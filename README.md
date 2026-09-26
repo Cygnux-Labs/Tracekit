@@ -55,7 +55,7 @@ A separate model compares what you asked, what the agent said, and what it did, 
 ## End-to-end demo (real Claude Code run)
 
 ```bash
-./demo/run_demo.sh
+bash demo/run_demo.sh
 ```
 
 This copies `demo/project` (a small repo with a timeout bug) to a temp folder and runs a real headless `claude -p` session with tracekit hooks. It uses its own `TRACEKIT_HOME` and a `--settings` file, so your normal setup is untouched. It then verifies the log, renders the report and runs a tamper test on a copy.
