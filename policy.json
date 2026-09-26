@@ -1,0 +1,19 @@
+{
+  "_comment": "Rules are regexes. 'deny' blocks the tool call before it runs. 'flag' lets it run but marks it for review. 'field' picks which tool_input field to match (defaults: Bash=command, Write/Edit=file_path, WebFetch=url).",
+  "deny": [
+    {"tool": "Bash", "pattern": "rm\\s+-[a-zA-Z]*r[a-zA-Z]*f?\\s+(/|~|\\$HOME)(\\s|/?$)", "reason": "recursive delete of root or home"},
+    {"tool": "Bash", "pattern": "(curl|wget)[^|;]*\\|\\s*(sudo\\s+)?(ba|z)?sh", "reason": "piping a download into a shell"},
+    {"tool": "Bash", "pattern": "git\\s+push\\b.*(--force|-f\\b)", "reason": "force push"},
+    {"tool": "Bash", "pattern": "\\bsudo\\b", "reason": "privilege escalation"},
+    {"tool": "Write|Edit|MultiEdit", "pattern": "(^|/)(\\.env(\\..*)?|id_rsa|id_ed25519)$|/\\.ssh/|/\\.aws/", "reason": "writing to secrets / credentials files"}
+  ],
+  "flag": [
+    {"tool": "Bash", "pattern": "\\b(curl|wget|ssh|scp|rsync|nc|ncat)\\b", "label": "network"},
+    {"tool": "WebFetch|WebSearch", "pattern": ".*", "label": "network"},
+    {"tool": "Bash", "pattern": "\\b(rm|mv|chmod|chown|dd|truncate)\\b", "label": "destructive"},
+    {"tool": "Bash", "pattern": "\\b(git\\s+(push|reset\\s+--hard|clean)|npm\\s+publish|pip\\s+install|docker\\s+run)\\b", "label": "side_effect"},
+    {"tool": "Read|Bash|Grep", "pattern": "\\.env\\b|id_rsa|\\.ssh/|credentials", "label": "secrets_access"},
+    {"tool": "mcp__.*", "pattern": ".*", "label": "external_tool"}
+  ],
+  "scope": {"flag_writes_outside_cwd": true}
+}
