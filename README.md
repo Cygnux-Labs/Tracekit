@@ -1,6 +1,8 @@
 # tracekit: see what your coding agent actually did, and why
 
-A small, dependency-free kit (Python 3.8+, stdlib only) that plugs into Claude Code's hooks. For every session it records:
+https://github.com/user-attachments/assets/46640e32-82e2-46ef-a318-a9220f04714c
+
+For every session it records:
 
 - **What you asked:** each prompt.
 - **What the model said and thought:** assistant text and reasoning, read from the session transcript. Treat the reasoning as a claim, not proof.
