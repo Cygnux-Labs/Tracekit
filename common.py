@@ -79,6 +79,24 @@ def _last_record(f):
     return None
 
 
+class locked:
+    """Exclusive inter-process lock on ~/.tracekit/<name>.lock."""
+    def __init__(self, name):
+        self.path = os.path.join(HOME, name + ".lock")
+
+    def __enter__(self):
+        os.makedirs(HOME, exist_ok=True)
+        self.f = open(self.path, "a")
+        if fcntl:
+            fcntl.flock(self.f, fcntl.LOCK_EX)
+        return self
+
+    def __exit__(self, *a):
+        if fcntl:
+            fcntl.flock(self.f, fcntl.LOCK_UN)
+        self.f.close()
+
+
 def append(events):
     """Append events to the hash-chained ledger under an exclusive lock."""
     os.makedirs(HOME, exist_ok=True)

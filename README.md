@@ -21,6 +21,44 @@ python3 verify.py anchor      # save the current head hash; keep a copy off this
 python3 install.py --uninstall
 ```
 
+## Observer: a live terminal for every agent
+
+```bash
+python3 observer.py          # open http://127.0.0.1:7777 and leave it running
+```
+
+This is a Bloomberg-style screen that updates as agents work. It shows every session, including each subagent Claude Code spawns and any other agent you instrument.
+
+| Panel | What it shows |
+|---|---|
+| Ticker | Sessions, agents running, actions, actions per minute, tokens in and out, blocked, flagged, errors, files, elapsed time, ledger size |
+| 1 Agents | Each session's prompt, with the main agent and its subagents as a tree. Shows status (running, idle, done), what each is doing right now, action count, tokens and model. |
+| 2 Tape | Every event, newest first: prompts, thinking, speech, tool calls with status and duration, spawns, finishes, blocks, reviews |
+| 3 Alerts | Blocked actions, policy flags, failures and reviewer findings, by severity |
+| 4 Tool mix | Calls per tool |
+| 5 Timeline | One lane per agent, showing when each action ran and for how long, coloured by type (read, write, run, network, spawn, blocked) |
+| 6 Reasoning | What each agent said and thought, including when the provider withheld its thinking |
+| 7 Files | Every file read, written or blocked, and which agent touched it last |
+| 8 Detail | For the selected action: the reasoning just before it, full input and result, policy decision, and its ledger hash and previous hash |
+
+**Commands.** Type in the top bar and press Enter. `AGT fix` shows one agent, `TOOL BASH` one tool, `FILE .env` one file, `FLAG` only problems, `FIND timeout` searches everything, `SEQ 42` opens record 42, and `CLR` clears filters. Press `/` to jump to the command bar, `F` to show only flagged actions, `?` for help.
+
+**Integrity.** The chain badge turns red if the log fails verification. `python3 observer.py --export replay.html` writes a single file anyone can open. It replays the run with a timeline you can scrub, and re-checks every hash in the viewer's browser.
+
+**Other agents.** Anything can be traced, not only Claude Code:
+
+```python
+from tracekit_sdk import Tracer
+t = Tracer(agent="research-bot")
+t.prompt("Compare Q3 revenue")
+w = t.subagent("fetcher", "Fetch ACME filings")      # gets its own lane
+with w.tool("http_get", {"url": "..."}) as call:     # policy-checked before it runs
+    call.result({"status": 200})
+w.done("ok"); t.end()
+```
+
+Agents on other machines, or written in other languages, can POST JSON to `/api/ingest`. Set `TRACEKIT_INGEST_TOKEN` and bind with `--host 0.0.0.0` to accept them. See `examples/custom_agent.py`. For the plain terminal, `python3 watch.py` prints the same feed as text.
+
 ## The five layers it covers
 
 | Layer | What it gives you | Files |

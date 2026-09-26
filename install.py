@@ -15,7 +15,7 @@ import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 TOOL_EVENTS = ["PreToolUse", "PostToolUse", "PostToolUseFailure"]
-OTHER_EVENTS = ["UserPromptSubmit", "Stop", "SubagentStop", "SessionStart",
+OTHER_EVENTS = ["UserPromptSubmit", "Stop", "SubagentStart", "SubagentStop", "SessionStart",
                 "SessionEnd", "PreCompact", "Notification"]
 
 

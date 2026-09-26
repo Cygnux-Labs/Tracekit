@@ -50,10 +50,24 @@ def evaluate_policy(tool, tool_input, cwd):
     return decision, reasons, sorted(set(flags))
 
 
-def ingest_transcript(session_id, transcript_path):
-    """Pull new assistant turns (thinking, text, tool_use) from the transcript."""
+def subagent_transcript(main_path, agent_id):
+    """Claude Code stores subagent transcripts at <session>/subagents/agent-<id>.jsonl."""
+    if not main_path or not agent_id:
+        return None
+    return os.path.join(main_path[:-6] if main_path.endswith(".jsonl") else main_path,
+                        "subagents", f"agent-{agent_id}.jsonl")
+
+
+def ingest_transcript(session_id, transcript_path, agent_id=None, agent_type=None):
+    """Pull new assistant turns (thinking, text, tool_use) from a transcript.
+    Runs under a lock so parallel agents never ingest the same lines twice."""
     if not transcript_path or not os.path.exists(transcript_path):
         return []
+    with common.locked("state"):
+        return _ingest(session_id, transcript_path, agent_id, agent_type)
+
+
+def _ingest(session_id, transcript_path, agent_id, agent_type):
     state = common.load_json(common.STATE, {})
     key = f"{session_id}:{transcript_path}"
     offset = state.get(key, 0)
@@ -89,6 +103,7 @@ def ingest_transcript(session_id, transcript_path):
                                    "tool_name": b.get("name"), "tool_input": b.get("input")})
             if blocks:
                 events.append({"event": "model_turn", "session_id": session_id,
+                               "agent_id": agent_id, "agent_type": agent_type,
                                "transcript_uuid": entry.get("uuid"), "message_id": msg.get("id"),
                                "model": msg.get("model"),
                                "usage": msg.get("usage"), "blocks": blocks})
@@ -102,13 +117,26 @@ def main():
     payload = json.loads(raw) if raw.strip() else {}
     name = payload.get("hook_event_name", "Unknown")
     sid = payload.get("session_id")
+    aid, atype = payload.get("agent_id"), payload.get("agent_type")
     base = {"event": name, "session_id": sid, "cwd": payload.get("cwd"),
-            "agent": os.environ.get("TRACEKIT_AGENT", "claude-code")}
+            "agent": os.environ.get("TRACEKIT_AGENT", "claude-code"),
+            "agent_id": aid, "agent_type": atype, "prompt_id": payload.get("prompt_id")}
     events, exit_code, stderr_msg = [], 0, ""
+    main_tx = payload.get("transcript_path")
 
     # Reasoning that led up to this point (so it sits in the ledger before the action).
-    if name in ("PreToolUse", "PostToolUse", "PostToolUseFailure", "Stop", "SubagentStop", "PreCompact", "SessionEnd"):
-        events += ingest_transcript(sid, payload.get("transcript_path"))
+    if name in ("PreToolUse", "PostToolUse", "PostToolUseFailure", "Stop", "SubagentStop",
+                "PreCompact", "SessionEnd"):
+        if aid:  # a subagent: read its own transcript
+            sub = payload.get("agent_transcript_path") or subagent_transcript(main_tx, aid)
+            events += ingest_transcript(sid, sub, aid, atype)
+        events += ingest_transcript(sid, main_tx)
+    if name in ("Stop", "SessionEnd") and main_tx:  # catch up every subagent
+        d = os.path.join(main_tx[:-6], "subagents")
+        if os.path.isdir(d):
+            for fn in sorted(os.listdir(d)):
+                if fn.startswith("agent-") and fn.endswith(".jsonl"):
+                    events += ingest_transcript(sid, os.path.join(d, fn), fn[6:-6])
 
     if name == "PreToolUse":
         tool, ti = payload.get("tool_name", ""), payload.get("tool_input", {})
@@ -127,12 +155,14 @@ def main():
                        "tool_name": payload.get("tool_name"),
                        "tool_input": payload.get("tool_input"),
                        "tool_use_id": payload.get("tool_use_id"),
+                       "duration_ms": payload.get("duration_ms"),
                        "tool_response": resp})
     elif name == "UserPromptSubmit":
         events.append({**base, "prompt": payload.get("prompt")})
     else:
         extra = {k: v for k, v in payload.items()
-                 if k not in ("session_id", "cwd", "hook_event_name", "transcript_path")}
+                 if k not in ("session_id", "cwd", "hook_event_name", "transcript_path",
+                              "scratchpad_dir", "agent_id", "agent_type", "prompt_id")}
         events.append({**base, **extra})
 
     common.append(events)

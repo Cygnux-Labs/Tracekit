@@ -1,0 +1,666 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>TRACEKIT Observer</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+:root{
+  color-scheme:dark;
+  --bg:#000;--panel:#070707;--panel2:#0d0d0c;--line:#232220;--line2:#34322e;
+  --amber:#ffa630;--amber-dim:#a86c1c;--amber-bg:#1b1204;
+  --text:#e9e4d8;--muted:#8d877a;--faint:#5a564e;
+  --green:#3ddc84;--red:#ff5147;--cyan:#3cc8f0;--magenta:#d98bff;--blue:#7aa2ff;--yellow:#ffdd57;
+  --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--text);font:12px/1.35 var(--mono);font-variant-numeric:tabular-nums;overflow:hidden}
+button,input,select{font:inherit;color:inherit}
+#app{display:flex;flex-direction:column;height:100vh;height:100dvh;min-height:620px;padding-inline:6px;padding-block:0 4px}
+/* top bar */
+.top{display:flex;align-items:center;gap:10px;padding:6px 2px;border-bottom:1px solid var(--line2);flex-wrap:wrap}
+.brand{background:var(--amber);color:#000;font-weight:600;padding:2px 8px;letter-spacing:.06em}
+.cmd{flex:1 1 280px;display:flex;align-items:center;gap:6px;background:var(--panel2);border:1px solid var(--line2);padding:3px 8px;min-width:200px}
+.cmd span{color:var(--amber)}
+.cmd input{flex:1;background:transparent;border:0;outline:0;color:var(--yellow);text-transform:uppercase;min-width:0}
+.cmd input::placeholder{color:var(--faint);text-transform:none}
+.cmd kbd{color:#000;background:var(--amber-dim);padding:0 5px;font-size:11px}
+.chips{display:flex;gap:6px;flex-wrap:wrap}
+.chip{border:1px solid var(--amber-dim);color:var(--amber);padding:0 6px;cursor:pointer;background:transparent}
+.chip:hover{background:var(--amber-bg)}
+.mode{padding:1px 8px;font-weight:600;border:1px solid}
+.mode.live{color:var(--green);border-color:var(--green)}
+.mode.live::before{content:"● ";animation:blink 1.2s steps(2,start) infinite}
+.mode.replay{color:var(--cyan);border-color:var(--cyan)}
+.mode.off{color:var(--red);border-color:var(--red)}
+@keyframes blink{to{visibility:hidden}}
+@media (prefers-reduced-motion:reduce){.mode.live::before{animation:none}.flash{animation:none!important}}
+.chain{color:var(--muted)}.chain.ok{color:var(--green)}.chain.bad{color:var(--red);font-weight:600}
+.clock{color:var(--amber);margin-left:auto}
+/* ticker */
+.ticker{display:flex;gap:0;border-bottom:1px solid var(--line2);overflow-x:auto;scrollbar-width:none}
+.tk{padding:4px 12px 4px 10px;border-right:1px solid var(--line);white-space:nowrap}
+.tk b{display:block;color:var(--muted);font-weight:400;font-size:10px;letter-spacing:.08em}
+.tk i{font-style:normal;font-size:15px;font-weight:600;color:var(--text)}
+.tk i.up{color:var(--green)}.tk i.dn{color:var(--red)}.tk i.am{color:var(--amber)}
+.flash{animation:flash .6s ease-out}
+@keyframes flash{from{background:#3a2a08}to{background:transparent}}
+/* grid */
+main{flex:1;min-height:0;display:grid;gap:4px;padding-top:4px;
+  grid-template-columns:minmax(250px,1fr) minmax(0,2.2fr) minmax(260px,1.1fr);
+  grid-template-rows:minmax(0,1.25fr) minmax(0,.75fr) 150px minmax(0,1fr);
+  grid-template-areas:"agents tape alerts" "agents tape mix" "lanes lanes lanes" "reason files detail"}
+.p{background:var(--panel);border:1px solid var(--line);display:flex;flex-direction:column;min-height:0;min-width:0}
+.p>h2{margin:0;font-size:11px;font-weight:600;letter-spacing:.07em;color:var(--amber);background:var(--amber-bg);
+  padding:3px 6px;display:flex;gap:8px;align-items:center;border-bottom:1px solid var(--line2);white-space:nowrap}
+.p>h2 b{background:var(--amber);color:#000;padding:0 5px}
+.p>h2 small{margin-left:auto;color:var(--muted);font-weight:400;letter-spacing:0;overflow:hidden;text-overflow:ellipsis}
+.body{flex:1;min-height:0;overflow:auto;scrollbar-width:thin;scrollbar-color:var(--line2) transparent}
+.agents{grid-area:agents}.tape{grid-area:tape}.alerts{grid-area:alerts}.mix{grid-area:mix}
+.lanes{grid-area:lanes}.reason{grid-area:reason}.files{grid-area:files}.detail{grid-area:detail}
+/* agents */
+.sess{border-bottom:1px solid var(--line)}
+.sess-h{padding:6px 8px 4px;color:var(--muted);font-size:11px}
+.sess-h .prompt{color:var(--text);display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;margin-top:2px}
+.ag{display:grid;grid-template-columns:auto 1fr auto;gap:2px 8px;padding:5px 8px;cursor:pointer;border-left:2px solid transparent}
+.ag:hover{background:var(--panel2)}.ag.sel{border-left-color:var(--amber);background:var(--amber-bg)}
+.ag.sub{padding-left:22px}
+.dot{width:8px;height:8px;border-radius:50%;margin-top:3px;background:var(--faint)}
+.dot.running{background:var(--green);box-shadow:0 0 6px var(--green)}
+.dot.idle{background:var(--amber-dim)}.dot.done{background:var(--faint)}.dot.blocked{background:var(--red)}
+.ag .nm{color:var(--text);font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ag .st{font-size:10px;letter-spacing:.06em}
+.ag .st.running{color:var(--green)}.ag .st.idle{color:var(--amber)}.ag .st.done{color:var(--muted)}
+.ag .meta{grid-column:2/4;color:var(--muted);font-size:11px;display:flex;gap:10px;flex-wrap:wrap}
+.ag .cur{grid-column:2/4;color:var(--cyan);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* tables */
+table{width:100%;border-collapse:collapse}
+th{position:sticky;top:0;background:var(--panel2);color:var(--muted);font-weight:400;font-size:10px;letter-spacing:.07em;text-align:left;padding:3px 6px;border-bottom:1px solid var(--line2);z-index:1}
+td{padding:2px 6px;border-bottom:1px solid #121210;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:0}
+tr.row{cursor:pointer}tr.row:hover td{background:#12100b}tr.row.sel td{background:var(--amber-bg)}
+tr.new td{animation:flash .8s ease-out}
+.c-time{color:var(--muted);width:74px}.c-agent{width:122px;color:var(--amber)}.c-ev{width:58px}.c-tool{width:78px}
+.c-st{width:78px}.c-ms{width:52px;text-align:right;color:var(--muted)}
+.ev-PROMPT{color:var(--yellow)}.ev-THINK{color:var(--magenta)}.ev-SAYS{color:var(--text)}.ev-TOOL{color:var(--cyan)}
+.ev-SPAWN,.ev-DONE{color:var(--green)}.ev-STOP,.ev-SESS{color:var(--muted)}.ev-REVIEW{color:var(--blue)}.ev-BLOCK{color:var(--red);font-weight:600}
+.s-ok{color:var(--green)}.s-run{color:var(--yellow)}.s-err,.s-deny{color:var(--red);font-weight:600}.s-flag{color:var(--amber)}
+.tgt{color:var(--text)}.dim{color:var(--muted)}
+/* alerts */
+.al{padding:5px 8px;border-bottom:1px solid var(--line);cursor:pointer;display:grid;grid-template-columns:auto 1fr;gap:1px 8px}
+.al:hover{background:var(--panel2)}
+.sev{font-size:10px;font-weight:600;padding:0 4px;height:fit-content}
+.sev.high{background:var(--red);color:#000}.sev.med{background:var(--amber);color:#000}.sev.low{border:1px solid var(--muted);color:var(--muted)}.sev.info{background:var(--blue);color:#000}
+.al .tx{color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.al .sub{grid-column:2;color:var(--muted);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.empty{color:var(--faint);padding:10px 8px}
+/* mix */
+.bar{display:grid;grid-template-columns:86px 1fr 38px;gap:6px;align-items:center;padding:2px 8px;cursor:pointer}
+.bar:hover{background:var(--panel2)}
+.bar .tr{height:9px;background:#141310}.bar .fl{height:100%}
+.bar .n{text-align:right;color:var(--text)}
+/* lanes */
+.lanes .body{overflow:hidden;position:relative}
+canvas{display:block;width:100%;height:100%}
+.legend{display:flex;gap:10px;margin-left:auto;font-weight:400;letter-spacing:0}
+.legend span::before{content:"";display:inline-block;width:8px;height:8px;margin-right:4px;background:var(--c)}
+/* reasoning */
+.rs{padding:6px 8px;border-bottom:1px solid var(--line);cursor:pointer}
+.rs:hover{background:var(--panel2)}
+.rs .h{color:var(--muted);font-size:11px;display:flex;gap:8px}
+.rs .h .who{color:var(--amber)}
+.rs .t{white-space:pre-wrap;word-break:break-word;margin-top:2px;display:-webkit-box;-webkit-line-clamp:5;-webkit-box-orient:vertical;overflow:hidden}
+.rs.think .t{color:var(--magenta)}.rs.withheld .t{color:var(--faint);font-style:italic}
+/* detail */
+.kv{display:grid;grid-template-columns:92px 1fr;gap:2px 8px;padding:6px 8px}
+.kv dt{color:var(--muted)}.kv dd{margin:0;word-break:break-all}
+pre{margin:0;padding:6px 8px;white-space:pre-wrap;word-break:break-word;color:var(--text);font:11.5px/1.4 var(--mono)}
+.sec{color:var(--amber);font-size:10px;letter-spacing:.08em;padding:6px 8px 0;border-top:1px solid var(--line)}
+.hash{color:var(--green)}
+/* footer */
+.foot{display:flex;gap:12px;align-items:center;padding:4px 2px 0;color:var(--muted);flex-wrap:wrap}
+.foot kbd{background:var(--amber);color:#000;padding:0 4px;margin-right:3px}
+.rp{display:flex;gap:8px;align-items:center;flex:1 1 360px}
+.rp button,.rp select{background:var(--panel2);border:1px solid var(--line2);padding:1px 8px;cursor:pointer;color:var(--cyan)}
+.rp input[type=range]{flex:1;accent-color:var(--amber);min-width:80px}
+:focus-visible{outline:1px solid var(--yellow);outline-offset:1px}
+/* help overlay */
+.help{position:fixed;inset:0;background:rgba(0,0,0,.8);display:flex;align-items:center;justify-content:center;z-index:9;padding:16px}
+.help>div{background:var(--panel);border:1px solid var(--amber);max-width:620px;width:100%;max-height:90%;overflow:auto}
+.help table td{white-space:normal;max-width:none;padding:4px 8px}
+.help td:first-child{color:var(--yellow);width:170px}
+@media (max-width:900px){
+  body{overflow:auto}
+  main{display:flex;flex-direction:column}
+  .p{min-height:220px;max-height:420px}.lanes{min-height:170px}
+  #app{height:auto;min-height:100%}
+}
+</style>
+</head>
+<body>
+<div id="app">
+  <header class="top">
+    <span class="brand">TRACEKIT</span>
+    <label class="cmd" for="cmd"><span>▶</span><input id="cmd" autocomplete="off" spellcheck="false" placeholder="AGT api · TOOL BASH · FLAG · FILE .env · SEQ 12 · CLR · HELP"><kbd>GO</kbd></label>
+    <div class="chips" id="chips"></div>
+    <span class="mode" id="mode">…</span>
+    <span class="chain" id="chain">CHAIN …</span>
+    <span class="clock" id="clock"></span>
+  </header>
+  <div class="ticker" id="ticker"></div>
+  <main>
+    <section class="p agents"><h2><b>1</b>AGENTS<small id="agsum"></small></h2><div class="body" id="agents"></div></section>
+    <section class="p tape"><h2><b>2</b>TAPE<small id="tapesum"></small></h2><div class="body"><table><thead><tr><th class="c-time">TIME</th><th class="c-agent">AGENT</th><th class="c-ev">EVT</th><th class="c-tool">TOOL</th><th>TARGET / TEXT</th><th class="c-st">STATUS</th><th class="c-ms">MS</th></tr></thead><tbody id="tape"></tbody></table></div></section>
+    <section class="p alerts"><h2><b>3</b>ALERTS<small id="alsum"></small></h2><div class="body" id="alerts"></div></section>
+    <section class="p mix"><h2><b>4</b>TOOL MIX<small id="mixsum"></small></h2><div class="body" id="mix"></div></section>
+    <section class="p lanes"><h2><b>5</b>TIMELINE · ONE LANE PER AGENT
+      <span class="legend"><span style="--c:var(--cyan)">read</span><span style="--c:var(--amber)">write</span><span style="--c:var(--magenta)">exec</span><span style="--c:var(--blue)">net</span><span style="--c:var(--green)">agent</span><span style="--c:var(--red)">blocked/error</span></span></h2>
+      <div class="body" id="lanewrap"><canvas id="lanes"></canvas></div></section>
+    <section class="p reason"><h2><b>6</b>REASONING<small>self-reported, not proof</small></h2><div class="body" id="reason"></div></section>
+    <section class="p files"><h2><b>7</b>FILES<small id="filesum"></small></h2><div class="body"><table><thead><tr><th>PATH</th><th style="width:34px">R</th><th style="width:34px">W</th><th style="width:40px">BLK</th><th style="width:90px">LAST AGENT</th></tr></thead><tbody id="files"></tbody></table></div></section>
+    <section class="p detail"><h2><b>8</b>DETAIL<small id="detsum">click any row</small></h2><div class="body" id="detail"><div class="empty">Select an action, alert or reasoning entry.</div></div></section>
+  </main>
+  <footer class="foot">
+    <div class="rp" id="rp" hidden>
+      <button id="play" type="button">❚❚ PAUSE</button>
+      <select id="speed" aria-label="Replay speed"><option value="1">1×</option><option value="4" selected>4×</option><option value="16">16×</option><option value="100">100×</option></select>
+      <input id="scrub" type="range" min="0" max="0" value="0" aria-label="Replay position">
+      <span id="pos"></span>
+    </div>
+    <span><kbd>/</kbd>command</span><span><kbd>ESC</kbd>clear</span><span><kbd>F</kbd>flagged</span><span><kbd>?</kbd>help</span>
+  </footer>
+</div>
+<div class="help" id="help" hidden><div>
+  <h2 style="margin:0;padding:6px 8px;background:var(--amber);color:#000;font-size:12px">COMMANDS · type then press ENTER (GO)</h2>
+  <table><tbody>
+    <tr><td>AGT &lt;text&gt;</td><td>Show one agent: matches id, type or task description</td></tr>
+    <tr><td>TOOL &lt;name&gt;</td><td>Only this tool (BASH, READ, EDIT, AGENT, MCP…)</td></tr>
+    <tr><td>FILE &lt;text&gt;</td><td>Only actions touching matching paths</td></tr>
+    <tr><td>FLAG</td><td>Only flagged, blocked or failed actions (toggle)</td></tr>
+    <tr><td>FIND &lt;text&gt;</td><td>Full-text search across inputs, outputs and reasoning</td></tr>
+    <tr><td>SEQ &lt;n&gt;</td><td>Open ledger record n in DETAIL</td></tr>
+    <tr><td>CLR</td><td>Clear all filters</td></tr>
+    <tr><td>PAUSE · PLAY · SPEED &lt;n&gt;</td><td>Replay controls</td></tr>
+  </tbody></table>
+  <p style="padding:0 8px 8px;color:var(--muted)">Every row is a record in the hash-chained ledger. DETAIL shows its seq, hash and previous hash. Reasoning is what the model reported about itself; actions are what it did.</p>
+</div></div>
+<script>
+"use strict";
+const BOOT = /*__TRACE_DATA__*/null;
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const FIELD = {Bash:"command",Write:"file_path",Edit:"file_path",MultiEdit:"file_path",Read:"file_path",NotebookEdit:"notebook_path",WebFetch:"url",WebSearch:"query",Glob:"pattern",Grep:"pattern",Agent:"description",Task:"description"};
+const FILE_TOOLS = {Read:"R",Write:"W",Edit:"W",MultiEdit:"W",NotebookEdit:"W"};
+const SEVERE = new Set(["denied","out_of_scope_write","secrets_access"]);
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+
+function subject(tool, ti){
+  if (!ti || typeof ti !== "object") return String(ti ?? "");
+  const f = FIELD[tool];
+  if (f && ti[f] != null) return String(ti[f]);
+  const k = Object.keys(ti)[0];
+  return k ? `${k}=${typeof ti[k]==="string"?ti[k]:JSON.stringify(ti[k])}` : "";
+}
+function rel(text, cwd){
+  if (!cwd || !text) return text;
+  return String(text).split(cwd + "/").join("").split(cwd).join(".");
+}
+function category(a){
+  if (a.denied || a.error) return "bad";
+  const t = a.tool;
+  if (t === "Agent" || t === "Task") return "agent";
+  if (FILE_TOOLS[t] === "W") return "write";
+  if (t === "Read" || t === "Glob" || t === "Grep" || t === "LS") return "read";
+  if (t === "WebFetch" || t === "WebSearch" || /^mcp__/.test(t) || a.flags.includes("network")) return "net";
+  return "exec";
+}
+const CAT_COLOR = {read:"--cyan",write:"--amber",exec:"--magenta",net:"--blue",agent:"--green",bad:"--red"};
+const fmtT = ts => new Date(ts*1000).toTimeString().slice(0,8);
+const fmtN = n => n >= 1e6 ? (n/1e6).toFixed(2)+"M" : n >= 1e4 ? (n/1e3).toFixed(1)+"K" : String(n);
+const fmtDur = s => s < 60 ? s.toFixed(0)+"s" : s < 3600 ? Math.floor(s/60)+"m"+String(Math.floor(s%60)).padStart(2,"0") : (s/3600).toFixed(1)+"h";
+
+/* ---------------- state ---------------- */
+let S;
+function reset(){
+  S = {recs:[], sessions:new Map(), agents:new Map(), actions:new Map(), actList:[], tape:[], files:new Map(),
+       tools:new Map(), alerts:[], reasoning:[], tokIn:0, tokOut:0, spawnQ:[], withheldSeen:new Set(),
+       firstTs:null, lastTs:null};
+}
+const F = {agent:null, tool:null, file:null, flag:false, find:null};
+let selected = null, mode = BOOT ? "replay" : "live", chainState = {ok:null, n:0};
+
+function sessionOf(r){
+  const id = r.session_id || "unknown";
+  if (!S.sessions.has(id)) S.sessions.set(id, {id, prompts:[], start:r.ts, end:null, cwd:r.cwd||""});
+  const s = S.sessions.get(id); if (!s.cwd && r.cwd) s.cwd = r.cwd; return s;
+}
+function agentOf(r, create=true){
+  const key = (r.session_id||"unknown") + "|" + (r.agent_id || "main");
+  if (!S.agents.has(key) && create){
+    sessionOf(r);
+    S.agents.set(key, {key, session:r.session_id||"unknown", id:r.agent_id||"main",
+      type:r.agent_type || (r.agent_id ? "subagent" : (r.agent||"main")), sub:!!r.agent_id,
+      desc:"", status:"idle", actions:0, tokIn:0, tokOut:0, first:r.ts, last:r.ts,
+      current:null, errors:0, blocked:0, flags:0, model:""});
+  }
+  const a = S.agents.get(key); if (a){ a.last = Math.max(a.last, r.ts); if (r.agent_type && a.type==="subagent") a.type = r.agent_type; }
+  return a;
+}
+function label(a){
+  if (!a.sub) return "main·" + a.session.slice(-4);
+  const w = a.desc ? a.desc.split(/\s+/)[0] : a.type.split(/[-_ ]/)[0];
+  return w.toLowerCase().replace(/[^a-z0-9]/g,"").slice(0,8) + "·" + a.id.slice(0,4);
+}
+function pushTape(row){ S.tape.push(row); }
+function alert(sev, text, sub, ref, ts, agent){ S.alerts.push({sev, text, sub, ref, ts, agent}); }
+
+function ingest(r){
+  S.recs.push(r);
+  if (S.firstTs === null) S.firstTs = r.ts;
+  S.lastTs = Math.max(S.lastTs || 0, r.ts);
+  const ev = r.event;
+  if (ev === "SessionStart"){ sessionOf(r); agentOf(r); pushTape({ts:r.ts, agent:agentOf(r), ev:"SESS", text:"session start · "+(r.source||""), rec:r}); return; }
+  if (ev === "UserPromptSubmit"){
+    const s = sessionOf(r), a = agentOf(r); s.prompts.push(r.prompt||""); a.status = "running";
+    pushTape({ts:r.ts, agent:a, ev:"PROMPT", text:r.prompt, rec:r}); return;
+  }
+  if (ev === "model_turn"){
+    const a = agentOf(r); const u = r.usage || {};
+    const tin = (u.input_tokens||0)+(u.cache_creation_input_tokens||0)+(u.cache_read_input_tokens||0), tout = u.output_tokens||0;
+    const mid = r.message_id || r.transcript_uuid;
+    if (!S.withheldSeen.has("u"+mid)) { a.tokIn += tin; a.tokOut += tout; S.tokIn += tin; S.tokOut += tout; S.withheldSeen.add("u"+mid); }
+    if (r.model) a.model = r.model;
+    for (const b of r.blocks || []){
+      if ((b.kind === "thinking" || b.kind === "text") && b.text && b.text.trim()){
+        const kind = b.kind === "thinking" ? "think" : "says";
+        S.reasoning.push({ts:r.ts, agent:a, kind, text:b.text, rec:r});
+        pushTape({ts:r.ts, agent:a, ev:kind==="think"?"THINK":"SAYS", text:b.text, rec:r});
+      } else if (b.kind === "thinking_redacted" && !S.withheldSeen.has(mid)){
+        S.withheldSeen.add(mid);
+        S.reasoning.push({ts:r.ts, agent:a, kind:"withheld", text:"Thinking happened; the provider withheld its text.", rec:r});
+      }
+    }
+    return;
+  }
+  if (ev === "PreToolUse"){
+    const a = agentOf(r), pol = r.policy || {};
+    const act = {id:r.tool_use_id || ("s"+r.seq), pre:r, post:null, agent:a, tool:r.tool_name||"?", input:r.tool_input||{},
+      target:rel(subject(r.tool_name, r.tool_input), r.cwd), flags:[...(pol.flags||[])], denied:pol.decision === "deny",
+      reasons:pol.reasons||[], start:r.ts, end:null, ms:null, error:false, child:null};
+    if (act.denied) act.flags.unshift("denied");
+    S.actions.set(act.id, act); S.actList.push(act);
+    a.actions++; a.status = "running"; a.current = act.denied ? null : act;
+    S.tools.set(act.tool, (S.tools.get(act.tool)||0) + 1);
+    const fm = FILE_TOOLS[act.tool];
+    const path = act.input.file_path || act.input.notebook_path;
+    if (fm && path){
+      const p = rel(path, r.cwd);
+      const f = S.files.get(p) || {path:p, r:0, w:0, blk:0, last:null, acts:[]};
+      if (act.denied) f.blk++; else f[fm==="R"?"r":"w"]++;
+      f.last = a; f.acts.push(act); S.files.set(p, f);
+    }
+    if (act.tool === "Agent" || act.tool === "Task") S.spawnQ.push(act);
+    if (act.denied){ a.blocked++; alert("high", `BLOCKED ${act.tool}: ${act.target}`, act.reasons.join("; "), act, r.ts, a); }
+    for (const f of act.flags){
+      if (f === "denied") continue;
+      a.flags++;
+      alert(SEVERE.has(f) ? "high" : "med", `${f.replace(/_/g," ").toUpperCase()} · ${act.tool}`, act.target, act, r.ts, a);
+    }
+    pushTape({ts:r.ts, agent:a, ev:act.denied?"BLOCK":"TOOL", act, rec:r});
+    return;
+  }
+  if (ev === "PostToolUse"){
+    const act = S.actions.get(r.tool_use_id) || S.actList.slice().reverse().find(x => !x.post && x.tool === r.tool_name && JSON.stringify(x.input) === JSON.stringify(r.tool_input||{}));
+    if (!act) return;
+    act.post = r; act.end = r.ts; act.ms = r.duration_ms ?? Math.round((r.ts - act.start)*1000);
+    const resp = r.tool_response;
+    act.error = !!(r.failed || (resp && typeof resp === "object" && (resp.is_error || resp.error || resp.interrupted)));
+    if (act.error){ act.flags.push("error"); act.agent.errors++; alert("med", `FAILED ${act.tool}`, act.target, act, r.ts, act.agent); }
+    if (act.agent.current === act) act.agent.current = null;
+    return;
+  }
+  if (ev === "SubagentStart"){
+    const a = agentOf(r); a.status = "running";
+    const parent = S.spawnQ.shift();
+    if (parent){ a.desc = parent.input.description || ""; parent.child = a; }
+    pushTape({ts:r.ts, agent:a, ev:"SPAWN", text:(a.desc||a.type), rec:r}); return;
+  }
+  if (ev === "SubagentStop"){
+    const a = agentOf(r); a.status = "done"; a.current = null;
+    if (r.last_assistant_message) S.reasoning.push({ts:r.ts, agent:a, kind:"says", text:r.last_assistant_message, rec:r});
+    pushTape({ts:r.ts, agent:a, ev:"DONE", text:(r.last_assistant_message||"").slice(0,200), rec:r}); return;
+  }
+  if (ev === "Stop"){ const a = agentOf(r); a.status = "idle"; a.current = null; pushTape({ts:r.ts, agent:a, ev:"STOP", text:"turn finished", rec:r}); return; }
+  if (ev === "SessionEnd"){
+    const s = sessionOf(r); s.end = r.ts;
+    for (const a of S.agents.values()) if (a.session === s.id){ a.status = "done"; a.current = null; }
+    pushTape({ts:r.ts, agent:agentOf(r), ev:"SESS", text:"session end · "+(r.reason||""), rec:r}); return;
+  }
+  if (ev === "judge_verdict"){
+    const v = r.verdict || {}, a = agentOf(r);
+    alert(v.alignment === "misaligned" ? "high" : "info", `REVIEW: ${String(v.alignment||"?").toUpperCase()}`, v.summary||"", {rec:r}, r.ts, a);
+    for (const f of v.findings || []) alert(f.severity === "high" ? "high" : f.severity === "medium" ? "med" : "low", `REVIEW FINDING · ${f.type||""}`, f.evidence||"", {rec:r}, r.ts, a);
+    pushTape({ts:r.ts, agent:a, ev:"REVIEW", text:(v.alignment||"")+" · "+(v.summary||""), rec:r}); return;
+  }
+  if (ev === "log"){ sessionOf(r); pushTape({ts:r.ts, agent:agentOf(r), ev:"SAYS", text:r.text || r.message || "log", rec:r}); return; }
+  pushTape({ts:r.ts, agent:agentOf(r), ev:"SESS", text:ev, rec:r});
+}
+
+/* ---------------- filters ---------------- */
+function agentMatch(a){
+  if (!F.agent) return true;
+  const q = F.agent.toLowerCase();
+  return a.id.toLowerCase().startsWith(q) || a.type.toLowerCase().includes(q) || (a.desc||"").toLowerCase().includes(q) || (q==="main" && !a.sub);
+}
+function actMatch(act){
+  if (!agentMatch(act.agent)) return false;
+  if (F.tool && act.tool.toLowerCase() !== F.tool.toLowerCase() && !(F.tool.toLowerCase()==="mcp" && /^mcp__/.test(act.tool))) return false;
+  if (F.file && !act.target.toLowerCase().includes(F.file.toLowerCase())) return false;
+  if (F.flag && !act.flags.length) return false;
+  if (F.find){ const q = F.find.toLowerCase(); if (!(JSON.stringify(act.input)+JSON.stringify(act.post?.tool_response||"")).toLowerCase().includes(q)) return false; }
+  return true;
+}
+function rowMatch(row){
+  if (row.act) return actMatch(row.act);
+  if (!agentMatch(row.agent)) return false;
+  if (F.tool || F.file || F.flag) return false;
+  if (F.find) return String(row.text||"").toLowerCase().includes(F.find.toLowerCase());
+  return true;
+}
+function anyFilter(){ return F.agent || F.tool || F.file || F.flag || F.find; }
+
+/* ---------------- render ---------------- */
+let rq = false, lastCounts = {};
+function schedule(){ if (!rq){ rq = true; requestAnimationFrame(()=>{ rq = false; render(); }); } }
+function nowTs(){ return mode === "live" ? Date.now()/1000 : (S.lastTs || Date.now()/1000); }
+
+function render(){
+  renderTop(); renderTicker(); renderAgents(); renderTape(); renderAlerts(); renderMix(); renderLanes(); renderReason(); renderFiles();
+  if (selected) renderDetail(selected);
+}
+function renderTop(){
+  const m = $("mode");
+  m.className = "mode " + (mode === "live" ? (liveOk ? "live" : "off") : "replay");
+  m.textContent = mode === "live" ? (liveOk ? "LIVE" : "DISCONNECTED") : "REPLAY";
+  const c = $("chain");
+  c.className = "chain" + (chainState.ok === true ? " ok" : chainState.ok === false ? " bad" : "");
+  c.textContent = chainState.ok === true ? `CHAIN ✓ ${chainState.n} RECORDS` : chainState.ok === false ? `CHAIN ✗ TAMPERED` : "CHAIN …";
+  c.title = chainState.detail || "";
+  $("clock").textContent = new Date(nowTs()*1000).toTimeString().slice(0,8) + (mode === "replay" ? " (REPLAY)" : "");
+  const chips = [];
+  if (F.agent) chips.push(["agent","AGT "+F.agent]); if (F.tool) chips.push(["tool","TOOL "+F.tool]);
+  if (F.file) chips.push(["file","FILE "+F.file]); if (F.flag) chips.push(["flag","FLAGGED"]); if (F.find) chips.push(["find","FIND "+F.find]);
+  $("chips").innerHTML = chips.map(([k,t]) => `<button class="chip" data-clear="${k}" type="button">${esc(t)} ✕</button>`).join("");
+}
+function renderTicker(){
+  const agents = [...S.agents.values()], running = agents.filter(a => a.status === "running").length;
+  const t = nowTs(), recent = S.actList.filter(a => a.start > t - 60).length;
+  const blocked = S.actList.filter(a => a.denied).length, errors = S.actList.filter(a => a.error).length;
+  const flagged = S.actList.filter(a => a.flags.length).length;
+  const elapsed = S.firstTs ? t - S.firstTs : 0;
+  const items = [
+    ["SESSIONS", S.sessions.size, ""], ["AGENTS", agents.length, ""], ["RUNNING", running, running ? "up" : ""],
+    ["ACTIONS", S.actList.length, "am"], ["ACT/MIN", recent, recent ? "up" : ""],
+    ["TOKENS IN", fmtN(S.tokIn), ""], ["TOKENS OUT", fmtN(S.tokOut), ""],
+    ["BLOCKED", blocked, blocked ? "dn" : ""], ["FLAGGED", flagged, flagged ? "am" : ""], ["ERRORS", errors, errors ? "dn" : ""],
+    ["FILES", S.files.size, ""], ["ELAPSED", fmtDur(elapsed), ""], ["LEDGER", S.recs.length, ""]];
+  $("ticker").innerHTML = items.map(([k,v,c]) => {
+    const fl = lastCounts[k] !== undefined && lastCounts[k] !== v ? " flash" : ""; lastCounts[k] = v;
+    return `<div class="tk${fl}"><b>${k}</b><i class="${c}">${esc(v)}</i></div>`;
+  }).join("");
+}
+function renderAgents(){
+  const by = new Map();
+  for (const a of S.agents.values()){ if (!by.has(a.session)) by.set(a.session, []); by.get(a.session).push(a); }
+  let html = "";
+  for (const [sid, list] of [...by.entries()].reverse()){
+    const s = S.sessions.get(sid) || {prompts:[]};
+    list.sort((x,y) => (x.sub - y.sub) || (x.first - y.first));
+    html += `<div class="sess"><div class="sess-h">SESSION ${esc(sid.slice(0,8))} · ${esc((s.cwd||"").split("/").slice(-2).join("/"))}<div class="prompt">${esc(s.prompts[s.prompts.length-1] || "(no prompt recorded)")}</div></div>`;
+    for (const a of list){
+      const sel = F.agent && agentMatch(a) ? " sel" : "";
+      const st = a.status;
+      html += `<div class="ag${a.sub?" sub":""}${sel}" data-agent="${esc(a.id)}">
+        <span class="dot ${a.blocked && st!=="done" ? "blocked" : st}"></span>
+        <span class="nm">${esc(a.sub ? (a.desc || a.type) : "main agent")}</span><span class="st ${st}">${st.toUpperCase()}</span>
+        <span class="meta"><span>${esc(label(a))}</span><span>${a.actions} act</span><span>${fmtN(a.tokOut)} out</span>${a.blocked?`<span style="color:var(--red)">${a.blocked} blk</span>`:""}${a.errors?`<span style="color:var(--red)">${a.errors} err</span>`:""}${a.model?`<span>${esc(a.model)}</span>`:""}</span>
+        ${a.current ? `<span class="cur">▸ ${esc(a.current.tool)} ${esc(a.current.target)}</span>` : ""}
+      </div>`;
+    }
+    html += "</div>";
+  }
+  $("agents").innerHTML = html || `<div class="empty">Waiting for agents…</div>`;
+  const agents = [...S.agents.values()];
+  $("agsum").textContent = `${agents.filter(a=>a.status==="running").length} running / ${agents.length}`;
+}
+let tapeShown = 0;
+function renderTape(){
+  const rows = S.tape.filter(rowMatch), shown = rows.slice(-600).reverse();
+  const fresh = rows.length - tapeShown; tapeShown = rows.length;
+  $("tape").innerHTML = shown.map((row, i) => {
+    const a = row.act, isNew = i < fresh && fresh < 20 ? " new" : "";
+    const sel = selected && (selected === a || selected === row.rec) ? " sel" : "";
+    let tool = "", text = "", st = "", ms = "";
+    if (a){
+      tool = a.tool; text = a.target;
+      if (a.child) text += `  → ${label(a.child)}`;
+      st = a.denied ? `<span class="s-deny">BLOCKED</span>` : a.error ? `<span class="s-err">FAILED</span>` : a.post ? (a.flags.length ? `<span class="s-flag">⚑ OK</span>` : `<span class="s-ok">OK</span>`) : `<span class="s-run">RUNNING</span>`;
+      ms = a.ms != null ? a.ms : "";
+    } else { text = rel(String(row.text||""), row.rec?.cwd).replace(/\s+/g," "); }
+    return `<tr class="row${isNew}${sel}" data-i="${S.tape.indexOf(row)}"><td class="c-time">${fmtT(row.ts)}</td><td class="c-agent">${esc(label(row.agent))}</td><td class="c-ev ev-${row.ev}">${row.ev}</td><td class="c-tool">${esc(tool)}</td><td class="tgt${a?"":" dim"}" title="${esc(text.slice(0,400))}">${esc(text.slice(0,300))}</td><td class="c-st">${st}</td><td class="c-ms">${ms}</td></tr>`;
+  }).join("") || `<tr><td colspan="7" class="empty">${anyFilter() ? "Nothing matches the filter." : "Waiting for events…"}</td></tr>`;
+  $("tapesum").textContent = anyFilter() ? `${rows.length} of ${S.tape.length} events` : `${S.tape.length} events · newest first`;
+}
+function renderAlerts(){
+  const list = S.alerts.filter(al => !al.agent || agentMatch(al.agent)).slice(-200).reverse();
+  $("alerts").innerHTML = list.map((al, i) => `<div class="al" data-al="${S.alerts.indexOf(al)}"><span class="sev ${al.sev}">${al.sev.toUpperCase()}</span><span class="tx">${esc(al.text)}</span><span class="sub">${fmtT(al.ts)} · ${esc(al.agent ? label(al.agent) : "")} · ${esc(String(al.sub||"").slice(0,200))}</span></div>`).join("") || `<div class="empty">No alerts. Blocked, flagged and failed actions appear here.</div>`;
+  const hi = S.alerts.filter(a => a.sev === "high").length;
+  $("alsum").textContent = `${S.alerts.length} total · ${hi} high`;
+}
+function renderMix(){
+  const counts = new Map();
+  for (const a of S.actList) if (agentMatch(a.agent)) counts.set(a.tool, (counts.get(a.tool)||0)+1);
+  const rows = [...counts.entries()].sort((a,b) => b[1]-a[1]).slice(0,10), max = rows[0]?.[1] || 1;
+  $("mix").innerHTML = rows.map(([t,n]) => {
+    const cat = category({tool:t, flags:[], denied:false, error:false});
+    return `<div class="bar" data-tool="${esc(t)}"><span>${esc(t.slice(0,12))}</span><span class="tr"><span class="fl" style="display:block;width:${(n/max*100).toFixed(1)}%;background:var(${CAT_COLOR[cat]})"></span></span><span class="n">${n}</span></div>`;
+  }).join("") || `<div class="empty">No actions yet.</div>`;
+  $("mixsum").textContent = `${counts.size} tools`;
+}
+let laneHits = [];
+function renderLanes(){
+  const cv = $("lanes"), wrap = $("lanewrap"), dpr = window.devicePixelRatio || 1;
+  const W = wrap.clientWidth, H = wrap.clientHeight; if (!W || !H) return;
+  if (cv.width !== W*dpr || cv.height !== H*dpr){ cv.width = W*dpr; cv.height = H*dpr; }
+  const g = cv.getContext("2d"); g.setTransform(dpr,0,0,dpr,0,0); g.clearRect(0,0,W,H);
+  const agents = [...S.agents.values()].filter(agentMatch).sort((x,y) => x.session.localeCompare(y.session) || (x.sub-y.sub) || (x.first-y.first));
+  laneHits = [];
+  const labelW = 120, top = 16, t0 = S.firstTs, t1 = Math.max(nowTs(), (S.lastTs||0)+1);
+  g.font = `11px ${css("--mono")}`; g.textBaseline = "middle";
+  if (!agents.length || t0 == null){ g.fillStyle = css("--faint"); g.fillText("Waiting for agents…", 8, H/2); return; }
+  const laneH = Math.max(12, Math.min(26, (H - top - 4) / agents.length));
+  const x = ts => labelW + (ts - t0) / (t1 - t0) * (W - labelW - 8);
+  // time axis
+  g.strokeStyle = css("--line"); g.fillStyle = css("--muted"); g.lineWidth = 1;
+  const span = t1 - t0, steps = [1,2,5,10,15,30,60,120,300,600,900,1800,3600];
+  const step = steps.find(s => span / s <= 10) || 3600;
+  for (let t = Math.ceil(t0/step)*step; t <= t1; t += step){
+    const xx = Math.round(x(t)) + .5; g.beginPath(); g.moveTo(xx, top-4); g.lineTo(xx, H); g.stroke();
+    g.fillText(fmtT(t), xx + 3, 7);
+  }
+  agents.forEach((a, i) => {
+    const y = top + i*laneH;
+    if (i && agents[i-1].session !== a.session){ g.fillStyle = css("--amber-dim"); g.fillRect(0, y, W, 1); }
+    g.fillStyle = i % 2 ? "#0b0b0a" : "#080807"; g.fillRect(labelW, y, W-labelW, laneH);
+    g.fillStyle = a.status === "running" ? css("--green") : css("--amber"); g.fillText((a.sub ? "  " : "") + label(a), 6, y + laneH/2);
+    // life span
+    g.fillStyle = "#1a1a17"; g.fillRect(x(a.first), y + laneH/2 - 1, Math.max(1, x(a.status==="done" ? a.last : t1) - x(a.first)), 2);
+    for (const act of S.actList){
+      if (act.agent !== a || !actMatch(act)) continue;
+      const x0 = x(act.start), x1 = Math.max(x0 + 3, x(act.end ?? (act.denied ? act.start : t1)));
+      g.fillStyle = css(CAT_COLOR[category(act)]);
+      g.globalAlpha = selected === act ? 1 : .85;
+      g.fillRect(x0, y + 3, x1 - x0, laneH - 6);
+      if (act.flags.length && !act.denied){ g.fillStyle = css("--yellow"); g.fillRect(x0, y + 1, 3, 2); }
+      if (selected === act){ g.strokeStyle = css("--yellow"); g.strokeRect(x0-1.5, y+1.5, x1-x0+3, laneH-3); }
+      g.globalAlpha = 1;
+      laneHits.push({x0, x1, y0:y, y1:y+laneH, act});
+    }
+  });
+  if (mode === "live"){ const nx = x(Date.now()/1000); g.strokeStyle = css("--red"); g.beginPath(); g.moveTo(nx+.5, top-4); g.lineTo(nx+.5, H); g.stroke(); }
+}
+function renderReason(){
+  const list = S.reasoning.filter(r => agentMatch(r.agent) && (!F.find || r.text.toLowerCase().includes(F.find.toLowerCase()))).slice(-80).reverse();
+  $("reason").innerHTML = list.map(r => `<div class="rs ${r.kind}" data-seq="${r.rec.seq}"><div class="h"><span>${fmtT(r.ts)}</span><span class="who">${esc(label(r.agent))}</span><span>${r.kind === "think" ? "THINKING" : r.kind === "withheld" ? "THINKING (WITHHELD)" : "SAID"}</span></div><div class="t">${esc(r.text.slice(0,1200))}</div></div>`).join("") || `<div class="empty">No reasoning yet.</div>`;
+}
+function renderFiles(){
+  const list = [...S.files.values()].filter(f => !F.file || f.path.toLowerCase().includes(F.file.toLowerCase())).sort((a,b) => (b.w - a.w) || (b.r - a.r));
+  $("files").innerHTML = list.map(f => `<tr class="row" data-file="${esc(f.path)}"><td title="${esc(f.path)}">${esc(f.path.length > 48 ? "…" + f.path.slice(-47) : f.path)}</td><td class="dim">${f.r||""}</td><td style="color:var(--amber)">${f.w||""}</td><td style="color:var(--red)">${f.blk||""}</td><td class="c-agent">${esc(f.last ? label(f.last) : "")}</td></tr>`).join("") || `<tr><td colspan="5" class="empty">No files touched yet.</td></tr>`;
+  $("filesum").textContent = `${S.files.size} files · ${[...S.files.values()].filter(f=>f.w).length} written`;
+}
+function j(v){ try { return typeof v === "string" ? v : JSON.stringify(v, null, 2); } catch { return String(v); } }
+function renderDetail(sel){
+  let html = "";
+  if (sel.pre){ // action
+    const a = sel, st = a.denied ? "BLOCKED" : a.error ? "FAILED" : a.post ? "OK" : "RUNNING";
+    const before = S.reasoning.filter(r => r.agent === a.agent && r.ts <= a.start + 0.5 && r.kind !== "withheld").slice(-1)[0];
+    html += `<dl class="kv"><dt>ACTION</dt><dd style="color:var(--cyan)">${esc(a.tool)}</dd><dt>AGENT</dt><dd>${esc(label(a.agent))} ${a.agent.desc?"· "+esc(a.agent.desc):""}</dd>
+      <dt>STATUS</dt><dd class="${st==="OK"?"s-ok":st==="RUNNING"?"s-run":"s-err"}">${st}${a.ms!=null?` · ${a.ms} ms`:""}</dd>
+      <dt>TIME</dt><dd>${fmtT(a.start)}</dd><dt>POLICY</dt><dd>${a.denied?`<span class="s-deny">DENY</span> ${esc(a.reasons.join("; "))}`:"allow"}</dd>
+      <dt>FLAGS</dt><dd>${a.flags.length?esc(a.flags.join(", ")):"none"}</dd>${a.child?`<dt>SPAWNED</dt><dd>${esc(label(a.child))}</dd>`:""}</dl>`;
+    if (before) html += `<div class="sec">REASONING BEFORE THIS ACTION (${before.kind === "think" ? "thinking" : "said"})</div><pre style="color:var(--magenta)">${esc(before.text.slice(0,1500))}</pre>`;
+    html += `<div class="sec">INPUT</div><pre>${esc(j(a.input).slice(0,6000))}</pre>`;
+    if (a.post) html += `<div class="sec">RESULT</div><pre>${esc(j(a.post.tool_response).slice(0,6000))}</pre>`;
+    html += evidence(a.pre) + (a.post ? evidence(a.post) : "");
+    $("detsum").textContent = `${a.tool} · seq ${a.pre.seq}`;
+  } else if (sel.seq !== undefined){ // raw record
+    html += `<div class="sec">RECORD</div><pre>${esc(j(Object.fromEntries(Object.entries(sel).filter(([k]) => !["hash","prev"].includes(k)))).slice(0,8000))}</pre>` + evidence(sel);
+    $("detsum").textContent = `${sel.event} · seq ${sel.seq}`;
+  }
+  $("detail").innerHTML = html;
+}
+function evidence(r){
+  return `<div class="sec">LEDGER EVIDENCE · SEQ ${r.seq}</div><dl class="kv"><dt>hash</dt><dd class="hash">${esc(r.hash||"")}</dd><dt>prev</dt><dd class="dim">${esc(r.prev||"")}</dd></dl>`;
+}
+function select(x){ selected = x; schedule(); }
+
+/* ---------------- interaction ---------------- */
+document.addEventListener("click", e => {
+  const t = e.target.closest("[data-i],[data-al],[data-agent],[data-tool],[data-file],[data-seq],[data-clear]"); if (!t) return;
+  if (t.dataset.clear){ F[t.dataset.clear] = t.dataset.clear === "flag" ? false : null; return schedule(); }
+  if (t.dataset.i){ const row = S.tape[+t.dataset.i]; return select(row.act || row.rec); }
+  if (t.dataset.al){ const al = S.alerts[+t.dataset.al]; return select(al.ref?.pre ? al.ref : al.ref?.rec); }
+  if (t.dataset.agent){ F.agent = F.agent === t.dataset.agent ? null : t.dataset.agent; return schedule(); }
+  if (t.dataset.tool){ F.tool = F.tool === t.dataset.tool ? null : t.dataset.tool; return schedule(); }
+  if (t.dataset.file){ F.file = F.file === t.dataset.file ? null : t.dataset.file; return schedule(); }
+  if (t.dataset.seq){ const r = S.recs.find(r => r.seq === +t.dataset.seq); if (r) select(r); }
+});
+$("lanes").addEventListener("click", e => {
+  const b = e.target.getBoundingClientRect(), mx = e.clientX - b.left, my = e.clientY - b.top;
+  let best = null, bd = 9;
+  for (const h of laneHits){ if (my < h.y0 || my > h.y1) continue; const d = mx < h.x0 ? h.x0 - mx : mx > h.x1 ? mx - h.x1 : 0; if (d < bd){ bd = d; best = h; } }
+  if (best) select(best.act);
+});
+function runCommand(raw){
+  const s = raw.trim(); if (!s) return;
+  const [cmd, ...rest] = s.split(/\s+/), arg = rest.join(" ");
+  switch (cmd.toUpperCase()){
+    case "AGT": case "A": F.agent = arg || null; break;
+    case "TOOL": case "T": F.tool = arg || null; break;
+    case "FILE": F.file = arg || null; break;
+    case "FIND": case "/": F.find = arg || null; break;
+    case "FLAG": case "F": F.flag = !F.flag; break;
+    case "CLR": case "CLEAR": F.agent = F.tool = F.file = F.find = null; F.flag = false; selected = null; break;
+    case "SEQ": { const r = S.recs.find(r => r.seq === +arg); if (r){ const act = S.actList.find(a => a.pre === r || a.post === r); select(act || r); } break; }
+    case "HELP": case "?": $("help").hidden = false; break;
+    case "PAUSE": playing = false; updatePlay(); break;
+    case "PLAY": playing = true; updatePlay(); tick(); break;
+    case "SPEED": $("speed").value = arg; break;
+    default: F.find = s;
+  }
+  schedule();
+}
+$("cmd").addEventListener("keydown", e => { if (e.key === "Enter"){ runCommand(e.target.value); e.target.value = ""; } if (e.key === "Escape") e.target.blur(); });
+document.addEventListener("keydown", e => {
+  if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT") return;
+  if (e.key === "/"){ e.preventDefault(); $("cmd").focus(); }
+  else if (e.key === "Escape"){ $("help").hidden = true; selected = null; $("detail").innerHTML = `<div class="empty">Select an action, alert or reasoning entry.</div>`; $("detsum").textContent = "click any row"; schedule(); }
+  else if (e.key === "f" || e.key === "F"){ F.flag = !F.flag; schedule(); }
+  else if (e.key === "?"){ $("help").hidden = !$("help").hidden; }
+});
+$("help").addEventListener("click", e => { if (e.target.id === "help") $("help").hidden = true; });
+window.addEventListener("resize", schedule);
+setInterval(() => { if (mode === "live") schedule(); }, 1000);
+
+/* ---------------- integrity (browser-side SHA-256 chain check) ---------------- */
+function canon(v){
+  if (v === null || typeof v !== "object") return JSON.stringify(v);
+  if (Array.isArray(v)) return "[" + v.map(canon).join(",") + "]";
+  return "{" + Object.keys(v).sort().map(k => JSON.stringify(k) + ":" + canon(v[k])).join(",") + "}";
+}
+async function sha256(s){
+  const d = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s));
+  return [...new Uint8Array(d)].map(b => b.toString(16).padStart(2,"0")).join("");
+}
+async function verifyChain(recs){
+  if (!window.crypto?.subtle){ chainState = {ok:null, n:recs.length, detail:"browser has no WebCrypto"}; return schedule(); }
+  let prev = "0".repeat(64);
+  for (let i = 0; i < recs.length; i++){
+    const r = recs[i], body = Object.assign({}, r); delete body.hash;
+    if (r.seq !== i || r.prev !== prev || await sha256(canon(body)) !== r.hash){
+      chainState = {ok:false, n:recs.length, detail:`Chain breaks at seq ${r.seq}`}; return schedule();
+    }
+    prev = r.hash;
+  }
+  chainState = {ok:true, n:recs.length, detail:"Every record re-hashed in this browser; chain intact. Head " + prev.slice(0,16)}; schedule();
+}
+
+/* ---------------- live mode ---------------- */
+let liveOk = false;
+async function startLive(){
+  try {
+    const snap = await fetch("api/snapshot").then(r => r.json());
+    snap.forEach(ingest); liveOk = true; schedule();
+    const es = new EventSource("api/stream?from=" + snap.length);
+    es.onmessage = e => { ingest(JSON.parse(e.data)); schedule(); };
+    es.onopen = () => { liveOk = true; schedule(); };
+    es.onerror = () => { liveOk = false; schedule(); };
+    const check = async () => { try { const v = await fetch("api/verify").then(r => r.json()); chainState = {ok:v.ok, n:v.records, detail:(v.problems||[]).join("\n") || "Verified by the observer. Head " + (v.head||"").slice(0,16)}; schedule(); } catch {} };
+    check(); setInterval(check, 10000);
+  } catch (e) { liveOk = false; schedule(); }
+}
+
+/* ---------------- replay mode ---------------- */
+let playing = true, pos = 0;
+function updatePlay(){ $("play").textContent = playing ? "❚❚ PAUSE" : "▶ PLAY"; }
+function seek(n){
+  reset(); pos = Math.max(0, Math.min(n, BOOT.length));
+  for (let i = 0; i < pos; i++) ingest(BOOT[i]);
+  tapeShown = S.tape.length; $("scrub").value = pos; $("pos").textContent = `${pos}/${BOOT.length}`; schedule();
+}
+let timer = null;
+function tick(){
+  clearTimeout(timer);
+  if (!playing) return;
+  if (pos >= BOOT.length){ playing = false; updatePlay(); return; }
+  ingest(BOOT[pos]); pos++; $("scrub").value = pos; $("pos").textContent = `${pos}/${BOOT.length}`; schedule();
+  const gap = pos < BOOT.length ? Math.min(Math.max(BOOT[pos].ts - BOOT[pos-1].ts, 0.05), 3) : 0;
+  timer = setTimeout(tick, gap * 1000 / +$("speed").value);
+}
+function startReplay(){
+  $("rp").hidden = false; $("scrub").max = BOOT.length;
+  $("play").addEventListener("click", () => { if (pos >= BOOT.length) seek(0); playing = !playing; updatePlay(); tick(); });
+  $("scrub").addEventListener("input", e => { playing = false; updatePlay(); clearTimeout(timer); seek(+e.target.value); });
+  verifyChain(BOOT);
+  seek(0); tick();
+}
+
+reset();
+if (BOOT) startReplay(); else startLive();
+schedule();
+</script>
+</body>
+</html>

@@ -213,7 +213,8 @@ def render_item(it):
 
 CSS = """
 :root{--bg:#f7f6f3;--fg:#1d1d1b;--muted:#6b6a66;--card:#fff;--line:#e3e1dc;--acc:#2f6fdb;--warn:#b7791f;--sev:#c53030;--ok:#2f855a}
-@media (prefers-color-scheme:dark){:root{--bg:#161615;--fg:#ecebe8;--muted:#9c9a95;--card:#201f1e;--line:#33322f;--acc:#6ea0ff;--warn:#e0a84a;--sev:#ff6b6b;--ok:#5fc48a}}
+:root[data-theme=dark]{color-scheme:dark;--bg:#161615;--fg:#ecebe8;--muted:#9c9a95;--card:#201f1e;--line:#33322f;--acc:#6ea0ff;--warn:#e0a84a;--sev:#ff6b6b;--ok:#5fc48a}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]){color-scheme:dark;--bg:#161615;--fg:#ecebe8;--muted:#9c9a95;--card:#201f1e;--line:#33322f;--acc:#6ea0ff;--warn:#e0a84a;--sev:#ff6b6b;--ok:#5fc48a}}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 system-ui,sans-serif}
 header{padding:16px 20px;border-bottom:1px solid var(--line);display:flex;gap:16px;align-items:center;flex-wrap:wrap}
 h1{font-size:18px;margin:0}.integrity{padding:4px 10px;border-radius:99px;font-weight:600}
