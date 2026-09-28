@@ -1,0 +1,1 @@
+Fixed the bug in `api.py:4` — `TIMEOUT_SECONDS` was set to 1, but the upstream SLA (per the test comment) is 5 seconds, so a 4-second call was incorrectly raising `TimeoutError`. Bumped it to 5. Left `billing.py` untouched. Both tests now pass (`2 passed`).
