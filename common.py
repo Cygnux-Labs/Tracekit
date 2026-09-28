@@ -62,21 +62,54 @@ def record_hash(rec):
 
 
 def _last_record(f):
+    """Return the last *valid* record, reading backwards so records of any size work.
+    A torn final line (crash mid-write) is skipped, not treated as an empty ledger,
+    so the chain never silently restarts from genesis."""
     f.seek(0, os.SEEK_END)
-    size = f.tell()
-    if size == 0:
+    end = f.tell()
+    if end == 0:
         return None
-    chunk = min(size, 1 << 20)
-    f.seek(size - chunk)
-    lines = f.read().splitlines()
-    for line in reversed(lines):
-        line = line.strip()
-        if line:
+    fb = f
+    block, buf, pos = 1 << 16, b"", end
+    while pos > 0:
+        step = min(block, pos)
+        pos -= step
+        fb.seek(pos)
+        buf = fb.read(step) + buf
+        lines = buf.split(b"\n")
+        # lines[0] may be partial unless we reached the start of the file
+        complete = lines if pos == 0 else lines[1:]
+        for raw in reversed(complete):
+            raw = raw.strip()
+            if not raw:
+                continue
             try:
-                return json.loads(line)
+                rec = json.loads(raw.decode("utf-8"))
+                if isinstance(rec, dict) and "hash" in rec and "seq" in rec:
+                    return rec
             except Exception:
-                return None
+                continue  # torn or corrupt line: keep looking further back
+        if pos > 0:
+            buf = lines[0]  # carry the partial head into the next read
     return None
+
+
+def load_policy(path=None):
+    """(policy, error). A missing file means no rules; an unreadable one is reported,
+    never silently treated as 'no rules'."""
+    path = path or POLICY
+    if not os.path.exists(path):
+        return {}, None
+    try:
+        with open(path, encoding="utf-8") as f:
+            pol = json.load(f)
+        for section in ("deny", "flag"):
+            for rule in pol.get(section, []):
+                re.compile(rule["pattern"])
+                re.compile(rule.get("tool", ".*"))
+        return pol, None
+    except Exception as e:  # invalid JSON or regex
+        return {}, f"policy file unusable: {e}"
 
 
 class locked:
@@ -97,10 +130,11 @@ class locked:
         self.f.close()
 
 
-def append(events):
-    """Append events to the hash-chained ledger under an exclusive lock."""
-    os.makedirs(HOME, exist_ok=True)
-    with open(LEDGER, "a+", encoding="utf-8") as f:
+def append(events, path=None):
+    """Append events to the hash-chained ledger under an exclusive lock (binary I/O)."""
+    path = path or LEDGER
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path, "ab+") as f:
         if fcntl:
             fcntl.flock(f, fcntl.LOCK_EX)
         try:
@@ -108,11 +142,18 @@ def append(events):
             prev = last["hash"] if last else GENESIS
             seq = last["seq"] + 1 if last else 0
             f.seek(0, os.SEEK_END)
+            out = []
+            if f.tell() > 0:
+                f.seek(-1, os.SEEK_END)
+                if f.read(1) != b"\n":
+                    out.append(b"\n")  # isolate a torn line so it cannot merge with ours
             for ev in events:
                 rec = {"seq": seq, "ts": time.time(), **redact(ev), "prev": prev}
                 rec["hash"] = record_hash(rec)
-                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+                out.append((json.dumps(rec, ensure_ascii=False) + "\n").encode("utf-8"))
                 prev, seq = rec["hash"], seq + 1
+            f.seek(0, os.SEEK_END)
+            f.write(b"".join(out))
             f.flush()
             os.fsync(f.fileno())
         finally:
@@ -128,7 +169,10 @@ def read_ledger(path=LEDGER):
         for line in f:
             line = line.strip()
             if line:
-                out.append(json.loads(line))
+                try:
+                    out.append(json.loads(line))
+                except ValueError:
+                    continue  # torn/corrupt line: verify.py reports it
     return out
 
 

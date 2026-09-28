@@ -50,7 +50,9 @@ def check_anchors(path, ledger):
         return []
     by_seq = {r["seq"]: r["hash"] for r in common.read_ledger(ledger)}
     out = []
-    for line in open(path, encoding="utf-8"):
+    with open(path, encoding="utf-8") as fh:
+        lines = fh.read().splitlines()
+    for line in lines:
         parts = line.split()
         if len(parts) >= 3:
             seq, h = int(parts[1]), parts[2]

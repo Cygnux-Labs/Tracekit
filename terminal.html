@@ -620,15 +620,17 @@ async function verifyChain(recs){
 
 /* ---------------- live mode ---------------- */
 let liveOk = false;
+const TOK = new URLSearchParams(location.search).get("token");
+const q = (p, extra) => p + (TOK ? (p.includes("?") ? "&" : "?") + "token=" + encodeURIComponent(TOK) : "");
 async function startLive(){
   try {
-    const snap = await fetch("api/snapshot").then(r => r.json());
+    const snap = await fetch(q("api/snapshot")).then(r => r.json());
     snap.forEach(ingest); liveOk = true; schedule();
-    const es = new EventSource("api/stream?from=" + snap.length);
+    const es = new EventSource(q("api/stream?from=" + snap.length));
     es.onmessage = e => { ingest(JSON.parse(e.data)); schedule(); };
     es.onopen = () => { liveOk = true; schedule(); };
     es.onerror = () => { liveOk = false; schedule(); };
-    const check = async () => { try { const v = await fetch("api/verify").then(r => r.json()); chainState = {ok:v.ok, n:v.records, detail:(v.problems||[]).join("\n") || "Verified by the observer. Head " + (v.head||"").slice(0,16)}; schedule(); } catch {} };
+    const check = async () => { try { const v = await fetch(q("api/verify")).then(r => r.json()); chainState = {ok:v.ok, n:v.records, detail:(v.problems||[]).join("\n") || "Verified by the observer. Head " + (v.head||"").slice(0,16)}; schedule(); } catch {} };
     check(); setInterval(check, 10000);
   } catch (e) { liveOk = false; schedule(); }
 }
