@@ -1,0 +1,202 @@
+\begin{thebibliography}{28}
+\providecommand{\natexlab}[1]{#1}
+\providecommand{\url}[1]{\texttt{#1}}
+\expandafter\ifx\csname urlstyle\endcsname\relax
+  \providecommand{\doi}[1]{doi: #1}\else
+  \providecommand{\doi}{doi: \begingroup \urlstyle{rm}\Url}\fi
+
+\bibitem[{Anthropic}(2026)]{claudecode_hooks}
+{Anthropic}.
+\newblock Claude code documentation: Hooks reference and monitoring.
+\newblock \url{https://code.claude.com/docs/en/hooks},
+  \url{https://code.claude.com/docs/en/monitoring-usage}, 2026.
+\newblock Accessed September 2026.
+
+\bibitem[Baker et~al.(2025)Baker, Huizinga, Gao, Dou, Guan, Madry, Zaremba,
+  Pachocki, and Farhi]{baker2025monitoring}
+Bowen Baker, Joost Huizinga, Leo Gao, Zehao Dou, Melody~Y. Guan, Aleksander
+  Madry, Wojciech Zaremba, Jakub Pachocki, and David Farhi.
+\newblock Monitoring reasoning models for misbehavior and the risks of
+  promoting obfuscation.
+\newblock \emph{arXiv preprint arXiv:2503.11926}, 2025.
+
+\bibitem[Bhatt et~al.(2025)]{bhatt2025ctrlz}
+Aryan Bhatt et~al.
+\newblock {Ctrl-Z}: Controlling {AI} agents via resampling.
+\newblock \emph{arXiv preprint arXiv:2504.10374}, 2025.
+
+\bibitem[Chen et~al.(2025)Chen, Benton, Radhakrishnan, Uesato, Denison,
+  Schulman, et~al.]{chen2025reasoning}
+Yanda Chen, Joe Benton, Ansh Radhakrishnan, Jonathan Uesato, Carson Denison,
+  John Schulman, et~al.
+\newblock Reasoning models don't always say what they think.
+\newblock \emph{arXiv preprint arXiv:2505.05410}, 2025.
+
+\bibitem[Crosby and Wallach(2009)]{crosby2009tamper}
+Scott~A. Crosby and Dan~S. Wallach.
+\newblock Efficient data structures for tamper-evident logging.
+\newblock In \emph{Proceedings of the 18th USENIX Security Symposium}, 2009.
+
+\bibitem[Debenedetti et~al.(2024)Debenedetti, Zhang, Balunovi{\'c},
+  Beurer-Kellner, Fischer, and Tram{\`e}r]{debenedetti2024agentdojo}
+Edoardo Debenedetti, Jie Zhang, Mislav Balunovi{\'c}, Luca Beurer-Kellner, Marc
+  Fischer, and Florian Tram{\`e}r.
+\newblock {AgentDojo}: A dynamic environment to evaluate prompt injection
+  attacks and defenses for {LLM} agents.
+\newblock In \emph{Advances in Neural Information Processing Systems, Datasets
+  and Benchmarks Track}, 2024.
+\newblock arXiv:2406.13352.
+
+\bibitem[Debenedetti et~al.(2025)Debenedetti, Shumailov, Fan, Hayes, Carlini,
+  Fabian, Kern, Shi, Terzis, and Tram{\`e}r]{debenedetti2025camel}
+Edoardo Debenedetti, Ilia Shumailov, Tianqi Fan, Jamie Hayes, Nicholas Carlini,
+  Daniel Fabian, Christoph Kern, Chongyang Shi, Andreas Terzis, and Florian
+  Tram{\`e}r.
+\newblock Defeating prompt injections by design.
+\newblock \emph{arXiv preprint arXiv:2503.18813}, 2025.
+
+\bibitem[Greenblatt et~al.(2024)Greenblatt, Shlegeris, Sachan, and
+  Roger]{greenblatt2024control}
+Ryan Greenblatt, Buck Shlegeris, Kshitij Sachan, and Fabien Roger.
+\newblock {AI} control: Improving safety despite intentional subversion.
+\newblock In \emph{Proceedings of the 41st International Conference on Machine
+  Learning (ICML)}, 2024.
+\newblock arXiv:2312.06942.
+
+\bibitem[Greshake et~al.(2023)Greshake, Abdelnabi, Mishra, Endres, Holz, and
+  Fritz]{greshake2023indirect}
+Kai Greshake, Sahar Abdelnabi, Shailesh Mishra, Christoph Endres, Thorsten
+  Holz, and Mario Fritz.
+\newblock Not what you've signed up for: Compromising real-world
+  {LLM}-integrated applications with indirect prompt injection.
+\newblock In \emph{Proceedings of the 16th ACM Workshop on Artificial
+  Intelligence and Security (AISec)}, 2023.
+\newblock arXiv:2302.12173.
+
+\bibitem[Haber and Stornetta(1991)]{haber1991timestamp}
+Stuart Haber and W.~Scott Stornetta.
+\newblock How to time-stamp a digital document.
+\newblock \emph{Journal of Cryptology}, 3\penalty0 (2):\penalty0 99--111, 1991.
+
+\bibitem[{halo-record contributors}(2026)]{halorecord}
+{halo-record contributors}.
+\newblock halo-record: Tamper-evident runtime records for {AI} agents.
+\newblock \url{https://github.com/bkuan001/halo-record}, 2026.
+\newblock Accessed September 2026.
+
+\bibitem[Inan et~al.(2023)]{inan2023llamaguard}
+Hakan Inan et~al.
+\newblock {Llama Guard}: {LLM}-based input-output safeguard for human-{AI}
+  conversations.
+\newblock \emph{arXiv preprint arXiv:2312.06674}, 2023.
+
+\bibitem[{Invariant Labs}(2025)]{invariant}
+{Invariant Labs}.
+\newblock Invariant guardrails.
+\newblock \url{https://github.com/invariantlabs-ai/invariant}, 2025.
+\newblock Accessed September 2026.
+
+\bibitem[Korbak et~al.(2025)]{korbak2025cot}
+Tomek Korbak et~al.
+\newblock Chain of thought monitorability: A new and fragile opportunity for
+  {AI} safety.
+\newblock \emph{arXiv preprint arXiv:2507.11473}, 2025.
+
+\bibitem[Kutasov et~al.(2025)]{kutasov2025shade}
+Jonathan Kutasov et~al.
+\newblock {SHADE-Arena}: Evaluating sabotage and monitoring in {LLM} agents.
+\newblock \emph{arXiv preprint arXiv:2506.15740}, 2025.
+
+\bibitem[{Langfuse}(2026)]{langfuse_cc}
+{Langfuse}.
+\newblock Trace {Claude Code} with {Langfuse}.
+\newblock \url{https://langfuse.com/integrations/developer-tools/claude-code},
+  2026.
+\newblock Accessed September 2026.
+
+\bibitem[Lanham et~al.(2023)]{lanham2023faithfulness}
+Tamera Lanham et~al.
+\newblock Measuring faithfulness in chain-of-thought reasoning.
+\newblock \emph{arXiv preprint arXiv:2307.13702}, 2023.
+
+\bibitem[Laurie et~al.(2021)Laurie, Messeri, and Stradling]{rfc9162}
+Ben Laurie, Eran Messeri, and Rob Stradling.
+\newblock Certificate transparency version 2.0.
+\newblock RFC 9162, Internet Engineering Task Force, 2021.
+
+\bibitem[{nono project}(2026)]{nono}
+{nono project}.
+\newblock Tamper-evident audit trail for {AI} agents.
+\newblock \url{https://nono.sh/blog/secure-agent-audit}, 2026.
+\newblock Accessed September 2026.
+
+\bibitem[{OpenTelemetry Authors}(2026)]{otel_genai}
+{OpenTelemetry Authors}.
+\newblock Semantic conventions for generative {AI} systems.
+\newblock \url{https://opentelemetry.io/docs/specs/semconv/gen-ai/}, 2026.
+\newblock Accessed September 2026.
+
+\bibitem[Rebedea et~al.(2023)Rebedea, Dinu, Sreedhar, Parisien, and
+  Cohen]{rebedea2023nemo}
+Traian Rebedea, Razvan Dinu, Makesh Sreedhar, Christopher Parisien, and
+  Jonathan Cohen.
+\newblock {NeMo Guardrails}: A toolkit for controllable and safe {LLM}
+  applications with programmable rails.
+\newblock In \emph{Proceedings of EMNLP 2023: System Demonstrations}, 2023.
+\newblock arXiv:2310.10501.
+
+\bibitem[Ruan et~al.(2024)Ruan, Dong, Wang, Pitis, Zhou, Ba, Dubois, Maddison,
+  and Hashimoto]{ruan2024toolemu}
+Yangjun Ruan, Honghua Dong, Andrew Wang, Silviu Pitis, Yongchao Zhou, Jimmy Ba,
+  Yann Dubois, Chris~J. Maddison, and Tatsunori Hashimoto.
+\newblock Identifying the risks of {LM} agents with an {LM}-emulated sandbox.
+\newblock In \emph{International Conference on Learning Representations
+  (ICLR)}, 2024.
+\newblock arXiv:2309.15817.
+
+\bibitem[Rundgren et~al.(2020)Rundgren, Jordan, and Erdtman]{rfc8785}
+Anders Rundgren, Bret Jordan, and Samuel Erdtman.
+\newblock {JSON} canonicalization scheme ({JCS}).
+\newblock RFC 8785, Internet Engineering Task Force, 2020.
+
+\bibitem[Schneier and Kelsey(1999)]{schneier1999secure}
+Bruce Schneier and John Kelsey.
+\newblock Secure audit logs to support computer forensics.
+\newblock \emph{ACM Transactions on Information and System Security},
+  2\penalty0 (2):\penalty0 159--176, 1999.
+
+\bibitem[Turpin et~al.(2023)Turpin, Michael, Perez, and
+  Bowman]{turpin2023unfaithful}
+Miles Turpin, Julian Michael, Ethan Perez, and Samuel~R. Bowman.
+\newblock Language models don't always say what they think: Unfaithful
+  explanations in chain-of-thought prompting.
+\newblock In \emph{Advances in Neural Information Processing Systems
+  (NeurIPS)}, 2023.
+\newblock arXiv:2305.04388.
+
+\bibitem[Yuan et~al.(2024)]{yuan2024rjudge}
+Tongxin Yuan et~al.
+\newblock {R-Judge}: Benchmarking safety risk awareness for {LLM} agents.
+\newblock In \emph{Findings of the Association for Computational Linguistics:
+  EMNLP 2024}, 2024.
+\newblock arXiv:2401.10019.
+
+\bibitem[Zhan et~al.(2024)Zhan, Liang, Ying, and Kang]{zhan2024injecagent}
+Qiusi Zhan, Zhixiang Liang, Zifan Ying, and Daniel Kang.
+\newblock {InjecAgent}: Benchmarking indirect prompt injections in
+  tool-integrated large language model agents.
+\newblock In \emph{Findings of the Association for Computational Linguistics:
+  ACL 2024}, 2024.
+\newblock arXiv:2403.02691.
+
+\bibitem[Zheng et~al.(2023)Zheng, Chiang, Sheng, Zhuang, Wu, Zhuang, Lin, Li,
+  Li, Xing, Zhang, Gonzalez, and Stoica]{zheng2023judging}
+Lianmin Zheng, Wei-Lin Chiang, Ying Sheng, Siyuan Zhuang, Zhanghao Wu, Yonghao
+  Zhuang, Zi~Lin, Zhuohan Li, Dacheng Li, Eric~P. Xing, Hao Zhang, Joseph~E.
+  Gonzalez, and Ion Stoica.
+\newblock Judging {LLM}-as-a-judge with {MT-Bench} and {Chatbot Arena}.
+\newblock In \emph{Advances in Neural Information Processing Systems, Datasets
+  and Benchmarks Track}, 2023.
+\newblock arXiv:2306.05685.
+
+\end{thebibliography}
