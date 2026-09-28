@@ -128,3 +128,27 @@ The defaults block `sudo`, `curl … | sh`, force-pushes, recursive deletes of r
 - **The hash chain only proves internal consistency.** Someone who can rewrite the whole file can rebuild a valid chain. `verify.py anchor` plus a copy of the anchor stored elsewhere (a git commit, a message to yourself) closes that gap.
 - **Hooks can't see what happens inside a command.** They see the Bash command line, not every file or network call the command makes. Use a sandbox or OS-level auditing for that.
 - **Other agents.** Cursor, Codex and custom agents need their own adapters. Anything that can pipe hook-style JSON into `hook.py` works; for SDK agents, call `common.append()` from your tool wrapper.
+
+## Tests
+
+```bash
+python3 -m unittest discover -s tests -v    # 25 tests: ledger, hook, cross-checks, SDK, observer, installer
+```
+
+## Paper and evaluation
+
+The white paper, *Tracekit: Tamper-Evident Intent–Reasoning–Action Auditing for Autonomous Coding Agents* (Bravish Ghosh), is in [`paper/`](paper/), with the PDF at [`paper/main.pdf`](paper/main.pdf). Every number in it is generated from [`eval/results/`](eval/results/) by `eval/make_macros.py`.
+
+| Experiment | Script | What it measures |
+|---|---|---|
+| E1 integrity | `eval/e1_integrity.py` | Detection of 8 kinds of tampering; anchoring interval vs detection |
+| E2 overhead | `eval/e2_perf.py` | Hook latency vs ledger size; concurrent writers |
+| E3 policy gate | `eval/e3_policy.py` | Block rate on 44 harmful and 40 benign tool calls |
+| E4 real agents | `eval/e5_agents.py` | 14 real Claude Code runs, including planted prompt injections |
+| E5 seeded faults | `eval/e4_seeded_faults.py` | Rule flags vs independent reviewer on concealed misaligned steps |
+
+Rebuild the figures and paper with `python3 eval/make_figures.py && python3 eval/make_macros.py && cd paper && latexmk -pdf main.tex`.
+
+## License
+
+MIT. See [LICENSE](LICENSE).

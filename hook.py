@@ -29,8 +29,12 @@ def subject(tool, tool_input, field=None):
 
 
 def evaluate_policy(tool, tool_input, cwd):
-    policy = common.load_json(common.POLICY, {})
+    policy, err = common.load_policy()
     decision, reasons, flags = "allow", [], []
+    if err:
+        flags.append("policy_error")
+        if os.environ.get("TRACEKIT_FAIL_CLOSED") == "1":
+            return "deny", [err], flags
     for rule in policy.get("deny", []):
         if re.fullmatch(rule.get("tool", ".*"), tool) and \
                 re.search(rule["pattern"], subject(tool, tool_input, rule.get("field"))):

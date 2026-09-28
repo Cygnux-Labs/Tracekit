@@ -9,6 +9,7 @@ Endpoints
   GET  /                 the terminal UI
   GET  /api/snapshot     every ledger record (JSON array)
   GET  /api/stream?from=N  Server-Sent Events: each new record as it is written
+  With TRACEKIT_INGEST_TOKEN set, every endpoint needs it (header or ?token=).
   GET  /api/verify       hash-chain integrity
   POST /api/ingest       add events from ANY agent (JSON object or array):
                          {"event": "PreToolUse", "session_id": "...", "agent": "my-bot",
@@ -59,8 +60,19 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def authorized(self, u):
+        """With TRACEKIT_INGEST_TOKEN set, every endpoint (UI, reads, stream, ingest)
+        requires it: via 'Authorization: Bearer' or ?token= (EventSource cannot set headers)."""
+        if not TOKEN:
+            return True
+        if self.headers.get("Authorization") == f"Bearer {TOKEN}":
+            return True
+        return parse_qs(u.query).get("token", [""])[0] == TOKEN
+
     def do_GET(self):
         u = urlparse(self.path)
+        if not self.authorized(u):
+            return self._send(401, '{"error":"missing or wrong token"}')
         if u.path in ("/", "/index.html"):
             return self._send(200, ui_html(), "text/html")
         if u.path == "/api/snapshot":
@@ -109,10 +121,11 @@ class Handler(BaseHTTPRequestHandler):
             return
 
     def do_POST(self):
-        if urlparse(self.path).path != "/api/ingest":
+        u = urlparse(self.path)
+        if u.path != "/api/ingest":
             return self._send(404, '{"error":"not found"}')
-        if TOKEN and self.headers.get("Authorization") != f"Bearer {TOKEN}":
-            return self._send(401, '{"error":"missing or wrong ingest token"}')
+        if not self.authorized(u):
+            return self._send(401, '{"error":"missing or wrong token"}')
         try:
             body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"null")
         except Exception:
