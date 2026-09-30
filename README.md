@@ -1,4 +1,65 @@
-# tracekit: see what your coding agent actually did, and why
+# Tracekit: verifiable evidence of what coding agents did
+
+**Tracekit proves what its capture path recorded, and that the record has not changed since it was signed and checkpointed.** It does not prove intent, complete coverage, or that a reported tool result is real.
+
+Every tool call a coding agent makes (command, file, URL, policy decision, result) is written by a signer running as a **separate OS user**, hash-chained, Ed25519-signed and checkpointed to an external witness. A run exports as a `.tkb` evidence bundle that anyone can verify offline. The model's own reasoning is **self-reported, optional, and off by default**: it is never treated as evidence.
+
+## v0.2 quick start
+
+Status: **v0.2 development branch, draft.** System mode (separate signer user) is **Linux-only**; dev mode runs anywhere but only checks integrity. Release-gating evaluations for v0.2 are not written yet (see "Not done yet" below).
+
+```bash
+pip install .                         # adds the `tracekit` command; needs `cryptography` (installed automatically)
+tracekit demo                         # whole loop in a temp folder, no API key needed
+
+# real use (Linux): signer as its own OS user, hooks for the agent's user, optional model proxy
+sudo tracekit init --user "$USER" --witness git:/var/lib/tracekit/witness@git@github.com:you/tk-witness.git --proxy
+sudo tracekit init --user "$USER" --managed      # or: hooks in Claude Code's admin-managed settings
+tracekit status
+tracekit export --last -o run.tkb     # --otel adds OTLP/JSON; --otel-endpoint http://localhost:4318 also sends it
+tracekit verify run.tkb --key signer.pub --witness git:/path/to/witness-clone   # exit 0 ok, 1 fail, 2 bad bundle, 3 warn with --strict
+tracekit migrate ~/.tracekit/ledger.jsonl --out v1.jsonl          # convert a v0.1 ledger
+
+tracekit init --dev [--proxy]         # same-user signer for trying it out; bundles are marked and warned
+```
+
+`tracekit demo` asks a scripted agent (clearly labelled; `--real` uses `claude -p`) to fix a failing test in a repo whose README carries a planted prompt injection. The `.env` upload is blocked by rule TK-D006, the run is exported and verified against a git witness, then a copy with one edited command fails with `hash mismatch (event content was edited)`.
+
+| What the verifier checks | Fails on |
+|---|---|
+| chain, signatures, schema v1, contiguous `seq` | edited, deleted, reordered or forged records |
+| head vs signed checkpoints and the witness | truncation, a chain rebuilt with the real key, re-signing with another key, replayed checkpoints |
+| trust root (`--key`, `--witness`) | without either, the verdict says **UNANCHORED**: the bundle is only internally consistent |
+| every policy decision vs the policy snapshot it names | a decision citing rules its policy doesn't have; a policy changed mid-run is reported |
+| `capture.gap`, `trace.tamper`, approvals, coverage, content-capture mode | reported as warnings: what was *not* observed, or was changed by the agent |
+
+## What each capture path adds
+
+**Hooks (always).** Every tool call, its policy decision and its result, recorded before and after the tool runs. Deny rules block before the tool runs.
+
+**Transcript checks (on by default).** At every hook the hook hashes the agent's session transcript and the signer compares it with the previous mark. Deleting, emptying, shortening or editing earlier parts of the transcript produces a `trace.tamper` event (`deleted`, `truncated`, `edited`). Limit: changes after the session's last hook are not seen.
+
+**Model proxy (opt-in, `--proxy`).** A local proxy running as the `tracekit` user sits between Claude Code and the model API (`ANTHROPIC_BASE_URL`). It records each request before forwarding it and each response when it completes (hashed by default; headers and API keys are never recorded), streams responses through, and passes errors through unchanged. The signer cross-checks it against the hooks: a tool call the model asked for that no hook recorded is `hook_missing` (hooks disabled), a hook-recorded call with no model exchange is `proxy_missing` (proxy bypassed, or a fabricated event). In one real Claude Code session (6 requests) it added 3–28 ms per request before forwarding, mostly redaction and hashing of the request; this is a single-session measurement, not a benchmark.
+
+**Approvals (policy `ask` rules).** A matching Bash, Write, Edit, WebFetch or MCP call is held until someone runs `tracekit approve <id>` or `tracekit reject <id>` (`tracekit pending` lists them). Outside dev mode the approval must come from a **different OS user** than the agent's, or from a user listed in `approvers`. Same-user approvals are refused because the agent can always start a process as its own user. In dev mode they are allowed and recorded as "same user, not trustworthy". Unanswered holds are rejected after `approval_timeout_s`. See `tracekit/policy/strict.yaml`.
+
+**Policy.** `tracekit/policy/default.yaml` (versioned rules with ids and rationales; `extends: default` for your own). Every decision records the hash of the policy that produced it. The rules are tripwires and can be evaded; signer-owned storage, witnesses and cross-checks are the protection.
+
+## Not done yet (issue #1)
+
+- Release-gating evaluations (E0–E8: `make eval`, thresholds, durability, bypass and tampering experiments, policy precision, redaction leaks, repeated real-agent runs) and the paper update that depends on them.
+- Claude Code plugin packaging, published sample bundle and video, GitHub Action, design-partner kit, release to PyPI.
+- macOS system mode (needs a peer-credential implementation), Rekor witness.
+- An external review of [the threat model](docs/threat-model.md).
+
+Docs: [threat model](docs/threat-model.md) · [signing](docs/signing.md) · [witnesses](docs/witnesses.md) · [privacy](docs/privacy.md) · [event schema](schema/tracekit.event.v1.json) · roadmap: issue #1.
+
+---
+
+# v0.1 (still in the repo root)
+
+The v0.1 scripts below keep working. They log in the agent's own user and can be rewritten by it; use v0.2 for evidence.
+
 
 https://github.com/user-attachments/assets/46640e32-82e2-46ef-a318-a9220f04714c
 
@@ -132,8 +193,12 @@ The defaults block `sudo`, `curl … | sh`, force-pushes, recursive deletes of r
 ## Tests
 
 ```bash
-python3 -m unittest discover -s tests -v    # 25 tests: ledger, hook, cross-checks, SDK, observer, installer
+python3 -m unittest discover -s tests      # 87 tests; the two-OS-user isolation test runs only as root (it creates throwaway users)
 ```
+
+- `tests/test_v02.py` (27): Ed25519 vectors and backend rules, schema, redaction, policy, signer counters and gaps, fail-open/closed with the signer killed, 9 tamper cases, two-user isolation, export, packaging, demo, v0.1 migration.
+- `tests/test_capture.py` (35): transcript tamper detection, the proxy (streaming, redaction, error pass-through, fail modes), proxy/hook cross-check, stale runs, approvals (held until approved, rejection, timeout, self-approval refusal, same-user refusal outside dev mode, configured approvers), policy provenance, trust root, YAML policy, redaction.
+- `tests/test_tracekit.py` (25): v0.1.
 
 ## Paper and evaluation
 

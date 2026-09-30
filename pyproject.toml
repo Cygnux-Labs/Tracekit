@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tracekit"
+version = "0.2.0.dev0"
+description = "Signed, checkpointed evidence of what coding agents did"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Bravish Ghosh" }]
+requires-python = ">=3.9"
+dependencies = ["cryptography>=41"]   # signing; `tracekit verify` alone also works without it
+
+[project.optional-dependencies]
+yaml = ["PyYAML>=6"]   # optional: policies are parsed with a built-in YAML subset otherwise
+
+[project.scripts]
+tracekit = "tracekit.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/Cygnux-Labs/Tracekit"
+
+[tool.setuptools]
+packages = ["tracekit"]
+
+[tool.setuptools.package-data]
+tracekit = ["schema/*.json", "policy/*.yaml"]

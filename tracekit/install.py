@@ -1,0 +1,361 @@
+"""`tracekit init` / `status` / `uninstall` (P1, I1, I2).
+
+System mode (default, needs root, Linux only in v0.2): a `tracekit` OS user owns the key and the
+ledger; tracekitd runs as that user under systemd.
+Dev mode (--dev): the signer runs as *your* user. Convenient, but the agent could rewrite the
+ledger, so every run is labelled signer_isolation=same-user and verify says so.
+"""
+import json
+import os
+import pwd
+import shutil
+import signal
+import subprocess
+import sys
+import time
+
+from .core import read_json, read_text
+from . import client
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(HERE)
+SYS_HOME = "/var/lib/tracekit"
+SYS_USER = "tracekit"
+TOOL_EVENTS = ["PreToolUse", "PostToolUse", "PostToolUseFailure"]
+OTHER_EVENTS = ["UserPromptSubmit", "Stop", "SubagentStart", "SubagentStop", "SessionStart", "SessionEnd"]
+UNIT = """[Unit]
+Description=Tracekit signer daemon
+After=network.target
+
+[Service]
+User={user}
+Group={user}
+ExecStart={python} -m tracekit.daemon --home {home}
+Environment=PYTHONPATH={pythonpath}
+Restart=on-failure
+UMask=0022
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths={home}
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+"""
+PROXY_UNIT = """[Unit]
+Description=Tracekit model proxy
+After=tracekitd.service
+Requires=tracekitd.service
+
+[Service]
+User={user}
+Group={user}
+ExecStart={python} -m tracekit.proxy --home {home}
+Environment=PYTHONPATH={pythonpath}
+Restart=on-failure
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths={home}
+
+[Install]
+WantedBy=multi-user.target
+"""
+MANAGED_SETTINGS = {"linux": "/etc/claude-code/managed-settings.json",
+                    "darwin": "/Library/Application Support/ClaudeCode/managed-settings.json"}
+HOOK_TIMEOUT = {"PreToolUse": 600, "SessionEnd": 15}   # PreToolUse may hold a call for approval (C8)
+def _hook_command():
+    try:
+        import importlib.util
+        spec = importlib.util.find_spec("tracekit")
+        installed = spec and spec.origin and "site-packages" in spec.origin
+    except Exception:
+        installed = False
+    cmd = f'"{sys.executable}" -m tracekit.hook'
+    return cmd if installed else f'env PYTHONPATH="{ROOT}" {cmd}'
+
+
+def _is_ours(group):
+    return any("tracekit.hook" in (h.get("command") or "") or ("tracekit" in (h.get("command") or "") and "hook.py" in (h.get("command") or ""))
+               for h in group.get("hooks", []))
+
+
+def install_hooks(settings_path, uninstall=False, owner=None, proxy_url=None, extra=None):
+    """Add (or remove) Tracekit's hooks in a Claude Code settings file. Idempotent; backs up the
+    file first; leaves other hooks and settings alone. proxy_url sets env.ANTHROPIC_BASE_URL (C3)."""
+    os.makedirs(os.path.dirname(settings_path), exist_ok=True)
+    s = {}
+    if os.path.exists(settings_path):
+        with open(settings_path, encoding="utf-8") as f:
+            s = json.load(f)
+        shutil.copy2(settings_path, f"{settings_path}.bak-{time.strftime('%Y%m%d-%H%M%S')}")
+    hooks = s.setdefault("hooks", {})
+    for ev in TOOL_EVENTS + OTHER_EVENTS:
+        groups = [g for g in hooks.get(ev, []) if not _is_ours(g)]
+        if not uninstall:
+            e = {"hooks": [{"type": "command", "command": _hook_command(), "timeout": HOOK_TIMEOUT.get(ev, 30)}]}
+            groups.append({"matcher": "*", **e} if ev in TOOL_EVENTS else e)
+        if groups:
+            hooks[ev] = groups
+        else:
+            hooks.pop(ev, None)
+    if not hooks:
+        s.pop("hooks", None)
+    env = s.get("env") or {}
+    marker = "_tracekit_proxy"
+    if uninstall or not proxy_url:
+        if s.get(marker) and env.get("ANTHROPIC_BASE_URL") == s[marker]:
+            env.pop("ANTHROPIC_BASE_URL", None)
+        s.pop(marker, None)
+    if proxy_url and not uninstall:
+        env["ANTHROPIC_BASE_URL"] = proxy_url
+        s[marker] = proxy_url
+    if env:
+        s["env"] = env
+    else:
+        s.pop("env", None)
+    for k, v in (extra or {}).items():
+        if uninstall:
+            s.pop(k, None)
+        else:
+            s[k] = v
+    with open(settings_path, "w", encoding="utf-8") as f:
+        json.dump(s, f, indent=2)
+    if owner:
+        os.chown(settings_path, owner.pw_uid, owner.pw_gid)
+
+
+def _write_client_config(user_home, cfg, owner=None):
+    d = os.path.join(user_home, ".tracekit-client")
+    os.makedirs(os.path.join(d, "runs"), exist_ok=True)
+    p = os.path.join(d, "config.json")
+    with open(p, "w") as f:
+        json.dump(cfg, f, indent=2)
+    if owner:
+        for root, dirs, files in os.walk(d):
+            for x in [root] + [os.path.join(root, n) for n in dirs + files]:
+                os.chown(x, owner.pw_uid, owner.pw_gid)
+    return p
+
+
+def _write_signer_config(home, witnesses, checkpoint_every, socket_path, proxy=None, extra=None):
+    cfg = {"checkpoint_every": checkpoint_every, "witnesses": witnesses, "socket": socket_path, "socket_mode": "0666"}
+    if proxy:
+        cfg["proxy"] = proxy
+    cfg.update(extra or {})
+    with open(os.path.join(home, "config.json"), "w") as f:
+        json.dump(cfg, f, indent=2)
+
+
+def _upstream():
+    """Where the proxy forwards: whatever the user already pointed Claude Code at, else Anthropic."""
+    cur = os.environ.get("ANTHROPIC_BASE_URL", "")
+    return cur if cur and "127.0.0.1" not in cur and "localhost" not in cur else "https://api.anthropic.com"
+
+
+def start_dev_proxy(home):
+    env = dict(os.environ, PYTHONPATH=ROOT + os.pathsep + os.environ.get("PYTHONPATH", ""))
+    with open(os.path.join(home, "proxy.log"), "a") as log:  # the child keeps its own copy of the fd
+        p = subprocess.Popen([sys.executable, "-m", "tracekit.proxy", "--home", home], stdout=log, stderr=log, env=env,
+                             start_new_session=True)
+    _CHILDREN[p.pid] = p
+    with open(os.path.join(home, "proxy.pid"), "w") as f:
+        f.write(str(p.pid))
+    time.sleep(0.5)
+    return p.pid
+
+
+def init_dev(home, witnesses, checkpoint_every=50, hooks_path=None, start=True, proxy=False, proxy_port=8787, fail_mode=None):
+    home = os.path.abspath(home)
+    for sub in ("", "keys", "ledger", "blobs"):
+        os.makedirs(os.path.join(home, sub), exist_ok=True)
+    sock = os.path.join(home, "tracekitd.sock")
+    if not witnesses:
+        witnesses = [f"git:{os.path.join(home, 'witness')}"]
+    pcfg = {"port": proxy_port, "upstream": _upstream(), "fail_mode": fail_mode or "open"} if proxy else None
+    # dev mode: the agent and the approver are the same OS user, so approvals are allowed but labelled untrustworthy
+    _write_signer_config(home, witnesses, checkpoint_every, sock, pcfg, {"mode": "dev", "allow_same_user_approval": True})
+    cfg = {"socket": sock, "signer_home": home, "signer_isolation": "same-user", "mode": "dev"}
+    if proxy:
+        cfg.update(proxy=True, proxy_url=f"http://127.0.0.1:{proxy_port}")
+    client_home = os.environ.get("TRACEKIT_CLIENT_HOME")
+    if client_home:
+        os.makedirs(os.path.join(client_home, "runs"), exist_ok=True)
+        with open(os.path.join(client_home, "config.json"), "w") as f:
+            json.dump(cfg, f, indent=2)
+    else:
+        _write_client_config(os.path.expanduser("~"), cfg)
+    if start:
+        start_dev_daemon(home)
+        if proxy:
+            start_dev_proxy(home)
+    if hooks_path:
+        install_hooks(hooks_path, proxy_url=cfg.get("proxy_url"))
+    return cfg
+
+
+def start_dev_daemon(home):
+    env = dict(os.environ, PYTHONPATH=ROOT + os.pathsep + os.environ.get("PYTHONPATH", ""))
+    with open(os.path.join(home, "tracekitd.log"), "a") as log:
+        p = subprocess.Popen([sys.executable, "-m", "tracekit.daemon", "--home", home], stdout=log, stderr=log,
+                             env=env, start_new_session=True)
+    _CHILDREN[p.pid] = p
+    with open(os.path.join(home, "tracekitd.pid"), "w") as f:
+        f.write(str(p.pid))
+    sock = os.path.join(home, "tracekitd.sock")
+    for _ in range(100):
+        if os.path.exists(sock):
+            return p.pid
+        time.sleep(0.05)
+    raise RuntimeError(f"tracekitd did not start; see {home}/tracekitd.log")
+
+
+_CHILDREN = {}  # pid -> Popen for daemons started by this process (reaped on stop)
+
+
+def _stop_pidfile(path):
+    try:
+        pid = int(read_text(path))
+    except (OSError, ValueError):
+        return
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError:
+        pass
+    child = _CHILDREN.pop(pid, None)
+    if child is not None:
+        try:
+            child.wait(10)
+        except subprocess.TimeoutExpired:
+            child.kill(); child.wait(5)
+        return
+    try:
+        for _ in range(100):
+            os.kill(pid, 0)
+            time.sleep(0.05)
+    except OSError:
+        pass
+
+
+def stop_dev_daemon(home):
+    _stop_pidfile(os.path.join(home, "proxy.pid"))
+    _stop_pidfile(os.path.join(home, "tracekitd.pid"))
+
+
+def install_managed(proxy_url=None, managed_only=False, path=None):
+    """C5: put the hooks in Claude Code's admin-managed settings, which users and projects cannot
+    override. managed_only additionally sets allowManagedHooksOnly (user/project hooks stop running)."""
+    path = path or MANAGED_SETTINGS["darwin" if sys.platform == "darwin" else "linux"]
+    install_hooks(path, proxy_url=proxy_url, extra={"allowManagedHooksOnly": True} if managed_only else None)
+    os.chmod(path, 0o644)
+    return path
+
+
+def init_system(target_user, witnesses, checkpoint_every=50, project=None, no_service=False, proxy=False, proxy_port=8787,
+                managed=False, managed_only=False, fail_mode=None):
+    if not sys.platform.startswith("linux"):
+        raise SystemExit("v0.2 system mode is Linux-only: tracekitd identifies callers with SO_PEERCRED, which this "
+                         "platform does not provide, so it could not attest users, refuse forged proxy events or check "
+                         "approvers. Use `tracekit init --dev` to try Tracekit here (same-user, clearly labelled).")
+    if os.geteuid() != 0:
+        raise SystemExit("system mode needs root: sudo tracekit init   (or tracekit init --dev for a same-user signer)")
+    owner = pwd.getpwnam(target_user)
+    user = SYS_USER
+    try:
+        pwd.getpwnam(user)
+    except KeyError:
+        subprocess.run(["useradd", "--system", "--home-dir", SYS_HOME, "--shell", "/usr/sbin/nologin", "--user-group", user], check=True)
+    tk = pwd.getpwnam(user)
+    for sub, mode in (("", 0o755), ("keys", 0o700), ("ledger", 0o755), ("blobs", 0o755)):
+        p = os.path.join(SYS_HOME, sub)
+        os.makedirs(p, exist_ok=True)
+        os.chown(p, tk.pw_uid, tk.pw_gid)
+        os.chmod(p, mode)
+    sock = os.path.join(SYS_HOME, "tracekitd.sock")
+    if not witnesses:
+        witnesses = [f"git:{os.path.join(SYS_HOME, 'witness')}"]
+        print("note: using a local git witness only. It protects against the agent's user, not against root on this "
+              "machine. Point --witness at a remote repository the security team owns (docs/witnesses.md).")
+    pcfg = {"port": proxy_port, "upstream": _upstream(), "fail_mode": fail_mode or "open"} if proxy else None
+    _write_signer_config(SYS_HOME, witnesses, checkpoint_every, sock, pcfg)
+    os.chown(os.path.join(SYS_HOME, "config.json"), tk.pw_uid, tk.pw_gid)
+    # generate the key as the tracekit user so root-only reads are the only other path to it
+    env = dict(os.environ, PYTHONPATH=ROOT)
+    subprocess.run(["runuser" if shutil.which("runuser") else "sudo", "-u", tk.pw_name, "--", sys.executable, "-c",
+                    f"import sys; sys.path.insert(0,{ROOT!r}); from tracekit.ledger import Keys; Keys.load_or_create({os.path.join(SYS_HOME, 'keys')!r})"],
+                   check=True, env=env)
+    if not no_service:
+        if True:  # systemd (system mode is Linux-only in v0.2)
+            with open("/etc/systemd/system/tracekitd.service", "w") as f:
+                f.write(UNIT.format(user=tk.pw_name, python=sys.executable, home=SYS_HOME, pythonpath=ROOT))
+            if proxy:
+                with open("/etc/systemd/system/tracekit-proxy.service", "w") as f:
+                    f.write(PROXY_UNIT.format(user=tk.pw_name, python=sys.executable, home=SYS_HOME, pythonpath=ROOT))
+            subprocess.run(["systemctl", "daemon-reload"], check=False)
+            subprocess.run(["systemctl", "enable", "--now", "tracekitd"], check=False)
+            if proxy:
+                subprocess.run(["systemctl", "enable", "--now", "tracekit-proxy"], check=False)
+    cfg = {"socket": sock, "signer_home": SYS_HOME, "signer_isolation": "separate-user", "mode": "system"}
+    if proxy:
+        cfg.update(proxy=True, proxy_url=f"http://127.0.0.1:{proxy_port}")
+    _write_client_config(owner.pw_dir, cfg, owner)
+    if managed:
+        settings = install_managed(cfg.get("proxy_url"), managed_only)
+    else:
+        settings = os.path.join(project, ".claude", "settings.json") if project else os.path.join(owner.pw_dir, ".claude", "settings.json")
+        install_hooks(settings, owner=owner, proxy_url=cfg.get("proxy_url"))
+    return cfg, settings
+
+
+def status():
+    cfg = client.client_config()
+    out = {"client_config": cfg or None}
+    try:
+        from . import policy as P
+        pol, _ = P.load()
+        out["policy"] = {"version": pol.get("version"), "hash": P.policy_hash(pol), "fail_mode": pol.get("fail_mode", "open"),
+                         "content_capture": pol.get("content_capture", "hashed"), "reasoning_capture": pol.get("reasoning_capture", False)}
+    except Exception as e:
+        out["policy"] = {"error": str(e)}
+    try:
+        out["signer"] = client.status()
+    except client.SignerUnavailable as e:
+        out["signer"] = {"ok": False, "error": f"unreachable at {client.socket_path()}: {e}"}
+    hooks = []
+    for p in (os.path.expanduser("~/.claude/settings.json"), os.path.join(os.getcwd(), ".claude", "settings.json")):
+        if os.path.exists(p):
+            try:
+                s = read_json(p)
+                evs = [ev for ev, gs in s.get("hooks", {}).items() if any(_is_ours(g) for g in gs)]
+                hooks.append({"settings": p, "events": evs})
+            except ValueError:
+                hooks.append({"settings": p, "error": "unreadable"})
+    for p in MANAGED_SETTINGS.values():
+        if os.path.exists(p):
+            try:
+                s = read_json(p)
+                evs = [ev for ev, gs in s.get("hooks", {}).items() if any(_is_ours(g) for g in gs)]
+                hooks.append({"settings": p, "managed": True, "events": evs, "allowManagedHooksOnly": bool(s.get("allowManagedHooksOnly"))})
+            except (ValueError, OSError):
+                hooks.append({"settings": p, "managed": True, "error": "unreadable"})
+    out["hooks"] = hooks
+    out["capture_sources"] = ["hook"] + (["proxy"] if cfg.get("proxy") else []) + \
+        (["transcript"] if out["policy"].get("reasoning_capture") else [])
+    if cfg.get("proxy_url"):
+        import urllib.request
+        try:
+            urllib.request.urlopen(cfg["proxy_url"] + "/__tracekit_health", timeout=2)
+            out["proxy"] = {"url": cfg["proxy_url"], "reachable": True}
+        except Exception as e:
+            reachable = "HTTP Error" in str(e)
+            out["proxy"] = {"url": cfg["proxy_url"], "reachable": reachable, **({} if reachable else {"error": str(e)[:200]})}
+    return out
+
+
+def uninstall(project=None):
+    settings = os.path.join(project, ".claude", "settings.json") if project else os.path.expanduser("~/.claude/settings.json")
+    if os.path.exists(settings):
+        install_hooks(settings, uninstall=True)
+    cfg = client.client_config()
+    if cfg.get("mode") == "dev" and cfg.get("signer_home"):
+        stop_dev_daemon(cfg["signer_home"])
+    return settings

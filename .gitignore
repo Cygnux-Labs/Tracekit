@@ -7,3 +7,9 @@ paper/*.out
 paper/*.blg
 paper/*.fls
 paper/*.fdb_latexmk
+__pycache__/
+*.pyc
+build/
+*.egg-info/
+dist/
+*.tkb
