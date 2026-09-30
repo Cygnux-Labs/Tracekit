@@ -25,4 +25,4 @@ Homepage = "https://github.com/Cygnux-Labs/Tracekit"
 packages = ["tracekit"]
 
 [tool.setuptools.package-data]
-tracekit = ["schema/*.json", "policy/*.yaml"]
+tracekit = ["schema/*.json", "policy/*.yaml", "ui/*.html"]
