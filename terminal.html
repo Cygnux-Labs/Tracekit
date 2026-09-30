@@ -86,6 +86,7 @@ tr.new td{animation:flash .8s ease-out}
 .c-time{color:var(--muted);width:74px}.c-agent{width:122px;color:var(--amber)}.c-ev{width:58px}.c-tool{width:78px}
 .c-st{width:78px}.c-ms{width:52px;text-align:right;color:var(--muted)}
 .ev-PROMPT{color:var(--yellow)}.ev-THINK{color:var(--magenta)}.ev-SAYS{color:var(--text)}.ev-TOOL{color:var(--cyan)}
+.ev-ALERT{color:var(--red);font-weight:600}.ev-MODEL{color:var(--blue)}.ev-GAP{color:var(--yellow)}.ev-APPROVE{color:var(--green)}
 .ev-SPAWN,.ev-DONE{color:var(--green)}.ev-STOP,.ev-SESS{color:var(--muted)}.ev-REVIEW{color:var(--blue)}.ev-BLOCK{color:var(--red);font-weight:600}
 .s-ok{color:var(--green)}.s-run{color:var(--yellow)}.s-err,.s-deny{color:var(--red);font-weight:600}.s-flag{color:var(--amber)}
 .tgt{color:var(--text)}.dim{color:var(--muted)}
@@ -346,6 +347,10 @@ function ingest(r){
     pushTape({ts:r.ts, agent:a, ev:"REVIEW", text:(v.alignment||"")+" · "+(v.summary||""), rec:r}); return;
   }
   if (ev === "log"){ sessionOf(r); pushTape({ts:r.ts, agent:agentOf(r), ev:"SAYS", text:r.text || r.message || "log", rec:r}); return; }
+  // v0.2 events, translated by `tracekit observe`
+  if (ev === "tk_alert"){ const a = agentOf(r); alert(r.severity || "med", r.title || "ALERT", r.text || "", {rec:r}, r.ts, a);
+    pushTape({ts:r.ts, agent:a, ev:r.tape || "ALERT", text:(r.title||"")+" · "+(r.text||""), rec:r}); return; }
+  if (ev === "tk_model"){ const a = agentOf(r); pushTape({ts:r.ts, agent:a, ev:"MODEL", text:r.text || "", rec:r}); return; }
   pushTape({ts:r.ts, agent:agentOf(r), ev:"SESS", text:ev, rec:r});
 }
 

@@ -41,6 +41,12 @@ def main(argv=None):
     p.add_argument("--port", type=int)
     p.add_argument("--upstream")
 
+    p = sub.add_parser("observe", help="live terminal for the ledger (read-only web UI)")
+    p.add_argument("--home")
+    p.add_argument("--host", default="127.0.0.1")
+    p.add_argument("--port", type=int, default=7777)
+    p.add_argument("--export", help="write a self-contained replay HTML and exit")
+
     sub.add_parser("pending", help="list tool calls waiting for approval")
     for name in ("approve", "reject"):
         p = sub.add_parser(name, help=f"{name} a held tool call (run from a terminal outside the agent's session)")
@@ -106,6 +112,10 @@ def main(argv=None):
         from . import proxy
         return proxy.main(["--home", _signer_home(a)] + (["--port", str(a.port)] if a.port else []) +
                           (["--upstream", a.upstream] if a.upstream else []))
+    if a.cmd == "observe":
+        from . import observe
+        return observe.main((["--home", a.home] if a.home else []) + ["--host", a.host, "--port", str(a.port)] +
+                            (["--export", a.export] if a.export else []))
     if a.cmd in ("pending", "approve", "reject"):
         from . import client
         try:
