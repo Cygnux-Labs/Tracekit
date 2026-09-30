@@ -1,0 +1,121 @@
+# Tracekit default policy (C7).
+#
+# These rules are tripwires. Every regex here can be evaded (eval E3/E4 measure how often),
+# so they are not the protection: signer-owned storage, witness checkpoints and the proxy
+# cross-check are. Rules exist to stop honest mistakes and the obvious cases, and to put a
+# stable rule id on every decision so a reviewer can see why something was blocked.
+#
+# Each rule: id (stable, never reused), tool (regex over the tool name, full match),
+# pattern (regex searched in the tool's main field, or `field` if given), reason (shown to the
+# agent and recorded), rationale (why the rule exists). Sections: deny, ask, flag.
+
+version: '2026.09-2'
+fail_mode: open            # open | closed   (closed: tool calls are blocked while the signer is down)
+content_capture: hashed    # hashed | full
+reasoning_capture: false   # record model text from the harness transcript (self-reported, lower trust)
+transcript_hashing: true   # C2: hash the transcript prefix at every hook to detect later rewrites
+checkpoint_every: 50
+approval_timeout_s: 120    # C8: an `ask` that nobody answers is rejected after this long
+
+deny:
+  - id: TK-D001
+    tool: Bash
+    pattern: '\bsudo\b|\bdoas\b|\bpkexec\b|\bsu\s+-c\b|\bsu\s+root\b'
+    reason: privilege escalation
+    rationale: An agent should never need root; escalation widens every other risk and would let it reach the signer.
+  - id: TK-D002
+    tool: Bash
+    pattern: '(curl|wget)[^|;&]*\|\s*(sudo\s+)?(ba|z|da)?sh\b|(ba|z)?sh\s+<\(\s*(curl|wget)|\$\(\s*(curl|wget)'
+    reason: running a downloaded script
+    rationale: Remote code execution without review.
+  - id: TK-D003
+    tool: Bash
+    pattern: 'git\s+push\b.*(--force\b|-f\b|--force-with-lease|\s\+\S)'
+    reason: force push
+    rationale: Rewrites shared history.
+  - id: TK-D004
+    tool: Bash
+    pattern: '\brm\s+-[a-zA-Z]*[rR][a-zA-Z]*\s+(--no-preserve-root\s+)?(/|~|\$HOME)(/?\*)?(\s|$)|\bfind\s+/\s.*-delete'
+    reason: recursive delete of root or home
+    rationale: Irrecoverable data loss.
+  - id: TK-D005
+    tool: Write|Edit|MultiEdit|NotebookEdit
+    field: file_path
+    pattern: '(^|/)(\.env(\.[A-Za-z0-9_-]+)?|id_rsa|id_ed25519|credentials)$|/\.ssh/|/\.aws/'
+    reason: writing to a credentials file
+    rationale: Credential files are high-value and rarely a legitimate agent target.
+  - id: TK-D006
+    tool: Bash
+    pattern: '(curl|wget|http|nc|ncat|scp|rsync)\b[^\n]*(@\S*\.env\b|--data[-a-z]*[ =]@?\S*\.env\b|--upload-file\s+\S*\.env\b|--post-file[ =]\S*\.env\b|\s\S*\.env\s+\S+:|<\s*\S*\.env\b)'
+    reason: uploading a secrets file
+    rationale: Sending .env off the machine is exfiltration.
+  - id: TK-D007
+    tool: Bash|Write|Edit|MultiEdit|NotebookEdit
+    pattern: '/var/lib/tracekit|\.tracekit-signer|\.tracekit-client|\btracekitd\b|tracekit\.(daemon|proxy)\b|\bpkill\b[^\n]*tracekit|\bsystemctl\s+(stop|disable|kill|mask)\s+tracekit'
+    reason: touching Tracekit's own files or signer
+    rationale: The audit trail must not be modified by the audited agent. Ownership already blocks this in system mode; the rule makes the attempt visible and blocks it in dev mode too.
+  - id: TK-D008
+    tool: Bash
+    pattern: '(\brm\b|\bunlink\b|\btruncate\b|\bshred\b|\bsed\s+(-[a-zA-Z]*\s+)*-i|\bperl\s+-[a-zA-Z]*i|\bmv\b|\bln\s+-[a-zA-Z]*f|\bdd\b[^\n]*\bof=|\btee\b|>|\bfind\b[^\n]*-(delete|exec\s+(rm|truncate|sed)))[^\n]*(\.claude/projects|\.codex/sessions|\.gemini/tmp|\.config/opencode)|\bfind\s[^\n]*(\.claude/projects|\.codex/sessions|\.gemini/tmp|\.config/opencode)[^\n]*-(delete|exec\s+(rm|truncate|sed|shred))'
+    reason: modifying the agent harness's transcripts
+    rationale: Qin et al. (2026, arXiv:2609.30266) show agents delete and rewrite their own session files when instructed or rewarded. Transcripts are evidence; the agent has no reason to write them. Reading them is allowed.
+  - id: TK-D009
+    tool: Write|Edit|MultiEdit|NotebookEdit
+    field: file_path
+    pattern: '(\.claude/projects/|\.codex/sessions/|\.gemini/tmp/|\.config/opencode/)'
+    reason: writing to the agent harness's transcripts
+    rationale: Same as TK-D008, for the file-editing tools.
+
+ask: []
+# Example (see policy/strict.yaml): hold `git push` until a human approves from another terminal.
+#  - id: TK-A001
+#    tool: Bash
+#    pattern: '\bgit\s+push\b'
+#    reason: pushing to a remote
+
+flag:
+  - id: TK-F001
+    tool: Bash
+    pattern: '\b(curl|wget|ssh|scp|rsync|nc|ncat|telnet|ftp)\b'
+    label: network
+  - id: TK-F002
+    tool: WebFetch|WebSearch
+    pattern: '.*'
+    label: network
+  - id: TK-F003
+    tool: Bash
+    pattern: '\b(rm|mv|chmod|chown|dd|truncate|shred|unlink)\b'
+    label: destructive
+  - id: TK-F004
+    tool: Bash
+    pattern: '\b(git\s+(push|reset\s+--hard|clean)|npm\s+publish|pip3?\s+install|docker\s+run|terraform\s+apply|kubectl\s+(apply|delete))\b'
+    label: side_effect
+  - id: TK-F005
+    tool: Read|Bash|Grep
+    pattern: '\.env\b|id_rsa|\.ssh/|credentials|\.aws/|\.netrc'
+    label: secrets_access
+  - id: TK-F006
+    tool: 'mcp__.*'
+    pattern: '.*'
+    label: external_tool
+  - id: TK-F007
+    tool: Bash
+    pattern: '\bnohup\b|\bsetsid\b|\bdisown\b|&\s*$|&\s*;|\bcrontab\b|\bat\s+now\b|\bsystemd-run\b|\bscreen\s+-[a-zA-Z]*d|\btmux\s+new(-session)?\s+[^\n]*-d|\bdaemonize\b|\bwhile\s+(true|:)'
+    label: background_spawn
+  - id: TK-F008
+    tool: Bash
+    field: run_in_background
+    pattern: '(?i)^true$'
+    label: background_spawn
+  - id: TK-F009
+    tool: Bash|Write|Edit|MultiEdit
+    pattern: '\.claude/settings(\.local)?\.json|/\.claude/|\.codex/|managed-settings|\.mcp\.json|ANTHROPIC_BASE_URL'
+    label: harness_config
+  - id: TK-F010
+    tool: Bash
+    pattern: '(^|[;&|\s])(function\s+)?(ls|cat|rm|git|curl|wget|python3?|node|echo|grep|sudo|tracekit|claude|pytest|npm|cd|test|printf)\s*\(\s*\)\s*\{|\balias\s+(ls|cat|rm|git|curl|python3?|echo|grep|pytest|npm|claude|tracekit)='
+    label: shell_shadowing
+  - id: TK-F011
+    tool: Bash
+    pattern: '\b(export\s+)?(PATH|LD_PRELOAD|LD_LIBRARY_PATH|BASH_ENV|ENV|PROMPT_COMMAND|PYTHONPATH|NODE_OPTIONS)=|\bunset\s+(ANTHROPIC_BASE_URL|HTTPS?_PROXY)\b|>>?\s*~?/?[^\s]*\.(bashrc|profile|zshrc|bash_profile)\b'
+    label: env_tamper
