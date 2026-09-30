@@ -20,7 +20,8 @@ OTHER_EVENTS = ["UserPromptSubmit", "Stop", "SubagentStart", "SubagentStop", "Se
 
 
 def is_ours(group):
-    return any("tracekit" in (h.get("command") or "") and "hook.py" in (h.get("command") or "")
+    own = os.path.join(HERE, "hook.py")
+    return any(own in (h.get("command") or "") or ("tracekit" in (h.get("command") or "") and "hook.py" in (h.get("command") or ""))
                for h in group.get("hooks", []))
 
 

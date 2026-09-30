@@ -1,0 +1,35 @@
+# Stricter example policy: fail closed, and hold risky actions for human approval (C8).
+# Copy it, edit it, and point TRACEKIT_POLICY (or `tracekit init --policy`) at your copy.
+# Rules listed here are added to the default policy's deny and flag rules (`extends: default`).
+
+extends: default
+version: '2026.09-2-strict'
+fail_mode: closed
+approval_timeout_s: 300
+
+ask:
+  - id: TK-A001
+    tool: Bash
+    pattern: '\bgit\s+push\b'
+    reason: pushing to a remote
+    rationale: Code leaves the machine; a human should see what.
+  - id: TK-A002
+    tool: Bash
+    pattern: '\b(npm|pnpm|yarn)\s+publish\b|\btwine\s+upload\b|\bcargo\s+publish\b'
+    reason: publishing a package
+    rationale: Irreversible and public.
+  - id: TK-A003
+    tool: Bash
+    pattern: '\b(curl|wget)\b[^\n]*(-X\s*(POST|PUT|PATCH|DELETE)|--data|-d\s|-F\s|--upload-file)'
+    reason: sending data to a remote host
+    rationale: Possible exfiltration; approve if the destination and payload are expected.
+  - id: TK-A004
+    tool: WebFetch
+    pattern: '.*'
+    reason: fetching a web page
+    rationale: Untrusted web content is the main prompt-injection vector.
+  - id: TK-A005
+    tool: 'mcp__.*'
+    pattern: '.*'
+    reason: calling an MCP tool
+    rationale: External tools act outside the hook's view.
