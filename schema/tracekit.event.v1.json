@@ -1,0 +1,982 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Cygnux-Labs/Tracekit/schema/tracekit.event.v1.json",
+  "title": "Tracekit event v1",
+  "description": "One event in a Tracekit ledger. Frozen for v0.2: additions need a new schema_version.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "id",
+    "seq",
+    "prev_hash",
+    "ts",
+    "run_id",
+    "agent_id",
+    "parent_id",
+    "source",
+    "type",
+    "data"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "tracekit.event.v1"
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{32}$",
+      "description": "Random 128-bit id, hex."
+    },
+    "seq": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Signer's monotonic counter. Assigned by tracekitd, never by the client."
+    },
+    "prev_hash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "Hash of the previous record; 64 zeros for seq 0."
+    },
+    "ts": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{6}Z$",
+      "description": "Client-reported time, UTC, microseconds."
+    },
+    "ts_signed": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{6}Z$",
+      "description": "Time the signer accepted the event."
+    },
+    "run_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "agent_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200,
+      "description": "\"main\" for the top-level agent, otherwise the harness's sub-agent id."
+    },
+    "parent_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 200,
+      "description": "agent_id of the spawning agent, or null."
+    },
+    "source": {
+      "enum": [
+        "hook",
+        "proxy",
+        "transcript",
+        "signer",
+        "sdk",
+        "migrated"
+      ],
+      "description": "Capture path. transcript = harness-reported, lower trust."
+    },
+    "type": {
+      "enum": [
+        "run.start",
+        "run.end",
+        "tool.call",
+        "policy.decision",
+        "approval",
+        "tool.result",
+        "error",
+        "review",
+        "trace.tamper",
+        "capture.gap",
+        "checkpoint",
+        "user.prompt",
+        "model.message",
+        "model.exchange"
+      ]
+    },
+    "data": {
+      "type": "object"
+    },
+    "transcript": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "length",
+        "hash"
+      ],
+      "description": "C2: what the hook read of the harness transcript at this point (prefix hash). Lets the signer detect later edits, truncation or deletion.",
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "length": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "hash": {
+          "$ref": "#/$defs/hash"
+        },
+        "prefix_length": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "description": "Length the signer last acknowledged for this path."
+        },
+        "prefix_hash": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/hash"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Hash of the first prefix_length bytes as read now."
+        },
+        "missing": {
+          "type": "boolean"
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "run.start"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/run_start"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "run.end"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/run_end"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "tool.call"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/tool_call"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "policy.decision"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/policy_decision"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "approval"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/approval"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "tool.result"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/tool_result"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "error"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/error"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "review"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/review"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "trace.tamper"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/trace_tamper"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "capture.gap"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/capture_gap"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "checkpoint"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/checkpoint"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "user.prompt"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/user_prompt"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "model.message"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/model_message"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "model.exchange"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/model_exchange"
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "hash": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "content": {
+      "description": "Either the (redacted) value or a reference to it. Which one is decided by docs/privacy.md, never by the caller.",
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "value",
+            "redacted"
+          ],
+          "properties": {
+            "value": {},
+            "redacted": {
+              "type": "boolean"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "hash",
+            "size",
+            "redacted"
+          ],
+          "properties": {
+            "hash": {
+              "$ref": "#/$defs/hash"
+            },
+            "size": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "redacted": {
+              "type": "boolean"
+            }
+          }
+        }
+      ]
+    },
+    "run_start": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "agent",
+        "host",
+        "os_user",
+        "fail_mode",
+        "policy",
+        "capture_sources",
+        "sandbox",
+        "content_capture",
+        "signer_isolation"
+      ],
+      "properties": {
+        "agent": {
+          "type": "object",
+          "required": [
+            "name"
+          ],
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "version": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        },
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "repo": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "commit": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cwd": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "host": {
+          "type": "string"
+        },
+        "os_user": {
+          "type": "string"
+        },
+        "fail_mode": {
+          "enum": [
+            "open",
+            "closed"
+          ]
+        },
+        "policy": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "version",
+            "hash"
+          ],
+          "properties": {
+            "version": {
+              "type": "string"
+            },
+            "hash": {
+              "$ref": "#/$defs/hash"
+            }
+          }
+        },
+        "capture_sources": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "hook",
+              "proxy",
+              "transcript",
+              "sdk"
+            ]
+          }
+        },
+        "sandbox": {
+          "enum": [
+            "none",
+            "unknown",
+            "self-reported-active"
+          ]
+        },
+        "content_capture": {
+          "enum": [
+            "hashed",
+            "full"
+          ]
+        },
+        "reasoning_capture": {
+          "type": "boolean"
+        },
+        "signer_isolation": {
+          "enum": [
+            "separate-user",
+            "same-user"
+          ]
+        },
+        "os_user_attested": {
+          "type": "boolean",
+          "description": "true when tracekitd set os_user from the socket peer's credentials rather than trusting the client."
+        }
+      }
+    },
+    "run_end": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reason"
+      ],
+      "properties": {
+        "reason": {
+          "type": "string"
+        }
+      }
+    },
+    "tool_call": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tool_use_id",
+        "name",
+        "input"
+      ],
+      "properties": {
+        "tool_use_id": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "input": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/content"
+          }
+        }
+      }
+    },
+    "policy_decision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tool_use_id",
+        "decision",
+        "rule_ids"
+      ],
+      "properties": {
+        "tool_use_id": {
+          "type": "string"
+        },
+        "decision": {
+          "enum": [
+            "allow",
+            "deny",
+            "flag",
+            "ask"
+          ]
+        },
+        "rule_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "reasons": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "policy_hash": {
+          "$ref": "#/$defs/hash",
+          "description": "hash of the policy that produced this decision"
+        },
+        "policy_version": {
+          "type": "string"
+        }
+      }
+    },
+    "approval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tool_use_id",
+        "decision",
+        "approver",
+        "channel"
+      ],
+      "properties": {
+        "tool_use_id": {
+          "type": "string"
+        },
+        "decision": {
+          "enum": [
+            "approve",
+            "reject",
+            "timeout",
+            "self_approval_refused"
+          ]
+        },
+        "approver": {
+          "type": "string"
+        },
+        "channel": {
+          "type": "string"
+        },
+        "approver_uid": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "wait_ms": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "same_user": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "true when the approver is the agent's own OS user (dev mode only; not trustworthy)"
+        }
+      }
+    },
+    "tool_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tool_use_id",
+        "ok",
+        "output"
+      ],
+      "properties": {
+        "tool_use_id": {
+          "type": "string"
+        },
+        "ok": {
+          "type": "boolean"
+        },
+        "output": {
+          "$ref": "#/$defs/content"
+        },
+        "duration_ms": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      }
+    },
+    "error": {
+      "type": "object",
+      "required": [
+        "message"
+      ],
+      "properties": {
+        "message": {
+          "type": "string"
+        }
+      }
+    },
+    "review": {
+      "type": "object",
+      "required": [
+        "reviewer",
+        "verdict"
+      ],
+      "properties": {
+        "reviewer": {
+          "type": "string"
+        },
+        "verdict": {
+          "type": "object"
+        }
+      }
+    },
+    "trace_tamper": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "before",
+        "after"
+      ],
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "before": {
+          "type": "object",
+          "properties": {
+            "hash": {
+              "$ref": "#/$defs/hash"
+            },
+            "length": {
+              "type": "integer"
+            }
+          }
+        },
+        "after": {
+          "type": "object",
+          "properties": {
+            "hash": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "length": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            }
+          }
+        },
+        "kind": {
+          "enum": [
+            "deleted",
+            "truncated",
+            "edited",
+            "prefix_unverifiable"
+          ]
+        }
+      }
+    },
+    "capture_gap": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reason"
+      ],
+      "properties": {
+        "reason": {
+          "type": "string"
+        },
+        "from_ts": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "to_ts": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "missed_events": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "kind": {
+          "type": "string",
+          "description": "machine-readable gap class, e.g. counter_jump, signer_down, hook_missing, proxy_missing, stale_run, witness_late"
+        },
+        "tool_use_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "checkpoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "head_seq",
+        "head_hash",
+        "kid",
+        "witnesses"
+      ],
+      "properties": {
+        "head_seq": {
+          "type": "integer"
+        },
+        "head_hash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "kid": {
+          "type": "string"
+        },
+        "witnesses": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "user_prompt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "content"
+      ],
+      "properties": {
+        "content": {
+          "$ref": "#/$defs/content"
+        }
+      }
+    },
+    "model_message": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "content"
+      ],
+      "description": "Self-reported model output read from the harness transcript. Opt-in, off by default, lower trust.",
+      "properties": {
+        "kind": {
+          "enum": [
+            "text",
+            "thinking",
+            "thinking_withheld"
+          ]
+        },
+        "message_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "content": {
+          "$ref": "#/$defs/content"
+        }
+      }
+    },
+    "model_exchange": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "exchange_id",
+        "phase",
+        "streamed"
+      ],
+      "description": "C3: one model API request/response recorded by the proxy (source=proxy) before the request was forwarded and when the response completed.",
+      "properties": {
+        "exchange_id": {
+          "type": "string"
+        },
+        "phase": {
+          "enum": [
+            "request",
+            "response"
+          ]
+        },
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "request": {
+          "$ref": "#/$defs/content"
+        },
+        "response": {
+          "$ref": "#/$defs/content"
+        },
+        "status": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "streamed": {
+          "type": "boolean"
+        },
+        "duration_ms": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "first_byte_ms": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "added_latency_ms": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "tool_uses": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "name"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              }
+            }
+          }
+        },
+        "tool_results_sent": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "tool_use ids whose results the harness sent back in this request"
+        },
+        "stop_reason": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "upstream": {
+          "type": "string"
+        },
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "attribution": {
+          "enum": [
+            "metadata",
+            "tool_use_id",
+            "none"
+          ]
+        }
+      }
+    }
+  }
+}

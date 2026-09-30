@@ -10,6 +10,8 @@ import threading
 import time
 import unittest
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from tracekit.core import read_json, read_text, write_json, write_text  # noqa: E402,F401
 KIT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, KIT)
 
@@ -37,8 +39,18 @@ def fresh_modules(home):
     return common, verify
 
 
+def _restore_env(saved):
+    for k, v in saved.items():
+        if v is None:
+            os.environ.pop(k, None)
+        else:
+            os.environ[k] = v
+
+
 class Base(unittest.TestCase):
     def setUp(self):
+        # fresh_modules sets these process-wide; restore them so later suites (v0.2) are unaffected
+        self.addCleanup(_restore_env, {k: os.environ.get(k) for k in ("TRACEKIT_HOME", "TRACEKIT_POLICY")})
         self.home = tempfile.mkdtemp(prefix="tk-")
         shutil.copy(os.path.join(KIT, "policy.json"), os.path.join(self.home, "policy.json"))
         self.common, self.verify = fresh_modules(self.home)
@@ -48,10 +60,10 @@ class Base(unittest.TestCase):
         shutil.rmtree(self.home, ignore_errors=True)
 
     def lines(self):
-        return open(self.ledger, encoding="utf-8").read().splitlines()
+        return read_text(self.ledger).splitlines()
 
     def write_lines(self, lines):
-        open(self.ledger, "w", encoding="utf-8").write("\n".join(lines) + "\n")
+        write_text(self.ledger, "\n".join(lines) + "\n")
 
 
 class LedgerTests(Base):
@@ -121,7 +133,7 @@ class LedgerTests(Base):
         self.common.append([{"event": "log", "session_id": "s",
                              "text": "key sk-ant-abcdefghijklmnopqrstuvwxyz0123 and password=hunter22 gh token ghp_" + "a" * 36,
                              "huge": "y" * 30000}])
-        raw = open(self.ledger).read()
+        raw = read_text(self.ledger)
         self.assertNotIn("sk-ant-abcdef", raw); self.assertNotIn("hunter22", raw); self.assertNotIn("ghp_aaaa", raw)
         self.assertIn("[REDACTED]", raw); self.assertIn("truncated", raw)
 
@@ -153,7 +165,7 @@ class HookTests(Base):
         self.assertEqual(run_hook(self.home, "not json", TRACEKIT_FAIL_CLOSED="1")[0], 2)
 
     def test_invalid_policy_is_flagged_not_silent(self):
-        open(os.path.join(self.home, "policy.json"), "w").write('{"deny":[{"pattern":"("}]}')
+        write_text(os.path.join(self.home, "policy.json"), '{"deny":[{"pattern":"("}]}')
         self.assertEqual(self.pre("Bash", {"command": "ls"})[0], 0)
         self.assertIn("policy_error", self.last()["policy"]["flags"])
         self.assertEqual(self.pre("Bash", {"command": "ls"}, TRACEKIT_FAIL_CLOSED="1")[0], 2)
@@ -166,7 +178,7 @@ class HookTests(Base):
             {"type": "assistant", "uuid": "u2", "message": {"id": "m1", "model": "x", "content": [{"type": "text", "text": "Editing a.py"}]}},
             {"type": "assistant", "uuid": "u3", "message": {"id": "m1", "model": "x", "content": [{"type": "tool_use", "id": "t1", "name": "Edit", "input": {"file_path": "a.py"}}]}},
         ]
-        open(tx, "w").write("\n".join(json.dumps(e) for e in entries) + "\n")
+        write_text(tx, "\n".join(json.dumps(e) for e in entries) + "\n")
         for _ in range(3):
             run_hook(self.home, {"hook_event_name": "PostToolUse", "session_id": "s1", "transcript_path": tx,
                                  "tool_name": "Edit", "tool_input": {"file_path": "a.py"}, "tool_use_id": "t1"})
@@ -227,6 +239,7 @@ class ObserverTests(Base):
         from http.server import ThreadingHTTPServer
         self.srv = ThreadingHTTPServer(("127.0.0.1", 0), observer.Handler)
         threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+        self.addCleanup(self.srv.server_close)
         return self.srv.server_address[1]
 
     def tearDown(self):
@@ -273,14 +286,14 @@ class InstallTests(Base):
         proj = tempfile.mkdtemp()
         os.makedirs(os.path.join(proj, ".claude"))
         other = {"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "command": "echo mine"}]}]}, "model": "x"}
-        json.dump(other, open(os.path.join(proj, ".claude", "settings.json"), "w"))
+        write_json(os.path.join(proj, ".claude", "settings.json"), other)
         for _ in range(2):
             subprocess.run([sys.executable, os.path.join(KIT, "install.py"), "--project"], cwd=proj, env=env_for(self.home), capture_output=True)
-        s = json.load(open(os.path.join(proj, ".claude", "settings.json")))
+        s = read_json(os.path.join(proj, ".claude", "settings.json"))
         self.assertEqual(len(s["hooks"]["PreToolUse"]), 2)  # theirs + ours, not duplicated
         self.assertEqual(s["model"], "x")
         subprocess.run([sys.executable, os.path.join(KIT, "install.py"), "--project", "--uninstall"], cwd=proj, env=env_for(self.home), capture_output=True)
-        s = json.load(open(os.path.join(proj, ".claude", "settings.json")))
+        s = read_json(os.path.join(proj, ".claude", "settings.json"))
         self.assertEqual(s["hooks"]["PreToolUse"], other["hooks"]["PreToolUse"])
         shutil.rmtree(proj)
 
@@ -292,7 +305,7 @@ class BrowserVerifierParity(Base):
             self.skipTest("node not installed")
         self.common.append([{"event": "log", "session_id": "s", "text": "unicode ✓ – “quotes” \\ \t tab \u0007 bell", "n": 3, "f": 0.1,
                              "nested": {"b": [1, 2, {"z": None, "a": True}], "a": "x"}}])
-        js = open(os.path.join(KIT, "terminal.html")).read()
+        js = read_text(os.path.join(KIT, "terminal.html"))
         canon = js[js.index("function canon(v){"):js.index("async function sha256")]
         script = canon + """
 const crypto=require('crypto'),fs=require('fs');let prev='0'.repeat(64),ok=true;
