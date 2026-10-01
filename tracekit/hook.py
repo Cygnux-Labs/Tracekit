@@ -17,15 +17,11 @@ import subprocess
 import sys
 import time
 
-try:
-    import fcntl
-except ImportError:  # pragma: no cover
-    fcntl = None
-
 from .core import read_text
 from . import client, privacy
 from . import policy as policy_mod
 from .core import now_ts
+from .locking import lock_file, unlock_file
 
 AGENT_NAME = "claude-code"
 
@@ -135,9 +131,10 @@ def save_ack(path, length):
     if length is None:
         return
     lk = open(_acks_path() + ".lock", "a")
+    locked = False
     try:
-        if fcntl:
-            fcntl.flock(lk, fcntl.LOCK_EX)
+        lock_file(lk)
+        locked = True
         acks = _load_acks()
         if True:  # the signer is the authority on what it has seen (it also keeps a history for races)
             acks[path] = length
@@ -146,7 +143,11 @@ def save_ack(path, length):
                 json.dump(acks, f)
             os.replace(tmp, _acks_path())
     finally:
-        lk.close()
+        try:
+            if locked:
+                unlock_file(lk)
+        finally:
+            lk.close()
 
 
 def transcript_mark(path):

@@ -5,11 +5,7 @@ import os
 
 from . import crypto
 from .core import GENESIS, b64d, b64e, event_hash, sig_message
-
-try:
-    import fcntl
-except ImportError:  # pragma: no cover
-    fcntl = None
+from .locking import lock_file, unlock_file
 
 
 class Keys:
@@ -73,32 +69,54 @@ class Ledger:
 
     def __init__(self, path, keys):
         self.path, self.keys = path, keys
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        self._fh = open(path, "ab", buffering=0)  # unbuffered: a failed write never lingers in a buffer
-        os.chmod(path, 0o644)
-        if fcntl:
-            try:
-                fcntl.flock(self._fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except OSError:
-                raise RuntimeError(f"another tracekitd holds {path}")
-        self.seq, self.head, self.torn = -1, GENESIS, False
-        for _, rec, _raw in read_records(path):
-            self.torn = rec is None  # only a torn *final* line means a crash since the last start
-            if rec is None:
-                continue
-            seq = rec["seq"] if rec.get("elided") else rec["event"]["seq"]
-            self.seq, self.head = seq, rec["hash"]
-        needs_nl = False
-        if os.path.getsize(path):
-            with open(path, "rb") as f:
-                f.seek(-1, os.SEEK_END)
-                needs_nl = f.read(1) != b"\n"
-        if self.torn or needs_nl:  # isolate a torn/unterminated line so the next record starts cleanly
-            self._fh.write(b"\n")
+        self._fh = None
+        self._lock_fh = None
+        self._locked = False
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            self._fh = open(path, "ab", buffering=0)  # unbuffered: a failed write never lingers in a buffer
+            os.chmod(path, 0o644)
+            self._lock_fh = open(path + ".lock", "a+b")
+        except BaseException:
+            self.close()
+            raise
+        try:
+            lock_file(self._lock_fh, blocking=False)
+            self._locked = True
+        except OSError as e:
+            self.close()
+            raise RuntimeError(f"another tracekitd holds {path}") from e
+        try:
+            self.seq, self.head, self.torn = -1, GENESIS, False
+            for _, rec, _raw in read_records(path):
+                self.torn = rec is None  # only a torn *final* line means a crash since the last start
+                if rec is None:
+                    continue
+                seq = rec["seq"] if rec.get("elided") else rec["event"]["seq"]
+                self.seq, self.head = seq, rec["hash"]
+            needs_nl = False
+            if os.path.getsize(path):
+                with open(path, "rb") as f:
+                    f.seek(-1, os.SEEK_END)
+                    needs_nl = f.read(1) != b"\n"
+            if self.torn or needs_nl:  # isolate a torn/unterminated line so the next record starts cleanly
+                self._fh.write(b"\n")
+        except BaseException:
+            self.close()
+            raise
 
     def close(self):
-        if not self._fh.closed:
-            self._fh.close()
+        lock_fh = self._lock_fh
+        ledger_fh = self._fh
+        try:
+            if lock_fh is not None and not lock_fh.closed and self._locked:
+                unlock_file(lock_fh)
+        finally:
+            self._locked = False
+            if lock_fh is not None and not lock_fh.closed:
+                lock_fh.close()
+            if ledger_fh is not None and not ledger_fh.closed:
+                ledger_fh.close()
 
     def __del__(self):
         try:

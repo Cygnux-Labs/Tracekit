@@ -6,18 +6,20 @@ Tracekit makes one claim:
 
 It does **not** prove intent, complete coverage, or that a reported tool result is real. Every verifier report ends with that sentence.
 
-Scope: Claude Code on **Linux**. System mode (separate signer user) is Linux-only in v0.2 because caller identity comes from `SO_PEERCRED`; dev mode runs anywhere but gives integrity checks only, not isolation.
+Scope: Claude Code hooks and explicitly instrumented Python agents on Linux, Windows and macOS dev mode. System mode (separate signer user) is Linux-only in v0.2 because caller identity comes from `SO_PEERCRED`; dev mode uses an authenticated local transport but gives integrity checks only, not isolation or caller attestation.
 
 ## Two properties, kept apart
 
 | Property | Question | What provides it |
 |---|---|---|
 | **Integrity** | Has the stored record changed since it was signed? | Hash chain, Ed25519 signatures, witnessed checkpoints |
-| **Fidelity** | Does the record match what actually happened? | Only the capture paths: hooks, the model proxy (opt-in) and transcript prefix hashes. Partial, and labelled per path in `coverage.json` |
+| **Fidelity** | Does the record match what actually happened? | Only the capture paths: hooks, explicitly wrapped SDK calls, the model proxy (opt-in) and transcript prefix hashes. Partial, and labelled per path in `coverage.json` |
 
 A bundle can pass every integrity check and still miss things. The verifier never prints "complete"; the best coverage summary is "clean on observed paths".
 
 **The signer cannot tell a real event from a well-formed fake.** The agent's OS user can write to the signer's socket, so it can submit fabricated events and they will be signed. A valid signature means "tracekitd accepted this record from a caller with this OS user, at this position, and nobody has changed it since". It does not mean the hook produced it or that it describes something that happened. What makes fabrication visible is cross-checking independent paths (C4: tool calls with no matching model exchange raise `capture.gap` when the proxy is on), not the signature.
+
+**Generic SDK capture is opt-in per call.** `source: sdk` means an adapter submitted the event; it does not attest that the agent framework produced it or that every action was wrapped. SDK policy checks can block only operations executed inside `Tracer.tool()`.
 
 ## Attacker levels (as defined in issue #1)
 
@@ -42,7 +44,7 @@ Without either, a whole bundle forged with a fresh key verifies as consistent.
 | ID | Invariant | Where |
 |---|---|---|
 | I1 | The agent never holds the signing key | `tracekitd` owns `keys/signer.key` (0600, separate user) |
-| I2 | The agent's OS user cannot change the ledger | ledger owned by the signer user; clients only talk over a Unix socket |
+| I2 | The agent's OS user cannot change the ledger | Linux system mode: ledger owned by signer user; dev mode: same-user signer, no isolation guarantee |
 | I3 | Every record is signed; the signature covers `(hash, prev_hash, seq)` | `ledger.py`, `core.sig_message` |
 | I4 | The head is published outside the machine | checkpoints to git / file witnesses (Rekor off, not implemented) |
 | I5 | Lost events are visible, not silent | per-run, per-stream counters; `capture.gap` on jumps, regressions, out-of-order lifecycle, late witnesses |

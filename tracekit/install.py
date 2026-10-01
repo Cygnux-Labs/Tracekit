@@ -5,14 +5,22 @@ ledger; tracekitd runs as that user under systemd.
 Dev mode (--dev): the signer runs as *your* user. Convenient, but the agent could rewrite the
 ledger, so every run is labelled signer_isolation=same-user and verify says so.
 """
+import base64
 import json
 import os
-import pwd
+import secrets
+import shlex
+import socket
 import shutil
 import signal
 import subprocess
 import sys
 import time
+
+try:
+    import pwd
+except ImportError:
+    pwd = None
 
 from .core import read_json, read_text
 from . import client
@@ -70,8 +78,16 @@ def _hook_command():
         installed = spec and spec.origin and "site-packages" in spec.origin
     except Exception:
         installed = False
-    cmd = f'"{sys.executable}" -m tracekit.hook'
-    return cmd if installed else f'env PYTHONPATH="{ROOT}" {cmd}'
+        cmd = (f'"{sys.executable}" -m tracekit.hook' if os.name == "nt"
+            else f"{shlex.quote(sys.executable)} -m tracekit.hook")
+    if installed:
+        return cmd
+    if os.name == "nt":
+        encoded_root = base64.b64encode(ROOT.encode("utf-8")).decode("ascii")
+        code = (f"import base64,sys; sys.path.insert(0, base64.b64decode('{encoded_root}').decode('utf-8')); "
+                "from tracekit.hook import _entry; raise SystemExit(_entry())")
+        return f'"{sys.executable}" -c "{code}"'
+    return f"env PYTHONPATH={shlex.quote(ROOT)} {cmd}"
 
 
 def _is_ours(group):
@@ -134,6 +150,7 @@ def _write_client_config(user_home, cfg, owner=None):
         for root, dirs, files in os.walk(d):
             for x in [root] + [os.path.join(root, n) for n in dirs + files]:
                 os.chown(x, owner.pw_uid, owner.pw_gid)
+    os.chmod(p, 0o600)
     return p
 
 
@@ -142,14 +159,29 @@ def _write_signer_config(home, witnesses, checkpoint_every, socket_path, proxy=N
     if proxy:
         cfg["proxy"] = proxy
     cfg.update(extra or {})
-    with open(os.path.join(home, "config.json"), "w") as f:
+    path = os.path.join(home, "config.json")
+    with open(path, "w") as f:
         json.dump(cfg, f, indent=2)
+    os.chmod(path, 0o600)
 
 
 def _upstream():
     """Where the proxy forwards: whatever the user already pointed Claude Code at, else Anthropic."""
     cur = os.environ.get("ANTHROPIC_BASE_URL", "")
     return cur if cur and "127.0.0.1" not in cur and "localhost" not in cur else "https://api.anthropic.com"
+
+
+def _validate_init_options(checkpoint_every, proxy, proxy_port):
+    try:
+        checkpoint_every = int(checkpoint_every)
+        proxy_port = int(proxy_port)
+    except (TypeError, ValueError) as e:
+        raise ValueError("checkpoint interval and proxy port must be integers") from e
+    if checkpoint_every < 1:
+        raise ValueError("checkpoint interval must be positive")
+    if proxy and not 1 <= proxy_port <= 65535:
+        raise ValueError("proxy port must be between 1 and 65535")
+    return checkpoint_every, proxy_port
 
 
 def start_dev_proxy(home):
@@ -160,36 +192,79 @@ def start_dev_proxy(home):
     _CHILDREN[p.pid] = p
     with open(os.path.join(home, "proxy.pid"), "w") as f:
         f.write(str(p.pid))
-    time.sleep(0.5)
-    return p.pid
+    import urllib.request
+    health = f"http://127.0.0.1:{load_proxy_port(home)}/__tracekit_health"
+    for _ in range(100):
+        if p.poll() is not None:
+            break
+        try:
+            with urllib.request.urlopen(health, timeout=0.2) as response:
+                if response.status == 200:
+                    return p.pid
+        except Exception:
+            pass
+        time.sleep(0.05)
+    try:
+        with open(os.path.join(home, "proxy.log"), encoding="utf-8") as f:
+            detail = f.read()[-4000:].strip()
+    except OSError:
+        detail = ""
+    raise RuntimeError(f"tracekit proxy did not become ready; see {home}/proxy.log" + (f":\n{detail}" if detail else ""))
+
+
+def load_proxy_port(home):
+    with open(os.path.join(home, "config.json"), encoding="utf-8") as f:
+        return int(json.load(f).get("proxy", {}).get("port", 8787))
+
+
+def _dev_socket(home):
+    if hasattr(socket, "AF_UNIX") and hasattr(socket, "SO_PEERCRED"):
+        return os.path.join(home, "tracekitd.sock"), None
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    return f"tcp://127.0.0.1:{port}", secrets.token_urlsafe(32)
 
 
 def init_dev(home, witnesses, checkpoint_every=50, hooks_path=None, start=True, proxy=False, proxy_port=8787, fail_mode=None):
+    checkpoint_every, proxy_port = _validate_init_options(checkpoint_every, proxy, proxy_port)
     home = os.path.abspath(home)
     for sub in ("", "keys", "ledger", "blobs"):
         os.makedirs(os.path.join(home, sub), exist_ok=True)
-    sock = os.path.join(home, "tracekitd.sock")
+    sock, socket_token = _dev_socket(home)
     if not witnesses:
         witnesses = [f"git:{os.path.join(home, 'witness')}"]
     pcfg = {"port": proxy_port, "upstream": _upstream(), "fail_mode": fail_mode or "open"} if proxy else None
     # dev mode: the agent and the approver are the same OS user, so approvals are allowed but labelled untrustworthy
-    _write_signer_config(home, witnesses, checkpoint_every, sock, pcfg, {"mode": "dev", "allow_same_user_approval": True})
+    signer_extra = {"mode": "dev", "allow_same_user_approval": True}
+    if socket_token:
+        signer_extra["socket_token"] = socket_token
+    _write_signer_config(home, witnesses, checkpoint_every, sock, pcfg, signer_extra)
     cfg = {"socket": sock, "signer_home": home, "signer_isolation": "same-user", "mode": "dev"}
+    if socket_token:
+        cfg["socket_token"] = socket_token
     if proxy:
         cfg.update(proxy=True, proxy_url=f"http://127.0.0.1:{proxy_port}")
     client_home = os.environ.get("TRACEKIT_CLIENT_HOME")
     if client_home:
         os.makedirs(os.path.join(client_home, "runs"), exist_ok=True)
-        with open(os.path.join(client_home, "config.json"), "w") as f:
+        client_config_path = os.path.join(client_home, "config.json")
+        with open(client_config_path, "w") as f:
             json.dump(cfg, f, indent=2)
+        os.chmod(client_config_path, 0o600)
     else:
         _write_client_config(os.path.expanduser("~"), cfg)
-    if start:
-        start_dev_daemon(home)
-        if proxy:
-            start_dev_proxy(home)
-    if hooks_path:
-        install_hooks(hooks_path, proxy_url=cfg.get("proxy_url"))
+    try:
+        if start:
+            start_dev_daemon(home)
+            if proxy:
+                start_dev_proxy(home)
+        if hooks_path:
+            install_hooks(hooks_path, proxy_url=cfg.get("proxy_url"))
+    except Exception:
+        if start:
+            stop_dev_daemon(home)
+        raise
     return cfg
 
 
@@ -201,12 +276,22 @@ def start_dev_daemon(home):
     _CHILDREN[p.pid] = p
     with open(os.path.join(home, "tracekitd.pid"), "w") as f:
         f.write(str(p.pid))
-    sock = os.path.join(home, "tracekitd.sock")
+    signer_config = read_json(os.path.join(home, "config.json"))
     for _ in range(100):
-        if os.path.exists(sock):
-            return p.pid
+        if p.poll() is not None:
+            break
+        try:
+            if client._rpc({"op": "status"}, config=signer_config).get("ok"):
+                return p.pid
+        except client.SignerUnavailable:
+            pass
         time.sleep(0.05)
-    raise RuntimeError(f"tracekitd did not start; see {home}/tracekitd.log")
+    try:
+        with open(os.path.join(home, "tracekitd.log"), encoding="utf-8") as f:
+            detail = f.read()[-4000:].strip()
+    except OSError:
+        detail = ""
+    raise RuntimeError(f"tracekitd did not become ready; see {home}/tracekitd.log" + (f":\n{detail}" if detail else ""))
 
 
 _CHILDREN = {}  # pid -> Popen for daemons started by this process (reaped on stop)
@@ -258,6 +343,7 @@ def init_system(target_user, witnesses, checkpoint_every=50, project=None, no_se
                          "approvers. Use `tracekit init --dev` to try Tracekit here (same-user, clearly labelled).")
     if os.geteuid() != 0:
         raise SystemExit("system mode needs root: sudo tracekit init   (or tracekit init --dev for a same-user signer)")
+    checkpoint_every, proxy_port = _validate_init_options(checkpoint_every, proxy, proxy_port)
     owner = pwd.getpwnam(target_user)
     user = SYS_USER
     try:
@@ -308,7 +394,8 @@ def init_system(target_user, witnesses, checkpoint_every=50, project=None, no_se
 
 def status():
     cfg = client.client_config()
-    out = {"client_config": cfg or None}
+    visible_cfg = {k: v for k, v in cfg.items() if k != "socket_token"}
+    out = {"client_config": visible_cfg or None}
     try:
         from . import policy as P
         pol, _ = P.load()

@@ -1,7 +1,7 @@
 """tracekitd: the signer daemon (I1, I2, I3, C2, C4, C5, C8).
 
-Runs as a dedicated OS user (`tracekit`). It owns the signing key and the ledger; the agent's
-user can only *send* events over a Unix socket. For each event it:
+System mode runs as a dedicated OS user (`tracekit`); dev mode runs as the agent's user. The
+agent sends events over the configured local transport. For each event the daemon:
   1. validates it against schema v1,
   2. checks the client's per-run, per-stream counter for gaps and the run lifecycle for ordering,
   3. checks the attached transcript mark against what it saw before (C2: trace.tamper),
@@ -16,9 +16,11 @@ that nothing it accepted can later be changed, dropped or reordered without dete
     python -m tracekit.daemon --home /var/lib/tracekit [--socket PATH]
 """
 import argparse
+import getpass
+import hmac
 import json
+import math
 import os
-import pwd
 import signal
 import socket
 import socketserver
@@ -26,6 +28,12 @@ import struct
 import sys
 import threading
 import time
+from urllib.parse import urlsplit
+
+try:
+    import pwd
+except ImportError:
+    pwd = None
 
 from . import schema as schema_mod
 from .core import GENESIS, SCHEMA_VERSION, new_id, now_ts
@@ -35,6 +43,11 @@ from .witness import from_spec, make_checkpoint
 
 DEFAULT_HOME = "/var/lib/tracekit"
 MAX_LINE = 8 * 1024 * 1024
+MAX_SIGNER_CONNECTIONS = 64
+MAX_CACHED_RUNS = 10000
+MAX_CACHED_TRANSCRIPTS = 10000
+MAX_CACHED_APPROVALS = 10000
+STATE_RETENTION_S = 24 * 3600
 CLIENT_SOURCES = {"hook", "proxy", "transcript", "sdk", "migrated"}
 TRUSTED_ONLY_SOURCES = {"proxy"}   # accepted only from the signer's own uid: the proxy runs as the tracekit user
 HARNESS_WRAPPERS = {"sh", "bash", "dash", "zsh", "env", "python", "python3", "timeout", "uv", "uvx", "nice"}
@@ -49,6 +62,17 @@ def load_config(home):
         with open(path, encoding="utf-8") as f:
             cfg.update(json.load(f))
     return cfg
+
+
+def _user_name(uid):
+    if uid is None:
+        return getpass.getuser()
+    if pwd is not None:
+        try:
+            return pwd.getpwuid(uid).pw_name
+        except KeyError:
+            pass
+    return str(uid)
 
 
 # ---------- /proc helpers (C8 self-approval checks) ----------
@@ -86,7 +110,7 @@ def harness_of(hook_pid):
 class Signer:
     def __init__(self, home, cfg):
         self.home, self.cfg = home, cfg
-        self.my_uid = os.getuid()
+        self.my_uid = os.getuid() if hasattr(os, "getuid") else None
         self.keys = Keys.load_or_create(os.path.join(home, "keys"))
         self.ledger = Ledger(os.path.join(home, "ledger", "ledger.jsonl"), self.keys)
         with open(os.path.join(home, "ledger", "signer.pub"), "wb") as f:
@@ -105,6 +129,7 @@ class Signer:
         self.retry = []           # [(checkpoint, witness, attempts, next_time)]
         self.write_errors = 0
         self._load_runs()
+        self._prune_runtime_state(time.time())
         if self.ledger.torn:
             self._internal("capture.gap", {"reason": "torn final record found at startup (crash during a write)", "kind": "torn_write"})
         if self.ledger.seq >= 0:
@@ -130,6 +155,7 @@ class Signer:
                 continue
             ev = rec["event"]
             st = self._run(ev["run_id"])
+            st["last"] = time.time()
             if ev["type"] == "run.start":
                 st.update(started=True, ended=False, proxy="proxy" in ev["data"].get("capture_sources", []))
             elif ev["type"] == "run.end":
@@ -227,6 +253,7 @@ class Signer:
     # ---------- C2: transcript marks ----------
     def _note_transcript(self, path, length, h):
         t = self.transcripts.setdefault(path, {"length": -1, "hash": None, "history": {}})
+        t["updated_at"] = time.time()
         if length >= t["length"]:
             t["length"], t["hash"] = length, h
         t["history"][length] = h
@@ -309,30 +336,88 @@ class Signer:
                     self._internal("capture.gap", {"reason": f"run has no events for {int(now - st['last'])}s and never recorded "
                                                              "run.end (hooks disabled or session killed?)", "kind": "stale_run"}, rid)
                     st["stale_flagged"] = True
+            self._prune_runtime_state(now)
+
+    def _prune_runtime_state(self, now):
+        try:
+            retention = max(1.0, float(self.cfg.get("state_retention_s", STATE_RETENTION_S)))
+        except (TypeError, ValueError):
+            retention = STATE_RETENTION_S
+        changed_runs = False
+        for run_id, state in list(self.runs.items()):
+            if (state["ended"] or state["stale_flagged"]) and now - state["last"] > retention:
+                del self.runs[run_id]
+                changed_runs = True
+        while len(self.runs) > MAX_CACHED_RUNS:
+            run_id = min(self.runs, key=lambda rid: self.runs[rid]["last"])
+            del self.runs[run_id]
+            self._internal("capture.gap", {"reason": "signer evicted old run state to stay within its memory limit",
+                                           "kind": "run_state_evicted"}, run_id)
+            changed_runs = True
+        for path, state in list(self.transcripts.items()):
+            if now - state.get("updated_at", now) > retention:
+                del self.transcripts[path]
+                self._internal("capture.gap", {"reason": "signer expired transcript history; later transcript edits may be unverifiable",
+                                               "kind": "transcript_state_expired"})
+        while len(self.transcripts) > MAX_CACHED_TRANSCRIPTS:
+            path = min(self.transcripts, key=lambda item: self.transcripts[item].get("updated_at", 0))
+            del self.transcripts[path]
+            self._internal("capture.gap", {"reason": "signer evicted transcript history to stay within its memory limit",
+                                           "kind": "transcript_state_evicted"})
+        for approval_id, approval in list(self.approvals.items()):
+            if approval["decision"] is None and now >= approval["deadline"]:
+                with self.cond:
+                    self._record_approval(approval, "timeout", "tracekitd", "timeout")
+            elif approval["decision"] is not None and now - approval.get("decided_at", now) > retention:
+                del self.approvals[approval_id]
+        if len(self.approvals) > MAX_CACHED_APPROVALS:
+            decided = sorted((item for item in self.approvals.items() if item[1]["decision"] is not None),
+                             key=lambda item: item[1].get("decided_at", 0))
+            for approval_id, _ in decided[:len(self.approvals) - MAX_CACHED_APPROVALS]:
+                del self.approvals[approval_id]
+        if changed_runs:
+            self._save_runs()
 
     # ---------- C8: approvals ----------
     def _approval_request(self, req, peer):
         run_id, tid = req.get("run_id"), req.get("tool_use_id")
         if not run_id or not tid:
             return {"ok": False, "error": "run_id and tool_use_id required"}
-        timeout = min(float(req.get("timeout_s") or 120), float(self.cfg.get("approval_max_s", 3600)))
-        aid = new_id()[:8]
+        if sum(a["decision"] is None for a in self.approvals.values()) >= MAX_CACHED_APPROVALS:
+            return {"ok": False, "error": "too many pending approvals; retry after one is resolved"}
+        try:
+            requested_timeout = float(req.get("timeout_s") or 120)
+            max_timeout = float(self.cfg.get("approval_max_s", 3600))
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "approval timeout must be a finite positive number"}
+        if not math.isfinite(requested_timeout) or requested_timeout <= 0:
+            return {"ok": False, "error": "approval timeout must be a finite positive number"}
+        if not math.isfinite(max_timeout) or max_timeout <= 0:
+            max_timeout = 3600
+        timeout = min(requested_timeout, max_timeout)
+        aid = new_id()
+        while aid in self.approvals:
+            aid = new_id()
         hpid, htty = harness_of(peer[0]) if peer and peer[0] else (None, 0)
+        agent_uid = peer[1] if peer else None
+        if agent_uid is None and self.cfg.get("mode") == "dev":
+            agent_uid = self.my_uid
         self.approvals[aid] = {"id": aid, "run_id": run_id, "tool_use_id": tid, "agent_id": req.get("agent_id") or "main",
                                "summary": str(req.get("summary") or "")[:500], "rule_ids": req.get("rule_ids") or [],
-                               "agent_uid": peer[1] if peer else None, "hook_pid": peer[0] if peer else None,
+                               "agent_uid": agent_uid, "hook_pid": peer[0] if peer else None,
                                "harness_pid": hpid, "harness_tty": htty, "created": time.time(), "deadline": time.time() + timeout,
                                "decision": None, "approver": None, "channel": None}
         return {"ok": True, "approval_id": aid, "timeout_s": timeout}
 
     def _record_approval(self, a, decision, approver, channel, approver_uid=None, same_user=None):
         a["decision"], a["approver"], a["channel"] = decision, approver, channel
+        a["decided_at"] = time.time()
         self._internal("approval", {"tool_use_id": a["tool_use_id"], "decision": decision, "approver": approver, "channel": channel,
                                     "approver_uid": approver_uid, "same_user": same_user,
                                     "wait_ms": int((time.time() - a["created"]) * 1000)}, a["run_id"])
         self.cond.notify_all()
 
-    def _self_approval_reason(self, a, peer):
+    def _self_approval_reason(self, a, peer, interactive=None):
         """Why this approval must be refused, or None.
 
         The only boundary that holds is the OS user: an approval must come from a different user
@@ -340,15 +425,18 @@ class Signer:
         forged by the agent itself (for example by detaching a new session with its own terminal,
         which defeats any process-tree or tty check), so it is refused unless the signer runs in
         dev mode with allow_same_user_approval, and then it is labelled untrustworthy."""
+        if interactive is False:
+            return "approvals need an interactive terminal"
         pid, uid = peer if peer else (None, None)
         if uid is None:
+            if self.cfg.get("mode") == "dev" and self.cfg.get("allow_same_user_approval") and not self.cfg.get("approvers"):
+                if not interactive:
+                    return "approvals need an interactive terminal"
+                return None
             return "cannot identify the approving OS user (no peer credentials on this platform)"
         approvers = self.cfg.get("approvers")
         if approvers:
-            try:
-                names = {pwd.getpwuid(uid).pw_name, str(uid)}
-            except KeyError:
-                names = {str(uid)}
+            names = {_user_name(uid), str(uid)}
             if not names & {str(x) for x in approvers}:
                 return f"uid {uid} is not in the configured approvers {approvers}"
             if a["agent_uid"] is not None and uid == a["agent_uid"]:
@@ -386,19 +474,21 @@ class Signer:
         if a["decision"]:
             return {"ok": False, "error": f"approval {aid} already decided: {a['decision']}"}
         uid = peer[1] if peer else None
-        try:
-            who = pwd.getpwuid(uid).pw_name if uid is not None else "unknown"
-        except KeyError:
-            who = str(uid)
-        why = self._self_approval_reason(a, peer)
+        who = _user_name(uid) if uid is not None else "unattested dev user"
+        interactive = req.get("interactive") if "interactive" in req else None
+        why = self._self_approval_reason(a, peer, interactive)
         tty = ""
         if peer and peer[0]:
             try:
                 tty = os.readlink(f"/proc/{peer[0]}/fd/0")
             except OSError:
                 tty = ""
-        same = uid == a["agent_uid"]
-        channel = f"cli uid={uid} tty={tty or '?'}" + (" (same OS user as the agent: not trustworthy, dev mode)" if same else "")
+        same = uid == a["agent_uid"] if uid is not None and a["agent_uid"] is not None else None
+        channel = f"cli uid={uid} tty={tty or '?'}"
+        if same:
+            channel += " (same OS user as the agent: not trustworthy, dev mode)"
+        elif same is None:
+            channel += " (peer identity unavailable; untrusted dev mode)"
         if why:
             self._internal("approval", {"tool_use_id": a["tool_use_id"], "decision": "self_approval_refused", "approver": who,
                                         "channel": f"{channel}: {why}", "approver_uid": uid, "same_user": same,
@@ -459,7 +549,9 @@ class Signer:
         stream = str(req.get("stream") or ev.get("source") or "hook")[:32]
         if ev.get("source") not in CLIENT_SOURCES:
             return {"ok": False, "error": f"source must be one of {sorted(CLIENT_SOURCES)}"}
-        if ev.get("source") in TRUSTED_ONLY_SOURCES and peer_uid != self.my_uid:
+        uncredentialed_dev = self.cfg.get("mode") == "dev" and peer_uid is None
+        peer_is_signer = peer_uid is not None and self.my_uid is not None and peer_uid == self.my_uid
+        if ev.get("source") in TRUSTED_ONLY_SOURCES and not peer_is_signer and not uncredentialed_dev:
             self._internal("error", {"message": f"refused source={ev['source']} event from uid {peer_uid}: only the signer's own "
                                                 "user (the proxy) may send it", "client_run_id": str(run_id)[:200]})
             return {"ok": False, "error": f"source {ev['source']} is only accepted from the signer's user"}
@@ -470,11 +562,8 @@ class Signer:
         ev["seq"], ev["prev_hash"] = 0, GENESIS  # placeholders; the ledger assigns the real values
         if ev.get("type") == "run.start" and isinstance(ev.get("data"), dict):
             if peer_uid is not None:
-                try:
-                    ev["data"]["os_user"] = pwd.getpwuid(peer_uid).pw_name
-                    ev["data"]["os_user_attested"] = True
-                except KeyError:
-                    ev["data"]["os_user_attested"] = False
+                ev["data"]["os_user"] = _user_name(peer_uid)
+                ev["data"]["os_user_attested"] = True
             else:
                 ev["data"]["os_user_attested"] = False
         errs = schema_mod.validate(ev)
@@ -549,33 +638,134 @@ def _peer(conn):
         return None, None
 
 
+def _has_peer_credentials():
+    return hasattr(socket, "SO_PEERCRED")
+
+
 class _Handler(socketserver.StreamRequestHandler):
+    def setup(self):
+        self.request.settimeout(30)
+        super().setup()
+
     def handle(self):
         pid, uid = _peer(self.connection)
-        for line in self.rfile:
-            if len(line) > MAX_LINE:
-                self.wfile.write(b'{"ok": false, "error": "request too large"}\n'); return
+        while True:
             try:
-                resp = self.server.signer.handle(json.loads(line), uid, pid)
+                line = self.rfile.readline(MAX_LINE + 1)
+            except OSError:
+                return
+            if not line:
+                return
+            if len(line) > MAX_LINE:
+                self.wfile.write(b'{"ok": false, "error": "request too large"}\n')
+                self.close_connection = True
+                return
+            try:
+                req = json.loads(line)
+                token = getattr(self.server, "socket_token", None)
+                if token is not None:
+                    supplied = req.pop("_tracekit_token", "")
+                    if not isinstance(supplied, str) or not hmac.compare_digest(supplied, token):
+                        resp = {"ok": False, "error": "unauthorized local signer request"}
+                    else:
+                        resp = self.server.signer.handle(req, uid, pid)
+                else:
+                    resp = self.server.signer.handle(req, uid, pid)
             except Exception as e:  # never crash the daemon on one bad request
                 resp = {"ok": False, "error": f"internal: {e}"}
             self.wfile.write((json.dumps(resp) + "\n").encode("utf-8"))
             self.wfile.flush()
 
 
-class Server(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
+class _BoundedThreadingMixIn(socketserver.ThreadingMixIn):
     daemon_threads = True
+
+    def __init__(self, *args, **kwargs):
+        self._request_slots = threading.BoundedSemaphore(MAX_SIGNER_CONNECTIONS)
+        super().__init__(*args, **kwargs)
+
+    def process_request(self, request, client_address):
+        if not self._request_slots.acquire(blocking=False):
+            try:
+                request.sendall(b'{"ok": false, "error": "signer busy", "retryable": true}\n')
+            except OSError:
+                pass
+            finally:
+                self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self._request_slots.release()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._request_slots.release()
+
+
+class ThreadingTCPServer(_BoundedThreadingMixIn, socketserver.TCPServer):
+    pass
+
+
+def _unix_server_class():
+    unix_server = getattr(socketserver, "UnixStreamServer", None)
+    if unix_server is None:
+        if not hasattr(socket, "AF_UNIX"):
+            return None
+
+        class AFUnixServer(socketserver.TCPServer):
+            address_family = socket.AF_UNIX
+
+        unix_server = AFUnixServer
+
+    class ThreadingUnixServer(_BoundedThreadingMixIn, unix_server):
+        pass
+
+    return ThreadingUnixServer
+
+
+UnixServer = _unix_server_class()
 
 
 def serve(home, socket_path=None):
     cfg = load_config(home)
     sock = socket_path or cfg["socket"]
+    if sock.startswith("tcp://"):
+        endpoint = urlsplit(sock)
+        if (endpoint.hostname != "127.0.0.1" or endpoint.port is None or not 1 <= endpoint.port <= 65535
+                or endpoint.username or endpoint.password
+                or endpoint.path or endpoint.query or endpoint.fragment):
+            raise ValueError("TCP signer endpoint must use 127.0.0.1 and an explicit port")
+        if not isinstance(cfg.get("socket_token"), str) or not cfg["socket_token"]:
+            raise ValueError("TCP signer endpoint requires an authentication token")
+    else:
+        if not _has_peer_credentials():
+            raise RuntimeError("Unix signer sockets require kernel peer credentials; rerun `tracekit init --dev` to configure authenticated TCP")
+        if UnixServer is None:
+            raise RuntimeError("Unix sockets are unavailable; initialize Tracekit in dev mode to use TCP")
+        os.makedirs(os.path.dirname(sock) or ".", exist_ok=True)
+        if os.path.exists(sock):
+            os.unlink(sock)
     signer = Signer(home, cfg)
-    if os.path.exists(sock):
-        os.unlink(sock)
-    os.makedirs(os.path.dirname(sock), exist_ok=True)
-    srv = Server(sock, _Handler)
-    os.chmod(sock, int(str(cfg.get("socket_mode", "0666")), 8))
+    try:
+        if sock.startswith("tcp://"):
+            srv = ThreadingTCPServer((endpoint.hostname, endpoint.port), _Handler)
+            srv.socket_token = cfg["socket_token"]
+        else:
+            srv = UnixServer(sock, _Handler)
+            os.chmod(sock, int(str(cfg.get("socket_mode", "0666")), 8))
+            srv.socket_token = None
+    except BaseException:
+        signer.ledger.close()
+        if not sock.startswith("tcp://"):
+            try:
+                os.unlink(sock)
+            except OSError:
+                pass
+        raise
     srv.signer = signer
 
     def bg():
@@ -599,16 +789,23 @@ def serve(home, socket_path=None):
     print(f"tracekitd: kid={signer.keys.kid} seq={signer.ledger.seq} socket={sock} witnesses={[w.name for w in signer.witnesses]}",
           flush=True)
     if not hasattr(socket, "SO_PEERCRED"):
-        print("tracekitd: WARNING: no SO_PEERCRED on this platform: callers cannot be identified, so os_user is not attested, "
-              "proxy-source events are refused and every approval is refused. System mode is Linux-only in v0.2.",
+          print("tracekitd: WARNING: no SO_PEERCRED on this platform: caller identity is not attested; "
+              "dev-mode proxy events and approvals are untrusted. System mode is Linux-only in v0.2.",
               file=sys.stderr, flush=True)
     try:
         srv.serve_forever()
     finally:
         try:
-            os.unlink(sock)
-        except OSError:
-            pass
+            srv.server_close()
+        finally:
+            try:
+                signer.ledger.close()
+            finally:
+                if not sock.startswith("tcp://"):
+                    try:
+                        os.unlink(sock)
+                    except OSError:
+                        pass
 
 
 def main(argv=None):

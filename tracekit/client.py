@@ -1,16 +1,13 @@
-"""Client side: send events to tracekitd over its Unix socket. Runs as the agent's user and
+"""Client side: send events to tracekitd over its local transport. Runs as the agent's user and
 never writes the ledger. Its own small state (per-run counters, pending gaps) is agent-writable
 by design: tampering with it only produces capture.gap events on the signer side."""
 import json
 import os
 import socket
-
-try:
-    import fcntl
-except ImportError:  # pragma: no cover
-    fcntl = None
+from urllib.parse import urlsplit
 
 from .core import now_ts
+from .locking import lock_file, unlock_file
 
 DEFAULT_SOCKET = "/var/lib/tracekit/tracekitd.sock"
 
@@ -40,12 +37,33 @@ def socket_path():
     return os.environ.get("TRACEKIT_SOCKET") or client_config().get("socket") or DEFAULT_SOCKET
 
 
-def _rpc(req, timeout=5.0):
-    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    s.settimeout(timeout)
+def _rpc(req, timeout=5.0, config=None):
+    cfg = config if config is not None else client_config()
+    endpoint = cfg.get("socket", DEFAULT_SOCKET) if config is not None else socket_path()
+    request = req
+    if endpoint.startswith("tcp://"):
+        try:
+            parsed = urlsplit(endpoint)
+            if (parsed.hostname != "127.0.0.1" or parsed.port is None or not 1 <= parsed.port <= 65535
+                    or parsed.username or parsed.password or parsed.path or parsed.query or parsed.fragment):
+                raise ValueError("TCP signer endpoint must use 127.0.0.1 and an explicit port")
+        except ValueError as e:
+            raise SignerUnavailable(f"invalid signer endpoint: {e}") from e
+        token = cfg.get("socket_token") or os.environ.get("TRACEKIT_SOCKET_TOKEN")
+        if not isinstance(token, str) or not token:
+            raise SignerUnavailable("TCP signer endpoint has no authentication token")
+        address = (parsed.hostname, parsed.port)
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        request = dict(req, _tracekit_token=token)
+    else:
+        if not hasattr(socket, "AF_UNIX"):
+            raise SignerUnavailable("this Python build has no Unix sockets; initialize Tracekit in dev mode to use TCP")
+        address = endpoint
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
-        s.connect(socket_path())
-        s.sendall((json.dumps(req, ensure_ascii=False) + "\n").encode("utf-8"))
+        s.settimeout(timeout)
+        s.connect(address)
+        s.sendall((json.dumps(request, ensure_ascii=False) + "\n").encode("utf-8"))
         buf = b""
         while not buf.endswith(b"\n"):
             chunk = s.recv(65536)
@@ -75,8 +93,11 @@ class _RunLock:
 
     def __enter__(self):
         self.fh = open(self.path + ".lock", "a")
-        if fcntl:
-            fcntl.flock(self.fh, fcntl.LOCK_EX)
+        try:
+            lock_file(self.fh)
+        except BaseException:
+            self.fh.close()
+            raise
         try:
             with open(self.path, encoding="utf-8") as f:
                 self.state = json.load(f)
@@ -91,9 +112,10 @@ class _RunLock:
         os.replace(tmp, self.path)
 
     def __exit__(self, *a):
-        if fcntl:
-            fcntl.flock(self.fh, fcntl.LOCK_UN)
-        self.fh.close()
+        try:
+            unlock_file(self.fh)
+        finally:
+            self.fh.close()
 
 
 def send(event, attach=None, stream="hook"):

@@ -188,7 +188,9 @@ class HookTests(Base):
 
     def test_subagent_transcript_path(self):
         import hook
-        self.assertEqual(hook.subagent_transcript("/p/abc.jsonl", "a1"), "/p/abc/subagents/agent-a1.jsonl")
+        path = os.path.join(os.sep, "p", "abc.jsonl")
+        expected = os.path.join(os.sep, "p", "abc", "subagents", "agent-a1.jsonl")
+        self.assertEqual(hook.subagent_transcript(path, "a1"), expected)
 
 
 class ViewTests(Base):

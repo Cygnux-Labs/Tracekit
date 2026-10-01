@@ -78,9 +78,16 @@ def report(events):
         unsupported_used.append(f"environment changes that alter later commands (seq {envt[:10]})")
     sandboxes = sorted({(r["start"] or {}).get("sandbox", "unknown") for rid, r in runs.items() if rid != "_signer"})
     proxy_runs = [rid for rid, r in runs.items() if r["start"] and "proxy" in r["start"].get("capture_sources", [])]
-    observed = ["tool calls and their policy decisions (PreToolUse hook)", "tool results as reported by the harness (PostToolUse hook)",
-                "user prompts (hashed unless content_capture=full)",
-                "harness transcript prefix hashes at every hook (edits, truncation, deletion between hooks)"]
+    observed = []
+    if "hook" in sources:
+        observed.extend(["tool calls and policy decisions reported by the Claude Code hook",
+                         "tool results as reported by the Claude Code harness",
+                         "user prompts reported by the Claude Code hook"])
+    if "sdk" in sources:
+        observed.extend(["agent-reported prompts and tool calls explicitly sent through the SDK",
+                         "policy decisions and results for SDK-wrapped tool calls; unwrapped calls are not observed"])
+    if "transcript" in sources:
+        observed.append("harness transcript prefix hashes at every hook (edits, truncation, deletion between hooks)")
     if proxy_runs or exchanges:
         observed.append(f"model API requests and responses at the proxy ({exchanges} exchanges), cross-checked against hooks")
     else:

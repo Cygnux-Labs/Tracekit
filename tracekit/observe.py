@@ -54,15 +54,22 @@ class Translator:
     def __init__(self):
         self.pending = {}   # tool_use_id -> (tool.call event, record meta)
         self.cwd = {}       # run_id -> cwd
+        self.agent_names = {}
+        self.child_meta = {}
+        self.spawn_calls = {}
+        self.seen_agents = set()
         self.n = 0
 
     def _base(self, e, rec, event):
         self.n += 1
         r = {"seq": self.n - 1, "ts": _epoch(e.get("ts")), "event": event, "session_id": e["run_id"],
-             "cwd": self.cwd.get(e["run_id"], ""), "agent": "claude-code", "hash": rec.get("hash"),
+             "cwd": self.cwd.get(e["run_id"], ""), "agent": self.agent_names.get(e["run_id"], "claude-code"),
+             "parent_id": e.get("parent_id"), "hash": rec.get("hash"),
              "prev": e.get("prev_hash"), "tk_seq": e.get("seq"), "tk_source": e.get("source")}
         if e.get("agent_id") and e["agent_id"] not in ("main", "tracekitd"):
             r["agent_id"] = e["agent_id"]
+            meta = self.child_meta.get((e["run_id"], e["agent_id"]), {})
+            r["agent_type"] = meta.get("agent_type") or "subagent"
         return r
 
     def alert(self, e, rec, severity, title, text, tape="ALERT"):
@@ -79,6 +86,13 @@ class Translator:
             if t in ("capture.gap", "trace.tamper"):
                 out.append(self.alert(e, rec, "med", "SIGNER · " + t, d.get("reason") or json.dumps(d)[:200], "GAP"))
             return out
+        if t == "run.start":
+            self.agent_names[e["run_id"]] = (d.get("agent") or {}).get("name") or "custom-agent"
+        agent_id = e.get("agent_id")
+        agent_key = (e["run_id"], agent_id)
+        if agent_id not in (None, "main", "tracekitd") and agent_key not in self.seen_agents:
+            self.seen_agents.add(agent_key)
+            out.append(self._base(e, rec, "SubagentStart"))
         if t == "run.start":
             self.cwd[e["run_id"]] = d.get("cwd") or ""
             r = self._base(e, rec, "SessionStart")
@@ -106,6 +120,16 @@ class Translator:
                                  "reasons": [f"{i}" for i in d.get("rule_ids") or []] + [x for x in reasons if x not in known_flags],
                                  "flags": known_flags + (["held_for_approval"] if d["decision"] == "ask" else [])})
                 out.append(r)
+                if cd["name"] in ("Agent", "Task"):
+                    child_id = (cd.get("input") or {}).get("child_agent_id")
+                    if isinstance(child_id, dict):
+                        child_id = _show(child_id)
+                    if isinstance(child_id, str) and child_id:
+                        self.child_meta[(ce["run_id"], child_id)] = {
+                            "agent_type": _show((cd.get("input") or {}).get("subagent_type")) or "subagent",
+                            "parent_id": ce.get("agent_id"),
+                        }
+                        self.spawn_calls[(ce["run_id"], cd["tool_use_id"])] = child_id
                 if d["decision"] == "ask":
                     out.append(self.alert(e, rec, "med", f"HELD FOR APPROVAL · {cd['name']}",
                                           f"{', '.join(d.get('rule_ids') or [])}: tracekit pending / tracekit approve <id>", "GAP"))
@@ -114,6 +138,21 @@ class Translator:
             r.update(tool_use_id=d.get("tool_use_id"), failed=not d.get("ok", True), duration_ms=d.get("duration_ms"),
                      tool_response={"output": _show(d.get("output"))})
             out.append(r)
+            child_id = self.spawn_calls.pop((e["run_id"], d.get("tool_use_id")), None)
+            if child_id:
+                child_key = (e["run_id"], child_id)
+                if child_key not in self.seen_agents:
+                    self.seen_agents.add(child_key)
+                    start = {**self._base(e, rec, "SubagentStart"), "agent_id": child_id,
+                             "parent_id": (self.child_meta.get(child_key) or {}).get("parent_id")}
+                    start["agent_type"] = (self.child_meta.get(child_key) or {}).get("agent_type", "subagent")
+                    out.append(start)
+                final = _show(d.get("output"))
+                if isinstance(final, dict):
+                    final = final.get("final", "")
+                out.append({**self._base(e, rec, "SubagentStop"), "agent_id": child_id,
+                            "parent_id": (self.child_meta.get(child_key) or {}).get("parent_id"),
+                            "last_assistant_message": str(final or "")})
         elif t == "run.end":
             out.append({**self._base(e, rec, "SessionEnd"), "reason": d.get("reason")})
         elif t == "model.exchange":
