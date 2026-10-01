@@ -23,6 +23,10 @@ Homepage = "https://github.com/Cygnux-Labs/Tracekit"
 
 [tool.setuptools]
 packages = ["tracekit"]
+py-modules = ["tracekit_sdk"]
 
 [tool.setuptools.package-data]
 tracekit = ["schema/*.json", "policy/*.yaml", "ui/*.html"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

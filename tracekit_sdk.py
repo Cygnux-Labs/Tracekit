@@ -1,5 +1,8 @@
-"""Trace ANY agent (your own code, LangGraph, CrewAI, OpenAI Agents SDK, a bash loop...)
-into the same tamper-evident ledger the observer shows.
+"""Trace explicitly instrumented custom agents (LangGraph, CrewAI, Pi, or your own code).
+
+When a v0.2 signer is configured, ``Tracer`` writes signed ``source=sdk`` events to its ledger.
+Without one, a source checkout retains the legacy v0.1 behavior. This SDK does not discover
+agents or observe calls that are not routed through its methods.
 
     from tracekit_sdk import Tracer
     t = Tracer(agent="research-bot")                 # one session per Tracer
@@ -12,21 +15,15 @@ into the same tamper-evident ledger the observer shows.
     t.say("Summary: ...")
     t.end()
 
-Writes go straight to ~/.tracekit/ledger.jsonl (same machine), or to a remote observer
-with Tracer(..., endpoint="http://host:7777", token="...").
-Policy rules in policy.json are checked on every tool() call; a denied call raises
-PermissionError before your code runs.
+The legacy v0.1 observer endpoint remains available with ``endpoint=...``. Remote ingestion
+into v0.2 signed ledgers is not implemented. In either mode, ``tool()`` must wrap the real call
+for Tracekit to record it or enforce policy before it runs.
 """
 import json
 import os
-import sys
 import time
 import urllib.request
 import uuid
-
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import common  # noqa: E402
-from hook import evaluate_policy  # noqa: E402
 
 
 class _Call:
@@ -35,6 +32,7 @@ class _Call:
         self._res, self._start = None, None
 
     def __enter__(self):
+        from hook import evaluate_policy
         decision, reasons, flags = evaluate_policy(self.name, self.args, self.t.cwd)
         self.t._emit({"event": "PreToolUse", "tool_name": self.name, "tool_input": self.args,
                       "tool_use_id": self.id,
@@ -56,7 +54,7 @@ class _Call:
         return False
 
 
-class Tracer:
+class _LegacyTracer:
     def __init__(self, agent="custom-agent", session_id=None, agent_id=None, agent_type=None,
                  cwd=None, endpoint=None, token=None, _parent=None):
         self.agent, self.session_id = agent, session_id or "sess_" + uuid.uuid4().hex[:12]
@@ -69,6 +67,7 @@ class Tracer:
         ev = {"session_id": self.session_id, "agent": self.agent, "cwd": self.cwd,
               "agent_id": self.agent_id, "agent_type": self.agent_type, **ev}
         if not self.endpoint:
+            import common
             return common.append([ev])
         req = urllib.request.Request(self.endpoint.rstrip("/") + "/api/ingest", data=json.dumps(ev).encode(),
                                      headers={"Content-Type": "application/json",
@@ -96,7 +95,7 @@ class Tracer:
         child_id = uuid.uuid4().hex[:16]
         pre = _Call(self, "Agent", {"description": description, "subagent_type": agent_type})
         pre.__enter__()
-        child = Tracer(self.agent, self.session_id, child_id, agent_type, self.cwd, self.endpoint, self.token, _parent=self)
+        child = _LegacyTracer(self.agent, self.session_id, child_id, agent_type, self.cwd, self.endpoint, self.token, _parent=self)
         child._spawn_call = pre
         child._emit({"event": "SubagentStart"})
         return child
@@ -116,3 +115,37 @@ class Tracer:
 
     def end(self):
         self._emit({"event": "SessionEnd", "reason": "done"})
+
+
+def _configured_v2_signer():
+    try:
+        from tracekit import client
+        cfg = client.client_config()
+        return cfg.get("mode") in ("dev", "system") and bool(cfg.get("signer_home"))
+    except (ImportError, OSError, ValueError):
+        return False
+
+
+def _legacy_runtime_available():
+    try:
+        from importlib.util import find_spec
+        return find_spec("common") is not None and find_spec("hook") is not None
+    except (ImportError, ValueError):
+        return False
+
+
+class Tracer(_LegacyTracer):
+    """Compatibility constructor: prefer v0.2 when configured, retain v0.1 otherwise."""
+
+    def __new__(cls, *args, **kwargs):
+        if cls is Tracer:
+            endpoint = kwargs.get("endpoint") or (args[5] if len(args) > 5 else None)
+            if endpoint is None and _configured_v2_signer():
+                from tracekit.agent_sdk import Tracer as SignedTracer
+                return SignedTracer(*args, **kwargs)
+            if not _legacy_runtime_available():
+                raise RuntimeError("initialize a v0.2 signer with `tracekit init --dev` before using Tracer")
+        return super().__new__(cls)
+
+
+LegacyTracer = _LegacyTracer

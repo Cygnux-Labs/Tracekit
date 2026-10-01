@@ -5,10 +5,7 @@ import os
 import re
 import time
 
-try:
-    import fcntl  # Unix only
-except ImportError:  # pragma: no cover
-    fcntl = None
+from tracekit.locking import lock_file, unlock_file
 
 HOME = os.environ.get("TRACEKIT_HOME", os.path.expanduser("~/.tracekit"))
 LEDGER = os.path.join(HOME, "ledger.jsonl")
@@ -120,14 +117,18 @@ class locked:
     def __enter__(self):
         os.makedirs(HOME, exist_ok=True)
         self.f = open(self.path, "a")
-        if fcntl:
-            fcntl.flock(self.f, fcntl.LOCK_EX)
+        try:
+            lock_file(self.f)
+        except BaseException:
+            self.f.close()
+            raise
         return self
 
     def __exit__(self, *a):
-        if fcntl:
-            fcntl.flock(self.f, fcntl.LOCK_UN)
-        self.f.close()
+        try:
+            unlock_file(self.f)
+        finally:
+            self.f.close()
 
 
 def append(events, path=None):
@@ -135,8 +136,7 @@ def append(events, path=None):
     path = path or LEDGER
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     with open(path, "ab+") as f:
-        if fcntl:
-            fcntl.flock(f, fcntl.LOCK_EX)
+        lock_file(f)
         try:
             last = _last_record(f)
             prev = last["hash"] if last else GENESIS
@@ -157,8 +157,7 @@ def append(events, path=None):
             f.flush()
             os.fsync(f.fileno())
         finally:
-            if fcntl:
-                fcntl.flock(f, fcntl.LOCK_UN)
+            unlock_file(f)
 
 
 def read_ledger(path=LEDGER):

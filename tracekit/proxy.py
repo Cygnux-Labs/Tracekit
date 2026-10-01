@@ -18,7 +18,6 @@ model exchange (for a run that declared the proxy) means the proxy was bypassed.
     python -m tracekit.proxy --home /var/lib/tracekit [--port 8787] [--upstream https://api.anthropic.com]
 """
 import argparse
-import gzip
 import hashlib
 import http.client
 import http.server
@@ -27,6 +26,7 @@ import os
 import re
 import socketserver
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -38,6 +38,10 @@ from .core import content_ref, new_id, now_ts
 HOP = {"connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailers", "transfer-encoding",
        "upgrade", "host", "content-length", "accept-encoding"}
 MAX_KEEP = 64 * 1024 * 1024
+MAX_REQUEST_SIZE = 64 * 1024 * 1024
+MAX_SSE_LINE = 1024 * 1024
+MAX_TOOL_USES = 200
+MAX_CONCURRENT_REQUESTS = 16
 SESSION_RE = re.compile(r'"session_id"\s*:\s*"([^"]+)"')
 CFG = {"upstream": "https://api.anthropic.com", "fail_mode": "open", "content_capture": "hashed"}
 
@@ -46,12 +50,27 @@ def _decode(body, enc):
     enc = (enc or "").lower()
     try:
         if enc == "gzip":
-            return gzip.decompress(body)
-        if enc == "deflate":
-            return zlib.decompress(body)
+            decoder = zlib.decompressobj(16 + zlib.MAX_WBITS)
+        elif enc == "deflate":
+            decoder = zlib.decompressobj()
+        else:
+            return body if not enc or enc == "identity" else None
+        out = bytearray()
+        pending = body
+        while pending:
+            chunk = decoder.decompress(pending, MAX_REQUEST_SIZE + 1 - len(out))
+            out.extend(chunk)
+            if len(out) > MAX_REQUEST_SIZE:
+                return None
+            pending = decoder.unconsumed_tail
+            if pending and not chunk:
+                return None
+        out.extend(decoder.flush(MAX_REQUEST_SIZE + 1 - len(out)))
+        if len(out) > MAX_REQUEST_SIZE or not decoder.eof:
+            return None
+        return bytes(out)
     except (OSError, zlib.error):
         return None
-    return body if not enc or enc == "identity" else None
 
 
 def attribute(headers, req_json):
@@ -68,14 +87,24 @@ def attribute(headers, req_json):
 
 def tool_results_sent(req_json):
     """tool_use ids whose results the harness sends back in the newest user turn."""
+    if not isinstance(req_json, dict):
+        return []
     msgs = (req_json or {}).get("messages") or []
+    if not isinstance(msgs, list):
+        return []
     out = []
     for m in reversed(msgs):
+        if not isinstance(m, dict):
+            break
         if m.get("role") != "user":
             break
         c = m.get("content")
         if isinstance(c, list):
-            out += [b.get("tool_use_id") for b in c if isinstance(b, dict) and b.get("type") == "tool_result" and b.get("tool_use_id")]
+            for block in c:
+                if isinstance(block, dict) and block.get("type") == "tool_result" and block.get("tool_use_id"):
+                    out.append(str(block["tool_use_id"])[:500])
+                    if len(out) >= 200:
+                        return out
     return out[:200]
 
 
@@ -84,12 +113,30 @@ class SSEScan:
 
     def __init__(self):
         self.buf = b""
+        self.discarding_line = False
         self.tool_uses, self.stop_reason = [], None
 
     def feed(self, chunk):
-        self.buf += chunk
-        while b"\n" in self.buf:
-            line, self.buf = self.buf.split(b"\n", 1)
+        while chunk:
+            if self.discarding_line:
+                end = chunk.find(b"\n")
+                if end < 0:
+                    return
+                chunk = chunk[end + 1:]
+                self.discarding_line = False
+            end = chunk.find(b"\n")
+            if end < 0:
+                if len(self.buf) + len(chunk) > MAX_SSE_LINE:
+                    self.buf = b""
+                    self.discarding_line = True
+                else:
+                    self.buf += chunk
+                return
+            line = self.buf + chunk[:end]
+            self.buf = b""
+            chunk = chunk[end + 1:]
+            if len(line) > MAX_SSE_LINE:
+                continue
             line = line.strip()
             if not line.startswith(b"data:"):
                 continue
@@ -100,21 +147,34 @@ class SSEScan:
             self._event(ev)
 
     def _event(self, ev):
+        if not isinstance(ev, dict):
+            return
         t = ev.get("type")
         if t == "content_block_start":
             cb = ev.get("content_block") or {}
-            if cb.get("type") in ("tool_use", "server_tool_use") and cb.get("id"):
-                self.tool_uses.append({"id": cb["id"], "name": str(cb.get("name") or "?")})
+            if (isinstance(cb, dict) and len(self.tool_uses) < MAX_TOOL_USES
+                    and cb.get("type") in ("tool_use", "server_tool_use") and cb.get("id")):
+                self.tool_uses.append({"id": str(cb["id"])[:500], "name": str(cb.get("name") or "?")[:200]})
         elif t == "message_delta":
-            self.stop_reason = (ev.get("delta") or {}).get("stop_reason") or self.stop_reason
+            delta = ev.get("delta")
+            if isinstance(delta, dict) and isinstance(delta.get("stop_reason"), str):
+                self.stop_reason = delta["stop_reason"] or self.stop_reason
         elif t == "message" or ev.get("content"):
             self.json_message(ev)
 
     def json_message(self, msg):
-        for cb in msg.get("content") or []:
+        if not isinstance(msg, dict):
+            return
+        content = msg.get("content") or []
+        if not isinstance(content, list):
+            return
+        for cb in content:
+            if len(self.tool_uses) >= MAX_TOOL_USES:
+                break
             if isinstance(cb, dict) and cb.get("type") in ("tool_use", "server_tool_use") and cb.get("id"):
-                self.tool_uses.append({"id": cb["id"], "name": str(cb.get("name") or "?")})
-        self.stop_reason = msg.get("stop_reason") or self.stop_reason
+                self.tool_uses.append({"id": str(cb["id"])[:500], "name": str(cb.get("name") or "?")[:200]})
+        if isinstance(msg.get("stop_reason"), str):
+            self.stop_reason = msg["stop_reason"] or self.stop_reason
 
 
 def record(ev, fail_closed):
@@ -160,11 +220,25 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_header("content-length", str(len(body))); self.end_headers(); self.wfile.write(body)
             return
         t0 = time.perf_counter()
-        n = int(self.headers.get("content-length") or 0)
+        try:
+            n = int(self.headers.get("content-length") or 0)
+        except ValueError:
+            self.close_connection = True
+            return self._error(400, "tracekit proxy: invalid content-length")
+        if n < 0:
+            self.close_connection = True
+            return self._error(400, "tracekit proxy: invalid content-length")
+        if n > MAX_REQUEST_SIZE:
+            self.close_connection = True
+            return self._error(413, "tracekit proxy: request body exceeds the configured size limit")
         body = self.rfile.read(n) if n else b""
+        if len(body) != n:
+            self.close_connection = True
+            return self._error(400, "tracekit proxy: incomplete request body")
         plain = _decode(body, self.headers.get("content-encoding"))
         try:
-            req_json = json.loads(plain) if plain else None
+            decoded = json.loads(plain) if plain else None
+            req_json = decoded if isinstance(decoded, dict) else None
         except ValueError:
             req_json = None
         run_id, how = attribute(self.headers, req_json)
@@ -192,6 +266,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         status, scan, h, size, err = None, SSEScan(), hashlib.sha256(), 0, None
         first = None
         raw_tail = []
+        resp = None
+        chunked_response = False
         try:
             try:
                 resp = urllib.request.urlopen(req, timeout=600)
@@ -205,6 +281,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     self.send_header(k, v)
             self.send_header("transfer-encoding", "chunked")
             self.end_headers()
+            chunked_response = True
             while True:
                 chunk = resp.read1(65536) if hasattr(resp, "read1") else resp.read(65536)
                 if not chunk:
@@ -219,8 +296,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
                     scan.feed(chunk)
                 if size <= MAX_KEEP:
                     raw_tail.append(chunk)
-            self.wfile.write(b"0\r\n\r\n")
-            self.wfile.flush()
             if raw_tail and "json" in ctype:
                 try:
                     scan.json_message(json.loads(b"".join(raw_tail)))
@@ -231,6 +306,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if status is None:
                 try:
                     self._error(502, f"tracekit proxy: upstream error: {err}")
+                except OSError:
+                    pass
+        finally:
+            if resp is not None:
+                try:
+                    resp.close()
                 except OSError:
                     pass
         if is_model:
@@ -245,11 +326,42 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 "first_byte_ms": int(first) if first is not None else None, "added_latency_ms": round(added, 3),
                 "tool_uses": scan.tool_uses[:200], "stop_reason": scan.stop_reason, "upstream": CFG["upstream"],
                 "error": err, "attribution": how}}, False)
+        if chunked_response:
+            try:
+                self.wfile.write(b"0\r\n\r\n")
+                self.wfile.flush()
+            except OSError:
+                pass
 
 
 class Server(socketserver.ThreadingMixIn, http.server.HTTPServer):
     daemon_threads = True
     allow_reuse_address = True
+
+    def __init__(self, *args, **kwargs):
+        self._request_slots = threading.BoundedSemaphore(MAX_CONCURRENT_REQUESTS)
+        super().__init__(*args, **kwargs)
+
+    def process_request(self, request, client_address):
+        if not self._request_slots.acquire(blocking=False):
+            try:
+                request.sendall(b"HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nContent-Length: 0\r\n\r\n")
+            except OSError:
+                pass
+            finally:
+                self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except BaseException:
+            self._request_slots.release()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._request_slots.release()
 
 
 def serve(home, port=None, upstream=None, host="127.0.0.1"):
@@ -263,6 +375,8 @@ def serve(home, port=None, upstream=None, host="127.0.0.1"):
     if home:
         os.environ.setdefault("TRACEKIT_CLIENT_HOME", os.path.join(home, "proxy-client"))
         os.environ.setdefault("TRACEKIT_SOCKET", cfg.get("socket", os.path.join(home, "tracekitd.sock")))
+        if cfg.get("socket_token"):
+            os.environ.setdefault("TRACEKIT_SOCKET_TOKEN", cfg["socket_token"])
     srv = Server((host, port), Handler)
     print(f"tracekit proxy: http://{host}:{srv.server_address[1]} -> {CFG['upstream']} (fail_mode={CFG['fail_mode']})", flush=True)
     return srv
@@ -279,6 +393,8 @@ def main(argv=None):
         srv.serve_forever()
     except KeyboardInterrupt:
         pass
+    finally:
+        srv.server_close()
 
 
 if __name__ == "__main__":

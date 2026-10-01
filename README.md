@@ -17,7 +17,7 @@
 
 </div>
 
-**Tracekit** records every tool call a coding agent makes (the command, file, URL, policy decision and result) through a signer the agent cannot write to. It works with **Claude Code** out of the box. Other agents can be traced into the v0.1 ledger through a small Python SDK (see the v0.1 section).
+**Tracekit** records tool calls sent through its capture integrations, with policy decisions and results. Claude Code works out of the box through hooks. Custom agents can use the Python SDK to write `source=sdk` events into the configured v0.2 signed ledger; only calls explicitly wrapped by the SDK are captured or policy-checked. It does not discover agents or monitor the whole system automatically.
 
 Agent logs are weak evidence today. The problem is rarely the model; it is the record around it:
 
@@ -30,7 +30,7 @@ Tracekit is a small, auditable layer that deals with these:
 
 | | What it does | How it's enforced |
 |---|---|---|
-| ✍️ **Separate signer** | Every event is written by `tracekitd`, running as its own OS user. The agent talks to it over a Unix socket and never holds the key. | Linux system mode: file ownership plus `sudo tracekit init --user "$USER"` |
+| ✍️ **Separate signer** | In Linux system mode, `tracekitd` runs as its own OS user and the agent never holds the key. | File ownership plus `sudo tracekit init --user "$USER"`; dev mode is same-user and explicitly weaker |
 | 🔗 **Signed hash chain** | Each record carries the previous record's hash, a contiguous `seq`, and an Ed25519 signature over `(hash, prev_hash, seq)`. | `tracekit verify` rejects edited, deleted, reordered or forged records |
 | 🧾 **External witness** | The chain head is checkpointed to a git or file witness off the machine, so a chain rebuilt with the real key still fails. | `--witness git:...` at init, `--witness` / `--key` at verify |
 | 🛡️ **Policy gate** | Versioned rules with stable ids (`TK-D006`) block dangerous calls before they run; `ask` rules hold a call until a *different* OS user approves it. | Claude Code `PreToolUse` hook, `tracekit approve` / `reject` |
@@ -96,7 +96,27 @@ tracekit status
 tracekit init --dev [--proxy]
 ```
 
+On platforms without kernel peer credentials (including Windows and macOS), dev mode uses an
+authenticated loopback TCP connection. Caller identity cannot be attested there, so approvals are
+explicitly untrusted; separate-user system mode remains Linux-only.
+
 `--project` writes hooks to `./.claude/settings.json` instead of `~/.claude`. `tracekit uninstall` removes the hooks and keeps the ledger.
+
+## Generic agents
+
+After `tracekit init --dev` (or Linux system-mode setup), the existing import works for local custom agents:
+
+```python
+from tracekit_sdk import Tracer
+
+agent = Tracer(agent="pi-agent")
+agent.prompt("Review the task")
+with agent.tool("Bash", {"command": "python -m pytest"}) as call:
+  call.result({"exit_code": 0})
+agent.end()
+```
+
+`Tracer` writes signed v0.2 SDK events when a v0.2 client config is present. `tool()` evaluates policy before the wrapped operation and records the result; a denied call never enters the `with` body. `subagent()` produces a child lane in the observer. Prompts are hashed by default; `say()` and `think()` are recorded only when `reasoning_capture: true`. Every framework still needs an adapter that routes its actual calls through this API. Without a v0.2 signer, only a source checkout retains the legacy v0.1 fallback. Remote `/api/ingest` is v0.1-only; remote v0.2 ingestion and framework-native Pi/Codex/Cursor adapters remain TODOs.
 
 ## Use
 
@@ -115,8 +135,8 @@ tracekit init --dev [--proxy]
 ## How it fits together
 
 ```
- Claude Code ──▶ hook (PreToolUse / PostToolUse) ──▶ Unix socket ──▶ tracekitd ──▶ ledger (signed, chained)
-      │            policy: deny · ask · flag                         separate OS user        │
+ Claude Code ──▶ hook (PreToolUse / PostToolUse) ──▶ local transport ──▶ tracekitd ──▶ ledger (signed, chained)
+      │            policy: deny · ask · flag       (separate user only in Linux system mode)
       │                                                                                     ├──▶ witness (git / file)
       └──▶ model proxy (opt-in) ─────── cross-check: hook_missing / proxy_missing ──────────┘
                                                                                             │
@@ -206,6 +226,7 @@ Tracked in [issue #1](https://github.com/Cygnux-Labs/Tracekit/issues/1):
 
 - Release-gating evaluations (E0–E8: `make eval`, thresholds, durability, bypass and tampering experiments, policy precision, redaction leaks, repeated real-agent runs) and the paper update that depends on them.
 - Claude Code plugin packaging, a published sample bundle and video, a GitHub Action, a design-partner kit, a PyPI release.
+- Framework-specific adapters (Pi, Codex, Cursor, Gemini CLI, and others), plus remote v0.2 ingestion; the generic SDK currently supports manually instrumented local agents only.
 - macOS system mode (needs a peer-credential implementation), Rekor witness.
 - An external review of the threat model.
 

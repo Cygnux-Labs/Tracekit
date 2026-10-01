@@ -2,7 +2,7 @@
 tamper detection, OS-user isolation (root only).   python3 -m unittest tests.test_v02 -v"""
 import json
 import os
-import pwd
+import socket
 import shutil
 import subprocess
 import sys
@@ -11,14 +11,19 @@ import time
 import unittest
 import zipfile
 
+try:
+    import pwd
+except ImportError:
+    pwd = None
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 from tracekit import bundle, crypto, policy, privacy, schema  # noqa: E402
 from tracekit.core import GENESIS, SCHEMA_VERSION, b64e, event_hash, new_id, now_ts, sig_message  # noqa: E402
 from tracekit.daemon import Signer, load_config  # noqa: E402
-from tracekit.ledger import Keys  # noqa: E402
+from tracekit.ledger import Keys, read_records  # noqa: E402
 from tracekit.witness import make_checkpoint  # noqa: E402
-from tracekit.core import read_text, write_json  # noqa: E402
+from tracekit.core import read_json, read_text, write_json  # noqa: E402
 
 
 _SAVED_POLICY = None
@@ -391,6 +396,302 @@ class Packaging(unittest.TestCase):
                 rel = f"{sub}/{name}"
                 self.assertTrue(any(fnmatch.fnmatch(rel, g) for g in globs), f"{rel} not in package-data {globs}")
         self.assertIn("cryptography", re.search(r"dependencies\s*=\s*\[([^\]]*)\]", text).group(1))
+        self.assertRegex(text, r'py-modules\s*=\s*\[[^\]]*"tracekit_sdk"')
+
+
+class InstallConfig(unittest.TestCase):
+    def test_invalid_init_options_fail_before_creating_signer_home(self):
+        from tracekit import install
+        d = tempfile.mkdtemp()
+        try:
+            for options in ({"proxy": True, "proxy_port": 0}, {"proxy": True, "proxy_port": 65536},
+                            {"checkpoint_every": 0}):
+                home = os.path.join(d, str(len(os.listdir(d))), "signer")
+                with self.assertRaises(ValueError):
+                    install.init_dev(home, [], start=False, **options)
+                self.assertFalse(os.path.exists(home))
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_uncredentialed_unix_socket_is_rejected_before_opening_ledger(self):
+        from unittest.mock import patch
+        from tracekit import daemon
+        d = tempfile.mkdtemp()
+        write_json(os.path.join(d, "config.json"), {"mode": "dev", "socket": os.path.join(d, "tracekitd.sock")})
+        try:
+            with patch.object(daemon, "_has_peer_credentials", return_value=False):
+                with self.assertRaisesRegex(RuntimeError, "peer credentials"):
+                    daemon.serve(d)
+            self.assertFalse(os.path.exists(os.path.join(d, "keys")))
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    @unittest.skipUnless(os.name == "nt", "Windows shell command quoting regression")
+    def test_generated_checkout_hook_command_runs(self):
+        from unittest.mock import patch
+        from tracekit import install
+        d = tempfile.mkdtemp()
+        old_client_home = os.environ.get("TRACEKIT_CLIENT_HOME")
+        try:
+            os.environ["TRACEKIT_CLIENT_HOME"] = os.path.join(d, "client")
+            settings = os.path.join(d, "project", ".claude", "settings.json")
+            with patch.object(install, "ROOT", os.path.join(d, "O'Neil $checkout")):
+                install.init_dev(os.path.join(d, "signer"), [], hooks_path=settings, start=False)
+            command = read_json(settings)["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+            event = {"hook_event_name": "SessionStart", "session_id": "hook-command-test", "cwd": d}
+            result = subprocess.run(command, shell=True, input=json.dumps(event), text=True, capture_output=True,
+                                    env=os.environ.copy(), timeout=15)
+            self.assertEqual(result.returncode, 0, result.stderr)
+        finally:
+            if old_client_home is None:
+                os.environ.pop("TRACEKIT_CLIENT_HOME", None)
+            else:
+                os.environ["TRACEKIT_CLIENT_HOME"] = old_client_home
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_client_config_redacts_tcp_token_and_is_private(self):
+        from tracekit import install
+        d = tempfile.mkdtemp()
+        client_home = os.path.join(d, "client")
+        old_client_home = os.environ.get("TRACEKIT_CLIENT_HOME")
+        try:
+            os.environ["TRACEKIT_CLIENT_HOME"] = client_home
+            install.init_dev(os.path.join(d, "signer"), [], start=False)
+            client_config = os.path.join(client_home, "config.json")
+            cfg = read_json(client_config)
+            cfg["socket_token"] = "test-token-must-not-be-reported"
+            write_json(client_config, cfg)
+            self.assertNotIn("socket_token", install.status()["client_config"])
+            if os.name != "nt":
+                self.assertEqual(os.stat(client_config).st_mode & 0o077, 0)
+                self.assertEqual(os.stat(os.path.join(d, "signer", "config.json")).st_mode & 0o077, 0)
+        finally:
+            if old_client_home is None:
+                os.environ.pop("TRACEKIT_CLIENT_HOME", None)
+            else:
+                os.environ["TRACEKIT_CLIENT_HOME"] = old_client_home
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_failed_proxy_start_stops_signer(self):
+        from tracekit import install
+        d = tempfile.mkdtemp()
+        old_client_home = os.environ.get("TRACEKIT_CLIENT_HOME")
+        with socket.socket() as occupied:
+            occupied.bind(("127.0.0.1", 0))
+            port = occupied.getsockname()[1]
+            try:
+                os.environ["TRACEKIT_CLIENT_HOME"] = os.path.join(d, "client")
+                with self.assertRaisesRegex(RuntimeError, "proxy did not become ready"):
+                    install.init_dev(os.path.join(d, "signer"), [], proxy=True, proxy_port=port)
+                self.assertEqual(install._CHILDREN, {})
+            finally:
+                if old_client_home is None:
+                    os.environ.pop("TRACEKIT_CLIENT_HOME", None)
+                else:
+                    os.environ["TRACEKIT_CLIENT_HOME"] = old_client_home
+                shutil.rmtree(d, ignore_errors=True)
+
+
+class RuntimeStateRetention(unittest.TestCase):
+    def test_hard_cache_limits_evict_with_gap_records(self):
+        from unittest.mock import patch
+        d = tempfile.mkdtemp()
+        s = signer(d, witnesses=[])
+        try:
+            now = time.time()
+            with patch("tracekit.daemon.MAX_CACHED_RUNS", 2), \
+                    patch("tracekit.daemon.MAX_CACHED_TRANSCRIPTS", 2), \
+                    patch("tracekit.daemon.MAX_CACHED_APPROVALS", 2):
+                for index in range(3):
+                    state = s._new_run()
+                    state["last"] = now - index
+                    s.runs[str(index)] = state
+                    s.transcripts[str(index)] = {"length": 1, "hash": "sha256:x", "history": {1: "sha256:x"},
+                                                 "updated_at": now - index}
+                    s.approvals[str(index)] = {"decision": "approve", "decided_at": now - index}
+                s._prune_runtime_state(now)
+            self.assertLessEqual(len(s.runs), 2)
+            self.assertLessEqual(len(s.transcripts), 2)
+            self.assertLessEqual(len(s.approvals), 2)
+            events = [rec["event"] for _, rec, _ in read_records(s.ledger.path) if rec and not rec.get("elided")]
+            kinds = {ev["data"].get("kind") for ev in events if ev["type"] == "capture.gap"}
+            self.assertIn("run_state_evicted", kinds)
+            self.assertIn("transcript_state_evicted", kinds)
+        finally:
+            s.ledger.close()
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_old_run_transcript_and_approval_state_is_pruned(self):
+        d = tempfile.mkdtemp()
+        s = signer(d, witnesses=[])
+        try:
+            now = time.time()
+            s.cfg["state_retention_s"] = 1
+            s.runs["old-run"] = {"cseq": {}, "started": True, "ended": True, "proxy": False,
+                                  "last": now - 10, "stale_flagged": False, "agent_uid": None}
+            s.transcripts["old-transcript"] = {"length": 1, "hash": "sha256:old", "history": {1: "sha256:old"},
+                                               "updated_at": now - 10}
+            s.approvals["old-approval"] = {"decision": "approve", "decided_at": now - 10}
+            s._prune_runtime_state(now)
+            self.assertNotIn("old-run", s.runs)
+            self.assertNotIn("old-transcript", s.transcripts)
+            self.assertNotIn("old-approval", s.approvals)
+            events = [rec["event"] for _, rec, _ in read_records(s.ledger.path) if rec and not rec.get("elided")]
+            self.assertTrue(any(ev["type"] == "capture.gap" and ev["data"].get("kind") == "transcript_state_expired"
+                                for ev in events))
+        finally:
+            s.ledger.close()
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_expired_pending_approval_is_resolved_during_pruning(self):
+        d = tempfile.mkdtemp()
+        s = signer(d, witnesses=[])
+        try:
+            approval_id = s._approval_request({"run_id": "r", "tool_use_id": "t"}, None)["approval_id"]
+            s.approvals[approval_id]["deadline"] = time.time() - 1
+            s._prune_runtime_state(time.time())
+            self.assertEqual(s.approvals[approval_id]["decision"], "timeout")
+        finally:
+            s.ledger.close()
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_pending_approval_limit_rejects_additional_requests(self):
+        from unittest.mock import patch
+        d = tempfile.mkdtemp()
+        s = signer(d, witnesses=[])
+        try:
+            with patch("tracekit.daemon.MAX_CACHED_APPROVALS", 1):
+                first = s._approval_request({"run_id": "r", "tool_use_id": "1"}, None)
+                second = s._approval_request({"run_id": "r", "tool_use_id": "2"}, None)
+            self.assertTrue(first["ok"])
+            self.assertFalse(second["ok"])
+        finally:
+            s.ledger.close()
+            shutil.rmtree(d, ignore_errors=True)
+
+
+class AgentSDK(unittest.TestCase):
+    def test_legacy_tracer_api_records_signed_v2_events(self):
+        from tracekit import bundle, install
+        from tracekit.ledger import read_records
+        from tracekit.observe import Translator
+        from tracekit_sdk import Tracer
+        d = tempfile.mkdtemp()
+        home = os.path.join(d, "signer")
+        old_client_home = os.environ.get("TRACEKIT_CLIENT_HOME")
+        try:
+            os.environ["TRACEKIT_CLIENT_HOME"] = os.path.join(d, "client")
+            install.init_dev(home, [], start=True)
+            tracer = Tracer(agent="pi-agent", session_id="agent-sdk-test", cwd=d)
+            tracer.prompt("Check the sample project")
+            with tracer.tool("Bash", {"command": "printf safe"}) as call:
+                call.result({"stdout": "safe"})
+            with self.assertRaises(PermissionError):
+                with tracer.tool("Bash", {"command": "sudo rm -rf /"}):
+                    self.fail("a denied tool must not execute")
+            child = tracer.subagent("fetcher", "fetch a document")
+            with child.tool("http_get", {"url": "https://example.invalid/doc"}) as call:
+                call.result({"status": 200})
+            child.done("fetched")
+            tracer.end()
+
+            records = [rec for _, rec, _ in read_records(os.path.join(home, "ledger", "ledger.jsonl"))
+                       if rec and not rec.get("elided")]
+            events = [rec["event"] for rec in records]
+            run_start = next(ev for ev in events if ev["type"] == "run.start")
+            self.assertEqual(run_start["data"]["agent"]["name"], "pi-agent")
+            self.assertEqual(run_start["data"]["capture_sources"], ["sdk"])
+            self.assertIn("deny", [ev["data"]["decision"] for ev in events if ev["type"] == "policy.decision"])
+            from tracekit.coverage import report as coverage_report
+            observed = coverage_report(events)["observed"]
+            self.assertTrue(any("explicitly sent through the SDK" in item for item in observed))
+            self.assertFalse(any("Claude Code hook" in item for item in observed))
+            child_event = next(ev for ev in events if ev["source"] == "sdk" and ev["agent_id"] != "main"
+                               and ev["type"] == "tool.call")
+            child_id = child_event["agent_id"]
+            translator = Translator()
+            translated = [item for rec in records for item in translator.feed(rec)]
+            child_lifecycle = [item for item in translated if item.get("agent_id") == child_id
+                               and item.get("event") in ("SubagentStart", "SubagentStop")]
+            self.assertEqual([item["event"] for item in child_lifecycle], ["SubagentStart", "SubagentStop"])
+            out = os.path.join(d, "agent.tkb")
+            bundle.export(home, out)
+            _report, code = bundle.verify(out, [f"git:{home}/witness"])
+            self.assertEqual(code, 0)
+        finally:
+            if os.path.exists(os.path.join(home, "tracekitd.pid")):
+                install.stop_dev_daemon(home)
+            if old_client_home is None:
+                os.environ.pop("TRACEKIT_CLIENT_HOME", None)
+            else:
+                os.environ["TRACEKIT_CLIENT_HOME"] = old_client_home
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_fail_closed_signer_outage_blocks_wrapped_tool(self):
+        from tracekit import install
+        from tracekit_sdk import Tracer
+        d = tempfile.mkdtemp()
+        home = os.path.join(d, "signer")
+        old_client_home = os.environ.get("TRACEKIT_CLIENT_HOME")
+        old_policy = os.environ.get("TRACEKIT_POLICY")
+        try:
+            os.environ["TRACEKIT_CLIENT_HOME"] = os.path.join(d, "client")
+            policy_path = os.path.join(d, "closed.yaml")
+            with open(policy_path, "w", encoding="utf-8") as policy_file:
+                policy_file.write("extends: default\nfail_mode: closed\n")
+            os.environ["TRACEKIT_POLICY"] = policy_path
+            install.init_dev(home, [], start=True)
+            tracer = Tracer(agent="custom-agent", session_id="sdk-fail-closed", cwd=d)
+            install.stop_dev_daemon(home)
+            executed = False
+            with self.assertRaises(PermissionError):
+                with tracer.tool("Bash", {"command": "do-not-run"}):
+                    executed = True
+            self.assertFalse(executed)
+        finally:
+            if os.path.exists(os.path.join(home, "tracekitd.pid")):
+                install.stop_dev_daemon(home)
+            if old_client_home is None:
+                os.environ.pop("TRACEKIT_CLIENT_HOME", None)
+            else:
+                os.environ["TRACEKIT_CLIENT_HOME"] = old_client_home
+            if old_policy is None:
+                os.environ.pop("TRACEKIT_POLICY", None)
+            else:
+                os.environ["TRACEKIT_POLICY"] = old_policy
+            shutil.rmtree(d, ignore_errors=True)
+
+
+class DaemonLimits(unittest.TestCase):
+    def test_saturated_signer_rejects_excess_connections(self):
+        from tracekit.daemon import MAX_SIGNER_CONNECTIONS, ThreadingTCPServer, _Handler
+
+        class FakeSocket:
+            def __init__(self):
+                self.sent = b""
+
+            def sendall(self, data):
+                self.sent += data
+
+            def shutdown(self, _how):
+                pass
+
+            def close(self):
+                pass
+
+        server = ThreadingTCPServer(("127.0.0.1", 0), _Handler)
+        acquired = 0
+        try:
+            for _ in range(MAX_SIGNER_CONNECTIONS):
+                self.assertTrue(server._request_slots.acquire(blocking=False))
+                acquired += 1
+            request = FakeSocket()
+            server.process_request(request, ("127.0.0.1", 1))
+            self.assertIn(b'"retryable": true', request.sent)
+        finally:
+            for _ in range(acquired):
+                server._request_slots.release()
+            server.server_close()
 
 
 class Migration(unittest.TestCase):

@@ -6,6 +6,19 @@ import os
 import sys
 
 
+def _stdin_is_interactive():
+    if os.name != "nt":
+        return sys.stdin.isatty()
+    try:
+        import ctypes
+        import msvcrt
+        mode = ctypes.c_uint()
+        handle = msvcrt.get_osfhandle(sys.stdin.fileno())
+        return bool(ctypes.windll.kernel32.GetConsoleMode(handle, ctypes.byref(mode)))
+    except (AttributeError, OSError, ValueError):
+        return False
+
+
 def _signer_home(a):
     from . import client
     return a.home or client.client_config().get("signer_home") or "/var/lib/tracekit"
@@ -133,7 +146,8 @@ def main(argv=None):
                     return 2
                 aid = pend[0]["id"]
                 print(f"{a.cmd}: {pend[0]['summary']}")
-            r = client.rpc({"op": "approve", "approval_id": aid, "decision": "approve" if a.cmd == "approve" else "reject"})
+            r = client.rpc({"op": "approve", "approval_id": aid, "decision": "approve" if a.cmd == "approve" else "reject",
+                            "interactive": _stdin_is_interactive()})
         except client.SignerUnavailable as e:
             print(f"signer unavailable: {e}", file=sys.stderr)
             return 2

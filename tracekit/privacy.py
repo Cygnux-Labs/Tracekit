@@ -133,7 +133,7 @@ def redact(obj, dotenv=False):
 # Tool-input fields recorded in clear (after redaction): the minimum a security reviewer needs
 # to see *what* was done. Everything else is recorded as a hash unless content_capture=full.
 ALWAYS_CLEAR = {"command", "file_path", "notebook_path", "path", "url", "pattern", "query", "glob",
-                "description", "subagent_type", "timeout", "run_in_background", "offset", "limit"}
+                "description", "subagent_type", "child_agent_id", "timeout", "run_in_background", "offset", "limit"}
 
 
 def tool_input(tool, ti, content_capture="hashed"):

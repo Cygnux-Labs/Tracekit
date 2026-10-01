@@ -7,6 +7,7 @@ import http.server
 import json
 import os
 import shutil
+import socket
 import socketserver
 import subprocess
 import sys
@@ -232,6 +233,91 @@ class TS(socketserver.ThreadingMixIn, http.server.HTTPServer):
     allow_reuse_address = True
 
 
+class SSEScanBounds(unittest.TestCase):
+    def test_compressed_request_expansion_is_bounded(self):
+        import gzip
+        import zlib
+        from tracekit import proxy
+        original_limit = proxy.MAX_REQUEST_SIZE
+        proxy.MAX_REQUEST_SIZE = 1024
+        try:
+            payload = b"x" * 2048
+            self.assertIsNone(proxy._decode(zlib.compress(payload), "deflate"))
+            self.assertIsNone(proxy._decode(gzip.compress(payload), "gzip"))
+        finally:
+            proxy.MAX_REQUEST_SIZE = original_limit
+
+    def test_malformed_json_shapes_are_ignored(self):
+        from tracekit.proxy import SSEScan, tool_results_sent
+        scan = SSEScan()
+        scan.feed(b"data: []\ndata: {\"type\":\"content_block_start\",\"content_block\":[]}\n")
+        scan.json_message({"content": "not-a-list"})
+        self.assertEqual(scan.tool_uses, [])
+        self.assertEqual(tool_results_sent([]), [])
+        self.assertEqual(tool_results_sent({"messages": "not-a-list"}), [])
+
+    def test_oversized_line_is_discarded_and_parser_recovers(self):
+        from tracekit.proxy import MAX_SSE_LINE, SSEScan
+        scan = SSEScan()
+        scan.feed(b"x" * (MAX_SSE_LINE + 1))
+        self.assertEqual(scan.buf, b"")
+        self.assertTrue(scan.discarding_line)
+        event = json.dumps({"type": "content_block_start", "content_block": {"type": "tool_use", "id": "t1", "name": "Bash"}}).encode()
+        scan.feed(b"\n" + b"data: " + event + b"\n")
+        self.assertEqual(scan.tool_uses, [{"id": "t1", "name": "Bash"}])
+
+    def test_tool_use_tracking_is_bounded(self):
+        from tracekit.proxy import MAX_TOOL_USES, SSEScan
+        scan = SSEScan()
+        events = [json.dumps({"type": "content_block_start", "content_block": {"type": "tool_use", "id": str(i)}}).encode()
+                  for i in range(MAX_TOOL_USES + 20)]
+        scan.feed(b"\n".join(b"data: " + event for event in events) + b"\n")
+        self.assertEqual(len(scan.tool_uses), MAX_TOOL_USES)
+
+    def test_tool_result_tracking_is_bounded(self):
+        from tracekit.proxy import tool_results_sent
+        content = [{"type": "tool_result", "tool_use_id": str(i)} for i in range(1000)]
+        out = tool_results_sent({"messages": [{"role": "user", "content": content}]})
+        self.assertEqual(len(out), 200)
+
+    def test_copied_identifiers_are_bounded(self):
+        from tracekit.proxy import SSEScan
+        identifier = "x" * 10000
+        scan = SSEScan()
+        scan.json_message({"content": [{"type": "tool_use", "id": identifier}]})
+        self.assertEqual(len(scan.tool_uses[0]["id"]), 500)
+
+    def test_proxy_rejects_connections_when_worker_limit_is_reached(self):
+        from tracekit.proxy import Handler, MAX_CONCURRENT_REQUESTS, Server
+
+        class FakeSocket:
+            def __init__(self):
+                self.sent = b""
+
+            def sendall(self, data):
+                self.sent += data
+
+            def shutdown(self, _how):
+                pass
+
+            def close(self):
+                pass
+
+        server = Server(("127.0.0.1", 0), Handler)
+        acquired = 0
+        try:
+            for _ in range(MAX_CONCURRENT_REQUESTS):
+                self.assertTrue(server._request_slots.acquire(blocking=False))
+                acquired += 1
+            request = FakeSocket()
+            server.process_request(request, ("127.0.0.1", 1))
+            self.assertIn(b"503 Service Unavailable", request.sent)
+        finally:
+            for _ in range(acquired):
+                server._request_slots.release()
+            server.server_close()
+
+
 class ProxyStack(Stack):
     extra_cfg = {"crosscheck_grace_s": 1}
     fail_mode = "open"
@@ -288,6 +374,29 @@ class ProxyStack(Stack):
 
 
 class Proxy(ProxyStack):
+    def test_oversized_request_body_is_rejected(self):
+        from tracekit.proxy import MAX_REQUEST_SIZE
+        with socket.create_connection(("127.0.0.1", self.px_port), timeout=3) as conn:
+            conn.sendall((f"POST /v1/messages HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Length: {MAX_REQUEST_SIZE + 1}\r\n\r\n").encode())
+            response = conn.recv(4096)
+        self.assertIn(b"413", response)
+
+    def test_upstream_connect_error_has_valid_content_length_framing(self):
+        self.up.shutdown()
+        self.up.server_close()
+        with socket.create_connection(("127.0.0.1", self.px_port), timeout=3) as conn:
+            conn.sendall(b"POST /v1/messages HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\nContent-Length: 2\r\n\r\n{}")
+            chunks = []
+            while True:
+                chunk = conn.recv(4096)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+        head, body = b"".join(chunks).split(b"\r\n\r\n", 1)
+        length = int(next(line.split(b":", 1)[1] for line in head.split(b"\r\n") if line.lower().startswith(b"content-length:")))
+        self.assertIn(b"502", head.split(b"\r\n", 1)[0])
+        self.assertEqual(len(body), length)
+
     def test_streams_records_and_redacts(self):
         status, body, t_first, total = self.call_model()
         self.assertEqual(status, 200)
@@ -494,8 +603,12 @@ sys.stderr.write(hook.stderr.read()); sys.exit(hook.returncode)
         self.assertEqual(ap[0]["data"]["tool_use_id"], "tp1")
         self.assertIn("tty=", ap[0]["data"]["channel"])
         # dev mode: allowed, but labelled as untrustworthy in the record
-        self.assertTrue(ap[0]["data"]["same_user"])
-        self.assertIn("not trustworthy", ap[0]["data"]["channel"])
+        if hasattr(socket, "SO_PEERCRED"):
+            self.assertTrue(ap[0]["data"]["same_user"])
+            self.assertIn("not trustworthy", ap[0]["data"]["channel"])
+        else:
+            self.assertIsNone(ap[0]["data"]["same_user"])
+            self.assertIn("peer identity unavailable", ap[0]["data"]["channel"])
         dec = self.of("policy.decision", decision="ask")
         self.assertLess(dec[0]["seq"], ap[0]["seq"])
 
@@ -506,6 +619,7 @@ sys.stderr.write(hook.stderr.read()); sys.exit(hook.returncode)
         self.assertEqual(proc.wait(20), 2)
         self.assertIn("not approved", proc.stderr.read())
 
+    @unittest.skipUnless(hasattr(socket, "SO_PEERCRED"), "requires OS peer process credentials")
     def test_self_approval_from_inside_the_session_fails(self):
         proc = self.start_held_call()
         p = self.wait_pending()
@@ -580,7 +694,9 @@ class ApprovalIdentity(unittest.TestCase):
         self.assertFalse(r["ok"]); self.assertIn("different OS user", r["error"])
         r = s.handle({"op": "approve", "approval_id": aid, "decision": "approve"}, None, None)
         self.assertFalse(r["ok"]); self.assertIn("cannot identify", r["error"])
-        r = s.handle({"op": "approve", "approval_id": aid, "decision": "approve"}, os.getuid() if os.getuid() != 1000 else 0, 999997)
+        own_uid = os.getuid() if hasattr(os, "getuid") else 1000
+        other_uid = own_uid if own_uid != 1000 else 0
+        r = s.handle({"op": "approve", "approval_id": aid, "decision": "approve"}, other_uid, 999997)
         self.assertTrue(r["ok"]); self.assertFalse(r["same_user"])
 
     def test_configured_approvers(self):
@@ -588,6 +704,15 @@ class ApprovalIdentity(unittest.TestCase):
         aid = self.request(s, 1000)
         self.assertFalse(s.handle({"op": "approve", "approval_id": aid, "decision": "approve"}, 1001, 1)["ok"])
         self.assertTrue(s.handle({"op": "approve", "approval_id": aid, "decision": "reject"}, 4242, 1)["ok"])
+
+    def test_invalid_approval_timeouts_are_rejected(self):
+        s = self.signer()
+        for timeout in (float("nan"), float("inf"), -1, "not-a-number"):
+            response = s.handle({"op": "approval_request", "run_id": "r", "tool_use_id": str(timeout),
+                                 "timeout_s": timeout}, 1000, 1)
+            self.assertFalse(response["ok"])
+            self.assertIn("finite positive", response["error"])
+        self.assertEqual(s.approvals, {})
 
     def test_unknown_peer_cannot_send_proxy_events(self):
         s = self.signer()
