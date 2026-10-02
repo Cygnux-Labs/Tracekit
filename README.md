@@ -266,12 +266,15 @@ Not built yet (tracked in [issue #1](https://github.com/Cygnux-Labs/Tracekit/iss
 
 ## Evaluation and paper
 
-`make eval` runs two offline experiments against the v0.2 code and writes JSON to `eval/results/`. Results and caveats: [docs/evaluation.md](docs/evaluation.md).
+`make eval` runs four offline experiments against the v0.2 code and writes JSON to `eval/results/`; `make eval-agents` runs E5 with real Claude Code sessions. Results and caveats: [docs/evaluation.md](docs/evaluation.md).
 
 | Experiment | Script | What it measures |
 |---|---|---|
 | E1 integrity | `eval/e1_integrity.py` | Detection of 8 kinds of tampering by the ledger alone and with witness checkpoints; witness interval vs detection for an attacker who holds the signing key |
+| E2 overhead | `eval/e2_perf.py` | Hook latency per tool call (about 70 ms each for Pre and Post), signer throughput, concurrent writers, verify time against bundle size |
 | E3 policy gate | `eval/e3_policy.py` | Block rate of the default policy on 44 harmful and 40 benign tool calls (tuned on), plus a rougher second set |
+| E4 seeded faults | `eval/e4_seeded_faults.py` | 14 kinds of corruption of a real bundle, 30 placements each, bundle alone vs against the git witness vs `--strict` |
+| E5 real agents | `eval/e5_agents.py` | 12 real Claude Code runs (opt-in, spends model usage): capture, verification and false blocks; the planted injections were ignored by the model, so the gate was not exercised |
 
 The ledger alone cannot detect truncation or a full re-sign by a key holder; the witness closes that gap. Both limits show up in the E1 output.
 

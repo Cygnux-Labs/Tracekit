@@ -1,0 +1,154 @@
+{
+  "control_exit_bundle_alone": 0,
+  "control_exit_with_witness": 0,
+  "results": [
+    {
+      "detected_bundle_alone": 30,
+      "detected_with_witness": 30,
+      "detected_with_witness_strict": 30,
+      "fault": "edit a record",
+      "first_failing_check_with_witness": {
+        "chain intact": 30
+      },
+      "trials": 30
+    },
+    {
+      "detected_bundle_alone": 30,
+      "detected_with_witness": 30,
+      "detected_with_witness_strict": 30,
+      "fault": "delete a record",
+      "first_failing_check_with_witness": {
+        "chain intact": 30
+      },
+      "trials": 30
+    },
+    {
+      "detected_bundle_alone": 30,
+      "detected_with_witness": 30,
+      "detected_with_witness_strict": 30,
+      "fault": "swap two records",
+      "first_failing_check_with_witness": {
+        "chain intact": 30
+      },
+      "trials": 30
+    },
+    {
+      "detected_bundle_alone": 30,
+      "detected_with_witness": 30,
+      "detected_with_witness_strict": 30,
+      "fault": "append a forged record (valid hash, random signature)",
+      "first_failing_check_with_witness": {
+        "signatures valid": 30
+      },
+      "trials": 30
+    },
+    {
+      "detected_bundle_alone": 30,
+      "detected_with_witness": 30,
+      "detected_with_witness_strict": 30,
+      "fault": "edit then re-chain, without the key",
+      "first_failing_check_with_witness": {
+        "signatures valid": 30
+      },
+      "trials": 30
+    },
+    {
+      "detected_bundle_alone": 30,
+      "detected_with_witness": 30,
+      "detected_with_witness_strict": 30,
+      "fault": "truncate the tail, without the key",
+      "first_failing_check_with_witness": {
+        "head matches a witness checkpoint": 30
+      },
+      "trials": 30
+    },
+    {
+      "detected_bundle_alone": 0,
+      "detected_with_witness": 30,
+      "detected_with_witness_strict": 30,
+      "fault": "replace the signer: re-sign everything with an attacker key",
+      "first_failing_check_with_witness": {
+        "head matches a witness checkpoint": 30
+      },
+      "trials": 30
+    },
+    {
+      "detected_bundle_alone": 30,
+      "detected_with_witness": 30,
+      "detected_with_witness_strict": 30,
+      "fault": "replace signer.pub only",
+      "first_failing_check_with_witness": {
+        "signatures valid": 30
+      },
+      "trials": 30
+    },
+    {
+      "detected_bundle_alone": 30,
+      "detected_with_witness": 30,
+      "detected_with_witness_strict": 30,
+      "fault": "remove a deny rule from the policy snapshot",
+      "first_failing_check_with_witness": {
+        "policy hash consistent": 30
+      },
+      "trials": 30
+    },
+    {
+      "detected_bundle_alone": 30,
+      "detected_with_witness": 30,
+      "detected_with_witness_strict": 30,
+      "fault": "narrow the manifest's seq range",
+      "first_failing_check_with_witness": {
+        "manifest range": 30
+      },
+      "trials": 30
+    },
+    {
+      "detected_bundle_alone": 30,
+      "detected_with_witness": 30,
+      "detected_with_witness_strict": 30,
+      "fault": "add a file the manifest does not list",
+      "first_failing_check_with_witness": {
+        "files match manifest": 30
+      },
+      "trials": 30
+    },
+    {
+      "detected_bundle_alone": 0,
+      "detected_with_witness": 0,
+      "detected_with_witness_strict": 30,
+      "fault": "delete the bundle's own checkpoints",
+      "first_failing_check_with_witness": {
+        "-": 30
+      },
+      "trials": 30
+    },
+    {
+      "detected_bundle_alone": 0,
+      "detected_with_witness": 30,
+      "detected_with_witness_strict": 30,
+      "fault": "edit then re-chain and re-sign, WITH the real key",
+      "first_failing_check_with_witness": {
+        "head matches a witness checkpoint": 30
+      },
+      "trials": 30
+    },
+    {
+      "detected_bundle_alone": 0,
+      "detected_with_witness": 20,
+      "detected_with_witness_strict": 30,
+      "fault": "truncate the tail and re-sign, WITH the real key",
+      "first_failing_check_with_witness": {
+        "-": 10,
+        "head matches a witness checkpoint": 20
+      },
+      "trials": 30
+    },
+    {
+      "detected_bundle_alone": 30,
+      "detected_with_witness": 30,
+      "fault": "truncate the zip file at a random byte",
+      "trials": 30
+    }
+  ],
+  "verifier_crashes": 0
+}

@@ -1,0 +1,90 @@
+{
+  "append": {
+    "chain_ok": true,
+    "events": 1500,
+    "events_per_s": 85.3,
+    "per_event_ms": {
+      "max": 72.33,
+      "n": 750,
+      "p50": 9.03,
+      "p95": 50.28
+    },
+    "problems": []
+  },
+  "concurrent": {
+    "capture_gaps": 0,
+    "chain_ok": true,
+    "errors": [],
+    "events": 1600,
+    "events_per_s": 98.2,
+    "problems": [],
+    "recorded_tool_events": 1600,
+    "writers": 8
+  },
+  "latency": {
+    "hook_ms": {
+      "PostToolUse@0": {
+        "max": 153.89,
+        "n": 40,
+        "p50": 70.33,
+        "p95": 75.54
+      },
+      "PostToolUse@1000": {
+        "max": 137.93,
+        "n": 40,
+        "p50": 67.88,
+        "p95": 74.23
+      },
+      "PostToolUse@5000": {
+        "max": 155.7,
+        "n": 40,
+        "p50": 71.25,
+        "p95": 80.84
+      },
+      "PreToolUse@0": {
+        "max": 182.78,
+        "n": 40,
+        "p50": 69.65,
+        "p95": 81.75
+      },
+      "PreToolUse@1000": {
+        "max": 164.24,
+        "n": 40,
+        "p50": 69.6,
+        "p95": 77.26
+      },
+      "PreToolUse@5000": {
+        "max": 165.82,
+        "n": 40,
+        "p50": 74.24,
+        "p95": 86.49
+      }
+    },
+    "python_startup_ms": {
+      "max": 24.88,
+      "n": 40,
+      "p50": 19.01,
+      "p95": 24.24
+    }
+  },
+  "platform": "Linux-6.18.44-fc-v51-x86_64-with-glibc2.39",
+  "python": "3.13.15",
+  "reps": 40,
+  "verify": {
+    "2000": {
+      "bundle_bytes": 1186753,
+      "exit_code": 0,
+      "verify_ms": 715.4
+    },
+    "500": {
+      "bundle_bytes": 309407,
+      "exit_code": 0,
+      "verify_ms": 163.1
+    },
+    "8000": {
+      "bundle_bytes": 4696825,
+      "exit_code": 0,
+      "verify_ms": 2863.7
+    }
+  }
+}

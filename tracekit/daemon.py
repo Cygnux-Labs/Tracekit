@@ -698,6 +698,7 @@ class _Handler(socketserver.StreamRequestHandler):
 
 class _BoundedThreadingMixIn(socketserver.ThreadingMixIn):
     daemon_threads = True
+    request_queue_size = 256  # socketserver's default of 5 makes bursts of writers fail to connect (EAGAIN on Unix sockets)
 
     def __init__(self, *args, **kwargs):
         self._request_slots = threading.BoundedSemaphore(MAX_SIGNER_CONNECTIONS)
