@@ -11,6 +11,11 @@ jobs:
   test:
     name: py${{ matrix.python }} on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    # a hung test must fail the job, not hold a runner for six hours
+    timeout-minutes: 25
+    env:
+      PYTHONFAULTHANDLER: "1"
+      PYTHONUNBUFFERED: "1"
     # Linux is the supported platform for system mode; macOS and Windows run dev mode and are
     # reported but do not block merges until their runs are green
     continue-on-error: ${{ matrix.os != 'ubuntu-latest' }}
@@ -29,7 +34,7 @@ jobs:
       - name: Lint
         run: python -m pyflakes tracekit tracekit_sdk.py tests eval examples
       - name: Test
-        run: python -m pytest -q
+        run: python -m pytest -v -o faulthandler_timeout=240
 
   package:
     name: build and smoke-test the wheel

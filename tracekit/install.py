@@ -418,6 +418,36 @@ def _pid_is_tracekit(pid):
         return True
 
 
+def _pid_alive(pid):
+    """Is the process still running? os.kill(pid, 0) is a probe on POSIX but on Windows signal 0 is CTRL_C_EVENT, which
+    would be sent to a console process group (it can interrupt the caller), so Windows asks the kernel directly."""
+    if sys.platform == "win32":
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.OpenProcess(0x1000, False, int(pid))  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return False
+        try:
+            code = ctypes.c_ulong()
+            return bool(kernel32.GetExitCodeProcess(handle, ctypes.byref(code))) and code.value == 259  # STILL_ACTIVE
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except OSError:
+        return True  # exists but is not ours to signal
+    return True
+
+
+def _checkpoint_before_stop(home):
+    try:
+        client._rpc({"op": "checkpoint"}, timeout=5, config=read_json(os.path.join(home, "config.json")))
+    except Exception:  # noqa: BLE001  best effort: the signer may already be gone
+        pass
+
+
 def _stop_pidfile(path):
     try:
         pid = int(read_text(path))
@@ -430,6 +460,10 @@ def _stop_pidfile(path):
         except OSError:
             pass
         return
+    if sys.platform == "win32":
+        # there is no catchable SIGTERM on Windows (os.kill terminates the process outright), so ask the signer for its
+        # final checkpoint over the socket first
+        _checkpoint_before_stop(os.path.dirname(path))
     try:
         os.kill(pid, signal.SIGTERM)
     except OSError:
@@ -441,12 +475,10 @@ def _stop_pidfile(path):
         except subprocess.TimeoutExpired:
             child.kill(); child.wait(5)
     else:
-        try:
-            for _ in range(100):
-                os.kill(pid, 0)
-                time.sleep(0.05)
-        except OSError:
-            pass
+        for _ in range(100):
+            if not _pid_alive(pid):
+                break
+            time.sleep(0.05)
     try:
         os.remove(path)
     except OSError:
