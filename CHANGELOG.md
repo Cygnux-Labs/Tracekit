@@ -12,6 +12,11 @@ This entry lists the fixes from the production-hardening review on top of the v0
   v0.2, with `make eval-agents`; results in `docs/evaluation.md`. `eval/_stack.py` is the shared throwaway-signer helper.
 
 ### Fixed
+- **The browser verifier could show a valid run as TAMPERED.** Python and JavaScript write some numbers differently
+  (`1e-05` against `0.00001`, `1.5e+20` against `150000000000000000000`) and JavaScript cannot hold integers above
+  2**53, so any run containing such a value hashed differently in `replay.html` and the observer than in Python.
+  Canonical JSON now writes numbers the way JavaScript does, and integers beyond 2**53 are recorded as strings.
+  `tests/test_parity.py` runs the real JavaScript from both pages under Node against Python (skipped without Node).
 - **Windows: stopping the signer.** `os.kill(pid, 0)` was used as a liveness probe, but on Windows signal 0 is a Ctrl+C
   event sent to the console process group, which can interrupt the caller. Liveness is now asked of the kernel, and
   the signer is asked for a final checkpoint before it is terminated (Windows has no catchable SIGTERM).
