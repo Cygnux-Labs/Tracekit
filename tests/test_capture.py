@@ -5,8 +5,8 @@ stale runs (C5), YAML policy (C7), approvals (C8), redaction (C9).
 """
 import http.server
 import json
+import importlib.util
 import os
-import shutil
 import socket
 import socketserver
 import subprocess
@@ -20,7 +20,7 @@ import urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
-from tracekit import bundle, install, policy, privacy, yamlmini  # noqa: E402
+from tracekit import bundle, install, peercred, policy, privacy, yamlmini  # noqa: E402
 from tracekit.core import read_json, read_text, write_bytes, write_json, write_text  # noqa: E402
 
 _SAVED_POLICY = None
@@ -45,6 +45,51 @@ def free_port():
     s = socket.socket(); s.bind(("127.0.0.1", 0)); p = s.getsockname()[1]; s.close()
     return p
 
+
+
+def run_in_pty(argv, env, timeout=30):
+    """Run argv with a controlling pseudo-terminal and return (stdout+stderr, exit code).
+
+    Uses pty.fork and a deadline instead of pty.spawn / `script`: BSD and GNU `script` take different
+    flags, and on macOS a read on the pty master can block after the child has exited."""
+    import pty
+    import select
+    import types
+    pid, fd = pty.fork()
+    if pid == 0:  # child: fork gave it the slave side as its controlling terminal
+        try:
+            os.execve(argv[0], argv, env)
+        finally:
+            os._exit(127)
+    out, deadline, status = b"", time.time() + timeout, None
+    while time.time() < deadline:
+        ready, _, _ = select.select([fd], [], [], 0.2)
+        if ready:
+            try:
+                chunk = os.read(fd, 4096)
+            except OSError:
+                chunk = b""
+            if chunk:
+                out += chunk
+                continue
+        done, st = os.waitpid(pid, os.WNOHANG)
+        if done:
+            status = st
+            break
+    if status is None:
+        os.kill(pid, 9)
+        os.waitpid(pid, 0)
+        raise subprocess.TimeoutExpired(argv, timeout, output=out)
+    try:  # collect anything the child wrote just before exiting
+        while select.select([fd], [], [], 0.2)[0]:
+            chunk = os.read(fd, 4096)
+            if not chunk:
+                break
+            out += chunk
+    except OSError:
+        pass
+    os.close(fd)
+    return types.SimpleNamespace(stdout=out.decode("utf-8", "replace"), stderr="", returncode=os.WEXITSTATUS(status))
 
 class Stack(unittest.TestCase):
     """A dev signer (real daemon process) and helpers to fire hooks at it."""
@@ -586,10 +631,9 @@ sys.stderr.write(hook.stderr.read()); sys.exit(hook.returncode)
 
     def approve_from_terminal(self, aid, decision="approve"):
         """Run `tracekit approve` in a fresh pseudo-terminal, outside the harness's process tree."""
-        if not shutil.which("script"):
-            self.skipTest("needs `script` for a pty")
-        cmd = f"{PY} -m tracekit {decision} {aid}"
-        return subprocess.run(["script", "-qec", cmd, "/dev/null"], capture_output=True, text=True, env=self.env, timeout=30)
+        if importlib.util.find_spec("pty") is None:  # POSIX only; BSD and GNU `script` differ, so use the stdlib
+            self.skipTest("needs a pty")
+        return run_in_pty([PY, "-m", "tracekit", decision, aid], self.env, timeout=30)
 
     def test_action_held_until_approved(self):
         proc = self.start_held_call()
@@ -603,7 +647,7 @@ sys.stderr.write(hook.stderr.read()); sys.exit(hook.returncode)
         self.assertEqual(ap[0]["data"]["tool_use_id"], "tp1")
         self.assertIn("tty=", ap[0]["data"]["channel"])
         # dev mode: allowed, but labelled as untrustworthy in the record
-        if hasattr(socket, "SO_PEERCRED"):
+        if peercred.has_peer_credentials():  # SO_PEERCRED on Linux, LOCAL_PEERCRED on macOS
             self.assertTrue(ap[0]["data"]["same_user"])
             self.assertIn("not trustworthy", ap[0]["data"]["channel"])
         else:
@@ -619,7 +663,7 @@ sys.stderr.write(hook.stderr.read()); sys.exit(hook.returncode)
         self.assertEqual(proc.wait(20), 2)
         self.assertIn("not approved", proc.stderr.read())
 
-    @unittest.skipUnless(hasattr(socket, "SO_PEERCRED"), "requires OS peer process credentials")
+    @unittest.skipUnless(peercred.has_peer_credentials(), "requires OS peer process credentials")
     def test_self_approval_from_inside_the_session_fails(self):
         proc = self.start_held_call()
         p = self.wait_pending()
@@ -627,10 +671,13 @@ sys.stderr.write(hook.stderr.read()); sys.exit(hook.returncode)
         out1 = self.in_session(f"{PY} -m tracekit approve {p[0]['id']}", "a")
         self.assertIn("refused", out1)
         # ... even from a fresh pseudo-terminal inside the session
-        out2 = self.in_session(f"script -qec '{PY} -m tracekit approve {p[0]['id']}' /dev/null", "b")
-        self.assertIn("refused", out2)
+        refusals = 1
+        if sys.platform.startswith("linux"):  # GNU `script -c`; BSD `script` takes different arguments
+            out2 = self.in_session(f"script -qec '{PY} -m tracekit approve {p[0]['id']}' /dev/null", "b")
+            self.assertIn("refused", out2)
+            refusals = 2
         self.assertIsNone(proc.poll())
-        self.assertEqual(len(self.of("approval", decision="self_approval_refused")), 2)
+        self.assertEqual(len(self.of("approval", decision="self_approval_refused")), refusals)
         self.approve_from_terminal(p[0]["id"], "reject")
         proc.wait(20)
 
@@ -644,8 +691,6 @@ sys.stderr.write(hook.stderr.read()); sys.exit(hook.returncode)
         proc.wait(20)
 
     def test_timeout_rejects(self):
-        with open(self.pol, "a") as f:
-            pass
         txt = read_text(self.pol).replace("approval_timeout_s: 20", "approval_timeout_s: 2")
         write_text(self.pol, txt)
         proc = self.start_held_call()

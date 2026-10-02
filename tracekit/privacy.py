@@ -108,8 +108,14 @@ def mentions_dotenv(*texts):
     return any(isinstance(t, str) and DOTENV_PATH.search(t) for t in texts)
 
 
-def redact(obj, dotenv=False):
-    """Recursively redact every string (and every key). Returns (obj, was_redacted)."""
+MAX_DEPTH = 64
+
+
+def redact(obj, dotenv=False, _depth=0):
+    """Recursively redact every string (and every key). Returns (obj, was_redacted).
+    Nesting beyond MAX_DEPTH is replaced by a marker instead of recursing without bound."""
+    if _depth > MAX_DEPTH:
+        return "[truncated: nesting too deep]", True
     if isinstance(obj, str):
         out, hit = redact_text(obj)
         if dotenv:
@@ -117,13 +123,13 @@ def redact(obj, dotenv=False):
             hit = hit or hit2
         return out, hit
     if isinstance(obj, list):
-        res = [redact(x, dotenv) for x in obj]
+        res = [redact(x, dotenv, _depth + 1) for x in obj]
         return [r[0] for r in res], any(r[1] for r in res)
     if isinstance(obj, dict):
         out, hit = {}, False
         for k, v in obj.items():
             rk, hk = redact_text(k) if isinstance(k, str) else (k, False)
-            rv, hv = redact(v, dotenv)
+            rv, hv = redact(v, dotenv, _depth + 1)
             out[rk] = rv
             hit = hit or hk or hv
         return out, hit

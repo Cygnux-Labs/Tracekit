@@ -1,0 +1,13 @@
+{
+  "name": "tracekit",
+  "owner": {
+    "name": "Cygnux Labs"
+  },
+  "plugins": [
+    {
+      "name": "tracekit",
+      "source": "./plugin",
+      "description": "Signed, tamper-evident record of Claude Code tool calls, with a policy gate"
+    }
+  ]
+}

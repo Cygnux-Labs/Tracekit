@@ -66,10 +66,19 @@ def export(signer_home, out_path, run=None, last=True, since=None, otel=False, o
     cp_path = os.path.join(signer_home, "checkpoints.jsonl")
 
     def read_cps():
+        out = []
         if os.path.exists(cp_path):
-            with open(cp_path) as f:
-                return [json.loads(l) for l in f if l.strip()]
-        return []
+            with open(cp_path, encoding="utf-8") as f:
+                for line in f:
+                    if not line.strip():
+                        continue
+                    try:
+                        c = json.loads(line)
+                    except ValueError:
+                        continue  # a torn last line from a crash; the verifier reports what is missing
+                    if isinstance(c, dict) and isinstance(c.get("head_seq"), int):
+                        out.append(c)
+        return out
     cps = read_cps()
     if not [c for c in cps if c["head_seq"] >= last_sel]:
         # ask the signer for a checkpoint so the bundle ends at a signed, witnessed head
@@ -90,8 +99,11 @@ def export(signer_home, out_path, run=None, last=True, since=None, otel=False, o
                         os.environ["TRACEKIT_SOCKET"] = old
             cps = read_cps()
             recs = [r for _, r, _ in read_records(ledger_path) if r]
-        except Exception:
-            pass  # signer unreachable: the bundle's tail stays unwitnessed and verify says so
+        except Exception as e:
+            # signer unreachable: the bundle's tail stays unwitnessed and verify says so
+            import sys
+            print(f"tracekit: warning: could not ask the signer for a checkpoint ({e}); the bundle's tail may be unwitnessed",
+                  file=sys.stderr)
     covering = [c for c in cps if c["head_seq"] >= last_sel]
     end = min(c["head_seq"] for c in covering) if covering else last_sel
     end = max(end, last_sel)
@@ -134,17 +146,29 @@ def export(signer_home, out_path, run=None, last=True, since=None, otel=False, o
         payload = to_otlp_json(sel_events, crypto.kid(pub))
         blobs["otel.json"] = json.dumps(payload, indent=1).encode("utf-8")
         if otel_endpoint:
-            pushed = push(otel_endpoint, payload)
+            try:
+                pushed = push(otel_endpoint, payload)
+            except Exception as e:  # a down collector must not cost you the evidence bundle
+                import sys
+                print(f"tracekit: warning: could not send spans to {otel_endpoint} ({e}); the bundle was still written",
+                      file=sys.stderr)
+                pushed = ("failed", str(e)[:200])
     manifest = {"format": FORMAT, "tracekit_version": __version__, "created": sel_events[-1]["ts_signed"],
                 "selection": {"runs": sorted(runs)}, "seq_range": [0, end], "kid": crypto.kid(pub),
                 "public_key_b64": b64e(pub), "files": {k: sha256_hex(v) for k, v in blobs.items()}}
     from .replay import render
     blobs["replay.html"] = render(manifest, body_recs, cps_in, cov, policies).encode("utf-8")
     manifest["files"]["replay.html"] = sha256_hex(blobs["replay.html"])
-    with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as z:
-        z.writestr("manifest.json", json.dumps(manifest, indent=2))
-        for k, v in blobs.items():
-            z.writestr(k, v)
+    tmp_path = f"{out_path}.tmp-{os.getpid()}"
+    try:
+        with zipfile.ZipFile(tmp_path, "w", zipfile.ZIP_DEFLATED) as z:
+            z.writestr("manifest.json", json.dumps(manifest, indent=2))
+            for k, v in blobs.items():
+                z.writestr(k, v)
+        os.replace(tmp_path, out_path)  # never leave a half-written bundle under the real name
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
     return {"path": out_path, "runs": sorted(runs), "records": len(body_recs), "selected_events": len(sel_events),
             "checkpoints": len(cps_in), "end_seq": end, **({"otel_push": {"status": pushed[0]}} if pushed else {})}
 
@@ -163,10 +187,20 @@ class Report:
             self.warnings.append(name)
 
 
+MAX_BUNDLE_BYTES = 512 * 1024 * 1024   # uncompressed; refuses zip bombs before reading anything
+
+
 def load_bundle(path):
     with zipfile.ZipFile(path) as z:
-        names = set(z.namelist())
+        infos = [i for i in z.infolist() if not i.filename.endswith("/")]
+        names = [i.filename for i in infos]
+        if len(names) != len(set(names)):
+            raise ValueError("bundle contains duplicate member names")
+        if sum(i.file_size for i in infos) > MAX_BUNDLE_BYTES:
+            raise ValueError(f"bundle expands to more than {MAX_BUNDLE_BYTES // (1024 * 1024)} MiB")
         manifest = json.loads(z.read("manifest.json"))
+        if not isinstance(manifest, dict):
+            raise ValueError("manifest.json is not an object")
         blobs = {n: z.read(n) for n in names if n != "manifest.json"}
     return manifest, blobs
 
@@ -176,14 +210,20 @@ def _load_trusted_key(spec):
     if spec.startswith("ed25519:"):
         return None, spec
     with open(spec, "rb") as f:
-        raw = f.read().strip()
+        data = f.read()
+    # a raw key is exactly 32 bytes and may legitimately start or end with a whitespace byte (about 5% of
+    # keys), so only strip when it is not already the right length (the base64 form, with its newline)
+    raw = data if len(data) == 32 else data.strip()
     if len(raw) != 32:
         from .core import b64d
         raw = b64d(raw.decode())
+    if len(raw) != 32:
+        raise ValueError(f"{spec} is not an Ed25519 public key (expected 32 raw bytes or their base64)")
     return raw, crypto.kid(raw)
 
 
 def verify(path, witness_specs=(), strict=False, trusted_key=None):
+    """Verify a .tkb. Never raises on a malformed bundle: structure problems become failed checks."""
     rep = Report()
     try:
         manifest, blobs = load_bundle(path)
@@ -193,18 +233,31 @@ def verify(path, witness_specs=(), strict=False, trusted_key=None):
     if manifest.get("format") != FORMAT:
         rep.check("bundle readable", False, f"unknown format {manifest.get('format')!r}")
         return rep, EXIT_BAD
+    try:
+        return _verify(rep, manifest, blobs, witness_specs, strict, trusted_key)
+    except (KeyError, TypeError, AttributeError, IndexError, ValueError) as e:
+        rep.check("bundle structure", False, "", [f"bundle content is malformed and could not be fully checked: "
+                                                  f"{type(e).__name__}: {e}"])
+        return rep, EXIT_FAIL
+
+
+def _verify(rep, manifest, blobs, witness_specs, strict, trusted_key):
     # 0. file integrity against the manifest (manifest itself is covered by the signed chain + checkpoints)
-    bad = [n for n, h in manifest.get("files", {}).items() if n not in blobs or sha256_hex(blobs[n]) != h]
-    rep.check("files match manifest", not bad, "all bundle files match their manifest hashes" if not bad else "",
-              [f"{n}: missing or modified" for n in bad])
+    listed = manifest.get("files", {})
+    bad = [n for n, h in listed.items() if n not in blobs or sha256_hex(blobs[n]) != h]
+    extra = sorted(n for n in blobs if n not in listed)
+    rep.check("files match manifest", not bad and not extra,
+              "all bundle files match their manifest hashes" if not (bad or extra) else "",
+              [f"{n}: missing or modified" for n in bad] + [f"{n}: present but not listed in the manifest" for n in extra])
     pub = blobs.get("signer.pub", b"")
     kid = crypto.kid(pub) if len(pub) == 32 else None
     recs = []
-    for i, line in enumerate(blobs.get("records.jsonl", b"").decode("utf-8").splitlines(), 1):
+    for i, line in enumerate(blobs.get("records.jsonl", b"").decode("utf-8", "replace").splitlines(), 1):
         try:
-            recs.append(json.loads(line))
+            rec = json.loads(line)
         except ValueError:
-            recs.append(None)
+            rec = None
+        recs.append(rec if isinstance(rec, dict) else None)
 
     # 1. chain intact
     probs, prev, expect, events = [], GENESIS, 0, []
@@ -263,15 +316,31 @@ def verify(path, witness_specs=(), strict=False, trusted_key=None):
     if seqs and seqs[0] != 0:
         gaps.insert(0, f"records before seq {seqs[0]} missing")
     rep.check("counter has no gaps", not gaps, f"seq 0..{seqs[-1] if seqs else '-'} contiguous" if not gaps else "", gaps)
-    sel_runs = set(manifest.get("selection", {}).get("runs", []))
+    # the manifest is not signed, so it cannot narrow what gets checked: every event that is present
+    # (not elided) belongs to the selection, whatever the manifest claims
+    sel_runs = set(manifest.get("selection", {}).get("runs", []) or []) | \
+        {e.get("run_id") for e in events if e.get("run_id") != "_signer"}
+    seq_range = manifest.get("seq_range")
+    if isinstance(seq_range, list) and len(seq_range) == 2 and seqs and seq_range[1] != seqs[-1]:
+        rep.check("manifest range", False, "", [f"manifest says the bundle ends at seq {seq_range[1]} but the last record is {seqs[-1]}"])
     sel = [e for e in events if e.get("run_id") in sel_runs]
     cg = [e for e in events if e.get("type") == "capture.gap" and (e.get("run_id") in sel_runs or e.get("run_id") == "_signer")]
     rep.check("capture gaps", not cg, "no capture.gap events" if not cg else "",
               [f"seq {e['seq']}: {e['data'].get('reason')}" for e in cg][:20], warn=True)
 
     # 4. head matches a witness checkpoint
-    cps = [json.loads(l) for l in blobs.get("checkpoints.jsonl", b"").decode().splitlines() if l.strip()]
-    cp_probs = []
+    cps, cp_probs = [], []
+    for l in blobs.get("checkpoints.jsonl", b"").decode("utf-8", "replace").splitlines():
+        if not l.strip():
+            continue
+        try:
+            c = json.loads(l)
+        except ValueError:
+            c = None
+        if isinstance(c, dict) and isinstance(c.get("head_seq"), int) and isinstance(c.get("head_hash"), str):
+            cps.append(c)
+        else:
+            cp_probs.append("checkpoints.jsonl contains a line that is not a checkpoint")
     for c in cps:
         if not verify_checkpoint(c, pub) or c.get("kid") != kid:
             cp_probs.append(f"checkpoint seq {c.get('head_seq')}: signature invalid or wrong key (forged or replayed)")
@@ -285,7 +354,7 @@ def verify(path, witness_specs=(), strict=False, trusted_key=None):
     for spec in witness_specs:
         try:
             w = from_spec(spec)
-            allw = w.read()
+            allw = w.read(pub) if getattr(w, "needs_public", False) else w.read()
             wcps = [c for c in allw if c.get("kid") == kid]
         except Exception as e:
             cp_probs.append(f"witness {spec}: unreadable ({e})"); continue

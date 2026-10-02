@@ -40,8 +40,9 @@ label{color:var(--muted);font-size:13px;margin-right:12px}
 const M=__MANIFEST__, R=__RECORDS__, C=__CHECKPOINTS__, COV=__COVERAGE__, POL=__POLICIES__;
 const TRUST={hook:"observed at the harness hook",proxy:"observed at the model API boundary",transcript:"harness-reported, lower trust",sdk:"reported by an instrumented app",migrated:"converted from v0.1",signer:"written by tracekitd"};
 const esc=s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+function cp(a,b){const x=Array.from(a),y=Array.from(b),n=Math.min(x.length,y.length);for(let i=0;i<n;i++){const d=x[i].codePointAt(0)-y[i].codePointAt(0);if(d)return d;}return x.length-y.length;}
 function canon(v){if(v===null||typeof v!=="object")return JSON.stringify(v);if(Array.isArray(v))return"["+v.map(canon).join(",")+"]";
- return"{"+Object.keys(v).sort().map(k=>JSON.stringify(k)+":"+canon(v[k])).join(",")+"}";}
+ return"{"+Object.keys(v).sort(cp).map(k=>JSON.stringify(k)+":"+canon(v[k])).join(",")+"}";}
 const enc=new TextEncoder(), hex=b=>[...new Uint8Array(b)].map(x=>x.toString(16).padStart(2,"0")).join("");
 const b64=s=>Uint8Array.from(atob(s),c=>c.charCodeAt(0));
 async function sha(s){return hex(await crypto.subtle.digest("SHA-256",enc.encode(s)));}

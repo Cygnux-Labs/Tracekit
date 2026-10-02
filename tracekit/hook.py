@@ -34,6 +34,13 @@ def _git(args, cwd):
         return None
 
 
+def _as_dict(v):
+    """tool_input should be an object; if a harness sends anything else, record it rather than crash."""
+    if isinstance(v, dict):
+        return v
+    return {} if v is None else {"value": v}
+
+
 def _base(p):
     aid = p.get("agent_id")
     return {"run_id": p.get("session_id") or "unknown", "agent_id": aid or "main",
@@ -83,10 +90,14 @@ def _transcript_events(p, pol):
                 e = json.loads(line)
             except ValueError:
                 continue
-            if e.get("type") != "assistant":
+            if not isinstance(e, dict) or e.get("type") != "assistant":
                 continue
-            msg = e.get("message") or {}
-            for b in msg.get("content") or []:
+            msg = e.get("message")
+            msg = msg if isinstance(msg, dict) else {}
+            blocks = msg.get("content")
+            for b in (blocks if isinstance(blocks, list) else []):
+                if not isinstance(b, dict):
+                    continue
                 kind = {"text": "text", "thinking": "thinking"}.get(b.get("type"))
                 if kind == "thinking" and not (b.get("thinking") or "").strip():
                     kind = "thinking_withheld"
@@ -152,18 +163,37 @@ def save_ack(path, length):
 
 def transcript_mark(path):
     """{path, length, hash, prefix_length, prefix_hash} for the transcript as it is now.
-    prefix_* covers the first N bytes, where N is the length the signer last acknowledged."""
+    prefix_* covers the first N bytes, where N is the length the signer last acknowledged.
+    The file is streamed once, so a multi-hundred-MB transcript costs time, not memory."""
     ack = _load_acks().get(path)
+    if not isinstance(ack, int) or isinstance(ack, bool) or ack < 0:
+        ack = None
     try:
-        with open(path, "rb") as f:
-            data = f.read()
+        f = open(path, "rb")
     except FileNotFoundError:
         return {"path": path, "length": 0, "hash": "sha256:" + hashlib.sha256(b"").hexdigest(), "missing": True,
                 "prefix_length": ack, "prefix_hash": None}
     except OSError:
         return None
-    return {"path": path, "length": len(data), "hash": "sha256:" + hashlib.sha256(data).hexdigest(),
-            "prefix_length": ack, "prefix_hash": ("sha256:" + hashlib.sha256(data[:ack]).hexdigest()) if ack is not None else None}
+    full, prefix, total, prefix_hash = hashlib.sha256(), hashlib.sha256(), 0, None
+    with f:
+        while True:
+            chunk = f.read(1024 * 1024)
+            if not chunk:
+                break
+            if ack is not None and prefix_hash is None:
+                room = ack - total
+                if room >= len(chunk):
+                    prefix.update(chunk)
+                else:
+                    prefix.update(chunk[:room])
+                    prefix_hash = "sha256:" + prefix.hexdigest()
+            full.update(chunk)
+            total += len(chunk)
+    if ack is not None and prefix_hash is None:  # the file is shorter than what was acknowledged
+        prefix_hash = "sha256:" + prefix.hexdigest()
+    return {"path": path, "length": total, "hash": "sha256:" + full.hexdigest(), "prefix_length": ack,
+            "prefix_hash": prefix_hash}
 
 
 # ---------- C8: approvals ----------
@@ -215,8 +245,12 @@ def build_events(p, pol):
     phash = policy_mod.policy_hash(pol)
     if name == "SessionStart" or not os.path.exists(flag):
         evs.append(run_start_event(p, pol, cwd))
-        with open(flag, "w") as f:
-            f.write(phash)  # the policy this run started with
+        try:
+            os.makedirs(os.path.dirname(flag), exist_ok=True)
+            with open(flag, "w") as f:
+                f.write(phash)  # the policy this run started with
+        except OSError:
+            pass  # read-only client dir: every hook then re-sends run.start; the signer flags it as a gap
     try:
         start_hash = read_text(flag).strip()
     except OSError:
@@ -225,7 +259,7 @@ def build_events(p, pol):
     if name == "UserPromptSubmit":
         evs.append({**b, "type": "user.prompt", "data": {"content": privacy.content(p.get("prompt") or "", cc)}})
     elif name == "PreToolUse":
-        tool, ti, tid = p.get("tool_name") or "?", p.get("tool_input") or {}, p.get("tool_use_id") or "unknown"
+        tool, ti, tid = p.get("tool_name") or "?", _as_dict(p.get("tool_input")), p.get("tool_use_id") or "unknown"
         d = policy_mod.evaluate(pol, tool, ti, cwd)
         evs.append({**b, "type": "tool.call", "data": {"tool_use_id": tid, "name": tool, "input": privacy.tool_input(tool, ti, cc)}})
         dec = {**b, "type": "policy.decision", "data": {"tool_use_id": tid, "decision": d["decision"],
@@ -241,7 +275,7 @@ def build_events(p, pol):
         resp = p.get("tool_response") if not failed else {"error": p.get("error"), "response": p.get("tool_response")}
         ok = not failed and not (isinstance(resp, dict) and (resp.get("is_error") or resp.get("interrupted")))
         dur = p.get("duration_ms")
-        ti = p.get("tool_input") or {}
+        ti = _as_dict(p.get("tool_input"))
         dotenv = privacy.mentions_dotenv(ti.get("command"), ti.get("file_path"), ti.get("path"), ti.get("pattern"))
         evs.append({**b, "type": "tool.result", "data": {"tool_use_id": p.get("tool_use_id") or "unknown", "ok": bool(ok),
                                                          "output": privacy.content(resp if resp is not None else "", cc, dotenv),

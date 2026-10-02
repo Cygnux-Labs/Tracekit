@@ -1,0 +1,17 @@
+{
+  "name": "tracekit",
+  "version": "0.2.0-rc.1",
+  "description": "Signed, tamper-evident evidence of what Claude Code did: every tool call recorded in a hash-chained, Ed25519-signed ledger, with a policy gate that blocks dangerous calls before they run.",
+  "author": {
+    "name": "Cygnux Labs"
+  },
+  "homepage": "https://github.com/Cygnux-Labs/Tracekit",
+  "repository": "https://github.com/Cygnux-Labs/Tracekit",
+  "license": "MIT",
+  "keywords": [
+    "audit",
+    "security",
+    "provenance",
+    "hooks"
+  ]
+}

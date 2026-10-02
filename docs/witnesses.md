@@ -19,7 +19,7 @@ Signed with the same key as the records (over the canonical form without `sig`).
 | git repo with a remote (recommended) | Whoever owns the remote. Recommended: the security team, protected branch, written with a deploy key the agent's user cannot read, no push access for the agent's user | Every checkpoint (head seq, head hash, key id, time, signature) as a commit, forever | Nothing already pushed, unless they can force-push the remote. Records after the last pushed checkpoint are unprotected |
 | git repo without a remote | The signer's user on this machine | Same, locally | Root (L4) can rewrite it with the ledger. Protects against the agent's user (L1–L3) only |
 | file | Whoever can write the file | Checkpoint lines | Anyone who can write the file; use storage the host cannot rewrite (WORM, another machine's mount) |
-| Rekor (off, not implemented) | Sigstore's public log | Would retain hashes publicly and permanently | Would be append-only, but publishing reveals activity timing to everyone; kept off by default |
+| Rekor (experimental) | Sigstore's public log | Retains each signed checkpoint publicly and permanently | Append-only and not controlled by the host, but publishing reveals activity timing to everyone; off by default |
 
 ## Kinds
 
@@ -27,9 +27,26 @@ Signed with the same key as the records (over the canonical form without `sig`).
 |---|---|---|---|
 | `git:/path/clone[@remote]` (default) | one file per checkpoint in `checkpoints/<kid>/<seq>.json`, committed, pushed if a remote is set | As strong as the remote: if the agent host can't force-push there (protected branch, other account), history before the last push is fixed | Needs a remote to mean anything. Without one it only guards against edits to the ledger that forget the witness |
 | `file:/path` | JSON lines appended to a file | Useful for tests, or a file on storage the host can't rewrite (WORM, another machine's mount) | Same machine = little protection |
-| `rekor:` | stub | Would give a public transparency log | Off by default; enable with `TRACEKIT_ENABLE_REKOR=1` (not implemented in v0.2). Publishing hashes publicly reveals activity timing |
+| `rekor:https://rekor.sigstore.dev` | one `rekord` entry per checkpoint (the canonical checkpoint, its Ed25519 signature and the signer's public key) | A public, append-only log the agent host cannot rewrite | Experimental, off unless `TRACEKIT_ENABLE_REKOR=1`. Publishing reveals activity timing. See below |
 
 Unreachable witnesses are retried with backoff. Until one succeeds, the signer records a `capture.gap` saying the checkpoint is "not yet on" that witness, so the delay shows up in bundles.
+
+## Rekor (experimental)
+
+```bash
+export TRACEKIT_ENABLE_REKOR=1
+curl https://rekor.sigstore.dev/api/v1/log/publicKey > rekor.pem       # pin it once, out of band
+export TRACEKIT_REKOR_PUBKEY=$PWD/rekor.pem
+tracekit init --dev --witness rekor:https://rekor.sigstore.dev
+tracekit verify run.tkb --witness rekor:https://rekor.sigstore.dev
+```
+
+Reading is strict: Tracekit finds the signer's entries by public key and accepts one only if it carries a valid
+RFC 6962 inclusion proof **and** a signed entry timestamp that verifies against the Rekor key you pinned. With no
+pinned key, `verify` refuses rather than trust an unauthenticated response. The Merkle, signature and encoding code
+is tested offline against logs generated in the test suite; it has not been run against the live service from the
+build environment, so treat the first real run as validation. Entries are public and permanent, and the signer's
+public key links all of a signer's checkpoints together.
 
 ## What the verifier does
 

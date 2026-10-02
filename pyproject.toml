@@ -1,29 +1,55 @@
 [build-system]
-requires = ["setuptools>=61"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "tracekit"
-version = "0.2.0.dev0"
+dynamic = ["version"]   # single source of truth: tracekit/__init__.py
 description = "Signed, checkpointed evidence of what coding agents did"
 readme = "README.md"
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [{ name = "Bravish Ghosh" }]
+keywords = ["ai-agents", "observability", "audit", "tamper-evident", "claude-code", "security", "provenance"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Information Technology",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Security",
+    "Topic :: Software Development :: Quality Assurance",
+    "Topic :: System :: Logging",
+]
 requires-python = ">=3.9"
 dependencies = ["cryptography>=41"]   # signing; `tracekit verify` alone also works without it
 
 [project.optional-dependencies]
 yaml = ["PyYAML>=6"]   # optional: policies are parsed with a built-in YAML subset otherwise
+langchain = ["langchain-core>=0.2"]   # tracekit.adapters.langchain (LangChain / LangGraph tools)
+dev = ["pytest>=7", "PyYAML>=6", "pyflakes", "langchain-core>=0.2; python_version>='3.10'", "langgraph>=0.2; python_version>='3.10'"]
 
 [project.scripts]
 tracekit = "tracekit.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/Cygnux-Labs/Tracekit"
+Issues = "https://github.com/Cygnux-Labs/Tracekit/issues"
+Changelog = "https://github.com/Cygnux-Labs/Tracekit/blob/main/CHANGELOG.md"
+Security = "https://github.com/Cygnux-Labs/Tracekit/blob/main/SECURITY.md"
 
 [tool.setuptools]
-packages = ["tracekit"]
+packages = ["tracekit", "tracekit.adapters"]
 py-modules = ["tracekit_sdk"]
+
+[tool.setuptools.dynamic]
+version = { attr = "tracekit.__version__" }
 
 [tool.setuptools.package-data]
 tracekit = ["schema/*.json", "policy/*.yaml", "ui/*.html"]

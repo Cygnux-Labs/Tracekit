@@ -12,7 +12,7 @@ import time
 import uuid
 
 from . import client, policy, privacy
-from .core import GENESIS, SCHEMA_VERSION, new_id, now_ts
+from .core import GENESIS, SCHEMA_VERSION, jsonable, new_id, now_ts
 
 
 class TracekitSDKError(RuntimeError):
@@ -25,7 +25,7 @@ class _ToolCall:
             raise TypeError("tool arguments must be a mapping")
         self.tracer = tracer
         self.name = str(name)[:200]
-        self.args = args
+        self.args = jsonable(args)  # sets, bytes, datetimes, NaN...: recording must never raise inside the agent
         self.tool_use_id = "call_" + uuid.uuid4().hex[:24]
         self.result_value = None
         self.started = None
@@ -61,6 +61,8 @@ class _ToolCall:
 
         if decision["decision"] == "deny":
             raise PermissionError("Blocked by Tracekit policy: " + "; ".join(decision["reasons"]))
+        if decision["decision"] == "ask" and client.is_remote():
+            raise PermissionError("Held by Tracekit policy: approvals are not available for remote ingestion, so the call is refused")
         if decision["decision"] == "ask":
             from .hook import wait_for_approval
             approved, message = wait_for_approval(tool_event, decision, current_policy)
@@ -77,7 +79,7 @@ class _ToolCall:
         content_capture = self.tracer._policy.get("content_capture", "hashed")
         dotenv = privacy.mentions_dotenv(
             self.args.get("command"), self.args.get("file_path"), self.args.get("path"), self.args.get("pattern"))
-        output = ({"error": repr(exception)} if exception_type else self.result_value)
+        output = ({"error": repr(exception)} if exception_type else jsonable(self.result_value))
         event = self.tracer._event("tool.result", {
             "tool_use_id": self.tool_use_id,
             "ok": exception_type is None,
@@ -181,7 +183,7 @@ class Tracer:
     def prompt(self, text):
         self._ensure_active()
         self._send(self._event("user.prompt", {
-            "content": privacy.content(text, self._policy.get("content_capture", "hashed")),
+            "content": privacy.content(jsonable(text), self._policy.get("content_capture", "hashed")),
         }))
 
     def _message(self, kind, text):
@@ -191,7 +193,7 @@ class Tracer:
         self._send(self._event("model.message", {
             "kind": kind,
             "message_id": "m_" + uuid.uuid4().hex[:16],
-            "content": privacy.content(text, self._policy.get("content_capture", "hashed")),
+            "content": privacy.content(jsonable(text), self._policy.get("content_capture", "hashed")),
         }))
 
     def think(self, text):
@@ -223,6 +225,18 @@ class Tracer:
         if self._parent and self._spawn_call:
             self._spawn_call.result({"final": final_message})
             self._spawn_call.__exit__(None, None, None)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exception_type, exception, _traceback):
+        """`with Tracer(...) as t:` always records run.end, even when the agent raises."""
+        try:
+            self.end("error: " + repr(exception)[:400] if exception_type else "done")
+        except Exception:
+            if exception_type is None:
+                raise
+        return False
 
     def end(self, reason="done"):
         if self._ended:

@@ -51,6 +51,61 @@ def b64d(s):
     return base64.b64decode(s.encode("ascii"))
 
 
+_SURROGATES = None
+
+
+def scrub(obj, _depth=0):
+    """Make a decoded JSON value safe to canonicalise, hash and sign: lone UTF-16 surrogates
+    (which cannot be encoded as UTF-8) become U+FFFD, and NaN/Infinity (not valid JSON) become
+    strings. Without this a single odd byte in an agent's output would make the signer drop the
+    event instead of recording it."""
+    global _SURROGATES
+    if _depth > 200:
+        return "[truncated: nesting too deep]"
+    if isinstance(obj, str):
+        try:
+            obj.encode("utf-8")
+            return obj
+        except UnicodeEncodeError:
+            if _SURROGATES is None:
+                import re
+                _SURROGATES = re.compile("[\ud800-\udfff]")
+            return _SURROGATES.sub("\ufffd", obj)
+    if isinstance(obj, float):
+        if obj != obj or obj in (float("inf"), float("-inf")):
+            return str(obj)
+        if obj.is_integer() and abs(obj) < 2 ** 53:
+            return int(obj)  # Python writes 2.0, JavaScript writes 2: keep canonical JSON identical in both
+    if isinstance(obj, list):
+        return [scrub(x, _depth + 1) for x in obj]
+    if isinstance(obj, dict):
+        return {scrub(k, _depth + 1) if isinstance(k, str) else k: scrub(v, _depth + 1) for k, v in obj.items()}
+    return obj
+
+
+def jsonable(obj, _depth=0):
+    """Best-effort conversion of arbitrary Python values (SDK tool arguments and results) into
+    JSON-safe data, so instrumenting an agent can never raise inside the agent."""
+    if _depth > 50:
+        return "[truncated: nesting too deep]"
+    if obj is None or isinstance(obj, (bool, int, str)):
+        return scrub(obj)
+    if isinstance(obj, float):
+        return scrub(obj)
+    if isinstance(obj, (bytes, bytearray)):
+        return {"bytes": len(obj), "sha256": sha256_hex(bytes(obj))}
+    if isinstance(obj, dict):
+        return {str(k): jsonable(v, _depth + 1) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple, set, frozenset)):
+        return [jsonable(x, _depth + 1) for x in obj]
+    if isinstance(obj, BaseException):
+        return {"error": repr(obj)}
+    try:
+        return scrub(repr(obj))
+    except Exception:
+        return "[unrepresentable]"
+
+
 def content_ref(value, redacted=False):
     """Hash reference for content that is not recorded in clear."""
     raw = value if isinstance(value, str) else canon(value)

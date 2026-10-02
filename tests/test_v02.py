@@ -89,10 +89,10 @@ class Crypto(unittest.TestCase):
 
 
 class Schema(unittest.TestCase):
-    def test_copies_identical(self):
-        a = read_text(os.path.join(ROOT, "schema", "tracekit.event.v1.json"))
-        b = read_text(os.path.join(ROOT, "tracekit", "schema", "tracekit.event.v1.json"))
-        self.assertEqual(a, b)
+    def test_single_schema_copy(self):
+        """One schema file, shipped inside the package; a second copy at the repo root drifts."""
+        self.assertFalse(os.path.exists(os.path.join(ROOT, "schema")))
+        self.assertTrue(os.path.exists(os.path.join(ROOT, "tracekit", "schema", "tracekit.event.v1.json")))
 
     def test_valid_and_invalid(self):
         e = {"schema_version": SCHEMA_VERSION, "id": new_id(), "seq": 0, "prev_hash": GENESIS, **run_start()}
@@ -246,7 +246,6 @@ class Tamper(unittest.TestCase):
         cls.home = os.path.join(cls.d, "signer")
         cls.wit = os.path.join(cls.d, "witness.jsonl")
         s = signer(cls.home, witnesses=[f"file:{cls.wit}"], every=4)
-        n = 0
         for rid in ("other", "target"):
             s.handle({"op": "append", "cseq": 0, "event": run_start(rid), "attach": {"policy": policy.load()[1]}})
             for i in range(5):
@@ -571,7 +570,7 @@ class RuntimeStateRetention(unittest.TestCase):
 
 
 class AgentSDK(unittest.TestCase):
-    def test_legacy_tracer_api_records_signed_v2_events(self):
+    def test_tracer_records_signed_events(self):
         from tracekit import bundle, install
         from tracekit.ledger import read_records
         from tracekit.observe import Translator
@@ -697,7 +696,7 @@ class DaemonLimits(unittest.TestCase):
 class Migration(unittest.TestCase):
     def test_v01_ledger(self):
         from tracekit import migrate
-        recs, probs = migrate.verify_v01(os.path.join(ROOT, "demo", "sample-output", "ledger.jsonl"))
+        recs, probs = migrate.verify_v01(os.path.join(ROOT, "tests", "fixtures", "v01-ledger.jsonl"))
         self.assertEqual(probs, [])
         evs = migrate.convert(recs)
         self.assertTrue(any(e["type"] == "tool.call" for e in evs))

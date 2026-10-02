@@ -14,6 +14,7 @@ proxy/hook mismatches and approvals. Content that the ledger holds only as a has
 """
 import argparse
 import datetime as _dt
+import hmac
 import json
 import os
 import sys
@@ -59,6 +60,7 @@ class Translator:
         self.spawn_calls = {}
         self.seen_agents = set()
         self.n = 0
+        self.max_pending = 10000  # calls that never got a result must not accumulate forever
 
     def _base(self, e, rec, event):
         self.n += 1
@@ -105,6 +107,8 @@ class Translator:
         elif t == "user.prompt":
             out.append({**self._base(e, rec, "UserPromptSubmit"), "prompt": _show(d.get("content"))})
         elif t == "tool.call":
+            if len(self.pending) >= self.max_pending:
+                self.pending.pop(next(iter(self.pending)))
             self.pending[d["tool_use_id"]] = (e, rec)
         elif t == "policy.decision":
             call = self.pending.pop(d.get("tool_use_id"), None)
@@ -180,6 +184,12 @@ class Translator:
         return out
 
 
+def _script_json(obj):
+    """JSON safe to embed inside an HTML <script>: no </script>, no <!--, no line-separator surprises."""
+    return (json.dumps(obj, ensure_ascii=False).replace("&", "\\u0026").replace("<", "\\u003c").replace(">", "\\u003e")
+            .replace("\u2028", "\\u2028").replace("\u2029", "\\u2029"))
+
+
 def verify_ledger(path):
     """Chain + signature check of the whole ledger (the signer's public key sits next to it)."""
     pub_path = os.path.join(os.path.dirname(path), "signer.pub")
@@ -207,12 +217,38 @@ def verify_ledger(path):
     return n, problems[:50], head
 
 
-class Feed:
-    """Tails the ledger once and keeps the translated records for every client."""
+_VERIFY_CACHE = {}
 
-    def __init__(self, path):
+
+def verify_ledger_cached(path):
+    """verify_ledger, remembered until the file changes: every open browser tab polls /api/verify,
+    and re-checking every signature of a large ledger on each poll is wasted work."""
+    try:
+        st = os.stat(path)
+        key = (st.st_size, st.st_mtime_ns)
+    except OSError:
+        return verify_ledger(path)
+    hit = _VERIFY_CACHE.get(path)
+    if hit and hit[0] == key:
+        return hit[1]
+    result = verify_ledger(path)
+    _VERIFY_CACHE[path] = (key, result)
+    return result
+
+
+class Feed:
+    """Tails the ledger once and keeps the most recent translated records for every client.
+
+    Memory is bounded: past `max_records` the oldest are dropped from the live view (the ledger on
+    disk is untouched, and `tracekit export` / `observe --export` still cover all of it). Stream
+    positions are absolute (`base` + index) so a client never loses its place when records drop."""
+
+    def __init__(self, path, max_records=None):
         self.path, self.records, self.lock = path, [], threading.Condition()
+        self.max_records = max_records or int(os.environ.get("TRACEKIT_OBSERVE_MAX_RECORDS", "50000") or 50000)
+        self.base = 0  # absolute index of records[0]
         self.tr = Translator()
+        self.errors = 0
         threading.Thread(target=self._tail, daemon=True).start()
 
     def _tail(self):
@@ -233,16 +269,38 @@ class Feed:
                     continue
                 try:
                     rec = json.loads(raw)
-                except ValueError:
+                    new = self.tr.feed(rec)
+                except Exception as e:  # one malformed record must not stop the live view for good
+                    self.errors += 1
+                    print(f"tracekit observe: skipped an unreadable ledger record ({type(e).__name__}: {e})",
+                          file=sys.stderr, flush=True)
                     continue
-                new = self.tr.feed(rec)
                 if new:
                     with self.lock:
                         self.records.extend(new)
+                        over = len(self.records) - self.max_records
+                        if over > 0:
+                            del self.records[:over]
+                            self.base += over
                         self.lock.notify_all()
 
 
-def make_handler(feed, token):
+LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
+CSP = ("default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; "
+       "connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
+
+
+def _host_only(value):
+    """'localhost:7777' -> 'localhost'; '[::1]:7777' -> '::1'."""
+    value = (value or "").strip().lower()
+    if value.startswith("["):
+        return value[1:value.find("]")] if "]" in value else value
+    return value.rsplit(":", 1)[0] if value.count(":") == 1 else value
+
+
+def make_handler(feed, token, allowed_hosts=None):
+    allowed = set(LOOPBACK_HOSTS) | {h.lower() for h in (allowed_hosts or ())}
+
     class Handler(BaseHTTPRequestHandler):
         server_version = "tracekit-observe"
 
@@ -255,37 +313,61 @@ def make_handler(feed, token):
             self.send_header("Content-Type", ctype + "; charset=utf-8")
             self.send_header("Content-Length", str(len(data)))
             self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Referrer-Policy", "no-referrer")
+            self.send_header("Cross-Origin-Resource-Policy", "same-origin")
+            if ctype == "text/html":
+                self.send_header("Content-Security-Policy", CSP)
             self.end_headers()
             self.wfile.write(data)
 
+        def _authorized(self, u):
+            if not token:
+                return True
+            supplied = parse_qs(u.query).get("token", [""])[0]
+            bearer = self.headers.get("Authorization", "")
+            return hmac.compare_digest(bearer.encode(), f"Bearer {token}".encode()) or \
+                hmac.compare_digest(supplied.encode(), token.encode())
+
         def do_GET(self):
             u = urlparse(self.path)
-            if token and self.headers.get("Authorization") != f"Bearer {token}" and parse_qs(u.query).get("token", [""])[0] != token:
+            # DNS-rebinding guard: a web page the user visits can make a browser send requests to
+            # 127.0.0.1 under an attacker-controlled name; only names we expect are served
+            if _host_only(self.headers.get("Host")) not in allowed:
+                return self._send(403, '{"error":"unexpected Host header"}')
+            if not self._authorized(u):
                 return self._send(401, '{"error":"missing or wrong token"}')
             if u.path in ("/", "/index.html"):
-                return self._send(200, read_text(UI).replace("/*__TRACE_DATA__*/null", "null"), "text/html")
+                return self._send(200, read_text(UI).replace("/*__TRACE_DATA__*/null", "null").replace("/*__RAW_DATA__*/null", "null"), "text/html")
             if u.path == "/api/snapshot":
                 with feed.lock:
-                    return self._send(200, json.dumps(feed.records, ensure_ascii=False))
+                    body = {"next": feed.base + len(feed.records), "dropped": feed.base, "records": feed.records}
+                    return self._send(200, json.dumps(body, ensure_ascii=False))
             if u.path == "/api/verify":
-                n, problems, head = verify_ledger(feed.path)
+                n, problems, head = verify_ledger_cached(feed.path)
                 return self._send(200, json.dumps({"records": n, "ok": not problems, "problems": problems, "head": head}))
             if u.path == "/api/stream":
-                return self.stream(int(parse_qs(u.query).get("from", ["0"])[0]))
+                try:
+                    start = max(0, int(parse_qs(u.query).get("from", ["0"])[0]))
+                except ValueError:
+                    return self._send(400, '{"error":"from must be an integer"}')
+                return self.stream(start)
             self._send(404, '{"error":"not found"}')
 
         def stream(self, i):
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
             self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
             self.end_headers()
             last_ping = time.time()
             try:
                 while True:
                     with feed.lock:
-                        if i >= len(feed.records):
+                        i = max(i, feed.base)
+                        if i >= feed.base + len(feed.records):
                             feed.lock.wait(timeout=1.0)
-                        batch = feed.records[i:]
+                        batch = feed.records[i - feed.base:]
                     for r in batch:
                         self.wfile.write(b"data: " + json.dumps(r, ensure_ascii=False).encode("utf-8") + b"\n\n")
                     i += len(batch)
@@ -293,7 +375,7 @@ def make_handler(feed, token):
                         self.wfile.flush()
                     elif time.time() - last_ping > 15:
                         self.wfile.write(b": ping\n\n"); self.wfile.flush(); last_ping = time.time()
-            except (BrokenPipeError, ConnectionResetError):
+            except OSError:  # client went away (broken pipe, reset, timeout)
                 return
     return Handler
 
@@ -309,28 +391,41 @@ def main(argv=None):
     home = a.home or client.client_config().get("signer_home") or "/var/lib/tracekit"
     path = os.path.join(home, "ledger", "ledger.jsonl")
     if a.export:
-        tr, recs = Translator(), []
+        if not os.path.exists(path):
+            print(f"tracekit observe: no ledger at {path} (is the signer running? pass --home)", file=sys.stderr)
+            return 1
+        tr, recs, raw_recs = Translator(), [], []
         for _, rec, _raw in read_records(path):
-            recs += tr.feed(rec)
-        boot = json.dumps(recs, ensure_ascii=False).replace("<", "\\u003c").replace(">", "\\u003e")
-        with open(a.export, "w", encoding="utf-8") as f:
-            f.write(read_text(UI).replace("/*__TRACE_DATA__*/null", boot))
-        print("Wrote", a.export)
+            if isinstance(rec, dict):
+                raw_recs.append(rec)
+                recs += tr.feed(rec)
+        boot = _script_json(recs)
+        page = read_text(UI).replace("/*__TRACE_DATA__*/null", boot).replace("/*__RAW_DATA__*/null", _script_json(raw_recs))
+        tmp = f"{a.export}.tmp-{os.getpid()}"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(page)
+        os.replace(tmp, a.export)
+        print(f"Wrote {a.export} ({len(raw_recs)} ledger records)")
         return 0
     token = os.environ.get("TRACEKIT_OBSERVE_TOKEN")
     if a.host not in ("127.0.0.1", "localhost", "::1") and not token:
         print("Refusing to listen beyond localhost without TRACEKIT_OBSERVE_TOKEN set.", file=sys.stderr)
         return 1
     feed = Feed(path)
-    srv = ThreadingHTTPServer((a.host, a.port), make_handler(feed, token))
+    try:
+        srv = ThreadingHTTPServer((a.host, a.port), make_handler(feed, token, [a.host]))
+    except OSError as e:
+        print(f"tracekit observe: cannot listen on {a.host}:{a.port} ({e.strerror or e}); try --port", file=sys.stderr)
+        return 1
     srv.daemon_threads = True
     print(f"tracekit observe on http://{a.host}:{srv.server_address[1]}  (ledger: {path}, read-only)", flush=True)
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
         pass
+    finally:
+        srv.server_close()
     return 0
-
 
 
 if __name__ == "__main__":

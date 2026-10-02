@@ -6,7 +6,7 @@ Tracekit makes one claim:
 
 It does **not** prove intent, complete coverage, or that a reported tool result is real. Every verifier report ends with that sentence.
 
-Scope: Claude Code hooks and explicitly instrumented Python agents on Linux, Windows and macOS dev mode. System mode (separate signer user) is Linux-only in v0.2 because caller identity comes from `SO_PEERCRED`; dev mode uses an authenticated local transport but gives integrity checks only, not isolation or caller attestation.
+Scope: Claude Code hooks and explicitly instrumented Python agents on Linux, Windows and macOS dev mode. System mode (separate signer user) is Linux, with an experimental macOS port, because caller identity comes from kernel peer credentials (`SO_PEERCRED`, `LOCAL_PEERCRED`); dev mode uses an authenticated local transport but gives integrity checks only, not isolation or caller attestation.
 
 ## Two properties, kept apart
 
@@ -46,7 +46,7 @@ Without either, a whole bundle forged with a fresh key verifies as consistent.
 | I1 | The agent never holds the signing key | `tracekitd` owns `keys/signer.key` (0600, separate user) |
 | I2 | The agent's OS user cannot change the ledger | Linux system mode: ledger owned by signer user; dev mode: same-user signer, no isolation guarantee |
 | I3 | Every record is signed; the signature covers `(hash, prev_hash, seq)` | `ledger.py`, `core.sig_message` |
-| I4 | The head is published outside the machine | checkpoints to git / file witnesses (Rekor off, not implemented) |
+| I4 | The head is published outside the machine | checkpoints to git / file witnesses (Rekor is experimental and off by default) |
 | I5 | Lost events are visible, not silent | per-run, per-stream counters; `capture.gap` on jumps, regressions, out-of-order lifecycle, late witnesses |
 | I6 | Fail mode is explicit and recorded | `fail_mode` in policy and every `run.start`; `closed` blocks tool calls while the signer is down |
 
@@ -62,6 +62,14 @@ Without either, a whole bundle forged with a fresh key verifies as consistent.
 | Detects disabled hooks / proxy bypass | L2 row; needs the proxy |
 | Held actions need approval from outside the session | L1/L3: only a different OS user counts outside dev mode |
 | Reasoning is self-reported, optional, off by default | Fidelity: `source=transcript` is harness-reported, lower trust |
+
+## Remote SDK clients
+
+[Remote ingestion](remote-ingest.md) adds a trust boundary: a client on another machine, authenticated by a bearer
+token. It is treated like the local SDK, trusted only for what it sends. The gateway forces `source=sdk`, namespaces
+the run id, accepts only the SDK's event types, ignores the client's claims about host and isolation, and refuses
+approvals. A stolen token lets an attacker write plausible `sdk` events into that client's runs until it is revoked;
+it does not let them forge hook, proxy or transcript evidence or touch existing records.
 
 ## Open problems
 

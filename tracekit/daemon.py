@@ -24,7 +24,6 @@ import os
 import signal
 import socket
 import socketserver
-import struct
 import sys
 import threading
 import time
@@ -35,8 +34,9 @@ try:
 except ImportError:
     pwd = None
 
+from . import peercred
 from . import schema as schema_mod
-from .core import GENESIS, SCHEMA_VERSION, new_id, now_ts
+from .core import GENESIS, SCHEMA_VERSION, new_id, now_ts, scrub
 from .ledger import Keys, Ledger
 from .policy import policy_hash
 from .witness import from_spec, make_checkpoint
@@ -77,7 +77,9 @@ def _user_name(uid):
 
 # ---------- /proc helpers (C8 self-approval checks) ----------
 def _proc_stat(pid):
-    """(comm, ppid, tty_nr) from /proc/<pid>/stat, or None."""
+    """(comm, ppid, tty_nr) from /proc/<pid>/stat (ps(1) where there is no /proc), or None."""
+    if not os.path.isdir("/proc/self"):
+        return peercred.ps_stat(pid)
     try:
         with open(f"/proc/{pid}/stat") as f:
             s = f.read()
@@ -118,6 +120,9 @@ class Signer:
         self.blobs = os.path.join(home, "blobs")
         os.makedirs(self.blobs, exist_ok=True)
         self.witnesses = [from_spec(s) for s in cfg.get("witnesses", [])]
+        for w in self.witnesses:
+            if hasattr(w, "bind_key"):
+                w.bind_key(self.keys.public)
         self.lock = threading.RLock()
         self.cond = threading.Condition(self.lock)
         self.runs = {}            # run_id -> state (see _run)
@@ -193,6 +198,21 @@ class Signer:
         errs = schema_mod.validate(ev)
         assert not errs, errs
         return self._append(ev)
+
+    def _rejection(self, message, run_id):
+        """Record a rejected request as an `error` event, but not without bound: a client stuck in a retry
+        loop on one bad event must not be able to grow the ledger by an event per attempt. The first
+        few of each kind per run are recorded, then one summary at each power of ten."""
+        counts = self.__dict__.setdefault("_rejects", {})
+        if len(counts) > 5000:
+            counts.clear()
+        key = (str(run_id)[:200], message[:80])
+        n = counts[key] = counts.get(key, 0) + 1
+        if n <= 10:
+            self._internal("error", {"message": message[:900], "client_run_id": str(run_id)[:200]})
+        elif n >= 100 and n == 10 ** (len(str(n)) - 1):
+            self._internal("error", {"message": f"{message[:700]} (seen {n} times; further repeats are counted, not recorded one by one)",
+                                     "client_run_id": str(run_id)[:200]})
 
     # ---------- checkpoints ----------
     def checkpoint(self):
@@ -480,7 +500,7 @@ class Signer:
         tty = ""
         if peer and peer[0]:
             try:
-                tty = os.readlink(f"/proc/{peer[0]}/fd/0")
+                tty = os.readlink(f"/proc/{peer[0]}/fd/0") if os.path.isdir("/proc/self") else ""
             except OSError:
                 tty = ""
         same = uid == a["agent_uid"] if uid is not None and a["agent_uid"] is not None else None
@@ -544,16 +564,21 @@ class Signer:
                 return {"ok": False, "error": f"ledger write failed: {e}", "retryable": True}
 
     def _handle_append(self, req, peer_uid):
-        ev = dict(req.get("event") or {})
+        ev = req.get("event")
+        if not isinstance(ev, dict):
+            return {"ok": False, "error": "event must be an object"}
+        ev = scrub(ev)
         run_id, cseq = ev.get("run_id"), req.get("cseq")
+        if not isinstance(run_id, str) or not run_id:
+            return {"ok": False, "error": "event.run_id must be a non-empty string"}
         stream = str(req.get("stream") or ev.get("source") or "hook")[:32]
         if ev.get("source") not in CLIENT_SOURCES:
             return {"ok": False, "error": f"source must be one of {sorted(CLIENT_SOURCES)}"}
         uncredentialed_dev = self.cfg.get("mode") == "dev" and peer_uid is None
         peer_is_signer = peer_uid is not None and self.my_uid is not None and peer_uid == self.my_uid
         if ev.get("source") in TRUSTED_ONLY_SOURCES and not peer_is_signer and not uncredentialed_dev:
-            self._internal("error", {"message": f"refused source={ev['source']} event from uid {peer_uid}: only the signer's own "
-                                                "user (the proxy) may send it", "client_run_id": str(run_id)[:200]})
+            self._rejection(f"refused source={ev['source']} event from uid {peer_uid}: only the signer's own "
+                            "user (the proxy) may send it", run_id)
             return {"ok": False, "error": f"source {ev['source']} is only accepted from the signer's user"}
         ev.setdefault("schema_version", SCHEMA_VERSION)
         ev.setdefault("id", new_id())
@@ -568,8 +593,7 @@ class Signer:
                 ev["data"]["os_user_attested"] = False
         errs = schema_mod.validate(ev)
         if errs:
-            self._internal("error", {"message": "rejected invalid event: " + "; ".join(errs[:5])[:900],
-                                     "client_run_id": str(run_id)[:200]})
+            self._rejection("rejected invalid event: " + "; ".join(errs[:5])[:900], run_id)
             return {"ok": False, "error": "schema: " + "; ".join(errs[:5])}
         attach = req.get("attach") or {}
         st = self._run(run_id)
@@ -630,16 +654,11 @@ class Signer:
 
 
 def _peer(conn):
-    try:
-        creds = conn.getsockopt(socket.SOL_SOCKET, getattr(socket, "SO_PEERCRED"), struct.calcsize("3i"))
-        pid, uid, _gid = struct.unpack("3i", creds)
-        return pid, uid
-    except (AttributeError, OSError):
-        return None, None
+    return peercred.peer(conn)
 
 
 def _has_peer_credentials():
-    return hasattr(socket, "SO_PEERCRED")
+    return peercred.has_peer_credentials()
 
 
 class _Handler(socketserver.StreamRequestHandler):
@@ -785,12 +804,13 @@ def serve(home, socket_path=None):
         with signer.lock:
             signer.checkpoint()
         srv.shutdown()
-    signal.signal(signal.SIGTERM, lambda *a: threading.Thread(target=stop).start())
+    for _sig in (signal.SIGTERM, signal.SIGINT):  # Ctrl-C in a foreground daemon also ends with a final checkpoint
+        signal.signal(_sig, lambda *a: threading.Thread(target=stop).start())
     print(f"tracekitd: kid={signer.keys.kid} seq={signer.ledger.seq} socket={sock} witnesses={[w.name for w in signer.witnesses]}",
           flush=True)
-    if not hasattr(socket, "SO_PEERCRED"):
-          print("tracekitd: WARNING: no SO_PEERCRED on this platform: caller identity is not attested; "
-              "dev-mode proxy events and approvals are untrusted. System mode is Linux-only in v0.2.",
+    if not _has_peer_credentials():
+        print("tracekitd: WARNING: this platform cannot attest who connects (no SO_PEERCRED / LOCAL_PEERCRED): "
+              "dev-mode proxy events and approvals are untrusted.",
               file=sys.stderr, flush=True)
     try:
         srv.serve_forever()

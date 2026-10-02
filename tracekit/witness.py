@@ -6,7 +6,7 @@ A checkpoint commits to the ledger head:
 Published copies live where the agent's user cannot rewrite them, so rebuilding the whole
 chain on disk (even with the signing key) no longer matches what the witnesses hold.
 
-Witness specs:  file:/abs/path.jsonl   git:/abs/clone[@remote]   rekor:  (off; not in v0.2 core)
+Witness specs:  file:/abs/path.jsonl   git:/abs/clone[@remote]   rekor:https://rekor.sigstore.dev  (experimental, TRACEKIT_ENABLE_REKOR=1)
 """
 import json
 import os
@@ -50,9 +50,11 @@ class FileWitness:
         with open(self.path, encoding="utf-8") as f:
             for line in f:
                 try:
-                    out.append(json.loads(line))
+                    c = json.loads(line)
                 except ValueError:
                     continue
+                if isinstance(c, dict):
+                    out.append(c)
         return out
 
 
@@ -61,6 +63,12 @@ def _git(args, cwd=None, git_dir=None, check=True):
     env = dict(os.environ, GIT_AUTHOR_NAME="tracekitd", GIT_AUTHOR_EMAIL="tracekitd@localhost",
                GIT_COMMITTER_NAME="tracekitd", GIT_COMMITTER_EMAIL="tracekitd@localhost", GIT_TERMINAL_PROMPT="0")
     return subprocess.run(cmd, cwd=cwd, env=env, check=check, capture_output=True, text=True, timeout=60)
+
+
+def _git_init(path):
+    """`git init` on main for any git version (`-b` needs 2.28+)."""
+    _git(["init", "-q"], cwd=path)
+    _git(["symbolic-ref", "HEAD", "refs/heads/main"], cwd=path)
 
 
 class GitWitness:
@@ -77,10 +85,10 @@ class GitWitness:
             if self.remote:
                 r = _git(["clone", self.remote, self.path], check=False)
                 if r.returncode != 0:
-                    _git(["init", "-q", "-b", "main"], cwd=self.path)
+                    _git_init(self.path)
                     _git(["remote", "add", "origin", self.remote], cwd=self.path)
             else:
-                _git(["init", "-q", "-b", "main"], cwd=self.path)
+                _git_init(self.path)
 
     def publish(self, cp):
         self._ensure()
@@ -90,7 +98,8 @@ class GitWitness:
         with open(full, "w", encoding="utf-8") as f:
             json.dump(cp, f, sort_keys=True, indent=1)
         _git(["add", rel], cwd=self.path)
-        _git(["commit", "-q", "-m", f"checkpoint {cp['kid']} seq {cp['head_seq']}"], cwd=self.path)
+        if _git(["diff", "--cached", "--quiet"], cwd=self.path, check=False).returncode != 0:
+            _git(["commit", "-q", "-m", f"checkpoint {cp['kid']} seq {cp['head_seq']}"], cwd=self.path)
         if self.remote:
             _git(["push", "-q", "origin", "HEAD:main"], cwd=self.path)  # raises if unreachable
         return self.name
@@ -105,9 +114,11 @@ class GitWitness:
                 if rel.startswith("checkpoints/") and rel.endswith(".json"):
                     s = _git(["show", f"HEAD:{rel}"], git_dir=self.path, check=False).stdout
                     try:
-                        out.append(json.loads(s))
+                        c = json.loads(s)
                     except ValueError:
-                        pass
+                        continue
+                    if isinstance(c, dict):
+                        out.append(c)
             return out
         base = os.path.join(self.path, "checkpoints")
         for root, _dirs, files in os.walk(base):
@@ -115,20 +126,12 @@ class GitWitness:
                 if fn.endswith(".json"):
                     try:
                         with open(os.path.join(root, fn), encoding="utf-8") as f:
-                            out.append(json.load(f))
-                    except ValueError:
-                        pass
+                            c = json.load(f)
+                    except (ValueError, OSError):
+                        continue
+                    if isinstance(c, dict):
+                        out.append(c)
         return out
-
-
-class RekorWitness:
-    name = "rekor:"
-
-    def publish(self, cp):
-        raise NotImplementedError("Rekor witness is off by default and not part of v0.2 core; see docs/witnesses.md")
-
-    def read(self):
-        return []
 
 
 def from_spec(spec):
@@ -140,5 +143,6 @@ def from_spec(spec):
     if kind == "rekor":
         if os.environ.get("TRACEKIT_ENABLE_REKOR") != "1":
             raise ValueError("rekor witness requires TRACEKIT_ENABLE_REKOR=1 (public and permanent; see docs/witnesses.md)")
-        return RekorWitness()
+        from .rekor import RekorWitness
+        return RekorWitness(rest)
     raise ValueError(f"unknown witness spec {spec!r} (use file:/path or git:/path[@remote])")
