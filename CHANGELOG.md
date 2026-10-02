@@ -12,6 +12,11 @@ This entry lists the fixes from the production-hardening review on top of the v0
   v0.2, with `make eval-agents`; results in `docs/evaluation.md`. `eval/_stack.py` is the shared throwaway-signer helper.
 
 ### Fixed
+- **Windows: stopping the signer.** `os.kill(pid, 0)` was used as a liveness probe, but on Windows signal 0 is a Ctrl+C
+  event sent to the console process group, which can interrupt the caller. Liveness is now asked of the kernel, and
+  the signer is asked for a final checkpoint before it is terminated (Windows has no catchable SIGTERM).
+- **CI could hang for hours.** Jobs now have a 25 minute timeout, tests run verbosely, and a test stuck for 4 minutes
+  dumps every thread's stack, so a hang fails with a diagnosis.
 - **Bursts of concurrent writers lost events.** The signer's accept queue was Python's default of 5, so eight or more
   writers connecting at once got `EAGAIN` and, being fail-open, dropped events. The queue is 256 and the client retries
   a full-queue connect. Found by the new E2 evaluation; covered by `BurstOfWriters`.

@@ -715,3 +715,17 @@ class BurstOfWriters(unittest.TestCase):
                 else:
                     os.environ[k] = v
             shutil.rmtree(d, ignore_errors=True)
+
+
+class PidAlive(unittest.TestCase):
+    def test_probe_matches_reality_without_signalling(self):
+        import subprocess
+        from tracekit import install
+        self.assertTrue(install._pid_alive(os.getpid()))
+        p = subprocess.Popen([sys.executable, "-c", "pass"])
+        p.wait()
+        for _ in range(50):
+            if not install._pid_alive(p.pid):
+                break
+            time.sleep(0.05)
+        self.assertFalse(install._pid_alive(p.pid))
