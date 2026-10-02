@@ -11,14 +11,60 @@ import base64
 import datetime as _dt
 import hashlib
 import json
+import re
 import os
 
 GENESIS = "0" * 64
 SCHEMA_VERSION = "tracekit.event.v1"
 
 
+_EXPONENT = re.compile(r"[0-9][eE][+-]?[0-9]")
+
+
+def js_number(x):
+    """A finite float written the way JavaScript's Number#toString writes it (ECMAScript 7.1.12.1). Python's repr
+    has the same shortest round-trip digits but switches to an exponent at 1e16 and below 1e-4, JavaScript at
+    1e21 and below 1e-6, so 1e-05 and 1.5e+20 would hash differently in the browser than in Python."""
+    r = repr(float(x))
+    sign = "-" if r.startswith("-") else ""
+    mantissa, _, exp = r.lstrip("-").partition("e")
+    whole, _, frac = mantissa.partition(".")
+    digits, n = whole + frac, len(whole) + (int(exp) if exp else 0)
+    stripped = digits.lstrip("0")
+    n -= len(digits) - len(stripped)
+    digits = stripped.rstrip("0")
+    if not digits:
+        return "0"
+    k = len(digits)
+    if k <= n <= 21:
+        body = digits + "0" * (n - k)
+    elif 0 < n <= 21:
+        body = digits[:n] + "." + digits[n:]
+    elif -6 < n <= 0:
+        body = "0." + "0" * (-n) + digits
+    else:
+        e = n - 1
+        body = digits[0] + ("." + digits[1:] if k > 1 else "") + "e" + ("+" if e >= 0 else "-") + str(abs(e))
+    return sign + body
+
+
+def _canon_slow(obj):
+    if isinstance(obj, bool) or obj is None or isinstance(obj, (int, str)):
+        return json.dumps(obj, ensure_ascii=False)
+    if isinstance(obj, float):
+        return js_number(obj) if obj == obj and obj not in (float("inf"), float("-inf")) else json.dumps(obj)
+    if isinstance(obj, (list, tuple)):
+        return "[" + ",".join(_canon_slow(x) for x in obj) + "]"
+    return "{" + ",".join(json.dumps(k, ensure_ascii=False) + ":" + _canon_slow(obj[k]) for k in sorted(obj)) + "}"
+
+
 def canon(obj):
-    return json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    """Canonical JSON: sorted keys, no spaces, UTF-8, numbers written as JavaScript writes them, so the browser
+    verifier (replay.html, observer) computes the same hashes as Python."""
+    out = json.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    if _EXPONENT.search(out):  # rare: only values Python writes with an exponent can differ from JavaScript
+        return _canon_slow(obj)
+    return out
 
 
 def sha256_hex(b):
@@ -71,6 +117,8 @@ def scrub(obj, _depth=0):
                 import re
                 _SURROGATES = re.compile("[\ud800-\udfff]")
             return _SURROGATES.sub("\ufffd", obj)
+    if isinstance(obj, int) and not isinstance(obj, bool) and abs(obj) >= 2 ** 53:
+        return str(obj)  # JavaScript numbers are doubles: the browser would read this integer as a different value
     if isinstance(obj, float):
         if obj != obj or obj in (float("inf"), float("-inf")):
             return str(obj)
