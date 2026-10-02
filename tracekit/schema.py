@@ -1,4 +1,4 @@
-"""Validate events against schema/tracekit.event.v1.json with a small, dependency-free
+"""Validate events against tracekit/schema/tracekit.event.v1.json with a small, dependency-free
 JSON Schema subset (type, const, enum, required, properties, additionalProperties, items,
 oneOf, allOf, if/then, $ref to #/$defs, pattern, minimum, minLength, maxLength)."""
 import json

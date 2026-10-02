@@ -1,0 +1,13 @@
+#!/bin/sh
+# Claude Code hook entry point for the Tracekit plugin. Needs the `tracekit` Python package:
+#   pip install tracekit && tracekit init --dev --no-hooks     (or a system-mode signer)
+# If it is missing the hook says so on stderr and lets the call proceed (it never blocks work because
+# Tracekit is not installed), but nothing is being recorded until you install it.
+for py in "${TRACEKIT_PYTHON:-}" python3 python; do
+  [ -n "$py" ] || continue
+  if command -v "$py" >/dev/null 2>&1 && "$py" -c "import tracekit.hook" >/dev/null 2>&1; then
+    exec "$py" -m tracekit.hook
+  fi
+done
+echo "tracekit plugin: the 'tracekit' Python package is not installed for python3, so this call was NOT recorded. Run: pip install tracekit && tracekit init --dev --no-hooks" >&2
+exit 0

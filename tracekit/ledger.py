@@ -18,9 +18,15 @@ class Keys:
         os.chmod(keydir, 0o700)
         sk, pk = os.path.join(keydir, "signer.key"), os.path.join(keydir, "signer.pub")
         if os.path.exists(sk):
+            if os.name != "nt" and (os.stat(sk).st_mode & 0o077):
+                os.chmod(sk, 0o600)  # a group/world-readable signing key defeats the whole design
             with open(sk, "rb") as f:
                 secret = f.read()
-            public = crypto.public_from_secret(secret)
+            try:
+                public = crypto.public_from_secret(secret)
+            except ValueError as e:
+                raise RuntimeError(f"{sk} is not a valid Ed25519 key ({len(secret)} bytes); refusing to replace it "
+                                   "(that would fork the chain). Restore it from backup.") from e
         else:
             secret, public = crypto.generate()
             fd = os.open(sk, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -89,11 +95,14 @@ class Ledger:
         try:
             self.seq, self.head, self.torn = -1, GENESIS, False
             for _, rec, _raw in read_records(path):
-                self.torn = rec is None  # only a torn *final* line means a crash since the last start
-                if rec is None:
+                self.torn = not isinstance(rec, dict)  # only a torn *final* line means a crash since the last start
+                if self.torn:
                     continue
-                seq = rec["seq"] if rec.get("elided") else rec["event"]["seq"]
-                self.seq, self.head = seq, rec["hash"]
+                try:
+                    seq = rec["seq"] if rec.get("elided") else rec["event"]["seq"]
+                    self.seq, self.head = seq, rec["hash"]
+                except (KeyError, TypeError):
+                    self.torn = True
             needs_nl = False
             if os.path.getsize(path):
                 with open(path, "rb") as f:

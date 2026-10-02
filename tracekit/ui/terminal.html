@@ -5,8 +5,6 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <title>TRACEKIT Observer</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap">
   <style>
     :root {
       color-scheme: dark;
@@ -908,10 +906,32 @@
         min-height: 100%
       }
     }
+    @media (max-width:700px) {
+      /* phones: keep time, event, tool, target and status readable; agent and duration live in DETAIL */
+      th.c-ms, td.c-ms, th.c-agent, td.c-agent {
+        display: none
+      }
+
+      .c-time {
+        width: 68px;
+        white-space: nowrap
+      }
+
+      td.tgt {
+        white-space: normal;
+        word-break: break-all
+      }
+
+      header.top {
+        flex-wrap: wrap;
+        row-gap: 4px
+      }
+    }
   </style>
 </head>
 
 <body>
+  <noscript>Tracekit Observer needs JavaScript. For a terminal-only view of a bundle run <code>tracekit verify</code>.</noscript>
   <div id="app">
     <header class="top">
       <span class="brand">TRACEKIT</span>
@@ -1053,6 +1073,7 @@
   <script>
     "use strict";
     const BOOT = /*__TRACE_DATA__*/null;
+    const RAW = /*__RAW_DATA__*/null;
     const $ = id => document.getElementById(id);
     const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
     const FIELD = { Bash: "command", Write: "file_path", Edit: "file_path", MultiEdit: "file_path", Read: "file_path", NotebookEdit: "notebook_path", WebFetch: "url", WebSearch: "query", Glob: "pattern", Grep: "pattern", Agent: "description", Task: "description" };
@@ -1265,9 +1286,10 @@
       const m = $("mode");
       m.className = "mode " + (mode === "live" ? (liveOk ? "live" : "off") : "replay");
       m.textContent = mode === "live" ? (liveOk ? "LIVE" : "DISCONNECTED") : "REPLAY";
+      m.title = mode === "live" && !liveOk ? liveErr : "";
       const c = $("chain");
       c.className = "chain" + (chainState.ok === true ? " ok" : chainState.ok === false ? " bad" : "");
-      c.textContent = chainState.ok === true ? `CHAIN ✓ ${chainState.n} RECORDS` : chainState.ok === false ? `CHAIN ✗ TAMPERED` : "CHAIN …";
+      c.textContent = chainState.ok === true ? `CHAIN ✓ ${chainState.n} RECORDS` : chainState.ok === false ? `CHAIN ✗ BROKEN` : chainState.detail ? "CHAIN n/a" : "CHAIN …";
       c.title = chainState.detail || "";
       $("clock").textContent = new Date(nowTs() * 1000).toTimeString().slice(0, 8) + (mode === "replay" ? " (REPLAY)" : "");
       const chips = [];
@@ -1476,43 +1498,59 @@
     setInterval(() => { if (mode === "live") schedule(); }, 1000);
 
     /* ---------------- integrity (browser-side SHA-256 chain check) ---------------- */
+    function cpCompare(a, b) {
+      const x = Array.from(a), y = Array.from(b), n = Math.min(x.length, y.length);
+      for (let i = 0; i < n; i++) { const d = x[i].codePointAt(0) - y[i].codePointAt(0); if (d) return d; }
+      return x.length - y.length;
+    }
     function canon(v) {
       if (v === null || typeof v !== "object") return JSON.stringify(v);
       if (Array.isArray(v)) return "[" + v.map(canon).join(",") + "]";
-      return "{" + Object.keys(v).sort().map(k => JSON.stringify(k) + ":" + canon(v[k])).join(",") + "}";
+      return "{" + Object.keys(v).sort(cpCompare).map(k => JSON.stringify(k) + ":" + canon(v[k])).join(",") + "}";
     }
     async function sha256(s) {
       const d = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s));
       return [...new Uint8Array(d)].map(b => b.toString(16).padStart(2, "0")).join("");
     }
     async function verifyChain(recs) {
-      if (!window.crypto?.subtle) { chainState = { ok: null, n: recs.length, detail: "browser has no WebCrypto" }; return schedule(); }
-      let prev = "0".repeat(64);
-      for (let i = 0; i < recs.length; i++) {
-        const r = recs[i], body = Object.assign({}, r); delete body.hash;
-        if (r.seq !== i || r.prev !== prev || await sha256(canon(body)) !== r.hash) {
-          chainState = { ok: false, n: recs.length, detail: `Chain breaks at seq ${r.seq}` }; return schedule();
+      if (!Array.isArray(recs)) { chainState = { ok: null, n: 0, detail: "This replay carries no raw ledger records. Run `tracekit verify` on a bundle." }; return schedule(); }
+      if (!window.crypto?.subtle) { chainState = { ok: null, n: recs.length, detail: "This browser has no WebCrypto (needs https or localhost)." }; return schedule(); }
+      let prev = "0".repeat(64), expect = 0;
+      for (const r of recs) {
+        const el = r.elided === true, ev = el ? null : r.event;
+        const seq = el ? r.seq : ev && ev.seq, ph = el ? r.prev_hash : ev && ev.prev_hash;
+        if (seq !== expect || ph !== prev || (!el && await sha256(canon(ev)) !== r.hash)) {
+          chainState = { ok: false, n: recs.length, detail: `Hash chain breaks at seq ${seq}` }; return schedule();
         }
-        prev = r.hash;
+        prev = r.hash; expect++;
       }
-      chainState = { ok: true, n: recs.length, detail: "Every record re-hashed in this browser; chain intact. Head " + prev.slice(0, 16) }; schedule();
+      chainState = { ok: true, n: recs.length, detail: "Hash chain re-computed in this browser from the raw ledger records. Signatures are checked by `tracekit verify`. Head " + prev.slice(0, 16) }; schedule();
     }
 
     /* ---------------- live mode ---------------- */
-    let liveOk = false;
+    let liveOk = false, liveErr = "";
     const TOK = new URLSearchParams(location.search).get("token");
     const q = (p, extra) => p + (TOK ? (p.includes("?") ? "&" : "?") + "token=" + encodeURIComponent(TOK) : "");
+    async function getJSON(path) {
+      const r = await fetch(q(path));
+      if (r.status === 401) throw Object.assign(new Error("This observer needs a token: open the page with ?token=<TRACEKIT_OBSERVE_TOKEN>."), { fatal: true });
+      if (!r.ok) throw new Error(`observer answered HTTP ${r.status}`);
+      return r.json();
+    }
     async function startLive() {
       try {
-        const snap = await fetch(q("api/snapshot")).then(r => r.json());
-        snap.forEach(ingest); liveOk = true; schedule();
-        const es = new EventSource(q("api/stream?from=" + snap.length));
-        es.onmessage = e => { ingest(JSON.parse(e.data)); schedule(); };
-        es.onopen = () => { liveOk = true; schedule(); };
-        es.onerror = () => { liveOk = false; schedule(); };
-        const check = async () => { try { const v = await fetch(q("api/verify")).then(r => r.json()); chainState = { ok: v.ok, n: v.records, detail: (v.problems || []).join("\n") || "Verified by the observer. Head " + (v.head || "").slice(0, 16) }; schedule(); } catch { } };
+        const snap = await getJSON("api/snapshot");
+        snap.records.forEach(ingest); liveOk = true; liveErr = ""; schedule();
+        const es = new EventSource(q("api/stream?from=" + snap.next));
+        es.onmessage = e => { try { ingest(JSON.parse(e.data)); schedule(); } catch (err) { console.error("bad stream record", err); } };
+        es.onopen = () => { liveOk = true; liveErr = ""; schedule(); };
+        es.onerror = () => { liveOk = false; liveErr = "Connection lost; reconnecting…"; schedule(); };
+        const check = async () => { try { const v = await getJSON("api/verify"); chainState = { ok: v.ok, n: v.records, detail: (v.problems || []).join("\n") || "Verified by the observer (hash chain and Ed25519 signatures). Head " + (v.head || "").slice(0, 16) }; schedule(); } catch { } };
         check(); setInterval(check, 10000);
-      } catch (e) { liveOk = false; schedule(); }
+      } catch (e) {
+        liveOk = false; liveErr = e.message || String(e); schedule();
+        if (!e.fatal) setTimeout(startLive, 3000);  // the observer may still be starting: keep trying
+      }
     }
 
     /* ---------------- replay mode ---------------- */
@@ -1536,7 +1574,7 @@
       $("rp").hidden = false; $("scrub").max = BOOT.length;
       $("play").addEventListener("click", () => { if (pos >= BOOT.length) seek(0); playing = !playing; updatePlay(); tick(); });
       $("scrub").addEventListener("input", e => { playing = false; updatePlay(); clearTimeout(timer); seek(+e.target.value); });
-      verifyChain(BOOT);
+      verifyChain(RAW);
       seek(0); tick();
     }
 

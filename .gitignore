@@ -13,3 +13,8 @@ build/
 *.egg-info/
 dist/
 *.tkb
+!docs/sample/*.tkb
+.pytest_cache/
+.venv/
+venv/
+.DS_Store

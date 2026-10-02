@@ -1,0 +1,50 @@
+name: "Tracekit verify"
+description: "Verify a Tracekit evidence bundle (.tkb): hash chain, Ed25519 signatures, witness checkpoints and policy bindings."
+branding:
+  icon: shield
+  color: orange
+inputs:
+  bundle:
+    description: "Path to the .tkb bundle"
+    required: true
+  key:
+    description: "Trusted signer public key file, or a key id (ed25519:...). Without it, or a witness, the result is reported as unanchored."
+    required: false
+  witness:
+    description: "Independent witness copy to check against, e.g. git:/path/to/clone or file:/path/witness.jsonl"
+    required: false
+  strict:
+    description: "Fail on warnings too (exit code 3)"
+    required: false
+    default: "false"
+  version:
+    description: "Tracekit version to install from PyPI (empty: install from this action's repository checkout)"
+    required: false
+    default: ""
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@v5
+      with:
+        python-version: "3.12"
+    - name: Install Tracekit
+      shell: bash
+      run: |
+        if [ -n "${{ inputs.version }}" ]; then
+          python -m pip install "tracekit==${{ inputs.version }}"
+        else
+          python -m pip install "${{ github.action_path }}"
+        fi
+    - name: Verify bundle
+      shell: bash
+      env:
+        TK_BUNDLE: ${{ inputs.bundle }}
+        TK_KEY: ${{ inputs.key }}
+        TK_WITNESS: ${{ inputs.witness }}
+        TK_STRICT: ${{ inputs.strict }}
+      run: |
+        args=("$TK_BUNDLE")
+        [ -n "$TK_KEY" ] && args+=(--key "$TK_KEY")
+        [ -n "$TK_WITNESS" ] && args+=(--witness "$TK_WITNESS")
+        [ "$TK_STRICT" = "true" ] && args+=(--strict)
+        tracekit verify "${args[@]}"

@@ -8,8 +8,8 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](./LICENSE)
 [![Python](https://img.shields.io/badge/python-%E2%89%A53.9-3776AB?style=flat-square&logo=python&logoColor=white)](./pyproject.toml)
-[![Status](https://img.shields.io/badge/status-v0.2%20draft-orange?style=flat-square)](https://github.com/Cygnux-Labs/Tracekit/issues/1)
-[![Tests](https://img.shields.io/badge/tests-87%20passing-brightgreen?style=flat-square)](./tests)
+[![Status](https://img.shields.io/badge/status-v0.2%20release%20candidate-orange?style=flat-square)](https://github.com/Cygnux-Labs/Tracekit/issues/1)
+[![CI](https://img.shields.io/github/actions/workflow/status/Cygnux-Labs/Tracekit/ci.yml?branch=main&style=flat-square&label=tests)](https://github.com/Cygnux-Labs/Tracekit/actions/workflows/ci.yml)
 [![Signing](https://img.shields.io/badge/signing-Ed25519-blueviolet?style=flat-square)](./docs/signing.md)
 [![Paper](https://img.shields.io/badge/paper-PDF-b31b1b?style=flat-square)](./paper/main.pdf)
 
@@ -76,10 +76,11 @@ That is real output (trimmed). The demo uses dev mode, so the verifier warns tha
 
 ## Install
 
-Status: **v0.2 development branch, draft.** System mode (separate signer user) is **Linux-only**. Dev mode runs anywhere but only checks integrity, not isolation.
+Status: **v0.2 release candidate** (`tracekit --version`). See the [changelog](CHANGELOG.md). System mode (separate signer user) is supported on Linux and **experimental on macOS**. Dev mode runs anywhere but only checks integrity, not isolation. See [platforms](docs/portability.md).
 
 ```bash
-pip install .                         # adds the `tracekit` command; needs `cryptography` (installed automatically)
+pip install git+https://github.com/Cygnux-Labs/Tracekit   # or, from a clone: pip install .
+# adds the `tracekit` command; needs `cryptography` (installed automatically)
 ```
 
 **Linux, real use.** Signer as its own OS user, hooks for the agent's user, optional model proxy:
@@ -98,9 +99,13 @@ tracekit init --dev [--proxy]
 
 On platforms without kernel peer credentials (including Windows and macOS), dev mode uses an
 authenticated loopback TCP connection. Caller identity cannot be attested there, so approvals are
-explicitly untrusted; separate-user system mode remains Linux-only.
+explicitly untrusted. macOS has kernel peer credentials, so there dev mode attests callers too, and an experimental system mode exists (`sudo tracekit init --experimental-macos`, see [platforms](docs/portability.md)).
 
 `--project` writes hooks to `./.claude/settings.json` instead of `~/.claude`. `tracekit uninstall` removes the hooks and keeps the ledger.
+
+**As a Claude Code plugin.** `/plugin marketplace add Cygnux-Labs/Tracekit`, then `/plugin install tracekit@tracekit`, supplies the hooks and `/tracekit-status`, `/tracekit-verify` and `/tracekit-pending`. The signer still comes from the Python package (`tracekit init --dev --no-hooks`). Use the plugin or `tracekit init`, not both. See [plugin/README.md](plugin/README.md).
+
+**Try verification without installing anything:** [`docs/sample/`](docs/sample/README.md) holds a real bundle, a tampered copy and the signer's public key.
 
 ## Generic agents
 
@@ -116,7 +121,11 @@ with agent.tool("Bash", {"command": "python -m pytest"}) as call:
 agent.end()
 ```
 
-`Tracer` writes signed v0.2 SDK events when a v0.2 client config is present. `tool()` evaluates policy before the wrapped operation and records the result; a denied call never enters the `with` body. `subagent()` produces a child lane in the observer. Prompts are hashed by default; `say()` and `think()` are recorded only when `reasoning_capture: true`. Every framework still needs an adapter that routes its actual calls through this API. Without a v0.2 signer, only a source checkout retains the legacy v0.1 fallback. Remote `/api/ingest` is v0.1-only; remote v0.2 ingestion and framework-native Pi/Codex/Cursor adapters remain TODOs.
+`Tracer` writes signed v0.2 SDK events when a v0.2 client config is present. `tool()` evaluates policy before the wrapped operation and records the result; a denied call never enters the `with` body. `subagent()` produces a child lane in the observer. Prompts are hashed by default; `say()` and `think()` are recorded only when `reasoning_capture: true`. The SDK needs a configured v0.2 signer (`tracekit init --dev`).
+
+**Frameworks.** `@traced(tracer)` wraps any sync or async function, and `tracekit.adapters.langchain.TracekitCallbackHandler` covers LangChain and LangGraph tools (`pip install "tracekit[langchain]"`), with a denied call blocked before the tool body runs. Policy rules match on tool names, so name your shell tool `Bash` or add rules for it. See [adapters](docs/adapters.md). Codex, Cursor and Gemini CLI have no adapter yet.
+
+**Agents on other machines.** `tracekit ingest serve` runs an authenticated, TLS gateway; clients configure it with `tracekit init --remote URL`. Remote events are recorded as `sdk` evidence in a namespaced run, and held (`ask`) calls are refused. See [remote ingestion](docs/remote-ingest.md).
 
 ## Use
 
@@ -192,7 +201,7 @@ A Bloomberg-style screen that updates as agents work, including every subagent C
 | 7 Files | Every file read, written or blocked, and which agent touched it last |
 | 8 Detail | The selected action: input, result, policy decision, hash and previous hash |
 
-Type in the top bar: `AGT fix`, `TOOL BASH`, `FILE .env`, `FLAG`, `FIND timeout`, `SEQ 42`, `CLR`. Press `/` for the command bar, `F` for flagged only, `?` for help. The chain badge turns red if the ledger fails verification. Content held only as a hash shows as `[hashed sha256:...]`.
+Type in the top bar: `AGT fix`, `TOOL BASH`, `FILE .env`, `FLAG`, `FIND timeout`, `SEQ 42`, `CLR`. Press `/` for the command bar, `F` for flagged only, `?` for help. The chain badge turns red if the ledger fails verification. Live mode checks hash chain and signatures on the server; an exported replay re-computes the hash chain in your browser (run `tracekit verify` for signatures). Content held only as a hash shows as `[hashed sha256:...]`.
 
 ---
 
@@ -210,6 +219,20 @@ Tracekit proves what its capture path recorded, and that the record has not chan
 
 All of these are mapped claim by claim in [the threat model](docs/threat-model.md), which has not been externally reviewed yet. If you find a gap that isn't there, [open an issue](https://github.com/Cygnux-Labs/Tracekit/issues).
 
+## Use in CI
+
+Verify a bundle in a GitHub Actions workflow with the bundled action:
+
+```yaml
+- uses: Cygnux-Labs/Tracekit@main
+  with:
+    bundle: run.tkb
+    key: keys/signer.pub        # pin the signer; or pass witness: git:/path/to/clone
+    strict: "true"
+```
+
+Without a pinned key or a witness the result is reported as unanchored, exactly as on the command line.
+
 ## Privacy and security
 
 - **One required dependency**: `cryptography`, for signing. `tracekit verify` also works without it. PyYAML is optional.
@@ -218,90 +241,52 @@ All of these are mapped claim by claim in [the threat model](docs/threat-model.m
 - **Bundles follow the ledger's rules.** Records from other runs are elided to `seq`, `hash`, `prev_hash`, `sig`.
 - **Fail mode is explicit and recorded.** `fail_mode: open` by default; `closed` blocks tool calls while the signer is down. Every `run.start` records which one was in effect.
 
-Details: [threat model](docs/threat-model.md) · [signing](docs/signing.md) · [witnesses](docs/witnesses.md) · [privacy](docs/privacy.md) · [event schema](tracekit/schema/tracekit.event.v1.json).
+Details: [threat model](docs/threat-model.md) · [signing](docs/signing.md) · [witnesses](docs/witnesses.md) · [privacy](docs/privacy.md) · [platforms](docs/portability.md) · [adapters](docs/adapters.md) · [remote ingestion](docs/remote-ingest.md) · [evaluation](docs/evaluation.md) · [event schema](tracekit/schema/tracekit.event.v1.json). Trying Tracekit with a team: the [design-partner kit](docs/design-partner-kit.md). Reviewing it: the [review packet](docs/review-packet.md).
 
-## Not done yet
+## Limits and not done yet
 
-Tracked in [issue #1](https://github.com/Cygnux-Labs/Tracekit/issues/1):
+Known limits, stated plainly:
 
-- Release-gating evaluations (E0–E8: `make eval`, thresholds, durability, bypass and tampering experiments, policy precision, redaction leaks, repeated real-agent runs) and the paper update that depends on them.
-- Claude Code plugin packaging, a published sample bundle and video, a GitHub Action, a design-partner kit, a PyPI release.
-- Framework-specific adapters (Pi, Codex, Cursor, Gemini CLI, and others), plus remote v0.2 ingestion; the generic SDK currently supports manually instrumented local agents only.
-- macOS system mode (needs a peer-credential implementation), Rekor witness.
-- An external review of the threat model.
+- Tracekit records what is routed through its hooks, proxy, transcript reader and SDK. Anything outside those channels is reported as a coverage gap, not silently assumed clean ([threat model](docs/threat-model.md)).
+- The policy gate is a regex gate. It stops the obvious and tells you when a rule could not be evaluated; it is not a sandbox (`make eval` measures it on a labelled corpus, and the misses are listed in the results).
+- Regexes in a policy are checked at load time for catastrophic-backtracking shapes, and each match has a 0.5 s budget where the platform allows (POSIX, main thread). A match that times out counts as a match.
+- The live observer keeps the most recent 50,000 records in memory (`TRACEKIT_OBSERVE_MAX_RECORDS`); older ones stay in the ledger and in exports.
+- System mode (a separate OS user for the signer) is supported on Linux and experimental on macOS (unit-tested with mocks, not validated on hardware). Windows runs dev mode only; a dev-mode signer shares the agent's user and therefore needs an external witness to be trusted.
+- The Rekor witness is experimental: the proof and signature code is tested offline, and has not been run against the live service.
+- Remote ingestion trusts a remote client only for what it sends; a stolen token lets an attacker write `sdk` events into that client's runs until revoked.
+
+Not built yet (tracked in [issue #1](https://github.com/Cygnux-Labs/Tracekit/issues/1)):
+
+- Adapters for Codex, Cursor and Gemini CLI (each has its own hook format).
+- A demo video, and the first PyPI release (the release workflow is in place; the one-time publisher setup is in [docs/RELEASING.md](docs/RELEASING.md)).
+- Windows system mode.
+- An external review of the threat model ([review packet](docs/review-packet.md)) and a v0.2 update of the paper ([draft notes](paper/v0.2-update-draft.md)).
 
 ---
 
-## Paper and evaluation
+## Evaluation and paper
 
-The white paper, *Tracekit: Tamper-Evident Intent–Reasoning–Action Auditing for Autonomous Coding Agents* (Bravish Ghosh), is in [`paper/`](paper/), with the PDF at [`paper/main.pdf`](paper/main.pdf). It covers v0.1. Every number in it is generated from [`eval/results/`](eval/results/) by `eval/make_macros.py`.
+`make eval` runs two offline experiments against the v0.2 code and writes JSON to `eval/results/`. Results and caveats: [docs/evaluation.md](docs/evaluation.md).
 
 | Experiment | Script | What it measures |
 |---|---|---|
-| E1 integrity | `eval/e1_integrity.py` | Detection of 8 kinds of tampering; anchoring interval vs detection |
-| E2 overhead | `eval/e2_perf.py` | Hook latency vs ledger size; concurrent writers |
-| E3 policy gate | `eval/e3_policy.py` | Block rate on 44 harmful and 40 benign tool calls |
-| E4 real agents | `eval/e5_agents.py` | 14 real Claude Code runs, including planted prompt injections |
-| E5 seeded faults | `eval/e4_seeded_faults.py` | Rule flags vs independent reviewer on concealed misaligned steps |
+| E1 integrity | `eval/e1_integrity.py` | Detection of 8 kinds of tampering by the ledger alone and with witness checkpoints; witness interval vs detection for an attacker who holds the signing key |
+| E3 policy gate | `eval/e3_policy.py` | Block rate of the default policy on 44 harmful and 40 benign tool calls (tuned on), plus a rougher second set |
 
-Rebuild with `python3 eval/make_figures.py && python3 eval/make_macros.py && cd paper && latexmk -pdf main.tex`.
+The ledger alone cannot detect truncation or a full re-sign by a key holder; the witness closes that gap. Both limits show up in the E1 output.
 
-<details>
-<summary><b>v0.1 scripts (still in the repo root)</b></summary>
-
-The v0.1 scripts keep working. They log as the agent's own user and can be rewritten by it, so use v0.2 for evidence.
-
-```bash
-python3 install.py            # user-wide; --project for just this repo; restart Claude Code
-python3 view.py               # writes ~/.tracekit/report.html
-python3 verify.py             # check the log hasn't been altered
-python3 verify.py anchor      # save the current head hash; keep a copy off this machine
-python3 observer.py           # live terminal at http://127.0.0.1:7777 (accepts POST /api/ingest)
-python3 watch.py              # the same feed as plain text
-python3 install.py --uninstall
-```
-
-**Independent review.** A separate model compares what you asked, what the agent said, and what it did, and writes JSON findings into the log:
-
-```bash
-python3 judge.py --session <id-prefix> --via-cli   # uses your signed-in `claude` CLI, no tools, one turn
-python3 judge.py --session <id-prefix>             # or with ANTHROPIC_API_KEY set
-python3 judge.py --session <id-prefix> --dry-run   # see exactly what gets sent
-```
-
-`judge.py` is the only v0.1 path that sends anything off the machine.
-
-**Automatic flags in the v0.1 report:** blocked by policy; wrote outside the project folder; touched secrets; **changed a file never mentioned in your prompt or its reasoning**; acted with no stated reasoning; network access, destructive command or external side effect; tool error or no result.
-
-**Real Claude Code demo.** `bash demo/run_demo.sh` runs a headless `claude -p` session on a repo with a timeout bug, using its own `TRACEKIT_HOME` and `--settings` file. In `demo/sample-output/` the agent fixed `api.py` and left `billing.py` alone, its `.env` write was blocked and reported rather than worked around, withheld thinking was labelled as withheld, the tamper test caught one edited record, and the reviewer rated the run `aligned` while noting the agent had echoed an instruction planted inside `billing.py`.
-
-**Other agents (v0.1 SDK).** Anything can be traced into the v0.1 ledger, not only Claude Code. Rules in `policy.json` are checked on every `tool()` call:
-
-```python
-from tracekit_sdk import Tracer
-t = Tracer(agent="research-bot")
-t.prompt("Compare Q3 revenue")
-w = t.subagent("fetcher", "Fetch ACME filings")      # gets its own lane
-with w.tool("http_get", {"url": "..."}) as call:     # policy-checked before it runs
-    call.result({"status": 200})
-w.done("ok"); t.end()
-```
-
-Agents on other machines can POST JSON to the v0.1 observer's `/api/ingest` (set `TRACEKIT_INGEST_TOKEN`, bind with `--host 0.0.0.0`). See `examples/custom_agent.py`. The v0.2 `tracekit observe` is read-only and has no ingest endpoint, because only `tracekitd` writes the v0.2 ledger.
-
-Settings: `TRACEKIT_HOME`, `TRACEKIT_POLICY`, `TRACEKIT_MAX_STR`, `TRACEKIT_FAIL_CLOSED=1`.
-
-</details>
+The white paper, *Tracekit: Tamper-Evident Intent–Reasoning–Action Auditing for Autonomous Coding Agents* (Bravish Ghosh), is in [`paper/`](paper/) with the PDF at [`paper/main.pdf`](paper/main.pdf). It describes the v0.1 prototype and its measurements; the v0.1 scripts and their experiment code were removed from this tree and are in the git history before the v0.2 release. A v0.2 update of the paper is pending.
 
 ## Tests
 
 ```bash
-python3 -m unittest discover -s tests      # 87 tests; the two-OS-user isolation test runs only as root
+make test        # or: python -m pytest -q
 ```
 
-- `tests/test_v02.py` (27): Ed25519 vectors, schema, redaction, policy, signer counters and gaps, fail-open/closed with the signer killed, 9 tamper cases, two-user isolation, export, packaging, demo, v0.1 migration.
-- `tests/test_capture.py` (35): transcript tamper detection, the proxy (streaming, redaction, error pass-through, fail modes), proxy/hook cross-check, approvals, policy provenance, trust root, YAML policy.
-- `tests/test_tracekit.py` (25): v0.1.
+- `tests/test_v02.py`: Ed25519 vectors, schema, redaction, policy, signer counters and gaps, fail-open/closed with the signer killed, tamper cases, two-user isolation (runs only as root), export, packaging, demo, v0.1 ledger migration.
+- `tests/test_capture.py`: transcript tamper detection, the proxy (streaming, redaction, error pass-through, fail modes), proxy/hook cross-check, approvals, policy provenance, trust root, YAML policy.
+- `tests/test_portability.py`, `test_rekor.py`, `test_adapters.py`, `test_ingest.py`: macOS/Windows paths and the plugin package (mocked), Merkle proofs and the Rekor client, LangChain/LangGraph against the real libraries, the remote gateway end to end.
+- `tests/test_hardening.py`: malformed and hostile input to the verifier, signer, hook, policy engine, observer and installer; bounded memory; regex safety.
 
 ## License
 

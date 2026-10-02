@@ -4,14 +4,14 @@
 
 | Mode | Command | Key | Runs as |
 |---|---|---|---|
-| System (Linux only) | `sudo tracekit init --user <agent-user>` | `/var/lib/tracekit/keys/signer.key` (0600, dir 0700) | OS user `tracekit`, under systemd |
+| System (Linux; macOS experimental) | `sudo tracekit init --user <agent-user>` (macOS: add `--experimental-macos`) | `/var/lib/tracekit/keys/signer.key` (0600, dir 0700) | OS user `tracekit` under systemd (macOS: `_tracekit` under launchd) |
 | Dev (any OS) | `tracekit init --dev` | `~/.tracekit-signer/keys/signer.key` | your own user. **Bundles record `signer_isolation: same-user` and the verifier warns** |
 
 The public key is `keys/signer.pub`; it is copied into every bundle. The key id is `ed25519:` + the first 16 hex characters of `sha256(pubkey)`.
 
 **Why a separate OS user and not the OS keychain.** A keychain protects the key's bytes, but it signs whatever a process in the user's session asks it to. An agent running in that session could ask it to sign forged or rewritten records, and could still delete or rewrite the ledger file. A separate user owns both the key and the ledger, so the agent's user can only append through the socket and can never rewrite what is there.
 
-**Why system mode is Linux-only.** The signer identifies each caller with `SO_PEERCRED`: that is how it attests `os_user`, refuses `source=proxy` events from anyone but its own user, and checks approvers. System-mode installation is refused on platforms without it. Dev mode uses an authenticated loopback TCP transport there, but caller identity remains unattested and proxy events and approvals are explicitly untrusted. A manually configured Unix socket is refused when peer credentials are unavailable.
+**Why system mode needs kernel peer credentials.** The signer identifies each caller with `SO_PEERCRED` (Linux) or `LOCAL_PEERCRED` and `LOCAL_PEERPID` (macOS): that is how it attests `os_user`, refuses `source=proxy` events from anyone but its own user, and checks approvers. System-mode installation is refused on platforms without them (Windows), and on macOS it needs `--experimental-macos` until it is validated on hardware ([platforms](portability.md)). Where there are no peer credentials, dev mode uses an authenticated loopback TCP transport, but caller identity remains unattested and proxy events and approvals are explicitly untrusted. A manually configured Unix socket is refused when peer credentials are unavailable.
 
 ## Cryptography
 
@@ -30,7 +30,7 @@ Signing and key generation use the [`cryptography`](https://cryptography.io) pac
 
 The socket accepts `status`, `append`, `checkpoint` (adds a checkpoint, nothing else) and the approval operations. There is no delete, rewrite or key export. On `append` it:
 
-1. validates the event against `schema/tracekit.event.v1.json`; failures are rejected **and** recorded as an `error` event;
+1. validates the event against `tracekit/schema/tracekit.event.v1.json`; failures are rejected **and** recorded as an `error` event;
 2. refuses `source: signer` from any client; system mode accepts `source: proxy` only from its own OS user, while dev mode's authenticated local transport is explicitly same-user and untrusted;
 3. sets `seq`, `prev_hash` and `ts_signed` itself (the client cannot choose them), and an `id` if the client sent none;
 4. on `run.start`, replaces `os_user` with the caller's user from `SO_PEERCRED` and sets `os_user_attested: true`;

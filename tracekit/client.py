@@ -37,10 +37,45 @@ def socket_path():
     return os.environ.get("TRACEKIT_SOCKET") or client_config().get("socket") or DEFAULT_SOCKET
 
 
+def _http_rpc(endpoint, cfg, req, timeout):
+    """Remote transport: POST the request to an ingest gateway (docs/remote-ingest.md)."""
+    import urllib.error
+    import urllib.request
+    parsed = urlsplit(endpoint)
+    if parsed.scheme != "https" and not (parsed.scheme == "http" and parsed.hostname in ("127.0.0.1", "localhost")):
+        raise SignerUnavailable("remote signer endpoints must use https (plain http only for localhost)")
+    token = cfg.get("socket_token") or os.environ.get("TRACEKIT_REMOTE_TOKEN")
+    if not isinstance(token, str) or not token:
+        raise SignerUnavailable("remote endpoint has no token (set it with `tracekit init --remote`)")
+    url = endpoint.rstrip("/") + ("" if endpoint.rstrip("/").endswith("/v1/rpc") else "/v1/rpc")
+    r = urllib.request.Request(url, data=json.dumps(req, ensure_ascii=False).encode("utf-8"), method="POST",
+                               headers={"Content-Type": "application/json", "Authorization": "Bearer " + token})
+    try:
+        with urllib.request.urlopen(r, timeout=timeout) as resp:
+            return json.loads(resp.read() or b"{}")
+    except urllib.error.HTTPError as e:
+        try:
+            body = json.loads(e.read() or b"{}")
+        except ValueError:
+            body = {}
+        if e.code in (429, 503):
+            body.setdefault("retryable", True)
+        return {"ok": False, "error": body.get("error") or f"HTTP {e.code}", **({"retryable": True} if body.get("retryable") else {})}
+    except (OSError, ValueError) as e:
+        raise SignerUnavailable(str(e)) from e
+
+
+def is_remote(config=None):
+    cfg = config if config is not None else client_config()
+    return str(cfg.get("socket", "")).startswith(("https://", "http://"))
+
+
 def _rpc(req, timeout=5.0, config=None):
     cfg = config if config is not None else client_config()
     endpoint = cfg.get("socket", DEFAULT_SOCKET) if config is not None else socket_path()
     request = req
+    if endpoint.startswith(("https://", "http://")):
+        return _http_rpc(endpoint, cfg, req, max(timeout, 10.0))
     if endpoint.startswith("tcp://"):
         try:
             parsed = urlsplit(endpoint)

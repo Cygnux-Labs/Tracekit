@@ -1,55 +1,54 @@
 {
-  "records_per_ledger": 300,
+  "records_per_ledger": 120,
   "mutations": {
     "edit_field": {
-      "chain_only": 1.0,
-      "chain_plus_anchor": 1.0,
-      "trials": 200
+      "ledger_only": 1.0,
+      "ledger_plus_witness": 1.0,
+      "trials": 60
     },
     "delete_record": {
-      "chain_only": 1.0,
-      "chain_plus_anchor": 1.0,
-      "trials": 200
+      "ledger_only": 1.0,
+      "ledger_plus_witness": 1.0,
+      "trials": 60
     },
     "swap_adjacent": {
-      "chain_only": 1.0,
-      "chain_plus_anchor": 1.0,
-      "trials": 200
+      "ledger_only": 1.0,
+      "ledger_plus_witness": 1.0,
+      "trials": 60
     },
     "insert_forged": {
-      "chain_only": 1.0,
-      "chain_plus_anchor": 1.0,
-      "trials": 200
+      "ledger_only": 1.0,
+      "ledger_plus_witness": 1.0,
+      "trials": 60
     },
     "truncate_tail": {
-      "chain_only": 0.0,
-      "chain_plus_anchor": 1.0,
-      "trials": 200
+      "ledger_only": 0.0,
+      "ledger_plus_witness": 1.0,
+      "trials": 60
     },
-    "rechain_after_edit": {
-      "chain_only": 0.0,
-      "chain_plus_anchor": 1.0,
-      "trials": 200
+    "rechain_no_key": {
+      "ledger_only": 1.0,
+      "ledger_plus_witness": 1.0,
+      "trials": 60
     },
-    "rechain_after_delete": {
-      "chain_only": 0.0,
-      "chain_plus_anchor": 1.0,
-      "trials": 200
+    "rechain_with_key": {
+      "ledger_only": 0.0,
+      "ledger_plus_witness": 1.0,
+      "trials": 60
     },
     "torn_write": {
-      "chain_only": 1.0,
-      "chain_plus_anchor": 1.0,
-      "trials": 200
+      "ledger_only": 1.0,
+      "ledger_plus_witness": 1.0,
+      "trials": 60
     }
   },
-  "anchor_interval_vs_detection": {
+  "witness_interval_vs_detection": {
     "1": 1.0,
-    "5": 0.99,
-    "10": 0.97,
-    "25": 0.97,
-    "50": 0.925,
-    "100": 0.86,
-    "300": 0.465
-  },
-  "source_records": 143
+    "5": 1.0,
+    "10": 1.0,
+    "25": 0.9,
+    "50": 0.8166666666666667,
+    "100": 0.8166666666666667,
+    "120": 1.0
+  }
 }

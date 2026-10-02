@@ -20,12 +20,12 @@ approval_timeout_s: 120    # C8: an `ask` that nobody answers is rejected after 
 deny:
   - id: TK-D001
     tool: Bash
-    pattern: '\bsudo\b|\bdoas\b|\bpkexec\b|\bsu\s+-c\b|\bsu\s+root\b'
+    pattern: '(^|[;&|(`''"]|\$\(|\bxargs\s|\bexec\s|\bnohup\s|\btime\s|\benv\s)\s*(sudo|doas|pkexec)\b|\bsu\s+-c\b|\bsu\s+root\b'
     reason: privilege escalation
     rationale: An agent should never need root; escalation widens every other risk and would let it reach the signer.
   - id: TK-D002
     tool: Bash
-    pattern: '(curl|wget)[^|;&]*\|\s*(sudo\s+)?(ba|z|da)?sh\b|(ba|z)?sh\s+<\(\s*(curl|wget)|\$\(\s*(curl|wget)'
+    pattern: '(curl|wget)[^|;&]*\|\s*(sudo\s+)?((ba|z|da)?sh|python3?|perl|ruby|node)\b|(ba|z)?sh\s+<\(\s*(curl|wget)|\$\(\s*(curl|wget)|\b(curl|wget)\b[^\n]*(&&|;)\s*(sudo\s+)?((ba|z|da)?sh\s+\S|\./\S|chmod\s+\+x[^\n]*(&&|;)\s*\./)|\b(exec|eval)\(\s*[A-Za-z_.]*urlopen'
     reason: running a downloaded script
     rationale: Remote code execution without review.
   - id: TK-D003
@@ -35,18 +35,28 @@ deny:
     rationale: Rewrites shared history.
   - id: TK-D004
     tool: Bash
-    pattern: '\brm\s+-[a-zA-Z]*[rR][a-zA-Z]*\s+(--no-preserve-root\s+)?(/|~|\$HOME)(/?\*)?(\s|$)|\bfind\s+/\s.*-delete'
+    pattern: '\brm\b(?=[^;&|\n]*?\s-[a-zA-Z]*[rR])\s+(-{1,2}[a-zA-Z-]+\s+)+["'']?(/|~|\$HOME|\$\{HOME\})/?["'']?\*?(\s|$)|\bfind\s+/\s.*-delete'
     reason: recursive delete of root or home
     rationale: Irrecoverable data loss.
   - id: TK-D005
     tool: Write|Edit|MultiEdit|NotebookEdit
     field: file_path
-    pattern: '(^|/)(\.env(\.[A-Za-z0-9_-]+)?|id_rsa|id_ed25519|credentials)$|/\.ssh/|/\.aws/'
+    pattern: '(^|/)(\.env(\.(?!example$|sample$|template$|dist$)[A-Za-z0-9_-]+)?|id_rsa|id_ed25519|credentials)$|/\.ssh/|/\.aws/'
     reason: writing to a credentials file
     rationale: Credential files are high-value and rarely a legitimate agent target.
+  - id: TK-D010
+    tool: Bash
+    pattern: '(>>?|\btee\b(\s+-a)?|\b(cp|mv|install)\b[^\n|;&]*\s)\s*\S*(\.env(\.(?!example\b|sample\b|template\b|dist\b)[A-Za-z0-9_-]+)?|id_rsa|id_ed25519|authorized_keys|\.aws/credentials)(\s|$|[;&|)''"])'
+    reason: writing to a credentials file from the shell
+    rationale: The shell twin of TK-D005. Redirects, tee, cp and mv reach the same files the file-editing tools are blocked from.
+  - id: TK-D011
+    tool: Bash
+    pattern: '\b(cat|tar|zip|base64|gzip)\b[^\n]*(\.ssh|id_rsa|id_ed25519|\.aws|\.netrc|/etc/shadow|/etc/passwd)[^\n]*\|\s*(curl|nc|ncat|socat|wget)\b|\b(scp|rsync|curl|wget)\b[^\n]*(\.ssh/|id_rsa|id_ed25519|\.aws/credentials|\.netrc|--post-file[ =]/etc/(passwd|shadow))'
+    reason: sending credential files off the machine
+    rationale: Keys and cloud credentials leaving the host are exfiltration. TK-D006 covers .env files.
   - id: TK-D006
     tool: Bash
-    pattern: '(curl|wget|http|nc|ncat|scp|rsync)\b[^\n]*(@\S*\.env\b|--data[-a-z]*[ =]@?\S*\.env\b|--upload-file\s+\S*\.env\b|--post-file[ =]\S*\.env\b|\s\S*\.env\s+\S+:|<\s*\S*\.env\b)'
+    pattern: '\bcat\s+\S*\.env\b[^\n]*\|\s*(curl|wget|nc|ncat)\b|(curl|wget|http|nc|ncat|scp|rsync)\b[^\n]*(@\S*\.env\b|--data[-a-z]*[ =]@?\S*\.env\b|--upload-file\s+\S*\.env\b|--post-file[ =]\S*\.env\b|\s\S*\.env\s+\S+:|<\s*\S*\.env\b)'
     reason: uploading a secrets file
     rationale: Sending .env off the machine is exfiltration.
   - id: TK-D007
