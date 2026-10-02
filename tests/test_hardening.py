@@ -671,3 +671,47 @@ class LongInputs(unittest.TestCase):
         pol = policy.load()[0]
         self.assertEqual(policy.evaluate(pol, "Bash", {"command": "x" * (policy.MAX_SUBJECT + 1)}, "/p")["decision"], "deny")
         self.assertEqual(policy.evaluate(pol, "Read", {"file_path": "x" * 1000}, "/p")["decision"], "allow")
+
+
+class BurstOfWriters(unittest.TestCase):
+    """Sixteen writers connecting at once must not lose events to a full accept queue (EAGAIN)."""
+
+    def test_no_events_dropped_under_a_burst(self):
+        import threading
+        from tracekit import install
+        from tracekit.agent_sdk import Tracer
+        from tracekit.ledger import read_records
+        d = tempfile.mkdtemp()
+        home = os.path.join(d, "signer")
+        saved = {k: os.environ.get(k) for k in ("TRACEKIT_CLIENT_HOME", "TRACEKIT_POLICY")}
+        os.environ["TRACEKIT_CLIENT_HOME"] = os.path.join(d, "client")
+        os.environ.pop("TRACEKIT_POLICY", None)
+        try:
+            install.init_dev(home, [], checkpoint_every=50)
+            errors = []
+
+            def work(w):
+                try:
+                    with Tracer(agent="burst", session_id=f"burst{w}") as t:
+                        for i in range(20):
+                            with t.tool("Read", {"file_path": f"{w}/{i}.py"}) as c:
+                                c.result({"bytes": i})
+                except Exception as e:  # noqa: BLE001
+                    errors.append(repr(e))
+            th = [threading.Thread(target=work, args=(w,)) for w in range(16)]
+            [x.start() for x in th]
+            [x.join() for x in th]
+            install.stop_dev_daemon(home)
+            self.assertEqual(errors, [])
+            recs = [r["event"] for _, r, _ in read_records(os.path.join(home, "ledger", "ledger.jsonl"))
+                    if r and not r.get("elided") and r["event"]["run_id"].startswith("burst")]
+            self.assertFalse([e for e in recs if e["type"] == "capture.gap"], "a send failed and was recorded as a gap")
+            self.assertEqual(len([e for e in recs if e["type"] in ("tool.call", "tool.result")]), 16 * 20 * 2)
+        finally:
+            install.stop_dev_daemon(home)
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+            shutil.rmtree(d, ignore_errors=True)

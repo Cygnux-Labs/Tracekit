@@ -1,4 +1,4 @@
-.PHONY: help install test lint build check demo eval clean
+.PHONY: help install test lint build check demo eval eval-agents clean
 PY ?= python3
 
 help:
@@ -8,7 +8,8 @@ help:
 	@echo "make build     build the sdist and wheel into dist/"
 	@echo "make check     lint + test + build + twine check"
 	@echo "make demo      run the scripted end-to-end demo"
-	@echo "make eval      offline evaluations E1 (integrity) and E3 (policy gate); rewrites eval/results/"
+	@echo "make eval      offline evaluations E1 (integrity), E2 (overhead), E3 (policy gate), E4 (seeded faults); rewrites eval/results/"
+	@echo "make eval-agents  E5: real Claude Code runs (needs the claude CLI; spends model usage)"
 	@echo "make clean     remove build artefacts"
 
 install:
@@ -32,7 +33,12 @@ demo:
 
 eval:
 	$(PY) eval/e1_integrity.py
+	$(PY) eval/e2_perf.py
 	$(PY) eval/e3_policy.py
+	$(PY) eval/e4_seeded_faults.py
+
+eval-agents:
+	E5=1 $(PY) eval/e5_agents.py
 
 clean:
 	rm -rf build dist *.egg-info .pytest_cache

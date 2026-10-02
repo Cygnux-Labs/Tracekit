@@ -7,7 +7,14 @@ All notable changes to Tracekit. Versions follow [PEP 440](https://peps.python.o
 First release candidate of v0.2: the signed evidence-bundle core, live observer and custom-agent SDK.
 This entry lists the fixes from the production-hardening review on top of the v0.2 development branch.
 
+### Added
+- Evaluations E2 (overhead), E4 (seeded faults against a real bundle) and E5 (opt-in real Claude Code runs) ported to
+  v0.2, with `make eval-agents`; results in `docs/evaluation.md`. `eval/_stack.py` is the shared throwaway-signer helper.
+
 ### Fixed
+- **Bursts of concurrent writers lost events.** The signer's accept queue was Python's default of 5, so eight or more
+  writers connecting at once got `EAGAIN` and, being fail-open, dropped events. The queue is 256 and the client retries
+  a full-queue connect. Found by the new E2 evaluation; covered by `BurstOfWriters`.
 - **A write to a path containing a NUL byte was not flagged on some Python and OS combinations.** The
   out-of-scope check relied on `realpath` raising; it now treats an embedded NUL as out of scope explicitly.
 - **Tests assumed Linux.** Approvals used GNU `script -c` and `SO_PEERCRED`; they now use a stdlib `pty` helper

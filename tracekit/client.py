@@ -4,6 +4,7 @@ by design: tampering with it only produces capture.gap events on the signer side
 import json
 import os
 import socket
+import time
 from urllib.parse import urlsplit
 
 from .core import now_ts
@@ -97,7 +98,14 @@ def _rpc(req, timeout=5.0, config=None):
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
         s.settimeout(timeout)
-        s.connect(address)
+        for attempt in range(40):  # a full accept queue shows up as EAGAIN (Unix sockets): wait briefly and retry
+            try:
+                s.connect(address)
+                break
+            except BlockingIOError:
+                if attempt == 39:
+                    raise
+                time.sleep(0.02 + 0.01 * attempt)
         s.sendall((json.dumps(request, ensure_ascii=False) + "\n").encode("utf-8"))
         buf = b""
         while not buf.endswith(b"\n"):
