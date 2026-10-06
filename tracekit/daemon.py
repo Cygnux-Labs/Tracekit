@@ -617,7 +617,10 @@ class Signer:
         if ev["type"] == "policy.decision" and claimed and not os.path.exists(self._blob(claimed)):
             self._internal("capture.gap", {"reason": f"decision made under policy {claimed[:19]} whose snapshot was never recorded",
                                            "kind": "policy_unrecorded", "tool_use_id": ev["data"].get("tool_use_id")}, run_id)
-        if ev["type"] == "run.start":
+        if run_id.startswith("findings:"):
+            if ev["type"] != "review":  # companion runs hold analyzer findings only; no lifecycle of their own
+                return {"ok": False, "error": "findings runs accept only review events"}
+        elif ev["type"] == "run.start":
             if st["started"] and not st["ended"]:
                 self._internal("capture.gap", {"reason": "run.start for a run that never recorded run.end", "kind": "no_run_end"}, run_id)
             st.update(started=True, ended=False, proxy="proxy" in ev["data"].get("capture_sources", []), agent_uid=peer_uid)

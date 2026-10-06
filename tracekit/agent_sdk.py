@@ -27,7 +27,7 @@ class _ToolCall:
         self.name = str(name)[:200]
         self.args = jsonable(args)  # sets, bytes, datetimes, NaN...: recording must never raise inside the agent
         # pass the model's own tool-call id to link this execution to the model.exchange that asked for it
-        self.tool_use_id = str(tool_use_id)[:200] if tool_use_id else "call_" + uuid.uuid4().hex[:24]
+        self.tool_use_id = str(tool_use_id)[:200] if tool_use_id else "tk_" + uuid.uuid4().hex[:24]
         self.result_value = None
         self.started = None
 

@@ -49,7 +49,7 @@ def select(records, run=None, last=False, since=None):
     return set()
 
 
-def export(signer_home, out_path, run=None, last=True, since=None, otel=False, otel_endpoint=None):
+def export(signer_home, out_path, run=None, last=True, since=None, otel=False, otel_endpoint=None, otel_headers=None):
     ledger_path = os.path.join(signer_home, "ledger", "ledger.jsonl")
     recs = [r for _, r, _ in read_records(ledger_path) if r]
     if not recs:
@@ -58,6 +58,8 @@ def export(signer_home, out_path, run=None, last=True, since=None, otel=False, o
     if not runs:
         raise SystemExit("no run matches the selection")
     runs = set(runs)
+    present = {r["event"]["run_id"] for r in recs if not r.get("elided")}
+    runs |= {"findings:" + x for x in list(runs) if "findings:" + x in present}  # signed findings travel with their run
     keep = lambda ev: ev["run_id"] in runs or (ev["run_id"] == "_signer" and ev["type"] in SIGNER_TYPES)  # noqa: E731
     sel_seqs = [r["event"]["seq"] for r in recs if not r.get("elided") and r["event"]["run_id"] in runs]
     if not sel_seqs:
@@ -147,7 +149,7 @@ def export(signer_home, out_path, run=None, last=True, since=None, otel=False, o
         blobs["otel.json"] = json.dumps(payload, indent=1).encode("utf-8")
         if otel_endpoint:
             try:
-                pushed = push(otel_endpoint, payload)
+                pushed = push(otel_endpoint, payload, headers=otel_headers)
             except Exception as e:  # a down collector must not cost you the evidence bundle
                 import sys
                 print(f"tracekit: warning: could not send spans to {otel_endpoint} ({e}); the bundle was still written",
@@ -460,6 +462,19 @@ def _verify(rep, manifest, blobs, witness_specs, strict, trusted_key):
               "that exist in it" if not pp else "", pp[:20])
     if pw:
         rep.check("policy unchanged during run", False, "", pw[:20], warn=True)
+
+    # 5b. signed findings must cite evidence that is in the bundle, unaltered
+    from .findings import check_bundle
+    fnd = [e for e in sel if e.get("type") == "review" and str(e.get("run_id", "")).startswith("findings:")]
+    if fnd:
+        fp = check_bundle(fnd, hashes)
+        sev = {}
+        for e in fnd:
+            v = e["data"].get("verdict") or {}
+            sev[v.get("severity", "?")] = sev.get(v.get("severity", "?"), 0) + 1
+        rep.check("findings cite intact evidence", not fp, f"{len(fnd)} signed finding(s) (" +
+                  ", ".join(f"{k}: {v}" for k, v in sorted(sev.items())) + "), every cited record present and unaltered"
+                  if not fp else "", fp[:20])
 
     # 6. capture sources used (C1): every event carries its source; say how much each is worth
     counts = {}

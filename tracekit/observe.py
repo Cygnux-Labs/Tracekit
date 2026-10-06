@@ -88,6 +88,18 @@ class Translator:
             if t in ("capture.gap", "trace.tamper"):
                 out.append(self.alert(e, rec, "med", "SIGNER · " + t, d.get("reason") or json.dumps(d)[:200], "GAP"))
             return out
+        if e["run_id"].startswith("findings:"):
+            v = d.get("verdict") or {}
+            if t == "review" and v.get("kind") == "finding":
+                sev = {"critical": "high", "high": "high", "medium": "med"}.get(v.get("severity"), "low")
+                a = self.alert(e, rec, sev, f"FINDING {v.get('rule', '')} · {v.get('title', '')}",
+                               f"{v.get('detail', '')} [evidence seq {', '.join(str(x.get('seq')) for x in (v.get('evidence') or [])[:6])}]", "FINDING")
+                a.pop("agent_id", None)  # the analyzer is not an agent lane of the run
+                a.pop("agent_type", None)
+                a["session_id"] = v.get("run_id") or a["session_id"]
+                a["agent"] = self.agent_names.get(a["session_id"], a["agent"])
+                out.append(a)
+            return out
         if t == "run.start":
             self.agent_names[e["run_id"]] = (d.get("agent") or {}).get("name") or "custom-agent"
         agent_id = e.get("agent_id")

@@ -16,6 +16,8 @@ def report(events):
     gaps, tampers, bg, net, sources = [], [], [], [], set()
     exchanges, reported_exchanges, otel_runs, shadow, envt, approvals = 0, 0, set(), [], [], []
     for e in events:
+        if e["run_id"].startswith("findings:"):
+            continue  # analyzer conclusions, not capture
         sources.add(e["source"])
         d = e["data"]
         r = runs.setdefault(e["run_id"], {"start": None, "end": False})
