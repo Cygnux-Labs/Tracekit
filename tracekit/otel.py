@@ -180,7 +180,7 @@ def parse_headers(pairs=(), env=True):
 
 
 def push(endpoint, payload, timeout=10, headers=None):
-    """POST OTLP/JSON to an OTLP/HTTP collector or backend (Jaeger, Tempo, Langfuse, Laminar, ...).
+    """POST OTLP/JSON to an OTLP/HTTP collector or backend (Jaeger, Tempo or any OTLP/HTTP endpoint).
     A URL ending in /v1/traces (or any explicit path) is used as given; a bare origin gets /v1/traces appended."""
     from urllib.parse import urlsplit
     base = endpoint.rstrip("/")
