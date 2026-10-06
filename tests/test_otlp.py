@@ -510,3 +510,74 @@ class CoverageWording(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Push(unittest.TestCase):
+    """tracekit otel push: signed runs out to any OTLP/HTTP backend, with auth headers, exactly once per run."""
+
+    def setUp(self):
+        from http.server import BaseHTTPRequestHandler
+        self.d = tempfile.mkdtemp()
+        self.home = os.path.join(self.d, "signer")
+        self.old = os.environ.get("TRACEKIT_CLIENT_HOME")
+        os.environ["TRACEKIT_CLIENT_HOME"] = os.path.join(self.d, "client")
+        install.init_dev(self.home, [], start=True)
+        got = self.got = []
+
+        class H(BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_POST(self):
+                body = self.rfile.read(int(self.headers["Content-Length"]))
+                got.append((self.path, dict(self.headers), json.loads(body)))
+                self.send_response(200)
+                self.send_header("Content-Length", "2")
+                self.end_headers()
+                self.wfile.write(b"{}")
+        self.srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+        self.url = f"http://127.0.0.1:{self.srv.server_address[1]}/api/public/otel/v1/traces"
+
+    def tearDown(self):
+        self.srv.shutdown()
+        self.srv.server_close()
+        install.stop_dev_daemon(self.home)
+        if self.old is None:
+            os.environ.pop("TRACEKIT_CLIENT_HOME", None)
+        else:
+            os.environ["TRACEKIT_CLIENT_HOME"] = self.old
+        shutil.rmtree(self.d, ignore_errors=True)
+
+    def push(self, *extra):
+        from tracekit import cli
+        return cli.main(["otel", "push", "--endpoint", self.url, "--home", self.home, "--header", "Authorization=Basic abc",
+                         "--state", os.path.join(self.d, "state.json"), *extra])
+
+    def test_all_runs_once_with_headers_and_evidence_links(self):
+        from tracekit.agent_sdk import Tracer
+        for sid in ("one", "two"):
+            with Tracer(agent="bot", session_id=sid, cwd=self.d) as t:
+                with t.tool("Bash", {"command": "ls"}) as c:
+                    c.result("x")
+        self.assertEqual(self.push("--all"), 0)
+        self.assertEqual(len(self.got), 2)
+        path, headers, body = self.got[0]
+        self.assertEqual(path, "/api/public/otel/v1/traces")  # explicit path used as given
+        self.assertEqual(headers.get("Authorization"), "Basic abc")
+        attrs = [a["key"] for rs in body["resourceSpans"] for ss in rs["scopeSpans"] for s in ss["spans"] for a in s["attributes"]]
+        self.assertIn("tracekit.entry_hash", attrs)
+        self.assertEqual(self.push("--all"), 0)
+        self.assertEqual(len(self.got), 2, "already-sent runs are not sent again")
+
+    def test_tracekit_to_tracekit_round_trip(self):
+        """Our own OTLP export is valid input for our own receiver."""
+        from tracekit.agent_sdk import Tracer
+        with Tracer(agent="bot", session_id="rt", cwd=self.d) as t:
+            with t.tool("Bash", {"command": "ls"}) as c:
+                c.result("x")
+        self.push("--run", "rt")
+        spans = otlp_wire.decode(json.dumps(self.got[0][2]).encode(), "application/json")[0]
+        self.assertTrue(spans)
+        kinds = {otlp.classify(sp) for sp in spans}
+        self.assertTrue({"tool", "agent"} <= kinds)
