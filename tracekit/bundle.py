@@ -143,7 +143,7 @@ def export(signer_home, out_path, run=None, last=True, since=None, otel=False, o
     pushed = None
     if otel or otel_endpoint:
         from .otel import push, to_otlp_json
-        payload = to_otlp_json(sel_events, crypto.kid(pub))
+        payload = to_otlp_json(sel_events, crypto.kid(pub), {r["event"]["seq"]: r["hash"] for r in body_recs if not r.get("elided")})
         blobs["otel.json"] = json.dumps(payload, indent=1).encode("utf-8")
         if otel_endpoint:
             try:

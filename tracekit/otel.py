@@ -41,7 +41,22 @@ def _clear(inp, k):
     return v.get("value") if "value" in v else None
 
 
-def to_otlp_json(events, kid=None):
+def _provider(d):
+    up = d.get("upstream") or ""
+    return up[5:] if up.startswith("otel:") else "anthropic"  # the proxy only fronts the Anthropic API
+
+
+def to_otlp_json(events, kid=None, hashes=None):
+    """hashes: optional {seq: record hash}. Each span then carries tracekit.entry_hash, so any span in any
+    backend can be traced back to the signed ledger entry it came from (and checked with `tracekit verify`)."""
+    from .otlp import trace_id_of
+    hashes = hashes or {}
+
+    def ev_attrs(e):
+        out = [_attr("tracekit.seq", e["seq"])]
+        if e["seq"] in hashes:
+            out.append(_attr("tracekit.entry_hash", hashes[e["seq"]]))
+        return out
     runs = {}
     for e in events:
         r = runs.setdefault(e["run_id"], {"start": None, "end": None, "first": e, "last": e, "calls": {}, "dec": {}, "spans": [],
@@ -69,13 +84,17 @@ def to_otlp_json(events, kid=None):
     for rid, r in runs.items():
         if rid.startswith("_"):
             continue
-        trace = hashlib.sha256(rid.encode()).hexdigest()[:32]
-        root = _sid(rid, "root")
+        orig = trace_id_of(rid)  # ingested from OpenTelemetry: give the spans back their original ids
+        trace = orig or hashlib.sha256(rid.encode()).hexdigest()[:32]
+        root = (r["end"]["id"][:16] if orig and r["end"] else _sid(rid, "root"))
         st = (r["start"] or {}).get("data", {})
         agent = (st.get("agent") or {}).get("name", "agent")
         spans = []
+        provs = sorted({_provider(b["data"]) for k, a, b in r["spans"] if k == "chat"}) or (["unknown"] if orig else ["anthropic"])
         root_attrs = [_attr("gen_ai.operation.name", "invoke_agent"), _attr("gen_ai.agent.name", agent),
-                      _attr("gen_ai.conversation.id", rid), _attr("gen_ai.provider.name", "anthropic")]
+                      _attr("gen_ai.conversation.id", rid), _attr("gen_ai.provider.name", provs[0])]
+        if r["start"]:
+            root_attrs += ev_attrs(r["start"])
         for k in ("model", "repo", "commit", "os_user", "fail_mode", "signer_isolation", "sandbox", "content_capture"):
             if st.get(k) is not None:
                 root_attrs.append(_attr(("gen_ai.request.model" if k == "model" else f"tracekit.{k}"), st[k]))
@@ -99,7 +118,7 @@ def to_otlp_json(events, kid=None):
                 d, dec = b["data"], r["dec"].get(a["data"]["tool_use_id"], {})
                 attrs = [_attr("gen_ai.operation.name", "execute_tool"), _attr("gen_ai.tool.name", a["data"]["name"]),
                          _attr("gen_ai.tool.call.id", d["tool_use_id"]), _attr("tracekit.agent_id", a["agent_id"]),
-                         _attr("tracekit.seq", a["seq"]), _attr("tracekit.source", a["source"]),
+                         _attr("tracekit.source", a["source"]), *ev_attrs(a),
                          _attr("tracekit.policy.decision", dec.get("decision", "unknown")),
                          _attr("tracekit.policy.rule_ids", dec.get("rule_ids", [])), _attr("tracekit.result.ok", bool(d["ok"]))]
                 for k in ("command", "file_path", "url"):
@@ -111,8 +130,8 @@ def to_otlp_json(events, kid=None):
                               "status": {"code": 1 if d["ok"] else 2}})
             else:
                 d = b["data"]
-                attrs = [_attr("gen_ai.operation.name", "chat"), _attr("gen_ai.provider.name", "anthropic"),
-                         _attr("tracekit.source", "proxy"), _attr("tracekit.seq", b["seq"]), _attr("tracekit.exchange_id", d["exchange_id"])]
+                attrs = [_attr("gen_ai.operation.name", "chat"), _attr("gen_ai.provider.name", _provider(d)),
+                         _attr("tracekit.source", b["source"]), *ev_attrs(b), _attr("tracekit.exchange_id", d["exchange_id"])]
                 if d.get("model"):
                     attrs.append(_attr("gen_ai.request.model", d["model"]))
                 if d.get("stop_reason"):
@@ -122,7 +141,8 @@ def to_otlp_json(events, kid=None):
                 for k in ("status", "added_latency_ms", "first_byte_ms"):
                     if d.get(k) is not None:
                         attrs.append(_attr(f"tracekit.{k}", d[k]))
-                spans.append({"traceId": trace, "spanId": _sid(rid, d["exchange_id"]), "parentSpanId": root,
+                sid = d["exchange_id"] if orig and len(d["exchange_id"]) == 16 else _sid(rid, d["exchange_id"])
+                spans.append({"traceId": trace, "spanId": sid, "parentSpanId": root,
                               "name": f"chat {d.get('model') or ''}".strip(), "kind": 3, "startTimeUnixNano": _ns(a["ts"]),
                               "endTimeUnixNano": _ns(b["ts"]), "attributes": attrs,
                               "status": {"code": 1 if (d.get("status") or 0) < 400 and not d.get("error") else 2}})
@@ -131,7 +151,7 @@ def to_otlp_json(events, kid=None):
             spans.append({"traceId": trace, "spanId": c["id"][:16], "parentSpanId": root, "name": f"execute_tool {c['data']['name']}",
                           "kind": 1, "startTimeUnixNano": _ns(c["ts"]), "endTimeUnixNano": _ns(c["ts"]),
                           "attributes": [_attr("gen_ai.operation.name", "execute_tool"), _attr("gen_ai.tool.name", c["data"]["name"]),
-                                         _attr("gen_ai.tool.call.id", tid), _attr("tracekit.seq", c["seq"]),
+                                         _attr("gen_ai.tool.call.id", tid), *ev_attrs(c),
                                          _attr("tracekit.policy.decision", dec.get("decision", "unknown")),
                                          _attr("tracekit.policy.rule_ids", dec.get("rule_ids", []))],
                           "status": {"code": 2, "message": "blocked by policy" if dec.get("decision") == "deny" else "no result recorded"}})

@@ -20,13 +20,14 @@ class TracekitSDKError(RuntimeError):
 
 
 class _ToolCall:
-    def __init__(self, tracer, name, args):
+    def __init__(self, tracer, name, args, tool_use_id=None):
         if not isinstance(args, dict):
             raise TypeError("tool arguments must be a mapping")
         self.tracer = tracer
         self.name = str(name)[:200]
         self.args = jsonable(args)  # sets, bytes, datetimes, NaN...: recording must never raise inside the agent
-        self.tool_use_id = "call_" + uuid.uuid4().hex[:24]
+        # pass the model's own tool-call id to link this execution to the model.exchange that asked for it
+        self.tool_use_id = str(tool_use_id)[:200] if tool_use_id else "call_" + uuid.uuid4().hex[:24]
         self.result_value = None
         self.started = None
 
@@ -202,9 +203,9 @@ class Tracer:
     def say(self, text):
         self._message("text", text)
 
-    def tool(self, name, args=None):
+    def tool(self, name, args=None, tool_use_id=None):
         self._ensure_active()
-        return _ToolCall(self, name, args if args is not None else {})
+        return _ToolCall(self, name, args if args is not None else {}, tool_use_id)
 
     def subagent(self, agent_type, description):
         self._ensure_active()
