@@ -5,6 +5,19 @@ All notable changes to Tracekit. Versions follow [PEP 440](https://peps.python.o
 ## Unreleased
 
 ### Added
+- **Signed findings** (#10) and **say-vs-do detectors** (#11). `tracekit analyze` runs deterministic detectors (claims vs
+  executed commands, requests vs executions, risky actions left out of the agent's account, secrets in output,
+  retrospective policy violations) and signs each finding as a `review` event in `findings:<run>`, citing records by seq
+  and hash. Bundles carry findings with their run; `tracekit verify` adds "findings cite intact evidence" and fails on
+  missing or altered evidence. Findings appear in the live observer. E6 (`eval/e6_findings.py`) measures the detectors
+  on 2,000 synthetic sessions, including held-out paraphrases they miss.
+- **SQL over the ledger** (#8). `tracekit sql` with views `runs`, `tool_calls`, `model_exchanges`, `findings`, `gaps`,
+  backed by a stdlib SQLite index that reads only the ledger's new tail, checks hash links, and rebuilds itself if the
+  ledger was rewritten. Read-only connection, time budget, table/JSON/CSV output, and `--mcp` for coding agents.
+- **OTLP push with auth** (#13). `tracekit otel push --endpoint URL --header K=V [--all|--run R|--follow]` sends signed
+  runs to Laminar, Langfuse, Jaeger or any OTLP/HTTP backend, once per run; `export --otel-header` and
+  `OTEL_EXPORTER_OTLP_HEADERS` are honoured. An explicit endpoint path is used as given.
+- `docs/comparison.md`: Tracekit and agent observability platforms, including where they are ahead.
 - **One-line SDK auto-instrumentation** (#5). `tracekit_sdk.init()` patches the installed OpenAI (chat completions,
   Responses), Anthropic (messages.create, messages.stream) and Google Gen AI (generate_content, generate_content_stream)
   SDKs, sync and async, streaming included. Each call is a signed request event written before the call is sent and a
@@ -23,6 +36,10 @@ All notable changes to Tracekit. Versions follow [PEP 440](https://peps.python.o
 - **OTLP export carries evidence links.** Every exported span has `tracekit.entry_hash`, the hash of the signed
   ledger entry it came from. Runs ingested from OpenTelemetry export with their original trace and span ids, and
   model spans report their real provider instead of always `anthropic`.
+
+### Changed
+- SDK tool calls made without a model id now get `tk_` ids (were `call_`, which collides with OpenAI call ids).
+- `tracekit analyze`, `otel` and `sql` parse their own options (a leading `--option` used to be rejected).
 
 ### Fixed
 - The coverage report called every model exchange "at the proxy, cross-checked against hooks"; application-reported

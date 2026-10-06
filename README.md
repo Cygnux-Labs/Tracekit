@@ -129,6 +129,10 @@ agent.end()
 
 **Anything instrumented with OpenTelemetry.** `tracekit otel serve` is an OTLP/HTTP receiver on `127.0.0.1:4318` (protobuf or JSON, gzip). Point any exporter at it (`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://127.0.0.1:4318/v1/traces`) and the agent spans (GenAI semantic conventions, OpenLLMetry and OpenInference) become signed ledger events: model calls, tool calls with a retrospective policy check, and one run per trace. No code changes in the agent. Spans arrive after the work is done, so nothing is gated, and the coverage report says so. See [OpenTelemetry](docs/otel.md).
 
+**Findings, signed.** `tracekit analyze` runs deterministic detectors over a run (claimed tests that never ran, "tests pass" after a failed run, a denied push that happened, a force push left out of the summary, tool calls the model never asked for, secrets in output, retrospective policy violations) and signs each finding into the ledger, citing the exact records it rests on. `tracekit verify` fails if a finding cites evidence that is missing or altered. See [findings](docs/findings.md).
+
+**SQL and MCP.** `tracekit sql "SELECT ..."` queries the ledger through views (`runs`, `tool_calls`, `model_exchanges`, `findings`, `gaps`), with a stdlib SQLite index that checks the hash chain as it loads. `tracekit sql --mcp` lets coding agents query traces. See [SQL](docs/sql.md).
+
 **Agents on other machines.** `tracekit ingest serve` runs an authenticated, TLS gateway; clients configure it with `tracekit init --remote URL`. Remote events are recorded as `sdk` evidence in a namespaced run, and held (`ask`) calls are refused. See [remote ingestion](docs/remote-ingest.md).
 
 ## Use
@@ -140,6 +144,9 @@ agent.end()
 | `tracekit observe` | Live terminal at `http://127.0.0.1:7777`. Read-only. `--export replay.html` writes a single file anyone can open. |
 | `tracekit pending` / `approve <id>` / `reject <id>` | Answer held `ask` calls, from a terminal outside the agent's session. |
 | `tracekit otel serve` | Receive OTLP/HTTP traces on `127.0.0.1:4318` and record the agent spans. |
+| `tracekit otel push --endpoint URL --header K=V --follow` | Stream signed runs to Laminar, Langfuse, Jaeger or any OTLP/HTTP backend as they finish. |
+| `tracekit analyze --last` | Run the detectors and sign the findings into the ledger. Exit 4 on high or critical findings. |
+| `tracekit sql "SELECT ..."` | Read-only SQL over the ledger; `--mcp` serves it to coding agents. |
 | `tracekit export --last -o run.tkb` | Write an evidence bundle. `--otel` adds OTLP/JSON (every span carries `tracekit.entry_hash`); `--otel-endpoint http://localhost:4318` also sends it. |
 | `tracekit verify run.tkb --key signer.pub --witness git:/path/to/clone` | Verify offline. Exit `0` ok, `1` fail, `2` bad bundle, `3` warnings with `--strict`. |
 | `tracekit migrate ~/.tracekit/ledger.jsonl --out v1.jsonl` | Convert a v0.1 ledger. |
