@@ -33,8 +33,10 @@ from .core import now_ts
 
 TOKENS_FILE = "ingest-tokens.json"
 MAX_BODY = 1024 * 1024
-ALLOWED_TYPES = {"run.start", "user.prompt", "tool.call", "policy.decision", "tool.result", "model.message", "run.end"}
+ALLOWED_TYPES = {"run.start", "user.prompt", "tool.call", "policy.decision", "tool.result", "model.message", "model.exchange",
+                 "run.end"}  # model.exchange: SDK auto-instrumentation; source=sdk, never cross-checked as proxy evidence
 ALLOWED_OPS = {"append", "status"}
+OTLP_EXTRA_TYPES = {"model.exchange"}  # application-reported (source=sdk); never cross-checked as proxy evidence
 ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,120}$")
 RATE_PER_S, BURST = 100.0, 300.0
 
@@ -81,8 +83,9 @@ def authenticate(tokens, bearer):
     return found
 
 
-def sanitize(req, cid, addr, isolation="same-user"):
-    """Validate a remote request and rewrite it for the signer. -> (request, error)."""
+def sanitize(req, cid, addr, isolation="same-user", extra_types=()):
+    """Validate a remote request and rewrite it for the signer. -> (request, error).
+    extra_types: event types allowed on this path beyond the SDK's (the OTLP path adds model.exchange)."""
     if not isinstance(req, dict) or req.get("op") not in ALLOWED_OPS:
         return None, f"op must be one of {sorted(ALLOWED_OPS)}"
     if req["op"] == "status":
@@ -92,7 +95,7 @@ def sanitize(req, cid, addr, isolation="same-user"):
         return None, "event must be an object"
     if ev.get("source") != "sdk":
         return None, "remote clients may only send source=sdk events"
-    if ev.get("type") not in ALLOWED_TYPES:
+    if ev.get("type") not in ALLOWED_TYPES and ev.get("type") not in extra_types:
         return None, f"event type {ev.get('type')!r} is not accepted from remote clients"
     if "transcript" in ev:
         return None, "transcript evidence cannot be sent remotely"
@@ -125,9 +128,36 @@ class _Bucket:
             return False
 
 
+_REQ = threading.local()  # the address of the request being handled, read by the OTLP sink on the same thread
+
+
+def _otlp_receiver(cid, forward):
+    """An OTLP receiver for one authenticated client: events are sanitised exactly like SDK events (namespaced
+    run, source=sdk) and carry a per-run counter so the signer can see gaps."""
+    from . import otlp
+    counters = {}
+
+    def sink(ev, attach):
+        run = ev["run_id"]
+        req = {"op": "append", "event": ev, "cseq": counters.get(run, -1) + 1}
+        if attach:
+            req["attach"] = attach
+        safe, err = sanitize(req, cid, getattr(_REQ, "addr", "?"), client.client_config().get("signer_isolation", "same-user"),
+                             extra_types=OTLP_EXTRA_TYPES)
+        if err:
+            return {"ok": False, "error": err}
+        resp = forward(safe)
+        if resp.get("ok"):
+            counters[run] = req["cseq"]
+        return resp
+    return otlp.Receiver(sink)
+
+
 def make_handler(home, forward=None):
     forward = forward or client.rpc
     buckets = {}
+    receivers = {}
+    receivers_lock = threading.Lock()
 
     class H(BaseHTTPRequestHandler):
         server_version = "tracekit-ingest"
@@ -144,14 +174,42 @@ def make_handler(home, forward=None):
             self.end_headers()
             self.wfile.write(data)
 
+        def _otlp(self, cid):
+            from . import otlp
+            from .otlp_wire import MAX_BODY as OTLP_MAX
+            try:
+                n = int(self.headers.get("Content-Length", "-1"))
+            except ValueError:
+                n = -1
+            if not 0 <= n <= OTLP_MAX:
+                self.close_connection = True
+                return self._send(413, {"message": f"body must be 0..{OTLP_MAX} bytes with a Content-Length"})
+            body = self.rfile.read(n)
+            with receivers_lock:
+                rcv = receivers.get(cid)
+                if rcv is None:
+                    rcv = receivers[cid] = _otlp_receiver(cid, forward)
+            _REQ.addr = self.client_address[0]
+            code, headers, data = otlp.handle_traces(rcv, body, self.headers.get("Content-Type"), self.headers.get("Content-Encoding"))
+            self.send_response(code)
+            for k, v in headers.items():
+                self.send_header(k, v)
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(data)
+
         def do_POST(self):
-            if self.path != "/v1/rpc":
+            path = self.path.split("?")[0].rstrip("/")
+            if path not in ("/v1/rpc", "/v1/traces"):
                 return self._send(404, {"ok": False, "error": "not found"})
             cid = authenticate(load_tokens(home), self.headers.get("Authorization", ""))
             if not cid:
                 return self._send(401, {"ok": False, "error": "unauthorized"})
             if not buckets.setdefault(cid, _Bucket()).take():
                 return self._send(429, {"ok": False, "error": "rate limited", "retryable": True})
+            if path == "/v1/traces":
+                return self._otlp(cid)
             try:
                 n = int(self.headers.get("Content-Length", "0"))
             except ValueError:
@@ -213,7 +271,8 @@ def main(argv=None):
         ctx.minimum_version = ssl.TLSVersion.TLSv1_2
         ctx.load_cert_chain(a.cert, a.key)
         srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
-    print(f"tracekit ingest: listening on {'https' if a.cert else 'http'}://{a.host}:{a.port}/v1/rpc", flush=True)
+    print(f"tracekit ingest: listening on {'https' if a.cert else 'http'}://{a.host}:{a.port}/v1/rpc "
+          "(SDK) and /v1/traces (OTLP/HTTP)", flush=True)
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

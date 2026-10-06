@@ -636,7 +636,9 @@ class Signer:
         if ev["type"] == "tool.call" and ev["source"] == "hook":
             tu = self._tool_use(d["tool_use_id"])
             tu["hook"] = (run_id, time.time())
-        elif ev["type"] == "model.exchange" and d.get("phase", "response") == "response":
+        elif ev["type"] == "model.exchange" and ev["source"] == "proxy" and d.get("phase", "response") == "response":
+            # only the proxy's own observation of the model is cross-checked against hooks; an application-reported
+            # exchange (SDK, OpenTelemetry) would raise false hook_missing gaps for runs that have no hooks
             for t in d.get("tool_uses") or []:
                 tu = self._tool_use(t["id"])
                 tu["model"] = (run_id, t["name"], time.time())

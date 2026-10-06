@@ -55,6 +55,8 @@ def main(argv=None):
 
     p = sub.add_parser("ingest", help="remote ingestion gateway: `ingest token NAME` / `ingest serve`", add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
+    p = sub.add_parser("otel", help="OpenTelemetry receiver: `otel serve` records agent spans sent over OTLP/HTTP", add_help=False)
+    p.add_argument("rest", nargs=argparse.REMAINDER)
     p = sub.add_parser("daemon", help="run tracekitd in the foreground")
     p.add_argument("--home")
     p = sub.add_parser("proxy", help="run the model proxy in the foreground")
@@ -144,6 +146,9 @@ def _run(a):
     if a.cmd == "ingest":
         from . import ingest
         return ingest.main(a.rest)
+    if a.cmd == "otel":
+        from . import otlp
+        return otlp.main(a.rest)
     if a.cmd == "init" and a.remote:
         return _init_remote(a)
     if a.cmd == "init":
