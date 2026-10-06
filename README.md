@@ -144,7 +144,7 @@ agent.end()
 | `tracekit observe` | Live terminal at `http://127.0.0.1:7777`. Read-only. `--export replay.html` writes a single file anyone can open. |
 | `tracekit pending` / `approve <id>` / `reject <id>` | Answer held `ask` calls, from a terminal outside the agent's session. |
 | `tracekit otel serve` | Receive OTLP/HTTP traces on `127.0.0.1:4318` and record the agent spans. |
-| `tracekit otel push --endpoint URL --header K=V --follow` | Stream signed runs to Laminar, Langfuse, Jaeger or any OTLP/HTTP backend as they finish. |
+| `tracekit otel push --endpoint URL --header K=V --follow` | Stream signed runs to Jaeger, Tempo or any OTLP/HTTP backend as they finish. |
 | `tracekit analyze --last` | Run the detectors and sign the findings into the ledger. Exit 4 on high or critical findings. |
 | `tracekit sql "SELECT ..."` | Read-only SQL over the ledger; `--mcp` serves it to coding agents. |
 | `tracekit export --last -o run.tkb` | Write an evidence bundle. `--otel` adds OTLP/JSON (every span carries `tracekit.entry_hash`); `--otel-endpoint http://localhost:4318` also sends it. |
