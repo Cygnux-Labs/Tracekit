@@ -15,9 +15,8 @@ All notable changes to Tracekit. Versions follow [PEP 440](https://peps.python.o
   backed by a stdlib SQLite index that reads only the ledger's new tail, checks hash links, and rebuilds itself if the
   ledger was rewritten. Read-only connection, time budget, table/JSON/CSV output, and `--mcp` for coding agents.
 - **OTLP push with auth** (#13). `tracekit otel push --endpoint URL --header K=V [--all|--run R|--follow]` sends signed
-  runs to Laminar, Langfuse, Jaeger or any OTLP/HTTP backend, once per run; `export --otel-header` and
+  runs to Jaeger, Tempo or any OTLP/HTTP backend, once per run; `export --otel-header` and
   `OTEL_EXPORTER_OTLP_HEADERS` are honoured. An explicit endpoint path is used as given.
-- `docs/comparison.md`: Tracekit and agent observability platforms, including where they are ahead.
 - **One-line SDK auto-instrumentation** (#5). `tracekit_sdk.init()` patches the installed OpenAI (chat completions,
   Responses), Anthropic (messages.create, messages.stream) and Google Gen AI (generate_content, generate_content_stream)
   SDKs, sync and async, streaming included. Each call is a signed request event written before the call is sent and a
