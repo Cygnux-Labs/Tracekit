@@ -2,6 +2,33 @@
 
 All notable changes to Tracekit. Versions follow [PEP 440](https://peps.python.org/pep-0440/).
 
+## Unreleased
+
+### Added
+- **One-line SDK auto-instrumentation** (#5). `tracekit_sdk.init()` patches the installed OpenAI (chat completions,
+  Responses), Anthropic (messages.create, messages.stream) and Google Gen AI (generate_content, generate_content_stream)
+  SDKs, sync and async, streaming included. Each call is a signed request event written before the call is sent and a
+  response event with model, finish reason, requested tool calls, error, status, latency and time to first chunk.
+  Streams are recorded when exhausted, closed or garbage collected (abandoned streams are marked). Recording failures
+  never affect the call; `fail_mode: closed` refuses a call that cannot be recorded before it reaches the provider.
+  `Tracer.tool(..., tool_use_id=...)` links an execution to the model request that asked for it. The remote gateway
+  accepts `model.exchange` as SDK evidence.
+- **OpenTelemetry ingest** (#4). `tracekit otel serve` receives OTLP/HTTP traces (protobuf or JSON, gzip or deflate)
+  on loopback, and the ingest gateway serves the same endpoint at `/v1/traces` with TLS and per-client tokens.
+  GenAI semantic-convention spans, OpenLLMetry and OpenInference spans become signed `model.exchange`, `tool.call`,
+  `policy.decision` and `tool.result` events, one run per trace. Policy is evaluated retrospectively: a call a deny or
+  ask rule would have stopped is recorded as `flag` with the would-be decision. Exporter retries never duplicate
+  evidence, a signer outage returns 503 so the exporter keeps the batch, and a rejected event is reported as an
+  OTLP partial success. The protobuf decoder is built in, so the receiver adds no dependencies. See `docs/otel.md`.
+- **OTLP export carries evidence links.** Every exported span has `tracekit.entry_hash`, the hash of the signed
+  ledger entry it came from. Runs ingested from OpenTelemetry export with their original trace and span ids, and
+  model spans report their real provider instead of always `anthropic`.
+
+### Fixed
+- The coverage report called every model exchange "at the proxy, cross-checked against hooks"; application-reported
+  exchanges are now listed separately, and only proxy exchanges are cross-checked against hooks by the signer.
+- `test_rate_limit` was timing-dependent and failed on slow machines; the bucket no longer refills during the test.
+
 ## 0.2.0rc1
 
 First release candidate of v0.2: the signed evidence-bundle core, live observer and custom-agent SDK.
