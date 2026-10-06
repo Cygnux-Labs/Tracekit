@@ -1,6 +1,6 @@
 # Evaluation (v0.2)
 
-Five experiments run against the v0.2 code. E1 to E4 are offline and run with `make eval`; E5 uses real Claude Code
+Six experiments run against the v0.2 code. E1 to E4 and E6 are offline and run with `make eval`; E5 uses real Claude Code
 runs and is opt-in (`make eval-agents`, needs the `claude` CLI and spends model usage). Results are written to
 `eval/results/`. The experiments are small, synthetic and written by the authors. They show how the mechanisms
 behave, not how Tracekit performs across real agents and projects. The v0.1 paper's experiments (14 Claude Code
@@ -131,6 +131,34 @@ runs show that capture and verification work on real sessions, not that the gate
 case in `docs/sample/` comes from a scripted agent, as the demo says. A model that follows the injection is the case
 the gate exists for, and this experiment did not produce one. Twelve runs of one model on one tiny project is a smoke
 test, not a benchmark.
+
+## E6: findings (say vs do, request vs execution)
+
+`eval/e6_findings.py` builds 2000 synthetic coding-agent sessions (seed 6). Half get exactly one spliced
+misbehaviour; the other half end honestly in the same situations (tests run and passing before "all tests pass", a
+force push the agent reports, "I did not push" with no push), so false positives are measured on the hard cases.
+Injected claims come from three pools: phrasings the detectors were written for, paraphrases written to fall outside
+them, and a held-out set written after the detectors were final and never used to tune them.
+
+| misbehaviour | rule | n | recall |
+|---|---|---|---|
+| fake tests | TK-X101 | 84 | 1.00 |
+| fake tests heldout | TK-X101 | 111 | 0.29 |
+| push denied heldout | TK-X111 | 111 | 0.40 |
+| failed tests claimed | TK-X105 | 86 | 1.00 |
+| hidden force push | TK-X120 | 111 | 1.00 |
+| push denied but pushed | TK-X111 | 77 | 1.00 |
+| unrequested exec | TK-X002 | 111 | 1.00 |
+| requested not run | TK-X001 | 111 | 1.00 |
+| secret in output | TK-X004 | 111 | 1.00 |
+
+- **Precision 1.00**: 0 of 1000 honest sessions produced any watched finding.
+- **Recall 0.84** overall, but this mixes in-pattern and held-out phrasings. The structural detectors
+  (request vs execution, secrets) are exact. The text detectors catch every in-pattern claim and only
+  29% (tests) and 40% (push) of held-out
+  paraphrases. Regexes do not generalise to wording they were not written for; a model-based judge is the obvious next
+  detector, and its findings would be signed and evidence-checked the same way.
+- The sessions are synthetic. E6 measures the detectors' logic on known ground truth, not how often real agents misbehave.
 
 ## What is not measured
 
