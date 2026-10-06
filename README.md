@@ -123,7 +123,11 @@ agent.end()
 
 `Tracer` writes signed v0.2 SDK events when a v0.2 client config is present. `tool()` evaluates policy before the wrapped operation and records the result; a denied call never enters the `with` body. `subagent()` produces a child lane in the observer. Prompts are hashed by default; `say()` and `think()` are recorded only when `reasoning_capture: true`. The SDK needs a configured v0.2 signer (`tracekit init --dev`).
 
+**One line for model calls.** `tracekit_sdk.init(agent="research-bot")` records every call made through the OpenAI, Anthropic and Google Gen AI Python SDKs (chat, Responses, Messages, generate_content; sync, async and streaming) as signed `model.exchange` events: model, finish reason, the tool calls the model asked for, errors, status, latency and time to first chunk, with prompts and outputs redacted and hashed. Pass the model's call id to `tracer.tool(name, args, tool_use_id=call.id)` and the request and the execution share one id in the ledger. Recording never changes what the SDK returns; with `fail_mode: closed`, a call that cannot be recorded is refused before it is sent.
+
 **Frameworks.** `@traced(tracer)` wraps any sync or async function, and `tracekit.adapters.langchain.TracekitCallbackHandler` covers LangChain and LangGraph tools (`pip install "tracekit[langchain]"`), with a denied call blocked before the tool body runs. Policy rules match on tool names, so name your shell tool `Bash` or add rules for it. See [adapters](docs/adapters.md). Codex, Cursor and Gemini CLI have no adapter yet.
+
+**Anything instrumented with OpenTelemetry.** `tracekit otel serve` is an OTLP/HTTP receiver on `127.0.0.1:4318` (protobuf or JSON, gzip). Point any exporter at it (`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://127.0.0.1:4318/v1/traces`) and the agent spans (GenAI semantic conventions, OpenLLMetry and OpenInference) become signed ledger events: model calls, tool calls with a retrospective policy check, and one run per trace. No code changes in the agent. Spans arrive after the work is done, so nothing is gated, and the coverage report says so. See [OpenTelemetry](docs/otel.md).
 
 **Agents on other machines.** `tracekit ingest serve` runs an authenticated, TLS gateway; clients configure it with `tracekit init --remote URL`. Remote events are recorded as `sdk` evidence in a namespaced run, and held (`ask`) calls are refused. See [remote ingestion](docs/remote-ingest.md).
 
@@ -135,7 +139,8 @@ agent.end()
 | `tracekit status` | Hooks, signer, witnesses, policy, fail mode and capture sources. |
 | `tracekit observe` | Live terminal at `http://127.0.0.1:7777`. Read-only. `--export replay.html` writes a single file anyone can open. |
 | `tracekit pending` / `approve <id>` / `reject <id>` | Answer held `ask` calls, from a terminal outside the agent's session. |
-| `tracekit export --last -o run.tkb` | Write an evidence bundle. `--otel` adds OTLP/JSON; `--otel-endpoint http://localhost:4318` also sends it. |
+| `tracekit otel serve` | Receive OTLP/HTTP traces on `127.0.0.1:4318` and record the agent spans. |
+| `tracekit export --last -o run.tkb` | Write an evidence bundle. `--otel` adds OTLP/JSON (every span carries `tracekit.entry_hash`); `--otel-endpoint http://localhost:4318` also sends it. |
 | `tracekit verify run.tkb --key signer.pub --witness git:/path/to/clone` | Verify offline. Exit `0` ok, `1` fail, `2` bad bundle, `3` warnings with `--strict`. |
 | `tracekit migrate ~/.tracekit/ledger.jsonl --out v1.jsonl` | Convert a v0.1 ledger. |
 
