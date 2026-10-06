@@ -4,7 +4,7 @@ Tracekit speaks OpenTelemetry in both directions.
 
 - **In:** `tracekit otel serve` receives OTLP/HTTP traces and records the agent-relevant spans as signed ledger events.
 - **Out:** `tracekit export --otel` writes a bundle's events as OTLP/JSON spans, and `--otel-endpoint` sends them to a collector
-  (Jaeger, Tempo, Honeycomb, Langfuse, Laminar, anything that accepts OTLP).
+  (Jaeger, Tempo, or anything that accepts OTLP).
 
 ## Receiving traces
 
