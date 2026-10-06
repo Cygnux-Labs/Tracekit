@@ -8,7 +8,7 @@ help:
 	@echo "make build     build the sdist and wheel into dist/"
 	@echo "make check     lint + test + build + twine check"
 	@echo "make demo      run the scripted end-to-end demo"
-	@echo "make eval      offline evaluations E1 (integrity), E2 (overhead), E3 (policy gate), E4 (seeded faults); rewrites eval/results/"
+	@echo "make eval      offline evaluations E1 (integrity), E2 (overhead), E3 (policy gate), E4 (seeded faults), E6 (findings); rewrites eval/results/"
 	@echo "make eval-agents  E5: real Claude Code runs (needs the claude CLI; spends model usage)"
 	@echo "make clean     remove build artefacts"
 
@@ -36,6 +36,7 @@ eval:
 	$(PY) eval/e2_perf.py
 	$(PY) eval/e3_policy.py
 	$(PY) eval/e4_seeded_faults.py
+	$(PY) eval/e6_findings.py
 
 eval-agents:
 	E5=1 $(PY) eval/e5_agents.py
