@@ -12,6 +12,7 @@ only what the bundle already holds (hashes, clear operational fields per docs/pr
 import datetime as _dt
 import hashlib
 import json
+import os
 import urllib.request
 
 
@@ -160,10 +161,33 @@ def to_otlp_json(events, kid=None, hashes=None):
     return {"resourceSpans": rs}
 
 
-def push(endpoint, payload, timeout=10):
-    """POST OTLP/JSON to an OTLP/HTTP collector (e.g. http://localhost:4318)."""
-    url = endpoint.rstrip("/") + ("" if endpoint.rstrip("/").endswith("/v1/traces") else "/v1/traces")
-    req = urllib.request.Request(url, data=json.dumps(payload).encode(), method="POST", headers={"content-type": "application/json"})
+def parse_headers(pairs=(), env=True):
+    """Headers from repeated K=V flags plus OTEL_EXPORTER_OTLP_(TRACES_)HEADERS (comma-separated, URL-encoded values)."""
+    from urllib.parse import unquote
+    out = {}
+    if env:
+        for var in ("OTEL_EXPORTER_OTLP_HEADERS", "OTEL_EXPORTER_OTLP_TRACES_HEADERS"):
+            for item in (os.environ.get(var) or "").split(","):
+                if "=" in item:
+                    k, v = item.split("=", 1)
+                    out[k.strip()] = unquote(v.strip())
+    for item in pairs or ():
+        if "=" not in item:
+            raise ValueError(f"header must be KEY=VALUE, got {item!r}")
+        k, v = item.split("=", 1)
+        out[k.strip()] = v.strip()
+    return out
+
+
+def push(endpoint, payload, timeout=10, headers=None):
+    """POST OTLP/JSON to an OTLP/HTTP collector or backend (Jaeger, Tempo, Langfuse, Laminar, ...).
+    A URL ending in /v1/traces (or any explicit path) is used as given; a bare origin gets /v1/traces appended."""
+    from urllib.parse import urlsplit
+    base = endpoint.rstrip("/")
+    url = base if urlsplit(base).path not in ("", "/") else base + "/v1/traces"
+    h = {"content-type": "application/json"}
+    h.update(headers or {})
+    req = urllib.request.Request(url, data=json.dumps(payload).encode(), method="POST", headers=h)
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     with opener.open(req, timeout=timeout) as r:
         return r.status, r.read().decode("utf-8", "replace")

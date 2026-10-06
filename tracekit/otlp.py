@@ -521,6 +521,75 @@ def serve(host="127.0.0.1", port=4318, receiver=None):
     return srv
 
 
+def _ledger_runs(home):
+    """-> (records, {run_id: [events]}, finished run ids in end order)."""
+    from .ledger import read_records
+    recs = [r for _, r, _ in read_records(os.path.join(home, "ledger", "ledger.jsonl")) if r and not r.get("elided")]
+    runs, ended = collections.OrderedDict(), []
+    for r in recs:
+        e = r["event"]
+        if e["run_id"].startswith(("_", "findings:")):
+            continue
+        runs.setdefault(e["run_id"], []).append(e)
+        if e["type"] == "run.end":
+            ended.append(e["run_id"])
+    return recs, runs, ended
+
+
+def push_main(a):
+    """Send runs as OTLP/JSON. Each span carries tracekit.entry_hash, so the backend view links back to signed evidence."""
+    import time as _time
+    from .otel import parse_headers, push, to_otlp_json
+    try:
+        headers = parse_headers(a.header)
+    except ValueError as e:
+        print(f"tracekit otel push: {e}", file=sys.stderr)
+        return 2
+    home = a.home or client.client_config().get("signer_home") or "/var/lib/tracekit"
+    state_path = a.state or os.path.join(client.client_dir(), "otel-push-" + hashlib.sha256(
+        (os.path.abspath(home) + "|" + a.endpoint).encode()).hexdigest()[:12] + ".json")
+    try:
+        with open(state_path, encoding="utf-8") as fh:
+            sent = set(json.load(fh))
+    except (OSError, ValueError):
+        sent = set()
+
+    def once():
+        recs, runs, ended = _ledger_runs(home)
+        hashes = {r["event"]["seq"]: r["hash"] for r in recs}
+        targets = [a.run] if a.run else [r for r in dict.fromkeys(ended) if r not in sent] if (a.all or a.follow) else ended[-1:]
+        n = 0
+        for rid in targets:
+            if rid not in runs:
+                print(f"tracekit otel push: no run {rid!r}", file=sys.stderr)
+                return 2, n
+            payload = to_otlp_json(runs[rid], None, hashes)
+            try:
+                status, body = push(a.endpoint, payload, headers=headers)
+            except Exception as e:  # keep the run unsent; --follow retries next round
+                print(f"tracekit otel push: {rid}: {e}", file=sys.stderr)
+                return 1, n
+            if status >= 300:
+                print(f"tracekit otel push: {rid}: HTTP {status}: {body[:200]}", file=sys.stderr)
+                return 1, n
+            sent.add(rid)
+            n += 1
+            print(f"sent {rid} ({sum(len(ss['spans']) for rs in payload['resourceSpans'] for ss in rs['scopeSpans'])} spans)", flush=True)
+            tmp = state_path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(sorted(sent), fh)
+            os.replace(tmp, state_path)
+        return 0, n
+    if not a.follow:
+        return once()[0]
+    try:
+        while True:
+            once()
+            _time.sleep(max(0.2, a.interval))
+    except KeyboardInterrupt:
+        return 0
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="tracekit otel")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -528,7 +597,19 @@ def main(argv=None):
     s.add_argument("--host", default="127.0.0.1")
     s.add_argument("--port", type=int, default=4318)
     s.add_argument("--cwd", help="directory path rules are evaluated against (default: the current directory)")
+    f = sub.add_parser("push", help="send signed runs from the ledger to an OTLP/HTTP backend (Laminar, Langfuse, Jaeger, ...)")
+    f.add_argument("--endpoint", required=True, help="e.g. http://localhost:4318 or https://cloud.langfuse.com/api/public/otel/v1/traces")
+    f.add_argument("--header", action="append", default=[], metavar="KEY=VALUE", help="repeatable; OTEL_EXPORTER_OTLP_HEADERS also read")
+    f.add_argument("--home", help="signer home (default: from the client config)")
+    g = f.add_mutually_exclusive_group()
+    g.add_argument("--run")
+    g.add_argument("--all", action="store_true", help="every finished run")
+    g.add_argument("--follow", action="store_true", help="keep running: send each run when it records run.end")
+    f.add_argument("--interval", type=float, default=2.0)
+    f.add_argument("--state", help="file remembering which runs were sent (default: in the client directory)")
     a = ap.parse_args(argv)
+    if a.cmd == "push":
+        return push_main(a)
     if a.host not in ("127.0.0.1", "localhost", "::1"):
         print("tracekit otel: the local receiver only listens on loopback; for other machines use "
               "`tracekit ingest serve` (TLS + per-client tokens), which also serves /v1/traces", file=sys.stderr)

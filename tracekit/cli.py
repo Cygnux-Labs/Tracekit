@@ -26,7 +26,14 @@ def _signer_home(a):
     return a.home or client.client_config().get("signer_home") or "/var/lib/tracekit"
 
 
+_DELEGATED = {"analyze": "findings", "otel": "otlp", "sql": "query"}  # subcommands with their own parsers
+
+
 def main(argv=None):
+    args = list(sys.argv[1:] if argv is None else argv)
+    if args and args[0] in _DELEGATED:  # before argparse: REMAINDER would not pass a leading --option through
+        import importlib
+        return importlib.import_module(f".{_DELEGATED[args[0]]}", __package__).main(args[1:])
     ap = argparse.ArgumentParser(prog="tracekit", description="Signed, checkpointed evidence of what coding agents did.")
     ap.add_argument("--version", action="version", version=f"tracekit {__version__}")
     sub = ap.add_subparsers(dest="cmd", required=True, metavar="command")
@@ -54,6 +61,10 @@ def main(argv=None):
     p.add_argument("--project", action="store_true")
 
     p = sub.add_parser("ingest", help="remote ingestion gateway: `ingest token NAME` / `ingest serve`", add_help=False)
+    p.add_argument("rest", nargs=argparse.REMAINDER)
+    p = sub.add_parser("analyze", help="run the detectors over a run and sign the findings into the ledger", add_help=False)
+    p.add_argument("rest", nargs=argparse.REMAINDER)
+    p = sub.add_parser("sql", help="read-only SQL over the ledger (`sql --schema`, `sql --mcp` for coding agents)", add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
     p = sub.add_parser("otel", help="OpenTelemetry receiver: `otel serve` records agent spans sent over OTLP/HTTP", add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
@@ -83,6 +94,8 @@ def main(argv=None):
     g.add_argument("--since", help="RFC3339 time, e.g. 2026-09-30T00:00:00.000000Z")
     p.add_argument("--otel", action="store_true", help="also include otel.json (OTLP/JSON)")
     p.add_argument("--otel-endpoint", help="also POST the spans to an OTLP/HTTP collector, e.g. http://localhost:4318")
+    p.add_argument("--otel-header", action="append", default=[], metavar="KEY=VALUE",
+                   help="header for --otel-endpoint (repeatable; also read from OTEL_EXPORTER_OTLP_HEADERS)")
     p.add_argument("--home", help="signer home to read the ledger from")
 
     p = sub.add_parser("verify", help="verify a .tkb offline")
@@ -146,6 +159,9 @@ def _run(a):
     if a.cmd == "ingest":
         from . import ingest
         return ingest.main(a.rest)
+    if a.cmd == "analyze":
+        from . import findings
+        return findings.main(a.rest)
     if a.cmd == "otel":
         from . import otlp
         return otlp.main(a.rest)
@@ -242,8 +258,9 @@ def _run(a):
         return 0 if r.get("ok") else 1
     if a.cmd == "export":
         from . import bundle
+        from .otel import parse_headers
         info = bundle.export(_signer_home(a), a.out, run=a.run, last=not (a.run or a.since), since=a.since, otel=a.otel,
-                             otel_endpoint=a.otel_endpoint)
+                             otel_endpoint=a.otel_endpoint, otel_headers=parse_headers(a.otel_header))
         print(json.dumps(info, indent=2))
         return 0
     if a.cmd == "verify":
