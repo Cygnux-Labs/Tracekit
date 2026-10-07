@@ -14,7 +14,9 @@ tracekit otel serve                     # http://127.0.0.1:4318/v1/traces
 OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://127.0.0.1:4318/v1/traces python my_agent.py
 ```
 
-Any OTLP/HTTP exporter works: protobuf or JSON bodies, `gzip` or `deflate` encoding. The receiver has no
+Any OTLP/HTTP exporter works: protobuf or JSON bodies, `gzip` or `deflate` encoding. For exporters that default to
+gRPC, add `--grpc-port 4317` (needs `pip install "tracekit[grpc]"`): the same receiver handles both, a signer outage is
+answered with `UNAVAILABLE` (exporters retry) and a malformed request with `INVALID_ARGUMENT`. The receiver has no
 dependencies of its own; it decodes protobuf itself. It listens on loopback only. Agents on other machines send to
 the ingest gateway instead, which serves the same `/v1/traces` path behind TLS and per-client tokens:
 
@@ -71,3 +73,31 @@ Runs that came in over OpenTelemetry go back out with their original trace id an
 between your instrumentation and your existing observability tool without breaking links.
 
 ![Tracekit spans in Jaeger](otel-jaeger.png)
+
+### Example: a run in Jaeger, checked against the evidence
+
+```bash
+jaeger                                                    # Jaeger v2 all-in-one: OTLP on :4318, UI on :16686
+python3 examples/custom_agent.py                          # any traced run
+tracekit otel push --endpoint http://localhost:4318 --all # or --follow to send each run as it ends
+tracekit export --out run.tkb
+python3 examples/otel_jaeger_check.py run.tkb http://localhost:16686
+```
+
+Output from Jaeger 2.22 (Linux arm64, Python 3.10, October 2026):
+
+```
+tracekit verify exit: 0
+  invoke_agent research-bot        seq    0  2a3338dd0563ecf2272ac33  in bundle
+  execute_tool http_get            seq    5  efcdcb3bd72585435e8ad1b  in bundle
+  execute_tool http_get            seq    8  0209316a33b36671ba4bea3  in bundle
+  execute_tool parse_table         seq   12  8314fd52fa98e994a462ad7  in bundle
+  execute_tool parse_table         seq   13  cd4aa931bcee3d36aa0e19c  in bundle
+  execute_tool Agent               seq    2  85f0caa1a99156eea5a2660  in bundle
+  execute_tool Agent               seq    4  e3f58f19031c95f5482ca3f  in bundle
+  execute_tool Bash                seq   20  89c43138e53242bf20f7887  in bundle
+8/8 spans resolve to a signed record in the verified bundle
+```
+
+The denied `sudo cp` shows up in Jaeger as an `execute_tool Bash` span with `tracekit.policy.decision=deny`. Jaeger is a
+view: if a span and the bundle ever disagree, the bundle (checked by `tracekit verify`) is the record.

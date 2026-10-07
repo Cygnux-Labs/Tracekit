@@ -1,6 +1,6 @@
 # Evaluation (v0.2)
 
-Six experiments run against the v0.2 code. E1 to E4 and E6 are offline and run with `make eval`; E5 uses real Claude Code
+Seven experiments run against the v0.2 code. E1 to E4 and E6 are offline and run with `make eval`; E5 uses real Claude Code
 runs and is opt-in (`make eval-agents`, needs the `claude` CLI and spends model usage). Results are written to
 `eval/results/`. The experiments are small, synthetic and written by the authors. They show how the mechanisms
 behave, not how Tracekit performs across real agents and projects. The v0.1 paper's experiments (14 Claude Code
@@ -159,6 +159,30 @@ them, and a held-out set written after the detectors were final and never used t
   paraphrases. Regexes do not generalise to wording they were not written for; a model-based judge is the obvious next
   detector, and its findings would be signed and evidence-checked the same way.
 - The sessions are synthetic. E6 measures the detectors' logic on known ground truth, not how often real agents misbehave.
+
+## E7: SQL index at a million events
+
+`python3 eval/e7_sql_scale.py` synthesises a hash-chained ledger of 1,000,001 events (604 MB; 10,000 runs of
+tool calls, policy decisions, results and model exchanges), builds the index, times typical queries (each run twice, the
+second timed), then rebuilds a second index from the same ledger and compares every result. Machine: 2 vCPUs
+(x86_64), Python 3.13.16, SQLite 3.45.1. Results: `eval/results/e7_sql_scale.json`.
+
+| query | time |
+|---|---|
+| events by type | 58 ms |
+| tool calls by name, with denies (joins every call to its decision and result) | 516 ms |
+| one run's tool calls | 1 ms |
+| denied commands, most recent 20 | 1 ms |
+| tokens by model | 525 ms |
+| runs rollup, top 10 by tokens | 689 ms |
+| one run's rollup | 1 ms |
+| substring search over all event data (full scan) | 227 ms |
+
+- Index build 36.2 s; refresh with nothing new 0.55 s (re-hashes the indexed prefix to detect a rewrite).
+- Every query above returns in under 1 s; a rebuilt index returns identical rows (true).
+- Records carry a placeholder signature: the index never checks signatures (it is not evidence), so signing a million
+  records would only time Ed25519. The backend is SQLite from the standard library, not DuckDB or ClickHouse: no extra
+  dependency, and fast enough at this size. Free-text search is a full scan (`LIKE`), linear in ledger size.
 
 ## What is not measured
 

@@ -20,6 +20,30 @@ Signed with the same key as the records (over the canonical form without `sig`).
 | git repo without a remote | The signer's user on this machine | Same, locally | Root (L4) can rewrite it with the ledger. Protects against the agent's user (L1–L3) only |
 | file | Whoever can write the file | Checkpoint lines | Anyone who can write the file; use storage the host cannot rewrite (WORM, another machine's mount) |
 | Rekor (experimental) | Sigstore's public log | Retains each signed checkpoint publicly and permanently | Append-only and not controlled by the host, but publishing reveals activity timing to everyone; off by default |
+| witness service (`tracekit witness serve`) | Whoever runs it: the security team, or a third party | Every checkpoint in an append-only RFC 6962 Merkle log with signed tree heads | Nothing logged, without detection: a second history for a logged sequence number is refused (fork), and readers check inclusion proofs and consistency between tree heads they have seen, so the operator cannot drop or rewrite entries quietly either |
+
+## Witness service
+
+```bash
+# on the witness host
+tracekit witness init  --home /srv/tkw          # creates the witness key; give witness.pub to signers and verifiers
+tracekit witness token box-1 --home /srv/tkw --signer-pub signer.pub     # prints a token once; binds it to that signer key
+tracekit witness serve --home /srv/tkw --host 0.0.0.0 --port 8444 --cert c.pem --key k.pem
+
+# signer: publish to it
+tracekit init ... --witness 'https://witness.example:8444#token=/var/lib/tracekit/witness.token&key=/var/lib/tracekit/witness.pub'
+# verifier: read from it (the witness key must be pinned; state= remembers the last tree head for consistency checks)
+tracekit verify run.tkb --witness 'https://witness.example:8444#key=witness.pub&state=~/.tkw-sth.json'
+```
+
+| Endpoint | |
+|---|---|
+| `POST /v1/checkpoints` | token-authenticated; the checkpoint must be signed by the key registered for the token. Returns the index, a signed tree head and an inclusion proof. Same checkpoint again: the same receipt. Different head for a logged sequence number: `409` and a conflict record |
+| `GET /v1/checkpoints?after=N` | entries with inclusion proofs against the current signed tree head |
+| `GET /v1/sth`, `/v1/consistency?first=&second=` | signed tree head; RFC 6962 consistency proof between two sizes |
+| `GET /v1/conflicts`, `/v1/key` | refused forks; the witness public key |
+
+The witness holds checkpoints only (sequence numbers, hashes, key ids, timestamps), never ledger content.
 
 ## Kinds
 
