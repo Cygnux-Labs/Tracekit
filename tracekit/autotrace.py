@@ -31,6 +31,7 @@ import time
 import uuid
 
 from . import client, privacy
+from . import usage as _usage
 from .core import jsonable
 
 MAX_TEXT = 1024 * 1024   # streamed text kept for the (hashed) response content
@@ -94,6 +95,10 @@ class _Exchange:
         self.done = False
         self.lock = threading.Lock()
         self.stop_reason, self.tool_uses, self.text, self.resp_model, self.chunks = None, {}, [], None, 0
+        self.usage = None
+
+    def add_usage(self, u):
+        self.usage = _usage.merge(self.usage, u)
 
     def _capture(self):
         return self.tracer._policy.get("content_capture", "hashed")
@@ -141,6 +146,8 @@ class _Exchange:
                     "stop_reason": str(self.stop_reason)[:100] if self.stop_reason is not None else None,
                     "tool_uses": tools, "error": str(error)[:500] if error else None,
                     "upstream": f"sdk:{self.provider}:{self.operation}", "attribution": "none"}
+            if self.usage:
+                data["usage"] = self.usage
             if content is not None:
                 data["response"] = privacy.content(content, self._capture())
             self.tracer._send(self.tracer._event("model.exchange", data))
@@ -162,6 +169,7 @@ def _note_failure():
 
 def _openai_chat(ex, resp):
     ex.resp_model = _get(resp, "model")
+    ex.add_usage(_usage.from_openai(_get(resp, "usage")))
     ex.stop_reason = _get(resp, "choices", 0, "finish_reason")
     for ch in _get(resp, "choices", default=[]) or []:
         for tc in _get(ch, "message", "tool_calls", default=[]) or []:
@@ -170,6 +178,7 @@ def _openai_chat(ex, resp):
 
 def _openai_chat_chunk(ex, chunk):
     ex.resp_model = ex.resp_model or _get(chunk, "model")
+    ex.add_usage(_usage.from_openai(_get(chunk, "usage")))  # last chunk, with stream_options={"include_usage": True}
     for ch in _get(chunk, "choices", default=[]) or []:
         if _get(ch, "finish_reason"):
             ex.stop_reason = _get(ch, "finish_reason")
@@ -193,6 +202,7 @@ def _openai_chat_chunk(ex, chunk):
 
 def _openai_responses(ex, resp):
     ex.resp_model = _get(resp, "model")
+    ex.add_usage(_usage.from_openai(_get(resp, "usage")))
     ex.stop_reason = _get(resp, "incomplete_details", "reason") or _get(resp, "status")
     for item in _get(resp, "output", default=[]) or []:
         if _get(item, "type") in ("function_call", "custom_tool_call", "mcp_call"):
@@ -215,6 +225,7 @@ def _openai_responses_event(ex, ev):
 
 def _anthropic_msg(ex, resp):
     ex.resp_model = _get(resp, "model")
+    ex.add_usage(_usage.from_anthropic(_get(resp, "usage")))
     ex.stop_reason = _get(resp, "stop_reason")
     for b in _get(resp, "content", default=[]) or []:
         if _get(b, "type") in ("tool_use", "server_tool_use", "mcp_tool_use"):
@@ -225,6 +236,7 @@ def _anthropic_event(ex, ev):
     t = _get(ev, "type")
     if t == "message_start":
         ex.resp_model = _get(ev, "message", "model")
+        ex.add_usage(_usage.from_anthropic(_get(ev, "message", "usage")))
     elif t == "content_block_start":
         b = _get(ev, "content_block")
         if _get(b, "type") in ("tool_use", "server_tool_use", "mcp_tool_use"):
@@ -235,10 +247,12 @@ def _anthropic_event(ex, ev):
             ex.text.append(txt)
     elif t == "message_delta":
         ex.stop_reason = _get(ev, "delta", "stop_reason") or ex.stop_reason
+        ex.add_usage(_usage.from_anthropic(_get(ev, "usage")))
 
 
 def _gemini(ex, resp):
     ex.resp_model = _get(resp, "model_version") or ex.resp_model
+    ex.add_usage(_usage.from_gemini(_get(resp, "usage_metadata")))
     fr = _get(resp, "candidates", 0, "finish_reason")
     if fr is not None:
         ex.stop_reason = getattr(fr, "name", None) or str(fr)

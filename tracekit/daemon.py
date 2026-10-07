@@ -113,7 +113,8 @@ class Signer:
     def __init__(self, home, cfg):
         self.home, self.cfg = home, cfg
         self.my_uid = os.getuid() if hasattr(os, "getuid") else None
-        self.keys = Keys.load_or_create(os.path.join(home, "keys"))
+        from .extsigner import load as load_keys
+        self.keys = load_keys(cfg, lambda: Keys.load_or_create(os.path.join(home, "keys")))
         self.ledger = Ledger(os.path.join(home, "ledger", "ledger.jsonl"), self.keys)
         with open(os.path.join(home, "ledger", "signer.pub"), "wb") as f:
             f.write(self.keys.public)
@@ -189,7 +190,42 @@ class Signer:
     def _append(self, ev):
         rec = self.ledger.append(ev)
         self.since_cp += 1
+        if self._hash_index is not None:
+            self._hash_index[rec["event"]["seq"]] = rec["hash"]
         return rec
+
+    _hash_index = None
+
+    def _record_hash(self, seq):
+        """Hash of the ledger record at seq (built once from the ledger file, then kept current by _append)."""
+        if self._hash_index is None:
+            from .ledger import read_records
+            idx = {}
+            for _, r, _ in read_records(self.ledger.path):
+                if isinstance(r, dict):
+                    s = r.get("seq") if r.get("elided") else (r.get("event") or {}).get("seq")
+                    if isinstance(s, int):
+                        idx[s] = r.get("hash")
+            self._hash_index = idx
+        return self._hash_index.get(seq)
+
+    def _finding_problems(self, ev):
+        """A finding must cite records that exist in this ledger with exactly the cited hash."""
+        v = (ev.get("data") or {}).get("verdict") or {}
+        if v.get("kind") != "finding":
+            return []
+        refs = v.get("evidence")
+        if not isinstance(refs, list) or not refs:
+            return ["a finding must cite at least one ledger record"]
+        bad = []
+        for ref in refs[:200]:
+            s, h = (ref or {}).get("seq"), (ref or {}).get("hash")
+            have = self._record_hash(s) if isinstance(s, int) else None
+            if have is None:
+                bad.append(f"seq {s}: not in the ledger")
+            elif have != h:
+                bad.append(f"seq {s}: cited hash {str(h)[:12]} does not match the ledger ({have[:12]})")
+        return bad
 
     def _internal(self, typ, data, run_id="_signer"):
         ev = {"schema_version": SCHEMA_VERSION, "id": new_id(), "seq": 0, "prev_hash": GENESIS, "ts": now_ts(),
@@ -617,9 +653,13 @@ class Signer:
         if ev["type"] == "policy.decision" and claimed and not os.path.exists(self._blob(claimed)):
             self._internal("capture.gap", {"reason": f"decision made under policy {claimed[:19]} whose snapshot was never recorded",
                                            "kind": "policy_unrecorded", "tool_use_id": ev["data"].get("tool_use_id")}, run_id)
-        if run_id.startswith("findings:"):
+        if run_id.startswith(("findings:", "anchors:")):
             if ev["type"] != "review":  # companion runs hold analyzer findings only; no lifecycle of their own
                 return {"ok": False, "error": "findings runs accept only review events"}
+            probs = self._finding_problems(ev)
+            if probs:  # refused at write time; `tracekit verify` checks the same thing again offline
+                self._rejection("refused finding: " + "; ".join(probs[:3]), run_id)
+                return {"ok": False, "error": "finding cites evidence that is not in the ledger: " + "; ".join(probs[:5])}
         elif ev["type"] == "run.start":
             if st["started"] and not st["ended"]:
                 self._internal("capture.gap", {"reason": "run.start for a run that never recorded run.end", "kind": "no_run_end"}, run_id)

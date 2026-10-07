@@ -7,6 +7,8 @@ copy of the bundle is shown failing verification.
 
 Default: a SCRIPTED agent (fixed hook payloads, clearly labelled) so the demo needs no API key.
 --real: runs `claude -p` in the temp project with Tracekit hooks installed.
+--agent codex|cursor|gemini: the same scripted run, sent as that harness's own hook payloads through the
+command `tracekit init --agent <name>` installs (tool names, event names and replies in its format).
 """
 import json
 import os
@@ -45,19 +47,89 @@ def _project(d):
     return p
 
 
-def _hook(env, payload):
-    r = subprocess.run([sys.executable, "-m", "tracekit.hook"], input=json.dumps(payload), capture_output=True,
-                       text=True, env=env, timeout=30)
-    return r.returncode, r.stderr.strip()
+AGENTS = ("claude", "codex", "cursor", "gemini")
 
 
-def scripted(env, proj):
+def _native(agent, base, event, name=None, ti=None, tid=None, result=None, ok=True):
+    """A Claude Code-shaped step -> (payload in `agent`'s own hook format, argv of the hook command)."""
+    if agent == "claude":
+        p = dict(base, hook_event_name=event)
+        if name:
+            p.update(tool_name=name, tool_use_id=tid, tool_input=ti)
+            if event != "PreToolUse":
+                p["tool_response"] = result
+                p["duration_ms"] = 40
+        return p, [sys.executable, "-m", "tracekit.hook"]
+    argv = [sys.executable, "-m", "tracekit.agent_hooks", agent]
+    sid, cwd = base["session_id"], base["cwd"]
+    if name == "Bash":
+        native = {"codex": ("shell", {"command": ["bash", "-lc", ti["command"]]}), "cursor": ("Shell", {"command": ti["command"]}),
+                  "gemini": ("run_shell_command", {"command": ti["command"]})}[agent]
+    elif name == "Read":
+        native = {"codex": ("shell", {"command": ["bash", "-lc", "cat " + ti["file_path"]]}), "cursor": ("Read", {"path": ti["file_path"]}),
+                  "gemini": ("read_file", {"absolute_path": ti["file_path"]})}[agent]
+    elif name == "Edit":
+        patch = f"*** Begin Patch\n*** Update File: {ti['file_path']}\n-    return {ti['old_string']}\n+    return {ti['new_string']}\n*** End Patch"
+        native = {"codex": ("apply_patch", {"patch": patch}), "cursor": ("Edit", {"path": ti["file_path"], "old_string": ti["old_string"],
+                                                                                  "new_string": ti["new_string"]}),
+                  "gemini": ("replace", {"file_path": ti["file_path"], "old_string": ti["old_string"], "new_string": ti["new_string"]})}[agent]
+    else:
+        native = (name, ti)
+    if agent == "codex":
+        ev = {"PostToolUseFailure": "PostToolUse"}.get(event, event)
+        p = {"session_id": sid, "cwd": cwd, "hook_event_name": ev, "model": "scripted"}
+        if name:
+            p.update(tool_name=native[0], tool_input=native[1], tool_use_id=tid)
+            if ev == "PostToolUse":
+                p["tool_response"] = result
+        if event == "UserPromptSubmit":
+            p["prompt"] = base.get("prompt")
+        return p, argv
+    if agent == "cursor":
+        ev = {"PreToolUse": "preToolUse", "PostToolUse": "postToolUse", "PostToolUseFailure": "postToolUseFailure",
+              "UserPromptSubmit": "beforeSubmitPrompt", "SessionStart": "sessionStart", "SessionEnd": "sessionEnd"}[event]
+        p = {"conversation_id": sid, "workspace_roots": [cwd], "hook_event_name": ev, "model": "scripted"}
+        if name:
+            p.update(tool_name=native[0], tool_input=native[1], tool_use_id=tid)
+            if event != "PreToolUse":
+                p.update(tool_output=json.dumps(result), duration=40)
+                if not ok:
+                    p["error_message"] = "exit code 1"
+        if event == "UserPromptSubmit":
+            p["prompt"] = base.get("prompt")
+        return p, argv
+    ev = {"PreToolUse": "BeforeTool", "PostToolUse": "AfterTool", "PostToolUseFailure": "AfterTool",
+          "UserPromptSubmit": "BeforeAgent"}.get(event, event)
+    p = {"session_id": sid, "cwd": cwd, "hook_event_name": ev}
+    if name:
+        p.update(tool_name=native[0], tool_input=native[1])
+        if ev == "AfterTool":
+            p["tool_response"] = result if ok else dict(result or {}, error="exit code 1")
+    if event == "UserPromptSubmit":
+        p["prompt"] = base.get("prompt")
+    return p, argv
+
+
+def _send(env, payload, argv):
+    r = subprocess.run(argv, input=json.dumps(payload), capture_output=True, text=True, env=env, timeout=30)
+    try:
+        reply = json.loads(r.stdout) if r.stdout.strip() else {}
+    except ValueError:
+        reply = {}
+    out = reply.get("hookSpecificOutput") if isinstance(reply, dict) else None
+    denied = r.returncode == 2 or (isinstance(reply, dict) and (reply.get("permission") == "deny" or reply.get("decision") == "deny"
+                                                                or (out or {}).get("permissionDecision") == "deny"))
+    return denied, r.stderr.strip()
+
+
+def scripted(env, proj, agent="claude"):
     """A fixed sequence of hook payloads, shaped like Claude Code's. Not a model.
     TRACEKIT_DEMO_PACE=<seconds> slows it down (for watching it in `tracekit observe`)."""
     import time
     pace = float(os.environ.get("TRACEKIT_DEMO_PACE") or 0)
     transcript = os.path.join(os.path.dirname(proj), "transcript.jsonl")
-    base = {"session_id": "demo-run-1", "cwd": proj, "transcript_path": transcript}
+    base = {"session_id": "demo-run-1" if agent == "claude" else f"demo-{agent}-1", "cwd": proj, "transcript_path": transcript,
+            "prompt": PROMPT}
     n = [0]
 
     def note(text):  # what the scripted "model" says, written to its transcript like a harness would
@@ -69,18 +141,17 @@ def scripted(env, proj):
         note(f"calling {name}")
         n[0] += 1
         tid = f"toolu_demo_{n[0]:02d}"
-        code, err = _hook(env, {**base, "hook_event_name": "PreToolUse", "tool_name": name, "tool_use_id": tid, "tool_input": ti})
+        denied, err = _send(env, *_native(agent, base, "PreToolUse", name, ti, tid))
         shown = ti.get("command") or ti.get("file_path")
-        if code == 2:
+        if denied:
             print(f"  BLOCKED  {name}: {shown}\n           {err}")
             return False
         print(f"  ran      {name}: {shown}")
-        _hook(env, {**base, "hook_event_name": "PostToolUse" if ok else "PostToolUseFailure", "tool_name": name, "tool_use_id": tid,
-                    "tool_input": ti, "tool_response": result, "duration_ms": 40})
+        _send(env, *_native(agent, base, "PostToolUse" if ok else "PostToolUseFailure", name, ti, tid, result, ok))
         return True
 
-    _hook(env, {**base, "hook_event_name": "SessionStart", "source": "startup"})
-    _hook(env, {**base, "hook_event_name": "UserPromptSubmit", "prompt": PROMPT})
+    _send(env, *_native(agent, base, "SessionStart"))
+    _send(env, *_native(agent, base, "UserPromptSubmit"))
     print(f"  prompt   {PROMPT}")
     tool("Read", {"file_path": os.path.join(proj, "README.md")}, {"content": README})
     tool("Bash", {"command": "python -m pytest -q test_calc.py"}, {"stdout": "1 failed", "exit_code": 1}, ok=False)
@@ -95,7 +166,7 @@ def scripted(env, proj):
               + ("Tracekit blocked that (TK-D006), so nothing was sent." if blocked else "that upload ran."))
     note(report)
     time.sleep(pace)
-    _hook(env, {**base, "hook_event_name": "SessionEnd", "reason": "done"})
+    _send(env, *_native(agent, base, "SessionEnd"))
     print(f"  agent    {report}")
 
 
@@ -131,7 +202,13 @@ def tamper_copy(src, dst):
             z.writestr(n, v)
 
 
-def main(real=False, keep=False):
+def main(real=False, keep=False, agent="claude"):
+    if agent not in AGENTS:
+        print(f"tracekit demo: --agent must be one of {', '.join(AGENTS)}", file=sys.stderr)
+        return 2
+    if real and agent != "claude":
+        print("tracekit demo: --real drives Claude Code only; the other agents run scripted", file=sys.stderr)
+        return 2
     d = tempfile.mkdtemp(prefix="tracekit-demo-")
     home = os.path.join(d, "signer")
     env = dict(os.environ, TRACEKIT_CLIENT_HOME=os.path.join(d, "client"),
@@ -143,8 +220,11 @@ def main(real=False, keep=False):
         print("  not isolation. Use `sudo tracekit init --user <agent-user>` for a separate-user signer.")
         install.init_dev(home, [], checkpoint_every=5)
         proj = _project(d)
-        say("agent run (" + ("REAL: claude -p" if real else "SCRIPTED agent: fixed hook payloads, not a model") + ")")
-        (globals()["real"] if real else scripted)(env, proj)
+        say("agent run (" + ("REAL: claude -p" if real else f"SCRIPTED {agent} agent: fixed {agent} hook payloads, not a model") + ")")
+        if real:
+            globals()["real"](env, proj)
+        else:
+            scripted(env, proj, agent)
         install.stop_dev_daemon(home)  # final checkpoint on shutdown
         say("export the run as an evidence bundle")
         out = os.path.join(d, "run.tkb")

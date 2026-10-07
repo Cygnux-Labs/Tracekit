@@ -139,6 +139,15 @@ def to_otlp_json(events, kid=None, hashes=None):
                     attrs.append(_attr("gen_ai.response.finish_reasons", [d["stop_reason"]]))
                 if d.get("tool_uses"):
                     attrs.append(_attr("tracekit.tool_use_ids", [t["id"] for t in d["tool_uses"]]))
+                u = d.get("usage") or {}
+                if u:  # GenAI semconv counts cached input inside input_tokens
+                    attrs += [_attr("gen_ai.usage.input_tokens", (u.get("input_tokens") or 0) + (u.get("cache_read_tokens") or 0)),
+                              _attr("gen_ai.usage.output_tokens", u.get("output_tokens") or 0)]
+                    for k, n in (("cache_read_tokens", "gen_ai.usage.cache_read.input_tokens"),
+                                 ("cache_write_tokens", "gen_ai.usage.cache_creation.input_tokens"),
+                                 ("reasoning_tokens", "tracekit.usage.reasoning_tokens")):
+                        if u.get(k) is not None:
+                            attrs.append(_attr(n, u[k]))
                 for k in ("status", "added_latency_ms", "first_byte_ms"):
                     if d.get(k) is not None:
                         attrs.append(_attr(f"tracekit.{k}", d[k]))

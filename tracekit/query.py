@@ -22,22 +22,26 @@ import sqlite3
 import sys
 import time
 
-INDEX_VERSION = 2
+INDEX_VERSION = 4
+INSERT = "INSERT OR REPLACE INTO events VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT);
 CREATE TABLE IF NOT EXISTS events (
   seq INTEGER PRIMARY KEY, hash TEXT NOT NULL, prev_hash TEXT NOT NULL, ts TEXT, ts_signed TEXT, run_id TEXT, agent_id TEXT,
-  parent_id TEXT, source TEXT, type TEXT, data TEXT, chain_ok INTEGER NOT NULL, tool_use_id TEXT, phase TEXT);
+  parent_id TEXT, source TEXT, type TEXT, data TEXT, chain_ok INTEGER NOT NULL, tool_use_id TEXT, phase TEXT,
+  name TEXT, decision TEXT, ok INTEGER, tokens_in INTEGER, tokens_out INTEGER);  -- copies of data fields the views aggregate
 CREATE INDEX IF NOT EXISTS ev_run ON events(run_id, type);
+-- makes the runs rollup an index-only scan (no JSON parsed, no table rows read)
+CREATE INDEX IF NOT EXISTS ev_rollup ON events(run_id, type, phase, decision, ok, tokens_in, tokens_out, ts, source);
 CREATE INDEX IF NOT EXISTS ev_type ON events(type);
 CREATE INDEX IF NOT EXISTS ev_tool ON events(tool_use_id, type, run_id);
 
 CREATE VIEW IF NOT EXISTS tool_calls AS
-SELECT c.run_id, c.agent_id, c.seq, c.tool_use_id, json_extract(c.data,'$.name') AS name,
+SELECT c.run_id, c.agent_id, c.seq, c.tool_use_id, c.name AS name,
        json_extract(c.data,'$.input.command.value') AS command, json_extract(c.data,'$.input.file_path.value') AS file_path,
-       json_extract(c.data,'$.input.url.value') AS url, json_extract(d.data,'$.decision') AS decision,
-       json_extract(d.data,'$.rule_ids') AS rule_ids, json_extract(r.data,'$.ok') AS ok,
+       json_extract(c.data,'$.input.url.value') AS url, d.decision AS decision,
+       json_extract(d.data,'$.rule_ids') AS rule_ids, r.ok AS ok,
        json_extract(r.data,'$.duration_ms') AS duration_ms, json_extract(r.data,'$.output.redacted') AS output_redacted,
        c.ts AS started, r.ts AS finished, c.source, c.hash AS call_hash, r.hash AS result_hash
 FROM events c
@@ -46,11 +50,14 @@ LEFT JOIN events r ON r.tool_use_id=c.tool_use_id AND r.type='tool.result' AND r
 WHERE c.type='tool.call';
 
 CREATE VIEW IF NOT EXISTS model_exchanges AS
-SELECT run_id, agent_id, seq, json_extract(data,'$.exchange_id') AS exchange_id, json_extract(data,'$.model') AS model,
+SELECT run_id, agent_id, seq, json_extract(data,'$.exchange_id') AS exchange_id, name AS model,
        json_extract(data,'$.upstream') AS upstream, json_extract(data,'$.stop_reason') AS stop_reason,
        json_extract(data,'$.status') AS status, json_extract(data,'$.duration_ms') AS duration_ms,
        json_extract(data,'$.first_byte_ms') AS first_byte_ms, json_extract(data,'$.streamed') AS streamed,
-       json_extract(data,'$.error') AS error, json_extract(data,'$.tool_uses') AS tool_uses, source, ts, hash
+       json_extract(data,'$.error') AS error, json_extract(data,'$.tool_uses') AS tool_uses,
+       json_extract(data,'$.usage.input_tokens') AS input_tokens, json_extract(data,'$.usage.output_tokens') AS output_tokens,
+       json_extract(data,'$.usage.cache_read_tokens') AS cache_read_tokens, json_extract(data,'$.usage.cache_write_tokens') AS cache_write_tokens,
+       json_extract(data,'$.usage.reasoning_tokens') AS reasoning_tokens, source, ts, hash
 FROM events WHERE type='model.exchange' AND phase='response';
 
 CREATE VIEW IF NOT EXISTS findings AS
@@ -66,32 +73,57 @@ UNION ALL
 SELECT seq, run_id, 'trace.tamper:' || json_extract(data,'$.kind'), json_extract(data,'$.path'), ts FROM events WHERE type='trace.tamper';
 
 CREATE VIEW IF NOT EXISTS runs AS
-SELECT e.run_id,
-  max(CASE WHEN e.type='run.start' THEN json_extract(e.data,'$.agent.name') END) AS agent,
-  max(CASE WHEN e.type='run.start' THEN json_extract(e.data,'$.model') END) AS model,
-  max(CASE WHEN e.type='run.start' THEN json_extract(e.data,'$.content_capture') END) AS content_capture,
-  min(e.ts) AS started, max(CASE WHEN e.type='run.end' THEN e.ts END) AS ended,
-  count(*) AS events, sum(e.type='tool.call') AS tool_calls, sum(e.type='model.exchange' AND e.phase='response') AS model_calls,
-  sum(e.type='policy.decision' AND json_extract(e.data,'$.decision')='deny') AS denied,
-  sum(e.type='policy.decision' AND json_extract(e.data,'$.decision')='flag') AS flagged,
-  sum(e.type='tool.result' AND json_extract(e.data,'$.ok')=0) AS failed_tools,
-  (SELECT count(*) FROM events f WHERE f.run_id='findings:' || e.run_id) AS findings,
-  (SELECT count(*) FROM events g WHERE g.run_id=e.run_id AND g.type IN ('capture.gap','trace.tamper')) AS gaps,
+SELECT g.run_id,
+  (SELECT json_extract(s.data,'$.agent.name') FROM events s WHERE s.run_id=g.run_id AND s.type='run.start' ORDER BY s.seq LIMIT 1) AS agent,
+  (SELECT json_extract(s.data,'$.model') FROM events s WHERE s.run_id=g.run_id AND s.type='run.start' ORDER BY s.seq LIMIT 1) AS model,
+  (SELECT json_extract(s.data,'$.content_capture') FROM events s WHERE s.run_id=g.run_id AND s.type='run.start' ORDER BY s.seq LIMIT 1) AS content_capture,
+  g.started, g.ended, g.events, g.tool_calls, g.model_calls, g.tokens_in, g.tokens_out, g.denied, g.flagged, g.failed_tools,
+  (SELECT count(*) FROM events f WHERE f.run_id='findings:' || g.run_id) AS findings,
+  (SELECT count(*) FROM events x WHERE x.run_id=g.run_id AND x.type IN ('capture.gap','trace.tamper')) AS gaps,
+  g.sources
+FROM (SELECT e.run_id, min(e.ts) AS started, max(CASE WHEN e.type='run.end' THEN e.ts END) AS ended, count(*) AS events,
+  sum(e.type='tool.call') AS tool_calls, sum(e.type='model.exchange' AND e.phase='response') AS model_calls,
+  sum(CASE WHEN e.type='model.exchange' AND e.phase='response' THEN e.tokens_in END) AS tokens_in,
+  sum(CASE WHEN e.type='model.exchange' AND e.phase='response' THEN e.tokens_out END) AS tokens_out,
+  sum(e.type='policy.decision' AND e.decision='deny') AS denied,
+  sum(e.type='policy.decision' AND e.decision='flag') AS flagged,
+  sum(e.type='tool.result' AND e.ok=0) AS failed_tools,
   group_concat(DISTINCT e.source) AS sources
-FROM events e WHERE e.run_id NOT LIKE '\\_%' ESCAPE '\\' AND e.run_id NOT LIKE 'findings:%' GROUP BY e.run_id;
+  FROM events e WHERE e.run_id NOT LIKE '\\_%' ESCAPE '\\' AND e.run_id NOT LIKE 'findings:%' GROUP BY e.run_id) g;
 """
 
 DOC = {
     "events": "every ledger record: seq, hash, prev_hash, ts, ts_signed, run_id, agent_id, parent_id, source, type, data (JSON), chain_ok",
-    "runs": "one row per run: agent, model, content_capture, started, ended, events, tool_calls, model_calls, denied, flagged, "
+    "runs": "one row per run: agent, model, content_capture, started, ended, events, tool_calls, model_calls, tokens_in, tokens_out, denied, flagged, "
             "failed_tools, findings, gaps, sources",
     "tool_calls": "tool call + policy decision + result: run_id, agent_id, seq, tool_use_id, name, command, file_path, url, decision, "
                   "rule_ids, ok, duration_ms, output_redacted, started, finished, source, call_hash, result_hash",
     "model_exchanges": "model responses: run_id, seq, exchange_id, model, upstream, stop_reason, status, duration_ms, first_byte_ms, "
-                       "streamed, error, tool_uses (JSON), source, ts, hash",
+                       "streamed, error, tool_uses (JSON), input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, reasoning_tokens, source, ts, hash",
     "findings": "signed analyzer findings: run_id, seq, rule, severity, title, detail, evidence (JSON), detector, ts, hash",
     "gaps": "capture gaps and trace tampering: seq, run_id, kind, reason, ts",
 }
+
+
+def _int(v):
+    return v if isinstance(v, int) and not isinstance(v, bool) else None
+
+
+def _columns(etype, d):
+    """(name, decision, ok, tokens_in, tokens_out): the data fields the views group and sum, copied out of the JSON once at
+    index time so a rollup over a million events doesn't parse a million JSON documents."""
+    if etype == "tool.call":
+        return (str(d.get("name")) if d.get("name") is not None else None, None, None, None, None)
+    if etype == "policy.decision":
+        return (None, d.get("decision") if isinstance(d.get("decision"), str) else None, None, None, None)
+    if etype == "tool.result":
+        ok = d.get("ok")
+        return (None, None, int(ok) if isinstance(ok, bool) else None, None, None)
+    if etype == "model.exchange":
+        u = d.get("usage") if isinstance(d.get("usage"), dict) else {}
+        tin = sum(_int(u.get(k)) or 0 for k in ("input_tokens", "cache_read_tokens", "cache_write_tokens"))
+        return (str(d.get("model")) if d.get("model") is not None else None, None, None, tin if u else None, _int(u.get("output_tokens")))
+    return (None, None, None, None, None)
 
 
 def default_index(home):
@@ -158,7 +190,7 @@ class Index:
                     h = hashlib.sha256()
                 last = db.execute("SELECT seq, hash FROM events ORDER BY seq DESC LIMIT 1").fetchone()
                 prev, want = (last[1], last[0] + 1) if last else (GENESIS, 0)
-                rows, consumed = [], offset
+                rows, consumed, added = [], offset, 0
                 for raw in f:
                     if not raw.endswith(b"\n"):
                         break  # a line still being written: pick it up next time
@@ -181,13 +213,20 @@ class Index:
                     rows.append((seq, r.get("hash"), ev.get("prev_hash", ""), ev.get("ts"), ev.get("ts_signed"), ev.get("run_id"),
                                  ev.get("agent_id"), ev.get("parent_id"), ev.get("source"), ev.get("type"),
                                  json.dumps(ev.get("data"), ensure_ascii=False) if "data" in ev else None, ok,
-                                 d.get("tool_use_id"), d.get("phase")))
+                                 d.get("tool_use_id"), d.get("phase"), *_columns(ev.get("type"), d)))
                     prev, want = r.get("hash"), (seq + 1 if isinstance(seq, int) else want + 1)
+                    if len(rows) >= 50_000:  # bounded memory on big ledgers; all of it commits (or not) together below
+                        db.executemany(INSERT, rows)
+                        added += len(rows)
+                        rows = []
             with db:
-                db.executemany("INSERT OR REPLACE INTO events VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", rows)
+                db.executemany(INSERT, rows)
                 db.execute("INSERT OR REPLACE INTO meta VALUES ('offset', ?)", (str(consumed),))
                 db.execute("INSERT OR REPLACE INTO meta VALUES ('prefix_sha256', ?)", (h.hexdigest(),))
-            return len(rows)
+            return added + len(rows)
+        except BaseException:
+            db.rollback()
+            raise
         finally:
             db.close()
 
