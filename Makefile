@@ -1,4 +1,4 @@
-.PHONY: help install test lint build check demo eval eval-agents clean
+.PHONY: help install test test-ts eval-scale lint build check demo eval eval-agents clean
 PY ?= python3
 
 help:
@@ -17,6 +17,12 @@ install:
 
 test:
 	$(PY) -m pytest -q
+
+eval-scale:
+	$(PY) eval/e7_sql_scale.py
+
+test-ts:
+	cd sdk/typescript && npm install --no-audit --no-fund && npm test
 
 lint:
 	$(PY) -m pyflakes tracekit tracekit_sdk.py tests eval examples

@@ -5,6 +5,51 @@ All notable changes to Tracekit. Versions follow [PEP 440](https://peps.python.o
 ## Unreleased
 
 ### Added
+- **LangGraph node tracing, Browser Use and Stagehand hooks** (#6): `TracekitCallbackHandler(tracer, nodes=True)` records
+  each graph node as a policy-checked `node:<name>` step; `tracekit.adapters.browser` gates and records Browser Use
+  actions and Stagehand `act`/`extract`/`observe`/`goto` (Python), `instrumentStagehand` in the TypeScript SDK. Runnable
+  examples for every adapter in `examples/` (and `sdk/typescript/examples/`), run in CI.
+- **`tracekit demo --agent codex|cursor|gemini`** (#7): the scripted demo sent as that agent's own hook payloads; a
+  guarantee matrix per capture path in the README.
+- **Observer over bundles, with cost** (#9): `tracekit observe --bundle run.tkb` (verified first; live view or
+  `--export`), `--prices prices.json` adds cost per model call, agent and session.
+- **`tracekit.init()`** (#5) as the one-line entry point (same as `tracekit_sdk.init()`), with an offline example for
+  OpenAI, Anthropic and Gemini (`examples/model_calls.py`).
+- **PGS end to end on a local chain** (#15): `examples/pgs_onchain_demo.py` drives Proof-Gated Signing's guard and
+  wallet on a Hardhat chain; blocked transactions are checked on-chain to be unsigned (nonce unchanged), a drift attack
+  reverts on its post-conditions. Fixed: transaction summaries now keep the target of PGS-style call dicts.
+- **Jaeger example** (#13): `examples/otel_jaeger_check.py` matches every span Jaeger holds to a signed record of a
+  verified bundle (run against Jaeger 2.22).
+- **Key attestation in bundles** (#16): `--key-attestation FILE` with an external signer; the document's hash is signed
+  into checkpoints, exports carry the document, `verify` reports it (Tracekit checks identity, not vendor contents).
+- **Auditor walkthrough** (#12) in docs/proofpack.md; `verify.pyz` checked on a machine without Tracekit.
+- **E7: SQL at a million events** (#8): every typical query under 1 s on 2 vCPUs; rollup columns are copied out of the
+  JSON at index time (index format 4, rebuilt automatically) and inserts are batched.
+- **TypeScript SDK** (`sdk/typescript`, `@cygnux/tracekit`): policy-gated `tool()`, OpenAI and Anthropic instrumentation
+  (streaming included), Vercel AI SDK middleware; runs on Tracekit's Python engine through `python -m tracekit.bridge`.
+- **OTLP/gRPC ingest**: `tracekit otel serve --grpc-port 4317` (optional `grpcio`), same receiver and guarantees as HTTP.
+- **The signer refuses findings whose evidence does not match the ledger** (missing record, wrong hash, none cited), in
+  addition to the check `tracekit verify` makes offline.
+- **Token usage and cost** (#9). Optional `usage` on `model.exchange` responses (input, output, cache read, cache write,
+  reasoning tokens), normalised from the Anthropic proxy, the OpenAI / Anthropic / Gemini SDKs and OpenTelemetry
+  (GenAI semconv, OpenLLMetry, OpenInference, Vercel AI SDK). Exported as `gen_ai.usage.*`, queryable in SQL, shown in
+  the observer. `tracekit cost` totals per run or model; cost only with a user-supplied price table (none built in).
+  The schema change is additive (optional field); bundles that use it need this verifier.
+- **Coding-agent hooks** (#7): `tracekit init --dev --agent codex|cursor|gemini` on the Claude Code hook pipeline (policy
+  gate, approvals, signing, transcript hashing), with tool names mapped onto the policy vocabulary.
+- **Adapters** (#6): MCP client sessions (`tracekit.adapters.mcp`) and Vercel AI SDK telemetry spans.
+- **Proof packs** (#12): `tracekit proofpack` / `tracekit report`: bundle, readable report with every check, findings,
+  coverage and an evidence-to-control map (EU AI Act Art. 12, SOC 2 CC7.2, ISO/IEC 42001 A.6.2.8), and `verify.pyz`, a
+  verifier that needs only Python.
+- **Witness service** (#17): `tracekit witness init|token|serve`, an append-only RFC 6962 Merkle log of checkpoints with
+  signed tree heads, per-signer tokens, fork refusal and conflict log; `https://` witness specs check inclusion and
+  consistency proofs against a pinned witness key.
+- **External signers** (#16): keep the signing key in a TPM, HSM, enclave or KMS through a long-lived helper process;
+  signatures verified before use; key assurance signed into checkpoints and reported by `verify` ("signing key").
+- **Causeway integration** (#14): `tracekit causeway anchor|verify|import-tests|export`.
+- **Guarded onchain transactions** (#15): `tracekit.adapters.onchain.guarded_tx` records a transaction guard's verdict
+  (Proof-Gated Signing's `Guard.check` interface) before signing and never signs a blocked transaction; detectors
+  TK-X006 to TK-X008.
 - **Signed findings** (#10) and **say-vs-do detectors** (#11). `tracekit analyze` runs deterministic detectors (claims vs
   executed commands, requests vs executions, risky actions left out of the agent's account, secrets in output,
   retrospective policy violations) and signs each finding as a `review` event in `findings:<run>`, citing records by seq
