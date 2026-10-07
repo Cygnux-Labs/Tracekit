@@ -581,3 +581,81 @@ class Push(unittest.TestCase):
         self.assertTrue(spans)
         kinds = {otlp.classify(sp) for sp in spans}
         self.assertTrue({"tool", "agent"} <= kinds)
+
+
+try:
+    import importlib.util
+    from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter as GrpcExporter
+    HAVE_GRPC = HAVE_OTEL and importlib.util.find_spec("grpc") is not None
+except ImportError:
+    HAVE_GRPC = False
+
+
+@unittest.skipUnless(HAVE_GRPC, "grpcio / OTLP gRPC exporter not installed")
+class Grpc(unittest.TestCase):
+    """OTLP/gRPC with the real OpenTelemetry gRPC exporter, into the same receiver and a real signer."""
+
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.home = os.path.join(self.d, "signer")
+        self.old = os.environ.get("TRACEKIT_CLIENT_HOME")
+        os.environ["TRACEKIT_CLIENT_HOME"] = os.path.join(self.d, "client")
+        install.init_dev(self.home, [], start=True)
+        self.sink_down = False
+
+        def sink(ev, attach):
+            if self.sink_down:
+                raise client.SignerUnavailable("restarting")
+            return otlp.local_sink(ev, attach)
+        self.srv, self.port = otlp.serve_grpc("127.0.0.1", 0, otlp.Receiver(sink, otlp.Mapper(cwd=self.d)))
+
+    def tearDown(self):
+        self.srv.stop(0)
+        install.stop_dev_daemon(self.home)
+        if self.old is None:
+            os.environ.pop("TRACEKIT_CLIENT_HOME", None)
+        else:
+            os.environ["TRACEKIT_CLIENT_HOME"] = self.old
+        shutil.rmtree(self.d, ignore_errors=True)
+
+    def test_real_grpc_exporter(self):
+        from opentelemetry.sdk.trace.export import SpanExportResult
+        provider = TracerProvider(resource=Resource.create({"service.name": "grpc-agent"}))
+        exporter = GrpcExporter(endpoint=f"127.0.0.1:{self.port}", insecure=True)
+        provider.add_span_processor(SimpleSpanProcessor(exporter))
+        tr = provider.get_tracer("t")
+        with tr.start_as_current_span("invoke_agent g", attributes={"gen_ai.operation.name": "invoke_agent"}) as root:
+            with tr.start_as_current_span("execute_tool Bash", attributes={"gen_ai.operation.name": "execute_tool", "gen_ai.tool.name": "Bash",
+                                                                           "gen_ai.tool.call.arguments": '{"command": "ls"}'}):
+                pass
+            tid = format(root.get_span_context().trace_id, "032x")
+        provider.shutdown()
+        evs = [r["event"] for _, r, _ in read_records(os.path.join(self.home, "ledger", "ledger.jsonl")) if r and r["event"]["run_id"] == f"otel:grpc-agent:{tid}"]
+        self.assertEqual([e["type"] for e in evs], ["run.start", "tool.call", "policy.decision", "tool.result", "run.end"])
+        # signer down: UNAVAILABLE, which exporters treat as retryable
+        self.sink_down = True
+        import grpc as g
+        ch = g.insecure_channel(f"127.0.0.1:{self.port}")
+        call = ch.unary_unary(otlp.GRPC_METHOD, request_serializer=None, response_deserializer=None)
+        from opentelemetry.proto.collector.trace.v1 import trace_service_pb2
+        from google.protobuf import json_format
+        req = trace_service_pb2.ExportTraceServiceRequest()
+        doc = json.loads(json.dumps(agent_trace()))
+        import base64
+        for rs in doc["resourceSpans"]:
+            for ss in rs["scopeSpans"]:
+                for sp in ss["spans"]:
+                    for k in ("traceId", "spanId", "parentSpanId"):
+                        if k in sp:
+                            sp[k] = base64.b64encode(bytes.fromhex(sp[k])).decode()
+        json_format.ParseDict(doc, req)
+        with self.assertRaises(g.RpcError) as cm:
+            call(req.SerializeToString(), timeout=10)
+        self.assertEqual(cm.exception.code(), g.StatusCode.UNAVAILABLE)
+        with self.assertRaises(g.RpcError) as cm:
+            call(b"\xff\xff\xff", timeout=10)
+        self.assertEqual(cm.exception.code(), g.StatusCode.INVALID_ARGUMENT)
+        self.sink_down = False
+        self.assertEqual(call(req.SerializeToString(), timeout=10), b"")  # retried batch accepted: full success
+        ch.close()
+        self.assertIsNotNone(SpanExportResult)
