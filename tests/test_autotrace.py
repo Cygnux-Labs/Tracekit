@@ -327,6 +327,8 @@ class Signed(unittest.TestCase):
         import tracekit_sdk
         t = tracekit_sdk.init(agent="mock-bot", session_id="auto-1", cwd=self.d)
         self.assertIs(tracekit_sdk.init(), t)
+        import tracekit
+        self.assertIs(tracekit.init(), t)  # the documented `tracekit.init()` is the same entry point
         c = openai.OpenAI(api_key="k", base_url="http://mock/v1", http_client=httpx.Client(transport=transport(lambda r: (200, OPENAI_CHAT, False))))
         out = c.chat.completions.create(model="gpt-4o", messages=[{"role": "user", "content": "ls"}])
         call = out.choices[0].message.tool_calls[0]

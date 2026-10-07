@@ -193,6 +193,19 @@ class Signed(unittest.TestCase):
         rep, code = bundle.verify(bad)
         self.assertEqual(code, 1)
 
+    def test_signer_refuses_findings_with_bad_evidence(self):
+        from tracekit import client
+        with Tracer(agent="x", session_id="job-2", cwd=self.d) as t:
+            with t.tool("Bash", {"command": "ls"}) as c:
+                c.result("x")
+        rec = next(r for r in self.records() if not r.get("elided") and r["event"]["run_id"] == "job-2" and r["event"]["type"] == "tool.call")
+        good = {"run_id": "job-2", "rule": "R", "severity": "low", "kind": "finding", "evidence": [{"seq": rec["event"]["seq"], "hash": rec["hash"]}]}
+        self.assertTrue(client.send(findings.finding_event(good), stream="analyzer").get("ok"))
+        for bad_ev in ([{"seq": rec["event"]["seq"], "hash": "0" * 64}], [{"seq": 10 ** 6, "hash": rec["hash"]}], []):
+            resp = client.send(findings.finding_event(dict(good, evidence=bad_ev)), stream="analyzer")
+            self.assertFalse(resp.get("ok"), bad_ev)
+            self.assertIn("evidence", resp.get("error", "") + "cite")
+
     def test_findings_runs_accept_only_reviews(self):
         from tracekit import client
         ev = findings.finding_event({"run_id": "x", "rule": "R", "severity": "low", "evidence": []})
