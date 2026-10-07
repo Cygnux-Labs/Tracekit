@@ -52,7 +52,8 @@ class Translator:
     """v0.2 events -> v0.1-shaped records for terminal.html. Stateful: joins tool.call with its
     policy.decision, which v0.2 records as two events."""
 
-    def __init__(self):
+    def __init__(self, prices=None):
+        self.prices = prices  # usage.Prices from --prices: adds cost to model calls (Tracekit ships no prices)
         self.pending = {}   # tool_use_id -> (tool.call event, record meta)
         self.cwd = {}       # run_id -> cwd
         self.agent_names = {}
@@ -87,6 +88,19 @@ class Translator:
         if e["run_id"] == "_signer":
             if t in ("capture.gap", "trace.tamper"):
                 out.append(self.alert(e, rec, "med", "SIGNER · " + t, d.get("reason") or json.dumps(d)[:200], "GAP"))
+            return out
+        if e["run_id"].startswith("findings:"):
+            v = d.get("verdict") or {}
+            if t == "review" and v.get("kind") == "finding":
+                sev = {"critical": "high", "high": "high", "medium": "med"}.get(v.get("severity"), "low")
+                a = self.alert(e, rec, sev, f"FINDING {v.get('rule', '')} · {v.get('title', '')}",
+                               f"{v.get('detail', '')} [evidence seq {', '.join(str(x.get('seq')) for x in (v.get('evidence') or [])[:6])}]", "FINDING")
+                a["evidence"] = [{"seq": x.get("seq"), "hash": x.get("hash")} for x in (v.get("evidence") or [])[:50] if isinstance(x, dict)]
+                a.pop("agent_id", None)  # the analyzer is not an agent lane of the run
+                a.pop("agent_type", None)
+                a["session_id"] = v.get("run_id") or a["session_id"]
+                a["agent"] = self.agent_names.get(a["session_id"], a["agent"])
+                out.append(a)
             return out
         if t == "run.start":
             self.agent_names[e["run_id"]] = (d.get("agent") or {}).get("name") or "custom-agent"
@@ -162,9 +176,17 @@ class Translator:
         elif t == "model.exchange":
             if d.get("phase") == "response":
                 tools = ", ".join(f"{x['name']}" for x in d.get("tool_uses") or []) or "no tool calls"
-                out.append({**self._base(e, rec, "tk_model"),
+                u = d.get("usage") or {}
+                usage_txt = (f" · {(u.get('input_tokens') or 0) + (u.get('cache_read_tokens') or 0) + (u.get('cache_write_tokens') or 0)} in"
+                             f" / {u.get('output_tokens') or 0} out tok") if u else ""
+                cost = self.prices.cost(d.get("model"), u) if (self.prices and u) else None
+                out.append({**self._base(e, rec, "tk_model"), "model": d.get("model"),
+                            **({"cost": cost, "currency": self.prices.currency} if cost is not None else {}),
+                            "usage": {"input_tokens": u.get("input_tokens") or 0, "output_tokens": u.get("output_tokens") or 0,
+                                      "cache_read_input_tokens": u.get("cache_read_tokens") or 0,
+                                      "cache_creation_input_tokens": u.get("cache_write_tokens") or 0} if u else None,
                             "text": f"model {d.get('model') or ''} → {d.get('status')} {d.get('stop_reason') or ''} · {tools} · "
-                                    f"{d.get('duration_ms')} ms (+{d.get('added_latency_ms')} ms proxy)"})
+                                    f"{d.get('duration_ms')} ms" + (f" (+{d.get('added_latency_ms')} ms proxy)" if d.get("added_latency_ms") is not None else "") + usage_txt})
         elif t == "model.message":
             kind = {"thinking": "thinking", "thinking_withheld": "thinking_redacted"}.get(d.get("kind"), "text")
             out.append({**self._base(e, rec, "model_turn"), "blocks": [{"kind": kind, "text": str(_show(d.get("content")))}]})
@@ -243,11 +265,11 @@ class Feed:
     disk is untouched, and `tracekit export` / `observe --export` still cover all of it). Stream
     positions are absolute (`base` + index) so a client never loses its place when records drop."""
 
-    def __init__(self, path, max_records=None):
+    def __init__(self, path, max_records=None, prices=None):
         self.path, self.records, self.lock = path, [], threading.Condition()
         self.max_records = max_records or int(os.environ.get("TRACEKIT_OBSERVE_MAX_RECORDS", "50000") or 50000)
         self.base = 0  # absolute index of records[0]
-        self.tr = Translator()
+        self.tr = Translator(prices)
         self.errors = 0
         threading.Thread(target=self._tail, daemon=True).start()
 
@@ -380,6 +402,29 @@ def make_handler(feed, token, allowed_hosts=None):
     return Handler
 
 
+def _open_bundle(bundle_path):
+    """Unpack a bundle's records and public key into a private temp dir laid out like a signer home, so the same
+    feed and the same /api/verify (chain + signatures) run over it. Returns (ledger path, `tracekit verify` exit)."""
+    import atexit
+    import shutil
+    import tempfile
+    from . import bundle
+    try:
+        _rep, code = bundle.verify(bundle_path)
+        _manifest, blobs = bundle.load_bundle(bundle_path)
+    except Exception as e:
+        print(f"tracekit observe: cannot read bundle {bundle_path}: {e}", file=sys.stderr)
+        return None, 2
+    d = tempfile.mkdtemp(prefix="tk-observe-")
+    atexit.register(shutil.rmtree, d, True)
+    os.makedirs(os.path.join(d, "ledger"))
+    with open(os.path.join(d, "ledger", "ledger.jsonl"), "wb") as f:
+        f.write(blobs.get("records.jsonl", b""))
+    with open(os.path.join(d, "ledger", "signer.pub"), "wb") as f:
+        f.write(blobs.get("signer.pub", b""))
+    return os.path.join(d, "ledger", "ledger.jsonl"), code
+
+
 def main(argv=None):
     from . import client
     ap = argparse.ArgumentParser(prog="tracekit observe")
@@ -387,14 +432,27 @@ def main(argv=None):
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=7777)
     ap.add_argument("--export", help="write a self-contained replay HTML of the ledger so far and exit")
+    ap.add_argument("--bundle", help="view an exported .tkb bundle instead of the live ledger (verified first)")
+    ap.add_argument("--prices", help="JSON price table (see tracekit/usage.py): adds cost per model call, agent and session")
     a = ap.parse_args(argv)
-    home = a.home or client.client_config().get("signer_home") or "/var/lib/tracekit"
-    path = os.path.join(home, "ledger", "ledger.jsonl")
+    prices = None
+    if a.prices:
+        from .usage import Prices
+        prices = Prices.load(a.prices)
+    if a.bundle:
+        path, code = _open_bundle(a.bundle)
+        if path is None:
+            return 1
+        print(f"tracekit observe: bundle {a.bundle} " + ("verified" if code == 0 else f"FAILED verification (exit {code}); showing it anyway"),
+              file=sys.stderr)
+    else:
+        home = a.home or client.client_config().get("signer_home") or "/var/lib/tracekit"
+        path = os.path.join(home, "ledger", "ledger.jsonl")
     if a.export:
         if not os.path.exists(path):
             print(f"tracekit observe: no ledger at {path} (is the signer running? pass --home)", file=sys.stderr)
             return 1
-        tr, recs, raw_recs = Translator(), [], []
+        tr, recs, raw_recs = Translator(prices), [], []
         for _, rec, _raw in read_records(path):
             if isinstance(rec, dict):
                 raw_recs.append(rec)
@@ -411,7 +469,7 @@ def main(argv=None):
     if a.host not in ("127.0.0.1", "localhost", "::1") and not token:
         print("Refusing to listen beyond localhost without TRACEKIT_OBSERVE_TOKEN set.", file=sys.stderr)
         return 1
-    feed = Feed(path)
+    feed = Feed(path, prices=prices)
     try:
         srv = ThreadingHTTPServer((a.host, a.port), make_handler(feed, token, [a.host]))
     except OSError as e:

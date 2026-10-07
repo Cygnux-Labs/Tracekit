@@ -36,8 +36,23 @@ The handler uses LangChain's callback system, which LangGraph shares. It raises 
 propagates the exception before the tool body executes. It is tested against `langchain-core` and a LangGraph
 `ToolNode`. Model calls are not recorded by this adapter.
 
-## Not built
+## MCP client sessions
 
-Codex, Cursor and Gemini CLI have their own hook formats and need their own adapters; Claude Code is covered by
-the hooks and the [plugin](../plugin/README.md). To add one, read the format, translate each tool call into
-`tracer.tool(name, args)`, and write a test that proves a denied call never executes.
+```python
+from tracekit.adapters.mcp import traced_session
+session = traced_session(session, tracer, server="github")
+await session.call_tool("create_issue", {"title": "..."})    # gated and recorded as mcp__github__create_issue
+```
+
+Names follow Claude Code's `mcp__<server>__<tool>` convention, so the default and strict policies' MCP rules apply. A
+denied call raises `PermissionError` and never reaches the server. MCP tool errors (`isError`) stay results for the
+caller and are recorded as failed calls.
+
+## Model calls, onchain transactions, other harnesses
+
+- Model calls: `tracekit_sdk.init()` (OpenAI, Anthropic, Google Gen AI) or OpenTelemetry ([otel](otel.md)).
+- Onchain transactions behind a guard: `tracekit.adapters.onchain.guarded_tx` ([integrations](integrations.md)).
+- Codex CLI, Cursor and Gemini CLI: hooks, `tracekit init --dev --agent ...` ([coding agents](coding-agents.md)).
+
+To add an adapter for something else: translate each tool call into `tracer.tool(name, args)` and write a test that
+proves a denied call never executes.

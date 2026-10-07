@@ -12,6 +12,7 @@ only what the bundle already holds (hashes, clear operational fields per docs/pr
 import datetime as _dt
 import hashlib
 import json
+import os
 import urllib.request
 
 
@@ -41,7 +42,22 @@ def _clear(inp, k):
     return v.get("value") if "value" in v else None
 
 
-def to_otlp_json(events, kid=None):
+def _provider(d):
+    up = d.get("upstream") or ""
+    return up[5:] if up.startswith("otel:") else "anthropic"  # the proxy only fronts the Anthropic API
+
+
+def to_otlp_json(events, kid=None, hashes=None):
+    """hashes: optional {seq: record hash}. Each span then carries tracekit.entry_hash, so any span in any
+    backend can be traced back to the signed ledger entry it came from (and checked with `tracekit verify`)."""
+    from .otlp import trace_id_of
+    hashes = hashes or {}
+
+    def ev_attrs(e):
+        out = [_attr("tracekit.seq", e["seq"])]
+        if e["seq"] in hashes:
+            out.append(_attr("tracekit.entry_hash", hashes[e["seq"]]))
+        return out
     runs = {}
     for e in events:
         r = runs.setdefault(e["run_id"], {"start": None, "end": None, "first": e, "last": e, "calls": {}, "dec": {}, "spans": [],
@@ -69,13 +85,17 @@ def to_otlp_json(events, kid=None):
     for rid, r in runs.items():
         if rid.startswith("_"):
             continue
-        trace = hashlib.sha256(rid.encode()).hexdigest()[:32]
-        root = _sid(rid, "root")
+        orig = trace_id_of(rid)  # ingested from OpenTelemetry: give the spans back their original ids
+        trace = orig or hashlib.sha256(rid.encode()).hexdigest()[:32]
+        root = (r["end"]["id"][:16] if orig and r["end"] else _sid(rid, "root"))
         st = (r["start"] or {}).get("data", {})
         agent = (st.get("agent") or {}).get("name", "agent")
         spans = []
+        provs = sorted({_provider(b["data"]) for k, a, b in r["spans"] if k == "chat"}) or (["unknown"] if orig else ["anthropic"])
         root_attrs = [_attr("gen_ai.operation.name", "invoke_agent"), _attr("gen_ai.agent.name", agent),
-                      _attr("gen_ai.conversation.id", rid), _attr("gen_ai.provider.name", "anthropic")]
+                      _attr("gen_ai.conversation.id", rid), _attr("gen_ai.provider.name", provs[0])]
+        if r["start"]:
+            root_attrs += ev_attrs(r["start"])
         for k in ("model", "repo", "commit", "os_user", "fail_mode", "signer_isolation", "sandbox", "content_capture"):
             if st.get(k) is not None:
                 root_attrs.append(_attr(("gen_ai.request.model" if k == "model" else f"tracekit.{k}"), st[k]))
@@ -99,7 +119,7 @@ def to_otlp_json(events, kid=None):
                 d, dec = b["data"], r["dec"].get(a["data"]["tool_use_id"], {})
                 attrs = [_attr("gen_ai.operation.name", "execute_tool"), _attr("gen_ai.tool.name", a["data"]["name"]),
                          _attr("gen_ai.tool.call.id", d["tool_use_id"]), _attr("tracekit.agent_id", a["agent_id"]),
-                         _attr("tracekit.seq", a["seq"]), _attr("tracekit.source", a["source"]),
+                         _attr("tracekit.source", a["source"]), *ev_attrs(a),
                          _attr("tracekit.policy.decision", dec.get("decision", "unknown")),
                          _attr("tracekit.policy.rule_ids", dec.get("rule_ids", [])), _attr("tracekit.result.ok", bool(d["ok"]))]
                 for k in ("command", "file_path", "url"):
@@ -111,18 +131,28 @@ def to_otlp_json(events, kid=None):
                               "status": {"code": 1 if d["ok"] else 2}})
             else:
                 d = b["data"]
-                attrs = [_attr("gen_ai.operation.name", "chat"), _attr("gen_ai.provider.name", "anthropic"),
-                         _attr("tracekit.source", "proxy"), _attr("tracekit.seq", b["seq"]), _attr("tracekit.exchange_id", d["exchange_id"])]
+                attrs = [_attr("gen_ai.operation.name", "chat"), _attr("gen_ai.provider.name", _provider(d)),
+                         _attr("tracekit.source", b["source"]), *ev_attrs(b), _attr("tracekit.exchange_id", d["exchange_id"])]
                 if d.get("model"):
                     attrs.append(_attr("gen_ai.request.model", d["model"]))
                 if d.get("stop_reason"):
                     attrs.append(_attr("gen_ai.response.finish_reasons", [d["stop_reason"]]))
                 if d.get("tool_uses"):
                     attrs.append(_attr("tracekit.tool_use_ids", [t["id"] for t in d["tool_uses"]]))
+                u = d.get("usage") or {}
+                if u:  # GenAI semconv counts cached input inside input_tokens
+                    attrs += [_attr("gen_ai.usage.input_tokens", (u.get("input_tokens") or 0) + (u.get("cache_read_tokens") or 0)),
+                              _attr("gen_ai.usage.output_tokens", u.get("output_tokens") or 0)]
+                    for k, n in (("cache_read_tokens", "gen_ai.usage.cache_read.input_tokens"),
+                                 ("cache_write_tokens", "gen_ai.usage.cache_creation.input_tokens"),
+                                 ("reasoning_tokens", "tracekit.usage.reasoning_tokens")):
+                        if u.get(k) is not None:
+                            attrs.append(_attr(n, u[k]))
                 for k in ("status", "added_latency_ms", "first_byte_ms"):
                     if d.get(k) is not None:
                         attrs.append(_attr(f"tracekit.{k}", d[k]))
-                spans.append({"traceId": trace, "spanId": _sid(rid, d["exchange_id"]), "parentSpanId": root,
+                sid = d["exchange_id"] if orig and len(d["exchange_id"]) == 16 else _sid(rid, d["exchange_id"])
+                spans.append({"traceId": trace, "spanId": sid, "parentSpanId": root,
                               "name": f"chat {d.get('model') or ''}".strip(), "kind": 3, "startTimeUnixNano": _ns(a["ts"]),
                               "endTimeUnixNano": _ns(b["ts"]), "attributes": attrs,
                               "status": {"code": 1 if (d.get("status") or 0) < 400 and not d.get("error") else 2}})
@@ -131,7 +161,7 @@ def to_otlp_json(events, kid=None):
             spans.append({"traceId": trace, "spanId": c["id"][:16], "parentSpanId": root, "name": f"execute_tool {c['data']['name']}",
                           "kind": 1, "startTimeUnixNano": _ns(c["ts"]), "endTimeUnixNano": _ns(c["ts"]),
                           "attributes": [_attr("gen_ai.operation.name", "execute_tool"), _attr("gen_ai.tool.name", c["data"]["name"]),
-                                         _attr("gen_ai.tool.call.id", tid), _attr("tracekit.seq", c["seq"]),
+                                         _attr("gen_ai.tool.call.id", tid), *ev_attrs(c),
                                          _attr("tracekit.policy.decision", dec.get("decision", "unknown")),
                                          _attr("tracekit.policy.rule_ids", dec.get("rule_ids", []))],
                           "status": {"code": 2, "message": "blocked by policy" if dec.get("decision") == "deny" else "no result recorded"}})
@@ -140,10 +170,33 @@ def to_otlp_json(events, kid=None):
     return {"resourceSpans": rs}
 
 
-def push(endpoint, payload, timeout=10):
-    """POST OTLP/JSON to an OTLP/HTTP collector (e.g. http://localhost:4318)."""
-    url = endpoint.rstrip("/") + ("" if endpoint.rstrip("/").endswith("/v1/traces") else "/v1/traces")
-    req = urllib.request.Request(url, data=json.dumps(payload).encode(), method="POST", headers={"content-type": "application/json"})
+def parse_headers(pairs=(), env=True):
+    """Headers from repeated K=V flags plus OTEL_EXPORTER_OTLP_(TRACES_)HEADERS (comma-separated, URL-encoded values)."""
+    from urllib.parse import unquote
+    out = {}
+    if env:
+        for var in ("OTEL_EXPORTER_OTLP_HEADERS", "OTEL_EXPORTER_OTLP_TRACES_HEADERS"):
+            for item in (os.environ.get(var) or "").split(","):
+                if "=" in item:
+                    k, v = item.split("=", 1)
+                    out[k.strip()] = unquote(v.strip())
+    for item in pairs or ():
+        if "=" not in item:
+            raise ValueError(f"header must be KEY=VALUE, got {item!r}")
+        k, v = item.split("=", 1)
+        out[k.strip()] = v.strip()
+    return out
+
+
+def push(endpoint, payload, timeout=10, headers=None):
+    """POST OTLP/JSON to an OTLP/HTTP collector or backend (Jaeger, Tempo or any OTLP/HTTP endpoint).
+    A URL ending in /v1/traces (or any explicit path) is used as given; a bare origin gets /v1/traces appended."""
+    from urllib.parse import urlsplit
+    base = endpoint.rstrip("/")
+    url = base if urlsplit(base).path not in ("", "/") else base + "/v1/traces"
+    h = {"content-type": "application/json"}
+    h.update(headers or {})
+    req = urllib.request.Request(url, data=json.dumps(payload).encode(), method="POST", headers=h)
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     with opener.open(req, timeout=timeout) as r:
         return r.status, r.read().decode("utf-8", "replace")

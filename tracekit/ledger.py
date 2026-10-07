@@ -9,8 +9,15 @@ from .locking import lock_file, unlock_file
 
 
 class Keys:
+    """The signer's key. ``assurance`` says where the private key lives; it is written into checkpoints and reported by
+    the verifier. For a file key it is "file": anyone with root on the signer host can copy the key."""
+    assurance = "file"
+
     def __init__(self, secret, public):
         self.secret, self.public, self.kid = secret, public, crypto.kid(public)
+
+    def sign(self, msg):
+        return crypto.sign(self.secret, msg)
 
     @classmethod
     def load_or_create(cls, keydir):
@@ -41,7 +48,7 @@ class Keys:
 def make_record(event, keys):
     h = event_hash(event)
     return {"v": 1, "event": event, "hash": h, "kid": keys.kid,
-            "sig": b64e(crypto.sign(keys.secret, sig_message(h, event["prev_hash"], event["seq"])))}
+            "sig": b64e(keys.sign(sig_message(h, event["prev_hash"], event["seq"])))}
 
 
 def verify_record_sig(rec, public):

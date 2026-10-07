@@ -2,6 +2,94 @@
 
 All notable changes to Tracekit. Versions follow [PEP 440](https://peps.python.org/pep-0440/).
 
+## Unreleased
+
+### Added
+- **LangGraph node tracing, Browser Use and Stagehand hooks** (#6): `TracekitCallbackHandler(tracer, nodes=True)` records
+  each graph node as a policy-checked `node:<name>` step; `tracekit.adapters.browser` gates and records Browser Use
+  actions and Stagehand `act`/`extract`/`observe`/`goto` (Python), `instrumentStagehand` in the TypeScript SDK. Runnable
+  examples for every adapter in `examples/` (and `sdk/typescript/examples/`), run in CI.
+- **`tracekit demo --agent codex|cursor|gemini`** (#7): the scripted demo sent as that agent's own hook payloads; a
+  guarantee matrix per capture path in the README.
+- **Observer over bundles, with cost** (#9): `tracekit observe --bundle run.tkb` (verified first; live view or
+  `--export`), `--prices prices.json` adds cost per model call, agent and session.
+- **`tracekit.init()`** (#5) as the one-line entry point (same as `tracekit_sdk.init()`), with an offline example for
+  OpenAI, Anthropic and Gemini (`examples/model_calls.py`).
+- **PGS end to end on a local chain** (#15): `examples/pgs_onchain_demo.py` drives Proof-Gated Signing's guard and
+  wallet on a Hardhat chain; blocked transactions are checked on-chain to be unsigned (nonce unchanged), a drift attack
+  reverts on its post-conditions. Fixed: transaction summaries now keep the target of PGS-style call dicts.
+- **Jaeger example** (#13): `examples/otel_jaeger_check.py` matches every span Jaeger holds to a signed record of a
+  verified bundle (run against Jaeger 2.22).
+- **Key attestation in bundles** (#16): `--key-attestation FILE` with an external signer; the document's hash is signed
+  into checkpoints, exports carry the document, `verify` reports it (Tracekit checks identity, not vendor contents).
+- **Auditor walkthrough** (#12) in docs/proofpack.md; `verify.pyz` checked on a machine without Tracekit.
+- **E7: SQL at a million events** (#8): every typical query under 1 s on 2 vCPUs; rollup columns are copied out of the
+  JSON at index time (index format 4, rebuilt automatically) and inserts are batched.
+- **TypeScript SDK** (`sdk/typescript`, `@cygnux/tracekit`): policy-gated `tool()`, OpenAI and Anthropic instrumentation
+  (streaming included), Vercel AI SDK middleware; runs on Tracekit's Python engine through `python -m tracekit.bridge`.
+- **OTLP/gRPC ingest**: `tracekit otel serve --grpc-port 4317` (optional `grpcio`), same receiver and guarantees as HTTP.
+- **The signer refuses findings whose evidence does not match the ledger** (missing record, wrong hash, none cited), in
+  addition to the check `tracekit verify` makes offline.
+- **Token usage and cost** (#9). Optional `usage` on `model.exchange` responses (input, output, cache read, cache write,
+  reasoning tokens), normalised from the Anthropic proxy, the OpenAI / Anthropic / Gemini SDKs and OpenTelemetry
+  (GenAI semconv, OpenLLMetry, OpenInference, Vercel AI SDK). Exported as `gen_ai.usage.*`, queryable in SQL, shown in
+  the observer. `tracekit cost` totals per run or model; cost only with a user-supplied price table (none built in).
+  The schema change is additive (optional field); bundles that use it need this verifier.
+- **Coding-agent hooks** (#7): `tracekit init --dev --agent codex|cursor|gemini` on the Claude Code hook pipeline (policy
+  gate, approvals, signing, transcript hashing), with tool names mapped onto the policy vocabulary.
+- **Adapters** (#6): MCP client sessions (`tracekit.adapters.mcp`) and Vercel AI SDK telemetry spans.
+- **Proof packs** (#12): `tracekit proofpack` / `tracekit report`: bundle, readable report with every check, findings,
+  coverage and an evidence-to-control map (EU AI Act Art. 12, SOC 2 CC7.2, ISO/IEC 42001 A.6.2.8), and `verify.pyz`, a
+  verifier that needs only Python.
+- **Witness service** (#17): `tracekit witness init|token|serve`, an append-only RFC 6962 Merkle log of checkpoints with
+  signed tree heads, per-signer tokens, fork refusal and conflict log; `https://` witness specs check inclusion and
+  consistency proofs against a pinned witness key.
+- **External signers** (#16): keep the signing key in a TPM, HSM, enclave or KMS through a long-lived helper process;
+  signatures verified before use; key assurance signed into checkpoints and reported by `verify` ("signing key").
+- **Causeway integration** (#14): `tracekit causeway anchor|verify|import-tests|export`.
+- **Guarded onchain transactions** (#15): `tracekit.adapters.onchain.guarded_tx` records a transaction guard's verdict
+  (Proof-Gated Signing's `Guard.check` interface) before signing and never signs a blocked transaction; detectors
+  TK-X006 to TK-X008.
+- **Signed findings** (#10) and **say-vs-do detectors** (#11). `tracekit analyze` runs deterministic detectors (claims vs
+  executed commands, requests vs executions, risky actions left out of the agent's account, secrets in output,
+  retrospective policy violations) and signs each finding as a `review` event in `findings:<run>`, citing records by seq
+  and hash. Bundles carry findings with their run; `tracekit verify` adds "findings cite intact evidence" and fails on
+  missing or altered evidence. Findings appear in the live observer. E6 (`eval/e6_findings.py`) measures the detectors
+  on 2,000 synthetic sessions, including held-out paraphrases they miss.
+- **SQL over the ledger** (#8). `tracekit sql` with views `runs`, `tool_calls`, `model_exchanges`, `findings`, `gaps`,
+  backed by a stdlib SQLite index that reads only the ledger's new tail, checks hash links, and rebuilds itself if the
+  ledger was rewritten. Read-only connection, time budget, table/JSON/CSV output, and `--mcp` for coding agents.
+- **OTLP push with auth** (#13). `tracekit otel push --endpoint URL --header K=V [--all|--run R|--follow]` sends signed
+  runs to Jaeger, Tempo or any OTLP/HTTP backend, once per run; `export --otel-header` and
+  `OTEL_EXPORTER_OTLP_HEADERS` are honoured. An explicit endpoint path is used as given.
+- **One-line SDK auto-instrumentation** (#5). `tracekit_sdk.init()` patches the installed OpenAI (chat completions,
+  Responses), Anthropic (messages.create, messages.stream) and Google Gen AI (generate_content, generate_content_stream)
+  SDKs, sync and async, streaming included. Each call is a signed request event written before the call is sent and a
+  response event with model, finish reason, requested tool calls, error, status, latency and time to first chunk.
+  Streams are recorded when exhausted, closed or garbage collected (abandoned streams are marked). Recording failures
+  never affect the call; `fail_mode: closed` refuses a call that cannot be recorded before it reaches the provider.
+  `Tracer.tool(..., tool_use_id=...)` links an execution to the model request that asked for it. The remote gateway
+  accepts `model.exchange` as SDK evidence.
+- **OpenTelemetry ingest** (#4). `tracekit otel serve` receives OTLP/HTTP traces (protobuf or JSON, gzip or deflate)
+  on loopback, and the ingest gateway serves the same endpoint at `/v1/traces` with TLS and per-client tokens.
+  GenAI semantic-convention spans, OpenLLMetry and OpenInference spans become signed `model.exchange`, `tool.call`,
+  `policy.decision` and `tool.result` events, one run per trace. Policy is evaluated retrospectively: a call a deny or
+  ask rule would have stopped is recorded as `flag` with the would-be decision. Exporter retries never duplicate
+  evidence, a signer outage returns 503 so the exporter keeps the batch, and a rejected event is reported as an
+  OTLP partial success. The protobuf decoder is built in, so the receiver adds no dependencies. See `docs/otel.md`.
+- **OTLP export carries evidence links.** Every exported span has `tracekit.entry_hash`, the hash of the signed
+  ledger entry it came from. Runs ingested from OpenTelemetry export with their original trace and span ids, and
+  model spans report their real provider instead of always `anthropic`.
+
+### Changed
+- SDK tool calls made without a model id now get `tk_` ids (were `call_`, which collides with OpenAI call ids).
+- `tracekit analyze`, `otel` and `sql` parse their own options (a leading `--option` used to be rejected).
+
+### Fixed
+- The coverage report called every model exchange "at the proxy, cross-checked against hooks"; application-reported
+  exchanges are now listed separately, and only proxy exchanges are cross-checked against hooks by the signer.
+- `test_rate_limit` was timing-dependent and failed on slow machines; the bucket no longer refills during the test.
+
 ## 0.2.0rc1
 
 First release candidate of v0.2: the signed evidence-bundle core, live observer and custom-agent SDK.

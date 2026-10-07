@@ -1111,7 +1111,7 @@
     function reset() {
       S = {
         recs: [], sessions: new Map(), agents: new Map(), actions: new Map(), actList: [], tape: [], files: new Map(),
-        tools: new Map(), alerts: [], reasoning: [], tokIn: 0, tokOut: 0, spawnQ: [], withheldSeen: new Set(),
+        tools: new Map(), alerts: [], reasoning: [], tokIn: 0, tokOut: 0, cost: 0, costSeen: false, currency: "", spawnQ: [], withheldSeen: new Set(),
         firstTs: null, lastTs: null
       };
     }
@@ -1130,7 +1130,7 @@
         S.agents.set(key, {
           key, session: r.session_id || "unknown", id: r.agent_id || "main",
           type: r.agent_type || (r.agent_id ? "subagent" : (r.agent || "main")), sub: !!r.agent_id, parent: r.parent_id || null,
-          desc: "", status: "idle", actions: 0, tokIn: 0, tokOut: 0, first: r.ts, last: r.ts,
+          desc: "", status: "idle", actions: 0, tokIn: 0, tokOut: 0, cost: 0, first: r.ts, last: r.ts,
           current: null, errors: 0, blocked: 0, flags: 0, model: ""
         });
       }
@@ -1246,7 +1246,14 @@
         const a = agentOf(r); alert(r.severity || "med", r.title || "ALERT", r.text || "", { rec: r }, r.ts, a);
         pushTape({ ts: r.ts, agent: a, ev: r.tape || "ALERT", text: (r.title || "") + " · " + (r.text || ""), rec: r }); return;
       }
-      if (ev === "tk_model") { const a = agentOf(r); pushTape({ ts: r.ts, agent: a, ev: "MODEL", text: r.text || "", rec: r }); return; }
+      if (ev === "tk_model") {
+        const a = agentOf(r); const u = r.usage;
+        if (u) { const tin = (u.input_tokens || 0) + (u.cache_creation_input_tokens || 0) + (u.cache_read_input_tokens || 0), tout = u.output_tokens || 0;
+                 a.tokIn += tin; a.tokOut += tout; S.tokIn += tin; S.tokOut += tout; }
+        if (typeof r.cost === "number") { a.cost += r.cost; S.cost += r.cost; S.costSeen = true; S.currency = r.currency || S.currency; }
+        if (r.model) a.model = r.model;
+        pushTape({ ts: r.ts, agent: a, ev: "MODEL", text: r.text || "", rec: r }); return;
+      }
       pushTape({ ts: r.ts, agent: agentOf(r), ev: "SESS", text: ev, rec: r });
     }
 
@@ -1307,6 +1314,7 @@
         ["SESSIONS", S.sessions.size, ""], ["AGENTS", agents.length, ""], ["RUNNING", running, running ? "up" : ""],
         ["ACTIONS", S.actList.length, "am"], ["ACT/MIN", recent, recent ? "up" : ""],
         ["TOKENS IN", fmtN(S.tokIn), ""], ["TOKENS OUT", fmtN(S.tokOut), ""],
+        ...(S.costSeen ? [["COST " + (S.currency || ""), S.cost.toFixed(4), ""]] : []),
         ["BLOCKED", blocked, blocked ? "dn" : ""], ["FLAGGED", flagged, flagged ? "am" : ""], ["ERRORS", errors, errors ? "dn" : ""],
         ["FILES", S.files.size, ""], ["ELAPSED", fmtDur(elapsed), ""], ["LEDGER", S.recs.length, ""]];
       $("ticker").innerHTML = items.map(([k, v, c]) => {
@@ -1328,7 +1336,7 @@
           html += `<div class="ag${a.sub ? " sub" : ""}${sel}" data-agent="${esc(a.id)}">
         <span class="dot ${a.blocked && st !== "done" ? "blocked" : st}"></span>
         <span class="nm">${esc(a.sub ? (a.desc || a.type) : "main agent")}</span><span class="st ${st}">${st.toUpperCase()}</span>
-        <span class="meta"><span>${esc(label(a))}</span><span>${a.actions} act</span><span>${fmtN(a.tokOut)} out</span>${a.blocked ? `<span style="color:var(--red)">${a.blocked} blk</span>` : ""}${a.errors ? `<span style="color:var(--red)">${a.errors} err</span>` : ""}${a.model ? `<span>${esc(a.model)}</span>` : ""}</span>
+        <span class="meta"><span>${esc(label(a))}</span><span>${a.actions} act</span><span>${fmtN(a.tokOut)} out</span>${a.cost ? `<span>${a.cost.toFixed(4)} ${esc(S.currency)}</span>` : ""}${a.blocked ? `<span style="color:var(--red)">${a.blocked} blk</span>` : ""}${a.errors ? `<span style="color:var(--red)">${a.errors} err</span>` : ""}${a.model ? `<span>${esc(a.model)}</span>` : ""}</span>
         ${a.current ? `<span class="cur">▸ ${esc(a.current.tool)} ${esc(a.current.target)}</span>` : ""}
       </div>`;
         }
@@ -1437,21 +1445,30 @@
         html += `<div class="sec">INPUT</div><pre>${esc(j(a.input).slice(0, 6000))}</pre>`;
         if (a.post) html += `<div class="sec">RESULT</div><pre>${esc(j(a.post.tool_response).slice(0, 6000))}</pre>`;
         html += evidence(a.pre) + (a.post ? evidence(a.post) : "");
-        $("detsum").textContent = `${a.tool} · seq ${a.pre.seq}`;
+        $("detsum").textContent = `${a.tool} · seq ${lseq(a.pre)}`;
       } else if (sel.seq !== undefined) { // raw record
-        html += `<div class="sec">RECORD</div><pre>${esc(j(Object.fromEntries(Object.entries(sel).filter(([k]) => !["hash", "prev"].includes(k)))).slice(0, 8000))}</pre>` + evidence(sel);
-        $("detsum").textContent = `${sel.event} · seq ${sel.seq}`;
+        if (Array.isArray(sel.evidence) && sel.evidence.length) {  // a signed finding: jump to the records it cites
+          html += `<div class="sec">EVIDENCE CITED BY THIS FINDING</div><dl class="kv">` + sel.evidence.map(x => {
+            const r = S.recs.find(r => r.tk_seq === x.seq);
+            const st = !r ? `<span class="dim">not in this view</span>` : r.hash === x.hash ? `<span class="s-ok">hash matches</span>` : `<span class="s-deny">HASH MISMATCH</span>`;
+            return `<dt><a href="#" data-tkseq="${esc(String(x.seq))}">seq ${esc(String(x.seq))}</a></dt><dd>${r ? esc(r.event) + " · " : ""}${st}</dd>`;
+          }).join("") + `</dl>`;
+        }
+        html += `<div class="sec">RECORD</div><pre>${esc(j(Object.fromEntries(Object.entries(sel).filter(([k]) => !["hash", "prev"].includes(k) && !(k === "seq" && sel.tk_seq !== undefined)))).slice(0, 8000))}</pre>` + evidence(sel);
+        $("detsum").textContent = `${sel.event} · seq ${lseq(sel)}`;
       }
       $("detail").innerHTML = html;
     }
+    function lseq(r) { return r.tk_seq ?? r.seq; }  // the ledger's seq (v0.2 records carry it as tk_seq)
     function evidence(r) {
-      return `<div class="sec">LEDGER EVIDENCE · SEQ ${r.seq}</div><dl class="kv"><dt>hash</dt><dd class="hash">${esc(r.hash || "")}</dd><dt>prev</dt><dd class="dim">${esc(r.prev || "")}</dd></dl>`;
+      return `<div class="sec">LEDGER EVIDENCE · SEQ ${lseq(r)}</div><dl class="kv"><dt>hash</dt><dd class="hash">${esc(r.hash || "")}</dd><dt>prev</dt><dd class="dim">${esc(r.prev || "")}</dd></dl>`;
     }
     function select(x) { selected = x; schedule(); }
 
     /* ---------------- interaction ---------------- */
     document.addEventListener("click", e => {
-      const t = e.target.closest("[data-i],[data-al],[data-agent],[data-tool],[data-file],[data-seq],[data-clear]"); if (!t) return;
+      const t = e.target.closest("[data-i],[data-al],[data-agent],[data-tool],[data-file],[data-seq],[data-tkseq],[data-clear]"); if (!t) return;
+      if (t.dataset.tkseq) { e.preventDefault(); const r = S.recs.find(r => r.tk_seq === +t.dataset.tkseq); if (r) { const act = S.actList.find(a => a.pre === r || a.post === r); select(act || r); } return; }
       if (t.dataset.clear) { F[t.dataset.clear] = t.dataset.clear === "flag" ? false : null; return schedule(); }
       if (t.dataset.i) { const row = S.tape[+t.dataset.i]; return select(row.act || row.rec); }
       if (t.dataset.al) { const al = S.alerts[+t.dataset.al]; return select(al.ref?.pre ? al.ref : al.ref?.rec); }
@@ -1476,7 +1493,7 @@
         case "FIND": case "/": F.find = arg || null; break;
         case "FLAG": case "F": F.flag = !F.flag; break;
         case "CLR": case "CLEAR": F.agent = F.tool = F.file = F.find = null; F.flag = false; selected = null; break;
-        case "SEQ": { const r = S.recs.find(r => r.seq === +arg); if (r) { const act = S.actList.find(a => a.pre === r || a.post === r); select(act || r); } break; }
+        case "SEQ": { const r = S.recs.find(r => lseq(r) === +arg); if (r) { const act = S.actList.find(a => a.pre === r || a.post === r); select(act || r); } break; }
         case "HELP": case "?": $("help").hidden = false; break;
         case "PAUSE": playing = false; updatePlay(); break;
         case "PLAY": playing = true; updatePlay(); tick(); break;

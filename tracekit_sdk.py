@@ -15,8 +15,16 @@ must wrap the real call for Tracekit to enforce policy before it runs and record
         worker.done("Fetched 3 filings")
         t.say("Summary: ...")
 
+One line records every model call made through the OpenAI, Anthropic and Google Gen AI SDKs (sync, async,
+streaming) as signed model.exchange events:
+
+    import tracekit_sdk
+    tracer = tracekit_sdk.init(agent="research-bot")
+    # ... use openai / anthropic / google-genai as usual; wrap tool executions with tracer.tool(...)
+
 Remote ingestion (agents on other machines writing to this ledger) is not supported.
 """
 from tracekit.agent_sdk import TracekitSDKError, Tracer
+from tracekit.autotrace import init, instrument, shutdown, uninstrument
 
-__all__ = ["Tracer", "TracekitSDKError"]
+__all__ = ["Tracer", "TracekitSDKError", "init", "instrument", "uninstrument", "shutdown"]

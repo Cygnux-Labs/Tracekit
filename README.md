@@ -123,7 +123,39 @@ agent.end()
 
 `Tracer` writes signed v0.2 SDK events when a v0.2 client config is present. `tool()` evaluates policy before the wrapped operation and records the result; a denied call never enters the `with` body. `subagent()` produces a child lane in the observer. Prompts are hashed by default; `say()` and `think()` are recorded only when `reasoning_capture: true`. The SDK needs a configured v0.2 signer (`tracekit init --dev`).
 
-**Frameworks.** `@traced(tracer)` wraps any sync or async function, and `tracekit.adapters.langchain.TracekitCallbackHandler` covers LangChain and LangGraph tools (`pip install "tracekit[langchain]"`), with a denied call blocked before the tool body runs. Policy rules match on tool names, so name your shell tool `Bash` or add rules for it. See [adapters](docs/adapters.md). Codex, Cursor and Gemini CLI have no adapter yet.
+**One line for model calls.** `tracekit_sdk.init(agent="research-bot")` records every call made through the OpenAI, Anthropic and Google Gen AI Python SDKs (chat, Responses, Messages, generate_content; sync, async and streaming) as signed `model.exchange` events: model, finish reason, the tool calls the model asked for, errors, status, latency and time to first chunk, with prompts and outputs redacted and hashed. Pass the model's call id to `tracer.tool(name, args, tool_use_id=call.id)` and the request and the execution share one id in the ledger. Recording never changes what the SDK returns; with `fail_mode: closed`, a call that cannot be recorded is refused before it is sent.
+
+**TypeScript.** `@cygnux/tracekit` (in `sdk/typescript`) gives JS/TS agents the same policy-gated `tool()` and signed model calls (`instrumentOpenAI`, `instrumentAnthropic`, a Vercel AI SDK middleware). It drives Tracekit's Python engine through a stdio bridge, so policy, redaction and the event format are identical across languages.
+
+**Frameworks.** `@traced(tracer)` wraps any sync or async function, and `tracekit.adapters.langchain.TracekitCallbackHandler` covers LangChain and LangGraph tools (`pip install "tracekit[langchain]"`), with a denied call blocked before the tool body runs. Policy rules match on tool names, so name your shell tool `Bash` or add rules for it. `tracekit.adapters.mcp.traced_session` gates and records every MCP tool call made through a client session, and Vercel AI SDK telemetry spans are understood by the OpenTelemetry receiver. See [adapters](docs/adapters.md).
+
+**Codex CLI, Cursor and Gemini CLI.** `tracekit init --dev --agent codex|cursor|gemini` installs hooks on the same pipeline as Claude Code: the policy gate before each tool call (deny blocks, ask holds for approval), signed events, transcript hashing. Tool names are mapped onto the policy vocabulary (`run_shell_command` and `Shell` become `Bash`, `apply_patch` becomes `Edit` with the patched file), so the default rules apply. See [coding agents](docs/coding-agents.md); `tracekit demo --agent codex|cursor|gemini` runs the scripted demo in that agent's own hook format.
+
+What each capture path can and cannot guarantee:
+
+| Capture path | Blocks a call before it runs | Records the result | Model request vs execution check (`tracekit analyze`, live with the proxy) | Reasoning capture |
+|---|---|---|---|---|
+| Claude Code hooks | yes (deny; ask holds for approval) | yes | yes, with the model proxy | yes (transcript) |
+| Codex CLI, Cursor, Gemini CLI hooks | yes (deny; ask holds for approval) | yes | with `tracekit.init()` or OTel in the agent's process, not via the proxy | no |
+| Python / TypeScript SDK, LangChain/LangGraph, MCP, browser hooks | yes, for calls made through the wrapper | yes | with `tracekit.init()` | only what the code reports (`think`, `say`) |
+| OpenTelemetry ingest (`tracekit otel serve`) | no: spans arrive after the fact; would-deny calls become flags | yes | the spans themselves | no |
+| `tracekit.init()` model-call tracing | no tools gated: records model calls | n/a | is the model side | no |
+
+Anything an agent does outside its capture path (a tool that shells out on its own, a process Tracekit doesn't wrap) is not seen.
+
+**Tokens and cost.** Model calls record token usage from every capture path (proxy, SDK, OpenTelemetry). `tracekit cost` totals it per run or model, and with your own price table (`--prices`) adds cost. Tracekit ships no prices and never guesses one.
+
+**Proof packs for auditors.** `tracekit proofpack --run R` writes one zip: the bundle, a readable report (the run, every verification check, findings, coverage, and which evidence is relevant to EU AI Act Art. 12, SOC 2 CC7.2 and ISO/IEC 42001 A.6.2.8), and `verify.pyz`, a verifier that runs with nothing but Python. See [proof packs](docs/proofpack.md).
+
+**Witness service, hardware keys.** `tracekit witness serve` runs an append-only, Merkle-tree checkpoint log with signed tree heads: it refuses a second history for the same sequence number, and clients check inclusion and consistency proofs, so the witness cannot quietly rewrite its log either. `tracekit init --signer-cmd ... --signer-pub ...` keeps the signing key in a TPM, HSM or enclave through a small helper process. See [witnesses](docs/witnesses.md) and [signing](docs/signing.md).
+
+**Causeway and onchain agents.** `tracekit causeway anchor|verify|import-tests|export` makes Causeway's causal logs tamper-evident under Tracekit's signer and turns its counterfactual verdicts into signed findings. `tracekit.adapters.onchain.guarded_tx` records a transaction guard's verdict (Proof-Gated Signing's `Guard.check` interface) before the wallet signs, and never signs a blocked transaction. See [integrations](docs/integrations.md).
+
+**Anything instrumented with OpenTelemetry.** `tracekit otel serve` is an OTLP/HTTP receiver on `127.0.0.1:4318` (protobuf or JSON, gzip). Point any exporter at it (`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://127.0.0.1:4318/v1/traces`) and the agent spans (GenAI semantic conventions, OpenLLMetry and OpenInference) become signed ledger events: model calls, tool calls with a retrospective policy check, and one run per trace. No code changes in the agent. Spans arrive after the work is done, so nothing is gated, and the coverage report says so. See [OpenTelemetry](docs/otel.md).
+
+**Findings, signed.** `tracekit analyze` runs deterministic detectors over a run (claimed tests that never ran, "tests pass" after a failed run, a denied push that happened, a force push left out of the summary, tool calls the model never asked for, secrets in output, retrospective policy violations) and signs each finding into the ledger, citing the exact records it rests on. `tracekit verify` fails if a finding cites evidence that is missing or altered. See [findings](docs/findings.md).
+
+**SQL and MCP.** `tracekit sql "SELECT ..."` queries the ledger through views (`runs`, `tool_calls`, `model_exchanges`, `findings`, `gaps`), with a stdlib SQLite index that checks the hash chain as it loads. `tracekit sql --mcp` lets coding agents query traces. See [SQL](docs/sql.md).
 
 **Agents on other machines.** `tracekit ingest serve` runs an authenticated, TLS gateway; clients configure it with `tracekit init --remote URL`. Remote events are recorded as `sdk` evidence in a namespaced run, and held (`ask`) calls are refused. See [remote ingestion](docs/remote-ingest.md).
 
@@ -135,7 +167,15 @@ agent.end()
 | `tracekit status` | Hooks, signer, witnesses, policy, fail mode and capture sources. |
 | `tracekit observe` | Live terminal at `http://127.0.0.1:7777`. Read-only. `--export replay.html` writes a single file anyone can open. |
 | `tracekit pending` / `approve <id>` / `reject <id>` | Answer held `ask` calls, from a terminal outside the agent's session. |
-| `tracekit export --last -o run.tkb` | Write an evidence bundle. `--otel` adds OTLP/JSON; `--otel-endpoint http://localhost:4318` also sends it. |
+| `tracekit otel serve` | Receive OTLP/HTTP traces on `127.0.0.1:4318` and record the agent spans. |
+| `tracekit otel push --endpoint URL --header K=V --follow` | Stream signed runs to Jaeger, Tempo or any OTLP/HTTP backend as they finish. |
+| `tracekit analyze --last` | Run the detectors and sign the findings into the ledger. Exit 4 on high or critical findings. |
+| `tracekit sql "SELECT ..."` | Read-only SQL over the ledger; `--mcp` serves it to coding agents. |
+| `tracekit cost [--prices p.json] [--by model]` | Token usage per run or model; cost when you supply prices. |
+| `tracekit proofpack --run R -o pack.zip` / `tracekit report run.tkb` | Auditor zip (bundle, report, control map, stdlib-only verifier) / the report alone. |
+| `tracekit witness init\|token\|serve` | Run a witness log for signers to publish checkpoints to. |
+| `tracekit causeway anchor\|verify\|import-tests\|export` | Sign and check Causeway runs; import counterfactual verdicts as findings. |
+| `tracekit export --last -o run.tkb` | Write an evidence bundle. `--otel` adds OTLP/JSON (every span carries `tracekit.entry_hash`); `--otel-endpoint http://localhost:4318` also sends it. |
 | `tracekit verify run.tkb --key signer.pub --witness git:/path/to/clone` | Verify offline. Exit `0` ok, `1` fail, `2` bad bundle, `3` warnings with `--strict`. |
 | `tracekit migrate ~/.tracekit/ledger.jsonl --out v1.jsonl` | Convert a v0.1 ledger. |
 
@@ -257,7 +297,6 @@ Known limits, stated plainly:
 
 Not built yet (tracked in [issue #1](https://github.com/Cygnux-Labs/Tracekit/issues/1)):
 
-- Adapters for Codex, Cursor and Gemini CLI (each has its own hook format).
 - A demo video, and the first PyPI release (the release workflow is in place; the one-time publisher setup is in [docs/RELEASING.md](docs/RELEASING.md)).
 - Windows system mode.
 - An external review of the threat model ([review packet](docs/review-packet.md)) and a v0.2 update of the paper ([draft notes](paper/v0.2-update-draft.md)).

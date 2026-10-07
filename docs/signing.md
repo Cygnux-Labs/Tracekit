@@ -13,6 +13,36 @@ The public key is `keys/signer.pub`; it is copied into every bundle. The key id 
 
 **Why system mode needs kernel peer credentials.** The signer identifies each caller with `SO_PEERCRED` (Linux) or `LOCAL_PEERCRED` and `LOCAL_PEERPID` (macOS): that is how it attests `os_user`, refuses `source=proxy` events from anyone but its own user, and checks approvers. System-mode installation is refused on platforms without them (Windows), and on macOS it needs `--experimental-macos` until it is validated on hardware ([platforms](portability.md)). Where there are no peer credentials, dev mode uses an authenticated loopback TCP transport, but caller identity remains unattested and proxy events and approvals are explicitly untrusted. A manually configured Unix socket is refused when peer credentials are unavailable.
 
+## Keys in hardware (external signers)
+
+```bash
+tracekit init --dev --signer-cmd "/usr/local/bin/tk-hsm-signer --slot 0" --signer-pub hsm-signer.pub --key-assurance hsm
+```
+
+With an external signer the private key never enters tracekitd: a helper process (TPM, HSM, smart card, enclave, KMS)
+signs. The protocol is one line per request on the helper's stdin, `sign <hex>`, answered with `ok <hex signature>` or
+`err <reason>`; the helper is started once and kept running. Every signature is verified against the configured public
+key before use, so a helper that signs with another key or returns garbage stops the signer instead of corrupting the
+ledger, and a failed signature is reported to clients as a retryable write failure with the ledger unchanged.
+`examples/ext_signer.py` is a reference helper; replace its two marked lines with calls to your device.
+
+`--key-assurance` (tpm, hsm, tee, kms, smartcard) is signed into every checkpoint and shown by `tracekit verify` as the
+**signing key** check; a file key is reported as a warning. The assurance is the operator's statement: Tracekit cannot
+attest where a key lives, so pair it with the device's own attestation where it offers one. Re-running `init` keeps a
+configured external signer (dropping it would silently switch to a new file key and fork the chain).
+
+`--key-attestation FILE` attaches that attestation: a TPM quote, an enclave (Nitro, TDX, SEV-SNP) attestation document,
+or a KMS key's metadata export, up to 1 MiB. Its SHA-256 is signed into every checkpoint, `tracekit export` puts the
+document in the bundle as `attestation/<sha256>.bin`, and `verify` reports it under **signing key**, warning if a
+checkpoint names a document the bundle does not carry. Tracekit checks only that it is the document the checkpoints
+name. Whether it is genuine and binds this public key is checked with the vendor's tools (certificate chain, PCR or
+measurement values, the key in the user data); the run and the evidence for it now travel together.
+
+```bash
+tracekit init --dev --signer-cmd "/usr/local/bin/tk-nitro-signer" --signer-pub /etc/tracekit/signer.pub \
+  --key-assurance tee --key-attestation /etc/tracekit/nitro-attestation.cbor
+```
+
 ## Cryptography
 
 Signing and key generation use the [`cryptography`](https://cryptography.io) package (a required dependency; constant-time, widely reviewed). Verification uses it too when installed, and otherwise a small pure-Python RFC 8032 verifier, so `tracekit verify` runs with only the standard library. Verification handles public data only, so the fallback's lack of timing hardening does not matter there. Tracekit never signs with the pure-Python code; it is kept only to check the RFC 8032 test vectors.

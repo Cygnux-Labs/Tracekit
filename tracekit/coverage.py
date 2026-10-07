@@ -14,11 +14,15 @@ def report(events):
     """events: list of full v1 events (selection only)."""
     runs, calls, results, denied = {}, {}, set(), set()
     gaps, tampers, bg, net, sources = [], [], [], [], set()
-    exchanges, shadow, envt, approvals = 0, [], [], []
+    exchanges, reported_exchanges, otel_runs, shadow, envt, approvals = 0, 0, set(), [], [], []
     for e in events:
+        if e["run_id"].startswith(("findings:", "anchors:")):
+            continue  # analyzer conclusions, not capture
         sources.add(e["source"])
         d = e["data"]
         r = runs.setdefault(e["run_id"], {"start": None, "end": False})
+        if ":otel:" in ":" + e["run_id"]:
+            otel_runs.add(e["run_id"])
         if e["type"] == "run.start":
             r["start"] = d
         elif e["type"] == "run.end":
@@ -32,7 +36,10 @@ def report(events):
         elif e["type"] == "trace.tamper":
             tampers.append({"seq": e["seq"], "path": d.get("path"), "kind": d.get("kind")})
         elif e["type"] == "model.exchange" and d.get("phase") == "response":
-            exchanges += 1
+            if e["source"] == "proxy":
+                exchanges += 1
+            else:
+                reported_exchanges += 1
         elif e["type"] == "approval":
             approvals.append({"seq": e["seq"], "tool_use_id": d.get("tool_use_id"), "decision": d.get("decision"),
                               "approver": d.get("approver")})
@@ -86,6 +93,11 @@ def report(events):
     if "sdk" in sources:
         observed.extend(["agent-reported prompts and tool calls explicitly sent through the SDK",
                          "policy decisions and results for SDK-wrapped tool calls; unwrapped calls are not observed"])
+    if otel_runs:
+        observed.append(f"spans the application exported over OpenTelemetry ({len(otel_runs)} run(s)), recorded after they ran: "
+                        "policy was evaluated retrospectively and nothing was gated")
+    if reported_exchanges:
+        observed.append(f"model requests and responses reported by the application ({reported_exchanges} exchanges, not proxy-observed)")
     if "transcript" in sources:
         observed.append("harness transcript prefix hashes at every hook (edits, truncation, deletion between hooks)")
     if proxy_runs or exchanges:

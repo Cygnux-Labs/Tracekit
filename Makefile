@@ -1,4 +1,4 @@
-.PHONY: help install test lint build check demo eval eval-agents clean
+.PHONY: help install test test-ts eval-scale lint build check demo eval eval-agents clean
 PY ?= python3
 
 help:
@@ -8,7 +8,7 @@ help:
 	@echo "make build     build the sdist and wheel into dist/"
 	@echo "make check     lint + test + build + twine check"
 	@echo "make demo      run the scripted end-to-end demo"
-	@echo "make eval      offline evaluations E1 (integrity), E2 (overhead), E3 (policy gate), E4 (seeded faults); rewrites eval/results/"
+	@echo "make eval      offline evaluations E1 (integrity), E2 (overhead), E3 (policy gate), E4 (seeded faults), E6 (findings); rewrites eval/results/"
 	@echo "make eval-agents  E5: real Claude Code runs (needs the claude CLI; spends model usage)"
 	@echo "make clean     remove build artefacts"
 
@@ -17,6 +17,12 @@ install:
 
 test:
 	$(PY) -m pytest -q
+
+eval-scale:
+	$(PY) eval/e7_sql_scale.py
+
+test-ts:
+	cd sdk/typescript && npm install --no-audit --no-fund && npm test
 
 lint:
 	$(PY) -m pyflakes tracekit tracekit_sdk.py tests eval examples
@@ -36,6 +42,7 @@ eval:
 	$(PY) eval/e2_perf.py
 	$(PY) eval/e3_policy.py
 	$(PY) eval/e4_seeded_faults.py
+	$(PY) eval/e6_findings.py
 
 eval-agents:
 	E5=1 $(PY) eval/e5_agents.py
