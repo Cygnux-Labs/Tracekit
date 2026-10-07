@@ -29,6 +29,10 @@ Findings also appear live in `tracekit observe` (Alerts panel, tape entry `FINDI
 | TK-X105 | critical | the agent said tests pass after the last test run failed | agent text in clear |
 | TK-X111..114 | critical | the agent denied pushing, deleting, editing or network calls that it made | agent text in clear |
 | TK-X120 | high | a risky action that nothing the agent said afterwards mentions | agent text in clear |
+| TK-X006 | critical | an onchain transaction was signed without a recorded guard verdict | `adapters.onchain` |
+| TK-X007 | critical | an onchain transaction was executed although the guard denied it | `adapters.onchain` |
+| TK-X008 | medium | an onchain transaction was blocked by the guard | `adapters.onchain` |
+| TK-C001..C004 | high..low | imported Causeway counterfactual verdicts: confirmed cause, suppressive, ruled out, not applied | `tracekit causeway import-tests` |
 | TK-X000, TK-X100 | info | a check could not run (no model exchanges captured / agent text only hashed) | - |
 
 Detectors never pass silently: when the ledger holds only hashes of what the agent said, TK-X100 says the text checks
