@@ -42,6 +42,7 @@ class Normalise(unittest.TestCase):
 
 
 class Capture(unittest.TestCase):
+    @unittest.skipUnless(T.openai is not None and T.httpx is not None, "openai SDK not installed")
     def test_sdk_records_usage(self):
         t = T.FakeTracer()
         autotrace.instrument(t)
@@ -97,6 +98,7 @@ class Cost(unittest.TestCase):
         with self.assertRaises(ValueError):
             usage.Prices({"nope": 1})
 
+    @unittest.skipUnless(T.openai is not None and T.httpx is not None, "openai SDK not installed")
     def test_cli_end_to_end(self):
         import subprocess
         d = tempfile.mkdtemp()
