@@ -251,6 +251,15 @@ def _write_signer_config(home, witnesses, checkpoint_every, socket_path, proxy=N
         cfg["proxy"] = proxy
     cfg.update(extra or {})
     path = os.path.join(home, "config.json")
+    if "signer" not in cfg and os.path.exists(path):
+        # re-running init must never drop a configured external signer: the daemon would fall back to a new file key
+        try:
+            with open(path) as f:
+                old = json.load(f)
+            if isinstance(old, dict) and old.get("signer"):
+                cfg["signer"] = old["signer"]
+        except (OSError, ValueError):
+            pass
     with open(path, "w") as f:
         json.dump(cfg, f, indent=2)
     os.chmod(path, 0o600)
@@ -318,7 +327,8 @@ def _dev_socket(home):
     return f"tcp://127.0.0.1:{port}", secrets.token_urlsafe(32)
 
 
-def init_dev(home, witnesses, checkpoint_every=50, hooks_path=None, start=True, proxy=False, proxy_port=8787, fail_mode=None):
+def init_dev(home, witnesses, checkpoint_every=50, hooks_path=None, start=True, proxy=False, proxy_port=8787, fail_mode=None,
+             signer=None):
     checkpoint_every, proxy_port = _validate_init_options(checkpoint_every, proxy, proxy_port)
     home = os.path.abspath(home)
     for sub in ("", "keys", "ledger", "blobs"):
@@ -329,6 +339,8 @@ def init_dev(home, witnesses, checkpoint_every=50, hooks_path=None, start=True, 
     pcfg = {"port": proxy_port, "upstream": _upstream(), "fail_mode": fail_mode or "open"} if proxy else None
     # dev mode: the agent and the approver are the same OS user, so approvals are allowed but labelled untrustworthy
     signer_extra = {"mode": "dev", "allow_same_user_approval": True}
+    if signer:
+        signer_extra["signer"] = signer
     if socket_token:
         signer_extra["socket_token"] = socket_token
     _write_signer_config(home, witnesses, checkpoint_every, sock, pcfg, signer_extra)
@@ -500,7 +512,7 @@ def install_managed(proxy_url=None, managed_only=False, path=None):
 
 
 def init_system(target_user, witnesses, checkpoint_every=50, project=None, no_service=False, proxy=False, proxy_port=8787,
-                managed=False, managed_only=False, fail_mode=None, experimental_macos=False, hooks=True):
+                managed=False, managed_only=False, fail_mode=None, experimental_macos=False, hooks=True, signer=None):
     darwin = sys.platform == "darwin"
     if not (sys.platform.startswith("linux") or darwin):
         raise SystemExit("v0.2 system mode runs on Linux and (experimentally) macOS: tracekitd must identify callers "
@@ -535,7 +547,7 @@ def init_system(target_user, witnesses, checkpoint_every=50, project=None, no_se
         print("note: using a local git witness only. It protects against the agent's user, not against root on this "
               "machine. Point --witness at a remote repository the security team owns (docs/witnesses.md).")
     pcfg = {"port": proxy_port, "upstream": _upstream(), "fail_mode": fail_mode or "open"} if proxy else None
-    _write_signer_config(SYS_HOME, witnesses, checkpoint_every, sock, pcfg)
+    _write_signer_config(SYS_HOME, witnesses, checkpoint_every, sock, pcfg, {"signer": signer} if signer else None)
     os.chown(os.path.join(SYS_HOME, "config.json"), tk.pw_uid, tk.pw_gid)
     # generate the key as the tracekit user so root-only reads are the only other path to it
     env = dict(os.environ, PYTHONPATH=ROOT)

@@ -26,7 +26,17 @@ def _signer_home(a):
     return a.home or client.client_config().get("signer_home") or "/var/lib/tracekit"
 
 
+_DELEGATED = {"observe": "observe", "analyze": "findings", "otel": "otlp", "sql": "query", "cost": "cost", "proofpack": "proofpack", "witness": "witness_server", "causeway": "causeway"}  # subcommands with their own parsers
+
+
 def main(argv=None):
+    args = list(sys.argv[1:] if argv is None else argv)
+    if args and args[0] == "report":
+        from .proofpack import report_main
+        return report_main(args[1:])
+    if args and args[0] in _DELEGATED:  # before argparse: REMAINDER would not pass a leading --option through
+        import importlib
+        return importlib.import_module(f".{_DELEGATED[args[0]]}", __package__).main(args[1:])
     ap = argparse.ArgumentParser(prog="tracekit", description="Signed, checkpointed evidence of what coding agents did.")
     ap.add_argument("--version", action="version", version=f"tracekit {__version__}")
     sub = ap.add_subparsers(dest="cmd", required=True, metavar="command")
@@ -48,12 +58,37 @@ def main(argv=None):
     p.add_argument("--fail-closed", action="store_true", help="proxy: refuse to forward when the signer can't record")
     p.add_argument("--managed", action="store_true", help="system mode: install hooks in Claude Code's admin-managed settings")
     p.add_argument("--managed-only", action="store_true", help="with --managed: also set allowManagedHooksOnly")
+    p.add_argument("--agent", choices=("claude", "codex", "cursor", "gemini"), default="claude",
+                   help="which coding agent's hooks to install (default: Claude Code)")
+    p.add_argument("--signer-cmd", help="external signer helper command (TPM/HSM/enclave; see tracekit/extsigner.py)")
+    p.add_argument("--signer-pub", help="with --signer-cmd: the helper key's raw 32-byte Ed25519 public key file")
+    p.add_argument("--key-assurance", default="external", help="with --signer-cmd: where the key lives (tpm, hsm, tee, kms, smartcard)")
+    p.add_argument("--key-attestation", help="with --signer-cmd: the device's attestation document for the key (TPM quote, "
+                                             "enclave attestation, KMS key metadata); its hash is signed into checkpoints and "
+                                             "exports carry it")
 
     sub.add_parser("status", help="hooks, signer, witnesses, policy, fail mode, capture sources")
     p = sub.add_parser("uninstall", help="remove hooks (the ledger is kept)")
     p.add_argument("--project", action="store_true")
+    p.add_argument("--agent", choices=("claude", "codex", "cursor", "gemini"), default="claude")
 
     p = sub.add_parser("ingest", help="remote ingestion gateway: `ingest token NAME` / `ingest serve`", add_help=False)
+    p.add_argument("rest", nargs=argparse.REMAINDER)
+    p = sub.add_parser("analyze", help="run the detectors over a run and sign the findings into the ledger", add_help=False)
+    p.add_argument("rest", nargs=argparse.REMAINDER)
+    p = sub.add_parser("sql", help="read-only SQL over the ledger (`sql --schema`, `sql --mcp` for coding agents)", add_help=False)
+    p.add_argument("rest", nargs=argparse.REMAINDER)
+    p = sub.add_parser("cost", help="token usage (and cost, with your price table) per run or model", add_help=False)
+    p.add_argument("rest", nargs=argparse.REMAINDER)
+    p = sub.add_parser("proofpack", help="zip for auditors: bundle + report + stdlib-only verifier + control map", add_help=False)
+    p.add_argument("rest", nargs=argparse.REMAINDER)
+    p = sub.add_parser("report", help="readable evidence report for a .tkb bundle", add_help=False)
+    p.add_argument("rest", nargs=argparse.REMAINDER)
+    p = sub.add_parser("witness", help="run a witness log: `witness init|token|serve` (append-only, Merkle tree, signed heads)", add_help=False)
+    p.add_argument("rest", nargs=argparse.REMAINDER)
+    p = sub.add_parser("causeway", help="Causeway runs: anchor | verify | import-tests | export", add_help=False)
+    p.add_argument("rest", nargs=argparse.REMAINDER)
+    p = sub.add_parser("otel", help="OpenTelemetry receiver: `otel serve` records agent spans sent over OTLP/HTTP", add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
     p = sub.add_parser("daemon", help="run tracekitd in the foreground")
     p.add_argument("--home")
@@ -62,11 +97,8 @@ def main(argv=None):
     p.add_argument("--port", type=int)
     p.add_argument("--upstream")
 
-    p = sub.add_parser("observe", help="live terminal for the ledger (read-only web UI)")
-    p.add_argument("--home")
-    p.add_argument("--host", default="127.0.0.1")
-    p.add_argument("--port", type=int, default=7777)
-    p.add_argument("--export", help="write a self-contained replay HTML and exit")
+    p = sub.add_parser("observe", help="live terminal for the ledger or a bundle (read-only web UI)")
+    p.add_argument("rest", nargs=argparse.REMAINDER)
 
     sub.add_parser("pending", help="list tool calls waiting for approval")
     for name in ("approve", "reject"):
@@ -81,6 +113,8 @@ def main(argv=None):
     g.add_argument("--since", help="RFC3339 time, e.g. 2026-09-30T00:00:00.000000Z")
     p.add_argument("--otel", action="store_true", help="also include otel.json (OTLP/JSON)")
     p.add_argument("--otel-endpoint", help="also POST the spans to an OTLP/HTTP collector, e.g. http://localhost:4318")
+    p.add_argument("--otel-header", action="append", default=[], metavar="KEY=VALUE",
+                   help="header for --otel-endpoint (repeatable; also read from OTEL_EXPORTER_OTLP_HEADERS)")
     p.add_argument("--home", help="signer home to read the ledger from")
 
     p = sub.add_parser("verify", help="verify a .tkb offline")
@@ -96,6 +130,8 @@ def main(argv=None):
     p = sub.add_parser("demo", help="end-to-end demo in a temp folder")
     p.add_argument("--real", action="store_true", help="drive a real `claude -p` session instead of the scripted agent")
     p.add_argument("--keep", action="store_true")
+    p.add_argument("--agent", default="claude", choices=["claude", "codex", "cursor", "gemini"],
+                   help="send the scripted run as this coding agent's own hook payloads (default: claude)")
 
     a = ap.parse_args(argv)
     try:
@@ -144,6 +180,12 @@ def _run(a):
     if a.cmd == "ingest":
         from . import ingest
         return ingest.main(a.rest)
+    if a.cmd == "analyze":
+        from . import findings
+        return findings.main(a.rest)
+    if a.cmd == "otel":
+        from . import otlp
+        return otlp.main(a.rest)
     if a.cmd == "init" and a.remote:
         return _init_remote(a)
     if a.cmd == "init":
@@ -154,13 +196,42 @@ def _run(a):
         if not 1 <= a.proxy_port <= 65535:
             print("tracekit: --proxy-port must be between 1 and 65535", file=sys.stderr)
             return 2
+        signer = None
+        if a.key_attestation and not a.signer_cmd:
+            print("tracekit: --key-attestation goes with --signer-cmd (an attestation is about an external key)", file=sys.stderr)
+            return 2
+        if a.signer_cmd or a.signer_pub:
+            import shlex
+            from .extsigner import ASSURANCES
+            if not (a.signer_cmd and a.signer_pub):
+                print("tracekit: --signer-cmd and --signer-pub go together", file=sys.stderr)
+                return 2
+            if a.key_assurance not in ASSURANCES - {"file"}:
+                print(f"tracekit: --key-assurance must be one of {sorted(ASSURANCES - {'file'})}", file=sys.stderr)
+                return 2
+            signer = {"type": "external", "argv": shlex.split(a.signer_cmd), "public_key": os.path.abspath(a.signer_pub),
+                      "assurance": a.key_assurance}
+            if a.key_attestation:
+                signer["attestation"] = os.path.abspath(a.key_attestation)
+        if a.dev and a.agent != "claude":
+            from . import agent_hooks
+            home = a.home or os.path.expanduser("~/.tracekit-signer")
+            try:
+                cfg = install.init_dev(home, a.witness, a.checkpoint_every, None, fail_mode="closed" if a.fail_closed else None, signer=signer)
+                path = None if a.no_hooks else agent_hooks.install(a.agent, os.getcwd() if a.project else None)
+            except install.SettingsError as e:
+                print(f"tracekit: {e}", file=sys.stderr)
+                return 1
+            print(f"dev signer running (same-user): {cfg['socket']}")
+            print(f"{a.agent} hooks:", path or "not installed")
+            return 0
         if a.dev:
             home = a.home or os.path.expanduser("~/.tracekit-signer")
             hooks = None if a.no_hooks else (os.path.join(os.getcwd(), ".claude", "settings.json") if a.project
                                             else os.path.expanduser("~/.claude/settings.json"))
             try:
                 cfg = install.init_dev(home, a.witness, a.checkpoint_every, hooks, proxy=a.proxy, proxy_port=a.proxy_port,
-                                       fail_mode="closed" if a.fail_closed else None)
+                                       fail_mode="closed" if a.fail_closed else None, signer=signer)
             except install.SettingsError as e:
                 print(f"tracekit: {e}", file=sys.stderr)
                 return 1
@@ -175,7 +246,7 @@ def _run(a):
                                                 os.getcwd() if a.project else None, a.no_service, proxy=a.proxy,
                                                 proxy_port=a.proxy_port, managed=a.managed, managed_only=a.managed_only,
                                                 fail_mode="closed" if a.fail_closed else None,
-                                                experimental_macos=a.experimental_macos, hooks=not a.no_hooks)
+                                                experimental_macos=a.experimental_macos, hooks=not a.no_hooks, signer=signer)
         except install.SettingsError as e:
             print(f"tracekit: {e}", file=sys.stderr)
             return 1
@@ -184,6 +255,10 @@ def _run(a):
     if a.cmd == "status":
         from . import install
         print(json.dumps(install.status(), indent=2))
+        return 0
+    if a.cmd == "uninstall" and a.agent != "claude":
+        from . import agent_hooks
+        print("hooks removed from", agent_hooks.install(a.agent, os.getcwd() if a.project else None, uninstall=True))
         return 0
     if a.cmd == "uninstall":
         from . import install
@@ -200,10 +275,6 @@ def _run(a):
         from . import proxy
         return proxy.main(["--home", _signer_home(a)] + (["--port", str(a.port)] if a.port else []) +
                           (["--upstream", a.upstream] if a.upstream else []))
-    if a.cmd == "observe":
-        from . import observe
-        return observe.main((["--home", a.home] if a.home else []) + ["--host", a.host, "--port", str(a.port)] +
-                            (["--export", a.export] if a.export else []))
     if a.cmd in ("pending", "approve", "reject"):
         from . import client
         try:
@@ -237,8 +308,9 @@ def _run(a):
         return 0 if r.get("ok") else 1
     if a.cmd == "export":
         from . import bundle
+        from .otel import parse_headers
         info = bundle.export(_signer_home(a), a.out, run=a.run, last=not (a.run or a.since), since=a.since, otel=a.otel,
-                             otel_endpoint=a.otel_endpoint)
+                             otel_endpoint=a.otel_endpoint, otel_headers=parse_headers(a.otel_header))
         print(json.dumps(info, indent=2))
         return 0
     if a.cmd == "verify":
@@ -254,7 +326,7 @@ def _run(a):
         return migrate.main(a.rest)
     if a.cmd == "demo":
         from . import demo
-        return demo.main(real=a.real, keep=a.keep)
+        return demo.main(real=a.real, keep=a.keep, agent=a.agent)
     return 2
 
 

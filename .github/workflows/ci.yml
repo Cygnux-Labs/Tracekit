@@ -36,6 +36,26 @@ jobs:
       - name: Test
         run: python -m pytest -v -o faulthandler_timeout=240
 
+  typescript:
+    name: TypeScript SDK and examples
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: python -m pip install -e .
+      - name: Test the SDK (real signer, mocked model APIs)
+        run: make test-ts
+      - name: Run the Vercel AI SDK example
+        run: |
+          export TRACEKIT_CLIENT_HOME="$RUNNER_TEMP/client"
+          python -c "from tracekit import install; install.init_dev('$RUNNER_TEMP/signer', [], start=True)"
+          cd sdk/typescript && node examples/vercel_ai.mjs
+
   package:
     name: build and smoke-test the wheel
     runs-on: ubuntu-latest

@@ -117,6 +117,37 @@ class LangChain(Base):
         self.assertIn("out:echo hi", out["messages"][-1].content)
         self.assertEqual(sum(1 for e in self.events() if e["type"] == "tool.call"), 1)
 
+    def test_langgraph_node_tracing(self):
+        try:
+            from langgraph.graph import END, START, StateGraph
+        except ImportError:
+            self.skipTest("langgraph not installed")
+        from typing import TypedDict
+        from langchain_core.runnables import RunnableLambda
+        from tracekit.adapters.langchain import TracekitCallbackHandler
+
+        class S(TypedDict):
+            n: int
+
+        inner = RunnableLambda(lambda x: x + 1)  # a runnable inside a node: must not become its own step
+        g = StateGraph(S)
+        g.add_node("plan", lambda s: {"n": inner.invoke(s["n"])})
+        g.add_node("act", lambda s: {"n": s["n"] * 10})
+        g.add_edge(START, "plan")
+        g.add_edge("plan", "act")
+        g.add_edge("act", END)
+        graph = g.compile()
+        with Tracer(agent="lg", cwd=self.d) as t:
+            out = graph.invoke({"n": 1}, config={"callbacks": [TracekitCallbackHandler(t, nodes=True)]})
+        self.assertEqual(out["n"], 20)
+        calls = [e["data"] for e in self.events() if e["type"] == "tool.call"]
+        self.assertEqual([c["name"] for c in calls], ["node:plan", "node:act"])
+        self.assertTrue(all("step" in c["input"] for c in calls))
+        self.assertEqual([e["data"]["ok"] for e in self.events() if e["type"] == "tool.result"], [True, True])
+        before = len(self.events())
+        with Tracer(agent="lg2", cwd=self.d) as t:  # off by default: no node steps
+            graph.invoke({"n": 1}, config={"callbacks": [TracekitCallbackHandler(t)]})
+        self.assertFalse([e for e in self.events()[before:] if e["type"] == "tool.call"])
 
 if __name__ == "__main__":
     unittest.main()

@@ -138,7 +138,13 @@ class EndToEnd(unittest.TestCase):
             pass
 
     def test_rate_limit(self):
-        codes = {self.post({"op": "bogus"}, self.token)[0] for _ in range(int(ingest.BURST) + 40)}
+        # no refill during the test: on a slow machine 100/s refill could otherwise keep the bucket from emptying
+        old = ingest.RATE_PER_S
+        ingest.RATE_PER_S = 0.0
+        try:
+            codes = {self.post({"op": "bogus"}, self.token)[0] for _ in range(int(ingest.BURST) + 40)}
+        finally:
+            ingest.RATE_PER_S = old
         self.assertIn(429, codes)
 
     def test_ask_rules_are_refused_remotely(self):

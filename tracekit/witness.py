@@ -6,7 +6,8 @@ A checkpoint commits to the ledger head:
 Published copies live where the agent's user cannot rewrite them, so rebuilding the whole
 chain on disk (even with the signing key) no longer matches what the witnesses hold.
 
-Witness specs:  file:/abs/path.jsonl   git:/abs/clone[@remote]   rekor:https://rekor.sigstore.dev  (experimental, TRACEKIT_ENABLE_REKOR=1)
+Witness specs:  file:/abs/path.jsonl   git:/abs/clone[@remote]   https://witness.example[#token=..&key=..]  (tracekit witness serve)
+                rekor:https://rekor.sigstore.dev  (experimental, TRACEKIT_ENABLE_REKOR=1)
 """
 import json
 import os
@@ -20,7 +21,12 @@ CP_TYPE = "tracekit.checkpoint.v1"
 
 def make_checkpoint(head_seq, head_hash, keys, ts=None):
     cp = {"type": CP_TYPE, "head_seq": head_seq, "head_hash": head_hash, "ts": ts or now_ts(), "kid": keys.kid}
-    cp["sig"] = b64e(crypto.sign(keys.secret, canon(cp).encode("utf-8")))
+    assurance = getattr(keys, "assurance", "file")
+    if assurance != "file":  # signed with the checkpoint; absent (= file) keeps older checkpoints byte-identical
+        cp["key_assurance"] = assurance
+    if getattr(keys, "attestation_sha256", None):
+        cp["key_attestation_sha256"] = keys.attestation_sha256
+    cp["sig"] = b64e(keys.sign(canon(cp).encode("utf-8")) if hasattr(keys, "sign") else crypto.sign(keys.secret, canon(cp).encode("utf-8")))
     return cp
 
 
@@ -134,7 +140,124 @@ class GitWitness:
         return out
 
 
+class HttpWitness:
+    """A `tracekit witness serve` log. Spec: https://host:port[#token=/path/token&key=/path/witness.pub&state=/path/sth.json]
+
+    publish(): POST the checkpoint with the token; the receipt's tree head and inclusion proof are checked when a key is pinned.
+    read(): every entry must come with a valid inclusion proof against a tree head signed by the pinned witness key, and
+    the tree head must be consistent (RFC 6962 consistency proof) with the last one this client saw. Without a pinned
+    key read() refuses: a witness you do not authenticate adds nothing."""
+
+    def __init__(self, spec):
+        from urllib.parse import parse_qs
+        url, _, frag = spec.partition("#")
+        self.url = url.rstrip("/")
+        opts = {k: v[0] for k, v in parse_qs(frag).items()}
+        self.token_path = opts.get("token") or os.environ.get("TRACEKIT_WITNESS_TOKEN_FILE")
+        self.key_path = opts.get("key") or os.environ.get("TRACEKIT_WITNESS_PUBKEY")
+        self.state_path = opts.get("state")
+        self.name = f"witness:{self.url}"
+        if not (self.url.startswith("https://") or self.url.startswith(("http://127.0.0.1", "http://localhost", "http://[::1]"))):
+            raise ValueError("witness URLs must use https (plain http only for localhost)")
+
+    def _key(self):
+        if not self.key_path:
+            return None
+        with open(self.key_path, "rb") as f:
+            k = f.read()
+        if len(k) != 32:
+            raise ValueError(f"{self.key_path}: not a raw 32-byte Ed25519 public key")
+        return k
+
+    def _http(self, method, path, body=None, token=None):
+        import urllib.error
+        import urllib.request
+        h = {"Content-Type": "application/json"}
+        if token:
+            h["Authorization"] = "Bearer " + token
+        req = urllib.request.Request(self.url + path, data=json.dumps(body).encode() if body is not None else None, method=method, headers=h)
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        try:
+            with opener.open(req, timeout=15) as r:
+                return r.status, json.loads(r.read() or b"{}")
+        except urllib.error.HTTPError as e:
+            try:
+                return e.code, json.loads(e.read() or b"{}")
+            except ValueError:
+                return e.code, {}
+
+    def _check_sth(self, sth, key):
+        from .witness_server import verify_sth
+        if not verify_sth(sth, key):
+            raise ValueError(f"{self.name}: tree head is not signed by the pinned witness key")
+        if self.state_path:
+            try:
+                with open(self.state_path, encoding="utf-8") as f:
+                    old = json.load(f)
+            except (OSError, ValueError):
+                old = None
+            if old and old["tree_size"] > sth["tree_size"]:
+                raise ValueError(f"{self.name}: log shrank from {old['tree_size']} to {sth['tree_size']} entries")
+            if old and 0 < old["tree_size"] <= sth["tree_size"]:
+                from . import merkle
+                code, r = self._http("GET", f"/v1/consistency?first={old['tree_size']}&second={sth['tree_size']}")
+                proof = [bytes.fromhex(x) for x in (r.get("proof") or [])] if code == 200 else None
+                if proof is None or not merkle.verify_consistency(old["tree_size"], sth["tree_size"], bytes.fromhex(old["root_hash"]),
+                                                                  bytes.fromhex(sth["root_hash"]), proof):
+                    raise ValueError(f"{self.name}: log is not consistent with the tree head seen before (rewritten history)")
+            tmp = self.state_path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump({"tree_size": sth["tree_size"], "root_hash": sth["root_hash"]}, f)
+            os.replace(tmp, self.state_path)
+
+    def publish(self, cp):
+        if not self.token_path:
+            raise ValueError(f"{self.name}: no token (add #token=/path/to/token)")
+        with open(self.token_path, encoding="utf-8") as f:
+            token = f.read().strip()
+        code, r = self._http("POST", "/v1/checkpoints", cp, token)
+        if code not in (200, 201):
+            raise RuntimeError(f"{self.name}: HTTP {code}: {r.get('error', r)}")
+        key = self._key()
+        if key is not None:
+            from . import merkle
+            self._check_sth(r["sth"], key)
+            leaf = merkle.leaf_hash(canon(cp).encode("utf-8"))
+            if not merkle.verify_inclusion(r["index"], r["sth"]["tree_size"], leaf, [bytes.fromhex(x) for x in r["inclusion"]],
+                                           bytes.fromhex(r["sth"]["root_hash"])):
+                raise RuntimeError(f"{self.name}: receipt's inclusion proof does not verify")
+        return self.name
+
+    def read(self):
+        from . import merkle
+        key = self._key()
+        if key is None:
+            raise ValueError(f"{self.name}: pin the witness public key (#key=/path/witness.pub) to read from it")
+        out, after, sth0 = [], -1, None
+        while True:
+            code, r = self._http("GET", f"/v1/checkpoints?after={after}")
+            if code != 200:
+                raise RuntimeError(f"{self.name}: HTTP {code}")
+            sth = r["sth"]
+            if sth0 is None:
+                self._check_sth(sth, key)
+                sth0 = sth
+            elif not __import__("tracekit.witness_server", fromlist=["verify_sth"]).verify_sth(sth, key):
+                raise ValueError(f"{self.name}: tree head is not signed by the pinned witness key")
+            root = bytes.fromhex(sth["root_hash"])
+            for e in r["entries"]:
+                leaf = merkle.leaf_hash(canon(e["cp"]).encode("utf-8"))
+                if not merkle.verify_inclusion(e["index"], sth["tree_size"], leaf, [bytes.fromhex(x) for x in e["inclusion"]], root):
+                    raise ValueError(f"{self.name}: entry {e['index']} has no valid inclusion proof")
+                out.append(e["cp"])
+            if not r["entries"]:
+                return out
+            after = r["entries"][-1]["index"]
+
+
 def from_spec(spec):
+    if spec.startswith(("https://", "http://")):
+        return HttpWitness(spec)
     kind, _, rest = spec.partition(":")
     if kind == "file":
         return FileWitness(rest)
@@ -145,4 +268,4 @@ def from_spec(spec):
             raise ValueError("rekor witness requires TRACEKIT_ENABLE_REKOR=1 (public and permanent; see docs/witnesses.md)")
         from .rekor import RekorWitness
         return RekorWitness(rest)
-    raise ValueError(f"unknown witness spec {spec!r} (use file:/path or git:/path[@remote])")
+    raise ValueError(f"unknown witness spec {spec!r} (use file:/path, git:/path[@remote] or https://witness[#key=...])")

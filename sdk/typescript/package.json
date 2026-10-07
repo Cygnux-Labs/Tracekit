@@ -1,0 +1,23 @@
+{
+  "name": "@cygnux/tracekit",
+  "version": "0.3.0-alpha.1",
+  "description": "Tracekit for TypeScript/JavaScript agents: policy-gated tool calls and signed model-call evidence, through the same engine as the Python SDK.",
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": { ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" } },
+  "files": ["dist", "README.md"],
+  "engines": { "node": ">=18" },
+  "scripts": {
+    "build": "tsc -p .",
+    "test": "npm run build && node --test test/*.test.mjs"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0",
+    "@types/node": "^22.0.0",
+    "openai": "*",
+    "@anthropic-ai/sdk": "*"
+  },
+  "repository": { "type": "git", "url": "https://github.com/Cygnux-Labs/Tracekit" }
+}
