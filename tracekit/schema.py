@@ -15,8 +15,12 @@ _TYPES = {"object": dict, "array": list, "string": str, "boolean": bool, "null":
 def schema():
     global _SCHEMA
     if _SCHEMA is None:
-        with open(SCHEMA_PATH, encoding="utf-8") as f:
-            _SCHEMA = json.load(f)
+        try:
+            with open(SCHEMA_PATH, encoding="utf-8") as f:
+                _SCHEMA = json.load(f)
+        except OSError:  # running from a zip (the proof pack's verify.pyz): read the packaged copy
+            import pkgutil
+            _SCHEMA = json.loads(pkgutil.get_data(__package__, "schema/tracekit.event.v1.json").decode("utf-8"))
     return _SCHEMA
 
 

@@ -60,6 +60,8 @@ def export(signer_home, out_path, run=None, last=True, since=None, otel=False, o
     runs = set(runs)
     present = {r["event"]["run_id"] for r in recs if not r.get("elided")}
     runs |= {"findings:" + x for x in list(runs) if "findings:" + x in present}  # signed findings travel with their run
+    runs |= {"findings:causeway:" + x[len("anchors:causeway:"):] for x in list(runs)
+             if x.startswith("anchors:causeway:") and "findings:causeway:" + x[len("anchors:causeway:"):] in present}
     keep = lambda ev: ev["run_id"] in runs or (ev["run_id"] == "_signer" and ev["type"] in SIGNER_TYPES)  # noqa: E731
     sel_seqs = [r["event"]["seq"] for r in recs if not r.get("elided") and r["event"]["run_id"] in runs]
     if not sel_seqs:
@@ -142,6 +144,7 @@ def export(signer_home, out_path, run=None, last=True, since=None, otel=False, o
     }
     blobs = {k: v.encode("utf-8") for k, v in files.items()}
     blobs["signer.pub"] = pub
+    blobs.update(_attestations(signer_home, cps_in))
     pushed = None
     if otel or otel_endpoint:
         from .otel import push, to_otlp_json
@@ -190,6 +193,26 @@ class Report:
 
 
 MAX_BUNDLE_BYTES = 512 * 1024 * 1024   # uncompressed; refuses zip bombs before reading anything
+
+
+def _attestations(signer_home, cps):
+    """The key attestation document the checkpoints name (by SHA-256), from the signer config: attestation/<sha>.bin."""
+    wanted = {c.get("key_attestation_sha256") for c in cps} - {None}
+    if not wanted:
+        return {}
+    try:
+        with open(os.path.join(signer_home, "config.json"), encoding="utf-8") as f:
+            path = ((json.load(f).get("signer") or {}).get("attestation"))
+        from .extsigner import read_attestation
+        data = read_attestation(path) if path else None
+    except (OSError, ValueError):
+        data = None
+    if data is None or sha256_hex(data) not in wanted:
+        import sys
+        print("tracekit: warning: checkpoints name a key attestation document that is not at the configured path any more; "
+              "the bundle will say so", file=sys.stderr)
+        return {}
+    return {f"attestation/{sha256_hex(data)}.bin": data}
 
 
 def load_bundle(path):
@@ -416,6 +439,27 @@ def _verify(rep, manifest, blobs, witness_specs, strict, trusted_key):
             "nothing outside the bundle vouches for its signer key or checkpoints: this proves the bundle is internally "
             "consistent, not who signed it or that it matches the real ledger. Pass --key <signer.pub> and/or --witness <copy>."],
             warn=True)
+
+    # 4c. where the signing key lives, as stated (and signed) in the checkpoints: informative, not attested
+    valid_cps = [c for c in cps if verify_checkpoint(c, pub) and c.get("kid") == kid]
+    if valid_cps:
+        kinds = sorted({c.get("key_assurance", "file") for c in valid_cps})
+        if kinds == ["file"]:
+            rep.check("signing key", False, "file key on the signer host", [
+                "the private key is a file: root on the signer host can copy it. Use an external signer (TPM, HSM, enclave) "
+                "and an external witness to remove that."], warn=True)
+        else:
+            att = sorted({c.get("key_attestation_sha256") for c in valid_cps} - {None})
+            missing = [h for h in att if sha256_hex(blobs.get(f"attestation/{h}.bin", b"")) != h]
+            problems = [] if len(kinds) == 1 else [f"key storage changed within the bundle: {kinds}"]
+            problems += [f"checkpoints name attestation document sha256:{h[:16]}… but the bundle does not carry it" for h in missing]
+            if att and not missing:
+                detail = (f"{', '.join(kinds)}, with the device's attestation document in the bundle (attestation/"
+                          f"{att[-1][:16]}….bin, named in the signed checkpoints). Tracekit checked it is that document; check "
+                          "its contents (certificate chain, that it binds this public key) with the vendor's tools")
+            else:
+                detail = f"{', '.join(kinds)} (stated by the signer and signed into its checkpoints; no attestation document)"
+            rep.check("signing key", not problems, detail, problems, warn=True)
 
     # 5. policy hash consistent: every run.start and every decision names a snapshot in the bundle,
     #    the snapshot hashes to that name, and every rule a decision cites exists in its snapshot

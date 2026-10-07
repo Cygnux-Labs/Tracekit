@@ -182,6 +182,28 @@ def _detect(ctx):
                     "This call was reported after it ran, and the policy would have blocked or held it. " +
                     "; ".join(r for r in d["data"].get("reasons") or [] if "would have" in r), ev, tool_use_id=tid)
 
+    # TK-X006 / TK-X007 / TK-X008: onchain transactions and their guard verdicts (tracekit.adapters.onchain)
+    guard = {}
+    for e, h in recs:
+        v = (e["data"].get("verdict") or {}) if e["type"] == "review" else {}
+        if v.get("kind") == "tx_guard" and v.get("tool_use_id"):
+            guard[v["tool_use_id"]] = (e, h, v)
+    for tid, (c, ch) in calls.items():
+        if c["data"]["name"] != "OnchainTx":
+            continue
+        res = results.get(tid)
+        signed = bool(res and res[0]["data"].get("ok"))
+        g = guard.get(tid)
+        if g is None and signed:
+            ctx.add("TK-X006", "critical", "transaction signed without a guard verdict",
+                    "An OnchainTx was executed and no tx-guard verdict was recorded before it.", [(c, ch), res], tool_use_id=tid)
+        elif g is not None and not g[2]["allow"] and signed:
+            ctx.add("TK-X007", "critical", "transaction executed although the guard denied it",
+                    "; ".join(g[2].get("reasons") or [])[:300], [(c, ch), (g[0], g[1]), res], tool_use_id=tid)
+        elif g is not None and not g[2]["allow"]:
+            ctx.add("TK-X008", "medium", "transaction blocked by the guard",
+                    "; ".join(g[2].get("reasons") or [])[:300], [(c, ch), (g[0], g[1])], tool_use_id=tid)
+
     # TK-X004: secrets showed up in tool output or input (redaction fired)
     for tid, (r, rh) in results.items():
         out = r["data"].get("output") or {}
@@ -219,7 +241,7 @@ def _detect(ctx):
     if said_text and not texts:
         e0 = said_text[0]
         ctx.add("TK-X100", "info", "agent text recorded only as hashes: say-vs-do checks could not run",
-                "Set content_capture: full (model output) or reasoning_capture: true (agent messages) to check claims against actions.",
+                "Set content_capture: full to keep text in plain form (with reasoning_capture: true to record agent messages at all) to check claims against actions.",
                 [(e0, {e["seq"]: h for e, h in recs}[e0["seq"]])])
     seen_claims = set()
     for e, h, text in texts:

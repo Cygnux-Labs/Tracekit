@@ -41,6 +41,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from . import client, policy, privacy
+from .usage import from_otel
 from .core import GENESIS, SCHEMA_VERSION, jsonable, now_ts
 from .otlp_wire import MAX_BODY, WireError, decode, encode_response_protobuf
 
@@ -111,6 +112,11 @@ def classify(sp):
         return "llm"
     if op in AGENT_OPS:
         return "agent"
+    # Vercel AI SDK (experimental_telemetry): provider calls are ai.*.doGenerate / doStream, tools are ai.toolCall
+    if sp["name"] == "ai.toolCall" or a.get("ai.toolCall.name"):
+        return "tool"
+    if sp["name"].startswith("ai.") and sp["name"].endswith((".doGenerate", ".doStream")):
+        return "llm"
     oi = str(a.get("openinference.span.kind") or "").upper()
     if oi == "TOOL":
         return "tool"
@@ -129,11 +135,13 @@ def classify(sp):
 
 
 def _provider(a):
-    return str(a.get("gen_ai.provider.name") or a.get("gen_ai.system") or a.get("llm.provider") or a.get("llm.system") or "unknown")
+    return str(a.get("gen_ai.provider.name") or a.get("gen_ai.system") or a.get("llm.provider") or a.get("llm.system")
+               or a.get("ai.model.provider") or "unknown")
 
 
 def _model(a):
-    return a.get("gen_ai.response.model") or a.get("gen_ai.request.model") or a.get("llm.model_name") or None
+    return (a.get("gen_ai.response.model") or a.get("gen_ai.request.model") or a.get("llm.model_name")
+            or a.get("ai.response.model") or a.get("ai.model.id") or None)
 
 
 def _input_messages(a, sp):
@@ -147,6 +155,8 @@ def _input_messages(a, sp):
             return rows
     if a.get("input.value") is not None:
         return _maybe_json(a["input.value"])
+    if a.get("ai.prompt.messages") is not None:
+        return _maybe_json(a["ai.prompt.messages"])
     ev = [{"event": e["name"], **e["attrs"]} for e in sp["events"] if e["name"].startswith("gen_ai.") and
           e["name"] != "gen_ai.choice"]
     return ev or None
@@ -161,6 +171,11 @@ def _output_messages(a, sp):
             return rows
     if a.get("output.value") is not None:
         return _maybe_json(a["output.value"])
+    if a.get("ai.response.text") is not None or a.get("ai.response.toolCalls") is not None:
+        calls = _maybe_json(a.get("ai.response.toolCalls")) or []
+        return [{"role": "assistant", "content": a.get("ai.response.text"),
+                 "parts": [{"type": "tool_call", "id": c.get("toolCallId"), "name": c.get("toolName")}
+                           for c in calls if isinstance(c, dict)]}]
     ev = [{"event": e["name"], **e["attrs"]} for e in sp["events"] if e["name"] == "gen_ai.choice"]
     return ev or None
 
@@ -202,7 +217,7 @@ def _tool_uses(out):
 
 
 def _finish(a, out):
-    fr = a.get("gen_ai.response.finish_reasons")
+    fr = a.get("gen_ai.response.finish_reasons") or a.get("ai.response.finishReason")
     if isinstance(fr, list) and fr:
         return str(fr[0])
     if isinstance(fr, str):
@@ -227,12 +242,12 @@ def _error(sp):
 
 
 def _tool_name(a, sp):
-    return str(a.get("gen_ai.tool.name") or a.get("tool.name") or a.get("traceloop.entity.name") or
+    return str(a.get("gen_ai.tool.name") or a.get("tool.name") or a.get("ai.toolCall.name") or a.get("traceloop.entity.name") or
                (sp["name"][len("execute_tool "):] if sp["name"].startswith("execute_tool ") else sp["name"]) or "tool")[:200]
 
 
 def _tool_args(a):
-    for k in ("gen_ai.tool.call.arguments", "tool.parameters", "traceloop.entity.input", "input.value"):
+    for k in ("gen_ai.tool.call.arguments", "tool.parameters", "ai.toolCall.args", "traceloop.entity.input", "input.value"):
         if a.get(k) is not None:
             v = _maybe_json(a[k])
             if isinstance(v, dict) and set(v) == {"args", "kwargs"} and isinstance(v.get("kwargs"), dict):
@@ -242,7 +257,7 @@ def _tool_args(a):
 
 
 def _tool_result(a):
-    for k in ("gen_ai.tool.call.result", "traceloop.entity.output", "output.value"):
+    for k in ("gen_ai.tool.call.result", "ai.toolCall.result", "traceloop.entity.output", "output.value"):
         if a.get(k) is not None:
             return _maybe_json(a[k])
     return None
@@ -333,7 +348,7 @@ class Mapper:
         name, args = _tool_name(a, sp), jsonable(_tool_args(a))
         if not isinstance(args, dict):
             args = {"arguments": args}
-        use_id = str(a.get("gen_ai.tool.call.id") or a.get("tool_call.id") or f"otel_{sid}")[:200]
+        use_id = str(a.get("gen_ai.tool.call.id") or a.get("tool_call.id") or a.get("ai.toolCall.id") or f"otel_{sid}")[:200]
         d = policy.evaluate(pol, name, args, self.cwd)
         would = d["decision"]
         decision = "flag" if would in ("deny", "ask") else would
@@ -361,7 +376,7 @@ class Mapper:
         model = _model(a)
         model = str(model)[:200] if model is not None else None
         inp, out = _input_messages(a, sp), _output_messages(a, sp)
-        streamed = bool(a.get("gen_ai.request.stream") or a.get("llm.is_streaming"))
+        streamed = bool(a.get("gen_ai.request.stream") or a.get("llm.is_streaming") or sp["name"].endswith(".doStream"))
         req = {"exchange_id": sid, "phase": "request", "model": model, "streamed": streamed,
                "upstream": "otel:" + _provider(a)[:100], "attribution": "none"}
         if inp is not None:
@@ -371,6 +386,9 @@ class Mapper:
                 "duration_ms": max(0, (sp["end_ns"] - sp["start_ns"]) // 1_000_000) if sp["end_ns"] and sp["start_ns"] else None,
                 "stop_reason": _finish(a, out), "tool_uses": _tool_uses(out), "error": err,
                 "upstream": "otel:" + _provider(a)[:100], "attribution": "none"}
+        u = from_otel(a)
+        if u:
+            resp["usage"] = u
         if out is not None:
             resp["response"] = privacy.content(jsonable(out), capture)
         return [((tid, sid, "model.request"), self._base(rid, _ts(sp["start_ns"]), _event_id(sid, "model.request"),
@@ -515,6 +533,47 @@ def make_handler(receiver):
     return H
 
 
+GRPC_METHOD = "/opentelemetry.proto.collector.trace.v1.TraceService/Export"
+
+
+def serve_grpc(host="127.0.0.1", port=4317, receiver=None, max_workers=4):
+    """OTLP/gRPC on the same receiver (needs `pip install grpcio`; no generated stubs: requests are decoded by
+    otlp_wire like OTLP/HTTP protobuf). Retryable failures map to UNAVAILABLE, so exporters keep and resend the batch.
+    -> (server, bound port)."""
+    import concurrent.futures
+    try:
+        import grpc
+    except ImportError as e:
+        raise RuntimeError("OTLP/gRPC needs grpcio: pip install grpcio") from e
+    receiver = receiver or Receiver(local_sink)
+
+    def export(body, context):
+        try:
+            spans = decode_protobuf_request(body)
+        except WireError as e:
+            context.abort(grpc.StatusCode.INVALID_ARGUMENT, str(e)[:500])
+        res = receiver.export(spans)
+        if res["retryable"]:
+            context.abort(grpc.StatusCode.UNAVAILABLE, "; ".join(res["errors"])[:500])
+        return encode_response_protobuf(res["rejected"], "; ".join(res["errors"])[:1000])
+
+    handler = grpc.method_handlers_generic_handler("opentelemetry.proto.collector.trace.v1.TraceService", {
+        "Export": grpc.unary_unary_rpc_method_handler(export, request_deserializer=None, response_serializer=None)})
+    srv = grpc.server(concurrent.futures.ThreadPoolExecutor(max_workers=max_workers),
+                      options=[("grpc.max_receive_message_length", MAX_BODY)])
+    srv.add_generic_rpc_handlers((handler,))
+    bound = srv.add_insecure_port(f"{host}:{port}")
+    srv.start()
+    return srv, bound
+
+
+def decode_protobuf_request(body):
+    from .otlp_wire import decode_protobuf
+    if len(body) > MAX_BODY:
+        raise WireError(f"body exceeds {MAX_BODY} bytes")
+    return decode_protobuf(body)
+
+
 def serve(host="127.0.0.1", port=4318, receiver=None):
     srv = ThreadingHTTPServer((host, port), make_handler(receiver or Receiver(local_sink)))
     srv.daemon_threads = True
@@ -597,6 +656,7 @@ def main(argv=None):
     s.add_argument("--host", default="127.0.0.1")
     s.add_argument("--port", type=int, default=4318)
     s.add_argument("--cwd", help="directory path rules are evaluated against (default: the current directory)")
+    s.add_argument("--grpc-port", type=int, default=None, help="also serve OTLP/gRPC on this port (usually 4317; needs grpcio)")
     f = sub.add_parser("push", help="send signed runs from the ledger to any OTLP/HTTP backend (Jaeger, Tempo, a collector, ...)")
     f.add_argument("--endpoint", required=True, help="e.g. http://localhost:4318 or https://otel.example.com/v1/traces")
     f.add_argument("--header", action="append", default=[], metavar="KEY=VALUE", help="repeatable; OTEL_EXPORTER_OTLP_HEADERS also read")
@@ -618,8 +678,16 @@ def main(argv=None):
         client.status()
     except client.SignerUnavailable as e:
         print(f"tracekit otel: warning: signer not reachable yet ({e}); exporters will be told to retry", file=sys.stderr)
-    srv = serve(a.host, a.port, Receiver(local_sink, Mapper(cwd=a.cwd)))
+    receiver = Receiver(local_sink, Mapper(cwd=a.cwd))
+    srv = serve(a.host, a.port, receiver)
     print(f"tracekit otel: listening on http://{a.host}:{srv.server_address[1]}/v1/traces", flush=True)
+    if a.grpc_port is not None:
+        try:
+            _gsrv, gport = serve_grpc(a.host, a.grpc_port, receiver)  # same receiver: one dedupe and pairing state
+        except RuntimeError as e:
+            print(f"tracekit otel: {e}", file=sys.stderr)
+            return 2
+        print(f"tracekit otel: listening on grpc://{a.host}:{gport}", flush=True)
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

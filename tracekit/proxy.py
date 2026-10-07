@@ -114,7 +114,12 @@ class SSEScan:
     def __init__(self):
         self.buf = b""
         self.discarding_line = False
-        self.tool_uses, self.stop_reason = [], None
+        self.tool_uses, self.stop_reason, self.usage = [], None, None
+
+    def _usage(self, u):
+        if isinstance(u, dict):
+            from .usage import from_anthropic, merge
+            self.usage = merge(self.usage, from_anthropic(u))
 
     def feed(self, chunk):
         while chunk:
@@ -150,6 +155,8 @@ class SSEScan:
         if not isinstance(ev, dict):
             return
         t = ev.get("type")
+        if t == "message_start":
+            self._usage((ev.get("message") or {}).get("usage") if isinstance(ev.get("message"), dict) else None)
         if t == "content_block_start":
             cb = ev.get("content_block") or {}
             if (isinstance(cb, dict) and len(self.tool_uses) < MAX_TOOL_USES
@@ -159,6 +166,7 @@ class SSEScan:
             delta = ev.get("delta")
             if isinstance(delta, dict) and isinstance(delta.get("stop_reason"), str):
                 self.stop_reason = delta["stop_reason"] or self.stop_reason
+            self._usage(ev.get("usage"))
         elif t == "message" or ev.get("content"):
             self.json_message(ev)
 
@@ -175,6 +183,7 @@ class SSEScan:
                 self.tool_uses.append({"id": str(cb["id"])[:500], "name": str(cb.get("name") or "?")[:200]})
         if isinstance(msg.get("stop_reason"), str):
             self.stop_reason = msg["stop_reason"] or self.stop_reason
+        self._usage(msg.get("usage"))
 
 
 def record(ev, fail_closed):
@@ -325,7 +334,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 "status": status, "streamed": streamed, "duration_ms": int((time.perf_counter() - t0) * 1000),
                 "first_byte_ms": int(first) if first is not None else None, "added_latency_ms": round(added, 3),
                 "tool_uses": scan.tool_uses[:200], "stop_reason": scan.stop_reason, "upstream": CFG["upstream"],
-                "error": err, "attribution": how}}, False)
+                "error": err, "attribution": how, **({"usage": scan.usage} if scan.usage else {})}}, False)
         if chunked_response:
             try:
                 self.wfile.write(b"0\r\n\r\n")

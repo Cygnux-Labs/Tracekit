@@ -294,7 +294,8 @@ def build_events(p, pol):
     return evs, deny
 
 
-def main():
+def main(harness_reasoning=True):
+    """harness_reasoning=False: the harness is not Claude Code, so its transcript format is unknown: hash it, never parse it."""
     raw = sys.stdin.read()
     try:
         p = json.loads(raw) if raw.strip() else {}
@@ -308,7 +309,7 @@ def main():
             print(f"[tracekit] {e}; blocking tool calls until the policy is fixed", file=sys.stderr)
             return 2
         return 0
-    evs, deny = build_events(p, pol)
+    evs, deny = build_events(p, pol if harness_reasoning else dict(pol, reasoning_capture=False))
     signer_down = None
     for ev in evs:
         try:
