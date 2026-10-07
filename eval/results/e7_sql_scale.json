@@ -1,0 +1,58 @@
+{
+  "experiment": "E7 SQL index at scale",
+  "tracekit_version": "0.2.0rc1",
+  "events": 1000001,
+  "ledger_mb": 604,
+  "python": "3.13.16",
+  "sqlite": "3.45.1",
+  "cpus": 2,
+  "machine": "x86_64",
+  "index_build_s": 36.2,
+  "noop_refresh_s": 0.55,
+  "queries": {
+    "events by type": {
+      "seconds": 0.058,
+      "rows": 6
+    },
+    "tool calls by name, with denies (joins every call to its decision and result)": {
+      "seconds": 0.516,
+      "rows": 4
+    },
+    "one run's tool calls": {
+      "seconds": 0.001,
+      "rows": 19
+    },
+    "denied commands, most recent 20": {
+      "seconds": 0.001,
+      "rows": 20
+    },
+    "tokens by model": {
+      "seconds": 0.525,
+      "rows": 3
+    },
+    "runs rollup, top 10 by tokens": {
+      "seconds": 0.689,
+      "rows": 10
+    },
+    "one run's rollup": {
+      "seconds": 0.001,
+      "rows": 1
+    },
+    "substring search over all event data (full scan)": {
+      "seconds": 0.227,
+      "rows": 1
+    }
+  },
+  "rebuild_identical": true,
+  "under_1s": [
+    "denied commands, most recent 20",
+    "events by type",
+    "one run's rollup",
+    "one run's tool calls",
+    "runs rollup, top 10 by tokens",
+    "substring search over all event data (full scan)",
+    "tokens by model",
+    "tool calls by name, with denies (joins every call to its decision and result)"
+  ],
+  "over_1s": []
+}
