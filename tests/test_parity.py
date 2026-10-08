@@ -61,7 +61,8 @@ class BrowserParity(unittest.TestCase):
         # what a record looks like on disk, in both encodings the code base writes
         for ensure_ascii in (False, True):
             stored = [json.dumps(v, ensure_ascii=ensure_ascii) for v in values]
-            r = subprocess.run([NODE, "-e", script], input=json.dumps(stored), capture_output=True, text=True, timeout=60)
+            r = subprocess.run([NODE, "-e", script], input=json.dumps(stored), capture_output=True, text=True,
+                               encoding="utf-8", timeout=60)
             self.assertEqual(r.returncode, 0, r.stderr[:500])
             got = json.loads(r.stdout)
             bad = [(i, core.canon(values[i]), got[i]) for i in range(len(values)) if core.canon(values[i]) != got[i]]

@@ -6,6 +6,7 @@ import io
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -537,6 +538,7 @@ class PolicySafety(unittest.TestCase):
         self.assertIn("X1", str(cm.exception))
         shutil.rmtree(d, ignore_errors=True)
 
+    @unittest.skipUnless(hasattr(signal, "setitimer"), "the regex budget needs SIGALRM; Windows relies on check_regex alone")
     def test_runaway_match_is_bounded_and_counts_as_match(self):
         import time
         old = policy.REGEX_BUDGET_S
@@ -662,6 +664,8 @@ class LongInputs(unittest.TestCase):
             t = time.time()
             self.assertEqual(policy.evaluate(pol, "Bash", {"command": cmd}, "/p")["decision"], "deny", pad)
             self.assertLess(time.time() - t, 8)
+        if not hasattr(signal, "setitimer"):
+            return  # without SIGALRM nothing interrupts a "scan to the end" rule, so this case is slow on Windows
         t = time.time()
         worst = "cat " * 60_000   # many candidate starts for a "scan to the end" rule
         policy.evaluate(pol, "Bash", {"command": worst}, "/p")

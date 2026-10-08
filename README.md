@@ -93,6 +93,8 @@ sudo tracekit init --user "$USER" --managed      # or: hooks in Claude Code's ad
 tracekit status
 ```
 
+Install the agent CLI system-wide (root-owned, for example `sudo npm install -g @anthropic-ai/claude-code`) and init registers it as the **harness**: the signer then accepts a run only from that program's process tree, so a script the agent starts elsewhere cannot fabricate a run (`--harness [NAME=]PATH` to name it explicitly; see the [threat model](docs/threat-model.md)).
+
 **Anywhere, to try it.** A same-user signer; bundles are marked and the verifier warns:
 
 ```bash
@@ -252,7 +254,8 @@ Type in the top bar: `AGT fix`, `TOOL BASH`, `FILE .env`, `FLAG`, `FIND timeout`
 
 Tracekit proves what its capture path recorded, and that the record has not changed since it was signed and checkpointed. It does **not** prove intent, complete coverage, or that a reported tool result is real.
 
-- **Faked command output.** Tool results are whatever the harness reports. Shell-function or `PATH` tricks can spoof them. That needs OS-level capture (a sandbox or audit subsystem), planned for v0.3+.
+- **Faked command output.** Tool results are whatever the harness reports. Shell-function or `PATH` tricks can spoof them. That needs OS-level capture (a sandbox or audit subsystem), planned for 0.4.
+- **Fabrication from inside the session.** Harness binding (`--harness`) refuses runs and events from anything outside the registered agent program's process tree, but the agent's own tool calls run inside it. A fabricated event in the live run is caught only by the model proxy; a second fabricated run is recorded as a `concurrent_run` gap.
 - **Inside subprocesses.** Hooks see the Bash command line, not every file or network call the command makes.
 - **After the last hook.** Activity and transcript edits after the session's final hook are not seen.
 - **Host compromise.** An attacker with root can take the key. That needs key storage outside the OS or the proxy on another machine.
@@ -282,7 +285,7 @@ Without a pinned key or a witness the result is reported as unanchored, exactly 
 - **The ledger stays on the signer host.** Witnesses get only checkpoint hashes, `seq`, key id and timestamps, never content.
 - **Hashed by default.** `content_capture: hashed`, `reasoning_capture: false`. Common secrets (API keys, GitHub, AWS and Slack tokens, private keys, `password=`) are masked before anything is written.
 - **Bundles follow the ledger's rules.** Records from other runs are elided to `seq`, `hash`, `prev_hash`, `sig`.
-- **Fail mode is explicit and recorded.** `fail_mode: open` by default; `closed` blocks tool calls while the signer is down. Every `run.start` records which one was in effect.
+- **Fail mode is explicit and recorded.** Linux system mode fails closed by default: tool calls are blocked while the signer is down, unless the root-owned `/etc/tracekit/client.json` sets `fail_mode: open`. Dev mode defaults to `open`. Every `run.start` records which one was in effect.
 
 Details: [threat model](docs/threat-model.md) · [signing](docs/signing.md) · [witnesses](docs/witnesses.md) · [privacy](docs/privacy.md) · [platforms](docs/portability.md) · [adapters](docs/adapters.md) · [remote ingestion](docs/remote-ingest.md) · [evaluation](docs/evaluation.md) · [event schema](tracekit/schema/tracekit.event.v1.json). Trying Tracekit with a team: the [design-partner kit](docs/design-partner-kit.md). Reviewing it: the [review packet](docs/review-packet.md).
 

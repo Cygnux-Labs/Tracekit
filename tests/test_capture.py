@@ -4,8 +4,8 @@ stale runs (C5), YAML policy (C7), approvals (C8), redaction (C9).
     python3 -m unittest tests.test_capture -v
 """
 import http.server
+import importlib
 import json
-import importlib.util
 import os
 import socket
 import socketserver
@@ -631,7 +631,9 @@ sys.stderr.write(hook.stderr.read()); sys.exit(hook.returncode)
 
     def approve_from_terminal(self, aid, decision="approve"):
         """Run `tracekit approve` in a fresh pseudo-terminal, outside the harness's process tree."""
-        if importlib.util.find_spec("pty") is None:  # POSIX only; BSD and GNU `script` differ, so use the stdlib
+        try:  # POSIX only; BSD and GNU `script` differ, so use the stdlib. Windows ships pty but not termios.
+            importlib.import_module("pty")
+        except ImportError:
             self.skipTest("needs a pty")
         return run_in_pty([PY, "-m", "tracekit", decision, aid], self.env, timeout=30)
 

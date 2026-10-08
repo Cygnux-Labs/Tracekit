@@ -60,7 +60,8 @@ class Tokens(unittest.TestCase):
             ingest.add_token(d, "build-1")
         with self.assertRaises(ValueError):
             ingest.add_token(d, "bad name!")
-        self.assertEqual(oct(os.stat(os.path.join(d, ingest.TOKENS_FILE)).st_mode & 0o777), "0o600")
+        if os.name != "nt":  # Windows has no POSIX permission bits
+            self.assertEqual(oct(os.stat(os.path.join(d, ingest.TOKENS_FILE)).st_mode & 0o777), "0o600")
         shutil.rmtree(d)
 
 
@@ -181,7 +182,8 @@ class ClientConfig(unittest.TestCase):
             self.assertEqual(rc, 0)
             cfg = json.load(open(os.path.join(d, "config.json")))
             self.assertEqual((cfg["socket"], cfg["socket_token"]), ("https://tk.example:8443", "tk_abc"))
-            self.assertEqual(oct(os.stat(os.path.join(d, "config.json")).st_mode & 0o777), "0o600")
+            if os.name != "nt":  # Windows has no POSIX permission bits
+                self.assertEqual(oct(os.stat(os.path.join(d, "config.json")).st_mode & 0o777), "0o600")
             self.assertEqual(cli._init_remote(argparse.Namespace(remote="http://evil.example", token_file=tf)), 2)
         finally:
             if old is None:
