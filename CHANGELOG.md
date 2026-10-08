@@ -4,6 +4,34 @@ All notable changes to Tracekit. Versions follow [PEP 440](https://peps.python.o
 
 ## Unreleased
 
+### Security (0.3: harness binding, closing fabricated runs)
+After 0.2.1, any process running as the agent's user could still drive the real hook with a complete, well-formed
+run that never happened, and it verified as `VERIFIED` (E8.6). The signer now checks *which program* sent each event,
+from the kernel's view of the sender's process tree, not from anything the agent can write.
+- **Registered harnesses.** `sudo tracekit init --harness [NAME=]PATH` (repeatable; default: the agent's CLI on
+  root's PATH) registers the agent program. It must be root-owned with no group/world-writable file or directory
+  above it, so the agent cannot replace it. An npm-installed CLI registers as its interpreter plus its script.
+- **Binding.** A hook `run.start` is accepted only from a process descending from a registered harness binary,
+  matched by executable (`/proc/<pid>/exe`), not by name. The signer records the harness instance (pid + kernel start
+  time) in the signed `run.start` (`data.harness`, never accepted from the client), and every later hook or
+  transcript event of that run must come from the same instance. Anything else is refused and recorded against the
+  targeted run, so a fabricated run, or a detached helper writing into a live run, ends `VERIFIED WITH GAPS`.
+- **Fabricated runs from inside the session** are still possible (the agent's own tool call can run the hook with a
+  new session id). A second open run in the same harness instance is recorded as a `concurrent_run` capture gap.
+- **Verifier.** A new `harness attribution` check names the attested harness, or warns that a system-mode run has no
+  binding and its hook events could have come from any process running as the agent's user.
+- **Signer privilege.** Reading another user's `/proc/<pid>/exe` needs `CAP_SYS_PTRACE`; the systemd unit grants it
+  only when a harness is registered (`AmbientCapabilities`, `CapabilityBoundingSet`).
+- **Modes.** `harness_binding: enforce` (default with a registered harness in system mode), `record` (gaps instead
+  of refusals), or `off` (default with no harness, and in dev mode). The proxy and SDK sources are not bound.
+- **Upgrading:** `sudo tracekit migrate --system --harness /usr/local/bin/claude`, then restart `tracekitd`.
+- **Eval.** E8 gains E8.6 (fabricated run outside the harness), E8.7 (fabricated run inside a live session) and E8.8
+  (a detached helper writing into a live run). Upstream 0.2.1 verifies all three as clean `VERIFIED`; with binding,
+  all eight E8 cases are caught. CI runs E8 with a registered harness and gates on all eight.
+- **Still open:** fabricated *events inside the real run*, sent by the agent's own tool calls through the same
+  harness instance, are only caught by the proxy cross-check (`proxy_missing`). Closing that needs OS-level capture
+  (planned for 0.4).
+
 ### Security (0.2.1 hotfix: insider attacks on the capture path)
 Four attacks on a Linux system-mode install made hidden or fabricated activity verify as a clean `VERIFIED`. None
 broke the signature, chain or witness; they all went around what feeds the ledger. Found by a black-box audit with
