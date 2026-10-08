@@ -185,5 +185,143 @@ class ClientConfig(unittest.TestCase):
             shutil.rmtree(d, ignore_errors=True)
 
 
+REJECTED = ("http://localhost.evil.example", "http://localhost@evil.example/", "http://evil.example")
+ACCEPTED = ("https://x.example", "http://localhost:4318", "http://127.0.0.1:9", "http://[::1]:9")
+
+
+class RemoteUrls(unittest.TestCase):
+    """Credentials only go to https hosts or exact loopback names, never through userinfo or redirects."""
+
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.old = os.environ.get("TRACEKIT_CLIENT_HOME")
+        os.environ["TRACEKIT_CLIENT_HOME"] = self.d
+        self.tf = os.path.join(self.d, "tok")
+        with open(self.tf, "w") as f:
+            f.write("tk_abc\n")
+
+    def tearDown(self):
+        if self.old is None:
+            os.environ.pop("TRACEKIT_CLIENT_HOME", None)
+        else:
+            os.environ["TRACEKIT_CLIENT_HOME"] = self.old
+        shutil.rmtree(self.d, ignore_errors=True)
+
+    def init_remote(self, url):
+        import argparse
+        from tracekit import cli
+        return cli._init_remote(argparse.Namespace(remote=url, token_file=self.tf))
+
+    def test_init_remote(self):
+        for url in REJECTED:
+            self.assertEqual(self.init_remote(url), 2, url)
+            self.assertFalse(os.path.exists(os.path.join(self.d, "config.json")), url)
+        for url in ACCEPTED:
+            self.assertEqual(self.init_remote(url), 0, url)
+
+    def test_otel_push(self):
+        from unittest import mock
+        from tracekit import otel
+
+        class Sent(Exception):
+            pass
+        opener = mock.Mock()
+        opener.open.side_effect = Sent
+        with mock.patch.object(client, "no_redirect_opener", return_value=opener):
+            for url in REJECTED:
+                with self.assertRaises(ValueError, msg=url):
+                    otel.push(url, {}, headers={"Authorization": "Bearer x"})
+            self.assertEqual(opener.open.call_count, 0)
+            for url in ACCEPTED:
+                with self.assertRaises(Sent, msg=url):
+                    otel.push(url, {})
+
+    @unittest.skipUnless(hasattr(os, "O_NOFOLLOW"), "no O_NOFOLLOW")
+    def test_init_remote_does_not_follow_a_config_symlink(self):
+        target = os.path.join(self.d, "elsewhere")
+        open(target, "w").close()
+        os.symlink(target, os.path.join(self.d, "config.json"))
+        with self.assertRaises(OSError):
+            self.init_remote("https://x.example")
+        self.assertEqual(os.path.getsize(target), 0)
+
+    def serve(self, handler):
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        return f"http://127.0.0.1:{srv.server_address[1]}"
+
+    def test_redirect_is_not_followed(self):
+        from http.server import BaseHTTPRequestHandler
+        seen = []
+
+        class Target(BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_POST(self):
+                seen.append(self.headers.get("Authorization"))
+                self.send_response(200)
+                self.send_header("Content-Length", "11")
+                self.end_headers()
+                self.wfile.write(b'{"ok":true}')
+            do_GET = do_POST
+        target = self.serve(Target)
+
+        class Redirect(BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_POST(self):
+                self.send_response(302)
+                self.send_header("Location", target + "/v1/rpc")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+        src = self.serve(Redirect)
+        resp = client._http_rpc(src, {"socket_token": "secret"}, {"op": "status"}, 5)
+        self.assertFalse(resp.get("ok"))
+        self.assertEqual(seen, [], "the redirect target must never be contacted")
+
+    def test_empty_reply_is_unavailable(self):
+        from http.server import BaseHTTPRequestHandler
+
+        class Empty(BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_POST(self):
+                self.send_response(200)
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+        url = self.serve(Empty)
+        with self.assertRaises(client.SignerUnavailable) as empty:
+            client._http_rpc(url, {"socket_token": "t"}, {"op": "status"}, 5)
+        self.assertIn("empty reply", str(empty.exception))
+        import socket as _socket
+        s = _socket.socket()
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+        s.close()
+        with self.assertRaises(client.SignerUnavailable):  # a refused connection takes the same path
+            client._http_rpc(f"http://127.0.0.1:{port}", {"socket_token": "t"}, {"op": "status"}, 5)
+
+    def test_empty_reply_on_the_tcp_transport_is_unavailable(self):
+        import socket as _socket
+        srv = _socket.socket()
+        srv.bind(("127.0.0.1", 0))
+        srv.listen(1)
+        self.addCleanup(srv.close)
+
+        def answer_nothing():
+            conn, _ = srv.accept()
+            conn.recv(65536)
+            conn.close()
+        threading.Thread(target=answer_nothing, daemon=True).start()
+        cfg = {"socket": f"tcp://127.0.0.1:{srv.getsockname()[1]}", "socket_token": "t"}
+        with self.assertRaises(client.SignerUnavailable):
+            client._rpc({"op": "status"}, config=cfg)
+
+
 if __name__ == "__main__":
     unittest.main()
