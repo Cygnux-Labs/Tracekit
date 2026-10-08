@@ -36,6 +36,34 @@ jobs:
       - name: Test
         run: python -m pytest -v -o faulthandler_timeout=240
 
+  insider:
+    # 0.2.1: E8 attacks the path that feeds the ledger, as real separate OS users against a system-mode
+    # signer. Merges are blocked unless E8.1-E8.5 are caught (E8.6 is tracked, closed by 0.3).
+    name: E8 insider attacks (Linux system mode)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install system mode with separate agent and attacker users
+        run: |
+          PY="$(which python)"
+          sudo cp -r "$GITHUB_WORKSPACE" /opt/tracekit
+          sudo chmod -R a+rX /opt/tracekit
+          sudo useradd -m agent
+          sudo useradd -m mallory
+          sudo "$PY" -m pip install /opt/tracekit
+          cd /tmp && sudo "$PY" -m tracekit init --user agent --no-service --no-hooks
+      - name: Run E8
+        run: cd /opt/tracekit && sudo "$(which python)" eval/e8_insider.py --out /tmp/e8_insider.json
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e8-insider
+          path: /tmp/e8_insider.json
+
   typescript:
     name: TypeScript SDK and examples
     runs-on: ubuntu-latest
