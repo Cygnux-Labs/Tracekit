@@ -1,7 +1,7 @@
 """Authenticated remote ingestion: let SDK agents on other machines write to this signer's ledger.
 
     tracekit ingest token build-agent --home /var/lib/tracekit     # prints a token once; stores only its hash
-    tracekit ingest serve --home /var/lib/tracekit --host 0.0.0.0 --port 8443 --cert c.pem --key k.pem
+    tracekit ingest serve --experimental --home /var/lib/tracekit --host 0.0.0.0 --port 8443 --cert c.pem --key k.pem
     # on the agent's machine:
     tracekit init --remote https://tracekit.example:8443 --token-file token.txt
 
@@ -26,10 +26,11 @@ import ssl
 import sys
 import threading
 import time
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 
 from . import client
 from .core import now_ts
+from .netserver import Server
 
 TOKENS_FILE = "ingest-tokens.json"
 MAX_BODY = 1024 * 1024
@@ -230,6 +231,10 @@ def make_handler(home, forward=None):
     return H
 
 
+def serve(home, host="127.0.0.1", port=8443, ssl_context=None, forward=None):
+    return Server((host, port), make_handler(home, forward), ssl_context)
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="tracekit ingest")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -243,6 +248,7 @@ def main(argv=None):
     s.add_argument("--cert")
     s.add_argument("--key")
     s.add_argument("--insecure-http", action="store_true", help="plain HTTP on a non-loopback address (TLS terminated in front)")
+    s.add_argument("--experimental", action="store_true", help="required: the ingest gateway is being rebuilt")
     a = ap.parse_args(argv)
     if a.cmd == "token":
         try:
@@ -253,6 +259,9 @@ def main(argv=None):
         print(token)
         print(f"(client {a.name!r}; this is the only time the token is shown)", file=sys.stderr)
         return 0
+    from .cli import experimental_gate
+    if not experimental_gate(a.experimental, "tracekit ingest serve"):
+        return 2
     loopback = a.host in ("127.0.0.1", "localhost", "::1")
     if bool(a.cert) != bool(a.key):
         print("tracekit ingest: --cert and --key go together", file=sys.stderr)
@@ -264,13 +273,12 @@ def main(argv=None):
     if not load_tokens(a.home):
         print("tracekit ingest: no client tokens yet: run `tracekit ingest token <name> --home ...` first", file=sys.stderr)
         return 2
-    srv = ThreadingHTTPServer((a.host, a.port), make_handler(a.home))
-    srv.daemon_threads = True
+    ctx = None
     if a.cert:
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         ctx.minimum_version = ssl.TLSVersion.TLSv1_2
         ctx.load_cert_chain(a.cert, a.key)
-        srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
+    srv = serve(a.home, a.host, a.port, ctx)
     print(f"tracekit ingest: listening on {'https' if a.cert else 'http'}://{a.host}:{a.port}/v1/rpc "
           "(SDK) and /v1/traces (OTLP/HTTP)", flush=True)
     try:

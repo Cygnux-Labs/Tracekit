@@ -29,6 +29,8 @@ TRUST = {"hook": "reported by a hook process (any process running as the agent's
          "transcript": "harness-reported, lower trust", "sdk": "reported by an instrumented app",
          "migrated": "converted from a v0.1 ledger (hash chain only, unsigned origin)", "signer": "written by tracekitd"}
 EXIT_OK, EXIT_FAIL, EXIT_BAD, EXIT_WARN = 0, 1, 2, 3
+# companion runs (signed findings, causeway anchors) have no run.start/run.end of their own
+COMPANION_PREFIXES = ("findings:", "anchors:")
 
 
 def _elide(rec):
@@ -168,8 +170,7 @@ def export(signer_home, out_path, run=None, last=True, since=None, otel=False, o
     manifest = {"format": FORMAT, "tracekit_version": __version__, "created": sel_events[-1]["ts_signed"],
                 "selection": {"runs": sorted(runs)}, "seq_range": [0, end], "kid": crypto.kid(pub),
                 "public_key_b64": b64e(pub), "files": {k: sha256_hex(v) for k, v in blobs.items()}}
-    from .replay import render
-    blobs["replay.html"] = render(manifest, body_recs, cps_in, cov, policies).encode("utf-8")
+    blobs["replay.html"] = _replay(manifest, blobs).encode("utf-8")
     manifest["files"]["replay.html"] = sha256_hex(blobs["replay.html"])
     tmp_path = f"{out_path}.tmp-{os.getpid()}"
     try:
@@ -185,10 +186,21 @@ def export(signer_home, out_path, run=None, last=True, since=None, otel=False, o
             "checkpoints": len(cps_in), "end_seq": end, **({"otel_push": {"status": pushed[0]}} if pushed else {})}
 
 
+def _replay(manifest, blobs):
+    """replay.html rendered from the bundle files alone, so the verifier can regenerate it and compare."""
+    from .replay import render
+    jl = lambda n: [json.loads(l) for l in blobs.get(n, b"").decode("utf-8").splitlines() if l.strip()]
+    pols = {k: v.decode("utf-8") for k, v in blobs.items() if k.startswith("policies/")}
+    files = {k: v for k, v in (manifest.get("files") or {}).items() if k != "replay.html"}
+    return render({**manifest, "files": files}, jl("records.jsonl"), jl("checkpoints.jsonl"),
+                  json.loads(blobs.get("coverage.json") or b"{}"), pols)
+
+
 # ------------------------------------------------------------------ verify
 class Report:
     def __init__(self):
-        self.checks, self.failures, self.warnings = [], [], []
+        self.checks, self.failures, self.warnings, self.notes = [], [], [], []
+        self.assurance = None
 
     def check(self, name, ok, detail="", problems=None, warn=False):
         self.checks.append({"check": name, "status": "pass" if ok else ("warn" if warn else "fail"), "detail": detail,
@@ -274,10 +286,19 @@ def verify(path, witness_specs=(), strict=False, trusted_key=None):
 
 
 def _verify(rep, manifest, blobs, witness_specs, strict, trusted_key):
-    # 0. file integrity against the manifest (manifest itself is covered by the signed chain + checkpoints)
-    listed = manifest.get("files", {})
+    # 0. file integrity against the manifest (manifest itself is covered by the signed chain + checkpoints).
+    #    replay.html is an untrusted view: it never changes the verdict, a mismatch is only a warning.
+    listed = {n: h for n, h in manifest.get("files", {}).items() if n != "replay.html"}
     bad = [n for n, h in listed.items() if n not in blobs or sha256_hex(blobs[n]) != h]
-    extra = sorted(n for n in blobs if n not in listed)
+    extra = sorted(n for n in blobs if n not in listed and n != "replay.html")
+    if "replay.html" in blobs:
+        try:
+            same = _replay(manifest, blobs).encode("utf-8") == blobs["replay.html"]
+        except (ValueError, TypeError, AttributeError):
+            same = False
+        if not same:
+            rep.notes.append("replay.html differs from the viewer this verifier would generate; the verdict does not use it, "
+                             "do not rely on it")
     rep.check("files match manifest", not bad and not extra,
               "all bundle files match their manifest hashes" if not (bad or extra) else "",
               [f"{n}: missing or modified" for n in bad] + [f"{n}: present but not listed in the manifest" for n in extra])
@@ -364,6 +385,24 @@ def _verify(rep, manifest, blobs, witness_specs, strict, trusted_key):
           and (e.get("data") or {}).get("client_run_id") in sel_runs]
     rep.check("rejected writes", not rj, "none" if not rj else "",
               [f"seq {e['seq']}: {e['data'].get('message')}" for e in rj][:20], warn=True)
+    # 3b. run completeness: a v1 stub is signed over (hash, prev_hash, seq) only, so nothing says which run it
+    #     belonged to, and a stub of a selected run looks exactly like a stub of another run
+    stubs = sum(1 for r in recs if r and r.get("elided"))
+    rep.check("run completeness", not stubs, "no elided records: every record in the bundle is whole" if not stubs else "",
+              [f"{stubs} elided record(s): v1 signatures do not bind a stub to its run"] +
+              [f"run {x}: run completeness unproven (v1 bundle with elided records)" for x in sorted(map(str, sel_runs))][:20],
+              warn=True)
+    bound_runs = sorted(str(x) for x in sel_runs if not str(x).startswith(COMPANION_PREFIXES))
+    run_ends = {x: max((e["seq"] for e in sel if e.get("run_id") == x and e.get("type") == "run.end"), default=None)
+                for x in bound_runs}
+    rb = [] if sel_runs else ["no selected run has a record in the bundle"]
+    for x in bound_runs:
+        if not any(e.get("run_id") == x and e.get("type") == "run.start" for e in sel):
+            rb.append(f"run {x}: run boundaries unproven (no run.start in the bundle)")
+        if run_ends[x] is None:
+            rb.append(f"run {x}: tail unproven (no signed run.end in the bundle; the run may have continued)")
+    rep.check("run boundaries", not rb, f"run.start and run.end present for {len(bound_runs)} run(s)" if not rb else "",
+              rb[:20], warn=True)
 
     # 4. head matches a witness checkpoint
     cps, cp_probs = [], []
@@ -385,7 +424,7 @@ def _verify(rep, manifest, blobs, witness_specs, strict, trusted_key):
             cp_probs.append(f"checkpoint seq {c['head_seq']} is beyond the last record in the bundle (records truncated)")
         elif hashes[c["head_seq"]] != c["head_hash"]:
             cp_probs.append(f"checkpoint seq {c['head_seq']}: head {c['head_hash'][:12]} does not match record {hashes[c['head_seq']][:12]} (chain rewritten)")
-    wit_names = []
+    wit_names, wit_seqs = [], set()
     bundle_end = seqs[-1] if seqs else -1
     bundle_cp_seqs = {c.get("head_seq") for c in cps}
     for spec in witness_specs:
@@ -409,9 +448,21 @@ def _verify(rep, manifest, blobs, witness_specs, strict, trusted_key):
             if c["head_seq"] in hashes and hashes[c["head_seq"]] != c["head_hash"]:
                 cp_probs.append(f"witness {w.name} holds head {c['head_hash'][:12]} for seq {c['head_seq']} but the bundle has "
                                 f"{hashes[c['head_seq']][:12]} (chain rebuilt after checkpointing)")
+                continue
+            wit_seqs.add(c["head_seq"])
         cps += [c for c in wcps if c not in cps]
-        newer = [c["head_seq"] for c in wcps if seqs and c["head_seq"] > seqs[-1]]
-        _ = newer  # a witness ahead of the bundle is normal: the ledger kept growing after export
+    # 4a. with a witness: a bundle that stops before the first witnessed checkpoint at or after a run's run.end hides
+    #     how the ledger continued. Only that is evidence of a cut; an open run (no run.end) or a witness that has not
+    #     yet seen a checkpoint past run.end is already reported by "run boundaries" or is simply not anchored yet.
+    if wit_names:
+        tw = []
+        for x in bound_runs:
+            first = min((s for s in wit_seqs if run_ends[x] is not None and s >= run_ends[x]), default=None)
+            if first is not None and first > bundle_end:
+                tw.append(f"run {x}: tail not covered by a witnessed checkpoint (run.end at seq {run_ends[x]}; first "
+                          f"witnessed checkpoint after it is seq {first}, beyond the bundle's last record {bundle_end})")
+        rep.check("run tail witnessed", not tw, "no run.end is followed by a witnessed checkpoint the bundle omits"
+                  if not tw else "", tw[:20])
     sel_last = max((e["seq"] for e in sel), default=-1)
     good = [c for c in cps if verify_checkpoint(c, pub) and hashes.get(c["head_seq"]) == c["head_hash"]]
     covered = any(c["head_seq"] >= sel_last for c in good)
@@ -582,11 +633,16 @@ def _verify(rep, manifest, blobs, witness_specs, strict, trusted_key):
     full = any(c == "full" or r for c, r in modes)
     rep.check("opt-in content capture", not full, txt, [txt] if full else [], warn=True)
 
+    # 9. assurance: a same-user (dev mode) signer could have been rewritten by the agent, whatever integrity says
+    iso = sorted({str(e["data"].get("signer_isolation")) for e in sel if e["type"] == "run.start"})
+    rep.assurance = ("dev (signer ran as the agent's own user: the agent could have rewritten the ledger)"
+                     if not iso or "same-user" in iso else f"signer_isolation={', '.join(iso)} (as stated in run.start)")
+
     code = EXIT_FAIL if rep.failures else (EXIT_WARN if strict and rep.warnings else EXIT_OK)
     return rep, code
 
 
-GAP_CHECKS = ("capture gaps", "rejected writes")
+GAP_CHECKS = ("capture gaps", "rejected writes", "run completeness", "run boundaries")
 
 
 def print_report(rep, code, stream=None):
@@ -603,5 +659,8 @@ def print_report(rep, code, stream=None):
         verdict = "VERIFIED WITH GAPS (" + ", ".join(gappy) + ")"
     if code in (EXIT_OK, EXIT_WARN) and any(c["check"] == "trust root" and c["status"] != "pass" for c in rep.checks):
         verdict += " BUT UNANCHORED (internally consistent only; no trusted key or witness was checked)"
-    s.write(f"\n{verdict}. Tracekit proves what its capture path recorded and that it has not changed since it was "
+    for n in getattr(rep, "notes", ()):
+        s.write(f"warning: {n}\n")
+    s.write(f"\nIntegrity: {verdict}.\nAssurance: {getattr(rep, 'assurance', None) or 'unknown (no run.start checked)'}.\n"
+            f"Tracekit proves what its capture path recorded and that it has not changed since it was "
             f"signed and checkpointed. It does not prove intent, complete coverage, or that reported results are real.\n")
