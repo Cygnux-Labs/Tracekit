@@ -1,6 +1,6 @@
 """OpenTelemetry ingest: receive OTLP traces and record the agent-relevant spans as signed ledger events.
 
-    tracekit otel serve                        # OTLP/HTTP on 127.0.0.1:4318, forwards to the configured signer
+    tracekit otel serve --experimental         # OTLP/HTTP on 127.0.0.1:4318, forwards to the configured signer
     OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://127.0.0.1:4318/v1/traces python my_agent.py
 
 Remote agents send to the authenticated ingest gateway instead (`tracekit ingest serve` also serves
@@ -657,6 +657,7 @@ def main(argv=None):
     s.add_argument("--port", type=int, default=4318)
     s.add_argument("--cwd", help="directory path rules are evaluated against (default: the current directory)")
     s.add_argument("--grpc-port", type=int, default=None, help="also serve OTLP/gRPC on this port (usually 4317; needs grpcio)")
+    s.add_argument("--experimental", action="store_true", help="required: the OTLP receiver is being rebuilt")
     f = sub.add_parser("push", help="send signed runs from the ledger to any OTLP/HTTP backend (Jaeger, Tempo, a collector, ...)")
     f.add_argument("--endpoint", required=True, help="e.g. http://localhost:4318 or https://otel.example.com/v1/traces")
     f.add_argument("--header", action="append", default=[], metavar="KEY=VALUE", help="repeatable; OTEL_EXPORTER_OTLP_HEADERS also read")
@@ -670,6 +671,9 @@ def main(argv=None):
     a = ap.parse_args(argv)
     if a.cmd == "push":
         return push_main(a)
+    from .cli import experimental_gate
+    if not experimental_gate(a.experimental, "tracekit otel serve"):
+        return 2
     if a.host not in ("127.0.0.1", "localhost", "::1"):
         print("tracekit otel: the local receiver only listens on loopback; for other machines use "
               "`tracekit ingest serve` (TLS + per-client tokens), which also serves /v1/traces", file=sys.stderr)
