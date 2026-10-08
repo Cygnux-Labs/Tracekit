@@ -1,17 +1,15 @@
 """Browser Use and Stagehand action hooks, against duck-typed stand-ins (neither library is a test dependency)."""
 import asyncio
 import os
-import shutil
 import sys
-import tempfile
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
-from tracekit import install  # noqa: E402
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from tracekit.adapters.browser import instrument_browser_use, instrument_stagehand  # noqa: E402
 from tracekit.agent_sdk import Tracer  # noqa: E402
-from tracekit.ledger import read_records  # noqa: E402
+from factories import DaemonCase  # noqa: E402
 
 
 class Result:
@@ -52,30 +50,12 @@ class Page:
         return "loaded"
 
 
-class Browser(unittest.TestCase):
-    def setUp(self):
-        self.d = tempfile.mkdtemp()
-        self.home = os.path.join(self.d, "signer")
-        self.old = {k: os.environ.get(k) for k in ("TRACEKIT_CLIENT_HOME", "TRACEKIT_POLICY")}
-        os.environ["TRACEKIT_CLIENT_HOME"] = os.path.join(self.d, "client")
-        pol = os.path.join(self.d, "p.yaml")
-        with open(pol, "w") as f:
-            f.write("extends: default\nversion: browser-test\ndeny:\n  - id: X-BANK\n    tool: 'browser:(navigate|goto)'\n"
-                    "    pattern: 'bank\\.example'\n    reason: agents stay off the bank\n")
-        os.environ["TRACEKIT_POLICY"] = pol
-        install.init_dev(self.home, [], start=True)
-
-    def tearDown(self):
-        install.stop_dev_daemon(self.home)
-        for k, v in self.old.items():
-            if v is None:
-                os.environ.pop(k, None)
-            else:
-                os.environ[k] = v
-        shutil.rmtree(self.d, ignore_errors=True)
+class Browser(DaemonCase):
+    policy_yaml = ("extends: default\nversion: browser-test\ndeny:\n  - id: X-BANK\n    tool: 'browser:(navigate|goto)'\n"
+                   "    pattern: 'bank\\.example'\n    reason: agents stay off the bank\n")
 
     def events(self):
-        return [r["event"] for _, r, _ in read_records(os.path.join(self.home, "ledger", "ledger.jsonl")) if r]
+        return [r["event"] for r in self.records()]
 
     def test_browser_use_actions_are_gated_and_recorded(self):
         tools = Tools()
