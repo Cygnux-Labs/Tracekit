@@ -237,9 +237,7 @@ def config_path(harness, project=None):
 
 def _command(harness):
     from .install import _hook_command
-    return _hook_command().replace("tracekit.hook", "tracekit.agent_hooks") + f" {harness}" if "-m tracekit.hook" in _hook_command() \
-        else _hook_command().replace("from tracekit.hook import _entry; raise SystemExit(_entry())",
-                                     f"from tracekit.agent_hooks import entry; raise SystemExit(entry({harness!r}))")
+    return _hook_command("tracekit.agent_hooks", "entry", (harness,))
 
 
 def _ours(cmd):
@@ -269,12 +267,13 @@ def install(harness, project=None, uninstall=False):
     cmd = _command(harness)
     if harness == "cursor":
         s.setdefault("version", 1)
+        closed = H.fail_closed()
         events = {"preToolUse": 600, "postToolUse": 30, "postToolUseFailure": 30, "beforeSubmitPrompt": 30, "sessionStart": 30,
                   "sessionEnd": 30}
         for ev, timeout in events.items():
             lst = [h for h in hooks.get(ev, []) if not (isinstance(h, dict) and _ours(h.get("command")))]
             if not uninstall:
-                lst.append({"command": cmd, "type": "command", "timeout": timeout, "failClosed": False})
+                lst.append({"command": cmd, "type": "command", "timeout": timeout, "failClosed": closed})
             if lst:
                 hooks[ev] = lst
             else:
@@ -305,12 +304,14 @@ def install(harness, project=None, uninstall=False):
 def entry(harness=None):
     harness = harness or (sys.argv[1] if len(sys.argv) > 1 else "")
     if harness not in HARNESSES:
-        print(f"usage: python -m tracekit.agent_hooks {{{'|'.join(HARNESSES)}}}", file=sys.stderr)
-        return 0  # never block an agent because of a wiring mistake; say it on stderr
+        closed = H.fail_closed()
+        print(f"usage: python -m tracekit.agent_hooks {{{'|'.join(HARNESSES)}}}; "
+              + ("blocking (fail-closed)" if closed else "allowing (fail-open)"), file=sys.stderr)
+        return 2 if closed else 0
     try:
         return run(harness, sys.stdin.read())
     except Exception as e:
-        closed = os.environ.get("TRACEKIT_FAIL_CLOSED") == "1" or H.client.system_fail_closed()
+        closed = H.fail_closed()
         print(f"[tracekit] {harness} hook error ({e}); " + ("blocking (fail-closed)" if closed else "allowing (fail-open)"), file=sys.stderr)
         _reply(harness, sys.stdout, not closed, str(e), True)
         return 2 if closed else 0
