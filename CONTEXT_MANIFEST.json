@@ -235,7 +235,8 @@
     "models": {
       "fast": "opus",
       "high_reasoning": "opus"
-    }
+    },
+    "isolate_roles": true
   },
   "deny_read": [],
   "secret_scan": {
