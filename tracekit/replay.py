@@ -4,6 +4,7 @@ policy hash, capture sources, gaps, tampering, approvals, opt-in capture) and sh
 did, with every event labelled by the capture path that recorded it. Schema validation and
 independent witness checks need `tracekit verify`."""
 import json
+import re
 
 PAGE = r"""<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Tracekit evidence bundle</title>
@@ -39,7 +40,7 @@ label{color:var(--muted);font-size:13px;margin-right:12px}
 <script>
 const M=__MANIFEST__, R=__RECORDS__, C=__CHECKPOINTS__, COV=__COVERAGE__, POL=__POLICIES__;
 const TRUST={hook:"reported by a hook process (any process running as the agent's user can send these)",proxy:"observed at the model API boundary",transcript:"harness-reported, lower trust",sdk:"reported by an instrumented app",migrated:"converted from v0.1",signer:"written by tracekitd"};
-const esc=s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 function cp(a,b){const x=Array.from(a),y=Array.from(b),n=Math.min(x.length,y.length);for(let i=0;i<n;i++){const d=x[i].codePointAt(0)-y[i].codePointAt(0);if(d)return d;}return x.length-y.length;}
 function canon(v){if(v===null||typeof v!=="object")return JSON.stringify(v);if(Array.isArray(v))return"["+v.map(canon).join(",")+"]";
  return"{"+Object.keys(v).sort(cp).map(k=>JSON.stringify(k)+":"+canon(v[k])).join(",")+"}";}
@@ -48,10 +49,10 @@ const b64=s=>Uint8Array.from(atob(s),c=>c.charCodeAt(0));
 async function sha(s){return hex(await crypto.subtle.digest("SHA-256",enc.encode(s)));}
 const results=[];
 function add(name,status,detail,problems){results.push(status);const d=document.createElement("div");d.className="c";
- d.innerHTML=`<span class="b ${status}">${status.toUpperCase()}</span><b>${esc(name)}</b>${detail?" — "+esc(detail):""}`+
- (problems&&problems.length?"<ul>"+problems.slice(0,12).map(p=>`<li class="${status}">${esc(p)}</li>`).join("")+"</ul>":"");
+ d.innerHTML=`<span class="b ${esc(status)}">${esc(status.toUpperCase())}</span><b>${esc(name)}</b>${esc(detail?" — "+detail:"")}`+
+ (problems&&problems.length?"<ul>"+problems.slice(0,12).map(p=>`<li class="${esc(status)}">${esc(p)}</li>`).join("")+"</ul>":"");
  document.getElementById("checks").appendChild(d);}
-function tile(k,v,cls){const d=document.createElement("div");d.className="tile";d.innerHTML=`<div class="k">${esc(k)}</div><div class="v ${cls||""}">${esc(v)}</div>`;document.getElementById("tiles").appendChild(d);}
+function tile(k,v,cls){const d=document.createElement("div");d.className="tile";d.innerHTML=`<div class="k">${esc(k)}</div><div class="v ${esc(cls||"")}">${esc(v)}</div>`;document.getElementById("tiles").appendChild(d);}
 function val(c){return c&&("value" in c)?JSON.stringify(c.value):(c&&c.hash?c.hash.slice(0,19)+"…":"");}
 function summary(e){const d=e.data||{};
  if(e.type==="tool.call"){const i=d.input||{};return d.name+" "+Object.keys(i).map(k=>k+"="+val(i[k])).join(" ");}
@@ -125,8 +126,8 @@ function finding(e){return e.type==="capture.gap"||e.type==="trace.tamper"||e.ty
   (COV.unsupported_used&&COV.unsupported_used.length?"<ul>"+COV.unsupported_used.map(w=>`<li class="warn">unsupported path used: ${esc(w)}</li>`).join("")+"</ul>":"")+
   "<p>Never covered: "+esc(COV.unsupported.join("; "))+"</p>";
  function draw(){const only=document.getElementById("onlyfind").checked, el=document.getElementById("showel").checked;
-  document.getElementById("rows").innerHTML=R.filter(r=>r.elided?el&&!only:(!only||finding(r.event))).map(r=>r.elided?`<tr class="el"><td>${r.seq}</td><td colspan="6">elided (not in this selection) · hash ${r.hash.slice(0,16)}…</td></tr>`:
-  `<tr><td>${r.event.seq}</td><td>${esc(r.event.ts.slice(11,23))}</td><td>${esc(r.event.run_id.slice(0,8))}</td><td>${esc(r.event.agent_id.slice(0,10))}</td><td class="${r.event.source==="transcript"?"low":""}" title="${esc(TRUST[r.event.source]||"")}">${esc(r.event.source)}${r.event.source==="transcript"?" ⚠":""}</td><td class="${r.event.type==="capture.gap"?"warn":(r.event.type==="trace.tamper"||(r.event.type==="policy.decision"&&r.event.data.decision==="deny")?"fail":"")}">${esc(r.event.type)}</td><td class="x">${esc(summary(r.event))}</td></tr>`).join("");}
+  document.getElementById("rows").innerHTML=R.filter(r=>r.elided?el&&!only:(!only||finding(r.event))).map(r=>r.elided?`<tr class="el"><td>${esc(r.seq)}</td><td colspan="6">elided (not in this selection) · hash ${esc(String(r.hash).slice(0,16))}…</td></tr>`:
+  `<tr><td>${esc(r.event.seq)}</td><td>${esc(String(r.event.ts).slice(11,23))}</td><td>${esc(String(r.event.run_id).slice(0,8))}</td><td>${esc(String(r.event.agent_id).slice(0,10))}</td><td class="${r.event.source==="transcript"?"low":""}" title="${esc(TRUST[r.event.source]||"")}">${esc(r.event.source)}${r.event.source==="transcript"?" ⚠":""}</td><td class="${esc(r.event.type==="capture.gap"?"warn":(r.event.type==="trace.tamper"||(r.event.type==="policy.decision"&&r.event.data.decision==="deny")?"fail":""))}">${esc(r.event.type)}</td><td class="x">${esc(summary(r.event))}</td></tr>`).join("");}
  document.getElementById("onlyfind").onchange=draw;document.getElementById("showel").onchange=draw;draw();
 })();
 </script></body></html>"""
@@ -143,5 +144,7 @@ def render(manifest, records, checkpoints, cov, policies=None):
             pols[name.split("/")[-1].rsplit(".", 1)[0]] = json.loads(text)
         except ValueError:
             pass
-    return (PAGE.replace("__MANIFEST__", _js(manifest)).replace("__RECORDS__", _js(records))
-            .replace("__CHECKPOINTS__", _js(checkpoints)).replace("__COVERAGE__", _js(cov)).replace("__POLICIES__", _js(pols)))
+    data = {"__MANIFEST__": manifest, "__RECORDS__": records, "__CHECKPOINTS__": checkpoints, "__COVERAGE__": cov,
+            "__POLICIES__": pols}
+    # one pass, so a placeholder name inside bundle content is never substituted a second time
+    return re.sub("|".join(data), lambda m: _js(data[m.group(0)]), PAGE)
