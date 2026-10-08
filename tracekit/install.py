@@ -24,6 +24,7 @@ except ImportError:
 
 from .core import read_json, read_text
 from . import client
+from .deploy import files
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
@@ -146,37 +147,47 @@ class SettingsError(Exception):
     """A Claude Code settings file Tracekit cannot safely edit."""
 
 
-def _atomic_write_json(path, obj, mode=None):
-    tmp = f"{path}.tmp-{os.getpid()}"
+def _atomic_write_json(path, obj, mode=0o600):
+    files.write_json(path, obj, mode)
+
+
+def _backup(path, data):
+    d = files.open_dir(os.path.dirname(os.path.abspath(path)))
     try:
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(obj, f, indent=2)
-            f.write("\n")
-            f.flush()
-            os.fsync(f.fileno())
-        if mode is not None:
-            os.chmod(tmp, mode)
-        os.replace(tmp, path)
+        return files.backup(d, os.path.basename(path), data)
     finally:
-        if os.path.exists(tmp):
-            try:
-                os.remove(tmp)
-            except OSError:
-                pass
+        files.close(d)
 
 
-def install_hooks(settings_path, uninstall=False, owner=None, proxy_url=None, extra=None):
+def install_hooks(settings_path, uninstall=False, owner=None, proxy_url=None, extra=None, mode=0o600):
     """Add (or remove) Tracekit's hooks in a Claude Code settings file. Idempotent; backs up the
     file before changing it; leaves other hooks and settings alone. proxy_url sets
-    env.ANTHROPIC_BASE_URL (C3). Raises SettingsError instead of overwriting a file it cannot parse."""
-    os.makedirs(os.path.dirname(settings_path) or ".", exist_ok=True)
-    s, original = {}, None
-    if os.path.exists(settings_path):
+    env.ANTHROPIC_BASE_URL (C3). Raises SettingsError instead of overwriting a file it cannot parse,
+    or one that is a symlink. With owner (as root) the whole edit runs as that user."""
+    if owner is not None:
+        return files.as_user(owner, install_hooks, settings_path, uninstall, None, proxy_url, extra, mode,
+                             errors=(SettingsError,))
+    settings_path = os.path.abspath(settings_path)
+    os.makedirs(os.path.dirname(settings_path), exist_ok=True)
+    try:
+        d = files.open_dir(os.path.dirname(settings_path))
         try:
-            with open(settings_path, encoding="utf-8") as f:
-                original = f.read()
+            _install_hooks_at(d, settings_path, uninstall, proxy_url, extra, mode)
+        finally:
+            files.close(d)
+    except files.UnsafePath as e:
+        raise SettingsError(f"{settings_path}: {e}") from e
+
+
+def _install_hooks_at(d, settings_path, uninstall, proxy_url, extra, mode):
+    name = os.path.basename(settings_path)
+    s, raw = {}, files.read(d, name)
+    original = None
+    if raw is not None:
+        try:
+            original = raw.decode("utf-8")
             s = json.loads(original) if original.strip() else {}
-        except (OSError, ValueError) as e:
+        except ValueError as e:
             raise SettingsError(f"{settings_path} is not valid JSON ({e}); fix or remove it, then retry. "
                                 "Tracekit did not change it.") from e
         if not isinstance(s, dict):
@@ -225,44 +236,65 @@ def install_hooks(settings_path, uninstall=False, owner=None, proxy_url=None, ex
             unchanged = False
         if unchanged:
             return
-        shutil.copy2(settings_path, f"{settings_path}.bak-{time.strftime('%Y%m%d-%H%M%S')}")
-    _atomic_write_json(settings_path, s)
-    if owner:
-        os.chown(settings_path, owner.pw_uid, owner.pw_gid)
+        files.backup(d, name, raw)
+    files.write(d, name, files.json_bytes(s), mode)
+
+
+def _my_uid():
+    return {os.geteuid()} if hasattr(os, "geteuid") else None
 
 
 def _write_client_config(user_home, cfg, owner=None):
-    d = os.path.join(user_home, ".tracekit-client")
-    os.makedirs(os.path.join(d, "runs"), exist_ok=True)
-    p = os.path.join(d, "config.json")
-    with open(p, "w") as f:
-        json.dump(cfg, f, indent=2)
-    if owner:
-        for root, dirs, files in os.walk(d):
-            for x in [root] + [os.path.join(root, n) for n in dirs + files]:
-                os.chown(x, owner.pw_uid, owner.pw_gid)
-    os.chmod(p, 0o600)
-    return p
+    """Write ~/.tracekit-client/config.json; with owner (as root) the write runs as that user."""
+    return files.as_user(owner, _write_client_dir, os.path.join(user_home, ".tracekit-client"), cfg)
 
 
-def _write_signer_config(home, witnesses, checkpoint_every, socket_path, proxy=None, extra=None):
+def _write_client_dir(path, cfg):
+    """Create path/ and path/runs (owned by the current user) and write path/config.json (0600), following no symlink."""
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    parent = files.open_dir(os.path.dirname(os.path.abspath(path)))
+    try:
+        d = files.subdir(parent, os.path.basename(path), 0o755, _my_uid())
+    finally:
+        files.close(parent)
+    try:
+        files.close(files.subdir(d, "runs", 0o755, _my_uid()))
+        files.write(d, "config.json", files.json_bytes(cfg))
+    finally:
+        files.close(d)
+    return os.path.join(path, "config.json")
+
+
+def _signer_dir(home, tk_user=None):
+    return files.open_dir(home, {tk_user.pw_uid} if tk_user else _my_uid())
+
+
+def _read_config(d):
+    raw = files.read(d, "config.json")
+    try:
+        cfg = json.loads(raw) if raw else {}
+    except ValueError:
+        return {}
+    return cfg if isinstance(cfg, dict) else {}
+
+
+def _save_config(d, cfg, tk_user=None):
+    files.write(d, "config.json", files.json_bytes(cfg), 0o600, tk_user and tk_user.pw_uid, tk_user and tk_user.pw_gid)
+
+
+def _write_signer_config(home, witnesses, checkpoint_every, socket_path, proxy=None, extra=None, tk_user=None):
     cfg = {"checkpoint_every": checkpoint_every, "witnesses": witnesses, "socket": socket_path, "socket_mode": "0666"}
     if proxy:
         cfg["proxy"] = proxy
     cfg.update(extra or {})
-    path = os.path.join(home, "config.json")
-    if "signer" not in cfg and os.path.exists(path):
+    d = _signer_dir(home, tk_user)
+    try:
         # re-running init must never drop a configured external signer: the daemon would fall back to a new file key
-        try:
-            with open(path) as f:
-                old = json.load(f)
-            if isinstance(old, dict) and old.get("signer"):
-                cfg["signer"] = old["signer"]
-        except (OSError, ValueError):
-            pass
-    with open(path, "w") as f:
-        json.dump(cfg, f, indent=2)
-    os.chmod(path, 0o600)
+        if "signer" not in cfg and _read_config(d).get("signer"):
+            cfg["signer"] = _read_config(d)["signer"]
+        _save_config(d, cfg, tk_user)
+    finally:
+        files.close(d)
 
 
 HARNESS_COMMANDS = {"claude": "claude", "codex": "codex", "cursor": "cursor-agent", "gemini": "gemini"}
@@ -370,13 +402,16 @@ def load_proxy_port(home):
 
 
 def _dev_socket(home):
+    """Unix socket where the kernel names the caller, else token-authenticated TCP on port 0: tracekitd binds a free
+    port itself and writes it to its config (daemon.serve). A signer that is already running keeps its endpoint."""
     from .peercred import has_peer_credentials
     if hasattr(socket, "AF_UNIX") and has_peer_credentials():
         return os.path.join(home, "tracekitd.sock"), None
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-        probe.bind(("127.0.0.1", 0))
-        port = probe.getsockname()[1]
-    return f"tcp://127.0.0.1:{port}", secrets.token_urlsafe(32)
+    if _signer_healthy(home):
+        old = read_json(os.path.join(home, "config.json"))
+        if str(old.get("socket", "")).startswith("tcp://") and old.get("socket_token"):
+            return old["socket"], old["socket_token"]
+    return "tcp://127.0.0.1:0", secrets.token_urlsafe(32)
 
 
 def init_dev(home, witnesses, checkpoint_every=50, hooks_path=None, start=True, proxy=False, proxy_port=8787, fail_mode=None,
@@ -401,21 +436,20 @@ def init_dev(home, witnesses, checkpoint_every=50, hooks_path=None, start=True, 
         cfg["socket_token"] = socket_token
     if proxy:
         cfg.update(proxy=True, proxy_url=f"http://127.0.0.1:{proxy_port}")
-    client_home = os.environ.get("TRACEKIT_CLIENT_HOME")
-    if client_home:
-        os.makedirs(os.path.join(client_home, "runs"), exist_ok=True)
-        client_config_path = os.path.join(client_home, "config.json")
-        with open(client_config_path, "w") as f:
-            json.dump(cfg, f, indent=2)
-        os.chmod(client_config_path, 0o600)
-    else:
-        _write_client_config(os.path.expanduser("~"), cfg)
     try:
         if start:
             if not _signer_healthy(home):
                 start_dev_daemon(home)
             if proxy and not _proxy_healthy(home):
                 start_dev_proxy(home)
+        # lean: with start=False a TCP client config keeps port 0 until init runs with start; resolve it from the
+        # signer config in the client if dev TCP without start becomes a supported setup
+        cfg["socket"] = read_json(os.path.join(home, "config.json")).get("socket", sock)
+        client_home = os.environ.get("TRACEKIT_CLIENT_HOME")
+        if client_home:
+            _write_client_dir(client_home, cfg)
+        else:
+            _write_client_config(os.path.expanduser("~"), cfg)
         if hooks_path:
             install_hooks(hooks_path, proxy_url=cfg.get("proxy_url"))
     except Exception:
@@ -449,12 +483,12 @@ def start_dev_daemon(home):
     _CHILDREN[p.pid] = p
     with open(os.path.join(home, "tracekitd.pid"), "w") as f:
         f.write(str(p.pid))
-    signer_config = read_json(os.path.join(home, "config.json"))
     for _ in range(100):
         if p.poll() is not None:
             break
         try:
-            if client._rpc({"op": "status"}, config=signer_config).get("ok"):
+            # re-read each time: on TCP port 0 the signer writes the port it bound into its config
+            if client._rpc({"op": "status"}, config=read_json(os.path.join(home, "config.json"))).get("ok"):
                 return p.pid
         except client.SignerUnavailable:
             pass
@@ -558,8 +592,7 @@ def install_managed(proxy_url=None, managed_only=False, path=None):
     """C5: put the hooks in Claude Code's admin-managed settings, which users and projects cannot
     override. managed_only additionally sets allowManagedHooksOnly (user/project hooks stop running)."""
     path = path or MANAGED_SETTINGS["darwin" if sys.platform == "darwin" else "linux"]
-    install_hooks(path, proxy_url=proxy_url, extra={"allowManagedHooksOnly": True} if managed_only else None)
-    os.chmod(path, 0o644)
+    install_hooks(path, proxy_url=proxy_url, extra={"allowManagedHooksOnly": True} if managed_only else None, mode=0o644)
     return path
 
 
@@ -568,28 +601,27 @@ def _write_system_client_config(cfg):
     and the TRACEKIT_SOCKET / TRACEKIT_POLICY environment, so the agent cannot redirect or reconfigure its hooks."""
     path = client.SYSTEM_CONFIG
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    os.chown(os.path.dirname(path), 0, 0)
-    os.chmod(os.path.dirname(path), 0o755)
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(cfg, f, indent=2)
-    os.chown(tmp, 0, 0)
-    os.chmod(tmp, 0o644)
-    os.replace(tmp, path)
+    d = files.open_dir(os.path.dirname(path), {0})
+    try:
+        os.fchown(d, 0, 0)
+        os.fchmod(d, 0o755)
+        files.write(d, os.path.basename(path), files.json_bytes(cfg), 0o644, 0, 0)
+    finally:
+        files.close(d)
 
 
 def _update_signer_config(home, fields, tk_user=None):
-    path = os.path.join(home, "config.json")
-    with open(path, encoding="utf-8") as f:
-        cfg = json.load(f)
-    cfg.update(fields)
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(cfg, f, indent=2)
-    if tk_user is not None:
-        os.chown(tmp, tk_user.pw_uid, tk_user.pw_gid)
-    os.chmod(tmp, 0o600)
-    os.replace(tmp, path)
+    d = _signer_dir(home, tk_user)
+    try:
+        raw = files.read(d, "config.json")
+        if raw is None:
+            raise FileNotFoundError(os.path.join(home, "config.json"))
+        cfg = json.loads(raw)
+        cfg.update(fields)
+        _save_config(d, cfg, tk_user)
+    finally:
+        files.close(d)
+    return cfg
 
 
 def _pin_policy(home, tk_user=None):
@@ -597,18 +629,7 @@ def _pin_policy(home, tk_user=None):
     run or decision made under a different policy into a policy_mismatch capture gap. Re-run after a policy change."""
     from . import policy as policy_mod
     pol, _ = policy_mod.load()
-    path = os.path.join(home, "config.json")
-    with open(path, encoding="utf-8") as f:
-        cfg = json.load(f)
-    cfg["pinned_policy_hash"] = policy_mod.policy_hash(pol)
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(cfg, f, indent=2)
-    if tk_user is not None:
-        os.chown(tmp, tk_user.pw_uid, tk_user.pw_gid)
-    os.chmod(tmp, 0o600)
-    os.replace(tmp, path)
-    return cfg["pinned_policy_hash"]
+    return _update_signer_config(home, {"pinned_policy_hash": policy_mod.policy_hash(pol)}, tk_user)["pinned_policy_hash"]
 
 
 def migrate_system(fail_mode=None, harnesses=None):
@@ -674,11 +695,19 @@ def init_system(target_user, witnesses, checkpoint_every=50, project=None, no_se
         else:
             subprocess.run(["useradd", "--system", "--home-dir", SYS_HOME, "--shell", "/usr/sbin/nologin", "--user-group", user], check=True)
     tk = pwd.getpwnam(user)
-    for sub, mode in (("", 0o755), ("keys", 0o700), ("ledger", 0o755), ("blobs", 0o755)):
-        p = os.path.join(SYS_HOME, sub)
-        os.makedirs(p, exist_ok=True)
-        os.chown(p, tk.pw_uid, tk.pw_gid)
-        os.chmod(p, mode)
+    os.makedirs(SYS_HOME, exist_ok=True)
+    home_fd = files.open_dir(SYS_HOME, {0, tk.pw_uid})
+    try:
+        for sub, mode in (("keys", 0o700), ("ledger", 0o755), ("blobs", 0o755), ("", 0o755)):
+            fd = files.subdir(home_fd, sub, mode, {0, tk.pw_uid}) if sub else home_fd
+            try:
+                os.fchown(fd, tk.pw_uid, tk.pw_gid)
+                os.fchmod(fd, mode)
+            finally:
+                if sub:
+                    files.close(fd)
+    finally:
+        files.close(home_fd)
     sock = os.path.join(SYS_HOME, "tracekitd.sock")
     if not witnesses:
         witnesses = [f"git:{os.path.join(SYS_HOME, 'witness')}"]
@@ -686,8 +715,7 @@ def init_system(target_user, witnesses, checkpoint_every=50, project=None, no_se
               "machine. Point --witness at a remote repository the security team owns (docs/witnesses.md).")
     pcfg = {"port": proxy_port, "upstream": _upstream(), "fail_mode": fail_mode or "open"} if proxy else None
     extra = dict({"signer": signer} if signer else {}, **({} if darwin else harness_config(harnesses, agent)))
-    _write_signer_config(SYS_HOME, witnesses, checkpoint_every, sock, pcfg, extra or None)
-    os.chown(os.path.join(SYS_HOME, "config.json"), tk.pw_uid, tk.pw_gid)
+    _write_signer_config(SYS_HOME, witnesses, checkpoint_every, sock, pcfg, extra or None, tk)
     # generate the key as the tracekit user so root-only reads are the only other path to it
     env = dict(os.environ, PYTHONPATH=ROOT)
     subprocess.run(["runuser" if shutil.which("runuser") else "sudo", "-u", tk.pw_name, "--", sys.executable, "-c",
