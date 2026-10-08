@@ -130,10 +130,6 @@ class WindowsPaths(unittest.TestCase):
         self.assertNotIn("env PYTHONPATH", cmd)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class PluginPackage(unittest.TestCase):
     def test_plugin_hooks_match_the_installer_exactly(self):
         import json
@@ -166,3 +162,7 @@ class PluginPackage(unittest.TestCase):
                            env={"PATH": "/nonexistent", "TRACEKIT_PYTHON": ""})
         self.assertEqual(r.returncode, 0)
         self.assertIn("NOT recorded", r.stderr)
+
+
+if __name__ == "__main__":
+    unittest.main()
