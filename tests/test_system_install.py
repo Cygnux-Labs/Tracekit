@@ -52,13 +52,34 @@ class SystemModeUsesOpt(unittest.TestCase):
                 unit = f.read()
             self.assertIn(f"ExecStart={install.OPT_PYTHON} -I -m {module} ", unit)
             self.assertNotIn("PYTHONPATH", unit)
-        self.assertIn("UMask=0027", open(os.path.join(units, "tracekitd.service")).read())
+            self.assertIn("UMask=0027", unit)
         keygen = next(c.args[0] for c in run.call_args_list if "Keys.load_or_create" in " ".join(c.args[0]))
         self.assertIn(install.OPT_PYTHON, keygen)
         self.assertEqual(hooks.call_args.kwargs["python"], install.OPT_PYTHON)
         self.assertEqual(sys_cfg.call_args.args[0]["policy"], POLICY)
         for sub in ("ledger", "blobs"):
             self.assertEqual(stat.S_IMODE(os.stat(os.path.join(home, sub)).st_mode), 0o750)
+
+    def test_migrate_keeps_a_policy_path(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        with open(os.path.join(d, "config.json"), "w") as f:
+            f.write("{}")
+        me = install.pwd.getpwuid(os.getuid())
+        for existing, expected in (({"policy": "/etc/tracekit/p.yaml"}, "/etc/tracekit/p.yaml"), (None, POLICY)):
+            with as_root_on_linux(), mock.patch.object(install, "SYS_HOME", d), \
+                    mock.patch.object(install, "SYSTEMD_DIR", d), \
+                    mock.patch.object(install.client, "system_config", return_value=existing), \
+                    mock.patch.object(install.os.path, "exists", return_value=True), \
+                    mock.patch.object(install, "_opt_default_policy", return_value=POLICY), \
+                    mock.patch.object(install.pwd, "getpwnam", return_value=me), \
+                    mock.patch.object(install, "harness_config", return_value={}), \
+                    mock.patch.object(install, "_update_signer_config"), \
+                    mock.patch.object(install, "_pin_policy", return_value="sha256:" + "0" * 64), \
+                    mock.patch.object(install, "_write_system_client_config") as sys_cfg, \
+                    contextlib.redirect_stdout(io.StringIO()):
+                install.migrate_system()
+            self.assertEqual(sys_cfg.call_args.args[0]["policy"], expected)
 
     def test_hook_command_runs_the_opt_interpreter(self):
         self.assertTrue(install._hook_command(python=install.OPT_PYTHON).startswith(f"{install.OPT_PYTHON} -I -m tracekit.hook"))

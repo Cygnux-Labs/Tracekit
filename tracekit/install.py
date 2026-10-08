@@ -64,6 +64,7 @@ User={user}
 Group={user}
 ExecStart={python} -I -m tracekit.proxy --home {home}
 Restart=on-failure
+UMask=0027
 NoNewPrivileges=true
 ProtectSystem=strict
 ReadWritePaths={home}
@@ -654,6 +655,11 @@ def migrate_system(fail_mode=None, harnesses=None):
            "signer_isolation": "separate-user", "mode": "system", "fail_mode": fail_mode or "closed"}
     if scfg.get("proxy"):
         cfg.update(proxy=True, proxy_url=f"http://127.0.0.1:{scfg['proxy'].get('port', 8787)}")
+    policy = (client.system_config() or {}).get("policy")
+    if not policy and os.path.exists(OPT_PYTHON):  # 0.2.x configs have no policy key; use the root-owned default
+        policy = _opt_default_policy()
+    if policy:
+        cfg["policy"] = policy
     _write_system_client_config(cfg)
     tk = pwd.getpwnam(SYS_USER)
     hcfg = harness_config(harnesses)
@@ -713,6 +719,10 @@ def _install_venv():
             os.lchown(p, 0, 0)
             if not os.path.islink(p):
                 os.chmod(p, os.stat(p).st_mode & ~0o022)
+    return _opt_default_policy()
+
+
+def _opt_default_policy():
     return subprocess.run([OPT_PYTHON, "-I", "-c", "from tracekit.policy import DEFAULT_POLICY; print(DEFAULT_POLICY)"],
                           check=True, capture_output=True, text=True).stdout.strip()
 
