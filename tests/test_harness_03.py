@@ -20,7 +20,8 @@ from tracekit.daemon import Signer, find_harness, load_config, trusted_file  # n
 from tests.test_hotfix_021 import make_signer, run_start, tool_call  # noqa: E402
 
 LINUX_PROC = sys.platform.startswith("linux") and os.path.isdir("/proc/self")
-AGENT_UID = 1001
+# must differ from the uid running the tests (1001 on GitHub runners), or the signer treats the agent as itself
+AGENT_UID = 1001 if not hasattr(os, "getuid") or os.getuid() != 1001 else 1002
 SH = shutil.which("dash") or shutil.which("sh")
 
 
