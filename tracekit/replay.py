@@ -38,7 +38,7 @@ label{color:var(--muted);font-size:13px;margin-right:12px}
 </main>
 <script>
 const M=__MANIFEST__, R=__RECORDS__, C=__CHECKPOINTS__, COV=__COVERAGE__, POL=__POLICIES__;
-const TRUST={hook:"observed at the harness hook",proxy:"observed at the model API boundary",transcript:"harness-reported, lower trust",sdk:"reported by an instrumented app",migrated:"converted from v0.1",signer:"written by tracekitd"};
+const TRUST={hook:"reported by a hook process (any process running as the agent's user can send these)",proxy:"observed at the model API boundary",transcript:"harness-reported, lower trust",sdk:"reported by an instrumented app",migrated:"converted from v0.1",signer:"written by tracekitd"};
 const esc=s=>String(s??"").replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 function cp(a,b){const x=Array.from(a),y=Array.from(b),n=Math.min(x.length,y.length);for(let i=0;i<n;i++){const d=x[i].codePointAt(0)-y[i].codePointAt(0);if(d)return d;}return x.length-y.length;}
 function canon(v){if(v===null||typeof v!=="object")return JSON.stringify(v);if(Array.isArray(v))return"["+v.map(canon).join(",")+"]";

@@ -9,7 +9,7 @@
 # pattern (regex searched in the tool's main field, or `field` if given), reason (shown to the
 # agent and recorded), rationale (why the rule exists). Sections: deny, ask, flag.
 
-version: '2026.09-2'
+version: '2026.10-1'
 fail_mode: open            # open | closed   (closed: tool calls are blocked while the signer is down)
 content_capture: hashed    # hashed | full
 reasoning_capture: false   # record model text from the harness transcript (self-reported, lower trust)
@@ -46,7 +46,7 @@ deny:
     rationale: Credential files are high-value and rarely a legitimate agent target.
   - id: TK-D010
     tool: Bash
-    pattern: '(>>?|\btee\b(\s+-a)?|\b(cp|mv|install)\b[^\n|;&]*\s)\s*\S*(\.env(\.(?!example\b|sample\b|template\b|dist\b)[A-Za-z0-9_-]+)?|id_rsa|id_ed25519|authorized_keys|\.aws/credentials)(\s|$|[;&|)''"])'
+    pattern: '(>>?|\btee\b(\s+-a)?)\s*\S*(\.env(\.(?!example\b|sample\b|template\b|dist\b)[A-Za-z0-9_-]+)?|id_rsa|id_ed25519|authorized_keys|\.aws/credentials)(\s|$|[;&|)''\"])|\b(cp|mv|install)\b[^\n|;&]*\s\S*(\.env(\.(?!example\b|sample\b|template\b|dist\b)[A-Za-z0-9_-]+)?|id_rsa|id_ed25519|authorized_keys|\.aws/credentials)\s*($|[;&|)])'
     reason: writing to a credentials file from the shell
     rationale: The shell twin of TK-D005. Redirects, tee, cp and mv reach the same files the file-editing tools are blocked from.
   - id: TK-D011

@@ -4,6 +4,31 @@ All notable changes to Tracekit. Versions follow [PEP 440](https://peps.python.o
 
 ## Unreleased
 
+### Security (0.2.1 hotfix: insider attacks on the capture path)
+Four attacks on a Linux system-mode install made hidden or fabricated activity verify as a clean `VERIFIED`. None
+broke the signature, chain or witness; they all went around what feeds the ledger. Found by a black-box audit with
+real separate OS users; reproduced as eval E8 (`eval/e8_insider.py`, now a required CI job).
+- **Signer redirect (E8.1, E8.2).** The hooks took the signer address from the agent-writable
+  `~/.tracekit-client/config.json` or `TRACEKIT_SOCKET`, so an agent could send tool calls to a decoy signer and
+  switch back; restoring its counter files hid the gap. System mode now reads a root-owned
+  `/etc/tracekit/client.json` (trusted only if root-owned and not group/world-writable) and ignores both.
+- **Cross-user injection (E8.3).** Appends after `run.start` were not checked against the run's owner, and the
+  socket is world-writable, so any local user could write events into another user's run, recorded as
+  `source: hook`. The signer now refuses events from a uid other than the run owner's (the signer's own uid, used by
+  the proxy, still passes) and records each refusal against the targeted run; ownership survives a restart.
+- **Fail-open by default (E8.4).** A tool call ran unrecorded while the signer was down. System mode now fails
+  closed unless the root-owned config sets `fail_mode: open`.
+- **Policy swap (E8.5).** `TRACEKIT_POLICY` is ignored in system mode. `tracekit init` also pins the effective
+  policy hash in the signer config; a run or decision under any other policy is a `policy_mismatch` capture gap.
+- **Verdict.** `verify` and proof packs say `VERIFIED WITH GAPS (...)` instead of `VERIFIED` when capture gaps or
+  refused writes exist. Single-run exports now keep refused-write `error` events, which were elided before.
+- **Label.** The `hook` capture source now reads "reported by a hook process (any process running as the agent's
+  user can send these)" instead of "observed at the harness hook".
+- **Upgrading:** `sudo tracekit migrate --system [--fail-mode open|closed]`, then restart `tracekitd`. Dev mode is
+  unchanged.
+- **Still open:** an agent can send a fully fabricated, well-formed run through the real hook path (E8.6). It needs
+  harness binding (planned for 0.3); with the proxy on it surfaces as `proxy_missing`.
+
 ### Added
 - **LangGraph node tracing, Browser Use and Stagehand hooks** (#6): `TracekitCallbackHandler(tracer, nodes=True)` records
   each graph node as a policy-checked `node:<name>` step; `tracekit.adapters.browser` gates and records Browser Use
@@ -86,6 +111,8 @@ All notable changes to Tracekit. Versions follow [PEP 440](https://peps.python.o
 - `tracekit analyze`, `otel` and `sql` parse their own options (a leading `--option` used to be rejected).
 
 ### Fixed
+- **TK-D010** denied `cp .env /tmp/x` as "writing to a credentials file"; it now matches credentials files only as the
+  destination of `cp`/`mv`/`install`. Default policy version `2026.10-1`.
 - The coverage report called every model exchange "at the proxy, cross-checked against hooks"; application-reported
   exchanges are now listed separately, and only proxy exchanges are cross-checked against hooks by the signer.
 - `test_rate_limit` was timing-dependent and failed on slow machines; the bucket no longer refills during the test.

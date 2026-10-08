@@ -310,7 +310,7 @@ def entry(harness=None):
     try:
         return run(harness, sys.stdin.read())
     except Exception as e:
-        closed = os.environ.get("TRACEKIT_FAIL_CLOSED") == "1"
+        closed = os.environ.get("TRACEKIT_FAIL_CLOSED") == "1" or H.client.system_fail_closed()
         print(f"[tracekit] {harness} hook error ({e}); " + ("blocking (fail-closed)" if closed else "allowing (fail-open)"), file=sys.stderr)
         _reply(harness, sys.stdout, not closed, str(e), True)
         return 2 if closed else 0

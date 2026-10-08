@@ -24,8 +24,8 @@ from .witness import from_spec, verify_checkpoint
 
 FORMAT = "tracekit.bundle.v1"
 # signer-wide events kept in every bundle: they say whether the signer itself had problems
-SIGNER_TYPES = {"capture.gap", "trace.tamper", "checkpoint"}
-TRUST = {"hook": "observed at the harness hook", "proxy": "observed at the model API boundary",
+SIGNER_TYPES = {"capture.gap", "trace.tamper", "checkpoint", "error"}  # 0.2.1: refused writes are evidence too
+TRUST = {"hook": "reported by a hook process (any process running as the agent's user can send these)", "proxy": "observed at the model API boundary",
          "transcript": "harness-reported, lower trust", "sdk": "reported by an instrumented app",
          "migrated": "converted from a v0.1 ledger (hash chain only, unsigned origin)", "signer": "written by tracekitd"}
 EXIT_OK, EXIT_FAIL, EXIT_BAD, EXIT_WARN = 0, 1, 2, 3
@@ -62,7 +62,14 @@ def export(signer_home, out_path, run=None, last=True, since=None, otel=False, o
     runs |= {"findings:" + x for x in list(runs) if "findings:" + x in present}  # signed findings travel with their run
     runs |= {"findings:causeway:" + x[len("anchors:causeway:"):] for x in list(runs)
              if x.startswith("anchors:causeway:") and "findings:causeway:" + x[len("anchors:causeway:"):] in present}
-    keep = lambda ev: ev["run_id"] in runs or (ev["run_id"] == "_signer" and ev["type"] in SIGNER_TYPES)  # noqa: E731
+    def keep(ev):  # 0.2.1: a refused write names the run it targeted in client_run_id, not run_id
+        if ev["run_id"] in runs:
+            return True
+        if ev["run_id"] == "_signer" and ev["type"] in SIGNER_TYPES:
+            if ev["type"] == "error":
+                return (ev.get("data") or {}).get("client_run_id") in runs
+            return True
+        return False
     sel_seqs = [r["event"]["seq"] for r in recs if not r.get("elided") and r["event"]["run_id"] in runs]
     if not sel_seqs:
         raise SystemExit(f"no records for run(s) {sorted(runs)}")
@@ -352,6 +359,11 @@ def _verify(rep, manifest, blobs, witness_specs, strict, trusted_key):
     cg = [e for e in events if e.get("type") == "capture.gap" and (e.get("run_id") in sel_runs or e.get("run_id") == "_signer")]
     rep.check("capture gaps", not cg, "no capture.gap events" if not cg else "",
               [f"seq {e['seq']}: {e['data'].get('reason')}" for e in cg][:20], warn=True)
+    # 0.2.1: writes the signer refused for these runs (e.g. another user writing into the run) are evidence too
+    rj = [e for e in events if e.get("type") == "error" and e.get("run_id") == "_signer"
+          and (e.get("data") or {}).get("client_run_id") in sel_runs]
+    rep.check("rejected writes", not rj, "none" if not rj else "",
+              [f"seq {e['seq']}: {e['data'].get('message')}" for e in rj][:20], warn=True)
 
     # 4. head matches a witness checkpoint
     cps, cp_probs = [], []
@@ -562,6 +574,9 @@ def _verify(rep, manifest, blobs, witness_specs, strict, trusted_key):
     return rep, code
 
 
+GAP_CHECKS = ("capture gaps", "rejected writes")
+
+
 def print_report(rep, code, stream=None):
     import sys
     s = stream or sys.stdout
@@ -571,6 +586,9 @@ def print_report(rep, code, stream=None):
         for p in c["problems"]:
             s.write(f"        {p}\n")
     verdict = {EXIT_OK: "VERIFIED", EXIT_FAIL: "VERIFICATION FAILED", EXIT_BAD: "UNUSABLE BUNDLE", EXIT_WARN: "VERIFIED WITH WARNINGS (strict)"}[code]
+    gappy = [c["check"] for c in rep.checks if c["check"] in GAP_CHECKS and c["status"] == "warn"]
+    if code == EXIT_OK and gappy:  # 0.2.1: a gap in what was captured is never reported as a clean VERIFIED
+        verdict = "VERIFIED WITH GAPS (" + ", ".join(gappy) + ")"
     if code in (EXIT_OK, EXIT_WARN) and any(c["check"] == "trust root" and c["status"] != "pass" for c in rep.checks):
         verdict += " BUT UNANCHORED (internally consistent only; no trusted key or witness was checked)"
     s.write(f"\n{verdict}. Tracekit proves what its capture path recorded and that it has not changed since it was "
