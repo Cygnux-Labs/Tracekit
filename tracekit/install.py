@@ -706,8 +706,11 @@ def _install_venv():
         if bad:
             raise SystemExit(f"the Python running init could be modified by a non-root user ({bad}). Run init with a "
                              "root-owned Python, e.g. sudo /usr/bin/python3 -m tracekit init")
-    from . import __version__
-    src = ROOT if os.path.isfile(os.path.join(ROOT, "pyproject.toml")) else f"tracekit=={__version__}"
+    if not os.path.isfile(os.path.join(ROOT, "pyproject.toml")):
+        # lean: source checkout only; install from a pinned wheel once the distribution name is settled
+        raise SystemExit("system mode installs from a Tracekit source checkout: run it from the repository, e.g. "
+                         "cd tracekit && sudo /usr/bin/python3 -m tracekit init --user <agent-user>")
+    src = ROOT
     old = os.umask(0o022)
     try:
         subprocess.run([sys.executable, "-m", "venv", "--clear", OPT], check=True)
