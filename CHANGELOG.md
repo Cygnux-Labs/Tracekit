@@ -4,6 +4,43 @@ All notable changes to Tracekit. Versions follow [PEP 440](https://peps.python.o
 
 ## Unreleased
 
+### Installer file writes
+- `tracekit init` writes every config, settings file and backup through a directory fd: temp files get an
+  unpredictable name, are created exclusively with their final mode (0600 for configs), and nothing follows a symlink.
+  A symlinked `~/.claude/settings.json`, `~/.tracekit-client/` entry or signer `config.json` is refused with an error.
+- As root, writes into the agent user's home run as that user; signer files are `fchown`ed on the open file.
+- Backups are named `<file>.bak-<time>-<random>`.
+- Dev mode over TCP: tracekitd binds a free port itself and records it in its config; init reads it back instead of
+  probing for a free port.
+
+### Hook invocation
+- Generated hook commands (Claude Code, Codex, Cursor, Gemini) and the plugin's `tracekit-hook` run Python in
+  isolated mode (`-I`): the project directory and `PYTHON*` variables no longer affect which `tracekit` is imported.
+  Re-run `tracekit init` to rewrite existing hook commands.
+- Cursor's `failClosed` and wiring errors in the Codex/Cursor/Gemini hook entry now follow the configured fail mode.
+- The plugin's `tracekit-hook` blocks instead of allowing when the package is missing and
+  `/etc/tracekit/client.json` is fail-closed.
+
+### Validate remote endpoint URLs
+- `tracekit init --remote` and `tracekit otel push` parse the URL: `https://` to any host, plain `http://` only when the
+  host is exactly `localhost`, `127.0.0.1` or `::1`; URLs with `user@` are refused.
+- The remote signer client and `otel push` no longer follow HTTP redirects, so credentials never reach a redirect target.
+- An empty or non-JSON-object reply from the signer is treated as "signer unavailable", like a refused connection.
+- `init --remote` refuses to write its config through a symlink.
+
+### Verifier: v1 run completeness (interim, until evidence format v2)
+v1 signatures cover `(hash, prev_hash, seq)` only, so an elided stub does not say which run it belonged to.
+- **Elided records.** A bundle with any elided stub reports every selected run as "run completeness unproven (v1
+  bundle with elided records)" and ends `VERIFIED WITH GAPS (run completeness)`, never plain `VERIFIED`. Export
+  already includes every record of the selected runs; selecting fewer runs than the ledger holds now shows this gap.
+- **Run boundaries.** Each selected run must have a non-elided `run.start` and a signed `run.end`; otherwise
+  "run boundaries unproven" / "tail unproven" (a gap, not a failure). Findings and anchor runs are exempt.
+- **Witnessed tail.** With `--witness`, the bundle must reach the first witnessed checkpoint at or after each run's
+  `run.end`; a bundle that stops before that checkpoint fails with "tail not covered by a witnessed checkpoint".
+- **Output.** The verdict is now two lines, `Integrity: …` and `Assurance: …`; assurance is `dev` when a run.start
+  says the signer ran as the agent's own user (`signer_isolation: same-user`), so dev bundles never print a bare
+  `VERIFIED.`.
+
 ### Security (0.3: harness binding, closing fabricated runs)
 After 0.2.1, any process running as the agent's user could still drive the real hook with a complete, well-formed
 run that never happened, and it verified as `VERIFIED` (E8.6). The signer now checks *which program* sent each event,

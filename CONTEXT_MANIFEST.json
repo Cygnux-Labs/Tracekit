@@ -251,6 +251,26 @@
   },
   "risk_boundaries": [
     {
+      "path": "tracekit/viewer/",
+      "risk_level": "critical",
+      "rationale": "Viewer and replay pages render untrusted evidence and show verification results (XSS, misleading verdicts)"
+    },
+    {
+      "path": "tracekit/ui/",
+      "risk_level": "critical",
+      "rationale": "Viewer and replay pages render untrusted evidence and show verification results (XSS, misleading verdicts)"
+    },
+    {
+      "path": "tracekit/replay.py",
+      "risk_level": "critical",
+      "rationale": "Viewer and replay pages render untrusted evidence and show verification results (XSS, misleading verdicts)"
+    },
+    {
+      "path": "tracekit/observe.py",
+      "risk_level": "critical",
+      "rationale": "Viewer and replay pages render untrusted evidence and show verification results (XSS, misleading verdicts)"
+    },
+    {
       "path": "tracekit/daemon.py",
       "risk_level": "critical",
       "rationale": "Signer, ledger, crypto and their replacements: integrity of all evidence (invariants I0, I1, I6, I7)"
@@ -478,5 +498,8 @@
       "command": "r=\"$(git rev-parse --path-format=absolute --git-common-dir)/../.venv/bin/python\"; [ -x \"$r\" ] && export TRACEKIT_PYTHON=\"$r\"; make test-ts",
       "timeout_seconds": 600
     }
+  ],
+  "review_paths": [
+    ".github/workflows/"
   ]
 }
