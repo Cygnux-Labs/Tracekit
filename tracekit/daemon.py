@@ -983,15 +983,29 @@ def _unix_server_class():
 UnixServer = _unix_server_class()
 
 
+def _record_endpoint(home, sock):
+    """Port 0: write the port this signer bound into its config (next to the token), so `tracekit init` can read it
+    back. Written atomically and without following symlinks."""
+    from .deploy import files
+    d = files.open_dir(home)
+    try:
+        raw = files.read(d, "config.json")
+        cfg = json.loads(raw) if raw else {}
+        cfg["socket"] = sock
+        files.write(d, "config.json", files.json_bytes(cfg), 0o600)
+    finally:
+        files.close(d)
+
+
 def serve(home, socket_path=None):
     cfg = load_config(home)
     sock = socket_path or cfg["socket"]
     if sock.startswith("tcp://"):
         endpoint = urlsplit(sock)
-        if (endpoint.hostname != "127.0.0.1" or endpoint.port is None or not 1 <= endpoint.port <= 65535
+        if (endpoint.hostname != "127.0.0.1" or endpoint.port is None or not 0 <= endpoint.port <= 65535
                 or endpoint.username or endpoint.password
                 or endpoint.path or endpoint.query or endpoint.fragment):
-            raise ValueError("TCP signer endpoint must use 127.0.0.1 and an explicit port")
+            raise ValueError("TCP signer endpoint must use 127.0.0.1 and an explicit port (0: pick a free one)")
         if not isinstance(cfg.get("socket_token"), str) or not cfg["socket_token"]:
             raise ValueError("TCP signer endpoint requires an authentication token")
     else:
@@ -1007,6 +1021,9 @@ def serve(home, socket_path=None):
         if sock.startswith("tcp://"):
             srv = ThreadingTCPServer((endpoint.hostname, endpoint.port), _Handler)
             srv.socket_token = cfg["socket_token"]
+            if endpoint.port == 0:
+                sock = f"tcp://127.0.0.1:{srv.server_address[1]}"
+                _record_endpoint(home, sock)
         else:
             srv = UnixServer(sock, _Handler)
             os.chmod(sock, int(str(cfg.get("socket_mode", "0666")), 8))
