@@ -11,6 +11,7 @@ All notable changes to Tracekit. Versions follow [PEP 440](https://peps.python.o
 - Cursor's `failClosed` and wiring errors in the Codex/Cursor/Gemini hook entry now follow the configured fail mode.
 - The plugin's `tracekit-hook` blocks instead of allowing when the package is missing and
   `/etc/tracekit/client.json` is fail-closed.
+
 ### Verifier: v1 run completeness (interim, until evidence format v2)
 v1 signatures cover `(hash, prev_hash, seq)` only, so an elided stub does not say which run it belonged to.
 - **Elided records.** A bundle with any elided stub reports every selected run as "run completeness unproven (v1
@@ -19,7 +20,7 @@ v1 signatures cover `(hash, prev_hash, seq)` only, so an elided stub does not sa
 - **Run boundaries.** Each selected run must have a non-elided `run.start` and a signed `run.end`; otherwise
   "run boundaries unproven" / "tail unproven" (a gap, not a failure). Findings and anchor runs are exempt.
 - **Witnessed tail.** With `--witness`, the bundle must reach the first witnessed checkpoint at or after each run's
-  `run.end`; a bundle cut at an earlier checkpoint boundary fails with "tail not covered by a witnessed checkpoint".
+  `run.end`; a bundle that stops before that checkpoint fails with "tail not covered by a witnessed checkpoint".
 - **Output.** The verdict is now two lines, `Integrity: …` and `Assurance: …`; assurance is `dev` when a run.start
   says the signer ran as the agent's own user (`signer_isolation: same-user`), so dev bundles never print a bare
   `VERIFIED.`.
