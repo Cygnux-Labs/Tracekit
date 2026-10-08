@@ -16,12 +16,10 @@ jobs:
         with:
           fetch-depth: 0
       - name: Check sign-off
-        env:
-          BASE: ${{ github.event.pull_request.base.sha }}
-          HEAD: ${{ github.event.pull_request.head.sha }}
+        # the checkout is the PR merge commit: parent 1 is the base branch, parent 2 the PR head
         run: |
           missing=0
-          for c in $(git rev-list --no-merges "$BASE..$HEAD"); do
+          for c in $(git rev-list --no-merges HEAD^1..HEAD^2); do
             author="$(git log -1 --format='%an <%ae>' "$c")"
             if ! git log -1 --format='%(trailers:key=Signed-off-by,valueonly)' "$c" | grep -qxF "$author"; then
               echo "::error::$(git log -1 --format='%h %s' "$c"): missing 'Signed-off-by: $author'"
@@ -29,6 +27,6 @@ jobs:
             fi
           done
           if [ "$missing" -ne 0 ]; then
-            echo "Sign off with 'git commit -s'; fix a branch with 'git rebase --signoff $BASE'. See CONTRIBUTING.md."
+            echo "Sign off with 'git commit -s'; fix a branch with 'git rebase --signoff origin/$GITHUB_BASE_REF'. See CONTRIBUTING.md."
             exit 1
           fi
