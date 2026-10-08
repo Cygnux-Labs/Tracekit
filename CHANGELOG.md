@@ -13,6 +13,12 @@ All notable changes to Tracekit. Versions follow [PEP 440](https://peps.python.o
 - Dev mode over TCP: tracekitd binds a free port itself and records it in its config; init reads it back instead of
   probing for a free port.
 
+### Project
+- `SECURITY.md` states supported versions, a disclosure timeline, safe harbour and the operator caveat.
+- Contributions need a DCO sign-off (`git commit -s`); a CI check enforces it on pull requests.
+- Issue templates for policy false positives/negatives and integration requests; blank issues are off and
+  security reports go to private advisories. The PR template checks security invariants and evidence-format changes.
+
 ### Hook invocation
 - Generated hook commands (Claude Code, Codex, Cursor, Gemini) and the plugin's `tracekit-hook` run Python in
   isolated mode (`-I`): the project directory and `PYTHON*` variables no longer affect which `tracekit` is imported.
@@ -27,6 +33,19 @@ All notable changes to Tracekit. Versions follow [PEP 440](https://peps.python.o
 - The remote signer client and `otel push` no longer follow HTTP redirects, so credentials never reach a redirect target.
 - An empty or non-JSON-object reply from the signer is treated as "signer unavailable", like a refused connection.
 - `init --remote` refuses to write its config through a symlink.
+
+### Verifier: v1 run completeness (interim, until evidence format v2)
+v1 signatures cover `(hash, prev_hash, seq)` only, so an elided stub does not say which run it belonged to.
+- **Elided records.** A bundle with any elided stub reports every selected run as "run completeness unproven (v1
+  bundle with elided records)" and ends `VERIFIED WITH GAPS (run completeness)`, never plain `VERIFIED`. Export
+  already includes every record of the selected runs; selecting fewer runs than the ledger holds now shows this gap.
+- **Run boundaries.** Each selected run must have a non-elided `run.start` and a signed `run.end`; otherwise
+  "run boundaries unproven" / "tail unproven" (a gap, not a failure). Findings and anchor runs are exempt.
+- **Witnessed tail.** With `--witness`, the bundle must reach the first witnessed checkpoint at or after each run's
+  `run.end`; a bundle that stops before that checkpoint fails with "tail not covered by a witnessed checkpoint".
+- **Output.** The verdict is now two lines, `Integrity: …` and `Assurance: …`; assurance is `dev` when a run.start
+  says the signer ran as the agent's own user (`signer_isolation: same-user`), so dev bundles never print a bare
+  `VERIFIED.`.
 
 ### Security (observer and replay rendering)
 - `tracekit observe` and `replay.html` escape every record-derived value they put into HTML, and fill their data

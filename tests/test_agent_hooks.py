@@ -10,36 +10,12 @@ import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
-from tracekit import agent_hooks, install  # noqa: E402
-from tracekit.ledger import read_records  # noqa: E402
-
-_SAVED = {}
-
-
-def setUpModule():
-    _SAVED["policy"] = os.environ.pop("TRACEKIT_POLICY", None)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from tracekit import agent_hooks  # noqa: E402
+from factories import DaemonCase, ledger_records, patch_env  # noqa: E402
 
 
-def tearDownModule():
-    if _SAVED.get("policy") is not None:
-        os.environ["TRACEKIT_POLICY"] = _SAVED["policy"]
-
-
-class Harnesses(unittest.TestCase):
-    def setUp(self):
-        self.d = tempfile.mkdtemp()
-        self.home = os.path.join(self.d, "signer")
-        self.old = os.environ.get("TRACEKIT_CLIENT_HOME")
-        os.environ["TRACEKIT_CLIENT_HOME"] = os.path.join(self.d, "client")
-        install.init_dev(self.home, [], start=True)
-
-    def tearDown(self):
-        install.stop_dev_daemon(self.home)
-        if self.old is None:
-            os.environ.pop("TRACEKIT_CLIENT_HOME", None)
-        else:
-            os.environ["TRACEKIT_CLIENT_HOME"] = self.old
-        shutil.rmtree(self.d, ignore_errors=True)
+class Harnesses(DaemonCase):
 
     def hook(self, harness, payload):
         p = subprocess.run([sys.executable, "-m", "tracekit.agent_hooks", harness], input=json.dumps(payload), capture_output=True,
@@ -47,7 +23,7 @@ class Harnesses(unittest.TestCase):
         return p.returncode, p.stdout, p.stderr
 
     def events(self, run):
-        return [r["event"] for _, r, _ in read_records(os.path.join(self.home, "ledger", "ledger.jsonl")) if r and r["event"]["run_id"] == run]
+        return [r["event"] for r in ledger_records(self.home) if r["event"]["run_id"] == run]
 
     def test_codex(self):
         base = {"session_id": "cx-1", "cwd": self.d, "model": "gpt-5-codex", "turn_id": "t1", "transcript_path": None, "permission_mode": "default"}
@@ -150,10 +126,6 @@ class Installer(unittest.TestCase):
             shutil.rmtree(d, ignore_errors=True)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class DemoPerAgent(unittest.TestCase):
     """`tracekit demo --agent <name>` (#7): the scripted run in each harness's own hook format, end to end."""
 
@@ -161,30 +133,22 @@ class DemoPerAgent(unittest.TestCase):
         import contextlib
         import io
         from tracekit import demo
-        old = os.environ.get("TRACEKIT_CLIENT_HOME")
-        try:
-            for agent in demo.AGENTS:
-                out = io.StringIO()
-                with contextlib.redirect_stdout(out):
-                    code = demo.main(agent=agent)
-                self.assertEqual(code, 0, agent + "\n" + out.getvalue())
-                self.assertIn("BLOCKED  Bash: curl", out.getvalue())
-                self.assertIn("original bundle exit 0, tampered bundle exit 1", out.getvalue())
-        finally:
-            if old is None:
-                os.environ.pop("TRACEKIT_CLIENT_HOME", None)
-            else:
-                os.environ["TRACEKIT_CLIENT_HOME"] = old
+        patch_env(self)
+        for agent in demo.AGENTS:
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                code = demo.main(agent=agent)
+            self.assertEqual(code, 0, agent + "\n" + out.getvalue())
+            self.assertIn("BLOCKED  Bash: curl", out.getvalue())
+            self.assertIn("original bundle exit 0, tampered bundle exit 1", out.getvalue())
 
     def test_native_payloads_are_recorded_under_the_agent(self):
         import contextlib
         import io
         import tempfile
         from tracekit import demo, install as inst
-        from tracekit.ledger import read_records
         d = tempfile.mkdtemp()
-        old = os.environ.get("TRACEKIT_CLIENT_HOME")
-        os.environ["TRACEKIT_CLIENT_HOME"] = os.path.join(d, "client")
+        patch_env(self, TRACEKIT_CLIENT_HOME=os.path.join(d, "client"))
         env = dict(os.environ, PYTHONPATH=ROOT)
         home = os.path.join(d, "signer")
         inst.init_dev(home, [], start=True)
@@ -192,14 +156,14 @@ class DemoPerAgent(unittest.TestCase):
             proj = demo._project(d)
             with contextlib.redirect_stdout(io.StringIO()):
                 demo.scripted(env, proj, "codex")
-            evs = [r["event"] for _, r, _ in read_records(os.path.join(home, "ledger", "ledger.jsonl")) if r]
+            evs = [r["event"] for r in ledger_records(home)]
             start = next(e for e in evs if e["type"] == "run.start")
             self.assertEqual((start["run_id"], start["data"]["agent"]["name"]), ("demo-codex-1", "codex"))
             self.assertEqual([e["data"]["name"] for e in evs if e["type"] == "tool.call"], ["Bash", "Bash", "Bash", "Edit", "Bash", "Bash"])
             self.assertEqual([e["data"]["decision"] for e in evs if e["type"] == "policy.decision"][-1], "deny")
         finally:
             inst.stop_dev_daemon(home)
-            if old is None:
-                os.environ.pop("TRACEKIT_CLIENT_HOME", None)
-            else:
-                os.environ["TRACEKIT_CLIENT_HOME"] = old
+
+
+if __name__ == "__main__":
+    unittest.main()

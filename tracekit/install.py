@@ -442,8 +442,6 @@ def init_dev(home, witnesses, checkpoint_every=50, hooks_path=None, start=True, 
                 start_dev_daemon(home)
             if proxy and not _proxy_healthy(home):
                 start_dev_proxy(home)
-        # lean: with start=False a TCP client config keeps port 0 until init runs with start; resolve it from the
-        # signer config in the client if dev TCP without start becomes a supported setup
         cfg["socket"] = read_json(os.path.join(home, "config.json")).get("socket", sock)
         client_home = os.environ.get("TRACEKIT_CLIENT_HOME")
         if client_home:
