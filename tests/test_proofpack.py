@@ -77,6 +77,8 @@ class Pack(unittest.TestCase):
     def test_verifier_runs_with_only_the_standard_library(self):
         _, x = self.unpack()
         env = {"PATH": os.environ.get("PATH", ""), "HOME": x}
+        if os.name == "nt":
+            env["SYSTEMROOT"] = os.environ.get("SYSTEMROOT", r"C:\Windows")  # Python cannot start without it
         # -I: isolated, -S: no site-packages, so no `cryptography`: pure-Python Ed25519 does the signature checks
         p = subprocess.run([sys.executable, "-I", "-S", os.path.join(x, "verify.pyz"), os.path.join(x, "run.tkb"), "--key", self.pub],
                            capture_output=True, text=True, cwd=x, env=env, timeout=300)
