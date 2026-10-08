@@ -11,8 +11,10 @@ import zipfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from tracekit import bundle, install, proofpack  # noqa: E402
 from tracekit.agent_sdk import Tracer  # noqa: E402
+from factories import patch_env  # noqa: E402
 
 
 class Pack(unittest.TestCase):
@@ -20,7 +22,7 @@ class Pack(unittest.TestCase):
     def setUpClass(cls):
         cls.d = tempfile.mkdtemp()
         cls.home = os.path.join(cls.d, "signer")
-        cls.old = os.environ.get("TRACEKIT_CLIENT_HOME")
+        patch_env(cls)
         os.environ["TRACEKIT_CLIENT_HOME"] = os.path.join(cls.d, "client")
         install.init_dev(cls.home, [], start=True)
         with Tracer(agent="audit-bot", session_id="pp-1", cwd=cls.d) as t:
@@ -39,10 +41,6 @@ class Pack(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         install.stop_dev_daemon(cls.home)
-        if cls.old is None:
-            os.environ.pop("TRACEKIT_CLIENT_HOME", None)
-        else:
-            os.environ["TRACEKIT_CLIENT_HOME"] = cls.old
         shutil.rmtree(cls.d, ignore_errors=True)
 
     def unpack(self, key=None):

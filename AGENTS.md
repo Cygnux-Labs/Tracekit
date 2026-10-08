@@ -78,6 +78,9 @@ There is no typecheck step.
 - New dependencies need risk review (`agent-flow audit-risk`).
 - If code contradicts this file, trust the code and flag `[CONTEXT_STALE]`.
 - Fix root causes; no comments that justify workarounds.
+- Apply the `ponytail` skill (full intensity) to every coding task: the smallest correct change, stdlib and existing
+  code before new code, no speculative abstraction, no dead code or unused fixtures. Mark deliberate shortcuts `lean:`.
+- Don't edit `CHANGELOG.md` in feature PRs; release notes are written once per release.
 - Security invariants (the product's promise): the agent never holds a signing key or assigns sequence numbers; nothing
   an agent-controlled process supplies (isolation level, fail mode, gap/tamper records, approval identity) is trusted by
   the signer or verifier; gaps are signed, never silent; never ship verification code inside a bundle.
