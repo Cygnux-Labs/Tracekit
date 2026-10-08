@@ -545,6 +545,7 @@ class RuntimeStateRetention(unittest.TestCase):
     def test_expired_pending_approval_is_resolved_during_pruning(self):
         d = tempfile.mkdtemp()
         s = signer(d, witnesses=[])
+        s._run("r")["started"] = True
         try:
             approval_id = s._approval_request({"run_id": "r", "tool_use_id": "t"}, None)["approval_id"]
             s.approvals[approval_id]["deadline"] = time.time() - 1
@@ -558,6 +559,7 @@ class RuntimeStateRetention(unittest.TestCase):
         from unittest.mock import patch
         d = tempfile.mkdtemp()
         s = signer(d, witnesses=[])
+        s._run("r")["started"] = True
         try:
             with patch("tracekit.daemon.MAX_CACHED_APPROVALS", 1):
                 first = s._approval_request({"run_id": "r", "tool_use_id": "1"}, None)
