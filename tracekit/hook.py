@@ -343,7 +343,7 @@ def _entry():
     try:
         return main()
     except Exception as e:  # a crash in Tracekit must follow the configured fail mode
-        closed = os.environ.get("TRACEKIT_FAIL_CLOSED") == "1"
+        closed = os.environ.get("TRACEKIT_FAIL_CLOSED") == "1" or client.system_fail_closed()
         try:
             closed = closed or policy_mod.load()[0].get("fail_mode") == "closed"
         except Exception:

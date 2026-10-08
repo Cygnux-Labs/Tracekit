@@ -180,11 +180,18 @@ def validate(pol):
 
 def load(path=None):
     """Return (effective_policy, canonical_json_text). Raises PolicyError on an unusable file."""
-    path = path or os.environ.get("TRACEKIT_POLICY") or DEFAULT_POLICY
+    from .client import system_config
+    sc = system_config()
+    if sc is not None:  # 0.2.1 system mode: the agent's environment cannot choose the policy or the fail mode
+        path = path or sc.get("policy") or DEFAULT_POLICY
+    else:
+        path = path or os.environ.get("TRACEKIT_POLICY") or DEFAULT_POLICY
     try:
         pol = _resolve(path)
         pol.setdefault("deny", []); pol.setdefault("ask", []); pol.setdefault("flag", [])
         validate(pol)
+        if sc is not None:
+            pol["fail_mode"] = sc.get("fail_mode", "closed") if sc.get("fail_mode") in ("open", "closed") else "closed"
         return pol, canon(pol)
     except PolicyError:
         raise

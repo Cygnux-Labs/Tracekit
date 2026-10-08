@@ -99,6 +99,9 @@ def report(bundle_path, key=None, witnesses=()):
     dec = {e["data"]["tool_use_id"]: e["data"]["decision"] for e in sel if e["type"] == "policy.decision"}
     usage = [e["data"].get("usage") for e in sel if e["type"] == "model.exchange" and e["data"].get("usage")]
     verdict = {0: "VERIFIED", 1: "FAILED", 2: "BAD BUNDLE", 3: "VERIFIED WITH WARNINGS"}.get(code, str(code))
+    from .bundle import GAP_CHECKS
+    if code == 0 and any(c["check"] in GAP_CHECKS and c["status"] == "warn" for c in rep.checks):
+        verdict = "VERIFIED WITH GAPS"
     anchored = any(c["check"] == "trust root" and c["status"] == "pass" for c in rep.checks)
     L = [f"# Evidence report: {', '.join(runs) or '(no run)'}", "",
          f"Generated {_dt.datetime.now(_dt.timezone.utc).strftime('%Y-%m-%d %H:%M UTC')} from `{os.path.basename(bundle_path)}`.",

@@ -31,6 +31,16 @@ _DELEGATED = {"observe": "observe", "analyze": "findings", "otel": "otlp", "sql"
 
 def main(argv=None):
     args = list(sys.argv[1:] if argv is None else argv)
+    if args[:2] == ["migrate", "--system"]:  # 0.2.1; before argparse for the same REMAINDER reason as below
+        rest = args[2:]
+        fm = None
+        if rest[:1] == ["--fail-mode"] and len(rest) == 2 and rest[1] in ("open", "closed"):
+            fm = rest[1]
+        elif rest:
+            print("usage: tracekit migrate --system [--fail-mode open|closed]", file=sys.stderr)
+            return 2
+        from . import install
+        return install.migrate_system(fm)
     if args and args[0] == "report":
         from .proofpack import report_main
         return report_main(args[1:])
@@ -124,7 +134,7 @@ def main(argv=None):
     p.add_argument("--strict", action="store_true", help="exit 3 on warnings")
     p.add_argument("--json", action="store_true")
 
-    p = sub.add_parser("migrate", help="read or convert a v0.1 ledger")
+    p = sub.add_parser("migrate", help="read or convert a v0.1 ledger; `migrate --system` upgrades a 0.2.0 system install")
     p.add_argument("rest", nargs=argparse.REMAINDER)
 
     p = sub.add_parser("demo", help="end-to-end demo in a temp folder")
