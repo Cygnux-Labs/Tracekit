@@ -236,7 +236,8 @@
       "fast": "opus",
       "high_reasoning": "opus"
     },
-    "isolate_roles": true
+    "isolate_roles": true,
+    "lean": "full"
   },
   "deny_read": [],
   "secret_scan": {

@@ -22,32 +22,19 @@ sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from tracekit import bundle, cli, core, hook, install, observe, policy, privacy  # noqa: E402
 from tracekit.witness import FileWitness, GitWitness, make_checkpoint  # noqa: E402
-from test_v02 import ev, run_start, signer  # noqa: E402
+from factories import ev, ledger_records, make_signer, patch_env, rewrite_bundle, run_start  # noqa: E402
 
 
 def make_bundle(d):
     """A real, valid single-run bundle plus the witness copy that anchors it."""
     home = os.path.join(d, "s")
-    s = signer(home, witnesses=[f"file:{d}/w.jsonl"], every=100)
+    s = make_signer(home, witnesses=[f"file:{d}/w.jsonl"], checkpoint_every=100)
     s.handle({"op": "append", "cseq": 0, "event": run_start("a"), "attach": {"policy": policy.load()[1]}})
     s.handle({"op": "append", "cseq": 1, "event": ev("user.prompt", {"content": {"hash": "sha256:" + "0" * 64, "size": 1, "redacted": False}}, "a")})
     s.handle({"op": "append", "cseq": 2, "event": ev("run.end", {"reason": "x"}, "a")})
     out = os.path.join(d, "a.tkb")
     bundle.export(home, out, run="a")
     return out, f"file:{d}/w.jsonl"
-
-
-def rewrite(src, dst, edit):
-    """Copy a bundle, letting `edit(files: dict, manifest: dict)` change it; manifest hashes are refreshed."""
-    with zipfile.ZipFile(src) as z:
-        files = {n: z.read(n) for n in z.namelist() if n != "manifest.json"}
-        manifest = json.loads(z.read("manifest.json"))
-    edit(files, manifest)
-    manifest["files"] = {k: hashlib.sha256(v).hexdigest() for k, v in files.items() if k in manifest["files"]}
-    with zipfile.ZipFile(dst, "w") as z:
-        z.writestr("manifest.json", json.dumps(manifest))
-        for k, v in files.items():
-            z.writestr(k, v)
 
 
 class HookCommand(unittest.TestCase):
@@ -176,7 +163,7 @@ class VerifierNeverCrashes(unittest.TestCase):
 
     def check_fails(self, edit, name):
         out = os.path.join(self.d, name + ".tkb")
-        rewrite(self.good, out, edit)
+        rewrite_bundle(self.good, out, edit)
         rep, code = bundle.verify(out, [self.wit])  # must return, not raise
         self.assertIn(code, (bundle.EXIT_FAIL, bundle.EXIT_BAD), name)
         return rep
@@ -219,7 +206,7 @@ class VerifierNeverCrashes(unittest.TestCase):
             lines = files["records.jsonl"].decode().splitlines()
             files["records.jsonl"] = ("\n".join(lines) + "\n").encode()
         out = os.path.join(self.d, "hidden.tkb")
-        rewrite(self.good, out, edit)
+        rewrite_bundle(self.good, out, edit)
         rep, _ = bundle.verify(out, [self.wit])
         src = [c for c in rep.checks if c["check"] == "capture sources"][0]
         self.assertIn("hook", src["detail"])  # still saw the run's events
@@ -242,7 +229,7 @@ class VerifierNeverCrashes(unittest.TestCase):
     def test_export_is_atomic(self):
         d = tempfile.mkdtemp()
         home = os.path.join(d, "s")
-        s = signer(home, witnesses=[f"file:{d}/w.jsonl"], every=100)
+        s = make_signer(home, witnesses=[f"file:{d}/w.jsonl"], checkpoint_every=100)
         s.handle({"op": "append", "cseq": 0, "event": run_start("a"), "attach": {"policy": policy.load()[1]}})
         out = os.path.join(d, "out.tkb")
         with open(out, "wb") as f:
@@ -318,7 +305,7 @@ class Sanitising(unittest.TestCase):
 
     def test_signer_records_events_with_lone_surrogates_and_nan(self):
         home = tempfile.mkdtemp()
-        s = signer(home)
+        s = make_signer(home)
         s.handle({"op": "append", "cseq": 0, "event": run_start("r")})
         r = s.handle({"op": "append", "cseq": 1, "event": ev("tool.call", {
             "tool_use_id": "t", "name": "Bash", "input": {"command": {"value": "echo \ud800", "redacted": False}}}, "r")})
@@ -399,7 +386,7 @@ class ObserverServer(unittest.TestCase):
     def setUpClass(cls):
         cls.d = tempfile.mkdtemp()
         cls.home = os.path.join(cls.d, "s")
-        s = signer(cls.home, witnesses=[f"file:{cls.d}/w.jsonl"], every=100)
+        s = make_signer(cls.home, witnesses=[f"file:{cls.d}/w.jsonl"], checkpoint_every=100)
         s.handle({"op": "append", "cseq": 0, "event": run_start("r"), "attach": {"policy": policy.load()[1]}})
         cls.path = os.path.join(cls.home, "ledger", "ledger.jsonl")
 
@@ -479,7 +466,6 @@ class ObserverServer(unittest.TestCase):
 
 class AgentSdkEdges(unittest.TestCase):
     def test_tracer_is_a_context_manager_and_never_raises_on_odd_values(self):
-        from tracekit.ledger import read_records
         d = tempfile.mkdtemp()
         home = os.path.join(d, "signer")
         os.environ["TRACEKIT_CLIENT_HOME"] = os.path.join(d, "client")
@@ -492,7 +478,7 @@ class AgentSdkEdges(unittest.TestCase):
                         call.result({"when": __import__("datetime").datetime(2026, 1, 1), "set": {3}})
                     raise RuntimeError("agent crashed")
             install.stop_dev_daemon(home)
-            types = [r["event"]["type"] for _, r, _ in read_records(os.path.join(home, "ledger", "ledger.jsonl")) if r and not r.get("elided")]
+            types = [r["event"]["type"] for r in ledger_records(home) if not r.get("elided")]
             self.assertIn("tool.result", types)
             self.assertEqual(types.count("run.end"), 1)  # recorded even though the agent raised
         finally:
@@ -514,10 +500,6 @@ class Packaging(unittest.TestCase):
         r = subprocess.run([sys.executable, "-m", "tracekit", "--version"], capture_output=True, text=True, cwd=ROOT)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("tracekit", r.stdout)
-
-
-if __name__ == "__main__":
-    unittest.main()
 
 
 class PolicySafety(unittest.TestCase):
@@ -568,7 +550,7 @@ class BoundedFeed(unittest.TestCase):
     def test_feed_drops_oldest_and_keeps_absolute_positions(self):
         d = tempfile.mkdtemp()
         home = os.path.join(d, "s")
-        s = signer(home, witnesses=[f"file:{d}/w.jsonl"], every=1000)
+        s = make_signer(home, witnesses=[f"file:{d}/w.jsonl"], checkpoint_every=1000)
         s.handle({"op": "append", "cseq": 0, "event": run_start("r"), "attach": {"policy": policy.load()[1]}})
         for i in range(1, 30):
             s.handle({"op": "append", "cseq": i, "event": ev("user.prompt", {"content": core.content_ref(f"p{i}")}, "r")})
@@ -641,14 +623,13 @@ class TrustedKeyFile(unittest.TestCase):
 class RejectionFlood(unittest.TestCase):
     def test_retrying_one_invalid_event_cannot_grow_the_ledger_without_bound(self):
         d = tempfile.mkdtemp()
-        s = signer(os.path.join(d, "s"), witnesses=[f"file:{d}/w.jsonl"], every=100000)
+        s = make_signer(os.path.join(d, "s"), witnesses=[f"file:{d}/w.jsonl"], checkpoint_every=100000)
         s.handle({"op": "append", "cseq": 0, "event": run_start("r"), "attach": {"policy": policy.load()[1]}})
         bad = ev("tool.call", {"tool_use_id": "t", "name": "Bash", "input": {"command": "plain string, not a content ref"}}, "r")
         for i in range(1, 1500):
             self.assertFalse(s.handle({"op": "append", "cseq": i, "event": dict(bad)})["ok"])
-        from tracekit.ledger import read_records
-        errors = [r["event"]["data"]["message"] for _, r, _ in read_records(os.path.join(d, "s", "ledger", "ledger.jsonl"))
-                  if r and not r.get("elided") and r["event"]["type"] == "error"]
+        errors = [r["event"]["data"]["message"] for r in ledger_records(os.path.join(d, "s"))
+                  if not r.get("elided") and r["event"]["type"] == "error"]
         self.assertLessEqual(len(errors), 10 + 3)          # 10 individual + summaries at 100, 1000
         self.assertTrue(any("1000 times" in m for m in errors))
         s.ledger.close()
@@ -684,10 +665,9 @@ class BurstOfWriters(unittest.TestCase):
         import threading
         from tracekit import install
         from tracekit.agent_sdk import Tracer
-        from tracekit.ledger import read_records
         d = tempfile.mkdtemp()
         home = os.path.join(d, "signer")
-        saved = {k: os.environ.get(k) for k in ("TRACEKIT_CLIENT_HOME", "TRACEKIT_POLICY")}
+        patch_env(self)
         os.environ["TRACEKIT_CLIENT_HOME"] = os.path.join(d, "client")
         os.environ.pop("TRACEKIT_POLICY", None)
         try:
@@ -707,17 +687,12 @@ class BurstOfWriters(unittest.TestCase):
             [x.join() for x in th]
             install.stop_dev_daemon(home)
             self.assertEqual(errors, [])
-            recs = [r["event"] for _, r, _ in read_records(os.path.join(home, "ledger", "ledger.jsonl"))
-                    if r and not r.get("elided") and r["event"]["run_id"].startswith("burst")]
+            recs = [r["event"] for r in ledger_records(home)
+                    if not r.get("elided") and r["event"]["run_id"].startswith("burst")]
             self.assertFalse([e for e in recs if e["type"] == "capture.gap"], "a send failed and was recorded as a gap")
             self.assertEqual(len([e for e in recs if e["type"] in ("tool.call", "tool.result")]), 16 * 20 * 2)
         finally:
             install.stop_dev_daemon(home)
-            for k, v in saved.items():
-                if v is None:
-                    os.environ.pop(k, None)
-                else:
-                    os.environ[k] = v
             shutil.rmtree(d, ignore_errors=True)
 
 
@@ -733,3 +708,7 @@ class PidAlive(unittest.TestCase):
                 break
             time.sleep(0.05)
         self.assertFalse(install._pid_alive(p.pid))
+
+
+if __name__ == "__main__":
+    unittest.main()
