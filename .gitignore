@@ -7,8 +7,6 @@ paper/*.out
 paper/*.blg
 paper/*.fls
 paper/*.fdb_latexmk
-__pycache__/
-*.pyc
 build/
 *.egg-info/
 dist/
@@ -18,6 +16,7 @@ dist/
 .venv/
 venv/
 .DS_Store
+_claude_snapshots/
 
 # local planning notes (not committed)
 planning/

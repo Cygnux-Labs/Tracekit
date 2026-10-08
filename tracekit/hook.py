@@ -6,7 +6,7 @@ Fail mode (policy `fail_mode`, recorded in run.start):
   closed           signer down -> every tool call is blocked
 A policy deny always blocks, whether or not the signer is reachable.
 
-    python -m tracekit.hook      (wired by `tracekit init`)
+    python -I -m tracekit.hook   (wired by `tracekit init`)
 """
 import getpass
 import hashlib
@@ -339,15 +339,21 @@ def main(harness_reasoning=True):
     return 0
 
 
+def fail_closed():
+    """True when the configured fail mode (env, system config or policy) says a Tracekit failure must block."""
+    if os.environ.get("TRACEKIT_FAIL_CLOSED") == "1" or client.system_fail_closed():
+        return True
+    try:
+        return policy_mod.load()[0].get("fail_mode") == "closed"
+    except Exception:
+        return False
+
+
 def _entry():
     try:
         return main()
     except Exception as e:  # a crash in Tracekit must follow the configured fail mode
-        closed = os.environ.get("TRACEKIT_FAIL_CLOSED") == "1" or client.system_fail_closed()
-        try:
-            closed = closed or policy_mod.load()[0].get("fail_mode") == "closed"
-        except Exception:
-            pass
+        closed = fail_closed()
         print(f"[tracekit] hook error ({e}); " + ("blocking (fail-closed)" if closed else "allowing (fail-open)"), file=sys.stderr)
         return 2 if closed else 0
 
