@@ -1,0 +1,28 @@
+# Docs Index
+
+Last full scan: {{TIMESTAMP}} · {{DOC_COUNT}} docs · {{STALE_COUNT}} stale ({{STALE_PERCENT}}%)
+
+## Active
+
+| Doc | Path | Status | Updated |
+|---|---|---|---|
+| {{DOC_1_TITLE}} | `{{DOC_1_PATH}}` | {{DOC_1_STATUS}} | {{DOC_1_DATE}} |
+| {{DOC_2_TITLE}} | `{{DOC_2_PATH}}` | {{DOC_2_STATUS}} | {{DOC_2_DATE}} |
+
+## Stale
+
+| Doc | Path | Since | Reason |
+|---|---|---|---|
+| {{STALE_1_TITLE}} | `{{STALE_1_PATH}}` | {{STALE_1_DATE}} | {{STALE_1_REASON}} |
+
+Fix with `/repair-docs`: it re-verifies the prose against the code, then refreshes the manifest.
+
+## Missing
+
+Code with no design doc:
+
+- `{{MISSING_1_PATH}}`: {{MISSING_1_DESCRIPTION}}
+
+## Archived
+
+Superseded docs: marked here, not deleted.

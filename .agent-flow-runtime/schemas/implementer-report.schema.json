@@ -1,0 +1,172 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/Drix10/agent-flow/schemas/implementer-report.schema.json",
+  "title": "agent-flow implementer report",
+  "type": "object",
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": [
+        "ready_for_review",
+        "needs_me"
+      ]
+    },
+    "issue": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "branch": {
+      "type": "string"
+    },
+    "commit": {
+      "type": "string"
+    },
+    "files_changed": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "criteria": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "criterion": {
+            "type": "string"
+          },
+          "evidence": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "criterion",
+          "evidence"
+        ]
+      }
+    },
+    "checks": {
+      "type": "object",
+      "properties": {
+        "test": {
+          "type": "string",
+          "enum": [
+            "passed",
+            "failed",
+            "not_defined"
+          ]
+        },
+        "typecheck": {
+          "type": "string",
+          "enum": [
+            "passed",
+            "failed",
+            "not_defined"
+          ]
+        },
+        "lint": {
+          "type": "string",
+          "enum": [
+            "passed",
+            "failed",
+            "not_defined"
+          ]
+        }
+      }
+    },
+    "new_dependencies": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "shortcuts": {
+      "type": "array",
+      "description": "Deliberate simplifications that cut a real corner, each marked in the code with a `lean:` comment. They go into the pull request and `agent-flow debt`, so a deferral can't quietly become permanent.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "where": {
+            "type": "string"
+          },
+          "ceiling": {
+            "type": "string"
+          },
+          "upgrade": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "where",
+          "ceiling",
+          "upgrade"
+        ]
+      }
+    },
+    "context_stale": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "file": {
+            "type": "string"
+          },
+          "claim": {
+            "type": "string"
+          },
+          "reality": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "file",
+          "claim",
+          "reality"
+        ]
+      }
+    },
+    "disputes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "finding": {
+            "type": "string"
+          },
+          "evidence": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "finding",
+          "evidence"
+        ]
+      }
+    },
+    "category": {
+      "type": "string",
+      "enum": [
+        "IMPL_ERROR",
+        "SPEC_ERROR",
+        "ARCH_ERROR",
+        "protected_path"
+      ]
+    },
+    "what_i_tried": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "what_failed": {
+      "type": "string"
+    },
+    "suggested_next_step": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "status",
+    "issue"
+  ]
+}
