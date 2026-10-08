@@ -4,6 +4,15 @@ All notable changes to Tracekit. Versions follow [PEP 440](https://peps.python.o
 
 ## Unreleased
 
+### Installer file writes
+- `tracekit init` writes every config, settings file and backup through a directory fd: temp files get an
+  unpredictable name, are created exclusively with their final mode (0600 for configs), and nothing follows a symlink.
+  A symlinked `~/.claude/settings.json`, `~/.tracekit-client/` entry or signer `config.json` is refused with an error.
+- As root, writes into the agent user's home run as that user; signer files are `fchown`ed on the open file.
+- Backups are named `<file>.bak-<time>-<random>`.
+- Dev mode over TCP: tracekitd binds a free port itself and records it in its config; init reads it back instead of
+  probing for a free port.
+
 ### Project
 - `SECURITY.md` states supported versions, a disclosure timeline, safe harbour and the operator caveat.
 - Contributions need a DCO sign-off (`git commit -s`); a CI check enforces it on pull requests.
@@ -17,6 +26,13 @@ All notable changes to Tracekit. Versions follow [PEP 440](https://peps.python.o
 - Cursor's `failClosed` and wiring errors in the Codex/Cursor/Gemini hook entry now follow the configured fail mode.
 - The plugin's `tracekit-hook` blocks instead of allowing when the package is missing and
   `/etc/tracekit/client.json` is fail-closed.
+
+### Validate remote endpoint URLs
+- `tracekit init --remote` and `tracekit otel push` parse the URL: `https://` to any host, plain `http://` only when the
+  host is exactly `localhost`, `127.0.0.1` or `::1`; URLs with `user@` are refused.
+- The remote signer client and `otel push` no longer follow HTTP redirects, so credentials never reach a redirect target.
+- An empty or non-JSON-object reply from the signer is treated as "signer unavailable", like a refused connection.
+- `init --remote` refuses to write its config through a symlink.
 
 ### Security (0.3: harness binding, closing fabricated runs)
 After 0.2.1, any process running as the agent's user could still drive the real hook with a complete, well-formed
