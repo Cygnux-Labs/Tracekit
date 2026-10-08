@@ -169,8 +169,9 @@ def main(argv=None):
 def _init_remote(a):
     from . import client
     url = a.remote.rstrip("/")
-    if not (url.startswith("https://") or url.startswith(("http://127.0.0.1", "http://localhost"))):
-        print("tracekit: --remote must be an https:// URL (http only for localhost)", file=sys.stderr)
+    err = client.remote_url_error(url)
+    if err:
+        print(f"tracekit: --remote: {err}", file=sys.stderr)
         return 2
     token = os.environ.get("TRACEKIT_REMOTE_TOKEN", "")
     if a.token_file:
@@ -180,7 +181,7 @@ def _init_remote(a):
         print("tracekit: give the client token with --token-file or TRACEKIT_REMOTE_TOKEN", file=sys.stderr)
         return 2
     path = os.path.join(client.client_dir(), "config.json")
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0), 0o600)
     with os.fdopen(fd, "w") as f:
         json.dump({"socket": url, "socket_token": token, "mode": "remote", "signer_isolation": "remote"}, f, indent=2)
     print(f"remote signer configured: {url} (SDK only: Claude Code hooks are not installed; held calls are refused)")
