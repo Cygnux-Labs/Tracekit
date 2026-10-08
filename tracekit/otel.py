@@ -192,11 +192,14 @@ def push(endpoint, payload, timeout=10, headers=None):
     """POST OTLP/JSON to an OTLP/HTTP collector or backend (Jaeger, Tempo or any OTLP/HTTP endpoint).
     A URL ending in /v1/traces (or any explicit path) is used as given; a bare origin gets /v1/traces appended."""
     from urllib.parse import urlsplit
+    from .client import no_redirect_opener, remote_url_error
+    err = remote_url_error(endpoint)
+    if err:
+        raise ValueError(f"OTLP endpoint: {err}")
     base = endpoint.rstrip("/")
     url = base if urlsplit(base).path not in ("", "/") else base + "/v1/traces"
     h = {"content-type": "application/json"}
     h.update(headers or {})
     req = urllib.request.Request(url, data=json.dumps(payload).encode(), method="POST", headers=h)
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-    with opener.open(req, timeout=timeout) as r:
+    with no_redirect_opener().open(req, timeout=timeout) as r:
         return r.status, r.read().decode("utf-8", "replace")
