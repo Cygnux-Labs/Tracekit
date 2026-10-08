@@ -14,3 +14,17 @@ make check          # lint + tests + build
 - Tracekit says what it could not observe instead of staying quiet. Keep that property: a check that
   cannot run should warn, never pass.
 - Report vulnerabilities privately (see `SECURITY.md`).
+
+## Developer Certificate of Origin
+
+Every commit must be signed off under the [Developer Certificate of Origin 1.1](https://developercertificate.org/):
+by adding the line below you certify that you wrote the change, or otherwise have the right to submit it
+under the project's license.
+
+```
+Signed-off-by: Your Name <you@example.com>
+```
+
+`git commit -s` adds it, using your `user.name` and `user.email`. A CI check fails the pull request if any
+commit lacks a sign-off. To fix older commits on your branch, run `git rebase --signoff main` and push the
+branch again.
