@@ -23,7 +23,39 @@ def client_dir():
     return d
 
 
+SYSTEM_CONFIG = "/etc/tracekit/client.json"
+
+
+def system_config():
+    """The root-owned client config written by `sudo tracekit init` (0.2.1), or None.
+
+    When it exists it is the only source of the signer address, policy path and fail mode: the agent's own
+    ~/.tracekit-client/config.json and TRACEKIT_SOCKET are ignored, so the agent cannot point its hooks at a
+    signer it runs itself. A file that is not owned by root, or that others can write, is not trusted."""
+    try:
+        st = os.stat(SYSTEM_CONFIG)
+    except OSError:
+        return None
+    if hasattr(os, "getuid") and (st.st_uid != 0 or st.st_mode & 0o022):
+        return None
+    try:
+        with open(SYSTEM_CONFIG, encoding="utf-8") as f:
+            cfg = json.load(f)
+    except (OSError, ValueError):
+        return None
+    return cfg if isinstance(cfg, dict) else None
+
+
+def system_fail_closed():
+    """True in system mode unless the root-owned config explicitly allows fail-open."""
+    sc = system_config()
+    return sc is not None and sc.get("fail_mode", "closed") != "open"
+
+
 def client_config():
+    sc = system_config()
+    if sc is not None:
+        return sc
     p = os.path.join(client_dir(), "config.json")
     if os.path.exists(p):
         try:
@@ -35,6 +67,9 @@ def client_config():
 
 
 def socket_path():
+    sc = system_config()
+    if sc is not None:
+        return sc.get("socket") or DEFAULT_SOCKET
     return os.environ.get("TRACEKIT_SOCKET") or client_config().get("socket") or DEFAULT_SOCKET
 
 
