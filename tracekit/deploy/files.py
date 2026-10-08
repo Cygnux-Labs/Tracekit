@@ -131,13 +131,24 @@ def write(d, name, data, mode=0o600, uid=None, gid=None):
             os.replace(tmp, name, src_dir_fd=d, dst_dir_fd=d)
             os.fsync(d)
         else:
-            os.replace(tmp_path, path)
+            _replace_retrying(tmp_path, path)
     except BaseException:
         try:
             os.unlink(tmp_path, **at)
         except OSError:
             pass
         raise
+
+
+def _replace_retrying(src, dst, tries=20):
+    """os.replace, retried briefly: on Windows it fails with access denied while another process has dst open."""
+    for i in range(tries):
+        try:
+            return os.replace(src, dst)
+        except PermissionError:
+            if os.name != "nt" or i == tries - 1:
+                raise
+            time.sleep(0.05)
 
 
 def backup(d, name, data):
