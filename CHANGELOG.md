@@ -137,6 +137,9 @@ real separate OS users; reproduced as eval E8 (`eval/e8_insider.py`, now a requi
 ### Changed
 - SDK tool calls made without a model id now get `tk_` ids (were `call_`, which collides with OpenAI call ids).
 - `tracekit analyze`, `otel` and `sql` parse their own options (a leading `--option` used to be rejected).
+- `SECURITY.md` now states supported release lines, a disclosure timeline, safe harbour and scope (including that
+  there is no protection against the operator without an independent witness). Contributions need a DCO sign-off
+  (`git commit -s`), checked in CI; new issue templates for policy false positives/negatives and integrations.
 
 ### Fixed
 - **TK-D010** denied `cp .env /tmp/x` as "writing to a credentials file"; it now matches credentials files only as the
