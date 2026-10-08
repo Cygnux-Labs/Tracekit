@@ -245,7 +245,7 @@ def _ours(cmd):
 
 
 def install(harness, project=None, uninstall=False):
-    from .install import SettingsError, _atomic_write_json
+    from .install import SettingsError, _atomic_write_json, _backup
     path = config_path(harness, project)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     s = {}
@@ -258,9 +258,7 @@ def install(harness, project=None, uninstall=False):
             raise SettingsError(f"{path} is not valid JSON ({e}); Tracekit did not change it.") from e
         if not isinstance(s, dict):
             raise SettingsError(f"{path} must contain a JSON object; Tracekit did not change it.")
-        import shutil
-        import time
-        shutil.copy2(path, f"{path}.bak-{time.strftime('%Y%m%d-%H%M%S')}")
+        _backup(path, txt.encode("utf-8"))
     hooks = s.setdefault("hooks", {})
     if not isinstance(hooks, dict):
         raise SettingsError(f"'hooks' in {path} must be an object; Tracekit did not change it.")
