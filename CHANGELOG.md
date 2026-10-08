@@ -4,6 +4,13 @@ All notable changes to Tracekit. Versions follow [PEP 440](https://peps.python.o
 
 ## Unreleased
 
+### Fixed
+- Redaction stays fast on large tool arguments: the private-key, JWT, connection-string, dotenv and secret-assignment
+  rules no longer take quadratic time on repeated prefixes. Connection-string user and password parts are capped at
+  256 characters, and URLs with an empty user (`redis://:p@h:6379`) are now redacted.
+- When a tool call mentions a `.env` file, every `KEY=value` line in its inputs, including the fields always recorded
+  in clear (such as `command`), is redacted.
+
 ### Security (0.3: harness binding, closing fabricated runs)
 After 0.2.1, any process running as the agent's user could still drive the real hook with a complete, well-formed
 run that never happened, and it verified as `VERIFIED` (E8.6). The signer now checks *which program* sent each event,
