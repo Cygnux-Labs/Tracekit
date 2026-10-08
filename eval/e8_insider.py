@@ -99,9 +99,9 @@ def verdict(rid):
     subprocess.run([sys.executable, "-m", "tracekit", "export", "--home", HOME, "-o", out, "--run", rid], capture_output=True, text=True)
     r = subprocess.run([sys.executable, "-m", "tracekit", "verify", out, "--witness", f"git:{HOME}/witness"], capture_output=True, text=True)
     text = r.stdout + r.stderr
-    lines = [l for l in text.splitlines() if "VERIFIED" in l or "VERIFICATION FAILED" in l or "UNUSABLE" in l]
+    lines = [l for l in text.splitlines() if l.startswith("Integrity: ")]
     if lines:
-        return lines[-1].split(". Tracekit")[0], r.returncode
+        return lines[-1][len("Integrity: "):].rstrip("."), r.returncode
     return "NO BUNDLE (nothing recorded for this run)", r.returncode
 
 
