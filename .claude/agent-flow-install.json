@@ -1,0 +1,14 @@
+{
+  "version": "1.2.6",
+  "harness": "claude",
+  "files": {
+    ".claude/skills/agent-flow-bootstrap": "8af56864a6ce47670ad8fcf19e34d8b1315334ee309e82e5ca8e237e7fad62f8",
+    ".claude/skills/agent-flow-gardener": "c56d6bce554fc86ec52e9d35f44893c3313b7ff129c04283a1ea4e0ae6332d97",
+    ".claude/skills/agent-flow-implementer": "d7c35bca226aeb3ff98b6addd9faca037f04b9d8f22685e4e32731513ccc163a",
+    ".claude/skills/agent-flow-invoking-agents": "8f4569f95fb0f391104cdd1e831d977820bd9494759a614e51dd640da537bbc6",
+    ".claude/skills/agent-flow-qa": "4e8bb577140965d76bbf41772f04572d24b6e873bf9dfcf725df3297341feeb2",
+    ".claude/skills/agent-flow-reviewer": "bab4da2486f4e3a058ab56d0f9c75c76e23ee4625b539ee44bb387a6129e35cb",
+    ".claude/agents/reviewer.md": "fd3e2849917a7db37c85f0836d62a1b1f10acc3ad8c9acc63e8a3f485a065a75",
+    ".agent-flow-runtime": "63d43da24264b00ca47e4aaf2c6a899e2c3eb7178a1e8c8a9b3063e0511f3473"
+  }
+}

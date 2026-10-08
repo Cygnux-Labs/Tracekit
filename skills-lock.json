@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "skills": {
+    "agent-flow-bootstrap": {
+      "source": "Drix10/agent-flow",
+      "sourceType": "github",
+      "skillPath": "skills/agent-flow-bootstrap/SKILL.md",
+      "computedHash": "4ddd251ab185ce72cf2817a6dd5f3b572100e8701f4636729eeba02944219285"
+    },
+    "agent-flow-gardener": {
+      "source": "Drix10/agent-flow",
+      "sourceType": "github",
+      "skillPath": "skills/agent-flow-gardener/SKILL.md",
+      "computedHash": "5381570d836dd0e3075968dd979f2adb400af9b6ad5d4b5c88e80e8df1042421"
+    },
+    "agent-flow-implementer": {
+      "source": "Drix10/agent-flow",
+      "sourceType": "github",
+      "skillPath": "skills/agent-flow-implementer/SKILL.md",
+      "computedHash": "2d381bd201c3fbc47aa07f392d802d8ab05df3d1940b5fe44e2e16c54712562e"
+    },
+    "agent-flow-invoking-agents": {
+      "source": "Drix10/agent-flow",
+      "sourceType": "github",
+      "skillPath": "skills/agent-flow-invoking-agents/SKILL.md",
+      "computedHash": "5c380093d8454d17babe38c388fbcd9f47e9e0eb14dd7f124898772ea97c4183"
+    },
+    "agent-flow-qa": {
+      "source": "Drix10/agent-flow",
+      "sourceType": "github",
+      "skillPath": "skills/agent-flow-qa/SKILL.md",
+      "computedHash": "fd2b503d03e85b68efbc0b033f5d26934bab8d474edfb8f99ad3bb75887ec9ee"
+    },
+    "agent-flow-reviewer": {
+      "source": "Drix10/agent-flow",
+      "sourceType": "github",
+      "skillPath": "skills/agent-flow-reviewer/SKILL.md",
+      "computedHash": "f99e7191ffb5153daaa138850a43ea4ab821889e53ee01ef783ecfef8bc637af"
+    }
+  }
+}
