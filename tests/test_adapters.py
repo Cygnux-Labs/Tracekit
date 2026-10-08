@@ -1,36 +1,19 @@
 import asyncio
 import os
-import shutil
 import sys
-import tempfile
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
-from tracekit import install  # noqa: E402
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from tracekit.adapters import traced  # noqa: E402
-from tracekit.ledger import read_records  # noqa: E402
 from tracekit.agent_sdk import Tracer  # noqa: E402
+from factories import DaemonCase  # noqa: E402
 
 
-class Base(unittest.TestCase):
-    def setUp(self):
-        self.d = tempfile.mkdtemp()
-        self.home = os.path.join(self.d, "signer")
-        self.old = os.environ.get("TRACEKIT_CLIENT_HOME")
-        os.environ["TRACEKIT_CLIENT_HOME"] = os.path.join(self.d, "client")
-        install.init_dev(self.home, [], start=True)
-
-    def tearDown(self):
-        install.stop_dev_daemon(self.home)
-        if self.old is None:
-            os.environ.pop("TRACEKIT_CLIENT_HOME", None)
-        else:
-            os.environ["TRACEKIT_CLIENT_HOME"] = self.old
-        shutil.rmtree(self.d, ignore_errors=True)
-
+class Base(DaemonCase):
     def events(self):
-        return [r["event"] for _, r, _ in read_records(os.path.join(self.home, "ledger", "ledger.jsonl")) if r and not r.get("elided")]
+        return [r["event"] for r in self.records() if not r.get("elided")]
 
 
 class Generic(Base):
@@ -148,6 +131,7 @@ class LangChain(Base):
         with Tracer(agent="lg2", cwd=self.d) as t:  # off by default: no node steps
             graph.invoke({"n": 1}, config={"callbacks": [TracekitCallbackHandler(t)]})
         self.assertFalse([e for e in self.events()[before:] if e["type"] == "tool.call"])
+
 
 if __name__ == "__main__":
     unittest.main()

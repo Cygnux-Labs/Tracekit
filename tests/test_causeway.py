@@ -6,13 +6,14 @@ import os
 import shutil
 import subprocess
 import sys
-import tempfile
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
-from tracekit import bundle, causeway, install  # noqa: E402
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from tracekit import bundle, causeway  # noqa: E402
 from tracekit.agent_sdk import Tracer  # noqa: E402
+from factories import DaemonCase  # noqa: E402
 
 try:
     from causeway.core import load_run as cw_load, verify as cw_verify
@@ -49,21 +50,7 @@ TESTS = [{"intervention": "input:vendor:*", "target": "tool=send_email", "n": 40
           "ci": [-0.18, 0.18], "verdict": "no-detectable-effect", "method": "paired re-execution"}]
 
 
-class Integration(unittest.TestCase):
-    def setUp(self):
-        self.d = tempfile.mkdtemp()
-        self.home = os.path.join(self.d, "signer")
-        self.old = os.environ.get("TRACEKIT_CLIENT_HOME")
-        os.environ["TRACEKIT_CLIENT_HOME"] = os.path.join(self.d, "client")
-        install.init_dev(self.home, [], start=True)
-
-    def tearDown(self):
-        install.stop_dev_daemon(self.home)
-        if self.old is None:
-            os.environ.pop("TRACEKIT_CLIENT_HOME", None)
-        else:
-            os.environ["TRACEKIT_CLIENT_HOME"] = self.old
-        shutil.rmtree(self.d, ignore_errors=True)
+class Integration(DaemonCase):
 
     def records(self):
         return causeway._records(self.home)

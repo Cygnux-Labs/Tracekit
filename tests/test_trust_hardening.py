@@ -17,7 +17,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 from tracekit import autotrace, bridge, client, hook, migrate, policy  # noqa: E402
 from tracekit.core import GENESIS, SCHEMA_VERSION, canon, new_id, now_ts  # noqa: E402
-from tests.test_hotfix_021 import make_signer  # noqa: E402
+from factories import make_signer  # noqa: E402
 
 AGENT_UID, OTHER_UID = 1001, 1002
 
@@ -115,7 +115,7 @@ class Approvals(unittest.TestCase):
     def signer(self, **cfg):
         d = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, d, True)
-        s = make_signer(d, cfg)
+        s = make_signer(d, **cfg)
         s._run("r").update(started=True, agent_uid=AGENT_UID)
         return s
 
