@@ -1,0 +1,43 @@
+{
+  "E8.1 decoy redirect": {
+    "caught": true,
+    "hidden_call_reached_real_signer": true,
+    "verdict": "VERIFIED"
+  },
+  "E8.2 redirect + counter restore": {
+    "caught": true,
+    "hidden_call_reached_real_signer": true,
+    "verdict": "VERIFIED WITH GAPS (capture gaps)"
+  },
+  "E8.3 cross-user injection": {
+    "caught": true,
+    "injection_accepted": false,
+    "mallory_saw": "False",
+    "verdict": "VERIFIED WITH GAPS (rejected writes)"
+  },
+  "E8.5 policy swap": {
+    "caught": true,
+    "hook_exit_code": "2",
+    "meaning": "2 = still denied by the real policy"
+  },
+  "E8.6 fabricated run": {
+    "caught": false,
+    "verdict": "VERIFIED",
+    "expected": "open until 0.3 (harness binding)"
+  },
+  "E8.4 signer down": {
+    "caught": true,
+    "hook_exit_code": "2",
+    "meaning": "2 = blocked; 0 = ran unrecorded"
+  },
+  "_gate_0.2.1": {
+    "required": [
+      "E8.1 decoy redirect",
+      "E8.2 redirect + counter restore",
+      "E8.3 cross-user injection",
+      "E8.5 policy swap",
+      "E8.4 signer down"
+    ],
+    "passed": true
+  }
+}

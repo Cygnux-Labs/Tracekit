@@ -21,6 +21,10 @@ import hmac
 import json
 import math
 import os
+try:
+    import pwd
+except ImportError:  # pragma: no cover - Windows
+    pwd = None
 import signal
 import socket
 import socketserver
@@ -164,6 +168,11 @@ class Signer:
             st["last"] = time.time()
             if ev["type"] == "run.start":
                 st.update(started=True, ended=False, proxy="proxy" in ev["data"].get("capture_sources", []))
+                if ev["data"].get("os_user_attested") and ev["data"].get("os_user"):
+                    try:  # restore run ownership after a restart
+                        st["agent_uid"] = pwd.getpwnam(ev["data"]["os_user"]).pw_uid
+                    except (KeyError, AttributeError):
+                        pass
             elif ev["type"] == "run.end":
                 st["ended"] = True
             elif ev["type"] == "checkpoint":
@@ -633,6 +642,14 @@ class Signer:
             return {"ok": False, "error": "schema: " + "; ".join(errs[:5])}
         attach = req.get("attach") or {}
         st = self._run(run_id)
+        owner = st.get("agent_uid")
+        if (peer_uid is not None and not peer_is_signer and owner is not None and peer_uid != owner
+                and not run_id.startswith(("findings:", "anchors:"))):
+            # 0.2.1: a run belongs to the uid that started it. Without this, any local user could write
+            # well-formed events into another user's run, and the record would read as that agent's.
+            self._rejection(f"refused event from uid {peer_uid} ({_user_name(peer_uid)}): run belongs to uid "
+                            f"{owner} ({_user_name(owner)})", run_id)
+            return {"ok": False, "error": "run belongs to another user"}
         st["last"] = time.time()
         st["stale_flagged"] = False
         if isinstance(cseq, int):
@@ -646,6 +663,12 @@ class Signer:
             self._internal("capture.gap", {"reason": "event without client counter", "kind": "counter"}, run_id)
         claimed = (ev["data"].get("policy") or {}).get("hash") if ev["type"] == "run.start" else \
             (ev["data"].get("policy_hash") if ev["type"] == "policy.decision" else None)
+        pinned = self.cfg.get("pinned_policy_hash")
+        if pinned and claimed and claimed != pinned:
+            # 0.2.1: the operator pinned the policy the agent must run under; a different one is evidence
+            self._internal("capture.gap", {"reason": f"{ev['type']} under policy {claimed[:19]}, not the pinned policy "
+                                                     f"{str(pinned)[:19]}", "kind": "policy_mismatch",
+                                           "tool_use_id": ev["data"].get("tool_use_id")}, run_id)
         if attach.get("policy") is not None and claimed:
             err = self._store_policy(attach["policy"], claimed)
             if err:

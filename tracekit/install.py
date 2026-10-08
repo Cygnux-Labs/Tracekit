@@ -511,6 +511,65 @@ def install_managed(proxy_url=None, managed_only=False, path=None):
     return path
 
 
+def _write_system_client_config(cfg):
+    """0.2.1: root-owned client config. In system mode it overrides the agent-writable copy in the agent's home
+    and the TRACEKIT_SOCKET / TRACEKIT_POLICY environment, so the agent cannot redirect or reconfigure its hooks."""
+    path = client.SYSTEM_CONFIG
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    os.chown(os.path.dirname(path), 0, 0)
+    os.chmod(os.path.dirname(path), 0o755)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, indent=2)
+    os.chown(tmp, 0, 0)
+    os.chmod(tmp, 0o644)
+    os.replace(tmp, path)
+
+
+def _pin_policy(home, tk_user=None):
+    """0.2.1: record the hash of the effective system-mode policy in the signer config. The signer then turns any
+    run or decision made under a different policy into a policy_mismatch capture gap. Re-run after a policy change."""
+    from . import policy as policy_mod
+    pol, _ = policy_mod.load()
+    path = os.path.join(home, "config.json")
+    with open(path, encoding="utf-8") as f:
+        cfg = json.load(f)
+    cfg["pinned_policy_hash"] = policy_mod.policy_hash(pol)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, indent=2)
+    if tk_user is not None:
+        os.chown(tmp, tk_user.pw_uid, tk_user.pw_gid)
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, path)
+    return cfg["pinned_policy_hash"]
+
+
+def migrate_system(fail_mode=None):
+    """0.2.1 `tracekit migrate --system`: upgrade a 0.2.0 system-mode install in place. Writes the root-owned
+    client config and pins the policy; the ledger, key and witness are untouched. Restart tracekitd afterwards."""
+    if not sys.platform.startswith("linux"):
+        raise SystemExit("migrate --system: system mode is Linux-only in 0.2.1")
+    if os.geteuid() != 0:
+        raise SystemExit("migrate --system needs root: sudo tracekit migrate --system")
+    signer_cfg = os.path.join(SYS_HOME, "config.json")
+    if not os.path.exists(signer_cfg):
+        raise SystemExit(f"no system-mode signer at {SYS_HOME}; run `sudo tracekit init --user <agent-user>` instead")
+    with open(signer_cfg, encoding="utf-8") as f:
+        scfg = json.load(f)
+    cfg = {"socket": scfg.get("socket") or os.path.join(SYS_HOME, "tracekitd.sock"), "signer_home": SYS_HOME,
+           "signer_isolation": "separate-user", "mode": "system", "fail_mode": fail_mode or "closed"}
+    if scfg.get("proxy"):
+        cfg.update(proxy=True, proxy_url=f"http://127.0.0.1:{scfg['proxy'].get('port', 8787)}")
+    _write_system_client_config(cfg)
+    tk = pwd.getpwnam(SYS_USER)
+    pinned = _pin_policy(SYS_HOME, tk)
+    print(f"wrote {client.SYSTEM_CONFIG} (root-owned; agent config and TRACEKIT_SOCKET/TRACEKIT_POLICY now ignored)")
+    print(f"pinned policy {pinned[:19]}; fail_mode={cfg['fail_mode']}")
+    print("restart the signer to load the pin: sudo systemctl restart tracekitd")
+    return 0
+
+
 def init_system(target_user, witnesses, checkpoint_every=50, project=None, no_service=False, proxy=False, proxy_port=8787,
                 managed=False, managed_only=False, fail_mode=None, experimental_macos=False, hooks=True, signer=None):
     darwin = sys.platform == "darwin"
@@ -579,6 +638,8 @@ def init_system(target_user, witnesses, checkpoint_every=50, project=None, no_se
     if proxy:
         cfg.update(proxy=True, proxy_url=f"http://127.0.0.1:{proxy_port}")
     _write_client_config(owner.pw_dir, cfg, owner)
+    _write_system_client_config(dict(cfg, fail_mode=fail_mode or "closed"))
+    _pin_policy(SYS_HOME, tk)
     if not hooks:
         settings = None  # hooks come from elsewhere (the Claude Code plugin)
     elif managed:
