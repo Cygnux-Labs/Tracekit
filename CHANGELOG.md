@@ -4,6 +4,14 @@ All notable changes to Tracekit. Versions follow [PEP 440](https://peps.python.o
 
 ## Unreleased
 
+### Hook invocation
+- Generated hook commands (Claude Code, Codex, Cursor, Gemini) and the plugin's `tracekit-hook` run Python in
+  isolated mode (`-I`): the project directory and `PYTHON*` variables no longer affect which `tracekit` is imported.
+  Re-run `tracekit init` to rewrite existing hook commands.
+- Cursor's `failClosed` and wiring errors in the Codex/Cursor/Gemini hook entry now follow the configured fail mode.
+- The plugin's `tracekit-hook` blocks instead of allowing when the package is missing and
+  `/etc/tracekit/client.json` is fail-closed.
+
 ### Security (observer and replay rendering)
 - `tracekit observe` and `replay.html` escape every record-derived value they put into HTML, and fill their data
   slots in one pass, so bundle content cannot inject markup or script.
