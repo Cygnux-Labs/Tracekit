@@ -3,19 +3,17 @@ python3 -m pytest tests/test_adapters2.py -q"""
 import asyncio
 import json
 import os
-import shutil
 import sys
-import tempfile
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.join(ROOT, "tests"))
-from tracekit import install, otlp, otlp_wire, schema  # noqa: E402
+from tracekit import otlp, otlp_wire, schema  # noqa: E402
 from tracekit.adapters.mcp import tool_name, traced_session  # noqa: E402
 from tracekit.agent_sdk import Tracer  # noqa: E402
-from tracekit.ledger import read_records  # noqa: E402
 import test_otlp as O  # noqa: E402
+from factories import DaemonCase  # noqa: E402
 
 try:
     from mcp import types as mcp_types
@@ -37,27 +35,9 @@ class FakeSession:
         return "passthrough"
 
 
-class MCP(unittest.TestCase):
-    def setUp(self):
-        self.d = tempfile.mkdtemp()
-        self.home = os.path.join(self.d, "signer")
-        self.old = {k: os.environ.get(k) for k in ("TRACEKIT_CLIENT_HOME", "TRACEKIT_POLICY")}
-        os.environ["TRACEKIT_CLIENT_HOME"] = os.path.join(self.d, "client")
-        pol = os.path.join(self.d, "p.yaml")
-        with open(pol, "w") as f:
-            f.write("extends: default\nversion: mcp-test\ndeny:\n  - id: X-MCP-DEL\n    tool: 'mcp__github__delete_.*'\n"
-                    "    pattern: '.*'\n    reason: no deletes through MCP\n")
-        os.environ["TRACEKIT_POLICY"] = pol
-        install.init_dev(self.home, [], start=True)
-
-    def tearDown(self):
-        install.stop_dev_daemon(self.home)
-        for k, v in self.old.items():
-            if v is None:
-                os.environ.pop(k, None)
-            else:
-                os.environ[k] = v
-        shutil.rmtree(self.d, ignore_errors=True)
+class MCP(DaemonCase):
+    policy_yaml = ("extends: default\nversion: mcp-test\ndeny:\n  - id: X-MCP-DEL\n    tool: 'mcp__github__delete_.*'\n"
+                   "    pattern: '.*'\n    reason: no deletes through MCP\n")
 
     def test_calls_are_gated_recorded_and_errors_kept_as_results(self):
         raw = FakeSession()
@@ -75,7 +55,7 @@ class MCP(unittest.TestCase):
         self.assertEqual(other, "passthrough")
         from tracekit.adapters.mcp import _is_error
         self.assertTrue(_is_error(err, err if isinstance(err, dict) else {}))
-        evs = [r["event"] for _, r, _ in read_records(os.path.join(self.home, "ledger", "ledger.jsonl")) if r and r["event"]["run_id"] == "m1"]
+        evs = [r["event"] for r in self.records() if r["event"]["run_id"] == "m1"]
         calls = [e["data"]["name"] for e in evs if e["type"] == "tool.call"]
         self.assertEqual(calls, ["mcp__github__create_issue", "mcp__github__delete_repo", "mcp__github__boom"])
         decisions = [e["data"]["decision"] for e in evs if e["type"] == "policy.decision"]

@@ -20,22 +20,10 @@ import urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from tracekit import bundle, install, peercred, policy, privacy, yamlmini  # noqa: E402
 from tracekit.core import read_json, read_text, write_bytes, write_json, write_text  # noqa: E402
-
-_SAVED_POLICY = None
-
-
-def setUpModule():
-    # never inherit a policy path from another suite or the shell
-    global _SAVED_POLICY
-    _SAVED_POLICY = os.environ.pop("TRACEKIT_POLICY", None)
-
-
-def tearDownModule():
-    if _SAVED_POLICY is not None:
-        os.environ["TRACEKIT_POLICY"] = _SAVED_POLICY
-
+from factories import make_signer  # noqa: E402
 
 PY = sys.executable
 
@@ -725,10 +713,7 @@ class ApprovalIdentity(unittest.TestCase):
     """The signer's approval rule, driven directly with chosen peer credentials."""
 
     def signer(self, **cfg):
-        from tracekit.daemon import Signer, load_config
-        home = tempfile.mkdtemp()
-        write_json(os.path.join(home, "config.json"), {"checkpoint_every": 100, "witnesses": [], **cfg})
-        return Signer(home, load_config(home))
+        return make_signer(tempfile.mkdtemp(), checkpoint_every=100, witnesses=[], **cfg)
 
     def request(self, s, agent_uid):
         r = s.handle({"op": "approval_request", "run_id": "r", "tool_use_id": "t", "timeout_s": 30}, agent_uid, 999999)

@@ -16,8 +16,9 @@ from http.server import ThreadingHTTPServer
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from tracekit import bundle, client, coverage, ingest, install, otlp, otlp_wire, schema  # noqa: E402
-from tracekit.ledger import read_records  # noqa: E402
+from factories import ledger_records, patch_env  # noqa: E402
 
 try:
     from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
@@ -31,18 +32,6 @@ except ImportError:  # optional: the receiver itself has no dependencies
 
 TRACE = "5b8efff798038103d269b633813fc60c"
 NS = 1_760_000_000_000_000_000
-_SAVED = {}
-
-
-def setUpModule():
-    _SAVED["policy"] = os.environ.pop("TRACEKIT_POLICY", None)
-
-
-def tearDownModule():
-    if _SAVED.get("policy") is not None:
-        os.environ["TRACEKIT_POLICY"] = _SAVED["policy"]
-
-
 def kv(k, v):
     if isinstance(v, bool):
         val = {"boolValue": v}
@@ -357,7 +346,7 @@ class Signed(unittest.TestCase):
     def setUp(self):
         self.d = tempfile.mkdtemp()
         self.home = os.path.join(self.d, "signer")
-        self.old = {k: os.environ.get(k) for k in ("TRACEKIT_CLIENT_HOME",)}
+        patch_env(self)
         os.environ["TRACEKIT_CLIENT_HOME"] = os.path.join(self.d, "client")
         install.init_dev(self.home, [], start=True)
         self.srv = otlp.serve("127.0.0.1", 0, otlp.Receiver(otlp.local_sink, otlp.Mapper(cwd=self.d)))
@@ -368,15 +357,10 @@ class Signed(unittest.TestCase):
         self.srv.shutdown()
         self.srv.server_close()
         install.stop_dev_daemon(self.home)
-        for k, v in self.old.items():
-            if v is None:
-                os.environ.pop(k, None)
-            else:
-                os.environ[k] = v
         shutil.rmtree(self.d, ignore_errors=True)
 
     def events(self):
-        return [r["event"] for _, r, _ in read_records(os.path.join(self.home, "ledger", "ledger.jsonl")) if r and not r.get("elided")]
+        return [r["event"] for r in ledger_records(self.home) if not r.get("elided")]
 
     def post(self, body, ct="application/json", enc=None, path="/v1/traces"):
         c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
@@ -413,7 +397,7 @@ class Signed(unittest.TestCase):
         self.assertEqual(chat["gen_ai.request.model"], {"stringValue": "gpt-4o"})
         tool = {a["key"]: a["value"] for a in spans["3333333333333333"]["attributes"]}
         self.assertEqual(tool["gen_ai.tool.call.id"], {"stringValue": "call_1"})
-        recs = {r["hash"] for _, r, _ in read_records(os.path.join(self.home, "ledger", "ledger.jsonl")) if r}
+        recs = {r["hash"] for r in ledger_records(self.home)}
         self.assertIn(tool["tracekit.entry_hash"]["stringValue"], recs)  # every span points at a signed entry
         self.assertTrue(any("OpenTelemetry" in o for o in cov["observed"]))
         self.assertTrue(any("not proxy-observed" in o for o in cov["observed"]))
@@ -454,7 +438,7 @@ class Gateway(unittest.TestCase):
     def setUp(self):
         self.d = tempfile.mkdtemp()
         self.home = os.path.join(self.d, "signer")
-        self.old = os.environ.get("TRACEKIT_CLIENT_HOME")
+        patch_env(self)
         os.environ["TRACEKIT_CLIENT_HOME"] = os.path.join(self.d, "gw")
         install.init_dev(self.home, [], start=True)
         self.token = ingest.add_token(self.home, "box-1")
@@ -467,10 +451,6 @@ class Gateway(unittest.TestCase):
         self.srv.shutdown()
         self.srv.server_close()
         install.stop_dev_daemon(self.home)
-        if self.old is None:
-            os.environ.pop("TRACEKIT_CLIENT_HOME", None)
-        else:
-            os.environ["TRACEKIT_CLIENT_HOME"] = self.old
         shutil.rmtree(self.d, ignore_errors=True)
 
     def post(self, token):
@@ -486,7 +466,7 @@ class Gateway(unittest.TestCase):
         self.assertEqual(self.post(None)[0], 401)
         self.assertEqual(self.post("wrong")[0], 401)
         self.assertEqual(self.post(self.token)[0], 200)
-        evs = [r["event"] for _, r, _ in read_records(os.path.join(self.home, "ledger", "ledger.jsonl")) if r and not r.get("elided")]
+        evs = [r["event"] for r in ledger_records(self.home) if not r.get("elided")]
         mine = [e for e in evs if e["run_id"] == f"remote:box-1:otel:research-bot:{TRACE}"]
         self.assertEqual(len(mine), 7)
         self.assertTrue(mine[0]["data"]["host"].startswith("remote:box-1@"))
@@ -508,10 +488,6 @@ class CoverageWording(unittest.TestCase):
         self.assertIn("no model proxy: disabled hooks can only be inferred from missing run.end, not detected", rep["warnings"])
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class Push(unittest.TestCase):
     """tracekit otel push: signed runs out to any OTLP/HTTP backend, with auth headers, exactly once per run."""
 
@@ -519,7 +495,7 @@ class Push(unittest.TestCase):
         from http.server import BaseHTTPRequestHandler
         self.d = tempfile.mkdtemp()
         self.home = os.path.join(self.d, "signer")
-        self.old = os.environ.get("TRACEKIT_CLIENT_HOME")
+        patch_env(self)
         os.environ["TRACEKIT_CLIENT_HOME"] = os.path.join(self.d, "client")
         install.init_dev(self.home, [], start=True)
         got = self.got = []
@@ -543,10 +519,6 @@ class Push(unittest.TestCase):
         self.srv.shutdown()
         self.srv.server_close()
         install.stop_dev_daemon(self.home)
-        if self.old is None:
-            os.environ.pop("TRACEKIT_CLIENT_HOME", None)
-        else:
-            os.environ["TRACEKIT_CLIENT_HOME"] = self.old
         shutil.rmtree(self.d, ignore_errors=True)
 
     def push(self, *extra):
@@ -598,7 +570,7 @@ class Grpc(unittest.TestCase):
     def setUp(self):
         self.d = tempfile.mkdtemp()
         self.home = os.path.join(self.d, "signer")
-        self.old = os.environ.get("TRACEKIT_CLIENT_HOME")
+        patch_env(self)
         os.environ["TRACEKIT_CLIENT_HOME"] = os.path.join(self.d, "client")
         install.init_dev(self.home, [], start=True)
         self.sink_down = False
@@ -612,10 +584,6 @@ class Grpc(unittest.TestCase):
     def tearDown(self):
         self.srv.stop(0)
         install.stop_dev_daemon(self.home)
-        if self.old is None:
-            os.environ.pop("TRACEKIT_CLIENT_HOME", None)
-        else:
-            os.environ["TRACEKIT_CLIENT_HOME"] = self.old
         shutil.rmtree(self.d, ignore_errors=True)
 
     def test_real_grpc_exporter(self):
@@ -630,7 +598,7 @@ class Grpc(unittest.TestCase):
                 pass
             tid = format(root.get_span_context().trace_id, "032x")
         provider.shutdown()
-        evs = [r["event"] for _, r, _ in read_records(os.path.join(self.home, "ledger", "ledger.jsonl")) if r and r["event"]["run_id"] == f"otel:grpc-agent:{tid}"]
+        evs = [r["event"] for r in ledger_records(self.home) if r["event"]["run_id"] == f"otel:grpc-agent:{tid}"]
         self.assertEqual([e["type"] for e in evs], ["run.start", "tool.call", "policy.decision", "tool.result", "run.end"])
         # signer down: UNAVAILABLE, which exporters treat as retryable
         self.sink_down = True
@@ -659,3 +627,7 @@ class Grpc(unittest.TestCase):
         self.assertEqual(call(req.SerializeToString(), timeout=10), b"")  # retried batch accepted: full success
         ch.close()
         self.assertIsNotNone(SpanExportResult)
+
+
+if __name__ == "__main__":
+    unittest.main()

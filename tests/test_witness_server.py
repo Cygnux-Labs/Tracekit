@@ -10,15 +10,17 @@ import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from tracekit import bundle, install, witness_server  # noqa: E402
 from tracekit.agent_sdk import Tracer  # noqa: E402
 from tracekit.witness import HttpWitness, from_spec  # noqa: E402
+from factories import patch_env  # noqa: E402
 
 
 class Service(unittest.TestCase):
     def setUp(self):
         self.d = tempfile.mkdtemp()
-        self.old = os.environ.get("TRACEKIT_CLIENT_HOME")
+        patch_env(self)
         os.environ["TRACEKIT_CLIENT_HOME"] = os.path.join(self.d, "client")
         self.whome = os.path.join(self.d, "witness")
         self.wpub, _ = witness_server.init(self.whome)
@@ -39,10 +41,6 @@ class Service(unittest.TestCase):
         install.stop_dev_daemon(self.home)
         self.srv.shutdown()
         self.srv.server_close()
-        if self.old is None:
-            os.environ.pop("TRACEKIT_CLIENT_HOME", None)
-        else:
-            os.environ["TRACEKIT_CLIENT_HOME"] = self.old
         shutil.rmtree(self.d, ignore_errors=True)
 
     def run_agent(self, sid="w-1"):

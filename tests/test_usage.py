@@ -16,6 +16,7 @@ from tracekit.proxy import SSEScan  # noqa: E402
 sys.path.insert(0, os.path.join(ROOT, "tests"))
 import test_autotrace as T  # noqa: E402
 import test_otlp as O  # noqa: E402
+from factories import patch_env  # noqa: E402
 
 
 class Normalise(unittest.TestCase):
@@ -42,7 +43,8 @@ class Normalise(unittest.TestCase):
 
 
 class Capture(unittest.TestCase):
-    @unittest.skipUnless(T.openai is not None and T.httpx is not None, "openai SDK not installed")
+    @unittest.skipUnless(T.openai is not None and T.anthropic is not None and T.httpx is not None,
+                         "openai and anthropic SDKs not installed")
     def test_sdk_records_usage(self):
         t = T.FakeTracer()
         autotrace.instrument(t)
@@ -102,8 +104,7 @@ class Cost(unittest.TestCase):
     def test_cli_end_to_end(self):
         import subprocess
         d = tempfile.mkdtemp()
-        old = os.environ.get("TRACEKIT_CLIENT_HOME")
-        os.environ["TRACEKIT_CLIENT_HOME"] = os.path.join(d, "client")
+        patch_env(self, TRACEKIT_CLIENT_HOME=os.path.join(d, "client"))
         home = os.path.join(d, "signer")
         install.init_dev(home, [], start=True)
         try:
@@ -135,10 +136,6 @@ class Cost(unittest.TestCase):
             self.assertEqual([r["cost"] for r in boot if r.get("event") == "tk_model"], [20.0, 20.0, 20.0])
         finally:
             install.stop_dev_daemon(home)
-            if old is None:
-                os.environ.pop("TRACEKIT_CLIENT_HOME", None)
-            else:
-                os.environ["TRACEKIT_CLIENT_HOME"] = old
             shutil.rmtree(d, ignore_errors=True)
 
 
