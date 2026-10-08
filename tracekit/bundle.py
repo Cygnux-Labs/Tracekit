@@ -29,6 +29,8 @@ TRUST = {"hook": "reported by a hook process (any process running as the agent's
          "transcript": "harness-reported, lower trust", "sdk": "reported by an instrumented app",
          "migrated": "converted from a v0.1 ledger (hash chain only, unsigned origin)", "signer": "written by tracekitd"}
 EXIT_OK, EXIT_FAIL, EXIT_BAD, EXIT_WARN = 0, 1, 2, 3
+# companion runs (signed findings, causeway anchors) have no run.start/run.end of their own
+COMPANION_PREFIXES = ("findings:", "anchors:")
 
 
 def _elide(rec):
@@ -189,6 +191,7 @@ def export(signer_home, out_path, run=None, last=True, since=None, otel=False, o
 class Report:
     def __init__(self):
         self.checks, self.failures, self.warnings = [], [], []
+        self.assurance = None
 
     def check(self, name, ok, detail="", problems=None, warn=False):
         self.checks.append({"check": name, "status": "pass" if ok else ("warn" if warn else "fail"), "detail": detail,
@@ -364,6 +367,24 @@ def _verify(rep, manifest, blobs, witness_specs, strict, trusted_key):
           and (e.get("data") or {}).get("client_run_id") in sel_runs]
     rep.check("rejected writes", not rj, "none" if not rj else "",
               [f"seq {e['seq']}: {e['data'].get('message')}" for e in rj][:20], warn=True)
+    # 3b. run completeness: a v1 stub is signed over (hash, prev_hash, seq) only, so nothing says which run it
+    #     belonged to, and a stub of a selected run looks exactly like a stub of another run
+    stubs = sum(1 for r in recs if r and r.get("elided"))
+    rep.check("run completeness", not stubs, "no elided records: every record in the bundle is whole" if not stubs else "",
+              [f"{stubs} elided record(s): v1 signatures do not bind a stub to its run"] +
+              [f"run {x}: run completeness unproven (v1 bundle with elided records)" for x in sorted(map(str, sel_runs))][:20],
+              warn=True)
+    bound_runs = sorted(str(x) for x in sel_runs if not str(x).startswith(COMPANION_PREFIXES))
+    run_ends = {x: max((e["seq"] for e in sel if e.get("run_id") == x and e.get("type") == "run.end"), default=None)
+                for x in bound_runs}
+    rb = [] if sel_runs else ["no selected run has a record in the bundle"]
+    for x in bound_runs:
+        if not any(e.get("run_id") == x and e.get("type") == "run.start" for e in sel):
+            rb.append(f"run {x}: run boundaries unproven (no run.start in the bundle)")
+        if run_ends[x] is None:
+            rb.append(f"run {x}: tail unproven (no signed run.end in the bundle; the run may have continued)")
+    rep.check("run boundaries", not rb, f"run.start and run.end present for {len(bound_runs)} run(s)" if not rb else "",
+              rb[:20], warn=True)
 
     # 4. head matches a witness checkpoint
     cps, cp_probs = [], []
@@ -385,7 +406,7 @@ def _verify(rep, manifest, blobs, witness_specs, strict, trusted_key):
             cp_probs.append(f"checkpoint seq {c['head_seq']} is beyond the last record in the bundle (records truncated)")
         elif hashes[c["head_seq"]] != c["head_hash"]:
             cp_probs.append(f"checkpoint seq {c['head_seq']}: head {c['head_hash'][:12]} does not match record {hashes[c['head_seq']][:12]} (chain rewritten)")
-    wit_names = []
+    wit_names, wit_seqs = [], set()
     bundle_end = seqs[-1] if seqs else -1
     bundle_cp_seqs = {c.get("head_seq") for c in cps}
     for spec in witness_specs:
@@ -409,9 +430,26 @@ def _verify(rep, manifest, blobs, witness_specs, strict, trusted_key):
             if c["head_seq"] in hashes and hashes[c["head_seq"]] != c["head_hash"]:
                 cp_probs.append(f"witness {w.name} holds head {c['head_hash'][:12]} for seq {c['head_seq']} but the bundle has "
                                 f"{hashes[c['head_seq']][:12]} (chain rebuilt after checkpointing)")
+                continue
+            wit_seqs.add(c["head_seq"])
         cps += [c for c in wcps if c not in cps]
-        newer = [c["head_seq"] for c in wcps if seqs and c["head_seq"] > seqs[-1]]
-        _ = newer  # a witness ahead of the bundle is normal: the ledger kept growing after export
+    # 4a. with a witness, each selected run must be followed up to the first witnessed checkpoint after its run.end;
+    #     a bundle cut at an earlier checkpoint boundary hides how the run continued
+    if wit_names:
+        tw = []
+        for x in bound_runs:
+            if run_ends[x] is None:
+                if any(s > bundle_end for s in wit_seqs):
+                    tw.append(f"run {x}: tail not covered by a witnessed checkpoint (no run.end in the bundle, which ends at "
+                              f"seq {bundle_end}, while the witness shows the ledger continued to seq {max(wit_seqs)})")
+                continue
+            first = min((s for s in wit_seqs if s >= run_ends[x]), default=None)
+            if first is None or first > bundle_end:
+                tw.append(f"run {x}: tail not covered by a witnessed checkpoint (run.end at seq {run_ends[x]}; "
+                          + (f"first witnessed checkpoint after it is seq {first}, beyond the bundle's last record {bundle_end})"
+                             if first is not None else "no witnessed checkpoint at or after it)"))
+        rep.check("run tail witnessed", not tw, "every run.end is followed by a witnessed checkpoint in the bundle"
+                  if not tw else "", tw[:20])
     sel_last = max((e["seq"] for e in sel), default=-1)
     good = [c for c in cps if verify_checkpoint(c, pub) and hashes.get(c["head_seq"]) == c["head_hash"]]
     covered = any(c["head_seq"] >= sel_last for c in good)
@@ -582,11 +620,16 @@ def _verify(rep, manifest, blobs, witness_specs, strict, trusted_key):
     full = any(c == "full" or r for c, r in modes)
     rep.check("opt-in content capture", not full, txt, [txt] if full else [], warn=True)
 
+    # 9. assurance: a same-user (dev mode) signer could have been rewritten by the agent, whatever integrity says
+    iso = sorted({str(e["data"].get("signer_isolation")) for e in sel if e["type"] == "run.start"})
+    rep.assurance = ("dev (signer ran as the agent's own user: the agent could have rewritten the ledger)"
+                     if not iso or "same-user" in iso else f"signer_isolation={', '.join(iso)} (as stated in run.start)")
+
     code = EXIT_FAIL if rep.failures else (EXIT_WARN if strict and rep.warnings else EXIT_OK)
     return rep, code
 
 
-GAP_CHECKS = ("capture gaps", "rejected writes")
+GAP_CHECKS = ("capture gaps", "rejected writes", "run completeness", "run boundaries")
 
 
 def print_report(rep, code, stream=None):
@@ -603,5 +646,6 @@ def print_report(rep, code, stream=None):
         verdict = "VERIFIED WITH GAPS (" + ", ".join(gappy) + ")"
     if code in (EXIT_OK, EXIT_WARN) and any(c["check"] == "trust root" and c["status"] != "pass" for c in rep.checks):
         verdict += " BUT UNANCHORED (internally consistent only; no trusted key or witness was checked)"
-    s.write(f"\n{verdict}. Tracekit proves what its capture path recorded and that it has not changed since it was "
+    s.write(f"\nIntegrity: {verdict}.\nAssurance: {getattr(rep, 'assurance', None) or 'unknown (no run.start checked)'}.\n"
+            f"Tracekit proves what its capture path recorded and that it has not changed since it was "
             f"signed and checkpointed. It does not prove intent, complete coverage, or that reported results are real.\n")

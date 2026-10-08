@@ -233,7 +233,7 @@ class Verdict(unittest.TestCase):
     def verdict(self, checks, code=bundle.EXIT_OK):
         out = io.StringIO()
         bundle.print_report(self.Rep(checks), code, out)
-        return out.getvalue().strip().splitlines()[-1]
+        return next(l for l in out.getvalue().splitlines() if l.startswith("Integrity: "))[len("Integrity: "):]
 
     def chk(self, name, status):
         return {"check": name, "status": status, "detail": "", "problems": []}

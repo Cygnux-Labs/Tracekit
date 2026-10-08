@@ -4,6 +4,19 @@ All notable changes to Tracekit. Versions follow [PEP 440](https://peps.python.o
 
 ## Unreleased
 
+### Verifier: v1 run completeness (interim, until evidence format v2)
+v1 signatures cover `(hash, prev_hash, seq)` only, so an elided stub does not say which run it belonged to.
+- **Elided records.** A bundle with any elided stub reports every selected run as "run completeness unproven (v1
+  bundle with elided records)" and ends `VERIFIED WITH GAPS (run completeness)`, never plain `VERIFIED`. Export
+  already includes every record of the selected runs; selecting fewer runs than the ledger holds now shows this gap.
+- **Run boundaries.** Each selected run must have a non-elided `run.start` and a signed `run.end`; otherwise
+  "run boundaries unproven" / "tail unproven" (a gap, not a failure). Findings and anchor runs are exempt.
+- **Witnessed tail.** With `--witness`, the bundle must reach the first witnessed checkpoint at or after each run's
+  `run.end`; a bundle cut at an earlier checkpoint boundary fails with "tail not covered by a witnessed checkpoint".
+- **Output.** The verdict is now two lines, `Integrity: …` and `Assurance: …`; assurance is `dev` when a run.start
+  says the signer ran as the agent's own user (`signer_isolation: same-user`), so dev bundles never print a bare
+  `VERIFIED.`.
+
 ### Security (0.3: harness binding, closing fabricated runs)
 After 0.2.1, any process running as the agent's user could still drive the real hook with a complete, well-formed
 run that never happened, and it verified as `VERIFIED` (E8.6). The signer now checks *which program* sent each event,
