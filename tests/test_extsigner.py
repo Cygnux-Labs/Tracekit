@@ -10,9 +10,11 @@ import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from tracekit import bundle, crypto, install  # noqa: E402
 from tracekit.agent_sdk import Tracer  # noqa: E402
 from tracekit.extsigner import ExternalKeys, SignerError  # noqa: E402
+from factories import patch_env  # noqa: E402
 
 HELPER = os.path.join(ROOT, "examples", "ext_signer.py")
 
@@ -60,8 +62,7 @@ class Unit(unittest.TestCase):
 class Signed(unittest.TestCase):
     def test_signer_with_external_key_end_to_end(self):
         d = tempfile.mkdtemp()
-        old = os.environ.get("TRACEKIT_CLIENT_HOME")
-        os.environ["TRACEKIT_CLIENT_HOME"] = os.path.join(d, "client")
+        patch_env(self, TRACEKIT_CLIENT_HOME=os.path.join(d, "client"))
         home = os.path.join(d, "signer")
         key = os.path.join(d, "hsm.key")
         subprocess.run([sys.executable, HELPER, "--key", key, "--init"], check=True, capture_output=True)
@@ -84,18 +85,13 @@ class Signed(unittest.TestCase):
             self.assertIn("hsm", chk["detail"])
         finally:
             install.stop_dev_daemon(home)
-            if old is None:
-                os.environ.pop("TRACEKIT_CLIENT_HOME", None)
-            else:
-                os.environ["TRACEKIT_CLIENT_HOME"] = old
             shutil.rmtree(d, ignore_errors=True)
 
     def test_attestation_document_travels_with_the_bundle(self):
         import hashlib
         import zipfile
         d = tempfile.mkdtemp()
-        old = os.environ.get("TRACEKIT_CLIENT_HOME")
-        os.environ["TRACEKIT_CLIENT_HOME"] = os.path.join(d, "client")
+        patch_env(self, TRACEKIT_CLIENT_HOME=os.path.join(d, "client"))
         home = os.path.join(d, "signer")
         key = os.path.join(d, "tee.key")
         att = os.path.join(d, "attestation.cbor")
@@ -134,10 +130,6 @@ class Signed(unittest.TestCase):
             self.assertTrue(any("does not carry it" in p for p in chk2["problems"]), chk2)
         finally:
             install.stop_dev_daemon(home)
-            if old is None:
-                os.environ.pop("TRACEKIT_CLIENT_HOME", None)
-            else:
-                os.environ["TRACEKIT_CLIENT_HOME"] = old
             shutil.rmtree(d, ignore_errors=True)
 
 
