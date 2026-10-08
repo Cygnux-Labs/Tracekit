@@ -1,7 +1,5 @@
 import os
-import shutil
 import sys
-import tempfile
 from unittest import mock
 
 import pytest
@@ -9,8 +7,6 @@ import pytest
 TESTS = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(TESTS))
 sys.path.insert(0, TESTS)
-
-import factories  # noqa: E402
 
 MARKERS = {
     "unit": "fast, in-process, no daemon or subprocess",
@@ -44,24 +40,3 @@ def _isolated_env():
     """Whatever a test does to os.environ is undone after it."""
     with mock.patch.dict(os.environ):
         yield
-
-
-@pytest.fixture
-def inproc_signer(tmp_path):
-    """An in-process Signer over a fresh home."""
-    s = factories.make_signer(str(tmp_path / "signer"))
-    yield s
-    s.ledger.close()
-
-
-@pytest.fixture
-def dev_daemon(monkeypatch):
-    """A real dev-mode signer daemon; yields its home. The client home points at it."""
-    from tracekit import install
-    d = tempfile.mkdtemp()
-    home = os.path.join(d, "signer")
-    monkeypatch.setenv("TRACEKIT_CLIENT_HOME", os.path.join(d, "client"))
-    install.init_dev(home, [], start=True)
-    yield home
-    install.stop_dev_daemon(home)
-    shutil.rmtree(d, ignore_errors=True)
