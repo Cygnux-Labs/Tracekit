@@ -1,0 +1,603 @@
+{
+  "version": "2",
+  "lastScan": "2026-10-08T18:13:45.599Z",
+  "surfaces": [
+    {
+      "key": "auth:eval/e3_policy.py",
+      "type": "auth",
+      "path": "eval/e3_policy.py",
+      "detail": "auth pattern",
+      "lines": [
+        41
+      ],
+      "firstSeen": "2026-10-08T18:13:45.476Z"
+    },
+    {
+      "key": "auth:eval/e5_agents.py",
+      "type": "auth",
+      "path": "eval/e5_agents.py",
+      "detail": "auth pattern",
+      "lines": [
+        47
+      ],
+      "firstSeen": "2026-10-08T18:13:45.476Z"
+    },
+    {
+      "key": "auth:examples/model_calls.py",
+      "type": "auth",
+      "path": "examples/model_calls.py",
+      "detail": "auth pattern",
+      "lines": [
+        41,
+        43,
+        56,
+        68
+      ],
+      "firstSeen": "2026-10-08T18:13:45.476Z"
+    },
+    {
+      "key": "auth:tracekit/demo.py",
+      "type": "auth",
+      "path": "tracekit/demo.py",
+      "detail": "auth pattern",
+      "lines": [
+        30
+      ],
+      "firstSeen": "2026-10-08T18:13:45.476Z"
+    },
+    {
+      "key": "auth:tracekit/ingest.py",
+      "type": "auth",
+      "path": "tracekit/ingest.py",
+      "detail": "auth pattern",
+      "lines": [
+        74,
+        206
+      ],
+      "firstSeen": "2026-10-08T18:13:45.476Z"
+    },
+    {
+      "key": "auth:tracekit/privacy.py",
+      "type": "auth",
+      "path": "tracekit/privacy.py",
+      "detail": "auth pattern",
+      "lines": [
+        18,
+        37,
+        62
+      ],
+      "firstSeen": "2026-10-08T18:13:45.476Z"
+    },
+    {
+      "key": "data-mutation:eval/_stack.py",
+      "type": "data-mutation",
+      "path": "eval/_stack.py",
+      "detail": "data-mutation pattern",
+      "lines": [
+        42
+      ],
+      "firstSeen": "2026-10-08T18:13:45.476Z"
+    },
+    {
+      "key": "data-mutation:eval/e1_integrity.py",
+      "type": "data-mutation",
+      "path": "eval/e1_integrity.py",
+      "detail": "data-mutation pattern",
+      "lines": [
+        85,
+        88
+      ],
+      "firstSeen": "2026-10-08T18:13:45.476Z"
+    },
+    {
+      "key": "data-mutation:eval/e3_policy.py",
+      "type": "data-mutation",
+      "path": "eval/e3_policy.py",
+      "detail": "data-mutation pattern",
+      "lines": [
+        38,
+        39,
+        50,
+        63,
+        68
+      ],
+      "firstSeen": "2026-10-08T18:13:45.476Z"
+    },
+    {
+      "key": "data-mutation:eval/e5_agents.py",
+      "type": "data-mutation",
+      "path": "eval/e5_agents.py",
+      "detail": "data-mutation pattern",
+      "lines": [
+        37,
+        38
+      ],
+      "firstSeen": "2026-10-08T18:13:45.476Z"
+    },
+    {
+      "key": "data-mutation:eval/e7_sql_scale.py",
+      "type": "data-mutation",
+      "path": "eval/e7_sql_scale.py",
+      "detail": "data-mutation pattern",
+      "lines": [
+        24,
+        133
+      ],
+      "firstSeen": "2026-10-08T18:13:45.476Z"
+    },
+    {
+      "key": "data-mutation:eval/e8_insider.py",
+      "type": "data-mutation",
+      "path": "eval/e8_insider.py",
+      "detail": "data-mutation pattern",
+      "lines": [
+        183,
+        204
+      ],
+      "firstSeen": "2026-10-08T18:13:45.476Z"
+    },
+    {
+      "key": "data-mutation:sdk/typescript/examples/vercel_ai.mjs",
+      "type": "data-mutation",
+      "path": "sdk/typescript/examples/vercel_ai.mjs",
+      "detail": "data-mutation pattern",
+      "lines": [
+        15
+      ],
+      "firstSeen": "2026-10-08T18:13:45.476Z"
+    },
+    {
+      "key": "data-mutation:tracekit/bundle.py",
+      "type": "data-mutation",
+      "path": "tracekit/bundle.py",
+      "detail": "data-mutation pattern",
+      "lines": [
+        183
+      ],
+      "firstSeen": "2026-10-08T18:13:45.476Z"
+    },
+    {
+      "key": "data-mutation:tracekit/daemon.py",
+      "type": "data-mutation",
+      "path": "tracekit/daemon.py",
+      "detail": "data-mutation pattern",
+      "lines": [
+        1004,
+        1018,
+        1060
+      ],
+      "firstSeen": "2026-10-08T18:13:45.476Z"
+    },
+    {
+      "key": "data-mutation:tracekit/demo.py",
+      "type": "data-mutation",
+      "path": "tracekit/demo.py",
+      "detail": "data-mutation pattern",
+      "lines": [
+        250
+      ],
+      "firstSeen": "2026-10-08T18:13:45.476Z"
+    },
+    {
+      "key": "data-mutation:tracekit/hook.py",
+      "type": "data-mutation",
+      "path": "tracekit/hook.py",
+      "detail": "data-mutation pattern",
+      "lines": [
+        286
+      ],
+      "firstSeen": "2026-10-08T18:13:45.476Z"
+    },
+    {
+      "key": "data-mutation:tracekit/install.py",
+      "type": "data-mutation",
+      "path": "tracekit/install.py",
+      "detail": "data-mutation pattern",
+      "lines": [
+        163,
+        523,
+        547
+      ],
+      "firstSeen": "2026-10-08T18:13:45.476Z"
+    },
+    {
+      "key": "data-mutation:tracekit/observe.py",
+      "type": "data-mutation",
+      "path": "tracekit/observe.py",
+      "detail": "data-mutation pattern",
+      "lines": [
+        419
+      ],
+      "firstSeen": "2026-10-08T18:13:45.476Z"
+    },
+    {
+      "key": "data-mutation:tracekit/proofpack.py",
+      "type": "data-mutation",
+      "path": "tracekit/proofpack.py",
+      "detail": "data-mutation pattern",
+      "lines": [
+        202
+      ],
+      "firstSeen": "2026-10-08T18:13:45.476Z"
+    },
+    {
+      "key": "data-mutation:tracekit/query.py",
+      "type": "data-mutation",
+      "path": "tracekit/query.py",
+      "detail": "data-mutation pattern",
+      "lines": [
+        150,
+        151,
+        351
+      ],
+      "firstSeen": "2026-10-08T18:13:45.476Z"
+    },
+    {
+      "key": "dependency:pyproject.toml:3.10",
+      "type": "dependency",
+      "path": "pyproject.toml",
+      "detail": "Dependency: 3.10",
+      "firstSeen": "2026-10-08T18:13:45.476Z"
+    },
+    {
+      "key": "dependency:pyproject.toml:anthropic",
+      "type": "dependency",
+      "path": "pyproject.toml",
+      "detail": "Dependency: anthropic",
+      "firstSeen": "2026-10-08T18:13:45.476Z"
+    },
+    {
+      "key": "dependency:pyproject.toml:cryptography",
+      "type": "dependency",
+      "path": "pyproject.toml",
+      "detail": "Dependency: cryptography",
+      "firstSeen": "2026-10-08T18:13:45.476Z"
+    },
+    {
+      "key": "dependency:pyproject.toml:google-genai",
+      "type": "dependency",
+      "path": "pyproject.toml",
+      "detail": "Dependency: google-genai",
+      "firstSeen": "2026-10-08T18:13:45.476Z"
+    },
+    {
+      "key": "dependency:pyproject.toml:grpcio",
+      "type": "dependency",
+      "path": "pyproject.toml",
+      "detail": "Dependency: grpcio",
+      "firstSeen": "2026-10-08T18:13:45.476Z"
+    },
+    {
+      "key": "dependency:pyproject.toml:langchain-core",
+      "type": "dependency",
+      "path": "pyproject.toml",
+      "detail": "Dependency: langchain-core",
+      "firstSeen": "2026-10-08T18:13:45.476Z"
+    },
+    {
+      "key": "dependency:pyproject.toml:langgraph",
+      "type": "dependency",
+      "path": "pyproject.toml",
+      "detail": "Dependency: langgraph",
+      "firstSeen": "2026-10-08T18:13:45.476Z"
+    },
+    {
+      "key": "dependency:pyproject.toml:openai",
+      "type": "dependency",
+      "path": "pyproject.toml",
+      "detail": "Dependency: openai",
+      "firstSeen": "2026-10-08T18:13:45.476Z"
+    },
+    {
+      "key": "dependency:pyproject.toml:opentelemetry-exporter-otlp-proto-grpc",
+      "type": "dependency",
+      "path": "pyproject.toml",
+      "detail": "Dependency: opentelemetry-exporter-otlp-proto-grpc",
+      "firstSeen": "2026-10-08T18:13:45.476Z"
+    },
+    {
+      "key": "dependency:pyproject.toml:opentelemetry-exporter-otlp-proto-http",
+      "type": "dependency",
+      "path": "pyproject.toml",
+      "detail": "Dependency: opentelemetry-exporter-otlp-proto-http",
+      "firstSeen": "2026-10-08T18:13:45.476Z"
+    },
+    {
+      "key": "dependency:pyproject.toml:opentelemetry-sdk",
+      "type": "dependency",
+      "path": "pyproject.toml",
+      "detail": "Dependency: opentelemetry-sdk",
+      "firstSeen": "2026-10-08T18:13:45.476Z"
+    },
+    {
+      "key": "dependency:pyproject.toml:pyflakes",
+      "type": "dependency",
+      "path": "pyproject.toml",
+      "detail": "Dependency: pyflakes",
+      "firstSeen": "2026-10-08T18:13:45.476Z"
+    },
+    {
+      "key": "dependency:pyproject.toml:pytest",
+      "type": "dependency",
+      "path": "pyproject.toml",
+      "detail": "Dependency: pytest",
+      "firstSeen": "2026-10-08T18:13:45.476Z"
+    },
+    {
+      "key": "dependency:pyproject.toml:pyyaml",
+      "type": "dependency",
+      "path": "pyproject.toml",
+      "detail": "Dependency: pyyaml",
+      "firstSeen": "2026-10-08T18:13:45.476Z"
+    },
+    {
+      "key": "dependency:sdk/typescript/package.json:@anthropic-ai/sdk",
+      "type": "dependency",
+      "path": "sdk/typescript/package.json",
+      "detail": "Dependency: @anthropic-ai/sdk",
+      "firstSeen": "2026-10-08T18:13:45.476Z"
+    },
+    {
+      "key": "dependency:sdk/typescript/package.json:@types/node",
+      "type": "dependency",
+      "path": "sdk/typescript/package.json",
+      "detail": "Dependency: @types/node",
+      "firstSeen": "2026-10-08T18:13:45.476Z"
+    },
+    {
+      "key": "dependency:sdk/typescript/package.json:openai",
+      "type": "dependency",
+      "path": "sdk/typescript/package.json",
+      "detail": "Dependency: openai",
+      "firstSeen": "2026-10-08T18:13:45.476Z"
+    },
+    {
+      "key": "dependency:sdk/typescript/package.json:typescript",
+      "type": "dependency",
+      "path": "sdk/typescript/package.json",
+      "detail": "Dependency: typescript",
+      "firstSeen": "2026-10-08T18:13:45.476Z"
+    },
+    {
+      "key": "exec:eval/_stack.py",
+      "type": "exec",
+      "path": "eval/_stack.py",
+      "detail": "exec pattern",
+      "lines": [
+        58
+      ],
+      "firstSeen": "2026-10-08T18:13:45.476Z"
+    },
+    {
+      "key": "exec:eval/e2_perf.py",
+      "type": "exec",
+      "path": "eval/e2_perf.py",
+      "detail": "exec pattern",
+      "lines": [
+        43
+      ],
+      "firstSeen": "2026-10-08T18:13:45.476Z"
+    },
+    {
+      "key": "exec:eval/e3_policy.py",
+      "type": "exec",
+      "path": "eval/e3_policy.py",
+      "detail": "exec pattern",
+      "lines": [
+        34,
+        68
+      ],
+      "firstSeen": "2026-10-08T18:13:45.476Z"
+    },
+    {
+      "key": "exec:eval/e5_agents.py",
+      "type": "exec",
+      "path": "eval/e5_agents.py",
+      "detail": "exec pattern",
+      "lines": [
+        53,
+        54,
+        55,
+        64
+      ],
+      "firstSeen": "2026-10-08T18:13:45.476Z"
+    },
+    {
+      "key": "exec:eval/e8_insider.py",
+      "type": "exec",
+      "path": "eval/e8_insider.py",
+      "detail": "exec pattern",
+      "lines": [
+        58,
+        67,
+        99,
+        100,
+        127
+      ],
+      "firstSeen": "2026-10-08T18:13:45.476Z"
+    },
+    {
+      "key": "exec:examples/pgs_onchain_demo.py",
+      "type": "exec",
+      "path": "examples/pgs_onchain_demo.py",
+      "detail": "exec pattern",
+      "lines": [
+        82
+      ],
+      "firstSeen": "2026-10-08T18:13:45.476Z"
+    },
+    {
+      "key": "exec:sdk/typescript/src/index.ts",
+      "type": "exec",
+      "path": "sdk/typescript/src/index.ts",
+      "detail": "exec pattern",
+      "lines": [
+        14
+      ],
+      "firstSeen": "2026-10-08T18:13:45.476Z"
+    },
+    {
+      "key": "exec:tracekit/demo.py",
+      "type": "exec",
+      "path": "tracekit/demo.py",
+      "detail": "exec pattern",
+      "lines": [
+        44,
+        45,
+        46,
+        114,
+        179
+      ],
+      "firstSeen": "2026-10-08T18:13:45.476Z"
+    },
+    {
+      "key": "exec:tracekit/extsigner.py",
+      "type": "exec",
+      "path": "tracekit/extsigner.py",
+      "detail": "exec pattern",
+      "lines": [
+        53
+      ],
+      "firstSeen": "2026-10-08T18:13:45.476Z"
+    },
+    {
+      "key": "exec:tracekit/hook.py",
+      "type": "exec",
+      "path": "tracekit/hook.py",
+      "detail": "exec pattern",
+      "lines": [
+        31
+      ],
+      "firstSeen": "2026-10-08T18:13:45.476Z"
+    },
+    {
+      "key": "exec:tracekit/install.py",
+      "type": "exec",
+      "path": "tracekit/install.py",
+      "detail": "exec pattern",
+      "lines": [
+        89,
+        342,
+        447,
+        641,
+        675
+      ],
+      "firstSeen": "2026-10-08T18:13:45.476Z"
+    },
+    {
+      "key": "exec:tracekit/peercred.py",
+      "type": "exec",
+      "path": "tracekit/peercred.py",
+      "detail": "exec pattern",
+      "lines": [
+        57
+      ],
+      "firstSeen": "2026-10-08T18:13:45.476Z"
+    },
+    {
+      "key": "exec:tracekit/witness.py",
+      "type": "exec",
+      "path": "tracekit/witness.py",
+      "detail": "exec pattern",
+      "lines": [
+        71
+      ],
+      "firstSeen": "2026-10-08T18:13:45.476Z"
+    },
+    {
+      "key": "external-api:eval/e3_policy.py",
+      "type": "external-api",
+      "path": "eval/e3_policy.py",
+      "detail": "external-api pattern",
+      "lines": [
+        32
+      ],
+      "firstSeen": "2026-10-08T18:13:45.476Z"
+    },
+    {
+      "key": "external-api:examples/otel_jaeger_check.py",
+      "type": "external-api",
+      "path": "examples/otel_jaeger_check.py",
+      "detail": "external-api pattern",
+      "lines": [
+        14,
+        28
+      ],
+      "firstSeen": "2026-10-08T18:13:45.476Z"
+    },
+    {
+      "key": "external-api:tracekit/client.py",
+      "type": "external-api",
+      "path": "tracekit/client.py",
+      "detail": "external-api pattern",
+      "lines": [
+        79,
+        87,
+        90
+      ],
+      "firstSeen": "2026-10-08T18:13:45.476Z"
+    },
+    {
+      "key": "external-api:tracekit/install.py",
+      "type": "external-api",
+      "path": "tracekit/install.py",
+      "detail": "external-api pattern",
+      "lines": [
+        347,
+        353,
+        436,
+        438,
+        774
+      ],
+      "firstSeen": "2026-10-08T18:13:45.476Z"
+    },
+    {
+      "key": "external-api:tracekit/otel.py",
+      "type": "external-api",
+      "path": "tracekit/otel.py",
+      "detail": "external-api pattern",
+      "lines": [
+        16,
+        199,
+        200
+      ],
+      "firstSeen": "2026-10-08T18:13:45.476Z"
+    },
+    {
+      "key": "external-api:tracekit/proxy.py",
+      "type": "external-api",
+      "path": "tracekit/proxy.py",
+      "detail": "external-api pattern",
+      "lines": [
+        32,
+        272,
+        282
+      ],
+      "firstSeen": "2026-10-08T18:13:45.476Z"
+    },
+    {
+      "key": "external-api:tracekit/rekor.py",
+      "type": "external-api",
+      "path": "tracekit/rekor.py",
+      "detail": "external-api pattern",
+      "lines": [
+        16,
+        120,
+        123
+      ],
+      "firstSeen": "2026-10-08T18:13:45.476Z"
+    },
+    {
+      "key": "external-api:tracekit/witness.py",
+      "type": "external-api",
+      "path": "tracekit/witness.py",
+      "detail": "external-api pattern",
+      "lines": [
+        174,
+        178,
+        179
+      ],
+      "firstSeen": "2026-10-08T18:13:45.476Z"
+    }
+  ]
+}

@@ -1,0 +1,481 @@
+{
+  "version": "2",
+  "repo": "Tracekit",
+  "generated_by": "agent-flow@1.2.6 manifest sync",
+  "generated_at": "2026-10-08T18:08:24.145Z",
+  "last_full_scan": "2026-10-08T18:08:46.111Z",
+  "default_branch": "main",
+  "staleness_threshold_days": 30,
+  "context_files": [
+    {
+      "path": "AGENTS.md",
+      "references": [
+        {
+          "path": "tracekit/daemon.py",
+          "type": "file",
+          "last_verified": "2026-10-08T18:08:24.145Z",
+          "exists": true
+        },
+        {
+          "path": "tracekit/ledger.py",
+          "type": "file",
+          "last_verified": "2026-10-08T18:08:24.145Z",
+          "exists": true
+        },
+        {
+          "path": "tracekit/hook.py",
+          "type": "file",
+          "last_verified": "2026-10-08T18:08:24.145Z",
+          "exists": true
+        },
+        {
+          "path": "tracekit/bundle.py",
+          "type": "file",
+          "last_verified": "2026-10-08T18:08:24.145Z",
+          "exists": true
+        },
+        {
+          "path": "tracekit/core.py",
+          "type": "file",
+          "last_verified": "2026-10-08T18:08:24.145Z",
+          "exists": true
+        },
+        {
+          "path": "tracekit/schema/tracekit.event.v1.json",
+          "type": "file",
+          "last_verified": "2026-10-08T18:08:24.145Z",
+          "exists": true
+        },
+        {
+          "path": "tracekit/schema.py",
+          "type": "file",
+          "last_verified": "2026-10-08T18:08:24.145Z",
+          "exists": true
+        },
+        {
+          "path": "tracekit/agent_hooks.py",
+          "type": "file",
+          "last_verified": "2026-10-08T18:08:24.145Z",
+          "exists": true
+        },
+        {
+          "path": "tracekit/agent_sdk.py",
+          "type": "file",
+          "last_verified": "2026-10-08T18:08:24.145Z",
+          "exists": true
+        },
+        {
+          "path": "tracekit/autotrace.py",
+          "type": "file",
+          "last_verified": "2026-10-08T18:08:24.145Z",
+          "exists": true
+        },
+        {
+          "path": "tracekit/adapters/",
+          "type": "directory",
+          "last_verified": "2026-10-08T18:08:24.145Z",
+          "exists": true
+        },
+        {
+          "path": "tracekit/policy.py",
+          "type": "file",
+          "last_verified": "2026-10-08T18:08:24.145Z",
+          "exists": true
+        },
+        {
+          "path": "tracekit/policy/",
+          "type": "directory",
+          "last_verified": "2026-10-08T18:08:24.145Z",
+          "exists": true
+        },
+        {
+          "path": "tracekit/install.py",
+          "type": "file",
+          "last_verified": "2026-10-08T18:08:24.145Z",
+          "exists": true
+        },
+        {
+          "path": "tracekit/cli.py",
+          "type": "file",
+          "last_verified": "2026-10-08T18:08:24.145Z",
+          "exists": true
+        },
+        {
+          "path": "tracekit/witness.py",
+          "type": "file",
+          "last_verified": "2026-10-08T18:08:24.145Z",
+          "exists": true
+        },
+        {
+          "path": "tracekit/witness_server.py",
+          "type": "file",
+          "last_verified": "2026-10-08T18:08:24.145Z",
+          "exists": true
+        },
+        {
+          "path": "tracekit/rekor.py",
+          "type": "file",
+          "last_verified": "2026-10-08T18:08:24.145Z",
+          "exists": true
+        },
+        {
+          "path": "tracekit/otlp.py",
+          "type": "file",
+          "last_verified": "2026-10-08T18:08:24.145Z",
+          "exists": true
+        },
+        {
+          "path": "tracekit/ingest.py",
+          "type": "file",
+          "last_verified": "2026-10-08T18:08:24.145Z",
+          "exists": true
+        },
+        {
+          "path": "tracekit/proxy.py",
+          "type": "file",
+          "last_verified": "2026-10-08T18:08:24.145Z",
+          "exists": true
+        },
+        {
+          "path": "sdk/typescript/",
+          "type": "directory",
+          "last_verified": "2026-10-08T18:08:24.145Z",
+          "exists": true
+        },
+        {
+          "path": "tracekit/bridge.py",
+          "type": "file",
+          "last_verified": "2026-10-08T18:08:24.145Z",
+          "exists": true
+        },
+        {
+          "path": "plugin/",
+          "type": "directory",
+          "last_verified": "2026-10-08T18:08:24.145Z",
+          "exists": true
+        },
+        {
+          "path": "tests/",
+          "type": "directory",
+          "last_verified": "2026-10-08T18:08:24.145Z",
+          "exists": true
+        },
+        {
+          "path": "eval/",
+          "type": "directory",
+          "last_verified": "2026-10-08T18:08:24.145Z",
+          "exists": true
+        },
+        {
+          "path": "docs/",
+          "type": "directory",
+          "last_verified": "2026-10-08T18:08:24.145Z",
+          "exists": true
+        },
+        {
+          "path": "docs/sample/",
+          "type": "directory",
+          "last_verified": "2026-10-08T18:08:24.145Z",
+          "exists": true
+        },
+        {
+          "path": "paper/",
+          "type": "directory",
+          "last_verified": "2026-10-08T18:08:24.145Z",
+          "exists": true
+        },
+        {
+          "path": "tests/test_hotfix_021.py",
+          "type": "file",
+          "last_verified": "2026-10-08T18:08:24.145Z",
+          "exists": true
+        },
+        {
+          "path": "tracekit/demo.py",
+          "type": "file",
+          "last_verified": "2026-10-08T18:08:24.145Z",
+          "exists": true
+        },
+        {
+          "path": "tracekit/policy/default.yaml",
+          "type": "file",
+          "last_verified": "2026-10-08T18:08:24.145Z",
+          "exists": true
+        }
+      ],
+      "confidence_markers": {
+        "high_confidence": 20,
+        "inferred": 1,
+        "needs_verification": 1
+      }
+    },
+    {
+      "path": "CLAUDE.md",
+      "references": [],
+      "confidence_markers": {
+        "high_confidence": 0,
+        "inferred": 0,
+        "needs_verification": 0
+      }
+    }
+  ],
+  "protected_paths": [
+    "tracekit/schema/tracekit.event.v1.json",
+    "docs/sample/demo-run.tkb",
+    "docs/sample/demo-run-tampered.tkb",
+    "docs/sample/signer.pub",
+    "docs/sample/demo-run-replay.html",
+    "tests/fixtures/",
+    "paper/",
+    "LICENSE"
+  ],
+  "pipeline": {
+    "max_review_rounds": 2,
+    "auto_merge_low_risk": true,
+    "models": {
+      "fast": "opus",
+      "high_reasoning": "opus"
+    }
+  },
+  "deny_read": [],
+  "secret_scan": {
+    "ignore_paths": [
+      "tests/test_v02.py",
+      "tests/test_capture.py",
+      "tests/test_autotrace.py",
+      "tests/test_otlp.py",
+      "eval/e5_agents.py",
+      "tracekit/demo.py"
+    ]
+  },
+  "risk_boundaries": [
+    {
+      "path": "tracekit/daemon.py",
+      "risk_level": "critical",
+      "rationale": "Signer, ledger, crypto and their replacements: integrity of all evidence (invariants I0, I1, I6, I7)"
+    },
+    {
+      "path": "tracekit/ledger.py",
+      "risk_level": "critical",
+      "rationale": "Signer, ledger, crypto and their replacements: integrity of all evidence (invariants I0, I1, I6, I7)"
+    },
+    {
+      "path": "tracekit/crypto.py",
+      "risk_level": "critical",
+      "rationale": "Signer, ledger, crypto and their replacements: integrity of all evidence (invariants I0, I1, I6, I7)"
+    },
+    {
+      "path": "tracekit/core.py",
+      "risk_level": "critical",
+      "rationale": "Signer, ledger, crypto and their replacements: integrity of all evidence (invariants I0, I1, I6, I7)"
+    },
+    {
+      "path": "tracekit/client.py",
+      "risk_level": "critical",
+      "rationale": "Signer, ledger, crypto and their replacements: integrity of all evidence (invariants I0, I1, I6, I7)"
+    },
+    {
+      "path": "tracekit/peercred.py",
+      "risk_level": "critical",
+      "rationale": "Signer, ledger, crypto and their replacements: integrity of all evidence (invariants I0, I1, I6, I7)"
+    },
+    {
+      "path": "tracekit/extsigner.py",
+      "risk_level": "critical",
+      "rationale": "Signer, ledger, crypto and their replacements: integrity of all evidence (invariants I0, I1, I6, I7)"
+    },
+    {
+      "path": "tracekit/merkle.py",
+      "risk_level": "critical",
+      "rationale": "Signer, ledger, crypto and their replacements: integrity of all evidence (invariants I0, I1, I6, I7)"
+    },
+    {
+      "path": "tracekit/locking.py",
+      "risk_level": "critical",
+      "rationale": "Signer, ledger, crypto and their replacements: integrity of all evidence (invariants I0, I1, I6, I7)"
+    },
+    {
+      "path": "tracekit/signer/",
+      "risk_level": "critical",
+      "rationale": "Signer, ledger, crypto and their replacements: integrity of all evidence (invariants I0, I1, I6, I7)"
+    },
+    {
+      "path": "tracekit/format/",
+      "risk_level": "critical",
+      "rationale": "Signer, ledger, crypto and their replacements: integrity of all evidence (invariants I0, I1, I6, I7)"
+    },
+    {
+      "path": "tracekit/keys/",
+      "risk_level": "critical",
+      "rationale": "Signer, ledger, crypto and their replacements: integrity of all evidence (invariants I0, I1, I6, I7)"
+    },
+    {
+      "path": "tracekit/identity/",
+      "risk_level": "critical",
+      "rationale": "Signer, ledger, crypto and their replacements: integrity of all evidence (invariants I0, I1, I6, I7)"
+    },
+    {
+      "path": "tracekit/storage/",
+      "risk_level": "critical",
+      "rationale": "Signer, ledger, crypto and their replacements: integrity of all evidence (invariants I0, I1, I6, I7)"
+    },
+    {
+      "path": "tracekit/transport/",
+      "risk_level": "critical",
+      "rationale": "Signer, ledger, crypto and their replacements: integrity of all evidence (invariants I0, I1, I6, I7)"
+    },
+    {
+      "path": "tracekit/merkle/",
+      "risk_level": "critical",
+      "rationale": "Signer, ledger, crypto and their replacements: integrity of all evidence (invariants I0, I1, I6, I7)"
+    },
+    {
+      "path": "tracekit/client/",
+      "risk_level": "critical",
+      "rationale": "Signer, ledger, crypto and their replacements: integrity of all evidence (invariants I0, I1, I6, I7)"
+    },
+    {
+      "path": "tracekit/bundle.py",
+      "risk_level": "critical",
+      "rationale": "Verifier, schema and witnesses: decides what counts as evidence (I8, I9)"
+    },
+    {
+      "path": "tracekit/witness.py",
+      "risk_level": "critical",
+      "rationale": "Verifier, schema and witnesses: decides what counts as evidence (I8, I9)"
+    },
+    {
+      "path": "tracekit/witness_server.py",
+      "risk_level": "critical",
+      "rationale": "Verifier, schema and witnesses: decides what counts as evidence (I8, I9)"
+    },
+    {
+      "path": "tracekit/rekor.py",
+      "risk_level": "critical",
+      "rationale": "Verifier, schema and witnesses: decides what counts as evidence (I8, I9)"
+    },
+    {
+      "path": "tracekit/schema.py",
+      "risk_level": "critical",
+      "rationale": "Verifier, schema and witnesses: decides what counts as evidence (I8, I9)"
+    },
+    {
+      "path": "tracekit/schema/",
+      "risk_level": "critical",
+      "rationale": "Verifier, schema and witnesses: decides what counts as evidence (I8, I9)"
+    },
+    {
+      "path": "tracekit/verify/",
+      "risk_level": "critical",
+      "rationale": "Verifier, schema and witnesses: decides what counts as evidence (I8, I9)"
+    },
+    {
+      "path": "tracekit/witness/",
+      "risk_level": "critical",
+      "rationale": "Verifier, schema and witnesses: decides what counts as evidence (I8, I9)"
+    },
+    {
+      "path": "tracekit/install.py",
+      "risk_level": "critical",
+      "rationale": "Install, CLI and CI: run with root or publish releases"
+    },
+    {
+      "path": "tracekit/cli.py",
+      "risk_level": "critical",
+      "rationale": "Install, CLI and CI: run with root or publish releases"
+    },
+    {
+      "path": "tracekit/deploy/",
+      "risk_level": "critical",
+      "rationale": "Install, CLI and CI: run with root or publish releases"
+    },
+    {
+      "path": "plugin/",
+      "risk_level": "critical",
+      "rationale": "Install, CLI and CI: run with root or publish releases"
+    },
+    {
+      "path": ".github/workflows/",
+      "risk_level": "critical",
+      "rationale": "Install, CLI and CI: run with root or publish releases"
+    },
+    {
+      "path": "action.yml",
+      "risk_level": "critical",
+      "rationale": "Install, CLI and CI: run with root or publish releases"
+    },
+    {
+      "path": "tracekit/policy.py",
+      "risk_level": "critical",
+      "rationale": "Policy engine and harness hooks: the gate that blocks dangerous calls (I2, I3)"
+    },
+    {
+      "path": "tracekit/policy/",
+      "risk_level": "critical",
+      "rationale": "Policy engine and harness hooks: the gate that blocks dangerous calls (I2, I3)"
+    },
+    {
+      "path": "tracekit/hook.py",
+      "risk_level": "critical",
+      "rationale": "Policy engine and harness hooks: the gate that blocks dangerous calls (I2, I3)"
+    },
+    {
+      "path": "tracekit/agent_hooks.py",
+      "risk_level": "critical",
+      "rationale": "Policy engine and harness hooks: the gate that blocks dangerous calls (I2, I3)"
+    },
+    {
+      "path": "tracekit/adapters/harnesses/",
+      "risk_level": "critical",
+      "rationale": "Policy engine and harness hooks: the gate that blocks dangerous calls (I2, I3)"
+    },
+    {
+      "path": "docs/",
+      "risk_level": "low",
+      "rationale": "Docs, tests, examples and evals: mechanical edits (a path inside a critical tree stays critical)"
+    },
+    {
+      "path": "*.md",
+      "risk_level": "low",
+      "rationale": "Docs, tests, examples and evals: mechanical edits (a path inside a critical tree stays critical)"
+    },
+    {
+      "path": "tests/",
+      "risk_level": "low",
+      "rationale": "Docs, tests, examples and evals: mechanical edits (a path inside a critical tree stays critical)"
+    },
+    {
+      "path": "examples/",
+      "risk_level": "low",
+      "rationale": "Docs, tests, examples and evals: mechanical edits (a path inside a critical tree stays critical)"
+    },
+    {
+      "path": "eval/",
+      "risk_level": "low",
+      "rationale": "Docs, tests, examples and evals: mechanical edits (a path inside a critical tree stays critical)"
+    }
+  ],
+  "gates": [
+    {
+      "name": "lint",
+      "command": "PY=$(r=\"$(git rev-parse --path-format=absolute --git-common-dir)/../.venv/bin/python\"; [ -x \"$r\" ] && echo \"$r\" || echo python3); PYTHONPATH=\"$PWD\" make lint PY=\"$PY\"",
+      "timeout_seconds": 180,
+      "on_stop": true
+    },
+    {
+      "name": "test",
+      "command": "PY=$(r=\"$(git rev-parse --path-format=absolute --git-common-dir)/../.venv/bin/python\"; [ -x \"$r\" ] && echo \"$r\" || echo python3); PYTHONPATH=\"$PWD\" make test PY=\"$PY\"",
+      "timeout_seconds": 1200
+    },
+    {
+      "name": "build",
+      "command": "PY=$(r=\"$(git rev-parse --path-format=absolute --git-common-dir)/../.venv/bin/python\"; [ -x \"$r\" ] && echo \"$r\" || echo python3); PYTHONPATH=\"$PWD\" make build PY=\"$PY\"",
+      "timeout_seconds": 600
+    },
+    {
+      "name": "test-ts",
+      "command": "r=\"$(git rev-parse --path-format=absolute --git-common-dir)/../.venv/bin/python\"; [ -x \"$r\" ] && export TRACEKIT_PYTHON=\"$r\"; make test-ts",
+      "timeout_seconds": 600
+    }
+  ]
+}
