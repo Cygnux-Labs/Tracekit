@@ -148,6 +148,13 @@ def is_remote(config=None):
 def _rpc(req, timeout=5.0, config=None):
     cfg = config if config is not None else client_config()
     endpoint = cfg.get("socket", DEFAULT_SOCKET) if config is not None else socket_path()
+    if endpoint == "tcp://127.0.0.1:0" and cfg.get("signer_home"):
+        # dev TCP signer bound an ephemeral port and recorded it in its own config
+        try:
+            with open(os.path.join(cfg["signer_home"], "config.json"), encoding="utf-8") as f:
+                endpoint = json.load(f).get("socket") or endpoint
+        except (OSError, ValueError):
+            pass
     request = req
     if endpoint.startswith(("https://", "http://")):
         return _http_rpc(endpoint, cfg, req, max(timeout, 10.0))
