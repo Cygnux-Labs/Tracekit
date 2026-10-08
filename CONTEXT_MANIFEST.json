@@ -478,5 +478,8 @@
       "command": "r=\"$(git rev-parse --path-format=absolute --git-common-dir)/../.venv/bin/python\"; [ -x \"$r\" ] && export TRACEKIT_PYTHON=\"$r\"; make test-ts",
       "timeout_seconds": 600
     }
+  ],
+  "review_paths": [
+    ".github/workflows/"
   ]
 }
