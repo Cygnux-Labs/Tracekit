@@ -9,7 +9,7 @@ tracekit demo --agent codex            # the scripted demo, sent as Codex's own 
 ```
 
 The installer merges into existing files: other hooks and settings are kept, a backup is written first, and running it
-twice changes nothing. Every hook calls `python -m tracekit.agent_hooks <agent>`, which translates the harness's payload
+twice changes nothing. Every hook calls `python -I -m tracekit.agent_hooks <agent>`, which translates the harness's payload
 into the Claude Code hook shape and runs the same pipeline as the Claude Code hook.
 
 | | Codex CLI | Cursor | Gemini CLI |
