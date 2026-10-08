@@ -534,6 +534,37 @@
         "os_user_attested": {
           "type": "boolean",
           "description": "true when tracekitd set os_user from the socket peer's credentials rather than trusting the client."
+        },
+        "harness": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "0.3: set only by the signer. The registered harness instance the run.start came from (pid + kernel start time), found from the kernel's view of the sender's process tree.",
+          "required": [
+            "name",
+            "exe",
+            "pid",
+            "attested"
+          ],
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "exe": {
+              "type": "string"
+            },
+            "pid": {
+              "type": "integer"
+            },
+            "start_time": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "attested": {
+              "type": "boolean"
+            }
+          }
         }
       }
     },

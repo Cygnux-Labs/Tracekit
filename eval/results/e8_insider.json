@@ -20,10 +20,20 @@
     "hook_exit_code": "2",
     "meaning": "2 = still denied by the real policy"
   },
-  "E8.6 fabricated run": {
-    "caught": false,
-    "verdict": "VERIFIED",
-    "expected": "open until 0.3 (harness binding)"
+  "E8.6 fabricated run, outside the harness": {
+    "caught": true,
+    "verdict": "UNUSABLE BUNDLE",
+    "fake_calls_recorded": false
+  },
+  "E8.7 fabricated run, inside a live session": {
+    "caught": true,
+    "verdict": "VERIFIED WITH GAPS (capture gaps)",
+    "run": "the fake run"
+  },
+  "E8.8 write into a live run from outside the session": {
+    "caught": true,
+    "injection_accepted": false,
+    "verdict": "VERIFIED WITH GAPS (capture gaps, rejected writes)"
   },
   "E8.4 signer down": {
     "caught": true,
@@ -36,6 +46,20 @@
       "E8.2 redirect + counter restore",
       "E8.3 cross-user injection",
       "E8.5 policy swap",
+      "E8.4 signer down"
+    ],
+    "passed": true
+  },
+  "_gate_0.3": {
+    "harness_binding": true,
+    "required": [
+      "E8.1 decoy redirect",
+      "E8.2 redirect + counter restore",
+      "E8.3 cross-user injection",
+      "E8.5 policy swap",
+      "E8.6 fabricated run, outside the harness",
+      "E8.7 fabricated run, inside a live session",
+      "E8.8 write into a live run from outside the session",
       "E8.4 signer down"
     ],
     "passed": true

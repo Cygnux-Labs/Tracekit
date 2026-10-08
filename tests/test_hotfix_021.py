@@ -93,6 +93,7 @@ class SystemConfigTrust(_SystemConfig):
             self.assertIsNone(client.system_config(), oct(mode))
 
     @unittest.skipIf(IS_ROOT, "as root every file is root-owned")
+    @unittest.skipIf(os.name == "nt", "Windows reports every file as uid 0")
     def test_user_owned_file_is_ignored(self):
         self.write({"socket": "/x"})
         self.assertIsNone(client.system_config())

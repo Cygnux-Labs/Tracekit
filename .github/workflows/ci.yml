@@ -37,8 +37,8 @@ jobs:
         run: python -m pytest -v -o faulthandler_timeout=240
 
   insider:
-    # 0.2.1: E8 attacks the path that feeds the ledger, as real separate OS users against a system-mode
-    # signer. Merges are blocked unless E8.1-E8.5 are caught (E8.6 is tracked, closed by 0.3).
+    # E8 attacks the path that feeds the ledger, as real separate OS users against a system-mode signer with a
+    # registered harness (0.3). Merges are blocked unless all eight cases (E8.1-E8.8) are caught.
     name: E8 insider attacks (Linux system mode)
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -54,8 +54,9 @@ jobs:
           sudo chmod -R a+rX /opt/tracekit
           sudo useradd -m agent
           sudo useradd -m mallory
+          sudo install -D -m755 "$(readlink -f /bin/dash)" /usr/local/lib/tracekit-e8/agent
           sudo "$PY" -m pip install /opt/tracekit
-          cd /tmp && sudo "$PY" -m tracekit init --user agent --no-service --no-hooks
+          cd /tmp && sudo "$PY" -m tracekit init --user agent --no-service --no-hooks --harness agent=/usr/local/lib/tracekit-e8/agent
       - name: Run E8
         run: cd /opt/tracekit && sudo "$(which python)" eval/e8_insider.py --out /tmp/e8_insider.json
       - if: always()
