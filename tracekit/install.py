@@ -116,25 +116,25 @@ def _create_system_user_darwin(name):
 MANAGED_SETTINGS = {"linux": "/etc/claude-code/managed-settings.json",
                     "darwin": "/Library/Application Support/ClaudeCode/managed-settings.json"}
 HOOK_TIMEOUT = {"PreToolUse": 600, "SessionEnd": 15}   # PreToolUse may hold a call for approval (C8)
-def _hook_command():
+def _hook_command(module="tracekit.hook", func="_entry", args=()):
+    """Shell command that runs `module.func(*args)`. Python runs isolated (-I): the working directory, user
+    site-packages and PYTHON* variables are not on the import path, so the harness's cwd cannot shadow tracekit."""
     try:
         import importlib.util
+        import site
         spec = importlib.util.find_spec("tracekit")
-        installed = bool(spec and spec.origin and "site-packages" in spec.origin)
+        user_site = site.getusersitepackages()
+        installed = bool(spec and spec.origin and "site-packages" in spec.origin
+                         and not spec.origin.startswith(user_site))
     except Exception:
         installed = False
-    if os.name == "nt":
-        cmd = f'"{sys.executable}" -m tracekit.hook'
-    else:
-        cmd = f"{shlex.quote(sys.executable)} -m tracekit.hook"
+    py = f'"{sys.executable}"' if os.name == "nt" else shlex.quote(sys.executable)
     if installed:
-        return cmd
-    if os.name == "nt":
-        encoded_root = base64.b64encode(ROOT.encode("utf-8")).decode("ascii")
-        code = (f"import base64,sys; sys.path.insert(0, base64.b64decode('{encoded_root}').decode('utf-8')); "
-                "from tracekit.hook import _entry; raise SystemExit(_entry())")
-        return f'"{sys.executable}" -c "{code}"'
-    return f"env PYTHONPATH={shlex.quote(ROOT)} {cmd}"
+        return " ".join([py, "-I", "-m", module, *args])
+    encoded_root = base64.b64encode(ROOT.encode("utf-8")).decode("ascii")
+    code = (f"import base64,sys; sys.path.insert(0, base64.b64decode('{encoded_root}').decode('utf-8')); "
+            f"from {module} import {func}; raise SystemExit({func}({', '.join(repr(a) for a in args)}))")
+    return f'{py} -I -c "{code}"' if os.name == "nt" else f"{py} -I -c {shlex.quote(code)}"
 
 
 def _is_ours(group):
