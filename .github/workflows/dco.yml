@@ -1,0 +1,31 @@
+name: DCO
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  dco:
+    # every non-merge commit in the pull request needs a Signed-off-by trailer matching its author (CONTRIBUTING.md)
+    name: DCO sign-off
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Check sign-offs
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          fail=0
+          for c in $(git rev-list --no-merges "$BASE..$HEAD"); do
+            author="$(git log -1 --format='%an <%ae>' "$c")"
+            if ! git log -1 --format='%(trailers:key=Signed-off-by,valueonly)' "$c" | grep -Fxq "$author"; then
+              echo "::error::commit $c has no 'Signed-off-by: $author' (run git commit -s, see CONTRIBUTING.md)"
+              fail=1
+            fi
+          done
+          exit $fail
