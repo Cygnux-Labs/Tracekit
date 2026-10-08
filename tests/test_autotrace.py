@@ -4,16 +4,15 @@ import asyncio
 import gc
 import json
 import os
-import shutil
 import sys
-import tempfile
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
-from tracekit import autotrace, client, install, schema  # noqa: E402
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from tracekit import autotrace, client, schema  # noqa: E402
 from tracekit.core import GENESIS, SCHEMA_VERSION, new_id, now_ts  # noqa: E402
-from tracekit.ledger import read_records  # noqa: E402
+from factories import DaemonCase  # noqa: E402
 
 try:
     import httpx2 as httpx
@@ -306,22 +305,9 @@ class Lifecycle(unittest.TestCase):
 
 
 @unittest.skipUnless(openai is not None and httpx is not None, "openai not installed")
-class Signed(unittest.TestCase):
-    def setUp(self):
-        self.d = tempfile.mkdtemp()
-        self.home = os.path.join(self.d, "signer")
-        self.old = os.environ.get("TRACEKIT_CLIENT_HOME")
-        os.environ["TRACEKIT_CLIENT_HOME"] = os.path.join(self.d, "client")
-        install.init_dev(self.home, [], start=True)
-
+class Signed(DaemonCase):
     def tearDown(self):
         autotrace.shutdown()
-        install.stop_dev_daemon(self.home)
-        if self.old is None:
-            os.environ.pop("TRACEKIT_CLIENT_HOME", None)
-        else:
-            os.environ["TRACEKIT_CLIENT_HOME"] = self.old
-        shutil.rmtree(self.d, ignore_errors=True)
 
     def test_init_records_a_signed_run_and_links_tool_execution(self):
         import tracekit_sdk
@@ -335,7 +321,7 @@ class Signed(unittest.TestCase):
         with t.tool("Bash", json.loads(call.function.arguments), tool_use_id=call.id) as tc:
             tc.result("a.txt")
         tracekit_sdk.shutdown()
-        evs = [r["event"] for _, r, _ in read_records(os.path.join(self.home, "ledger", "ledger.jsonl")) if r and not r.get("elided")]
+        evs = [r["event"] for r in self.records() if not r.get("elided")]
         mine = [e for e in evs if e["run_id"] == "auto-1"]
         self.assertEqual([e["type"] for e in mine], ["run.start", "model.exchange", "model.exchange", "tool.call", "policy.decision",
                                                      "tool.result", "run.end"])

@@ -11,20 +11,10 @@ import zipfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from tracekit import bundle, findings, install  # noqa: E402
 from tracekit.agent_sdk import Tracer  # noqa: E402
-from tracekit.ledger import read_records  # noqa: E402
-
-_SAVED = {}
-
-
-def setUpModule():
-    _SAVED["policy"] = os.environ.pop("TRACEKIT_POLICY", None)
-
-
-def tearDownModule():
-    if _SAVED.get("policy") is not None:
-        os.environ["TRACEKIT_POLICY"] = _SAVED["policy"]
+from factories import ledger_records, patch_env  # noqa: E402
 
 
 def rec(seq, typ, data, run="r"):
@@ -130,7 +120,7 @@ class Signed(unittest.TestCase):
     def setUp(self):
         self.d = tempfile.mkdtemp()
         self.home = os.path.join(self.d, "signer")
-        self.old = os.environ.get("TRACEKIT_CLIENT_HOME")
+        patch_env(self)
         os.environ["TRACEKIT_CLIENT_HOME"] = os.path.join(self.d, "client")
         install.init_dev(self.home, [], start=True)
         pol = os.path.join(self.d, "full.yaml")
@@ -141,14 +131,10 @@ class Signed(unittest.TestCase):
     def tearDown(self):
         os.environ.pop("TRACEKIT_POLICY", None)
         install.stop_dev_daemon(self.home)
-        if self.old is None:
-            os.environ.pop("TRACEKIT_CLIENT_HOME", None)
-        else:
-            os.environ["TRACEKIT_CLIENT_HOME"] = self.old
         shutil.rmtree(self.d, ignore_errors=True)
 
     def records(self):
-        return [r for _, r, _ in read_records(os.path.join(self.home, "ledger", "ledger.jsonl")) if r]
+        return ledger_records(self.home)
 
     def test_analyze_signs_findings_bundle_verifies_and_tampering_is_caught(self):
         with Tracer(agent="liar", session_id="job-1", cwd=self.d) as t:

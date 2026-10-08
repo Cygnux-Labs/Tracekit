@@ -10,40 +10,17 @@ import shutil
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from tracekit import bundle, client, policy  # noqa: E402
-from tracekit.core import now_ts  # noqa: E402
 from tracekit.daemon import Signer, load_config  # noqa: E402
+from factories import ledger_records, make_signer, patch_env, run_start, tool_call  # noqa: E402
 
 IS_ROOT = hasattr(os, "geteuid") and os.geteuid() == 0
 AGENT_UID, OTHER_UID = 1001, 1002
-
-
-def ev(typ, data, run="r1", source="hook"):
-    return {"run_id": run, "agent_id": "main", "parent_id": None, "source": source, "type": typ, "ts": now_ts(),
-            "data": data}
-
-
-def run_start(run="r1", pol=None):
-    pol = pol or policy.load()[0]
-    return ev("run.start", {"agent": {"name": "test", "version": None}, "host": "h", "os_user": "u", "fail_mode": "closed",
-                            "policy": {"version": pol["version"], "hash": policy.policy_hash(pol)}, "capture_sources": ["hook"],
-                            "sandbox": "unknown", "content_capture": "hashed", "signer_isolation": "separate-user"}, run)
-
-
-def tool_call(tid, cmd="ls", run="r1"):
-    return ev("tool.call", {"tool_use_id": tid, "name": "Bash", "input": {"command": {"value": cmd, "redacted": False}}}, run)
-
-
-def make_signer(home, extra=None):
-    os.makedirs(home, exist_ok=True)
-    cfg = {"checkpoint_every": 50, "witnesses": [f"file:{home}/witness.jsonl"]}
-    cfg.update(extra or {})
-    with open(os.path.join(home, "config.json"), "w") as f:
-        json.dump(cfg, f)
-    return Signer(home, load_config(home))
 
 
 class _SystemConfig(unittest.TestCase):
@@ -51,18 +28,11 @@ class _SystemConfig(unittest.TestCase):
 
     def setUp(self):
         self.d = tempfile.mkdtemp()
-        self.saved_path = client.SYSTEM_CONFIG
-        client.SYSTEM_CONFIG = os.path.join(self.d, "client.json")
-        self.saved_env = {k: os.environ.pop(k, None) for k in ("TRACEKIT_SOCKET", "TRACEKIT_POLICY")}
-
-    def tearDown(self):
-        client.SYSTEM_CONFIG = self.saved_path
-        for k, v in self.saved_env.items():
-            if v is None:
-                os.environ.pop(k, None)
-            else:
-                os.environ[k] = v
-        shutil.rmtree(self.d, ignore_errors=True)
+        self.addCleanup(shutil.rmtree, self.d, ignore_errors=True)
+        p = mock.patch.object(client, "SYSTEM_CONFIG", os.path.join(self.d, "client.json"))
+        p.start()
+        self.addCleanup(p.stop)
+        patch_env(self, TRACEKIT_SOCKET=None, TRACEKIT_POLICY=None)
 
     def write(self, cfg, mode=0o644):
         with open(client.SYSTEM_CONFIG, "w") as f:
@@ -157,8 +127,7 @@ class RunOwnership(unittest.TestCase):
         return self.s.handle(req, peer_uid=uid, peer_pid=1)
 
     def events(self):
-        from tracekit.ledger import read_records
-        return [r["event"] for _, r, _ in read_records(self.s.ledger.path) if r]
+        return [r["event"] for r in ledger_records(self.s.home)]
 
     def test_owner_can_append(self):
         self.assertTrue(self.append(run_start(), 0, AGENT_UID, {"policy": self.pol_raw})["ok"])
@@ -203,17 +172,16 @@ class PinnedPolicy(unittest.TestCase):
         shutil.rmtree(self.d, ignore_errors=True)
 
     def gaps(self, s):
-        from tracekit.ledger import read_records
-        return [r["event"]["data"] for _, r, _ in read_records(s.ledger.path)
-                if r and r["event"]["type"] == "capture.gap" and r["event"]["data"].get("kind") == "policy_mismatch"]
+        return [r["event"]["data"] for r in ledger_records(s.home)
+                if r["event"]["type"] == "capture.gap" and r["event"]["data"].get("kind") == "policy_mismatch"]
 
     def test_matching_policy_is_silent(self):
-        s = make_signer(os.path.join(self.d, "a"), {"pinned_policy_hash": policy.policy_hash(self.pol)})
+        s = make_signer(os.path.join(self.d, "a"), pinned_policy_hash=policy.policy_hash(self.pol))
         s.handle({"op": "append", "cseq": 0, "event": run_start(pol=self.pol), "attach": {"policy": self.pol_raw}})
         self.assertEqual(self.gaps(s), [])
 
     def test_different_policy_is_a_gap(self):
-        s = make_signer(os.path.join(self.d, "b"), {"pinned_policy_hash": "sha256:" + "0" * 64})
+        s = make_signer(os.path.join(self.d, "b"), pinned_policy_hash="sha256:" + "0" * 64)
         s.handle({"op": "append", "cseq": 0, "event": run_start(pol=self.pol), "attach": {"policy": self.pol_raw}})
         g = self.gaps(s)
         self.assertEqual(len(g), 1)
