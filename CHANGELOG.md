@@ -13,6 +13,12 @@ All notable changes to Tracekit. Versions follow [PEP 440](https://peps.python.o
 - Dev mode over TCP: tracekitd binds a free port itself and records it in its config; init reads it back instead of
   probing for a free port.
 
+### Project
+- `SECURITY.md` states supported versions, a disclosure timeline, safe harbour and the operator caveat.
+- Contributions need a DCO sign-off (`git commit -s`); a CI check enforces it on pull requests.
+- Issue templates for policy false positives/negatives and integration requests; blank issues are off and
+  security reports go to private advisories. The PR template checks security invariants and evidence-format changes.
+
 ### Hook invocation
 - Generated hook commands (Claude Code, Codex, Cursor, Gemini) and the plugin's `tracekit-hook` run Python in
   isolated mode (`-I`): the project directory and `PYTHON*` variables no longer affect which `tracekit` is imported.
