@@ -144,7 +144,7 @@ class Completeness(unittest.TestCase):
         self.assertNotEqual(integ, "Integrity: VERIFIED.")
         self.assertTrue(any("run r1: tail unproven" in p for p in chk["run boundaries"]["problems"]))
 
-    def test_cut_at_checkpoint_boundary_fails_with_witness(self):
+    def test_cut_inside_a_run_at_a_checkpoint_is_tail_unproven(self):
         self.two_runs(mid_checkpoint=True)
         src = self.export(since="0")
         with zipfile.ZipFile(src) as z:
@@ -152,12 +152,37 @@ class Completeness(unittest.TestCase):
         mid = min(c["head_seq"] for c in cps)
         cut = rewrite(src, self.path("cp.tkb"), lambda rs: [r for r in rs if seq_of(r) <= mid],
                       lambda cs: [c for c in cs if c["head_seq"] <= mid])
-        _, code, _, _ = self.verdict(cut)
-        self.assertEqual(code, 0)  # without a witness nothing shows the ledger went on
+        for witness in ((), [self.witness]):  # an open run is never plain VERIFIED, and never a FAIL on its own
+            integ, code, chk, _ = self.verdict(cut, witness)
+            self.assertEqual(code, 0, integ)
+            self.assertNotEqual(integ, "Integrity: VERIFIED.")
+            self.assertTrue(any("run r1: tail unproven" in p for p in chk["run boundaries"]["problems"]))
+
+    def test_bundle_stopping_before_a_witnessed_checkpoint_after_run_end_fails(self):
+        self.two_runs()
+        recs = [r for _, r, _ in read_records(self.s.ledger.path) if r]
+        end1 = next(r["event"]["seq"] for r in recs if r["event"]["run_id"] == "r1" and r["event"]["type"] == "run.end")
+        wpath = self.witness[len("file:"):]
+        with open(wpath) as f:  # the checkpoint at r1's run.end never reached the witness; a later one did
+            kept = [l for l in f if json.loads(l)["head_seq"] != end1]
+        with open(wpath, "w") as f:
+            f.writelines(kept)
+        later = min(json.loads(l)["head_seq"] for l in kept if json.loads(l)["head_seq"] > end1)
+        cut = rewrite(self.export(since="0"), self.path("late.tkb"), lambda rs: [r for r in rs if seq_of(r) < later],
+                      lambda cs: [c for c in cs if c["head_seq"] < later])
         integ, code, chk, _ = self.verdict(cut, [self.witness])
         self.assertEqual(code, 1, integ)
         self.assertEqual(chk["run tail witnessed"]["status"], "fail")
-        self.assertTrue(any("tail not covered by a witnessed checkpoint" in p for p in chk["run tail witnessed"]["problems"]))
+        self.assertTrue(any("run r1: tail not covered by a witnessed checkpoint" in p
+                            for p in chk["run tail witnessed"]["problems"]))
+
+    def test_witness_without_a_checkpoint_after_run_end_is_not_a_failure(self):
+        self.two_runs()
+        wpath = self.witness[len("file:"):]
+        open(wpath, "w").close()  # witness has seen nothing yet (late publish)
+        integ, code, chk, _ = self.verdict(self.export(since="0"), [self.witness])
+        self.assertNotEqual(code, 1, integ)
+        self.assertEqual(chk["run tail witnessed"]["status"], "pass")
 
     def test_dev_signer_never_prints_bare_verified(self):
         start = run_start("r1", self.pol)
