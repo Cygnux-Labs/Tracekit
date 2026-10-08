@@ -88,7 +88,7 @@ class Ledger:
         try:
             os.makedirs(os.path.dirname(path), exist_ok=True)
             self._fh = open(path, "ab", buffering=0)  # unbuffered: a failed write never lingers in a buffer
-            os.chmod(path, 0o644)
+            os.chmod(path, 0o640)
             self._lock_fh = open(path + ".lock", "a+b")
         except BaseException:
             self.close()

@@ -73,12 +73,12 @@ class MacPeerCred(unittest.TestCase):
 class MacSystemMode(unittest.TestCase):
     def test_plist_is_valid_and_runs_as_the_signer_account(self):
         data = install.launchd_plist("dev.tracekit.tracekitd", "_tracekit", "/usr/bin/python3", "tracekit.daemon",
-                                     "/var/lib/tracekit", "/opt/tracekit")
+                                     "/var/lib/tracekit")
         p = plistlib.loads(data)
         self.assertEqual(p["UserName"], "_tracekit")
-        self.assertEqual(p["ProgramArguments"], ["/usr/bin/python3", "-m", "tracekit.daemon", "--home", "/var/lib/tracekit"])
+        self.assertEqual(p["ProgramArguments"], ["/usr/bin/python3", "-I", "-m", "tracekit.daemon", "--home", "/var/lib/tracekit"])
         self.assertTrue(p["KeepAlive"] and p["RunAtLoad"])
-        self.assertEqual(p["EnvironmentVariables"]["PYTHONPATH"], "/opt/tracekit")
+        self.assertNotIn("EnvironmentVariables", p)
 
     def test_refused_without_experimental_flag(self):
         with mock.patch.object(install.sys, "platform", "darwin"):

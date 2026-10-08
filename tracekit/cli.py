@@ -79,11 +79,14 @@ def main(argv=None):
     p.add_argument("--signer-cmd", help="external signer helper command (TPM/HSM/enclave; see tracekit/extsigner.py)")
     p.add_argument("--signer-pub", help="with --signer-cmd: the helper key's raw 32-byte Ed25519 public key file")
     p.add_argument("--key-assurance", default="external", help="with --signer-cmd: where the key lives (tpm, hsm, tee, kms, smartcard)")
+    p.add_argument("--i-understand-agent-is-privileged", dest="allow_privileged", action="store_true",
+                   help="system mode: trace a user that is root or in a sudo/wheel/admin/docker/tracekit group anyway")
     p.add_argument("--key-attestation", help="with --signer-cmd: the device's attestation document for the key (TPM quote, "
                                              "enclave attestation, KMS key metadata); its hash is signed into checkpoints and "
                                              "exports carry it")
 
     sub.add_parser("status", help="hooks, signer, witnesses, policy, fail mode, capture sources")
+    sub.add_parser("doctor", help="system mode: check the signer, hooks and policy run from files the agent cannot modify")
     p = sub.add_parser("uninstall", help="remove hooks (the ledger is kept)")
     p.add_argument("--project", action="store_true")
     p.add_argument("--agent", choices=("claude", "codex", "cursor", "gemini"), default="claude")
@@ -264,7 +267,7 @@ def _run(a):
                                                 proxy_port=a.proxy_port, managed=a.managed, managed_only=a.managed_only,
                                                 fail_mode="closed" if a.fail_closed else None,
                                                 experimental_macos=a.experimental_macos, hooks=not a.no_hooks, signer=signer,
-                                                harnesses=a.harness, agent=a.agent)
+                                                harnesses=a.harness, agent=a.agent, allow_privileged=a.allow_privileged)
         except install.SettingsError as e:
             print(f"tracekit: {e}", file=sys.stderr)
             return 1
@@ -274,6 +277,9 @@ def _run(a):
         from . import install
         print(json.dumps(install.status(), indent=2))
         return 0
+    if a.cmd == "doctor":
+        from . import install
+        return install.doctor()
     if a.cmd == "uninstall" and a.agent != "claude":
         from . import agent_hooks
         print("hooks removed from", agent_hooks.install(a.agent, os.getcwd() if a.project else None, uninstall=True))
