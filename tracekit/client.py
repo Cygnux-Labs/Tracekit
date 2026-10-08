@@ -73,13 +73,42 @@ def socket_path():
     return os.environ.get("TRACEKIT_SOCKET") or client_config().get("socket") or DEFAULT_SOCKET
 
 
+def remote_url_error(url):
+    """Why `url` may not receive credentials, or None: https to any host, plain http only to
+    localhost, 127.0.0.1 or ::1, and never a URL with userinfo (user@host)."""
+    try:
+        parsed = urlsplit(url)
+        host = parsed.hostname
+        parsed.port  # raises ValueError on a malformed port
+    except ValueError as e:
+        return f"invalid URL: {e}"
+    if "@" in parsed.netloc:
+        return "URL must not contain user@ credentials"
+    if not host:
+        return "URL has no host"
+    if parsed.scheme == "https" or (parsed.scheme == "http" and host in ("localhost", "127.0.0.1", "::1")):
+        return None
+    return "URL must use https (plain http only for localhost, 127.0.0.1 or ::1)"
+
+
+def no_redirect_opener():
+    """A urllib opener that bypasses proxies and returns any 3xx as an HTTPError instead of following it,
+    so credential headers are never re-sent to a redirect target."""
+    import urllib.request
+
+    class _NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *a, **kw):
+            return None
+    return urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
+
+
 def _http_rpc(endpoint, cfg, req, timeout):
     """Remote transport: POST the request to an ingest gateway (docs/remote-ingest.md)."""
     import urllib.error
     import urllib.request
-    parsed = urlsplit(endpoint)
-    if parsed.scheme != "https" and not (parsed.scheme == "http" and parsed.hostname in ("127.0.0.1", "localhost")):
-        raise SignerUnavailable("remote signer endpoints must use https (plain http only for localhost)")
+    err = remote_url_error(endpoint)
+    if err:
+        raise SignerUnavailable(f"remote signer endpoint: {err}")
     token = cfg.get("socket_token") or os.environ.get("TRACEKIT_REMOTE_TOKEN")
     if not isinstance(token, str) or not token:
         raise SignerUnavailable("remote endpoint has no token (set it with `tracekit init --remote`)")
@@ -87,8 +116,8 @@ def _http_rpc(endpoint, cfg, req, timeout):
     r = urllib.request.Request(url, data=json.dumps(req, ensure_ascii=False).encode("utf-8"), method="POST",
                                headers={"Content-Type": "application/json", "Authorization": "Bearer " + token})
     try:
-        with urllib.request.urlopen(r, timeout=timeout) as resp:
-            return json.loads(resp.read() or b"{}")
+        with no_redirect_opener().open(r, timeout=timeout) as resp:
+            return _reply(resp.read())
     except urllib.error.HTTPError as e:
         try:
             body = json.loads(e.read() or b"{}")
@@ -99,6 +128,16 @@ def _http_rpc(endpoint, cfg, req, timeout):
         return {"ok": False, "error": body.get("error") or f"HTTP {e.code}", **({"retryable": True} if body.get("retryable") else {})}
     except (OSError, ValueError) as e:
         raise SignerUnavailable(str(e)) from e
+
+
+def _reply(raw):
+    """Decode a signer reply; an empty or non-object reply means the signer is unavailable."""
+    if not raw.strip():
+        raise SignerUnavailable("empty reply from signer")
+    out = json.loads(raw)
+    if not isinstance(out, dict):
+        raise SignerUnavailable("unexpected reply from signer")
+    return out
 
 
 def is_remote(config=None):
@@ -148,7 +187,7 @@ def _rpc(req, timeout=5.0, config=None):
             if not chunk:
                 break
             buf += chunk
-        return json.loads(buf or b"{}")
+        return _reply(buf)
     except (OSError, ValueError) as e:
         raise SignerUnavailable(str(e)) from e
     finally:
