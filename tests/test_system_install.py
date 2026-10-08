@@ -81,6 +81,15 @@ class SystemModeUsesOpt(unittest.TestCase):
                 install.migrate_system()
             self.assertEqual(sys_cfg.call_args.args[0]["policy"], expected)
 
+    def test_venv_installs_only_from_a_source_checkout(self):
+        run = mock.Mock()
+        with mock.patch.object(install, "ROOT", tempfile.gettempdir()), \
+                mock.patch("tracekit.daemon.trusted_file", return_value=None), \
+                mock.patch.object(install.subprocess, "run", run):
+            with self.assertRaises(SystemExit):
+                install._install_venv()
+        run.assert_not_called()
+
     def test_hook_command_runs_the_opt_interpreter(self):
         self.assertTrue(install._hook_command(python=install.OPT_PYTHON).startswith(f"{install.OPT_PYTHON} -I -m tracekit.hook"))
 
