@@ -438,7 +438,7 @@ class ObserverServer(unittest.TestCase):
         port = self.serve("s3cret")
         self.assertEqual(self.get(port, "/api/snapshot")[0], 401)
         self.assertEqual(self.get(port, "/api/snapshot?token=nope")[0], 401)
-        self.assertEqual(self.get(port, "/api/snapshot?token=s3cret")[0], 200)
+        self.assertEqual(self.get(port, "/api/snapshot?token=s3cret")[0], 401)  # exchanged at / for a cookie
         self.assertEqual(self.get(port, "/api/snapshot", {"Authorization": "Bearer s3cret"})[0], 200)
 
     def test_bad_stream_offset_is_a_400(self):
