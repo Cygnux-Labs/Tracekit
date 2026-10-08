@@ -113,6 +113,117 @@ def harness_of(hook_pid):
     return None, 0
 
 
+# ---------- 0.3: harness binding ----------
+HOOK_BOUND_SOURCES = {"hook", "transcript"}   # the sources a harness spawns; sdk/proxy/migrated are attributed differently
+BINDING_MODES = ("off", "record", "enforce")
+
+
+def _start_time(pid):
+    """Kernel start time of pid (clock ticks since boot): with the pid, identifies one process instance."""
+    try:
+        with open(f"/proc/{pid}/stat") as f:
+            s = f.read()
+        return int(s[s.rindex(")") + 2:].split()[19])
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def _cmdline(pid):
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as f:
+            return [a.decode("utf-8", "replace") for a in f.read().split(b"\0") if a]
+    except OSError:
+        return None
+
+
+def _exe(pid):
+    """Resolved executable of pid, or None. Reading another user's /proc/<pid>/exe needs CAP_SYS_PTRACE, which
+    `tracekit init` grants the signer service for exactly this check. A replaced or deleted binary never matches."""
+    try:
+        exe = os.readlink(f"/proc/{pid}/exe")
+    except OSError:
+        return None
+    return None if exe.endswith(" (deleted)") else exe
+
+
+def trusted_file(path):
+    """Problem with trusting `path` as a harness binary, or None. The agent must not be able to replace it: the file
+    and every directory above it must be root-owned and not group- or world-writable."""
+    if not os.path.isabs(path):
+        return "not an absolute path"
+    p = os.path.realpath(path)
+    while True:
+        try:
+            st = os.stat(p)
+        except OSError as e:
+            return f"{p}: {e.strerror}"
+        if st.st_uid != 0:
+            return f"{p} is not owned by root"
+        if st.st_mode & 0o022:
+            return f"{p} is group- or world-writable"
+        if p == "/":
+            return None
+        p = os.path.dirname(p)
+
+
+def normalize_harnesses(spec):
+    """Validate the `harnesses` list from the signer config: [{"name", "exe", "script"?}]. `script` is for harnesses
+    that are interpreter scripts (an npm-installed CLI runs as node): the process's executable is the interpreter,
+    and its first non-option argument must resolve to the registered script."""
+    out = []
+    for h in spec or []:
+        if not isinstance(h, dict) or not isinstance(h.get("exe"), str) or not os.path.isabs(h["exe"]):
+            continue
+        sc = h.get("script")
+        out.append({"name": str(h.get("name") or os.path.basename(h["exe"]))[:64], "exe": os.path.realpath(h["exe"]),
+                    "script": os.path.realpath(sc) if isinstance(sc, str) and os.path.isabs(sc) else None})
+    return out
+
+
+def _script_of(pid, argv):
+    """The script an interpreter process runs: its first non-option argument, resolved against the process's cwd."""
+    for a in argv[1:]:
+        if a.startswith("-"):
+            continue
+        if not os.path.isabs(a):
+            try:
+                a = os.path.join(os.readlink(f"/proc/{pid}/cwd"), a)
+            except OSError:
+                return None
+        return os.path.realpath(a)
+    return None
+
+
+def find_harness(pid, harnesses, limit=64):
+    """The registered harness instance that pid descends from: (instance dict, None) or (None, why).
+
+    The hook process is spawned by the harness (usually through a shell), so the signer walks up the process tree
+    from the connecting process and takes the nearest ancestor whose executable (not its name, which any process can
+    set) is a registered, root-owned harness binary. A process the agent detaches (double fork, setsid) is reparented
+    to init and has no harness above it."""
+    if not pid:
+        return None, "no peer pid"
+    readable = 0
+    for apid, _comm, _tty in _ancestors(pid, limit)[1:]:
+        exe = _exe(apid)
+        if exe is None:
+            continue
+        readable += 1
+        for h in harnesses:
+            if exe != h["exe"]:
+                continue
+            if h["script"] and _script_of(apid, _cmdline(apid) or []) != h["script"]:
+                continue
+            for f in (exe, h["script"]):
+                bad = f and trusted_file(f)
+                if bad:
+                    return None, f"registered harness file {f} can be replaced by a non-root user: {bad}"
+            return {"name": h["name"], "exe": exe, "pid": apid, "start_time": _start_time(apid)}, None
+    if not readable and len(_ancestors(pid, limit)) > 1:
+        return None, "signer cannot read process executables (needs CAP_SYS_PTRACE; see docs/threat-model.md)"
+    return None, "no registered harness among the sender's ancestor processes"
+
+
 class Signer:
     def __init__(self, home, cfg):
         self.home, self.cfg = home, cfg
@@ -138,6 +249,9 @@ class Signer:
         self.last_cp_seq = -1
         self.retry = []           # [(checkpoint, witness, attempts, next_time)]
         self.write_errors = 0
+        self.harnesses = normalize_harnesses(cfg.get("harnesses"))
+        mode = cfg.get("harness_binding") or ("enforce" if self.harnesses and cfg.get("mode") != "dev" else "off")
+        self.binding = mode if mode in BINDING_MODES else "enforce"
         self._load_runs()
         self._prune_runtime_state(time.time())
         if self.ledger.torn:
@@ -150,7 +264,7 @@ class Signer:
     @staticmethod
     def _new_run():
         return {"cseq": {}, "started": False, "ended": False, "proxy": False, "last": time.time(), "stale_flagged": False,
-                "agent_uid": None}
+                "agent_uid": None, "harness": None}
 
     def _run(self, run_id):
         st = self.runs.get(run_id)
@@ -173,6 +287,9 @@ class Signer:
                         st["agent_uid"] = pwd.getpwnam(ev["data"]["os_user"]).pw_uid
                     except (KeyError, AttributeError):
                         pass
+                h = ev["data"].get("harness")
+                if isinstance(h, dict) and h.get("pid"):  # 0.3: restore the run's harness binding after a restart
+                    st["harness"] = (h["pid"], h.get("start_time"))
             elif ev["type"] == "run.end":
                 st["ended"] = True
             elif ev["type"] == "checkpoint":
@@ -603,12 +720,52 @@ class Signer:
             if op != "append":
                 return {"ok": False, "error": f"unsupported op {op!r} (no delete, rewrite or key export exists)"}
             try:
-                return self._handle_append(req, peer_uid)
+                return self._handle_append(req, peer_uid, peer_pid)
             except OSError as e:
                 self.write_errors += 1
                 return {"ok": False, "error": f"ledger write failed: {e}", "retryable": True}
 
-    def _handle_append(self, req, peer_uid):
+    def _check_harness(self, ev, run_id, peer_pid):
+        """0.3 harness binding. Returns (refusal message or None, harness key for a run.start).
+
+        A run.start must come from a process descending from a registered harness binary; the signer records which
+        harness instance (pid + kernel start time) it was, and every later hook/transcript event of that run must come
+        from the same instance. A script the agent runs outside the harness, or after detaching from it, cannot start
+        or write into a run. A script run from inside the harness session can still start a *second* run; that is
+        recorded as a concurrent_run gap, because one harness process drives one session at a time."""
+        inst, why = find_harness(peer_pid, self.harnesses)
+        key = (inst["pid"], inst["start_time"]) if inst else None
+        enforce = self.binding == "enforce"
+        if ev.get("type") == "run.start":
+            if inst is None:
+                if enforce:
+                    self._rejection(f"refused run.start: {why}", run_id)
+                    return f"run.start must come from a registered harness ({why})", None
+                self._internal("capture.gap", {"reason": f"run.start not attributable to a registered harness: {why}",
+                                               "kind": "unattributed_run"}, run_id)
+                return None, None
+            others = [r for r, o in self.runs.items()
+                      if r != run_id and o.get("harness") and tuple(o["harness"]) == key and o["started"] and not o["ended"]]
+            if others:
+                self._internal("capture.gap", {"reason": f"a second open run started in the same harness instance (pid {inst['pid']}) "
+                                                         f"as run {others[0][:80]}: one of them may have been fabricated from "
+                                                         "inside the session", "kind": "concurrent_run"}, run_id)
+            if isinstance(ev.get("data"), dict):
+                ev["data"]["harness"] = {"name": inst["name"], "exe": inst["exe"], "pid": inst["pid"],
+                                         "start_time": inst["start_time"], "attested": True}
+            return None, key
+        st = self.runs.get(run_id)
+        bound = st.get("harness") if st else None
+        if inst is None or (bound and key != tuple(bound)):
+            msg = (f"event not sent from a registered harness ({why})" if inst is None
+                   else f"event sent from harness pid {inst['pid']}, but the run is bound to harness pid {bound[0]}")
+            if enforce:
+                self._rejection("refused " + msg, run_id)
+                return msg, None
+            self._internal("capture.gap", {"reason": msg, "kind": "harness_mismatch"}, run_id)
+        return None, None
+
+    def _handle_append(self, req, peer_uid, peer_pid=None):
         ev = req.get("event")
         if not isinstance(ev, dict):
             return {"ok": False, "error": "event must be an object"}
@@ -636,6 +793,13 @@ class Signer:
                 ev["data"]["os_user_attested"] = True
             else:
                 ev["data"]["os_user_attested"] = False
+            ev["data"].pop("harness", None)  # only the signer may say which harness sent a run.start
+        harness_key = None
+        if (self.binding != "off" and ev.get("source") in HOOK_BOUND_SOURCES and peer_uid is not None
+                and not peer_is_signer and not run_id.startswith(("findings:", "anchors:"))):
+            denied, harness_key = self._check_harness(ev, run_id, peer_pid)
+            if denied:
+                return {"ok": False, "error": denied}
         errs = schema_mod.validate(ev)
         if errs:
             self._rejection("rejected invalid event: " + "; ".join(errs[:5])[:900], run_id)
@@ -686,7 +850,8 @@ class Signer:
         elif ev["type"] == "run.start":
             if st["started"] and not st["ended"]:
                 self._internal("capture.gap", {"reason": "run.start for a run that never recorded run.end", "kind": "no_run_end"}, run_id)
-            st.update(started=True, ended=False, proxy="proxy" in ev["data"].get("capture_sources", []), agent_uid=peer_uid)
+            st.update(started=True, ended=False, proxy="proxy" in ev["data"].get("capture_sources", []), agent_uid=peer_uid,
+                      harness=harness_key)
         elif ev["source"] == "proxy":
             pass  # proxy exchanges may arrive before the hook's run.start
         elif not st["started"]:

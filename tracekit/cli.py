@@ -32,15 +32,18 @@ _DELEGATED = {"observe": "observe", "analyze": "findings", "otel": "otlp", "sql"
 def main(argv=None):
     args = list(sys.argv[1:] if argv is None else argv)
     if args[:2] == ["migrate", "--system"]:  # 0.2.1; before argparse for the same REMAINDER reason as below
-        rest = args[2:]
-        fm = None
-        if rest[:1] == ["--fail-mode"] and len(rest) == 2 and rest[1] in ("open", "closed"):
-            fm = rest[1]
-        elif rest:
-            print("usage: tracekit migrate --system [--fail-mode open|closed]", file=sys.stderr)
-            return 2
+        rest, fm, harnesses = args[2:], None, []
+        while rest:
+            if rest[0] == "--fail-mode" and len(rest) > 1 and rest[1] in ("open", "closed") and fm is None:
+                fm = rest[1]
+            elif rest[0] == "--harness" and len(rest) > 1:
+                harnesses.append(rest[1])
+            else:
+                print("usage: tracekit migrate --system [--fail-mode open|closed] [--harness [NAME=]PATH ...]", file=sys.stderr)
+                return 2
+            rest = rest[2:]
         from . import install
-        return install.migrate_system(fm)
+        return install.migrate_system(fm, harnesses)
     if args and args[0] == "report":
         from .proofpack import report_main
         return report_main(args[1:])
@@ -70,6 +73,9 @@ def main(argv=None):
     p.add_argument("--managed-only", action="store_true", help="with --managed: also set allowManagedHooksOnly")
     p.add_argument("--agent", choices=("claude", "codex", "cursor", "gemini"), default="claude",
                    help="which coding agent's hooks to install (default: Claude Code)")
+    p.add_argument("--harness", action="append", default=[], metavar="[NAME=]PATH",
+                   help="system mode (0.3): the agent program whose processes may send events, e.g. /usr/local/bin/claude "
+                        "(repeatable; must be root-owned). Default: the agent's CLI on PATH if installed root-owned")
     p.add_argument("--signer-cmd", help="external signer helper command (TPM/HSM/enclave; see tracekit/extsigner.py)")
     p.add_argument("--signer-pub", help="with --signer-cmd: the helper key's raw 32-byte Ed25519 public key file")
     p.add_argument("--key-assurance", default="external", help="with --signer-cmd: where the key lives (tpm, hsm, tee, kms, smartcard)")
@@ -256,7 +262,8 @@ def _run(a):
                                                 os.getcwd() if a.project else None, a.no_service, proxy=a.proxy,
                                                 proxy_port=a.proxy_port, managed=a.managed, managed_only=a.managed_only,
                                                 fail_mode="closed" if a.fail_closed else None,
-                                                experimental_macos=a.experimental_macos, hooks=not a.no_hooks, signer=signer)
+                                                experimental_macos=a.experimental_macos, hooks=not a.no_hooks, signer=signer,
+                                                harnesses=a.harness, agent=a.agent)
         except install.SettingsError as e:
             print(f"tracekit: {e}", file=sys.stderr)
             return 1

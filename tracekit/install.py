@@ -46,7 +46,7 @@ NoNewPrivileges=true
 ProtectSystem=strict
 ReadWritePaths={home}
 PrivateTmp=true
-
+{caps}
 [Install]
 WantedBy=multi-user.target
 """
@@ -263,6 +263,58 @@ def _write_signer_config(home, witnesses, checkpoint_every, socket_path, proxy=N
     with open(path, "w") as f:
         json.dump(cfg, f, indent=2)
     os.chmod(path, 0o600)
+
+
+HARNESS_COMMANDS = {"claude": "claude", "codex": "codex", "cursor": "cursor-agent", "gemini": "gemini"}
+# 0.3: lets tracekitd read /proc/<pid>/exe of the agent's processes to find the harness that sent an event. It is only
+# set when harnesses are registered. The signer already holds the signing key, so this does not widen what a
+# compromised signer could do to the record; it does let it inspect the agent's processes (docs/threat-model.md).
+UNIT_CAPS = "AmbientCapabilities=CAP_SYS_PTRACE\nCapabilityBoundingSet=CAP_SYS_PTRACE\n"
+
+
+def resolve_harness(spec, agent="claude"):
+    """`--harness` value -> registered harness. spec is PATH or NAME=PATH; a script (#!) registers its interpreter as
+    the executable and the script itself, because that is what the kernel shows for the running harness."""
+    name, path = spec.split("=", 1) if "=" in spec else (agent, spec)
+    found = path if os.path.isabs(path) else shutil.which(path)
+    if not found or not os.path.exists(found):
+        raise SystemExit(f"--harness: {path} not found")
+    real = os.path.realpath(found)
+    with open(real, "rb") as f:
+        head = f.read(256)
+    entry = {"name": name or agent, "exe": real}
+    if head.startswith(b"#!"):
+        interp = head[2:].split(b"\n", 1)[0].decode(errors="replace").strip().split()
+        if interp and os.path.basename(interp[0]) == "env":
+            prog = [a for a in interp[1:] if not a.startswith("-")]
+            interp = [shutil.which(prog[0]) or prog[0]] if prog else []
+        if not interp or not os.path.isabs(interp[0]):
+            raise SystemExit(f"--harness: cannot resolve the interpreter of {real}")
+        entry = {"name": entry["name"], "exe": os.path.realpath(interp[0]), "script": real}
+    from .daemon import trusted_file
+    for f in (entry["exe"], entry.get("script")):
+        bad = f and trusted_file(f)
+        if bad:
+            raise SystemExit(f"--harness: {f} could be replaced by a non-root user ({bad}). Install the agent "
+                             "system-wide (root-owned) so Tracekit can trust which program sent each event.")
+    return entry
+
+
+def harness_config(specs, agent="claude"):
+    """Signer-config fields for 0.3 harness binding. With no --harness, the agent's CLI on root's PATH is used if it
+    is installed root-owned; otherwise binding stays off and init says so."""
+    if specs:
+        return {"harnesses": [resolve_harness(s, agent) for s in specs], "harness_binding": "enforce"}
+    cmd = shutil.which(HARNESS_COMMANDS.get(agent, agent))
+    if cmd:
+        try:
+            return {"harnesses": [resolve_harness(cmd, agent)], "harness_binding": "enforce"}
+        except SystemExit as e:
+            print(f"note: harness binding off: {e}")
+            return {"harness_binding": "off"}
+    print(f"note: harness binding off: no root-owned `{HARNESS_COMMANDS.get(agent, agent)}` on PATH. Without it, any "
+          "process running as the agent's user can start a run (docs/threat-model.md). Re-run with --harness PATH.")
+    return {"harness_binding": "off"}
 
 
 def _upstream():
@@ -526,6 +578,20 @@ def _write_system_client_config(cfg):
     os.replace(tmp, path)
 
 
+def _update_signer_config(home, fields, tk_user=None):
+    path = os.path.join(home, "config.json")
+    with open(path, encoding="utf-8") as f:
+        cfg = json.load(f)
+    cfg.update(fields)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, indent=2)
+    if tk_user is not None:
+        os.chown(tmp, tk_user.pw_uid, tk_user.pw_gid)
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, path)
+
+
 def _pin_policy(home, tk_user=None):
     """0.2.1: record the hash of the effective system-mode policy in the signer config. The signer then turns any
     run or decision made under a different policy into a policy_mismatch capture gap. Re-run after a policy change."""
@@ -545,9 +611,9 @@ def _pin_policy(home, tk_user=None):
     return cfg["pinned_policy_hash"]
 
 
-def migrate_system(fail_mode=None):
-    """0.2.1 `tracekit migrate --system`: upgrade a 0.2.0 system-mode install in place. Writes the root-owned
-    client config and pins the policy; the ledger, key and witness are untouched. Restart tracekitd afterwards."""
+def migrate_system(fail_mode=None, harnesses=None):
+    """`tracekit migrate --system`: upgrade a 0.2.x system-mode install in place. Writes the root-owned client config,
+    pins the policy and (0.3) registers the harness; the ledger, key and witness are untouched. Restart tracekitd."""
     if not sys.platform.startswith("linux"):
         raise SystemExit("migrate --system: system mode is Linux-only in 0.2.1")
     if os.geteuid() != 0:
@@ -563,15 +629,28 @@ def migrate_system(fail_mode=None):
         cfg.update(proxy=True, proxy_url=f"http://127.0.0.1:{scfg['proxy'].get('port', 8787)}")
     _write_system_client_config(cfg)
     tk = pwd.getpwnam(SYS_USER)
+    hcfg = harness_config(harnesses)
+    _update_signer_config(SYS_HOME, hcfg, tk)
+    unit = "/etc/systemd/system/tracekitd.service"
+    if hcfg.get("harnesses") and os.path.exists(unit):
+        with open(unit) as f:
+            text = f.read()
+        if "CAP_SYS_PTRACE" not in text:
+            with open(unit, "w") as f:
+                f.write(text.replace("PrivateTmp=true\n", "PrivateTmp=true\n" + UNIT_CAPS, 1))
+            subprocess.run(["systemctl", "daemon-reload"], check=False)
     pinned = _pin_policy(SYS_HOME, tk)
     print(f"wrote {client.SYSTEM_CONFIG} (root-owned; agent config and TRACEKIT_SOCKET/TRACEKIT_POLICY now ignored)")
+    for h in hcfg.get("harnesses", []):
+        print(f"harness binding: {h['name']} = {h['exe']}" + (f" running {h['script']}" if h.get("script") else ""))
     print(f"pinned policy {pinned[:19]}; fail_mode={cfg['fail_mode']}")
     print("restart the signer to load the pin: sudo systemctl restart tracekitd")
     return 0
 
 
 def init_system(target_user, witnesses, checkpoint_every=50, project=None, no_service=False, proxy=False, proxy_port=8787,
-                managed=False, managed_only=False, fail_mode=None, experimental_macos=False, hooks=True, signer=None):
+                managed=False, managed_only=False, fail_mode=None, experimental_macos=False, hooks=True, signer=None,
+                harnesses=None, agent="claude"):
     darwin = sys.platform == "darwin"
     if not (sys.platform.startswith("linux") or darwin):
         raise SystemExit("v0.2 system mode runs on Linux and (experimentally) macOS: tracekitd must identify callers "
@@ -606,7 +685,8 @@ def init_system(target_user, witnesses, checkpoint_every=50, project=None, no_se
         print("note: using a local git witness only. It protects against the agent's user, not against root on this "
               "machine. Point --witness at a remote repository the security team owns (docs/witnesses.md).")
     pcfg = {"port": proxy_port, "upstream": _upstream(), "fail_mode": fail_mode or "open"} if proxy else None
-    _write_signer_config(SYS_HOME, witnesses, checkpoint_every, sock, pcfg, {"signer": signer} if signer else None)
+    extra = dict({"signer": signer} if signer else {}, **({} if darwin else harness_config(harnesses, agent)))
+    _write_signer_config(SYS_HOME, witnesses, checkpoint_every, sock, pcfg, extra or None)
     os.chown(os.path.join(SYS_HOME, "config.json"), tk.pw_uid, tk.pw_gid)
     # generate the key as the tracekit user so root-only reads are the only other path to it
     env = dict(os.environ, PYTHONPATH=ROOT)
@@ -626,7 +706,8 @@ def init_system(target_user, witnesses, checkpoint_every=50, project=None, no_se
                 subprocess.run(["launchctl", "bootstrap", "system", plist], check=False)
         else:  # systemd
             with open("/etc/systemd/system/tracekitd.service", "w") as f:
-                f.write(UNIT.format(user=tk.pw_name, python=sys.executable, home=SYS_HOME, pythonpath=ROOT))
+                f.write(UNIT.format(user=tk.pw_name, python=sys.executable, home=SYS_HOME, pythonpath=ROOT,
+                                    caps=UNIT_CAPS if extra.get("harnesses") else ""))
             if proxy:
                 with open("/etc/systemd/system/tracekit-proxy.service", "w") as f:
                     f.write(PROXY_UNIT.format(user=tk.pw_name, python=sys.executable, home=SYS_HOME, pythonpath=ROOT))

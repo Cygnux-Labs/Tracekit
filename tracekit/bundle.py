@@ -542,6 +542,18 @@ def _verify(rep, manifest, blobs, witness_specs, strict, trusted_key):
               "; ".join(f"{k}: {v} events ({TRUST.get(k, k)})" for k, v in sorted(counts.items())),
               [f"run.start declared capture source {x!r} but no {x} events were recorded" for x in missing], warn=True)
 
+    # 6a. harness attribution (0.3): in system mode, was each hook run started by a registered harness process?
+    hook_starts = [e for e in sel if e["type"] == "run.start" and e["source"] in ("hook", "transcript")
+                   and e["data"].get("os_user_attested")]
+    if hook_starts:
+        unbound = [e for e in hook_starts if not (e["data"].get("harness") or {}).get("attested")]
+        bound = [e["data"]["harness"] for e in hook_starts if e not in unbound]
+        rep.check("harness attribution", not unbound,
+                  "; ".join(sorted({f"{h['name']} ({h['exe']}), pid {h['pid']}" for h in bound}))
+                  + " (signer-attested from the kernel's process tree)" if not unbound else "",
+                  [f"run {e['run_id'][:80]}: no harness binding, so its hook events could have been sent by any process "
+                   "running as the agent's user (tracekit init --harness)" for e in unbound][:20], warn=True)
+
     # 6b. trace tampering (C2) and approvals (C8): findings about the run, not about the bundle
     tt = [e for e in events if e.get("type") == "trace.tamper" and (e.get("run_id") in sel_runs or e.get("run_id") == "_signer")]
     marks = sum(1 for e in sel if e.get("transcript"))
