@@ -65,7 +65,8 @@ $ pip install . && tracekit demo
 [PASS] policy hash consistent — every decision is bound to a policy snapshot in the bundle
 [PASS] harness transcript unchanged — prefix matched at all 14 transcript marks
 [WARN] coverage — signer ran as the agent's own user (dev mode): the agent could have rewritten the ledger
-VERIFIED.
+Integrity: VERIFIED.
+Assurance: dev (signer ran as the agent's own user: the agent could have rewritten the ledger).
 
 == tamper test: rewrite one recorded command in a copy, then verify again
   [FAIL] chain intact: record seq 6: hash mismatch (event content was edited)
