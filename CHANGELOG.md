@@ -4,6 +4,13 @@ All notable changes to Tracekit. Versions follow [PEP 440](https://peps.python.o
 
 ## Unreleased
 
+### Validate remote endpoint URLs
+- `tracekit init --remote` and `tracekit otel push` parse the URL: `https://` to any host, plain `http://` only when the
+  host is exactly `localhost`, `127.0.0.1` or `::1`; URLs with `user@` are refused.
+- The remote signer client and `otel push` no longer follow HTTP redirects, so credentials never reach a redirect target.
+- An empty or non-JSON-object reply from the signer is treated as "signer unavailable", like a refused connection.
+- `init --remote` refuses to write its config through a symlink.
+
 ### Security (0.3: harness binding, closing fabricated runs)
 After 0.2.1, any process running as the agent's user could still drive the real hook with a complete, well-formed
 run that never happened, and it verified as `VERIFIED` (E8.6). The signer now checks *which program* sent each event,
