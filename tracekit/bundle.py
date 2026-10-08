@@ -659,7 +659,7 @@ def print_report(rep, code, stream=None):
         verdict = "VERIFIED WITH GAPS (" + ", ".join(gappy) + ")"
     if code in (EXIT_OK, EXIT_WARN) and any(c["check"] == "trust root" and c["status"] != "pass" for c in rep.checks):
         verdict += " BUT UNANCHORED (internally consistent only; no trusted key or witness was checked)"
-    for n in rep.notes:
+    for n in getattr(rep, "notes", ()):
         s.write(f"warning: {n}\n")
     s.write(f"\nIntegrity: {verdict}.\nAssurance: {getattr(rep, 'assurance', None) or 'unknown (no run.start checked)'}.\n"
             f"Tracekit proves what its capture path recorded and that it has not changed since it was "
