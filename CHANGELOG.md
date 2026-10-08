@@ -47,6 +47,13 @@ v1 signatures cover `(hash, prev_hash, seq)` only, so an elided stub does not sa
   says the signer ran as the agent's own user (`signer_isolation: same-user`), so dev bundles never print a bare
   `VERIFIED.`.
 
+### Fixed
+- Redaction stays fast on large tool arguments: the private-key, JWT, connection-string, dotenv and secret-assignment
+  rules no longer take quadratic time on repeated prefixes. Connection-string user and password parts are capped at
+  256 characters, and URLs with an empty user (`redis://:p@h:6379`) are now redacted.
+- When a tool call mentions a `.env` file, every `KEY=value` line in its inputs, including the fields always recorded
+  in clear (such as `command`), is redacted.
+
 ### Security (observer and replay rendering)
 - `tracekit observe` and `replay.html` escape every record-derived value they put into HTML, and fill their data
   slots in one pass, so bundle content cannot inject markup or script.
