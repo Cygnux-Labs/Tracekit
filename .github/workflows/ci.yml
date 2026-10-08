@@ -59,6 +59,8 @@ jobs:
           cd /tmp && sudo "$PY" -m tracekit init --user agent --no-service --no-hooks --harness agent=/usr/local/lib/tracekit-e8/agent
       - name: Run E8
         run: cd /opt/tracekit && sudo "$(which python)" eval/e8_insider.py --out /tmp/e8_insider.json
+      - name: Root-only installer tests
+        run: cd /opt/tracekit && sudo "$(which python)" -m pip install pytest && sudo "$(which python)" -m pytest -q -m root tests/test_install_files.py
       - if: always()
         uses: actions/upload-artifact@v4
         with:

@@ -48,7 +48,7 @@ Changelog = "https://github.com/Cygnux-Labs/Tracekit/blob/main/CHANGELOG.md"
 Security = "https://github.com/Cygnux-Labs/Tracekit/blob/main/SECURITY.md"
 
 [tool.setuptools]
-packages = ["tracekit", "tracekit.adapters"]
+packages = ["tracekit", "tracekit.adapters", "tracekit.deploy"]
 py-modules = ["tracekit_sdk"]
 
 [tool.setuptools.dynamic]
@@ -59,3 +59,4 @@ tracekit = ["schema/*.json", "policy/*.yaml", "ui/*.html"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["root: needs root; run by the CI insider job"]
