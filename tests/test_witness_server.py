@@ -114,5 +114,24 @@ class Service(unittest.TestCase):
         self.assertIn("not consistent", str(cm.exception))
 
 
+class TornLog(unittest.TestCase):
+    def test_witness_starts_when_the_last_line_is_torn(self):
+        d = tempfile.mkdtemp()
+        try:
+            witness_server.init(d)
+            log = witness_server.Log(d)
+            log.add("box", {"kid": "ed25519:k", "head_seq": 1, "head_hash": "a" * 64})
+            logp = os.path.join(d, "log.jsonl")
+            with open(logp, "a") as f:
+                f.write('{"cp": {"kid": "ed25519:k", "head_se')  # a write cut short
+            log = witness_server.Log(d)
+            self.assertEqual(len(log.entries), 1)
+            self.assertTrue(os.path.exists(logp + ".torn"))
+            log.add("box", {"kid": "ed25519:k", "head_seq": 2, "head_hash": "b" * 64})
+            self.assertEqual([e["cp"]["head_seq"] for e in witness_server.Log(d).entries], [1, 2])
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+
 if __name__ == "__main__":
     unittest.main()
