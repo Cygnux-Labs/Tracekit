@@ -4,10 +4,13 @@ Lets an SDK agent on another machine write to this signer's ledger over HTTPS. I
 runners, batch workers, a framework running elsewhere). It is not a way to collect Claude Code hooks from other
 machines: run a signer on each machine for that.
 
+> **Experimental.** The ingest gateway (`tracekit ingest serve`) is off by default and being rebuilt: it runs only with `--experimental` and prints a
+> warning when it starts. `tracekit init` never starts it.
+
 ```bash
 # on the signer host
 tracekit ingest token build-agent --home /var/lib/tracekit          # prints the token once; only its hash is stored
-tracekit ingest serve --home /var/lib/tracekit --host 0.0.0.0 --port 8443 --cert fullchain.pem --key privkey.pem
+tracekit ingest serve --experimental --home /var/lib/tracekit --host 0.0.0.0 --port 8443 --cert fullchain.pem --key privkey.pem
 
 # on the agent's machine
 echo "$TOKEN" > token.txt
