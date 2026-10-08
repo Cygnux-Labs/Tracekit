@@ -433,22 +433,17 @@ def _verify(rep, manifest, blobs, witness_specs, strict, trusted_key):
                 continue
             wit_seqs.add(c["head_seq"])
         cps += [c for c in wcps if c not in cps]
-    # 4a. with a witness, each selected run must be followed up to the first witnessed checkpoint after its run.end;
-    #     a bundle cut at an earlier checkpoint boundary hides how the run continued
+    # 4a. with a witness: a bundle that stops before the first witnessed checkpoint at or after a run's run.end hides
+    #     how the ledger continued. Only that is evidence of a cut; an open run (no run.end) or a witness that has not
+    #     yet seen a checkpoint past run.end is already reported by "run boundaries" or is simply not anchored yet.
     if wit_names:
         tw = []
         for x in bound_runs:
-            if run_ends[x] is None:
-                if any(s > bundle_end for s in wit_seqs):
-                    tw.append(f"run {x}: tail not covered by a witnessed checkpoint (no run.end in the bundle, which ends at "
-                              f"seq {bundle_end}, while the witness shows the ledger continued to seq {max(wit_seqs)})")
-                continue
-            first = min((s for s in wit_seqs if s >= run_ends[x]), default=None)
-            if first is None or first > bundle_end:
-                tw.append(f"run {x}: tail not covered by a witnessed checkpoint (run.end at seq {run_ends[x]}; "
-                          + (f"first witnessed checkpoint after it is seq {first}, beyond the bundle's last record {bundle_end})"
-                             if first is not None else "no witnessed checkpoint at or after it)"))
-        rep.check("run tail witnessed", not tw, "every run.end is followed by a witnessed checkpoint in the bundle"
+            first = min((s for s in wit_seqs if run_ends[x] is not None and s >= run_ends[x]), default=None)
+            if first is not None and first > bundle_end:
+                tw.append(f"run {x}: tail not covered by a witnessed checkpoint (run.end at seq {run_ends[x]}; first "
+                          f"witnessed checkpoint after it is seq {first}, beyond the bundle's last record {bundle_end})")
+        rep.check("run tail witnessed", not tw, "no run.end is followed by a witnessed checkpoint the bundle omits"
                   if not tw else "", tw[:20])
     sel_last = max((e["seq"] for e in sel), default=-1)
     good = [c for c in cps if verify_checkpoint(c, pub) and hashes.get(c["head_seq"]) == c["head_hash"]]
