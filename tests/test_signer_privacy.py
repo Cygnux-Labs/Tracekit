@@ -9,7 +9,7 @@ import unittest
 
 from test_rpc_contract import Harness
 from tracekit import schema
-from tracekit.format.canon import event_hash
+from tracekit.format.canon import event_hash, loads_strict
 from tracekit.policy2.engine import Engine
 from tracekit.signer import service as svc
 
@@ -86,6 +86,19 @@ class SignerPrivacy(Harness, unittest.TestCase):
         got = self.call("approval_get", {"approval_id": aid})
         self.assertEqual((got["args"], got["reason"]), ({"to": "acct-1", "memo": "[REDACTED:anthropic_key]"},
                                                         "use [REDACTED:anthropic_key]"))
+
+    def test_a_raw_approver_copy_stays_valid_json(self):
+        self.register()
+        self.decide("wire", '{"url":"postgres://u:p@db/x","to":"acct-1"}', args_source="raw")
+        aid = self.call("approval_request", self.run_req(tool_call_id="tc-1"))["approval_id"]
+        got = self.call("approval_get", {"approval_id": aid})
+        self.assertEqual(loads_strict(got["args"]), {"url": "[REDACTED:connection_string]", "to": "acct-1"})
+
+    def test_a_model_error_is_redacted(self):
+        self.register()
+        self.call("model_event", self.ev(provider="p", model="m", phase="response", error=f"bad key {SECRET}"))
+        self.signer.close()
+        self.assertNotIn(SECRET.encode(), self.stored())
 
     def test_policy_decides_on_the_unredacted_arguments(self):
         self.register()
