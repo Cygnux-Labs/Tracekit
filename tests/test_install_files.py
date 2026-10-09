@@ -1,6 +1,7 @@
 """Installer writes never follow a planted symlink, create files 0600 from the start, and dev TCP has no port race."""
 import json
 import os
+import shutil
 import stat
 import tempfile
 import unittest
@@ -58,6 +59,11 @@ class ClientConfig(_Sentinel, unittest.TestCase):
             install._write_client_config(self.d, {"socket": "x"})
         self.assertSentinelUntouched()
         self.assertEqual(os.listdir(self.outside), ["sentinel"])
+
+    def test_client_home_with_trailing_slash(self):
+        p = install._write_client_dir(os.path.join(self.d, "client") + os.sep, {"socket": "x"})
+        self.assertEqual(p, os.path.join(self.d, "client", "config.json"))
+        self.assertEqual(json.load(open(p)), {"socket": "x"})
 
     def test_writes_0600_config(self):
         p = install._write_client_config(self.d, {"socket": "x"})
@@ -120,6 +126,16 @@ class SignerConfig(_Sentinel, unittest.TestCase):
         self.assertSentinelUntouched()
         self.assertEqual(json.load(open(os.path.join(self.d, "config.json")))["x"], 1)
 
+    def test_rerun_keeps_the_policy_pin_and_harnesses_until_replaced(self):
+        kept = {"pinned_policy_hash": "sha256:" + "1" * 64, "harnesses": [{"name": "claude", "exe": "/usr/bin/claude"}],
+                "harness_binding": "enforce"}
+        install._write_signer_config(self.d, [], 50, "s", extra=kept)
+        cfg = install._write_signer_config(self.d, [], 50, "s")
+        self.assertEqual({k: cfg[k] for k in kept}, kept)
+        self.assertEqual(json.load(open(os.path.join(self.d, "config.json"))), cfg)
+        new = [{"name": "codex", "exe": "/usr/bin/codex"}]
+        self.assertEqual(install._write_signer_config(self.d, [], 50, "s", extra={"harnesses": new})["harnesses"], new)
+
     def test_signer_home_owned_by_someone_else_is_refused(self):
         other = type("pw", (), {"pw_uid": os.getuid() + 1, "pw_gid": os.getgid()})
         with self.assertRaises(files.UnsafePath):
@@ -146,6 +162,30 @@ class ModeFromCreation(unittest.TestCase):
         finally:
             os.umask(old)
         self.assertEqual(seen, [0o600, 0o600, 0o600])
+
+
+@unittest.skipIf(os.name == "nt", "POSIX fifos and fork")
+class ReadAndDropPrivileges(unittest.TestCase):
+    def test_read_refuses_a_fifo_without_blocking_or_stat_by_path(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        os.mkfifo(os.path.join(d, "config.json"))
+        with mock.patch.object(files.os, "stat", side_effect=AssertionError("stat by path, then open")):
+            with self.assertRaises(files.UnsafePath):
+                files.read(d, "config.json")
+            self.assertIsNone(files.read(d, "missing.json"))
+
+    def test_as_user_uses_initgroups(self):
+        pw = type("pw", (), {"pw_name": "bob", "pw_uid": 1001, "pw_gid": 1001})
+        with mock.patch.object(files.os, "geteuid", return_value=0), mock.patch.object(files.os, "fork", return_value=0), \
+                mock.patch.object(files.os, "initgroups", create=True) as initgroups, \
+                mock.patch.object(files.os, "setgroups", create=True) as setgroups, \
+                mock.patch.object(files.os, "setgid"), mock.patch.object(files.os, "setuid"), \
+                mock.patch.object(files.os, "_exit", side_effect=SystemExit):
+            with self.assertRaises(SystemExit):  # the forked child's exit, run in this process
+                files.as_user(pw, lambda: 1)
+        initgroups.assert_called_once_with("bob", 1001)
+        setgroups.assert_not_called()
 
 
 class DevTcpEndpoint(unittest.TestCase):
