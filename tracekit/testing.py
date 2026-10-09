@@ -36,9 +36,10 @@ def _allow(tool, args):
 
 
 class FakeSigner:
-    def __init__(self, rule=_allow, identity="fake-user", tenant="default"):
-        """`rule(tool, args) -> (decision, rule_ids)` with decision allow|deny|ask; args are the parsed value."""
-        self.rule, self.identity, self.tenant = rule, identity, tenant
+    def __init__(self, rule=_allow, identity="fake-user", tenant="default", t2=()):
+        """`rule(tool, args) -> (decision, rule_ids)` with decision allow|deny|ask; args are the parsed value. An
+        approval for a call one of the rule ids in `t2` asked about has a T2 executor: its consume returns the args."""
+        self.rule, self.identity, self.tenant, self.t2 = rule, identity, tenant, set(t2)
         self._n = 0
         self._done = {}        # (identity, request_id) -> (payload digest, response)
         self._runs = {}
@@ -152,7 +153,7 @@ class FakeSigner:
                            check=consume)
 
     def state_write(self, req):
-        return self._event("state_write", "state.write", ("key", "value_digest"), req)
+        return self._event("state_write", "state.write", ("key", "value_digest", "prev_digest"), req)
 
     def model_event(self, req):
         return self._event("model_event", "model.event", ("provider", "model", "phase", "content_digest", "usage",
@@ -177,7 +178,8 @@ class FakeSigner:
                 "run_id": req["run_id"], "tool_call_id": req["tool_call_id"], "attempt": attempt, "tool": call["tool"],
                 "args_source": call["args_source"], "args": call["args"], "args_digest": call["args_digest"],
                 "rule_ids": call["rule_ids"], "policy_hash": POLICY_HASH, "requester": self.identity,
-                "expires_at": expires_at, "state": "requested", **({"reason": req["reason"]} if "reason" in req else {})}
+                "expires_at": expires_at, "state": "requested", **({"reason": req["reason"]} if "reason" in req else {}),
+                "executor": "t2" if self.t2 & set(call["rule_ids"]) else "t1"}
             a["binding_digest"] = event_hash({"v": 1, "approval_id": approval_id, "nonce": self._id("nonce"),
                                               **{k: a[k] for k in ("run_id", "tool_call_id", "attempt", "tool",
                                                                    "args_digest", "args_source", "policy_hash",
@@ -232,7 +234,10 @@ class FakeSigner:
             else:
                 a["state"] = "consumed"
                 self._append(run, "approval.consumed", {"approval_id": aid})
-                return {"ok": True, "rule_ids": ["TK-APPROVED"], "approval_id": aid}
+                out = {"ok": True, "rule_ids": ["TK-APPROVED"], "approval_id": aid}
+                if a["executor"] == "t2":
+                    out["args"] = loads_strict(a["args"]) if a["args_source"] == "raw" else copy.deepcopy(a["args"])
+                return out
             self._append(run, "approval.refused", {"tool_call_id": req["tool_call_id"], "rule_ids": [code]})
             return {"ok": False, "rule_ids": [code], **({"approval_id": aid} if a else {})}
         return self._call("approval_consume", req, handle)
@@ -242,14 +247,29 @@ class FakeSigner:
             a = self._approvals.get(req["approval_id"])
             if a is None:
                 raise RPCError("unknown_approval", req["approval_id"])
-            return {"approval_id": req["approval_id"], **{k: v for k, v in a.items() if k != "args_digest"}}
+            return {"approval_id": req["approval_id"], **{k: v for k, v in a.items() if k not in ("args_digest", "executor")}}
         return self._call("approval_get", req, handle)
 
     def approval_list(self, req):
-        return self._call("approval_list", req, lambda req: {"approvals": [
-            {"approval_id": aid, **{k: a[k] for k in rpc_schema.RESPONSES["approval_list"]["properties"]["approvals"]
-                                    ["items"]["required"] if k != "approval_id"}}
-            for aid, a in self._approvals.items() if req.get("run_id") in (None, a["run_id"])]})
+        def handle(req):
+            ids = [aid for aid, a in self._approvals.items() if req.get("run_id") in (None, a["run_id"])]
+            start = ids.index(req["cursor"]) + 1 if req.get("cursor") in ids else 0
+            page, more = ids[start:start + req.get("limit", 100)], ids[start + req.get("limit", 100):]
+            keys = rpc_schema.RESPONSES["approval_list"]["properties"]["approvals"]["items"]["required"]
+            return {"approvals": [{"approval_id": aid, **{k: self._approvals[aid][k] for k in keys if k != "approval_id"}}
+                                  for aid in page], "next_cursor": page[-1] if more else None}
+        return self._call("approval_list", req, handle)
+
+    def approval_abandon(self, req):
+        def handle(req):
+            run = self._run(req)
+            a = self._approval(req["run_id"], req["approval_id"])
+            if a["state"] not in ("requested", "approved"):
+                raise RPCError("approval_not_pending", a["state"])
+            a["state"] = "expired"
+            self._append(run, "approval.abandoned", {"approval_id": req["approval_id"]})
+            return {"approval_id": req["approval_id"], "state": "expired"}
+        return self._call("approval_abandon", req, handle)
 
     def close_run(self, req):
         def handle(req):

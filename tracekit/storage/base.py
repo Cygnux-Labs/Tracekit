@@ -64,8 +64,9 @@ class Storage:
 
     def checkpoint_put(self, size, note, tree=RECORDS):
         """Store the signed checkpoint note (str) of `tree` (RECORDS or a registry_tree) at `size` as the latest;
-        ValueError when an older stored note is of a larger tree. The record tree keeps only its latest note, a
-        registry tree every note (a run-set export proves consistency between two of them)."""
+        ValueError when an older stored note is of a larger tree. A note of the latest size replaces it (the same
+        note with witness cosignatures added). The record tree keeps only its latest note, a registry tree every note
+        (a run-set export proves consistency between two of them)."""
         raise NotImplementedError
 
     def checkpoint_latest(self, tree=RECORDS):
@@ -74,6 +75,13 @@ class Storage:
 
     def checkpoint_at(self, tree, size):
         """The stored note of registry tree `tree` at `size`, or None."""
+        raise NotImplementedError
+
+    def witness_queue(self):
+        """The witness publisher's persisted state (a JSON object), {} before the first witness_queue_put."""
+        raise NotImplementedError
+
+    def witness_queue_put(self, state):
         raise NotImplementedError
 
     def tiles_get(self, tree, level, index, width):

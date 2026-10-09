@@ -39,7 +39,7 @@ def new_run(tenant, run_id):
     """`closed`: run.closing written, late records only; `final`: run.final written, nothing more. `active` and
     `closing_at` are monotonic times for the idle and grace clocks."""
     return {"tenant": tenant, "run_id": run_id, "run_seq": 0, "head": ZERO_HASH, "streams": {}, "closed": False,
-            "final": False, "calls": {}, "decisions": {}, "denied": {}, "owner": None, "source": "sdk",
+            "final": False, "calls": {}, "decisions": {}, "denied": {}, "states": {}, "owner": None, "source": "sdk",
             "active": time.monotonic(), "closing_at": None}
 
 
@@ -49,10 +49,23 @@ def approval(tenant, run_id, data):
     return {"run_key": (tenant, run_id), "tool_call_id": b["tool_call_id"], "attempt": b["attempt"], "tool": b["tool"],
             "args_source": b["args_source"], "decision_id": data["decision_id"], "commitment": b["args_commitment"],
             "rule_ids": data["rule_ids"], "policy_hash": data["policy_hash"], "requester": data["requester"],
-            "expires_at": data["expires_at"], "binding_digest": data["binding_digest"], "state": "requested"}
+            "expires_at": data["expires_at"], "binding_digest": data["binding_digest"], "state": "requested",
+            "executor": data.get("executor", "t1")}
 
 
-APPROVAL_ENDS = {"approval.consumed": "consumed", "approval.expired": "expired"}
+APPROVAL_ENDS = {"approval.consumed": "consumed", "approval.expired": "expired", "approval.abandoned": "expired"}
+
+
+def salt_label(e):
+    """What the salt of event `e`'s commitments is derived from; None when it has none."""
+    d = e["data"]
+    if e["type"] in ("policy.decision", "approval.request", "approval.binding_mismatch"):
+        return d.get("decision_id")
+    if e["type"] == "tool.result":
+        return "result:" + d["decision_id"]
+    if e["type"] in ("model.exchange", "state.write"):
+        return f"{e['type']}:{e['tenant']}:{e['run_id']}:{e['request_id']}"
+    return None
 
 
 def subject(identity):
@@ -191,6 +204,8 @@ class RecordLog:
                 run["calls"][e["tool_call_id"]] = call
                 if call["decision_id"]:
                     run["decisions"][call["decision_id"]] = call
+            elif e["type"] == "state.write":
+                run["states"][e["data"]["key"]] = (salt_label(e), e["data"]["digest"])
             elif e["type"] == "tool.result" and "decision_id" in e["data"]:
                 run["decisions"][e["data"]["decision_id"]] = None
             elif e["type"] == "approval.request":

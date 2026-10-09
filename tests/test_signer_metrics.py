@@ -169,7 +169,7 @@ class TestListen(unittest.TestCase):
         self.assertEqual(svc.load_config(path)["metrics"], {"listen": "127.0.0.1:9464"})
         with self.assertRaises(ValueError):
             svc.serve({"socket": os.path.join(d, "s.sock"), "metrics": {"listen": "0.0.0.0:0"}},
-                      types.SimpleNamespace(metrics=metrics.SignerMetrics()))
+                      types.SimpleNamespace(metrics=metrics.SignerMetrics(), logs_list=str))
 
 
 class TestFsyncLag(unittest.TestCase):
