@@ -16,15 +16,21 @@ ops
   end          run, reason?
   ping
 
-Requests run concurrently (one thread each), so a call held for approval does not stall the others. If the signer is
-unreachable the Tracer's fail mode applies exactly as in Python: open records a gap later, closed refuses."""
+Requests run concurrently on a bounded pool of worker threads, so a call held for approval does not stall the others.
+A request that has not finished within its timeout_s (default 300 s, at most an hour) is answered with an error; its
+late result is dropped. If the signer is unreachable the Tracer's fail mode applies exactly as in Python: open records
+a gap later, closed refuses."""
 import json
+import math
 import sys
 import threading
 import time
 
 from . import autotrace
 from .agent_sdk import Tracer
+
+MAX_WORKERS = 32
+DEFAULT_TIMEOUT_S, MAX_TIMEOUT_S = 300.0, 3660.0
 
 
 class Bridge:
@@ -43,17 +49,50 @@ class Bridge:
             self.out.write(json.dumps(obj, default=str) + "\n")
             self.out.flush()
 
-    def handle(self, req):
+    def handle(self, req, answered=None):
+        """Run one request and reply, unless its timeout already answered it (answered is set)."""
         rid = req.get("id")
         try:
             res = getattr(self, "op_" + str(req.get("op")), None)
             if res is None:
                 raise ValueError(f"unknown op {req.get('op')!r}")
-            self.reply({"id": rid, "ok": True, **(res(req) or {})})
+            out = {"id": rid, "ok": True, **(res(req) or {})}
         except PermissionError as e:
-            self.reply({"id": rid, "ok": False, "denied": True, "error": str(e)})
+            out = {"id": rid, "ok": False, "denied": True, "error": str(e)}
         except Exception as e:
-            self.reply({"id": rid, "ok": False, "denied": False, "error": f"{type(e).__name__}: {e}"})
+            out = {"id": rid, "ok": False, "denied": False, "error": f"{type(e).__name__}: {e}"}
+        self._answer(answered, out)
+
+    def _answer(self, answered, out):
+        with self.lock:
+            if answered is not None:
+                if answered.is_set():
+                    return
+                answered.set()
+        self.reply(out)
+
+    def submit(self, req, slots):
+        """Run req on a worker thread (waiting for a free one of the bounded slots), with a timer that answers it
+        with an error if it runs past its timeout."""
+        t = req.get("timeout_s", DEFAULT_TIMEOUT_S)
+        if isinstance(t, bool) or not isinstance(t, (int, float)) or not math.isfinite(t) or t <= 0:
+            t = DEFAULT_TIMEOUT_S
+        answered = threading.Event()
+        timer = threading.Timer(min(t, MAX_TIMEOUT_S), self._answer, (answered, {
+            "id": req.get("id"), "ok": False, "denied": False, "error": f"request timed out after {min(t, MAX_TIMEOUT_S)} s"}))
+        timer.daemon = True
+
+        def work():
+            try:
+                self.handle(req, answered)
+            finally:
+                timer.cancel()
+                slots.release()
+        slots.acquire()
+        timer.start()
+        th = threading.Thread(target=work, daemon=True)
+        th.start()
+        return th
 
     def op_ping(self, r):
         return {"pong": True}
@@ -62,7 +101,7 @@ class Bridge:
         t = Tracer(agent=str(r.get("agent") or "ts-agent"), session_id=r.get("session_id"), cwd=r.get("cwd"))
         h = self._id("r")
         self.runs[h] = t
-        return {"run": h, "session_id": t.session_id}
+        return {"run": h, "session_id": t.session_id, "fail_mode": t._policy.get("fail_mode", "open")}
 
     def _run(self, r):
         t = self.runs.get(r.get("run"))
@@ -132,7 +171,7 @@ class Bridge:
 def main():
     b = Bridge(sys.stdout)
     b.reply({"id": 0, "ok": True, "ready": True, "protocol": 1})
-    threads = []
+    slots, threads = threading.BoundedSemaphore(MAX_WORKERS), []
     for line in sys.stdin:
         line = line.strip()
         if not line:
@@ -142,10 +181,10 @@ def main():
         except ValueError:
             b.reply({"id": None, "ok": False, "error": "invalid JSON"})
             continue
-        th = threading.Thread(target=b.handle, args=(req,), daemon=True)
-        th.start()
-        threads.append(th)
-        threads = [x for x in threads if x.is_alive()]
+        if not isinstance(req, dict):
+            b.reply({"id": None, "ok": False, "error": "request must be a JSON object"})
+            continue
+        threads = [x for x in threads if x.is_alive()] + [b.submit(req, slots)]
     deadline = time.time() + 10
     for th in threads:  # stdin closed: let in-flight requests finish, then end any run still open
         th.join(max(0.0, deadline - time.time()))

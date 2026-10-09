@@ -1,24 +1,18 @@
-"""Browser-agent action hooks: Browser Use and Stagehand (Python).
+"""Browser-agent action hooks: Browser Use (Python; Stagehand moved to contrib/stagehand).
 
     from tracekit.agent_sdk import Tracer
-    from tracekit.adapters.browser import instrument_browser_use, instrument_stagehand
+    from tracekit.adapters.browser import instrument_browser_use
 
     with Tracer(agent="shopper") as tracer:
         tools = instrument_browser_use(Tools(), tracer)      # browser_use.Tools (or a Controller)
         agent = Agent(task=..., llm=..., tools=tools)
         await agent.run()
 
-    page = instrument_stagehand(stagehand.page, tracer)     # act / extract / observe / goto
-
 Every browser action is recorded as a signed ``browser:<action>`` tool call and checked against the
 policy before it runs, so a rule such as ``tool: "browser:navigate"`` with a ``url`` pattern can keep
-an agent off a domain. A denied Browser Use action is handed back to the agent as an error result
-(the action does not run and the agent can recover); a denied Stagehand call raises PermissionError.
-Neither library is imported here: both hooks wrap the object you pass in."""
+an agent off a domain. A denied action is handed back to the agent as an error result (the action does
+not run and the agent can recover). Browser Use is not imported here: the hook wraps the object you pass in."""
 import functools
-import inspect
-
-STAGEHAND_METHODS = ("act", "extract", "observe", "goto")
 
 
 def instrument_browser_use(tools, tracer, prefix="browser:"):
@@ -54,42 +48,6 @@ def instrument_browser_use(tools, tracer, prefix="browser:"):
     execute_action._tracekit = True
     registry.execute_action = execute_action
     return tools
-
-
-def instrument_stagehand(page, tracer, methods=STAGEHAND_METHODS, prefix="browser:"):
-    """Wrap Stagehand page methods (sync or async) so each call is a policy-checked, signed step."""
-    for name in methods:
-        original = getattr(page, name, None)
-        if original is None or getattr(original, "_tracekit", False):
-            continue
-        setattr(page, name, _wrap(original, tracer, prefix + name))
-    return page
-
-
-def _wrap(original, tracer, tool_name):
-    def args_of(args, kwargs):
-        recorded = dict(kwargs)
-        if args:
-            first = args[0]
-            recorded["input"] = first if isinstance(first, (str, int, float, bool, dict, list)) else repr(first)
-        return recorded
-
-    if inspect.iscoroutinefunction(original):
-        @functools.wraps(original)
-        async def wrapper(*args, **kwargs):
-            with tracer.tool(tool_name, args_of(args, kwargs)) as call:
-                result = await original(*args, **kwargs)
-                call.result(_summary(result))
-                return result
-    else:
-        @functools.wraps(original)
-        def wrapper(*args, **kwargs):
-            with tracer.tool(tool_name, args_of(args, kwargs)) as call:
-                result = original(*args, **kwargs)
-                call.result(_summary(result))
-                return result
-    wrapper._tracekit = True
-    return wrapper
 
 
 def _summary(result):

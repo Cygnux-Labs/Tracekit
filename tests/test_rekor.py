@@ -119,6 +119,8 @@ class RekorFlow(unittest.TestCase):
         self.assertEqual(sorted(g["head_seq"] for g in got), [10, 20, 30])
         for g in got:
             self.assertTrue(g["head_hash"])
+            self.assertTrue(witness.verify_checkpoint(g, self.keys.public), "read() returns the signed checkpoint")
+        self.assertEqual(sorted(got, key=lambda g: g["head_seq"]), cps)
 
     def test_published_entry_binds_the_checkpoint_signature_and_key(self):
         c = self.cp(7)
@@ -171,6 +173,43 @@ class RekorFlow(unittest.TestCase):
         key = serialization.load_pem_public_key(pem)
         raw = key.public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
         self.assertEqual(raw, bytes(self.keys.public))
+
+
+class VerifyAgainstRekor(unittest.TestCase):
+    def test_verify_with_a_rekor_witness_passes(self):
+        import shutil
+        from unittest import mock
+        from tracekit import bundle, install
+        from tracekit.agent_sdk import Tracer
+        d = tempfile.mkdtemp()
+        old = os.environ.get("TRACEKIT_CLIENT_HOME")
+        os.environ["TRACEKIT_CLIENT_HOME"] = os.path.join(d, "client")
+        home = os.path.join(d, "signer")
+        try:
+            install.init_dev(home, [], start=True)
+            with Tracer(agent="bot", session_id="rk-1", cwd=d) as t:
+                with t.tool("Bash", {"command": "ls"}) as c:
+                    c.result("x")
+            tkb = os.path.join(d, "run.tkb")
+            bundle.export(home, tkb, run="rk-1")
+            manifest, blobs = bundle.load_bundle(tkb)
+            log = FakeLog(d)
+            log.bind_key(blobs["signer.pub"])
+            for line in blobs["checkpoints.jsonl"].decode().splitlines():
+                log.publish(json.loads(line))
+            with mock.patch.object(bundle, "from_spec", return_value=log):
+                rep, code = bundle.verify(tkb, ["rekor:https://rekor.test"])
+            self.assertEqual(code, 0, rep.checks)
+            trust = next(c for c in rep.checks if c["check"] == "trust root")
+            self.assertEqual(trust["status"], "pass", trust)
+            self.assertIn("rekor:https://rekor.test", trust["detail"])
+        finally:
+            install.stop_dev_daemon(home)
+            if old is None:
+                os.environ.pop("TRACEKIT_CLIENT_HOME", None)
+            else:
+                os.environ["TRACEKIT_CLIENT_HOME"] = old
+            shutil.rmtree(d, ignore_errors=True)
 
 
 if __name__ == "__main__":

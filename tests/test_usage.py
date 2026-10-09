@@ -1,4 +1,4 @@
-"""Token usage and cost (#9): normalisation per provider, every capture path, SQL, export, `tracekit cost`.
+"""Token usage and cost (#9): normalisation per provider, every capture path, export, `tracekit cost`.
 python3 -m pytest tests/test_usage.py -q"""
 import json
 import os
@@ -9,13 +9,14 @@ import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
-from tracekit import autotrace, install, otlp, otlp_wire, query, schema, usage  # noqa: E402
+from tracekit import autotrace, install, otlp, otlp_wire, schema, usage  # noqa: E402
 from tracekit.otel import to_otlp_json  # noqa: E402
 from tracekit.proxy import SSEScan  # noqa: E402
 
 sys.path.insert(0, os.path.join(ROOT, "tests"))
 import test_autotrace as T  # noqa: E402
 import test_otlp as O  # noqa: E402
+from factories import patch_env  # noqa: E402
 
 
 class Normalise(unittest.TestCase):
@@ -42,7 +43,8 @@ class Normalise(unittest.TestCase):
 
 
 class Capture(unittest.TestCase):
-    @unittest.skipUnless(T.openai is not None and T.httpx is not None, "openai SDK not installed")
+    @unittest.skipUnless(T.openai is not None and T.anthropic is not None and T.httpx is not None,
+                         "openai and anthropic SDKs not installed")
     def test_sdk_records_usage(self):
         t = T.FakeTracer()
         autotrace.instrument(t)
@@ -102,8 +104,7 @@ class Cost(unittest.TestCase):
     def test_cli_end_to_end(self):
         import subprocess
         d = tempfile.mkdtemp()
-        old = os.environ.get("TRACEKIT_CLIENT_HOME")
-        os.environ["TRACEKIT_CLIENT_HOME"] = os.path.join(d, "client")
+        patch_env(self, TRACEKIT_CLIENT_HOME=os.path.join(d, "client"))
         home = os.path.join(d, "signer")
         install.init_dev(home, [], start=True)
         try:
@@ -115,14 +116,11 @@ class Cost(unittest.TestCase):
             tracekit_sdk.shutdown()
             prices = os.path.join(d, "p.json")
             json.dump({"models": {"gpt-4o*": {"input": 1000000, "output": 2000000}}}, open(prices, "w"))
-            out = subprocess.run([sys.executable, "-m", "tracekit", "cost", "--home", home, "--index", os.path.join(d, "i.sqlite"),
+            out = subprocess.run([sys.executable, "-m", "tracekit", "cost", "--home", home,
                                   "--prices", prices, "--format", "json"], capture_output=True, text=True, cwd=ROOT)
             self.assertEqual(out.returncode, 0, out.stderr)
             row = json.loads(out.stdout)[0]
             self.assertEqual((row["run"], row["calls"], row["input"], row["output"], row["cost_usd"]), ("cost-1", 3, 30, 15, 60.0))
-            idx = query.Index(home, os.path.join(d, "i.sqlite"))
-            idx.refresh()
-            self.assertEqual(idx.query("SELECT tokens_in, tokens_out FROM runs WHERE run_id='cost-1'")[1], [(30, 15)])
             # the observer shows the same cost, live or over an exported bundle (#9)
             from tracekit import bundle
             tkb, html = os.path.join(d, "c.tkb"), os.path.join(d, "c.html")
@@ -135,10 +133,6 @@ class Cost(unittest.TestCase):
             self.assertEqual([r["cost"] for r in boot if r.get("event") == "tk_model"], [20.0, 20.0, 20.0])
         finally:
             install.stop_dev_daemon(home)
-            if old is None:
-                os.environ.pop("TRACEKIT_CLIENT_HOME", None)
-            else:
-                os.environ["TRACEKIT_CLIENT_HOME"] = old
             shutil.rmtree(d, ignore_errors=True)
 
 

@@ -30,6 +30,8 @@ def verify_v01(path):
                 r = json.loads(line)
             except ValueError:
                 problems.append(f"line {i}: not JSON"); continue
+            if not isinstance(r, dict) or "ts" not in r:
+                problems.append(f"line {i}: not a v0.1 record"); continue
             body = {k: v for k, v in r.items() if k != "hash"}
             if hashlib.sha256(canon(body).encode()).hexdigest() != r.get("hash"):
                 problems.append(f"line {i}: hash mismatch")
@@ -97,17 +99,25 @@ def main(argv):
     ap.add_argument("ledger")
     ap.add_argument("--out", help="write v1 events (unsigned) as JSONL")
     ap.add_argument("--send", action="store_true", help="send the converted events to tracekitd to be signed")
+    ap.add_argument("--force", action="store_true", help="--send even when the v0.1 chain is broken")
     ap.add_argument("--full-content", action="store_true", help="keep v0.1 content in clear (default: hash it, per docs/privacy.md)")
     a = ap.parse_args(argv)
     recs, problems = verify_v01(a.ledger)
     print(f"v0.1 ledger: {len(recs)} records; chain " + ("intact" if not problems else f"BROKEN ({len(problems)} problems, e.g. {problems[0]})"))
-    evs = convert(recs, "full" if a.full_content else "hashed")
+    try:
+        evs = convert(recs, "full" if a.full_content else "hashed")
+    except (TypeError, ValueError, KeyError, AttributeError) as e:
+        print(f"cannot convert {a.ledger}: {e}", file=sys.stderr)
+        return 1
     print(f"converted to {len(evs)} v1 events (source=migrated)")
     if a.out:
         with open(a.out, "w", encoding="utf-8") as f:
             for e in evs:
                 f.write(json.dumps(e, ensure_ascii=False) + "\n")
         print("wrote", a.out)
+    if a.send and problems and not a.force:
+        print("not sent: the v0.1 chain is broken; pass --force to sign it anyway", file=sys.stderr)
+        return 1
     if a.send:
         from . import client
         for e in evs:

@@ -7,8 +7,10 @@ import os
 import sys
 import tempfile
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
-from tracekit.adapters.browser import instrument_browser_use, instrument_stagehand  # noqa: E402
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path[:0] = [os.path.join(HERE, "..", ".."), HERE]
+from tracekit.adapters.browser import instrument_browser_use  # noqa: E402
+from tracekit_stagehand import instrument_stagehand  # noqa: E402
 from tracekit_sdk import Tracer  # noqa: E402
 
 if "TRACEKIT_POLICY" not in os.environ:

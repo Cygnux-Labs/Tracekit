@@ -1,14 +1,14 @@
-"""Proof packs: one zip an auditor can check offline, with a readable report and a verifier that needs only Python.
+"""Proof packs: one zip an auditor can check offline with a Tracekit release they install themselves, plus a readable report.
 
-    tracekit proofpack --run R -o pack.zip [--key signer.pub] [--witness git:/clone]
-    tracekit report run.tkb [-o report.md]          # the report alone, for any bundle
+    tracekit-proofpack --run R -o pack.zip [--key signer.pub] [--witness git:/clone]
+    tracekit-report run.tkb [-o report.md]          # the report alone, for any bundle
 
 pack.zip:
     run.tkb          the signed evidence bundle (unchanged; `tracekit verify` checks it)
     REPORT.md        what the run did, every verification check, findings, coverage, and an evidence-to-control map
-    verify.pyz       Tracekit's verifier as a single file: `python3 verify.pyz run.tkb [--key signer.pub]` (stdlib only)
     controls.json    the control map, machine-readable
-    SHA256SUMS       hashes of the files above
+
+The pack carries no verifier: code shipped next to the evidence could be swapped with it.
 
 The control map says which evidence in the bundle is relevant to a requirement and what it does not cover. It is
 guidance for a reviewer, not a compliance determination."""
@@ -21,7 +21,6 @@ import os
 import sys
 import tempfile
 import zipfile
-import zipapp
 
 CONTROLS = [
     {"framework": "EU AI Act (Regulation (EU) 2024/1689)", "control": "Art. 12 Record-keeping",
@@ -41,45 +40,14 @@ CONTROLS = [
 ]
 
 
-def _verify_entry():
-    return ('import sys\nfrom tracekit import bundle\n'
-            'def main():\n'
-            '    import argparse\n'
-            '    ap = argparse.ArgumentParser(prog="verify.pyz", description="Verify a Tracekit .tkb bundle offline (stdlib only).")\n'
-            '    ap.add_argument("bundle")\n    ap.add_argument("--key")\n    ap.add_argument("--witness", action="append", default=[])\n'
-            '    ap.add_argument("--strict", action="store_true")\n    a = ap.parse_args()\n'
-            '    rep, code = bundle.verify(a.bundle, a.witness, a.strict, a.key)\n'
-            '    bundle.print_report(rep, code)\n    sys.exit(code)\n'
-            'main()\n')
-
-
-def build_verifier(out_path):
-    """A zipapp of the tracekit package. Signature checks fall back to pure-Python Ed25519 when `cryptography` is absent."""
-    src = os.path.dirname(os.path.abspath(__file__))
-    with tempfile.TemporaryDirectory() as d:
-        dst = os.path.join(d, "tracekit")
-        os.makedirs(dst)
-        for root, dirs, files in os.walk(src):
-            dirs[:] = [x for x in dirs if x != "__pycache__"]
-            rel = os.path.relpath(root, src)
-            for f in files:
-                if f.endswith((".py", ".json", ".yaml")):
-                    os.makedirs(os.path.join(dst, rel), exist_ok=True)
-                    with open(os.path.join(root, f), "rb") as i, open(os.path.join(dst, rel, f), "wb") as o:
-                        o.write(i.read())
-        with open(os.path.join(d, "__main__.py"), "w") as f:
-            f.write(_verify_entry())
-        zipapp.create_archive(d, out_path, interpreter="/usr/bin/env python3")
-
-
 def _md_escape(s):
     return str(s).replace("|", "\\|").replace("\n", " ")
 
 
 def report(bundle_path, key=None, witnesses=()):
     """-> (markdown, verification exit code)."""
-    from . import bundle as B
-    from . import coverage
+    from tracekit import bundle as B
+    from tracekit import coverage
     rep, code = B.verify(bundle_path, list(witnesses), False, key)
     manifest, blobs = B.load_bundle(bundle_path)
     events = []
@@ -99,7 +67,7 @@ def report(bundle_path, key=None, witnesses=()):
     dec = {e["data"]["tool_use_id"]: e["data"]["decision"] for e in sel if e["type"] == "policy.decision"}
     usage = [e["data"].get("usage") for e in sel if e["type"] == "model.exchange" and e["data"].get("usage")]
     verdict = {0: "VERIFIED", 1: "FAILED", 2: "BAD BUNDLE", 3: "VERIFIED WITH WARNINGS"}.get(code, str(code))
-    from .bundle import GAP_CHECKS
+    from tracekit.bundle import GAP_CHECKS
     if code == 0 and any(c["check"] in GAP_CHECKS and c["status"] == "warn" for c in rep.checks):
         verdict = "VERIFIED WITH GAPS"
     anchored = any(c["check"] == "trust root" and c["status"] == "pass" for c in rep.checks)
@@ -141,7 +109,7 @@ def report(bundle_path, key=None, witnesses=()):
     for c in CONTROLS:
         L += [f"### {c['framework']}: {c['control']}", "", f"> {c['requirement']}", "", "Evidence here:", ""] + \
              [f"- {x}" for x in c["evidence"]] + ["", "Not covered:", ""] + [f"- {x}" for x in c["not_covered"]] + [""]
-    L += ["## How to check this yourself", "", "```", "python3 verify.pyz run.tkb --key signer.pub      # in a proof pack; stdlib only",
+    L += ["## How to check this yourself", "", "Install a Tracekit release yourself (not from this pack), then:", "", "```",
           "tracekit verify run.tkb --key signer.pub --witness git:/path/to/witness-clone", "```", "",
           "Pin the signer's public key you obtained independently (not the one inside the bundle), or check against an external "
           "witness, to turn an unanchored result into an anchored one."]
@@ -150,12 +118,8 @@ def report(bundle_path, key=None, witnesses=()):
 
 def build(out_path, bundle_path, key=None, witnesses=()):
     md, code = report(bundle_path, key, witnesses)
-    with tempfile.TemporaryDirectory() as d:
-        pyz = os.path.join(d, "verify.pyz")
-        build_verifier(pyz)
-        files = {"run.tkb": open(bundle_path, "rb").read(), "REPORT.md": md.encode("utf-8"),
-                 "verify.pyz": open(pyz, "rb").read(), "controls.json": json.dumps(CONTROLS, indent=2).encode()}
-    files["SHA256SUMS"] = "".join(f"{hashlib.sha256(b).hexdigest()}  {n}\n" for n, b in files.items()).encode()
+    files = {"run.tkb": open(bundle_path, "rb").read(), "REPORT.md": md.encode("utf-8"),
+             "controls.json": json.dumps(CONTROLS, indent=2).encode()}
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
         for n, b in files.items():
@@ -165,7 +129,7 @@ def build(out_path, bundle_path, key=None, witnesses=()):
     return code
 
 
-def main(argv=None, prog="tracekit proofpack"):
+def main(argv=None, prog="tracekit-proofpack"):
     ap = argparse.ArgumentParser(prog=prog)
     ap.add_argument("bundle", nargs="?", help="an existing .tkb (otherwise one is exported from the ledger)")
     ap.add_argument("--run")
@@ -178,8 +142,8 @@ def main(argv=None, prog="tracekit proofpack"):
     path = a.bundle
     tmp = None
     if not path:
-        from . import bundle as B
-        from . import client
+        from tracekit import bundle as B
+        from tracekit import client
         home = a.home or client.client_config().get("signer_home") or "/var/lib/tracekit"
         tmp = tempfile.mkdtemp()
         path = os.path.join(tmp, "run.tkb")
@@ -194,7 +158,7 @@ def main(argv=None, prog="tracekit proofpack"):
                     f.write(md)
             return 0 if code in (0, 3) else code
         code = build(a.out, path, a.key, a.witness)
-        print(f"wrote {a.out} (verification exit {code}); check it with: unzip {a.out} && python3 verify.pyz run.tkb")
+        print(f"wrote {a.out} (verification exit {code}); check it with a Tracekit you installed: tracekit verify run.tkb --key signer.pub")
         return 0 if code in (0, 3) else code
     finally:
         if tmp:
@@ -203,8 +167,8 @@ def main(argv=None, prog="tracekit proofpack"):
 
 
 def report_main(argv=None):
-    argv = list(argv or [])
-    return main(argv + ["--report-only"], prog="tracekit report")
+    argv = list(sys.argv[1:] if argv is None else argv)
+    return main(argv + ["--report-only"], prog="tracekit-report")
 
 
 if __name__ == "__main__":

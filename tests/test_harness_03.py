@@ -7,17 +7,20 @@ Real processes are used throughout: a copy of /bin/sh plays the harness, and `sl
 """
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
-import time
 import unittest
+
+import pytest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from tracekit import daemon, policy  # noqa: E402
 from tracekit.daemon import Signer, find_harness, load_config, trusted_file  # noqa: E402
-from tests.test_hotfix_021 import make_signer, run_start, tool_call  # noqa: E402
+from factories import ledger_records, make_signer, run_start, tool_call  # noqa: E402
 
 LINUX_PROC = sys.platform.startswith("linux") and os.path.isdir("/proc/self")
 # must differ from the uid running the tests (1001 on GitHub runners), or the signer treats the agent as itself
@@ -26,8 +29,9 @@ SH = shutil.which("dash") or shutil.which("sh")
 
 
 def _spawn(argv, cwd=None):
-    """Start argv; it prints the pid of a `sleep` child it keeps running. Returns (process, child pid)."""
-    p = subprocess.Popen(argv, stdout=subprocess.PIPE, text=True, cwd=cwd)
+    """Start argv in its own process group; it prints the pid of a `sleep` child it keeps running.
+    Returns (process, child pid)."""
+    p = subprocess.Popen(argv, stdout=subprocess.PIPE, text=True, cwd=cwd, start_new_session=True)
     line = p.stdout.readline().strip()
     return p, int(line)
 
@@ -46,9 +50,13 @@ class _Harness(unittest.TestCase):
 
     def tearDown(self):
         daemon.trusted_file = self._trusted
-        for p in self.procs:
-            p.kill()
+        for p in self.procs:  # the whole group, so no `sleep` child outlives the test
+            try:
+                os.killpg(p.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
             p.wait()
+            p.stdout.close()
         shutil.rmtree(self.d, ignore_errors=True)
 
     def hook_under_harness(self, exe=None):
@@ -91,10 +99,9 @@ class FindHarness(_Harness):
 
     def test_detached_process_is_not(self):
         # a double fork reparents the process to init, out from under the harness
-        p, pid = _spawn([self.harness, "-c", "(setsid sleep 60 >/dev/null 2>&1 & echo $!) ; sleep 0.3"])
+        p, pid = _spawn([self.harness, "-c", "(setsid sleep 60 >/dev/null 2>&1 & echo $!)"])
         self.procs.append(p)
-        p.wait()
-        time.sleep(0.2)
+        p.wait()  # the harness and the subshell are gone: the kernel reparented the sleep when they exited
         try:
             inst, _ = find_harness(pid, self.harnesses())
             self.assertIsNone(inst)
@@ -136,6 +143,7 @@ class TrustedFile(unittest.TestCase):
         finally:
             shutil.rmtree(d, ignore_errors=True)
 
+    @pytest.mark.root
     @unittest.skipUnless(hasattr(os, "geteuid") and os.geteuid() == 0 and os.path.exists("/bin/sh"), "needs root-owned /bin/sh")
     def test_root_owned_system_binary_is_trusted(self):
         self.assertIsNone(trusted_file("/bin/sh"))
@@ -157,7 +165,7 @@ class SignerBinding(_Harness):
         super().tearDown()
 
     def signer(self, binding):
-        return make_signer(self.home, {"harnesses": self.harnesses(), "harness_binding": binding, "mode": "system"})
+        return make_signer(self.home, harnesses=self.harnesses(), harness_binding=binding, mode="system")
 
     def append(self, e, pid, uid=AGENT_UID):
         n = self.cseq[e["run_id"]] = self.cseq.get(e["run_id"], -1) + 1
@@ -167,8 +175,7 @@ class SignerBinding(_Harness):
         return self.s.handle(req, peer_uid=uid, peer_pid=pid)
 
     def events(self):
-        from tracekit.ledger import read_records
-        return [r["event"] for _, r, _ in read_records(self.s.ledger.path) if r]
+        return [r["event"] for r in ledger_records(self.s.home)]
 
     def gaps(self, kind):
         return [e for e in self.events() if e["type"] == "capture.gap" and e["data"].get("kind") == kind]
@@ -294,10 +301,10 @@ class DefaultsAndConfig(unittest.TestCase):
     def test_registered_harness_defaults_to_enforce_in_system_mode(self):
         d = tempfile.mkdtemp()
         try:
-            s = make_signer(d, {"harnesses": [{"exe": "/bin/sh"}]})
+            s = make_signer(d, harnesses=[{"exe": "/bin/sh"}])
             self.assertEqual(s.binding, "enforce")
             s.ledger.close()
-            s = make_signer(os.path.join(d, "dev"), {"harnesses": [{"exe": "/bin/sh"}], "mode": "dev"})
+            s = make_signer(os.path.join(d, "dev"), harnesses=[{"exe": "/bin/sh"}], mode="dev")
             self.assertEqual(s.binding, "off")
             s.ledger.close()
         finally:
@@ -306,7 +313,7 @@ class DefaultsAndConfig(unittest.TestCase):
     def test_unknown_binding_mode_fails_closed(self):
         d = tempfile.mkdtemp()
         try:
-            s = make_signer(d, {"harnesses": [{"exe": "/bin/sh"}], "harness_binding": "maybe"})
+            s = make_signer(d, harnesses=[{"exe": "/bin/sh"}], harness_binding="maybe")
             self.assertEqual(s.binding, "enforce")
             s.ledger.close()
         finally:

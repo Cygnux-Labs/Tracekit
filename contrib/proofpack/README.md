@@ -2,8 +2,8 @@
 
 ```bash
 tracekit analyze --run R                                  # optional: include signed findings
-tracekit proofpack --run R -o pack.zip --key signer.pub   # or: tracekit proofpack run.tkb -o pack.zip
-tracekit report run.tkb > REPORT.md                       # the report alone
+tracekit-proofpack --run R -o pack.zip --key signer.pub   # or: tracekit-proofpack run.tkb -o pack.zip
+tracekit-report run.tkb > REPORT.md                       # the report alone
 ```
 
 `pack.zip` holds:
@@ -12,16 +12,18 @@ tracekit report run.tkb > REPORT.md                       # the report alone
 |---|---|
 | `run.tkb` | the evidence bundle, unchanged |
 | `REPORT.md` | the run (agent, model, policy, capture sources, signer isolation, tool and model calls, tokens), every verification check with its result, signed findings, coverage (observed, not observed by design, warnings), and the evidence-to-control map |
-| `verify.pyz` | Tracekit's verifier as one file. `python3 verify.pyz run.tkb --key signer.pub` runs with only the standard library: signature checks fall back to pure-Python Ed25519 when `cryptography` is missing |
 | `controls.json` | the control map, machine-readable |
-| `SHA256SUMS` | hashes of the files above |
+
+The pack carries no verifier. Verification code shipped next to the evidence could be replaced along with it, so the
+auditor brings their own.
 
 ## Auditor walkthrough
 
 What a reviewer does with a pack they were sent, on their own machine:
 
-1. `sha256sum -c SHA256SUMS` (or `shasum -a 256 -c`): the files are the ones the pack was built with.
-2. `python3 verify.pyz run.tkb --key signer.pub`, with the signer's public key obtained separately (from the team's
+1. Install a Tracekit release yourself, from the package index or the project's release page (`pip install tracekit-ai`),
+   never from a file in the pack.
+2. `tracekit verify run.tkb --key signer.pub`, with the signer's public key obtained separately (from the team's
    key registry, a ticket, a signed email), or `--witness URL` with a pinned witness key. Exit 0 and `VERIFIED` mean
    every record is signed by that key, the chain is unbroken, checkpoints match, findings cite intact evidence. Without
    `--key` or `--witness` the verdict is `VERIFIED BUT UNANCHORED`: consistent, but nothing outside the pack vouches
@@ -30,10 +32,8 @@ What a reviewer does with a pack they were sent, on their own machine:
    the capture path did not observe, and which control each piece of evidence is relevant to (`controls.json` has the
    same map for tooling).
 4. Spot-check: pick a row in the report and find its seq and hash in `run.tkb` (`unzip -p run.tkb records.jsonl`), or
-   open `replay.html` inside the bundle, which re-runs the chain and signature checks in the browser.
-
-Checked on a clean machine (Linux arm64, Python 3.10, no Tracekit installed, `python3 -I` with an empty environment):
-`sha256sum -c SHA256SUMS` passed and `verify.pyz` returned exit 0, using only the files in the pack.
+   open `replay.html` inside the bundle to browse the run. It is a convenience view, not evidence: `tracekit verify`
+   never uses it for the verdict and prints a warning if it differs from the viewer it would generate itself.
 
 ## The control map
 

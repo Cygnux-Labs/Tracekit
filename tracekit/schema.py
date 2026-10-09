@@ -18,7 +18,7 @@ def schema():
         try:
             with open(SCHEMA_PATH, encoding="utf-8") as f:
                 _SCHEMA = json.load(f)
-        except OSError:  # running from a zip (the proof pack's verify.pyz): read the packaged copy
+        except OSError:  # imported from a zip archive: read the packaged copy
             import pkgutil
             _SCHEMA = json.loads(pkgutil.get_data(__package__, "schema/tracekit.event.v1.json").decode("utf-8"))
     return _SCHEMA

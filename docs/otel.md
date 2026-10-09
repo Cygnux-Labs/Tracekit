@@ -8,9 +8,13 @@ Tracekit speaks OpenTelemetry in both directions.
 
 ## Receiving traces
 
+> **Experimental.** The OTLP receiver (`tracekit otel serve`) and the ingest gateway (`tracekit ingest serve`) are off
+> by default and being rebuilt: each runs only with `--experimental` and prints a warning when it starts.
+> `tracekit init` never starts them.
+
 ```bash
 tracekit init --dev                     # once: a local signer
-tracekit otel serve                     # http://127.0.0.1:4318/v1/traces
+tracekit otel serve --experimental      # http://127.0.0.1:4318/v1/traces
 OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://127.0.0.1:4318/v1/traces python my_agent.py
 ```
 
@@ -22,7 +26,7 @@ the ingest gateway instead, which serves the same `/v1/traces` path behind TLS a
 
 ```bash
 tracekit ingest token build-box --home /var/lib/tracekit      # prints a token once
-tracekit ingest serve --home /var/lib/tracekit --host 0.0.0.0 --cert c.pem --key k.pem
+tracekit ingest serve --experimental --home /var/lib/tracekit --host 0.0.0.0 --cert c.pem --key k.pem
 # on the agent's machine
 OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=https://tracekit.example:8443/v1/traces \
 OTEL_EXPORTER_OTLP_TRACES_HEADERS="Authorization=Bearer%20tk_..." python my_agent.py
