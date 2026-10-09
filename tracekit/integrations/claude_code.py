@@ -3,9 +3,11 @@ this process holds no key, evaluates no policy and writes no ledger.
 
     python -I -m tracekit.integrations.claude_code   (wired by `tracekit init --dev --v2`)
 
-Each hook is a new process, so the run (id and token) of a Claude Code session and the decision binding of a tool
-call are kept in the runtime dir between hooks. Exit 0 lets the call proceed, exit 2 blocks it (reason on stderr).
-The signer unreachable or any other failure: the fail mode configured for the v1 hook (`tracekit.hook.fail_closed`).
+Each hook is a new process, so the run of a Claude Code session (id, token, fail modes, and the one event stream and
+next client_seq all its hooks share) and the decision binding of a tool call are kept in the runtime dir between hooks.
+Exit 0 lets the call proceed, exit 2 blocks it (reason on stderr). The signer unreachable: the run's fail mode for the
+tool's class, from register_run (closed before a run is registered). A signer refusal, a failure while a call waits for
+its approval, or any other error: blocked.
 """
 import glob
 import hashlib
@@ -13,13 +15,14 @@ import json
 import os
 import sys
 import time
+import uuid
 
 from tracekit import privacy
 from tracekit.deploy import files
 from tracekit.format.canon import event_hash
 from tracekit.locking import lock_file
 from tracekit.sdk import autospawn
-from tracekit.sdk.client import Client, RunHandle
+from tracekit.sdk.client import Client, RunHandle, SignerUnavailable, fail_open
 from tracekit.signer.rpc_schema import RPCError
 
 AGENT = "claude-code"
@@ -41,48 +44,67 @@ def _load(path):
         return None
 
 
-def _run(client, sid, register=True, stale=None):
-    """The session's run, registered on its first event (or again when `stale` is the stored, closed one)."""
+def _run(client, sid, register=True, send=None, **fields):
+    """(the session's run, registered on its first event; with `send`, the signer's reply to that event call, sent with
+    the session's stream and next client_seq under the session lock so parallel hooks reach the signer in client_seq
+    order, and sent again on a new run when the signer has closed the stored one (idle))"""
     path = _state(sid)
     with open(path[:-len(".json")] + ".lock", "a") as lk:   # parallel tool calls must not register two runs
         lock_file(lk)
         st = _load(path)
-        if register and (st is None or st == stale):
-            version = os.environ.get("CLAUDE_CODE_VERSION")
-            out = client.register_run({"agent": {"name": AGENT, **({"version": version[:64]} if version else {})}})
-            # lean: same-user dev mode, so the agent can read its own run token (dev assurance); system mode moves the
-            # token out of the agent's reach
-            st = {"run_id": out["run_id"], "run_token": out["run_token"]}
-            files.write_json(path, st)
-    return st and RunHandle(client, st)
+        if register and st is None:
+            st = _register(client, path)
+        if not (st and send):
+            return st and RunHandle(client, st), None
+        try:
+            return _send(client, path, st, send, fields)
+        except RPCError as e:
+            if not register or e.code not in ("run_closed", "unknown_run"):
+                raise
+            return _send(client, path, _register(client, path), send, fields)
+
+
+def _register(client, path):
+    version = os.environ.get("CLAUDE_CODE_VERSION")
+    out = client.register_run({"agent": {"name": AGENT, **({"version": version[:64]} if version else {})}})
+    # lean: same-user dev mode, so the agent can read its own run token and edit its fail modes here (dev
+    # assurance); system mode moves this state out of the agent's reach
+    st = {"run_id": out["run_id"], "run_token": out["run_token"], "fail_modes": out.get("fail_modes") or {},
+          "stream": uuid.uuid4().hex, "seq": 0}
+    files.write_json(path, st)
+    return st
+
+
+def _send(client, path, st, method, fields):
+    run = RunHandle(client, st)
+    files.write_json(path, dict(st, seq=st["seq"] + 1))
+    return run, run.call(method, stream=st["stream"], client_seq=st["seq"], **fields)
 
 
 def _pre(client, p, sid, tid):
     tool, args = p.get("tool_name") or "?", p.get("tool_input")
-    run = _run(client, sid)
-    try:
-        d = run.call("decide", tool_call_id=tid, tool=tool, args=args, args_source="parsed")
-    except RPCError as e:
-        if e.code not in ("run_closed", "unknown_run"):
-            raise
-        run = _run(client, sid, stale=run.registered)   # the signer closed the run (idle): continue in a new one
-        d = run.call("decide", tool_call_id=tid, tool=tool, args=args, args_source="parsed")
+    run, d = _run(client, sid, send="decide", tool_call_id=tid, tool=tool, args=args, args_source="parsed")
+    if d["decision"] == "deny":
+        print(f"Blocked by tracekit policy: {'; '.join(d['rule_ids'])} {d.get('reason', '')}".rstrip(), file=sys.stderr)
+        return 2
     if d["decision"] == "ask":
-        aid = run.call("approval_request", tool_call_id=tid)["approval_id"]
-        print(f"[tracekit] waiting for approval {aid} ({'; '.join(d['rule_ids'])})", file=sys.stderr, flush=True)
-        state, deadline = "requested", time.monotonic() + APPROVAL_WAIT_S
-        while state == "requested" and deadline > time.monotonic():
-            left_ms = int(min(deadline - time.monotonic(), 300) * 1000)
-            state = run.call("approval_wait", approval_id=aid, timeout_ms=left_ms)["state"]
-        if state != "approved":
+        try:
+            aid = run.call("approval_request", tool_call_id=tid)["approval_id"]
+            print(f"[tracekit] waiting for approval {aid} ({'; '.join(d['rule_ids'])})", file=sys.stderr, flush=True)
+            state, deadline = "requested", time.monotonic() + APPROVAL_WAIT_S
+            while state == "requested" and deadline > time.monotonic():
+                left_ms = int(min(deadline - time.monotonic(), 300) * 1000)
+                state = run.call("approval_wait", approval_id=aid, timeout_ms=left_ms)["state"]
+            c = run.approval_consume(tid, tool, args, approval_id_hint=aid) if state == "approved" else None
+        except Exception as e:   # no fail mode once the policy asked: a call nobody approved never runs
+            state, c = f"{type(e).__name__}: {e}", None
+        if c is None:
             print(f"Held by tracekit policy ({'; '.join(d['rule_ids'])}) and not approved: {state}", file=sys.stderr)
             return 2
-        c = run.approval_consume(tid, tool, args, approval_id_hint=aid)   # once, and only for the approved args
-        if not c["ok"]:
-            print(f"Held by tracekit policy: {'; '.join(c['rule_ids'])} {c.get('reason', '')}".rstrip(), file=sys.stderr)
-            return 2
-    elif d["decision"] != "allow":
-        print(f"Blocked by tracekit policy: {'; '.join(d['rule_ids'])} {d.get('reason', '')}".rstrip(), file=sys.stderr)
+    else:
+        c = run.approval_consume(tid, tool, args)   # every call that runs: once, for the decided args
+    if not c["ok"]:
+        print(f"Held by tracekit policy: {'; '.join(c['rule_ids'])} {c.get('reason', '')}".rstrip(), file=sys.stderr)
         return 2
     files.write_json(_state(sid, tid), {"run_id": run.run_id, "decision_id": d["decision_id"],
                                         "args_digest": event_hash({"tool": tool, "args": args})})
@@ -91,8 +113,8 @@ def _pre(client, p, sid, tid):
 
 def _post(client, p, sid, tid):
     path = _state(sid, tid)
-    call, run = _load(path), _run(client, sid, register=False)
-    if not call or not run or call["run_id"] != run.run_id:
+    call, st = _load(path), _load(_state(sid))
+    if not call or not st or call["run_id"] != st["run_id"]:
         print(f"[tracekit] no decision for tool call {tid}; result not recorded", file=sys.stderr)
         return 0
     from tracekit import policy as policy_mod
@@ -102,13 +124,62 @@ def _post(client, p, sid, tid):
     ok = not failed and not (isinstance(resp, dict) and (resp.get("is_error") or resp.get("interrupted")))
     ti = p.get("tool_input") if isinstance(p.get("tool_input"), dict) else {}
     dotenv = privacy.mentions_dotenv(ti.get("command"), ti.get("file_path"), ti.get("path"), ti.get("pattern"))
-    run.call("complete", tool_call_id=tid, decision_id=call["decision_id"], args_digest=call["args_digest"],
-             status="ok" if ok else "error", result=privacy.content(resp if resp is not None else "", cc, dotenv))
+    _run(client, sid, register=False, send="complete", tool_call_id=tid, decision_id=call["decision_id"],
+         args_digest=call["args_digest"], status="ok" if ok else "error",
+         result=privacy.content(resp if resp is not None else "", cc, dotenv))
     os.remove(path)
     return 0
 
 
-def main():
+def _prune():
+    """Removes session and tool call state no hook has written for longer than the signer's default run idle timeout:
+    the signer has closed those runs, and a call that never got its PostToolUse leaves its state behind."""
+    from tracekit.signer.service import IDLE_S
+    old = time.time() - IDLE_S
+    for f in sorted(glob.glob(os.path.join(glob.escape(autospawn.runtime_dir()), "claude-code-*")),
+                    key=lambda f: f.endswith(".lock")):   # the state first, then the locks it no longer needs
+        # lean: a lock goes only once its session state has; a hook that resumes that very session at this instant
+        # could lock a fresh file beside one still held, so two runs get registered, rare enough for dev mode
+        if f.endswith(".lock") and os.path.exists(f[:-len(".lock")] + ".json"):
+            continue
+        try:
+            if os.path.getmtime(f) < old:
+                os.remove(f)
+        except OSError:   # removed by a parallel hook
+            pass
+
+
+def _tool_class(tool):
+    # lean: the class in the dev signer's default policy; a signer with another policy may class the tool otherwise
+    from tracekit.signer.service import load_policy
+    return load_policy().tool_class(tool)
+
+
+def _handle(client, p, name, sid, tid):
+    if name == "PreToolUse":
+        return _pre(client, p, sid, tid)
+    if name in TOOL_EVENTS:
+        return _post(client, p, sid, tid)
+    if name == "SessionEnd":
+        run, _ = _run(client, sid, register=False)
+        try:
+            if run:
+                run.close(str(p.get("reason") or "session end")[:256])
+        except RPCError as e:
+            if e.code not in ("run_closed", "unknown_run"):   # closed already (idle): only the state is left
+                raise
+        for f in glob.glob(glob.escape(_state(sid)[:-len(".json")]) + "*"):
+            os.remove(f)
+        return 0
+    # lean: UserPromptSubmit and transcript reasoning have no v2 RPC yet and are not recorded; the L1 transcript tailer
+    # (M1b-07) and model events (M2) record them
+    if name == "SessionStart":
+        _prune()
+    _run(client, sid)   # SessionStart, or any other first event of the session, registers the run
+    return 0
+
+
+def _entry():
     raw = sys.stdin.read()
     try:
         p = json.loads(raw) if raw.strip() else {}
@@ -124,36 +195,21 @@ def main():
               + ("tool call blocked" if pre else "event not recorded"), file=sys.stderr)
         return 2 if pre else 0
     client = Client()
-    if name == "PreToolUse":
-        return _pre(client, p, sid, tid)
-    if name in TOOL_EVENTS:
-        return _post(client, p, sid, tid)
-    if name == "SessionEnd":
-        run = _run(client, sid, register=False)
-        try:
-            if run:
-                run.close(str(p.get("reason") or "session end")[:256])
-        except RPCError as e:
-            if e.code not in ("run_closed", "unknown_run"):   # closed already (idle): only the state is left
-                raise
-        for f in glob.glob(glob.escape(_state(sid)[:-len(".json")]) + "*"):
-            os.remove(f)
-        return 0
-    # lean: UserPromptSubmit and transcript reasoning have no v2 RPC yet and are not recorded; the L1 transcript tailer
-    # (M1b-07) and model events (M2) record them
-    _run(client, sid)   # SessionStart, or any other first event of the session, registers the run
-    return 0
-
-
-def _entry():
     try:
-        return main()
-    except Exception as e:  # the signer unreachable, or a crash: follow the configured fail mode
-        from tracekit.hook import fail_closed
-        closed = fail_closed()
-        print(f"[tracekit] hook error ({e}); " + ("blocking (fail-closed)" if closed else "allowing (fail-open)"),
+        return _handle(client, p, name, sid, tid)
+    except (SignerUnavailable, OSError) as e:   # the signer unreachable: the run's fail mode for the tool's class
+        try:
+            closed = not fail_open((_load(_state(sid)) or {}).get("fail_modes"), _tool_class(p.get("tool_name") or "?"))
+        except Exception:
+            closed = True
+        print(f"[tracekit] signer unreachable ({e}); " + ("blocking (fail-closed)" if closed else "allowing (fail-open)"),
               file=sys.stderr)
         return 2 if closed else 0
+    except Exception as e:   # a signer refusal or a crash: never a reason to let the call run
+        print(f"[tracekit] hook error ({type(e).__name__}: {e}); blocking", file=sys.stderr)
+        return 2
+    finally:
+        client.close()
 
 
 if __name__ == "__main__":
