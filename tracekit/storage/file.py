@@ -292,6 +292,7 @@ class FileStorage(_Records, Storage):
         if self._note and size < self._note[0]:
             raise ValueError(f"a checkpoint of size {size} is older than the stored one of size {self._note[0]}")
         with self._disk():
+            _sync(self.log.fd, True)   # the records a note covers are durable before the note
             _write_new(os.path.join(self.root, NOTE), note.encode("utf-8"))
         self._note = (size, note)
 
