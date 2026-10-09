@@ -4,9 +4,9 @@
 
 [![CI](https://img.shields.io/github/actions/workflow/status/Cygnux-Labs/Tracekit/ci.yml?branch=main&label=CI)](https://github.com/Cygnux-Labs/Tracekit/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/tracekit-ai)](https://pypi.org/project/tracekit-ai/)
-[![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
+[![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](https://github.com/Cygnux-Labs/Tracekit/blob/main/LICENSE)
 
-<img src="docs/demo/demo.gif" alt="tracekit demo: a scripted agent run, a policy block, export, offline verify and a tamper test" width="100%">
+<img src="https://raw.githubusercontent.com/Cygnux-Labs/Tracekit/main/docs/demo/demo.gif" alt="tracekit demo: a scripted agent run, a policy block, export, offline verify and a tamper test" width="100%">
 
 ## The problem
 
@@ -94,7 +94,7 @@ tracekit verify run.tkb --key ~/.tracekit-signer/ledger/signer.pub --witness git
 Dev mode keeps the signer, its key and a local git witness in `~/.tracekit-signer`. Without `--key` or `--witness` the
 verdict says `UNANCHORED`: the bundle is only internally consistent.
 
-To try the verifier alone on the shipped [sample bundle](docs/sample/README.md):
+To try the verifier alone on the shipped [sample bundle](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/sample/README.md):
 
 ```bash
 tracekit verify docs/sample/demo-run.tkb --key docs/sample/signer.pub            # exit 0
@@ -115,34 +115,34 @@ tracekit verify docs/sample/demo-run-tampered.tkb --key docs/sample/signer.pub  
 
 A verified bundle does **not** prove intent, complete coverage, or that a reported tool result is real. Anything the
 agent does outside a capture path (inside a subprocess, after the last hook) is not seen; the verifier lists the blind
-spots a run touched as warnings. The claims are mapped one by one in the [threat model](docs/threat-model-laptop.md).
+spots a run touched as warnings. The claims are mapped one by one in the [threat model](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/threat-model-laptop.md).
 
 ## Supported today
 
 | Capture path | Status | Docs |
 |---|---|---|
-| Claude Code hooks | supported | [threat model](docs/threat-model-laptop.md), [plugin](plugin/README.md) |
-| Codex CLI, Cursor, Gemini CLI hooks | supported | [coding agents](docs/coding-agents.md) |
-| Python SDK (`tracekit_sdk.Tracer`, `tracekit.init()` model calls) | supported | [adapters](docs/adapters.md), [examples](examples/) |
-| TypeScript SDK (`@cygnux/tracekit`, runs the Python engine over a bridge) | supported | [sdk/typescript](sdk/typescript/README.md) |
-| LangChain / LangGraph | supported | [adapters](docs/adapters.md) |
-| MCP client sessions | supported | [adapters](docs/adapters.md) |
-| OpenTelemetry receiver (`tracekit otel serve --experimental`) | experimental; records after the fact, gates nothing | [OpenTelemetry](docs/otel.md) |
+| Claude Code hooks | supported | [threat model](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/threat-model-laptop.md), [plugin](https://github.com/Cygnux-Labs/Tracekit/blob/main/plugin/README.md) |
+| Codex CLI, Cursor, Gemini CLI hooks | supported | [coding agents](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/coding-agents.md) |
+| Python SDK (`tracekit_sdk.Tracer`, `tracekit.init()` model calls) | supported | [adapters](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/adapters.md), [examples](https://github.com/Cygnux-Labs/Tracekit/blob/main/examples/) |
+| TypeScript SDK (`@cygnux/tracekit`, runs the Python engine over a bridge) | supported | [sdk/typescript](https://github.com/Cygnux-Labs/Tracekit/blob/main/sdk/typescript/README.md) |
+| LangChain / LangGraph | supported | [adapters](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/adapters.md) |
+| MCP client sessions | supported | [adapters](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/adapters.md) |
+| OpenTelemetry receiver (`tracekit otel serve --experimental`) | experimental; records after the fact, gates nothing | [OpenTelemetry](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/otel.md) |
 
 Hooks and SDK wrappers gate a call before it runs; the OpenTelemetry receiver only records. Platform support for each
-mode is in [platforms](docs/portability.md).
+mode is in [platforms](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/portability.md).
 
-Separate packages under `contrib/`: [proofpack](contrib/proofpack/README.md) (auditor zip: bundle, readable report and control map; auditors verify with
+Separate packages under `contrib/`: [proofpack](https://github.com/Cygnux-Labs/Tracekit/blob/main/contrib/proofpack/README.md) (auditor zip: bundle, readable report and control map; auditors verify with
 their own Tracekit install),
-[query](contrib/query/README.md) (SQL and MCP over the ledger), [stagehand](contrib/stagehand/README.md),
-[causeway](contrib/causeway/README.md), [onchain](contrib/onchain/README.md).
+[query](https://github.com/Cygnux-Labs/Tracekit/blob/main/contrib/query/README.md) (SQL and MCP over the ledger), [stagehand](https://github.com/Cygnux-Labs/Tracekit/blob/main/contrib/stagehand/README.md),
+[causeway](https://github.com/Cygnux-Labs/Tracekit/blob/main/contrib/causeway/README.md), [onchain](https://github.com/Cygnux-Labs/Tracekit/blob/main/contrib/onchain/README.md).
 
 ## Policy gate and approvals
 
-Rules in [`tracekit/policy/default.yaml`](tracekit/policy/default.yaml) have stable ids (`TK-D006`) and three
+Rules in [`tracekit/policy/default.yaml`](https://github.com/Cygnux-Labs/Tracekit/blob/main/tracekit/policy/default.yaml) have stable ids (`TK-D006`) and three
 effects: `deny` blocks the call, `ask` holds it until someone answers with `tracekit approve` or `tracekit reject`
 (outside dev mode, a different OS user), and `flag` lets it through and marks it.
-[`strict.yaml`](tracekit/policy/strict.yaml) fails closed and asks before pushes, publishes and uploads. The rules are
+[`strict.yaml`](https://github.com/Cygnux-Labs/Tracekit/blob/main/tracekit/policy/strict.yaml) fails closed and asks before pushes, publishes and uploads. The rules are
 regex tripwires that can be evaded; the guarantees come from the signer, the chain and the witness.
 
 ## System mode
@@ -151,12 +151,12 @@ On Linux, run from a clone of this repository with a root-owned Python
 (`sudo /usr/bin/python3 -m tracekit init --user <agent-user>`). Tracekit installs itself into a root-owned virtualenv
 at `/opt/tracekit` and runs the signer as its own OS user, so the agent's user cannot read the key, change the ledger
 or modify the code that records it, and tool calls are blocked while the signer is down (fail closed). macOS system mode is
-experimental; Windows runs dev mode only. See [platforms](docs/portability.md) and [signing](docs/signing.md).
+experimental; Windows runs dev mode only. See [platforms](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/portability.md) and [signing](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/signing.md).
 
 ## Witnesses
 
 `tracekit init --witness git:...` publishes checkpoints to a git repo; `tracekit witness serve` runs an append-only
-Merkle-tree checkpoint log with signed tree heads. See [witnesses](docs/witnesses.md).
+Merkle-tree checkpoint log with signed tree heads. See [witnesses](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/witnesses.md).
 
 ## CLI reference
 
@@ -166,9 +166,9 @@ the ledger or a bundle), `pending` / `approve` / `reject`, `export`, `verify` (e
 
 ## Architecture and threat model
 
-[Threat model](docs/threat-model-laptop.md) · [signing](docs/signing.md) · [witnesses](docs/witnesses.md) ·
-[privacy](docs/privacy.md) · [findings](docs/findings.md) · [evaluation](docs/evaluation.md) ·
-[review packet](docs/review-packet.md)
+[Threat model](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/threat-model-laptop.md) · [signing](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/signing.md) · [witnesses](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/witnesses.md) ·
+[privacy](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/privacy.md) · [findings](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/findings.md) · [evaluation](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/evaluation.md) ·
+[review packet](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/review-packet.md)
 
 ## Roadmap
 
@@ -177,12 +177,12 @@ the network, evidence format v2, and policy enforced inside the signer. Existing
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md). `make install`, then `make check` runs lint, tests and the build.
+See [CONTRIBUTING.md](https://github.com/Cygnux-Labs/Tracekit/blob/main/CONTRIBUTING.md). `make install`, then `make check` runs lint, tests and the build.
 
 ## Security
 
-Report vulnerabilities privately as described in [SECURITY.md](SECURITY.md).
+Report vulnerabilities privately as described in [SECURITY.md](https://github.com/Cygnux-Labs/Tracekit/blob/main/SECURITY.md).
 
 ## Licence
 
-MIT, Copyright Cygnux Labs. See [LICENSE](LICENSE).
+MIT, Copyright Cygnux Labs. See [LICENSE](https://github.com/Cygnux-Labs/Tracekit/blob/main/LICENSE).
