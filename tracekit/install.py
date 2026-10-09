@@ -77,6 +77,49 @@ WantedBy=multi-user.target
 """
 LAUNCHD_DIR = "/Library/LaunchDaemons"
 SYS_USER_DARWIN = "_tracekit"  # macOS system accounts are underscore-prefixed
+# v2 system mode (`tracekit init --v2`): the v2 signer service, as its own user, configured by a root-owned signer.yaml
+V2_USER, V2_USER_DARWIN = "tracekit-signer", "_tracekit_signer"
+V2_DATA = "/var/lib/tracekit-signer"   # keys and log: 0700, owned by the signer's user
+V2_CONFIG = "/etc/tracekit/signer.yaml"
+V2_UNIT, V2_LABEL = "tracekit-signer", "dev.tracekit.signer"
+V2_RUN = {"linux": "/run/tracekit-signer", "darwin": "/Library/Application Support/tracekit-signer"}   # the socket's dir
+V2_UNIT_TEXT = """[Unit]
+Description=Tracekit v2 signer
+After=network.target
+
+[Service]
+User={user}
+Group={user}
+ExecStart={python} -I -m tracekit signer serve --config {config}
+Restart=on-failure
+UMask=0027
+RuntimeDirectory={unit}
+RuntimeDirectoryMode=0755
+ReadWritePaths={data}
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target
+"""
 
 
 def launchd_plist(label, user, python, module, home, extra_args=()):
@@ -95,7 +138,7 @@ def _dscl(*args):
     return subprocess.run(["dscl", ".", *args], capture_output=True, text=True)
 
 
-def _create_system_user_darwin(name):
+def _create_system_user_darwin(name, home=SYS_HOME):
     """Create a hidden, non-login system user and group with a free id in the 200-399 service range."""
     used = set()
     for kind, key in (("/Users", "UniqueID"), ("/Groups", "PrimaryGroupID")):
@@ -110,7 +153,7 @@ def _create_system_user_darwin(name):
              ("-create", f"/Users/{name}"), ("-create", f"/Users/{name}", "UniqueID", str(ident)),
              ("-create", f"/Users/{name}", "PrimaryGroupID", str(ident)),
              ("-create", f"/Users/{name}", "UserShell", "/usr/bin/false"),
-             ("-create", f"/Users/{name}", "NFSHomeDirectory", SYS_HOME),
+             ("-create", f"/Users/{name}", "NFSHomeDirectory", home),
              ("-create", f"/Users/{name}", "RealName", "Tracekit signer"),
              ("-create", f"/Users/{name}", "IsHidden", "1")]
     for step in steps:
@@ -174,27 +217,29 @@ def _backup(path, data):
 
 
 def install_hooks(settings_path, uninstall=False, owner=None, proxy_url=None, extra=None, mode=0o600, python=None,
-                  module="tracekit.hook"):
+                  module="tracekit.hook", signer=None):
     """Add (or remove) Tracekit's hooks in a Claude Code settings file. Idempotent; backs up the
     file before changing it; leaves other hooks and settings alone. proxy_url sets
-    env.ANTHROPIC_BASE_URL (C3). Raises SettingsError instead of overwriting a file it cannot parse,
+    env.ANTHROPIC_BASE_URL (C3), signer env.TRACEKIT_SIGNER (removed on uninstall while it is still that value).
+    Raises SettingsError instead of overwriting a file it cannot parse,
     or one that is a symlink. With owner (as root) the whole edit runs as that user. python, module: see _hook_command."""
     if owner is not None:
         return files.as_user(owner, install_hooks, settings_path, uninstall, None, proxy_url, extra, mode, python,
-                             module, errors=(SettingsError,))
+                             module, signer, errors=(SettingsError,))
     settings_path = os.path.abspath(settings_path)
     os.makedirs(os.path.dirname(settings_path), exist_ok=True)
     try:
         d = files.open_dir(os.path.dirname(settings_path))
         try:
-            _install_hooks_at(d, settings_path, uninstall, proxy_url, extra, mode, python, module)
+            _install_hooks_at(d, settings_path, uninstall, proxy_url, extra, mode, python, module, signer)
         finally:
             files.close(d)
     except files.UnsafePath as e:
         raise SettingsError(f"{settings_path}: {e}") from e
 
 
-def _install_hooks_at(d, settings_path, uninstall, proxy_url, extra, mode, python=None, module="tracekit.hook"):
+def _install_hooks_at(d, settings_path, uninstall, proxy_url, extra, mode, python=None, module="tracekit.hook",
+                      signer=None):
     name = os.path.basename(settings_path)
     s, raw = {}, files.read(d, name)
     original = None
@@ -235,6 +280,11 @@ def _install_hooks_at(d, settings_path, uninstall, proxy_url, extra, mode, pytho
     if proxy_url and not uninstall:
         env["ANTHROPIC_BASE_URL"] = proxy_url
         s[marker] = proxy_url
+    if signer and uninstall:
+        if env.get("TRACEKIT_SIGNER") == signer:
+            env.pop("TRACEKIT_SIGNER")
+    elif signer:
+        env["TRACEKIT_SIGNER"] = signer
     if env:
         s["env"] = env
     else:
@@ -625,13 +675,17 @@ def install_managed(proxy_url=None, managed_only=False, path=None, python=None):
 def _write_system_client_config(cfg):
     """0.2.1: root-owned client config. In system mode it overrides the agent-writable copy in the agent's home
     and the TRACEKIT_SOCKET / TRACEKIT_POLICY environment, so the agent cannot redirect or reconfigure its hooks."""
-    path = client.SYSTEM_CONFIG
+    _write_root_file(client.SYSTEM_CONFIG, files.json_bytes(cfg))
+
+
+def _write_root_file(path, data):
+    """Write `path` root-owned and 0644, in a root-owned 0755 directory (created if missing), following no symlink."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
     d = files.open_dir(os.path.dirname(path), {0})
     try:
         os.fchown(d, 0, 0)
         os.fchmod(d, 0o755)
-        files.write(d, os.path.basename(path), files.json_bytes(cfg), 0o644, 0, 0)
+        files.write(d, os.path.basename(path), data, 0o644, 0, 0)
     finally:
         files.close(d)
 
@@ -704,7 +758,8 @@ def migrate_system(fail_mode=None, harnesses=None):
     return 0
 
 
-PRIVILEGED_GROUPS = {"sudo", "wheel", "admin", "docker", "lxd", "libvirt", "disk", SYS_USER, SYS_USER_DARWIN}
+PRIVILEGED_GROUPS = {"sudo", "wheel", "admin", "docker", "lxd", "libvirt", "disk", SYS_USER, SYS_USER_DARWIN, V2_USER,
+                     V2_USER_DARWIN}
 
 
 def _privileges(pw):
@@ -763,10 +818,11 @@ def _install_source():
     return None
 
 
-def _install_venv(requirement):
+def _install_venv(requirement, extra=""):
     """Install Tracekit (requirement from _install_source) into a root-owned virtualenv at OPT, so the signer and hooks
     never run code the agent's user can modify. The new venv is built beside OPT and swapped in only once it imports
-    tracekit; if any step fails the existing OPT is untouched. Returns the default policy path inside it."""
+    tracekit; if any step fails the existing OPT is untouched. extra: pip extras of Tracekit, such as "[signer]".
+    Returns the default policy path inside it."""
     new, old_opt = OPT + ".new", OPT + ".old"
     new_python = os.path.join(new, "bin", "python")
     shutil.rmtree(new, ignore_errors=True)
@@ -778,7 +834,9 @@ def _install_venv(requirement):
             requirement = [os.path.join(tmp, "Tracekit")]
             shutil.copytree(ROOT, requirement[0], ignore=shutil.ignore_patterns(".git"))
         subprocess.run([sys.executable, "-m", "venv", "--clear", new], check=True)
-        subprocess.run([new_python, "-m", "pip", "install", "--quiet", "--no-cache-dir", *requirement], check=True)
+        name, eq, version = requirement[-1].partition("==")
+        subprocess.run([new_python, "-m", "pip", "install", "--quiet", "--no-cache-dir", *requirement[:-1],
+                        name + extra + eq + version], check=True)
         subprocess.run([new_python, "-I", "-c", "import tracekit"], check=True)
     finally:
         os.umask(old)
@@ -841,9 +899,8 @@ def doctor(checks=None):
     return 1 if failed else 0
 
 
-def init_system(target_user, witnesses, checkpoint_every=50, project=None, no_service=False, proxy=False, proxy_port=8787,
-                managed=False, managed_only=False, fail_mode=None, experimental_macos=False, hooks=True, signer=None,
-                harnesses=None, agent="claude", allow_privileged=False):
+def _require_system(experimental_macos):
+    """Refuse a platform or user system mode cannot run on; True on macOS."""
     darwin = sys.platform == "darwin"
     if not (sys.platform.startswith("linux") or darwin):
         raise SystemExit("v0.2 system mode runs on Linux and (experimentally) macOS: tracekitd must identify callers "
@@ -855,12 +912,174 @@ def init_system(target_user, witnesses, checkpoint_every=50, project=None, no_se
                          "or use `tracekit init --dev`.")
     if os.geteuid() != 0:
         raise SystemExit("system mode needs root: sudo tracekit init   (or tracekit init --dev for a same-user signer)")
-    checkpoint_every, proxy_port = _validate_init_options(checkpoint_every, proxy, proxy_port)
-    owner = pwd.getpwnam(target_user)
+    return darwin
+
+
+def _agent_user(name, allow_privileged):
+    owner = pwd.getpwnam(name)
     why = _privileges(owner)
     if why and not allow_privileged:
-        raise SystemExit(f"refusing to trace {target_user}: {'; '.join(why)}, so its agents could stop or replace the "
+        raise SystemExit(f"refusing to trace {name}: {'; '.join(why)}, so its agents could stop or replace the "
                          "signer. Trace an unprivileged user, or re-run with --i-understand-agent-is-privileged.")
+    return owner
+
+
+def _system_user(name, home, darwin):
+    """The signer's own OS user, created (no login, no home made) when missing."""
+    try:
+        return pwd.getpwnam(name)
+    except KeyError:
+        pass
+    if darwin:
+        _create_system_user_darwin(name, home)
+    else:
+        subprocess.run(["useradd", "--system", "--home-dir", home, "--shell", "/usr/sbin/nologin", "--user-group", name],
+                       check=True)
+    return pwd.getpwnam(name)
+
+
+def v2_signer_yaml(agent, approver_uid, policy, sock):
+    """signer.yaml of v2 system mode. The agent's uid gets its own tenant (named after it), and so does the approver's,
+    who alone may answer its approvals; every other local user lands in tenant `local`. Scalars are JSON-quoted, which
+    the built-in YAML subset reads back exactly."""
+    q = json.dumps
+    tenant, me, approver = q(agent.pw_name), q(f"uid:{agent.pw_uid}"), q(f"uid:{approver_uid}")
+    return "\n".join([
+        "# written by `tracekit init --v2`; re-run it to change this file", f"data_dir: {q(V2_DATA)}",
+        f"socket: {q(sock)}", 'socket_mode: "0666"', 'tenant: "local"', "tenants:", f"  {me}: {tenant}",
+        f"  {approver}: {tenant}", "approvals:", '  self_approval: "deny"', "  approvers:", f"    - {approver}",
+        f"policy: {q(policy)}", ""])
+
+
+def v2_plist(user):
+    """The LaunchDaemon of v2 system mode: the signer as its own user, without supplementary groups."""
+    import plistlib
+    return plistlib.dumps({
+        "Label": V2_LABEL, "UserName": user, "GroupName": user, "InitGroups": False,
+        "ProgramArguments": [OPT_PYTHON, "-I", "-m", "tracekit", "signer", "serve", "--config", V2_CONFIG],
+        "RunAtLoad": True, "KeepAlive": True, "Umask": 0o027, "WorkingDirectory": V2_DATA,
+        "StandardErrorPath": os.path.join(V2_DATA, "signer.log")})
+
+
+def init_system_v2(target_user, approver=None, policy=None, project=None, no_service=False, hooks=True,
+                   experimental_macos=False, allow_privileged=False):
+    """`sudo tracekit init --v2 --user AGENT`: the v2 signer service as its own user, from the root-owned venv, with
+    the v2 Claude Code hook for AGENT. Approvals are answered only by `approver` (default: the admin who ran sudo), a
+    different uid from the agent's. Returns (socket, settings path or None)."""
+    darwin = _require_system(experimental_macos)
+    owner = _agent_user(target_user, allow_privileged)
+    if approver:
+        approver = pwd.getpwnam(approver)
+    elif os.environ.get("SUDO_UID"):
+        approver = pwd.getpwuid(int(os.environ["SUDO_UID"]))
+    else:
+        raise SystemExit("name the user who answers the agent's approvals: --approver USER")
+    if approver.pw_uid == owner.pw_uid:
+        raise SystemExit(f"the approver must be another user than {target_user}: an agent may not approve its own calls")
+    if policy:
+        from .daemon import trusted_file
+        policy = os.path.abspath(policy)
+        bad = trusted_file(policy)
+        if bad:
+            raise SystemExit(f"--policy: {bad}. The policy must be a root-owned file in root-owned directories, so "
+                             f"{target_user} cannot change it")
+    requirement = _install_source()
+    sig = _system_user(V2_USER_DARWIN if darwin else V2_USER, V2_DATA, darwin)
+    run_dir = V2_RUN["darwin" if darwin else "linux"]   # on Linux systemd creates it (RuntimeDirectory=)
+    for path, mode in ((V2_DATA, 0o700),) + (((run_dir, 0o755),) if darwin else ()):
+        os.makedirs(path, mode, exist_ok=True)
+        d = files.open_dir(path, {0, sig.pw_uid})
+        try:
+            os.fchown(d, sig.pw_uid, sig.pw_gid)
+            os.fchmod(d, mode)
+        finally:
+            files.close(d)
+    _install_venv(requirement, "[signer]")
+    policy = policy or subprocess.run(
+        [OPT_PYTHON, "-I", "-c", "from tracekit.signer.service import DEFAULT_POLICY; print(DEFAULT_POLICY)"],
+        check=True, capture_output=True, text=True).stdout.strip()
+    sock = os.path.join(run_dir, "signer.sock")
+    _write_root_file(V2_CONFIG, v2_signer_yaml(owner, approver.pw_uid, policy, sock).encode())
+    settings = os.path.join(project or owner.pw_dir, ".claude", "settings.json") if hooks else None
+    sc = client.system_config() or {}   # a v1 system mode install keeps its own keys
+    _write_system_client_config(dict(sc, mode="system", signer=sock, fail_mode=sc.get("fail_mode", "closed"),
+                                     hooks={"user": target_user, "settings": settings}))
+    if not no_service:
+        if darwin:
+            plist = os.path.join(LAUNCHD_DIR, V2_LABEL + ".plist")
+            _write_root_file(plist, v2_plist(sig.pw_name))
+            subprocess.run(["launchctl", "bootout", "system", plist], check=False)
+            subprocess.run(["launchctl", "bootstrap", "system", plist], check=False)
+        else:
+            _write_root_file(os.path.join(SYSTEMD_DIR, V2_UNIT + ".service"), V2_UNIT_TEXT.format(
+                user=sig.pw_name, python=OPT_PYTHON, config=V2_CONFIG, unit=V2_UNIT, data=V2_DATA).encode())
+            subprocess.run(["systemctl", "daemon-reload"], check=False)
+            subprocess.run(["systemctl", "enable", V2_UNIT], check=False)
+            r = subprocess.run(["systemctl", "restart", V2_UNIT], check=False)
+            if r.returncode:
+                print(f"could not start {V2_UNIT}: see systemctl status {V2_UNIT}")
+    if settings:
+        install_hooks(settings, owner=owner, python=OPT_PYTHON, module=V2_HOOK, signer=sock)
+    return sock, settings
+
+
+def uninstall_system_v2(purge=False):
+    """`sudo tracekit uninstall --v2`: remove the service, signer.yaml, the system config's v2 keys (the file, and the
+    venv, unless v1 system mode still uses them) and the agent's hooks. purge: also the signer's data dir (its keys and
+    log) and its user. Returns what was kept."""
+    darwin = _require_system(True)
+    sc = client.system_config() or {}
+    h = sc.get("hooks") or {}
+    if h.get("settings") and os.path.exists(h["settings"]):
+        try:
+            owner = pwd.getpwnam(h["user"])
+        except KeyError:
+            owner = None
+        install_hooks(h["settings"], uninstall=True, owner=owner, signer=sc.get("signer"))
+    if darwin:
+        plist = os.path.join(LAUNCHD_DIR, V2_LABEL + ".plist")
+        subprocess.run(["launchctl", "bootout", "system", plist], check=False)
+        removed = [plist, V2_RUN["darwin"]]
+    else:
+        removed = [os.path.join(SYSTEMD_DIR, V2_UNIT + ".service")]
+    unit = not darwin and os.path.exists(removed[0])   # none after --no-service: nothing to stop
+    if unit:
+        subprocess.run(["systemctl", "disable", "--now", V2_UNIT], check=False)
+    rest ={k: v for k, v in sc.items() if k not in ("signer", "hooks")}
+    if "socket" in rest:   # v1 system mode
+        _write_system_client_config(rest)
+    else:
+        removed += [client.SYSTEM_CONFIG, OPT]
+    removed.append(V2_CONFIG)
+    user = V2_USER_DARWIN if darwin else V2_USER
+    if purge:
+        removed.append(V2_DATA)
+    for p in removed:
+        if os.path.isdir(p) and not os.path.islink(p):
+            shutil.rmtree(p)
+        elif os.path.lexists(p):
+            os.remove(p)
+    if unit:
+        subprocess.run(["systemctl", "daemon-reload"], check=False)
+    try:
+        os.rmdir(os.path.dirname(V2_CONFIG))
+    except OSError:
+        pass   # not empty: v1 system mode or a policy lives there
+    if purge:
+        cmds = ([["dscl", ".", "-delete", f"/Users/{user}"], ["dscl", ".", "-delete", f"/Groups/{user}"]] if darwin
+                else [["userdel", user]])
+        for cmd in cmds:
+            subprocess.run(cmd, check=False)
+        return []
+    return [V2_DATA, user]
+
+
+def init_system(target_user, witnesses, checkpoint_every=50, project=None, no_service=False, proxy=False, proxy_port=8787,
+                managed=False, managed_only=False, fail_mode=None, experimental_macos=False, hooks=True, signer=None,
+                harnesses=None, agent="claude", allow_privileged=False):
+    darwin = _require_system(experimental_macos)
+    checkpoint_every, proxy_port = _validate_init_options(checkpoint_every, proxy, proxy_port)
+    owner = _agent_user(target_user, allow_privileged)
     requirement = _install_source()
     user = SYS_USER_DARWIN if darwin else SYS_USER
     try:

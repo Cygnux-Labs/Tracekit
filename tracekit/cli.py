@@ -60,8 +60,11 @@ def main(argv=None):
     p.add_argument("--token-file", help="with --remote: file holding the client token (or set TRACEKIT_REMOTE_TOKEN)")
     p.add_argument("--dev", action="store_true", help="same-user signer (no root; weaker: the agent could rewrite the ledger)")
     p.add_argument("--home", help="signer home (dev mode)")
-    p.add_argument("--v2", action="store_true", help="with --dev: wire the Claude Code hook of the v2 signer (it starts "
-                                                     "on first use)")
+    p.add_argument("--v2", action="store_true", help="the v2 signer: with --dev, wire its Claude Code hook (the signer "
+                                                     "starts on first use); as root, install it in system mode")
+    p.add_argument("--approver", help="with --v2, system mode: the user who answers the agent's approvals (default: "
+                                      "$SUDO_USER, the admin running init)")
+    p.add_argument("--policy", help="with --v2, system mode: the signer's policy file (root-owned; default: its own pack)")
     p.add_argument("--project", action="store_true", help="hooks in ./.claude/settings.json instead of ~/.claude")
     p.add_argument("--no-hooks", action="store_true")
     p.add_argument("--witness", action="append", default=[], help="file:/path.jsonl or git:/clone[@remote] (repeatable)")
@@ -98,6 +101,8 @@ def main(argv=None):
     sub.add_parser("doctor", help="system mode: check the signer and policy run from files the agent cannot modify")
     p = sub.add_parser("uninstall", help="remove hooks (the ledger is kept)")
     p.add_argument("--project", action="store_true")
+    p.add_argument("--v2", action="store_true", help="as root: remove v2 system mode (service, configs, hooks)")
+    p.add_argument("--purge", action="store_true", help="with --v2: also delete the signer's keys, log and user")
     p.add_argument("--agent", choices=("claude", "codex", "cursor", "gemini"), default="claude")
 
     p = sub.add_parser("ingest", help="remote ingestion gateway: `ingest token NAME` / `ingest serve`", add_help=False)
@@ -263,14 +268,30 @@ def _run(a):
                       "assurance": a.key_assurance}
             if a.key_attestation:
                 signer["attestation"] = os.path.abspath(a.key_attestation)
-        if a.v2 and not (a.dev and a.agent == "claude"):
-            print("tracekit: --v2 wires the Claude Code hook in dev mode only (--dev); system mode comes later",
-                  file=sys.stderr)
+        if a.v2 and a.agent != "claude":
+            print("tracekit: --v2 wires the Claude Code hook only", file=sys.stderr)
             return 2
-        if a.v2 and (a.home or a.witness or a.proxy or a.fail_closed or signer):
-            print("tracekit: --home, --witness, --proxy, --fail-closed and --signer-cmd are v1 signer options; "
-                  "they don't apply with --v2", file=sys.stderr)
+        if a.v2 and (a.home or a.witness or a.proxy or a.fail_closed or signer or a.harness or a.managed):
+            print("tracekit: --home, --witness, --proxy, --fail-closed, --signer-cmd, --harness and --managed are v1 "
+                  "signer options; they don't apply with --v2", file=sys.stderr)
             return 2
+        if (a.approver or a.policy) and (a.dev or not a.v2):
+            print("tracekit: --approver and --policy are for --v2 system mode", file=sys.stderr)
+            return 2
+        if a.v2 and not a.dev:
+            if not a.user:
+                print("tracekit: --v2 system mode needs --user AGENT, the user whose agent is traced", file=sys.stderr)
+                return 2
+            try:
+                sock, settings = install.init_system_v2(a.user, a.approver, a.policy, os.getcwd() if a.project else None,
+                                                        a.no_service, not a.no_hooks, a.experimental_macos,
+                                                        a.allow_privileged)
+            except install.SettingsError as e:
+                print(f"tracekit: {e}", file=sys.stderr)
+                return 1
+            print(f"v2 signer installed as a separate user; socket {sock}; config {install.V2_CONFIG}; "
+                  f"hooks: {settings or 'not installed'}")
+            return 0
         if a.dev and a.agent != "claude":
             from . import agent_hooks
             home = a.home or os.path.expanduser("~/.tracekit-signer")
@@ -346,6 +367,18 @@ def _run(a):
     if a.cmd == "doctor":
         from . import install
         return install.doctor()
+    if a.cmd == "uninstall" and (a.v2 or a.purge):
+        from . import install
+        if not a.v2 or a.project or a.agent != "claude":
+            print("tracekit: --purge goes with --v2, which takes neither --project nor --agent", file=sys.stderr)
+            return 2
+        try:
+            kept = install.uninstall_system_v2(a.purge)
+        except install.SettingsError as e:
+            print(f"tracekit: {e}", file=sys.stderr)
+            return 1
+        print("v2 system mode removed" + (f"; kept {' and user '.join(kept)} (--purge deletes them)" if kept else ""))
+        return 0
     if a.cmd == "uninstall" and a.agent != "claude":
         from . import agent_hooks
         print("hooks removed from", agent_hooks.install(a.agent, os.getcwd() if a.project else None, uninstall=True))
