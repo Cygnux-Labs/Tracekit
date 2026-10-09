@@ -15,6 +15,8 @@ import uuid
 
 from langchain.agents.middleware import AgentMiddleware
 from langchain_core.messages import ToolMessage
+from langgraph.constants import CONFIG_KEY_CHECKPOINTER
+from langgraph.errors import GraphBubbleUp
 from langgraph.types import interrupt
 
 from tracekit.format.canon import event_hash
@@ -30,6 +32,7 @@ class TracekitMiddleware(AgentMiddleware):
 
     def _event(self, call, **kw):
         return {"request_id": uuid.uuid4().hex, **self.run, "stream": self.stream, "client_seq": next(self._seq),
+                # lean: attempt is always 0; count per tool_call_id once retry middleware is supported
                 "tool_call_id": call["id"], "attempt": 0, **kw}
 
     def _decide(self, call, **kw):
@@ -41,7 +44,7 @@ class TracekitMiddleware(AgentMiddleware):
         call = request.tool_call
         d = self._decide(call)
         if d["decision"] == "ask":
-            if request.runtime.config["configurable"].get("__pregel_checkpointer") is None:
+            if request.runtime.config["configurable"].get(CONFIG_KEY_CHECKPOINTER) is None:
                 return self._refusal(call, "approval required, and the agent has no checkpointer to wait for it")
             # a fixed request_id, so the re-run on resume (even in another process) gets the same approval back
             key = hashlib.sha256(f"{self.run['run_id']}\0{call['id']}".encode()).hexdigest()[:32]
@@ -79,6 +82,8 @@ class TracekitMiddleware(AgentMiddleware):
             return blocked
         try:
             out = handler(request)
+        except GraphBubbleUp:   # interrupt() or a handoff inside the tool: control flow, not an outcome
+            raise
         except Exception as e:
             self._complete(request.tool_call, exc=e)
             raise
@@ -91,6 +96,8 @@ class TracekitMiddleware(AgentMiddleware):
             return blocked
         try:
             out = await handler(request)
+        except GraphBubbleUp:   # interrupt() or a handoff inside the tool: control flow, not an outcome
+            raise
         except Exception as e:
             self._complete(request.tool_call, exc=e)
             raise
