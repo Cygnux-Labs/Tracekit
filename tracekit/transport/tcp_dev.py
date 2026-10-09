@@ -72,14 +72,19 @@ def connect(endpoint_path, timeout=READ_TIMEOUT_S):
     """(socket, rfile) to the dev signer in `endpoint_path`, after it has proved it holds the token."""
     with open(endpoint_path) as f:
         ep = json.load(f)
-    sock = socket.create_connection((HOST, ep["port"]), timeout)
+    return dial(HOST, ep["port"], ep["token"], timeout)
+
+
+def dial(host, port, token, timeout=READ_TIMEOUT_S):
+    """(socket, rfile) to the signer at host:port, after it has proved it holds `token`; then we prove it too."""
+    sock = socket.create_connection((host, port), timeout)
     try:
         rfile = sock.makefile("rb")
         nonce_c = secrets.token_hex(16)
         write_frame(sock, {"method": "hello", "nonce": nonce_c})
         reply = read_frame(rfile) or {}
-        check_proof(ep["token"], reply.get("proof"), "signer", nonce_c)
-        write_frame(sock, {"proof": proof(ep["token"], "client", _nonce(reply))})
+        check_proof(token, reply.get("proof"), "signer", nonce_c)
+        write_frame(sock, {"proof": proof(token, "client", _nonce(reply))})
     except BaseException:
         sock.close()
         raise

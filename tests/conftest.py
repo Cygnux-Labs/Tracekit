@@ -16,6 +16,7 @@ MARKERS = {
     "k8s": "needs a Kubernetes cluster",
     "nightly": "too slow for every push; runs on the nightly schedule",
     "perf": "performance measurement",
+    "quickstart": "builds the wheel into a fresh venv and runs docs/quickstart-v2.md (TRACEKIT_QUICKSTART=1)",
 }
 
 # settings a developer's shell may carry that would change what the signer, hook or client does under test

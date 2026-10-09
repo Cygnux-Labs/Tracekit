@@ -283,7 +283,7 @@ class TestCli(unittest.TestCase):
         self.assertIn("approval_not_pending", again.stderr)
 
 
-@unittest.skipUnless(os.name == "posix", "the v2 client speaks Unix sockets only")
+@unittest.skipUnless(os.name == "posix", "POSIX paths, signals and shells; DevSignerOverTcp (test_signer_dev.py) runs everywhere")
 class TestCliDevSigner(unittest.TestCase):
     def test_approve_round_trip_with_the_dev_signer(self):
         d = tempfile.mkdtemp(dir="/tmp")

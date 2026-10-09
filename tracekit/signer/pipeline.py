@@ -12,7 +12,6 @@ after RECOVER_S reopens the storage, rebuilds the run state from it and writes a
 import base64
 import copy
 import hashlib
-import hmac
 import json
 import queue
 import secrets
@@ -22,6 +21,7 @@ from collections import OrderedDict
 from concurrent.futures import Future
 
 from tracekit.core import now_ts
+from tracekit.format import registry
 from tracekit.format.records import RecordError, verify_record
 from tracekit.schema import V2
 from tracekit.signer.rpc_schema import RPCError
@@ -32,7 +32,6 @@ TAIL = 1024          # records whose signatures are checked on every open; `trac
 RECOVER_S = 1.0
 DONE_MAX = 100_000   # request_ids remembered for retries
 SIGNER_RUN = ("tracekit", "tracekit/signer")   # signer-level records; "/" keeps it out of reach of client run_ids
-LEAF_TYPES = {"run.registered": 1, "run.final": 2}   # records with a registry leaf, and the leaf's type byte
 _MISSING = object()
 
 
@@ -88,8 +87,12 @@ class Tx:
         return run
 
     def emit(self, run, typ, data, source=None, **top):
-        """Sign one event into `run` (source: the run's unless given); returns its run_seq."""
+        """Sign one event into `run` (source: the run's unless given); returns its run_seq. Nothing follows log.closed."""
         log = self.log
+        if log.head["closed"]:
+            raise RPCError("unavailable", "the log is closed (log.closed): it takes no more records")
+        if typ == "log.closed":
+            self.set(log.head, "closed", True)
         e = {"schema_version": V2, "id": secrets.token_hex(16), "seq": log.head["seq"], "prev_hash": log.head["prev"],
              "ts": now_ts(), "run_id": run["run_id"], "agent_id": "main", "parent_id": None, "source": source or run["source"],
              "type": typ, "data": data, "tenant": run["tenant"], "log_id": log.log_id, "run_seq": run["run_seq"],
@@ -154,7 +157,7 @@ class RecordLog:
         s = self.storage
         tail = s.tail_state()
         size = tail["tree_size"]
-        runs, prev, leaves, approvals, index = {}, ZERO_HASH, {}, {}, {}
+        runs, prev, leaves, approvals, index, tenants, closed = {}, ZERO_HASH, {}, {}, {}, set(), False
         for r in s.iter_range(0, size):
             e = r["event"]
             run = runs.get((e["tenant"], e["run_id"]))
@@ -171,8 +174,9 @@ class RecordLog:
             run["run_seq"], run["head"], prev = e["run_seq"] + 1, r["hash"], r["hash"]
             if "client_seq" in e:
                 run["streams"][e["stream"]] = max(e["client_seq"], run["streams"].get(e["stream"], -1))
-            if e["type"] in LEAF_TYPES:
-                leaves.setdefault(e["tenant"], []).append(r)
+            for tenant, leaf in self.leaves(r, tenants):
+                leaves.setdefault(tenant, []).append(leaf)
+            closed = closed or e["type"] == "log.closed"
             if e["type"] == "run.registered":
                 run["owner"], run["source"] = "{scheme}:{subject}".format(**e["data"]["identity"]), e["source"]
             elif e["type"] == "run.closing":
@@ -198,19 +202,29 @@ class RecordLog:
             elif e["type"] in APPROVAL_ENDS:
                 approvals[e["data"]["approval_id"]]["state"] = APPROVAL_ENDS[e["type"]]
         self.log_id = self.log_id or secrets.token_hex(16)
-        self.runs, self.head = runs, {"seq": size, "prev": prev}
+        self.runs, self.head, self.tenants = runs, {"seq": size, "prev": prev, "closed": closed}, tenants
         self.approvals, self.approval_index = approvals, index   # approval_id -> state; (tenant, run, call, attempt) -> id
-        for tenant, rs in leaves.items():
-            for r in rs[tail["registry"].get(tenant, (0,))[0]:]:
-                s.registry_append(tenant, self.leaf(r))
+        for tenant, ls in leaves.items():
+            for leaf in ls[tail["registry"].get(tenant, (0,))[0]:]:
+                s.registry_append(tenant, leaf)
 
-    def leaf(self, r):
-        """The registry leaf of a lifecycle record (04-design §1.5):
-        type u8 ‖ H(tenant_salt ‖ run_id) ‖ log_id 16B ‖ seq u64 ‖ record_hash."""
-        e = r["event"]
-        tenant_salt = hmac.new(self.salt, e["tenant"].encode("utf-8"), hashlib.sha256).digest()
-        return (bytes([LEAF_TYPES[e["type"]]]) + hashlib.sha256(tenant_salt + e["run_id"].encode("utf-8")).digest()
-                + bytes.fromhex(e["log_id"]) + e["seq"].to_bytes(8, "big") + bytes.fromhex(r["hash"][7:]))
+    def tenant_salt(self, tenant):
+        return registry.tenant_salt(self.salt, tenant)
+
+    def leaf(self, r, tenant=None):
+        """The registry leaf of a lifecycle record (format.registry) in `tenant`'s registry (default: its own)."""
+        return registry.leaf(r, self.tenant_salt(tenant or r["event"]["tenant"]))
+
+    def leaves(self, r, tenants):
+        """[(tenant, leaf)] of record `r`: none, its tenant's (added to `tenants`, the tenants with a registry), or
+        for a signer-level record one in every registry."""
+        typ, tenant = r["event"]["type"], r["event"]["tenant"]
+        if typ in registry.SIGNER_LEAVES:
+            return [(t, self.leaf(r, t)) for t in sorted(tenants)]
+        if typ not in registry.LEAF_TYPES:
+            return []
+        tenants.add(tenant)
+        return [(tenant, self.leaf(r))]
 
     def _startup_records(self, tx):
         if self.head["seq"] == 0:
@@ -322,8 +336,8 @@ class RecordLog:
             self.metrics.written(tx.records)
             try:
                 for r in tx.records:
-                    if r["event"]["type"] in LEAF_TYPES:
-                        self.storage.registry_append(r["event"]["tenant"], self.leaf(r))
+                    for tenant, leaf in self.leaves(r, self.tenants):
+                        self.storage.registry_append(tenant, leaf)
             except Exception as e:   # the records are written; the recovery's replay appends the missing leaves
                 self.down, self._last_try = (now_ts(), str(e) or type(e).__name__), time.monotonic()
         while len(self.done) > DONE_MAX:

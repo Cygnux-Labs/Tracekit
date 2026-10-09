@@ -4,6 +4,7 @@
     records.jsonl        one v2 record per line, seq order
     registry.jsonl       {"tenant", "leaf": hex} per line, every tenant's registry log
     checkpoint.note      the latest signed checkpoint note of the record tree, replaced whole
+    registry-notes.jsonl {"tree", "size", "note"} per line, every signed note of every registry tree
     tiles/<tree>/<level>/<index>.<width>
 
 Files are 0640 and directories 0750; creating or renaming a file syncs it and its directory. The run index and the
@@ -156,7 +157,8 @@ def _parse_note(data):
 
 
 class _Records:
-    """The run index and record tree over records.jsonl, shared by the writer and the reader."""
+    """The run index and record tree over records.jsonl, and the registry trees and notes, shared by the writer and
+    the reader."""
 
     def _index_log(self):
         for n, line in enumerate(self.log.lines, 1):
@@ -165,6 +167,38 @@ class _Records:
             except (ValueError, KeyError, TypeError) as e:
                 raise StorageCorrupt(f"records.jsonl line {n}: {e}; run fsck") from None
         del self.log.lines
+
+    def _index_registry(self):
+        self.registry, self.notes = {}, {}   # tenant -> ([line numbers], Tree); registry tree -> [(size, note)]
+        for name, log in (("registry.jsonl", self.reg_log), ("registry-notes.jsonl", self.note_log)):
+            for n, line in enumerate(log.lines):
+                try:
+                    r = json.loads(line)
+                    if log is self.reg_log:
+                        self._index_leaf(r["tenant"], bytes.fromhex(r["leaf"]), n)
+                    else:
+                        self.notes.setdefault(r["tree"], []).append((r["size"], r["note"]))
+                except (ValueError, KeyError, TypeError) as e:
+                    raise StorageCorrupt(f"{name} line {n + 1}: {e}; run fsck") from None
+            del log.lines
+
+    def _index_leaf(self, tenant, leaf, n):
+        if tenant not in self.registry:
+            self.registry[tenant] = ([], Tree(self._tiles(registry_tree(tenant))))
+        lines, tree = self.registry[tenant]
+        lines.append(n)
+        tree.append(leaf_hash(leaf))
+
+    def registry_iter(self, tenant):
+        lines, _ = self.registry.get(tenant, ([], None))
+        for line in self.reg_log.read(list(lines)):
+            yield bytes.fromhex(json.loads(line)["leaf"])
+
+    def registry_merkle(self, tenant):
+        return self.registry.get(tenant, (None, None))[1]
+
+    def checkpoint_at(self, tree, size):
+        return next((note for s, note in self.notes.get(tree, ()) if s == size), None)
 
     def _index(self, record):
         e = record["event"]
@@ -206,34 +240,28 @@ class FileStorage(_Records, Storage):
             raise
         self.torn = []
         self.runs = {}  # (tenant, run_id) -> {"seqs": [...], "run_seq", "head"}
-        self.registry = {}  # tenant -> ([line numbers], Tree)
         # lean: run and registry indexes live in memory, O(records); snapshot them when logs reach millions of records
         self.tree = Tree(self.tile_store(RECORDS))
         self.prev = ZERO_HASH
-        self.log = self.reg_log = None
+        self.log = self.reg_log = self.note_log = None
         try:
             self.log = _Log(os.path.join(root, "records.jsonl"), self.torn, on_sync)
             self.reg_log = _Log(os.path.join(root, "registry.jsonl"), self.torn, on_sync)
+            self.note_log = _Log(os.path.join(root, "registry-notes.jsonl"), self.torn, on_sync)
             with self._disk():
                 self._index_log()
-                for n, line in enumerate(self.reg_log.lines):
-                    try:
-                        r = json.loads(line)
-                        self._index_leaf(r["tenant"], bytes.fromhex(r["leaf"]), n)
-                    except (ValueError, KeyError, TypeError) as e:
-                        raise StorageCorrupt(f"registry.jsonl line {n + 1}: {e}; run fsck") from None
+                self._index_registry()
                 try:
                     with open(os.path.join(root, NOTE), "rb") as f:
                         self._note = _parse_note(f.read())
                 except FileNotFoundError:
                     self._note = None
         except BaseException:
-            for log in (self.log, self.reg_log):
+            for log in (self.log, self.reg_log, self.note_log):
                 if log:
                     os.close(log.fd)
             self._lock.close()
             raise
-        del self.reg_log.lines
         self._stop = threading.Event()
         self._syncer = None
         if not self.full:
@@ -267,12 +295,8 @@ class FileStorage(_Records, Storage):
         since = [t for log in (self.log, self.reg_log) for t in (log.syncing_since, log.dirty_since) if t is not None]
         return time.monotonic() - min(since) if since else 0.0
 
-    def _index_leaf(self, tenant, leaf, n):
-        if tenant not in self.registry:
-            self.registry[tenant] = ([], Tree(self.tile_store(registry_tree(tenant))))
-        lines, tree = self.registry[tenant]
-        lines.append(n)
-        tree.append(leaf_hash(leaf))
+    def _tiles(self, tree):
+        return self.tile_store(tree)
 
     def append_batch(self, records):
         with self._disk():
@@ -296,21 +320,23 @@ class FileStorage(_Records, Storage):
             self.reg_log.append([line], self.full)
             self._index_leaf(tenant, leaf, len(self.reg_log.offsets) - 2)
 
-    def registry_iter(self, tenant):
-        lines, _ = self.registry.get(tenant, ([], None))
-        for line in self.reg_log.read(list(lines)):
-            yield bytes.fromhex(json.loads(line)["leaf"])
-
-    def checkpoint_put(self, size, note):
-        if self._note and size < self._note[0]:
-            raise ValueError(f"a checkpoint of size {size} is older than the stored one of size {self._note[0]}")
+    def checkpoint_put(self, size, note, tree=RECORDS):
+        latest = self.checkpoint_latest(tree)
+        if latest and size < latest[0]:
+            raise ValueError(f"a checkpoint of size {size} is older than the stored one of size {latest[0]}")
         with self._disk():
-            _sync(self.log.fd, True)   # the records a note covers are durable before the note
-            _write_new(os.path.join(self.root, NOTE), note.encode("utf-8"))
-        self._note = (size, note)
+            if tree == RECORDS:
+                _sync(self.log.fd, True)   # the records a note covers are durable before the note
+                _write_new(os.path.join(self.root, NOTE), note.encode("utf-8"))
+                self._note = (size, note)
+            elif not latest or size > latest[0]:
+                _sync(self.reg_log.fd, True)
+                line = json.dumps({"tree": tree, "size": size, "note": note}, ensure_ascii=False).encode("utf-8")
+                self.note_log.append([line + b"\n"], True)
+                self.notes.setdefault(tree, []).append((size, note))
 
-    def checkpoint_latest(self):
-        return self._note
+    def checkpoint_latest(self, tree=RECORDS):
+        return self._note if tree == RECORDS else (self.notes.get(tree) or [None])[-1]
 
     def _tile_path(self, tree, level, index, width):
         if not re.fullmatch(r"[a-z0-9-]{1,64}", tree):
@@ -341,7 +367,7 @@ class FileStorage(_Records, Storage):
         self._stop.set()
         if self._syncer:
             self._syncer.join()
-        for log in (self.log, self.reg_log):
+        for log in (self.log, self.reg_log, self.note_log):
             with contextlib.suppress(OSError):
                 _sync(log.fd, True)
             os.close(log.fd)
@@ -355,18 +381,32 @@ class FileReader(_Records):
     files are symlinks, writable by group or others, or owned by another user than the directory.
 
     Offers what `bundle_v2.export` reads: iter_run, iter_range, get_run, `runs`, `tree` (size, root_at, inclusion
-    proofs) and checkpoint_latest()."""
+    proofs), checkpoint_latest(), and the registry: registry_iter, registry_merkle and checkpoint_at. Registry leaves
+    and notes are those written when it was opened; open it after reading the record note an export uses."""
 
     def __init__(self, root):
         self.root, self.runs, self.prev = root, {}, ZERO_HASH
         st = os.lstat(root)
         self._owner = st.st_uid
         self._check(root, st, stat.S_ISDIR)
-        # lean: rebuilds the tree in memory from every leaf, O(records) per open; read the tiles once views stay open
+        # lean: rebuilds the trees in memory from every leaf, O(records) per open; read the tiles once views stay open
         self.tree = Tree(MemoryTileStore())
-        path = os.path.join(root, "records.jsonl")
-        self.log = _Lines(path, self._read(path))
+        self.log, self.reg_log, self.note_log = (self._lines(n) for n in (
+            "records.jsonl", "registry.jsonl", "registry-notes.jsonl"))
         self._index_log()
+        self._index_registry()
+
+    def _lines(self, name):
+        path = os.path.join(self.root, name)
+        try:
+            return _Lines(path, self._read(path))
+        except FileNotFoundError:
+            if name == "records.jsonl":
+                raise
+            return _Lines(path, b"")   # not created yet: the writer creates it on open
+
+    def _tiles(self, tree):
+        return MemoryTileStore()
 
     def _check(self, path, st, kind):
         if not kind(st.st_mode) or os.name == "posix" and (st.st_mode & 0o022 or st.st_uid != self._owner):
@@ -378,9 +418,11 @@ class FileReader(_Records):
             self._check(path, os.fstat(fd), stat.S_ISREG)
             return f.read()
 
-    def checkpoint_latest(self):
-        """Read again on every call: the writer replaces the note whole, so each call sees the newest one. It may be
-        of a larger tree than the records this reader holds; open a new reader to cover it."""
+    def checkpoint_latest(self, tree=RECORDS):
+        """The record tree's note is read again on every call: the writer replaces it whole, so each call sees the
+        newest one. It may be of a larger tree than the records this reader holds; open a new reader to cover it."""
+        if tree != RECORDS:
+            return (self.notes.get(tree) or [None])[-1]
         try:
             return _parse_note(self._read(os.path.join(self.root, NOTE)))
         except FileNotFoundError:

@@ -210,6 +210,7 @@ class Completeness(unittest.TestCase):
         start = next(r["event"] for _, r, _ in read_records(self.s.ledger.path) if r and r["event"]["type"] == "run.start")
         return start["data"]["signer_isolation"], self.verdict(out)[3]
 
+    @unittest.skipUnless(hasattr(os, "getuid"), "the v1 signer stamps isolation from the peer's uid; Windows has none")
     def test_signer_stamps_isolation_over_the_client_claim(self):
         recorded, lines = self.assurance("separate-user", os.getuid())  # a dev signer: the client runs as its user
         self.assertEqual(recorded, "same-user")
@@ -221,6 +222,7 @@ class Completeness(unittest.TestCase):
         self.assertEqual(recorded, "separate-user")
         self.assertIn("Assurance: unknown (client-reported signer_isolation=separate-user).", lines)
 
+    @unittest.skipUnless(hasattr(os, "getuid"), "the v1 signer stamps isolation from the peer's uid; Windows has none")
     def test_attested_separate_user(self):
         recorded, lines = self.assurance("same-user", os.getuid() + 1)
         self.assertEqual(recorded, "separate-user")
