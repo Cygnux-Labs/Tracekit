@@ -61,6 +61,17 @@ class TestFileStorage(FileCase):
         problems = fsck(self.root)
         self.assertTrue(problems[0].startswith("records.jsonl line 2: unreadable"), problems)
 
+    def test_unreadable_witness_queue_is_corrupt(self):
+        s = self.open()
+        s.witness_queue_put({})
+        s.close()
+        with open(os.path.join(self.root, "witness-queue.json"), "wb") as f:
+            f.write(b"{")
+        s = self.open()
+        self.addCleanup(s.close)
+        with self.assertRaisesRegex(StorageCorrupt, "witness-queue.json"):
+            s.witness_queue()
+
     def test_tile_outliving_lost_log_lines_is_rewritten(self):
         s = self.open()
         s.append_batch(Chain().batch(300))
