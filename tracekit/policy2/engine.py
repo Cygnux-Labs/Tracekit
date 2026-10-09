@@ -56,15 +56,17 @@ class Engine:
         if cls == "unknown" and self.policy.get("unknown_tools") in SECTIONS:
             hits[self.policy["unknown_tools"]].append("TK-UNKNOWN-TOOL")
         nondeterministic = False
-        cmds = []
+        parsed = [], []
         if cls == "shell":
-            command = fields.get("command") if isinstance(fields.get("command"), str) else ""
-            if len(command.encode("utf-8", "backslashreplace")) > MAX_SUBJECT:
+            command = fields.get("command", "")
+            if len(_text(command if isinstance(command, str) else canonical(command)).encode()) > MAX_SUBJECT:
                 hits["deny"].append("TK-OVERSIZE")
             else:
                 try:
-                    cmds = shell.parse(command)
+                    parsed = _shell(args)
                 except shell.ParseError:
+                    hits["ask"].append("TK-SHELL-PARSE")
+                if any(c["opaque"] for c in parsed[0]):
                     hits["ask"].append("TK-SHELL-PARSE")
         for sec, rule, tool_re, pat, unless in self.rules:
             if rule.get("class", cls) != cls:
@@ -72,7 +74,7 @@ class Engine:
             try:
                 if tool_re is not None and not self._match(tool_re, _text(tool), True):
                     continue
-                for subject in self._subjects(cls, rule.get("field"), args, fields, cmds):
+                for subject in self._subjects(cls, rule.get("field"), args, fields, parsed):
                     subject = _text(subject)
                     if len(subject.encode("utf-8")) > MAX_SUBJECT:
                         hits["deny"].append("TK-OVERSIZE")
@@ -93,17 +95,39 @@ class Engine:
         return out
 
     @staticmethod
-    def _subjects(cls, field, args, fields, cmds):
+    def _subjects(cls, field, args, fields, parsed):
         """A class field matches the signer's extraction; any other field names a raw argument; no field scans the
-        whole call (Write/Edit content, WebFetch url and prompt, MCP args)."""
+        whole call (Write/Edit content, WebFetch url and prompt, MCP args). A shell `line` is the raw command and
+        each line the parser normalised; an fs `path` with `..` also matches its lexically normalised form."""
         if cls == "shell" and field in (None, "argv"):
-            return [" ".join(c["argv"]) for c in cmds]
+            return [" ".join(c["argv"]) for c in parsed[0]]
+        if cls == "shell" and field == "line":
+            return Engine._subjects(cls, "command", args, fields, parsed) + parsed[1]
         if field is None:
             return [canonical(args)]
         value = fields.get(field) if field in CLASSES.get(cls, ()) else args.get(field)
         if value is None:
             return []
+        if cls == "fs" and field == "path" and isinstance(value, str):
+            return classes.fs_forms(classes.first(args, *classes.PATH_KEYS))
         return [value if isinstance(value, str) else canonical(value)]
+
+
+def _shell(args):
+    """(commands, normalised lines) of a shell call. `command` or `cmd` is a command line or an argv list; `commands`
+    (OpenAI's shell tool) a list of command lines. Anything else, or more than one of them, raises ParseError."""
+    present = [k for k in classes.SHELL_KEYS if args.get(k) is not None]
+    if len(present) > 1:
+        raise shell.ParseError(f"more than one command field: {present}")
+    value = args[present[0]] if present else ""
+    strings = isinstance(value, list) and value and all(isinstance(a, str) for a in value)
+    if isinstance(value, str):
+        return shell.analyse(value)
+    if strings and present == ["commands"]:
+        return shell.analyse("\n".join(value))
+    if strings:
+        return shell.analyse_argv(value)
+    raise shell.ParseError("the command is neither a string nor a list of strings")
 
 
 def _text(s):

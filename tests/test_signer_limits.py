@@ -21,8 +21,7 @@ class Clock:
 
 class RunToken(unittest.TestCase):
     def setUp(self):
-        self.clock = Clock()
-        self.tokens = RunTokens(b"k" * 32, ttl_s=60, clock=self.clock)
+        self.tokens = RunTokens(b"k" * 32)
         self.tok = self.tokens.issue("acme", "run-1", ALICE)
 
     def refused(self, token, tenant="acme", run_id="run-1", identity=ALICE):
@@ -41,16 +40,15 @@ class RunToken(unittest.TestCase):
         self.refused(self.tok, identity=BOB)
         self.refused(self.tok, identity=CallerIdentity("token", "1000", True))   # same subject, other scheme
 
-    def test_expired(self):
-        self.clock.t += 60
-        self.refused(self.tok)
+    def test_no_expiry(self):   # good for as long as its run is open, however long that is
+        self.assertEqual(set(self.tokens.claims(self.tok)), {"tenant", "run_id", "sub"})
 
     def test_tampered_or_malformed(self):
         payload, mac = self.tok.split(".")
         forged = _unb64(payload).replace(b"run-1", b"run-2")
         self.refused(_b64(forged) + "." + mac, run_id="run-2")
         self.refused(payload + "." + _b64(b"\0" * 32))
-        self.refused(RunTokens(b"x" * 32, clock=self.clock).issue("acme", "run-1", ALICE))
+        self.refused(RunTokens(b"x" * 32).issue("acme", "run-1", ALICE))
         for bad in ("", "abc", "a.b.c", "é.é", None):
             self.refused(bad)
 
