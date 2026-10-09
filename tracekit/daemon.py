@@ -1055,9 +1055,9 @@ def serve(home, socket_path=None):
         if UnixServer is None:
             raise RuntimeError("Unix sockets are unavailable; initialize Tracekit in dev mode to use TCP")
         os.makedirs(os.path.dirname(sock) or ".", exist_ok=True)
-        if os.path.exists(sock):
-            os.unlink(sock)
-    signer = Signer(home, cfg)
+    signer = Signer(home, cfg)  # takes the ledger lock first: a second signer on this home stops here
+    if not sock.startswith("tcp://") and os.path.exists(sock):
+        os.unlink(sock)  # stale: the signer that owned it no longer holds the ledger lock
     try:
         if sock.startswith("tcp://"):
             srv = ThreadingTCPServer((endpoint.hostname, endpoint.port), _Handler)
