@@ -128,6 +128,42 @@ class SignerPrivacy(Harness, unittest.TestCase):
         self.assertEqual([p for p, d in args.items() if decision["data"]["args_commitment"] ==
                           "hmac-sha256:" + hmac.new(salt, d.encode(), "sha256").hexdigest()], ["7310"])
 
+    def test_every_record_has_its_own_salt(self):
+        self.register()
+        self.decide("wire", {"to": "a"})
+        aid = self.call("approval_request", self.run_req(tool_call_id="tc-1"))["approval_id"]
+        self.approve(aid)
+        self.call("approval_consume", self.run_req(tool_call_id="tc-1", tool="wire", args_source="parsed", args={"to": "b"}))
+        for _ in range(2):
+            self.call("state_write", self.ev(key="k", value_digest="sha256:" + "0" * 64))
+        self.signer.close()
+        es = self.records()
+        labels = [svc.salt_label(e) for e in es if svc.salt_label(e)]
+        self.assertEqual(len(labels), len(set(labels)), labels)
+        by = {e["type"]: e for e in es}
+
+        def opens(e, commitment, args):
+            salt = bytes.fromhex(svc.reveal(self.dir, e["seq"])["salt"])
+            digest = event_hash({"tool": "wire", "args": args})
+            return commitment == "hmac-sha256:" + hmac.new(salt, digest.encode(), "sha256").hexdigest()
+        request, mismatch = by["approval.request"], by["approval.binding_mismatch"]
+        self.assertTrue(opens(request, request["data"]["binding"]["args_commitment"], {"to": "a"}))
+        self.assertFalse(opens(request, by["policy.decision"]["data"]["args_commitment"], {"to": "a"}))
+        self.assertTrue(opens(mismatch, mismatch["data"]["args_commitment"], {"to": "b"}))
+        self.assertFalse(opens(mismatch, request["data"]["binding"]["args_commitment"], {"to": "a"}))
+
+    def test_a_call_run_against_its_decision_is_a_signed_gap(self):
+        self.register()
+        self.complete(*self.decide("pay", {"key": SECRET}, "tc-1"))   # deny
+        self.complete(*self.decide("wire", {"to": "a"}, "tc-2"))      # ask, never approved
+        self.complete(*self.decide("read_file", {}, "tc-3"))
+        self.signer.close()
+        gaps = [e for e in self.records() if e["type"] == "capture.gap"]
+        self.assertEqual([(g["data"]["kind"], g["data"]["tool_use_id"]) for g in gaps],
+                         [("executed_against_policy", "tc-1"), ("executed_against_policy", "tc-2")])
+        for g in gaps:
+            self.assertEqual(schema.validate(g), [], g)
+
     def test_client_digests_are_published_as_commitments(self):
         self.register()
         digest = "sha256:" + "0" * 64

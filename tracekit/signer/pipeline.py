@@ -57,14 +57,17 @@ APPROVAL_ENDS = {"approval.consumed": "consumed", "approval.expired": "expired",
 
 
 def salt_label(e):
-    """What the salt of event `e`'s commitments is derived from; None when it has none."""
+    """What the salt of event `e`'s commitments is derived from: an id the signer chose for that one record (the
+    decision, the approval or the record's own id); None when it has none."""
     d = e["data"]
-    if e["type"] in ("policy.decision", "approval.request", "approval.binding_mismatch"):
+    if e["type"] == "policy.decision":
         return d.get("decision_id")
+    if e["type"] == "approval.request":
+        return "approval:" + d["approval_id"]
     if e["type"] == "tool.result":
         return "result:" + d["decision_id"]
-    if e["type"] in ("model.exchange", "state.write"):
-        return f"{e['type']}:{e['tenant']}:{e['run_id']}:{e['request_id']}"
+    if e["type"] in ("model.exchange", "state.write", "approval.binding_mismatch"):
+        return f"{e['type']}:{e['id']}"
     return None
 
 
