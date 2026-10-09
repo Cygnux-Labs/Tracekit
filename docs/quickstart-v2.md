@@ -9,7 +9,7 @@ your own machine (macOS, Linux or Windows) as a **dev** signer, which runs as yo
 
 ```sh
 python3 -m venv .venv && . .venv/bin/activate      # Windows: .venv\Scripts\activate
-pip install tracekit-ai                             # preview: pip install . from a checkout
+pip install 'tracekit-ai[signer]'                  # preview: pip install '.[signer]' from a checkout
 ```
 
 You don't start anything yourself. The first client that needs a signer starts one in the background and later

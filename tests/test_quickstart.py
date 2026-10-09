@@ -67,7 +67,7 @@ class Quickstart(unittest.TestCase):
         sh(sys.executable, "-m", "pip", "wheel", "-q", "--no-deps", "-w", dist, ROOT, env=dict(os.environ))
         sh(sys.executable, "-m", "venv", venv, env=cls.env)
         [wheel] = os.listdir(dist)
-        sh(cls.py, "-m", "pip", "install", "-q", os.path.join(dist, wheel), env=cls.env, cwd=cls.dir)
+        sh(cls.py, "-m", "pip", "install", "-q", os.path.join(dist, wheel) + "[signer]", env=cls.env, cwd=cls.dir)
         cls.addClassCleanup(sh, cls.tracekit, "down", env=cls.env, cwd=cls.dir)
 
     def sh(self, *argv):

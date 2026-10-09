@@ -65,7 +65,10 @@ def connect(path, timeout=CONNECT_TIMEOUT_S, token=None):
     try:
         if path.startswith("tcp://"):
             host, _, port = path[len("tcp://"):].rpartition(":")
-            sock, rfile = tcp_dev.dial(host, int(port), token or os.environ.get("TRACEKIT_SIGNER_TOKEN", ""), timeout)
+            token = token or os.environ.get("TRACEKIT_SIGNER_TOKEN")
+            if not token:
+                raise SignerUnavailable(f"{path}: tcp:// signers need TRACEKIT_SIGNER_TOKEN")
+            sock, rfile = tcp_dev.dial(host, int(port), token, timeout)
         elif hasattr(socket, "AF_UNIX"):
             sock = socket.socket(socket.AF_UNIX)
             sock.settimeout(timeout)

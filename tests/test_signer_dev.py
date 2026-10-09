@@ -195,6 +195,8 @@ class DevSignerOverTcp(unittest.TestCase):
         with open(ep) as f:
             published = json.load(f)
         os.environ["TRACEKIT_SIGNER"] = f"tcp://127.0.0.1:{published['port']}"
+        with self.assertRaisesRegex(SignerUnavailable, "need TRACEKIT_SIGNER_TOKEN"):
+            Client().status()
         os.environ["TRACEKIT_SIGNER_TOKEN"] = "0" * 64
         with self.assertRaisesRegex(SignerUnavailable, "proof mismatch"):
             Client().status()
