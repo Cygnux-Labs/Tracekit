@@ -65,15 +65,18 @@ def approval(tenant, run_id, data):
             "args_source": b["args_source"], "decision_id": data["decision_id"], "commitment": b["args_commitment"],
             "rule_ids": data["rule_ids"], "policy_hash": data["policy_hash"], "requester": data["requester"],
             "expires_at": data["expires_at"], "binding_digest": data["binding_digest"], "state": "requested",
-            "executor": data.get("executor", "t1")}
+            "executor": data.get("executor", "t1"), "label": salt_label({"type": "approval.request", "data": data})}
 
 
 APPROVAL_ENDS = {"approval.consumed": "consumed", "approval.expired": "expired", "approval.abandoned": "expired"}
 
 
 def salt_label(e):
-    """What the salt of event `e`'s commitments is derived from; None when it has none."""
+    """What the salt of event `e`'s commitments is derived from; None when it has none. A record with a `salt_id` (one
+    the signer chose for that record alone) uses it; records written before `salt_id` keep their old labels."""
     d = e["data"]
+    if "salt_id" in d:
+        return f"{e['type']}:{d['salt_id']}"
     if e["type"] in ("policy.decision", "approval.request", "approval.binding_mismatch"):
         return d.get("decision_id")
     if e["type"] == "tool.result":

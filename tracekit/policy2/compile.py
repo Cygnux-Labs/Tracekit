@@ -17,7 +17,7 @@ SECTIONS = ("deny", "ask", "flag")
 TOP_KEYS = {"version", "description", "extends", "tools", "unknown_tools", "deny", "ask", "flag"}
 RULE_KEYS = {"id", "class", "tool", "field", "pattern", "unless", "reason", "rationale", "label", "approval"}
 EXECUTORS = ({"executor": "t1"}, {"executor": "t2"})   # an ask rule's `approval`: t2 runs only the signer's copy
-CLASSES = {"shell": {"command", "argv"}, "fs": {"path", "op", "content_digest"}, "http": {"method", "url", "host"},
+CLASSES = {"shell": {"command", "argv", "line"}, "fs": {"path", "op", "content_digest"}, "http": {"method", "url", "host"},
            "sql": {"statement", "verb", "db"}, "payment": {"amount", "currency", "payee", "new_payee"},
            "email": {"to", "domains", "attachments"}, "mcp": {"server", "tool", "args"}, "browser": {"action", "url"},
            "unknown": set()}
