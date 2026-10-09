@@ -1,0 +1,51 @@
+[
+  {
+    "name": "client tool_use (decoded input) and provider-run server tools",
+    "request": {"model": "claude-sonnet-5-5", "max_tokens": 1024, "messages": [
+      {"role": "user", "content": "find it"},
+      {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_prev", "name": "Bash", "input": {"command": "pwd"}}]},
+      {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_prev", "content": "/tmp"},
+                                   {"type": "text", "text": "go on"}]}]},
+    "response": {"id": "msg_1", "type": "message", "role": "assistant", "model": "claude-sonnet-5-5-20260101",
+      "stop_reason": "tool_use", "stop_sequence": null,
+      "content": [
+        {"type": "text", "text": "Searching"},
+        {"type": "server_tool_use", "id": "srvtoolu_1", "name": "web_search", "input": {"query": "tracekit"}},
+        {"type": "web_search_tool_result", "tool_use_id": "srvtoolu_1", "content": []},
+        {"type": "tool_use", "id": "toolu_1", "name": "Bash", "input": {"command": "ls"}}],
+      "usage": {"input_tokens": 7, "output_tokens": 9, "cache_read_input_tokens": 100, "cache_creation_input_tokens": 50}},
+    "expect": {"exchange_id": "msg_1", "model": "claude-sonnet-5-5-20260101", "finish": "tool_use", "usage": {"input_tokens": 7, "output_tokens": 9, "cache_read_tokens": 100, "cache_write_tokens": 50}, "tool_uses": [{"id": "srvtoolu_1", "name": "web_search", "executed_by": "provider"}, {"id": "toolu_1", "name": "Bash", "executed_by": "client", "args_source": "parsed", "args_digest": "sha256:3c4c0234f3fd581a998c6c92ee8487a3bf04eca566ab7e58f0a5f67dbd9fc504"}], "tool_results_sent": ["toolu_prev"]}
+  },
+  {
+    "name": "stream: the input JSON accumulated from deltas is the raw string; a tool with no deltas keeps {}",
+    "request": {"model": "claude-sonnet-5-5", "max_tokens": 1024, "stream": true,
+                "messages": [{"role": "user", "content": "ls"}]},
+    "stream": [
+      {"type": "message_start", "message": {"id": "msg_2", "type": "message", "role": "assistant",
+        "model": "claude-sonnet-5-5-20260101", "content": [], "stop_reason": null, "stop_sequence": null,
+        "usage": {"input_tokens": 12, "output_tokens": 1, "cache_read_input_tokens": 3}}},
+      {"type": "content_block_start", "index": 0, "content_block": {"type": "tool_use", "id": "toolu_s", "name": "Bash", "input": {}}},
+      {"type": "content_block_delta", "index": 0, "delta": {"type": "input_json_delta", "partial_json": ""}},
+      {"type": "content_block_delta", "index": 0, "delta": {"type": "input_json_delta", "partial_json": "{\"comm"}},
+      {"type": "content_block_delta", "index": 0, "delta": {"type": "input_json_delta", "partial_json": "and\": \"ls\"}"}},
+      {"type": "content_block_stop", "index": 0},
+      {"type": "content_block_start", "index": 1, "content_block": {"type": "tool_use", "id": "toolu_n", "name": "Now", "input": {}}},
+      {"type": "content_block_stop", "index": 1},
+      {"type": "message_delta", "delta": {"stop_reason": "tool_use", "stop_sequence": null}, "usage": {"output_tokens": 30}},
+      {"type": "message_stop"}],
+    "expect": {"exchange_id": "msg_2", "model": "claude-sonnet-5-5-20260101", "finish": "tool_use", "usage": {"input_tokens": 12, "output_tokens": 30, "cache_read_tokens": 3}, "tool_uses": [{"id": "toolu_s", "name": "Bash", "executed_by": "client", "args_source": "raw", "args_digest": "sha256:3c4c0234f3fd581a998c6c92ee8487a3bf04eca566ab7e58f0a5f67dbd9fc504"}, {"id": "toolu_n", "name": "Now", "executed_by": "client", "args_source": "parsed", "args_digest": "sha256:fab1b6869bd8d3f480f2a7b97db66ad08beba1eb56bcd8d368ef816d038f3044"}], "tool_results_sent": []}
+  },
+  {
+    "name": "stream: duplicate keys in the streamed input are unparseable",
+    "request": {"model": "claude-sonnet-5-5", "max_tokens": 1024, "stream": true, "messages": []},
+    "stream": [
+      {"type": "message_start", "message": {"id": "msg_3", "type": "message", "role": "assistant",
+        "model": "claude-sonnet-5-5-20260101", "content": [], "stop_reason": null, "stop_sequence": null,
+        "usage": {"input_tokens": 2, "output_tokens": 1}}},
+      {"type": "content_block_start", "index": 0, "content_block": {"type": "tool_use", "id": "toolu_d", "name": "Bash", "input": {}}},
+      {"type": "content_block_delta", "index": 0, "delta": {"type": "input_json_delta",
+                                                            "partial_json": "{\"command\": \"ls\", \"command\": \"rm\"}"}},
+      {"type": "message_delta", "delta": {"stop_reason": "tool_use", "stop_sequence": null}, "usage": {"output_tokens": 5}}],
+    "expect": {"exchange_id": "msg_3", "model": "claude-sonnet-5-5-20260101", "finish": "tool_use", "usage": {"input_tokens": 2, "output_tokens": 5}, "tool_uses": [{"id": "toolu_d", "name": "Bash", "executed_by": "client", "args_source": "raw", "args_unparseable": true}], "tool_results_sent": []}
+  }
+]
