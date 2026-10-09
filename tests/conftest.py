@@ -27,6 +27,15 @@ def pytest_configure(config):
         config.addinivalue_line("markers", f"{name}: {doc}")
 
 
+def pytest_collection_modifyitems(config, items):
+    """perf tests run only when asked for: `pytest -m perf`."""
+    if "perf" in (config.getoption("-m") or ""):
+        return
+    for item in items:
+        if "perf" in item.keywords:
+            item.add_marker(pytest.mark.skip(reason="perf test: run with -m perf"))
+
+
 @pytest.fixture(autouse=True, scope="session")
 def _no_shell_env():
     with pytest.MonkeyPatch.context() as mp:
