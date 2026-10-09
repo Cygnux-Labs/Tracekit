@@ -22,7 +22,8 @@ def _signer_home(a):
     return a.home or client.client_config().get("signer_home") or "/var/lib/tracekit"
 
 
-_DELEGATED = {"observe": "observe", "analyze": "findings", "otel": "otlp", "cost": "cost", "witness": "witness_server"}  # subcommands with their own parsers
+_DELEGATED = {"observe": "observe", "analyze": "findings", "otel": "otlp", "cost": "cost", "witness": "witness_server",
+              "signer": "signer.service"}  # subcommands with their own parsers
 _MOVED = {"sql": "query", "proofpack": "proofpack", "report": "proofpack", "causeway": "causeway"}  # now separate packages under contrib/
 
 
@@ -103,6 +104,8 @@ def main(argv=None):
     p.add_argument("rest", nargs=argparse.REMAINDER)
     p = sub.add_parser("witness", help="run a witness log: `witness init|token|serve` (append-only, Merkle tree, signed heads)", add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
+    p = sub.add_parser("signer", help="the v2 signer service: `signer serve|fsck --config signer.yaml`", add_help=False)
+    p.add_argument("rest", nargs=argparse.REMAINDER)
     p = sub.add_parser("otel", help="OpenTelemetry receiver: `otel serve` records agent spans sent over OTLP/HTTP", add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
     p = sub.add_parser("daemon", help="run tracekitd in the foreground")
@@ -138,6 +141,7 @@ def main(argv=None):
     p.add_argument("--witness", action="append", default=[], help="independent witness copy to check against")
     p.add_argument("--key", help="trusted signer public key (signer.pub file) or key id ed25519:...")
     p.add_argument("--strict", action="store_true", help="exit 3 on warnings")
+    p.add_argument("--trust", help="format v2: pinned trust config (log keys, witness keys, algorithms)")
     p.add_argument("--json", action="store_true")
 
     p = sub.add_parser("policy", help="policy v2: `policy compile FILE` prints canonical JSON and its hash; `policy lint FILE`")
@@ -360,14 +364,23 @@ def _run(a):
         print(json.dumps(info, indent=2))
         return 0
     if a.cmd == "verify":
-        from . import bundle
-        rep, code = bundle.verify(a.bundle, a.witness, a.strict, a.key)
+        from .verify import v1, v2
+        mod = v2 if v2.is_v2(a.bundle) else v1
+        if mod is v2:
+            if not a.trust:
+                print("tracekit verify: a v2 bundle needs --trust (the verifier's pinned trust config)", file=sys.stderr)
+                return 2
+            rep, code = v2.verify(a.bundle, a.trust)
+            integrity, assurance = rep.integrity, rep.assurance
+        else:
+            rep, code = v1.verify(a.bundle, a.witness, a.strict, a.key)
+            integrity, assurance = v1.integrity(rep, code), v1.assurance(rep)
         if a.json:
             print(json.dumps({"exit_code": code, "checks": rep.checks, "failures": rep.failures, "warnings": rep.warnings,
-                              "integrity": bundle.integrity(rep, code), "assurance": bundle.assurance(rep), "notes": rep.notes},
+                              "integrity": integrity, "assurance": assurance, "notes": rep.notes},
                              indent=2))
         else:
-            bundle.print_report(rep, code)
+            mod.print_report(rep, code)
         return code
     if a.cmd == "policy":
         from .policy2 import compile as policy_compile
