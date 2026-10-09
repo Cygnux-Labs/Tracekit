@@ -279,3 +279,25 @@ class InitV2(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StateReads(unittest.TestCase):
+    def test_a_state_file_being_replaced_is_read_again_on_windows(self):
+        """On Windows, open() fails while a parallel hook replaces the file: the hook waits instead of blocking the call."""
+        from unittest import mock
+        from tracekit.integrations import claude_code
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        path = os.path.join(d, "s.json")
+        with open(path, "w") as f:
+            json.dump({"run_id": "r"}, f)
+        real, tries = open, []
+
+        def flaky(*a, **kw):
+            tries.append(1)
+            if len(tries) < 3:
+                raise PermissionError(13, "in use")
+            return real(*a, **kw)
+        with mock.patch.object(claude_code.os, "name", "nt"), mock.patch("builtins.open", flaky):
+            self.assertEqual(claude_code._load(path), {"run_id": "r"})
+        self.assertEqual(len(tries), 3)

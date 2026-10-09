@@ -37,11 +37,16 @@ def _state(*ids):
 
 
 def _load(path):
-    try:
-        with open(path, encoding="utf-8") as f:
-            return json.load(f)
-    except FileNotFoundError:
-        return None
+    for i in range(20):
+        try:
+            with open(path, encoding="utf-8") as f:
+                return json.load(f)
+        except FileNotFoundError:
+            return None
+        except PermissionError:   # Windows: a parallel hook is replacing the file this instant
+            if os.name != "nt" or i == 19:
+                raise
+            time.sleep(0.05)
 
 
 def _run(client, sid, register=True, send=None, **fields):
