@@ -14,8 +14,8 @@ from .. import yamlmini
 from ..policy import PolicyError, _sre_c, _sre_p, check_regex
 
 SECTIONS = ("deny", "ask", "flag")
-TOP_KEYS = {"version", "description", "extends", "tools", "deny", "ask", "flag"}
-RULE_KEYS = {"id", "class", "tool", "field", "pattern", "reason", "rationale", "label"}
+TOP_KEYS = {"version", "description", "extends", "tools", "unknown_tools", "deny", "ask", "flag"}
+RULE_KEYS = {"id", "class", "tool", "field", "pattern", "unless", "reason", "rationale", "label"}
 CLASSES = {"shell": {"command", "argv"}, "fs": {"path", "op", "content_digest"}, "http": {"method", "url", "host"},
            "sql": {"statement", "verb", "db"}, "payment": {"amount", "currency", "payee", "new_payee"},
            "email": {"to", "domains", "attachments"}, "mcp": {"server", "tool", "args"}, "browser": {"action", "url"},
@@ -149,6 +149,8 @@ def _lint(pol, path):
     for tool, cls in tools.items():
         if cls not in CLASSES:
             errors.append(f"{path}: tool {tool!r} has unknown class {cls!r}")
+    if pol.get("unknown_tools", "allow") not in SECTIONS + ("allow",):
+        errors.append(f"{path}: unknown_tools must be allow, flag, ask or deny")
     for sec in SECTIONS:
         for r in pol.get(sec, []):
             if not isinstance(r, dict) or not isinstance(r.get("id"), str) or not isinstance(r.get("pattern"), str):
@@ -160,7 +162,7 @@ def _lint(pol, path):
             if r["id"] in ids:
                 errors.append(f"{where}: duplicate id")
             ids.add(r["id"])
-            for key in ("pattern", "tool"):
+            for key in ("pattern", "unless", "tool"):
                 try:
                     if isinstance(r.get(key), str):
                         check_pattern(r[key])

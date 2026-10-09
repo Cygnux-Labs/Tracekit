@@ -12,6 +12,7 @@ number of pinned witnesses); every record signed with an allowed algorithm by a 
 signer.epoch record before it and had not retired (key.retire) by then; schema-valid events; one run's chain, contiguous
 from run_seq 0 to a run.final record; the run's first and last records and every key record included in the
 checkpointed tree. A run without run.final verifies only to its head. The bundle's manifest is an index, never trusted.
+A run with any self-approval (dev mode: the approver was the requester) is reported `approvals: self`, assurance dev.
 
 Format bridge (04-design §1.9): when the log's first record, signer.epoch, has `bridge`, the v1 ledger it continues can
 be checked too (verify(..., v1_ledger, v1_key)): its chain verifies by v1 rules up to `v1_last_seq`, that last record
@@ -245,7 +246,9 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key):
 
     n = records[-1]["event"].get("run_seq")
     rep.integrity = "VERIFIED" if records[-1]["event"].get("type") == "run.final" else f"VERIFIED TO HEAD {n} (open)"
-    rep.assurance = _assurance(origin, cosigs, witnesses, trust, {r["alg"] for r in records})
+    self_approved = any(r["event"].get("type") == "approval" and r["event"]["data"].get("self_approved") is True
+                        for r in records)
+    rep.assurance = _assurance(origin, cosigs, witnesses, trust, {r["alg"] for r in records}, self_approved)
 
 
 def _bridge(rep, key_records, v1_ledger, v1_key):
@@ -285,16 +288,18 @@ def _bridge(rep, key_records, v1_ledger, v1_key):
                                              "in its key retirement", problems[:20])
 
 
-def _assurance(origin, cosigs, witnesses, trust, algs):
-    """dev: no pinned witness cosigned; local: only operator-run witnesses; witnessed: enough independent ones."""
+def _assurance(origin, cosigs, witnesses, trust, algs, self_approved=False):
+    """dev: no pinned witness cosigned, or a self-approval in the run; local: only operator-run witnesses; witnessed:
+    enough independent ones."""
     independent = [k for k, _ in cosigs if witnesses[k] != "operator"]
-    level = ("witnessed" if len(independent) >= max(1, trust["witnesses_required"])
+    level = ("dev" if self_approved else "witnessed" if len(independent) >= max(1, trust["witnesses_required"])
              else "local" if cosigs else "dev")
     anchors = ", ".join(f"{k.split('+')[0]} ({witnesses[k]}) at "
                         f"{datetime.datetime.fromtimestamp(ts, datetime.timezone.utc):%Y-%m-%dT%H:%M:%SZ}"
                         for k, ts in sorted(cosigs, key=lambda c: c[1]))
     return (f"{level}; records {'+'.join(sorted(algs))}; checkpoint ed25519 ({origin})"
-            + (f"; cosigned ed25519 by {anchors}" if anchors else "; no witness cosignature"))
+            + (f"; cosigned ed25519 by {anchors}" if anchors else "; no witness cosignature")
+            + ("; approvals: self" if self_approved else ""))
 
 
 def print_report(rep, code, stream=None):

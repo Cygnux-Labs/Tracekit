@@ -94,7 +94,7 @@ class Bridge(unittest.TestCase):
         self.assertEqual((self.ledger_bytes(), records(self.data)), before)
 
     def test_interrupted_after_the_v1_records_resumes(self):
-        with mock.patch.object(format_bridge, "SignerService", side_effect=OSError("killed")):
+        with mock.patch.object(svc, "SignerService", side_effect=OSError("killed")):
             with self.assertRaises(OSError):
                 format_bridge.bridge(self.home, self.data)
         self.assertTrue(os.path.exists(self.key))
