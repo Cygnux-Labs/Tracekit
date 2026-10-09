@@ -39,7 +39,7 @@ def runtime_dir():
     (on POSIX; Windows has no uid, so it relies on the user-only profile ACL as S3 decides)."""
     d = os.environ.get("TRACEKIT_RUNTIME_DIR")
     if not d and os.name == "nt":
-        d = os.path.join(os.environ["LOCALAPPDATA"], "tracekit", "run")
+        d = os.path.join(os.environ.get("LOCALAPPDATA") or os.path.expanduser("~/AppData/Local"), "tracekit", "run")
     elif not d and sys.platform == "darwin":
         d = os.path.expanduser("~/Library/Application Support/tracekit/run")
         if len(os.path.join(d, SOCK).encode()) > 103:   # macOS caps socket paths at 104 bytes

@@ -28,8 +28,7 @@ classifiers = [
     "Topic :: System :: Logging",
 ]
 requires-python = ">=3.9"
-dependencies = ["cryptography>=41", "rfc8785>=0.1,<0.2",   # signing (`tracekit verify` alone works without it); JCS for format v2
-                "regex>=2023.8"]   # the v2 signer's policy engine without google-re2 (stdlib re has no match timeout)
+dependencies = ["cryptography>=41", "rfc8785>=0.1,<0.2"]   # signing (`tracekit verify` alone works without it); JCS for format v2
 
 [project.optional-dependencies]
 yaml = ["PyYAML>=6"]   # optional: policies are parsed with a built-in YAML subset otherwise
