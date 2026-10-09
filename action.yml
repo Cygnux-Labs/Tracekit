@@ -31,7 +31,7 @@ runs:
       shell: bash
       run: |
         if [ -n "${{ inputs.version }}" ]; then
-          python -m pip install "tracekit==${{ inputs.version }}"
+          python -m pip install "tracekit-ai==${{ inputs.version }}"
         else
           python -m pip install "${{ github.action_path }}"
         fi

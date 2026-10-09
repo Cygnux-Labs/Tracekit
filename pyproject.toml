@@ -3,13 +3,13 @@ requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "tracekit"
+name = "tracekit-ai"
 dynamic = ["version"]   # single source of truth: tracekit/__init__.py
 description = "Signed, checkpointed evidence of what coding agents did"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
-authors = [{ name = "Bravish Ghosh" }]
+authors = [{ name = "Cygnux Labs" }]
 keywords = ["ai-agents", "observability", "audit", "tamper-evident", "claude-code", "security", "provenance", "opentelemetry"]
 classifiers = [
     "Development Status :: 4 - Beta",
