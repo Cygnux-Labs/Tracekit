@@ -47,25 +47,47 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install system mode with separate agent and attacker users
+      - name: Install system mode from a root-owned Python
         run: |
-          PY="$(which python)"
-          sudo cp -r "$GITHUB_WORKSPACE" /opt/tracekit
-          sudo chmod -R a+rX /opt/tracekit
+          sudo apt-get install -y -q python3-cryptography python3-venv
+          sudo cp -r "$GITHUB_WORKSPACE" /usr/local/src/tracekit
+          sudo chmod -R a+rX /usr/local/src/tracekit
           sudo useradd -m agent
           sudo useradd -m mallory
           sudo install -D -m755 "$(readlink -f /bin/dash)" /usr/local/lib/tracekit-e8/agent
-          sudo "$PY" -m pip install /opt/tracekit
-          cd /tmp && sudo "$PY" -m tracekit init --user agent --no-service --no-hooks --harness agent=/usr/local/lib/tracekit-e8/agent
+          cd /usr/local/src/tracekit && sudo /usr/bin/python3 -m tracekit init --user agent --no-service --no-hooks --harness agent=/usr/local/lib/tracekit-e8/agent
       - name: Run E8
-        run: cd /opt/tracekit && sudo "$(which python)" eval/e8_insider.py --out /tmp/e8_insider.json
+        run: cd /usr/local/src/tracekit && sudo /opt/tracekit/bin/python eval/e8_insider.py --out /tmp/e8_insider.json
       - name: Root-only installer tests
-        run: cd /opt/tracekit && sudo "$(which python)" -m pip install pytest && sudo "$(which python)" -m pytest -q -m root tests/test_install_files.py
+        run: cd /usr/local/src/tracekit && sudo /opt/tracekit/bin/python -m pip install pytest==8.3.5 && sudo /opt/tracekit/bin/python -m pytest -q -m root tests/test_install_files.py
       - if: always()
         uses: actions/upload-artifact@v4
         with:
           name: e8-insider
           path: /tmp/e8_insider.json
+
+  root:
+    # the tests marked root (OS-user isolation, root-owned config and binaries, installer) skip in the test job;
+    # here they run as root from a root-owned install, and the job fails if any of them is skipped
+    name: Root-only tests (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install into a root-owned location
+        run: |
+          sudo cp -r "$GITHUB_WORKSPACE" /opt/tracekit
+          sudo chown -R root:root /opt/tracekit
+          sudo chmod -R go-w /opt/tracekit
+          sudo "$(which python)" -m pip install /opt/tracekit pytest==8.3.4
+      - name: Run the root tests as root
+        run: |
+          set -o pipefail
+          cd /opt/tracekit && sudo "$(which python)" -m pytest -v -rs -m root -p no:cacheprovider tests/test_v02.py tests/test_hotfix_021.py tests/test_harness_03.py tests/test_install_files.py | tee /tmp/root-tests.log
+          if grep -q SKIPPED /tmp/root-tests.log; then echo "::error::root tests were skipped"; exit 1; fi
 
   typescript:
     name: TypeScript SDK and examples

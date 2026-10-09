@@ -10,11 +10,11 @@ import unittest
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ROOT = os.path.dirname(os.path.dirname(HERE))
-sys.path[:0] = [ROOT, HERE]
+sys.path[:0] = [ROOT, HERE, os.path.join(ROOT, "tests")]
 from tracekit import bundle, install  # noqa: E402
 from tracekit_onchain import analyze, guarded_tx  # noqa: E402
 from tracekit.agent_sdk import Tracer  # noqa: E402
-from tracekit.ledger import read_records  # noqa: E402
+from factories import ledger_records, patch_env  # noqa: E402
 
 ROUTER = "0x" + "11" * 20
 ATTACKER = "0x" + "66" * 20
@@ -43,20 +43,16 @@ class Onchain(unittest.TestCase):
     def setUp(self):
         self.d = tempfile.mkdtemp()
         self.home = os.path.join(self.d, "signer")
-        self.old = os.environ.get("TRACEKIT_CLIENT_HOME")
+        patch_env(self)
         os.environ["TRACEKIT_CLIENT_HOME"] = os.path.join(self.d, "client")
         install.init_dev(self.home, [], start=True)
 
     def tearDown(self):
         install.stop_dev_daemon(self.home)
-        if self.old is None:
-            os.environ.pop("TRACEKIT_CLIENT_HOME", None)
-        else:
-            os.environ["TRACEKIT_CLIENT_HOME"] = self.old
         shutil.rmtree(self.d, ignore_errors=True)
 
     def records(self):
-        return [r for _, r, _ in read_records(os.path.join(self.home, "ledger", "ledger.jsonl")) if r and not r.get("elided")]
+        return [r for r in ledger_records(self.home) if not r.get("elided")]
 
     def test_allowed_and_blocked(self):
         wallet = Wallet()
@@ -117,12 +113,12 @@ class Onchain(unittest.TestCase):
         self.assertEqual(verdicts, [True, True, False, False, True])
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class Summary(unittest.TestCase):
     def test_pgs_call_dicts_keep_their_target(self):
         from tracekit_onchain import _summary
         s = _summary([{"target": "0xabc", "value": 0, "data": "0xa9059cbb" + "00" * 64}], 31337)
         self.assertEqual((s["calls"][0]["to"], s["calls"][0]["selector"]), ("0xabc", "0xa9059cbb"))
+
+
+if __name__ == "__main__":
+    unittest.main()

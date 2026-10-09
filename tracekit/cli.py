@@ -8,17 +8,13 @@ import sys
 from . import __version__
 
 
-def _stdin_is_interactive():
-    if os.name != "nt":
-        return sys.stdin.isatty()
-    try:
-        import ctypes
-        import msvcrt
-        mode = ctypes.c_uint()
-        handle = msvcrt.get_osfhandle(sys.stdin.fileno())
-        return bool(ctypes.windll.kernel32.GetConsoleMode(handle, ctypes.byref(mode)))
-    except (AttributeError, OSError, ValueError):
+def experimental_gate(enabled, what):
+    """Experimental servers run only with --experimental, and always say they are being rebuilt."""
+    if not enabled:
+        print(f"tracekit: {what} is experimental and off by default; pass --experimental to run it", file=sys.stderr)
         return False
+    print(f"tracekit: warning: {what} is experimental and being rebuilt; do not rely on it", file=sys.stderr)
+    return True
 
 
 def _signer_home(a):
@@ -67,7 +63,8 @@ def main(argv=None):
     p.add_argument("--user", help="system mode: the user whose agents are traced (default: $SUDO_USER)")
     p.add_argument("--no-service", action="store_true", help="system mode: do not install systemd/launchd")
     p.add_argument("--experimental-macos", action="store_true", help="allow system mode on macOS (not yet validated on hardware)")
-    p.add_argument("--proxy", action="store_true", help="also run the model proxy and point Claude Code at it (C3)")
+    p.add_argument("--proxy", action="store_true", help="also run the model proxy and point Claude Code at it (C3; needs --experimental)")
+    p.add_argument("--experimental", action="store_true", help="allow experimental surfaces (--proxy)")
     p.add_argument("--proxy-port", type=int, default=8787)
     p.add_argument("--fail-closed", action="store_true", help="proxy: refuse to forward when the signer can't record")
     p.add_argument("--managed", action="store_true", help="system mode: install hooks in Claude Code's admin-managed settings")
@@ -80,11 +77,14 @@ def main(argv=None):
     p.add_argument("--signer-cmd", help="external signer helper command (TPM/HSM/enclave; see tracekit/extsigner.py)")
     p.add_argument("--signer-pub", help="with --signer-cmd: the helper key's raw 32-byte Ed25519 public key file")
     p.add_argument("--key-assurance", default="external", help="with --signer-cmd: where the key lives (tpm, hsm, tee, kms, smartcard)")
+    p.add_argument("--i-understand-agent-is-privileged", dest="allow_privileged", action="store_true",
+                   help="system mode: trace a user that is root or in a sudo/wheel/admin/docker/tracekit group anyway")
     p.add_argument("--key-attestation", help="with --signer-cmd: the device's attestation document for the key (TPM quote, "
                                              "enclave attestation, KMS key metadata); its hash is signed into checkpoints and "
                                              "exports carry it")
 
     sub.add_parser("status", help="hooks, signer, witnesses, policy, fail mode, capture sources")
+    sub.add_parser("doctor", help="system mode: check the signer, hooks and policy run from files the agent cannot modify")
     p = sub.add_parser("uninstall", help="remove hooks (the ledger is kept)")
     p.add_argument("--project", action="store_true")
     p.add_argument("--agent", choices=("claude", "codex", "cursor", "gemini"), default="claude")
@@ -101,8 +101,9 @@ def main(argv=None):
     p.add_argument("rest", nargs=argparse.REMAINDER)
     p = sub.add_parser("daemon", help="run tracekitd in the foreground")
     p.add_argument("--home")
-    p = sub.add_parser("proxy", help="run the model proxy in the foreground")
+    p = sub.add_parser("proxy", help="run the model proxy in the foreground (experimental)")
     p.add_argument("--home")
+    p.add_argument("--experimental", action="store_true", help="required: the proxy is being rebuilt")
     p.add_argument("--port", type=int)
     p.add_argument("--upstream")
 
@@ -206,6 +207,8 @@ def _run(a):
         if not 1 <= a.proxy_port <= 65535:
             print("tracekit: --proxy-port must be between 1 and 65535", file=sys.stderr)
             return 2
+        if a.proxy and not experimental_gate(a.experimental, "the model proxy (init --proxy)"):
+            return 2
         signer = None
         if a.key_attestation and not a.signer_cmd:
             print("tracekit: --key-attestation goes with --signer-cmd (an attestation is about an external key)", file=sys.stderr)
@@ -257,7 +260,7 @@ def _run(a):
                                                 proxy_port=a.proxy_port, managed=a.managed, managed_only=a.managed_only,
                                                 fail_mode="closed" if a.fail_closed else None,
                                                 experimental_macos=a.experimental_macos, hooks=not a.no_hooks, signer=signer,
-                                                harnesses=a.harness, agent=a.agent)
+                                                harnesses=a.harness, agent=a.agent, allow_privileged=a.allow_privileged)
         except install.SettingsError as e:
             print(f"tracekit: {e}", file=sys.stderr)
             return 1
@@ -267,6 +270,9 @@ def _run(a):
         from . import install
         print(json.dumps(install.status(), indent=2))
         return 0
+    if a.cmd == "doctor":
+        from . import install
+        return install.doctor()
     if a.cmd == "uninstall" and a.agent != "claude":
         from . import agent_hooks
         print("hooks removed from", agent_hooks.install(a.agent, os.getcwd() if a.project else None, uninstall=True))
@@ -284,6 +290,8 @@ def _run(a):
         return daemon.main(["--home", _signer_home(a)])
     if a.cmd == "proxy":
         from . import proxy
+        if not experimental_gate(a.experimental, "the model proxy (tracekit proxy)"):
+            return 2
         return proxy.main(["--home", _signer_home(a)] + (["--port", str(a.port)] if a.port else []) +
                           (["--upstream", a.upstream] if a.upstream else []))
     if a.cmd in ("pending", "approve", "reject"):
@@ -310,8 +318,7 @@ def _run(a):
                     return 2
                 if hits:
                     aid = hits[0]["id"]
-            r = client.rpc({"op": "approve", "approval_id": aid, "decision": "approve" if a.cmd == "approve" else "reject",
-                            "interactive": _stdin_is_interactive()})
+            r = client.rpc({"op": "approve", "approval_id": aid, "decision": "approve" if a.cmd == "approve" else "reject"})
         except client.SignerUnavailable as e:
             print(f"signer unavailable: {e}", file=sys.stderr)
             return 2

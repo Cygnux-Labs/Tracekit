@@ -6,15 +6,15 @@ import os
 import shutil
 import subprocess
 import sys
-import tempfile
 import unittest
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ROOT = os.path.dirname(os.path.dirname(HERE))
-sys.path[:0] = [ROOT, HERE]
+sys.path[:0] = [ROOT, HERE, os.path.join(ROOT, "tests")]
 import tracekit_causeway as causeway  # noqa: E402
-from tracekit import bundle, install  # noqa: E402
+from tracekit import bundle  # noqa: E402
 from tracekit.agent_sdk import Tracer  # noqa: E402
+from factories import DaemonCase  # noqa: E402
 
 try:
     from causeway.core import load_run as cw_load, verify as cw_verify
@@ -51,21 +51,7 @@ TESTS = [{"intervention": "input:vendor:*", "target": "tool=send_email", "n": 40
           "ci": [-0.18, 0.18], "verdict": "no-detectable-effect", "method": "paired re-execution"}]
 
 
-class Integration(unittest.TestCase):
-    def setUp(self):
-        self.d = tempfile.mkdtemp()
-        self.home = os.path.join(self.d, "signer")
-        self.old = os.environ.get("TRACEKIT_CLIENT_HOME")
-        os.environ["TRACEKIT_CLIENT_HOME"] = os.path.join(self.d, "client")
-        install.init_dev(self.home, [], start=True)
-
-    def tearDown(self):
-        install.stop_dev_daemon(self.home)
-        if self.old is None:
-            os.environ.pop("TRACEKIT_CLIENT_HOME", None)
-        else:
-            os.environ["TRACEKIT_CLIENT_HOME"] = self.old
-        shutil.rmtree(self.d, ignore_errors=True)
+class Integration(DaemonCase):
 
     def records(self):
         return causeway._records(self.home)

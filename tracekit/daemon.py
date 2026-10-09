@@ -51,6 +51,8 @@ MAX_SIGNER_CONNECTIONS = 64
 MAX_CACHED_RUNS = 10000
 MAX_CACHED_TRANSCRIPTS = 10000
 MAX_CACHED_APPROVALS = 10000
+MAX_PENDING_APPROVALS_PER_UID = 100
+MAX_APPROVAL_WAIT_S = 60
 STATE_RETENTION_S = 24 * 3600
 CLIENT_SOURCES = {"hook", "proxy", "transcript", "sdk", "migrated"}
 TRUSTED_ONLY_SOURCES = {"proxy"}   # accepted only from the signer's own uid: the proxy runs as the tracekit user
@@ -103,6 +105,20 @@ def _ancestors(pid, limit=64):
         out.append((pid, st[0], st[2]))
         pid = st[1]
     return out
+
+
+def stdin_is_tty(pid):
+    """Whether pid's stdin is a terminal, as the signer itself observes it; None when it cannot tell.
+    Linux reads /proc/<pid>/fd/0 (needs ptrace rights over pid); elsewhere, or without them, the controlling tty."""
+    if not pid:
+        return None
+    if os.path.isdir("/proc/self"):
+        try:
+            return os.readlink(f"/proc/{pid}/fd/0").startswith(("/dev/pts/", "/dev/tty", "/dev/console"))
+        except OSError:
+            pass
+    st = _proc_stat(pid)
+    return None if st is None else st[2] != 0
 
 
 def harness_of(hook_pid):
@@ -565,7 +581,15 @@ class Signer:
         run_id, tid = req.get("run_id"), req.get("tool_use_id")
         if not run_id or not tid:
             return {"ok": False, "error": "run_id and tool_use_id required"}
-        if sum(a["decision"] is None for a in self.approvals.values()) >= MAX_CACHED_APPROVALS:
+        st = self.runs.get(run_id)
+        agent_uid = peer[1] if peer else None
+        if not st or not st.get("started") or st.get("agent_uid") != agent_uid:
+            return {"ok": False, "error": "approvals can only be requested for a started run the caller owns"}
+        if agent_uid is None and self.cfg.get("mode") == "dev":
+            agent_uid = self.my_uid
+        pending = [a for a in self.approvals.values() if a["decision"] is None]
+        if (len(pending) >= MAX_CACHED_APPROVALS
+                or sum(a["agent_uid"] == agent_uid for a in pending) >= MAX_PENDING_APPROVALS_PER_UID):
             return {"ok": False, "error": "too many pending approvals; retry after one is resolved"}
         try:
             requested_timeout = float(req.get("timeout_s") or 120)
@@ -581,9 +605,6 @@ class Signer:
         while aid in self.approvals:
             aid = new_id()
         hpid, htty = harness_of(peer[0]) if peer and peer[0] else (None, 0)
-        agent_uid = peer[1] if peer else None
-        if agent_uid is None and self.cfg.get("mode") == "dev":
-            agent_uid = self.my_uid
         self.approvals[aid] = {"id": aid, "run_id": run_id, "tool_use_id": tid, "agent_id": req.get("agent_id") or "main",
                                "summary": str(req.get("summary") or "")[:500], "rule_ids": req.get("rule_ids") or [],
                                "agent_uid": agent_uid, "hook_pid": peer[0] if peer else None,
@@ -599,21 +620,16 @@ class Signer:
                                     "wait_ms": int((time.time() - a["created"]) * 1000)}, a["run_id"])
         self.cond.notify_all()
 
-    def _self_approval_reason(self, a, peer, interactive=None):
-        """Why this approval must be refused, or None.
+    def _identity_reason(self, a, uid):
+        """Why OS user uid may not decide approval a, or None.
 
         The only boundary that holds is the OS user: an approval must come from a different user
         than the agent's (or from a configured approver). A same-user approval can always be
         forged by the agent itself (for example by detaching a new session with its own terminal,
         which defeats any process-tree or tty check), so it is refused unless the signer runs in
         dev mode with allow_same_user_approval, and then it is labelled untrustworthy."""
-        if interactive is False:
-            return "approvals need an interactive terminal"
-        pid, uid = peer if peer else (None, None)
         if uid is None:
             if self.cfg.get("mode") == "dev" and self.cfg.get("allow_same_user_approval") and not self.cfg.get("approvers"):
-                if not interactive:
-                    return "approvals need an interactive terminal"
                 return None
             return "cannot identify the approving OS user (no peer credentials on this platform)"
         approvers = self.cfg.get("approvers")
@@ -626,11 +642,23 @@ class Signer:
             return None
         if a["agent_uid"] is None:
             return "the agent's OS user is unknown, so a different-user approval cannot be established"
-        if uid != a["agent_uid"]:
-            return None  # a different OS user than the agent: the case that holds
-        if not self.cfg.get("allow_same_user_approval", False):
-            return ("approvals must come from a different OS user than the agent, or a configured approver "
-                    "(same-user approvals are only allowed in dev mode)")
+        if uid != a["agent_uid"] or self.cfg.get("allow_same_user_approval", False):
+            return None
+        return ("approvals must come from a different OS user than the agent, or a configured approver "
+                "(same-user approvals are only allowed in dev mode)")
+
+    def _self_approval_reason(self, a, peer):
+        """Why this approval must be refused, or None. Decided only from what the signer observes about the peer."""
+        pid, uid = peer if peer else (None, None)
+        why = self._identity_reason(a, uid)
+        if why:
+            return why
+        if uid is None:
+            return "approvals need an interactive terminal the signer can observe (no peer credentials)"
+        if stdin_is_tty(pid) is False:
+            return "approvals need an interactive terminal"
+        if uid != a["agent_uid"] or self.cfg.get("approvers"):
+            return None
         # dev mode only: best-effort checks that stop accidents, not a determined agent
         if pid is None:
             return "cannot identify the approving process"
@@ -657,8 +685,7 @@ class Signer:
             return {"ok": False, "error": f"approval {aid} already decided: {a['decision']}"}
         uid = peer[1] if peer else None
         who = _user_name(uid) if uid is not None else "unattested dev user"
-        interactive = req.get("interactive") if "interactive" in req else None
-        why = self._self_approval_reason(a, peer, interactive)
+        why = self._self_approval_reason(a, peer)
         tty = ""
         if peer and peer[0]:
             try:
@@ -683,18 +710,27 @@ class Signer:
         a = self.approvals.get(req.get("approval_id"))
         if not a:
             return {"ok": False, "error": "unknown approval"}
-        end = min(time.time() + float(req.get("wait_s") or 20), a["deadline"])
+        wait_s = req.get("wait_s", 20)
+        if (isinstance(wait_s, bool) or not isinstance(wait_s, (int, float)) or not math.isfinite(wait_s)
+                or not 0 <= wait_s <= MAX_APPROVAL_WAIT_S):
+            return {"ok": False, "error": f"wait_s must be a number from 0 to {MAX_APPROVAL_WAIT_S}"}
+        end = min(time.time() + wait_s, a["deadline"])
         while a["decision"] is None and time.time() < end:
             self.cond.wait(timeout=max(0.05, end - time.time()))
         if a["decision"] is None and time.time() >= a["deadline"]:
             self._record_approval(a, "timeout", "tracekitd", "timeout")
         return {"ok": True, "decision": a["decision"], "approver": a["approver"], "channel": a["channel"]}
 
-    def _approval_list(self):
+    def _pending_approvals(self):
         now = time.time()
+        return [a for a in self.approvals.values() if a["decision"] is None and a["deadline"] > now]
+
+    def _approval_list(self, peer):
+        """The pending approvals the caller's OS user may decide."""
+        now, uid = time.time(), peer[1] if peer else None
         return {"ok": True, "pending": [{k: a[k] for k in ("id", "run_id", "tool_use_id", "agent_id", "summary", "rule_ids")}
                                         | {"expires_in_s": int(a["deadline"] - now)}
-                                        for a in self.approvals.values() if a["decision"] is None and a["deadline"] > now]}
+                                        for a in self._pending_approvals() if self._identity_reason(a, uid) is None]}
 
     # ---------- requests ----------
     def handle(self, req, peer_uid=None, peer_pid=None):
@@ -704,7 +740,7 @@ class Signer:
             if op == "status":
                 return {"ok": True, "seq": self.ledger.seq, "head": self.ledger.head, "kid": self.keys.kid,
                         "witnesses": [w.name for w in self.witnesses], "last_checkpoint_seq": self.last_cp_seq,
-                        "pending_witness_retries": len(self.retry), "pending_approvals": len(self._approval_list()["pending"]),
+                        "pending_witness_retries": len(self.retry), "pending_approvals": len(self._pending_approvals()),
                         "write_errors": self.write_errors}
             if op == "checkpoint":  # harmless: only ever adds a signed checkpoint (used by export)
                 cp = self.checkpoint()
@@ -716,7 +752,7 @@ class Signer:
             if op == "approve":
                 return self._approve(req, peer)
             if op == "approval_list":
-                return self._approval_list()
+                return self._approval_list(peer)
             if op != "append":
                 return {"ok": False, "error": f"unsupported op {op!r} (no delete, rewrite or key export exists)"}
             try:

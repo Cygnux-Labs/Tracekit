@@ -10,9 +10,10 @@ from http.server import ThreadingHTTPServer
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from tracekit import client, ingest, install  # noqa: E402
 from tracekit.agent_sdk import Tracer  # noqa: E402
-from tracekit.ledger import read_records  # noqa: E402
+from factories import ledger_records, patch_env  # noqa: E402
 
 
 class Sanitize(unittest.TestCase):
@@ -69,7 +70,7 @@ class EndToEnd(unittest.TestCase):
     def setUp(self):
         self.d = tempfile.mkdtemp()
         self.home = os.path.join(self.d, "signer")
-        self.old = {k: os.environ.get(k) for k in ("TRACEKIT_CLIENT_HOME", "TRACEKIT_REMOTE_TOKEN")}
+        patch_env(self)
         os.environ["TRACEKIT_CLIENT_HOME"] = os.path.join(self.d, "gateway-client")
         install.init_dev(self.home, [], start=True)
         self.token = ingest.add_token(self.home, "agent-box")
@@ -83,11 +84,6 @@ class EndToEnd(unittest.TestCase):
     def tearDown(self):
         self.srv.shutdown(); self.srv.server_close()
         install.stop_dev_daemon(self.home)
-        for k, v in self.old.items():
-            if v is None:
-                os.environ.pop(k, None)
-            else:
-                os.environ[k] = v
         shutil.rmtree(self.d, ignore_errors=True)
 
     def as_remote(self):
@@ -99,7 +95,7 @@ class EndToEnd(unittest.TestCase):
         os.environ["TRACEKIT_CLIENT_HOME"] = home
 
     def events(self):
-        return [r["event"] for _, r, _ in read_records(os.path.join(self.home, "ledger", "ledger.jsonl")) if r and not r.get("elided")]
+        return [r["event"] for r in ledger_records(self.home) if not r.get("elided")]
 
     def test_remote_sdk_run_lands_in_the_ledger_namespaced_and_policy_still_applies(self):
         self.as_remote()
@@ -173,7 +169,7 @@ class ClientConfig(unittest.TestCase):
         import argparse
         from tracekit import cli
         d = tempfile.mkdtemp()
-        old = os.environ.get("TRACEKIT_CLIENT_HOME")
+        patch_env(self)
         os.environ["TRACEKIT_CLIENT_HOME"] = d
         try:
             tf = os.path.join(d, "tok")
@@ -186,10 +182,6 @@ class ClientConfig(unittest.TestCase):
                 self.assertEqual(oct(os.stat(os.path.join(d, "config.json")).st_mode & 0o777), "0o600")
             self.assertEqual(cli._init_remote(argparse.Namespace(remote="http://evil.example", token_file=tf)), 2)
         finally:
-            if old is None:
-                os.environ.pop("TRACEKIT_CLIENT_HOME", None)
-            else:
-                os.environ["TRACEKIT_CLIENT_HOME"] = old
             shutil.rmtree(d, ignore_errors=True)
 
 

@@ -24,6 +24,7 @@ from .core import now_ts
 from .locking import lock_file, unlock_file
 
 AGENT_NAME = "claude-code"
+TOOL_EVENTS = ("PreToolUse", "PostToolUse", "PostToolUseFailure")
 
 
 def _git(args, cwd):
@@ -43,13 +44,12 @@ def _as_dict(v):
 
 def _base(p):
     aid = p.get("agent_id")
-    return {"run_id": p.get("session_id") or "unknown", "agent_id": aid or "main",
+    return {"run_id": p["session_id"], "agent_id": aid or "main",
             "parent_id": "main" if aid else None, "source": "hook", "ts": now_ts()}
 
 
 def _started_flag(run_id):
-    safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in run_id)[:120]
-    return os.path.join(client.client_dir(), "runs", safe + ".started")
+    return os.path.join(client.client_dir(), "runs", client.state_name(run_id) + ".started")
 
 
 def run_start_event(p, pol, cwd):
@@ -74,7 +74,7 @@ def _transcript_events(p, pol):
     path = p.get("transcript_path")
     if not pol.get("reasoning_capture") or not path or not os.path.exists(path):
         return []
-    off_file = _started_flag(p.get("session_id") or "unknown") + ".txoff"
+    off_file = _started_flag(p["session_id"]) + ".txoff"
     try:
         off = int(read_text(off_file))
     except (OSError, ValueError):
@@ -113,14 +113,20 @@ def _transcript_events(p, pol):
 
 
 # ---------- C2: transcript prefix hashing ----------
+def _path_part(name):
+    """True when name is a single path component, so joining it cannot leave the directory."""
+    return (isinstance(name, str) and name not in ("", ".", "..") and "/" not in name and "\\" not in name
+            and not os.path.splitdrive(name)[0])
+
+
 def transcript_path_for(p):
     """The transcript of the agent that fired this hook (sub-agents have their own file)."""
     path = p.get("transcript_path")
     if not path:
         return None
-    aid = p.get("agent_id")
-    if aid:
-        sub = os.path.join(os.path.dirname(path), str(p.get("session_id") or ""), "subagents", f"agent-{aid}.jsonl")
+    aid, sid = p.get("agent_id"), p.get("session_id")
+    if aid and _path_part(sid) and _path_part(f"agent-{aid}.jsonl"):
+        sub = os.path.join(os.path.dirname(path), sid, "subagents", f"agent-{aid}.jsonl")
         if os.path.exists(sub):
             return sub
     return path
@@ -259,7 +265,7 @@ def build_events(p, pol):
     if name == "UserPromptSubmit":
         evs.append({**b, "type": "user.prompt", "data": {"content": privacy.content(p.get("prompt") or "", cc)}})
     elif name == "PreToolUse":
-        tool, ti, tid = p.get("tool_name") or "?", _as_dict(p.get("tool_input")), p.get("tool_use_id") or "unknown"
+        tool, ti, tid = p.get("tool_name") or "?", _as_dict(p.get("tool_input")), p["tool_use_id"]
         d = policy_mod.evaluate(pol, tool, ti, cwd)
         evs.append({**b, "type": "tool.call", "data": {"tool_use_id": tid, "name": tool, "input": privacy.tool_input(tool, ti, cc)}})
         dec = {**b, "type": "policy.decision", "data": {"tool_use_id": tid, "decision": d["decision"],
@@ -277,7 +283,7 @@ def build_events(p, pol):
         dur = p.get("duration_ms")
         ti = _as_dict(p.get("tool_input"))
         dotenv = privacy.mentions_dotenv(ti.get("command"), ti.get("file_path"), ti.get("path"), ti.get("pattern"))
-        evs.append({**b, "type": "tool.result", "data": {"tool_use_id": p.get("tool_use_id") or "unknown", "ok": bool(ok),
+        evs.append({**b, "type": "tool.result", "data": {"tool_use_id": p["tool_use_id"], "ok": bool(ok),
                                                          "output": privacy.content(resp if resp is not None else "", cc, dotenv),
                                                          "duration_ms": int(dur) if isinstance(dur, (int, float)) else None}})
     elif name == "SessionEnd":
@@ -309,14 +315,28 @@ def main(harness_reasoning=True):
             print(f"[tracekit] {e}; blocking tool calls until the policy is fixed", file=sys.stderr)
             return 2
         return 0
+    name = p.get("hook_event_name") if isinstance(p, dict) else None
+    missing = [k for k in ("session_id",) + (("tool_use_id",) if name in TOOL_EVENTS else ())
+               if not isinstance(p.get(k), str) or not p[k]] if isinstance(p, dict) else ["payload"]
+    if missing:
+        print(f"[tracekit] hook payload has no {', '.join(missing)}; event not recorded", file=sys.stderr)
+        if name != "PreToolUse":
+            return 0
+        d = policy_mod.evaluate(pol, p.get("tool_name") or "?", _as_dict(p.get("tool_input")), p.get("cwd"))
+        return 2 if pol.get("fail_mode") == "closed" or d["decision"] in ("deny", "ask") else 0
     evs, deny = build_events(p, pol if harness_reasoning else dict(pol, reasoning_capture=False))
-    signer_down = None
+    signer_down = rejected = None
     for ev in evs:
         try:
             attach_pol = ev.pop("_attach_policy", False) or ev["type"] == "run.start"
             resp = client.send(ev, {"policy": pol_raw} if attach_pol else None)
             if not resp.get("ok"):
                 print(f"[tracekit] signer rejected event: {resp.get('error')}", file=sys.stderr)
+                if ev["type"] == "tool.call":
+                    rejected = str(resp.get("error"))
+                    client.send({**_base(p), "type": "capture.gap", "data": {
+                        "reason": f"signer rejected tool call {ev['data']['tool_use_id']}: {rejected}"[:900],
+                        "kind": "client_rejected"}})
             elif ev.get("transcript") and "transcript_ack" in resp:
                 save_ack(ev["transcript"]["path"], resp["transcript_ack"])
         except client.SignerUnavailable as e:
@@ -335,6 +355,9 @@ def main(harness_reasoning=True):
         return 2
     if signer_down and p.get("hook_event_name") == "PreToolUse" and pol.get("fail_mode") == "closed":
         print(f"[tracekit] signer unavailable ({signer_down}); fail_mode=closed blocks tool calls", file=sys.stderr)
+        return 2
+    if rejected and pol.get("fail_mode") == "closed":
+        print(f"[tracekit] signer rejected the tool call ({rejected}); fail_mode=closed blocks it", file=sys.stderr)
         return 2
     return 0
 
