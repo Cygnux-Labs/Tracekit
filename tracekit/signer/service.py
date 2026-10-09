@@ -11,6 +11,7 @@
 signer.yaml:
     data_dir: /var/lib/tracekit-signer      # keys/ and store/; relative paths are from the config file
     socket: /run/tracekit/signer.sock        # Unix socket transport (peer uid, per frame on Linux)
+    socket_mode: "0666"                      # chmod the socket after bind (default: as the umask leaves it)
     tcp_endpoint: /run/tracekit/endpoint.json   # loopback TCP dev transport (token, mutual HMAC)
     http: {listen: 0.0.0.0:8443, ...}        # HTTPS with k8s_sa, mtls or token identity (tracekit/transport/http.py)
     durability: ack-on-write                 # or ack-on-fsync
@@ -138,9 +139,9 @@ WITNESS_GAP_S, BACKOFF_S = 300.0, (1.0, 300.0)
 CLASSES = ("public", "customer", "tracekit", "operator")
 GRACE_S, IDLE_S = 5.0, 3600.0
 FAIL_MODES = {"default": "closed"}
-CONFIG_KEYS = {"data_dir", "socket", "tcp_endpoint", "http", "durability", "tenant", "tenants", "authorize", "limits",
-               "acknowledge_rollback", "policy", "multi_tenant_apps", "migrators", "analyzers", "fail_modes", "grace_s",
-               "idle_s", "origin", "metrics", "witnesses", "contact", "approvals"}
+CONFIG_KEYS = {"data_dir", "socket", "socket_mode", "tcp_endpoint", "http", "durability", "tenant", "tenants",
+               "authorize", "limits", "acknowledge_rollback", "policy", "multi_tenant_apps", "migrators", "analyzers",
+               "fail_modes", "grace_s", "idle_s", "origin", "metrics", "witnesses", "contact", "approvals"}
 APPROVAL_KEYS = {"self_approval", "approvers", "break_glass"}
 
 
@@ -1156,6 +1157,8 @@ def load_config(path):
     unknown = set(cfg) - CONFIG_KEYS
     if unknown or "data_dir" not in cfg:
         raise ValueError(f"{path}: needs data_dir; unknown keys {sorted(unknown)}")
+    if "socket_mode" in cfg and not re.fullmatch(r"0?[0-7]{3}", str(cfg["socket_mode"])):
+        raise ValueError(f'{path}: socket_mode is an octal mode such as "0666"')
     base = os.path.dirname(os.path.abspath(path))
     for k in ("data_dir", "socket", "tcp_endpoint", "policy"):
         if cfg.get(k):
@@ -1237,6 +1240,8 @@ def serve(cfg, service):
         except FileNotFoundError:
             pass
         servers.append(UnixServer(cfg["socket"], handle))
+        if cfg.get("socket_mode"):
+            os.chmod(cfg["socket"], int(str(cfg["socket_mode"]), 8))
     if cfg.get("tcp_endpoint"):
         from tracekit.transport.tcp_dev import TcpDevServer
         servers.append(TcpDevServer(cfg["tcp_endpoint"], _dev_token(), handle))

@@ -268,10 +268,13 @@ class InitV2(unittest.TestCase):
                 install.install_hooks(settings, uninstall=True)
             self.assertIn(f"Tracekit v2 hooks removed from {settings}", out.getvalue())
 
-    def test_v2_refuses_system_mode(self):
+    def test_v2_option_refusals(self):
         code, err = self.init("--v2")
         self.assertEqual(code, 2)
-        self.assertIn("dev mode only", err)
+        self.assertIn("needs --user AGENT", err)
+        code, err = self.init("--dev", "--v2", "--approver", "root")
+        self.assertEqual(code, 2)
+        self.assertIn("for --v2 system mode", err)
         code, err = self.init("--dev", "--v2", "--fail-closed")
         self.assertEqual(code, 2)
         self.assertIn("don't apply with --v2", err)
