@@ -105,6 +105,19 @@ class TestRunSet(RunSet):
         self.assertFalse(beta_leaves & {x["leaf"] for x in leaves})
         self.assertNotIn("acme", self.registry_note()[1])   # the registry origin never names the tenant
 
+    def test_a_tenant_level_gap_is_in_every_registry_and_the_run_set(self):
+        a = self.register()
+        self.register("beta")
+        self.s.log.write(lambda tx: tx.gap("witness_failed", "witness w has not cosigned"))   # as the publisher writes it
+        self.finish(a)
+        for tenant in ("acme", "beta"):
+            self.assertEqual([registry.parse(x)[0] for x in self.s.log.storage.registry_iter(tenant)][1], "capture.gap")
+        code, rep, line = self.check(self.export(), "run-set")
+        self.assertEqual((code, rep.integrity), (0, "VERIFIED"), rep.checks)
+        self.assertEqual(line["detail"], "COMPLETE, registry 0..3 (1 runs registered, 1 final, 0 open; tenant-level "
+                                         "gaps: witness_failed 1)")
+        self.assertIn("tenant-level gaps", rep.warnings)   # so --strict exits 3
+
     def test_whole_run_deletion_is_detected(self):
         out, runs = self.honest()
         gone = run_name("acme", runs["a"]["run_id"])

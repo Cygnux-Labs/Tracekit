@@ -33,10 +33,11 @@ ORIGIN = "tracekit.example.org/log/publish"
 
 class FakeWitness:
     """tlog-witness v1.1.0 add-checkpoint: 404 unknown origin, 403 no valid log signature, 409 + size on a stale old
-    size, 422 on a bad proof, 413 past MAX_BODY; `status` forces an answer (e.g. 503), `stop()` makes it unreachable."""
+    size, 422 on a bad proof, 413 past MAX_BODY; `status` forces an answer (e.g. 503), `stop()` makes it unreachable,
+    `skew` (seconds) sets its clock off."""
 
     def __init__(self, port=0):
-        self.logs, self.sizes, self.bodies, self.status = {}, {}, [], None
+        self.logs, self.sizes, self.bodies, self.status, self.skew = {}, {}, [], None, 0
         fake = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -83,7 +84,7 @@ class FakeWitness:
             return 422, b"inconsistent"
         self.sizes[origin] = (size, root)
         text = note[:note.index("\n\n") + 1]
-        return 200, cosign(text, NAME, SECRET, int(time.time())).encode()
+        return 200, cosign(text, NAME, SECRET, int(time.time()) + self.skew).encode()
 
 
 def signed_note(origin, leaves, secret):
@@ -289,6 +290,27 @@ class Publisher(unittest.TestCase):
             self.assertTrue(wait_for(gaps, 5))
         self.assertEqual(gaps()[0]["event"]["data"]["kind"], "witness_failed")
         self.assertIn("KeyError", gaps()[0]["event"]["data"]["reason"])
+
+    def test_clock_skew_is_one_gap_per_episode(self):
+        skews = lambda: [r["event"]["data"] for r in records(self.dir) if r["event"]["type"] == "capture.gap"  # noqa: E731
+                         and r["event"]["data"]["kind"] == "clock_skew"]
+
+        def cosign_all():   # a run, then wait until the witness cosigned the latest note
+            self.finished_run()
+            self.s.checkpoint()
+            size = self.s.log.storage.tree.size
+            self.assertTrue(wait_for(lambda: self.cosigned() and self.cosigned()[0] >= size, 5))
+        self.w.skew = 1000
+        for _ in range(3):
+            cosign_all()
+        self.assertEqual(len(skews()), 1, skews())
+        self.assertTrue(skews()[0]["tenant_level"])
+        self.w.skew = 0   # the episode ends
+        cosign_all()
+        cosign_all()
+        self.w.skew = -1000
+        cosign_all()
+        self.assertTrue(wait_for(lambda: len(skews()) == 2, 5), skews())
 
     def test_checkpoint_spam_is_coalesced(self):
         with mock.patch.object(svc, "CHECKPOINT_MIN_S", 0.2):

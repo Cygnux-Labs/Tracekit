@@ -36,12 +36,22 @@ signer.yaml:
     approvals: {self_approval: deny, approvers: ["uid:1001", "mtls:spiffe://acme/ops/*"],   # identity or prefix/*
                 break_glass: ["uid:0"]}      # may answer any approval, with a reason; recorded break_glass
     acknowledge_rollback: false
+    lock_timeout_s: 10                       # wait this long for the storage lock, then exit naming its holder's pid
+    fsck_every_s: 86400                      # full-chain check in the background (0: off; the dev signer's is off)
+    clock_skew_s: 300                        # a witness cosignature this far from the signer's clock: clock_skew gap
 
 Startup (04-design §2.6): the storage lock is taken before any socket is touched; the log is replayed, its chain
 checked and its tail signatures verified; then the configured witnesses are asked for their latest cosigned checkpoint.
 A witness is a `tlog_witness.TlogWitness` (or an object with its `name`, `vkey`, `add_checkpoint` and `latest`), and
 `latest` raises when it is unreachable. A local log behind the witnessed one is a rollback: a signed `trace.tamper{rollback}`, then client writes are refused until it is
-acknowledged. No witness reachable: a signed `degraded_unanchored` gap, and the signer runs.
+acknowledged. No witness reachable: a signed `degraded_unanchored` gap, and the signer runs. The store opens from its
+latest snapshot (written every SNAPSHOT_RECORDS records and on close) and replays only the records after it.
+Every `fsck_every_s` a background thread checks the whole store as `tracekit signer fsck` does; new problems are one
+signed `trace.tamper{edited}` and refuse client writes (acknowledge_rollback does not cover them). Snapshots carry an
+HMAC under keys/snapshot.key; one that fails it is ignored and the logs are replayed in full.
+
+Tenant-level gaps (04-design §2.7): witness_failed, witness_late, clock_skew, degraded_unanchored gaps and rollback
+tamper records are signer-level records with a leaf in every tenant's registry, so a run-set over the window shows them.
 
 Run lifecycle (04-design §2.7): run.registered → events → close_run or the idle timeout (paused while an approval is
 pending) → run.closing → grace window, where only late records (complete, state_write, model_event) are accepted →
@@ -60,7 +70,8 @@ off the writer: the writer only computes consistency proofs) and merges the veri
 note, whose body never changes. Per witness and tree, the store keeps the size the witness last cosigned and the retry
 state (witness-queue.json), so a restart resumes where it left off; retries back off from BACKOFF_S[0] to BACKOFF_S[1]
 (a refusal waits the longest). A log a witness has failed to cosign for WITNESS_GAP_S gets one signed
-`capture.gap{witness_failed}` per outage.
+`capture.gap{witness_failed}` per outage. A cosignature whose timestamp is more than `clock_skew_s` from the signer's
+clock starts a clock skew episode: one signed `capture.gap{clock_skew}` until a cosignature within it ends the episode.
 
 Policy (04-design §4): the signer classifies the tool and decides with policy2; every decide gets a fresh decision_id
 that one `complete` with the same arguments consumes. Only deny and ask are memoised, per (tool_call_id, attempt).
@@ -123,7 +134,7 @@ from tracekit.signer.runtoken import RunTokens
 from tracekit.storage.base import ACK_ON_WRITE, RECORDS, StorageUnavailable, registry_tree
 from tracekit.storage.file import FileStorage, _mkdir, _sync_dir, _write_all
 from tracekit.storage.file import fsck as fsck_store
-from tracekit.tlog_witness import TlogWitness, WitnessError, signed_by
+from tracekit.tlog_witness import TlogWitness, WitnessError, log_signed, signed_by
 from tracekit.transport import answering_hello, hello
 
 DEFAULT_POLICY = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "policy2", "packs", "dev.yaml")
@@ -136,12 +147,15 @@ LIST_PAGE = 100
 TICK_S = 1.0
 CHECKPOINT_S, CHECKPOINT_MIN_S = 10.0, 1.0
 WITNESS_GAP_S, BACKOFF_S = 300.0, (1.0, 300.0)
+FSCK_S, CLOCK_SKEW_S, LOCK_TIMEOUT_S = 86400.0, 300.0, 10.0
+SNAPSHOT_RECORDS = 100_000
 CLASSES = ("public", "customer", "tracekit", "operator")
 GRACE_S, IDLE_S = 5.0, 3600.0
 FAIL_MODES = {"default": "closed"}
 CONFIG_KEYS = {"data_dir", "socket", "socket_mode", "tcp_endpoint", "http", "durability", "tenant", "tenants",
                "authorize", "limits", "acknowledge_rollback", "policy", "multi_tenant_apps", "migrators", "analyzers",
-               "fail_modes", "grace_s", "idle_s", "origin", "metrics", "witnesses", "contact", "approvals"}
+               "fail_modes", "grace_s", "idle_s", "origin", "metrics", "witnesses", "contact", "approvals",
+               "lock_timeout_s", "fsck_every_s", "clock_skew_s"}
 APPROVAL_KEYS = {"self_approval", "approvers", "break_glass"}
 
 
@@ -198,6 +212,17 @@ def _write_new(path, data):
     _sync_dir(os.path.dirname(path))
 
 
+def _snapshot_key(keys):
+    """The key of the store's snapshots, or None before it exists (then the store replays its logs in full). Read
+    before the storage lock is taken: a key cut short is ignored, and _secret then stops the start."""
+    try:
+        with open(os.path.join(keys, "snapshot.key"), "rb") as f:
+            key = f.read()
+    except FileNotFoundError:
+        return None
+    return key if len(key) == 32 else None
+
+
 def _secret(path, make, size=32):
     """The `size`-byte secret in `path`, created (0600) on first use. Called under the storage lock, so never by two
     signers. A file of another size stops the start: a key is never used cut short."""
@@ -233,7 +258,8 @@ class SignerService:
     def __init__(self, data_dir, policy=None, identity=None, tenant="default", tenants=None, limits=Limits(),
                  durability=ACK_ON_WRITE, witnesses=(), acknowledge_rollback=False, open_storage=None, isolation=None,
                  multi_tenant_apps=(), migrators=(), analyzers=(), fail_modes=None, grace_s=GRACE_S, idle_s=IDLE_S,
-                 bridge=None, origin=None, authorize=None, contact=None, approvals=None):
+                 bridge=None, origin=None, authorize=None, contact=None, approvals=None, lock_timeout_s=0,
+                 fsck_every_s=FSCK_S, clock_skew_s=CLOCK_SKEW_S):
         """`identity` answers the in-process SignerAPI calls (default: this process's uid); transports call
         handle_frame with the identity they established. `policy` is a policy2 Engine (default: load_policy()).
         `open_storage()` defaults to file storage in data_dir/store. `origin` names the log in its checkpoints, `contact`
@@ -241,7 +267,8 @@ class SignerService:
         `multi_tenant_apps`, `migrators` and `analyzers` are identities ("scheme:subject"); `tenants` and `authorize`
         map identities or prefixes (`...:*`, `.../*`) to a tenant and to the methods they may call.
         `isolation` fixes the signer_isolation label of every run (a dev signer: same-user). `bridge`: see RecordLog.
-        `approvals`: who answers approvals (the `approvals` config section); None for the dev signer's rules."""
+        `approvals`: who answers approvals (the `approvals` config section); None for the dev signer's rules.
+        `lock_timeout_s`, `fsck_every_s` (0: no background check) and `clock_skew_s`: see the config keys."""
         fail_modes = dict(fail_modes or FAIL_MODES)
         if not all(isinstance(k, str) and v in ("open", "closed") for k, v in fail_modes.items()):
             raise ValueError("fail_modes maps tool classes to open or closed")
@@ -254,13 +281,15 @@ class SignerService:
         authorize = dict(authorize or {})
         if not all(isinstance(m, list) and set(m) <= set(REQUESTS) for m in authorize.values()):
             raise ValueError(f"authorize maps identities to lists of methods out of {sorted(REQUESTS)}")
+        keys = os.path.join(data_dir, "keys")
         open_storage = open_storage or (lambda: FileStorage(os.path.join(data_dir, "store"), durability,
-                                                            self.metrics.fsync_seconds.observe))
+                                                            self.metrics.fsync_seconds.observe, lock_timeout_s,
+                                                            _snapshot_key(keys)))
         storage = open_storage()   # takes the storage lock before anything else
         try:
-            keys = os.path.join(data_dir, "keys")
             _mkdir(keys)
             os.chmod(keys, 0o700)
+            storage.snapshot_key = _secret(os.path.join(keys, "snapshot.key"), lambda: os.urandom(32))
             sign = RecordSigner(_secret(os.path.join(keys, "record.key"), lambda: crypto.generate()[0]))
             self.tokens = RunTokens(_secret(os.path.join(keys, "run_token.key"), lambda: os.urandom(32)))
             self._salt_key = _secret(os.path.join(keys, "args_salt.key"), lambda: os.urandom(32))
@@ -277,7 +306,9 @@ class SignerService:
         self.tenant, self.tenants, self.authorize = tenant, dict(tenants or {}), authorize
         self.multi_tenant_apps, self.migrators, self.analyzers = set(multi_tenant_apps), set(migrators), set(analyzers)
         self.fail_modes, self.grace_s, self.idle_s = fail_modes, grace_s, idle_s
-        self.approvals = approvals
+        self.approvals, self.data_dir = approvals, data_dir
+        self.fsck_every_s, self.clock_skew_s, self._skewed, self._fsck_seen = fsck_every_s, clock_skew_s, set(), set()
+        self._snapped = storage.tail_state()["tree_size"]
         self._approvers, self._break_glass = ({k: True for k in (approvals or {}).get(name, ())}
                                               for name in ("approvers", "break_glass"))
         self._swept = self._noted = time.monotonic()
@@ -325,16 +356,22 @@ class SignerService:
         self._checkpointer = threading.Thread(target=self._checkpoint_loop, name="tracekit-signer-checkpointer",
                                               daemon=True)
         self._checkpointer.start()
+        if fsck_every_s:
+            self._fsck = threading.Thread(target=self._fsck_loop, name="tracekit-signer-fsck", daemon=True)
+            self._fsck.start()
         self._publishers = [threading.Thread(target=self._publish_loop, args=(w,), name=f"tracekit-witness-{i}",
                                              daemon=True) for i, w in enumerate(self.witnesses)]
         for t in self._publishers:
             t.start()
 
-    def _rollback(self, path, before, after, acknowledged, why):
-        self.log.write(lambda tx: tx.emit(self.log.signer_run(tx), "trace.tamper", {
-            "path": path, "kind": "rollback", "before": before, "after": after}, source="signer"))
+    def _tamper(self, kind, path, before, after, acknowledged, why):
+        """A signed trace.tamper (a rollback is tenant-level); unless acknowledged, client writes are refused."""
+        data = {"path": path, "kind": kind, "before": before, "after": after,
+                **({"tenant_level": True} if kind == "rollback" else {})}
+        self.log.write(lambda tx: tx.emit(self.log.signer_run(tx), "trace.tamper", data, source="signer"))
         if not acknowledged:
-            self.log.refuse_writes = f"{why}: rolled back; restart with acknowledge_rollback once investigated"
+            self.log.refuse_writes = why + ("; restart with acknowledge_rollback once investigated" if kind == "rollback"
+                                            else "; repair the store (tracekit signer fsck) and restart")
 
     def _check_notes(self, acknowledged):
         """The latest stored note of each tree (the record tree, every registry tree) against the tree: a note of more
@@ -351,10 +388,10 @@ class SignerService:
             path, root = "records" if name == RECORDS else origin, base64.b64decode(root)   # no tenant name in clear
             local = tree.size if tree else 0
             if size > local or tree.root_at(size) != root:
-                self._rollback(path, {"length": size, "hash": "sha256:" + root.hex()},
+                self._tamper("rollback", path, {"length": size, "hash": "sha256:" + root.hex()},
                                {"length": local, "hash": "sha256:" + (tree.root() if tree else merkle.root([])).hex()},
                                acknowledged, f"the local {path} log ({local} leaves) does not extend its stored "
-                                             f"checkpoint ({size})")
+                                             f"checkpoint ({size}): rolled back")
 
     def _check_witnesses(self, witnesses, acknowledged):
         if not witnesses:
@@ -373,9 +410,10 @@ class SignerService:
         local = self.log.storage.tail_state()
         if local["tree_size"] >= size:
             return
-        self._rollback("records", {"length": size, **({"hash": "sha256:" + root.hex()} if root else {})},
+        self._tamper("rollback", "records", {"length": size, **({"hash": "sha256:" + root.hex()} if root else {})},
                        {"length": local["tree_size"], "hash": "sha256:" + local["tree_root"].hex()}, acknowledged,
-                       f"the local log ({local['tree_size']} records) is behind the witnessed checkpoint ({size})")
+                       f"the local log ({local['tree_size']} records) is behind the witnessed checkpoint ({size}): "
+                       "rolled back")
 
     # --- dispatch ---
 
@@ -435,11 +473,41 @@ class SignerService:
             self._nudged.clear()
             try:
                 self.checkpoint()
+                if self.log.storage.tree.size - self._snapped >= SNAPSHOT_RECORDS:
+                    self.snapshot()
             except (RPCError, StorageUnavailable, OSError):   # storage down: the next round retries
                 pass
             except Exception:
                 self._loop_error("checkpointer")
             self._stop.wait(CHECKPOINT_MIN_S)
+
+    def snapshot(self):
+        """Snapshot the store and the run state, so the next start replays only the records after it."""
+        with self._checkpointing:   # no note is stored while the storage snapshots its note index
+            size = self.log.storage.tree.size
+            self.log.snapshot()
+            self._snapped = size
+
+    def _fsck_loop(self):
+        while not self._stop.wait(self.fsck_every_s):
+            try:
+                self.check_store()
+            except Exception:
+                self._loop_error("fsck")
+
+    def check_store(self):
+        """Check the store as `tracekit signer fsck` does, up to the records and registry leaves written so far; new
+        problems get one signed trace.tamper{edited} and refuse client writes until a restart."""
+        def written(tx):
+            t = self.log.storage.tail_state()
+            return {"records.jsonl": t["tree_size"], "registry.jsonl": sum(n for n, _ in t["registry"].values())}
+        problems = fsck(self.data_dir, self.log.write(written))
+        new = [p for p in problems if p not in self._fsck_seen]
+        if new:   # acknowledge_rollback covers the rollback found at start, never a later finding
+            self._fsck_seen.update(new)
+            self._tamper("edited", new[0].split(": ")[0][:256], {}, {}, False,
+                         f"the background fsck found {len(new)} new problem(s), first: {new[0][:512]}")
+        return problems
 
     def checkpoint(self):
         """Sign and store a note of the record tree when it grew since the latest stored one, then one of each
@@ -522,6 +590,13 @@ class SignerService:
         with self._queue_lock:
             st.update(size=size, attempts=0, next=0, since=None, gapped=False)
             self.log.storage.witness_queue_put(self._queue)
+        now, ts = time.time(), checkpoint.open_note(log_signed(note, log_vkey) + lines, [log_vkey], [w.vkey])[3][0][1]
+        if abs(ts - now) <= self.clock_skew_s:
+            self._skewed.discard(w.name)
+        elif w.name not in self._skewed:   # one gap per episode, however many notes it spans
+            self.log.write(lambda tx: tx.gap("clock_skew", f"witness {w.name} cosigned at {_iso(ts)}, "
+                                                           f"{abs(ts - now):.0f} s from the signer's clock ({_iso(now)})"))
+            self._skewed.add(w.name)
         self._wake[w.name].set()   # a newer note may be waiting
 
     def _witness_lag(self):
@@ -630,11 +705,14 @@ class SignerService:
             wake.set()
         self._ticker.join()
         self._checkpointer.join()
+        if self.fsck_every_s:
+            self._fsck.join()
         for t in self._publishers:
             t.join()
         self.flush_refusals()
         try:
             self.checkpoint()
+            self.snapshot()
         except (RPCError, StorageUnavailable, OSError):   # storage down: the next start's notes cover these records
             pass
         self.log.close()
@@ -1223,7 +1301,9 @@ def open_service(cfg, **kw):
                          analyzers=cfg.get("analyzers", ()), fail_modes=cfg.get("fail_modes"),
                          grace_s=float(cfg.get("grace_s", GRACE_S)), idle_s=float(cfg.get("idle_s", IDLE_S)),
                          origin=cfg.get("origin"), contact=cfg.get("contact"), approvals=cfg.get("approvals") or {},
-                         authorize=cfg.get("authorize"), **kw)
+                         authorize=cfg.get("authorize"), lock_timeout_s=float(cfg.get("lock_timeout_s", LOCK_TIMEOUT_S)),
+                         fsck_every_s=float(cfg.get("fsck_every_s", FSCK_S)),
+                         clock_skew_s=float(cfg.get("clock_skew_s", CLOCK_SKEW_S)), **kw)
 
 
 def serve(cfg, service):
@@ -1340,7 +1420,7 @@ def _serve_dev():
     from tracekit.sdk.autospawn import runtime_dir
 
     def open_handler():
-        service = SignerService(dev_data_dir(), isolation="same-user")
+        service = SignerService(dev_data_dir(), isolation="same-user", fsck_every_s=0)
         return service.handle_frame, service.close
     try:
         return serve_dev(runtime_dir(), open_handler, idle_s=float(os.environ.get("TRACEKIT_DEV_IDLE", 900)))
@@ -1351,15 +1431,18 @@ def _serve_dev():
     return 1
 
 
-def fsck(data_dir):
-    """Every problem in the store: the storage check (hashes, chains) plus every record's signature."""
+def fsck(data_dir, upto=None):
+    """Every problem in the store: the storage check (hashes, chains) plus every record's signature. `upto`: see
+    storage.file.fsck."""
     store = os.path.join(data_dir, "store")
-    problems = fsck_store(store)
+    problems = fsck_store(store, upto, _snapshot_key(os.path.join(data_dir, "keys")))
     with open(os.path.join(data_dir, "keys", "record.key"), "rb") as f:
         sign = RecordSigner(f.read())
     try:
         with open(os.path.join(store, "records.jsonl"), "rb") as f:
             for n, line in enumerate(f, 1):
+                if upto and n > upto["records.jsonl"]:
+                    break
                 try:
                     verify_record(loads_strict(line), [sign.spki], {sign.alg})
                 except RecordError as e:
@@ -1463,8 +1546,8 @@ def main(argv=None):
         return 1 if problems else 0
     try:
         service = open_service(cfg)
-    except BlockingIOError:
-        print(f"tracekit signer: another signer holds {cfg['data_dir']}", file=sys.stderr)
+    except BlockingIOError as e:
+        print(f"tracekit signer: {e.strerror}", file=sys.stderr)
         return 1
     except Exception as e:
         print(f"tracekit signer: {e}", file=sys.stderr)

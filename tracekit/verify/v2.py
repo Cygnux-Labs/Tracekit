@@ -22,7 +22,8 @@ origin `<origin>/registry/<id of the bundle's tenant salt>`, and consistent with
 present and in the registry tree; each pointing to a record of the checkpointed tree with that hash, seq, type and
 H(tenant_salt ‖ run_id); one run.final per run; every run final in the range in the bundle from its run.registered (when
 in the range) to that run.final; every bundled run but the selected one the target of a leaf in the range; a range ending
-above size 0. Anything else is `run-set: INCOMPLETE` (FAILED). Every key.retire leaf in the range must be among the key
+above size 0. Anything else is `run-set: INCOMPLETE` (FAILED). Tenant-level gaps in the range (signer capture.gap
+and trace.tamper leaves: witness failures, clock skew, rollbacks) are counted by kind on the run-set line and warned. Every key.retire leaf in the range must be among the key
 records, so a withheld retirement fails `keys`; without a range from size 0 that reaches every bundled record, that is
 unproven (a `keys` warning and an assurance note). The log tail after the checkpoint is reported
 unproven (a warning) unless a log.closed in the range is the checkpoint's last record.
@@ -325,7 +326,7 @@ def _run_set(rep, files, trust, origin, size, runs, included, check_record):
     leaves, pointed = rs["leaves"], {r["event"]["seq"]: r for r in _jsonl(files["registry/records.jsonl"])}
     if len(leaves) != hi - lo:
         problems.append(f"{hi - lo} leaves in {lo}..{hi}, {len(leaves)} in the bundle: a leaf is missing")
-    registered, finals, retired, closed, tenant, targets, top = {}, {}, [], None, None, set(), -1
+    registered, finals, retired, closed, tenant, targets, top, gaps = {}, {}, [], None, None, set(), -1, {}
     for i, x in enumerate(leaves[:hi - lo], lo):
         leaf = base64.b64decode(x["leaf"], validate=True)
         if not verify_inclusion(i, hi, leaf_hash(leaf), [base64.b64decode(p, validate=True) for p in x["inclusion"]],
@@ -353,8 +354,10 @@ def _run_set(rep, files, trust, origin, size, runs, included, check_record):
             finals[e["run_id"]] = r
         elif typ == "key.retire":
             retired.append((seq, h))
-        else:
+        elif typ == "log.closed":
             closed = e
+        else:
+            gaps[e["data"]["kind"]] = gaps.get(e["data"]["kind"], 0) + 1
     for run_id, final in finals.items():
         recs = runs.get(run_name(tenant, run_id))
         if (not recs or recs[-1]["hash"] != final["hash"]
@@ -365,9 +368,13 @@ def _run_set(rep, files, trust, origin, size, runs, included, check_record):
                         "of the range")
     if closed and size > closed["data"]["final_seq"] + 1:
         problems.append(f"records after log.closed at seq {closed['seq']}")
+    counted = ", ".join(f"{k} {n}" for k, n in sorted(gaps.items()))
     rep.check("run-set", not problems, f"COMPLETE, {span} ({len(registered)} runs registered, {len(finals)} final, "
-                                       f"{len(set(registered) - set(finals))} open)" if not problems else
+                                       f"{len(set(registered) - set(finals))} open"
+                                       + (f"; tenant-level gaps: {counted}" if gaps else "") + ")" if not problems else
               f"INCOMPLETE, {span}", problems)
+    if gaps:
+        rep.check("tenant-level gaps", False, f"{sum(gaps.values())} in the range: {counted}", warn=True)
     rep.check("log tail", bool(closed), f"none: log.closed at seq {closed['seq']} is the last record" if closed else
               f"records after tree size {size} are unproven (no log.closed in the range)", warn=True)
     return retired, top if lo == 0 else -1
