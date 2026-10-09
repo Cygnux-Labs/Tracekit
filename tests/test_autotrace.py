@@ -295,6 +295,7 @@ class Lifecycle(unittest.TestCase):
         s = c.chat.completions.create(model="m", messages=[], stream=True)
         del s
         gc.collect()
+        autotrace.flush()  # queued by __del__, recorded at the next call, shutdown or exit
         self.assertEqual(len(t.pairs()[1]), 1)
         self.assertIn("abandoned", t.pairs()[1][0]["error"])
 
