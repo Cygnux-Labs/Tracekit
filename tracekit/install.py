@@ -665,7 +665,7 @@ def migrate_system(fail_mode=None, harnesses=None):
         raise SystemExit("migrate --system needs root: sudo tracekit migrate --system")
     signer_cfg = os.path.join(SYS_HOME, "config.json")
     if not os.path.exists(signer_cfg):
-        raise SystemExit(f"no system-mode signer at {SYS_HOME}; run `sudo tracekit init --user <agent-user>` instead")
+        raise SystemExit(f"no system-mode signer at {SYS_HOME}; run `sudo /usr/bin/python3 -m tracekit init --user <agent-user>` instead")
     unit = os.path.join(SYSTEMD_DIR, "tracekitd.service")
     try:
         runs_opt = f"ExecStart={OPT_PYTHON} " in read_text(unit)
@@ -817,10 +817,10 @@ def doctor(checks=None):
             return 1
         if sc is None:
             print(f"FAIL  system mode: {client.SYSTEM_CONFIG} is missing or not root-owned\n"
-                  "      fix: sudo tracekit init --user <agent-user>")
+                  "      fix: sudo /usr/bin/python3 -m tracekit init --user <agent-user>")
             return 1
         from .policy import DEFAULT_POLICY
-        reinstall = "re-run sudo tracekit init --user <agent-user> to reinstall into " + OPT
+        reinstall = "re-run sudo /usr/bin/python3 -m tracekit init --user <agent-user> to reinstall into " + OPT
         checks = [("signer python", OPT_PYTHON, reinstall), ("venv config", os.path.join(OPT, "pyvenv.cfg"), reinstall),
                   ("runtime", OPT, reinstall), ("unit file", _unit_path(), reinstall),
                    ("policy file", sc.get("policy") or DEFAULT_POLICY,
