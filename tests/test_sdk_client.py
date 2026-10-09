@@ -27,7 +27,7 @@ USE_FAKE = f"from tracekit.sdk import autospawn; autospawn.SIGNER_ARGV = {FAKE_A
 SAY_PID = USE_FAKE + "from tracekit.sdk.client import Client; c = Client(); c.status(); print(c.hello['pid'])"
 
 
-@unittest.skipUnless(os.name == "posix", "the v2 client speaks Unix sockets only")
+@unittest.skipUnless(os.name == "posix", "POSIX paths, signals and shells; DevSignerOverTcp (test_signer_dev.py) runs everywhere")
 class DevSigner(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.mkdtemp(dir="/tmp")   # short path: macOS caps socket paths at 104 bytes

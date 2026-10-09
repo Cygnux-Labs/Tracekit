@@ -6,9 +6,10 @@
         if d["decision"] == "allow":
             run.complete("call-1", "ok")
 
-The signer is the Unix socket in `$TRACEKIT_SIGNER`, or an `https://host:port` URL (each call is one POST /v2/rpc;
-`$TRACEKIT_SIGNER_TOKEN_FILE` names a bearer token file, re-read per call so a rotated service-account token is picked
-up; `$TRACEKIT_SIGNER_CERT`/`_KEY` a client certificate for mTLS; `$TRACEKIT_SIGNER_CA` pins the signer's CA). Without it, a same-user dev signer is found or started
+The signer is the Unix socket in `$TRACEKIT_SIGNER`, `tcp://host:port` with `$TRACEKIT_SIGNER_TOKEN` (the dev
+transport), or an `https://host:port` URL (each call is one POST /v2/rpc; `$TRACEKIT_SIGNER_TOKEN_FILE` names a bearer
+token file, re-read per call so a rotated service-account token is picked up; `$TRACEKIT_SIGNER_CERT`/`_KEY` a client
+certificate for mTLS; `$TRACEKIT_SIGNER_CA` pins the signer's CA). Without it, a same-user dev signer is found or started
 (tracekit/sdk/autospawn.py). Requests go out in order on one connection and the signer answers them in order, so any
 number of threads can have calls in flight; a call that may block (`approval_wait`) gets a connection of its own so it
 holds up no one. Every request is validated against the RPC contract before it is sent.
@@ -36,7 +37,7 @@ from tracekit import __version__
 from tracekit.format.canon import StrictJSONError, event_hash, loads_strict
 from tracekit.signer import rpc_schema
 from tracekit.signer.rpc_schema import RPC_VERSION, RPCError
-from tracekit.transport import parse_frame, read_frame, write_frame
+from tracekit.transport import parse_frame, read_frame, tcp_dev, write_frame
 
 CONNECT_TIMEOUT_S = 2
 RETRIES = 3
@@ -62,20 +63,30 @@ def _new_id():
     return uuid.uuid4().hex
 
 
-def connect(path, timeout=CONNECT_TIMEOUT_S):
-    """(socket, rfile, hello) for the signer listening on Unix socket `path`, after checking its protocol range."""
-    if not hasattr(socket, "AF_UNIX"):
-        # lean: Unix sockets only; Windows dev signers need transport.tcp_dev here and in testing.serve_fake
-        raise SignerUnavailable("this platform has no Unix sockets; the v2 client does not support it yet")
-    sock = socket.socket(socket.AF_UNIX)
-    sock.settimeout(timeout)
+def connect(path, timeout=CONNECT_TIMEOUT_S, token=None):
+    """(socket, rfile, hello) for the signer at `path`, after checking its protocol range. `path` is a Unix socket, or
+    `tcp://host:port` for a signer on the loopback TCP transport, which must prove it holds `token`
+    ($TRACEKIT_SIGNER_TOKEN by default) before we prove it too (transport/tcp_dev.py)."""
+    sock = None
     try:
-        sock.connect(path)
-        rfile = sock.makefile("rb")
+        if path.startswith("tcp://"):
+            host, _, port = path[len("tcp://"):].rpartition(":")
+            token = token or os.environ.get("TRACEKIT_SIGNER_TOKEN")
+            if not token:
+                raise SignerUnavailable(f"{path}: tcp:// signers need TRACEKIT_SIGNER_TOKEN")
+            sock, rfile = tcp_dev.dial(host, int(port), token, timeout)
+        elif hasattr(socket, "AF_UNIX"):
+            sock = socket.socket(socket.AF_UNIX)
+            sock.settimeout(timeout)
+            sock.connect(path)
+            rfile = sock.makefile("rb")
+        else:
+            raise SignerUnavailable(f"this platform has no Unix sockets: name the signer tcp://host:port, not {path}")
         write_frame(sock, {"method": "hello"})
         hello = read_frame(rfile)
-    except (OSError, RPCError) as e:
-        sock.close()
+    except (OSError, RPCError, ValueError) as e:
+        if sock:
+            sock.close()
         raise SignerUnavailable(f"no signer answering at {path}: {e}") from None
     sock.settimeout(None)
     try:

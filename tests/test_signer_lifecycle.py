@@ -7,7 +7,7 @@ import time
 import unittest
 
 from test_bundle_v2 import LOG_SECRET, ORIGIN, pub
-from test_signer_service import ME, OTHER, PAY_ASKS, records, tmpdir
+from test_signer_service import ME, OTHER, PAY_ASKS, SEPARATE_USER, records, tmpdir
 from tracekit import merkle
 from tracekit.bundle_v2 import export
 from tracekit.format import checkpoint
@@ -92,7 +92,7 @@ class TestSignerOnlyRecords(Lifecycle):
         out = self.call("register_run", {"agent": {"name": "a"}}, OTHER)
         self.assertEqual(out["fail_modes"], FAIL_MODES)
         reg = self.events(out["run_id"])[0]
-        self.assertEqual((reg["data"]["signer_isolation"], reg["data"]["fail_modes"]), ("separate-user", FAIL_MODES))
+        self.assertEqual((reg["data"]["signer_isolation"], reg["data"]["fail_modes"]), (SEPARATE_USER, FAIL_MODES))
 
     def test_tenant_is_attested_unless_a_configured_app_asserts_it(self):
         self.refused("forbidden", "register_run", {"agent": {"name": "a"}, "tenant": "acme"}, OTHER)
