@@ -1,16 +1,18 @@
 """Guarded onchain transactions (#15): the guard's verdict is signed before signing; a blocked transaction never reaches
 the wallet; detectors catch unguarded or overridden transactions. The guard here implements PGS's Guard.check()
-interface; PGS itself needs a chain, web3 and Z3 and is not run in this suite.  python3 -m pytest tests/test_onchain.py -q"""
+interface; PGS itself needs a chain, web3 and Z3 and is not run in this suite.  python3 -m pytest contrib/onchain/tests -q"""
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, ROOT)
-from tracekit import bundle, findings, install  # noqa: E402
-from tracekit.adapters.onchain import guarded_tx  # noqa: E402
+HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ROOT = os.path.dirname(os.path.dirname(HERE))
+sys.path[:0] = [ROOT, HERE]
+from tracekit import bundle, install  # noqa: E402
+from tracekit_onchain import analyze, guarded_tx  # noqa: E402
 from tracekit.agent_sdk import Tracer  # noqa: E402
 from tracekit.ledger import read_records  # noqa: E402
 
@@ -74,7 +76,7 @@ class Onchain(unittest.TestCase):
         self.assertEqual(verdicts[0]["tx"]["calls"][0]["selector"], "0xa9059cbb")
         res = [e["data"] for e in evs if e["type"] == "tool.result"]
         self.assertEqual([x["ok"] for x in res], [True, False])
-        f = {x["rule"] for x in findings.analyze(self.records(), "tx-1")}
+        f = {x["rule"] for x in analyze(self.records(), "tx-1")}
         self.assertIn("TK-X008", f)
         self.assertFalse({"TK-X006", "TK-X007"} & f)
         out = os.path.join(self.d, "b.tkb")
@@ -96,11 +98,23 @@ class Onchain(unittest.TestCase):
             return {"event": {"seq": seq, "run_id": "r", "type": typ, "source": "sdk", "data": data}, "hash": f"{seq:064x}"}
         unguarded = [rec(1, "tool.call", {"tool_use_id": "a", "name": "OnchainTx", "input": {}}),
                      rec(2, "tool.result", {"tool_use_id": "a", "ok": True, "output": {"value": {}, "redacted": False}})]
-        self.assertIn("TK-X006", {x["rule"] for x in findings.analyze(unguarded, "r")})
+        self.assertIn("TK-X006", {x["rule"] for x in analyze(unguarded, "r")})
         overridden = unguarded[:1] + [rec(2, "review", {"reviewer": "tx-guard", "verdict": {"kind": "tx_guard", "allow": False,
                                                                                             "reasons": ["payee-cap"], "tool_use_id": "a"}}),
                                       rec(3, "tool.result", {"tool_use_id": "a", "ok": True, "output": {"value": {}, "redacted": False}})]
-        self.assertIn("TK-X007", {x["rule"] for x in findings.analyze(overridden, "r")})
+        self.assertIn("TK-X007", {x["rule"] for x in analyze(overridden, "r")})
+
+    @unittest.skipUnless(os.environ.get("TRACEKIT_PGS"), "set TRACEKIT_PGS=<pgs repo> with a Hardhat node on :8545")
+    def test_pgs_demo(self):
+        p = subprocess.run([sys.executable, os.path.join(HERE, "pgs_onchain_demo.py"), "--pgs", os.environ["TRACEKIT_PGS"],
+                            "--out", os.path.join(self.d, "pgs.tkb")], cwd=self.d, capture_output=True, text=True, timeout=600)
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertEqual(p.stdout.count("BLOCKED by the guard, never signed"), 2)
+        self.assertIn("REVERTED on-chain by the post-conditions", p.stdout)
+        self.assertIn("attacker gain over the session: 0.00", p.stdout)
+        verdicts = [r["event"]["data"]["verdict"]["allow"] for r in self.records()
+                    if r["event"]["type"] == "review" and r["event"]["data"].get("reviewer") == "tx-guard"]
+        self.assertEqual(verdicts, [True, True, False, False, True])
 
 
 if __name__ == "__main__":
@@ -109,6 +123,6 @@ if __name__ == "__main__":
 
 class Summary(unittest.TestCase):
     def test_pgs_call_dicts_keep_their_target(self):
-        from tracekit.adapters.onchain import _summary
+        from tracekit_onchain import _summary
         s = _summary([{"target": "0xabc", "value": 0, "data": "0xa9059cbb" + "00" * 64}], 31337)
         self.assertEqual((s["calls"][0]["to"], s["calls"][0]["selector"]), ("0xabc", "0xa9059cbb"))

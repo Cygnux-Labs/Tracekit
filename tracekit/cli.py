@@ -26,7 +26,8 @@ def _signer_home(a):
     return a.home or client.client_config().get("signer_home") or "/var/lib/tracekit"
 
 
-_DELEGATED = {"observe": "observe", "analyze": "findings", "otel": "otlp", "sql": "query", "cost": "cost", "proofpack": "proofpack", "witness": "witness_server", "causeway": "causeway"}  # subcommands with their own parsers
+_DELEGATED = {"observe": "observe", "analyze": "findings", "otel": "otlp", "cost": "cost", "witness": "witness_server"}  # subcommands with their own parsers
+_MOVED = {"sql": "query", "proofpack": "proofpack", "report": "proofpack", "causeway": "causeway"}  # now separate packages under contrib/
 
 
 def main(argv=None):
@@ -44,9 +45,9 @@ def main(argv=None):
             rest = rest[2:]
         from . import install
         return install.migrate_system(fm, harnesses)
-    if args and args[0] == "report":
-        from .proofpack import report_main
-        return report_main(args[1:])
+    if args and args[0] in _MOVED:
+        print(f"tracekit {args[0]}: moved to contrib/{_MOVED[args[0]]} (pip install ./contrib/{_MOVED[args[0]]})", file=sys.stderr)
+        return 2
     if args and args[0] in _DELEGATED:  # before argparse: REMAINDER would not pass a leading --option through
         import importlib
         return importlib.import_module(f".{_DELEGATED[args[0]]}", __package__).main(args[1:])
@@ -92,17 +93,9 @@ def main(argv=None):
     p.add_argument("rest", nargs=argparse.REMAINDER)
     p = sub.add_parser("analyze", help="run the detectors over a run and sign the findings into the ledger", add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
-    p = sub.add_parser("sql", help="read-only SQL over the ledger (`sql --schema`, `sql --mcp` for coding agents)", add_help=False)
-    p.add_argument("rest", nargs=argparse.REMAINDER)
     p = sub.add_parser("cost", help="token usage (and cost, with your price table) per run or model", add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
-    p = sub.add_parser("proofpack", help="zip for auditors: bundle + report + stdlib-only verifier + control map", add_help=False)
-    p.add_argument("rest", nargs=argparse.REMAINDER)
-    p = sub.add_parser("report", help="readable evidence report for a .tkb bundle", add_help=False)
-    p.add_argument("rest", nargs=argparse.REMAINDER)
     p = sub.add_parser("witness", help="run a witness log: `witness init|token|serve` (append-only, Merkle tree, signed heads)", add_help=False)
-    p.add_argument("rest", nargs=argparse.REMAINDER)
-    p = sub.add_parser("causeway", help="Causeway runs: anchor | verify | import-tests | export", add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
     p = sub.add_parser("otel", help="OpenTelemetry receiver: `otel serve` records agent spans sent over OTLP/HTTP", add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)

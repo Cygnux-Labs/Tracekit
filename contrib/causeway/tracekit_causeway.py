@@ -1,14 +1,14 @@
 """Causeway integration: Tracekit as the trust root for Causeway's causal logs, in both directions.
 
-    tracekit causeway anchor runs/demo-seed0            # sign + witness the Causeway run's chain head, blobs and tests
-    tracekit causeway verify runs/demo-seed0            # unchanged since a signed anchor? (and what came after it)
-    tracekit causeway import-tests runs/demo-seed0      # counterfactual verdicts -> signed Tracekit findings
-    tracekit causeway export --run R -o runs/           # a Tracekit run as a Causeway run (lineage, alerts, graph views)
+    tracekit-causeway anchor runs/demo-seed0            # sign + witness the Causeway run's chain head, blobs and tests
+    tracekit-causeway verify runs/demo-seed0            # unchanged since a signed anchor? (and what came after it)
+    tracekit-causeway import-tests runs/demo-seed0      # counterfactual verdicts -> signed Tracekit findings
+    tracekit-causeway export --run R -o runs/           # a Tracekit run as a Causeway run (lineage, alerts, graph views)
 
 Causeway hash-chains its events but does not sign them: anyone who can rewrite the run directory can rebuild a
 consistent chain. An anchor is a signed, checkpointed (and witnessed, if configured) Tracekit record of the run's chain
 head, the digest of all its blobs and the digest of its test results. After anchoring, editing any event, blob or test
-result, or dropping events, makes `tracekit causeway verify` fail; appending events is reported as an unanchored tail.
+result, or dropping events, makes `tracekit-causeway verify` fail; appending events is reported as an unanchored tail.
 
 Anchors and imported findings live in companion runs (``anchors:causeway:<run>``, ``findings:causeway:<run>``) that the
 signer accepts only `review` events for. Causeway's formats are read from its documented spec (docs/architecture.md);
@@ -85,17 +85,17 @@ def digest(path):
 # ------------------------------------------------------------------ ledger access
 
 def _home(a):
-    from . import client
+    from tracekit import client
     return a.home or client.client_config().get("signer_home") or "/var/lib/tracekit"
 
 
 def _records(home):
-    from .ledger import read_records
+    from tracekit.ledger import read_records
     return [r for _, r, _ in read_records(os.path.join(home, "ledger", "ledger.jsonl")) if r and not r.get("elided")]
 
 
 def _review_event(run_id, verdict, reviewer):
-    from .core import GENESIS as TG, SCHEMA_VERSION, new_id, now_ts
+    from tracekit.core import GENESIS as TG, SCHEMA_VERSION, new_id, now_ts
     return {"schema_version": SCHEMA_VERSION, "id": new_id(), "seq": 0, "prev_hash": TG, "ts": now_ts(), "run_id": run_id,
             "agent_id": "analyzer", "parent_id": None, "source": "sdk", "type": "review",
             "data": {"reviewer": reviewer, "verdict": verdict}}
@@ -109,7 +109,7 @@ def anchors_for(records, cw_run):
 
 def anchor(home, path):
     """Sign an anchor for a Causeway run. -> (status, verdict, signed_seq_or_None)."""
-    from . import client
+    from tracekit import client
     d, events, blobs, _ = digest(path)
     probs = chain_problems(events, blobs)
     if probs:
@@ -132,7 +132,7 @@ def check(records, path):
         return False, ["Causeway chain broken: " + "; ".join(probs[:5])]
     anchors = anchors_for(records, d["run_id"])
     if not anchors:
-        return False, [f"run {d['run_id']}: no signed anchor in the ledger (run `tracekit causeway anchor`)"]
+        return False, [f"run {d['run_id']}: no signed anchor in the ledger (run `tracekit-causeway anchor`)"]
     seq, h, v = anchors[-1]
     if v["events"] > len(events):
         return False, [f"anchored with {v['events']} events, now {len(events)}: events were removed"]
@@ -155,8 +155,8 @@ def check(records, path):
 
 def import_tests(home, path):
     """Counterfactual verdicts as signed findings citing the run's anchor. Requires a current anchor."""
-    from . import client
-    from .findings import fingerprint
+    from tracekit import client
+    from tracekit.findings import fingerprint
     records = _records(home)
     ok, lines = check(records, path)
     if not ok:
@@ -293,7 +293,7 @@ def export(home, run_id, out_dir):
 # ------------------------------------------------------------------ CLI
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(prog="tracekit causeway")
+    ap = argparse.ArgumentParser(prog="tracekit-causeway")
     sub = ap.add_subparsers(dest="cmd", required=True)
     for name in ("anchor", "verify", "import-tests"):
         p = sub.add_parser(name)
@@ -309,7 +309,7 @@ def main(argv=None):
         try:
             path, n = export(home, a.run, a.out)
         except ValueError as err:
-            print(f"tracekit causeway: {err}", file=sys.stderr)
+            print(f"tracekit-causeway: {err}", file=sys.stderr)
             return 2
         print(f"wrote {path} ({n} Causeway events); open with: causeway report {a.out}")
         return 0

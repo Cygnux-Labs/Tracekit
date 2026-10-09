@@ -1,5 +1,5 @@
 """Compliance proof packs (#12): report, control map, and a verifier that runs with nothing but Python.
-python3 -m pytest tests/test_proofpack.py -q"""
+python3 -m pytest contrib/proofpack/tests -q"""
 import hashlib
 import os
 import shutil
@@ -9,9 +9,11 @@ import tempfile
 import unittest
 import zipfile
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, ROOT)
-from tracekit import bundle, install, proofpack  # noqa: E402
+HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ROOT = os.path.dirname(os.path.dirname(HERE))
+sys.path[:0] = [ROOT, HERE]
+import tracekit_proofpack as proofpack  # noqa: E402
+from tracekit import bundle, install  # noqa: E402
 from tracekit.agent_sdk import Tracer  # noqa: E402
 
 
@@ -95,10 +97,10 @@ class Pack(unittest.TestCase):
 
     def test_cli(self):
         out = os.path.join(self.d, "cli.zip")
-        p = subprocess.run([sys.executable, "-m", "tracekit", "proofpack", "--home", self.home, "--run", "pp-1", "-o", out],
-                           capture_output=True, text=True, cwd=ROOT)
+        p = subprocess.run([sys.executable, "-m", "tracekit_proofpack", "--home", self.home, "--run", "pp-1", "-o", out],
+                           capture_output=True, text=True, cwd=HERE, env=dict(os.environ, PYTHONPATH=ROOT))
         self.assertEqual(p.returncode, 0, p.stderr)
-        p = subprocess.run([sys.executable, "-m", "tracekit", "report", self.tkb], capture_output=True, text=True, cwd=ROOT)
+        p = subprocess.run([sys.executable, "-m", "tracekit_proofpack", "--report-only", self.tkb], capture_output=True, text=True, cwd=HERE, env=dict(os.environ, PYTHONPATH=ROOT))
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertTrue(p.stdout.startswith("# Evidence report: pp-1"))
 

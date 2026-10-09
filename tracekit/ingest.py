@@ -34,7 +34,7 @@ from .core import now_ts
 TOKENS_FILE = "ingest-tokens.json"
 MAX_BODY = 1024 * 1024
 ALLOWED_TYPES = {"run.start", "user.prompt", "tool.call", "policy.decision", "tool.result", "model.message", "model.exchange",
-                 "review", "run.end"}  # review: guard verdicts (adapters.onchain); remote runs are namespaced, never findings:/anchors:  # model.exchange: SDK auto-instrumentation; source=sdk, never cross-checked as proxy evidence
+                 "review", "run.end"}  # review: guard verdicts (contrib/onchain); remote runs are namespaced, never findings:/anchors:  # model.exchange: SDK auto-instrumentation; source=sdk, never cross-checked as proxy evidence
 ALLOWED_OPS = {"append", "status"}
 OTLP_EXTRA_TYPES = {"model.exchange"}  # application-reported (source=sdk); never cross-checked as proxy evidence
 ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,120}$")

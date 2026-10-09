@@ -4,7 +4,7 @@
 Needs the PGS repository and a local Hardhat chain (no real funds; chain id 31337):
 
     git clone <pgs repo> ../pgs && cd ../pgs && npm i && pip install z3-solver web3 && node compile.js && ./node.sh 8545
-    python3 examples/pgs_onchain_demo.py --pgs ../pgs
+    python3 contrib/onchain/pgs_onchain_demo.py --pgs ../pgs
 
 Four transactions the agent proposes: two honest (pay Alice, swap USDC for WETH), two malicious (approve a drainer and
 claim, a direct transfer to the attacker), and one swap whose pool is upgraded by the attacker between the guard's check
@@ -17,12 +17,12 @@ import sys
 import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.join(HERE, ".."))
+sys.path[:0] = [os.path.join(HERE, "..", ".."), HERE]
 
 
 def main(argv=None):
     ap = argparse.ArgumentParser()
-    ap.add_argument("--pgs", default=os.path.join(HERE, "..", "..", "pgs"), help="path to the PGS repository")
+    ap.add_argument("--pgs", default=os.path.join(HERE, "..", "..", "..", "pgs"), help="path to the PGS repository")
     ap.add_argument("--rpc", default="http://127.0.0.1:8545")
     ap.add_argument("--out", default=os.path.join(tempfile.gettempdir(), "pgs-run.tkb"))
     a = ap.parse_args(argv)
@@ -33,7 +33,7 @@ def main(argv=None):
     from pgs.world import E18, World, w3_connect
 
     from tracekit import bundle
-    from tracekit.adapters.onchain import guarded_tx
+    from tracekit_onchain import guarded_tx
     from tracekit.agent_sdk import Tracer
 
     w3 = w3_connect(a.rpc)

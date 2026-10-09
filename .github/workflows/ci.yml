@@ -108,3 +108,19 @@ jobs:
         with:
           name: dist
           path: dist/
+
+  contrib:
+    name: contrib packages
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install core and every contrib package
+        run: python -m pip install -e ".[dev]" ./contrib/causeway ./contrib/onchain ./contrib/proofpack ./contrib/query ./contrib/stagehand
+      - name: Lint
+        run: python -m pyflakes contrib
+      - name: Test
+        run: make test-contrib PY=python
