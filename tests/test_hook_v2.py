@@ -13,7 +13,7 @@ import unittest
 from unittest import mock
 
 from test_bundle_v2 import LOG_SECRET, ORIGIN, pub
-from tracekit import cli, install
+from tracekit import cli, install, privacy
 from tracekit.bundle_v2 import export
 from tracekit.format import checkpoint
 from tracekit.format.checkpoint import ED25519
@@ -106,6 +106,20 @@ class HookV2(unittest.TestCase):
         self.assertEqual([e["type"] for e in evs], ["run.registered", "policy.decision", "tool.result"])
         self.assertFalse(evs[2]["data"]["ok"])
 
+    def test_output_goes_through_privacy_per_content_capture(self):
+        resp = {"stdout": "API_KEY=abc123def456ghi\nCOLOR=blue"}
+        policy = os.path.join(self.dir, "full.yaml")
+        with open(policy, "w") as f:
+            f.write("extends: default\nversion: full-capture\ncontent_capture: full\n")
+        for tid, cc in (("t1", "hashed"), ("t2", "full")):
+            if cc == "full":
+                os.environ["TRACEKIT_POLICY"] = policy
+            self.pre("cat .env", tid=tid)
+            self.assertEqual(self.hook("PostToolUse", tool_name="Bash", tool_input={"command": "cat .env"},
+                                       tool_use_id=tid, tool_response=resp), (0, ""))
+            out = self.events()[-1]["data"]["output"]
+            self.assertEqual(out["hash"], service._ref({"result": privacy.content(resp, cc, True)})["hash"], cc)
+
     def test_deny(self):
         code, err = self.pre("pkill tracekitd")
         self.assertEqual(code, 2)
@@ -152,6 +166,12 @@ class HookV2(unittest.TestCase):
         old.close()
         self.assertEqual(self.pre("ls", tid="t2"), (0, ""))
         self.assertNotEqual(self.run_handle().run_id, old.run_id)
+
+    def test_session_end_after_the_signer_closed_the_run(self):
+        self.pre("ls")
+        self.run_handle().close()
+        self.assertEqual(self.hook("SessionEnd", reason="exit"), (0, ""))
+        self.assertEqual([f for f in os.listdir(os.path.join(self.dir, "run")) if f.startswith("claude-code-")], [])
 
     def test_missing_ids_are_never_defaulted(self):
         code, err = self.hook("PreToolUse", tool_name="Bash", tool_input={"command": "ls"})
@@ -208,6 +228,9 @@ class InitV2(unittest.TestCase):
         code, err = self.init("--v2")
         self.assertEqual(code, 2)
         self.assertIn("dev mode only", err)
+        code, err = self.init("--dev", "--v2", "--fail-closed")
+        self.assertEqual(code, 2)
+        self.assertIn("don't apply with --v2", err)
 
 
 if __name__ == "__main__":

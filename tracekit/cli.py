@@ -245,6 +245,10 @@ def _run(a):
             print("tracekit: --v2 wires the Claude Code hook in dev mode only (--dev); system mode comes later",
                   file=sys.stderr)
             return 2
+        if a.v2 and (a.home or a.witness or a.proxy or a.fail_closed or signer):
+            print("tracekit: --home, --witness, --proxy, --fail-closed and --signer-cmd are v1 signer options; "
+                  "they don't apply with --v2", file=sys.stderr)
+            return 2
         if a.dev and a.agent != "claude":
             from . import agent_hooks
             home = a.home or os.path.expanduser("~/.tracekit-signer")

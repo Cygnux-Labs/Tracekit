@@ -127,8 +127,12 @@ def main():
         return _post(client, p, sid, tid)
     if name == "SessionEnd":
         run = _run(client, sid, register=False)
-        if run:
-            run.close(str(p.get("reason") or "session end")[:256])
+        try:
+            if run:
+                run.close(str(p.get("reason") or "session end")[:256])
+        except RPCError as e:
+            if e.code not in ("run_closed", "unknown_run"):   # closed already (idle): only the state is left
+                raise
         for f in glob.glob(glob.escape(_state(sid)[:-len(".json")]) + "*"):
             os.remove(f)
         return 0
