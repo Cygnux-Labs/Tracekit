@@ -155,9 +155,15 @@ def _key(config):
     return f"langgraph:{c['thread_id']}" + (f"/{c['checkpoint_ns']}" if c.get("checkpoint_ns") else "")
 
 
+def _latest(config):
+    """The config that reads the thread's latest checkpoint, whichever checkpoint `config` names."""
+    c = config["configurable"]
+    return {"configurable": {"thread_id": c["thread_id"], "checkpoint_ns": c.get("checkpoint_ns", "")}}
+
+
 class TracekitCheckpointer(BaseCheckpointSaver):
     """A BaseCheckpointSaver that commits what the wrapped saver holds to the signer (L1): after each checkpoint or
-    pending-writes write, a `state_write` of `checkpoint_digest` of the thread's checkpoint (key
+    pending-writes write, a `state_write` of `checkpoint_digest` of the thread's latest checkpoint (key
     `langgraph:<thread_id>[/<checkpoint_ns>]`), from the digest the signer last recorded for it. A checkpoint changed
     in the saver between two writes (seen when a run loads it to resume) makes the next write start from another
     digest than the signer's last, which the signer records as a `state_tamper` gap."""
@@ -176,7 +182,7 @@ class TracekitCheckpointer(BaseCheckpointSaver):
         return self._loaded(self.saver.get_tuple(config))
 
     async def aget_tuple(self, config):
-        return self._loaded(await self.saver.aget_tuple(config))
+        return await asyncio.to_thread(self._loaded, await self.saver.aget_tuple(config))   # the lock waits on a signer call
 
     def _loaded(self, t):
         if t is not None:
@@ -201,12 +207,12 @@ class TracekitCheckpointer(BaseCheckpointSaver):
         await self._awrote(config)
         return config
 
-    def put_writes(self, config, *args, **kw):
-        self.saver.put_writes(config, *args, **kw)
+    def put_writes(self, config, writes, task_id, task_path=""):   # LangGraph passes task_path only if named
+        self.saver.put_writes(config, writes, task_id, task_path)
         self._wrote(config)
 
-    async def aput_writes(self, config, *args, **kw):
-        await self.saver.aput_writes(config, *args, **kw)
+    async def aput_writes(self, config, writes, task_id, task_path=""):
+        await self.saver.aput_writes(config, writes, task_id, task_path)
         await self._awrote(config)
 
     # the saver has written: raising would fail the run after it. The next commitment starts from the last digest the
@@ -214,21 +220,21 @@ class TracekitCheckpointer(BaseCheckpointSaver):
     def _wrote(self, config):
         try:
             n = next(self._reads)   # numbered after the write, so any later-numbered read includes it
-            self._commit(n, self.saver.get_tuple(config))
+            self._commit(n, self.saver.get_tuple(_latest(config)))
         except Exception as e:
             warnings.warn(f"tracekit: checkpoint commitment for {_key(config)} not recorded: {e}", stacklevel=3)
 
     async def _awrote(self, config):
         try:
             n = next(self._reads)
-            t = await self.saver.aget_tuple(config)
+            t = await self.saver.aget_tuple(_latest(config))
             await asyncio.to_thread(self._commit, n, t)   # the signer client blocks
         except Exception as e:
             warnings.warn(f"tracekit: checkpoint commitment for {_key(config)} not recorded: {e}", stacklevel=3)
 
     def _commit(self, n, t):
-        """Commit `t`, from read `n`, unless a later read is committed already (it includes this write). `t` is None
-        for writes to a checkpoint not saved yet: its own commitment comes after them."""
+        """Commit `t`, the thread's latest checkpoint as read `n` found it, unless a later read is committed already
+        (it includes this write). `t` is None before the thread's first checkpoint."""
         if t is None:
             return
         k = _key(t.config)

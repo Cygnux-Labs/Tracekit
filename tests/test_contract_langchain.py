@@ -9,6 +9,7 @@ import os
 import subprocess
 import sys
 import unittest
+import warnings
 from unittest import mock
 
 import adapter_contract as ac
@@ -208,6 +209,13 @@ class TestOnRealSigner(ac.Contract, ac.OnReal, unittest.TestCase):
         self.assertGreater(len(calls), 2)
         gaps = [e["data"]["kind"] for e in self.events(self.d.run()) if e["type"] == "capture.gap"]
         self.assertEqual(gaps, ["client_counter_gap"])   # the lost write, and no state_tamper
+
+    def test_async_calls_commit_the_checkpoint(self):
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            self.assertEqual(self.d.call("echo", {"text": "hi"}, mode="async")["seen"], "hi")
+        self.assertEqual([str(w.message) for w in caught], [])
+        self.assertTrue(self.recorded("state.write"))
 
 
 @unittest.skipUnless(HAVE_LC, "langchain>=1 / langgraph-checkpoint-sqlite not installed")
