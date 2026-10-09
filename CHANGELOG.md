@@ -2,6 +2,53 @@
 
 All notable changes to Tracekit. Versions follow [PEP 440](https://peps.python.org/pep-0440/).
 
+## 0.4.0 (2026-10-09) — v2 signer preview
+
+A **preview of the v2 architecture** for server-hosted agents, shipped alongside the unchanged v1 laptop setup.
+Everything v1 (`tracekit init`, the v1 hooks, `tracekitd`, `.tkb` v1 bundles and their verifier) works as in 0.3.0;
+the v2 pieces are opt-in. Formats and the signer RPC may still change before 1.0. Quickstart:
+[docs/quickstart-v2.md](docs/quickstart-v2.md).
+
+### The v2 signer (preview)
+- **`tracekit signer serve`**: a signer service that holds the keys and assigns sequence numbers; agents talk to it over
+  a versioned RPC (Unix socket with peer-uid identity, loopback TCP with a token for dev, HTTPS with Kubernetes
+  service-account tokens, mTLS/SPIFFE or a bearer token). Per-method authorization and tenant mapping from config.
+- **Same-user dev signer, started on first use** by the Python client (`tracekit up | down | status`); a signer of an
+  incompatible version is refused, never restarted behind your back.
+- **Evidence format v2**: JCS canonical JSON, domain-separated Ed25519 record signatures, an RFC 6962 Merkle tree over
+  all records, C2SP checkpoint notes signed by a separate log key, per-tenant registry logs, and per-run bundles.
+- **`tracekit verify`** reads v2 bundles against a pinned trust config (`tracekit signer trust` writes one for a dev
+  signer) and reports `Integrity` and `Assurance` separately; a dev signer's runs verify at `Assurance: dev`.
+- **Run lifecycle** in the signer: registration, idle timeout, closing window for late results, `run.final`; gap and
+  tamper records are written by the signer only.
+- **Policy v2 inside the signer**: an RE2-subset engine (google-re2 or `regex`, same results), a structural shell
+  parser, tool classes, the coding packs, `unless` exemptions; decisions are bound to the exact arguments that later run.
+- **Approvals**: one per tool call attempt, bound to its arguments, consumed once; edited arguments, swapped ids and
+  expired approvals are refused and recorded; pending approvals survive a signer restart (arguments kept encrypted);
+  `tracekit approvals list | show | approve | reject`. Self-approval is allowed in dev mode, labelled, and caps
+  assurance at `dev`.
+- **Checkpoints, export and viewing**: signed notes after each run ends and on a cadence; `tracekit export --v2`;
+  `tracekit view`, a read-only laptop viewer where every run is checked by the verifier.
+- **Metrics**: Prometheus `/metrics` on its own port ([docs/observability.md](docs/observability.md)).
+- **Run-set completeness**: per-tenant registry logs are checkpointed; `tracekit export --v2 --run-set` bundles every
+  run a tenant registered in a window, so a deleted run or a withheld key retirement fails verification.
+- **Format bridge**: `tracekit signer bridge` continues a v1 ledger in a v2 log and retires the v1 key.
+
+### Integrations on v2 (preview)
+- **Claude Code**: `tracekit init --dev --v2` wires a thin v2 hook (no local policy, no keys; ~55 ms per tool call).
+- **OpenAI Agents SDK** (`tracekit.integrations.openai_agents`): signer-side approvals through the tool input
+  guardrail, `apply_decisions(state)` for paused runs; hosted tools are recorded and listed as uncovered.
+- **LangChain v1** middleware (`tracekit.integrations.langchain`): deny-and-continue, approvals through LangGraph
+  `interrupt()` that survive a process restart.
+- **Autotrace on v2** with shared parsers for OpenAI (Chat Completions, Responses), Anthropic and Google Gen AI: the
+  tool calls a model asked for are recorded (as salted commitments) for later reconciliation.
+- An adapter contract suite that every integration runs against both a test signer and the real one.
+
+### Fixes
+- A second v1 signer started on the same home no longer cuts off the running one (#73).
+- Windows: the test suite runs again (it stopped at collection), file-lock contention is reported the same way as on
+  POSIX, and the v2 client reaches a Windows dev signer over loopback TCP.
+
 ## 0.3.0 (2026-10-09)
 
 First release published on PyPI, as **`tracekit-ai`** (`pip install tracekit-ai`; the import and the command stay
