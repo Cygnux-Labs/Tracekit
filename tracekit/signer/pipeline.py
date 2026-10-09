@@ -55,6 +55,18 @@ def approval(tenant, run_id, data):
 APPROVAL_ENDS = {"approval.consumed": "consumed", "approval.expired": "expired"}
 
 
+def salt_label(e):
+    """What the salt of event `e`'s commitments is derived from; None when it has none."""
+    d = e["data"]
+    if e["type"] in ("policy.decision", "approval.request", "approval.binding_mismatch"):
+        return d.get("decision_id")
+    if e["type"] == "tool.result":
+        return "result:" + d["decision_id"]
+    if e["type"] in ("model.exchange", "state.write"):
+        return f"{e['type']}:{e['tenant']}:{e['run_id']}:{e['request_id']}"
+    return None
+
+
 def subject(identity):
     return f"{identity.scheme}:{identity.subject}"
 
@@ -192,7 +204,7 @@ class RecordLog:
                 if call["decision_id"]:
                     run["decisions"][call["decision_id"]] = call
             elif e["type"] == "state.write":
-                run["states"][e["data"]["key"]] = e["data"]["digest"]
+                run["states"][e["data"]["key"]] = (salt_label(e), e["data"]["digest"])
             elif e["type"] == "tool.result" and "decision_id" in e["data"]:
                 run["decisions"][e["data"]["decision_id"]] = None
             elif e["type"] == "approval.request":

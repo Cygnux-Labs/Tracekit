@@ -193,8 +193,9 @@ class TestService(unittest.TestCase):
             self.assertEqual(schema.validate(e), [], e)
         gaps = [e["data"] for e in events if e["type"] == "capture.gap"]
         self.assertEqual([g["kind"] for g in gaps], ["state_tamper", "state_tamper"])
-        self.assertIn(f"last written {d2}, now from {other}", gaps[0]["reason"])
-        self.assertIn(f"last written {d3}, now from {d2}", gaps[1]["reason"])
+        for g in gaps:   # the reason names the key; the state digests stay commitments, never in clear
+            self.assertIn("state k ", g["reason"])
+            self.assertFalse(any(d in g["reason"] for d in (d1, d2, d3, other)), g["reason"])
 
     def test_disk_error_is_unavailable_then_a_signed_gap(self):
         s = self.open()

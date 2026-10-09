@@ -50,7 +50,7 @@ class TestScrape(Harness, unittest.TestCase):
             return parse(r.read().decode())
 
     def serve(self):
-        servers = svc.serve({"socket": os.path.join(self.dir, "s.sock"), "metrics": {"listen": "127.0.0.1:0"}},
+        servers = svc.serve({"tcp_endpoint": os.path.join(self.dir, "endpoint.json"), "metrics": {"listen": "127.0.0.1:0"}},
                             self.signer)
         for s in servers:
             self.addCleanup(s.server_close)
@@ -183,7 +183,7 @@ class TestFsyncLag(unittest.TestCase):
         s._stop.set()
         s._syncer.join()
         s.append_batch(Chain().batch(3, ("a",)))
-        self.assertGreater(s.unsynced_s(), 0.0)
+        self.assertTrue(wait_for(lambda: s.unsynced_s() > 0.0, 1, 0.001))   # once the monotonic clock ticks (Windows: ~16 ms)
         s._stop.clear()
         s._syncer = threading.Thread(target=s._sync_loop, daemon=True)
         s._syncer.start()
