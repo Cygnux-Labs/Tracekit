@@ -24,6 +24,7 @@ try:
 except ImportError:  # pragma: no cover
     fcntl = None
 
+from tracekit.deploy.files import _replace_retrying
 from tracekit.format.canon import event_hash, loads_strict
 from tracekit.locking import lock_file
 from tracekit.merkle import leaf_hash
@@ -82,7 +83,7 @@ def _write_new(path, data):
         os.fsync(fd)
     finally:
         os.close(fd)
-    os.replace(tmp, path)
+    _replace_retrying(tmp, path)   # a FileReader may be reading the old file
     _sync_dir(os.path.dirname(path))
 
 
