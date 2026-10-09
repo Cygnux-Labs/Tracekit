@@ -101,6 +101,8 @@ class SignerMetrics:
                                             "Signed checkpoint notes of the record tree written."))
         self.witness_failures = self.add(Counter("tracekit_signer_witness_publish_failures_total",
                                                  "Checkpoint notes a witness did not cosign, by witness.", "witness"))
+        self.loop_errors = self.add(Counter("tracekit_signer_loop_errors_total",
+                                            "Unexpected errors of a background loop, which carried on, by loop.", "loop"))
 
     def add(self, m):
         self.metrics.append(m)
