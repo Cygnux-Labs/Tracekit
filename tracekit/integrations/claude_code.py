@@ -77,8 +77,11 @@ def _pre(client, p, sid, tid):
         if state != "approved":
             print(f"Held by tracekit policy ({'; '.join(d['rule_ids'])}) and not approved: {state}", file=sys.stderr)
             return 2
-        d = run.call("decide", tool_call_id=tid, tool=tool, args=args, args_source="parsed", approval_id=aid)
-    if d["decision"] != "allow":
+        c = run.approval_consume(tid, tool, args, approval_id_hint=aid)   # once, and only for the approved args
+        if not c["ok"]:
+            print(f"Held by tracekit policy: {'; '.join(c['rule_ids'])} {c.get('reason', '')}".rstrip(), file=sys.stderr)
+            return 2
+    elif d["decision"] != "allow":
         print(f"Blocked by tracekit policy: {'; '.join(d['rule_ids'])} {d.get('reason', '')}".rstrip(), file=sys.stderr)
         return 2
     files.write_json(_state(sid, tid), {"run_id": run.run_id, "decision_id": d["decision_id"],
