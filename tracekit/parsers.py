@@ -14,10 +14,13 @@ Gemini function calls without an id get `gemini:<response id>:<index>` and `id_s
 
 `Stream(kind)` accumulates a streamed response, chunk by chunk, into the shape `parse` reads.
 """
+import hashlib
+
 import rfc8785
 
 from tracekit import usage as _usage
 from tracekit.format.canon import event_hash, loads_strict
+from tracekit.signer import rpc_schema
 
 
 def _get(obj, *path, default=None):
@@ -41,8 +44,15 @@ def _list(obj, *path):
     return v if isinstance(v, (list, tuple)) else []
 
 
+def _id(x):
+    """A provider's tool call id as the RPC's ID: kept when it fits, else `sha256:<hex>` of it, so an id format the
+    RPC does not accept never refuses the call."""
+    s = str(x)
+    return s if not rpc_schema.validate(rpc_schema.ID, s) else "sha256:" + hashlib.sha256(s.encode()).hexdigest()
+
+
 def tool_use(id, name, args=None, args_source="parsed", executed_by="client"):
-    t = {"id": str(id), "name": str(name), "executed_by": executed_by}
+    t = {"id": _id(id), "name": str(name)[:256] or "?", "executed_by": executed_by}
     if executed_by == "provider":
         return t
     t["args_source"] = args_source
@@ -59,7 +69,7 @@ def tool_use(id, name, args=None, args_source="parsed", executed_by="client"):
 def _out(rid, model, finish, usage, uses, sent):
     return {"exchange_id": rid, "model": model, "finish": finish,
             "usage": {k: v for k, v in (usage or {}).items() if v is not None} or None,
-            "tool_uses": uses, "tool_results_sent": sent}
+            "tool_uses": uses, "tool_results_sent": [_id(i) for i in sent if i]}
 
 
 # ------------------------------------------------------------------ OpenAI Chat Completions
@@ -75,7 +85,7 @@ def openai_chat(resp, request=None):
                                      "raw"))
     sent = [_get(m, "tool_call_id") for m in _list(request, "messages") if _get(m, "role") == "tool"]
     return _out(_get(resp, "id"), _get(resp, "model"), _get(resp, "choices", 0, "finish_reason"),
-                _usage.from_openai(_get(resp, "usage")), uses, [i for i in sent if i])
+                _usage.from_openai(_get(resp, "usage")), uses, sent)
 
 
 def _at(items, i):
@@ -94,12 +104,15 @@ def _openai_chat_chunk(acc, chunk):
             choice["finish_reason"] = _get(c, "finish_reason")
         for tc in _list(c, "delta", "tool_calls"):
             call = _at(choice.setdefault("message", {}).setdefault("tool_calls", []), _get(tc, "index", default=0))
-            fn = call.setdefault("function", {"arguments": ""})
-            if _get(tc, "id"):
-                call["id"] = _get(tc, "id")
-            if _get(tc, "function", "name"):
-                fn["name"] = _get(tc, "function", "name")
-            fn["arguments"] += _get(tc, "function", "arguments", default="")
+            for k in ("id", "type"):
+                if _get(tc, k):
+                    call[k] = _get(tc, k)
+            for k, field in (("function", "arguments"), ("custom", "input")):
+                if _get(tc, k) is not None:
+                    part = call.setdefault(k, {field: ""})
+                    if _get(tc, k, "name"):
+                        part["name"] = _get(tc, k, "name")
+                    part[field] += _get(tc, k, field, default="")
 
 
 # ------------------------------------------------------------------ OpenAI Responses
@@ -107,9 +120,10 @@ def _openai_chat_chunk(acc, chunk):
 # output item type -> tool name, for tools the provider runs itself
 PROVIDER_ITEMS = {"web_search_call": "web_search", "file_search_call": "file_search",
                   "code_interpreter_call": "code_interpreter", "image_generation_call": "image_generation",
-                  "computer_call": "computer", "mcp_call": "mcp"}
+                  "mcp_call": "mcp"}
 # output item type -> (tool name or None for the item's `name`, the field holding the arguments, args_source)
 CLIENT_ITEMS = {"function_call": (None, "arguments", "raw"), "custom_tool_call": (None, "input", "parsed"),
+                "computer_call": ("computer", "action", "parsed"),
                 "local_shell_call": ("local_shell", "action", "parsed"), "shell_call": ("shell", "action", "parsed"),
                 "apply_patch_call": ("apply_patch", "operation", "parsed")}
 
@@ -126,7 +140,7 @@ def openai_responses(resp, request=None):
             uses.append(tool_use(_get(item, "call_id") or _get(item, "id"), name, executed_by="provider"))
     sent = [_get(i, "call_id") for i in _list(request, "input") if str(_get(i, "type", default="")).endswith("_output")]
     return _out(_get(resp, "id"), _get(resp, "model"), _get(resp, "incomplete_details", "reason") or _get(resp, "status"),
-                _usage.from_openai(_get(resp, "usage")), uses, [i for i in sent if i])
+                _usage.from_openai(_get(resp, "usage")), uses, sent)
 
 
 def _openai_responses_event(acc, ev):
@@ -156,7 +170,7 @@ def anthropic(resp, request=None):
     sent = [_get(b, "tool_use_id") for m in _list(request, "messages") for b in _list(m, "content")
             if _get(b, "type") == "tool_result"]
     return _out(_get(resp, "id"), _get(resp, "model"), _get(resp, "stop_reason"),
-                _usage.from_anthropic(_get(resp, "usage")), uses, [i for i in sent if i])
+                _usage.from_anthropic(_get(resp, "usage")), uses, sent)
 
 
 _ANTHROPIC_USAGE = ("input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")
@@ -201,7 +215,7 @@ def gemini(resp, request=None):
             for p in _list(c, "parts")]
     fr = _get(resp, "candidates", 0, "finish_reason")
     return _out(rid, _get(resp, "model_version"), getattr(fr, "name", fr), _usage.from_gemini(_get(resp, "usage_metadata")),
-                uses, [i for i in sent if i])
+                uses, sent)
 
 
 def _gemini_chunk(acc, chunk):

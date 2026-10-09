@@ -88,6 +88,25 @@ class Rules(unittest.TestCase):
     def test_parsed_values_that_are_not_canonical_json(self):
         self.assertTrue(parsers.tool_use("c", "t", {"n": float("nan")})["args_unparseable"])
 
+    def test_ids_the_rpc_does_not_accept_become_digests(self):
+        schema = rpc_schema.REQUESTS["model_event"]["properties"]
+        for raw in ("call/1+2=", "a b", "x" * 129):
+            out = parsers.parse("openai:chat", {"choices": [{"message": {"tool_calls": [
+                {"id": raw, "type": "function", "function": {"name": "t", "arguments": "{}"}}]}}]},
+                {"messages": [{"role": "tool", "tool_call_id": raw}]})
+            self.assertEqual(out["tool_uses"][0]["id"], out["tool_results_sent"][0], raw)
+            self.assertTrue(out["tool_results_sent"][0].startswith("sha256:"), raw)
+            self.assertEqual(rpc_schema.validate(schema["tool_uses"], out["tool_uses"]), [], raw)
+            self.assertEqual(rpc_schema.validate(schema["tool_results_sent"], out["tool_results_sent"]), [], raw)
+
+    def test_streamed_chat_custom_tool_call(self):
+        # the SDK's chunk type has no custom tool calls yet, so this shape is a dict only
+        s = parsers.Stream("openai:chat")
+        for part in ({"id": "call_c", "type": "custom", "custom": {"name": "apply_patch", "input": "*** Begin"}},
+                     {"custom": {"input": " Patch"}}):
+            s.add({"id": "chatcmpl-3", "choices": [{"index": 0, "delta": {"tool_calls": [{"index": 0, **part}]}}]})
+        self.assertEqual(s.parse()["tool_uses"], [parsers.tool_use("call_c", "apply_patch", "*** Begin Patch")])
+
     def test_raw_and_parsed_agree_on_strict_input(self):
         self.assertEqual(parsers.tool_use("c", "t", '{"b": [1, 2.0], "a": "x"}', "raw")["args_digest"],
                          parsers.tool_use("c", "t", {"a": "x", "b": [1, 2]})["args_digest"])

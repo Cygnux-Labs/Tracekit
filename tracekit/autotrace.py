@@ -82,7 +82,7 @@ def _status_of(exc):
 class _Exchange:
     """One model call. begin() -> request event; finish() -> response event (exactly once)."""
 
-    def __init__(self, tracer, provider, operation, model, kwargs, streamed, on_resp, on_item):
+    def __init__(self, tracer, provider, operation, model, kwargs, streamed, on_resp=None, on_item=None):
         self.tracer, self.provider, self.operation = tracer, provider, operation
         self.model, self.kwargs, self.streamed = model, kwargs, streamed
         self.on_resp, self.on_item = on_resp, on_item
@@ -96,10 +96,12 @@ class _Exchange:
         self.usage = None
 
     def response(self, resp):
-        self.on_resp(self, resp)
+        if self.on_resp:
+            self.on_resp(self, resp)
 
     def item(self, item):
-        self.on_item(self, item)
+        if self.on_item:
+            self.on_item(self, item)
 
     def add_text(self, t):
         if isinstance(t, str) and self.text_len < MAX_TEXT:

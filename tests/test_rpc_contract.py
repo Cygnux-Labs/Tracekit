@@ -273,6 +273,7 @@ class SignerContract(Harness):
                     [{k: v for k, v in a.items() if k != "args_digest"}],     # neither
                     [{k: v for k, v in a.items() if k != "args_source"}],
                     [dict(ws, executed_by="model")],
+                    [dict(ws, args_digest=a["args_digest"])],                # a provider-run tool has no args
                     [dict(a, id="call a")],
                     [dict(a, args_digest="sha256:x")],
                     [dict(a, extra=1)],
