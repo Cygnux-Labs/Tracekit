@@ -152,6 +152,8 @@ def main(argv=None):
     p.add_argument("--key", help="trusted signer public key (signer.pub file) or key id ed25519:...")
     p.add_argument("--strict", action="store_true", help="exit 3 on warnings")
     p.add_argument("--trust", help="format v2: pinned trust config (log keys, witness keys, algorithms)")
+    p.add_argument("--v1-ledger", help="format v2: the v1 ledger.jsonl the log's format bridge continues")
+    p.add_argument("--v1-key", help="with --v1-ledger: the v1 signer.pub")
     p.add_argument("--json", action="store_true")
 
     p = sub.add_parser("policy", help="policy v2: `policy compile FILE` prints canonical JSON and its hash; `policy lint FILE`")
@@ -382,7 +384,10 @@ def _run(a):
             if not a.trust:
                 print("tracekit verify: a v2 bundle needs --trust (the verifier's pinned trust config)", file=sys.stderr)
                 return 2
-            rep, code = v2.verify(a.bundle, a.trust)
+            if bool(a.v1_ledger) != bool(a.v1_key):
+                print("tracekit verify: --v1-ledger and --v1-key go together", file=sys.stderr)
+                return 2
+            rep, code = v2.verify(a.bundle, a.trust, a.v1_ledger, a.v1_key)
             integrity, assurance = rep.integrity, rep.assurance
         else:
             rep, code = v1.verify(a.bundle, a.witness, a.strict, a.key)
