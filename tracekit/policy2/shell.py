@@ -2,7 +2,7 @@
 
 `parse(command)` returns every simple command the line would run, including those reached through wrappers, `sh -c`
 strings, substitutions, heredocs into a shell and interpreter one-liners:
-`{"argv": [...], "via": [...], "pipeline": n, "redirects": [[op, target]], "glob": bool}`. argv[0] is a basename;
+`{"argv": [...], "via": [...], "pipeline": n, "glob": bool}`. argv[0] is a basename;
 `via` says how the command was reached (empty at top level); commands with the same `pipeline` are stages of one
 pipeline, in order. Variables are not expanded and encodings are not decoded. A line it cannot parse raises ParseError.
 """
@@ -14,12 +14,18 @@ class ParseError(ValueError):
 
 
 MAX_DEPTH = 32
+MAX_WORK = 1 << 20   # characters parsed in total, re-parsed consumer strings included
 SHELLS = {"sh", "bash", "zsh", "dash", "ksh", "ash"}
 # wrapper -> (options that take a value, positional arguments before the command)
 WRAPPERS = {"command": ((), 0), "env": (("-u", "-C", "--unset", "--chdir"), 0), "nohup": ((), 0),
-            "time": (("-f", "-o"), 0), "xargs": (("-a", "-d", "-E", "-I", "-L", "-n", "-P", "-s"), 0),
+            "time": (("-f", "-o", "--format", "--output"), 0),
+            "xargs": (("-a", "-d", "-E", "-I", "-L", "-n", "-P", "-s", "--arg-file", "--delimiter", "--max-lines",
+                       "--max-args", "--max-procs", "--max-chars", "--process-slot-var"), 0),
             "busybox": ((), 0), "exec": (("-a",), 0), "timeout": (("-s", "-k", "--signal", "--kill-after"), 1),
-            "nice": (("-n",), 0), "sudo": (("-u", "-g", "-C", "-D", "-p", "-r", "-t", "-U", "-R", "-T"), 0),
+            "nice": (("-n", "--adjustment"), 0),
+            "sudo": (("-u", "-g", "-C", "-D", "-h", "-p", "-r", "-t", "-U", "-R", "-T", "--user", "--group", "--close-from",
+                      "--chdir", "--host", "--prompt", "--role", "--type", "--other-user", "--chroot",
+                      "--command-timeout"), 0),
             "doas": (("-u", "-C"), 0)}
 KEYWORDS = {"if", "then", "else", "elif", "fi", "do", "done", "while", "until", "{", "}", "!"}
 SSH_OPTS = set("-b -c -D -E -e -F -I -i -J -L -l -m -O -o -p -Q -R -S -W -w".split())
@@ -37,7 +43,7 @@ _TICK = re.compile(r"`([^`]*)`")
 
 
 def parse(command):
-    ctx = {"cmds": [], "pipes": 0, "depth": 0}
+    ctx = {"cmds": [], "pipes": 0, "depth": 0, "work": 0}
     _Parser(command, ctx, []).script()
     return ctx["cmds"]
 
@@ -68,7 +74,7 @@ def _shell_mode(args):
         a = args[i]
         if a in ("-o", "+o", "-O", "+O"):
             i += 2
-        elif a == "--":
+        elif a in ("--", "-"):
             break
         elif a[:1] in "-+" and len(a) > 1:
             if a[0] == "-" and not a.startswith("--") and "c" in a:
@@ -125,6 +131,9 @@ def _ansi_c(text):
 class _Parser:
     def __init__(self, src, ctx, via):
         self.s, self.i, self.ctx, self.via, self.heredocs = src, 0, ctx, via, []
+        ctx["work"] += len(src)
+        if ctx["work"] > MAX_WORK:
+            raise ParseError("too much nested shell text")
 
     def peek(self, k=0):
         return self.s[self.i + k:self.i + k + 1]
@@ -210,7 +219,7 @@ class _Parser:
             self.gap()
 
     def simple(self, pid):
-        words, glob, redirects, strings, docs = [], False, [], [], []
+        words, glob, strings, docs = [], False, [], []
         consumed = loop_header = False
         while True:
             self.blank()
@@ -235,10 +244,8 @@ class _Parser:
                     docs.append({"delim": target[0], "strip": m.group(2) == "<<-", "expand": target[0] == target[1],
                                  "via": self.via, "cmds": []})
                     self.heredocs.append(docs[-1])
-                else:
-                    redirects.append([m.group(0), target[0]])
-                    if m.group(2) == "<<<":
-                        strings.append(target[0])
+                elif m.group(2) == "<<<":
+                    strings.append(target[0])
                 continue
             start = self.i
             text, raw, g = self.word()
@@ -255,7 +262,7 @@ class _Parser:
                 continue
             words.append(text)
             glob |= g
-        cmds = self.emit(words, pid, self.via, redirects, glob) if words else []
+        cmds = self.emit(words, pid, self.via, glob) if words else []
         for d in docs:
             d["cmds"] = cmds
         shell = _stdin_shell(cmds)
@@ -263,17 +270,17 @@ class _Parser:
             self.nested(text, shell["via"] + [shell["argv"][0] + " <<<"])
         return consumed
 
-    def emit(self, argv, pid, via, redirects=(), glob=False):
+    def emit(self, argv, pid, via, glob=False):
         cmds = []
         while argv:
             if len(via) > MAX_DEPTH:
                 raise ParseError("nested too deeply")
             name, args = argv[0].rsplit("/", 1)[-1] or argv[0], argv[1:]
-            cmd = {"argv": [name] + args, "via": via, "pipeline": pid, "redirects": list(redirects), "glob": glob}
+            cmd = {"argv": [name] + args, "via": via, "pipeline": pid, "glob": glob}
             self.ctx["cmds"].append(cmd)
             cmds.append(cmd)
             if name in WRAPPERS:
-                argv, via, redirects = _unwrap(name, args), via + [name], ()
+                argv, via = _unwrap(name, args), via + [name]
                 continue
             if name in SHELLS:
                 mode, script = _shell_mode(args)
@@ -421,6 +428,8 @@ class _Parser:
                 j += 1
             if j >= len(s):
                 raise ParseError("unterminated $((")
+            if "$(" in s[self.i + 3:j] or "`" in s[self.i + 3:j]:
+                raise ParseError("command substitution inside $(( )) is not supported")
             self.i = j + 1
         elif nxt == "(":
             self.i += 2

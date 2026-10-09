@@ -6,6 +6,7 @@ import os
 import shutil
 import sys
 import tempfile
+import time
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from unittest import mock
@@ -75,6 +76,14 @@ class Compile(unittest.TestCase):
         self.assertEqual([r["id"] for r in pol["deny"]], ["B1"])
         self.assertEqual([r["id"] for r in pol["ask"]], ["B2"])
         self.assertNotIn(self.d, pc.canonical(pol))   # no paths in what is hashed
+
+    def test_extends_loop_through_dot_path(self):
+        self.assertIn("extends loop", "\n".join(self.errors("extends: ./p.yaml\n")))
+
+    def test_malformed_input_is_a_lint_error(self):
+        self.write("base.yaml", "deny: [x]\n")
+        self.assertTrue(self.errors("extends: base.yaml\n"))
+        self.assertTrue(self.errors("deny: [\n"))
 
     def test_absolute_extends_is_an_error(self):
         base = self.write("base.yaml", "deny: []\n")
@@ -213,6 +222,7 @@ class Shell(unittest.TestCase):
             "diff <(sudo id) b": ["<()"],
             "bash <<EOF\nsudo id\nEOF": ["bash <<"],
             "bash <<< 'sudo id'": ["bash <<<"],
+            "bash - <<EOF\nsudo id\nEOF": ["bash <<"],
             "cat <<EOF\n$(sudo id)\nEOF": ["<<", "$()"],
             "eval sudo id": ["eval"],
             "ssh -p 22 host 'sudo id'": ["ssh"],
@@ -232,7 +242,8 @@ class Shell(unittest.TestCase):
 
     def test_wrappers_are_stripped_with_their_options(self):
         for cmd in ("env -u X FOO=1 sudo -u root id", "timeout -s KILL 5 nice -n 3 id", "nohup time -p id",
-                    "doas -u root id", "busybox id", "exec -a x id", "xargs -n 1 id"):
+                    "doas -u root id", "busybox id", "exec -a x id", "xargs -n 1 id", "sudo --user root id",
+                    "sudo --user=root id", "nice --adjustment 3 id"):
             with self.subTest(cmd=cmd):
                 self.assertEqual(argvs(cmd)[-1], ["id"])
         self.assertEqual(argvs("command -v sudo"), [["command", "-v", "sudo"]])
@@ -266,9 +277,19 @@ class Shell(unittest.TestCase):
 
     def test_parse_failures(self):
         for cmd in ('echo "open', "echo $(ls", "ls )", "case x in a) ls;; esac", "cat <<EOF\nno end", "f() { ls; }",
-                    "a &&", "| ls", "echo 'open", "echo `ls", "eval " * 40 + "id"):
+                    "a &&", "| ls", "echo 'open", "echo `ls", "eval " * 40 + "id",
+                    "echo $(( $(sudo id) ))", "echo $(( `sudo id` ))"):
             with self.subTest(cmd=cmd), self.assertRaises(shell.ParseError):
                 shell.parse(cmd)
+
+    def test_nested_reparsed_consumers_are_bounded(self):
+        cmd = 'eval "$(id)" "$(id)"'
+        while len(cmd) * 2 < MAX_SUBJECT:
+            cmd = f'eval "$({cmd})" "$({cmd})"'
+        start = time.monotonic()
+        with self.assertRaises(shell.ParseError):
+            shell.parse(cmd)
+        self.assertLess(time.monotonic() - start, 5)
 
     def test_deep_nesting_is_a_parse_failure_not_a_crash(self):
         for cmd in ("$(" * 5000, "${" * 5000, "sudo " * 5000 + "id", "(" * 5000):
