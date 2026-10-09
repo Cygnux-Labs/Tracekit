@@ -18,7 +18,7 @@ from tracekit import install
 from tracekit.sdk import client as sdk_client
 from tracekit.signer import service
 
-AGENT = types.SimpleNamespace(pw_uid=1001, pw_gid=1001, pw_name="agent", pw_dir="/home/agent")
+AGENT = types.SimpleNamespace(pw_uid=64101, pw_gid=64101, pw_name="agent", pw_dir="/home/agent")
 POLICY = "/opt/tracekit/lib/python3/site-packages/tracekit/policy2/packs/coding.yaml"
 
 
@@ -32,7 +32,7 @@ class SignerConfig(unittest.TestCase):
         cfg = service.load_config(path)
         self.assertEqual(cfg["data_dir"], install.V2_DATA)
         self.assertEqual((cfg["socket"], cfg["socket_mode"]), ("/run/tracekit-signer/signer.sock", "0666"))
-        self.assertEqual(cfg["tenants"], {"uid:1001": "agent", "uid:501": "agent"})
+        self.assertEqual(cfg["tenants"], {"uid:64101": "agent", "uid:501": "agent"})
         self.assertEqual(cfg["tenant"], "local")
         self.assertEqual(cfg["approvals"], {"self_approval": "deny", "approvers": ["uid:501"]})
         self.assertEqual(cfg["policy"], POLICY)
@@ -98,7 +98,7 @@ class InitRefusals(unittest.TestCase):
 
     def test_approver_must_be_another_user(self):
         self.assertIn("approver must be another user", self.init(approver="agent"))
-        self.assertIn("approver must be another user", self.init(env={"SUDO_UID": "1001"}))
+        self.assertIn("approver must be another user", self.init(env={"SUDO_UID": "64101"}))
 
     def test_no_approver(self):
         with mock.patch.dict(os.environ):
