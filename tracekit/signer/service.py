@@ -32,6 +32,8 @@ signer.yaml:
     witnesses:                               # C2SP tlog-witnesses that cosign every new note (tracekit.tlog_witness)
       - {url: https://witness.example.org, vkey: "witness.example.org/w1+1234abcd+BA...", class: customer}
     contact: ops@example.org                 # the logs list's contact line; default the origin
+    anchors: {rekor: {signing_config: sigstage-signing_config.json, trusted_root: sigstage-trusted_root.json,
+                      every_s: 3600}}        # Rekor v2 + RFC 3161 anchors of the record note (tracekit.anchor.rekor2)
     approvals: {self_approval: deny, approvers: ["uid:1001", "mtls:spiffe://acme/ops/*"],   # identity or prefix/*
                 break_glass: ["uid:0"]}      # may answer any approval, with a reason; recorded break_glass
     acknowledge_rollback: false
@@ -60,6 +62,11 @@ note, whose body never changes. Per witness and tree, the store keeps the size t
 state (witness-queue.json), so a restart resumes where it left off; retries back off from BACKOFF_S[0] to BACKOFF_S[1]
 (a refusal waits the longest). A log a witness has failed to cosign for WITNESS_GAP_S gets one signed
 `capture.gap{witness_failed}` per outage.
+
+Anchoring (04-design §2.9, decision S2): with `anchors.rekor`, one more worker of the same kind, named `rekor`, anchors
+the latest record tree note in Rekor v2 with an RFC 3161 timestamp, at most once per `every_s` (>= 3600), signed with
+keys/rekor.key (P-256, its public key written to <data_dir>/rekor.pub on start), and stores the anchor through the
+storage (anchors.jsonl). It shares the retry queue, backoff and `witness_failed` gap.
 
 Policy (04-design §4): the signer classifies the tool and decides with policy2; every decide gets a fresh decision_id
 that one `complete` with the same arguments consumes. Only deny and ask are memoised, per (tool_call_id, attempt).
@@ -106,6 +113,8 @@ from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from tracekit import __version__, crypto, merkle, privacy, yamlmini
+from tracekit.anchor import rekor2
+from tracekit.anchor.rekor2 import RekorAnchor
 from tracekit.deploy import files
 from tracekit.format import checkpoint, registry
 from tracekit.format.canon import StrictJSONError, canonical, event_hash, loads_strict
@@ -140,7 +149,7 @@ GRACE_S, IDLE_S = 5.0, 3600.0
 FAIL_MODES = {"default": "closed"}
 CONFIG_KEYS = {"data_dir", "socket", "tcp_endpoint", "http", "durability", "tenant", "tenants", "authorize", "limits",
                "acknowledge_rollback", "policy", "multi_tenant_apps", "migrators", "analyzers", "fail_modes", "grace_s",
-               "idle_s", "origin", "metrics", "witnesses", "contact", "approvals"}
+               "idle_s", "origin", "metrics", "witnesses", "contact", "approvals", "anchors"}
 APPROVAL_KEYS = {"self_approval", "approvers", "break_glass"}
 
 
@@ -232,7 +241,7 @@ class SignerService:
     def __init__(self, data_dir, policy=None, identity=None, tenant="default", tenants=None, limits=Limits(),
                  durability=ACK_ON_WRITE, witnesses=(), acknowledge_rollback=False, open_storage=None, isolation=None,
                  multi_tenant_apps=(), migrators=(), analyzers=(), fail_modes=None, grace_s=GRACE_S, idle_s=IDLE_S,
-                 bridge=None, origin=None, authorize=None, contact=None, approvals=None):
+                 bridge=None, origin=None, authorize=None, contact=None, approvals=None, rekor=None):
         """`identity` answers the in-process SignerAPI calls (default: this process's uid); transports call
         handle_frame with the identity they established. `policy` is a policy2 Engine (default: load_policy()).
         `open_storage()` defaults to file storage in data_dir/store. `origin` names the log in its checkpoints, `contact`
@@ -240,7 +249,8 @@ class SignerService:
         `multi_tenant_apps`, `migrators` and `analyzers` are identities ("scheme:subject"); `tenants` and `authorize`
         map identities or prefixes (`...:*`, `.../*`) to a tenant and to the methods they may call.
         `isolation` fixes the signer_isolation label of every run (a dev signer: same-user). `bridge`: see RecordLog.
-        `approvals`: who answers approvals (the `approvals` config section); None for the dev signer's rules."""
+        `approvals`: who answers approvals (the `approvals` config section); None for the dev signer's rules.
+        `rekor`: the `anchors.rekor` config section ({signing_config, trusted_root, every_s}), or None."""
         fail_modes = dict(fail_modes or FAIL_MODES)
         if not all(isinstance(k, str) and v in ("open", "closed") for k, v in fail_modes.items()):
             raise ValueError("fail_modes maps tool classes to open or closed")
@@ -267,6 +277,9 @@ class SignerService:
             self.quotas = Quotas(limits)
             salt = _secret(os.path.join(keys, "registry_salt.key"), lambda: os.urandom(32))
             self._log_key = _secret(os.path.join(keys, "log.key"), lambda: crypto.generate()[0])
+            self.anchors = [] if rekor is None else [RekorAnchor(
+                rekor["signing_config"], rekor["trusted_root"],
+                _secret(os.path.join(keys, "rekor.key"), rekor2.new_key), rekor.get("every_s", rekor2.MIN_EVERY_S))]
             self.log = RecordLog(storage, open_storage, sign, self.quotas, salt, self.metrics, bridge)
         except BaseException:
             storage.close()
@@ -287,12 +300,14 @@ class SignerService:
         self.origin = origin or f"tracekit.local/{self.log.log_id}"
         self.contact, self.witnesses = contact or self.origin, list(witnesses)
         self._queue, self._queue_lock = storage.witness_queue(), threading.Lock()
-        self._wake = {w.name: threading.Event() for w in self.witnesses}
+        self._wake = {w.name: threading.Event() for w in self.witnesses + self.anchors}
         try:
             self.vkey = checkpoint.vkey(self.origin, checkpoint.ED25519, crypto.public_from_secret(self._log_key))
             d = files.open_dir(data_dir)
             try:
                 files.write(d, "log.vkey", (self.vkey + "\n").encode("ascii"), 0o644)
+                for a in self.anchors:
+                    files.write(d, "rekor.pub", (base64.b64encode(a.spki).decode("ascii") + "\n").encode("ascii"), 0o644)
             finally:
                 files.close(d)
             _mkdir(self._args_dir)
@@ -318,14 +333,17 @@ class SignerService:
             self.metrics.add(metrics.Gauge(name, help, fn))
         self.metrics.add(metrics.Gauge(
             "tracekit_signer_witness_lag_records", "Records in the latest record tree note that the witness has not "
-            "cosigned yet.", self._witness_lag, "witness"))
+            "cosigned yet.", lambda: self._lag(self.witnesses), "witness"))
+        self.metrics.add(metrics.Gauge(
+            "tracekit_signer_anchor_lag_records", "Records in the latest record tree note not anchored yet.",
+            lambda: self._lag(self.anchors), "anchor"))
         self._ticker = threading.Thread(target=self._tick_loop, name="tracekit-signer-ticker", daemon=True)
         self._ticker.start()
         self._checkpointer = threading.Thread(target=self._checkpoint_loop, name="tracekit-signer-checkpointer",
                                               daemon=True)
         self._checkpointer.start()
         self._publishers = [threading.Thread(target=self._publish_loop, args=(w,), name=f"tracekit-witness-{i}",
-                                             daemon=True) for i, w in enumerate(self.witnesses)]
+                                             daemon=True) for i, w in enumerate(self.witnesses + self.anchors)]
         for t in self._publishers:
             t.start()
 
@@ -473,7 +491,7 @@ class SignerService:
             try:
                 trees = self.log.write(lambda tx: [(RECORDS, self.log.storage.tree)] + [
                     (registry_tree(t), self.log.storage.registry_merkle(t)) for t in sorted(self.log.tenants)])
-                for tree, merkle_tree in trees:
+                for tree, merkle_tree in trees[:1] if w in self.anchors else trees:   # anchors: the record tree only
                     self._publish(w, tree, merkle_tree)
             except (RPCError, StorageUnavailable, OSError):   # storage down: the next round retries
                 pass
@@ -514,20 +532,23 @@ class SignerService:
                     st["gapped"] = True
                     self.log.storage.witness_queue_put(self._queue)
             return
-        with self._checkpointing:   # merged into the stored note unless a newer note replaced it meanwhile
-            stored = self.log.storage.checkpoint_latest(tree)
-            if stored and stored[0] == size and not signed_by(stored[1].split("\n\n", 1)[1], w.vkey):
-                self.log.storage.checkpoint_put(size, stored[1] + lines, tree)
+        if w in self.anchors:
+            self.log.storage.anchor_put(size, {"note": note, **lines})
+        else:
+            with self._checkpointing:   # merged into the stored note unless a newer note replaced it meanwhile
+                stored = self.log.storage.checkpoint_latest(tree)
+                if stored and stored[0] == size and not signed_by(stored[1].split("\n\n", 1)[1], w.vkey):
+                    self.log.storage.checkpoint_put(size, stored[1] + lines, tree)
         with self._queue_lock:
-            st.update(size=size, attempts=0, next=0, since=None, gapped=False)
+            st.update(size=size, attempts=0, next=time.time() + getattr(w, "every_s", 0), since=None, gapped=False)
             self.log.storage.witness_queue_put(self._queue)
         self._wake[w.name].set()   # a newer note may be waiting
 
-    def _witness_lag(self):
+    def _lag(self, publishers):
         latest = self.log.storage.checkpoint_latest()
         with self._queue_lock:
             return {w.name: max(0, (latest[0] if latest else 0) - self._queue.get(w.name, {}).get(RECORDS, {}).get(
-                "size", 0)) for w in self.witnesses}
+                "size", 0)) for w in publishers}
 
     def logs_list(self):
         """This signer's logs (the record log and each tenant's registry log) in the witness network's `logs/v0`
@@ -1183,6 +1204,16 @@ def load_config(path):
         if name in names:
             raise ValueError(f"{path}: two witnesses named {name}")
         names.add(name)
+    if "anchors" in cfg:
+        r = cfg["anchors"].get("rekor") if isinstance(cfg["anchors"], dict) and set(cfg["anchors"]) == {"rekor"} else None
+        if not (isinstance(r, dict) and {"signing_config", "trusted_root"} <= set(r) <= {"signing_config", "trusted_root",
+                                                                                      "every_s"}
+                and all(isinstance(r[k], str) and r[k] for k in ("signing_config", "trusted_root"))
+                and isinstance(r.get("every_s", rekor2.MIN_EVERY_S), (int, float))
+                and r.get("every_s", rekor2.MIN_EVERY_S) >= rekor2.MIN_EVERY_S):
+            raise ValueError(f"{path}: anchors is {{rekor: {{signing_config, trusted_root, every_s}}}}, every_s at least "
+                             f"{rekor2.MIN_EVERY_S:g}")
+        r.update({k: os.path.join(base, r[k]) for k in ("signing_config", "trusted_root")})
     return cfg
 
 
@@ -1208,6 +1239,18 @@ def read_vkey(data_dir):
     return vkey
 
 
+def read_rekor_pub(data_dir):
+    """The Rekor publishing key (base64 SPKI) the signer of `data_dir` wrote on start."""
+    d = files.open_dir(data_dir)
+    try:
+        data = files.read(d, "rekor.pub")
+    finally:
+        files.close(d)
+    if data is None:
+        raise ValueError(f"{data_dir} has no rekor.pub yet: start the signer with anchors once")
+    return data.decode("ascii").strip()
+
+
 def open_service(cfg, **kw):
     if cfg.get("policy"):
         kw.setdefault("policy", load_policy(cfg["policy"]))
@@ -1220,7 +1263,7 @@ def open_service(cfg, **kw):
                          analyzers=cfg.get("analyzers", ()), fail_modes=cfg.get("fail_modes"),
                          grace_s=float(cfg.get("grace_s", GRACE_S)), idle_s=float(cfg.get("idle_s", IDLE_S)),
                          origin=cfg.get("origin"), contact=cfg.get("contact"), approvals=cfg.get("approvals") or {},
-                         authorize=cfg.get("authorize"), **kw)
+                         authorize=cfg.get("authorize"), rekor=(cfg.get("anchors") or {}).get("rekor"), **kw)
 
 
 def serve(cfg, service):
@@ -1427,8 +1470,13 @@ def main(argv=None):
             vkey = read_vkey(cfg["data_dir"])
             if a.cmd == "trust":
                 witnesses = [{"vkey": w["vkey"], "class": w["class"]} for w in cfg.get("witnesses") or ()]
+                rekor = (cfg.get("anchors") or {}).get("rekor")
+                if rekor:
+                    with open(rekor["trusted_root"], "rb") as f:
+                        rekor = {"trusted_root": json.loads(f.read()), "publishing_key": read_rekor_pub(cfg["data_dir"]),
+                                 "class": "public"}
                 files.write_json(a.out, {"logs": [vkey], "witnesses": witnesses, "algs": [RecordSigner.alg],
-                                         "witnesses_required": 0}, 0o644)
+                                         "witnesses_required": 0, **({"rekor": rekor} if rekor else {})}, 0o644)
         except (OSError, ValueError, SignerUnavailable) as e:
             print(f"tracekit signer: {e}", file=sys.stderr)
             return 2
