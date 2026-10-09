@@ -26,7 +26,8 @@ POLICY = Engine({"deny": [{"id": "T-DENY", "tool": "rm", "pattern": "^"}],
 class View(unittest.TestCase):
     def setUp(self):
         self.d = ts.tmpdir(self)
-        cfg = {"data_dir": self.d, "socket": os.path.join(self.d, "s.sock"), "grace_s": 0}
+        cfg = {"data_dir": self.d, "socket": os.path.join(self.d, "s.sock"), "grace_s": 0,
+               "approvals": {"self_approval": "allow"}}   # one uid runs and approves
         self.service = svc.open_service(cfg, policy=POLICY)
         self.addCleanup(self.service.close)
         for srv in svc.serve(cfg, self.service):

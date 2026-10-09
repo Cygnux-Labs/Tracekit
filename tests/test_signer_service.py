@@ -292,7 +292,7 @@ class TestService(unittest.TestCase):
         self.assertEqual((gaps[0]["tenant"], gaps[0]["run_id"]), SIGNER_RUN)
 
     def test_quotas_and_refusal_summaries(self):
-        s = self.open(limits=Limits(open_runs=1, events_per_s=0.001, burst=1, streams_per_run=1))
+        s = self.open(limits=Limits(open_runs=1, events_per_s=0.001, burst=3, streams_per_run=1))
         run = self.register(s)
         self.refused("quota_exceeded", s, "register_run", {"request_id": "r2", "agent": {"name": "a"}})
         s.decide(self.ev(run, 0, tool_call_id="t", tool="t", args_source="parsed", args={}))
@@ -339,7 +339,8 @@ class SocketSigner:
 class TestServeContract(SignerContract, unittest.TestCase):
     def make_signer(self):
         d = tmpdir(self)
-        cfg = {"data_dir": d, "socket": os.path.join(d, "s.sock"), "multi_tenant_apps": [f"uid:{ME.subject}"]}
+        cfg = {"data_dir": d, "socket": os.path.join(d, "s.sock"), "multi_tenant_apps": [f"uid:{ME.subject}"],
+               "approvals": {"self_approval": "allow"}}   # one uid runs and approves
         service = svc.open_service(cfg, policy=PAY_ASKS)
         servers = svc.serve(cfg, service)
         for srv in servers:
