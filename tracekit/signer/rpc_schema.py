@@ -1,4 +1,4 @@
-"""The signer RPC contract, version 1: one JSON Schema per request and response, the error shape, and `SignerAPI`.
+"""The signer RPC contract, version 2: one JSON Schema per request and response, the error shape, and `SignerAPI`.
 
 Frozen: a change to any schema here is a new RPC_VERSION. The caller's identity comes from the transport (peer
 credentials, token, mTLS), never from a request field. Calls that change state carry `request_id`, scoped to that
@@ -12,7 +12,7 @@ from typing import Protocol
 from tracekit.format.canon import MAX_SAFE_INT
 from tracekit.schema import _check
 
-RPC_VERSION = 1
+RPC_VERSION = 2
 MAX_RAW_ARGS = 1 << 20   # characters of a raw arguments string
 
 ERROR_CODES = [
@@ -71,6 +71,8 @@ _decide["then"] = {"properties": {"args": _str(MAX_RAW_ARGS)}}
 REQUESTS = {
     "register_run": _obj(["request_id", "agent"], request_id=ID, run_id=ID,
                          tenant=ID, principal=_str(256),   # app-asserted; recorded as not attested
+                         source={"const": "migrated"},     # events imported from another log
+                         analyzes=ID,                      # a findings run about this run of the same tenant
                          agent=_obj(["name"], name=_str(128, minLength=1), version=_str(64))),
     "decide": _decide,
     "complete": _obj(_EVENT_REQ + ["tool_call_id", "status"], **_EVENT, tool_call_id=ID, attempt=SEQ,
@@ -94,7 +96,8 @@ REQUESTS = {
 RESPONSES = {
     "register_run": _obj(["run_id", "run_token", "tenant", "tenant_attested", "principal_attested"],
                          run_id=ID, run_token=TOKEN, tenant=ID, tenant_attested={"type": "boolean"},
-                         principal=_str(256), principal_attested={"type": "boolean"}),
+                         principal=_str(256), principal_attested={"type": "boolean"},
+                         fail_modes={"type": "object", "additionalProperties": {"enum": ["open", "closed"]}}),
     "decide": _obj(["decision", "rule_ids", "run_seq"], decision={"enum": ["allow", "deny", "ask"]},
                    rule_ids=RULE_IDS, reason=REASON, run_seq=SEQ),
     "complete": _SEQ_ONLY,
