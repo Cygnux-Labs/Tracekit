@@ -45,7 +45,7 @@ A resumed run (another process, after a restart) builds `TracekitAgents` with th
 | before the tool runs | `decide` | `tool_call_id`, tool name, the arguments as the SDK decoded them (`parsed`); after a resume in another process, the model's raw string |
 | right before it runs | `approval_consume` | the same call, the arguments (for function tools the model's raw string), and the approval id the run state carries as a hint |
 | after the tool runs | `complete` | `status` `ok` or `error`, a `sha256:` commitment to the result (not the result), or the exception type and message |
-| after each model response | `model_event` | a `sha256:` commitment to the whole response output, and token usage |
+| after each model response | `model_event` | a `sha256:` commitment to the whole response output, every tool call in it (`tool_uses`; hosted ones as `executed_by: provider`), and token usage |
 
 The signer classifies the tool and computes the args digest itself; nothing the adapter sends is trusted for that.
 
@@ -81,7 +81,7 @@ without Tracekit.
 
 - **Hosted tools** (web search, file search, code interpreter, image generation, hosted MCP, a hosted `ShellTool`),
   **`ComputerTool`** and **handoffs** run outside the hooks Tracekit can gate. `tk.tool(...)` refuses hosted tools
-  with a `TypeError`. They appear only inside the signed model exchange recorded for each model response (T3: what the
+  with a `TypeError`. They appear only as `tool_uses` in the signed model exchange recorded for each model response (T3: what the
   agent process reported, not checked by Tracekit).
 - **`LocalShellTool` and `ApplyPatchTool` cannot wait for an approval**: the SDK has no approval hook for the first and
   does not tell the editor the call id of the second, so an `ask` for them is refused. Allow and deny work as above.

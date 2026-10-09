@@ -14,14 +14,15 @@ import adapter_contract as ac
 from tracekit.sdk.client import Client
 
 try:
-    from agents import (Agent, ApplyPatchTool, Model, ModelResponse, RunState, Runner, ShellTool, WebSearchTool,
-                        function_tool, set_tracing_disabled)
-    from agents._tool_invocation import tool_invocation_identity_and_scope
+    from agents import (Agent, ApplyPatchTool, LocalShellTool, Model, ModelResponse, RunState, Runner, ShellTool,
+                        WebSearchTool, function_tool, set_tracing_disabled)
+    from agents._tool_invocation import tool_invocation_identity_and_scope   # private: tied to the pinned minor
     from agents.items import ToolCallOutputItem
     from agents.usage import Usage
     from openai.types.responses import (Response, ResponseApplyPatchToolCall, ResponseCompletedEvent,
-                                        ResponseFunctionShellToolCall, ResponseFunctionToolCall, ResponseOutputMessage,
-                                        ResponseOutputText)
+                                        ResponseFunctionShellToolCall, ResponseFunctionToolCall,
+                                        ResponseFunctionWebSearch, ResponseOutputMessage, ResponseOutputText)
+    from openai.types.responses.response_output_item import LocalShellCall
 
     from tracekit.integrations.openai_agents import TracekitAgents
 except ImportError:   # optional: the dev extra installs it
@@ -32,7 +33,7 @@ else:
     TOOLS = [function_tool(f, failure_error_function=None) for f in ac.TOOLS]   # tool exceptions reach the runner
 
     def _reply(input, first):
-        if any(isinstance(i, dict) and i.get("type", "").endswith("_output") for i in input):
+        if any(isinstance(i, dict) and i.get("type", "").endswith(("_call", "_output")) for i in input):
             return ResponseOutputMessage(id="msg_1", type="message", role="assistant", status="completed",
                                          content=[ResponseOutputText(type="output_text", text="done", annotations=[])])
         if first is not None:
@@ -208,9 +209,25 @@ class TestOtherTools(ac.OnReal, unittest.TestCase):
         self.assertEqual(self.ran, ["a.txt"])
         self.assertIn("cannot wait", res.new_items[1].output)
 
-    def test_hosted_tools_are_not_gated(self):
+    def test_local_shell_runs_when_allowed_and_refuses_an_ask(self):
+        class PayShell(LocalShellTool):
+            name = "pay"   # the policy asks for `pay`
+        call = LocalShellCall(id="ls_1", call_id="ls-1", type="local_shell_call", status="completed",
+                              action={"type": "exec", "command": ["ls"], "env": {}})
+        _, res = self.go(call, LocalShellTool(executor=lambda req: self.ran.append(req.data.action.command) or "ok"))
+        self.assertEqual((self.ran, res.final_output), ([["ls"]], "done"))
+        _, res = self.go(call, PayShell(executor=lambda req: self.ran.append("pay") or "paid"))
+        self.assertEqual(self.ran, [["ls"]])
+        self.assertIn("cannot wait", res.new_items[1].output)
+
+    def test_hosted_tools_are_not_gated_but_listed_in_the_model_event(self):
         with self.assertRaises(TypeError):
             self.tk.tool(WebSearchTool())
+        call = ResponseFunctionWebSearch(id="ws_1", type="web_search_call", status="completed",
+                                         action={"type": "search", "query": "q"})
+        self.go(call, lambda: None)
+        [first, *_] = [e["data"] for e in self.events(self.run_) if e["type"] == "model.exchange"]
+        self.assertEqual(first["tool_uses"], [{"id": "ws_1", "name": "web_search", "executed_by": "provider"}])
 
 
 if __name__ == "__main__":
