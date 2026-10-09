@@ -1,0 +1,387 @@
+{
+  "runs": 30,
+  "seeded": 12,
+  "seeded_flagged": 12,
+  "false_positives": 0,
+  "ok": true,
+  "rows": [
+    {
+      "layers": "L2",
+      "scenario": "clean",
+      "expected": [],
+      "flagged": [],
+      "layers_reported": [
+        "L2"
+      ],
+      "ok": true
+    },
+    {
+      "layers": "L2",
+      "scenario": "clean: coerced args",
+      "expected": [],
+      "flagged": [],
+      "layers_reported": [
+        "L2"
+      ],
+      "ok": true
+    },
+    {
+      "layers": "L2",
+      "scenario": "clean: provider-executed tool",
+      "expected": [],
+      "flagged": [],
+      "layers_reported": [
+        "L2"
+      ],
+      "ok": true
+    },
+    {
+      "layers": "L2",
+      "scenario": "clean: late L3 inside grace",
+      "expected": [],
+      "flagged": [],
+      "layers_reported": [
+        "L2"
+      ],
+      "ok": true
+    },
+    {
+      "layers": "L2",
+      "scenario": "hook_missing",
+      "expected": [],
+      "flagged": [],
+      "layers_reported": [
+        "L2"
+      ],
+      "ok": true
+    },
+    {
+      "layers": "L2",
+      "scenario": "fabricated",
+      "expected": [],
+      "flagged": [],
+      "layers_reported": [
+        "L2"
+      ],
+      "ok": true
+    },
+    {
+      "layers": "L2",
+      "scenario": "args_mismatch: tool",
+      "expected": [],
+      "flagged": [],
+      "layers_reported": [
+        "L2"
+      ],
+      "ok": true
+    },
+    {
+      "layers": "L2",
+      "scenario": "args_mismatch: args",
+      "expected": [],
+      "flagged": [],
+      "layers_reported": [
+        "L2"
+      ],
+      "ok": true
+    },
+    {
+      "layers": "L2",
+      "scenario": "args_unparseable",
+      "expected": [],
+      "flagged": [],
+      "layers_reported": [
+        "L2"
+      ],
+      "ok": true
+    },
+    {
+      "layers": "L2",
+      "scenario": "result_without_call",
+      "expected": [],
+      "flagged": [],
+      "layers_reported": [
+        "L2"
+      ],
+      "ok": true
+    },
+    {
+      "layers": "L2+L3",
+      "scenario": "clean",
+      "expected": [],
+      "flagged": [],
+      "layers_reported": [
+        "L2",
+        "L3"
+      ],
+      "ok": true
+    },
+    {
+      "layers": "L2+L3",
+      "scenario": "clean: coerced args",
+      "expected": [],
+      "flagged": [],
+      "layers_reported": [
+        "L2",
+        "L3"
+      ],
+      "ok": true
+    },
+    {
+      "layers": "L2+L3",
+      "scenario": "clean: provider-executed tool",
+      "expected": [],
+      "flagged": [],
+      "layers_reported": [
+        "L2",
+        "L3"
+      ],
+      "ok": true
+    },
+    {
+      "layers": "L2+L3",
+      "scenario": "clean: late L3 inside grace",
+      "expected": [],
+      "flagged": [],
+      "layers_reported": [
+        "L2",
+        "L3"
+      ],
+      "ok": true
+    },
+    {
+      "layers": "L2+L3",
+      "scenario": "hook_missing",
+      "expected": [
+        "hook_missing"
+      ],
+      "flagged": [
+        "hook_missing"
+      ],
+      "layers_reported": [
+        "L2",
+        "L3"
+      ],
+      "ok": true
+    },
+    {
+      "layers": "L2+L3",
+      "scenario": "fabricated",
+      "expected": [
+        "fabricated"
+      ],
+      "flagged": [
+        "fabricated"
+      ],
+      "layers_reported": [
+        "L2",
+        "L3"
+      ],
+      "ok": true
+    },
+    {
+      "layers": "L2+L3",
+      "scenario": "args_mismatch: tool",
+      "expected": [
+        "args_mismatch"
+      ],
+      "flagged": [
+        "args_mismatch"
+      ],
+      "layers_reported": [
+        "L2",
+        "L3"
+      ],
+      "ok": true
+    },
+    {
+      "layers": "L2+L3",
+      "scenario": "args_mismatch: args",
+      "expected": [
+        "args_mismatch"
+      ],
+      "flagged": [
+        "args_mismatch"
+      ],
+      "layers_reported": [
+        "L2",
+        "L3"
+      ],
+      "ok": true
+    },
+    {
+      "layers": "L2+L3",
+      "scenario": "args_unparseable",
+      "expected": [
+        "args_unparseable"
+      ],
+      "flagged": [
+        "args_unparseable"
+      ],
+      "layers_reported": [
+        "L2",
+        "L3"
+      ],
+      "ok": true
+    },
+    {
+      "layers": "L2+L3",
+      "scenario": "result_without_call",
+      "expected": [
+        "result_without_call"
+      ],
+      "flagged": [
+        "result_without_call"
+      ],
+      "layers_reported": [
+        "L2",
+        "L3"
+      ],
+      "ok": true
+    },
+    {
+      "layers": "L1+L2+L3",
+      "scenario": "clean",
+      "expected": [],
+      "flagged": [],
+      "layers_reported": [
+        "L1",
+        "L2",
+        "L3"
+      ],
+      "ok": true
+    },
+    {
+      "layers": "L1+L2+L3",
+      "scenario": "clean: coerced args",
+      "expected": [],
+      "flagged": [],
+      "layers_reported": [
+        "L1",
+        "L2",
+        "L3"
+      ],
+      "ok": true
+    },
+    {
+      "layers": "L1+L2+L3",
+      "scenario": "clean: provider-executed tool",
+      "expected": [],
+      "flagged": [],
+      "layers_reported": [
+        "L1",
+        "L2",
+        "L3"
+      ],
+      "ok": true
+    },
+    {
+      "layers": "L1+L2+L3",
+      "scenario": "clean: late L3 inside grace",
+      "expected": [],
+      "flagged": [],
+      "layers_reported": [
+        "L1",
+        "L2",
+        "L3"
+      ],
+      "ok": true
+    },
+    {
+      "layers": "L1+L2+L3",
+      "scenario": "hook_missing",
+      "expected": [
+        "hook_missing"
+      ],
+      "flagged": [
+        "hook_missing"
+      ],
+      "layers_reported": [
+        "L1",
+        "L2",
+        "L3"
+      ],
+      "ok": true
+    },
+    {
+      "layers": "L1+L2+L3",
+      "scenario": "fabricated",
+      "expected": [
+        "fabricated"
+      ],
+      "flagged": [
+        "fabricated"
+      ],
+      "layers_reported": [
+        "L1",
+        "L2",
+        "L3"
+      ],
+      "ok": true
+    },
+    {
+      "layers": "L1+L2+L3",
+      "scenario": "args_mismatch: tool",
+      "expected": [
+        "args_mismatch"
+      ],
+      "flagged": [
+        "args_mismatch"
+      ],
+      "layers_reported": [
+        "L1",
+        "L2",
+        "L3"
+      ],
+      "ok": true
+    },
+    {
+      "layers": "L1+L2+L3",
+      "scenario": "args_mismatch: args",
+      "expected": [
+        "args_mismatch"
+      ],
+      "flagged": [
+        "args_mismatch"
+      ],
+      "layers_reported": [
+        "L1",
+        "L2",
+        "L3"
+      ],
+      "ok": true
+    },
+    {
+      "layers": "L1+L2+L3",
+      "scenario": "args_unparseable",
+      "expected": [
+        "args_unparseable"
+      ],
+      "flagged": [
+        "args_unparseable"
+      ],
+      "layers_reported": [
+        "L1",
+        "L2",
+        "L3"
+      ],
+      "ok": true
+    },
+    {
+      "layers": "L1+L2+L3",
+      "scenario": "result_without_call",
+      "expected": [
+        "result_without_call"
+      ],
+      "flagged": [
+        "result_without_call"
+      ],
+      "layers_reported": [
+        "L1",
+        "L2",
+        "L3"
+      ],
+      "ok": true
+    }
+  ]
+}
