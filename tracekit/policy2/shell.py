@@ -2,9 +2,14 @@
 
 `parse(command)` returns every simple command the line would run, including those reached through wrappers, `sh -c`
 strings, substitutions, heredocs into a shell and interpreter one-liners:
-`{"argv": [...], "via": [...], "pipeline": n, "glob": bool}`. argv[0] is a basename;
+`{"argv": [...], "via": [...], "pipeline": n, "glob": bool, "opaque": bool}`. argv[0] is a basename;
 `via` says how the command was reached (empty at top level); commands with the same `pipeline` are stages of one
-pipeline, in order. Variables are not expanded and encodings are not decoded. A line it cannot parse raises ParseError.
+pipeline, in order. `opaque`: what the command runs cannot be read from the line (a glob or brace in its name, a shell
+reading its script from a pipe, a file or inherited stdin, `source` of a stream). Variables are not expanded and
+encodings are not decoded. A line it cannot parse raises ParseError.
+
+`analyse(command)` also returns the normalised lines: each parsed script with quotes and escapes resolved and
+redirections kept, for rules that match a whole command line.
 """
 import re
 
@@ -14,7 +19,8 @@ class ParseError(ValueError):
 
 
 MAX_DEPTH = 32
-MAX_WORK = 1 << 20   # characters parsed in total, re-parsed consumer strings included
+MAX_WORK = 1 << 18   # characters parsed in total, re-parsed consumer strings included: 4 × the largest subject, so
+                     # a worst-case command costs a fraction of a second of the signer (the parser holds the GIL)
 SHELLS = {"sh", "bash", "zsh", "dash", "ksh", "ash"}
 # wrapper -> (options that take a value, positional arguments before the command)
 WRAPPERS = {"command": ((), 0), "env": (("-u", "-C", "--unset", "--chdir"), 0), "nohup": ((), 0),
@@ -26,7 +32,19 @@ WRAPPERS = {"command": ((), 0), "env": (("-u", "-C", "--unset", "--chdir"), 0), 
             "sudo": (("-u", "-g", "-C", "-D", "-h", "-p", "-r", "-t", "-U", "-R", "-T", "--user", "--group", "--close-from",
                       "--chdir", "--host", "--prompt", "--role", "--type", "--other-user", "--chroot",
                       "--command-timeout"), 0),
-            "doas": (("-u", "-C"), 0)}
+            "doas": (("-u", "-C"), 0), "stdbuf": (("-i", "-o", "-e", "--input", "--output", "--error"), 0),
+            "setsid": ((), 0), "chroot": (("--userspec", "--groups"), 1), "builtin": ((), 0),
+            "nsenter": (("-t", "-S", "-G", "--target", "--setuid", "--setgid"), 0),
+            "unshare": (("-R", "-w", "-S", "-G", "--root", "--wd", "--setuid", "--setgid", "--propagation",
+                         "--setgroups", "--map-user", "--map-group", "--map-users", "--map-groups"), 0),
+            "flock": (("-w", "-E", "--wait", "--timeout", "--conflict-exit-code"), 1),
+            "ionice": (("-c", "-n", "-p", "-P", "-u", "--class", "--classdata", "--pid", "--pgid", "--uid"), 0),
+            "strace": (("-a", "-b", "-e", "-E", "-I", "-o", "-O", "-p", "-P", "-s", "-S", "-u", "-X", "--output"), 0),
+            "runuser": (("-u", "-g", "-G", "-s", "-w", "--user", "--group", "--supp-group", "--shell",
+                         "--whitelist-environment"), 0)}
+# commands that run a string through a shell: -c anywhere in their arguments (getopt permutes)
+DASH_C = {"su", "script"}
+STREAMS = ("/dev/stdin", "/dev/fd/", "/proc/self/fd/", "<(")
 KEYWORDS = {"if", "then", "else", "elif", "fi", "do", "done", "while", "until", "{", "}", "!"}
 SSH_OPTS = set("-b -c -D -E -e -F -I -i -J -L -l -m -O -o -p -Q -R -S -W -w".split())
 INTERPRETER = re.compile(r"python[0-9.]*|node|nodejs|perl|ruby")
@@ -38,14 +56,26 @@ _ANSI = {"n": "\n", "t": "\t", "r": "\r", "a": "\a", "b": "\b", "e": "\x1b", "E"
 # lean: interpreter code is scanned for string or list literals passed to a process-spawning call, plus backticks in
 # perl/ruby; code that builds the command at run time is not followed (tripwire territory, like encodings)
 _CALL = re.compile(r"\b(system|popen|execSync|execFileSync|exec|spawn\w*|run|call|check_call|check_output|Popen|getoutput)\s*\(\s*")
-_STR = re.compile(r"""(['"])((?:\\.|(?!\1).)*)\1""")
+_STR = re.compile(r"""(['"])((?:\\.|(?!\1)[^\\\n])*)\1""")
 _TICK = re.compile(r"`([^`]*)`")
 
 
 def parse(command):
-    ctx = {"cmds": [], "pipes": 0, "depth": 0, "work": 0}
+    return analyse(command)[0]
+
+
+def analyse(command):
+    """(the commands, the normalised lines)."""
+    ctx = {"cmds": [], "lines": [], "pipes": 0, "depth": 0, "work": 0}
     _Parser(command, ctx, []).script()
-    return ctx["cmds"]
+    return ctx["cmds"], [x for x in ctx["lines"] if x]
+
+
+def analyse_argv(argv):
+    """analyse() for a command given as an argv list, run without a shell."""
+    ctx = {"cmds": [], "lines": [" ".join(argv)], "pipes": 1, "depth": 0, "work": 0}
+    _Parser("", ctx, []).emit(list(argv), 1, [])
+    return ctx["cmds"], [x for x in ctx["lines"] if x]
 
 
 def _unwrap(name, args):
@@ -68,23 +98,57 @@ def _unwrap(name, args):
 
 
 def _shell_mode(args):
-    """('c', script) for sh -c, ('stdin', None) when the shell reads its script from stdin, else (None, None)."""
-    i = 0
+    """('c', script) for sh -c, ('stdin', None) when the shell reads its script from stdin (or a stream such as
+    /dev/stdin or <( )), else (None, None). Options after -c are skipped as the shell does: the script is the first
+    operand."""
+    i, flags = 0, ""
     while i < len(args):
         a = args[i]
         if a in ("-o", "+o", "-O", "+O"):
             i += 2
-        elif a in ("--", "-"):
-            break
-        elif a[:1] in "-+" and len(a) > 1:
-            if a[0] == "-" and not a.startswith("--") and "c" in a:
-                return ("c", args[i + 1]) if i + 1 < len(args) else (None, None)
-            if a[0] == "-" and not a.startswith("--") and "s" in a:
-                return "stdin", None
+            continue
+        if a in ("--", "-"):
             i += 1
-        else:
-            return None, None   # a script file
-    return ("stdin", None) if i + 1 >= len(args) else (None, None)
+            break
+        if a[:1] not in "-+" or len(a) == 1:
+            break
+        if a[0] == "-" and not a.startswith("--"):
+            flags += a[1:]
+        i += 1
+    if "c" in flags:
+        return ("c", args[i]) if i < len(args) else (None, None)
+    if "s" in flags or i >= len(args) or args[i].startswith(STREAMS):
+        return "stdin", None
+    return None, None   # a script file
+
+
+def _dash_c(args):
+    """The value of -c/--command (also bundled, as in -lc), or None."""
+    for i, a in enumerate(args):
+        if a == "--":
+            break
+        long = next((f for f in ("--command", "--session-command") if a.startswith(f)), None)
+        if long and a[len(long):len(long) + 1] == "=":
+            return a[len(long) + 1:]
+        if a == long or (re.fullmatch(r"-[A-Za-z]+", a) and "c" in a):
+            rest = "" if long else a[a.index("c") + 1:]
+            return rest or (args[i + 1] if i + 1 < len(args) else None)
+    return None
+
+
+def _split_string(args):
+    """env -S: the string it splits into the command, joined with the arguments after it; None without -S."""
+    i = 0
+    while i < len(args) and args[i].startswith("-") and args[i] != "--":
+        a = args[i]
+        if a in ("-S", "--split-string"):
+            return " ".join(args[i + 1:])
+        if a.startswith("--split-string="):
+            return " ".join([a[15:]] + args[i + 1:])
+        if re.fullmatch(r"-[iv0]*S.+", a, re.S):
+            return " ".join([a[a.index("S") + 1:]] + args[i + 1:])
+        i += 2 if a in WRAPPERS["env"][0] else 1
+    return None
 
 
 def _ssh_command(args):
@@ -130,7 +194,7 @@ def _ansi_c(text):
 
 class _Parser:
     def __init__(self, src, ctx, via):
-        self.s, self.i, self.ctx, self.via, self.heredocs = src, 0, ctx, via, []
+        self.s, self.i, self.ctx, self.via, self.heredocs, self.out = src, 0, ctx, via, [], []
         ctx["work"] += len(src)
         if ctx["work"] > MAX_WORK:
             raise ParseError("too much nested shell text")
@@ -154,8 +218,14 @@ class _Parser:
 
     def script(self):
         self.list(None)
+        self.flush()
         if self.heredocs:
             raise ParseError(f"heredoc {self.heredocs[0]['delim']} not terminated")
+
+    def flush(self):
+        while self.out[-1:] == [";"]:
+            self.out.pop()
+        self.ctx["lines"].append(" ".join(self.out))
 
     def blank(self):
         s = self.s
@@ -185,6 +255,8 @@ class _Parser:
                 break
             self.pipeline()
             self.blank()
+            self.out.append(self.s[self.i:self.i + 2] if self.at("&&") or self.at("||") else
+                            self.peek() if self.peek() in (";", "&") else ";")
             if self.at("&&") or self.at("||"):
                 self.i += 2
                 self.gap()
@@ -216,10 +288,11 @@ class _Parser:
                 self.i += 1
             else:
                 return
+            self.out.append("|")
             self.gap()
 
     def simple(self, pid):
-        words, glob, strings, docs = [], False, [], []
+        words, globs, strings, docs = [], [], [], []
         consumed = loop_header = False
         while True:
             self.blank()
@@ -231,7 +304,9 @@ class _Parser:
                 if words or loop_header or self.at("(("):
                     raise ParseError("unexpected ( (arithmetic and function definitions are not supported)")
                 self.i += 1
+                self.out.append("(")
                 self.list(")")
+                self.out.append(")")
                 continue
             m = None if c in "<>" and self.peek(1) == "(" else _REDIR.match(self.s, self.i)
             if m:
@@ -240,6 +315,7 @@ class _Parser:
                 target = self.word()
                 if target is None:
                     raise ParseError("redirection without a target")
+                self.out += [m.group(0), target[0]]
                 if m.group(2) in ("<<", "<<-"):
                     docs.append({"delim": target[0], "strip": m.group(2) == "<<-", "expand": target[0] == target[1],
                                  "via": self.via, "cmds": []})
@@ -249,6 +325,7 @@ class _Parser:
                 continue
             start = self.i
             text, raw, g = self.word()
+            self.out.append(text)
             if loop_header:
                 continue
             if not words and raw == text and text in KEYWORDS:
@@ -261,31 +338,56 @@ class _Parser:
             if not words and _ASSIGN.match(self.s, start):
                 continue
             words.append(text)
-            glob |= g
-        cmds = self.emit(words, pid, self.via, glob) if words else []
+            globs.append(g)
+        cmds = self.emit(words, pid, self.via, any(globs), globs) if words else []
         for d in docs:
             d["cmds"] = cmds
         shell = _stdin_shell(cmds)
+        if shell and not docs and not strings:
+            shell["opaque"] = True   # its script comes from a pipe, a file or inherited stdin
         for text in strings if shell else ():
             self.nested(text, shell["via"] + [shell["argv"][0] + " <<<"])
         return consumed
 
-    def emit(self, argv, pid, via, glob=False):
-        cmds = []
+    def emit(self, argv, pid, via, glob=False, globs=None):
+        """`globs[i]`: argv[i] has an unquoted glob or brace (only words of the line itself have one)."""
+        cmds, globs = [], globs or [False] * len(argv)
         while argv:
             if len(via) > MAX_DEPTH:
                 raise ParseError("nested too deeply")
             name, args = argv[0].rsplit("/", 1)[-1] or argv[0], argv[1:]
-            cmd = {"argv": [name] + args, "via": via, "pipeline": pid, "glob": glob}
+            cmd = {"argv": [name] + args, "via": via, "pipeline": pid, "glob": glob, "opaque": globs[0]}
             self.ctx["cmds"].append(cmd)
             cmds.append(cmd)
-            if name in WRAPPERS:
-                argv, via = _unwrap(name, args), via + [name]
+            if name in DASH_C:
+                if _dash_c(args) is None:
+                    cmd["opaque"] = True   # an interactive shell: it runs whatever its stdin holds
+                else:
+                    self.nested(_dash_c(args), via + [name + " -c"])
+            elif name == "sg":
+                self.nested(" ".join(a for a in args[1:] if a != "-c"), via + ["sg -c"])
+            elif name == "watch":
+                i = 0
+                while i < len(args) and args[i].startswith("-"):
+                    i += 2 if args[i] in ("-n", "--interval") else 1
+                self.nested(" ".join(args[i:]), via + ["watch sh -c"])
+            elif name == "env" and _split_string(args) is not None:
+                self.nested(_split_string(args), via + ["env -S"])
+            elif name in WRAPPERS:
+                if name == "runuser" and _dash_c(args) is not None:
+                    self.nested(_dash_c(args), via + ["runuser -c"])
+                inner = _unwrap(name, args)
+                if name == "flock" and inner[:1] in (["-c"], ["--command"]):
+                    self.nested(" ".join(inner[1:2]), via + ["flock -c"])
+                    break
+                argv, via, globs = inner, via + [name], globs[len(argv) - len(inner):]
                 continue
-            if name in SHELLS:
+            elif name in SHELLS:
                 mode, script = _shell_mode(args)
                 if mode == "c":
                     self.nested(script, via + [name + " -c"])
+            elif name in ("source", ".") and args[:1] and args[0].startswith(STREAMS):
+                cmd["opaque"] = True
             elif name == "eval":
                 self.nested(" ".join(args), via + ["eval"])
             elif name == "ssh":
@@ -339,7 +441,7 @@ class _Parser:
                 _Parser(body, self.ctx, d["via"] + ["<<"]).dquote(None)
 
     def word(self):
-        """Return (text, raw source, has_unquoted_glob), or None at an operator or the end."""
+        """Return (text, raw source, has an unquoted glob or brace expansion), or None at an operator or the end."""
         s, start, buf, bare = self.s, self.i, [], []
         while self.i < len(s):
             c = s[self.i]
@@ -374,12 +476,15 @@ class _Parser:
                 self.i += 1
         if self.i == start:
             return None
-        return "".join(buf), s[start:self.i], bool(re.search(r"[*?]|\[[^]]+\]", "".join(bare)))
+        bare = "".join(bare)   # neither pattern backtracks: each scan from a `[` or `{` stops at the next bracket
+        glob = re.search(r"[*?]|\[[^][]+\]", bare) or any("," in b or ".." in b for b in re.findall(r"\{[^{}]*\}", bare))
+        return "".join(buf), s[start:self.i], bool(glob)
 
     def sub(self, label):
-        via, self.via = self.via, self.via + [label]
+        via, out, self.via, self.out = self.via, self.out, self.via + [label], []
         self.list(")")
-        self.via = via
+        self.flush()
+        self.via, self.out = via, out
 
     def dquote(self, term):
         """Read up to `term` ("\"", "}" or None for a heredoc body), running substitutions; return the text."""

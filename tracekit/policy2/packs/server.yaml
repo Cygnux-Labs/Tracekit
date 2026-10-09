@@ -1,0 +1,5 @@
+# Server pack (policy v2): the coding pack's rules for a server-hosted agent, where a tool the policy does not map
+# waits for a person instead of being flagged.
+extends: coding.yaml
+description: server-hosted agents (coding pack; unmapped tools ask)
+unknown_tools: ask

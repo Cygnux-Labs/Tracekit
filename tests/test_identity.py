@@ -72,7 +72,14 @@ class FrameCredentials(unittest.TestCase):
     def test_frame_from_another_uid_is_refused(self):
         a, b = self.pair()
         b.sendall(b'{"n":1}\n')
-        self.refused(uid.CredentialReader(a, os.getuid() + 1))
+        with self.assertRaisesRegex(RPCError, f"sent as uid {os.getuid()}, not the connecting effective uid"):
+            uid.CredentialReader(a, os.getuid() + 1).readline(100)
+
+    def test_sender_attaching_its_effective_uid_is_read(self):
+        a, b = self.pair()
+        b.sendmsg([b'{"n":1}\n'], [(socket.SOL_SOCKET, socket.SCM_CREDENTIALS,
+                                     struct.pack("iII", os.getpid(), os.geteuid(), os.getegid()))])
+        self.assertEqual(uid.CredentialReader(a, os.geteuid()).readline(100), b'{"n":1}\n')
 
     def test_frame_without_credentials_is_refused(self):
         a, b = self.pair(passcred=False)

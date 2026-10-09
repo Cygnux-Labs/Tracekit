@@ -1,5 +1,7 @@
 """`tracekit view`: the v2 signer's runs, each verified by verify.v2, served with the observer's page and security."""
+import contextlib
 import http.client
+import io
 import json
 import os
 import shutil
@@ -8,6 +10,7 @@ import ssl
 import subprocess
 import threading
 import unittest
+from unittest import mock
 
 import test_signer_service as ts
 from factories import wait_for
@@ -92,12 +95,38 @@ class View(unittest.TestCase):
         self.assertEqual(self.rows(feed, run_id), [rep])   # none of its events
         self.assertEqual(feed.verify()[1], [f"run {run_id} of tenant default: FAILED"])
 
-    def serve(self, feed, token=None, tls=None):
+    def serve(self, feed, token="t0k", tls=None):
         srv = view.server(feed, "127.0.0.1", 0, token, tls)
         threading.Thread(target=srv.serve_forever, daemon=True).start()
         self.addCleanup(srv.server_close)
         self.addCleanup(srv.shutdown)
         return srv.server_address[1]
+
+    def session(self, port, timeout=5):
+        """(connection, headers) of a browser that exchanged the printed token for its session cookie."""
+        c = http.client.HTTPConnection("127.0.0.1", port, timeout=timeout)
+        c.request("GET", "/")
+        r = c.getresponse()
+        r.read()
+        self.assertEqual(r.status, 401)   # no anonymous access, even on loopback
+        c.request("GET", "/?token=t0k")
+        r = c.getresponse()
+        r.read()
+        self.assertEqual(r.status, 303)
+        return c, {"Cookie": r.getheader("Set-Cookie").split(";")[0]}
+
+    def test_loopback_viewer_prints_a_token_url_and_needs_it(self):
+        with mock.patch.object(view, "server") as server, mock.patch.dict(os.environ), \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            os.environ.pop("TRACEKIT_VIEW_TOKEN", None)
+            server.return_value.serve_forever.side_effect = KeyboardInterrupt
+            server.return_value.server_address = ("127.0.0.1", 7778)
+            self.assertEqual(view.main(["--data-dir", self.d]), 0)
+        token = server.call_args[0][3]
+        self.assertGreaterEqual(len(token), 32)
+        self.assertIn(f"http://127.0.0.1:7778/?token={token} ", out.getvalue())
+        with self.assertRaises(ValueError):
+            view.server(None, "127.0.0.1", 0, None)
 
     def test_hostile_tool_names_are_data_and_the_page_escapes_every_sink(self):
         run = self.client.run(agent="a")
@@ -105,24 +134,23 @@ class View(unittest.TestCase):
         self.client.call("checkpoint_nudge", {})
         feed = view.StoreFeed(self.d)
         self.report(feed, run.run_id)
-        port = self.serve(feed)
-        c = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
-        c.request("GET", "/")
+        c, cookie = self.session(self.serve(feed))
+        c.request("GET", "/", headers=cookie)
         r = c.getresponse()
         page = r.read().decode()
         self.assertIn("script-src 'nonce-", r.getheader("Content-Security-Policy"))
         self.assertNotIn("<img", page)
         self.assertEqual(unescaped(script_of(page)), [])
-        c.request("GET", "/api/snapshot")
+        c.request("GET", "/api/snapshot", headers=cookie)
         snap = json.loads(c.getresponse().read())
         self.assertIn(XSS, [x.get("tool_name") for x in snap["records"]])
 
     def test_sse_shows_a_new_record(self):
         feed = view.StoreFeed(self.d)
-        c = http.client.HTTPConnection("127.0.0.1", self.serve(feed), timeout=15)
-        c.request("GET", "/api/snapshot")
+        c, cookie = self.session(self.serve(feed), 15)
+        c.request("GET", "/api/snapshot", headers=cookie)
         start = json.loads(c.getresponse().read())["next"]
-        c.request("GET", f"/api/stream?from={start}")
+        c.request("GET", f"/api/stream?from={start}", headers=cookie)
         stream = c.getresponse()
         run = self.client.run(agent="late")
         run.decide("c1", "Bash", {"command": "ls"})

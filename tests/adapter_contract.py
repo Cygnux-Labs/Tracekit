@@ -3,7 +3,8 @@
 An adapter plugs in through a driver; subclass `Contract` with a `driver(case, signer_path)` and mix in `OnFake` or
 `OnReal` (tests/test_contract_langchain.py). Each case runs against FakeSigner and the real signer, both served in
 this process on a Unix socket (loopback TCP where there are none), so the adapter and its resumed processes reach them as they would a deployed signer.
-The policy: `pay` asks (R-PAY, with a T2 executor), `wipe` is denied (R-WIPE), everything else is allowed.
+The policy: `pay` asks (R-PAY, with a T2 executor), `wipe` is denied (R-WIPE), everything else is allowed; a
+`<prefix>/` before the name (MCP's `mcp:<server>/pay`) is ignored.
 
 A driver has:
 - `run()`: {"run_id", "run_token"} of the run its calls went to;
@@ -65,7 +66,7 @@ TOOLS = [echo, pay, wipe, fail]
 
 
 def _rule(tool, args):
-    return {"pay": ("ask", ["R-PAY"]), "wipe": ("deny", ["R-WIPE"])}.get(tool, ("allow", []))
+    return {"pay": ("ask", ["R-PAY"]), "wipe": ("deny", ["R-WIPE"])}.get(tool.rsplit("/", 1)[-1], ("allow", []))
 
 
 def tmpdir(case):
@@ -108,9 +109,9 @@ class OnFake:
 
 class OnReal:
     def serve_signer(self):
-        self.service = s = SignerService(tmpdir(self), policy=Engine({"ask": [{"id": "R-PAY", "tool": "^pay$", "pattern": "^",
+        self.service = s = SignerService(tmpdir(self), policy=Engine({"ask": [{"id": "R-PAY", "tool": "^(.*/)?pay$", "pattern": "^",
                                                                                "approval": {"executor": "t2"}}],
-                                                       "deny": [{"id": "R-WIPE", "tool": "^wipe$", "pattern": "^"}]}))
+                                                       "deny": [{"id": "R-WIPE", "tool": "^(.*/)?wipe$", "pattern": "^"}]}))
         self.addCleanup(s.close)
         return _serve(self, s.handle_frame)
 
@@ -288,3 +289,19 @@ class Contract:
         self.needs("l1")
         self.d.call("echo", {"text": "hi"})
         self.assertTrue(self.recorded("state.write"))
+
+    def test_l1_saved_state_edited_between_pause_and_resume_is_a_state_tamper(self):
+        self.needs("l1")
+        self.needs("saved_state")
+        if isinstance(self, OnFake):
+            self.skipTest("FakeSigner does not check prev_digest")
+
+        def gaps():
+            return [e["data"]["kind"] for e in self.events(self.d.run()) if e["type"] == "capture.gap"]
+        self.approve(self.paused("call-0"))
+        self.assertEqual(self.d.resume()["ran"], ["pay"])
+        self.assertEqual(gaps(), [])   # resumed in a new process from the state as saved
+        self.approve(self.paused())
+        self.d.tamper(args=dict(PAY, cents=1500000))
+        self.refused(self.d.resume(), "TK-APPROVAL-MISMATCH")
+        self.assertEqual(gaps(), ["state_tamper"])

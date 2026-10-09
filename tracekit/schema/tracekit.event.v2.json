@@ -16,7 +16,11 @@
     "parent_id",
     "source",
     "type",
-    "data"
+    "data",
+    "log_id",
+    "tenant",
+    "run_seq",
+    "run_prev_hash"
   ],
   "properties": {
     "schema_version": {
@@ -1451,7 +1455,8 @@
             "log_closed",
             "quota_refused",
             "identity_refused",
-            "approval_expired"
+            "approval_expired",
+            "executed_against_policy"
           ],
           "description": "Gap and tamper kinds (signer-written only)."
         },
@@ -1546,6 +1551,10 @@
       ],
       "description": "C3: one model API request/response recorded by the proxy (source=proxy) before the request was forwarded and when the response completed.",
       "properties": {
+        "salt_id": {
+          "$ref": "#/$defs/id",
+          "description": "the signer's salt id for this record's commitments (salt label <type>:<salt_id>); absent on records written before salt_id existed"
+        },
         "exchange_id": {
           "type": "string",
           "maxLength": 4096
@@ -1854,6 +1863,10 @@
         "binding_digest"
       ],
       "properties": {
+        "salt_id": {
+          "$ref": "#/$defs/id",
+          "description": "the signer's salt id for this record's commitments (salt label <type>:<salt_id>); absent on records written before salt_id existed"
+        },
         "approval_id": {
           "$ref": "#/$defs/id"
         },
@@ -2025,6 +2038,10 @@
         "args_commitment"
       ],
       "properties": {
+        "salt_id": {
+          "$ref": "#/$defs/id",
+          "description": "the signer's salt id for this record's commitments (salt label <type>:<salt_id>); absent on records written before salt_id existed"
+        },
         "approval_id": {
           "$ref": "#/$defs/id"
         },
@@ -2043,7 +2060,7 @@
         },
         "decision_id": {
           "$ref": "#/$defs/id",
-          "description": "the decision whose salt both commitments are under"
+          "description": "the decision the approval was for (without salt_id: the decision whose salt both commitments are under)"
         }
       }
     },
@@ -2073,6 +2090,10 @@
         "digest"
       ],
       "properties": {
+        "salt_id": {
+          "$ref": "#/$defs/id",
+          "description": "the signer's salt id for this record's commitments (salt label <type>:<salt_id>); absent on records written before salt_id existed"
+        },
         "store": {
           "type": "string",
           "maxLength": 256
@@ -2170,8 +2191,7 @@
       ],
       "properties": {
         "kid": {
-          "type": "string",
-          "maxLength": 71
+          "$ref": "#/$defs/hash"
         },
         "last_seq": {
           "type": "integer",

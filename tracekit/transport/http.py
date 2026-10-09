@@ -5,7 +5,8 @@ signer.yaml:
       listen: 0.0.0.0:8443
       cert: tls/server.pem
       key: tls/server.key
-      client_ca: tls/clients-ca.pem             # mtls: client certificates are verified against these CAs
+      client_ca:                                 # mtls: SPIFFE trust domain -> the CA bundle its IDs must chain to
+        example.org: tls/example-ca.pem
       authenticators: [k8s_sa, mtls, token]
       k8s_sa: {audience: tracekit-signer, ...}  # tracekit/identity/k8s_sa.py
       token_file: tls/bearer                     # token: a bearer secret (identity token:http)
@@ -44,13 +45,18 @@ def configure(cfg):
     names = cfg.get("authenticators")
     if not isinstance(names, list) or not names or len(set(names)) != len(names) or set(names) - {"k8s_sa", "mtls", "token"}:
         raise ValueError("http.authenticators: a list of k8s_sa, mtls, token")
+    cas = cfg.get("client_ca")
+    if cas is not None and not (isinstance(cas, dict) and cas and all(
+            isinstance(k, str) and k and isinstance(v, str) and v for k, v in cas.items())):
+        raise ValueError("http.client_ca: a mapping of SPIFFE trust domain to CA bundle path")
     tls = None
     if cfg.get("cert") and cfg.get("key"):
         tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         tls.minimum_version = ssl.TLSVersion.TLSv1_2
         tls.load_cert_chain(cfg["cert"], cfg["key"])
         if cfg.get("client_ca"):
-            tls.load_verify_locations(cfg["client_ca"])
+            for path in cfg["client_ca"].values():
+                tls.load_verify_locations(path)
             tls.verify_mode = ssl.CERT_OPTIONAL   # a presented certificate must verify; mtls refuses a missing one
     elif cfg.get("cert") or cfg.get("key") or cfg.get("insecure_loopback") is not True or not _loopback(host):
         raise ValueError("http: needs cert and key (plain HTTP only with insecure_loopback on a loopback address)")
@@ -59,7 +65,7 @@ def configure(cfg):
         if name == "mtls":
             if not (tls and cfg.get("client_ca")):
                 raise ValueError("http: mtls needs cert, key and client_ca")
-            auths.append(MtlsAuthenticator())
+            auths.append(MtlsAuthenticator(cfg["client_ca"]))
         elif name == "token":
             if not cfg.get("token_file"):
                 raise ValueError("http: token needs token_file")
@@ -90,8 +96,11 @@ class _Handler(BaseHTTPRequestHandler):
         if self.path != PATH:
             return self._reply(404, RPCError("invalid_request", f"POST {PATH}").wire(), close=True)
         n = self.headers.get("Content-Length", "")
-        if not n.isdigit():
+        if not n:
             return self._reply(411, RPCError("invalid_request", "Content-Length required").wire(), close=True)
+        if not (n.isascii() and n.isdigit() and len(n) <= 8):
+            return self._reply(400, RPCError("invalid_request", "Content-Length: at most 8 ASCII digits").wire(),
+                               close=True)
         if int(n) > MAX_LINE:
             return self._reply(413, RPCError("quota_exceeded", f"body longer than {MAX_LINE} bytes").wire(), close=True)
         try:

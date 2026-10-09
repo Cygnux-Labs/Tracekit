@@ -16,8 +16,8 @@ signer.yaml:
     http: {listen: 0.0.0.0:8443, ...}        # HTTPS with k8s_sa, mtls or token identity (tracekit/transport/http.py)
     durability: ack-on-write                 # or ack-on-fsync
     tenant: default                          # tenant of callers not in `tenants`
-    tenants: {"uid:1001": acme, "k8s_sa:system:serviceaccount:acme:*": acme}   # identity or prefix* -> tenant (attested)
-    authorize: {"mtls:spiffe://acme/agent": [register_run, decide, complete, close_run]}   # identity or prefix* ->
+    tenants: {"uid:1001": acme, "k8s_sa:system:serviceaccount:acme:*": acme}   # identity or prefix:* -> tenant (attested)
+    authorize: {"mtls:spiffe://acme/agent": [register_run, decide, complete, close_run]}   # identity or prefix:* ->
                                              # methods; uid and token:dev default to all, the rest to none
     multi_tenant_apps: ["uid:1002"]          # may assert a tenant per run (recorded as not attested)
     migrators: ["uid:1003"]                  # may register `migrated` runs
@@ -33,7 +33,7 @@ signer.yaml:
     witnesses:                               # C2SP tlog-witnesses that cosign every new note (tracekit.tlog_witness)
       - {url: https://witness.example.org, vkey: "witness.example.org/w1+1234abcd+BA...", class: customer}
     contact: ops@example.org                 # the logs list's contact line; default the origin
-    approvals: {self_approval: deny, approvers: ["uid:1001", "mtls:spiffe://acme/ops/*"],   # identity or prefix*
+    approvals: {self_approval: deny, approvers: ["uid:1001", "mtls:spiffe://acme/ops/*"],   # identity or prefix/*
                 break_glass: ["uid:0"]}      # may answer any approval, with a reason; recorded break_glass
     acknowledge_rollback: false
 
@@ -85,11 +85,13 @@ it still finds. Every published digest of agent content is an HMAC under a per-r
 keys/args_salt.key (`salt_label`), which `reveal` prints for one record. Policy decides on the unredacted arguments.
 """
 import argparse
+import base64
 import collections
 import datetime
 import hashlib
 import hmac
 import json
+import logging
 import os
 import pathlib
 import re
@@ -114,12 +116,12 @@ from tracekit.locking import lock_file
 from tracekit.policy2 import compile as policy_compile
 from tracekit.policy2.engine import Engine
 from tracekit.signer import metrics, rpc_schema
-from tracekit.signer.pipeline import SIGNER_RUN, RecordLog, approval, salt_label, subject
+from tracekit.signer.pipeline import SIGNER_RUN, RecordLog, approval, final_run, owner, salt_label, subject
 from tracekit.signer.quotas import Limits, Quotas
 from tracekit.signer.rpc_schema import REQUESTS, RPCError
 from tracekit.signer.runtoken import RunTokens
 from tracekit.storage.base import ACK_ON_WRITE, RECORDS, StorageUnavailable, registry_tree
-from tracekit.storage.file import FileStorage, _mkdir
+from tracekit.storage.file import FileStorage, _mkdir, _sync_dir, _write_all
 from tracekit.storage.file import fsck as fsck_store
 from tracekit.tlog_witness import TlogWitness, WitnessError, signed_by
 from tracekit.transport import answering_hello, hello
@@ -181,32 +183,45 @@ def _dotenv(args):
 
 
 def _write_new(path, data):
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), 0o600)
+    """Create `path` (0600) holding all of `data`, or leave nothing there; FileExistsError when it exists."""
+    tmp = f"{path}.{secrets.token_hex(8)}.tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), 0o600)
     try:
-        os.write(fd, data)
-        os.fsync(fd)
+        try:
+            _write_all(fd, data)
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.link(tmp, path)
     finally:
-        os.close(fd)
+        os.unlink(tmp)
+    _sync_dir(os.path.dirname(path))
 
 
-def _secret(path, make):
-    """The secret in `path`, created (0600) on first use. Called under the storage lock, so never by two signers."""
+def _secret(path, make, size=32):
+    """The `size`-byte secret in `path`, created (0600) on first use. Called under the storage lock, so never by two
+    signers. A file of another size stops the start: a key is never used cut short."""
     try:
         with open(path, "rb") as f:
-            return f.read()
+            data = f.read()
     except FileNotFoundError:
-        pass
-    data = make()
-    _write_new(path, data)
+        data = make()
+        _write_new(path, data)
+    if len(data) != size:
+        raise ValueError(f"{path} holds {len(data)} bytes, not a {size}-byte key: restore it from a backup")
     return data
 
 
+PREFIX_ENDS = (":*", "/*")
+
+
 def lookup(table, sub, default=None):
-    """table[sub], else the entry of the longest `prefix*` key that `sub` starts with, else `default`."""
+    """table[sub], else the entry of the longest prefix key (ending in `:*` or `/*`) that `sub` starts with, else
+    `default`."""
     if sub in table:
         return table[sub]
     # lean: scans every key per call; a prefix trie if maps grow past a few hundred entries
-    best = max((k for k in table if k.endswith("*") and sub.startswith(k[:-1])), key=len, default=None)
+    best = max((k for k in table if k.endswith(PREFIX_ENDS) and sub.startswith(k[:-1])), key=len, default=None)
     return default if best is None else table[best]
 
 
@@ -224,7 +239,7 @@ class SignerService:
         `open_storage()` defaults to file storage in data_dir/store. `origin` names the log in its checkpoints, `contact`
         its operator in the logs list. `witnesses` cosign its notes (see the module docstring).
         `multi_tenant_apps`, `migrators` and `analyzers` are identities ("scheme:subject"); `tenants` and `authorize`
-        map identities or `prefix*` to a tenant and to the methods they may call.
+        map identities or prefixes (`...:*`, `.../*`) to a tenant and to the methods they may call.
         `isolation` fixes the signer_isolation label of every run (a dev signer: same-user). `bridge`: see RecordLog.
         `approvals`: who answers approvals (the `approvals` config section); None for the dev signer's rules."""
         fail_modes = dict(fail_modes or FAIL_MODES)
@@ -286,6 +301,7 @@ class SignerService:
             for aid in os.listdir(self._args_dir):   # left by a crash, or by an approval_request that was rolled back
                 if self.log.approvals.get(aid, {}).get("state") not in LIVE:
                     self._drop_args(aid)
+            self._check_notes(acknowledge_rollback)
             self._check_witnesses(witnesses, acknowledge_rollback)
         except BaseException:
             self.log.close()
@@ -295,7 +311,7 @@ class SignerService:
                 ("tracekit_signer_fsync_lag_seconds", "Seconds the oldest written but unsynced record has waited.",
                  lambda: self.log.storage.unsynced_s()),
                 ("tracekit_signer_open_runs", "Runs registered and not yet closing.",
-                 lambda: sum(not r["closed"] for k, r in list(self.log.runs.items()) if k != SIGNER_RUN)),
+                 lambda: sum(list(self.log.open_runs.values()))),
                 ("tracekit_signer_pending_approvals", "Approvals requested and not yet answered.",
                  lambda: sum(a["state"] == "requested" for a in list(self.log.approvals.values()))),
                 ("tracekit_signer_checkpoint_age_seconds", "Seconds since this signer last wrote a checkpoint note "
@@ -314,6 +330,32 @@ class SignerService:
         for t in self._publishers:
             t.start()
 
+    def _rollback(self, path, before, after, acknowledged, why):
+        self.log.write(lambda tx: tx.emit(self.log.signer_run(tx), "trace.tamper", {
+            "path": path, "kind": "rollback", "before": before, "after": after}, source="signer"))
+        if not acknowledged:
+            self.log.refuse_writes = f"{why}: rolled back; restart with acknowledge_rollback once investigated"
+
+    def _check_notes(self, acknowledged):
+        """The latest stored note of each tree (the record tree, every registry tree) against the tree: a note of more
+        leaves, or of another root at its size, means the log was rolled back or forked."""
+        s = self.log.storage
+        trees = [(RECORDS, s.tree)] + [(registry_tree(t), s.registry_merkle(t))
+                                       for t in sorted(self.log.tenants | set(s.tail_state()["registry"]))]
+        for name, tree in trees:
+            latest = s.checkpoint_latest(name)
+            if latest is None:
+                continue
+            size, note = latest
+            origin, _, root = note.split("\n", 3)[:3]
+            path, root = "records" if name == RECORDS else origin, base64.b64decode(root)   # no tenant name in clear
+            local = tree.size if tree else 0
+            if size > local or tree.root_at(size) != root:
+                self._rollback(path, {"length": size, "hash": "sha256:" + root.hex()},
+                               {"length": local, "hash": "sha256:" + (tree.root() if tree else merkle.root([])).hex()},
+                               acknowledged, f"the local {path} log ({local} leaves) does not extend its stored "
+                                             f"checkpoint ({size})")
+
     def _check_witnesses(self, witnesses, acknowledged):
         if not witnesses:
             return
@@ -331,13 +373,9 @@ class SignerService:
         local = self.log.storage.tail_state()
         if local["tree_size"] >= size:
             return
-        before = {"length": size, **({"hash": "sha256:" + root.hex()} if root else {})}
-        self.log.write(lambda tx: tx.emit(self.log.signer_run(tx), "trace.tamper", {
-            "path": "records", "kind": "rollback", "before": before,
-            "after": {"length": local["tree_size"], "hash": "sha256:" + local["tree_root"].hex()}}, source="signer"))
-        if not acknowledged:
-            self.log.refuse_writes = (f"the local log ({local['tree_size']} records) is behind the witnessed checkpoint "
-                                      f"({size}): rolled back; restart with acknowledge_rollback once investigated")
+        self._rollback("records", {"length": size, **({"hash": "sha256:" + root.hex()} if root else {})},
+                       {"length": local["tree_size"], "hash": "sha256:" + local["tree_root"].hex()}, acknowledged,
+                       f"the local log ({local['tree_size']} records) is behind the witnessed checkpoint ({size})")
 
     # --- dispatch ---
 
@@ -367,6 +405,11 @@ class SignerService:
                 self._refusals[k] = (first, now, n + 1)
             raise
 
+    def _loop_error(self, loop):
+        """Count and log an unexpected error of a background loop, which carries on with its next round."""
+        self.metrics.loop_errors.inc(loop)
+        logging.getLogger(__name__).exception("tracekit signer: the %s loop failed; retrying", loop)
+
     def _tick_loop(self):
         flushed = time.monotonic()
         while not self._stop.wait(TICK_S):
@@ -374,9 +417,14 @@ class SignerService:
                 self.sweep()
             except RPCError:   # storage down: the next tick retries
                 pass
+            except Exception:
+                self._loop_error("ticker")
             if time.monotonic() - flushed >= REFUSAL_WINDOW_S:
                 flushed = time.monotonic()
-                self.flush_refusals()
+                try:
+                    self.flush_refusals()
+                except Exception:
+                    self._loop_error("ticker")
 
     def _checkpoint_loop(self):
         """A note after each nudge (a run.final nudges too), at most one per CHECKPOINT_MIN_S, and every CHECKPOINT_S."""
@@ -389,6 +437,8 @@ class SignerService:
                 self.checkpoint()
             except (RPCError, StorageUnavailable, OSError):   # storage down: the next round retries
                 pass
+            except Exception:
+                self._loop_error("checkpointer")
             self._stop.wait(CHECKPOINT_MIN_S)
 
     def checkpoint(self):
@@ -428,6 +478,8 @@ class SignerService:
                     self._publish(w, tree, merkle_tree)
             except (RPCError, StorageUnavailable, OSError):   # storage down: the next round retries
                 pass
+            except Exception:
+                self._loop_error("publisher")
 
     def _publish(self, w, tree, merkle_tree):
         latest = self.log.storage.checkpoint_latest(tree)
@@ -443,7 +495,11 @@ class SignerService:
         try:
             lines = w.add_checkpoint(note, log_vkey, old,
                                      lambda n: self.log.write(lambda tx: merkle_tree.consistency_proof(n, size)))
-        except WitnessError as e:
+        except (RPCError, StorageUnavailable):   # storage down: the publish loop retries
+            raise
+        except Exception as e:   # any other failure is the witness's, and not worth a quick retry
+            if not isinstance(e, WitnessError):
+                e = WitnessError(f"{w.name}: {type(e).__name__}: {e}", False)
             self.metrics.witness_failures.inc(w.name)
             with self._queue_lock:
                 st["attempts"] += 1
@@ -501,9 +557,10 @@ class SignerService:
             t = time.monotonic() if now is None else now
             paused = max(0.0, t - self._swept)
             self._swept = max(self._swept, t)
-            expired, live, deadline = [], {}, _iso(time.time() if wall is None else wall)
+            expired, live, mine, deadline = [], {}, {}, _iso(time.time() if wall is None else wall)
             # lean: visits every approval and run on each tick; keep deadline heaps once a signer holds ~100k of them
             for aid, a in self.log.approvals.items():
+                mine.setdefault(a["run_key"], []).append(aid)
                 if a["state"] in LIVE:
                     live.setdefault(a["run_key"], []).append(aid)
 
@@ -520,6 +577,11 @@ class SignerService:
                     tx.set(run, "final", True)
                     tx.emit(run, "run.final", {"head_run_seq": run["run_seq"] - 1, "head_hash": run["head"]},
                             source="signer")
+                    tx.set(self.log.runs, key, final_run(run))   # its calls, decisions and arguments go
+                    for aid in mine.get(key, ()):   # all ended now: nothing can use them
+                        a = self.log.approvals[aid]
+                        tx.pop(self.log.approval_index, (*key, a["tool_call_id"], a["attempt"]))
+                        tx.pop(self.log.approvals, aid)
                     finals.append(key)
                     continue
                 expire(run, [aid for aid in live.get(key, ()) if self.log.approvals[aid]["expires_at"] <= deadline])
@@ -598,7 +660,7 @@ class SignerService:
         """Whether `identity` may see approval `a`: the run's owner, a break-glass identity, or an identity of the
         run's tenant (with a config, only an approver of it)."""
         sub = subject(identity)
-        if sub == self.log.runs[a["run_key"]]["owner"] or lookup(self._break_glass, sub, False):
+        if owner(identity) == self.log.runs[a["run_key"]]["owner"] or lookup(self._break_glass, sub, False):
             return True
         return (self.approvals is None or lookup(self._approvers, sub, False)) and \
             a["run_key"][0] == lookup(self.tenants, sub, self.tenant)
@@ -634,7 +696,7 @@ class SignerService:
     def _drop_args(self, approval_id):
         try:
             os.unlink(os.path.join(self._args_dir, approval_id))
-        except FileNotFoundError:
+        except OSError:   # gone already, or left for the next start's cleanup
             pass
 
     @staticmethod
@@ -652,9 +714,11 @@ class SignerService:
         return "hmac-sha256:" + hmac.new(_salt(self._salt_key, label), digest.encode(), "sha256").hexdigest()
 
     def _same(self, call, digest):
-        """Whether `digest` is the args digest the decision (or approval) `call` was made for."""
-        return bool(call["commitment"] and digest) and hmac.compare_digest(call["commitment"],
-                                                                            self._commit(call["decision_id"], digest))
+        """Whether `digest` is the args digest the decision `call` was made for."""
+        return self._opens(call["commitment"], call["decision_id"], digest)
+
+    def _opens(self, commitment, label, digest):
+        return bool(commitment and digest) and hmac.compare_digest(commitment, self._commit(label, digest))
 
     def _evaluate(self, tool, args, hint):
         """(policy decision, hint disagreed). A class hint that disagrees with the policy's class gets the stricter of
@@ -681,17 +745,19 @@ class SignerService:
                 raise RPCError("forbidden", f"{sub[:256]} is not configured to register runs with `{field}`")
         tenant = req.get("tenant") or lookup(self.tenants, sub, self.tenant)
         run_id = req.get("run_id") or secrets.token_hex(16)
+        own = owner(identity)
+        self.quotas.take_event(identity)
 
         def fn(tx, _):
             if (tenant, run_id) in self.log.runs:
                 raise RPCError("run_exists", run_id)
             if "analyzes" in req and (tenant, req["analyzes"]) not in self.log.runs:
                 raise RPCError("unknown_run", req["analyzes"])
-            # lean: counts by scanning every run, O(runs); keep a per-owner counter when runs reach the thousands
-            self.quotas.check_count("open_runs", sum(r["owner"] == sub and not r["closed"]
-                                                     for r in self.log.runs.values()))
+            n = self.log.open_runs.get(own, 0)
+            self.quotas.check_count("open_runs", n)
             run = tx.new_run(tenant, run_id)
-            tx.set(run, "owner", sub)
+            tx.set(run, "owner", own)
+            tx.set(self.log.open_runs, own, n + 1)
             tx.set(run, "source", req.get("source", "sdk"))
             out = {"run_id": run_id, "run_token": self.tokens.issue(tenant, run_id, identity), "tenant": tenant,
                    "tenant_attested": "tenant" not in req, "principal_attested": False, "fail_modes": self.fail_modes}
@@ -761,9 +827,9 @@ class SignerService:
         """`data(commit)`: the event's data, given `commit(digest)`, the commitment under this record's salt."""
         key = self._authorize(identity, req)
         self.quotas.take_event(identity)
-        label = salt_label({"type": typ, "data": None, "tenant": key[0], "run_id": key[1],
-                            "request_id": req["request_id"]})
-        data = data(lambda digest: self._commit(label, digest))
+        sid = secrets.token_hex(16)
+        label = salt_label({"type": typ, "data": {"salt_id": sid}})
+        data = {**data(lambda digest: self._commit(label, digest)), "salt_id": sid}
 
         def fn(tx, run):
             if need_call and req["tool_call_id"] not in run["calls"]:
@@ -775,7 +841,7 @@ class SignerService:
         key, tcid, attempt, did = self._authorize(identity, req), req["tool_call_id"], req.get("attempt", 0), req["decision_id"]
         # read off the writer thread, which checks the decision again; unknown after a restart (arguments are never
         # logged), so a replayed decision redacts as if the call touched a .env file
-        dotenv = (self.log.runs[key]["decisions"].get(did) or {}).get("dotenv", True)
+        dotenv = (self.log.runs[key].get("decisions", {}).get(did) or {}).get("dotenv", True)
         try:
             value, manifest = _redact({k: req[k] for k in ("result", "error") if k in req}, dotenv,
                                       req.get("redaction", {}) if req.get("redacted") else None)
@@ -793,21 +859,27 @@ class SignerService:
             if not self._same(call, req["args_digest"]):
                 raise RPCError("args_mismatch", f"{tcid} ran with other arguments than decision {did}")
             tx.set(run["decisions"], did, None)
-            return {"run_seq": tx.event(run, req, "tool.result", {"tool_use_id": tcid, "ok": req["status"] == "ok",
-                                                                  "output": output, "decision_id": did,
-                                                                  "redaction": manifest},
-                                        tool_call_id=tcid, attempt=attempt)}
+            seq = tx.event(run, req, "tool.result", {"tool_use_id": tcid, "ok": req["status"] == "ok", "output": output,
+                                                     "decision_id": did, "redaction": manifest},
+                           tool_call_id=tcid, attempt=attempt)
+            approved = self.log.approvals.get(self.log.approval_index.get((*key, tcid, attempt)), {}).get("state")
+            if call["decision"] == "deny" or (call["decision"] == "ask" and approved != "consumed"):
+                tx.emit(run, "capture.gap", {"kind": "executed_against_policy", "tool_use_id": tcid,
+                                             "reason": f"{tcid} ran after a {call['decision']} decision"
+                                                       + (" with no consumed approval" if call["decision"] == "ask" else "")},
+                        source="signer", tool_call_id=tcid)
+            return {"run_seq": seq}
         return self.log.submit(identity, "complete", req, fn, key, late=True)
 
     def _state_write(self, identity, req):
         key, sk = self._authorize(identity, req), req["key"]
         self.quotas.take_event(identity)
-        label = salt_label({"type": "state.write", "data": None, "tenant": key[0], "run_id": key[1],
-                            "request_id": req["request_id"]})
+        sid = secrets.token_hex(16)
+        label = salt_label({"type": "state.write", "data": {"salt_id": sid}})
         digest = self._commit(label, req["value_digest"])
 
         def fn(tx, run):
-            data = {"store": "default", "key": sk, "digest": digest}
+            data = {"store": "default", "key": sk, "digest": digest, "salt_id": sid}
             prev = req.get("prev_digest", ...)
             if prev is not ...:
                 data["prev_digest"] = prev and self._commit(label, prev)
@@ -846,6 +918,7 @@ class SignerService:
     def _approval_request(self, identity, req):
         key, tcid, sub = self._authorize(identity, req), req["tool_call_id"], subject(identity)
         attempt = req.get("attempt", 0)
+        self.quotas.take_event(identity)
 
         def fn(tx, run):
             aid = self.log.approval_index.get((*key, tcid, attempt))
@@ -853,23 +926,23 @@ class SignerService:
                 a = self.log.approvals[aid]
                 return {"approval_id": aid, "state": a["state"], "expires_at": a["expires_at"]}
             call = run["calls"].get(tcid)
-            if call is None or call["attempt"] != attempt or "pending" not in call:
+            if call is None or call["attempt"] != attempt or not call.get("pending"):
                 raise RPCError("unknown_tool_call", f"{tcid} attempt {attempt} has no pending `ask` decision")
             self.quotas.check_count("pending_approvals", sum(a["requester"] == sub and a["state"] == "requested"
                                                              for a in self.log.approvals.values()))
             p = call["pending"]
-            aid, expires_at = "apr-" + secrets.token_hex(16), _iso(time.time() + APPROVAL_TTL_S)
+            aid, expires_at, sid = "apr-" + secrets.token_hex(16), _iso(time.time() + APPROVAL_TTL_S), secrets.token_hex(16)
+            args, digest = self._args(p)
             binding = {"v": 1, "approval_id": aid, "tenant": key[0], "run_id": key[1], "tool_call_id": tcid,
-                       "attempt": attempt, "tool": p["tool"], "args_commitment": call["commitment"],
+                       "attempt": attempt, "tool": p["tool"], "args_commitment": self._commit("approval.request:" + sid, digest),
                        "args_source": p["args_source"],
                        "policy_hash": self.policy.policy_hash, "nonce": secrets.token_hex(16), "expires_at": expires_at}
             data = {"approval_id": aid, "decision_id": call["decision_id"], "policy_hash": self.policy.policy_hash,
                     "rule_ids": call["rule_ids"], "expires_at": expires_at, "requester": sub, "binding": binding,
-                    "binding_digest": "sha256:" + hashlib.sha256(canonical(binding)).hexdigest()}
+                    "binding_digest": "sha256:" + hashlib.sha256(canonical(binding)).hexdigest(), "salt_id": sid}
             if any(r.get("approval") == {"executor": "t2"} for _, r, *_ in self.policy.rules
                    if r["id"] in call["rule_ids"]):
                 data["executor"] = "t2"
-            args = self._args(p)[0]
             shown = privacy.redact(args, call["dotenv"])[0]   # redact the parsed args, so a raw copy stays valid JSON
             if p["args_source"] == "raw":
                 shown = p["args"] if shown == args else canonical(shown).decode()
@@ -881,6 +954,7 @@ class SignerService:
             _write_new(os.path.join(self._args_dir, aid), self._seal(aid, copy))
             tx.set(self.log.approvals, aid, approval(*key, data))
             tx.set(self.log.approval_index, (*key, tcid, attempt), aid)
+            tx.set(call, "pending", None)   # the sealed copy on disk is what the approver sees from now on
             tx.emit(run, "approval.request", data, request_id=req["request_id"], tool_call_id=tcid, attempt=attempt)
             return {"approval_id": aid, "state": "requested", "expires_at": expires_at}
         return self.log.submit(identity, "approval_request", req, fn, key)
@@ -889,7 +963,7 @@ class SignerService:
         aid, sub = req["approval_id"], subject(identity)
         a = self._visible(identity, aid)
         run_key = a["run_key"]
-        same = sub in (a["requester"], self.log.runs[run_key]["owner"])
+        same = sub == a["requester"] or owner(identity) == self.log.runs[run_key]["owner"]
         glass = False
         if self.approvals is not None:
             if same:
@@ -901,6 +975,7 @@ class SignerService:
                     raise RPCError("forbidden", f"{sub[:256]} is not an approver")
                 if "reason" not in req:
                     raise RPCError("forbidden", "a break-glass answer needs a reason")
+        self.quotas.take_event(identity)
 
         def fn(tx, run):
             a = self.log.approvals[aid]
@@ -930,8 +1005,11 @@ class SignerService:
         aid = req["approval_id"]
         self._approval(self._authorize(identity, req), aid)
         with self.quotas.wait_slot(identity), self._cond:
-            self._cond.wait_for(lambda: self.log.approvals[aid]["state"] != "requested", req.get("timeout_ms", 0) / 1000)
-        return {"approval_id": aid, "state": self.log.approvals[aid]["state"]}
+            self._cond.wait_for(lambda: self.log.approvals.get(aid, {}).get("state") != "requested",
+                                req.get("timeout_ms", 0) / 1000)
+        # read on the writer, so only a committed state is answered; gone: its run went final, which expired it
+        return {"approval_id": aid, "state": self.log.write(
+            lambda tx: self.log.approvals.get(aid, {"state": "expired"})["state"])}
 
     def _approval_consume(self, identity, req):
         key, tcid, attempt, hint = self._authorize(identity, req), req["tool_call_id"], req.get("attempt", 0), \
@@ -954,11 +1032,13 @@ class SignerService:
                         and self._same(call, digest)):
                     return {"ok": True, "rule_ids": []}   # needed no approval
                 why = "TK-APPROVAL-REQUIRED", "approval required but none was requested for this call"
-            elif not self._same(a, digest):
+            elif not self._opens(a["commitment"], a["label"], digest):
+                sid = secrets.token_hex(16)
                 tx.emit(run, "approval.binding_mismatch", {
                     "approval_id": aid, "decision_id": a["decision_id"], "tool_use_id": tcid,
                     "approved_commitment": a["commitment"],
-                    "args_commitment": self._commit(a["decision_id"], digest)}, source="signer", **top)
+                    "args_commitment": self._commit("approval.binding_mismatch:" + sid, digest), "salt_id": sid},
+                        source="signer", **top)
                 return {"ok": False, "rule_ids": ["TK-APPROVAL-MISMATCH"], "approval_id": aid,
                         "reason": "the arguments differ from the approved ones"}
             elif a["state"] != "approved":
@@ -986,13 +1066,15 @@ class SignerService:
 
     def _approval_get(self, identity, req):
         aid = req["approval_id"]
-        a = self._visible(identity, aid)
+        a = self.log.write(lambda tx: dict(self._visible(identity, aid)))   # committed state only
         copy = self._unseal(aid) or {"args_source": a["args_source"], "args": None}
         copy.pop("exec_args", None)   # the approver sees the redacted copy only
         return {**self._summary(aid, a), "binding_digest": a["binding_digest"], **copy}
 
     def _approval_list(self, identity, req):
-        items, page, cursor = iter(list(self.log.approvals.items())), [], req.get("cursor")
+        # copied on the writer, so only committed states are listed
+        items = iter(self.log.write(lambda tx: [(aid, dict(a)) for aid, a in self.log.approvals.items()]))
+        page, cursor = [], req.get("cursor")
         # lean: every page scans the approvals from the first; index them by tenant once a signer holds ~100k
         if cursor is not None:
             for aid, _ in items:
@@ -1026,6 +1108,7 @@ class SignerService:
 
     def _close_run(self, identity, req):
         key = self._authorize(identity, req)
+        self.quotas.take_event(identity)
 
         def fn(tx, run):
             return {"run_id": req["run_id"], "state": "closing",
@@ -1084,10 +1167,17 @@ def load_config(path):
     if h is not None:
         from tracekit.transport import http
         for section in (h, h.get("k8s_sa")) if isinstance(h, dict) else ():
-            for k in ("cert", "key", "client_ca", "token_file", "ca"):
-                if isinstance(section, dict) and section.get(k):
+            for k in ("cert", "key", "token_file", "ca"):
+                if isinstance(section, dict) and isinstance(section.get(k), str) and section[k]:
                     section[k] = os.path.join(base, section[k])
+        if isinstance(h, dict) and isinstance(h.get("client_ca"), dict):
+            h["client_ca"] = {td: os.path.join(base, p) if isinstance(p, str) else p for td, p in h["client_ca"].items()}
         http.configure(h)   # validates the section now; serve() builds it again
+    approvals = cfg.get("approvals") if isinstance(cfg.get("approvals"), dict) else {}
+    for table in (cfg.get("tenants"), cfg.get("authorize"), approvals.get("approvers"), approvals.get("break_glass")):
+        for k in table or ():
+            if "*" in str(k) and not (str(k).endswith(PREFIX_ENDS) and str(k).count("*") == 1):
+                raise ValueError(f"{path}: {k!r}: a prefix key must end in :* or /*")
     names = set()
     for w in cfg.get("witnesses") or ():
         if not (isinstance(w, dict) and set(w) == {"url", "vkey", "class"} and w["class"] in CLASSES):

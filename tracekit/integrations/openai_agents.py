@@ -18,6 +18,11 @@ wait for an approval (the SDK has no approval hook for the first and does not te
 `ask` for them is refused. Not gated: hosted tools (web and file search, code interpreter, hosted MCP, hosted shell),
 ComputerTool and handoffs run outside these hooks; they are recorded (T3) only inside the signed model exchange that
 `hooks=tk` records for each model response.
+
+A signer that cannot be reached when a call is decided: the call runs unrecorded if register_run's `fail_modes` say
+`open`, else it is refused. Any other failure to decide or approve (a refusal, a run the signer closed after its idle
+timeout: register a new run for a long-idle agent) refuses the call. A failure to record an outcome or a model response
+warns and changes nothing the SDK sees.
 """
 import asyncio
 import copy
@@ -27,6 +32,7 @@ import inspect
 import itertools
 import threading
 import uuid
+import warnings
 
 from agents import (ApplyPatchTool, FunctionTool, LocalShellTool, RunHooks, ShellTool, ToolGuardrailFunctionOutput,
                     function_tool, tool_input_guardrail)
@@ -35,10 +41,20 @@ from agents.tool import maybe_invoke_function_tool_failure_error_function, set_f
 
 from tracekit import parsers
 from tracekit.format.canon import event_hash, loads_strict
+from tracekit.sdk.client import SignerUnavailable, fail_open
 from tracekit.signer.rpc_schema import RPCError
 
 BLOCKED = "Tool call blocked by policy: "
 _EVENTS = ("decide", "complete", "model_event")
+MAX_OPEN_CALLS = 4096   # per-call entries kept between the SDK's hooks for one call
+
+
+def _keep(d, k, v):
+    """Sets d[k]; drops the oldest entry past MAX_OPEN_CALLS."""
+    # lean: an entry for a call that never reaches its next hook (a run abandoned mid-call) stays until pushed out
+    d[k] = v
+    if len(d) > MAX_OPEN_CALLS:
+        d.pop(next(iter(d)))
 
 
 def _source(args):
@@ -49,10 +65,12 @@ class TracekitAgents(RunHooks):
     def __init__(self, signer, run):
         """`signer` is any `SignerAPI`; `run` is its `register_run` response (`run_id`, `run_token`)."""
         self.signer, self.run = signer, {"run_id": run["run_id"], "run_token": run["run_token"]}
+        self.fail_modes = run.get("fail_modes")
+        # lean: a new stream per instance, so each process that resumes the run opens one (the signer allows 64 per
+        # run); persist the stream and its counter with the run if runs resume that often
         self.stream, self._seq, self._lock = "openai-agents-" + uuid.uuid4().hex, itertools.count(), threading.Lock()
         self._decided = {}   # tool_call_id -> its decision, from needs_approval to the gate in this process
-        self._passed = {}    # tool_call_id -> (decision, tool, args) of a call the gate let run, until it completes
-        # lean: an operation whose call never reaches the editor stays here; prune per run if agents run for days
+        self._passed = {}    # tool_call_id -> (decision, tool, args) of a call the gate let run (None: unrecorded)
         self._patches = {}   # id(operation) -> (operation, call_id): the SDK does not tell the editor the call id
 
     async def _call(self, method, req):
@@ -72,18 +90,33 @@ class TracekitAgents(RunHooks):
 
     async def _ask(self, ctx, call_id, tool, args):
         """needs_approval: decide; on ask open an approval and keep its id in the run context as a hint."""
-        d = self._decided[call_id] = await self._decide(call_id, tool, args)
+        try:
+            d = await self._decide(call_id, tool, args)
+        except (RPCError, SignerUnavailable):
+            return False   # the gate decides again, and refuses or follows the fail mode
+        _keep(self._decided, call_id, d)
         if d["decision"] != "ask":
             return False   # a deny is refused by the gate, before the call runs
         if not isinstance(ctx.context, dict):
             raise TypeError("TracekitAgents needs a dict run context: Runner.run(agent, input, context={})")
-        apr = await self._rpc("approval_request", tool_call_id=call_id)
+        try:
+            apr = await self._rpc("approval_request", tool_call_id=call_id)
+        except (RPCError, SignerUnavailable):
+            return False   # no approval to wait for: the gate's approval_consume refuses the call
         ctx.context.setdefault("tracekit", {}).setdefault("approvals", {})[call_id] = apr["approval_id"]
         return True
 
     async def _gate(self, ctx, call_id, tool, args, can_wait=True):
         """The refusal the model gets instead of the result, or None when the call may run now."""
-        d = self._decided.pop(call_id, None) or await self._decide(call_id, tool, args)   # resumed elsewhere
+        try:
+            d = self._decided.pop(call_id, None) or await self._decide(call_id, tool, args)   # resumed elsewhere
+        except SignerUnavailable as e:
+            if not fail_open(self.fail_modes):
+                return BLOCKED + f"signer unavailable: {e}"
+            _keep(self._passed, call_id, None)
+            return None
+        except RPCError as e:
+            return BLOCKED + f"signer refused the call: {e}"
         if d["decision"] == "deny":
             return BLOCKED + (", ".join(d["rule_ids"]) or "deny")
         if d["decision"] == "ask" and not can_wait:
@@ -96,27 +129,36 @@ class TracekitAgents(RunHooks):
         try:
             c = await self._rpc("approval_consume", tool_call_id=call_id, tool=tool, args_source=_source(args),
                                 args=args, **({"approval_id_hint": hint} if hint is not None else {}))
-        except RPCError as e:   # e.g. a hint that is not an id at all
-            c = {"ok": False, "rule_ids": [], "reason": e.message}
+        except (RPCError, SignerUnavailable) as e:   # e.g. a hint that is not an id at all
+            c = {"ok": False, "rule_ids": [], "reason": str(e)}
         if not c["ok"]:
             return BLOCKED + ", ".join(c["rule_ids"]) + (f": {c['reason']}" if c.get("reason") else "")
-        self._passed[call_id] = d, tool, args
+        _keep(self._passed, call_id, (d, tool, args))
         return None
 
     async def _body(self, call_id, fn, *a):
         """Run a call the gate let through and complete it with its outcome."""
-        d, tool, args = self._passed.pop(call_id)
-        req = {"tool_call_id": call_id, "decision_id": d["decision_id"],
-               "args_digest": event_hash({"tool": tool, "args": loads_strict(args) if isinstance(args, str) else args})}
+        passed = self._passed.pop(call_id)
         try:
             out = fn(*a)
             if inspect.isawaitable(out):
                 out = await out
         except Exception as e:
-            await self._rpc("complete", **req, status="error", error=f"{type(e).__name__}: {e}"[:4096])
+            await self._complete(call_id, passed, status="error", error=f"{type(e).__name__}: {e}"[:4096])
             raise
-        await self._rpc("complete", **req, status="ok", result=event_hash(str(out)))   # a commitment, not the result itself
+        await self._complete(call_id, passed, status="ok", result=event_hash(str(out)))   # a commitment, not the result
         return out
+
+    async def _complete(self, call_id, passed, **fields):
+        """Records the outcome; never raises, so the tool's result or exception reaches the SDK unchanged."""
+        if passed is None:   # ran unrecorded: the signer was unreachable and the run fails open
+            return
+        d, tool, args = passed
+        try:
+            digest = event_hash({"tool": tool, "args": loads_strict(args) if isinstance(args, str) else args})
+            await self._rpc("complete", tool_call_id=call_id, decision_id=d["decision_id"], args_digest=digest, **fields)
+        except Exception as e:
+            warnings.warn(f"tracekit: outcome of tool call {call_id} not recorded: {e}", stacklevel=2)
 
     async def _run(self, ctx, call_id, tool, args, fn, *a, can_wait=True):
         why = await self._gate(ctx, call_id, tool, args, can_wait)
@@ -144,7 +186,7 @@ class TracekitAgents(RunHooks):
             return dataclasses.replace(t, executor=executor)
         if isinstance(t, ApplyPatchTool):
             async def needs_approval(ctx, op, call_id):
-                self._patches[id(op)] = op, call_id   # the SDK hands the editor this very object next
+                _keep(self._patches, id(op), (op, call_id))   # the SDK hands the editor this very object next
                 return False   # the gate in the editor decides
             return dataclasses.replace(t, editor=_Editor(self, t.name, t.editor), needs_approval=needs_approval)
         if not isinstance(t, FunctionTool):
@@ -204,13 +246,17 @@ class TracekitAgents(RunHooks):
         return waiting
 
     async def on_llm_end(self, context, agent, response):
-        """T3: each model response as a commitment, hosted tool calls, computer actions and handoffs included."""
-        out = parsers.parse("openai:responses", {"output": response.output, "usage": response.usage})
-        model = agent.model if isinstance(agent.model, str) else getattr(agent.model, "model", None)
-        fields = {"usage": out["usage"], "tool_uses": out["tool_uses"][:128]}   # lean: the RPC's cap, as autotrace
-        await self._rpc("model_event", provider="openai", phase="response", model=str(model or "")[:128],
-                        content_digest=event_hash([i.model_dump(mode="json") for i in response.output]),
-                        **{k: v for k, v in fields.items() if v})
+        """T3: each model response as a commitment, hosted tool calls, computer actions and handoffs included. Never
+        raises: the run goes on without the record."""
+        try:
+            out = parsers.parse("openai:responses", {"output": response.output, "usage": response.usage})
+            model = agent.model if isinstance(agent.model, str) else getattr(agent.model, "model", None)
+            fields = {"usage": out["usage"], "tool_uses": out["tool_uses"][:128]}   # lean: the RPC's cap, as autotrace
+            await self._rpc("model_event", provider="openai", phase="response", model=str(model or "")[:128],
+                            content_digest=event_hash([i.model_dump(mode="json") for i in response.output]),
+                            **{k: v for k, v in fields.items() if v})
+        except Exception as e:
+            warnings.warn(f"tracekit: model response not recorded: {e}", stacklevel=2)
 
 
 class _Editor:

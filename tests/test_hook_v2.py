@@ -193,15 +193,24 @@ class HookV2(unittest.TestCase):
         self.assertEqual(self.hook("SessionStart", sid=None)[0], 0)
         self.assertFalse(os.path.exists(os.path.join(self.dir, "run", autospawn.SOCK)))   # nothing was sent
 
-    def test_signer_unreachable_follows_the_fail_mode(self):
+    def test_signer_unreachable_follows_the_runs_fail_mode(self):
         os.environ["TRACEKIT_SIGNER"] = os.path.join(self.dir, "nowhere.sock")
-        code, err = self.pre("ls")
-        self.assertEqual(code, 0)
-        self.assertIn("allowing (fail-open)", err)
-        os.environ["TRACEKIT_FAIL_CLOSED"] = "1"
-        code, err = self.pre("ls")
+        os.environ["TRACEKIT_FAIL_CLOSED"] = "0"   # the v1 hook's setting does not apply
+        code, err = self.pre("ls", sid="unregistered")
         self.assertEqual(code, 2)
         self.assertIn("blocking (fail-closed)", err)
+        del os.environ["TRACEKIT_SIGNER"]
+        self.assertEqual(self.hook("SessionStart")[0], 0)
+        with open(claude_code._state("s1")) as f:
+            st = json.load(f)
+        self.assertEqual(st["fail_modes"], {"default": "closed"})   # the signer's
+        with open(claude_code._state("s1"), "w") as f:
+            json.dump(dict(st, fail_modes={"default": "closed", "fs": "open"}), f)
+        os.environ["TRACEKIT_SIGNER"] = os.path.join(self.dir, "nowhere.sock")
+        self.assertEqual(self.pre("ls")[0], 2)
+        code, err = self.hook("PreToolUse", tool_name="Read", tool_input={"file_path": "a"}, tool_use_id="t2")
+        self.assertEqual(code, 0)
+        self.assertIn("allowing (fail-open)", err)
 
     def test_overhead(self):
         self.pre("ls", tid="warm")
@@ -233,6 +242,32 @@ class InitV2(unittest.TestCase):
         self.assertTrue(os.path.isabs(shlex.split(cmd)[0]), cmd)
         self.assertTrue(all(install._is_ours(g) for gs in hooks.values() for g in gs))
 
+    def test_v2_without_the_signer_extra_is_refused(self):
+        from tracekit.policy2 import engine
+        with mock.patch.object(engine, "_backend", side_effect=ImportError("no regex")):
+            for argv in (["init", "--dev", "--v2", "--no-hooks"], ["up"]):
+                err = io.StringIO()
+                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+                    self.assertEqual(cli.main(argv), 2, argv)
+                self.assertIn("pip install 'tracekit-ai[signer]'", err.getvalue())
+
+    def test_replacing_hooks_of_the_other_version_is_reported(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        settings = os.path.join(d, ".claude", "settings.json")
+        install.install_hooks(settings)   # v1
+        with mock.patch("os.getcwd", return_value=d), mock.patch.dict(os.environ, {"HOME": d}):
+            self.assertEqual([h["versions"] for h in install.status()["hooks"]], [["v1"]])
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                self.assertEqual(cli.main(["init", "--dev", "--v2", "--project"]), 0)
+            self.assertIn(f"Tracekit v1 hooks replaced by v2 hooks in {settings}", out.getvalue())
+            self.assertEqual([h["versions"] for h in install.status()["hooks"]], [["v2"]])
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                install.install_hooks(settings, uninstall=True)
+            self.assertIn(f"Tracekit v2 hooks removed from {settings}", out.getvalue())
+
     def test_v2_option_refusals(self):
         code, err = self.init("--v2")
         self.assertEqual(code, 2)
@@ -247,3 +282,25 @@ class InitV2(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StateReads(unittest.TestCase):
+    def test_a_state_file_being_replaced_is_read_again_on_windows(self):
+        """On Windows, open() fails while a parallel hook replaces the file: the hook waits instead of blocking the call."""
+        from unittest import mock
+        from tracekit.integrations import claude_code
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        path = os.path.join(d, "s.json")
+        with open(path, "w") as f:
+            json.dump({"run_id": "r"}, f)
+        real, tries = open, []
+
+        def flaky(*a, **kw):
+            tries.append(1)
+            if len(tries) < 3:
+                raise PermissionError(13, "in use")
+            return real(*a, **kw)
+        with mock.patch.object(claude_code.os, "name", "nt"), mock.patch("builtins.open", flaky):
+            self.assertEqual(claude_code._load(path), {"run_id": "r"})
+        self.assertEqual(len(tries), 3)

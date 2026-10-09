@@ -2,12 +2,12 @@
 
 All notable changes to Tracekit. Versions follow [PEP 440](https://peps.python.org/pep-0440/).
 
-## 0.4.0 (2026-10-09) — v2 signer preview
+## 0.4.0 (2026-10-10) — v2 signer preview
 
 A **preview of the v2 architecture** for server-hosted agents, shipped alongside the unchanged v1 laptop setup.
 Everything v1 (`tracekit init`, the v1 hooks, `tracekitd`, `.tkb` v1 bundles and their verifier) works as in 0.3.0;
-the v2 pieces are opt-in. Formats and the signer RPC may still change before 1.0. Quickstart:
-[docs/quickstart-v2.md](docs/quickstart-v2.md).
+the v2 pieces are opt-in (`pip install 'tracekit-ai[signer]'` for the signer). Formats and the signer RPC may still
+change before 1.0. Quickstart: [docs/quickstart-v2.md](docs/quickstart-v2.md).
 
 ### The v2 signer (preview)
 - **`tracekit signer serve`**: a signer service that holds the keys and assigns sequence numbers; agents talk to it over
@@ -19,6 +19,8 @@ the v2 pieces are opt-in. Formats and the signer RPC may still change before 1.0
   all records, C2SP checkpoint notes signed by a separate log key, per-tenant registry logs, and per-run bundles.
 - **`tracekit verify`** reads v2 bundles against a pinned trust config (`tracekit signer trust` writes one for a dev
   signer) and reports `Integrity` and `Assurance` separately; a dev signer's runs verify at `Assurance: dev`.
+  Assurance levels describe how far the checkpoint is anchored (`dev`, `local`, `witnessed`), not where the signer
+  runs: a signer running as the agent's own user can still reach `witnessed`.
 - **Run lifecycle** in the signer: registration, idle timeout, closing window for late results, `run.final`; gap and
   tamper records are written by the signer only.
 - **Policy v2 inside the signer**: an RE2-subset engine (google-re2 or `regex`, same results), a structural shell
@@ -26,12 +28,22 @@ the v2 pieces are opt-in. Formats and the signer RPC may still change before 1.0
 - **Approvals**: one per tool call attempt, bound to its arguments, consumed once; edited arguments, swapped ids and
   expired approvals are refused and recorded; pending approvals survive a signer restart (arguments kept encrypted);
   `tracekit approvals list | show | approve | reject`. Self-approval is allowed in dev mode, labelled, and caps
-  assurance at `dev`.
+  assurance at `dev`. A signer started from a config refuses self-approval and accepts only configured approvers of
+  the run's tenant (`approvals: {approvers, self_approval, break_glass}`); break-glass answers need a reason and are
+  recorded; an ask rule may name a T2 executor, which gets back exactly the approved arguments.
 - **Checkpoints, export and viewing**: signed notes after each run ends and on a cadence; `tracekit export --v2`;
   `tracekit view`, a read-only laptop viewer where every run is checked by the verifier.
+- **Witness publishing**: checkpoint notes go to configured C2SP tlog-witnesses in the background; cosignatures are
+  merged into the stored notes; a persisted retry queue survives restarts; a witness that stays unreachable gets a
+  signed gap. A run cosigned by a pinned non-operator witness verifies `Assurance: witnessed`.
+- **Privacy**: tool results and the approver's copy of arguments are redacted inside the signer before anything is
+  committed, with a manifest of the rules that fired; every published digest of agent content is a salted
+  commitment, and `tracekit signer reveal --record N` gives an auditor the salt of that one record
+  ([docs/privacy.md](docs/privacy.md)).
 - **Metrics**: Prometheus `/metrics` on its own port ([docs/observability.md](docs/observability.md)).
 - **Run-set completeness**: per-tenant registry logs are checkpointed; `tracekit export --v2 --run-set` bundles every
-  run a tenant registered in a window, so a deleted run or a withheld key retirement fails verification.
+  run a tenant registered in a window, so a deleted run or a withheld key retirement fails verification; a
+  single-run bundle reports key retirements as not proven complete (a warning; `--strict` exits 3).
 - **Format bridge**: `tracekit signer bridge` continues a v1 ledger in a v2 log and retires the v1 key.
 
 ### Integrations on v2 (preview)
@@ -39,10 +51,42 @@ the v2 pieces are opt-in. Formats and the signer RPC may still change before 1.0
 - **OpenAI Agents SDK** (`tracekit.integrations.openai_agents`): signer-side approvals through the tool input
   guardrail, `apply_decisions(state)` for paused runs; hosted tools are recorded and listed as uncovered.
 - **LangChain v1** middleware (`tracekit.integrations.langchain`): deny-and-continue, approvals through LangGraph
-  `interrupt()` that survive a process restart.
+  `interrupt()` that survive a process restart; `tracekit_tool_node` for graphs built on `ToolNode`; and
+  `TracekitCheckpointer`, which commits every saved checkpoint (pending tool calls included) so an edited
+  checkpoint is recorded as `state_tamper`.
+- **Claude Agent SDK** (`tracekit.integrations.claude_agent_sdk`): hooks for `ClaudeAgentOptions` and a session
+  store wrapper that commits saved transcripts.
+- **MCP client** (`tracekit.integrations.mcp`): every `call_tool` on a wrapped `ClientSession` is decided by the
+  signer and recorded as `mcp:<server>/<tool>`.
+- Every adapter: when the signer can't be reached, the run's fail mode for the tool class applies (default: closed);
+  a signer refusal, or a failure once a call waits for approval, never lets the call run; a failure to record an
+  outcome warns and leaves the tool's result as it was.
 - **Autotrace on v2** with shared parsers for OpenAI (Chat Completions, Responses), Anthropic and Google Gen AI: the
   tool calls a model asked for are recorded (as salted commitments) for later reconciliation.
 - An adapter contract suite that every integration runs against both a test signer and the real one.
+
+### Hardening from the release review
+A review of everything above before release found and fixed, among others: the Claude Code v2 hook letting calls
+through unrecorded after ~32 calls in a session (one event stream per session now); shell-parser inputs that could
+stall the signer, and policy bypasses (argv-list commands, `bash -c --`, globs and braces in the command name,
+scripts piped into a shell, quote splicing, `..` paths, missing wrappers and tool names); a result recorded after a
+deny now leaves a signed gap; key files written atomically and checked at start; a log rolled back below its own
+checkpoint is detected; memory of finished runs released; restarts keep idle and grace clocks; background loops no
+longer die silently; `verify --trust` refuses bundles that are not v2; run-set and key-retirement soundness; the
+viewer always requires its token; `tcp://` signers are loopback-only; mTLS identities are tied to their trust
+domain's CA; Kubernetes JWKS keys expire and errors are no longer echoed to unauthenticated callers.
+
+### Changes v1 users can notice
+- **New required dependency `rfc8785`** (canonical JSON for format v2). Verifying a v1 bundle still needs only the
+  standard library: the v2 verifier loads only for v2 bundles.
+- **`tracekit verify`** refuses flags that don't apply to the bundle's format (`--trust`, `--v1-ledger`, `--v1-key`
+  with a v1 bundle; `--key`, `--witness` with a v2 bundle) instead of ignoring them.
+- **`tracekit status`** gains a `signer_v2` section (it starts and creates nothing).
+- **Hooks:** `tracekit init` says when it replaces a v1 hook with a v2 one or the other way round.
+- **Autotrace (v1):** also records `.parse()` calls of OpenAI Chat Completions, Responses and Anthropic Messages;
+  usage for new captures counts OpenAI cache-write tokens separately and includes Gemini thinking tokens in output
+  tokens, so `tracekit cost` totals for new runs can differ from 0.3.0 for the same traffic.
+- **Windows:** non-blocking file-lock contention raises `BlockingIOError`, as on POSIX.
 
 ### Fixes
 - A second v1 signer started on the same home no longer cuts off the running one (#73).

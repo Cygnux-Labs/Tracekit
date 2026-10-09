@@ -1,4 +1,5 @@
 """The v1 → v2 format bridge (tracekit/signer/format_bridge.py) and its continuity check in the v2 verifier."""
+import base64
 import hashlib
 import json
 import os
@@ -8,7 +9,7 @@ import zipfile
 from unittest import mock
 
 from factories import ev, make_signer
-from test_bundle_v2 import LOG_SECRET, ORIGIN, pub
+from test_bundle_v2 import KEY1, LOG_SECRET, ORIGIN, Log, pub, spki
 from test_signer_service import ME, records, tmpdir
 from tracekit import crypto
 from tracekit.bundle_v2 import export
@@ -38,6 +39,9 @@ class Bridge(unittest.TestCase):
             f.write(GOLDEN_SECRET)
         with open(GOLDEN_PUB, "rb") as f:
             self.assertEqual(crypto.public_from_secret(GOLDEN_SECRET), f.read())
+        self.trust = os.path.join(d, "trust.json")
+        with open(self.trust, "w") as f:
+            json.dump({"logs": [checkpoint.vkey(ORIGIN, ED25519, pub(LOG_SECRET))], "algs": ["ed25519"]}, f)
 
     def ledger_bytes(self):
         with open(self.ledger, "rb") as f:
@@ -55,15 +59,34 @@ class Bridge(unittest.TestCase):
         self.addCleanup(store.close)
         size = store.tree.size
         text = checkpoint.body(ORIGIN, size, store.tree.root_at(size))
-        out, self.trust = os.path.join(self.data, "run.tkb"), os.path.join(self.data, "trust.json")
+        out = os.path.join(self.data, "run.tkb")
         export(store, "default", run["run_id"], text + "\n" + checkpoint.sign(text, ORIGIN, LOG_SECRET), out)
-        with open(self.trust, "w") as f:
-            json.dump({"logs": [checkpoint.vkey(ORIGIN, ED25519, pub(LOG_SECRET))], "algs": ["ed25519"]}, f)
         return out
 
-    def verify(self, out):
-        rep, code = v2.verify(out, self.trust, self.ledger, GOLDEN_PUB)
+    def epochs(self, *bridged):
+        """A bundle of a log that starts with one signer.epoch per entry of `bridged`, carrying the bridge if true."""
+        b = format_bridge.bridge(self.home, self.data)
+        name = "-".join(map(str, bridged))
+        log = Log(os.path.join(self.data, name))
+        self.addCleanup(log.store.close)
+        der = spki(KEY1)
+        keys = [{"kid": crypto.spki_kid(der), "alg": "ed25519", "spki": base64.b64encode(der).decode()}]
+        for bridge in bridged:
+            log.add("signer.epoch", {"keys": keys, **({"bridge": b} if bridge else {})}, run="signer", key=KEY1)
+        log.register()
+        log.final()
+        out = os.path.join(self.data, f"{name}.tkb")
+        export(log.store, "acme", "run-a", log.note(), out)
+        return out
+
+    def verify(self, out, v1_key=GOLDEN_PUB):
+        rep, code = v2.verify(out, self.trust, self.ledger, v1_key)
         return rep, code, {c["check"]: c for c in rep.checks}
+
+    def assert_bridge_fails(self, out, why, v1_key=GOLDEN_PUB):
+        rep, code, checks = self.verify(out, v1_key)
+        self.assertEqual((code, checks["format bridge"]["status"]), (1, "fail"), rep.checks)
+        self.assertIn(why, str(checks["format bridge"]["problems"]))
 
     def test_bridged_ledger_continues_into_a_verified_v2_bundle(self):
         b = format_bridge.bridge(self.home, self.data)
@@ -86,6 +109,28 @@ class Bridge(unittest.TestCase):
         rep, code, checks = self.verify(self.bundle())
         self.assertEqual((code, rep.integrity), (1, "FAILED"))
         self.assertIn("v1 record after format bridge", checks["format bridge"]["problems"][0])
+
+    def test_bridge_epoch_must_be_the_only_one_and_first(self):
+        self.assertEqual(self.verify(self.epochs(True))[2]["format bridge"]["status"], "pass")
+        for bridged in ((False, True), (True, True)):
+            with self.subTest(bridged):
+                self.assert_bridge_fails(self.epochs(*bridged), "does not start with one signer.epoch that bridges")
+
+    def test_wrong_v1_key_fails(self):
+        format_bridge.bridge(self.home, self.data)
+        out = self.bundle()
+        other = os.path.join(self.data, "other.pub")
+        with open(other, "wb") as f:
+            f.write(pub(LOG_SECRET))
+        self.assert_bridge_fails(out, "the v1 key is", other)
+
+    def test_v1_chain_break_before_the_bridge_fails(self):
+        format_bridge.bridge(self.home, self.data)
+        lines = self.ledger_bytes().splitlines(keepends=True)
+        seq1 = next(i for i, x in enumerate(lines) if x.startswith(b"{") and json.loads(x).get("event", {}).get("seq") == 1)
+        with open(self.ledger, "wb") as f:
+            f.write(b"".join(lines[:seq1] + lines[seq1 + 1:]))
+        self.assert_bridge_fails(self.bundle(), "does not continue the chain")
 
     def test_second_run_is_a_no_op(self):
         b = format_bridge.bridge(self.home, self.data)
