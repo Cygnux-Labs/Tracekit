@@ -11,6 +11,8 @@ import time
 import unittest
 import zipfile
 
+import pytest
+
 try:
     import pwd
 except ImportError:
@@ -24,7 +26,21 @@ from tracekit.core import GENESIS, SCHEMA_VERSION, b64e, event_hash, new_id, sig
 from tracekit.ledger import Keys  # noqa: E402
 from tracekit.witness import make_checkpoint  # noqa: E402
 from tracekit.core import read_json, read_text, write_json  # noqa: E402
-from factories import ev, ledger_records, make_signer, patch_env, run_start  # noqa: E402
+from factories import ev, ledger_records, make_signer, patch_env, run_start, wait_for  # noqa: E402
+
+
+_SAVED_POLICY = None
+
+
+def setUpModule():
+    # never inherit a policy path from another suite or the shell
+    global _SAVED_POLICY
+    _SAVED_POLICY = os.environ.pop("TRACEKIT_POLICY", None)
+
+
+def tearDownModule():
+    if _SAVED_POLICY is not None:
+        os.environ["TRACEKIT_POLICY"] = _SAVED_POLICY
 
 
 class Crypto(unittest.TestCase):
@@ -647,6 +663,7 @@ class Migration(unittest.TestCase):
         self.assertTrue(all(e["source"] == "migrated" for e in evs))
 
 
+@pytest.mark.root
 @unittest.skipUnless(hasattr(os, "geteuid") and os.geteuid() == 0 and shutil.which("runuser") and shutil.which("useradd"),
                      "needs root + runuser/useradd (creates two throwaway OS users)")
 class Isolation(unittest.TestCase):
@@ -670,10 +687,7 @@ class Isolation(unittest.TestCase):
         os.chown(os.path.join(cls.home, "config.json"), su.pw_uid, su.pw_gid)
         cls.proc = subprocess.Popen(["runuser", "-u", cls.SIGNER, "--", sys.executable, "-m", "tracekit.daemon", "--home", cls.home],
                                     env=dict(os.environ, PYTHONPATH=cls.pkg), stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-        for _ in range(100):
-            if os.path.exists(os.path.join(cls.home, "tracekitd.sock")):
-                break
-            time.sleep(0.05)
+        wait_for(lambda: os.path.exists(os.path.join(cls.home, "tracekitd.sock")), timeout=5)
         write_json(os.path.join(cls.client, "config.json"), {"socket": os.path.join(cls.home, "tracekitd.sock"), "signer_isolation": "separate-user"})
         os.chown(os.path.join(cls.client, "config.json"), ag.pw_uid, ag.pw_gid)
 

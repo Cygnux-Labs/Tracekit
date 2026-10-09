@@ -8,6 +8,7 @@ import os
 import shutil
 import sys
 import tempfile
+import time
 import unittest
 import zipfile
 from unittest import mock
@@ -95,3 +96,13 @@ class DaemonCase(unittest.TestCase):
 
     def records(self):
         return ledger_records(self.home)
+
+
+def wait_for(cond, timeout=10, interval=0.05):
+    """Poll cond() until it returns something truthy or the deadline passes; return its last value."""
+    deadline = time.monotonic() + timeout
+    while True:
+        v = cond()
+        if v or time.monotonic() >= deadline:
+            return v
+        time.sleep(interval)
