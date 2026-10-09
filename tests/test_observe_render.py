@@ -274,6 +274,20 @@ class ObserveBundle(unittest.TestCase):
         self.assertNotEqual(observe.main(["--bundle", bad, "--export", out]), 0)
         self.assertFalse(os.path.exists(out))
 
+    def test_static_pages_carry_a_csp(self):
+        d = tempfile.mkdtemp()
+        good, _ = make_bundle(d)
+        out = os.path.join(d, "o.html")
+        self.assertEqual(observe.main(["--bundle", good, "--export", out]), 0)
+        with open(out, encoding="utf-8") as f:
+            exported = f.read()
+        page = replay.render({"files": {}}, [], [], {}, {})
+        for html in (exported, page):
+            head = html[:html.index("</head>")]
+            self.assertIn('<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; script-src '
+                          '\'unsafe-inline\'; style-src \'unsafe-inline\'; img-src data:; connect-src \'none\'">', head)
+        self.assertIn("Run-completeness checks", page)
+
 
 if __name__ == "__main__":
     unittest.main()

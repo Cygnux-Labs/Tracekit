@@ -85,17 +85,52 @@ class SilentClient(unittest.TestCase):
 
     def test_silent_plain_http_client_times_out_and_threads_are_bounded(self):
         witness_server.init(os.path.join(self.d, "w"))
-        srv = netserver.Server(("127.0.0.1", 0), witness_server.make_handler(witness_server.Log(os.path.join(self.d, "w"))),
-                               timeout=0.5, max_threads=1)
+        srv = netserver.Server(("127.0.0.1", 0), self.handler(), timeout=1.5, max_threads=1)
         port = self.start(srv)
         self.silent(port)  # holds the only handler slot
         over = socket.create_connection(("127.0.0.1", port))
         self.socks.append(over)
-        over.settimeout(0.3)
-        self.assertEqual(over.recv(1), b"", "a connection over the thread limit is closed at once")
+        over.settimeout(3)
+        t0 = time.monotonic()
+        self.assertEqual(over.recv(1), b"", "a connection over the thread limit is closed after a short wait")
+        self.assertLess(time.monotonic() - t0, 1.4)
         self.socks[0].settimeout(3)
         self.assertEqual(self.socks[0].recv(1), b"", "the silent connection is closed when its read times out")
         self.assertEqual(self.request(port, "GET", "/v1/sth", tls=False), 200)
+
+    def handler(self):
+        log = witness_server.Log(os.path.join(self.d, "w"))
+        self.addCleanup(log.close)
+        return witness_server.make_handler(log)
+
+    def test_dripping_clients_do_not_block_a_request(self):
+        witness_server.init(os.path.join(self.d, "w"))
+        srv = netserver.Server(("127.0.0.1", 0), self.handler(), timeout=0.3, max_threads=3, deadline=1.0)
+        port = self.start(srv)
+        stop = threading.Event()
+        self.addCleanup(stop.set)
+
+        def drip():  # one byte just inside every read timeout, a request line that never ends
+            s = socket.create_connection(("127.0.0.1", port))
+            self.socks.append(s)
+            try:
+                while not stop.wait(0.15):
+                    s.sendall(b"G")
+            except OSError:
+                pass
+        for _ in range(3):
+            threading.Thread(target=drip, daemon=True).start()
+        time.sleep(0.4)  # every handler slot is held by a dripping client
+        self.assertEqual(self.request(port, "GET", "/v1/sth", tls=False), 200)
+
+    def test_connections_per_ip_are_capped(self):
+        witness_server.init(os.path.join(self.d, "w"))
+        port = self.start(netserver.Server(("127.0.0.1", 0), self.handler(), timeout=3, max_per_ip=1))
+        self.silent(port)
+        over = socket.create_connection(("127.0.0.1", port))
+        self.socks.append(over)
+        over.settimeout(0.5)
+        self.assertEqual(over.recv(1), b"", "a second connection from the same IP is closed at once")
 
 
 if __name__ == "__main__":

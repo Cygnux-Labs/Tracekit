@@ -308,7 +308,7 @@
       "expected": {
         "exit_code": 0,
         "integrity": "Integrity: VERIFIED WITH GAPS (run completeness).",
-        "assurance": "Assurance: signer_isolation=separate-user (as stated in run.start).",
+        "assurance": "Assurance: unknown (client-reported signer_isolation=separate-user).",
         "checks": [
           [
             "files match manifest",
@@ -401,7 +401,7 @@
       "expected": {
         "exit_code": 0,
         "integrity": "Integrity: VERIFIED.",
-        "assurance": "Assurance: signer_isolation=separate-user (as stated in run.start).",
+        "assurance": "Assurance: unknown (client-reported signer_isolation=separate-user).",
         "checks": [
           [
             "files match manifest",
@@ -490,7 +490,7 @@
       "expected": {
         "exit_code": 0,
         "integrity": "Integrity: VERIFIED.",
-        "assurance": "Assurance: signer_isolation=separate-user (as stated in run.start).",
+        "assurance": "Assurance: unknown (client-reported signer_isolation=separate-user).",
         "checks": [
           [
             "files match manifest",
