@@ -1,11 +1,20 @@
 """Claude Code hook on the v2 signer RPC: a thin client. The signer decides with its policy packs, signs and stores;
 this process holds no key, evaluates no policy and writes no ledger.
 
-    python -I -m tracekit.integrations.claude_code   (wired by `tracekit init --dev --v2`)
+    python -I -m tracekit.integrations.claude_code   (wired by `tracekit init --dev --v2`, or as root by
+                                                      `tracekit init --v2 --user AGENT`: system mode)
 
 Each hook is a new process, so the run (id and token) of a Claude Code session and the decision binding of a tool
 call are kept in the runtime dir between hooks. Exit 0 lets the call proceed, exit 2 blocks it (reason on stderr).
-The signer unreachable or any other failure: the fail mode configured for the v1 hook (`tracekit.hook.fail_closed`).
+The signer unreachable or any other failure: the fail mode configured for the v1 hook (`tracekit.hook.fail_closed`;
+closed in system mode).
+
+System mode: the signer runs as its own user and the hook reaches it only through the socket the root-owned
+/etc/tracekit/client.json names (a TRACEKIT_SIGNER naming another is refused). The run token stays in the agent's own
+0700 runtime dir, and the signer accepts it only from the uid that registered the run: another local user can neither
+read it nor use it. The agent never holds the signing keys, assigns sequence numbers, chooses the policy (the signer
+decides), or answers its own approvals (signer.yaml names a different approver uid). Its own uid can still use its run
+token, from any process it runs.
 """
 import glob
 import hashlib
@@ -50,9 +59,9 @@ def _run(client, sid, register=True, stale=None):
         if register and (st is None or st == stale):
             version = os.environ.get("CLAUDE_CODE_VERSION")
             out = client.register_run({"agent": {"name": AGENT, **({"version": version[:64]} if version else {})}})
-            # lean: same-user dev mode, so the agent can read its own run token (dev assurance); system mode moves the
-            # token out of the agent's reach
-            st = {"run_id": out["run_id"], "run_token": out["run_token"]}
+            # lean: any process of the agent's uid can read and use this token (another uid cannot); binding runs to
+            # the harness's processes (a root-owned harness helper) narrows that
+            st ={"run_id": out["run_id"], "run_token": out["run_token"]}
             files.write_json(path, st)
     return st and RunHandle(client, st)
 

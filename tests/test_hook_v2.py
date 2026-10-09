@@ -233,10 +233,13 @@ class InitV2(unittest.TestCase):
         self.assertTrue(os.path.isabs(shlex.split(cmd)[0]), cmd)
         self.assertTrue(all(install._is_ours(g) for gs in hooks.values() for g in gs))
 
-    def test_v2_refuses_system_mode(self):
+    def test_v2_option_refusals(self):
         code, err = self.init("--v2")
         self.assertEqual(code, 2)
-        self.assertIn("dev mode only", err)
+        self.assertIn("needs --user AGENT", err)
+        code, err = self.init("--dev", "--v2", "--approver", "root")
+        self.assertEqual(code, 2)
+        self.assertIn("for --v2 system mode", err)
         code, err = self.init("--dev", "--v2", "--fail-closed")
         self.assertEqual(code, 2)
         self.assertIn("don't apply with --v2", err)
