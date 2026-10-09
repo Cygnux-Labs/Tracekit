@@ -4,6 +4,7 @@ import contextlib
 import io
 import json
 import os
+import threading
 import unittest
 from unittest import mock
 
@@ -69,8 +70,9 @@ class Notes(unittest.TestCase):
         keys = os.path.join(self.dir, "keys")
         with open(os.path.join(keys, "log.key"), "rb") as f, open(os.path.join(keys, "record.key"), "rb") as g:
             self.assertNotEqual(f.read(), g.read())
-        self.assertEqual(os.stat(os.path.join(keys, "log.key")).st_mode & 0o777, 0o600)
-        self.assertEqual(os.stat(os.path.join(self.dir, "log.vkey")).st_mode & 0o777, 0o644)
+        if os.name == "posix":   # Windows has no permission bits
+            self.assertEqual(os.stat(os.path.join(keys, "log.key")).st_mode & 0o777, 0o600)
+            self.assertEqual(os.stat(os.path.join(self.dir, "log.vkey")).st_mode & 0o777, 0o644)
         self.assertEqual(svc.read_vkey(self.dir), vkey)
 
     def test_note_signed_by_another_key_fails(self):
@@ -102,8 +104,8 @@ class Reader(unittest.TestCase):
         for d, _, names in os.walk(self.root):
             for n in names:
                 p = os.path.join(d, n)
-                with open(p, "rb") as f:
-                    out[p] = (f.read(), os.stat(p).st_mtime_ns)
+                with open(p, "rb") as f:   # Windows refuses reads of the writer's locked lock file
+                    out[p] = (b"" if n == "lock" else f.read(), os.stat(p).st_mtime_ns)
         return out
 
     def test_partial_last_line_is_left_alone_and_nothing_is_modified(self):
@@ -122,6 +124,23 @@ class Reader(unittest.TestCase):
         note = checkpoint.body("example.org/log", 5, self.store.tree.root()) + "\n— example.org/log c2ln\n"
         self.store.checkpoint_put(5, note)
         self.assertEqual(r.checkpoint_latest(), (5, note))
+
+    def test_note_replaced_while_a_reader_reads_it(self):
+        r, stop, seen = FileReader(self.root), threading.Event(), []
+
+        def read():
+            while not stop.is_set():
+                seen.append(r.checkpoint_latest())
+        reader = threading.Thread(target=read)
+        reader.start()
+        try:
+            for i in range(5, 105):
+                self.store.checkpoint_put(i, checkpoint.body("example.org/log", i, self.store.tree.root()) + "\n")
+        finally:
+            stop.set()
+            reader.join()
+        self.assertEqual(r.checkpoint_latest()[0], 104)
+        self.assertTrue(all(n is None or 5 <= n[0] <= 104 for n in seen))
 
     def test_note_is_written_after_its_records_are_synced(self):
         calls = []   # full syncs only: the ack-on-write background syncer may run meanwhile
