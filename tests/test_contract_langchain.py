@@ -37,11 +37,12 @@ else:
     TOOLS = [tool(f) for f in ac.TOOLS]
 
     class StubModel(BaseChatModel):
-        """Makes the tool call in the user's JSON message, then answers "done"."""
+        """Makes the tool call (or list of them) in the user's JSON message, then answers "done"."""
 
         def _generate(self, messages, stop=None, run_manager=None, **kw):
             if isinstance(messages[-1], HumanMessage):
-                msg = AIMessage("", tool_calls=[json.loads(messages[-1].content)])
+                calls = json.loads(messages[-1].content)
+                msg = AIMessage("", tool_calls=calls if isinstance(calls, list) else [calls])
             else:
                 msg = AIMessage("done")
             return ChatResult(generations=[ChatGeneration(message=msg)])

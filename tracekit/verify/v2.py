@@ -13,6 +13,7 @@ signer.epoch record before it and had not retired (key.retire) by then; schema-v
 from run_seq 0 to a run.final record; the run's first and last records and every key record included in the
 checkpointed tree. A run without run.final verifies only to its head. The bundle's manifest is an index, never trusted.
 A run with any self-approval (dev mode: the approver was the requester) is reported `approvals: self`, assurance dev.
+Approvals answered under the break-glass role are listed, as a warning.
 
 Run-set (a bundle with registry/run-set.json): the tenant's registry notes, signed by the pinned log key under the
 origin `<origin>/registry/<id of the bundle's tenant salt>`, and consistent with each other; every leaf of the range
@@ -273,6 +274,13 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key):
     self_approved = any(r["event"].get("type") == "approval" and r["event"]["data"].get("self_approved") is True
                         for r in every)
     rep.assurance = _assurance(origin, cosigs, witnesses, trust, {r["alg"] for r in every + key_records}, self_approved)
+    glass = [r["event"] for r in every if r["event"].get("type") == "approval"
+             and r["event"]["data"].get("break_glass") is True]
+    if glass:
+        rep.check("break-glass approvals", False, f"{len(glass)} approval(s) answered under the break-glass role",
+                  [f"seq {e['seq']}: {e['data']['decision']} {e['data'].get('approval_id')} by "
+                   f"{e['data']['approver'][:256]}: {str(e['data'].get('reason'))[:200]!r}" for e in glass][:20],
+                  warn=True)
 
 
 def _run_set(rep, files, trust, origin, size, runs, included, check_record):

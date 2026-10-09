@@ -4,7 +4,9 @@
     records.jsonl        one v2 record per line, seq order
     registry.jsonl       {"tenant", "leaf": hex} per line, every tenant's registry log
     checkpoint.note      the latest signed checkpoint note of the record tree, replaced whole
-    registry-notes.jsonl {"tree", "size", "note"} per line, every signed note of every registry tree
+    registry-notes.jsonl {"tree", "size", "note"} per line, every signed note of every registry tree (a later line of
+                         the same size is that note cosigned, and replaces it)
+    witness-queue.json   the witness publisher's state, replaced whole
     tiles/<tree>/<level>/<index>.<width>
 
 Files are 0640 and directories 0750; creating or renaming a file syncs it and its directory. The run index and the
@@ -38,6 +40,7 @@ SYNC_INTERVAL = 0.005  # ack-on-write: the longest a written record waits for th
 _UNAVAILABLE = {errno.EIO, errno.ENOSPC}
 _BINARY = getattr(os, "O_BINARY", 0)
 NOTE = "checkpoint.note"
+QUEUE = "witness-queue.json"
 
 
 def _sync(fd, full):
@@ -115,6 +118,7 @@ class _Log(_Lines):
     def __init__(self, path, torn, on_sync):
         new = not os.path.exists(path)
         self.on_sync = on_sync
+        self.synced = 0   # lines known durable; set on open and after each sync
         self.dirty_since = self.syncing_since = None   # monotonic time of the oldest line not yet synced
         self.fd = os.open(path, os.O_RDWR | os.O_APPEND | os.O_CREAT | _BINARY, 0o640)
         try:
@@ -135,14 +139,22 @@ class _Log(_Lines):
             os.close(self.fd)
             raise
         super().__init__(path, data)
+        self.synced = len(self.lines)
 
     def append(self, lines, full):
-        _write_all(self.fd, b"".join(lines))
-        for line in lines:
-            self.offsets.append(self.offsets[-1] + len(line))
-        if full:
-            self.sync(True)
-        elif self.dirty_since is None:
+        """All of `lines` or, when the write or sync fails, none: the file is cut back to where it ended."""
+        end, n = self.offsets[-1], len(self.offsets)
+        try:
+            _write_all(self.fd, b"".join(lines))
+            for line in lines:
+                self.offsets.append(self.offsets[-1] + len(line))
+            if full:
+                self.sync(True)
+        except BaseException:
+            del self.offsets[n:]
+            os.ftruncate(self.fd, end)
+            raise
+        if not full and self.dirty_since is None:
             self.dirty_since = time.monotonic()
 
     def sync(self, full):
@@ -178,7 +190,7 @@ class _Records:
                     if log is self.reg_log:
                         self._index_leaf(r["tenant"], bytes.fromhex(r["leaf"]), n)
                     else:
-                        self.notes.setdefault(r["tree"], []).append((r["size"], r["note"]))
+                        self._index_note(r["tree"], r["size"], r["note"])
                 except (ValueError, KeyError, TypeError) as e:
                     raise StorageCorrupt(f"{name} line {n + 1}: {e}; run fsck") from None
             del log.lines
@@ -189,6 +201,13 @@ class _Records:
         lines, tree = self.registry[tenant]
         lines.append(n)
         tree.append(leaf_hash(leaf))
+
+    def _index_note(self, tree, size, note):
+        notes = self.notes.setdefault(tree, [])
+        if notes and notes[-1][0] == size:
+            notes[-1] = (size, note)
+        else:
+            notes.append((size, note))
 
     def registry_iter(self, tenant):
         lines, _ = self.registry.get(tenant, ([], None))
@@ -283,13 +302,18 @@ class FileStorage(_Records, Storage):
 
     def _sync_loop(self):
         while not self._stop.wait(SYNC_INTERVAL):
-            for log in (self.log, self.reg_log):
+            # registry leaves first: a leaf is appended after its record, so every leaf synced has its record synced
+            for log in (self.reg_log, self.log):
                 if log.dirty_since is not None:
                     log.syncing_since, log.dirty_since = log.dirty_since, None
+                    n = len(log.offsets) - 1
                     try:
                         log.sync(False)
+                        log.synced = n
                     except OSError as e:
-                        self._error = StorageUnavailable(os.strerror(e.errno))
+                        what = "records from seq" if log is self.log else "registry leaves from line"
+                        self._error = StorageUnavailable(f"background sync failed ({e.strerror or e}): {what} "
+                                                         f"{log.synced} on are not known durable")
                     log.syncing_since = None
 
     def unsynced_s(self):
@@ -330,14 +354,27 @@ class FileStorage(_Records, Storage):
                 _sync(self.log.fd, True)   # the records a note covers are durable before the note
                 _write_new(os.path.join(self.root, NOTE), note.encode("utf-8"))
                 self._note = (size, note)
-            elif not latest or size > latest[0]:
+            else:
                 _sync(self.reg_log.fd, True)
                 line = json.dumps({"tree": tree, "size": size, "note": note}, ensure_ascii=False).encode("utf-8")
                 self.note_log.append([line + b"\n"], True)
-                self.notes.setdefault(tree, []).append((size, note))
+                self._index_note(tree, size, note)
 
     def checkpoint_latest(self, tree=RECORDS):
         return self._note if tree == RECORDS else (self.notes.get(tree) or [None])[-1]
+
+    def witness_queue(self):
+        try:
+            with open(os.path.join(self.root, QUEUE), "rb") as f:
+                return json.loads(f.read())
+        except FileNotFoundError:
+            return {}
+        except ValueError as e:
+            raise StorageCorrupt(f"{QUEUE}: {e}; run fsck") from None
+
+    def witness_queue_put(self, state):
+        with self._disk():
+            _write_new(os.path.join(self.root, QUEUE), json.dumps(state, sort_keys=True).encode("utf-8"))
 
     def _tile_path(self, tree, level, index, width):
         if not re.fullmatch(r"[a-z0-9-]{1,64}", tree):

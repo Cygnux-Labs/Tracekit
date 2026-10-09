@@ -1,9 +1,11 @@
-"""Quotas: event rate per identity; open runs, pending approvals, streams per run, string and line sizes.
+"""Quotas: event rate per identity; open runs, pending approvals, concurrent approval waits, streams per run, string
+and line sizes.
 
 Refusals raise RPCError("quota_exceeded") at once. The rate limiter keeps a fixed number of buckets, evicting the least
 recently used; nothing resets them all. `summarise` folds the refusals of a window into `refusal.summary` records so a
 caller hammering a limit cannot make the signer write one record per refusal.
 """
+import contextlib
 import math
 import threading
 import time
@@ -22,6 +24,7 @@ class Limits:
     burst: int = 400
     open_runs: int = 100
     pending_approvals: int = 100
+    concurrent_waits: int = 8        # approval_wait calls one identity may have blocked at once
     streams_per_run: int = 64
     max_string: int = MAX_RAW_ARGS   # characters of any string in a request
     buckets: int = 10000             # rate-limiter keys kept
@@ -31,6 +34,7 @@ class Quotas:
     def __init__(self, limits=Limits(), clock=time.monotonic):
         self.limits, self.clock = limits, clock
         self._buckets = OrderedDict()   # key -> (tokens, last refill)
+        self._waits = {}                # (scheme, subject) -> approval_wait calls in progress
         self._lock = threading.Lock()
 
     def take_event(self, identity):
@@ -53,6 +57,24 @@ class Quotas:
         """`name` is open_runs, pending_approvals or streams_per_run; `current` is the count before the new one."""
         if current >= getattr(self.limits, name):
             raise RPCError("quota_exceeded", f"{name} limit {getattr(self.limits, name)}", retry_after_ms=COUNT_RETRY_MS)
+
+    @contextlib.contextmanager
+    def wait_slot(self, identity):
+        """Hold one of the identity's concurrent_waits slots for the duration of an approval_wait."""
+        key = (identity.scheme, identity.subject)
+        with self._lock:
+            n = self._waits.get(key, 0)
+            if n >= self.limits.concurrent_waits:
+                raise RPCError("quota_exceeded", f"concurrent_waits limit {self.limits.concurrent_waits}",
+                               retry_after_ms=COUNT_RETRY_MS)
+            self._waits[key] = n + 1
+        try:
+            yield
+        finally:
+            with self._lock:
+                self._waits[key] -= 1
+                if not self._waits[key]:
+                    del self._waits[key]
 
     def check_strings(self, value):
         """Refuses a request holding a string longer than max_string. No retry_after_ms: the same request never fits."""
