@@ -2,7 +2,63 @@
 
 All notable changes to Tracekit. Versions follow [PEP 440](https://peps.python.org/pep-0440/).
 
-## Unreleased
+## 0.3.0 (2026-10-09)
+
+First release published on PyPI, as **`tracekit-ai`** (`pip install tracekit-ai`; the import and the command stay
+`tracekit`). The name `tracekit` on PyPI belongs to an unrelated project: do not install it.
+
+### Breaking changes
+- **Niche modules moved to `contrib/`** as separate packages: proof packs (`tracekit-proofpack`, also `tracekit-report`),
+  SQL over the ledger (`tracekit-sql`), Causeway, on-chain guards and Stagehand. The old `tracekit proofpack`, `report`,
+  `sql` and `causeway` subcommands print where they went. Entries below that mention them describe the contrib
+  packages.
+- **Proof packs no longer contain a verifier** (`verify.pyz` and `SHA256SUMS` are gone): auditors verify with a
+  Tracekit release they install themselves. A bundled `replay.html` never affects a verdict.
+- **The ingest gateway, the Anthropic model proxy and the OTLP receiver need `--experimental`**; they are being rebuilt
+  for server-hosted agents.
+- **GitHub Action:** `require-anchor` defaults to `true`, so an unanchored bundle fails the step.
+- **System mode** runs only from a root-owned virtualenv at `/opt/tracekit`, installed from PyPI (`tracekit-ai`, the
+  same version) or from a root-owned clone, with a root-owned Python. `tracekit migrate --system` refuses installs that
+  predate it: re-run `sudo /usr/bin/python3 -m tracekit init --user <agent-user>`.
+- **`tracekit cost`** reads the ledger directly; `--index` was removed.
+- **`tracekit verify` output:** besides `Integrity:` and `Assurance:`, `--json` now carries `integrity`, `assurance`
+  and `notes`. Assurance is `separate-user` only where the signer itself attested it.
+
+### Security and correctness
+- **Signer:** stamps `signer_isolation` on `run.start` itself; records an approval before it takes effect; validates
+  approval requests (types, sizes, caller owns a started run, bounded `wait_s`, per-user cap); decides approvals only
+  from facts it observes (peer uid, the approving process's terminal); runs first seen without `run.start` get an owner.
+- **Hooks and client:** an untrusted or unreadable `/etc/tracekit/client.json` fails closed instead of falling back;
+  subagent transcript paths are confined to the session; payloads without ids are not merged and leave a signed gap;
+  a signer-rejected tool call blocks under `fail_mode: closed`, also when an approval was given; client state files use
+  collision-free names (existing state carries over); Codex, Cursor and Gemini sessions keep their `run.start` when
+  `reasoning_capture` is on.
+- **Redaction:** linear time on adversarial input; long connection-string passwords are redacted; a `.env` mention no
+  longer hides the command being run; lone surrogates are recorded instead of breaking capture.
+- **Verifier:** honest exports are no longer failed by a single missed witness publish (a warning instead); a malformed
+  or deeply nested bundle is a FAIL, never a crash; the witness-coverage detail names only checkpoints the witness holds.
+- **Installer:** every file write is safe against symlinks and races; reinstalling never leaves an empty runtime (the new
+  virtualenv is swapped in only once it imports); the system-mode hook blocks if it cannot run; re-running init keeps
+  the policy pin and registered harnesses and restarts the signer; `tracekit doctor` checks the whole runtime without
+  following symlinks; the GitHub Action passes inputs to the shell only through the environment.
+- **Network servers** (witness, ingest): TLS handshakes per connection with timeouts, an overall per-connection
+  deadline, bounded threads and a per-client cap; the witness log is locked against a second server and rolls back a
+  failed write; witness and Rekor URLs are validated and redirects refused; Rekor read-back includes the signature.
+- **Observer and replay:** all event-derived content is escaped; nonce-based CSP; the observer's token becomes an
+  HttpOnly cookie; static exports carry a CSP.
+- **SDKs:** a crashing or slow TypeScript bridge never crashes or hangs the host process, and fail-open lets model calls
+  through; bridge requests that time out leave no unfinished signed records; abandoned Python streams are recorded
+  before `run.end`.
+- **Packaging:** contrib packages depend on `tracekit-ai`; the sdist ships what its tests need.
+
+### Added
+- **`tracekit observe` polish** and a reproducible interface video (`docs/demo/observer_scene.py`,
+  `record_observer.mjs`).
+- **Golden verifier corpus** (`tests/golden/`): frozen v0.1 and v1 evidence with the verifier's recorded verdicts.
+- **Known-gap tests** (`tests/test_known_gaps.py`): strict expected failures for gaps the next evidence format closes.
+- **`eval/e8_insider.py --require-harness`**, SECURITY.md, CONTRIBUTING (sign-off for contributions from forks).
+
+### Earlier in this cycle
 
 ### Installer file writes
 - `tracekit init` writes every config, settings file and backup through a directory fd: temp files get an
@@ -127,15 +183,15 @@ real separate OS users; reproduced as eval E8 (`eval/e8_insider.py`, now a requi
   `--export`), `--prices prices.json` adds cost per model call, agent and session.
 - **`tracekit.init()`** (#5) as the one-line entry point (same as `tracekit_sdk.init()`), with an offline example for
   OpenAI, Anthropic and Gemini (`examples/model_calls.py`).
-- **PGS end to end on a local chain** (#15): `examples/pgs_onchain_demo.py` drives Proof-Gated Signing's guard and
+- **PGS end to end on a local chain** (#15): `contrib/onchain/pgs_onchain_demo.py` drives Proof-Gated Signing's guard and
   wallet on a Hardhat chain; blocked transactions are checked on-chain to be unsigned (nonce unchanged), a drift attack
   reverts on its post-conditions. Fixed: transaction summaries now keep the target of PGS-style call dicts.
 - **Jaeger example** (#13): `examples/otel_jaeger_check.py` matches every span Jaeger holds to a signed record of a
   verified bundle (run against Jaeger 2.22).
 - **Key attestation in bundles** (#16): `--key-attestation FILE` with an external signer; the document's hash is signed
   into checkpoints, exports carry the document, `verify` reports it (Tracekit checks identity, not vendor contents).
-- **Auditor walkthrough** (#12) in docs/proofpack.md; `verify.pyz` checked on a machine without Tracekit.
-- **E7: SQL at a million events** (#8): every typical query under 1 s on 2 vCPUs; rollup columns are copied out of the
+- **Auditor walkthrough** (#12), now in contrib/proofpack/README.md.
+- **E7: SQL at a million events** (#8, now `contrib/query/e7_sql_scale.py`): every typical query under 1 s on 2 vCPUs; rollup columns are copied out of the
   JSON at index time (index format 4, rebuilt automatically) and inserts are batched.
 - **TypeScript SDK** (`sdk/typescript`, `@cygnux/tracekit`): policy-gated `tool()`, OpenAI and Anthropic instrumentation
   (streaming included), Vercel AI SDK middleware; runs on Tracekit's Python engine through `python -m tracekit.bridge`.
@@ -150,16 +206,16 @@ real separate OS users; reproduced as eval E8 (`eval/e8_insider.py`, now a requi
 - **Coding-agent hooks** (#7): `tracekit init --dev --agent codex|cursor|gemini` on the Claude Code hook pipeline (policy
   gate, approvals, signing, transcript hashing), with tool names mapped onto the policy vocabulary.
 - **Adapters** (#6): MCP client sessions (`tracekit.adapters.mcp`) and Vercel AI SDK telemetry spans.
-- **Proof packs** (#12): `tracekit proofpack` / `tracekit report`: bundle, readable report with every check, findings,
-  coverage and an evidence-to-control map (EU AI Act Art. 12, SOC 2 CC7.2, ISO/IEC 42001 A.6.2.8), and `verify.pyz`, a
-  verifier that needs only Python.
+- **Proof packs** (#12, now `contrib/proofpack`: `tracekit-proofpack` / `tracekit-report`): bundle, readable report with every check, findings,
+  coverage and an evidence-to-control map (EU AI Act Art. 12, SOC 2 CC7.2, ISO/IEC 42001 A.6.2.8). (It also shipped `verify.pyz`, a
+  bundled verifier; removed in 0.3.0.)
 - **Witness service** (#17): `tracekit witness init|token|serve`, an append-only RFC 6962 Merkle log of checkpoints with
   signed tree heads, per-signer tokens, fork refusal and conflict log; `https://` witness specs check inclusion and
   consistency proofs against a pinned witness key.
 - **External signers** (#16): keep the signing key in a TPM, HSM, enclave or KMS through a long-lived helper process;
   signatures verified before use; key assurance signed into checkpoints and reported by `verify` ("signing key").
-- **Causeway integration** (#14): `tracekit causeway anchor|verify|import-tests|export`.
-- **Guarded onchain transactions** (#15): `tracekit.adapters.onchain.guarded_tx` records a transaction guard's verdict
+- **Causeway integration** (#14, now `contrib/causeway`): `tracekit causeway anchor|verify|import-tests|export`.
+- **Guarded onchain transactions** (#15, now `contrib/onchain`): `guarded_tx` records a transaction guard's verdict
   (Proof-Gated Signing's `Guard.check` interface) before signing and never signs a blocked transaction; detectors
   TK-X006 to TK-X008.
 - **Signed findings** (#10) and **say-vs-do detectors** (#11). `tracekit analyze` runs deterministic detectors (claims vs
@@ -168,7 +224,7 @@ real separate OS users; reproduced as eval E8 (`eval/e8_insider.py`, now a requi
   and hash. Bundles carry findings with their run; `tracekit verify` adds "findings cite intact evidence" and fails on
   missing or altered evidence. Findings appear in the live observer. E6 (`eval/e6_findings.py`) measures the detectors
   on 2,000 synthetic sessions, including held-out paraphrases they miss.
-- **SQL over the ledger** (#8). `tracekit sql` with views `runs`, `tool_calls`, `model_exchanges`, `findings`, `gaps`,
+- **SQL over the ledger** (#8, now `contrib/query`: `tracekit-sql`). `tracekit sql` with views `runs`, `tool_calls`, `model_exchanges`, `findings`, `gaps`,
   backed by a stdlib SQLite index that reads only the ledger's new tail, checks hash links, and rebuilds itself if the
   ledger was rewritten. Read-only connection, time budget, table/JSON/CSV output, and `--mcp` for coding agents.
 - **OTLP push with auth** (#13). `tracekit otel push --endpoint URL --header K=V [--all|--run R|--follow]` sends signed
