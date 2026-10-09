@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import json
 import os
+import time
 import shutil
 import tempfile
 import unittest
@@ -49,8 +50,17 @@ class SignerPrivacy(Harness, unittest.TestCase):
         out = b""
         for root, _, names in os.walk(self.dir):
             for n in names:
-                with open(os.path.join(root, n), "rb") as f:
-                    out += f.read()
+                for i in range(40):   # Windows: the signer may be replacing the file this instant
+                    try:
+                        with open(os.path.join(root, n), "rb") as f:
+                            out += f.read()
+                        break
+                    except FileNotFoundError:
+                        break
+                    except PermissionError:
+                        if os.name != "nt" or i == 39:
+                            raise
+                        time.sleep(0.05)
         return out
 
     def test_a_secret_in_a_result_never_reaches_the_store(self):

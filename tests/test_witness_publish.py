@@ -263,7 +263,7 @@ class Publisher(unittest.TestCase):
             self.finished_run()
             self.s.checkpoint()
             gaps = lambda: [r for r in records(self.dir) if r["event"]["type"] == "capture.gap"]   # noqa: E731
-            self.assertTrue(wait_for(gaps, 5))
+            self.assertTrue(wait_for(lambda: len(gaps()) == 2, 15))   # one per log (slow runners need the time)
             time.sleep(0.5)   # more failed retries, still one gap per log
             self.assertEqual([g["event"]["data"]["kind"] for g in gaps()], ["witness_failed"] * 2)
             self.assertEqual(sorted(g["event"]["data"]["reason"].split(" ")[5] for g in gaps()), sorted(self.w.logs))
@@ -304,8 +304,9 @@ class Publisher(unittest.TestCase):
 
     def test_logs_list(self):
         self.finished_run()
-        servers = svc.serve({"socket": os.path.join(self.dir, "s.sock"), "metrics": {"listen": "127.0.0.1:0"}},
-                            self.s)
+        transport = ({"socket": os.path.join(self.dir, "s.sock")} if hasattr(socket, "AF_UNIX")
+                     else {"tcp_endpoint": os.path.join(self.dir, "endpoint.json")})   # Windows: no Unix sockets
+        servers = svc.serve({**transport, "metrics": {"listen": "127.0.0.1:0"}}, self.s)
         for x in servers:
             self.addCleanup(x.server_close)
             self.addCleanup(x.shutdown)
