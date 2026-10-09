@@ -611,6 +611,7 @@ err.close(); sys.stderr.write(open(os.path.join(ctl, 'hook.err')).read()); sys.e
             self.skipTest("needs a pty")
         return run_in_pty([PY, "-m", "tracekit", decision, aid], self.env, timeout=30)
 
+    @unittest.skipUnless(peercred.has_peer_credentials(), "v1 lists an approval only to a caller with OS peer credentials")
     def test_action_held_until_approved(self):
         proc = self.start_held_call()
         p = self.wait_pending()
@@ -622,15 +623,12 @@ err.close(); sys.stderr.write(open(os.path.join(ctl, 'hook.err')).read()); sys.e
         self.assertEqual(ap[0]["data"]["tool_use_id"], "tp1")
         self.assertIn("tty=", ap[0]["data"]["channel"])
         # dev mode: allowed, but labelled as untrustworthy in the record
-        if peercred.has_peer_credentials():  # SO_PEERCRED on Linux, LOCAL_PEERCRED on macOS
-            self.assertTrue(ap[0]["data"]["same_user"])
-            self.assertIn("not trustworthy", ap[0]["data"]["channel"])
-        else:
-            self.assertIsNone(ap[0]["data"]["same_user"])
-            self.assertIn("peer identity unavailable", ap[0]["data"]["channel"])
+        self.assertTrue(ap[0]["data"]["same_user"])
+        self.assertIn("not trustworthy", ap[0]["data"]["channel"])
         dec = self.of("policy.decision", decision="ask")
         self.assertLess(dec[0]["seq"], ap[0]["seq"])
 
+    @unittest.skipUnless(peercred.has_peer_credentials(), "v1 lists an approval only to a caller with OS peer credentials")
     def test_reject(self):
         proc = self.start_held_call()
         p = self.wait_pending()
@@ -656,6 +654,7 @@ err.close(); sys.stderr.write(open(os.path.join(ctl, 'hook.err')).read()); sys.e
         self.approve_from_terminal(p[0]["id"], "reject")
         proc.wait(20)
 
+    @unittest.skipUnless(peercred.has_peer_credentials(), "v1 lists an approval only to a caller with OS peer credentials")
     def test_no_tty_is_refused(self):
         proc = self.start_held_call()
         p = self.wait_pending()

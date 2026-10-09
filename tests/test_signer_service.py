@@ -11,11 +11,13 @@ import tempfile
 import threading
 import time
 import unittest
+import uuid
+from unittest import mock
 
 import pytest
 
 from test_rpc_contract import SignerContract
-from tracekit import schema
+from tracekit import locking, schema
 from tracekit.format.canon import event_hash
 from tracekit.identity.base import CallerIdentity
 from tracekit.policy2.engine import Engine
@@ -29,6 +31,8 @@ from tracekit.storage.file import FileStorage
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ME = CallerIdentity("uid", str(os.getuid()) if hasattr(os, "getuid") else "0", True)
 OTHER = CallerIdentity("uid", "999999", True)
+# what the signer measures for a uid caller (ME, OTHER): Windows has no uid of its own to compare with
+SAME_USER, SEPARATE_USER = ("same-user", "separate-user") if hasattr(os, "getuid") else ("unknown", "unknown")
 PAY_ASKS = Engine({"ask": [{"id": "TEST-PAY", "tool": "pay", "pattern": "^"}]})
 
 
@@ -67,14 +71,14 @@ class TestServiceContract(SignerContract, unittest.TestCase):
             self.assertEqual(schema.validate(r["event"]), [], r["event"])
         self.assertEqual(svc.fsck(self.dir), [])
         reg = [r["event"] for r in rs if r["event"]["type"] == "run.registered"][0]
-        self.assertEqual(reg["data"]["signer_isolation"], "same-user")
+        self.assertEqual(reg["data"]["signer_isolation"], SAME_USER)
         self.assertFalse(reg["tenant_attested"])
 
     def test_isolation_is_measured_from_the_caller(self):
         self.signer.call(OTHER, "register_run", {"request_id": "r", "agent": {"name": "a"}})
         self.signer.close()
         reg = [r["event"] for r in records(self.dir) if r["event"]["type"] == "run.registered"][0]
-        self.assertEqual(reg["data"]["signer_isolation"], "separate-user")
+        self.assertEqual(reg["data"]["signer_isolation"], SEPARATE_USER)
 
     def test_request_id_and_tokens_are_scoped_to_the_identity(self):
         reg = {"request_id": "reg-1", "agent": {"name": "a"}}
@@ -122,7 +126,7 @@ class TestService(unittest.TestCase):
         return s.call(identity, "register_run", {"request_id": f"reg-{time.monotonic_ns()}", "agent": {"name": "a"}, **kw})
 
     def ev(self, run, seq, rid=None, **kw):
-        return {"request_id": rid or f"rq-{time.monotonic_ns()}", "run_id": run["run_id"], "run_token": run["run_token"],
+        return {"request_id": rid or uuid.uuid4().hex, "run_id": run["run_id"], "run_token": run["run_token"],
                 "stream": "s1", "client_seq": seq, **kw}
 
     def refused(self, code, s, method, req, identity=ME):
@@ -214,6 +218,14 @@ class TestService(unittest.TestCase):
         self.open()
         with self.assertRaises(BlockingIOError):
             svc.SignerService(self.dir)
+
+    def test_a_windows_lock_conflict_is_the_same_refusal(self):
+        msvcrt = mock.Mock(LK_NBLCK=2)
+        msvcrt.locking.side_effect = PermissionError(13, "Permission denied")
+        with mock.patch.object(locking, "fcntl", None), mock.patch.object(locking, "msvcrt", msvcrt), \
+                open(os.path.join(self.dir, "lock"), "a") as f:
+            with self.assertRaises(BlockingIOError):
+                locking.lock_file(f, blocking=False)
 
     def test_rollback_against_a_witness(self):
         s = self.open()

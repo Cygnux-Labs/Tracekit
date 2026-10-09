@@ -31,8 +31,10 @@ def lock_file(file, blocking=True):
                 msvcrt.locking(file.fileno(), operation, 1)
                 return
             except OSError as e:
-                if not blocking or e.errno not in contention:
+                if e.errno not in contention:
                     raise
+                if not blocking:   # what flock raises, so callers handle one exception on every OS
+                    raise BlockingIOError(e.errno, "the file is locked by another process") from None
                 time.sleep(0.05)
     raise RuntimeError("Tracekit requires fcntl or msvcrt for inter-process file locking")
 

@@ -2,7 +2,7 @@
 
 An adapter plugs in through a driver; subclass `Contract` with a `driver(case, signer_path)` and mix in `OnFake` or
 `OnReal` (tests/test_contract_langchain.py). Each case runs against FakeSigner and the real signer, both served in
-this process on a Unix socket, so the adapter and its resumed processes reach them as they would a deployed signer.
+this process on a Unix socket (loopback TCP where there are none), so the adapter and its resumed processes reach them as they would a deployed signer.
 The policy: `pay` asks (R-PAY), `wipe` is denied (R-WIPE), everything else is allowed.
 
 A driver has:
@@ -22,15 +22,15 @@ A driver has:
 """
 import os
 import shutil
+import socket
 import tempfile
 import threading
 
 from tracekit.policy2.engine import Engine
 from tracekit.sdk.client import Client
-from tracekit.signer.service import SignerService
+from tracekit.signer.service import SignerService, _dev_token
 from tracekit.testing import FakeSigner
 from tracekit.transport import answering_hello, hello
-from tracekit.transport.unix import UnixServer
 
 PAY = {"to": "acct-42", "cents": 1500}
 HINT = object()   # resume with the approval id the framework saved at the pause
@@ -69,14 +69,24 @@ def _rule(tool, args):
 
 
 def tmpdir(case):
-    d = tempfile.mkdtemp(dir="/tmp")   # short: macOS caps socket paths at 104 bytes
+    d = tempfile.mkdtemp(dir="/tmp" if os.path.isdir("/tmp") else None)   # short: macOS caps socket paths at 104 bytes
     case.addCleanup(shutil.rmtree, d, True)
     return d
 
 
 def _serve(case, handle_frame):
-    path = os.path.join(tmpdir(case), "s.sock")
-    srv = UnixServer(path, answering_hello(handle_frame, hello()))
+    """The signer's address: a Unix socket, or tcp://127.0.0.1:port with its token in $TRACEKIT_SIGNER_TOKEN."""
+    d, handle = tmpdir(case), answering_hello(handle_frame, hello())
+    if hasattr(socket, "AF_UNIX"):
+        from tracekit.transport.unix import UnixServer
+        path = os.path.join(d, "s.sock")
+        srv = UnixServer(path, handle)
+    else:
+        from tracekit.transport.tcp_dev import TcpDevServer
+        token = _dev_token()
+        srv = TcpDevServer(os.path.join(d, "endpoint.json"), token, handle)
+        path = f"tcp://127.0.0.1:{srv.server_address[1]}"
+        os.environ["TRACEKIT_SIGNER_TOKEN"] = token.secret   # tests/conftest.py restores the environment
     threading.Thread(target=srv.serve_forever, args=(0.2,), daemon=True).start()
     case.addCleanup(srv.server_close)
     case.addCleanup(srv.shutdown)

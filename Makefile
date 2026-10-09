@@ -1,9 +1,10 @@
-.PHONY: help install test test-contrib test-ts eval-scale lint build check demo eval eval-agents clean
+.PHONY: help install test quickstart test-contrib test-ts eval-scale lint build check demo eval eval-agents clean
 PY ?= python3
 
 help:
 	@echo "make install   editable install with dev extras"
 	@echo "make test      run the test suite"
+	@echo "make quickstart  build the wheel into a fresh venv and run the v2 quickstart end to end (needs the package index)"
 	@echo "make test-contrib  run the contrib/ packages' tests against the installed packages (pip install . ./contrib/*)"
 	@echo "make lint      pyflakes over the package, SDK and tests"
 	@echo "make build     build the sdist and wheel into dist/"
@@ -20,6 +21,9 @@ install:
 
 test:
 	$(PY) -m pytest -q
+
+quickstart:
+	TRACEKIT_QUICKSTART=1 $(PY) -m pytest -q -s -m quickstart tests/test_quickstart.py
 
 eval-scale:
 	$(PY) contrib/query/e7_sql_scale.py

@@ -92,11 +92,9 @@ class Driver:
         return out
 
 
-@unittest.skipUnless(os.name == "posix", "the v2 client speaks Unix sockets only")
 class TestOnFakeSigner(ac.Contract, ac.OnFake, unittest.TestCase):
     driver = Driver
 
 
-@unittest.skipUnless(os.name == "posix", "the v2 client speaks Unix sockets only")
 class TestOnRealSigner(ac.Contract, ac.OnReal, unittest.TestCase):
     driver = Driver

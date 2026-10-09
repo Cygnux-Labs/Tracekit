@@ -4,6 +4,8 @@ Each test asserts the intended behaviour, so it reports xfail today and fails (s
 closed; remove the marker then. Anything other than an AssertionError fails the test.
 
     python3 -m pytest tests/test_known_gaps.py -rx
+
+The v2 signer closes them (except kg09): tests/test_known_gaps_v2.py.
 """
 import json
 import os
@@ -116,6 +118,7 @@ class SignerGaps(unittest.TestCase):
         self.append(tool_call("t1", "cat /etc/hosts"))
         self.assertTrue(self.flagged("t1"))
 
+    @unittest.skipUnless(hasattr(os, "getuid"), "the v1 signer stamps isolation from the peer's uid; Windows has none")
     def test_kg11_signer_isolation_not_taken_from_client(self):
         start = run_start()
         start["data"]["signer_isolation"] = "separate-user"
