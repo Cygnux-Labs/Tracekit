@@ -9,9 +9,10 @@ import os
 import subprocess
 import sys
 import unittest
+from unittest import mock
 
 import adapter_contract as ac
-from tracekit.sdk.client import Client
+from tracekit.sdk.client import Client, SignerUnavailable
 
 try:
     from agents import (Agent, ApplyPatchTool, LocalShellTool, Model, ModelResponse, RunState, Runner, ShellTool,
@@ -163,6 +164,35 @@ class TestOnRealSigner(ac.Contract, ac.OnReal, unittest.TestCase):
         out = self.d.resume()
         self.refused(out, "TK-APPROVAL-MISMATCH")
         self.assertIsNone(out["raised"])   # the SDK's own check passed; the signer caught it
+
+    def echo(self, tk):
+        return invoke(agent(tk), tk, json.dumps({"name": "echo", "args": {"text": "hi"}, "id": "c1"}))[0]
+
+    def test_signer_unreachable_follows_the_fail_mode(self):
+        down = Client(os.path.join(ac.tmpdir(self), "none.sock"))
+        self.addCleanup(down.close)
+        with self.assertWarns(UserWarning):   # the model responses are not recorded either
+            out = self.echo(TracekitAgents(down, {**self.d.run(), "fail_modes": {"default": "closed"}}))
+        self.refused(out, "signer unavailable")
+        with self.assertWarns(UserWarning):
+            out = self.echo(TracekitAgents(down, {**self.d.run(), "fail_modes": {"default": "open"}}))
+        self.assertEqual((out["ran"], out["seen"], out["continued"]), (["echo"], "hi", True))
+
+    def test_closed_run_refuses_the_call(self):
+        self.client.close_run(dict(self.d.run()))
+        out = self.echo(TracekitAgents(self.d.signer, {**self.d.run(), "fail_modes": {"default": "open"}}))
+        self.refused(out, "run_closed")
+
+    def test_a_failed_complete_leaves_the_result_unchanged(self):
+        signer = mock.Mock(wraps=self.d.signer)
+        signer.complete.side_effect = SignerUnavailable("gone")
+        tk = TracekitAgents(signer, self.d.run())
+        with self.assertWarns(UserWarning):
+            out = self.echo(tk)
+        self.assertEqual((out["ran"], out["seen"], out["raised"]), (["echo"], "hi", None))
+        with self.assertWarns(UserWarning):
+            out = invoke(agent(tk), tk, json.dumps({"name": "fail", "args": {"why": "boom"}, "id": "c2"}))[0]
+        self.assertEqual(out["raised"], "ValueError: boom")
 
 
 @unittest.skipUnless(HAVE_OA, "openai-agents not installed")
