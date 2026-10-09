@@ -15,8 +15,8 @@ signer.yaml:
     http: {listen: 0.0.0.0:8443, ...}        # HTTPS with k8s_sa, mtls or token identity (tracekit/transport/http.py)
     durability: ack-on-write                 # or ack-on-fsync
     tenant: default                          # tenant of callers not in `tenants`
-    tenants: {"uid:1001": acme, "k8s_sa:system:serviceaccount:acme:*": acme}   # identity or prefix* -> tenant (attested)
-    authorize: {"mtls:spiffe://acme/agent": [register_run, decide, complete, close_run]}   # identity or prefix* ->
+    tenants: {"uid:1001": acme, "k8s_sa:system:serviceaccount:acme:*": acme}   # identity or prefix:* -> tenant (attested)
+    authorize: {"mtls:spiffe://acme/agent": [register_run, decide, complete, close_run]}   # identity or prefix:* ->
                                              # methods; uid and token:dev default to all, the rest to none
     multi_tenant_apps: ["uid:1002"]          # may assert a tenant per run (recorded as not attested)
     migrators: ["uid:1003"]                  # may register `migrated` runs
@@ -32,7 +32,7 @@ signer.yaml:
     witnesses:                               # C2SP tlog-witnesses that cosign every new note (tracekit.tlog_witness)
       - {url: https://witness.example.org, vkey: "witness.example.org/w1+1234abcd+BA...", class: customer}
     contact: ops@example.org                 # the logs list's contact line; default the origin
-    approvals: {self_approval: deny, approvers: ["uid:1001", "mtls:spiffe://acme/ops/*"],   # identity or prefix*
+    approvals: {self_approval: deny, approvers: ["uid:1001", "mtls:spiffe://acme/ops/*"],   # identity or prefix/*
                 break_glass: ["uid:0"]}      # may answer any approval, with a reason; recorded break_glass
     acknowledge_rollback: false
 
@@ -211,12 +211,16 @@ def _secret(path, make, size=32):
     return data
 
 
+PREFIX_ENDS = (":*", "/*")
+
+
 def lookup(table, sub, default=None):
-    """table[sub], else the entry of the longest `prefix*` key that `sub` starts with, else `default`."""
+    """table[sub], else the entry of the longest prefix key (ending in `:*` or `/*`) that `sub` starts with, else
+    `default`."""
     if sub in table:
         return table[sub]
     # lean: scans every key per call; a prefix trie if maps grow past a few hundred entries
-    best = max((k for k in table if k.endswith("*") and sub.startswith(k[:-1])), key=len, default=None)
+    best = max((k for k in table if k.endswith(PREFIX_ENDS) and sub.startswith(k[:-1])), key=len, default=None)
     return default if best is None else table[best]
 
 
@@ -234,7 +238,7 @@ class SignerService:
         `open_storage()` defaults to file storage in data_dir/store. `origin` names the log in its checkpoints, `contact`
         its operator in the logs list. `witnesses` cosign its notes (see the module docstring).
         `multi_tenant_apps`, `migrators` and `analyzers` are identities ("scheme:subject"); `tenants` and `authorize`
-        map identities or `prefix*` to a tenant and to the methods they may call.
+        map identities or prefixes (`...:*`, `.../*`) to a tenant and to the methods they may call.
         `isolation` fixes the signer_isolation label of every run (a dev signer: same-user). `bridge`: see RecordLog.
         `approvals`: who answers approvals (the `approvals` config section); None for the dev signer's rules."""
         fail_modes = dict(fail_modes or FAIL_MODES)
@@ -1160,10 +1164,17 @@ def load_config(path):
     if h is not None:
         from tracekit.transport import http
         for section in (h, h.get("k8s_sa")) if isinstance(h, dict) else ():
-            for k in ("cert", "key", "client_ca", "token_file", "ca"):
-                if isinstance(section, dict) and section.get(k):
+            for k in ("cert", "key", "token_file", "ca"):
+                if isinstance(section, dict) and isinstance(section.get(k), str) and section[k]:
                     section[k] = os.path.join(base, section[k])
+        if isinstance(h, dict) and isinstance(h.get("client_ca"), dict):
+            h["client_ca"] = {td: os.path.join(base, p) if isinstance(p, str) else p for td, p in h["client_ca"].items()}
         http.configure(h)   # validates the section now; serve() builds it again
+    approvals = cfg.get("approvals") if isinstance(cfg.get("approvals"), dict) else {}
+    for table in (cfg.get("tenants"), cfg.get("authorize"), approvals.get("approvers"), approvals.get("break_glass")):
+        for k in table or ():
+            if "*" in str(k) and not (str(k).endswith(PREFIX_ENDS) and str(k).count("*") == 1):
+                raise ValueError(f"{path}: {k!r}: a prefix key must end in :* or /*")
     names = set()
     for w in cfg.get("witnesses") or ():
         if not (isinstance(w, dict) and set(w) == {"url", "vkey", "class"} and w["class"] in CLASSES):

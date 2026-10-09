@@ -101,6 +101,14 @@ class TestLimits(unittest.TestCase):
         self.assertEqual(r.status, 413)
         self.assertIn(b"quota_exceeded", r.read())
 
+    def test_malformed_content_length_is_refused(self):
+        for n in (b"\xb2", b"1" * 9, b"9" * 5000):
+            s = self.tls()
+            s.sendall(b"POST /v2/rpc HTTP/1.1\r\nHost: x\r\nContent-Length: " + n + b"\r\n\r\n")
+            r = self.response(s)
+            self.assertEqual(r.status, 400, n[:9])
+            self.assertIn(b"invalid_request", r.read())
+
     def test_slow_client_is_cut_off(self):
         for partial in (b"POST /v2/rpc HTTP/1.1\r\nHost: x\r\n", b"POST /v2/rpc HTTP/1.1\r\nContent-Length: 50\r\n\r\n{"):
             s = self.tls()
@@ -133,12 +141,26 @@ class TestAuthorization(unittest.TestCase):
         self.s.call(ts.OTHER, "status", {})   # a uid keeps every method
 
     def test_tenant_map_takes_prefixes(self):
-        self.s.tenants.update({"k8s_sa:system:serviceaccount:acme:*": "acme", "k8s_sa:system:serviceaccount:acme:x*": "x"})
+        self.s.tenants.update({"k8s_sa:system:serviceaccount:acme:*": "acme", "mtls:spiffe://example.org/*": "org",
+                               "mtls:spiffe://example.org/x/*": "x"})
         reg = self.s.call(CallerIdentity("k8s_sa", "system:serviceaccount:acme:agent", True), "register_run",
                           {"request_id": "r", "agent": {"name": "x"}})
         self.assertEqual((reg["tenant"], reg["tenant_attested"]), ("acme", True))
-        self.assertEqual(svc.lookup(self.s.tenants, "k8s_sa:system:serviceaccount:acme:xy"), "x")   # longest prefix
+        self.assertEqual(svc.lookup(self.s.tenants, "mtls:spiffe://example.org/x/a"), "x")   # longest prefix
         self.assertIsNone(svc.lookup(self.s.tenants, "k8s_sa:system:serviceaccount:acmex:a"))
+
+    def test_prefix_keys_end_at_a_separator(self):
+        table = {"uid:100*": "a", "acme*": "b", "uid:*": "c"}
+        self.assertEqual(svc.lookup(table, "uid:1000"), "c")
+        self.assertIsNone(svc.lookup(table, "acme-evil"))
+        d = tmpdir(self)
+        path = os.path.join(d, "signer.yaml")
+        for table in ("authorize:\n  uid:100*: [status]\n", "tenants:\n  a*b/*: x\n",
+                      "approvals:\n  approvers: [acme*]\n"):
+            with open(path, "w") as f:
+                f.write("data_dir: data\n" + table)
+            with self.subTest(table), self.assertRaisesRegex(ValueError, "end in :\\* or /\\*"):
+                svc.load_config(path)
 
 
 class TestCrossTenant(unittest.TestCase):
@@ -155,7 +177,8 @@ class TestCrossTenant(unittest.TestCase):
             authorize={"k8s_sa:system:serviceaccount:*": all_methods, "mtls:spiffe://example.org/*": all_methods})
         self.addCleanup(self.s.close)
         cert, key = self.pki.issue("server")
-        port = serve(self, {"cert": cert, "key": key, "client_ca": self.pki.path, "authenticators": ["k8s_sa", "mtls"],
+        port = serve(self, {"cert": cert, "key": key, "client_ca": {"example.org": self.pki.path},
+                            "authenticators": ["k8s_sa", "mtls"],
                             "k8s_sa": self.jwks.config(self.pki)}, answering_hello(self.s.handle_frame, hello()))
         self.url, self.d = f"https://127.0.0.1:{port}", d
 

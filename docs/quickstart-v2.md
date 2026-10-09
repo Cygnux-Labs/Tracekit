@@ -76,7 +76,13 @@ The signer finalises a run a few seconds after it closes. A bundle exported befo
 unbroken chain. They are included in a checkpoint that key signed. Nothing in the bundle was edited, dropped or
 reordered after it was signed.
 
-`Assurance: dev` says how far to trust the signer itself, and in dev mode the answer is "not against the agent":
+`Assurance` describes checkpoint cosigning only, not how the signer is isolated: `dev` when no pinned witness cosigned
+the checkpoint (or the run holds a self-approval), `local` when only operator-run witnesses did, `witnessed` when enough
+independent ones did. A same-user signer whose checkpoints a pinned witness cosigns verifies as `witnessed`: the witness
+shows the log was not rolled back or forked after it cosigned, not that the agent could not reach the signer. How the
+signer was isolated is recorded in each run's `signer_isolation` (`same-user` here).
+
+In dev mode the signer is not protected against the agent:
 
 - The signer runs as **your user, the same user as the agent**. An agent that runs arbitrary commands as you can read
   the signer's key and store, stop the signer, or rewrite history and sign it again. The policy (TK-D007) makes such
@@ -87,6 +93,5 @@ reordered after it was signed.
   started with a config refuses self-approvals: list who may answer under `approvals: {approvers: [...]}` in
   `signer.yaml` (see `tracekit/signer/service.py`).
 
-Dev mode is for trying Tracekit and for catching mistakes, not attacks. Stronger assurance (`local`, `witnessed`) needs
-a signer that runs as a different user or on another host, plus witnesses that cosign its checkpoints. Those are later
-milestones.
+Dev mode is for trying Tracekit and for catching mistakes, not attacks. Protection against the agent needs a signer
+that runs as a different user or on another host (a later milestone), plus witnesses that cosign its checkpoints.

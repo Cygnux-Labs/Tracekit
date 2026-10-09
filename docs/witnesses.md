@@ -119,7 +119,8 @@ metrics: {listen: 0.0.0.0:9464, allow_remote: true}   # serves GET /logs/v0 to t
 - The signer's logs list, in the witness network's `logs/v0` format (vkey, qpd, contact per log), is at
   `GET /logs/v0` on the metrics port. A new tenant adds a registry log to it.
 
-**omniwitness** (shipped; Apache-2.0, built from a pinned commit of github.com/transparency-dev/witness). Its key file
+**omniwitness** (tested against, not shipped or pinned: `tests/test_witness_publish.py` runs it when the binary is on
+PATH; Apache-2.0, github.com/transparency-dev/witness). Its key file
 is a note signing key, `PRIVATE+KEY+<name>+<key id>+<base64(0x01 ‖ Ed25519 seed)>`; it registers the signer's logs by
 polling the list:
 
@@ -143,3 +144,7 @@ litewitness refuses bodies over 10 KiB; omniwitness accepts 16 KiB. Verify with 
 `tracekit signer trust -o trust.json` pins every configured witness with its class, and `tracekit verify` reports
 `Assurance: witnessed` once a non-`operator` pinned witness has cosigned the bundle's checkpoint. A signature line from
 a key the trust config does not pin is ignored; a pinned witness's bad cosignature fails the bundle.
+
+v2 assurance levels (`dev`, `local`, `witnessed`) describe checkpoint cosigning only, not signer isolation: a same-user
+dev signer with a witness verifies as `witnessed`. The witness shows the log was not rolled back or forked after it
+cosigned; whether the agent could reach the signer is each run's `signer_isolation` (`same-user`, `separate-user`).

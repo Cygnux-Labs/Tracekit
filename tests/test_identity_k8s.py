@@ -17,6 +17,7 @@ from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
 
 from test_identity_mtls import Pki, tmpdir
 from tracekit.identity import k8s_sa
+from tracekit.signer.quotas import Limits, Quotas
 from tracekit.signer.rpc_schema import RPCError
 
 ISS, AUD = "https://issuer.example", "tracekit-signer"
@@ -70,10 +71,13 @@ def https_server(case, pki, handler):
 
 
 class Jwks:
-    """An issuer with an RSA and an EC key whose JWKS is served at `self.uri`; counts the fetches."""
+    """An issuer with an RSA and an EC key whose JWKS is served at `self.uri`; counts the fetches. Answers 500 while
+    `fail` is set and waits for `gate` before each answer."""
 
     def __init__(self, case, pki):
         self.rsa, self.ec, self.fetches = rsa.generate_private_key(65537, 2048), ec.generate_private_key(ec.SECP256R1()), 0
+        self.fail, self.gate = False, threading.Event()
+        self.gate.set()
         rn, en = self.rsa.public_key().public_numbers(), self.ec.public_key().public_numbers()
         body = json.dumps({"keys": [{"kty": "RSA", "kid": "RS256", "n": b64int(rn.n), "e": b64int(rn.e)},
                                     {"kty": "EC", "kid": "ES256", "crv": "P-256", "x": b64int(en.x),
@@ -83,7 +87,8 @@ class Jwks:
         class H(BaseHTTPRequestHandler):
             def do_GET(self):
                 issuer.fetches += 1
-                self.send_response(200)
+                issuer.gate.wait(10)
+                self.send_response(500 if issuer.fail else 200)
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
@@ -96,8 +101,8 @@ class Jwks:
         return {"audience": AUD, "issuer": ISS, "jwks_uri": self.uri, "ca": pki.path}
 
 
-def request(token):
-    return types.SimpleNamespace(headers={"Authorization": f"Bearer {token}"})
+def request(token, peer="127.0.0.1"):
+    return types.SimpleNamespace(headers={"Authorization": f"Bearer {token}"}, client_address=(peer, 1))
 
 
 class TestJwks(unittest.TestCase):
@@ -140,6 +145,34 @@ class TestJwks(unittest.TestCase):
         for _ in range(3):
             self.refused(jwt(self.jwks.rsa, claims(), kid="other"))
         self.assertEqual(self.jwks.fetches, 1)
+
+    def test_keys_are_fetched_outside_the_lock_by_one_request_at_a_time(self):
+        self.jwks.gate.clear()
+        t = threading.Thread(target=lambda: self.auth.authenticate(request(jwt(self.jwks.rsa, claims())), {}))
+        t.start()
+        self.addCleanup(t.join)
+        self.addCleanup(self.jwks.gate.set)
+        while self.jwks.fetches == 0:
+            time.sleep(0.01)
+        with self.assertRaises(RPCError) as cm:   # no keys yet, and no second fetch
+            self.auth.authenticate(request(jwt(self.jwks.rsa, claims())), {})
+        self.assertEqual((cm.exception.code, self.jwks.fetches), ("unavailable", 1))
+
+    def test_stale_keys_are_refused_and_failures_stay_in_the_log(self):
+        now = [time.time()]
+        auth = k8s_sa.K8sSaAuthenticator(**self.jwks.config(self.pki), clock=lambda: now[0])
+        token = lambda: jwt(self.jwks.rsa, claims(exp=int(now[0]) + 600, nbf=int(now[0])))
+        auth.authenticate(request(token()), {})
+        self.jwks.fail = True
+        now[0] += k8s_sa.JWKS_TTL_S
+        with self.assertLogs(k8s_sa.log, "WARNING") as logs:
+            auth.authenticate(request(token()), {})   # the refetch failed: the keys at hand still serve
+        self.assertIn("HTTP 500", logs.output[0])
+        now[0] += k8s_sa.JWKS_MAX_AGE_S
+        with self.assertRaises(RPCError) as cm, self.assertLogs(k8s_sa.log, "WARNING"):
+            auth.authenticate(request(token()), {})
+        self.assertEqual((cm.exception.code, cm.exception.message), ("unavailable",
+                                                                      "service-account keys unavailable; retry later"))
 
     def test_other_bearer_tokens_are_left_to_other_authenticators(self):
         self.assertIsNone(self.auth.authenticate(request("x" * 40), {}))
@@ -216,6 +249,23 @@ class TestTokenReview(unittest.TestCase):
         self.now += k8s_sa.REVIEW_TTL_S   # past REVIEW_TTL_S: long is reviewed again
         self.auth.authenticate(request(long), {})
         self.assertEqual(len(self.reviews), 4)
+
+    def test_reviews_are_rate_limited_per_peer(self):
+        self.auth._reviews = Quotas(Limits(events_per_s=0.001, burst=2))
+        for _ in range(2):
+            self.auth.authenticate(request(self.token("good-x", ttl=0)), {})   # ttl 0: never cached
+        with self.assertRaises(RPCError) as cm:
+            self.auth.authenticate(request(self.token("good-x", ttl=0)), {})
+        self.assertEqual(cm.exception.code, "quota_exceeded")
+        self.auth.authenticate(request(self.token("good-x", ttl=0), "10.0.0.2"), {})
+        self.assertEqual(len(self.reviews), 3)
+
+    def test_review_failure_details_stay_in_the_log(self):
+        self.auth.tokenreview = "https://127.0.0.1:1"
+        with self.assertRaises(RPCError) as cm, self.assertLogs(k8s_sa.log, "WARNING") as logs:
+            self.auth.authenticate(request(self.token("good")), {})
+        self.assertEqual((cm.exception.code, cm.exception.message), ("unavailable", "TokenReview unavailable; retry later"))
+        self.assertIn("https://127.0.0.1:1", logs.output[0])
 
     def test_cache_is_bounded_lru(self):
         with mock.patch.object(k8s_sa, "CACHE_MAX", 2):

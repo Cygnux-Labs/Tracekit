@@ -25,7 +25,10 @@ from tracekit.locking import lock_file, unlock_file
 from tracekit.sdk.client import Incompatible, SignerUnavailable, connect
 
 SOCK, LOCK, SPAWN_LOCK, ENDPOINT, LOG = "signer.sock", "signer.lock", "spawn.lock", "endpoint.json", "signer.log"
-SIGNER_ARGV = [sys.executable, "-m", "tracekit", "signer", "serve", "--dev"]
+# -P (3.11+) keeps the working directory off sys.path; before 3.11 it is there, and spawn() makes it the private runtime
+# dir. Not -I, which also drops the PYTHONPATH a checkout without an install needs.
+SIGNER_ARGV = [sys.executable, *(["-P"] if sys.version_info >= (3, 11) else []), "-m", "tracekit", "signer", "serve",
+               "--dev"]
 _ENV = ("PATH", "HOME", "USER", "LOGNAME", "LANG", "TMPDIR", "XDG_RUNTIME_DIR", "XDG_DATA_HOME", "LOCALAPPDATA",
         "SYSTEMROOT", "PYTHONPATH")   # SYSTEMROOT: Windows sockets need it
 
@@ -34,9 +37,10 @@ class Hung(SignerUnavailable):
     pass
 
 
-def runtime_dir():
-    """The per-user runtime dir ($TRACEKIT_RUNTIME_DIR overrides), created 0700; refused unless it is ours and private
-    (on POSIX; Windows has no uid, so it relies on the user-only profile ACL as S3 decides)."""
+def runtime_dir(create=True):
+    """The per-user runtime dir ($TRACEKIT_RUNTIME_DIR overrides), created 0700 (with create=False, OSError while it
+    does not exist); refused unless it is ours and private (on POSIX; Windows has no uid, so it relies on the user-only
+    profile ACL as S3 decides)."""
     d = os.environ.get("TRACEKIT_RUNTIME_DIR")
     if not d and os.name == "nt":
         d = os.path.join(os.environ.get("LOCALAPPDATA") or os.path.expanduser("~/AppData/Local"), "tracekit", "run")
@@ -47,7 +51,8 @@ def runtime_dir():
     elif not d:
         xdg = os.environ.get("XDG_RUNTIME_DIR")
         d = os.path.join(xdg, "tracekit") if xdg else f"/tmp/tracekit-{os.getuid()}"
-    os.makedirs(d, 0o700, exist_ok=True)
+    if create:
+        os.makedirs(d, 0o700, exist_ok=True)
     st = os.lstat(d)
     if not stat.S_ISDIR(st.st_mode) or os.name == "posix" and (st.st_uid != os.getuid() or st.st_mode & 0o077):
         raise SignerUnavailable(f"{d} must be a directory owned by you with mode 0700")
@@ -105,7 +110,7 @@ def spawn(d):
     env = {k: v for k, v in os.environ.items() if k in _ENV or k.startswith(("LC_", "TRACEKIT_"))}
     env["TRACEKIT_RUNTIME_DIR"] = d
     with open(os.path.join(d, LOG), "ab") as log:
-        p = subprocess.Popen(SIGNER_ARGV, stdin=subprocess.DEVNULL, stdout=log, stderr=log, cwd="/", env=env,
+        p = subprocess.Popen(SIGNER_ARGV, stdin=subprocess.DEVNULL, stdout=log, stderr=log, cwd=d, env=env,
                              start_new_session=True, umask=0o077)
     threading.Thread(target=p.wait, daemon=True).start()   # reap it if it exits while we live
     return p
@@ -166,11 +171,11 @@ def down(timeout=10):
 
 
 def status():
-    """The v2 signer section of `tracekit status`. Starts nothing."""
+    """The v2 signer section of `tracekit status`. Starts and creates nothing."""
     path, token = os.environ.get("TRACEKIT_SIGNER"), None
     try:
         if not path:
-            d = runtime_dir()
+            d = runtime_dir(create=False)
             path = os.path.join(d, SOCK if hasattr(socket, "AF_UNIX") else ENDPOINT)
             path, token = address(d)
         sock, _, hello = connect(path, token=token)
