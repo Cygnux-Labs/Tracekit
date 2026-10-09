@@ -140,9 +140,20 @@ class InstallAndUninstall(unittest.TestCase):
             p.__enter__()
             self.addCleanup(p.__exit__, None, None, None)
 
+    def test_without_tailer_access_init_writes_no_tailer_key(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            sys_cfg = self.init_v2(sudo_why="no sudo rule: visudo refused it")
+        self.assertNotIn("tailer", sys_cfg.call_args.args[0])
+        self.assertIn("each run of agent's sessions records a tailer_lost gap", out.getvalue())
+
     def test_init_wires_signer_service_and_hook(self):
+        self.init_v2()
+
+    def init_v2(self, sudo_why=None):
         run = mock.Mock(return_value=mock.Mock(returncode=0, stdout=POLICY + "\n", stderr=""))
-        v1 = {"socket": "/var/lib/tracekit/tracekitd.sock", "mode": "system", "fail_mode": "closed"}
+        v1 = {"socket": "/var/lib/tracekit/tracekitd.sock", "mode": "system", "fail_mode": "closed",
+              "tailer": {"user": "stale"}}
         with mock.patch.object(install.pwd, "getpwnam", return_value=AGENT), \
                 mock.patch.object(install.pwd, "getpwuid", return_value=self.me), \
                 mock.patch.dict(os.environ, {"SUDO_UID": str(self.me.pw_uid)}), \
@@ -154,7 +165,7 @@ class InstallAndUninstall(unittest.TestCase):
                 mock.patch.object(install.client, "system_config", return_value=v1), \
                 mock.patch.object(install, "_write_system_client_config") as sys_cfg, \
                 mock.patch.object(install, "_tailer_acl", return_value=None) as acl, \
-                mock.patch.object(install, "_tailer_sudo", return_value=None) as sudo, \
+                mock.patch.object(install, "_tailer_sudo", return_value=sudo_why) as sudo, \
                 mock.patch.object(install, "install_hooks") as hooks:
             sock, settings = install.init_system_v2("agent")
         self.assertEqual(sock, "/run/tracekit-signer/signer.sock")
@@ -165,11 +176,14 @@ class InstallAndUninstall(unittest.TestCase):
         self.assertIn(f'approvers:\n    - "uid:{self.me.pw_uid}"', yaml)
         self.assertIn(f'policy: "{POLICY}"', yaml)
         self.assertIn("ExecStart=", self.written[os.path.join(self.d, "tracekit-signer.service")].decode())
+        acl.assert_called_once_with(AGENT, self.me.pw_name, False)
+        sudo.assert_called_once_with(AGENT, self.me)
+        if sudo_why:
+            return sys_cfg
+        del v1["tailer"]
         self.assertEqual(sys_cfg.call_args.args[0], dict(v1, signer=sock, hooks={"user": "agent", "settings": settings},
                                                          tailer={"user": self.me.pw_name, "uid": self.me.pw_uid,
                                                                  "python": install.OPT_PYTHON}))
-        acl.assert_called_once_with(AGENT, self.me.pw_name, False)
-        sudo.assert_called_once_with(AGENT, self.me)
         self.assertIn(f'authorize:\n  "uid:{self.me.pw_uid}": [model_event, state_write, tailer_lost, status]', yaml)
         self.assertEqual(hooks.call_args.kwargs, {"owner": AGENT, "python": install.OPT_PYTHON,
                                                   "module": install.V2_HOOK, "signer": sock})
@@ -215,9 +229,8 @@ class InstallAndUninstall(unittest.TestCase):
         self.assertIn(["userdel", install.V2_TAILER], cmds)
 
     def test_uninstall_revokes_the_tailers_acl_and_sudo_rule_and_purges_its_user(self):
-        open(install.TAILER_SUDOERS, "w").close()
-        sc = {"mode": "system", "signer": "/run/x.sock", "hooks": {"user": self.me.pw_name, "settings": None},
-              "tailer": {"user": "tracekit-tailer", "uid": 999, "python": install.OPT_PYTHON}}
+        open(install.TAILER_SUDOERS, "w").close()   # no `tailer` key: an ACL set before the sudo rule failed goes too
+        sc = {"mode": "system", "signer": "/run/x.sock", "hooks": {"user": self.me.pw_name, "settings": None}}
         kept, _, _, cmds = self.uninstall(sc, purge=True)
         self.assertEqual(kept, [])
         projects = os.path.join(self.me.pw_dir, ".claude", "projects")

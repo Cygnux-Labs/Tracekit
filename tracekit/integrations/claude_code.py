@@ -10,8 +10,8 @@ Exit 0 lets the call proceed, exit 2 blocks it (reason on stderr). The signer un
 tool's class, from register_run (closed before a run is registered). A signer refusal, a failure while a call waits for
 its approval, or any other error: blocked.
 
-SessionStart starts the run's transcript tailer (tracekit.tailer), once per run: it records the model's tool uses and
-the user's prompts (as commitments) from the transcript, which no hook payload carries.
+Each run of a session gets one transcript tailer (tracekit.tailer) on the transcript SessionStart names: it records the
+model's tool uses and the user's prompts (as commitments) from the transcript, which no hook payload carries.
 
 System mode: the signer runs as its own user and the hook reaches it only through the socket the root-owned
 /etc/tracekit/client.json names (a TRACEKIT_SIGNER naming another is refused, and the call blocked); the signer
@@ -63,19 +63,20 @@ def _load(path):
             time.sleep(0.05)
 
 
-def _run(client, sid, register=True, send=None, tailer=None, **fields):
+def _run(client, sid, register=True, send=None, transcript=None, **fields):
     """(the session's run, registered on its first event; with `send`, the signer's reply to that event call, sent with
     the session's stream and next client_seq under the session lock so parallel hooks reach the signer in client_seq
-    order, and sent again on a new run when the signer has closed the stored one (idle)). `tailer`: the transcript to
-    start the run's tailer on, unless it has one."""
+    order, and sent again on a new run when the signer has closed the stored one (idle)). `transcript` (SessionStart):
+    kept in the session state; each run of the session gets a tailer on it."""
     path = _state(sid)
     with open(path[:-len(".json")] + ".lock", "a") as lk:   # parallel tool calls must not register two runs
         lock_file(lk)
         st = _load(path)
         if register and st is None:
             st = _register(client, path)
-        if tailer and st and st.get("tailer") != st["run_id"]:
-            _start_tailer(client, path, st, tailer)
+        if st and transcript:
+            st["transcript"] = transcript
+        _tail(client, path, st)
         if not (st and send):
             return st and RunHandle(client, st), None
         try:
@@ -83,39 +84,51 @@ def _run(client, sid, register=True, send=None, tailer=None, **fields):
         except RPCError as e:
             if not register or e.code not in ("run_closed", "unknown_run"):
                 raise
-            return _send(client, path, _register(client, path), send, fields)
+            st = _register(client, path, st.get("transcript"))
+            _tail(client, path, st)
+            return _send(client, path, st, send, fields)
 
 
-def _register(client, path):
+def _register(client, path, transcript=None):
     version = os.environ.get("CLAUDE_CODE_VERSION")
     out = client.register_run({"agent": {"name": AGENT, **({"version": version[:64]} if version else {})}})
     # lean: any process of the agent's uid can read and use this token (another uid cannot); binding runs to the
     # harness's processes (a root-owned harness helper) narrows that
     st = {"run_id": out["run_id"], "run_token": out["run_token"], "fail_modes": out.get("fail_modes") or {},
-          "stream": uuid.uuid4().hex, "seq": 0}
+          "stream": uuid.uuid4().hex, "seq": 0, **({"transcript": transcript} if transcript else {})}
     files.write_json(path, st)
     return st
 
 
-def _start_tailer(client, path, st, transcript):
-    """Start tracekit.tailer for the run, detached. System mode: through sudo as the tailer's own user (the root-owned
-    system config names it), with a token the signer issued to that user's uid for this run."""
-    if os.name == "nt":   # the tailer needs O_NOFOLLOW and uids: POSIX only
+def _tail(client, path, st):
+    """Start tracekit.tailer for the run, detached, unless it has one. System mode: through sudo as the tailer's own
+    user (the root-owned system config names it), with a token the signer issued to that user's uid for this run; with
+    no tailer installed, the signer records a tailer_lost gap for the run instead."""
+    if not (st and st.get("transcript")) or st.get("tailer") == st["run_id"] or os.name == "nt":   # POSIX only
         return
-    handle = {"run_id": st["run_id"], "run_token": st["run_token"], "path": transcript}
-    t = (system_config() or {}).get("tailer")
+    # lean: a tailer for a run registered after an idle close reads the transcript from its start, so that run repeats
+    # the earlier runs' exchanges; hand it the earlier tailer's offset if that matters
+    handle = {"run_id": st["run_id"], "run_token": st["run_token"], "path": st["transcript"]}
+    sc = system_config() or {}
+    t = sc.get("tailer")
+    # lean: a tailer that dies or is killed (the agent's uid can signal it, through sudo too) leaves no gap; have the
+    # signer expect a final report from each delegated tailer at run.final if that matters
+    argv = None
     if t:
-        # lean: this tailer cannot see SessionEnd (the session state is the agent's); it exits once a call finds the run
-        # final or after IDLE_S without a new line. A run-closed notice from the signer if idle tailers pile up
+        # this tailer cannot see SessionEnd (the session state is the agent's): it exits once a call finds the run
+        # final, or with a tailer_lost after tailer.IDLE_TAILER_S without a new line
         handle["run_token"] = RunHandle(client, st).call("delegate_run", identity=f"uid:{t['uid']}")["run_token"]
         argv = ["sudo", "-n", "-u", t["user"], t["python"], "-I", "-m", "tracekit.tailer"]
+    elif sc.get("signer"):   # system mode, but init could not give the tailer access
+        RunHandle(client, st).call("tailer_lost", reason="no transcript tailer is installed", offset=0)
     else:   # exits once SessionEnd removes the session state
         handle["until"] = path
         argv = [sys.executable, "-I", "-m", "tracekit.tailer"]
-    p = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                         start_new_session=True)
-    p.stdin.write(json.dumps(handle).encode())
-    p.stdin.close()
+    if argv:
+        p = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                             start_new_session=True)
+        p.stdin.write(json.dumps(handle).encode())
+        p.stdin.close()
     st["tailer"] = st["run_id"]
     files.write_json(path, st)
 
@@ -216,11 +229,11 @@ def _handle(client, p, name, sid, tid):
         for f in glob.glob(glob.escape(_state(sid)[:-len(".json")]) + "*"):
             os.remove(f)
         return 0
-    tailer = None
+    transcript = None
     if name == "SessionStart":
         _prune()
-        tailer = p.get("transcript_path") if isinstance(p.get("transcript_path"), str) else None
-    _run(client, sid, tailer=tailer)   # SessionStart, or any other first event of the session, registers the run
+        transcript = p.get("transcript_path") if isinstance(p.get("transcript_path"), str) else None
+    _run(client, sid, transcript=transcript)   # SessionStart, or any other first event of the session, registers the run
     return 0
 
 

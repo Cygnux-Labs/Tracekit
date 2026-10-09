@@ -1090,15 +1090,17 @@ def init_system_v2(target_user, approver=None, policy=None, project=None, no_ser
     tailer = _system_user(V2_TAILER_DARWIN if darwin else V2_TAILER, "/var/empty", darwin)
     why = _tailer_acl(owner, tailer.pw_name, darwin) or _tailer_sudo(owner, tailer)
     if why:
-        print(f"transcript tailer: {why}. It cannot read {target_user}'s transcripts, so each session records a "
+        print(f"transcript tailer: {why}. No tailer is set up, so each run of {target_user}'s sessions records a "
               "tailer_lost gap instead of their tool uses and prompts")
     sock = os.path.join(run_dir, "signer.sock")
     _write_root_file(V2_CONFIG, v2_signer_yaml(owner, approver.pw_uid, policy, sock, tailer.pw_uid).encode())
     settings = os.path.join(project or owner.pw_dir, ".claude", "settings.json") if hooks else None
-    sc = client.system_config() or {}   # a v1 system mode install keeps its own keys
+    sc = {k: v for k, v in (client.system_config() or {}).items() if k != "tailer"}   # v1 system mode keeps its keys
+    # no `tailer` key: the hook has the signer record a tailer_lost gap for each run instead of starting one
     _write_system_client_config(dict(sc, mode="system", signer=sock, fail_mode=sc.get("fail_mode", "closed"),
                                      hooks={"user": target_user, "settings": settings},
-                                     tailer={"user": tailer.pw_name, "uid": tailer.pw_uid, "python": OPT_PYTHON}))
+                                     **({} if why else {"tailer": {"user": tailer.pw_name, "uid": tailer.pw_uid,
+                                                                   "python": OPT_PYTHON}})))
     if not no_service:
         if darwin:
             plist = os.path.join(LAUNCHD_DIR, V2_LABEL + ".plist")
@@ -1131,8 +1133,9 @@ def uninstall_system_v2(purge=False):
         owner = None
     if h.get("settings") and os.path.exists(h["settings"]):
         install_hooks(h["settings"], uninstall=True, owner=owner, signer=sc.get("signer"))
-    if owner and sc.get("tailer"):
-        why = _tailer_acl(owner, sc["tailer"]["user"], darwin, grant=False)
+    users = [V2_USER_DARWIN, V2_TAILER_DARWIN] if darwin else [V2_USER, V2_TAILER]
+    if owner:   # also when init kept no `tailer` key: its ACL may have been set before the sudo rule failed
+        why = _tailer_acl(owner, users[1], darwin, grant=False)
         if why:
             print(f"transcript tailer: could not remove its ACL ({why})")
     if darwin:
@@ -1150,7 +1153,6 @@ def uninstall_system_v2(purge=False):
     else:
         removed += [client.SYSTEM_CONFIG, OPT]
     removed += [V2_CONFIG, TAILER_SUDOERS]
-    users = [V2_USER_DARWIN, V2_TAILER_DARWIN] if darwin else [V2_USER, V2_TAILER]
     if purge:
         removed.append(V2_DATA)
     for p in removed:
