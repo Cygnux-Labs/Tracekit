@@ -83,6 +83,7 @@ public key links all of a signer's checkpoints together.
 | Bundle checkpoint seq beyond the last record | **fail**: truncated |
 | Checkpoint signed by a key other than `signer.pub` | **fail**: "signature invalid or wrong key" (replayed checkpoint) |
 | Bundle ends between checkpoints while the witness shows the ledger continued | **fail**: truncated (re-export) |
+| Bundle ends at its own signed checkpoint after `run.end` that the witness does not hold, while the witness holds a later one | warn: "checkpoint not on the witness" (a missed publish) |
 | Witness holds checkpoints but none by the bundle's key | **fail**: bundle re-signed with another key |
 | No witness given, or the head isn't witnessed yet | warn (fails under `--strict`); with no `--key` either, the verdict says `UNANCHORED` |
 
