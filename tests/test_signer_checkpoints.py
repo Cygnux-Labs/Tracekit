@@ -126,11 +126,15 @@ class Reader(unittest.TestCase):
         self.assertEqual(r.checkpoint_latest(), (5, note))
 
     def test_note_replaced_while_a_reader_reads_it(self):
-        r, stop, seen = FileReader(self.root), threading.Event(), []
+        r, stop, seen, errors = FileReader(self.root), threading.Event(), [], []
 
         def read():
             while not stop.is_set():
-                seen.append(r.checkpoint_latest())
+                try:
+                    seen.append(r.checkpoint_latest())
+                except Exception as e:
+                    errors.append(e)
+                    return
         reader = threading.Thread(target=read)
         reader.start()
         try:
@@ -139,8 +143,23 @@ class Reader(unittest.TestCase):
         finally:
             stop.set()
             reader.join()
+        self.assertEqual(errors, [])
         self.assertEqual(r.checkpoint_latest()[0], 104)
         self.assertTrue(all(n is None or 5 <= n[0] <= 104 for n in seen))
+
+    def test_note_replace_retries_while_windows_denies_it(self):
+        real, denied = os.replace, []
+
+        def replace(src, dst):   # Windows: access denied while a reader still has dst open
+            if not denied:
+                denied.append(dst)
+                raise PermissionError(13, "Access is denied", dst)
+            return real(src, dst)
+        note = checkpoint.body("example.org/log", 5, self.store.tree.root()) + "\n"
+        with mock.patch.object(os, "name", "nt"), mock.patch.object(os, "replace", replace):
+            self.store.checkpoint_put(5, note)
+        self.assertEqual(len(denied), 1)
+        self.assertEqual(FileReader(self.root).checkpoint_latest(), (5, note))
 
     def test_note_is_written_after_its_records_are_synced(self):
         calls = []   # full syncs only: the ack-on-write background syncer may run meanwhile
