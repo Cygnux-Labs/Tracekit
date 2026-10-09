@@ -53,6 +53,7 @@ eval:
 	$(PY) eval/e3_policy.py
 	$(PY) eval/e4_seeded_faults.py
 	$(PY) eval/e6_findings.py
+	$(PY) eval/e10_reconcile.py
 
 eval-agents:
 	E5=1 $(PY) eval/e5_agents.py
