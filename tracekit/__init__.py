@@ -2,7 +2,7 @@
 
 Tracekit proves what its capture path recorded, and that it hasn't changed since it was
 signed and checkpointed. It does not prove intent, complete coverage, or that a reported
-result is real. See docs/threat-model.md.
+result is real. See docs/threat-model-laptop.md.
 """
 __version__ = "0.2.0rc1"
 

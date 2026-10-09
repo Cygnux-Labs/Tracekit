@@ -1,5 +1,9 @@
 # Stricter example policy: fail closed, and hold risky actions for human approval (C8).
-# Copy it, edit it, and point TRACEKIT_POLICY (or `tracekit init --policy`) at your copy.
+# Copy it and edit it, then:
+#   dev mode:    set TRACEKIT_POLICY=/path/to/your-copy.yaml in the environment the agent (and so its hooks) runs in.
+#   system mode: TRACEKIT_POLICY is ignored. Put a root-owned copy outside the agent's reach, set "policy" to its path
+#                in /etc/tracekit/client.json, then run `sudo tracekit migrate --system` to pin it and restart tracekitd.
+#                fail_mode comes from client.json there, not from this file.
 # Rules listed here are added to the default policy's deny and flag rules (`extends: default`).
 
 extends: default

@@ -21,7 +21,14 @@ await tk.end();
   call throws `TracekitDenied` and `fn` never runs. Pass the model's call id as `toolUseId` to link request and execution.
 - `instrumentOpenAI` (chat completions, Responses), `instrumentAnthropic` (messages): a signed request event before the
   call is sent, and a response event with model, finish reason, requested tool calls, token usage, error, status and
-  time to first chunk. Streams are recorded when they end, fail or are abandoned. The returned objects are unchanged.
+  time to first chunk. Streams are recorded when they end, fail or are abandoned: the SDK replaces the stream's async
+  iterator in place with a recording one; non-streamed responses come back as the provider SDK returned them. The
+  wrapped `create` is an async function, so it returns a plain Promise: helpers on the SDK's own promise object (such
+  as `.withResponse()`) are not available through it. A provider error is recorded and rethrown. The request event is
+  written before the call is sent: if the bridge reports an error or times out, that error is thrown and the call is not sent; if the
+  bridge has exited, `fail_mode: closed` throws `TracekitDenied` and `fail_mode: open` sends the call unrecorded with a
+  warning on stderr. A failure to record a call that already completed is written to stderr and counted in
+  `tk.recordFailures`; it never replaces the call's result.
 - `tracekitMiddleware(tk)`: `wrapLanguageModel({ model, middleware: tracekitMiddleware(tk) })` in the Vercel AI SDK
   (v4 and v5 result shapes).
 

@@ -6,15 +6,16 @@
 | Dev mode (`init --dev`, same-user signer) | supported | supported | supported (TCP + token) |
 | System mode (signer as a separate OS user) | supported | **experimental** | not available |
 | Caller attestation (who connected to the signer) | `SO_PEERCRED` | `LOCAL_PEERCRED` + `LOCAL_PEERPID` | none: events are labelled unattested |
-| Process-tree check for approvals | `/proc` | `ps(1)` | none: approvals refused outside system mode |
+| Process-tree check for approvals | `/proc` | `ps(1)` | none: approvals are refused |
+| Harness binding (`init --harness`) | system mode | not available | not available |
 | Managed Claude Code settings | `/etc/claude-code/` | `/Library/Application Support/ClaudeCode/` | not wired up |
 | Hooks via the Claude Code plugin | supported | supported | no (the wrapper is POSIX shell) |
 
 ## What "tested" means here
 
 The CI workflow runs the whole suite on Linux, macOS and Windows (Python 3.9, 3.12, 3.13). The macOS and Windows
-jobs are `continue-on-error`, so a failure there is visible but does not block a merge. The workflow has not run
-yet, because nothing has been pushed.
+jobs are `continue-on-error`, so a failure there is visible but does not block a merge. Two more Linux jobs block
+merges: the root-only tests, and E8 (insider attacks against a real system-mode signer, docs/evaluation.md).
 
 Tested locally:
 
