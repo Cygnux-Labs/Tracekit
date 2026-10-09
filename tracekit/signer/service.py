@@ -1,6 +1,7 @@
 """The v2 signer service: `SignerService` implements `SignerAPI` over the record log's single writer (pipeline.py).
 
     tracekit signer serve --config signer.yaml
+    tracekit signer serve --dev               # the same-user dev signer clients auto-spawn (decision S3)
     tracekit signer fsck  --config signer.yaml
 
 signer.yaml:
@@ -48,8 +49,10 @@ import datetime
 import hashlib
 import hmac
 import os
+import pathlib
 import secrets
 import signal
+import socket
 import sys
 import threading
 import time
@@ -62,6 +65,7 @@ from tracekit import __version__, crypto, yamlmini
 from tracekit.format.canon import StrictJSONError, canonical, event_hash, loads_strict
 from tracekit.format.records import RecordError, RecordSigner, verify_record
 from tracekit.identity.base import CallerIdentity
+from tracekit.locking import lock_file
 from tracekit.policy2 import compile as policy_compile
 from tracekit.policy2.engine import Engine
 from tracekit.signer import rpc_schema
@@ -72,6 +76,7 @@ from tracekit.signer.runtoken import RunTokens
 from tracekit.storage.base import ACK_ON_WRITE, StorageUnavailable
 from tracekit.storage.file import FileStorage, _mkdir
 from tracekit.storage.file import fsck as fsck_store
+from tracekit.transport import answering_hello, hello
 
 DEFAULT_POLICY = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "policy2", "packs", "dev.yaml")
 APPROVAL_TTL_S = 3600
@@ -131,12 +136,13 @@ def _process_identity():
 
 class SignerService:
     def __init__(self, data_dir, policy=None, identity=None, tenant="default", tenants=None, limits=Limits(),
-                 durability=ACK_ON_WRITE, witnesses=(), acknowledge_rollback=False, open_storage=None,
+                 durability=ACK_ON_WRITE, witnesses=(), acknowledge_rollback=False, open_storage=None, isolation=None,
                  multi_tenant_apps=(), migrators=(), analyzers=(), fail_modes=None, grace_s=GRACE_S, idle_s=IDLE_S):
         """`identity` answers the in-process SignerAPI calls (default: this process's uid); transports call
         handle_frame with the identity they established. `policy` is a policy2 Engine (default: load_policy()).
         `open_storage()` defaults to file storage in data_dir/store.
-        `multi_tenant_apps`, `migrators` and `analyzers` are identities ("scheme:subject")."""
+        `multi_tenant_apps`, `migrators` and `analyzers` are identities ("scheme:subject").
+        `isolation` fixes the signer_isolation label of every run (a dev signer: same-user)."""
         fail_modes = dict(fail_modes or FAIL_MODES)
         if not all(isinstance(k, str) and v in ("open", "closed") for k, v in fail_modes.items()):
             raise ValueError("fail_modes maps tool classes to open or closed")
@@ -156,7 +162,8 @@ class SignerService:
         except BaseException:
             storage.close()
             raise
-        self.policy, self.identity = policy or load_policy(), identity or _process_identity()
+        self.policy, self.isolation = policy or load_policy(), isolation
+        self.identity = identity or _process_identity()
         self.tenant, self.tenants = tenant, dict(tenants or {})
         self.multi_tenant_apps, self.migrators, self.analyzers = set(multi_tenant_apps), set(migrators), set(analyzers)
         self.fail_modes, self.grace_s, self.idle_s = fail_modes, grace_s, idle_s
@@ -424,7 +431,7 @@ class SignerService:
             top = {"tenant_attested": out["tenant_attested"], "principal_attested": False}
             if "principal" in req:
                 out["principal"] = top["principal"] = req["principal"]
-            data = {"agent": req["agent"], "signer_isolation": self._isolation(identity), "fail_modes": self.fail_modes,
+            data = {"agent": req["agent"], "signer_isolation": self.isolation or self._isolation(identity), "fail_modes": self.fail_modes,
                     "identity": {"scheme": identity.scheme, "subject": identity.subject[:256],
                                  "attested": identity.attested}}
             if "analyzes" in req:
@@ -718,24 +725,122 @@ def open_service(cfg, **kw):
 def serve(cfg, service):
     """Bind the configured transports for `service` (whose storage lock is already held) and start answering.
     Returns the servers; stop each with shutdown() and server_close()."""
-    servers = []
+    servers, handle = [], answering_hello(service.handle_frame, hello())
     if cfg.get("socket"):
         from tracekit.transport.unix import UnixServer
         try:
             os.unlink(cfg["socket"])   # a dead signer's socket: safe to remove, this process holds the storage lock
         except FileNotFoundError:
             pass
-        servers.append(UnixServer(cfg["socket"], service.handle_frame))
+        servers.append(UnixServer(cfg["socket"], handle))
     if cfg.get("tcp_endpoint"):
-        from tracekit.identity.token import DevToken
         from tracekit.transport.tcp_dev import TcpDevServer
-        token = DevToken("dev", REQUESTS, ttl_s=365 * 86400)
-        servers.append(TcpDevServer(cfg["tcp_endpoint"], token, service.handle_frame))
+        servers.append(TcpDevServer(cfg["tcp_endpoint"], _dev_token(), handle))
     if not servers:
         raise ValueError("configure socket and/or tcp_endpoint")
     for s in servers:
         threading.Thread(target=s.serve_forever, args=(0.2,), daemon=True).start()
     return servers
+
+
+def _dev_token():
+    from tracekit.identity.token import DevToken
+    return DevToken("dev", [*REQUESTS, "hello"], ttl_s=365 * 86400)
+
+
+def dev_data_dir():
+    """The dev signer's per-user data dir (keys and store), created 0700."""
+    if os.name == "nt":
+        d = os.path.join(os.environ["LOCALAPPDATA"], "tracekit")
+    elif sys.platform == "darwin":
+        d = os.path.expanduser("~/Library/Application Support/tracekit/data")
+    else:
+        d = os.path.join(os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share"), "tracekit")
+    os.makedirs(d, 0o700, exist_ok=True)
+    os.chmod(d, 0o700)
+    return d
+
+
+def serve_dev(runtime_dir, open_handler, proto=(rpc_schema.RPC_VERSION, rpc_schema.RPC_VERSION), version=__version__,
+              idle_s=900):
+    """Serve as the dev signer of `runtime_dir` (decision S3) until SIGTERM, or until `idle_s` seconds (0: never) pass
+    with no connection open. Takes signer.lock before anything else (gives up after 1 s) and holds it for life; then
+    `open_handler()` -> (handle_frame, close); then binds the socket (loopback TCP without Unix sockets) and publishes
+    endpoint.json; before returning, unpublishes both, then calls close(). Call it from the main thread; returns an
+    exit code."""
+    from tracekit.deploy import files
+    from tracekit.sdk import autospawn
+
+    lock = open(os.path.join(runtime_dir, autospawn.LOCK), "a")
+    deadline = time.monotonic() + 1
+    while True:
+        try:
+            lock_file(lock, blocking=False)
+            break
+        except OSError:
+            if time.monotonic() > deadline:
+                print("LOST: another dev signer holds signer.lock", file=sys.stderr)
+                return 1
+            time.sleep(0.05)
+    stop = threading.Event()
+    signal.signal(signal.SIGTERM, lambda *_: stop.set())
+    sock, endpoint = os.path.join(runtime_dir, autospawn.SOCK), os.path.join(runtime_dir, autospawn.ENDPOINT)
+    for p in (sock, endpoint):
+        pathlib.Path(p).unlink(missing_ok=True)
+    handle_frame, close = open_handler()
+    info = hello(proto, version)
+    handle = answering_hello(handle_frame, info)
+    if hasattr(socket, "AF_UNIX"):
+        from tracekit.transport.unix import UnixServer
+        server = UnixServer(sock, handle)
+        files.write_json(endpoint, info)
+    else:
+        # lean: the Windows transport follows S3 but no client speaks it yet (sdk/client.py connect); test it with one
+        from tracekit.transport.tcp_dev import TcpDevServer
+        server = TcpDevServer(endpoint, _dev_token(), handle, publish=info)
+    active, last, mutex = [0], [time.monotonic()], threading.Lock()
+
+    def finish_request(request, address, inner=server.finish_request):   # counts the open connections
+        with mutex:
+            active[0] += 1
+        try:
+            inner(request, address)
+        finally:
+            with mutex:
+                active[0] -= 1
+                last[0] = time.monotonic()
+    server.finish_request = finish_request
+    threading.Thread(target=server.serve_forever, args=(0.2,), daemon=True).start()
+    print(f"SERVING pid {os.getpid()}", file=sys.stderr, flush=True)
+    try:
+        while not stop.wait(0.1):
+            with mutex:
+                if idle_s and not active[0] and time.monotonic() - last[0] > idle_s:
+                    break
+    except KeyboardInterrupt:
+        pass
+    # lean: no v2 checkpointer yet (04-design §2.9), so there is no final checkpoint to write; write it here first
+    for p in (endpoint, sock):
+        pathlib.Path(p).unlink(missing_ok=True)
+    server.shutdown()
+    server.server_close()
+    close()
+    return 0
+
+
+def _serve_dev():
+    from tracekit.sdk.autospawn import runtime_dir
+
+    def open_handler():
+        service = SignerService(dev_data_dir(), isolation="same-user")
+        return service.handle_frame, service.close
+    try:
+        return serve_dev(runtime_dir(), open_handler, idle_s=float(os.environ.get("TRACEKIT_DEV_IDLE", 900)))
+    except BlockingIOError:
+        print(f"tracekit signer: another signer holds {dev_data_dir()}", file=sys.stderr)
+    except Exception as e:
+        print(f"tracekit signer: {e}", file=sys.stderr)
+    return 1
 
 
 def fsck(data_dir):
@@ -761,9 +866,14 @@ def fsck(data_dir):
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="tracekit signer", description="the v2 signer service")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    sub.add_parser("serve", help="run the signer in the foreground").add_argument("--config", required=True)
+    mode = sub.add_parser("serve", help="run the signer in the foreground").add_mutually_exclusive_group(required=True)
+    mode.add_argument("--config")
+    mode.add_argument("--dev", action="store_true",
+                      help="the same-user dev signer of the runtime dir ($TRACEKIT_RUNTIME_DIR); clients start it")
     sub.add_parser("fsck", help="check every record of the store").add_argument("--config", required=True)
     a = ap.parse_args(argv)
+    if a.cmd == "serve" and a.dev:
+        return _serve_dev()
     try:
         cfg = load_config(a.config)
     except (OSError, ValueError) as e:
