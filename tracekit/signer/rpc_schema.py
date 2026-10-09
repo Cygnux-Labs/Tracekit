@@ -1,4 +1,4 @@
-"""The signer RPC contract, version 1: one JSON Schema per request and response, the error shape, and `SignerAPI`.
+"""The signer RPC contract, version 3: one JSON Schema per request and response, the error shape, and `SignerAPI`.
 
 Frozen: a change to any schema here is a new RPC_VERSION. The caller's identity comes from the transport (peer
 credentials, token, mTLS), never from a request field. Calls that change state carry `request_id`, scoped to that
@@ -12,7 +12,7 @@ from typing import Protocol
 from tracekit.format.canon import MAX_SAFE_INT
 from tracekit.schema import _check
 
-RPC_VERSION = 2
+RPC_VERSION = 3
 MAX_RAW_ARGS = 1 << 20   # characters of a raw arguments string
 
 ERROR_CODES = [
