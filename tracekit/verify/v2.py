@@ -5,13 +5,17 @@ Trust comes only from the verifier's own pinned config (JSON):
     {"logs": ["<log vkey>", ...],                         Ed25519 (0x01) log keys; the key name is the origin
      "witnesses": [{"vkey": "<cosigner vkey>", "class": "public|customer|tracekit|operator"}, ...],
      "algs": ["ed25519"],                                 record signature algorithms accepted
-     "witnesses_required": 0}                             pinned cosignatures a checkpoint must carry
+     "witnesses_required": 0,                             pinned cosignatures a checkpoint must carry
+     "rekor": {"trusted_root": {...}, "publishing_key": "<base64 SPKI>", "class": "public"}}   optional: a Sigstore
+                                                          trusted_root and the signer's P-256 Rekor publishing key
 
 Integrity VERIFIED needs: a checkpoint note signed by the pinned log key of its origin (and cosigned by the required
-number of pinned witnesses); every record signed with an allowed algorithm by a key that the log declared in a
-signer.epoch record before it and had not retired (key.retire) by then; schema-valid events; one run's chain, contiguous
-from run_seq 0 to a run.final record; the run's first and last records and every key record included in the
-checkpointed tree. A run without run.final verifies only to its head. The bundle's manifest is an index, never trusted.
+number of pinned witnesses); with `rekor` pinned, the checkpoint's Rekor anchor (rekor/, tsa/) when the bundle has one
+(tracekit.anchor.rekor2: an anchor that does not verify fails the bundle; without `rekor` it is ignored); every record
+signed with an allowed algorithm by a key that the log declared in a signer.epoch record before it and had not retired
+(key.retire) by then; schema-valid events; one run's chain, contiguous from run_seq 0 to a run.final record; the run's
+first and last records and every key record included in the checkpointed tree. A run without run.final verifies only
+to its head. The bundle's manifest is an index, never trusted.
 A run with any self-approval (dev mode: the approver was the requester) is reported `approvals: self`, assurance dev.
 Approvals answered under the break-glass role are listed, as a warning.
 A tool call that ran against a deny, or an ask with no consumed approval, is signed by the signer as a capture.gap
@@ -96,7 +100,11 @@ def read_zip(path):
 def load_trust(path):
     with open(path, "rb") as f:
         t = loads_strict(f.read(MAX_LINE))
-    ok = (isinstance(t, dict) and set(t) <= {"logs", "witnesses", "algs", "witnesses_required"}
+    r = t.get("rekor", {}) if isinstance(t, dict) else None
+    ok = (isinstance(t, dict) and set(t) <= {"logs", "witnesses", "algs", "witnesses_required", "rekor"}
+          and isinstance(r, dict) and (not r or set(r) == {"trusted_root", "publishing_key", "class"}
+                                       and isinstance(r["trusted_root"], dict) and isinstance(r["publishing_key"], str)
+                                       and r["class"] in CLASSES)
           and isinstance(t.get("logs"), list) and t["logs"] and all(isinstance(k, str) for k in t["logs"])
           and isinstance(t.get("witnesses", []), list)
           and all(isinstance(w, dict) and set(w) == {"vkey", "class"} and isinstance(w["vkey"], str)
@@ -104,7 +112,7 @@ def load_trust(path):
           and isinstance(t.get("algs"), list) and t["algs"] and all(isinstance(a, str) for a in t["algs"])
           and type(t.get("witnesses_required", 0)) is int and t.get("witnesses_required", 0) >= 0)
     if not ok:
-        raise ValueError(f"{path}: not a v2 trust config (logs, witnesses, algs, witnesses_required)")
+        raise ValueError(f"{path}: not a v2 trust config (logs, witnesses, algs, witnesses_required, rekor)")
     for k in t["logs"] + [w["vkey"] for w in t.get("witnesses", [])]:
         checkpoint.parse_vkey(k)
     return {"witnesses": [], "witnesses_required": 0, **t}
@@ -177,6 +185,7 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key):
     rep.check("checkpoint", size == proofs["tree_size"], f"{origin} at tree size {size}, signed by its pinned log key")
     rep.check("witness quorum", len(cosigs) >= trust["witnesses_required"],
               f"{len(cosigs)} pinned cosignature(s), {trust['witnesses_required']} required")
+    anchors = _anchor(rep, files, trust, files[name], origin, size)
 
     def included(record):
         seq = record["event"]["seq"]
@@ -287,7 +296,8 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key):
     if against:
         rep.check("policy", False, f"{len(against)} tool call(s) ran against a deny or an unapproved ask", against[:20],
                   warn=True)
-    rep.assurance = (_assurance(origin, cosigs, witnesses, trust, {r["alg"] for r in every + key_records}, self_approved)
+    rep.assurance = (_assurance(origin, cosigs, witnesses, trust, {r["alg"] for r in every + key_records}, self_approved,
+                                anchors)
                      + ("; key retirements not proven complete" if proven_to < relied else ""))
     glass = [r["event"] for r in every if r["event"].get("type") == "approval"
              and r["event"]["data"].get("break_glass") is True]
@@ -417,17 +427,43 @@ def _bridge(rep, key_records, v1_ledger, v1_key):
                                              "in its key retirement", problems[:20])
 
 
-def _assurance(origin, cosigs, witnesses, trust, algs, self_approved=False):
-    """dev: no pinned witness cosigned, or a self-approval in the run; local: only operator-run witnesses; witnessed:
-    enough independent ones."""
-    independent = [k for k, _ in cosigs if witnesses[k] != "operator"]
+def _anchor(rep, files, trust, note, origin, size):
+    """[(Rekor log, class, time)] of the checkpoint's anchor, checked when the trust config pins Rekor."""
+    pinned, tle = trust.get("rekor"), files.get(f"rekor/{size}.json")
+    if not pinned or tle is None:
+        return []
+    from tracekit.anchor import rekor2
+    from tracekit.tlog_witness import log_signed
+    try:
+        signed = []
+        for k in trust["logs"]:
+            if checkpoint.parse_vkey(k)[0] == origin:
+                try:
+                    signed.append(log_signed(note.decode("utf-8"), k).encode("utf-8"))
+                except ValueError:   # another pinned key of the origin
+                    pass
+        at, log = rekor2.verify({"rekor": loads_strict(tle), "tsa": base64.b64encode(files.get(f"tsa/{size}.tsr", b""))
+                                 .decode("ascii")}, signed[0], base64.b64decode(pinned["publishing_key"]),
+                                pinned["trusted_root"])
+    except (ValueError, IndexError) as e:
+        rep.check("rekor anchor", False, f"{type(e).__name__}: {e}")
+        return []
+    rep.check("rekor anchor", True, f"checkpoint in {log}, timestamped {at:%Y-%m-%dT%H:%M:%SZ} by a pinned TSA")
+    return [(log, pinned["class"], at)]
+
+
+def _assurance(origin, cosigs, witnesses, trust, algs, self_approved=False, anchors=()):
+    """dev: no pinned witness cosigned or anchor verified, or a self-approval in the run; local: only operator-run
+    ones; witnessed: enough independent ones (a pinned Rekor anchor counts as one, unless classed operator)."""
+    independent = [k for k, _ in cosigs if witnesses[k] != "operator"] + [a for a in anchors if a[1] != "operator"]
     level = ("dev" if self_approved else "witnessed" if len(independent) >= max(1, trust["witnesses_required"])
-             else "local" if cosigs else "dev")
-    anchors = ", ".join(f"{k.split('+')[0]} ({witnesses[k]}) at "
+             else "local" if cosigs or anchors else "dev")
+    cosigned = ", ".join(f"{k.split('+')[0]} ({witnesses[k]}) at "
                         f"{datetime.datetime.fromtimestamp(ts, datetime.timezone.utc):%Y-%m-%dT%H:%M:%SZ}"
                         for k, ts in sorted(cosigs, key=lambda c: c[1]))
     return (f"{level}; records {'+'.join(sorted(algs))}; checkpoint ed25519 ({origin})"
-            + (f"; cosigned ed25519 by {anchors}" if anchors else "; no witness cosignature")
+            + (f"; cosigned ed25519 by {cosigned}" if cosigned else "; no witness cosignature")
+            + "".join(f"; anchored in Rekor {log} ({cls}) at {at:%Y-%m-%dT%H:%M:%SZ}" for log, cls, at in anchors)
             + ("; approvals: self" if self_approved else ""))
 
 

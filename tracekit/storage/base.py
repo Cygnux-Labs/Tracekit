@@ -90,6 +90,14 @@ class Storage:
     def witness_queue_put(self, state):
         raise NotImplementedError
 
+    def anchor_put(self, size, anchor):
+        """Store the Rekor anchor (a JSON object with the anchored "note") of the record tree note at `size`."""
+        raise NotImplementedError
+
+    def anchors(self):
+        """Every stored anchor, {"size", **anchor}, oldest first; the last one stored for each size."""
+        raise NotImplementedError
+
     def tiles_get(self, tree, level, index, width):
         raise NotImplementedError
 
