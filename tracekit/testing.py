@@ -15,6 +15,7 @@ import hashlib
 import hmac
 import json
 import os
+import pathlib
 import signal
 import sys
 import threading
@@ -241,7 +242,8 @@ def serve_fake(runtime_dir, signer=None, proto=(rpc_schema.RPC_VERSION, rpc_sche
                 return 1
             time.sleep(0.05)
     sock, endpoint = os.path.join(runtime_dir, autospawn.SOCK), os.path.join(runtime_dir, autospawn.ENDPOINT)
-    autospawn.unlink_missing_ok(sock, endpoint)
+    for p in (sock, endpoint):
+        pathlib.Path(p).unlink(missing_ok=True)
     signer, mutex, last = signer or FakeSigner(), threading.Lock(), [time.monotonic()]
     hello = {"proto": list(proto), "version": version, "pid": os.getpid()}
 
@@ -264,7 +266,8 @@ def serve_fake(runtime_dir, signer=None, proto=(rpc_schema.RPC_VERSION, rpc_sche
     while not stop.wait(0.1):
         if idle_s and time.monotonic() - last[0] > idle_s:
             break
-    autospawn.unlink_missing_ok(endpoint, sock)
+    for p in (endpoint, sock):
+        pathlib.Path(p).unlink(missing_ok=True)
     server.shutdown()
     server.server_close()
     return 0

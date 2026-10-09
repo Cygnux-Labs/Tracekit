@@ -87,7 +87,7 @@ def main(argv=None):
     sub.add_parser("status", help="hooks, signer, witnesses, policy, fail mode, capture sources")
     p = sub.add_parser("up", help="find or start the same-user v2 dev signer")
     p.add_argument("--wait", action="store_true", help="return once it answers")
-    p.add_argument("--json", action="store_true", help="print its hello as JSON")
+    p.add_argument("--json", action="store_true", help="wait, then print its hello as JSON")
     p.add_argument("--replace", action="store_true", help="stop the running dev signer first, even an incompatible one")
     sub.add_parser("down", help="stop the same-user v2 dev signer")
     sub.add_parser("doctor", help="system mode: check the signer and policy run from files the agent cannot modify")
@@ -284,7 +284,7 @@ def _run(a):
         from .sdk import autospawn
         if a.replace:
             autospawn.down()
-        conn = autospawn.ensure(wait=a.wait)
+        conn = autospawn.ensure(wait=a.wait or a.json)
         hello = conn and conn[2]
         if conn:
             conn[0].close()

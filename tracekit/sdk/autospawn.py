@@ -10,6 +10,7 @@ Off in system mode and when TRACEKIT_SIGNER is set: an agent must not be able to
 """
 import json
 import os
+import pathlib
 import shlex
 import signal
 import stat
@@ -66,14 +67,6 @@ def _try(sock):
         return None
 
 
-def unlink_missing_ok(*paths):
-    for p in paths:
-        try:
-            os.unlink(p)
-        except FileNotFoundError:
-            pass
-
-
 def _pid(d):
     try:
         with open(os.path.join(d, ENDPOINT)) as f:
@@ -84,6 +77,7 @@ def _pid(d):
 
 def spawn(d):
     """Start a detached dev signer for runtime dir `d`: $TRACEKIT_DEV_SIGNER_CMD, else `tracekit signer serve --dev`."""
+    # lean: auto-spawn target overridable for tests until `tracekit signer serve` lands; drop or restrict to tests then
     cmd = os.environ.get("TRACEKIT_DEV_SIGNER_CMD")
     argv = shlex.split(cmd) if cmd else SIGNER_ARGV
     env = {k: v for k, v in os.environ.items() if k in _ENV or k.startswith(("LC_", "TRACEKIT_"))}
@@ -112,7 +106,8 @@ def ensure(wait=True, timeout=10):
             return conn
         p = None
         if not _held(lock):   # nothing alive: whatever is left belongs to a dead signer
-            unlink_missing_ok(sock, os.path.join(d, ENDPOINT))
+            for f in (sock, os.path.join(d, ENDPOINT)):
+                pathlib.Path(f).unlink(missing_ok=True)
             p = spawn(d)
             if not wait:
                 return None
@@ -154,7 +149,7 @@ def status():
     try:
         path = path or os.path.join(runtime_dir(), SOCK)
         sock, _, hello = connect(path)
-    except (SignerUnavailable, Incompatible) as e:
+    except (SignerUnavailable, Incompatible, OSError) as e:
         return {"socket": path, "running": isinstance(e, Incompatible), "error": str(e)}
     sock.close()
     return {"socket": path, "running": True, **hello}
