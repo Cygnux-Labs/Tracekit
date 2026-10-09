@@ -36,6 +36,7 @@ demo deny rule; any identity may answer an approval and self-approval is labelle
 import argparse
 import datetime
 import hashlib
+import json
 import os
 import secrets
 import signal
@@ -107,10 +108,11 @@ def _process_identity():
 class SignerService:
     def __init__(self, data_dir, rule=demo_rule, identity=None, tenant="default", tenants=None, limits=Limits(),
                  durability=ACK_ON_WRITE, witnesses=(), acknowledge_rollback=False, open_storage=None,
-                 multi_tenant_apps=(), migrators=(), analyzers=(), fail_modes=None, grace_s=GRACE_S, idle_s=IDLE_S):
+                 multi_tenant_apps=(), migrators=(), analyzers=(), fail_modes=None, grace_s=GRACE_S, idle_s=IDLE_S,
+                 bridge=None):
         """`identity` answers the in-process SignerAPI calls (default: this process's uid); transports call
         handle_frame with the identity they established. `open_storage()` defaults to file storage in data_dir/store.
-        `multi_tenant_apps`, `migrators` and `analyzers` are identities ("scheme:subject")."""
+        `multi_tenant_apps`, `migrators` and `analyzers` are identities ("scheme:subject"). `bridge`: see RecordLog."""
         fail_modes = dict(fail_modes or FAIL_MODES)
         if not all(isinstance(k, str) and v in ("open", "closed") for k, v in fail_modes.items()):
             raise ValueError("fail_modes maps tool classes to open or closed")
@@ -124,7 +126,7 @@ class SignerService:
             self.tokens = RunTokens(_secret(os.path.join(keys, "run_token.key"), lambda: os.urandom(32)))
             self.quotas = Quotas(limits)
             salt = _secret(os.path.join(keys, "registry_salt.key"), lambda: os.urandom(32))
-            self.log = RecordLog(storage, open_storage, sign, self.quotas, salt)
+            self.log = RecordLog(storage, open_storage, sign, self.quotas, salt, bridge)
         except BaseException:
             storage.close()
             raise
@@ -533,12 +535,27 @@ def main(argv=None):
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("serve", help="run the signer in the foreground").add_argument("--config", required=True)
     sub.add_parser("fsck", help="check every record of the store").add_argument("--config", required=True)
+    p = sub.add_parser("bridge", help="continue a v1 ledger in this signer's log and destroy the v1 key")
+    p.add_argument("--v1-home", required=True)
+    g = p.add_mutually_exclusive_group(required=True)
+    g.add_argument("--config")
+    g.add_argument("--dev", action="store_true", help="the same-user dev signer's data dir")
     a = ap.parse_args(argv)
+    from tracekit.signer import format_bridge
     try:
-        cfg = load_config(a.config)
+        cfg = {"data_dir": format_bridge.DEV_DATA_DIR} if getattr(a, "dev", False) else load_config(a.config)
     except (OSError, ValueError) as e:
         print(f"tracekit signer: {e}", file=sys.stderr)
         return 2
+    if a.cmd == "bridge":
+        # lean: run by hand while v1 hooks still sign with the v1 key; run the bridge on first v2 start once the hook
+        # speaks the RPC (M1a-14)
+        try:
+            print(json.dumps(format_bridge.bridge(a.v1_home, cfg["data_dir"])))
+        except (OSError, format_bridge.BridgeError) as e:
+            print(f"tracekit signer bridge: {e}", file=sys.stderr)
+            return 1
+        return 0
     if a.cmd == "fsck":
         problems = fsck(cfg["data_dir"])
         for p in problems:

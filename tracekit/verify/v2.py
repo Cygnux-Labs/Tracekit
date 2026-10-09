@@ -11,7 +11,13 @@ Integrity VERIFIED needs: a checkpoint note signed by the pinned log key of its 
 number of pinned witnesses); every record signed with an allowed algorithm by a key that the log declared in a
 signer.epoch record before it and had not retired (key.retire) by then; schema-valid events; one run's chain, contiguous
 from run_seq 0 to a run.final record; the run's first and last records and every key record included in the
-checkpointed tree. A run without run.final verifies only to its head. The bundle's manifest is an index, never trusted."""
+checkpointed tree. A run without run.final verifies only to its head. The bundle's manifest is an index, never trusted.
+
+Format bridge (04-design §1.9): when the log's first record, signer.epoch, has `bridge`, the v1 ledger it continues can
+be checked too (verify(..., v1_ledger, v1_key)): its chain verifies by v1 rules up to `v1_last_seq`, that last record
+has hash `v1_head` and is the retirement of key `v1_kid`, and no v1 record follows it. The frozen v1 verifier sees the
+bridge's two records as ordinary signer capture.gap events (a `capture gaps` warning) and cannot tell a v1 record
+appended after them with a copy of the retired key from any other: only this check reports it."""
 import base64
 import datetime
 import hashlib
@@ -20,13 +26,17 @@ import sys
 import zipfile
 
 from tracekit import __version__, crypto
-from tracekit.bundle import EXIT_BAD, EXIT_FAIL, EXIT_OK, Report
+from tracekit.bundle import EXIT_BAD, EXIT_FAIL, EXIT_OK, Report, _load_trusted_key
 from tracekit.bundle_v2 import FORMAT, KEY_TYPES
+from tracekit.core import GENESIS
+from tracekit.core import event_hash as v1_event_hash
 from tracekit.format import checkpoint
 from tracekit.format.canon import loads_strict
 from tracekit.format.records import RecordError, verify_record
+from tracekit.ledger import read_records, verify_record_sig
 from tracekit.merkle import leaf_hash, verify_inclusion
 from tracekit.schema import V2, validate
+from tracekit.signer.format_bridge import retire_data
 from tracekit.storage.base import ZERO_HASH
 
 MAX_ENTRIES = 10_000
@@ -105,8 +115,9 @@ def _version(v):
     return tuple(int(x) for x in re.findall(r"\d+", v)[:3])
 
 
-def verify(path, trust_path):
-    """Verify a v2 bundle against the pinned trust config at `trust_path`. Never raises on a malformed bundle."""
+def verify(path, trust_path, v1_ledger=None, v1_key=None):
+    """Verify a v2 bundle against the pinned trust config at `trust_path`, and with `v1_ledger` (a v1 ledger.jsonl) and
+    `v1_key` (its signer.pub) the format bridge into it. Never raises on a malformed bundle."""
     rep = Report()
     rep.integrity, rep.assurance = "UNUSABLE BUNDLE", "none"
     try:
@@ -128,7 +139,7 @@ def verify(path, trust_path):
         rep.check("bundle readable", False, f"cannot read bundle: {type(e).__name__}: {e}")
         return rep, EXIT_BAD
     try:
-        _verify(rep, manifest, files, trust)
+        _verify(rep, manifest, files, trust, v1_ledger, v1_key)
     except Exception as e:
         rep.check("bundle structure", False, "", [f"malformed and could not be fully checked: {type(e).__name__}: {e}"])
     if rep.failures:
@@ -136,7 +147,7 @@ def verify(path, trust_path):
     return rep, EXIT_FAIL if rep.failures else EXIT_OK
 
 
-def _verify(rep, manifest, files, trust):
+def _verify(rep, manifest, files, trust, v1_ledger, v1_key):
     listed = manifest.get("files")
     rep.check("manifest", isinstance(listed, dict) and listed == {n: hashlib.sha256(b).hexdigest()
                                                                   for n, b in files.items()},
@@ -207,6 +218,7 @@ def _verify(rep, manifest, files, trust):
     # lean: a withheld key.retire can't be noticed here; the registry log's key.retire leaves prove the full set (M1b)
     rep.check("keys", bool(timeline) and not key_problems,
               f"{len(timeline)} record key(s) from {len(key_records)} key record(s)", key_problems)
+    _bridge(rep, key_records, v1_ledger, v1_key)
 
     # the run
     runs = [n for n in files if n.startswith("runs/")]
@@ -234,6 +246,43 @@ def _verify(rep, manifest, files, trust):
     n = records[-1]["event"].get("run_seq")
     rep.integrity = "VERIFIED" if records[-1]["event"].get("type") == "run.final" else f"VERIFIED TO HEAD {n} (open)"
     rep.assurance = _assurance(origin, cosigs, witnesses, trust, {r["alg"] for r in records})
+
+
+def _bridge(rep, key_records, v1_ledger, v1_key):
+    bridges = [r["event"] for r in key_records if r["event"]["type"] == "signer.epoch" and "bridge" in r["event"]["data"]]
+    b = bridges[0]["data"]["bridge"] if bridges else None
+    if v1_ledger is None:
+        if b:
+            rep.notes.append(f"this log continues the v1 ledger of key {b['v1_kid']}; pass the v1 ledger and its "
+                             "signer.pub to check the format bridge")
+        return
+    if b is None or bridges[0]["seq"] != 0 or len(bridges) > 1:
+        rep.check("format bridge", False, "", ["the log does not start with one signer.epoch that bridges a v1 ledger"])
+        return
+    pub, kid = _load_trusted_key(v1_key)
+    problems = [] if kid == b["v1_kid"] else [f"the v1 key is {kid}, the bridge retires {b['v1_kid']}"]
+    prev, expect, last = GENESIS, 0, None   # last: (seq, hash, data) of the last v1 record up to the bridge
+    for _, r, _ in read_records(v1_ledger):
+        if not isinstance(r, dict):
+            continue   # a torn line the v1 ledger set aside
+        e = r.get("event") or {}
+        seq = r.get("seq") if r.get("elided") else e.get("seq")
+        if not isinstance(seq, int) or seq > b["v1_last_seq"]:
+            problems.append(f"seq {seq!r}: v1 record after format bridge")
+            continue
+        if not r.get("elided"):
+            if v1_event_hash(e) != r.get("hash"):
+                problems.append(f"v1 seq {seq}: hash mismatch")
+            problems.extend(f"v1 seq {seq}: {x}" for x in validate(e))
+        if seq != expect or (r.get("prev_hash") if r.get("elided") else e.get("prev_hash")) != prev:
+            problems.append(f"v1 seq {seq}: does not continue the chain")
+        if r.get("kid") != b["v1_kid"] or not verify_record_sig(r, pub):
+            problems.append(f"v1 seq {seq}: signature invalid")
+        prev, expect, last = r.get("hash"), seq + 1, (seq, r.get("hash"), e.get("data"))
+    if last != (b["v1_last_seq"], b["v1_head"], retire_data(b["v1_kid"], b["v1_last_seq"])):
+        problems.append(f"the v1 ledger does not end at seq {b['v1_last_seq']} in the bridge's key retirement")
+    rep.check("format bridge", not problems, f"v1 ledger of {b['v1_kid']} verifies to seq {b['v1_last_seq']} and ends "
+                                             "in its key retirement", problems[:20])
 
 
 def _assurance(origin, cosigs, witnesses, trust, algs):
