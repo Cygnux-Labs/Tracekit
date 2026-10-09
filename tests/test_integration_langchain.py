@@ -272,7 +272,13 @@ class ApprovalAcrossProcesses(unittest.TestCase):
     def test_resume_without_the_approval_id_is_still_refused(self):
         out = self.resume({"decision": "approve"})   # the app claims approval; the signer has none
         self.assertEqual(out["ran"], [])
-        self.assertIn("R-PAY", out["tool_message"])
+        self.assertIn("TK-APPROVAL-REQUESTED", out["tool_message"])
+
+    def test_another_approval_id_in_the_resume_value_is_refused(self):
+        self.decide()
+        out = self.resume({"approval_id": "apr-9999"})
+        self.assertEqual(out["ran"], [])
+        self.assertIn("TK-APPROVAL-UNBOUND", out["tool_message"])
 
 
 if __name__ == "__main__":

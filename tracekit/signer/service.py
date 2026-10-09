@@ -35,8 +35,14 @@ written by the signer only: no request can carry an event type, source, isolatio
 
 Policy (04-design §4): the signer classifies the tool and decides with policy2; every decide gets a fresh decision_id
 that one `complete` with the same arguments consumes. Only deny and ask are memoised, per (tool_call_id, attempt).
-Approvals and checkpoints are still stubs: any identity may answer an approval and self-approval is labelled;
-`checkpoint_nudge` schedules nothing.
+
+Approvals (04-design §5, decision S6): one per (tenant, run, tool_call_id, attempt), under a random id. The
+approval.request record binds it to the call (binding_digest); `approval_consume` lets the call run once, only with the
+approved arguments, and records every refusal. Approvals and the index are rebuilt from the log on start; the
+signer's copy of a pending call's arguments (what the approver is shown) is kept encrypted under keys/approval_args.key
+and deleted once the approval is consumed, rejected or expired. An approval expires after APPROVAL_TTL_S, or when its
+run ends. Dev stubs: any identity of the run's tenant may answer an approval, and a self-approval is labelled
+(`self_approved`); `checkpoint_nudge` schedules nothing.
 """
 import argparse
 import datetime
@@ -52,6 +58,8 @@ import threading
 import time
 
 import rfc8785
+from cryptography.exceptions import InvalidTag
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from tracekit import __version__, crypto, yamlmini
 from tracekit.format.canon import StrictJSONError, canonical, event_hash, loads_strict
@@ -61,7 +69,7 @@ from tracekit.locking import lock_file
 from tracekit.policy2 import compile as policy_compile
 from tracekit.policy2.engine import Engine
 from tracekit.signer import rpc_schema
-from tracekit.signer.pipeline import SIGNER_RUN, RecordLog, subject
+from tracekit.signer.pipeline import SIGNER_RUN, RecordLog, approval, subject
 from tracekit.signer.quotas import Limits, Quotas
 from tracekit.signer.rpc_schema import REQUESTS, RPCError
 from tracekit.signer.runtoken import RunTokens
@@ -75,6 +83,8 @@ APPROVAL_TTL_S = 3600
 DECISION_TTL_S = 300
 REFUSAL_WINDOW_S = 60
 STRICTNESS = ("allow", "flag", "ask", "deny")
+LIVE = ("requested", "approved")   # approval states that may still lead to a consume
+LIST_MAX = 1000
 TICK_S = 1.0
 GRACE_S, IDLE_S = 5.0, 3600.0
 FAIL_MODES = {"default": "closed"}
@@ -99,6 +109,15 @@ def _ref(value):
     return {"hash": "sha256:" + hashlib.sha256(c).hexdigest(), "size": len(c), "redacted": False}
 
 
+def _write_new(path, data):
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), 0o600)
+    try:
+        os.write(fd, data)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 def _secret(path, make):
     """The secret in `path`, created (0600) on first use. Called under the storage lock, so never by two signers."""
     try:
@@ -107,12 +126,7 @@ def _secret(path, make):
     except FileNotFoundError:
         pass
     data = make()
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0), 0o600)
-    try:
-        os.write(fd, data)
-        os.fsync(fd)
-    finally:
-        os.close(fd)
+    _write_new(path, data)
     return data
 
 
@@ -141,6 +155,7 @@ class SignerService:
             sign = RecordSigner(_secret(os.path.join(keys, "record.key"), lambda: crypto.generate()[0]))
             self.tokens = RunTokens(_secret(os.path.join(keys, "run_token.key"), lambda: os.urandom(32)))
             self._salt_key = _secret(os.path.join(keys, "args_salt.key"), lambda: os.urandom(32))
+            self._args_key = AESGCM(_secret(os.path.join(keys, "approval_args.key"), lambda: os.urandom(32)))
             self.quotas = Quotas(limits)
             salt = _secret(os.path.join(keys, "registry_salt.key"), lambda: os.urandom(32))
             self.log = RecordLog(storage, open_storage, sign, self.quotas, salt)
@@ -153,11 +168,16 @@ class SignerService:
         self.multi_tenant_apps, self.migrators, self.analyzers = set(multi_tenant_apps), set(migrators), set(analyzers)
         self.fail_modes, self.grace_s, self.idle_s = fail_modes, grace_s, idle_s
         self._swept = time.monotonic()
-        self._approvals = {}   # approval_id -> {"run_key", "tool_call_id", "decision_id", "commitment", "state", ...}
+        self._args_dir = os.path.join(data_dir, "approvals")   # approval_id -> the encrypted args of a live approval
         self._cond = threading.Condition()
         self._refusals, self._refusals_lock = {}, threading.Lock()
         self._stop = threading.Event()
         try:
+            _mkdir(self._args_dir)
+            os.chmod(self._args_dir, 0o700)
+            for aid in os.listdir(self._args_dir):   # left by a crash, or by an approval_request that was rolled back
+                if self.log.approvals.get(aid, {}).get("state") not in LIVE:
+                    self._drop_args(aid)
             self._check_witnesses(witnesses, acknowledge_rollback)
         except BaseException:
             self.log.close()
@@ -222,27 +242,47 @@ class SignerService:
                 flushed = time.monotonic()
                 self.flush_refusals()
 
-    def sweep(self, now=None):
-        """Close idle runs and write run.final for runs whose grace window has passed. `now`: a monotonic time."""
+    def sweep(self, now=None, wall=None):
+        """Close idle runs, write run.final for runs whose grace window has passed and expire approvals.
+        `now`: a monotonic time; `wall`: a time.time() for approval expiry."""
         def fn(tx):
             t = time.monotonic() if now is None else now
             paused = max(0.0, t - self._swept)
             self._swept = max(self._swept, t)
-            pending = {a["run_key"] for a in self._approvals.values() if a["state"] == "requested"}
-            # lean: visits every run on each tick, O(runs); keep a deadline heap once a signer holds ~100k runs
+            expired, live, deadline = [], {}, _iso(time.time() if wall is None else wall)
+            # lean: visits every approval and run on each tick; keep deadline heaps once a signer holds ~100k of them
+            for aid, a in self.log.approvals.items():
+                if a["state"] in LIVE:
+                    live.setdefault(a["run_key"], []).append(aid)
+
+            def expire(run, aids):
+                for aid in aids:
+                    tx.set(self.log.approvals[aid], "state", "expired")
+                    tx.emit(run, "approval.expired", {"approval_id": aid}, source="signer")
+                    expired.append(aid)
             for key, run in self.log.runs.items():
                 if key == SIGNER_RUN or run["final"]:
                     continue
+                if run["closed"] and t - run["closing_at"] >= self.grace_s:
+                    expire(run, live.get(key, ()))   # nothing can consume them once the run is final
+                    tx.set(run, "final", True)
+                    tx.emit(run, "run.final", {"head_run_seq": run["run_seq"] - 1, "head_hash": run["head"]},
+                            source="signer")
+                    continue
+                expire(run, [aid for aid in live.get(key, ()) if self.log.approvals[aid]["expires_at"] <= deadline])
                 if run["closed"]:
-                    if t - run["closing_at"] >= self.grace_s:
-                        tx.set(run, "final", True)
-                        tx.emit(run, "run.final", {"head_run_seq": run["run_seq"] - 1, "head_hash": run["head"]},
-                                source="signer")
-                elif key in pending:   # the idle clock pauses while an approval is pending
-                    tx.set(run, "active", run["active"] + paused)
+                    continue
+                if any(self.log.approvals[aid]["state"] == "requested" for aid in live.get(key, ())):
+                    tx.set(run, "active", run["active"] + paused)   # the idle clock pauses while an approval is pending
                 elif t - run["active"] >= self.idle_s:
                     tx.closing(run, "idle_timeout", source="signer")
-        self.log.write(fn)
+            return expired
+        expired = self.log.write(fn)
+        for aid in expired:
+            self._drop_args(aid)
+        if expired:
+            with self._cond:
+                self._cond.notify_all()
 
     def flush_refusals(self):
         """Write the refusals counted since the last flush as `refusal.summary` records, one per identity and code."""
@@ -282,10 +322,58 @@ class SignerService:
         return key
 
     def _approval(self, key, approval_id):
-        a = self._approvals.get(approval_id)
+        a = self.log.approvals.get(approval_id)
         if a is None or a["run_key"] != key:
             raise RPCError("unknown_approval", approval_id)
         return a
+
+    def _may_see(self, identity, a):
+        """Whether `identity` may see and answer approval `a`: the run's owner, or an identity of the run's tenant."""
+        sub = subject(identity)
+        return sub == self.log.runs[a["run_key"]]["owner"] or a["run_key"][0] == self.tenants.get(sub, self.tenant)
+
+    def _visible(self, identity, approval_id):
+        a = self.log.approvals.get(approval_id)
+        if a is None or not self._may_see(identity, a):
+            raise RPCError("unknown_approval", approval_id)
+        return a
+
+    @staticmethod
+    def _summary(approval_id, a):
+        return {"approval_id": approval_id, "state": a["state"], "run_id": a["run_key"][1],
+                **{k: a[k] for k in ("tool_call_id", "attempt", "tool", "rule_ids", "policy_hash", "requester",
+                                     "expires_at")}}
+
+    def _seal(self, approval_id, value):
+        nonce = os.urandom(12)
+        return nonce + self._args_key.encrypt(nonce, canonical(value), approval_id.encode())
+
+    def _unseal(self, approval_id):
+        """The signer's copy of an approval's arguments ({"args_source", "args", "reason"?}), None once deleted."""
+        try:
+            with open(os.path.join(self._args_dir, approval_id), "rb") as f:
+                blob = f.read()
+        except FileNotFoundError:
+            return None
+        try:
+            return loads_strict(self._args_key.decrypt(blob[:12], blob[12:], approval_id.encode()))
+        except InvalidTag:
+            raise RPCError("unavailable", f"the stored arguments of {approval_id} do not decrypt") from None
+
+    def _drop_args(self, approval_id):
+        try:
+            os.unlink(os.path.join(self._args_dir, approval_id))
+        except FileNotFoundError:
+            pass
+
+    @staticmethod
+    def _args(req):
+        """(the arguments, their digest sha256(JCS({tool, args}))), or (None, None) when they are not canonical JSON."""
+        try:
+            args = loads_strict(req["args"]) if req["args_source"] == "raw" else req["args"]
+            return args, event_hash({"tool": req["tool"], "args": args})
+        except (StrictJSONError, rfc8785.CanonicalizationError):
+            return None, None
 
     def _commit(self, decision_id, digest):
         """The published args_commitment: HMAC of the args digest under the decision's own salt, which the signer can
@@ -353,31 +441,20 @@ class SignerService:
         key = self._authorize(identity, req)
         self.quotas.take_event(identity)
         tool, tcid, attempt, hint = req["tool"], req["tool_call_id"], req.get("attempt", 0), req.get("tool_class_hint")
-        try:
-            args = loads_strict(req["args"]) if req["args_source"] == "raw" else req["args"]
-            digest = event_hash({"tool": tool, "args": args})
-        except (StrictJSONError, rfc8785.CanonicalizationError):
-            digest = None
+        args, digest = self._args(req)
         # matched here, off the writer thread; the writer picks a memoised deny/ask or this result
-        ruled = self._evaluate(tool, args, hint) if digest and "approval_id" not in req else None
+        ruled = self._evaluate(tool, args, hint) if digest else None
         did = "dec-" + secrets.token_hex(16)
         commitment = self._commit(did, digest) if digest else None
         # lean: expires_at is signed but `complete` does not enforce it; enforce once executors check it before running
         expires_at = _iso(time.time() + DECISION_TTL_S)
 
         def fn(tx, run):
-            a = self._approval(key, req["approval_id"]) if "approval_id" in req else None
             memo, gaps = run["calls"].get(tcid), []
             data = {"tool_use_id": tcid, "tool": tool, "decision_id": did, "policy_hash": self.policy.policy_hash,
                     "engine": self.policy.engine, "nonce": secrets.token_hex(16), "expires_at": expires_at}
             if digest is None:
                 verdict, rule_ids = "deny", ["TK-ARGS-INVALID"]
-            elif a is not None:
-                if a["tool_call_id"] != tcid or not self._same(a, digest):
-                    verdict, rule_ids = "deny", ["TK-APPROVAL-MISMATCH"]
-                else:
-                    verdict, rule_ids = {"approved": ("allow", ["TK-APPROVED"]), "requested": ("ask", a["rule_ids"])
-                                         }.get(a["state"], ("deny", ["TK-APPROVAL-" + a["state"].upper()]))
             elif memo and memo["attempt"] == attempt and memo["decision"] in ("deny", "ask") and self._same(memo, digest):
                 verdict, rule_ids = memo["decision"], memo["rule_ids"]
             else:
@@ -397,6 +474,8 @@ class SignerService:
                 data["args_commitment"] = commitment
             call = {"tool_call_id": tcid, "attempt": attempt, "decision": verdict, "rule_ids": rule_ids,
                     "decision_id": did, "commitment": commitment}
+            if verdict == "ask":   # the signer's copy, for the approval request (memory only: decide again after a restart)
+                call["pending"] = {"tool": tool, "args_source": req["args_source"], "args": req["args"], "digest": digest}
             tx.set(run["calls"], tcid, call)
             tx.set(run["decisions"], did, call)
             seq = tx.event(run, req, "policy.decision", dict(data, decision=verdict, rule_ids=rule_ids),
@@ -404,9 +483,6 @@ class SignerService:
             for kind, reason in gaps:
                 tx.emit(run, "capture.gap", {"kind": kind, "reason": reason, "tool_use_id": tcid}, source="signer",
                         tool_call_id=tcid)
-            if verdict == "allow" and a is not None:
-                tx.set(a, "state", "consumed")
-                tx.emit(run, "approval.consumed", {"approval_id": req["approval_id"]}, source="signer")
             return {"decision": "allow" if verdict == "flag" else verdict, "decision_id": did, "rule_ids": rule_ids,
                     "run_seq": seq, "expires_at": expires_at}
         return self.log.submit(identity, "decide", req, fn, key)
@@ -456,49 +532,123 @@ class SignerService:
 
     def _approval_request(self, identity, req):
         key, tcid, sub = self._authorize(identity, req), req["tool_call_id"], subject(identity)
+        attempt = req.get("attempt", 0)
 
         def fn(tx, run):
+            aid = self.log.approval_index.get((*key, tcid, attempt))
+            if aid:   # one approval per call attempt: asking again returns it, whatever its state
+                a = self.log.approvals[aid]
+                return {"approval_id": aid, "state": a["state"], "expires_at": a["expires_at"]}
             call = run["calls"].get(tcid)
-            if call is None or call["decision"] != "ask":
-                raise RPCError("unknown_tool_call", f"{tcid} has no pending `ask` decision")
+            if call is None or call["attempt"] != attempt or "pending" not in call:
+                raise RPCError("unknown_tool_call", f"{tcid} attempt {attempt} has no pending `ask` decision")
             self.quotas.check_count("pending_approvals", sum(a["requester"] == sub and a["state"] == "requested"
-                                                             for a in self._approvals.values()))
+                                                             for a in self.log.approvals.values()))
+            p = call["pending"]
             aid, expires_at = "apr-" + secrets.token_hex(16), _iso(time.time() + APPROVAL_TTL_S)
-            # lean: the stub records expires_at but never expires an approval; the approvals task enforces it
-            tx.set(self._approvals, aid, {"run_key": key, "tool_call_id": tcid, "decision_id": call["decision_id"],
-                                          "commitment": call["commitment"], "rule_ids": call["rule_ids"],
-                                          "state": "requested", "requester": sub})
-            tx.emit(run, "approval.request", {"approval_id": aid, "policy_hash": self.policy.policy_hash,
-                                              "rule_ids": call["rule_ids"], "expires_at": expires_at, "requester": sub},
-                    request_id=req["request_id"], tool_call_id=tcid)
+            binding = {"v": 1, "approval_id": aid, "tenant": key[0], "run_id": key[1], "tool_call_id": tcid,
+                       "attempt": attempt, "tool": p["tool"], "args_digest": p["digest"], "args_source": p["args_source"],
+                       "policy_hash": self.policy.policy_hash, "nonce": secrets.token_hex(16), "expires_at": expires_at}
+            published = {k: v for k, v in binding.items() if k != "args_digest"}
+            data = {"approval_id": aid, "decision_id": call["decision_id"], "policy_hash": self.policy.policy_hash,
+                    "rule_ids": call["rule_ids"], "expires_at": expires_at, "requester": sub,
+                    "binding": dict(published, args_commitment=call["commitment"]),
+                    "binding_digest": "sha256:" + hashlib.sha256(canonical(binding)).hexdigest()}
+            copy = {"args_source": p["args_source"], "args": p["args"]}
+            if "reason" in req:
+                copy["reason"] = req["reason"]
+            _write_new(os.path.join(self._args_dir, aid), self._seal(aid, copy))
+            tx.set(self.log.approvals, aid, approval(*key, data))
+            tx.set(self.log.approval_index, (*key, tcid, attempt), aid)
+            tx.emit(run, "approval.request", data, request_id=req["request_id"], tool_call_id=tcid, attempt=attempt)
             return {"approval_id": aid, "state": "requested", "expires_at": expires_at}
         return self.log.submit(identity, "approval_request", req, fn, key)
 
     def _approval_decide(self, identity, req):
-        a = self._approvals.get(req["approval_id"])
-        if a is None:
-            raise RPCError("unknown_approval", req["approval_id"])
-        sub = subject(identity)
+        aid, sub = req["approval_id"], subject(identity)
+        run_key = self._visible(identity, aid)["run_key"]
 
         def fn(tx, run):
+            a = self.log.approvals[aid]
             if a["state"] != "requested":
                 raise RPCError("approval_not_pending", a["state"])
+            if a["expires_at"] <= _iso(time.time()):
+                raise RPCError("approval_not_pending", "expired")
             tx.set(a, "state", "approved" if req["decision"] == "approve" else "rejected")
             same = a["requester"] == sub
-            tx.emit(run, "approval", {"tool_use_id": a["tool_call_id"], "decision": req["decision"], "approver": sub,
-                                      "channel": "rpc", "same_user": same},
-                    request_id=req["request_id"], tool_call_id=a["tool_call_id"])
-            return {"approval_id": req["approval_id"], "state": a["state"], "self_approved": same}
-        out = self.log.submit(identity, "approval_decide", req, fn, a["run_key"])
+            data = {"tool_use_id": a["tool_call_id"], "approval_id": aid, "decision": req["decision"], "approver": sub,
+                    "channel": "rpc", "self_approved": same}
+            if "reason" in req:
+                data["reason"] = req["reason"]
+            tx.emit(run, "approval", data, request_id=req["request_id"], tool_call_id=a["tool_call_id"])
+            return {"approval_id": aid, "state": a["state"], "self_approved": same}
+        out = self.log.submit(identity, "approval_decide", req, fn, run_key)
+        if out["state"] == "rejected":
+            self._drop_args(aid)
         with self._cond:
             self._cond.notify_all()
         return out
 
     def _approval_wait(self, identity, req):
-        a = self._approval(self._authorize(identity, req), req["approval_id"])
+        aid = req["approval_id"]
+        self._approval(self._authorize(identity, req), aid)
         with self._cond:
-            self._cond.wait_for(lambda: a["state"] != "requested", req.get("timeout_ms", 0) / 1000)
-        return {"approval_id": req["approval_id"], "state": a["state"]}
+            self._cond.wait_for(lambda: self.log.approvals[aid]["state"] != "requested", req.get("timeout_ms", 0) / 1000)
+        return {"approval_id": aid, "state": self.log.approvals[aid]["state"]}
+
+    def _approval_consume(self, identity, req):
+        key, tcid, attempt, hint = self._authorize(identity, req), req["tool_call_id"], req.get("attempt", 0), \
+            req.get("approval_id_hint")
+        self.quotas.take_event(identity)
+        _, digest = self._args(req)
+
+        def fn(tx, run):
+            aid = self.log.approval_index.get((*key, tcid, attempt))
+            a, call, top = self.log.approvals.get(aid), run["calls"].get(tcid), {"tool_call_id": tcid, "attempt": attempt}
+            if hint is not None and hint != aid:
+                why = "TK-APPROVAL-UNBOUND", "approval_id not bound to this call"
+            elif digest is None:
+                why = "TK-ARGS-INVALID", "the arguments are not canonical JSON"
+            elif a is None:
+                if (call and call["attempt"] == attempt and call["decision"] in ("allow", "flag")
+                        and self._same(call, digest)):
+                    return {"ok": True, "rule_ids": []}   # needed no approval
+                why = "TK-APPROVAL-REQUIRED", "approval required but none was requested for this call"
+            elif not self._same(a, digest):
+                tx.emit(run, "approval.binding_mismatch", {
+                    "approval_id": aid, "tool_use_id": tcid, "approved_commitment": a["commitment"],
+                    "args_commitment": self._commit(a["decision_id"], digest)}, source="signer", **top)
+                return {"ok": False, "rule_ids": ["TK-APPROVAL-MISMATCH"], "approval_id": aid,
+                        "reason": "the arguments differ from the approved ones"}
+            elif a["state"] != "approved":
+                why = "TK-APPROVAL-" + a["state"].upper(), f"not approved (state={a['state']})"
+            elif a["expires_at"] <= _iso(time.time()):
+                why = "TK-APPROVAL-EXPIRED", "the approval expired"
+            else:
+                tx.set(a, "state", "consumed")
+                tx.emit(run, "approval.consumed", {"approval_id": aid}, source="signer", **top)
+                return {"ok": True, "rule_ids": ["TK-APPROVED"], "approval_id": aid}
+            data = {"tool_use_id": tcid, "rule_ids": [why[0]], "reason": why[1]}
+            if a is not None:
+                data["approval_id"] = aid
+            tx.emit(run, "approval.refused", data, source="signer", **top)
+            return {"ok": False, **{k: v for k, v in data.items() if k != "tool_use_id"}}
+        out = self.log.submit(identity, "approval_consume", req, fn, key)
+        if out["ok"] and "approval_id" in out:
+            self._drop_args(out["approval_id"])
+        return out
+
+    def _approval_get(self, identity, req):
+        aid = req["approval_id"]
+        a = self._visible(identity, aid)
+        return {**self._summary(aid, a), "binding_digest": a["binding_digest"],
+                **(self._unseal(aid) or {"args_source": a["args_source"], "args": None})}
+
+    def _approval_list(self, identity, req):
+        mine = [(aid, a) for aid, a in list(self.log.approvals.items())
+                if req.get("run_id") in (None, a["run_key"][1]) and self._may_see(identity, a)]
+        recent = [x for x in mine if x[1]["state"] in LIVE] + [x for x in reversed(mine) if x[1]["state"] not in LIVE]
+        return {"approvals": [self._summary(aid, a) for aid, a in recent[:LIST_MAX]]}
 
     def _close_run(self, identity, req):
         key = self._authorize(identity, req)

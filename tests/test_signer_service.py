@@ -139,11 +139,11 @@ class TestService(unittest.TestCase):
         self.refused("conflict", s, "decide", self.ev(run, 5, rid="d0", tool_call_id="tc", tool="t", args_source="parsed", args={}))
         self.refused("unknown_decision", s, "complete", self.ev(run, 7, tool_call_id="never", decision_id="dec-x",
                                                                 args_digest="sha256:" + "0" * 64, status="ok"))
-        self.refused("unknown_approval", s, "decide", self.ev(run, 9, tool_call_id="x", tool="t", args_source="parsed",
-                                                             args={}, approval_id="apr-x"))
+        self.refused("unknown_tool_call", s, "approval_request", {"request_id": "a", "run_id": run["run_id"],
+                                                                  "run_token": run["run_token"], "tool_call_id": "tc"})
         self.assertEqual(self.state(s), before)
         out = s.decide(self.ev(run, 1, tool_call_id="tc2", tool="t", args_source="parsed", args={}))
-        self.assertEqual(out["run_seq"], 2)   # no gap from the refused client_seq values 5, 7, 9
+        self.assertEqual(out["run_seq"], 2)   # no gap from the refused client_seq values 5, 7
 
     def test_a_refused_item_inside_a_batch_leaves_the_rest(self):
         s = self.open()
