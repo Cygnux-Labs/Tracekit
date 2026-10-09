@@ -119,3 +119,59 @@ class TestOnRealSigner(MCPContract, ac.OnReal, unittest.TestCase):
         self.assertEqual(e["tool"], "mcp:contract_mcp/echo")
         [gap] = [e["data"] for e in self.events(self.d.run()) if e["type"] == "capture.gap"]
         self.assertIn("class hint 'mcp'", gap["reason"])   # the contract policy has no tools map
+
+
+class _StubSession:
+    server_info = type("Info", (), {"name": "stub"})()
+
+    def __init__(self):
+        self.calls = 0
+
+    async def call_tool(self, name, arguments=None):
+        from mcp.types import CallToolResult, TextContent
+        self.calls += 1
+        return CallToolResult(content=[TextContent(type="text", text="done")], is_error=False)
+
+
+class _Signer:
+    """A signer that fails the way it is told: `decide` and `complete` raise `errors[method]` when set."""
+
+    def __init__(self, **errors):
+        self.errors = errors
+
+    def __getattr__(self, method):
+        def call(req):
+            if method in self.errors:
+                raise self.errors[method]
+            return {"decide": {"decision": "allow", "decision_id": "dec-1", "rule_ids": []},
+                    "approval_consume": {"ok": True, "rule_ids": []}}.get(method, {"run_seq": 0})
+        return call
+
+
+@unittest.skipUnless(HAVE_MCP, "mcp not installed")
+class SignerFailures(unittest.TestCase):
+    RUN = {"run_id": "r1", "run_token": "t"}
+
+    def call(self, signer, **run):
+        session = _StubSession()
+        out = asyncio.run(TracekitSession(session, signer, {**self.RUN, **run}).call_tool("x", {}))
+        return out, session.calls
+
+    def test_unreachable_signer_refuses_unless_the_run_fails_open(self):
+        from tracekit.sdk.client import SignerUnavailable
+        out, calls = self.call(_Signer(decide=SignerUnavailable("down")))
+        self.assertEqual((out.is_error, calls), (True, 0))   # fail_modes default: closed
+        out, calls = self.call(_Signer(decide=SignerUnavailable("down")), fail_modes={"default": "open"})
+        self.assertEqual((out.is_error, calls), (False, 1))
+
+    def test_a_refusal_never_lets_the_call_run(self):
+        from tracekit.signer.rpc_schema import RPCError
+        out, calls = self.call(_Signer(decide=RPCError("run_closed", "closed")), fail_modes={"default": "open"})
+        self.assertEqual((out.is_error, calls), (True, 0))
+        self.assertIn("run_closed", out.content[0].text)
+
+    def test_a_failed_complete_warns_and_keeps_the_result(self):
+        from tracekit.signer.rpc_schema import RPCError
+        with self.assertWarns(UserWarning):
+            out, calls = self.call(_Signer(complete=RPCError("unavailable", "storage down")))
+        self.assertEqual((out.is_error, out.content[0].text, calls), (False, "done", 1))
