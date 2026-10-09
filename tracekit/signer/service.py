@@ -3,6 +3,7 @@
     tracekit signer serve --config signer.yaml
     tracekit signer serve --dev               # the same-user dev signer clients auto-spawn (decision S3)
     tracekit signer fsck  --config signer.yaml
+    tracekit signer close-log --config signer.yaml   # shut the log down for good (log.closed), signer stopped
     tracekit signer vkey  [--dev | --config signer.yaml]               # the log's verifier key
     tracekit signer trust [--dev | --config signer.yaml] -o trust.json  # a v2 trust config pinning it, no witnesses
 
@@ -36,13 +37,15 @@ acknowledged. No witness reachable: a signed `degraded_unanchored` gap, and the 
 
 Run lifecycle (04-design §2.7): run.registered → events → close_run or the idle timeout (paused while an approval is
 pending) → run.closing → grace window, where only late records (complete, state_write, model_event) are accepted →
-run.final{head}. run.registered and run.final also get a leaf in the tenant's registry log. Gap and tamper records are
-written by the signer only: no request can carry an event type, source, isolation or fail mode.
+run.final{head}. run.registered and run.final also get a leaf in the tenant's registry log (tracekit.format.registry),
+log.closed and key.retire one in every tenant's. Gap and tamper records are written by the signer only: no request can
+carry an event type, source, isolation or fail mode.
 
 Checkpoints (04-design §1.6, §2.9): a C2SP note of the record tree, signed by the log key (keys/log.key, Ed25519, named
 after the origin, signs notes only) and stored through the storage, after a run.final, on `checkpoint_nudge` (at most
-one note per CHECKPOINT_MIN_S), every CHECKPOINT_S while the tree grows, and on close. The log key's vkey is written to
-<data_dir>/log.vkey on start. Notes are signed off the writer thread; the writer only reads the tree head.
+one note per CHECKPOINT_MIN_S), every CHECKPOINT_S while the tree grows, and on close; then, signed by the same key, a
+note of each tenant registry that grew, under origin `<origin>/registry/<id of the tenant's salt>`. The log key's vkey
+is written to <data_dir>/log.vkey on start. Notes are signed off the writer thread; the writer only reads the heads.
 
 
 Policy (04-design §4): the signer classifies the tool and decides with policy2; every decide gets a fresh decision_id
@@ -76,7 +79,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from tracekit import __version__, crypto, yamlmini
 from tracekit.deploy import files
-from tracekit.format import checkpoint
+from tracekit.format import checkpoint, registry
 from tracekit.format.canon import StrictJSONError, canonical, event_hash, loads_strict
 from tracekit.format.records import RecordError, RecordSigner, verify_record
 from tracekit.identity.base import CallerIdentity
@@ -88,7 +91,7 @@ from tracekit.signer.pipeline import SIGNER_RUN, RecordLog, approval, subject
 from tracekit.signer.quotas import Limits, Quotas
 from tracekit.signer.rpc_schema import REQUESTS, RPCError
 from tracekit.signer.runtoken import RunTokens
-from tracekit.storage.base import ACK_ON_WRITE, StorageUnavailable
+from tracekit.storage.base import ACK_ON_WRITE, RECORDS, StorageUnavailable, registry_tree
 from tracekit.storage.file import FileStorage, _mkdir
 from tracekit.storage.file import fsck as fsck_store
 from tracekit.transport import answering_hello, hello
@@ -206,7 +209,7 @@ class SignerService:
         self._args_dir = os.path.join(data_dir, "approvals")   # approval_id -> the encrypted args of a live approval
         self._cond = threading.Condition()
         self._refusals, self._refusals_lock = {}, threading.Lock()
-        self._stop, self._nudged = threading.Event(), threading.Event()
+        self._stop, self._nudged, self._checkpointing = threading.Event(), threading.Event(), threading.Lock()
         self.origin = origin or f"tracekit.local/{self.log.log_id}"
         try:
             self.vkey = checkpoint.vkey(self.origin, checkpoint.ED25519, crypto.public_from_secret(self._log_key))
@@ -318,17 +321,30 @@ class SignerService:
             self._stop.wait(CHECKPOINT_MIN_S)
 
     def checkpoint(self):
-        """Sign and store a note of the record tree when it grew since the latest stored one."""
-        def head(tx):
-            t = self.log.storage.tree
-            return t.size, t.root()
-        size, root = self.log.write(head)
-        latest = self.log.storage.checkpoint_latest()
-        if size and (latest is None or size > latest[0]):
-            text = checkpoint.body(self.origin, size, root)
-            self.log.storage.checkpoint_put(size, text + "\n" + checkpoint.sign(text, self.origin, self._log_key))
-            self.metrics.checkpoints.inc()
-            self._noted = time.monotonic()
+        """Sign and store a note of the record tree when it grew since the latest stored one, then one of each
+        tenant's registry tree that grew (its leaves point to records the record note covers)."""
+        def heads(tx):
+            s = self.log.storage
+            return [(RECORDS, self.origin, s.tree.size, s.tree.root())] + [
+                (registry_tree(t), registry.origin(self.origin, self.log.tenant_salt(t)), m.size, m.root())
+                for t in sorted(self.log.tenants) if (m := s.registry_merkle(t))]
+        with self._checkpointing:   # the checkpointer thread, close_log and close may all call this
+            for tree, origin, size, root in self.log.write(heads):
+                latest = self.log.storage.checkpoint_latest(tree)
+                if size and (latest is None or size > latest[0]):
+                    text = checkpoint.body(origin, size, root)
+                    self.log.storage.checkpoint_put(size, text + "\n" + checkpoint.sign(text, origin, self._log_key),
+                                                    tree)
+                    if tree == RECORDS:
+                        self.metrics.checkpoints.inc()
+                        self._noted = time.monotonic()
+
+    def close_log(self):
+        """Close the log for good: a signed log.closed{final_seq: its own seq} (a leaf in every tenant's registry),
+        then the final notes. Every later write is refused, after a restart too."""
+        self.log.write(lambda tx: tx.emit(self.log.signer_run(tx), "log.closed", {"final_seq": self.log.head["seq"]},
+                                          source="signer"))
+        self.checkpoint()
 
     def sweep(self, now=None, wall=None):
         """Close idle runs, write run.final for runs whose grace window has passed and expire approvals.
@@ -1005,6 +1021,8 @@ def main(argv=None):
     mode.add_argument("--dev", action="store_true",
                       help="the same-user dev signer of the runtime dir ($TRACEKIT_RUNTIME_DIR); clients start it")
     sub.add_parser("fsck", help="check every record of the store").add_argument("--config", required=True)
+    sub.add_parser("close-log", help="close the log for good: write log.closed and the final notes (signer stopped)"
+                   ).add_argument("--config", required=True)
     for name, text in (("vkey", "print the log key's verifier key (C2SP vkey)"),
                        ("trust", "write a v2 trust config that pins the log key, with no witnesses")):
         q = sub.add_parser(name, help=text)
@@ -1062,6 +1080,16 @@ def main(argv=None):
     except Exception as e:
         print(f"tracekit signer: {e}", file=sys.stderr)
         return 1
+    if a.cmd == "close-log":
+        try:
+            service.close_log()
+        except (RPCError, StorageUnavailable, OSError) as e:
+            print(f"tracekit signer close-log: {e}", file=sys.stderr)
+            return 1
+        finally:
+            service.close()
+        print(f"log closed at seq {service.log.head['seq'] - 1}")
+        return 0
     stop = threading.Event()
     signal.signal(signal.SIGTERM, lambda *_: stop.set())
     try:
