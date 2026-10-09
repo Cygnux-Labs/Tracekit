@@ -33,8 +33,13 @@ def read_frame(rfile):
         if len(line) > MAX_LINE:
             raise RPCError("quota_exceeded", f"frame longer than {MAX_LINE} bytes")
         return None   # end of stream, possibly mid-line
+    return parse_frame(line)
+
+
+def parse_frame(data):
+    """One frame from bytes; raises invalid_request for anything but a strict JSON object."""
     try:
-        frame = loads_strict(line)
+        frame = loads_strict(data)
     except StrictJSONError as e:
         raise RPCError("invalid_request", str(e)) from None
     if not isinstance(frame, dict):

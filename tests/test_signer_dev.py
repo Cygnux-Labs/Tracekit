@@ -133,7 +133,7 @@ class DevSignerEndToEnd(unittest.TestCase):
     def test_hello_over_tcp(self):
         os.makedirs(self.run_dir, 0o700)
         ep = self.path("tcp.json")
-        svc = service.SignerService(os.path.join(self.dir, "tcp-data"))
+        svc = service.SignerService(os.path.join(self.dir, "tcp-data"), authorize=service.DEV_GRANT)
         self.addCleanup(svc.close)
         (server,) = service.serve({"tcp_endpoint": ep}, svc)
         self.addCleanup(server.server_close)
@@ -187,7 +187,7 @@ class DevSignerOverTcp(unittest.TestCase):
 
     def test_named_signer_with_a_token(self):
         ep = os.path.join(self.dir, "tcp.json")
-        svc = service.SignerService(os.path.join(self.dir, "tcp-data"))
+        svc = service.SignerService(os.path.join(self.dir, "tcp-data"), authorize=service.DEV_GRANT)
         self.addCleanup(svc.close)
         (server,) = service.serve({"tcp_endpoint": ep}, svc)
         self.addCleanup(server.server_close)

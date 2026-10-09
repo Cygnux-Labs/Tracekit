@@ -73,6 +73,10 @@ class Storage:
     def tiles_put(self, tree, level, index, width, data):
         raise NotImplementedError
 
+    def unsynced_s(self):
+        """Seconds the oldest written but not yet synced record has waited; 0 when everything written is durable."""
+        return 0.0
+
     def fsck(self):
         """Full check of every log: a list of problems, empty when the store is intact."""
         raise NotImplementedError
