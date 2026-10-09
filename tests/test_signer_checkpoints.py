@@ -124,9 +124,9 @@ class Reader(unittest.TestCase):
         self.assertEqual(r.checkpoint_latest(), (5, note))
 
     def test_note_is_written_after_its_records_are_synced(self):
-        calls = []
+        calls = []   # full syncs only: the ack-on-write background syncer may run meanwhile
         sync, write = file_storage._sync, file_storage._write_new
-        with mock.patch.object(file_storage, "_sync", lambda fd, full: calls.append(("sync", fd)) or sync(fd, full)), \
+        with mock.patch.object(file_storage, "_sync", lambda fd, full: full and calls.append(("sync", fd)) or sync(fd, full)), \
                 mock.patch.object(file_storage, "_write_new", lambda p, d: calls.append(("note", p)) or write(p, d)):
             self.store.checkpoint_put(5, checkpoint.body("example.org/log", 5, self.store.tree.root()))
         self.assertEqual(calls, [("sync", self.store.log.fd), ("note", os.path.join(self.root, file_storage.NOTE))])
