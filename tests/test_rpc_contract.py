@@ -147,7 +147,7 @@ class SignerContract:
         self.run_id, self.token, self.seq = first["run_id"], first["run_token"], 0
         req, first = self.decide()
         self.assertEqual(self.call("decide", dict(req)), first)
-        self.assertEqual(self.types().count("tool.decision"), 1)
+        self.assertEqual(self.types().count("policy.decision"), 1)
 
     def test_request_id_reused_with_another_payload(self):
         self.register()
@@ -211,8 +211,12 @@ class SignerContract:
             _, d = self.decide(tcid=f"bad-{i}", args_source="raw", args=raw)
             self.assertEqual((d["decision"], d["rule_ids"]), ("deny", ["TK-ARGS-INVALID"]), raw)
         for i, args in enumerate(({"id": 2 ** 60}, {"\ud800": 1})):
-            _, d = self.decide(tcid=f"parsed-{i}", args=args)
-            self.assertEqual(d["rule_ids"], ["TK-ARGS-INVALID"])
+            try:
+                _, d = self.decide(tcid=f"parsed-{i}", args=args)
+            except RPCError as e:   # over a transport, the strict frame parser refuses the whole request first
+                self.assertEqual(e.code, "invalid_request")
+            else:
+                self.assertEqual(d["rule_ids"], ["TK-ARGS-INVALID"])
 
     # --- approvals ---
 
