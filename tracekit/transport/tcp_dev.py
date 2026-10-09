@@ -53,7 +53,8 @@ class TcpDevServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
     # deadline when the signer service needs a connection cap
     daemon_threads = True
 
-    def __init__(self, endpoint_path, token, handle_frame, read_timeout=READ_TIMEOUT_S):
+    def __init__(self, endpoint_path, token, handle_frame, read_timeout=READ_TIMEOUT_S, publish=None):
+        """Binds, then writes `endpoint_path`: the port and token, plus the fields of `publish`."""
         self.token, self.handle_frame, self.read_timeout = token, handle_frame, read_timeout
         super().__init__((HOST, 0), _Conn)
         tmp = endpoint_path + ".tmp"
@@ -63,7 +64,7 @@ class TcpDevServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
             pass
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
         with os.fdopen(fd, "w") as f:
-            json.dump({"port": self.server_address[1], "token": token.secret}, f)
+            json.dump({**(publish or {}), "port":self.server_address[1], "token": token.secret}, f)
         os.replace(tmp, endpoint_path)
 
 
