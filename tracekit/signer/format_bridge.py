@@ -13,13 +13,8 @@ import os
 
 from tracekit.core import SCHEMA_VERSION, new_id, now_ts
 from tracekit.ledger import Keys, Ledger, read_records
-from tracekit.signer.service import SignerService
 from tracekit.storage.base import ACK_ON_FSYNC
 from tracekit.storage.file import FileStorage, _sync_dir
-
-# lean: the dev data dir is fixed here until `tracekit signer serve --dev` defines one (M1a-14); move it there then
-DEV_DATA_DIR = os.path.expanduser("~/.tracekit/signer")
-
 
 class BridgeError(Exception):
     pass
@@ -43,6 +38,7 @@ def _gap(data):
 
 def bridge(v1_home, data_dir):
     """Bridge the v1 ledger of `v1_home` into the v2 store of `data_dir`; returns the signer.epoch `bridge`."""
+    from tracekit.signer.service import SignerService   # here: the verifier imports this module for retire_data
     if hasattr(os, "geteuid") and os.stat(v1_home).st_uid != os.geteuid():
         raise BridgeError(f"run the bridge as the owner of {v1_home}")
     path = os.path.join(v1_home, "ledger", "ledger.jsonl")
