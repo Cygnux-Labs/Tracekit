@@ -32,6 +32,6 @@ class DevToken:
         if self.clock() >= self.expires_at:
             raise RPCError("unauthenticated", "dev token expired")
         method = frame.get("method")
-        if method not in self.scope:
+        if not isinstance(method, str) or method not in self.scope:
             raise RPCError("forbidden", f"dev token not scoped for {str(method)[:64]}")
         return CallerIdentity("token", self.subject, True, {"expires_at": self.expires_at})
