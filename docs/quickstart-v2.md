@@ -121,6 +121,9 @@ What system mode protects, and what it doesn't:
 - **Not protected:** any process the agent's user runs can read that user's run tokens and write into the agent's own
   runs, or start runs of its own. Binding runs to the harness's processes needs harness binding, which the v2 signer
   doesn't have yet. Root on the machine can do anything; witnesses on another host are the defence against that.
+- **Not protected either:** the hook lives in AGENT's own `~/.claude/settings.json`, which AGENT can edit. Removing
+  the hook, or running tools outside Claude Code, leaves no record and no gap; system mode secures what is recorded,
+  not that everything is.
 
 `eval/e8_insider_v2.py` checks these properties as real separate users (decoy signer, cross-user injection, signer
 down, policy through the environment, self-approval).
