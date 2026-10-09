@@ -71,6 +71,8 @@ def connect(path, timeout=CONNECT_TIMEOUT_S, token=None):
     try:
         if path.startswith("tcp://"):
             host, _, port = path[len("tcp://"):].rpartition(":")
+            if host not in ("127.0.0.1", "::1", "localhost"):   # frames after the handshake are plaintext
+                raise SignerUnavailable(f"{path}: tcp:// signers must be on loopback (127.0.0.1, ::1 or localhost)")
             token = token or os.environ.get("TRACEKIT_SIGNER_TOKEN")
             if not token:
                 raise SignerUnavailable(f"{path}: tcp:// signers need TRACEKIT_SIGNER_TOKEN")
@@ -125,8 +127,11 @@ class _Https:
         """The answer frame; _ConnectionLost when the request may not have arrived, SignerUnavailable on a timeout."""
         headers = {"Content-Type": "application/json"}
         if self.token_file:
-            with open(self.token_file, encoding="utf-8") as f:
-                headers["Authorization"] = "Bearer " + f.read().strip()
+            try:
+                with open(self.token_file, encoding="utf-8") as f:
+                    headers["Authorization"] = "Bearer " + f.read().strip()
+            except OSError as e:
+                raise SignerUnavailable(f"cannot read the signer token file: {e}") from None
         if self.pid != os.getpid():   # a forked child: its own connections
             self.pid, self.local = os.getpid(), threading.local()
         conn = getattr(self.local, "conn", None)

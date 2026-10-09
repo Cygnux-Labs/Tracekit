@@ -178,7 +178,9 @@ report it.
 ## Roadmap
 
 Tracekit is being extended from laptop coding agents to server-hosted agents: a signer service that agents reach over
-the network, evidence format v2 and policy enforced inside the signer. Existing v1 bundles keep verifying.
+the network, evidence format v2 and policy enforced inside the signer. Existing v1 bundles keep verifying. To try the v2
+signer, `pip install 'tracekit-ai[signer]'` and follow the
+[v2 quickstart](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/quickstart-v2.md).
 
 ## Contributing and security
 

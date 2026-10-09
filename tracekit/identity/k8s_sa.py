@@ -4,13 +4,16 @@ Two modes, by config:
     k8s_sa: {audience: tracekit-signer, issuer: https://..., jwks_uri: https://.../openid/v1/jwks, ca: jwks-ca.pem}
     k8s_sa: {audience: tracekit-signer, tokenreview: https://kubernetes.default.svc, token_file: ..., ca: ...}
 JWKS (cross-cluster): the issuer's keys are fetched over HTTPS and cached; RS256 and ES256 only, then iss, aud (the
-signer's own audience), exp and nbf with SKEW_S. TokenReview (in-cluster): the API server checks the token, asked with
-the signer's own token; a positive answer is cached for at most min(REVIEW_TTL_S, the token's remaining lifetime), a
-negative one never. The subject is `system:serviceaccount:<namespace>:<name>`.
+signer's own audience), exp and nbf with SKEW_S. One request at a time fetches, outside the lock; the others use the
+keys at hand, and every token is refused once the keys are older than JWKS_MAX_AGE_S. TokenReview (in-cluster): the API
+server checks the token, asked with the signer's own token, at most REVIEWS_PER_S per peer address; a positive answer is
+cached for at most min(REVIEW_TTL_S, the token's remaining lifetime), a negative one never. Why a fetch or review failed
+is logged, never told to the caller. The subject is `system:serviceaccount:<namespace>:<name>`.
 """
 import hashlib
 import http.client
 import json
+import logging
 import ssl
 import threading
 import time
@@ -24,17 +27,21 @@ from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa
 from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
 
 from tracekit.identity.base import CallerIdentity, bearer
+from tracekit.signer.quotas import Limits, Quotas
 from tracekit.signer.rpc_schema import RPCError
 
 SKEW_S = 30
 JWKS_TTL_S = 300
 REFETCH_S = 30        # least time between two JWKS fetches, also when a token names an unknown kid
+JWKS_MAX_AGE_S = 3600   # keys not refreshed for this long are not trusted
 REVIEW_TTL_S = 60
+REVIEWS_PER_S, REVIEW_BURST = 5, 20   # TokenReview requests per peer address
 CACHE_MAX = 1024      # TokenReview results kept, least recently used evicted
 KEYS_MAX = 64
 FETCH_MAX = 1 << 20
 TIMEOUT_S = 5
 SA_PREFIX = "system:serviceaccount:"
+log = logging.getLogger(__name__)
 
 
 def _unb64(s):
@@ -100,15 +107,16 @@ class K8sSaAuthenticator:
         self.token_file, self.clock = token_file, clock
         self.ctx = ssl.create_default_context(cafile=ca)
         self._lock = threading.Lock()
-        self._keys, self._fetched, self._tried = {}, None, None
+        self._keys, self._fetched, self._tried, self._fetching = {}, None, None, False
         self._cache = OrderedDict()   # sha256(token) -> (expires at, identity)
+        self._reviews = Quotas(Limits(events_per_s=REVIEWS_PER_S, burst=REVIEW_BURST, buckets=CACHE_MAX))
 
     def authenticate(self, conn, frame):
         """None when the request carries no JWT-shaped bearer token (another authenticator's credential)."""
         token = bearer(conn)
         if token is None or token.count(".") != 2:
             return None
-        return self._verify(token) if self.jwks_uri else self._review(token)
+        return self._verify(token) if self.jwks_uri else self._review(token, conn.client_address[0])
 
     # --- JWKS ---
 
@@ -116,23 +124,39 @@ class K8sSaAuthenticator:
         with self._lock:
             now = self.clock()
             due = self._fetched is None or now - self._fetched >= JWKS_TTL_S or kid not in self._keys
-            if due and (self._tried is None or now - self._tried >= REFETCH_S):
-                self._tried = now
-                try:
-                    jwks = _https("GET", self.jwks_uri, self.ctx)
-                    keys = {}
-                    for jwk in jwks["keys"][:KEYS_MAX]:
-                        try:
-                            k = _jwk(jwk)
-                        except (AttributeError, KeyError, TypeError, ValueError):
-                            continue
-                        if k and isinstance(jwk.get("kid"), str):
-                            keys[jwk["kid"]] = k
+            fetch = due and not self._fetching and (self._tried is None or now - self._tried >= REFETCH_S)
+            if fetch:
+                self._tried, self._fetching = now, True
+        if fetch:
+            try:
+                keys = self._fetch()
+            finally:
+                with self._lock:
+                    self._fetching = False
+            if keys is not None:
+                with self._lock:
                     self._keys, self._fetched = keys, now
-                except (OSError, ValueError, KeyError, TypeError, http.client.HTTPException) as e:
-                    if self._fetched is None:
-                        raise RPCError("unavailable", f"JWKS fetch failed: {e}") from None
+        with self._lock:
+            if self._fetched is None or self.clock() - self._fetched >= JWKS_MAX_AGE_S:
+                raise RPCError("unavailable", "service-account keys unavailable; retry later")
             return self._keys.get(kid)
+
+    def _fetch(self):
+        """The issuer's keys by kid, or None (logged) when the fetch fails."""
+        try:
+            jwks = _https("GET", self.jwks_uri, self.ctx)
+            keys = {}
+            for jwk in jwks["keys"][:KEYS_MAX]:
+                try:
+                    k = _jwk(jwk)
+                except (AttributeError, KeyError, TypeError, ValueError):
+                    continue
+                if k and isinstance(jwk.get("kid"), str):
+                    keys[jwk["kid"]] = k
+            return keys
+        except (OSError, ValueError, KeyError, TypeError, http.client.HTTPException) as e:
+            log.warning("JWKS fetch from %s failed: %s", self.jwks_uri, e)
+            return None
 
     def _verify(self, token):
         h64, p64, s64 = token.split(".")
@@ -175,23 +199,25 @@ class K8sSaAuthenticator:
 
     # --- TokenReview ---
 
-    def _review(self, token):
+    def _review(self, token, peer):
         h, now = hashlib.sha256(token.encode()).digest(), self.clock()
         with self._lock:
             hit = self._cache.pop(h, None)
             if hit and hit[0] > now:
                 self._cache[h] = hit
                 return hit[1]
-        with open(self.token_file, encoding="utf-8") as f:   # re-read: the kubelet rotates it
-            own = f.read().strip()
+        self._reviews.take(peer, "TokenReview rate limit")
         body = json.dumps({"apiVersion": "authentication.k8s.io/v1", "kind": "TokenReview",
                            "spec": {"token": token, "audiences": [self.audience]}})
         try:
+            with open(self.token_file, encoding="utf-8") as f:   # re-read: the kubelet rotates it
+                own = f.read().strip()
             out = _https("POST", self.tokenreview.rstrip("/") + "/apis/authentication.k8s.io/v1/tokenreviews", self.ctx,
                          body, {"Authorization": f"Bearer {own}", "Content-Type": "application/json"})
             st = out["status"]
         except (OSError, ValueError, KeyError, TypeError, http.client.HTTPException) as e:
-            raise RPCError("unavailable", f"TokenReview failed: {e}") from None
+            log.warning("TokenReview at %s failed: %s", self.tokenreview, e)
+            raise RPCError("unavailable", "TokenReview unavailable; retry later") from None
         if not isinstance(st, dict) or st.get("authenticated") is not True or self.audience not in (st.get("audiences") or []):
             raise _refuse("TokenReview did not authenticate it for this audience")
         user = st.get("user") if isinstance(st.get("user"), dict) else {}
