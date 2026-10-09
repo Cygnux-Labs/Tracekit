@@ -4,12 +4,26 @@ A frame is `{"method": ..., ...}`; the transport only reads `method`. The caller
 every frame by the transport's authenticator, never taken from the frame's content.
 """
 import json
+import os
 
+from tracekit import __version__
 from tracekit.format.canon import StrictJSONError, loads_strict
 from tracekit.signer.quotas import MAX_LINE
-from tracekit.signer.rpc_schema import RPCError
+from tracekit.signer.rpc_schema import RPC_VERSION, RPCError
 
 READ_TIMEOUT_S = 30
+
+
+def hello(proto=(RPC_VERSION, RPC_VERSION), version=__version__):
+    """The answer to `hello`, the first frame on every connection; a dev signer also publishes it as endpoint.json."""
+    return {"proto": list(proto), "version": version, "pid": os.getpid()}
+
+
+def answering_hello(handle_frame, hello):
+    """`handle_frame` that answers `hello` frames with `hello`."""
+    def handle(identity, frame):
+        return hello if frame.get("method") == "hello" else handle_frame(identity, frame)
+    return handle
 
 
 def read_frame(rfile):
