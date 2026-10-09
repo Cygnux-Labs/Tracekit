@@ -28,7 +28,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 HOOK = install._hook_command(install.V2_HOOK)
 
 
-@unittest.skipUnless(os.name == "posix", "the v2 client speaks Unix sockets only")
+@unittest.skipUnless(os.name == "posix", "POSIX paths, signals and shells; DevSignerOverTcp (test_signer_dev.py) runs everywhere")
 class HookV2(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.mkdtemp(dir="/tmp")   # short path: macOS caps socket paths at 104 bytes

@@ -937,7 +937,6 @@ def serve_dev(runtime_dir, open_handler, proto=(rpc_schema.RPC_VERSION, rpc_sche
         server = UnixServer(sock, handle)
         files.write_json(endpoint, info)
     else:
-        # lean: the Windows transport follows S3 but no client speaks it yet (sdk/client.py connect); test it with one
         from tracekit.transport.tcp_dev import TcpDevServer
         server = TcpDevServer(endpoint, _dev_token(), handle, publish=info)
     active, last, mutex = [0], [time.monotonic()], threading.Lock()
