@@ -1742,6 +1742,7 @@
           "properties": {
             "v1_kid": {
               "type": "string",
+              "maxLength": 24,
               "pattern": "^ed25519:[0-9a-f]{16}$"
             },
             "v1_last_seq": {
@@ -1751,6 +1752,7 @@
             },
             "v1_head": {
               "type": "string",
+              "maxLength": 64,
               "pattern": "^[0-9a-f]{64}$"
             }
           }
