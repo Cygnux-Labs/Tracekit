@@ -256,6 +256,13 @@ class RunHandle:
         return self.call("complete", tool_call_id=tool_call_id, status=status,
                          **{**self._decided.pop(tool_call_id, {}), **fields})
 
+    def approval_consume(self, tool_call_id, tool, args, approval_id_hint=None, **fields):
+        """Call right before running a call that was not denied: {"ok": True} when it may run now. `args` as for
+        `decide`; `approval_id_hint` is the approval id the framework saved, if any."""
+        hint = {"approval_id_hint": approval_id_hint} if approval_id_hint else {}
+        return self.call("approval_consume", tool_call_id=tool_call_id, tool=tool, args=args,
+                         **{"args_source": "raw" if isinstance(args, str) else "parsed", **hint, **fields})
+
     def close(self, reason=None):
         if not self.closed:
             self.call("close_run", **({"reason": reason} if reason else {}))

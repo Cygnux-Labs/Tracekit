@@ -154,7 +154,8 @@ class TestLifecycle(Lifecycle):
         closing = [e for e in self.events(idle["run_id"]) if e["type"] == "run.closing"]
         self.assertEqual([(e["data"]["reason"], e["source"]) for e in closing], [("idle_timeout", "signer")])
         types = [e["type"] for e in self.events(waiting["run_id"])]
-        self.assertEqual(types[-3:], ["approval", "run.closing", "run.final"])   # closed only after the approval
+        # closed only after the approval; nothing can consume it once the run is final
+        self.assertEqual(types[-4:], ["approval", "run.closing", "approval.expired", "run.final"])
         self.assertEqual(self.events(idle["run_id"])[-1]["type"], "run.final")
 
     def test_registry_log_proves_registration_and_final(self):

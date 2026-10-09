@@ -3,14 +3,16 @@
     from tracekit.testing import FakeSigner
     signer = FakeSigner(rule=lambda tool, args: ("ask", ["R1"]) if tool == "pay" else ("allow", []))
 
-It follows the RPC contract (schemas, error codes, idempotency, run tokens, client_seq gaps) but signs nothing,
-keeps nothing on disk and has one caller identity, so approvals are always self-approvals. Ids are deterministic.
+It follows the RPC contract (schemas, error codes, idempotency, run tokens, client_seq gaps, approval binding) but
+signs nothing, keeps nothing on disk and has one caller identity, so approvals are always self-approvals. Ids are
+deterministic.
 
 `serve_fake(runtime_dir)` serves one as a dev signer the way tracekit/sdk/autospawn.py expects; run it as
 `TRACEKIT_DEV_SIGNER_CMD="python -m tracekit.testing"` to have clients auto-spawn it.
 """
 import argparse
 import copy
+import datetime
 import hashlib
 import hmac
 import json
@@ -30,6 +32,9 @@ from tracekit.signer import rpc_schema
 from tracekit.signer.rpc_schema import RPCError
 
 
+POLICY_HASH = "sha256:" + "0" * 64
+
+
 def _allow(tool, args):
     return "allow", []
 
@@ -42,6 +47,7 @@ class FakeSigner:
         self._done = {}        # (identity, request_id) -> (payload digest, response)
         self._runs = {}
         self._approvals = {}
+        self._index = {}       # (run_id, tool_call_id, attempt) -> approval_id
 
     def _id(self, prefix):
         self._n += 1
@@ -115,30 +121,17 @@ class FakeSigner:
         def handle(req):
             run = self._run(req)
             self._check_seq(run, req)
-            a = self._approval(req["run_id"], req["approval_id"]) if "approval_id" in req else None
-            try:
-                args = loads_strict(req["args"]) if req["args_source"] == "raw" else req["args"]
-                digest = event_hash({"tool": req["tool"], "args": args})
-            except (StrictJSONError, rfc8785.CanonicalizationError):
-                decision, rule_ids, digest = "deny", ["TK-ARGS-INVALID"], None
-            else:
-                if a is None:
-                    decision, rule_ids = self.rule(req["tool"], args)
-                elif a["tool_call_id"] != req["tool_call_id"] or a["args_digest"] != digest:
-                    decision, rule_ids = "deny", ["TK-APPROVAL-MISMATCH"]
-                else:
-                    decision, rule_ids = {"approved": ("allow", ["TK-APPROVED"]), "requested": ("ask", a["rule_ids"])
-                                          }.get(a["state"], ("deny", ["TK-APPROVAL-" + a["state"].upper()]))
-            run["calls"][req["tool_call_id"]] = {"args_digest": digest, "decision": decision, "rule_ids": rule_ids}
+            args, digest = _digest(req)
+            decision, rule_ids = self.rule(req["tool"], args) if digest else ("deny", ["TK-ARGS-INVALID"])
+            run["calls"][req["tool_call_id"]] = {"args_digest": digest, "decision": decision, "rule_ids": rule_ids,
+                                                 "attempt": req.get("attempt", 0), "tool": req["tool"],
+                                                 "args_source": req["args_source"], "args": req["args"]}
             decision_id = self._id("dec")
             run["decisions"][decision_id] = (req["tool_call_id"], req.get("attempt", 0), digest)
             seq = self._append(run, "policy.decision", {"tool_call_id": req["tool_call_id"], "tool": req["tool"],
                                                       "decision_id": decision_id,
                                                       "attempt": req.get("attempt", 0), "args_source": req["args_source"],
                                                       "decision": decision, "rule_ids": rule_ids}, req)
-            if decision == "allow" and a is not None:
-                a["state"] = "consumed"
-                self._append(run, "approval.consumed", {"approval_id": req["approval_id"]})
             return {"decision": decision, "decision_id": decision_id, "rule_ids": rule_ids, "run_seq": seq}
         return self._call("decide", req, handle)
 
@@ -170,17 +163,30 @@ class FakeSigner:
 
     def approval_request(self, req):
         def handle(req):
-            run = self._run(req)
+            run, attempt = self._run(req), req.get("attempt", 0)
+            k = (req["run_id"], req["tool_call_id"], attempt)
+            if k in self._index:
+                a = self._approvals[self._index[k]]
+                return {"approval_id": self._index[k], "state": a["state"], "expires_at": a["expires_at"]}
             call = run["calls"].get(req["tool_call_id"])
-            if call is None or call["decision"] != "ask":
+            if call is None or call["decision"] != "ask" or call["attempt"] != attempt:
                 raise RPCError("unknown_tool_call", f"{req['tool_call_id']} has no pending `ask` decision")
-            approval_id = self._id("apr")
-            self._approvals[approval_id] = {"run_id": req["run_id"], "tool_call_id": req["tool_call_id"],
-                                            "args_digest": call["args_digest"], "rule_ids": call["rule_ids"],
-                                            "state": "requested"}
+            approval_id = self._index[k] = self._id("apr")
+            # lean: approvals never expire here; the real signer enforces expires_at
+            expires_at = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=1)
+                          ).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+            a = self._approvals[approval_id] = {
+                "run_id": req["run_id"], "tool_call_id": req["tool_call_id"], "attempt": attempt, "tool": call["tool"],
+                "args_source": call["args_source"], "args": call["args"], "args_digest": call["args_digest"],
+                "rule_ids": call["rule_ids"], "policy_hash": POLICY_HASH, "requester": self.identity,
+                "expires_at": expires_at, "state": "requested", **({"reason": req["reason"]} if "reason" in req else {})}
+            a["binding_digest"] = event_hash({"v": 1, "approval_id": approval_id, "nonce": self._id("nonce"),
+                                              **{k: a[k] for k in ("run_id", "tool_call_id", "attempt", "tool",
+                                                                   "args_digest", "args_source", "policy_hash",
+                                                                   "expires_at")}})
             self._append(run, "approval.request", {"approval_id": approval_id, "tool_call_id": req["tool_call_id"],
-                                                   "rule_ids": call["rule_ids"]})
-            return {"approval_id": approval_id, "state": "requested"}
+                                                   "rule_ids": call["rule_ids"], "binding_digest": a["binding_digest"]})
+            return {"approval_id": approval_id, "state": "requested", "expires_at": expires_at}
         return self._call("approval_request", req, handle)
 
     def approval_decide(self, req):
@@ -194,17 +200,58 @@ class FakeSigner:
             if run["closed"]:
                 raise RPCError("run_closed", a["run_id"])
             a["state"] = "approved" if req["decision"] == "approve" else "rejected"
-            self._append(run, "approval", {"approval_id": req["approval_id"],
-                                                               "decision": req["decision"], "approver": self.identity})
+            self._append(run, "approval", {"approval_id": req["approval_id"], "decision": req["decision"],
+                                           "approver": self.identity, "self_approved": True})
             return {"approval_id": req["approval_id"], "state": a["state"], "self_approved": True}
         return self._call("approval_decide", req, handle)
 
     def approval_wait(self, req):
         def handle(req):
             self._run(req, open_only=False)
-            # lean: answers at once and never expires approvals; a real signer blocks up to timeout_ms
+            # lean: answers at once; a real signer blocks up to timeout_ms
             return {"approval_id": req["approval_id"], "state": self._approval(req["run_id"], req["approval_id"])["state"]}
         return self._call("approval_wait", req, handle)
+
+    def approval_consume(self, req):
+        def handle(req):
+            run, attempt, hint = self._run(req), req.get("attempt", 0), req.get("approval_id_hint")
+            aid = self._index.get((req["run_id"], req["tool_call_id"], attempt))
+            a, call = self._approvals.get(aid), run["calls"].get(req["tool_call_id"])
+            digest = _digest(req)[1]
+            if hint is not None and hint != aid:
+                code = "TK-APPROVAL-UNBOUND"
+            elif digest is None:
+                code = "TK-ARGS-INVALID"
+            elif a is None:
+                if call and call["attempt"] == attempt and call["decision"] == "allow" and call["args_digest"] == digest:
+                    return {"ok": True, "rule_ids": []}
+                code = "TK-APPROVAL-REQUIRED"
+            elif a["args_digest"] != digest:
+                self._append(run, "approval.binding_mismatch", {"approval_id": aid, "tool_call_id": req["tool_call_id"]})
+                return {"ok": False, "rule_ids": ["TK-APPROVAL-MISMATCH"], "approval_id": aid}
+            elif a["state"] != "approved":
+                code = "TK-APPROVAL-" + a["state"].upper()
+            else:
+                a["state"] = "consumed"
+                self._append(run, "approval.consumed", {"approval_id": aid})
+                return {"ok": True, "rule_ids": ["TK-APPROVED"], "approval_id": aid}
+            self._append(run, "approval.refused", {"tool_call_id": req["tool_call_id"], "rule_ids": [code]})
+            return {"ok": False, "rule_ids": [code], **({"approval_id": aid} if a else {})}
+        return self._call("approval_consume", req, handle)
+
+    def approval_get(self, req):
+        def handle(req):
+            a = self._approvals.get(req["approval_id"])
+            if a is None:
+                raise RPCError("unknown_approval", req["approval_id"])
+            return {"approval_id": req["approval_id"], **{k: v for k, v in a.items() if k != "args_digest"}}
+        return self._call("approval_get", req, handle)
+
+    def approval_list(self, req):
+        return self._call("approval_list", req, lambda req: {"approvals": [
+            {"approval_id": aid, **{k: a[k] for k in rpc_schema.RESPONSES["approval_list"]["properties"]["approvals"]
+                                    ["items"]["required"] if k != "approval_id"}}
+            for aid, a in self._approvals.items() if req.get("run_id") in (None, a["run_id"])]})
 
     def close_run(self, req):
         def handle(req):
@@ -229,6 +276,15 @@ class FakeSigner:
 
     def checkpoint_nudge(self, req):
         return self._call("checkpoint_nudge", req, lambda req: {"scheduled": True})
+
+
+def _digest(req):
+    """(the parsed arguments, sha256(JCS({tool, args}))), or (None, None) when they are not canonical JSON."""
+    try:
+        args = loads_strict(req["args"]) if req["args_source"] == "raw" else req["args"]
+        return args, event_hash({"tool": req["tool"], "args": args})
+    except (StrictJSONError, rfc8785.CanonicalizationError):
+        return None, None
 
 
 def serve_fake(runtime_dir, signer=None, proto=(rpc_schema.RPC_VERSION, rpc_schema.RPC_VERSION), version=__version__,
@@ -288,6 +344,8 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser(prog="python -m tracekit.testing", description="serve a FakeSigner as the dev signer")
     ap.add_argument("--proto", default=f"{rpc_schema.RPC_VERSION}-{rpc_schema.RPC_VERSION}", help="MIN-MAX")
     ap.add_argument("--version", default=__version__)
+    ap.add_argument("--ask", action="append", default=[], metavar="TOOL", help="answer `ask` for this tool")
     a = ap.parse_args()
-    sys.exit(serve_fake(runtime_dir(), proto=tuple(map(int, a.proto.split("-"))), version=a.version,
+    signer = FakeSigner(lambda tool, args: ("ask", ["FAKE-ASK"]) if tool in a.ask else ("allow", []))
+    sys.exit(serve_fake(runtime_dir(), signer, proto=tuple(map(int, a.proto.split("-"))), version=a.version,
                         idle_s=float(os.environ.get("TRACEKIT_DEV_IDLE", 900))))
