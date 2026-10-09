@@ -52,7 +52,7 @@ reach is what makes truncating or re-signing the whole ledger detectable.
 ## Quickstart (2 minutes)
 
 ```bash
-pip install tracekit-ai     # or, from a clone: pip install .
+pip install tracekit-ai     # first PyPI release: 0.3.0; until then, from a clone: pip install .
 tracekit demo               # exit 0
 ```
 
@@ -88,7 +88,7 @@ Then trace Claude Code for real (dev mode: the signer runs as your user), and ex
 tracekit init --dev
 tracekit status
 tracekit export --last -o run.tkb
-tracekit verify run.tkb --key ~/.tracekit-signer/keys/signer.pub --witness git:$HOME/.tracekit-signer/witness
+tracekit verify run.tkb --key ~/.tracekit-signer/ledger/signer.pub --witness git:$HOME/.tracekit-signer/witness
 ```
 
 Dev mode keeps the signer, its key and a local git witness in `~/.tracekit-signer`. Without `--key` or `--witness` the
@@ -132,7 +132,8 @@ spots a run touched as warnings. The claims are mapped one by one in the [threat
 Hooks and SDK wrappers gate a call before it runs; the OpenTelemetry receiver only records. Platform support for each
 mode is in [platforms](docs/portability.md).
 
-Separate packages under `contrib/`: [proofpack](contrib/proofpack/README.md) (auditor zip with a standalone verifier),
+Separate packages under `contrib/`: [proofpack](contrib/proofpack/README.md) (auditor zip: bundle, readable report and control map; auditors verify with
+their own Tracekit install),
 [query](contrib/query/README.md) (SQL and MCP over the ledger), [stagehand](contrib/stagehand/README.md),
 [causeway](contrib/causeway/README.md), [onchain](contrib/onchain/README.md).
 
@@ -146,8 +147,10 @@ regex tripwires that can be evaded; the guarantees come from the signer, the cha
 
 ## System mode
 
-On Linux, `sudo tracekit init --user "$USER"` runs the signer as its own OS user, so the agent's user cannot read the
-key or change the ledger, and tool calls are blocked while the signer is down (fail closed). macOS system mode is
+On Linux, run from a clone of this repository with a root-owned Python
+(`sudo /usr/bin/python3 -m tracekit init --user <agent-user>`). Tracekit installs itself into a root-owned virtualenv
+at `/opt/tracekit` and runs the signer as its own OS user, so the agent's user cannot read the key, change the ledger
+or modify the code that records it, and tool calls are blocked while the signer is down (fail closed). macOS system mode is
 experimental; Windows runs dev mode only. See [platforms](docs/portability.md) and [signing](docs/signing.md).
 
 ## Witnesses
