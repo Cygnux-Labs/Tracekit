@@ -8,7 +8,7 @@ endpoint, because in v0.2 only tracekitd writes the ledger.
 
 v0.2 extras are shown as alerts: blocked or held calls, capture gaps, trace tampering,
 proxy/hook mismatches and approvals. Content that the ledger holds only as a hash is shown as
-`[hashed sha256:...]`.
+`[hashed · N bytes]`; the hash itself is in the record's DETAIL view.
 
     tracekit observe [--home /var/lib/tracekit] [--port 7777]
 """
@@ -48,7 +48,7 @@ def _show(c):
     if "value" in c:
         return c["value"]
     if "hash" in c:
-        return f"[hashed {c['hash'][:19]}… {c.get('size', '?')} bytes{', redacted' if c.get('redacted') else ''}]"
+        return f"[hashed · {c.get('size', '?')} bytes{' · redacted' if c.get('redacted') else ''}]"  # the hash is in DETAIL
     return c
 
 

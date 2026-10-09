@@ -97,6 +97,11 @@ sudo tracekit init --user "$USER" --managed      # or: hooks in Claude Code's ad
 tracekit status
 ```
 
+Run init with a root-owned Python (`sudo /usr/bin/python3 -m tracekit init ...`). It installs the signer into a
+root-owned virtualenv at `/opt/tracekit`: from PyPI (`tracekit-ai`, the same version) when Tracekit was pip-installed,
+or from a source checkout only if that is root-owned (`sudo git clone https://github.com/Cygnux-Labs/Tracekit
+/usr/local/src/Tracekit`).
+
 Install the agent CLI system-wide (root-owned, for example `sudo npm install -g @anthropic-ai/claude-code`) and init registers it as the **harness** (Linux): the signer then accepts a run only from that program's process tree, so a script the agent starts elsewhere cannot fabricate a run (`--harness [NAME=]PATH` to name it explicitly; see the [threat model](docs/threat-model-laptop.md)).
 
 **Anywhere, to try it.** A same-user signer; bundles are marked and the verifier warns:
@@ -285,6 +290,8 @@ Verify a bundle in a GitHub Actions workflow with the bundled action:
 ```
 
 Without a pinned key or a witness the result is reported as unanchored, exactly as on the command line.
+`require-anchor` defaults to `true`, so an unanchored bundle fails the step; set `require-anchor: "false"` to only
+report it.
 
 ## Privacy and security
 
