@@ -144,6 +144,15 @@ class Recording:
             self.assertEqual((resp["stop_reason"], self.ids(resp), resp.get("error")),
                              ("tool_use", [("toolu_s", "client")], None))
 
+    def test_messages_stream_partly_read_then_finished(self):
+        c = anthropic_client(lambda r: (200, sse(ANTHROPIC_EVENTS), True))
+        with c.messages.stream(model="claude-x", max_tokens=10, messages=[]) as s:
+            next(iter(s))
+            self.assertEqual(s.get_final_message().stop_reason, "tool_use")
+        resp = self.one()[1]
+        self.assertEqual((resp["stop_reason"], self.ids(resp), resp.get("error")),
+                         ("tool_use", [("toolu_s", "client")], None))
+
     def test_messages_parse(self):
         anthropic_client(lambda r: (200, ANTHROPIC_MSG, False)).messages.parse(model="claude-x", max_tokens=10,
                                                                                messages=[])
