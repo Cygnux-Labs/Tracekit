@@ -52,11 +52,12 @@ def _started_flag(run_id):
     return client.state_file(run_id, ".started")
 
 
-def run_start_event(p, pol, cwd):
+def run_start_event(p, pol, cwd, reasoning=True):
     cfg = client.client_config()
     remote = _git(["config", "--get", "remote.origin.url"], cwd) if cwd else None
     red_remote = privacy.redact_text(remote)[0] if remote else None
-    sources = ["hook"] + (["proxy"] if cfg.get("proxy") else []) + (["transcript"] if pol.get("reasoning_capture") else [])
+    reasoning = reasoning and bool(pol.get("reasoning_capture", False))
+    sources = ["hook"] + (["proxy"] if cfg.get("proxy") else []) + (["transcript"] if reasoning else [])
     return {**_base(p), "agent_id": "main", "parent_id": None, "type": "run.start", "data": {
         "agent": {"name": AGENT_NAME, "version": os.environ.get("CLAUDE_CODE_VERSION")},
         "model": p.get("model"), "repo": red_remote, "commit": _git(["rev-parse", "HEAD"], cwd) if cwd else None,
@@ -65,7 +66,7 @@ def run_start_event(p, pol, cwd):
         "policy": {"version": str(pol.get("version", "unversioned")), "hash": policy_mod.policy_hash(pol)},
         "capture_sources": sources, "sandbox": os.environ.get("TRACEKIT_SANDBOX", "unknown"),
         "content_capture": pol.get("content_capture", "hashed"),
-        "reasoning_capture": bool(pol.get("reasoning_capture", False)),
+        "reasoning_capture": reasoning,
         "signer_isolation": cfg.get("signer_isolation", "same-user")}}
 
 
@@ -240,8 +241,9 @@ def wait_for_approval(ev_call, decision, pol):
     return False, "approval timed out"
 
 
-def build_events(p, pol):
-    """Return (events, attach_for_first, deny_decision_or_None)."""
+def build_events(p, pol, reasoning=True):
+    """Return (events, attach_for_first, deny_decision_or_None). reasoning=False: never parse the transcript, whatever
+    the policy says (the policy itself is left as is: its hash is what run.start and every decision cite)."""
     name = p.get("hook_event_name")
     cwd = p.get("cwd")
     cc = pol.get("content_capture", "hashed")
@@ -250,7 +252,7 @@ def build_events(p, pol):
     flag = _started_flag(b["run_id"])
     phash = policy_mod.policy_hash(pol)
     if name == "SessionStart" or not os.path.exists(flag):
-        evs.append(run_start_event(p, pol, cwd))
+        evs.append(run_start_event(p, pol, cwd, reasoning))
         try:
             os.makedirs(os.path.dirname(flag), exist_ok=True)
             with open(flag, "w") as f:
@@ -261,7 +263,8 @@ def build_events(p, pol):
         start_hash = read_text(flag).strip()
     except OSError:
         start_hash = ""
-    evs += _transcript_events(p, pol)
+    if reasoning:
+        evs += _transcript_events(p, pol)
     if name == "UserPromptSubmit":
         evs.append({**b, "type": "user.prompt", "data": {"content": privacy.content(p.get("prompt") or "", cc)}})
     elif name == "PreToolUse":
@@ -329,7 +332,7 @@ def main(harness_reasoning=True):
             return 0
         d = policy_mod.evaluate(pol, p.get("tool_name") or "?", _as_dict(p.get("tool_input")), p.get("cwd"))
         return 2 if pol.get("fail_mode") == "closed" or d["decision"] in ("deny", "ask") else 0
-    evs, deny = build_events(p, pol if harness_reasoning else dict(pol, reasoning_capture=False))
+    evs, deny = build_events(p, pol, reasoning=harness_reasoning)
     signer_down = rejected = None
     for ev in evs:
         try:
