@@ -1,7 +1,11 @@
-"""OpenTelemetry ingest: receive OTLP traces and record the agent-relevant spans as signed ledger events.
+"""OpenTelemetry: receive OTLP traces and record the agent-relevant spans as signed ledger events, and push signed
+runs out as OTLP/JSON.
 
     tracekit otel serve --experimental         # OTLP/HTTP on 127.0.0.1:4318, forwards to the configured signer
+    tracekit otel serve --experimental --grpc-port 4317    # also OTLP/gRPC (needs grpcio)
     OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://127.0.0.1:4318/v1/traces python my_agent.py
+    tracekit otel push --endpoint URL          # send finished runs to an OTLP/HTTP backend (each span carries
+                                               # tracekit.entry_hash)
 
 Remote agents send to the authenticated ingest gateway instead (`tracekit ingest serve` also serves
 /v1/traces; docs/remote-ingest.md).
@@ -12,6 +16,7 @@ What is recorded
   OpenInference ``LLM``) become ``model.exchange`` request + response events.
 * Tool executions (gen_ai ``execute_tool``, OpenLLMetry ``tool``, OpenInference ``TOOL``) become
   ``tool.call`` + ``policy.decision`` + ``tool.result``.
+* A trace's root span ends the run (``run.end``, with the root's error if any).
 * Other spans (HTTP, DB, framework internals) are counted and skipped: they are not agent actions.
 
 What it means (and does not)
@@ -22,8 +27,10 @@ What it means (and does not)
   content_capture=full, secrets redacted first).
 
 Robustness
-* Exporters retry: every (trace, span, event kind) is written at most once per receiver process, so a retried
-  batch is acknowledged without duplicating evidence.
+* Exporters retry: the receiver remembers the most recent DEDUPE_CAP (trace, span, event kind) keys it has written
+  and acknowledges a retried batch without writing them again. The memory is per process and bounded: after a
+  restart, or once a key is evicted, a retry can write a duplicate, and a trace split across a restart sends
+  a second ``run.start`` for its run.
 * A signer outage returns 503 (retryable), so the exporter keeps the batch; events already written are not
   written again on retry.
 * An event the signer rejects is reported as an OTLP partial success; the rest of the batch still lands.

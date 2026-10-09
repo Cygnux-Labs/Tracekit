@@ -306,7 +306,7 @@ def _write_signer_config(home, witnesses, checkpoint_every, socket_path, proxy=N
 HARNESS_COMMANDS = {"claude": "claude", "codex": "codex", "cursor": "cursor-agent", "gemini": "gemini"}
 # 0.3: lets tracekitd read /proc/<pid>/exe of the agent's processes to find the harness that sent an event. It is only
 # set when harnesses are registered. The signer already holds the signing key, so this does not widen what a
-# compromised signer could do to the record; it does let it inspect the agent's processes (docs/threat-model.md).
+# compromised signer could do to the record; it does let it inspect the agent's processes (docs/threat-model-laptop.md).
 UNIT_CAPS = "AmbientCapabilities=CAP_SYS_PTRACE\nCapabilityBoundingSet=CAP_SYS_PTRACE\n"
 
 
@@ -351,7 +351,7 @@ def harness_config(specs, agent="claude"):
             print(f"note: harness binding off: {e}")
             return {"harness_binding": "off"}
     print(f"note: harness binding off: no root-owned `{HARNESS_COMMANDS.get(agent, agent)}` on PATH. Without it, any "
-          "process running as the agent's user can start a run (docs/threat-model.md). Re-run with --harness PATH.")
+          "process running as the agent's user can start a run (docs/threat-model-laptop.md). Re-run with --harness PATH.")
     return {"harness_binding": "off"}
 
 
