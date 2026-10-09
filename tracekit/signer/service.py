@@ -10,9 +10,12 @@ signer.yaml:
     data_dir: /var/lib/tracekit-signer      # keys/ and store/; relative paths are from the config file
     socket: /run/tracekit/signer.sock        # Unix socket transport (peer uid, per frame on Linux)
     tcp_endpoint: /run/tracekit/endpoint.json   # loopback TCP dev transport (token, mutual HMAC)
+    http: {listen: 0.0.0.0:8443, ...}        # HTTPS with k8s_sa, mtls or token identity (tracekit/transport/http.py)
     durability: ack-on-write                 # or ack-on-fsync
     tenant: default                          # tenant of callers not in `tenants`
-    tenants: {"uid:1001": acme}              # identity -> tenant (recorded as attested)
+    tenants: {"uid:1001": acme, "k8s_sa:system:serviceaccount:acme:*": acme}   # identity or prefix* -> tenant (attested)
+    authorize: {"mtls:spiffe://acme/agent": [register_run, decide, complete, close_run]}   # identity or prefix* ->
+                                             # methods; uid callers default to all, every other scheme to none
     multi_tenant_apps: ["uid:1002"]          # may assert a tenant per run (recorded as not attested)
     migrators: ["uid:1003"]                  # may register `migrated` runs
     analyzers: ["uid:1004"]                  # may register findings runs, each bound to the run it analyses
@@ -22,6 +25,7 @@ signer.yaml:
     limits: {events_per_s: 200, burst: 400}  # tracekit.signer.quotas.Limits
     policy: /etc/tracekit/policy.yaml        # policy v2 (YAML or JSON); default tracekit/policy2/packs/dev.yaml
     origin: tracekit.example.org/log/1       # checkpoint origin, the log key's name; default tracekit.local/<log_id>
+    metrics: {listen: 127.0.0.1:9464}        # Prometheus GET /metrics on its own port (tracekit.signer.metrics)
     acknowledge_rollback: false
 
 Startup (04-design §2.6): the storage lock is taken before any socket is touched; the log is replayed, its chain
@@ -79,7 +83,7 @@ from tracekit.identity.base import CallerIdentity
 from tracekit.locking import lock_file
 from tracekit.policy2 import compile as policy_compile
 from tracekit.policy2.engine import Engine
-from tracekit.signer import rpc_schema
+from tracekit.signer import metrics, rpc_schema
 from tracekit.signer.pipeline import SIGNER_RUN, RecordLog, approval, subject
 from tracekit.signer.quotas import Limits, Quotas
 from tracekit.signer.rpc_schema import REQUESTS, RPCError
@@ -100,8 +104,10 @@ TICK_S = 1.0
 CHECKPOINT_S, CHECKPOINT_MIN_S = 10.0, 1.0
 GRACE_S, IDLE_S = 5.0, 3600.0
 FAIL_MODES = {"default": "closed"}
-CONFIG_KEYS = {"data_dir", "socket", "tcp_endpoint", "durability", "tenant", "tenants", "limits", "acknowledge_rollback",
-               "policy", "multi_tenant_apps", "migrators", "analyzers", "fail_modes", "grace_s", "idle_s", "origin"}
+CONFIG_KEYS = {"data_dir", "socket", "tcp_endpoint", "http", "durability", "tenant", "tenants", "authorize", "limits",
+               "acknowledge_rollback", "policy", "multi_tenant_apps", "migrators", "analyzers", "fail_modes", "grace_s",
+               "idle_s", "origin", "metrics"}
+DEV_GRANT = {"token:dev": sorted(REQUESTS)}   # the dev token of the loopback TCP transport (scoped by DevToken itself)
 
 
 def load_policy(path=DEFAULT_POLICY, backend=None):
@@ -142,6 +148,15 @@ def _secret(path, make):
     return data
 
 
+def lookup(table, sub, default=None):
+    """table[sub], else the entry of the longest `prefix*` key that `sub` starts with, else `default`."""
+    if sub in table:
+        return table[sub]
+    # lean: scans every key per call; a prefix trie if maps grow past a few hundred entries
+    best = max((k for k in table if k.endswith("*") and sub.startswith(k[:-1])), key=len, default=None)
+    return default if best is None else table[best]
+
+
 def _process_identity():
     return CallerIdentity("uid", str(os.getuid()) if hasattr(os, "getuid") else "0", True)
 
@@ -150,16 +165,22 @@ class SignerService:
     def __init__(self, data_dir, policy=None, identity=None, tenant="default", tenants=None, limits=Limits(),
                  durability=ACK_ON_WRITE, witnesses=(), acknowledge_rollback=False, open_storage=None, isolation=None,
                  multi_tenant_apps=(), migrators=(), analyzers=(), fail_modes=None, grace_s=GRACE_S, idle_s=IDLE_S,
-                 bridge=None, origin=None):
+                 bridge=None, origin=None, authorize=None):
         """`identity` answers the in-process SignerAPI calls (default: this process's uid); transports call
         handle_frame with the identity they established. `policy` is a policy2 Engine (default: load_policy()).
         `open_storage()` defaults to file storage in data_dir/store. `origin` names the log in its checkpoints.
-        `multi_tenant_apps`, `migrators` and `analyzers` are identities ("scheme:subject").
+        `multi_tenant_apps`, `migrators` and `analyzers` are identities ("scheme:subject"); `tenants` and `authorize`
+        map identities or `prefix*` to a tenant and to the methods they may call.
         `isolation` fixes the signer_isolation label of every run (a dev signer: same-user). `bridge`: see RecordLog."""
         fail_modes = dict(fail_modes or FAIL_MODES)
         if not all(isinstance(k, str) and v in ("open", "closed") for k, v in fail_modes.items()):
             raise ValueError("fail_modes maps tool classes to open or closed")
-        open_storage = open_storage or (lambda: FileStorage(os.path.join(data_dir, "store"), durability))
+        self.metrics = metrics.SignerMetrics()
+        authorize = dict(authorize or {})
+        if not all(isinstance(m, list) and set(m) <= set(REQUESTS) for m in authorize.values()):
+            raise ValueError(f"authorize maps identities to lists of methods out of {sorted(REQUESTS)}")
+        open_storage = open_storage or (lambda: FileStorage(os.path.join(data_dir, "store"), durability,
+                                                            self.metrics.fsync_seconds.observe))
         storage = open_storage()   # takes the storage lock before anything else
         try:
             keys = os.path.join(data_dir, "keys")
@@ -172,16 +193,16 @@ class SignerService:
             self.quotas = Quotas(limits)
             salt = _secret(os.path.join(keys, "registry_salt.key"), lambda: os.urandom(32))
             self._log_key = _secret(os.path.join(keys, "log.key"), lambda: crypto.generate()[0])
-            self.log = RecordLog(storage, open_storage, sign, self.quotas, salt, bridge)
+            self.log = RecordLog(storage, open_storage, sign, self.quotas, salt, self.metrics, bridge)
         except BaseException:
             storage.close()
             raise
         self.policy, self.isolation = policy or load_policy(), isolation
         self.identity = identity or _process_identity()
-        self.tenant, self.tenants = tenant, dict(tenants or {})
+        self.tenant, self.tenants, self.authorize = tenant, dict(tenants or {}), authorize
         self.multi_tenant_apps, self.migrators, self.analyzers = set(multi_tenant_apps), set(migrators), set(analyzers)
         self.fail_modes, self.grace_s, self.idle_s = fail_modes, grace_s, idle_s
-        self._swept = time.monotonic()
+        self._swept = self._noted = time.monotonic()
         self._args_dir = os.path.join(data_dir, "approvals")   # approval_id -> the encrypted args of a live approval
         self._cond = threading.Condition()
         self._refusals, self._refusals_lock = {}, threading.Lock()
@@ -203,6 +224,17 @@ class SignerService:
         except BaseException:
             self.log.close()
             raise
+        for name, help, fn in (
+                ("tracekit_signer_queue_depth", "Items waiting for the writer.", self.log.queue_depth),
+                ("tracekit_signer_fsync_lag_seconds", "Seconds the oldest written but unsynced record has waited.",
+                 lambda: self.log.storage.unsynced_s()),
+                ("tracekit_signer_open_runs", "Runs registered and not yet closing.",
+                 lambda: sum(not r["closed"] for k, r in list(self.log.runs.items()) if k != SIGNER_RUN)),
+                ("tracekit_signer_pending_approvals", "Approvals requested and not yet answered.",
+                 lambda: sum(a["state"] == "requested" for a in list(self.log.approvals.values()))),
+                ("tracekit_signer_checkpoint_age_seconds", "Seconds since this signer last wrote a checkpoint note "
+                 "(since start when it has written none).", lambda: time.monotonic() - self._noted)):
+            self.metrics.add(metrics.Gauge(name, help, fn))
         self._ticker = threading.Thread(target=self._tick_loop, name="tracekit-signer-ticker", daemon=True)
         self._ticker.start()
         self._checkpointer = threading.Thread(target=self._checkpoint_loop, name="tracekit-signer-checkpointer",
@@ -243,12 +275,18 @@ class SignerService:
         try:
             if not isinstance(method, str) or method not in REQUESTS:
                 raise RPCError("invalid_request", f"unknown method {str(method)[:64]}")
+            granted = lookup(self.authorize, subject(identity))
+            if granted is None:   # unconfigured: a uid keeps every method, any other scheme gets none
+                granted = REQUESTS if identity.scheme == "uid" else ()
+            if method not in granted:
+                raise RPCError("forbidden", f"{subject(identity)[:256]} is not authorized for {method}")
             errs = rpc_schema.validate(REQUESTS[method], req)
             if errs:
                 raise RPCError("invalid_request", "; ".join(errs))
             self.quotas.check_strings(req)
             return getattr(self, "_" + method)(identity, req)
         except RPCError as e:
+            self.metrics.refusals.inc(e.code)
             now, k = time.time(), (identity.scheme, identity.subject, e.code)
             with self._refusals_lock:
                 first, _, n = self._refusals.get(k, (now, now, 0))
@@ -289,6 +327,8 @@ class SignerService:
         if size and (latest is None or size > latest[0]):
             text = checkpoint.body(self.origin, size, root)
             self.log.storage.checkpoint_put(size, text + "\n" + checkpoint.sign(text, self.origin, self._log_key))
+            self.metrics.checkpoints.inc()
+            self._noted = time.monotonic()
 
     def sweep(self, now=None, wall=None):
         """Close idle runs, write run.final for runs whose grace window has passed and expire approvals.
@@ -391,7 +431,7 @@ class SignerService:
     def _may_see(self, identity, a):
         """Whether `identity` may see and answer approval `a`: the run's owner, or an identity of the run's tenant."""
         sub = subject(identity)
-        return sub == self.log.runs[a["run_key"]]["owner"] or a["run_key"][0] == self.tenants.get(sub, self.tenant)
+        return sub == self.log.runs[a["run_key"]]["owner"] or a["run_key"][0] == lookup(self.tenants, sub, self.tenant)
 
     def _visible(self, identity, approval_id):
         a = self.log.approvals.get(approval_id)
@@ -470,7 +510,7 @@ class SignerService:
                                ("analyzes", self.analyzers)):
             if field in req and sub not in allowed:
                 raise RPCError("forbidden", f"{sub[:256]} is not configured to register runs with `{field}`")
-        tenant = req.get("tenant") or self.tenants.get(sub, self.tenant)
+        tenant = req.get("tenant") or lookup(self.tenants, sub, self.tenant)
         run_id = req.get("run_id") or secrets.token_hex(16)
 
         def fn(tx, _):
@@ -583,12 +623,19 @@ class SignerService:
                            {"store": "default", "key": req["key"], "digest": req["value_digest"]})
 
     def _model_event(self, identity, req):
-        data = {"exchange_id": req["request_id"], "phase": req["phase"], "streamed": False, "model": req["model"],
-                "upstream": req["provider"]}
-        if "content_digest" in req:
-            data["content_digest"] = req["content_digest"]
-        if len(req.get("usage", {})) == 2:   # the event schema needs both counts
+        data = {"exchange_id": req.get("exchange_id", req["request_id"]), "phase": req["phase"],
+                "streamed": req.get("streamed", False), "model": req["model"], "upstream": req["provider"]}
+        for k in ("content_digest", "stop_reason", "error", "tool_results_sent"):
+            if k in req:
+                data[k] = req[k]
+        if {"input_tokens", "output_tokens"} <= req.get("usage", {}).keys():   # the event schema needs both counts
             data["usage"] = req["usage"]
+        if "tool_uses" in req:   # the digests are published as commitments, salted per record and tool use
+            data["tool_uses"] = [{k: v for k, v in t.items() if k != "args_digest"} for t in req["tool_uses"]]
+            for i, t in enumerate(req["tool_uses"]):
+                if "args_digest" in t:
+                    data["tool_uses"][i]["args_commitment"] = self._commit(
+                        f"model:{req['run_id']}:{req['request_id']}:{i}", t["args_digest"])
         return self._event(identity, "model_event", req, "model.exchange", data)
 
     def _approval_request(self, identity, req):
@@ -765,6 +812,14 @@ def load_config(path):
     for k in ("data_dir", "socket", "tcp_endpoint", "policy"):
         if cfg.get(k):
             cfg[k] = os.path.join(base, cfg[k])
+    h = cfg.get("http")
+    if h is not None:
+        from tracekit.transport import http
+        for section in (h, h.get("k8s_sa")) if isinstance(h, dict) else ():
+            for k in ("cert", "key", "client_ca", "token_file", "ca"):
+                if isinstance(section, dict) and section.get(k):
+                    section[k] = os.path.join(base, section[k])
+        http.configure(h)   # validates the section now; serve() builds it again
     return cfg
 
 
@@ -801,13 +856,17 @@ def open_service(cfg, **kw):
                          multi_tenant_apps=cfg.get("multi_tenant_apps", ()), migrators=cfg.get("migrators", ()),
                          analyzers=cfg.get("analyzers", ()), fail_modes=cfg.get("fail_modes"),
                          grace_s=float(cfg.get("grace_s", GRACE_S)), idle_s=float(cfg.get("idle_s", IDLE_S)),
-                         origin=cfg.get("origin"), **kw)
+                         origin=cfg.get("origin"),
+                         authorize={**(DEV_GRANT if cfg.get("tcp_endpoint") else {}), **(cfg.get("authorize") or {})}, **kw)
 
 
 def serve(cfg, service):
     """Bind the configured transports for `service` (whose storage lock is already held) and start answering.
     Returns the servers; stop each with shutdown() and server_close()."""
-    servers, handle = [], answering_hello(service.handle_frame, hello())
+    if not (cfg.get("socket") or cfg.get("tcp_endpoint") or cfg.get("http")):
+        raise ValueError("configure socket, tcp_endpoint and/or http")
+    servers = [metrics.server(cfg["metrics"], service.metrics)] if "metrics" in cfg else []
+    handle = answering_hello(service.handle_frame, hello())
     if cfg.get("socket"):
         from tracekit.transport.unix import UnixServer
         try:
@@ -818,8 +877,9 @@ def serve(cfg, service):
     if cfg.get("tcp_endpoint"):
         from tracekit.transport.tcp_dev import TcpDevServer
         servers.append(TcpDevServer(cfg["tcp_endpoint"], _dev_token(), handle))
-    if not servers:
-        raise ValueError("configure socket and/or tcp_endpoint")
+    if cfg.get("http"):
+        from tracekit.transport import http
+        servers.append(http.HttpServer(*http.configure(cfg["http"]), handle))
     for s in servers:
         threading.Thread(target=s.serve_forever, args=(0.2,), daemon=True).start()
     return servers
@@ -912,7 +972,7 @@ def _serve_dev():
     from tracekit.sdk.autospawn import runtime_dir
 
     def open_handler():
-        service = SignerService(dev_data_dir(), isolation="same-user")
+        service = SignerService(dev_data_dir(), isolation="same-user", authorize=DEV_GRANT)
         return service.handle_frame, service.close
     try:
         return serve_dev(runtime_dir(), open_handler, idle_s=float(os.environ.get("TRACEKIT_DEV_IDLE", 900)))

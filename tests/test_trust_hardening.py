@@ -321,7 +321,7 @@ class Autotrace(unittest.TestCase):
     def stream(self, t):
         ex = autotrace._Exchange(t, "openai", "chat", "m", {}, True)
         ex.begin()
-        return autotrace._StreamProxy(iter([{"choices": []}]), ex, lambda ex, item: None)
+        return autotrace._StreamProxy(iter([{"choices": []}]), ex)
 
     def test_stream_finishing_after_end_leaves_a_gap(self):
         t = FakeTracer()

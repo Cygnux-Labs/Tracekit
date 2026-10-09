@@ -310,6 +310,9 @@ class Feed:
                             self.base += over
                         self.lock.notify_all()
 
+    def verify(self):
+        return verify_ledger_cached(self.path)
+
 
 def _page(trace="null", raw="null", nonce=None):
     """terminal.html with its data slots filled in one pass (so record content that happens to contain a slot name is
@@ -340,7 +343,9 @@ def _session(token):
     return hmac.new(token.encode(), b"tracekit-observe-session", hashlib.sha256).hexdigest()
 
 
-def make_handler(feed, token, allowed_hosts=None):
+def make_handler(feed, token, allowed_hosts=None, secure=False):
+    """`feed`: records, base, lock and verify() -> (records, problems, head), as Feed has. `secure`: served over HTTPS,
+    so the session cookie is Secure."""
     allowed = set(LOOPBACK_HOSTS) | {h.lower() for h in (allowed_hosts or ()) if h.lower() not in WILDCARD_HOSTS}
 
     class Handler(BaseHTTPRequestHandler):
@@ -399,7 +404,8 @@ def make_handler(feed, token, allowed_hosts=None):
             if exchange:
                 return self._send(303, "", "text/plain", headers=[
                     ("Location", u.path),
-                    ("Set-Cookie", f"{COOKIE}={_session(token)}; HttpOnly; SameSite=Strict; Path=/")])
+                    ("Set-Cookie", f"{COOKIE}={_session(token)}; HttpOnly; SameSite=Strict; Path=/"
+                                   + ("; Secure" if secure else ""))])
             if u.path in ("/", "/index.html"):
                 nonce = secrets.token_urlsafe(18)
                 return self._send(200, _page(nonce=nonce), "text/html", nonce=nonce)
@@ -408,7 +414,7 @@ def make_handler(feed, token, allowed_hosts=None):
                     body = {"next": feed.base + len(feed.records), "dropped": feed.base, "records": feed.records}
                     return self._send(200, json.dumps(body, ensure_ascii=False))
             if u.path == "/api/verify":
-                n, problems, head = verify_ledger_cached(feed.path)
+                n, problems, head = feed.verify()
                 return self._send(200, json.dumps({"records": n, "ok": not problems, "problems": problems, "head": head}))
             if u.path == "/api/stream":
                 try:
