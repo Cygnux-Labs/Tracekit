@@ -21,8 +21,10 @@ Run-set (a bundle with registry/run-set.json): the tenant's registry notes, sign
 origin `<origin>/registry/<id of the bundle's tenant salt>`, and consistent with each other; every leaf of the range
 present and in the registry tree; each pointing to a record of the checkpointed tree with that hash, seq, type and
 H(tenant_salt ‖ run_id); one run.final per run; every run final in the range in the bundle from its run.registered (when
-in the range) to that run.final. Anything else is `run-set: INCOMPLETE` (FAILED). Every key.retire leaf in the range
-must be among the key records, so a withheld retirement fails `keys`. The log tail after the checkpoint is reported
+in the range) to that run.final; every bundled run but the selected one the target of a leaf in the range; a range ending
+above size 0. Anything else is `run-set: INCOMPLETE` (FAILED). Every key.retire leaf in the range must be among the key
+records, so a withheld retirement fails `keys`; without a range from size 0 that reaches every bundled record, that is
+unproven (a `keys` warning and an assurance note). The log tail after the checkpoint is reported
 unproven (a warning) unless a log.closed in the range is the checkpoint's last record.
 
 Format bridge (04-design §1.9): when the log's first record, signer.epoch, has `bridge`, the v1 ledger it continues can
@@ -57,6 +59,8 @@ MAX_TOTAL = 512 << 20
 MAX_LINE = 1 << 20
 CLASSES = ("public", "customer", "tracekit", "operator")
 _NAME = re.compile(r"[A-Za-z0-9_-][A-Za-z0-9._-]*(/[A-Za-z0-9._-]+)*")
+_VERSION = re.compile(r"\d{1,9}(\.\d{1,9}){0,2}")
+_CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 
 
 class Unusable(ValueError):
@@ -86,15 +90,6 @@ def read_zip(path):
                 raise Unusable(f"{n} is larger than the bundle limits")
             files[n], total = data, total + len(data)
     return files
-
-
-def is_v2(path):
-    """True when `path` is a zip whose manifest names format v2. Never raises."""
-    try:
-        with zipfile.ZipFile(path) as z, z.open("manifest.json") as f:
-            return loads_strict(f.read(MAX_LINE)).get("format") == FORMAT
-    except Exception:
-        return False
 
 
 def load_trust(path):
@@ -143,8 +138,10 @@ def verify(path, trust_path, v1_ledger=None, v1_key=None):
         if not isinstance(manifest, dict) or manifest.get("format") != FORMAT:
             raise Unusable(f"format is not {FORMAT}")
         need = manifest.get("verifier_min_version")
-        if not isinstance(need, str) or _version(need) > _version(__version__):
-            rep.integrity = f"UNVERIFIABLE (needs tracekit >= {str(need)[:20]})"
+        if not (isinstance(need, str) and _VERSION.fullmatch(need)):
+            raise Unusable("verifier_min_version is not a version number")
+        if _version(need) > _version(__version__):
+            rep.integrity = f"UNVERIFIABLE (needs tracekit >= {need})"
             rep.check("bundle readable", False, rep.integrity)
             return rep, EXIT_BAD
     except Exception as e:
@@ -249,14 +246,23 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key):
                              "continue the run")
         if not (included(records[0]) and included(records[-1])):
             outside.append(f"run {str(head.get('run_id'))[:200]!r}")
+    retired, proven_to = [], -1
     if run_set:
-        retired = _run_set(rep, files, trust, origin, size, runs, included, lambda r, p: check_record(
+        retired, proven_to = _run_set(rep, files, trust, origin, size, runs, included, lambda r, p: check_record(
             r, keys_at(r["event"]["seq"]), p))
         listed = {(r["event"]["seq"], r["hash"]) for r in key_records}
         key_problems.extend(f"seq {seq}: key.retire withheld (the registry log has it)"
                             for seq, h in retired if (seq, h) not in listed)
     rep.check("keys", bool(timeline) and not key_problems,
               f"{len(timeline)} record key(s) from {len(key_records)} key record(s)", key_problems)
+    # a key.retire left out of keys/records.jsonl shows only against a registry range from its start past every record
+    # lean: a key.retire written before the tenant's first registry leaf is in no registry of the tenant; add signer
+    # leaves to a tenant's registry when it is created if keys are ever retired while tenants are being added
+    relied = max(r["event"]["seq"] for r in key_records + [r for rs in runs.values() for r in rs])
+    if proven_to < relied:
+        rep.check("keys", False, "retirements not proven complete",
+                  [f"no run-set from registry size 0 reaches seq {relied}, so a withheld key.retire would not show"],
+                  warn=True)
     _bridge(rep, key_records, v1_ledger, v1_key)
     count = sum(map(len, runs.values()))
     rep.check("signatures", not problems, f"{count} record(s), keys valid at their position", problems)
@@ -280,7 +286,8 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key):
     if against:
         rep.check("policy", False, f"{len(against)} tool call(s) ran against a deny or an unapproved ask", against[:20],
                   warn=True)
-    rep.assurance = _assurance(origin, cosigs, witnesses, trust, {r["alg"] for r in every + key_records}, self_approved)
+    rep.assurance = (_assurance(origin, cosigs, witnesses, trust, {r["alg"] for r in every + key_records}, self_approved)
+                     + ("; key retirements not proven complete" if proven_to < relied else ""))
     glass = [r["event"] for r in every if r["event"].get("type") == "approval"
              and r["event"]["data"].get("break_glass") is True]
     if glass:
@@ -292,10 +299,12 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key):
 
 def _run_set(rep, files, trust, origin, size, runs, included, check_record):
     """The run-set line (COMPLETE or INCOMPLETE) and the log tail line. Returns the (seq, hash) of every key.retire
-    the registry range points to."""
+    the registry range points to, and the highest seq the range points to when it starts at registry size 0 (else -1):
+    every key.retire up to there is in the range."""
     rs, problems = loads_strict(files["registry/run-set.json"]), []
     tsalt = base64.b64decode(rs["tenant_salt"], validate=True)
     lo, hi, reg_origin = rs["from"], rs["to"], registry.origin(origin, tsalt)
+    span = f"registry {lo}..{hi}"
     # the registry notes are signed by the record log's own pinned key, under the registry origin
     vkeys = [checkpoint.vkey(reg_origin, checkpoint.ED25519, checkpoint.parse_vkey(k)[3]) for k in trust["logs"]
              if checkpoint.parse_vkey(k)[0] == origin]
@@ -307,16 +316,16 @@ def _run_set(rep, files, trust, origin, size, runs, included, check_record):
             n2 = f"unusable ({type(e).__name__}: {e})"
         if n2 != n:
             problems.append(f"registry checkpoint at size {n}: {n2}")
-    if problems or not 0 <= lo <= hi:
-        rep.check("run-set", False, "INCOMPLETE", problems or [f"bad registry range {lo}..{hi}"])
-        return []
+    if problems or not 0 <= lo <= hi or hi == 0:
+        rep.check("run-set", False, f"INCOMPLETE, {span}", problems or [f"bad registry range {lo}..{hi}"])
+        return [], -1
     if 0 < lo < hi and not verify_consistency(lo, hi, roots[lo], roots[hi], [
             base64.b64decode(p, validate=True) for p in rs["consistency"]]):
         problems.append(f"registry checkpoint {lo} is not a prefix of {hi}")
     leaves, pointed = rs["leaves"], {r["event"]["seq"]: r for r in _jsonl(files["registry/records.jsonl"])}
     if len(leaves) != hi - lo:
         problems.append(f"{hi - lo} leaves in {lo}..{hi}, {len(leaves)} in the bundle: a leaf is missing")
-    registered, finals, retired, closed, tenant = {}, {}, [], None, None
+    registered, finals, retired, closed, tenant, targets, top = {}, {}, [], None, None, set(), -1
     for i, x in enumerate(leaves[:hi - lo], lo):
         leaf = base64.b64decode(x["leaf"], validate=True)
         if not verify_inclusion(i, hi, leaf_hash(leaf), [base64.b64decode(p, validate=True) for p in x["inclusion"]],
@@ -332,6 +341,9 @@ def _run_set(rep, files, trust, origin, size, runs, included, check_record):
             problems.append(f"leaf {i} points to a missing or different record (seq {seq})")
             continue
         check_record(r, problems)
+        top = max(top, seq)
+        if typ in ("run.registered", "run.final"):
+            targets.add(run_name(e["tenant"], e["run_id"]))
         if typ == "run.registered":
             tenant, registered[e["run_id"]] = e["tenant"], r
         elif typ == "run.final":
@@ -348,14 +360,17 @@ def _run_set(rep, files, trust, origin, size, runs, included, check_record):
         if (not recs or recs[-1]["hash"] != final["hash"]
                 or run_id in registered and recs[0]["hash"] != registered[run_id]["hash"]):
             problems.append(f"run {run_id[:200]!r} is final in the range but its records are not in the bundle")
+    if len(set(runs) - targets) > 1:
+        problems.append(f"{len(set(runs) - targets)} runs in the bundle, but only the selected run may be in no leaf "
+                        "of the range")
     if closed and size > closed["data"]["final_seq"] + 1:
         problems.append(f"records after log.closed at seq {closed['seq']}")
-    rep.check("run-set", not problems, f"COMPLETE ({len(registered)} runs registered, {len(finals)} final, "
-                                       f"{len(set(registered) - set(finals))} open)" if not problems else "INCOMPLETE",
-              problems)
+    rep.check("run-set", not problems, f"COMPLETE, {span} ({len(registered)} runs registered, {len(finals)} final, "
+                                       f"{len(set(registered) - set(finals))} open)" if not problems else
+              f"INCOMPLETE, {span}", problems)
     rep.check("log tail", bool(closed), f"none: log.closed at seq {closed['seq']} is the last record" if closed else
               f"records after tree size {size} are unproven (no log.closed in the range)", warn=True)
-    return retired
+    return retired, top if lo == 0 else -1
 
 
 def _bridge(rep, key_records, v1_ledger, v1_key):
@@ -410,9 +425,10 @@ def _assurance(origin, cosigs, witnesses, trust, algs, self_approved=False):
 
 
 def print_report(rep, code, stream=None):
-    s = stream or sys.stdout
+    """The report as text; control characters in bundle-derived strings are dropped so they reach no terminal."""
+    s, clean = stream or sys.stdout, lambda x: _CONTROL.sub("", str(x))
     for c in rep.checks:
-        s.write(f"[{c['status'].upper()}] {c['check']}" + (f" — {c['detail']}" if c["detail"] else "") + "\n")
+        s.write(f"[{c['status'].upper()}] {c['check']}" + (f" — {clean(c['detail'])}" if c["detail"] else "") + "\n")
         for p in c["problems"]:
-            s.write(f"        {p}\n")
-    s.write(f"\nIntegrity: {rep.integrity}.\nAssurance: {rep.assurance}.\n")
+            s.write(f"        {clean(p)}\n")
+    s.write(f"\nIntegrity: {clean(rep.integrity)}.\nAssurance: {clean(rep.assurance)}.\n")

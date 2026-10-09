@@ -296,7 +296,7 @@ class TestSelfApprovalCapsAssurance(tb.Case):
         rep, code = self.verify(out)
         self.assertEqual((code, rep.integrity), (0, "VERIFIED"), rep.checks)
         self.assertTrue(rep.assurance.startswith("dev;"), rep.assurance)
-        self.assertTrue(rep.assurance.endswith("; approvals: self"), rep.assurance)
+        self.assertIn("; approvals: self", rep.assurance)
 
 
 def tracekit(*args, env=None):
