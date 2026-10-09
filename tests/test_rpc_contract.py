@@ -91,6 +91,12 @@ class SignerContract:
                       args={"path": "a.txt"} if args is None else args, **kw)
         return req, self.call("decide", req)
 
+    def complete(self, req, d, **kw):
+        """`complete` for the call `req` that `decide` answered with `d`."""
+        return self.call("complete", self.ev(tool_call_id=req["tool_call_id"], decision_id=d["decision_id"],
+                                             args_digest=event_hash({"tool": req["tool"], "args": req["args"]}),
+                                             status="ok", **kw))
+
     def read(self):
         return self.call("read", {"run_id": self.run_id, "run_token": self.token, "limit": 1000})["events"]
 
@@ -110,9 +116,9 @@ class SignerContract:
     def test_run_lifecycle(self):
         reg = self.register()
         self.assertTrue(reg["tenant_attested"])
-        _, d = self.decide()
+        req, d = self.decide()
         self.assertEqual((d["decision"], d["rule_ids"]), ("allow", []))
-        self.call("complete", self.ev(tool_call_id="tc-1", status="ok", result={"bytes": 3}))
+        self.complete(req, d, result={"bytes": 3})
         self.call("state_write", self.ev(key="memory/notes", value_digest="sha256:" + "0" * 64))
         self.call("model_event", self.ev(provider="openai", model="gpt", phase="response",
                                          usage={"input_tokens": 10, "output_tokens": 2}))
@@ -269,7 +275,8 @@ class SignerContract:
         self.decide()   # allowed, so nothing to approve
         self.refused("unknown_tool_call", "approval_request", self.run_req(tool_call_id="tc-1"))
         self.refused("unknown_tool_call", "approval_request", self.run_req(tool_call_id="never"))
-        self.refused("unknown_tool_call", "complete", self.ev(tool_call_id="never", status="ok"))
+        self.refused("unknown_decision", "complete", self.ev(tool_call_id="never", decision_id="dec-x",
+                                                             args_digest="sha256:" + "0" * 64, status="ok"))
         self.refused("unknown_approval", "approval_decide", {"request_id": self.rid(), "approval_id": "apr-x",
                                                              "decision": "approve"})
         self.refused("unknown_approval", "approval_wait", {"run_id": self.run_id, "run_token": self.token,

@@ -5,8 +5,8 @@ Every decision names the engine (id@version) and the policy_hash. Precedence: de
 """
 import fnmatch
 
-from . import shell
-from .compile import SECTIONS, canonical, policy_hash, translate
+from . import classes, shell
+from .compile import CLASSES, SECTIONS, canonical, policy_hash, translate
 
 MAX_SUBJECT = 64 * 1024     # bytes of UTF-8; a longer subject is denied (TK-OVERSIZE), never cut or windowed
 REGEX_TIMEOUT_S = 1.0       # fallback engine only: a match that runs out of time denies, marked nondeterministic
@@ -45,15 +45,19 @@ class Engine:
             return tools[tool]
         return next((cls for pat, cls in sorted(tools.items()) if fnmatch.fnmatchcase(tool, pat)), "unknown")
 
-    def decide(self, tool, args):
-        """Return {verdict, rule_ids, policy_hash, engine[, nondeterministic]} for one tool call."""
+    def decide(self, tool, args, cls=None):
+        """Return {verdict, rule_ids, policy_hash, engine[, nondeterministic]} for one tool call. `cls` overrides the
+        class the policy maps the tool to."""
         args = args if isinstance(args, dict) else {"value": args}
-        cls = self.tool_class(tool)
+        cls = cls or self.tool_class(tool)
+        fields = classes.extract(cls, tool, args)
         hits = {sec: [] for sec in SECTIONS}
+        if cls == "unknown" and self.policy.get("unknown_tools") in SECTIONS:
+            hits[self.policy["unknown_tools"]].append("TK-UNKNOWN-TOOL")
         nondeterministic = False
         cmds = []
         if cls == "shell":
-            command = args.get("command") if isinstance(args.get("command"), str) else ""
+            command = fields.get("command") if isinstance(fields.get("command"), str) else ""
             if len(command.encode("utf-8", "backslashreplace")) > MAX_SUBJECT:
                 hits["deny"].append("TK-OVERSIZE")
             else:
@@ -67,7 +71,7 @@ class Engine:
             try:
                 if tool_re is not None and not self._match(tool_re, _text(tool), True):
                     continue
-                for subject in self._subjects(cls, rule.get("field"), args, cmds):
+                for subject in self._subjects(cls, rule.get("field"), args, fields, cmds):
                     subject = _text(subject)
                     if len(subject.encode("utf-8")) > MAX_SUBJECT:
                         hits["deny"].append("TK-OVERSIZE")
@@ -86,12 +90,14 @@ class Engine:
         return out
 
     @staticmethod
-    def _subjects(cls, field, args, cmds):
+    def _subjects(cls, field, args, fields, cmds):
+        """A class field matches the signer's extraction; any other field names a raw argument; no field scans the
+        whole call (Write/Edit content, WebFetch url and prompt, MCP args)."""
         if cls == "shell" and field in (None, "argv"):
             return [" ".join(c["argv"]) for c in cmds]
         if field is None:
             return [canonical(args)]
-        value = args.get(field)
+        value = fields.get(field) if field in CLASSES.get(cls, ()) else args.get(field)
         if value is None:
             return []
         return [value if isinstance(value, str) else canonical(value)]

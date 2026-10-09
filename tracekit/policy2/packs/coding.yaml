@@ -1,0 +1,158 @@
+# Coding pack (policy v2): the shell, files and harness self-protection rules of tracekit/policy/default.yaml,
+# ported to the RE2 subset and to signer-side classes. Rule ids are kept where the meaning is the same.
+#
+# Shell rules without a field match each command's argv (wrappers, paths and quoting resolved by policy2/shell.py);
+# `field: command` matches the raw command line. File rules match the signer-normalised `path`. Rules stay
+# tripwires: the protection is the signer, its storage and the witnesses.
+
+version: '2026.10-v2-1'
+description: coding agents on a laptop (Claude Code, Codex, Cursor, Gemini)
+unknown_tools: flag
+
+tools:
+  Bash: shell
+  Write: fs
+  Edit: fs
+  MultiEdit: fs
+  NotebookEdit: fs
+  Read: fs
+  Grep: fs
+  Glob: fs
+  WebFetch: http
+  WebSearch: http
+  'mcp__*': mcp
+  'mcp:*/*': mcp
+
+deny:
+  # --- shell ---
+  - id: TK-D001
+    class: shell
+    pattern: '^(sudo|doas|pkexec)( |$)|^su (.* )?(-c|root)( |$)'
+    reason: privilege escalation
+    rationale: An agent should never need root; escalation widens every other risk and would let it reach the signer.
+  - id: TK-D002
+    class: shell
+    field: command
+    pattern: '(curl|wget)[^|;&]*\|\s*(sudo\s+)?(\S*/)?((ba|z|da)?sh|python3?|perl|ruby|node)\b|(ba|z)?sh\s+<\(\s*(curl|wget)|\$\(\s*(curl|wget)|\b(curl|wget)\b[^\n]*(&&|;)\s*(sudo\s+)?((ba|z|da)?sh\s+\S|\./\S|chmod\s+\+x[^\n]*(&&|;)\s*\./)|\b(exec|eval)\(\s*[A-Za-z_.]*urlopen'
+    reason: running a downloaded script
+    rationale: Remote code execution without review.
+  - id: TK-D003
+    class: shell
+    field: command
+    pattern: 'git\s+push\b.*(--force\b|-f\b|--force-with-lease|\s\+\S)'
+    reason: force push
+    rationale: Rewrites shared history.
+  - id: TK-D004
+    class: shell
+    pattern: '^rm [-A-Za-z ]*-[A-Za-z]*[rR][-A-Za-z ]* (/|~|\$HOME|\$\{HOME\})/?\*?( |$)|^find / .*-delete( |$)'
+    reason: recursive delete of root or home
+    rationale: Irrecoverable data loss.
+  - id: TK-D010
+    class: shell
+    field: command
+    # lean: RE2 has no lookahead, so .env variants are listed instead of "anything but .example"; add names as needed
+    pattern: '(>>?|\btee\b(\s+-a)?)\s*\S*(\.env(\.(local|dev|development|prod|production|staging|test))*|id_rsa|id_ed25519|authorized_keys|\.aws/credentials)(\s|$|[;&|)''"])|\b(cp|mv|install)\b[^\n|;&]*\s\S*(\.env(\.(local|dev|development|prod|production|staging|test))*|id_rsa|id_ed25519|authorized_keys|\.aws/credentials)\s*($|[;&|)])'
+    reason: writing to a credentials file from the shell
+    rationale: The shell twin of TK-D005. Redirects, tee, cp and mv reach the same files the file-editing tools are blocked from.
+  - id: TK-D011
+    class: shell
+    field: command
+    pattern: '\b(cat|tar|zip|base64|gzip)\b[^\n]*(\.ssh|id_rsa|id_ed25519|\.aws|\.netrc|/etc/shadow|/etc/passwd)[^\n]*\|\s*(curl|nc|ncat|socat|wget)\b|\b(scp|rsync|curl|wget)\b[^\n]*(\.ssh/|id_rsa|id_ed25519|\.aws/credentials|\.netrc|--post-file[ =]/etc/(passwd|shadow))'
+    reason: sending credential files off the machine
+    rationale: Keys and cloud credentials leaving the host are exfiltration. TK-D006 covers .env files.
+  - id: TK-D006
+    class: shell
+    field: command
+    pattern: '\bcat\s+\S*\.env\b[^\n]*\|\s*(curl|wget|nc|ncat)\b|(curl|wget|http|nc|ncat|scp|rsync)\b[^\n]*(@\S*\.env\b|--data[-a-z]*[ =]@?\S*\.env\b|--upload-file\s+\S*\.env\b|--post-file[ =]\S*\.env\b|\s\S*\.env\s+\S+:|<\s*\S*\.env\b)'
+    reason: uploading a secrets file
+    rationale: Sending .env off the machine is exfiltration.
+  - id: TK-D008
+    class: shell
+    field: command
+    pattern: '(\brm\b|\bunlink\b|\btruncate\b|\bshred\b|\bsed\s+(-[a-zA-Z]*\s+)*-i|\bperl\s+-[a-zA-Z]*i|\bmv\b|\bln\s+-[a-zA-Z]*f|\bdd\b[^\n]*\bof=|\btee\b|>|\bfind\b[^\n]*-(delete|exec\s+(rm|truncate|sed)))[^\n]*(\.claude/projects|\.codex/sessions|\.gemini/tmp|\.config/opencode)|\bfind\s[^\n]*(\.claude/projects|\.codex/sessions|\.gemini/tmp|\.config/opencode)[^\n]*-(delete|exec\s+(rm|truncate|sed|shred))'
+    reason: modifying the agent harness's transcripts
+    rationale: Transcripts are evidence; the agent has no reason to write them. Reading them is allowed.
+
+  # --- files ---
+  - id: TK-D005
+    class: fs
+    tool: Write|Edit|MultiEdit|NotebookEdit
+    field: path
+    pattern: '(^|/)(\.env(\.(local|dev|development|prod|production|staging|test))*|id_rsa|id_ed25519|credentials)$|(^|/)\.ssh/|(^|/)\.aws/'
+    reason: writing to a credentials file
+    rationale: Credential files are high-value and rarely a legitimate agent target.
+  - id: TK-D009
+    class: fs
+    tool: Write|Edit|MultiEdit|NotebookEdit
+    field: path
+    pattern: '(^|/)(\.claude/projects|\.codex/sessions|\.gemini/tmp|\.config/opencode)/'
+    reason: writing to the agent harness's transcripts
+    rationale: Same as TK-D008, for the file-editing tools.
+
+  # --- harness self-protection ---
+  - id: TK-D007
+    class: shell
+    field: command
+    pattern: '/var/lib/tracekit|/etc/tracekit|/run/tracekit|\.tracekit-signer|\.tracekit-client|\btracekitd\b|tracekit\.(daemon|proxy|signer)\b|\btracekit\s+signer\b|\b(pkill|killall|kill)\b[^\n]*tracekit|\bsystemctl\s+(stop|disable|kill|mask)\s+tracekit|\blaunchctl\s+(bootout|unload|stop|remove|kill|disable)\b[^\n]*tracekit'
+    reason: touching Tracekit's own files or signer
+    rationale: The audit trail must not be modified by the audited agent. Ownership already blocks this in system mode; the rule makes the attempt visible and blocks it in dev mode too.
+  - id: TK-D013
+    class: fs
+    tool: Write|Edit|MultiEdit|NotebookEdit
+    field: path
+    pattern: '(^|/)(etc/tracekit|var/lib/tracekit[^/]*|run/tracekit|\.tracekit-signer|\.tracekit-client)(/|$)'
+    reason: writing Tracekit's own files, signer state or policy
+    rationale: The file-editing twin of TK-D007; /etc/tracekit holds the signer config and policy.
+
+flag:
+  - id: TK-F001
+    class: shell
+    field: command
+    pattern: '\b(curl|wget|ssh|scp|rsync|nc|ncat|telnet|ftp)\b'
+    label: network
+  - id: TK-F002
+    class: http
+    pattern: '.*'
+    label: network
+  - id: TK-F003
+    class: shell
+    field: command
+    pattern: '\b(rm|mv|chmod|chown|dd|truncate|shred|unlink)\b'
+    label: destructive
+  - id: TK-F004
+    class: shell
+    field: command
+    pattern: '\b(git\s+(push|reset\s+--hard|clean)|npm\s+publish|pip3?\s+install|docker\s+run|terraform\s+apply|kubectl\s+(apply|delete))\b'
+    label: side_effect
+  - id: TK-F005
+    tool: Read|Bash|Grep
+    pattern: '\.env\b|id_rsa|\.ssh/|credentials|\.aws/|\.netrc'
+    label: secrets_access
+  - id: TK-F006
+    class: mcp
+    pattern: '.*'
+    label: external_tool
+  - id: TK-F007
+    class: shell
+    field: command
+    pattern: '\bnohup\b|\bsetsid\b|\bdisown\b|&\s*$|&\s*;|\bcrontab\b|\bat\s+now\b|\bsystemd-run\b|\bscreen\s+-[a-zA-Z]*d|\btmux\s+new(-session)?\s+[^\n]*-d|\bdaemonize\b|\bwhile\s+(true|:)'
+    label: background_spawn
+  - id: TK-F008
+    tool: Bash
+    field: run_in_background
+    pattern: '^(true|True|TRUE)$'
+    label: background_spawn
+  - id: TK-F009
+    tool: Bash|Write|Edit|MultiEdit
+    pattern: '\.claude/settings(\.local)?\.json|/\.claude/|\.codex/|managed-settings|\.mcp\.json|ANTHROPIC_BASE_URL'
+    label: harness_config
+  - id: TK-F010
+    class: shell
+    field: command
+    pattern: '(^|[;&|\s])(function\s+)?(ls|cat|rm|git|curl|wget|python3?|node|echo|grep|sudo|tracekit|claude|pytest|npm|cd|test|printf)\s*\(\s*\)\s*\{|\balias\s+(ls|cat|rm|git|curl|python3?|echo|grep|pytest|npm|claude|tracekit)='
+    label: shell_shadowing
+  - id: TK-F011
+    class: shell
+    field: command
+    pattern: '\b(export\s+)?(PATH|LD_PRELOAD|LD_LIBRARY_PATH|BASH_ENV|ENV|PROMPT_COMMAND|PYTHONPATH|NODE_OPTIONS)=|\bunset\s+(ANTHROPIC_BASE_URL|HTTPS?_PROXY)\b|>>?\s*~?/?[^\s]*\.(bashrc|profile|zshrc|bash_profile)\b'
+    label: env_tamper
