@@ -1,6 +1,6 @@
 """Validate events against tracekit/schema/tracekit.event.v1.json with a small, dependency-free
 JSON Schema subset (type, const, enum, required, properties, additionalProperties, items,
-oneOf, allOf, if/then, $ref to #/$defs, pattern, minimum, minLength, maxLength)."""
+oneOf, allOf, if/then, $ref to #/$defs, pattern, minimum, maximum, minLength, maxLength, maxItems)."""
 import json
 import os
 import re
@@ -55,6 +55,10 @@ def _check(v, s, root, path, errs):
             errs.append(f"{path}: longer than {s['maxLength']}")
     if _is_type(v, "number") and "minimum" in s and v < s["minimum"]:
         errs.append(f"{path}: below {s['minimum']}")
+    if _is_type(v, "number") and "maximum" in s and v > s["maximum"]:
+        errs.append(f"{path}: above {s['maximum']}")
+    if isinstance(v, list) and "maxItems" in s and len(v) > s["maxItems"]:
+        errs.append(f"{path}: more than {s['maxItems']} items")
     if isinstance(v, dict):
         for k in s.get("required", []):
             if k not in v:

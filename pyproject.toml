@@ -28,7 +28,7 @@ classifiers = [
     "Topic :: System :: Logging",
 ]
 requires-python = ">=3.9"
-dependencies = ["cryptography>=41"]   # signing; `tracekit verify` alone also works without it
+dependencies = ["cryptography>=41", "rfc8785>=0.1,<0.2"]   # signing (`tracekit verify` alone works without it); JCS for format v2
 
 [project.optional-dependencies]
 yaml = ["PyYAML>=6"]   # optional: policies are parsed with a built-in YAML subset otherwise
@@ -48,7 +48,7 @@ Changelog = "https://github.com/Cygnux-Labs/Tracekit/blob/main/CHANGELOG.md"
 Security = "https://github.com/Cygnux-Labs/Tracekit/blob/main/SECURITY.md"
 
 [tool.setuptools]
-packages = ["tracekit", "tracekit.adapters", "tracekit.deploy", "tracekit.merkle"]
+packages = ["tracekit", "tracekit.adapters", "tracekit.deploy", "tracekit.format", "tracekit.merkle", "tracekit.signer"]
 py-modules = ["tracekit_sdk"]
 
 [tool.setuptools.dynamic]
