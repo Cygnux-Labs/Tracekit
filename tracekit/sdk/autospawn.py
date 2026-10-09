@@ -11,7 +11,6 @@ Off in system mode and when TRACEKIT_SIGNER is set: an agent must not be able to
 import json
 import os
 import pathlib
-import shlex
 import signal
 import stat
 import subprocess
@@ -25,7 +24,8 @@ from tracekit.sdk.client import Incompatible, SignerUnavailable, connect
 
 SOCK, LOCK, SPAWN_LOCK, ENDPOINT, LOG = "signer.sock", "signer.lock", "spawn.lock", "endpoint.json", "signer.log"
 SIGNER_ARGV = [sys.executable, "-m", "tracekit", "signer", "serve", "--dev"]
-_ENV = ("PATH", "HOME", "USER", "LOGNAME", "LANG", "TMPDIR", "XDG_RUNTIME_DIR", "PYTHONPATH")
+_ENV = ("PATH", "HOME", "USER", "LOGNAME", "LANG", "TMPDIR", "XDG_RUNTIME_DIR", "XDG_DATA_HOME", "LOCALAPPDATA",
+        "PYTHONPATH")
 
 
 class Hung(SignerUnavailable):
@@ -33,7 +33,8 @@ class Hung(SignerUnavailable):
 
 
 def runtime_dir():
-    """The per-user runtime dir ($TRACEKIT_RUNTIME_DIR overrides), created 0700; refused unless it is ours and private."""
+    """The per-user runtime dir ($TRACEKIT_RUNTIME_DIR overrides), created 0700; refused unless it is ours and private
+    (on POSIX; Windows has no uid, so it relies on the user-only profile ACL as S3 decides)."""
     d = os.environ.get("TRACEKIT_RUNTIME_DIR")
     if not d and sys.platform == "darwin":
         d = os.path.expanduser("~/Library/Application Support/tracekit/run")
@@ -44,7 +45,7 @@ def runtime_dir():
         d = os.path.join(xdg, "tracekit") if xdg else f"/tmp/tracekit-{os.getuid()}"
     os.makedirs(d, 0o700, exist_ok=True)
     st = os.lstat(d)
-    if not stat.S_ISDIR(st.st_mode) or st.st_uid != os.getuid() or st.st_mode & 0o077:
+    if not stat.S_ISDIR(st.st_mode) or os.name == "posix" and (st.st_uid != os.getuid() or st.st_mode & 0o077):
         raise SignerUnavailable(f"{d} must be a directory owned by you with mode 0700")
     return d
 
@@ -76,14 +77,11 @@ def _pid(d):
 
 
 def spawn(d):
-    """Start a detached dev signer for runtime dir `d`: $TRACEKIT_DEV_SIGNER_CMD, else `tracekit signer serve --dev`."""
-    # lean: auto-spawn target overridable for tests until `tracekit signer serve` lands; drop or restrict to tests then
-    cmd = os.environ.get("TRACEKIT_DEV_SIGNER_CMD")
-    argv = shlex.split(cmd) if cmd else SIGNER_ARGV
+    """Start a detached `tracekit signer serve --dev` for runtime dir `d`."""
     env = {k: v for k, v in os.environ.items() if k in _ENV or k.startswith(("LC_", "TRACEKIT_"))}
     env["TRACEKIT_RUNTIME_DIR"] = d
     with open(os.path.join(d, LOG), "ab") as log:
-        p = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=log, stderr=log, cwd="/", env=env,
+        p = subprocess.Popen(SIGNER_ARGV, stdin=subprocess.DEVNULL, stdout=log, stderr=log, cwd="/", env=env,
                              start_new_session=True, umask=0o077)
     threading.Thread(target=p.wait, daemon=True).start()   # reap it if it exits while we live
     return p
