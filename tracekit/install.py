@@ -122,6 +122,7 @@ def _create_system_user_darwin(name):
 MANAGED_SETTINGS = {"linux": "/etc/claude-code/managed-settings.json",
                     "darwin": "/Library/Application Support/ClaudeCode/managed-settings.json"}
 HOOK_TIMEOUT = {"PreToolUse": 600, "SessionEnd": 15}   # PreToolUse may hold a call for approval (C8)
+V2_HOOK = "tracekit.integrations.claude_code"
 def _hook_command(module="tracekit.hook", func="_entry", args=(), python=None):
     """Shell command that runs `module.func(*args)`. Python runs isolated (-I): the working directory, user
     site-packages and PYTHON* variables are not on the import path, so the harness's cwd cannot shadow tracekit.
@@ -152,7 +153,7 @@ def _hook_command(module="tracekit.hook", func="_entry", args=(), python=None):
 
 
 def _is_ours(group):
-    return any("tracekit.hook" in (h.get("command") or "") or ("tracekit" in (h.get("command") or "") and "hook.py" in (h.get("command") or ""))
+    return any("tracekit.hook" in (h.get("command") or "") or V2_HOOK in (h.get("command") or "") or ("tracekit" in (h.get("command") or "") and "hook.py" in (h.get("command") or ""))
                for h in group.get("hooks", []))
 
 
@@ -172,27 +173,28 @@ def _backup(path, data):
         files.close(d)
 
 
-def install_hooks(settings_path, uninstall=False, owner=None, proxy_url=None, extra=None, mode=0o600, python=None):
+def install_hooks(settings_path, uninstall=False, owner=None, proxy_url=None, extra=None, mode=0o600, python=None,
+                  module="tracekit.hook"):
     """Add (or remove) Tracekit's hooks in a Claude Code settings file. Idempotent; backs up the
     file before changing it; leaves other hooks and settings alone. proxy_url sets
     env.ANTHROPIC_BASE_URL (C3). Raises SettingsError instead of overwriting a file it cannot parse,
-    or one that is a symlink. With owner (as root) the whole edit runs as that user. python: see _hook_command."""
+    or one that is a symlink. With owner (as root) the whole edit runs as that user. python, module: see _hook_command."""
     if owner is not None:
         return files.as_user(owner, install_hooks, settings_path, uninstall, None, proxy_url, extra, mode, python,
-                             errors=(SettingsError,))
+                             module, errors=(SettingsError,))
     settings_path = os.path.abspath(settings_path)
     os.makedirs(os.path.dirname(settings_path), exist_ok=True)
     try:
         d = files.open_dir(os.path.dirname(settings_path))
         try:
-            _install_hooks_at(d, settings_path, uninstall, proxy_url, extra, mode, python)
+            _install_hooks_at(d, settings_path, uninstall, proxy_url, extra, mode, python, module)
         finally:
             files.close(d)
     except files.UnsafePath as e:
         raise SettingsError(f"{settings_path}: {e}") from e
 
 
-def _install_hooks_at(d, settings_path, uninstall, proxy_url, extra, mode, python=None):
+def _install_hooks_at(d, settings_path, uninstall, proxy_url, extra, mode, python=None, module="tracekit.hook"):
     name = os.path.basename(settings_path)
     s, raw = {}, files.read(d, name)
     original = None
@@ -214,7 +216,7 @@ def _install_hooks_at(d, settings_path, uninstall, proxy_url, extra, mode, pytho
             raise SettingsError(f"hooks.{ev} in {settings_path} must be a list; Tracekit did not change it.")
         groups = [g for g in existing if not (isinstance(g, dict) and _is_ours(g))]
         if not uninstall:
-            e = {"hooks": [{"type": "command", "command": _hook_command(python=python), "timeout": HOOK_TIMEOUT.get(ev, 30)}]}
+            e = {"hooks": [{"type": "command", "command": _hook_command(module, python=python), "timeout": HOOK_TIMEOUT.get(ev, 30)}]}
             groups.append({"matcher": "*", **e} if ev in TOOL_EVENTS else e)
         if groups:
             hooks[ev] = groups
