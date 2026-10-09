@@ -40,6 +40,7 @@ dev = ["pytest>=7", "PyYAML>=6", "pyflakes", "regex>=2023.8", "google-re2>=1.1; 
        "langchain>=1.4,<1.5; python_version>='3.10'", "langgraph>=1.2,<1.3; python_version>='3.10'",   # tested minors
        "langgraph-checkpoint-sqlite>=3.1,<3.2; python_version>='3.10'",
        "openai-agents>=0.23.1,<0.24; python_version>='3.10'",   # tested minor of tracekit.integrations.openai_agents
+       "mcp>=2.3,<2.4; python_version>='3.10'",   # tested minor of tracekit.integrations.mcp
        "opentelemetry-sdk>=1.20", "opentelemetry-exporter-otlp-proto-http>=1.20", "opentelemetry-exporter-otlp-proto-grpc>=1.20",   # only tests use these: the receiver has no deps
        "openai>=1.0", "anthropic>=0.30", "google-genai>=1.0"]   # tests for tracekit_sdk.init(); patched only when installed
 

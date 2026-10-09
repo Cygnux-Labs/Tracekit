@@ -3,7 +3,8 @@
 An adapter plugs in through a driver; subclass `Contract` with a `driver(case, signer_path)` and mix in `OnFake` or
 `OnReal` (tests/test_contract_langchain.py). Each case runs against FakeSigner and the real signer, both served in
 this process on a Unix socket (loopback TCP where there are none), so the adapter and its resumed processes reach them as they would a deployed signer.
-The policy: `pay` asks (R-PAY), `wipe` is denied (R-WIPE), everything else is allowed.
+The policy: `pay` asks (R-PAY), `wipe` is denied (R-WIPE), everything else is allowed; a `<prefix>/` before the
+name (MCP's `mcp:<server>/pay`) is ignored.
 
 A driver has:
 - `run()`: {"run_id", "run_token"} of the run its calls went to;
@@ -65,7 +66,7 @@ TOOLS = [echo, pay, wipe, fail]
 
 
 def _rule(tool, args):
-    return {"pay": ("ask", ["R-PAY"]), "wipe": ("deny", ["R-WIPE"])}.get(tool, ("allow", []))
+    return {"pay": ("ask", ["R-PAY"]), "wipe": ("deny", ["R-WIPE"])}.get(tool.rsplit("/", 1)[-1], ("allow", []))
 
 
 def tmpdir(case):
@@ -108,8 +109,8 @@ class OnFake:
 
 class OnReal:
     def serve_signer(self):
-        self.service = s = SignerService(tmpdir(self), policy=Engine({"ask": [{"id": "R-PAY", "tool": "^pay$", "pattern": "^"}],
-                                                       "deny": [{"id": "R-WIPE", "tool": "^wipe$", "pattern": "^"}]}))
+        self.service = s = SignerService(tmpdir(self), policy=Engine({"ask": [{"id": "R-PAY", "tool": "(.*/)?pay", "pattern": "^"}],
+                                                       "deny": [{"id": "R-WIPE", "tool": "(.*/)?wipe", "pattern": "^"}]}))
         self.addCleanup(s.close)
         return _serve(self, s.handle_frame)
 
