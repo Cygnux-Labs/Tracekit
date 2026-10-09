@@ -58,6 +58,8 @@ def main(argv=None):
     p.add_argument("--token-file", help="with --remote: file holding the client token (or set TRACEKIT_REMOTE_TOKEN)")
     p.add_argument("--dev", action="store_true", help="same-user signer (no root; weaker: the agent could rewrite the ledger)")
     p.add_argument("--home", help="signer home (dev mode)")
+    p.add_argument("--v2", action="store_true", help="with --dev: wire the Claude Code hook of the v2 signer (it starts "
+                                                     "on first use)")
     p.add_argument("--project", action="store_true", help="hooks in ./.claude/settings.json instead of ~/.claude")
     p.add_argument("--no-hooks", action="store_true")
     p.add_argument("--witness", action="append", default=[], help="file:/path.jsonl or git:/clone[@remote] (repeatable)")
@@ -239,6 +241,10 @@ def _run(a):
                       "assurance": a.key_assurance}
             if a.key_attestation:
                 signer["attestation"] = os.path.abspath(a.key_attestation)
+        if a.v2 and not (a.dev and a.agent == "claude"):
+            print("tracekit: --v2 wires the Claude Code hook in dev mode only (--dev); system mode comes later",
+                  file=sys.stderr)
+            return 2
         if a.dev and a.agent != "claude":
             from . import agent_hooks
             home = a.home or os.path.expanduser("~/.tracekit-signer")
@@ -255,6 +261,15 @@ def _run(a):
             home = a.home or os.path.expanduser("~/.tracekit-signer")
             hooks = None if a.no_hooks else (os.path.join(os.getcwd(), ".claude", "settings.json") if a.project
                                             else os.path.expanduser("~/.claude/settings.json"))
+            if a.v2:
+                try:
+                    if hooks:
+                        install.install_hooks(hooks, module=install.V2_HOOK)
+                except install.SettingsError as e:
+                    print(f"tracekit: {e}", file=sys.stderr)
+                    return 1
+                print("v2 hooks:", hooks or "not installed")
+                return 0
             try:
                 cfg = install.init_dev(home, a.witness, a.checkpoint_every, hooks, proxy=a.proxy, proxy_port=a.proxy_port,
                                        fail_mode="closed" if a.fail_closed else None, signer=signer)
