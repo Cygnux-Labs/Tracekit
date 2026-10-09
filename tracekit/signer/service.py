@@ -45,8 +45,9 @@ A witness is a `tlog_witness.TlogWitness` (or an object with its `name`, `vkey`,
 `latest` raises when it is unreachable. A local log behind the witnessed one is a rollback: a signed `trace.tamper{rollback}`, then client writes are refused until it is
 acknowledged. No witness reachable: a signed `degraded_unanchored` gap, and the signer runs. The store opens from its
 latest snapshot (written every SNAPSHOT_RECORDS records and on close) and replays only the records after it.
-Every `fsck_every_s` a background thread checks the whole store as `tracekit signer fsck` does; a problem is a signed
-`trace.tamper{edited}` and refuses client writes like a rollback.
+Every `fsck_every_s` a background thread checks the whole store as `tracekit signer fsck` does; new problems are one
+signed `trace.tamper{edited}` and refuse client writes (acknowledge_rollback does not cover them). Snapshots carry an
+HMAC under keys/snapshot.key; one that fails it is ignored and the logs are replayed in full.
 
 Tenant-level gaps (04-design §2.7): witness_failed, witness_late, clock_skew, degraded_unanchored gaps and rollback
 tamper records are signer-level records with a leaf in every tenant's registry, so a run-set over the window shows them.
@@ -210,6 +211,17 @@ def _write_new(path, data):
     _sync_dir(os.path.dirname(path))
 
 
+def _snapshot_key(keys):
+    """The key of the store's snapshots, or None before it exists (then the store replays its logs in full). Read
+    before the storage lock is taken: a key cut short is ignored, and _secret then stops the start."""
+    try:
+        with open(os.path.join(keys, "snapshot.key"), "rb") as f:
+            key = f.read()
+    except FileNotFoundError:
+        return None
+    return key if len(key) == 32 else None
+
+
 def _secret(path, make, size=32):
     """The `size`-byte secret in `path`, created (0600) on first use. Called under the storage lock, so never by two
     signers. A file of another size stops the start: a key is never used cut short."""
@@ -268,13 +280,15 @@ class SignerService:
         authorize = dict(authorize or {})
         if not all(isinstance(m, list) and set(m) <= set(REQUESTS) for m in authorize.values()):
             raise ValueError(f"authorize maps identities to lists of methods out of {sorted(REQUESTS)}")
+        keys = os.path.join(data_dir, "keys")
         open_storage = open_storage or (lambda: FileStorage(os.path.join(data_dir, "store"), durability,
-                                                            self.metrics.fsync_seconds.observe, lock_timeout_s))
+                                                            self.metrics.fsync_seconds.observe, lock_timeout_s,
+                                                            _snapshot_key(keys)))
         storage = open_storage()   # takes the storage lock before anything else
         try:
-            keys = os.path.join(data_dir, "keys")
             _mkdir(keys)
             os.chmod(keys, 0o700)
+            storage.snapshot_key = _secret(os.path.join(keys, "snapshot.key"), lambda: os.urandom(32))
             sign = RecordSigner(_secret(os.path.join(keys, "record.key"), lambda: crypto.generate()[0]))
             self.tokens = RunTokens(_secret(os.path.join(keys, "run_token.key"), lambda: os.urandom(32)))
             self._salt_key = _secret(os.path.join(keys, "args_salt.key"), lambda: os.urandom(32))
@@ -291,8 +305,8 @@ class SignerService:
         self.tenant, self.tenants, self.authorize = tenant, dict(tenants or {}), authorize
         self.multi_tenant_apps, self.migrators, self.analyzers = set(multi_tenant_apps), set(migrators), set(analyzers)
         self.fail_modes, self.grace_s, self.idle_s = fail_modes, grace_s, idle_s
-        self.approvals, self.data_dir, self._acknowledged = approvals, data_dir, acknowledge_rollback
-        self.fsck_every_s, self.clock_skew_s, self._skewed = fsck_every_s, clock_skew_s, set()
+        self.approvals, self.data_dir = approvals, data_dir
+        self.fsck_every_s, self.clock_skew_s, self._skewed, self._fsck_seen = fsck_every_s, clock_skew_s, set(), set()
         self._snapped = storage.tail_state()["tree_size"]
         self._approvers, self._break_glass = ({k: True for k in (approvals or {}).get(name, ())}
                                               for name in ("approvers", "break_glass"))
@@ -355,7 +369,8 @@ class SignerService:
                 **({"tenant_level": True} if kind == "rollback" else {})}
         self.log.write(lambda tx: tx.emit(self.log.signer_run(tx), "trace.tamper", data, source="signer"))
         if not acknowledged:
-            self.log.refuse_writes = f"{why}; restart with acknowledge_rollback once investigated"
+            self.log.refuse_writes = why + ("; restart with acknowledge_rollback once investigated" if kind == "rollback"
+                                            else "; repair the store (tracekit signer fsck) and restart")
 
     def _check_notes(self, acknowledged):
         """The latest stored note of each tree (the record tree, every registry tree) against the tree: a note of more
@@ -480,16 +495,17 @@ class SignerService:
                 self._loop_error("fsck")
 
     def check_store(self):
-        """Check the store as `tracekit signer fsck` does, up to the records and registry leaves written so far; a
-        problem is a signed trace.tamper{edited} and, unless rollbacks are acknowledged, refuses client writes."""
+        """Check the store as `tracekit signer fsck` does, up to the records and registry leaves written so far; new
+        problems get one signed trace.tamper{edited} and refuse client writes until a restart."""
         def written(tx):
             t = self.log.storage.tail_state()
             return {"records.jsonl": t["tree_size"], "registry.jsonl": sum(n for n, _ in t["registry"].values())}
         problems = fsck(self.data_dir, self.log.write(written))
-        if problems:
-            n = len(problems)
-            self._tamper("edited", problems[0].split(": ")[0][:256], {}, {}, self._acknowledged,
-                         f"the background fsck found {n} problem(s), first: {problems[0][:512]}")
+        new = [p for p in problems if p not in self._fsck_seen]
+        if new:   # acknowledge_rollback covers the rollback found at start, never a later finding
+            self._fsck_seen.update(new)
+            self._tamper("edited", new[0].split(": ")[0][:256], {}, {}, False,
+                         f"the background fsck found {len(new)} new problem(s), first: {new[0][:512]}")
         return problems
 
     def checkpoint(self):
@@ -1414,7 +1430,7 @@ def fsck(data_dir, upto=None):
     """Every problem in the store: the storage check (hashes, chains) plus every record's signature. `upto`: see
     storage.file.fsck."""
     store = os.path.join(data_dir, "store")
-    problems = fsck_store(store, upto)
+    problems = fsck_store(store, upto, _snapshot_key(os.path.join(data_dir, "keys")))
     with open(os.path.join(data_dir, "keys", "record.key"), "rb") as f:
         sign = RecordSigner(f.read())
     try:

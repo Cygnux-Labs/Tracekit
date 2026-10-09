@@ -2,6 +2,8 @@
 timeout."""
 import contextlib
 import io
+import hashlib
+import hmac
 import json
 import os
 import shutil
@@ -87,21 +89,37 @@ class TestSnapshots(Case):
         self.assertEqual(comparable(s.log._state()), state)   # the same state as a full replay
         self.call(s, "close_run", runs[11])   # a run from before the snapshot, and its token, still known
 
-    def test_a_snapshot_that_no_longer_matches_is_ignored_and_reported(self):
+    def edit_snapshot(self, edit, remac):
         s = self.open()
         self.register(s)
         s.close()
         snaps = os.path.join(self.dir, "store", "snapshots")
         name = os.listdir(snaps)[0]
-        with open(os.path.join(snaps, name)) as f:
-            snap = json.load(f)
-        snap["hash"] = "sha256:" + "1" * 64
-        with open(os.path.join(snaps, name), "w") as f:
-            json.dump(snap, f)
-        self.assertEqual(svc.fsck(self.dir), [f"snapshots/{name}: does not match the logs, so open ignores it and "
-                                              "replays them in full"])
+        with open(os.path.join(snaps, name), "rb") as f:
+            mac, _, body = f.read().partition(b"\n")
+        snap = json.loads(body)
+        edit(snap)
+        body = json.dumps(snap).encode()
+        if remac:
+            with open(os.path.join(self.dir, "keys", "snapshot.key"), "rb") as f:
+                mac = hmac.new(f.read(), body, hashlib.sha256).hexdigest().encode()
+        with open(os.path.join(snaps, name), "wb") as f:
+            f.write(mac + b"\n" + body)
+        self.assertEqual(svc.fsck(self.dir), [f"snapshots/{name}: does not match the logs or its MAC, so open "
+                                              "ignores it and replays them in full"])
         s, indexed, _ = self.read_on_open()
         self.assertEqual(indexed, list(range(s.log.storage.tree.size)))
+        return s
+
+    def test_a_snapshot_that_no_longer_matches_is_ignored_and_reported(self):
+        self.edit_snapshot(lambda snap: snap.update(hash="sha256:" + "1" * 64), remac=True)
+
+    def test_an_edited_snapshot_fails_its_mac_and_is_ignored(self):
+        def edit(snap):
+            for r in snap["state"]["runs"]:
+                r["owner"] = "uid:4242"
+        s = self.edit_snapshot(edit, remac=False)
+        self.assertNotIn("uid:4242", [r.get("owner") for r in s.log.runs.values()])
 
     def test_old_snapshots_are_pruned(self):
         for _ in range(4):
@@ -130,6 +148,24 @@ class TestBackgroundFsck(Case):
         tampers = [r["event"]["data"] for r in records(self.dir) if r["event"]["type"] == "trace.tamper"]
         self.assertEqual(tampers[0]["kind"], "edited")
         self.assertEqual(tampers[0]["path"], "records.jsonl line 1")
+
+
+    def test_acknowledge_rollback_does_not_cover_it_and_a_finding_is_recorded_once(self):
+        s = self.open(fsck_every_s=3600, acknowledge_rollback=True)
+        run = self.register(s)
+        p = os.path.join(self.dir, "store", "records.jsonl")
+        with open(p, "r+b") as f:
+            data = f.read()
+            at = data.index(b'"id":"') + 6
+            f.seek(at)
+            f.write(b"0" if data[at:at + 1] != b"0" else b"1")
+        self.assertTrue(s.check_store())
+        self.assertTrue(s.log.refuse_writes)
+        s.check_store()
+        with self.assertRaises(RPCError):
+            self.call(s, "close_run", run)
+        s.close()
+        self.assertEqual(sum(r["event"]["type"] == "trace.tamper" for r in records(self.dir)), 1)
 
 
 class TestStorageLock(Case):

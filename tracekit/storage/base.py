@@ -28,6 +28,7 @@ class StorageCorrupt(Exception):
 class Storage:
     torn = ()  # torn last lines (a write cut short by a crash) set aside on open: [{"log", "offset", "length", "path"}]
     snapshot = None  # the snapshot the store opened from: {"size", "hash" of record size-1, "state"}, or None
+    snapshot_key = None  # the key authenticating snapshots; none are read or written without it
 
     def snapshot_put(self, state):
         """Store a snapshot of the indexes at the current tree size with `state` (JSON), the caller's state at that

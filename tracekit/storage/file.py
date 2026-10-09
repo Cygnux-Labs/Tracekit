@@ -18,6 +18,8 @@ that hash (else from nothing), and the log lines after it are indexed, rewriting
 writer runs."""
 import contextlib
 import errno
+import hashlib
+import hmac
 import json
 import os
 import re
@@ -218,12 +220,20 @@ def _snapshots(root):
                   reverse=True)
 
 
-def _snapshot(root, path):
-    """The snapshot at `path` when the logs still hold what it covers (its last record, with that hash, ends where
-    it says, and every log is at least as long), else None."""
+def _mac(key, body):
+    return hmac.new(key, body, hashlib.sha256).hexdigest().encode("ascii")
+
+
+def _snapshot(root, path, key):
+    """The snapshot at `path` when its MAC under `key` holds (unchecked when `key` is None: fsck without the keys)
+    and the logs still hold what it covers (its last record, with that hash, ends where it says, and every log is at
+    least as long), else None."""
     try:
         with open(path, "rb") as f:
-            snap = json.loads(f.read())
+            mac, _, body = f.read().partition(b"\n")
+        if key is not None and not hmac.compare_digest(mac, _mac(key, body)):
+            return None
+        snap = json.loads(body)
         n, offsets = snap["size"], snap["offsets"]
         for name in LOGS:
             end = offsets[name][-1]
@@ -242,8 +252,8 @@ def _snapshot(root, path):
         return None
 
 
-def _latest_snapshot(root):
-    return next((snap for _, path in _snapshots(root) if (snap := _snapshot(root, path))), None)
+def _latest_snapshot(root, key):
+    return next((snap for _, path in _snapshots(root) if (snap := _snapshot(root, path, key))), None)
 
 
 class _Records:
@@ -321,9 +331,10 @@ class _Records:
 
 
 class FileStorage(_Records, Storage):
-    def __init__(self, root, mode=ACK_ON_WRITE, on_sync=None, lock_timeout_s=0):
+    def __init__(self, root, mode=ACK_ON_WRITE, on_sync=None, lock_timeout_s=0, snapshot_key=None):
         """`on_sync(seconds)` is called after each sync of a log. Another process holding the store's lock for
-        `lock_timeout_s` raises BlockingIOError naming its pid."""
+        `lock_timeout_s` raises BlockingIOError naming its pid. `snapshot_key` authenticates snapshots: without it
+        none is read or written (set the attribute once the key exists)."""
         if mode not in (ACK_ON_WRITE, ACK_ON_FSYNC):
             raise ValueError(f"unknown durability mode {mode!r}")
         _mkdir(root)
@@ -343,7 +354,8 @@ class FileStorage(_Records, Storage):
         self.prev = ZERO_HASH
         self.log = self.reg_log = self.note_log = None
         try:
-            self.snapshot = snap = _latest_snapshot(root)
+            self.snapshot_key = snapshot_key
+            self.snapshot = snap = snapshot_key and _latest_snapshot(root, snapshot_key)
             offsets = snap["offsets"] if snap else {}
             for attr, name in zip(("log", "reg_log", "note_log"), LOGS):
                 setattr(self, attr, _Log(os.path.join(root, name), self.torn, on_sync, offsets.get(name, (0,))))
@@ -413,7 +425,7 @@ class FileStorage(_Records, Storage):
         self.snapshot = {k: snap[k] for k in ("size", "hash", "state")}
 
     def snapshot_put(self, state):
-        if not self.tree.size:
+        if not (self.tree.size and self.snapshot_key):
             return
         logs = (self.log, self.reg_log, self.note_log)
         data = json.dumps({
@@ -426,7 +438,7 @@ class FileStorage(_Records, Storage):
             for log in logs:   # the lines a snapshot covers are durable before it
                 _sync(log.fd, True)
             _mkdir(d)
-            _write_new(os.path.join(d, f"{self.tree.size}.json"), data)
+            _write_new(os.path.join(d, f"{self.tree.size}.json"), _mac(self.snapshot_key, data) + b"\n" + data)
             for _, path in _snapshots(self.root)[2:]:
                 os.unlink(path)
 
@@ -579,9 +591,9 @@ class FileReader(_Records):
                 time.sleep(0.05)
 
 
-def fsck(root, upto=None):
+def fsck(root, upto=None, snapshot_key=None):
     """Check every line of a file store: strict JSON, record hash, the seq/prev_hash chain and each run's chain, and
-    every snapshot (one that no longer matches the logs is ignored on open). `upto` ({log name: lines}) checks only
+    every snapshot (one that no longer matches the logs, or whose MAC under `snapshot_key` fails, is ignored on open). `upto` ({log name: lines}) checks only
     the lines a running writer had written. Returns the problems found, empty when the store is intact."""
     problems = []
 
@@ -628,6 +640,6 @@ def fsck(root, upto=None):
         except (ValueError, KeyError, TypeError) as x:
             problems.append(f"registry.jsonl line {n}: unreadable ({x})")
     if upto is None:
-        problems.extend(f"{SNAPSHOTS}/{os.path.basename(path)}: does not match the logs, so open ignores it and "
-                        "replays them in full" for _, path in _snapshots(root) if _snapshot(root, path) is None)
+        problems.extend(f"{SNAPSHOTS}/{os.path.basename(path)}: does not match the logs or its MAC, so open ignores it and "
+                        "replays them in full" for _, path in _snapshots(root) if _snapshot(root, path, snapshot_key) is None)
     return problems
