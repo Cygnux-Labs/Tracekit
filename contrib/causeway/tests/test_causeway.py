@@ -1,6 +1,6 @@
 """Causeway integration (#14): anchors make Causeway runs tamper-evident, test verdicts become signed findings, and
 Tracekit runs export into Causeway's format (checked with Causeway's own verifier when installed).
-python3 -m pytest tests/test_causeway.py -q"""
+python3 -m pytest contrib/causeway/tests -q"""
 import json
 import os
 import shutil
@@ -8,10 +8,11 @@ import subprocess
 import sys
 import unittest
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, ROOT)
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from tracekit import bundle, causeway  # noqa: E402
+HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ROOT = os.path.dirname(os.path.dirname(HERE))
+sys.path[:0] = [ROOT, HERE, os.path.join(ROOT, "tests")]
+import tracekit_causeway as causeway  # noqa: E402
+from tracekit import bundle  # noqa: E402
 from tracekit.agent_sdk import Tracer  # noqa: E402
 from factories import DaemonCase  # noqa: E402
 
@@ -139,7 +140,7 @@ class Integration(DaemonCase):
         self.assertEqual(causeway.anchor(self.home, run)[0], "anchored")
         wrote = causeway.import_tests(self.home, run)
         self.assertTrue(any(w["rule"] == "TK-C001" and "vendor" in w["title"] for w in wrote))
-        p = subprocess.run([sys.executable, "-m", "tracekit", "causeway", "verify", "--home", self.home, run], capture_output=True, text=True, cwd=ROOT)
+        p = subprocess.run([sys.executable, "-m", "tracekit_causeway", "verify", "--home", self.home, run], capture_output=True, text=True, cwd=HERE, env=dict(os.environ, PYTHONPATH=ROOT))
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
 
 

@@ -1,7 +1,7 @@
 """Proof packs: one zip an auditor can check offline with a Tracekit release they install themselves, plus a readable report.
 
-    tracekit proofpack --run R -o pack.zip [--key signer.pub] [--witness git:/clone]
-    tracekit report run.tkb [-o report.md]          # the report alone, for any bundle
+    tracekit-proofpack --run R -o pack.zip [--key signer.pub] [--witness git:/clone]
+    tracekit-report run.tkb [-o report.md]          # the report alone, for any bundle
 
 pack.zip:
     run.tkb          the signed evidence bundle (unchanged; `tracekit verify` checks it)
@@ -46,8 +46,8 @@ def _md_escape(s):
 
 def report(bundle_path, key=None, witnesses=()):
     """-> (markdown, verification exit code)."""
-    from . import bundle as B
-    from . import coverage
+    from tracekit import bundle as B
+    from tracekit import coverage
     rep, code = B.verify(bundle_path, list(witnesses), False, key)
     manifest, blobs = B.load_bundle(bundle_path)
     events = []
@@ -67,7 +67,7 @@ def report(bundle_path, key=None, witnesses=()):
     dec = {e["data"]["tool_use_id"]: e["data"]["decision"] for e in sel if e["type"] == "policy.decision"}
     usage = [e["data"].get("usage") for e in sel if e["type"] == "model.exchange" and e["data"].get("usage")]
     verdict = {0: "VERIFIED", 1: "FAILED", 2: "BAD BUNDLE", 3: "VERIFIED WITH WARNINGS"}.get(code, str(code))
-    from .bundle import GAP_CHECKS
+    from tracekit.bundle import GAP_CHECKS
     if code == 0 and any(c["check"] in GAP_CHECKS and c["status"] == "warn" for c in rep.checks):
         verdict = "VERIFIED WITH GAPS"
     anchored = any(c["check"] == "trust root" and c["status"] == "pass" for c in rep.checks)
@@ -129,7 +129,7 @@ def build(out_path, bundle_path, key=None, witnesses=()):
     return code
 
 
-def main(argv=None, prog="tracekit proofpack"):
+def main(argv=None, prog="tracekit-proofpack"):
     ap = argparse.ArgumentParser(prog=prog)
     ap.add_argument("bundle", nargs="?", help="an existing .tkb (otherwise one is exported from the ledger)")
     ap.add_argument("--run")
@@ -142,8 +142,8 @@ def main(argv=None, prog="tracekit proofpack"):
     path = a.bundle
     tmp = None
     if not path:
-        from . import bundle as B
-        from . import client
+        from tracekit import bundle as B
+        from tracekit import client
         home = a.home or client.client_config().get("signer_home") or "/var/lib/tracekit"
         tmp = tempfile.mkdtemp()
         path = os.path.join(tmp, "run.tkb")
@@ -167,8 +167,8 @@ def main(argv=None, prog="tracekit proofpack"):
 
 
 def report_main(argv=None):
-    argv = list(argv or [])
-    return main(argv + ["--report-only"], prog="tracekit report")
+    argv = list(sys.argv[1:] if argv is None else argv)
+    return main(argv + ["--report-only"], prog="tracekit-report")
 
 
 if __name__ == "__main__":

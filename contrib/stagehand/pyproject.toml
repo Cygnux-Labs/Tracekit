@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tracekit-stagehand"
+version = "0.1.0"
+description = "Stagehand action hooks for Tracekit (Python)"
+license = "MIT"
+requires-python = ">=3.9"
+dependencies = ["tracekit"]
+
+[tool.setuptools]
+py-modules = ["tracekit_stagehand"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
