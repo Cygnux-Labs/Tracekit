@@ -10,9 +10,12 @@ signer.yaml:
     data_dir: /var/lib/tracekit-signer      # keys/ and store/; relative paths are from the config file
     socket: /run/tracekit/signer.sock        # Unix socket transport (peer uid, per frame on Linux)
     tcp_endpoint: /run/tracekit/endpoint.json   # loopback TCP dev transport (token, mutual HMAC)
+    http: {listen: 0.0.0.0:8443, ...}        # HTTPS with k8s_sa, mtls or token identity (tracekit/transport/http.py)
     durability: ack-on-write                 # or ack-on-fsync
     tenant: default                          # tenant of callers not in `tenants`
-    tenants: {"uid:1001": acme}              # identity -> tenant (recorded as attested)
+    tenants: {"uid:1001": acme, "k8s_sa:system:serviceaccount:acme:*": acme}   # identity or prefix* -> tenant (attested)
+    authorize: {"mtls:spiffe://acme/agent": [register_run, decide, complete, close_run]}   # identity or prefix* ->
+                                             # methods; uid callers default to all, every other scheme to none
     multi_tenant_apps: ["uid:1002"]          # may assert a tenant per run (recorded as not attested)
     migrators: ["uid:1003"]                  # may register `migrated` runs
     analyzers: ["uid:1004"]                  # may register findings runs, each bound to the run it analyses
@@ -100,8 +103,10 @@ TICK_S = 1.0
 CHECKPOINT_S, CHECKPOINT_MIN_S = 10.0, 1.0
 GRACE_S, IDLE_S = 5.0, 3600.0
 FAIL_MODES = {"default": "closed"}
-CONFIG_KEYS = {"data_dir", "socket", "tcp_endpoint", "durability", "tenant", "tenants", "limits", "acknowledge_rollback",
-               "policy", "multi_tenant_apps", "migrators", "analyzers", "fail_modes", "grace_s", "idle_s", "origin"}
+CONFIG_KEYS = {"data_dir", "socket", "tcp_endpoint", "http", "durability", "tenant", "tenants", "authorize", "limits",
+               "acknowledge_rollback", "policy", "multi_tenant_apps", "migrators", "analyzers", "fail_modes", "grace_s",
+               "idle_s", "origin"}
+DEV_GRANT = {"token:dev": sorted(REQUESTS)}   # the dev token of the loopback TCP transport (scoped by DevToken itself)
 
 
 def load_policy(path=DEFAULT_POLICY, backend=None):
@@ -142,6 +147,15 @@ def _secret(path, make):
     return data
 
 
+def lookup(table, sub, default=None):
+    """table[sub], else the entry of the longest `prefix*` key that `sub` starts with, else `default`."""
+    if sub in table:
+        return table[sub]
+    # lean: scans every key per call; a prefix trie if maps grow past a few hundred entries
+    best = max((k for k in table if k.endswith("*") and sub.startswith(k[:-1])), key=len, default=None)
+    return default if best is None else table[best]
+
+
 def _process_identity():
     return CallerIdentity("uid", str(os.getuid()) if hasattr(os, "getuid") else "0", True)
 
@@ -150,15 +164,19 @@ class SignerService:
     def __init__(self, data_dir, policy=None, identity=None, tenant="default", tenants=None, limits=Limits(),
                  durability=ACK_ON_WRITE, witnesses=(), acknowledge_rollback=False, open_storage=None, isolation=None,
                  multi_tenant_apps=(), migrators=(), analyzers=(), fail_modes=None, grace_s=GRACE_S, idle_s=IDLE_S,
-                 bridge=None, origin=None):
+                 bridge=None, origin=None, authorize=None):
         """`identity` answers the in-process SignerAPI calls (default: this process's uid); transports call
         handle_frame with the identity they established. `policy` is a policy2 Engine (default: load_policy()).
         `open_storage()` defaults to file storage in data_dir/store. `origin` names the log in its checkpoints.
-        `multi_tenant_apps`, `migrators` and `analyzers` are identities ("scheme:subject").
+        `multi_tenant_apps`, `migrators` and `analyzers` are identities ("scheme:subject"); `tenants` and `authorize`
+        map identities or `prefix*` to a tenant and to the methods they may call.
         `isolation` fixes the signer_isolation label of every run (a dev signer: same-user). `bridge`: see RecordLog."""
         fail_modes = dict(fail_modes or FAIL_MODES)
         if not all(isinstance(k, str) and v in ("open", "closed") for k, v in fail_modes.items()):
             raise ValueError("fail_modes maps tool classes to open or closed")
+        authorize = dict(authorize or {})
+        if not all(isinstance(m, list) and set(m) <= set(REQUESTS) for m in authorize.values()):
+            raise ValueError(f"authorize maps identities to lists of methods out of {sorted(REQUESTS)}")
         open_storage = open_storage or (lambda: FileStorage(os.path.join(data_dir, "store"), durability))
         storage = open_storage()   # takes the storage lock before anything else
         try:
@@ -178,7 +196,7 @@ class SignerService:
             raise
         self.policy, self.isolation = policy or load_policy(), isolation
         self.identity = identity or _process_identity()
-        self.tenant, self.tenants = tenant, dict(tenants or {})
+        self.tenant, self.tenants, self.authorize = tenant, dict(tenants or {}), authorize
         self.multi_tenant_apps, self.migrators, self.analyzers = set(multi_tenant_apps), set(migrators), set(analyzers)
         self.fail_modes, self.grace_s, self.idle_s = fail_modes, grace_s, idle_s
         self._swept = time.monotonic()
@@ -243,6 +261,11 @@ class SignerService:
         try:
             if not isinstance(method, str) or method not in REQUESTS:
                 raise RPCError("invalid_request", f"unknown method {str(method)[:64]}")
+            granted = lookup(self.authorize, subject(identity))
+            if granted is None:   # unconfigured: a uid keeps every method, any other scheme gets none
+                granted = REQUESTS if identity.scheme == "uid" else ()
+            if method not in granted:
+                raise RPCError("forbidden", f"{subject(identity)[:256]} is not authorized for {method}")
             errs = rpc_schema.validate(REQUESTS[method], req)
             if errs:
                 raise RPCError("invalid_request", "; ".join(errs))
@@ -391,7 +414,7 @@ class SignerService:
     def _may_see(self, identity, a):
         """Whether `identity` may see and answer approval `a`: the run's owner, or an identity of the run's tenant."""
         sub = subject(identity)
-        return sub == self.log.runs[a["run_key"]]["owner"] or a["run_key"][0] == self.tenants.get(sub, self.tenant)
+        return sub == self.log.runs[a["run_key"]]["owner"] or a["run_key"][0] == lookup(self.tenants, sub, self.tenant)
 
     def _visible(self, identity, approval_id):
         a = self.log.approvals.get(approval_id)
@@ -470,7 +493,7 @@ class SignerService:
                                ("analyzes", self.analyzers)):
             if field in req and sub not in allowed:
                 raise RPCError("forbidden", f"{sub[:256]} is not configured to register runs with `{field}`")
-        tenant = req.get("tenant") or self.tenants.get(sub, self.tenant)
+        tenant = req.get("tenant") or lookup(self.tenants, sub, self.tenant)
         run_id = req.get("run_id") or secrets.token_hex(16)
 
         def fn(tx, _):
@@ -765,6 +788,14 @@ def load_config(path):
     for k in ("data_dir", "socket", "tcp_endpoint", "policy"):
         if cfg.get(k):
             cfg[k] = os.path.join(base, cfg[k])
+    h = cfg.get("http")
+    if h is not None:
+        from tracekit.transport import http
+        for section in (h, h.get("k8s_sa")) if isinstance(h, dict) else ():
+            for k in ("cert", "key", "client_ca", "token_file", "ca"):
+                if isinstance(section, dict) and section.get(k):
+                    section[k] = os.path.join(base, section[k])
+        http.configure(h)   # validates the section now; serve() builds it again
     return cfg
 
 
@@ -801,7 +832,8 @@ def open_service(cfg, **kw):
                          multi_tenant_apps=cfg.get("multi_tenant_apps", ()), migrators=cfg.get("migrators", ()),
                          analyzers=cfg.get("analyzers", ()), fail_modes=cfg.get("fail_modes"),
                          grace_s=float(cfg.get("grace_s", GRACE_S)), idle_s=float(cfg.get("idle_s", IDLE_S)),
-                         origin=cfg.get("origin"), **kw)
+                         origin=cfg.get("origin"),
+                         authorize={**(DEV_GRANT if cfg.get("tcp_endpoint") else {}), **(cfg.get("authorize") or {})}, **kw)
 
 
 def serve(cfg, service):
@@ -818,8 +850,11 @@ def serve(cfg, service):
     if cfg.get("tcp_endpoint"):
         from tracekit.transport.tcp_dev import TcpDevServer
         servers.append(TcpDevServer(cfg["tcp_endpoint"], _dev_token(), handle))
+    if cfg.get("http"):
+        from tracekit.transport import http
+        servers.append(http.HttpServer(*http.configure(cfg["http"]), handle))
     if not servers:
-        raise ValueError("configure socket and/or tcp_endpoint")
+        raise ValueError("configure socket, tcp_endpoint and/or http")
     for s in servers:
         threading.Thread(target=s.serve_forever, args=(0.2,), daemon=True).start()
     return servers
@@ -913,7 +948,7 @@ def _serve_dev():
     from tracekit.sdk.autospawn import runtime_dir
 
     def open_handler():
-        service = SignerService(dev_data_dir(), isolation="same-user")
+        service = SignerService(dev_data_dir(), isolation="same-user", authorize=DEV_GRANT)
         return service.handle_frame, service.close
     try:
         return serve_dev(runtime_dir(), open_handler, idle_s=float(os.environ.get("TRACEKIT_DEV_IDLE", 900)))
