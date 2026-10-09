@@ -12,6 +12,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest import mock
@@ -88,7 +89,7 @@ class DevSigner(unittest.TestCase):
         self.assertEqual(Client().status()["rpc_version"], 1)
 
     def test_read_only_home_with_tracekit_signer(self):
-        hello = json.loads(self.cli("up", "--wait", "--json"))
+        hello = json.loads(self.cli("up", "--json"))   # --json waits for the signer it starts
         home = os.path.join(self.dir, "home")
         os.mkdir(home, 0o500)
         self.addCleanup(os.chmod, home, 0o700)
@@ -116,6 +117,39 @@ class DevSigner(unittest.TestCase):
         self.assertIn("dev signer stopped", self.cli("down"))
         self.assertFalse(json.loads(self.cli("status"))["signer_v2"]["running"])
         self.assertIn("no dev signer running", self.cli("down"))
+
+    def test_status_survives_an_unusable_runtime_dir(self):
+        with mock.patch.object(autospawn, "runtime_dir", side_effect=PermissionError("read-only")):
+            status = json.loads(self.cli("status"))
+        self.assertIn("client_config", status)
+        self.assertFalse(status["signer_v2"]["running"])
+
+    def test_approval_wait_does_not_hold_up_other_calls(self):
+        from tracekit.transport.unix import UnixServer
+        release = threading.Event()
+
+        def handle(identity, frame):
+            if frame["method"] == "hello":
+                return {"proto": [1, 1], "version": __version__, "pid": os.getpid()}
+            if frame["method"] == "approval_wait":
+                release.wait(10)   # a real signer blocks up to timeout_ms
+                return {"approval_id": frame["approval_id"], "state": "approved"}
+            return {"rpc_version": 1}
+        path = os.path.join(self.dir, "s.sock")
+        server = UnixServer(path, handle)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        c, waited = Client(path, timeout=5), []
+        c.status()
+        waiter = threading.Thread(target=lambda: waited.append(c.approval_wait(
+            {"run_id": "r1", "run_token": "t", "approval_id": "a1", "timeout_ms": 60000})))
+        waiter.start()
+        self.assertEqual(c.status(), {"rpc_version": 1})   # answered while the wait is still blocked
+        self.assertTrue(waiter.is_alive())
+        release.set()
+        waiter.join(10)
+        self.assertEqual(waited, [{"approval_id": "a1", "state": "approved"}])
 
     def test_run_handle_and_current_run(self):
         c = Client()

@@ -8,7 +8,8 @@
 
 The signer is the Unix socket in `$TRACEKIT_SIGNER`; without it, a same-user dev signer is found or started
 (tracekit/sdk/autospawn.py). Requests go out in order on one connection and the signer answers them in order, so any
-number of threads can have calls in flight. Every request is validated against the RPC contract before it is sent.
+number of threads can have calls in flight; a call that may block (`approval_wait`) gets a connection of its own so it
+holds up no one. Every request is validated against the RPC contract before it is sent.
 Calls that change state carry a `request_id`; a call whose connection drops is resent with the same id, which the
 signer answers with its original response. Event calls carry this process's `stream` and a `client_seq` that grows
 by one per event of a run. The client writes nothing to disk.
@@ -31,6 +32,7 @@ from tracekit.transport import read_frame, write_frame
 CONNECT_TIMEOUT_S = 2
 RETRIES = 3
 _EVENT_METHODS = {m for m, s in rpc_schema.REQUESTS.items() if "client_seq" in s["properties"]}
+_LONG_POLLS = {m for m, s in rpc_schema.REQUESTS.items() if "timeout_ms" in s["properties"]}
 
 current_run = contextvars.ContextVar("tracekit_current_run", default=None)   # set inside `with client.run(...)`
 
@@ -112,9 +114,11 @@ class Client:
             req.setdefault("request_id", _new_id())
         timeout = self.timeout + req.get("timeout_ms", 0) / 1000
         for _ in range(RETRIES):
-            fut = self._send(method, req)
             try:
-                reply = fut.result(timeout)
+                if method in _LONG_POLLS:
+                    reply = self._poll(method, req, timeout)
+                else:
+                    reply = self._send(method, req).result(timeout)
             except _ConnectionLost:
                 continue
             except concurrent.futures.TimeoutError:
@@ -140,9 +144,7 @@ class Client:
             fresh = method in _EVENT_METHODS and "client_seq" not in req
             if fresh:
                 req.update(stream=self.stream, client_seq=self._seqs.get(run_id, 0))
-            errs = rpc_schema.validate(rpc_schema.REQUESTS[method], req)
-            if errs:
-                raise RPCError("invalid_request", "; ".join(errs))
+            _validate(method, req)
             if self._conn is None:
                 self._conn = self._connect()
             if fresh:
@@ -157,13 +159,34 @@ class Client:
                 self._conn.drop()
             return fut
 
-    def _connect(self):
+    def _poll(self, method, req, timeout):
+        """One request on a connection of its own, closed after the answer."""
+        _validate(method, req)
+        sock, rfile = self._dial()
+        sock.settimeout(timeout)
+        try:
+            write_frame(sock, {"method": method, **req})
+            reply = read_frame(rfile)
+        except TimeoutError:
+            raise SignerUnavailable(f"no answer from the signer within {timeout:g}s") from None
+        except (OSError, RPCError):
+            reply = None
+        finally:
+            sock.close()
+        if reply is None:
+            raise _ConnectionLost()
+        return reply
+
+    def _dial(self):
         if self.signer:
             sock, rfile, self.hello = connect(self.signer)
         else:
             from tracekit.sdk import autospawn
             sock, rfile, self.hello = autospawn.ensure()
-        conn = _Conn(sock, rfile)
+        return sock, rfile
+
+    def _connect(self):
+        conn = _Conn(*self._dial())
         threading.Thread(target=self._read, args=(conn,), daemon=True, name="tracekit-client").start()
         return conn
 
@@ -182,6 +205,12 @@ class Client:
             conn.sock.close()
             while conn.pending:
                 conn.pending.popleft().set_exception(_ConnectionLost())
+
+
+def _validate(method, req):
+    errs = rpc_schema.validate(rpc_schema.REQUESTS[method], req)
+    if errs:
+        raise RPCError("invalid_request", "; ".join(errs))
 
 
 def _rpc_method(name):
