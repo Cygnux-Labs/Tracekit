@@ -6,7 +6,9 @@ independent witness checks need `tracekit verify`."""
 import json
 import re
 
-PAGE = r"""<!doctype html><html lang="en"><head><meta charset="utf-8">
+CSP_META = ('<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; script-src \'unsafe-inline\'; '
+            'style-src \'unsafe-inline\'; img-src data:; connect-src \'none\'">')
+PAGE = r"""<!doctype html><html lang="en"><head><meta charset="utf-8">""" + CSP_META + r"""
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Tracekit evidence bundle</title>
 <style>
 :root{--bg:#fbfaf7;--fg:#17181a;--muted:#62646a;--line:#e3e1db;--card:#fff;--ok:#1d7a4a;--warn:#9a6400;--bad:#b3261e;--acc:#2a5bd7;--chip:#f0eee8}
@@ -30,6 +32,7 @@ label{color:var(--muted);font-size:13px;margin-right:12px}
 <p id="meta"></p>
 <div id="banner" class="banner">Checking…</div>
 <p>Tracekit proves what its capture path recorded and that it has not changed since it was signed and checkpointed. It does not prove intent, complete coverage, or that reported results are real. This page re-runs the checks in your browser; schema validation and independent witness checks need <code>tracekit verify --witness …</code>.</p>
+<p>Run-completeness checks (elided records, run boundaries, witnessed tails) are reported by <code>tracekit verify</code>, not by this page.</p>
 <div class="grid" id="tiles"></div>
 <h2>Checks</h2><div class="checks" id="checks"></div>
 <h2>Coverage</h2><div class="c" id="cov"></div>
