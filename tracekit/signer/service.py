@@ -5,7 +5,7 @@
     tracekit signer fsck  --config signer.yaml
     tracekit signer close-log --config signer.yaml   # shut the log down for good (log.closed), signer stopped
     tracekit signer vkey  [--dev | --config signer.yaml]               # the log's verifier key
-    tracekit signer trust [--dev | --config signer.yaml] -o trust.json  # a v2 trust config pinning it, no witnesses
+    tracekit signer trust [--dev | --config signer.yaml] -o trust.json  # a v2 trust config pinning it and the witnesses
     tracekit signer reveal --record SEQ [--dev | --config signer.yaml]  # the salt of one record's commitments
 
 signer.yaml:
@@ -27,15 +27,19 @@ signer.yaml:
     limits: {events_per_s: 200, burst: 400}  # tracekit.signer.quotas.Limits
     policy: /etc/tracekit/policy.yaml        # policy v2 (YAML or JSON); default tracekit/policy2/packs/dev.yaml
     origin: tracekit.example.org/log/1       # checkpoint origin, the log key's name; default tracekit.local/<log_id>
-    metrics: {listen: 127.0.0.1:9464}        # Prometheus GET /metrics on its own port (tracekit.signer.metrics)
+    metrics: {listen: 127.0.0.1:9464}        # Prometheus GET /metrics on its own port (tracekit.signer.metrics),
+                                             # and GET /logs/v0: this signer's logs, for witnesses to poll
+    witnesses:                               # C2SP tlog-witnesses that cosign every new note (tracekit.tlog_witness)
+      - {url: https://witness.example.org, vkey: "witness.example.org/w1+1234abcd+BA...", class: customer}
+    contact: ops@example.org                 # the logs list's contact line; default the origin
     approvals: {self_approval: deny, approvers: ["uid:1001", "mtls:spiffe://acme/ops/*"],   # identity or prefix*
                 break_glass: ["uid:0"]}      # may answer any approval, with a reason; recorded break_glass
     acknowledge_rollback: false
 
 Startup (04-design §2.6): the storage lock is taken before any socket is touched; the log is replayed, its chain
 checked and its tail signatures verified; then the configured witnesses are asked for their latest cosigned checkpoint.
-A witness is any object with `latest() -> (tree_size, root_bytes)` that raises when unreachable. A local log behind the
-witnessed one is a rollback: a signed `trace.tamper{rollback}`, then client writes are refused until it is
+A witness is a `tlog_witness.TlogWitness` (or an object with its `name`, `vkey`, `add_checkpoint` and `latest`), and
+`latest` raises when it is unreachable. A local log behind the witnessed one is a rollback: a signed `trace.tamper{rollback}`, then client writes are refused until it is
 acknowledged. No witness reachable: a signed `degraded_unanchored` gap, and the signer runs.
 
 Run lifecycle (04-design §2.7): run.registered → events → close_run or the idle timeout (paused while an approval is
@@ -50,6 +54,12 @@ one note per CHECKPOINT_MIN_S), every CHECKPOINT_S while the tree grows, and on 
 note of each tenant registry that grew, under origin `<origin>/registry/<id of the tenant's salt>`. The log key's vkey
 is written to <data_dir>/log.vkey on start. Notes are signed off the writer thread; the writer only reads the heads.
 
+Publishing (04-design §2.9, §8): one worker per configured witness sends each tree's latest note to it (add-checkpoint,
+off the writer: the writer only computes consistency proofs) and merges the verified cosignature lines into the stored
+note, whose body never changes. Per witness and tree, the store keeps the size the witness last cosigned and the retry
+state (witness-queue.json), so a restart resumes where it left off; retries back off from BACKOFF_S[0] to BACKOFF_S[1]
+(a refusal waits the longest). A log a witness has failed to cosign for WITNESS_GAP_S gets one signed
+`capture.gap{witness_failed}` per outage.
 
 Policy (04-design §4): the signer classifies the tool and decides with policy2; every decide gets a fresh decision_id
 that one `complete` with the same arguments consumes. Only deny and ask are memoised, per (tool_call_id, attempt).
@@ -93,7 +103,7 @@ import rfc8785
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-from tracekit import __version__, crypto, privacy, yamlmini
+from tracekit import __version__, crypto, merkle, privacy, yamlmini
 from tracekit.deploy import files
 from tracekit.format import checkpoint, registry
 from tracekit.format.canon import StrictJSONError, canonical, event_hash, loads_strict
@@ -103,13 +113,14 @@ from tracekit.locking import lock_file
 from tracekit.policy2 import compile as policy_compile
 from tracekit.policy2.engine import Engine
 from tracekit.signer import metrics, rpc_schema
-from tracekit.signer.pipeline import SIGNER_RUN, RecordLog, approval, subject
+from tracekit.signer.pipeline import SIGNER_RUN, RecordLog, approval, salt_label, subject
 from tracekit.signer.quotas import Limits, Quotas
 from tracekit.signer.rpc_schema import REQUESTS, RPCError
 from tracekit.signer.runtoken import RunTokens
 from tracekit.storage.base import ACK_ON_WRITE, RECORDS, StorageUnavailable, registry_tree
 from tracekit.storage.file import FileStorage, _mkdir
 from tracekit.storage.file import fsck as fsck_store
+from tracekit.tlog_witness import TlogWitness, WitnessError, signed_by
 from tracekit.transport import answering_hello, hello
 
 DEFAULT_POLICY = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "policy2", "packs", "dev.yaml")
@@ -121,11 +132,13 @@ LIVE = ("requested", "approved")   # approval states that may still lead to a co
 LIST_PAGE = 100
 TICK_S = 1.0
 CHECKPOINT_S, CHECKPOINT_MIN_S = 10.0, 1.0
+WITNESS_GAP_S, BACKOFF_S = 300.0, (1.0, 300.0)
+CLASSES = ("public", "customer", "tracekit", "operator")
 GRACE_S, IDLE_S = 5.0, 3600.0
 FAIL_MODES = {"default": "closed"}
 CONFIG_KEYS = {"data_dir", "socket", "tcp_endpoint", "http", "durability", "tenant", "tenants", "authorize", "limits",
                "acknowledge_rollback", "policy", "multi_tenant_apps", "migrators", "analyzers", "fail_modes", "grace_s",
-               "idle_s", "origin", "metrics", "approvals"}
+               "idle_s", "origin", "metrics", "witnesses", "contact", "approvals"}
 APPROVAL_KEYS = {"self_approval", "approvers", "break_glass"}
 
 
@@ -146,18 +159,6 @@ MARK = re.compile(r"\[REDACTED:([a-z_]+)\]")
 
 def _salt(key, label):
     return hmac.new(key, label.encode(), "sha256").digest()
-
-
-def salt_label(e):
-    """What the salt of event `e`'s commitments is derived from; None when it has none."""
-    d = e["data"]
-    if e["type"] in ("policy.decision", "approval.request", "approval.binding_mismatch"):
-        return d.get("decision_id")
-    if e["type"] == "tool.result":
-        return "result:" + d["decision_id"]
-    if e["type"] in ("model.exchange", "state.write"):
-        return f"{e['type']}:{e['tenant']}:{e['run_id']}:{e['request_id']}"
-    return None
 
 
 def _redact(value, dotenv, claim=None):
@@ -216,10 +217,11 @@ class SignerService:
     def __init__(self, data_dir, policy=None, identity=None, tenant="default", tenants=None, limits=Limits(),
                  durability=ACK_ON_WRITE, witnesses=(), acknowledge_rollback=False, open_storage=None, isolation=None,
                  multi_tenant_apps=(), migrators=(), analyzers=(), fail_modes=None, grace_s=GRACE_S, idle_s=IDLE_S,
-                 bridge=None, origin=None, authorize=None, approvals=None):
+                 bridge=None, origin=None, authorize=None, contact=None, approvals=None):
         """`identity` answers the in-process SignerAPI calls (default: this process's uid); transports call
         handle_frame with the identity they established. `policy` is a policy2 Engine (default: load_policy()).
-        `open_storage()` defaults to file storage in data_dir/store. `origin` names the log in its checkpoints.
+        `open_storage()` defaults to file storage in data_dir/store. `origin` names the log in its checkpoints, `contact`
+        its operator in the logs list. `witnesses` cosign its notes (see the module docstring).
         `multi_tenant_apps`, `migrators` and `analyzers` are identities ("scheme:subject"); `tenants` and `authorize`
         map identities or `prefix*` to a tenant and to the methods they may call.
         `isolation` fixes the signer_isolation label of every run (a dev signer: same-user). `bridge`: see RecordLog.
@@ -268,6 +270,9 @@ class SignerService:
         self._refusals, self._refusals_lock = {}, threading.Lock()
         self._stop, self._nudged, self._checkpointing = threading.Event(), threading.Event(), threading.Lock()
         self.origin = origin or f"tracekit.local/{self.log.log_id}"
+        self.contact, self.witnesses = contact or self.origin, list(witnesses)
+        self._queue, self._queue_lock = storage.witness_queue(), threading.Lock()
+        self._wake = {w.name: threading.Event() for w in self.witnesses}
         try:
             self.vkey = checkpoint.vkey(self.origin, checkpoint.ED25519, crypto.public_from_secret(self._log_key))
             d = files.open_dir(data_dir)
@@ -295,31 +300,39 @@ class SignerService:
                 ("tracekit_signer_checkpoint_age_seconds", "Seconds since this signer last wrote a checkpoint note "
                  "(since start when it has written none).", lambda: time.monotonic() - self._noted)):
             self.metrics.add(metrics.Gauge(name, help, fn))
+        self.metrics.add(metrics.Gauge(
+            "tracekit_signer_witness_lag_records", "Records in the latest record tree note that the witness has not "
+            "cosigned yet.", self._witness_lag, "witness"))
         self._ticker = threading.Thread(target=self._tick_loop, name="tracekit-signer-ticker", daemon=True)
         self._ticker.start()
         self._checkpointer = threading.Thread(target=self._checkpoint_loop, name="tracekit-signer-checkpointer",
                                               daemon=True)
         self._checkpointer.start()
+        self._publishers = [threading.Thread(target=self._publish_loop, args=(w,), name=f"tracekit-witness-{i}",
+                                             daemon=True) for i, w in enumerate(self.witnesses)]
+        for t in self._publishers:
+            t.start()
 
     def _check_witnesses(self, witnesses, acknowledged):
         if not witnesses:
             return
-        heads = []
+        text = checkpoint.body(self.origin, 0, merkle.root([]))
+        empty, heads = text + "\n" + checkpoint.sign(text, self.origin, self._log_key), []
         for w in witnesses:
             try:
-                heads.append(w.latest())
+                heads.append(w.latest(empty, self.vkey))
             except Exception:   # unreachable or unreadable: counted as no answer
                 pass
         if not heads:
             self.log.write(lambda tx: tx.gap("degraded_unanchored", "no configured witness answered at startup"))
             return
-        size, root = max(heads)
+        size, root = max(heads, key=lambda h: h[0])
         local = self.log.storage.tail_state()
         if local["tree_size"] >= size:
             return
+        before = {"length": size, **({"hash": "sha256:" + root.hex()} if root else {})}
         self.log.write(lambda tx: tx.emit(self.log.signer_run(tx), "trace.tamper", {
-            "path": "records", "kind": "rollback",
-            "before": {"length": size, "hash": "sha256:" + root.hex()},
+            "path": "records", "kind": "rollback", "before": before,
             "after": {"length": local["tree_size"], "hash": "sha256:" + local["tree_root"].hex()}}, source="signer"))
         if not acknowledged:
             self.log.refuse_writes = (f"the local log ({local['tree_size']} records) is behind the witnessed checkpoint "
@@ -395,6 +408,81 @@ class SignerService:
                     if tree == RECORDS:
                         self.metrics.checkpoints.inc()
                         self._noted = time.monotonic()
+        for wake in self._wake.values():
+            wake.set()
+
+    # --- witness publishing ---
+
+    def _publish_loop(self, w):
+        wake = self._wake[w.name]
+        while True:
+            wake.wait(TICK_S)
+            if self._stop.is_set():
+                return
+            wake.clear()
+            try:
+                trees = self.log.write(lambda tx: [(RECORDS, self.log.storage.tree)] + [
+                    (registry_tree(t), self.log.storage.registry_merkle(t)) for t in sorted(self.log.tenants)])
+                for tree, merkle_tree in trees:
+                    self._publish(w, tree, merkle_tree)
+            except (RPCError, StorageUnavailable, OSError):   # storage down: the next round retries
+                pass
+
+    def _publish(self, w, tree, merkle_tree):
+        latest = self.log.storage.checkpoint_latest(tree)
+        with self._queue_lock:
+            st = self._queue.setdefault(w.name, {}).setdefault(tree, {"size": 0, "attempts": 0, "next": 0,
+                                                                      "since": None, "gapped": False})
+            if latest is None or latest[0] <= st["size"] or time.time() < st["next"]:
+                return
+            old = st["size"]
+        size, note = latest
+        origin = note.split("\n", 1)[0]
+        log_vkey = checkpoint.vkey(origin, checkpoint.ED25519, crypto.public_from_secret(self._log_key))
+        try:
+            lines = w.add_checkpoint(note, log_vkey, old,
+                                     lambda n: self.log.write(lambda tx: merkle_tree.consistency_proof(n, size)))
+        except WitnessError as e:
+            self.metrics.witness_failures.inc(w.name)
+            with self._queue_lock:
+                st["attempts"] += 1
+                st["since"] = st["since"] or time.time()
+                st["next"] = time.time() + (BACKOFF_S[1] if not e.retryable else
+                                            min(BACKOFF_S[1], BACKOFF_S[0] * 2 ** (st["attempts"] - 1)))
+                gap = not st["gapped"] and time.time() - st["since"] >= WITNESS_GAP_S
+                reason = f"witness {w.name} has not cosigned {origin} since {_iso(st['since'])}: {str(e)[:512]}"
+                self.log.storage.witness_queue_put(self._queue)
+            if gap:
+                self.log.write(lambda tx: tx.gap("witness_failed", reason))
+                with self._queue_lock:
+                    st["gapped"] = True
+                    self.log.storage.witness_queue_put(self._queue)
+            return
+        with self._checkpointing:   # merged into the stored note unless a newer note replaced it meanwhile
+            stored = self.log.storage.checkpoint_latest(tree)
+            if stored and stored[0] == size and not signed_by(stored[1].split("\n\n", 1)[1], w.vkey):
+                self.log.storage.checkpoint_put(size, stored[1] + lines, tree)
+        with self._queue_lock:
+            st.update(size=size, attempts=0, next=0, since=None, gapped=False)
+            self.log.storage.witness_queue_put(self._queue)
+        self._wake[w.name].set()   # a newer note may be waiting
+
+    def _witness_lag(self):
+        latest = self.log.storage.checkpoint_latest()
+        with self._queue_lock:
+            return {w.name: max(0, (latest[0] if latest else 0) - self._queue.get(w.name, {}).get(RECORDS, {}).get(
+                "size", 0)) for w in self.witnesses}
+
+    def logs_list(self):
+        """This signer's logs (the record log and each tenant's registry log) in the witness network's `logs/v0`
+        format, for a witness to register them from."""
+        tenants = sorted(self.log.tenants)   # a set of str: copied under the GIL, no writer needed
+        public = crypto.public_from_secret(self._log_key)
+        out = ["logs/v0", ""]
+        for origin in [self.origin] + [registry.origin(self.origin, self.log.tenant_salt(t)) for t in tenants]:
+            out += [f"vkey {checkpoint.vkey(origin, checkpoint.ED25519, public)}",
+                    f"qpd {int(86400 / CHECKPOINT_MIN_S)}", f"contact {self.contact}", ""]
+        return "".join(line + "\n" for line in out)
 
     def close_log(self):
         """Close the log for good: a signed log.closed{final_seq: its own seq} (a leaf in every tenant's registry),
@@ -475,8 +563,12 @@ class SignerService:
             return
         self._stop.set()
         self._nudged.set()
+        for wake in self._wake.values():
+            wake.set()
         self._ticker.join()
         self._checkpointer.join()
+        for t in self._publishers:
+            t.join()
         self.flush_refusals()
         try:
             self.checkpoint()
@@ -707,8 +799,27 @@ class SignerService:
         return self.log.submit(identity, "complete", req, fn, key, late=True)
 
     def _state_write(self, identity, req):
-        return self._event(identity, "state_write", req, "state.write",
-                           lambda commit: {"store": "default", "key": req["key"], "digest": commit(req["value_digest"])})
+        key, sk = self._authorize(identity, req), req["key"]
+        self.quotas.take_event(identity)
+        label = salt_label({"type": "state.write", "data": None, "tenant": key[0], "run_id": key[1],
+                            "request_id": req["request_id"]})
+        digest = self._commit(label, req["value_digest"])
+
+        def fn(tx, run):
+            data = {"store": "default", "key": sk, "digest": digest}
+            prev = req.get("prev_digest", ...)
+            if prev is not ...:
+                data["prev_digest"] = prev and self._commit(label, prev)
+            seq = tx.event(run, req, "state.write", data)
+            last = run["states"].get(sk)   # (salt label, commitment) of the last write of this key
+            if prev is not ... and last and self._commit(last[0], prev or "") != last[1]:
+                # the agent's own earlier write says the state was something else: it changed outside its writes
+                tx.emit(run, "capture.gap", {"kind": "state_tamper", "reason": f"state {sk[:200]} changed between "
+                                             "writes: the write starts from another state than the last one written"},
+                        source="signer")
+            tx.set(run["states"], sk, (label, digest))
+            return {"run_seq": seq}
+        return self.log.submit(identity, "state_write", req, fn, key, late=True)
 
     def _model_event(self, identity, req):
         def data(commit):
@@ -902,7 +1013,7 @@ class SignerService:
             if a["state"] not in LIVE:
                 raise RPCError("approval_not_pending", a["state"])
             tx.set(a, "state", "expired")
-            data = {"approval_id": aid, **({"reason": req["reason"]} if "reason" in req else {})}
+            data = {"approval_id": aid, **({"reason": privacy.redact_text(req["reason"])[0]} if "reason" in req else {})}
             tx.emit(run, "approval.abandoned", data, request_id=req["request_id"], tool_call_id=a["tool_call_id"],
                     attempt=a["attempt"])
             return {"approval_id": aid, "state": "expired"}
@@ -974,6 +1085,14 @@ def load_config(path):
                 if isinstance(section, dict) and section.get(k):
                     section[k] = os.path.join(base, section[k])
         http.configure(h)   # validates the section now; serve() builds it again
+    names = set()
+    for w in cfg.get("witnesses") or ():
+        if not (isinstance(w, dict) and set(w) == {"url", "vkey", "class"} and w["class"] in CLASSES):
+            raise ValueError(f"{path}: each witness is {{url, vkey, class}}, class one of {', '.join(CLASSES)}")
+        name = TlogWitness(w["url"], w["vkey"]).name   # a cosignature vkey
+        if name in names:
+            raise ValueError(f"{path}: two witnesses named {name}")
+        names.add(name)
     return cfg
 
 
@@ -1002,7 +1121,7 @@ def read_vkey(data_dir):
 def open_service(cfg, **kw):
     if cfg.get("policy"):
         kw.setdefault("policy", load_policy(cfg["policy"]))
-    # lean: no witness client until the checkpointer exists (04-design §2.9); pass witnesses= in process meanwhile
+    kw.setdefault("witnesses", [TlogWitness(w["url"], w["vkey"]) for w in cfg.get("witnesses", ())])
     return SignerService(cfg["data_dir"], durability=cfg.get("durability", ACK_ON_WRITE),
                          tenant=cfg.get("tenant", "default"), tenants=cfg.get("tenants"),
                          limits=Limits(**cfg.get("limits", {})),
@@ -1010,7 +1129,7 @@ def open_service(cfg, **kw):
                          multi_tenant_apps=cfg.get("multi_tenant_apps", ()), migrators=cfg.get("migrators", ()),
                          analyzers=cfg.get("analyzers", ()), fail_modes=cfg.get("fail_modes"),
                          grace_s=float(cfg.get("grace_s", GRACE_S)), idle_s=float(cfg.get("idle_s", IDLE_S)),
-                         origin=cfg.get("origin"), approvals=cfg.get("approvals") or {},
+                         origin=cfg.get("origin"), contact=cfg.get("contact"), approvals=cfg.get("approvals") or {},
                          authorize=cfg.get("authorize"), **kw)
 
 
@@ -1019,7 +1138,7 @@ def serve(cfg, service):
     Returns the servers; stop each with shutdown() and server_close()."""
     if not (cfg.get("socket") or cfg.get("tcp_endpoint") or cfg.get("http")):
         raise ValueError("configure socket, tcp_endpoint and/or http")
-    servers = [metrics.server(cfg["metrics"], service.metrics)] if "metrics" in cfg else []
+    servers = [metrics.server(cfg["metrics"], service.metrics, service.logs_list)] if "metrics" in cfg else []
     handle = answering_hello(service.handle_frame, hello())
     if cfg.get("socket"):
         from tracekit.transport.unix import UnixServer
@@ -1184,7 +1303,7 @@ def main(argv=None):
     sub.add_parser("close-log", help="close the log for good: write log.closed and the final notes (signer stopped)"
                    ).add_argument("--config", required=True)
     for name, text in (("vkey", "print the log key's verifier key (C2SP vkey)"),
-                       ("trust", "write a v2 trust config that pins the log key, with no witnesses")):
+                       ("trust", "write a v2 trust config that pins the log key and the configured witnesses")):
         q = sub.add_parser(name, help=text)
         g = q.add_mutually_exclusive_group()
         g.add_argument("--config")
@@ -1214,14 +1333,17 @@ def main(argv=None):
     if a.cmd in ("vkey", "trust"):
         from tracekit.sdk.client import SignerUnavailable
         try:
-            vkey = read_vkey(signer_config(a.config)["data_dir"])
+            cfg = signer_config(a.config)
+            vkey = read_vkey(cfg["data_dir"])
             if a.cmd == "trust":
-                files.write_json(a.out, {"logs": [vkey], "witnesses": [], "algs": [RecordSigner.alg],
+                witnesses = [{"vkey": w["vkey"], "class": w["class"]} for w in cfg.get("witnesses") or ()]
+                files.write_json(a.out, {"logs": [vkey], "witnesses": witnesses, "algs": [RecordSigner.alg],
                                          "witnesses_required": 0}, 0o644)
         except (OSError, ValueError, SignerUnavailable) as e:
             print(f"tracekit signer: {e}", file=sys.stderr)
             return 2
-        print(vkey if a.cmd == "vkey" else f"wrote {a.out}: pins log {vkey.split('+')[0]}, no witnesses")
+        print(vkey if a.cmd == "vkey" else f"wrote {a.out}: pins log {vkey.split('+')[0]} and "
+              f"{len(witnesses) or 'no'} witness(es)")
         return 0
     from tracekit.signer import format_bridge
     try:
