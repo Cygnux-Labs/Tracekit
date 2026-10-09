@@ -3,7 +3,10 @@
 Eight experiments. E1 to E4 and E6 are offline and run with `make eval`; E5 uses real Claude Code runs and is opt-in
 (`make eval-agents`, needs the `claude` CLI and spends model usage); E7 is `make eval-scale`; E8 needs root and a Linux
 system-mode signer and runs in CI as a merge gate. Results are written to
-`eval/results/`. The experiments are small, synthetic and written by the authors. They show how the mechanisms
+`eval/results/`. For the v2 signer: E4 v2 (`eval/e4_seeded_faults_v2.py`, seeded faults against a v2 bundle, in
+`make eval`), E9 (`eval/e9_signer_perf.py`, latency and throughput over the Unix socket, gated on Linux; `make eval`
+runs its `--quick` form on Linux) and E15 (`eval/e15_durability.py`, `kill -9` of the signer under concurrent clients,
+POSIX). `tests/INVARIANTS.md` maps each invariant to its tests. The experiments are small, synthetic and written by the authors. They show how the mechanisms
 behave, not how Tracekit performs across real agents and projects. The v0.1 paper's experiments (14 Claude Code
 runs, seeded faults, hook latency) were ported to v0.2 as E2, E4 and E5, with different scenarios and numbers.
 
