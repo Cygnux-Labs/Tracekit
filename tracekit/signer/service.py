@@ -54,10 +54,10 @@ Tenant-level gaps (04-design §2.7): witness_failed, witness_late, clock_skew, d
 tamper records are signer-level records with a leaf in every tenant's registry, so a run-set over the window shows them.
 
 Run lifecycle (04-design §2.7): run.registered → events → close_run or the idle timeout (paused while an approval is
-pending) → run.closing → grace window, where only late records (complete, state_write, model_event) are accepted →
-run.final{head}. run.registered and run.final also get a leaf in the tenant's registry log (tracekit.format.registry),
-log.closed and key.retire one in every tenant's. Gap and tamper records are written by the signer only: no request can
-carry an event type, source, isolation or fail mode.
+pending) → run.closing → grace window, where only late records (complete, state_write, model_event, tailer_lost) are
+accepted → run.final{head}. run.registered and run.final also get a leaf in the tenant's registry log
+(tracekit.format.registry), log.closed and key.retire one in every tenant's. Gap and tamper records are written by the
+signer only: no request can carry an event type, source, isolation or fail mode.
 
 Checkpoints (04-design §1.6, §2.9): a C2SP note of the record tree, signed by the log key (keys/log.key, Ed25519, named
 after the origin, signs notes only) and stored through the storage, after a run.final, on `checkpoint_nudge` (at most
@@ -1192,6 +1192,22 @@ class SignerService:
             return {"run_id": req["run_id"], "state": "closing",
                     "run_seq": tx.closing(run, "close_run", request_id=req["request_id"])}
         return self.log.submit(identity, "close_run", req, fn, key)
+
+    def _delegate_run(self, identity, req):
+        tenant, run_id = self._authorize(identity, req)
+        scheme, sub = req["identity"].split(":", 1)
+        return {"run_token": self.tokens.issue(tenant, run_id, CallerIdentity(scheme, sub, True))}
+
+    def _tailer_lost(self, identity, req):
+        key = self._authorize(identity, req)
+        self.quotas.take_event(identity)
+
+        def fn(tx, run):
+            return {"run_seq": tx.emit(run, "capture.gap", {
+                "kind": "tailer_lost",
+                "reason": f"{privacy.redact_text(req['reason'])[0]} (at transcript offset {req['offset']})"},
+                source="signer", request_id=req["request_id"])}
+        return self.log.submit(identity, "tailer_lost", req, fn, key, late=True)
 
     def _status(self, identity, req):
         return {"rpc_version": rpc_schema.RPC_VERSION, "signer": {"name": "tracekit-signer", "version": __version__},

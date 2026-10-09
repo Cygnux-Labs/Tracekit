@@ -10,6 +10,9 @@ Exit 0 lets the call proceed, exit 2 blocks it (reason on stderr). The signer un
 tool's class, from register_run (closed before a run is registered). A signer refusal, a failure while a call waits for
 its approval, or any other error: blocked.
 
+SessionStart starts the run's transcript tailer (tracekit.tailer), once per run: it records the model's tool uses and
+the user's prompts (as commitments) from the transcript, which no hook payload carries.
+
 System mode: the signer runs as its own user and the hook reaches it only through the socket the root-owned
 /etc/tracekit/client.json names (a TRACEKIT_SIGNER naming another is refused, and the call blocked); the signer
 unreachable is always fail-closed there, whatever the agent-writable state says. The run token stays in the agent's
@@ -22,6 +25,7 @@ import glob
 import hashlib
 import json
 import os
+import subprocess
 import sys
 import time
 import uuid
@@ -59,16 +63,19 @@ def _load(path):
             time.sleep(0.05)
 
 
-def _run(client, sid, register=True, send=None, **fields):
+def _run(client, sid, register=True, send=None, tailer=None, **fields):
     """(the session's run, registered on its first event; with `send`, the signer's reply to that event call, sent with
     the session's stream and next client_seq under the session lock so parallel hooks reach the signer in client_seq
-    order, and sent again on a new run when the signer has closed the stored one (idle))"""
+    order, and sent again on a new run when the signer has closed the stored one (idle)). `tailer`: the transcript to
+    start the run's tailer on, unless it has one."""
     path = _state(sid)
     with open(path[:-len(".json")] + ".lock", "a") as lk:   # parallel tool calls must not register two runs
         lock_file(lk)
         st = _load(path)
         if register and st is None:
             st = _register(client, path)
+        if tailer and st and st.get("tailer") != st["run_id"]:
+            _start_tailer(client, path, st, tailer)
         if not (st and send):
             return st and RunHandle(client, st), None
         try:
@@ -88,6 +95,29 @@ def _register(client, path):
           "stream": uuid.uuid4().hex, "seq": 0}
     files.write_json(path, st)
     return st
+
+
+def _start_tailer(client, path, st, transcript):
+    """Start tracekit.tailer for the run, detached. System mode: through sudo as the tailer's own user (the root-owned
+    system config names it), with a token the signer issued to that user's uid for this run."""
+    if os.name == "nt":   # the tailer needs O_NOFOLLOW and uids: POSIX only
+        return
+    handle = {"run_id": st["run_id"], "run_token": st["run_token"], "path": transcript}
+    t = (system_config() or {}).get("tailer")
+    if t:
+        # lean: this tailer cannot see SessionEnd (the session state is the agent's); it exits once a call finds the run
+        # final or after IDLE_S without a new line. A run-closed notice from the signer if idle tailers pile up
+        handle["run_token"] = RunHandle(client, st).call("delegate_run", identity=f"uid:{t['uid']}")["run_token"]
+        argv = ["sudo", "-n", "-u", t["user"], t["python"], "-I", "-m", "tracekit.tailer"]
+    else:   # exits once SessionEnd removes the session state
+        handle["until"] = path
+        argv = [sys.executable, "-I", "-m", "tracekit.tailer"]
+    p = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         start_new_session=True)
+    p.stdin.write(json.dumps(handle).encode())
+    p.stdin.close()
+    st["tailer"] = st["run_id"]
+    files.write_json(path, st)
 
 
 def _send(client, path, st, method, fields):
@@ -186,11 +216,11 @@ def _handle(client, p, name, sid, tid):
         for f in glob.glob(glob.escape(_state(sid)[:-len(".json")]) + "*"):
             os.remove(f)
         return 0
-    # lean: UserPromptSubmit and transcript reasoning have no v2 RPC yet and are not recorded; the L1 transcript tailer
-    # (M1b-07) and model events (M2) record them
+    tailer = None
     if name == "SessionStart":
         _prune()
-    _run(client, sid)   # SessionStart, or any other first event of the session, registers the run
+        tailer = p.get("transcript_path") if isinstance(p.get("transcript_path"), str) else None
+    _run(client, sid, tailer=tailer)   # SessionStart, or any other first event of the session, registers the run
     return 0
 
 
