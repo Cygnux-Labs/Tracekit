@@ -5,10 +5,10 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "tracekit-proofpack"
 version = "0.1.0"
-description = "Tracekit proof packs: bundle, readable report, control map and a stdlib-only verifier in one zip"
+description = "Tracekit proof packs: a .tkb bundle, a readable report and a control map in one zip (no bundled verifier)"
 license = "MIT"
 requires-python = ">=3.9"
-dependencies = ["tracekit"]
+dependencies = ["tracekit-ai"]
 
 [project.scripts]
 tracekit-proofpack = "tracekit_proofpack:main"
