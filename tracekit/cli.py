@@ -291,7 +291,7 @@ def _run(a):
         from . import proxy
         if not experimental_gate(a.experimental, "the model proxy (tracekit proxy)"):
             return 2
-        return proxy.main(["--home", _signer_home(a)] + (["--port", str(a.port)] if a.port else []) +
+        return proxy.main(["--home", _signer_home(a)] + (["--port", str(a.port)] if a.port is not None else []) +
                           (["--upstream", a.upstream] if a.upstream else []))
     if a.cmd in ("pending", "approve", "reject"):
         from . import client
@@ -334,7 +334,9 @@ def _run(a):
         from . import bundle
         rep, code = bundle.verify(a.bundle, a.witness, a.strict, a.key)
         if a.json:
-            print(json.dumps({"exit_code": code, "checks": rep.checks, "failures": rep.failures, "warnings": rep.warnings}, indent=2))
+            print(json.dumps({"exit_code": code, "checks": rep.checks, "failures": rep.failures, "warnings": rep.warnings,
+                              "integrity": bundle.integrity(rep, code), "assurance": bundle.assurance(rep), "notes": rep.notes},
+                             indent=2))
         else:
             bundle.print_report(rep, code)
         return code
