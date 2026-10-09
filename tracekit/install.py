@@ -767,7 +767,7 @@ def _install_venv(requirement):
         if requirement is None:  # build from a root-owned copy so the checkout gets no build/ or *.egg-info
             tmp = tempfile.mkdtemp()
             requirement = [os.path.join(tmp, "Tracekit")]
-            shutil.copytree(ROOT, requirement[0], symlinks=True, ignore=shutil.ignore_patterns(".git"))
+            shutil.copytree(ROOT, requirement[0], ignore=shutil.ignore_patterns(".git"))
         subprocess.run([sys.executable, "-m", "venv", "--clear", new], check=True)
         subprocess.run([new_python, "-m", "pip", "install", "--quiet", "--no-cache-dir", *requirement], check=True)
         subprocess.run([new_python, "-I", "-c", "import tracekit"], check=True)

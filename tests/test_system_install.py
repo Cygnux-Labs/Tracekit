@@ -2,6 +2,7 @@
 `tracekit doctor` flags agent-modifiable code; action.yml passes inputs to shell only through env."""
 import contextlib
 import io
+import json
 import os
 import shutil
 import stat
@@ -65,6 +66,37 @@ class SystemModeUsesOpt(unittest.TestCase):
         self.assertIn(["systemctl", "restart", "tracekitd", "tracekit-proxy"], cmds)
         self.assertFalse([c for c in cmds if "--now" in c])
         self.assertIn("restarted tracekitd and tracekit-proxy", out.getvalue())
+
+    def test_rerun_without_harness_keeps_the_registered_binding(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        home, units = os.path.join(d, "home"), os.path.join(d, "units")
+        os.makedirs(home)
+        os.makedirs(units)
+        harnesses = [{"exe": "/usr/local/bin/claude", "sha256": "ab" * 32}]
+        with open(os.path.join(home, "config.json"), "w") as f:
+            json.dump({"harnesses": harnesses, "harness_binding": "enforce"}, f)
+        run = mock.Mock(return_value=mock.Mock(returncode=0, stdout="", stderr=""))
+        with as_root_on_linux(), \
+                mock.patch.object(install, "SYS_HOME", home), mock.patch.object(install, "SYSTEMD_DIR", units), \
+                mock.patch.object(install.pwd, "getpwnam", return_value=install.pwd.getpwuid(os.getuid())), \
+                mock.patch.object(install, "_privileges", return_value=[]), \
+                mock.patch.object(install, "harness_config", return_value={"harness_binding": "off"}) as hc, \
+                mock.patch.object(install, "_install_source", return_value=None), \
+                mock.patch.object(install, "_install_venv", return_value=POLICY), \
+                mock.patch.object(install.subprocess, "run", run), \
+                mock.patch.object(install, "_write_client_config"), \
+                mock.patch.object(install, "_write_system_client_config"), \
+                mock.patch.object(install, "_pin_policy"), \
+                mock.patch.object(install, "install_hooks"), \
+                contextlib.redirect_stdout(io.StringIO()):
+            install.init_system("agent", [])
+        hc.assert_not_called()
+        with open(os.path.join(home, "config.json")) as f:
+            cfg = json.load(f)
+        self.assertEqual((cfg["harness_binding"], cfg["harnesses"]), ("enforce", harnesses))
+        with open(os.path.join(units, "tracekitd.service")) as f:
+            self.assertIn(install.UNIT_CAPS, f.read())
 
     def test_source_is_checked_before_any_system_change(self):
         d = tempfile.mkdtemp()
