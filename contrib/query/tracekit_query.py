@@ -1,9 +1,9 @@
 """SQL over the signed ledger, with no dependencies (sqlite3 from the standard library).
 
-    tracekit sql "SELECT name, count(*) FROM tool_calls GROUP BY name ORDER BY 2 DESC"
-    tracekit sql --schema
-    tracekit sql --format json "SELECT * FROM findings WHERE severity IN ('high','critical')"
-    tracekit sql --mcp            # MCP server on stdio: coding agents can query traces (tools: tracekit_sql, tracekit_schema)
+    tracekit-sql "SELECT name, count(*) FROM tool_calls GROUP BY name ORDER BY 2 DESC"
+    tracekit-sql --schema
+    tracekit-sql --format json "SELECT * FROM findings WHERE severity IN ('high','critical')"
+    tracekit-sql --mcp            # MCP server on stdio: coding agents can query traces (tools: tracekit_sql, tracekit_schema)
 
 The ledger stays the source of truth. The index is a derived cache (default ~/.cache/tracekit/index-<id>.sqlite) that is
 never treated as evidence, can be deleted at any time, and is rebuilt from the ledger when needed. It is refreshed
@@ -13,14 +13,14 @@ and the query result says so. Signatures are not re-checked here: use `tracekit 
 
 Queries run on a read-only connection with a time budget, so a query cannot change the index or hang the caller."""
 import argparse
-import csv
 import hashlib
-import io
 import json
 import os
 import sqlite3
 import sys
 import time
+
+from tracekit.cost import render
 
 INDEX_VERSION = 4
 INSERT = "INSERT OR REPLACE INTO events VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
@@ -158,7 +158,7 @@ class Index:
         Only the ledger's new tail is parsed. The bytes already indexed are re-hashed (fast, no parsing) and compared with
         the digest stored at the last refresh; any change before the stored offset means the ledger was rewritten, and the
         index is rebuilt from scratch."""
-        from .core import GENESIS
+        from tracekit.core import GENESIS
         db = self._connect()
         try:
             have = db.execute("SELECT name FROM sqlite_master WHERE name='meta'").fetchone()
@@ -250,23 +250,6 @@ class Index:
             db.close()
 
 
-def render(cols, rows, fmt="table", truncated=False):
-    if fmt == "json":
-        return json.dumps([dict(zip(cols, r)) for r in rows], indent=2, ensure_ascii=False, default=str)
-    if fmt == "csv":
-        buf = io.StringIO()
-        w = csv.writer(buf)
-        w.writerow(cols)
-        w.writerows(rows)
-        return buf.getvalue()
-    cells = [[("" if v is None else str(v)).replace("\n", " ")[:80] for v in r] for r in rows]
-    widths = [max([len(c)] + [len(r[i]) for r in cells]) for i, c in enumerate(cols)]
-    line = "  ".join(c.ljust(w) for c, w in zip(cols, widths))
-    out = [line, "  ".join("-" * w for w in widths)] + ["  ".join(v.ljust(w) for v, w in zip(r, widths)) for r in cells]
-    out.append(f"({len(rows)} row{'s' if len(rows) != 1 else ''}{', truncated' if truncated else ''})")
-    return "\n".join(out)
-
-
 def schema_text():
     return "\n".join(f"{k}: {v}" for k, v in DOC.items())
 
@@ -331,7 +314,7 @@ def mcp_serve(idx, stdin=None, stdout=None):
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(prog="tracekit sql", description="Read-only SQL over the signed ledger.")
+    ap = argparse.ArgumentParser(prog="tracekit-sql", description="Read-only SQL over the signed ledger.")
     ap.add_argument("query", nargs="?")
     ap.add_argument("--home", help="signer home (default: from the client config)")
     ap.add_argument("--index", help="index file (default: ~/.cache/tracekit/index-<id>.sqlite)")
@@ -341,7 +324,7 @@ def main(argv=None):
     ap.add_argument("--schema", action="store_true", help="list tables and views")
     ap.add_argument("--mcp", action="store_true", help="serve tracekit_sql / tracekit_schema over MCP (stdio)")
     a = ap.parse_args(argv)
-    from . import client
+    from tracekit import client
     home = a.home or client.client_config().get("signer_home") or "/var/lib/tracekit"
     idx = Index(home, a.index)
     if a.schema:
@@ -358,10 +341,10 @@ def main(argv=None):
         idx.refresh()
         cols, rows, trunc = idx.query(a.query, limit=a.limit)
     except (sqlite3.Error, FileNotFoundError, TimeoutError) as e:
-        print(f"tracekit sql: {e}", file=sys.stderr)
+        print(f"tracekit-sql: {e}", file=sys.stderr)
         return 2
     for n in idx.notes:
-        print(f"tracekit sql: note: {n}", file=sys.stderr)
+        print(f"tracekit-sql: note: {n}", file=sys.stderr)
     print(render(cols, rows, a.format, trunc))
     return 0
 

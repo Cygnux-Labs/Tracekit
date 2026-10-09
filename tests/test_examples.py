@@ -17,7 +17,6 @@ EXAMPLES = {  # file -> (modules it needs, tool names the ledger must show)
     "custom_agent.py": ((), ["http_get", "parse_table", "Bash"]),
     "langgraph_agent.py": (("langgraph",), ["node:plan", "node:tools", "Read", "node:report"]),
     "mcp_client.py": ((), ["mcp__github__create_issue", "mcp__github__delete_repo"]),
-    "browser_agent.py": ((), ["browser:goto", "browser:act", "browser:extract", "browser:goto"]),
     "model_calls.py": (("httpx",), []),
 }
 
@@ -71,10 +70,6 @@ class Examples(unittest.TestCase):
         self.assertIn("denied:", out)
         self.assertIn("deny", [e["data"]["decision"] for e in events if e["type"] == "policy.decision"])
 
-    def test_browser(self):
-        out, _ = self.run_example("browser_agent.py")
-        self.assertIn("denied:", out)
-
     def test_model_calls(self):
         out, events = self.run_example("model_calls.py")
         providers = out.rsplit("finished:", 1)[1].strip().split(", ")
@@ -84,18 +79,6 @@ class Examples(unittest.TestCase):
         self.assertTrue(all(r.get("usage") for r in responses))
         if "openai" in providers:
             self.assertEqual([r.get("streamed") for r in responses[:2]], [False, True])
-
-    @unittest.skipUnless(os.environ.get("TRACEKIT_PGS"), "set TRACEKIT_PGS=<pgs repo> with a Hardhat node on :8545")
-    def test_pgs_onchain(self):
-        p = subprocess.run([sys.executable, os.path.join(ROOT, "examples", "pgs_onchain_demo.py"), "--pgs", os.environ["TRACEKIT_PGS"],
-                            "--out", os.path.join(self.d, "pgs.tkb")], env=self.env, cwd=self.d, capture_output=True, text=True, timeout=600)
-        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
-        self.assertEqual(p.stdout.count("BLOCKED by the guard, never signed"), 2)
-        self.assertIn("REVERTED on-chain by the post-conditions", p.stdout)
-        self.assertIn("attacker gain over the session: 0.00", p.stdout)
-        events = [r["event"] for _, r, _ in read_records(os.path.join(self.home, "ledger", "ledger.jsonl")) if r]
-        verdicts = [e["data"]["verdict"]["allow"] for e in events if e["type"] == "review" and e["data"].get("reviewer") == "tx-guard"]
-        self.assertEqual(verdicts, [True, True, False, False, True])
 
 
 if __name__ == "__main__":

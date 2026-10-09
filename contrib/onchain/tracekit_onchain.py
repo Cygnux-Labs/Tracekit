@@ -1,6 +1,6 @@
 """Guarded onchain transactions: a transaction guard's verdict is signed into the ledger before the wallet signs anything.
 
-    from tracekit.adapters.onchain import guarded_tx
+    from tracekit_onchain import guarded_tx
     receipt = guarded_tx(tracer, guard, calls, send=lambda calls, post: wallet.execute_checked(calls, post), chain_id=1)
 
 ``guard`` is anything with ``check(calls) -> {"allow": bool, "reasons": [...], "post": <post-conditions or None>, ...}``,
@@ -14,10 +14,13 @@ post-conditions enforced on-chain). The order is fixed:
 4. allowed: ``send(calls, post)`` signs and submits; the tx hash and status are recorded.
 
 So a blocked transaction is never signed through this path, and every signed one has a guard verdict before it in the
-ledger. `tracekit analyze` flags any OnchainTx without one (TK-X006) or executed despite a deny (TK-X007)."""
+ledger. ``analyze(records, run_id)`` flags any OnchainTx without one (TK-X006), executed despite a deny (TK-X007) or
+blocked by the guard (TK-X008)."""
 import hashlib
 import json
 import time
+
+from tracekit import findings
 
 TOOL = "OnchainTx"
 
@@ -81,3 +84,33 @@ def guarded_tx(tracer, guard, calls, send, chain_id=None, guard_name="tx-guard")
         if status == 0:
             raise RuntimeError(f"transaction {tx_hash} reverted on-chain (post-conditions or execution failed)")
         return receipt
+
+
+def analyze(records, run_id):
+    """TK-X006..X008 for run_id over ledger records, as finding verdicts in tracekit.findings' format."""
+    recs = sorted(((r["event"], r["hash"]) for r in records if r and not r.get("elided") and r["event"]["run_id"] == run_id),
+                  key=lambda x: x[0]["seq"])
+    ctx = findings._Ctx(run_id, recs)
+    calls = {e["data"]["tool_use_id"]: (e, h) for e, h in recs if e["type"] == "tool.call"}
+    results = {e["data"]["tool_use_id"]: (e, h) for e, h in recs if e["type"] == "tool.result"}
+    guard = {}
+    for e, h in recs:
+        v = (e["data"].get("verdict") or {}) if e["type"] == "review" else {}
+        if v.get("kind") == "tx_guard" and v.get("tool_use_id"):
+            guard[v["tool_use_id"]] = (e, h, v)
+    for tid, (c, ch) in calls.items():
+        if c["data"]["name"] != TOOL:
+            continue
+        res = results.get(tid)
+        signed = bool(res and res[0]["data"].get("ok"))
+        g = guard.get(tid)
+        if g is None and signed:
+            ctx.add("TK-X006", "critical", "transaction signed without a guard verdict",
+                    "An OnchainTx was executed and no tx-guard verdict was recorded before it.", [(c, ch), res], tool_use_id=tid)
+        elif g is not None and not g[2]["allow"] and signed:
+            ctx.add("TK-X007", "critical", "transaction executed although the guard denied it",
+                    "; ".join(g[2].get("reasons") or [])[:300], [(c, ch), (g[0], g[1]), res], tool_use_id=tid)
+        elif g is not None and not g[2]["allow"]:
+            ctx.add("TK-X008", "medium", "transaction blocked by the guard",
+                    "; ".join(g[2].get("reasons") or [])[:300], [(c, ch), (g[0], g[1])], tool_use_id=tid)
+    return ctx.out

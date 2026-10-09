@@ -162,10 +162,10 @@ them, and a held-out set written after the detectors were final and never used t
 
 ## E7: SQL index at a million events
 
-`python3 eval/e7_sql_scale.py` synthesises a hash-chained ledger of 1,000,001 events (604 MB; 10,000 runs of
+`python3 contrib/query/e7_sql_scale.py` synthesises a hash-chained ledger of 1,000,001 events (604 MB; 10,000 runs of
 tool calls, policy decisions, results and model exchanges), builds the index, times typical queries (each run twice, the
 second timed), then rebuilds a second index from the same ledger and compares every result. Machine: 2 vCPUs
-(x86_64), Python 3.13.16, SQLite 3.45.1. Results: `eval/results/e7_sql_scale.json`.
+(x86_64), Python 3.13.16, SQLite 3.45.1. Results: `contrib/query/e7_sql_scale.json`.
 
 | query | time |
 |---|---|

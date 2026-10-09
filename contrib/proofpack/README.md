@@ -2,8 +2,8 @@
 
 ```bash
 tracekit analyze --run R                                  # optional: include signed findings
-tracekit proofpack --run R -o pack.zip --key signer.pub   # or: tracekit proofpack run.tkb -o pack.zip
-tracekit report run.tkb > REPORT.md                       # the report alone
+tracekit-proofpack --run R -o pack.zip --key signer.pub   # or: tracekit-proofpack run.tkb -o pack.zip
+tracekit-report run.tkb > REPORT.md                       # the report alone
 ```
 
 `pack.zip` holds:

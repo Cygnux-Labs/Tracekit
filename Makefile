@@ -1,9 +1,10 @@
-.PHONY: help install test test-ts eval-scale lint build check demo eval eval-agents clean
+.PHONY: help install test test-contrib test-ts eval-scale lint build check demo eval eval-agents clean
 PY ?= python3
 
 help:
 	@echo "make install   editable install with dev extras"
 	@echo "make test      run the test suite"
+	@echo "make test-contrib  run each contrib/ package's own tests"
 	@echo "make lint      pyflakes over the package, SDK and tests"
 	@echo "make build     build the sdist and wheel into dist/"
 	@echo "make check     lint + test + build + twine check"
@@ -19,13 +20,16 @@ test:
 	$(PY) -m pytest -q
 
 eval-scale:
-	$(PY) eval/e7_sql_scale.py
+	$(PY) contrib/query/e7_sql_scale.py
+
+test-contrib:
+	for d in contrib/*/; do (cd $$d && $(PY) -m pytest -q) || exit 1; done
 
 test-ts:
 	cd sdk/typescript && npm install --no-audit --no-fund && npm test
 
 lint:
-	$(PY) -m pyflakes tracekit tracekit_sdk.py tests eval examples
+	$(PY) -m pyflakes tracekit tracekit_sdk.py tests eval examples contrib
 
 build:
 	$(PY) -m pip install -q build twine

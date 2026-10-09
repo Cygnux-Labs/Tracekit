@@ -6,17 +6,35 @@
 
 See tracekit/usage.py for the price-table format. Tracekit ships no prices."""
 import argparse
+import csv
+import io
 import json
+import os
 import sys
 
-from .query import Index, render
 from .usage import Prices
+
+
+def render(cols, rows, fmt="table", truncated=False):
+    if fmt == "json":
+        return json.dumps([dict(zip(cols, r)) for r in rows], indent=2, ensure_ascii=False, default=str)
+    if fmt == "csv":
+        buf = io.StringIO()
+        w = csv.writer(buf)
+        w.writerow(cols)
+        w.writerows(rows)
+        return buf.getvalue()
+    cells = [[("" if v is None else str(v)).replace("\n", " ")[:80] for v in r] for r in rows]
+    widths = [max([len(c)] + [len(r[i]) for r in cells]) for i, c in enumerate(cols)]
+    line = "  ".join(c.ljust(w) for c, w in zip(cols, widths))
+    out = [line, "  ".join("-" * w for w in widths)] + ["  ".join(v.ljust(w) for v, w in zip(r, widths)) for r in cells]
+    out.append(f"({len(rows)} row{'s' if len(rows) != 1 else ''}{', truncated' if truncated else ''})")
+    return "\n".join(out)
 
 
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="tracekit cost")
     ap.add_argument("--home")
-    ap.add_argument("--index")
     ap.add_argument("--run")
     ap.add_argument("--by", choices=("run", "model"), default="run")
     ap.add_argument("--prices", help="JSON price table (see tracekit/usage.py)")
@@ -29,12 +47,18 @@ def main(argv=None):
     except (OSError, ValueError) as e:
         print(f"tracekit cost: {e}", file=sys.stderr)
         return 2
-    idx = Index(home, a.index)
-    idx.refresh()
-    where = "WHERE input_tokens IS NOT NULL" + (" AND run_id = ?" if a.run else "")
-    _, rows, _ = idx.query("SELECT run_id, coalesce(model, '?'), input_tokens, output_tokens, coalesce(cache_read_tokens,0), "
-                           "coalesce(cache_write_tokens,0), coalesce(reasoning_tokens,0) FROM model_exchanges " + where,
-                           (a.run,) if a.run else ())
+    from .ledger import read_records
+    rows = []
+    for _, r, _ in read_records(os.path.join(home, "ledger", "ledger.jsonl")):
+        ev = (r or {}).get("event") or {}
+        d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        u = d.get("usage") if isinstance(d.get("usage"), dict) else {}
+        if ev.get("type") != "model.exchange" or d.get("phase") != "response" or u.get("input_tokens") is None:
+            continue
+        if a.run and ev.get("run_id") != a.run:
+            continue
+        rows.append((ev.get("run_id"), "?" if d.get("model") is None else str(d["model"]), u["input_tokens"], u.get("output_tokens"),
+                     u.get("cache_read_tokens") or 0, u.get("cache_write_tokens") or 0, u.get("reasoning_tokens") or 0))
     groups = {}
     for run, model, i, o, cr, cw, rt in rows:
         key = run if a.by == "run" else model
