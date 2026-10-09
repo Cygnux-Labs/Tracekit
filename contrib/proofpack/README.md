@@ -21,7 +21,7 @@ auditor brings their own.
 
 What a reviewer does with a pack they were sent, on their own machine:
 
-1. Install a Tracekit release yourself, from the package index or the project's release page (`pip install tracekit`),
+1. Install a Tracekit release yourself, from the package index or the project's release page (`pip install tracekit-ai`),
    never from a file in the pack.
 2. `tracekit verify run.tkb --key signer.pub`, with the signer's public key obtained separately (from the team's
    key registry, a ticket, a signed email), or `--witness URL` with a pinned witness key. Exit 0 and `VERIFIED` mean

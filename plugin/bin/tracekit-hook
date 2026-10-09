@@ -1,6 +1,6 @@
 #!/bin/sh
 # Claude Code hook entry point for the Tracekit plugin. Needs the `tracekit` Python package:
-#   pip install tracekit && tracekit init --dev --no-hooks     (or a system-mode signer)
+#   pip install tracekit-ai && tracekit init --dev --no-hooks     (or a system-mode signer)
 # Python runs isolated (-I), so the project directory and PYTHON* variables never decide which tracekit runs;
 # the user site-packages directory is added back explicitly for `pip install --user` installs.
 # If the package is missing the hook says so on stderr and lets the call proceed, unless the system config
@@ -14,8 +14,8 @@ for py in "${TRACEKIT_PYTHON:-}" python3 python; do
   fi
 done
 if [ -e "$SYSTEM_CONFIG" ] && ! grep -Eq '"fail_mode"[[:space:]]*:[[:space:]]*"open"' "$SYSTEM_CONFIG" 2>/dev/null; then
-  echo "tracekit plugin: the 'tracekit' Python package is not installed for python3 and $SYSTEM_CONFIG requires fail-closed, so this call was blocked. Run: pip install tracekit" >&2
+  echo "tracekit plugin: the 'tracekit' Python package is not installed for python3 and $SYSTEM_CONFIG requires fail-closed, so this call was blocked. Run: pip install tracekit-ai" >&2
   exit 2
 fi
-echo "tracekit plugin: the 'tracekit' Python package is not installed for python3, so this call was NOT recorded. Run: pip install tracekit && tracekit init --dev --no-hooks" >&2
+echo "tracekit plugin: the 'tracekit' Python package is not installed for python3, so this call was NOT recorded. Run: pip install tracekit-ai && tracekit init --dev --no-hooks" >&2
 exit 0

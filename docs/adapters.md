@@ -23,7 +23,7 @@ for your own tool names in a policy file (`extends: default`).
 ## LangChain and LangGraph
 
 ```bash
-pip install "tracekit[langchain]"
+pip install "tracekit-ai[langchain]"
 ```
 
 ```python
