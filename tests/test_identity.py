@@ -79,7 +79,7 @@ class FrameCredentials(unittest.TestCase):
         b.sendall(b'{"n":1}\n')
         self.refused(uid.CredentialReader(a, os.getuid()))
 
-    @unittest.skipUnless(os.geteuid() == 0, "only a privileged sender may stamp another uid")
+    @unittest.skipUnless(hasattr(os, "geteuid") and os.geteuid() == 0, "only a privileged sender may stamp another uid")
     def test_sender_stamping_another_uid_is_refused(self):
         a, b = self.pair()
         b.sendmsg([b'{"n":1}\n'], [(socket.SOL_SOCKET, socket.SCM_CREDENTIALS, struct.pack("iII", os.getpid(), 65534, 65534))])

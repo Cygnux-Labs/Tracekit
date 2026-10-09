@@ -1,4 +1,4 @@
-"""The signer RPC contract, version 1: one JSON Schema per request and response, the error shape, and `SignerAPI`.
+"""The signer RPC contract, version 3: one JSON Schema per request and response, the error shape, and `SignerAPI`.
 
 Frozen: a change to any schema here is a new RPC_VERSION. The caller's identity comes from the transport (peer
 credentials, token, mTLS), never from a request field. Calls that change state carry `request_id`, scoped to that
@@ -12,7 +12,7 @@ from typing import Protocol
 from tracekit.format.canon import MAX_SAFE_INT
 from tracekit.schema import _check
 
-RPC_VERSION = 1
+RPC_VERSION = 3
 MAX_RAW_ARGS = 1 << 20   # characters of a raw arguments string
 
 ERROR_CODES = [
@@ -27,7 +27,9 @@ ERROR_CODES = [
     "run_closed",           # close_run already accepted for this run
     "conflict",             # request_id reused with a different payload
     "client_seq_reused",    # client_seq at or below the stream's high-water mark, under a new request_id
-    "unknown_tool_call",    # complete/approval_request for a tool_call_id the run never decided
+    "unknown_tool_call",    # approval_request for a tool_call_id the run never decided
+    "unknown_decision",     # complete with a decision_id that is not this call's, or already completed
+    "args_mismatch",        # complete with arguments other than the decided ones
     "unknown_approval",
     "approval_not_pending",
 ]
@@ -71,9 +73,13 @@ _decide["then"] = {"properties": {"args": _str(MAX_RAW_ARGS)}}
 REQUESTS = {
     "register_run": _obj(["request_id", "agent"], request_id=ID, run_id=ID,
                          tenant=ID, principal=_str(256),   # app-asserted; recorded as not attested
+                         source={"const": "migrated"},     # events imported from another log
+                         analyzes=ID,                      # a findings run about this run of the same tenant
                          agent=_obj(["name"], name=_str(128, minLength=1), version=_str(64))),
     "decide": _decide,
-    "complete": _obj(_EVENT_REQ + ["tool_call_id", "status"], **_EVENT, tool_call_id=ID, attempt=SEQ,
+    "complete": _obj(_EVENT_REQ + ["tool_call_id", "decision_id", "args_digest", "status"], **_EVENT,
+                     tool_call_id=ID, attempt=SEQ, decision_id=ID,
+                     args_digest=DIGEST,   # sha256(JCS({"tool", "args"})) of the args that ran
                      status={"enum": ["ok", "error"]}, result=ANY, error=_str(4096)),
     "state_write": _obj(_EVENT_REQ + ["key", "value_digest"], **_EVENT, key=_str(256, minLength=1), value_digest=DIGEST),
     "model_event": _obj(_EVENT_REQ + ["provider", "model", "phase"], **_EVENT, provider=_str(64), model=_str(128),
@@ -94,9 +100,11 @@ REQUESTS = {
 RESPONSES = {
     "register_run": _obj(["run_id", "run_token", "tenant", "tenant_attested", "principal_attested"],
                          run_id=ID, run_token=TOKEN, tenant=ID, tenant_attested={"type": "boolean"},
-                         principal=_str(256), principal_attested={"type": "boolean"}),
-    "decide": _obj(["decision", "rule_ids", "run_seq"], decision={"enum": ["allow", "deny", "ask"]},
-                   rule_ids=RULE_IDS, reason=REASON, run_seq=SEQ),
+                         principal=_str(256), principal_attested={"type": "boolean"},
+                         fail_modes={"type": "object", "additionalProperties": {"enum": ["open", "closed"]}}),
+    "decide": _obj(["decision", "decision_id", "rule_ids", "run_seq"], decision={"enum": ["allow", "deny", "ask"]},
+                   decision_id=ID,   # fresh for every decide; `complete` consumes it once
+                   rule_ids=RULE_IDS, reason=REASON, run_seq=SEQ, expires_at=_str(40)),
     "complete": _SEQ_ONLY,
     "state_write": _SEQ_ONLY,
     "model_event": _SEQ_ONLY,
