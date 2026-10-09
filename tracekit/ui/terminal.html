@@ -1075,7 +1075,7 @@
     const BOOT = /*__TRACE_DATA__*/null;
     const RAW = /*__RAW_DATA__*/null;
     const $ = id => document.getElementById(id);
-    const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+    const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
     const FIELD = { Bash: "command", Write: "file_path", Edit: "file_path", MultiEdit: "file_path", Read: "file_path", NotebookEdit: "notebook_path", WebFetch: "url", WebSearch: "query", Glob: "pattern", Grep: "pattern", Agent: "description", Task: "description" };
     const FILE_TOOLS = { Read: "R", Write: "W", Edit: "W", MultiEdit: "W", NotebookEdit: "W" };
     const SEVERE = new Set(["denied", "out_of_scope_write", "secrets_access"]);
@@ -1302,7 +1302,7 @@
       const chips = [];
       if (F.agent) chips.push(["agent", "AGT " + F.agent]); if (F.tool) chips.push(["tool", "TOOL " + F.tool]);
       if (F.file) chips.push(["file", "FILE " + F.file]); if (F.flag) chips.push(["flag", "FLAGGED"]); if (F.find) chips.push(["find", "FIND " + F.find]);
-      $("chips").innerHTML = chips.map(([k, t]) => `<button class="chip" data-clear="${k}" type="button">${esc(t)} ✕</button>`).join("");
+      $("chips").innerHTML = chips.map(([k, t]) => `<button class="chip" data-clear="${esc(k)}" type="button">${esc(t)} ✕</button>`).join("");
     }
     function renderTicker() {
       const agents = [...S.agents.values()], running = agents.filter(a => a.status === "running").length;
@@ -1319,7 +1319,7 @@
         ["FILES", S.files.size, ""], ["ELAPSED", fmtDur(elapsed), ""], ["LEDGER", S.recs.length, ""]];
       $("ticker").innerHTML = items.map(([k, v, c]) => {
         const fl = lastCounts[k] !== undefined && lastCounts[k] !== v ? " flash" : ""; lastCounts[k] = v;
-        return `<div class="tk${fl}"><b>${k}</b><i class="${c}">${esc(v)}</i></div>`;
+        return `<div class="tk${esc(fl)}"><b>${esc(k)}</b><i class="${esc(c)}">${esc(v)}</i></div>`;
       }).join("");
     }
     function renderAgents() {
@@ -1333,10 +1333,10 @@
         for (const a of list) {
           const sel = F.agent && agentMatch(a) ? " sel" : "";
           const st = a.status;
-          html += `<div class="ag${a.sub ? " sub" : ""}${sel}" data-agent="${esc(a.id)}">
-        <span class="dot ${a.blocked && st !== "done" ? "blocked" : st}"></span>
-        <span class="nm">${esc(a.sub ? (a.desc || a.type) : "main agent")}</span><span class="st ${st}">${st.toUpperCase()}</span>
-        <span class="meta"><span>${esc(label(a))}</span><span>${a.actions} act</span><span>${fmtN(a.tokOut)} out</span>${a.cost ? `<span>${a.cost.toFixed(4)} ${esc(S.currency)}</span>` : ""}${a.blocked ? `<span style="color:var(--red)">${a.blocked} blk</span>` : ""}${a.errors ? `<span style="color:var(--red)">${a.errors} err</span>` : ""}${a.model ? `<span>${esc(a.model)}</span>` : ""}</span>
+          html += `<div class="ag${a.sub ? " sub" : ""}${esc(sel)}" data-agent="${esc(a.id)}">
+        <span class="dot ${esc(a.blocked && st !== "done" ? "blocked" : st)}"></span>
+        <span class="nm">${esc(a.sub ? (a.desc || a.type) : "main agent")}</span><span class="st ${esc(st)}">${esc(st.toUpperCase())}</span>
+        <span class="meta"><span>${esc(label(a))}</span><span>${esc(a.actions)} act</span><span>${esc(fmtN(a.tokOut))} out</span>${a.cost ? `<span>${esc(a.cost.toFixed(4))} ${esc(S.currency)}</span>` : ""}${a.blocked ? `<span style="color:var(--red)">${esc(a.blocked)} blk</span>` : ""}${a.errors ? `<span style="color:var(--red)">${esc(a.errors)} err</span>` : ""}${a.model ? `<span>${esc(a.model)}</span>` : ""}</span>
         ${a.current ? `<span class="cur">▸ ${esc(a.current.tool)} ${esc(a.current.target)}</span>` : ""}
       </div>`;
         }
@@ -1357,16 +1357,16 @@
         if (a) {
           tool = a.tool; text = a.target;
           if (a.child) text += `  → ${label(a.child)}`;
-          st = a.denied ? `<span class="s-deny">BLOCKED</span>` : a.error ? `<span class="s-err">FAILED</span>` : a.post ? (a.flags.length ? `<span class="s-flag">⚑ OK</span>` : `<span class="s-ok">OK</span>`) : `<span class="s-run">RUNNING</span>`;
+          st = a.denied ? ["s-deny", "BLOCKED"] : a.error ? ["s-err", "FAILED"] : a.post ? (a.flags.length ? ["s-flag", "⚑ OK"] : ["s-ok", "OK"]) : ["s-run", "RUNNING"];
           ms = a.ms != null ? a.ms : "";
         } else { text = rel(String(row.text || ""), row.rec?.cwd).replace(/\s+/g, " "); }
-        return `<tr class="row${isNew}${sel}" data-i="${S.tape.indexOf(row)}"><td class="c-time">${fmtT(row.ts)}</td><td class="c-agent">${esc(label(row.agent))}</td><td class="c-ev ev-${row.ev}">${row.ev}</td><td class="c-tool">${esc(tool)}</td><td class="tgt${a ? "" : " dim"}" title="${esc(text.slice(0, 400))}">${esc(text.slice(0, 300))}</td><td class="c-st">${st}</td><td class="c-ms">${ms}</td></tr>`;
+        return `<tr class="row${esc(isNew)}${esc(sel)}" data-i="${esc(S.tape.indexOf(row))}"><td class="c-time">${esc(fmtT(row.ts))}</td><td class="c-agent">${esc(label(row.agent))}</td><td class="c-ev ev-${esc(row.ev)}">${esc(row.ev)}</td><td class="c-tool">${esc(tool)}</td><td class="tgt${a ? "" : " dim"}" title="${esc(text.slice(0, 400))}">${esc(text.slice(0, 300))}</td><td class="c-st">${st ? `<span class="${esc(st[0])}">${esc(st[1])}</span>` : ""}</td><td class="c-ms">${esc(ms)}</td></tr>`;
       }).join("") || `<tr><td colspan="7" class="empty">${anyFilter() ? "Nothing matches the filter." : "Waiting for events…"}</td></tr>`;
       $("tapesum").textContent = anyFilter() ? `${rows.length} of ${S.tape.length} events` : `${S.tape.length} events · newest first`;
     }
     function renderAlerts() {
       const list = S.alerts.filter(al => !al.agent || agentMatch(al.agent)).slice(-200).reverse();
-      $("alerts").innerHTML = list.map((al, i) => `<div class="al" data-al="${S.alerts.indexOf(al)}"><span class="sev ${al.sev}">${al.sev.toUpperCase()}</span><span class="tx">${esc(al.text)}</span><span class="sub">${fmtT(al.ts)} · ${esc(al.agent ? label(al.agent) : "")} · ${esc(String(al.sub || "").slice(0, 200))}</span></div>`).join("") || `<div class="empty">No alerts. Blocked, flagged and failed actions appear here.</div>`;
+      $("alerts").innerHTML = list.map((al, i) => `<div class="al" data-al="${esc(S.alerts.indexOf(al))}"><span class="sev ${esc(al.sev)}">${esc(String(al.sev).toUpperCase())}</span><span class="tx">${esc(al.text)}</span><span class="sub">${esc(fmtT(al.ts))} · ${esc(al.agent ? label(al.agent) : "")} · ${esc(String(al.sub || "").slice(0, 200))}</span></div>`).join("") || `<div class="empty">No alerts. Blocked, flagged and failed actions appear here.</div>`;
       const hi = S.alerts.filter(a => a.sev === "high").length;
       $("alsum").textContent = `${S.alerts.length} total · ${hi} high`;
     }
@@ -1376,7 +1376,7 @@
       const rows = [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10), max = rows[0]?.[1] || 1;
       $("mix").innerHTML = rows.map(([t, n]) => {
         const cat = category({ tool: t, flags: [], denied: false, error: false });
-        return `<div class="bar" data-tool="${esc(t)}"><span>${esc(t.slice(0, 12))}</span><span class="tr"><span class="fl" style="display:block;width:${(n / max * 100).toFixed(1)}%;background:var(${CAT_COLOR[cat]})"></span></span><span class="n">${n}</span></div>`;
+        return `<div class="bar" data-tool="${esc(t)}"><span>${esc(t.slice(0, 12))}</span><span class="tr"><span class="fl" style="display:block;width:${esc((n / max * 100).toFixed(1))}%;background:var(${esc(CAT_COLOR[cat])})"></span></span><span class="n">${esc(n)}</span></div>`;
       }).join("") || `<div class="empty">No actions yet.</div>`;
       $("mixsum").textContent = `${counts.size} tools`;
     }
@@ -1424,11 +1424,11 @@
     }
     function renderReason() {
       const list = S.reasoning.filter(r => agentMatch(r.agent) && (!F.find || r.text.toLowerCase().includes(F.find.toLowerCase()))).slice(-80).reverse();
-      $("reason").innerHTML = list.map(r => `<div class="rs ${r.kind}" data-seq="${r.rec.seq}"><div class="h"><span>${fmtT(r.ts)}</span><span class="who">${esc(label(r.agent))}</span><span>${r.kind === "think" ? "THINKING" : r.kind === "withheld" ? "THINKING (WITHHELD)" : "SAID"}</span></div><div class="t">${esc(r.text.slice(0, 1200))}</div></div>`).join("") || `<div class="empty">No reasoning yet.</div>`;
+      $("reason").innerHTML = list.map(r => `<div class="rs ${esc(r.kind)}" data-seq="${esc(r.rec.seq)}"><div class="h"><span>${esc(fmtT(r.ts))}</span><span class="who">${esc(label(r.agent))}</span><span>${r.kind === "think" ? "THINKING" : r.kind === "withheld" ? "THINKING (WITHHELD)" : "SAID"}</span></div><div class="t">${esc(r.text.slice(0, 1200))}</div></div>`).join("") || `<div class="empty">No reasoning yet.</div>`;
     }
     function renderFiles() {
       const list = [...S.files.values()].filter(f => !F.file || f.path.toLowerCase().includes(F.file.toLowerCase())).sort((a, b) => (b.w - a.w) || (b.r - a.r));
-      $("files").innerHTML = list.map(f => `<tr class="row" data-file="${esc(f.path)}"><td title="${esc(f.path)}">${esc(f.path.length > 48 ? "…" + f.path.slice(-47) : f.path)}</td><td class="dim">${f.r || ""}</td><td style="color:var(--amber)">${f.w || ""}</td><td style="color:var(--red)">${f.blk || ""}</td><td class="c-agent">${esc(f.last ? label(f.last) : "")}</td></tr>`).join("") || `<tr><td colspan="5" class="empty">No files touched yet.</td></tr>`;
+      $("files").innerHTML = list.map(f => `<tr class="row" data-file="${esc(f.path)}"><td title="${esc(f.path)}">${esc(f.path.length > 48 ? "…" + f.path.slice(-47) : f.path)}</td><td class="dim">${esc(f.r || "")}</td><td style="color:var(--amber)">${esc(f.w || "")}</td><td style="color:var(--red)">${esc(f.blk || "")}</td><td class="c-agent">${esc(f.last ? label(f.last) : "")}</td></tr>`).join("") || `<tr><td colspan="5" class="empty">No files touched yet.</td></tr>`;
       $("filesum").textContent = `${S.files.size} files · ${[...S.files.values()].filter(f => f.w).length} written`;
     }
     function j(v) { try { return typeof v === "string" ? v : JSON.stringify(v, null, 2); } catch { return String(v); } }
@@ -1437,10 +1437,10 @@
       if (sel.pre) { // action
         const a = sel, st = a.denied ? "BLOCKED" : a.error ? "FAILED" : a.post ? "OK" : "RUNNING";
         const before = S.reasoning.filter(r => r.agent === a.agent && r.ts <= a.start + 0.5 && r.kind !== "withheld").slice(-1)[0];
-        html += `<dl class="kv"><dt>ACTION</dt><dd style="color:var(--cyan)">${esc(a.tool)}</dd><dt>AGENT</dt><dd>${esc(label(a.agent))} ${a.agent.desc ? "· " + esc(a.agent.desc) : ""}</dd>
-      <dt>STATUS</dt><dd class="${st === "OK" ? "s-ok" : st === "RUNNING" ? "s-run" : "s-err"}">${st}${a.ms != null ? ` · ${a.ms} ms` : ""}</dd>
-      <dt>TIME</dt><dd>${fmtT(a.start)}</dd><dt>POLICY</dt><dd>${a.denied ? `<span class="s-deny">DENY</span> ${esc(a.reasons.join("; "))}` : "allow"}</dd>
-      <dt>FLAGS</dt><dd>${a.flags.length ? esc(a.flags.join(", ")) : "none"}</dd>${a.child ? `<dt>SPAWNED</dt><dd>${esc(label(a.child))}</dd>` : ""}</dl>`;
+        html += `<dl class="kv"><dt>ACTION</dt><dd style="color:var(--cyan)">${esc(a.tool)}</dd><dt>AGENT</dt><dd>${esc(label(a.agent))} ${esc(a.agent.desc ? "· " + a.agent.desc : "")}</dd>
+      <dt>STATUS</dt><dd class="${st === "OK" ? "s-ok" : st === "RUNNING" ? "s-run" : "s-err"}">${esc(st)}${a.ms != null ? ` · ${esc(a.ms)} ms` : ""}</dd>
+      <dt>TIME</dt><dd>${esc(fmtT(a.start))}</dd><dt>POLICY</dt><dd>${a.denied ? `<span class="s-deny">DENY</span> ${esc(a.reasons.join("; "))}` : "allow"}</dd>
+      <dt>FLAGS</dt><dd>${esc(a.flags.length ? a.flags.join(", ") : "none")}</dd>${a.child ? `<dt>SPAWNED</dt><dd>${esc(label(a.child))}</dd>` : ""}</dl>`;
         if (before) html += `<div class="sec">REASONING BEFORE THIS ACTION (${before.kind === "think" ? "thinking" : "said"})</div><pre style="color:var(--magenta)">${esc(before.text.slice(0, 1500))}</pre>`;
         html += `<div class="sec">INPUT</div><pre>${esc(j(a.input).slice(0, 6000))}</pre>`;
         if (a.post) html += `<div class="sec">RESULT</div><pre>${esc(j(a.post.tool_response).slice(0, 6000))}</pre>`;
@@ -1450,8 +1450,8 @@
         if (Array.isArray(sel.evidence) && sel.evidence.length) {  // a signed finding: jump to the records it cites
           html += `<div class="sec">EVIDENCE CITED BY THIS FINDING</div><dl class="kv">` + sel.evidence.map(x => {
             const r = S.recs.find(r => r.tk_seq === x.seq);
-            const st = !r ? `<span class="dim">not in this view</span>` : r.hash === x.hash ? `<span class="s-ok">hash matches</span>` : `<span class="s-deny">HASH MISMATCH</span>`;
-            return `<dt><a href="#" data-tkseq="${esc(String(x.seq))}">seq ${esc(String(x.seq))}</a></dt><dd>${r ? esc(r.event) + " · " : ""}${st}</dd>`;
+            const st = !r ? ["dim", "not in this view"] : r.hash === x.hash ? ["s-ok", "hash matches"] : ["s-deny", "HASH MISMATCH"];
+            return `<dt><a href="#" data-tkseq="${esc(x.seq)}">seq ${esc(x.seq)}</a></dt><dd>${esc(r ? r.event + " · " : "")}<span class="${esc(st[0])}">${esc(st[1])}</span></dd>`;
           }).join("") + `</dl>`;
         }
         html += `<div class="sec">RECORD</div><pre>${esc(j(Object.fromEntries(Object.entries(sel).filter(([k]) => !["hash", "prev"].includes(k) && !(k === "seq" && sel.tk_seq !== undefined)))).slice(0, 8000))}</pre>` + evidence(sel);
@@ -1461,7 +1461,7 @@
     }
     function lseq(r) { return r.tk_seq ?? r.seq; }  // the ledger's seq (v0.2 records carry it as tk_seq)
     function evidence(r) {
-      return `<div class="sec">LEDGER EVIDENCE · SEQ ${lseq(r)}</div><dl class="kv"><dt>hash</dt><dd class="hash">${esc(r.hash || "")}</dd><dt>prev</dt><dd class="dim">${esc(r.prev || "")}</dd></dl>`;
+      return `<div class="sec">LEDGER EVIDENCE · SEQ ${esc(lseq(r))}</div><dl class="kv"><dt>hash</dt><dd class="hash">${esc(r.hash || "")}</dd><dt>prev</dt><dd class="dim">${esc(r.prev || "")}</dd></dl>`;
     }
     function select(x) { selected = x; schedule(); }
 
@@ -1546,10 +1546,8 @@
 
     /* ---------------- live mode ---------------- */
     let liveOk = false, liveErr = "";
-    const TOK = new URLSearchParams(location.search).get("token");
-    const q = (p, extra) => p + (TOK ? (p.includes("?") ? "&" : "?") + "token=" + encodeURIComponent(TOK) : "");
     async function getJSON(path) {
-      const r = await fetch(q(path));
+      const r = await fetch(path, { credentials: "same-origin" });
       if (r.status === 401) throw Object.assign(new Error("This observer needs a token: open the page with ?token=<TRACEKIT_OBSERVE_TOKEN>."), { fatal: true });
       if (!r.ok) throw new Error(`observer answered HTTP ${r.status}`);
       return r.json();
@@ -1558,7 +1556,7 @@
       try {
         const snap = await getJSON("api/snapshot");
         snap.records.forEach(ingest); liveOk = true; liveErr = ""; schedule();
-        const es = new EventSource(q("api/stream?from=" + snap.next));
+        const es = new EventSource("api/stream?from=" + encodeURIComponent(snap.next));
         es.onmessage = e => { try { ingest(JSON.parse(e.data)); schedule(); } catch (err) { console.error("bad stream record", err); } };
         es.onopen = () => { liveOk = true; liveErr = ""; schedule(); };
         es.onerror = () => { liveOk = false; liveErr = "Connection lost; reconnecting…"; schedule(); };

@@ -1,11 +1,11 @@
 # SQL over the ledger
 
 ```bash
-tracekit sql --schema
-tracekit sql "SELECT name, count(*) FROM tool_calls GROUP BY name ORDER BY 2 DESC"
-tracekit sql --format json "SELECT * FROM findings WHERE severity IN ('high','critical')"
-tracekit sql --format csv "SELECT * FROM runs" > runs.csv
-tracekit sql --mcp     # MCP server on stdio for coding agents: tools tracekit_sql, tracekit_schema
+tracekit-sql --schema
+tracekit-sql "SELECT name, count(*) FROM tool_calls GROUP BY name ORDER BY 2 DESC"
+tracekit-sql --format json "SELECT * FROM findings WHERE severity IN ('high','critical')"
+tracekit-sql --format csv "SELECT * FROM runs" > runs.csv
+tracekit-sql --mcp     # MCP server on stdio for coding agents: tools tracekit_sql, tracekit_schema
 ```
 
 No dependencies: the index is SQLite from the Python standard library. It lives in `~/.cache/tracekit/` and is a derived

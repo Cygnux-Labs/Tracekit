@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tracekit-onchain"
+version = "0.1.0"
+description = "Guarded onchain transactions for Tracekit, with detectors TK-X006..X008"
+license = "MIT"
+requires-python = ">=3.9"
+dependencies = ["tracekit"]
+
+[tool.setuptools]
+py-modules = ["tracekit_onchain"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -37,7 +37,7 @@ Tracekit is a small, auditable layer that deals with these:
 | 🧾 **External witness** | The chain head is checkpointed to a git or file witness off the machine, so a chain rebuilt with the real key still fails. | `--witness git:...` at init, `--witness` / `--key` at verify |
 | 🛡️ **Policy gate** | Versioned rules with stable ids (`TK-D006`) block dangerous calls before they run; `ask` rules hold a call until a *different* OS user approves it. | Claude Code `PreToolUse` hook, `tracekit approve` / `reject` |
 | 🩺 **Transcript checks** | Hashes the agent's session transcript at every hook. Deleting, truncating or editing earlier parts produces a `trace.tamper` event. | On by default (`transcript_hashing: true`) |
-| 🔎 **Model proxy cross-check** | An opt-in local proxy records each model exchange. A tool call the model requested with no hook record means hooks were disabled; the reverse means the proxy was bypassed or an event was fabricated. | `tracekit init --proxy` |
+| 🔎 **Model proxy cross-check** | An opt-in local proxy records each model exchange. A tool call the model requested with no hook record means hooks were disabled; the reverse means the proxy was bypassed or an event was fabricated. | `tracekit init --proxy --experimental` |
 | 📦 **Offline evidence bundle** | A run exports as a `.tkb` with the events, policy snapshots, checkpoints and a replay page. Optional OTLP/JSON for Jaeger and friends. | `tracekit export`, `tracekit verify` |
 
 Content is hashed by default, secrets are redacted before anything is written, and the model's reasoning is **self-reported, optional and off by default**. It is never treated as evidence.
@@ -86,10 +86,10 @@ pip install git+https://github.com/Cygnux-Labs/Tracekit   # or, from a clone: pi
 # adds the `tracekit` command; needs `cryptography` (installed automatically)
 ```
 
-**Linux, real use.** Signer as its own OS user, hooks for the agent's user, optional model proxy:
+**Linux, real use.** Signer as its own OS user, hooks for the agent's user:
 
 ```bash
-sudo tracekit init --user "$USER" --witness git:/var/lib/tracekit/witness@git@github.com:you/tk-witness.git --proxy
+sudo tracekit init --user "$USER" --witness git:/var/lib/tracekit/witness@git@github.com:you/tk-witness.git
 sudo tracekit init --user "$USER" --managed      # or: hooks in Claude Code's admin-managed settings
 tracekit status
 ```
@@ -99,8 +99,12 @@ Install the agent CLI system-wide (root-owned, for example `sudo npm install -g 
 **Anywhere, to try it.** A same-user signer; bundles are marked and the verifier warns:
 
 ```bash
-tracekit init --dev [--proxy]
+tracekit init --dev
 ```
+
+The model proxy (`init --proxy`, `tracekit proxy`), the OTLP receiver (`tracekit otel serve`) and the ingest gateway
+(`tracekit ingest serve`) are experimental while they are rebuilt: each needs `--experimental` and prints a warning.
+`tracekit init` never starts them by default.
 
 On platforms without kernel peer credentials (including Windows and macOS), dev mode uses an
 authenticated loopback TCP connection. Caller identity cannot be attested there, so approvals are
@@ -132,7 +136,7 @@ agent.end()
 
 **TypeScript.** `@cygnux/tracekit` (in `sdk/typescript`) gives JS/TS agents the same policy-gated `tool()` and signed model calls (`instrumentOpenAI`, `instrumentAnthropic`, `instrumentStagehand`, a Vercel AI SDK middleware). It drives Tracekit's Python engine through a stdio bridge, so policy, redaction and the event format are identical across languages.
 
-**Frameworks.** `@traced(tracer)` (from `tracekit.adapters`) wraps any sync or async function, and `tracekit.adapters.langchain.TracekitCallbackHandler` covers LangChain and LangGraph tools (`pip install "tracekit-ai[langchain]"`), with a denied call blocked before the tool body runs; `TracekitCallbackHandler(tracer, nodes=True)` also records each LangGraph node as a policy-checked `node:<name>` step. Policy rules match on tool names, so name your shell tool `Bash` or add rules for it. `tracekit.adapters.mcp.traced_session` gates and records every MCP tool call made through a client session, and Vercel AI SDK telemetry spans are understood by the OpenTelemetry receiver. **Browser agents:** `tracekit.adapters.browser` gates and records Browser Use actions and Stagehand `act` / `extract` / `observe` / `goto` calls (a denied Browser Use action comes back to the agent as an error; a denied Stagehand call raises `PermissionError`). Runnable examples for every adapter are in [`examples/`](examples/) and [`sdk/typescript/examples/`](sdk/typescript/examples/), and run in CI. See [adapters](docs/adapters.md).
+**Frameworks.** `@traced(tracer)` (from `tracekit.adapters`) wraps any sync or async function, and `tracekit.adapters.langchain.TracekitCallbackHandler` covers LangChain and LangGraph tools (`pip install "tracekit-ai[langchain]"`), with a denied call blocked before the tool body runs; `TracekitCallbackHandler(tracer, nodes=True)` also records each LangGraph node as a policy-checked `node:<name>` step. Policy rules match on tool names, so name your shell tool `Bash` or add rules for it. `tracekit.adapters.mcp.traced_session` gates and records every MCP tool call made through a client session, and Vercel AI SDK telemetry spans are understood by the OpenTelemetry receiver. **Browser agents:** `tracekit.adapters.browser` gates and records Browser Use actions (a denied action comes back to the agent as an error); Python Stagehand hooks are in [contrib/stagehand](contrib/stagehand/README.md). Runnable examples for every adapter are in [`examples/`](examples/) and [`sdk/typescript/examples/`](sdk/typescript/examples/), and run in CI. See [adapters](docs/adapters.md).
 
 **Codex CLI, Cursor and Gemini CLI.** `tracekit init --dev --agent codex|cursor|gemini` installs hooks on the same pipeline as Claude Code: the policy gate before each tool call (deny blocks, ask holds for approval), signed events, transcript hashing. Tool names are mapped onto the policy vocabulary (`run_shell_command` and `Shell` become `Bash`, `apply_patch` becomes `Edit` with the patched file), so the default rules apply. See [coding agents](docs/coding-agents.md); `tracekit demo --agent codex|cursor|gemini` runs the scripted demo in that agent's own hook format.
 
@@ -143,26 +147,26 @@ What each capture path can and cannot guarantee:
 | Claude Code hooks | yes (deny; ask holds for approval) | yes | yes, with the model proxy | yes (transcript) |
 | Codex CLI, Cursor, Gemini CLI hooks | yes (deny; ask holds for approval) | yes | with `tracekit.init()` or OTel in the agent's process, not via the proxy | no |
 | Python / TypeScript SDK, LangChain/LangGraph, MCP, browser hooks | yes, for calls made through the wrapper | yes | with `tracekit.init()` | only what the code reports (`think`, `say`) |
-| OpenTelemetry ingest (`tracekit otel serve`) | no: spans arrive after the fact; would-deny calls become flags | yes | the spans themselves | no |
+| OpenTelemetry ingest (`tracekit otel serve --experimental`) | no: spans arrive after the fact; would-deny calls become flags | yes | the spans themselves | no |
 | `tracekit.init()` model-call tracing | no tools gated: records model calls | n/a | is the model side | no |
 
 Anything an agent does outside its capture path (a tool that shells out on its own, a process Tracekit doesn't wrap) is not seen.
 
 **Tokens and cost.** Model calls record token usage from every capture path (proxy, SDK, OpenTelemetry). `tracekit cost` totals it per run or model, and with your own price table (`--prices`) adds cost. Tracekit ships no prices and never guesses one.
 
-**Proof packs for auditors.** `tracekit proofpack --run R` writes one zip: the bundle, a readable report (the run, every verification check, findings, coverage, and which evidence is relevant to EU AI Act Art. 12, SOC 2 CC7.2 and ISO/IEC 42001 A.6.2.8), and `verify.pyz`, a verifier that runs with nothing but Python. See [proof packs](docs/proofpack.md).
+**Proof packs for auditors** ([contrib/proofpack](contrib/proofpack/README.md), a separate package). `tracekit-proofpack --run R` writes one zip: the bundle, a readable report (the run, every verification check, findings, coverage, and which evidence is relevant to EU AI Act Art. 12, SOC 2 CC7.2 and ISO/IEC 42001 A.6.2.8), and `verify.pyz`, a verifier that runs with nothing but Python.
 
 **Witness service, hardware keys.** `tracekit witness serve` runs an append-only, Merkle-tree checkpoint log with signed tree heads: it refuses a second history for the same sequence number, and clients check inclusion and consistency proofs, so the witness cannot quietly rewrite its log either. `tracekit init --signer-cmd ... --signer-pub ...` keeps the signing key in a TPM, HSM or enclave through a small helper process; `--key-attestation FILE` adds the device's attestation document, whose hash is signed into checkpoints and reported by `verify` (Tracekit checks the key's identity, not the vendor's attestation contents). See [witnesses](docs/witnesses.md) and [signing](docs/signing.md).
 
-**Causeway and onchain agents.** `tracekit causeway anchor|verify|import-tests|export` makes Causeway's causal logs tamper-evident under Tracekit's signer and turns its counterfactual verdicts into signed findings. `tracekit.adapters.onchain.guarded_tx` records a transaction guard's verdict (Proof-Gated Signing's `Guard.check` interface) before the wallet signs, and never signs a blocked transaction. See [integrations](docs/integrations.md).
+**Causeway and onchain agents** (separate packages under `contrib/`). `tracekit-causeway anchor|verify|import-tests|export` makes Causeway's causal logs tamper-evident under Tracekit's signer and turns its counterfactual verdicts into signed findings. `tracekit_onchain.guarded_tx` records a transaction guard's verdict (Proof-Gated Signing's `Guard.check` interface) before the wallet signs, and never signs a blocked transaction. See [contrib/causeway](contrib/causeway/README.md) and [contrib/onchain](contrib/onchain/README.md).
 
-**Anything instrumented with OpenTelemetry.** `tracekit otel serve` is an OTLP/HTTP receiver on `127.0.0.1:4318` (protobuf or JSON, gzip), and with `--grpc-port 4317` also OTLP/gRPC (`pip install "tracekit-ai[grpc]"`). Point any exporter at it (`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://127.0.0.1:4318/v1/traces`) and the agent spans (GenAI semantic conventions, OpenLLMetry and OpenInference) become signed ledger events: model calls, tool calls with a retrospective policy check, and one run per trace. No code changes in the agent. Spans arrive after the work is done, so nothing is gated, and the coverage report says so. See [OpenTelemetry](docs/otel.md).
+**Anything instrumented with OpenTelemetry.** `tracekit otel serve --experimental` is an OTLP/HTTP receiver on `127.0.0.1:4318` (protobuf or JSON, gzip), and with `--grpc-port 4317` also OTLP/gRPC (`pip install "tracekit-ai[grpc]"`). Point any exporter at it (`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://127.0.0.1:4318/v1/traces`) and the agent spans (GenAI semantic conventions, OpenLLMetry and OpenInference) become signed ledger events: model calls, tool calls with a retrospective policy check, and one run per trace. No code changes in the agent. Spans arrive after the work is done, so nothing is gated, and the coverage report says so. See [OpenTelemetry](docs/otel.md).
 
 **Findings, signed.** `tracekit analyze` runs deterministic detectors over a run (claimed tests that never ran, "tests pass" after a failed run, a denied push that happened, a force push left out of the summary, tool calls the model never asked for, secrets in output, retrospective policy violations) and signs each finding into the ledger, citing the exact records it rests on. The signer refuses a finding whose cited evidence does not match the ledger, and `tracekit verify` fails if a finding cites evidence that is missing or altered. See [findings](docs/findings.md).
 
-**SQL and MCP.** `tracekit sql "SELECT ..."` queries the ledger through views (`runs`, `tool_calls`, `model_exchanges`, `findings`, `gaps`), with a stdlib SQLite index that checks the hash chain as it loads. `tracekit sql --mcp` lets coding agents query traces. See [SQL](docs/sql.md).
+**SQL and MCP** ([contrib/query](contrib/query/README.md), a separate package). `tracekit-sql "SELECT ..."` queries the ledger through views (`runs`, `tool_calls`, `model_exchanges`, `findings`, `gaps`), with a stdlib SQLite index that checks the hash chain as it loads. `tracekit-sql --mcp` lets coding agents query traces.
 
-**Agents on other machines.** `tracekit ingest serve` runs an authenticated, TLS gateway; clients configure it with `tracekit init --remote URL`. Remote events are recorded as `sdk` evidence in a namespaced run, and held (`ask`) calls are refused. See [remote ingestion](docs/remote-ingest.md).
+**Agents on other machines.** `tracekit ingest serve --experimental` runs an authenticated, TLS gateway; clients configure it with `tracekit init --remote URL`. Remote events are recorded as `sdk` evidence in a namespaced run, and held (`ask`) calls are refused. See [remote ingestion](docs/remote-ingest.md).
 
 ## Use
 
@@ -172,14 +176,11 @@ Anything an agent does outside its capture path (a tool that shells out on its o
 | `tracekit status` | Hooks, signer, witnesses, policy, fail mode and capture sources. |
 | `tracekit observe` | Live terminal at `http://127.0.0.1:7777`. Read-only. `--bundle run.tkb` views an exported bundle (verified first), `--prices p.json` adds cost, `--export replay.html` writes a single file anyone can open. |
 | `tracekit pending` / `approve <id>` / `reject <id>` | Answer held `ask` calls, from a terminal outside the agent's session. |
-| `tracekit otel serve [--grpc-port 4317]` | Receive OTLP/HTTP (and optionally gRPC) traces on `127.0.0.1:4318` and record the agent spans. |
+| `tracekit otel serve --experimental [--grpc-port 4317]` | Receive OTLP/HTTP (and optionally gRPC) traces on `127.0.0.1:4318` and record the agent spans. |
 | `tracekit otel push --endpoint URL --header K=V --follow` | Stream signed runs to Jaeger, Tempo or any OTLP/HTTP backend as they finish. |
 | `tracekit analyze --last` | Run the detectors and sign the findings into the ledger. Exit 4 on high or critical findings. |
-| `tracekit sql "SELECT ..."` | Read-only SQL over the ledger; `--mcp` serves it to coding agents. |
 | `tracekit cost [--prices p.json] [--by model]` | Token usage per run or model; cost when you supply prices. |
-| `tracekit proofpack --run R -o pack.zip` / `tracekit report run.tkb` | Auditor zip (bundle, report, control map, stdlib-only verifier) / the report alone. |
 | `tracekit witness init\|token\|serve` | Run a witness log for signers to publish checkpoints to. |
-| `tracekit causeway anchor\|verify\|import-tests\|export` | Sign and check Causeway runs; import counterfactual verdicts as findings. |
 | `tracekit export --last -o run.tkb` | Write an evidence bundle. `--otel` adds OTLP/JSON (every span carries `tracekit.entry_hash`); `--otel-endpoint http://localhost:4318` also sends it. |
 | `tracekit verify run.tkb --key signer.pub --witness git:/path/to/clone` | Verify offline. Exit `0` ok, `1` fail, `2` bad bundle, `3` warnings with `--strict`. |
 | `tracekit migrate ~/.tracekit/ledger.jsonl --out v1.jsonl` | Convert a v0.1 ledger. |
@@ -312,7 +313,7 @@ Not built yet (tracked in [issue #1](https://github.com/Cygnux-Labs/Tracekit/iss
 
 ## Evaluation and paper
 
-`make eval` runs five offline experiments (E1 to E4 and E6) against the v0.2 code and writes JSON to `eval/results/`; `make eval-agents` runs E5 with real Claude Code sessions, and `make eval-scale` runs E7. Results and caveats: [docs/evaluation.md](docs/evaluation.md).
+`make eval` runs five offline experiments (E1 to E4 and E6) against the v0.2 code and writes JSON to `eval/results/`; `make eval-agents` runs E5 with real Claude Code sessions, and `make eval-scale` runs E7 (`contrib/query`). Results and caveats: [docs/evaluation.md](docs/evaluation.md).
 
 | Experiment | Script | What it measures |
 |---|---|---|
@@ -322,7 +323,7 @@ Not built yet (tracked in [issue #1](https://github.com/Cygnux-Labs/Tracekit/iss
 | E4 seeded faults | `eval/e4_seeded_faults.py` | 14 kinds of corruption of a real bundle plus a truncated zip, 30 placements each, bundle alone vs against the git witness vs `--strict` |
 | E5 real agents | `eval/e5_agents.py` | 12 real Claude Code runs (opt-in, spends model usage): capture, verification and false blocks; the planted injections were ignored by the model, so the gate was not exercised |
 | E6 findings | `eval/e6_findings.py` | The say-vs-do detectors on 2,000 synthetic sessions, half with one spliced misbehaviour: precision 1.00 (0 of 1,000 honest sessions flagged), recall 0.84 overall; structural detectors are exact, but held-out paraphrases of "tests pass" / "I did not push" are caught only 29% / 40% of the time |
-| E7 SQL at scale | `eval/e7_sql_scale.py` | The SQL index over a 1,000,001-event ledger (604 MB): every typical query under 1 s on 2 vCPUs, index build 36 s, and a rebuilt index returns identical rows |
+| E7 SQL at scale | `contrib/query/e7_sql_scale.py` | The SQL index over a 1,000,001-event ledger (604 MB): every typical query under 1 s on 2 vCPUs, index build 36 s, and a rebuilt index returns identical rows |
 
 The ledger alone cannot detect truncation or a full re-sign by a key holder; the witness closes that gap. Both limits show up in the E1 output.
 
@@ -339,8 +340,9 @@ make test        # or: python -m pytest -q
 - `tests/test_portability.py`, `test_rekor.py`, `test_adapters.py`, `test_ingest.py`: macOS/Windows paths and the plugin package (mocked), Merkle proofs and the Rekor client, LangChain/LangGraph against the real libraries, the remote gateway end to end.
 - `tests/test_hardening.py`: malformed and hostile input to the verifier, signer, hook, policy engine, observer and installer; bounded memory; regex safety.
 - `tests/test_agent_hooks.py`, `test_autotrace.py`, `test_otlp.py`, `test_usage.py`: Codex / Cursor / Gemini hook mapping, SDK auto-instrumentation (OpenAI, Anthropic, Gemini; streaming and async), OTLP ingest and export, token usage.
-- `tests/test_findings.py`, `test_query.py`, `test_proofpack.py`, `test_witness_server.py`, `test_extsigner.py`, `test_parity.py`: signed findings, the SQL index and MCP server, proof packs, the witness log, external signers, and Python/browser hash parity.
-- `tests/test_adapters2.py`, `test_browser.py`, `test_onchain.py`, `test_causeway.py`, `test_examples.py`: LangGraph nodes, Browser Use and Stagehand, guarded transactions, Causeway, and the runnable examples.
+- `tests/test_findings.py`, `test_witness_server.py`, `test_extsigner.py`, `test_parity.py`: signed findings, the witness log, external signers, and Python/browser hash parity.
+- `tests/test_adapters2.py`, `test_browser.py`, `test_examples.py`: LangGraph nodes, Browser Use, and the runnable examples.
+- `contrib/<name>/tests/`: each contrib package's own suite (`cd contrib/<name> && python -m pytest`).
 - `make test-ts` runs the TypeScript SDK tests.
 
 ## License

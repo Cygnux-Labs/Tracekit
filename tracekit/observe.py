@@ -14,9 +14,12 @@ proxy/hook mismatches and approvals. Content that the ledger holds only as a has
 """
 import argparse
 import datetime as _dt
+import hashlib
 import hmac
 import json
 import os
+import re
+import secrets
 import sys
 import threading
 import time
@@ -307,8 +310,19 @@ class Feed:
                         self.lock.notify_all()
 
 
+def _page(trace="null", raw="null", nonce=None):
+    """terminal.html with its data slots filled in one pass (so record content that happens to contain a slot name is
+    never substituted again) and, when served, the per-response script nonce."""
+    slots = {"/*__TRACE_DATA__*/null": trace, "/*__RAW_DATA__*/null": raw}
+    if nonce:
+        slots["<script>"] = f'<script nonce="{nonce}">'
+    return re.sub("|".join(re.escape(k) for k in slots), lambda m: slots[m.group(0)], read_text(UI))
+
+
 LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
-CSP = ("default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; "
+WILDCARD_HOSTS = {"0.0.0.0", "::", ""}
+COOKIE = "tracekit_observe"
+CSP = ("default-src 'none'; script-src 'nonce-{nonce}'; style-src 'unsafe-inline'; img-src data:; "
        "connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
 
 
@@ -320,8 +334,13 @@ def _host_only(value):
     return value.rsplit(":", 1)[0] if value.count(":") == 1 else value
 
 
+def _session(token):
+    """The cookie value a browser gets in exchange for the token: derived from it, so the token itself is never stored."""
+    return hmac.new(token.encode(), b"tracekit-observe-session", hashlib.sha256).hexdigest()
+
+
 def make_handler(feed, token, allowed_hosts=None):
-    allowed = set(LOOPBACK_HOSTS) | {h.lower() for h in (allowed_hosts or ())}
+    allowed = set(LOOPBACK_HOSTS) | {h.lower() for h in (allowed_hosts or ()) if h.lower() not in WILDCARD_HOSTS}
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "tracekit-observe"
@@ -329,9 +348,11 @@ def make_handler(feed, token, allowed_hosts=None):
         def log_message(self, *a):
             pass
 
-        def _send(self, code, body, ctype="application/json"):
+        def _send(self, code, body, ctype="application/json", nonce=None, headers=()):
             data = body.encode("utf-8") if isinstance(body, str) else body
             self.send_response(code)
+            for k, v in headers:
+                self.send_header(k, v)
             self.send_header("Content-Type", ctype + "; charset=utf-8")
             self.send_header("Content-Length", str(len(data)))
             self.send_header("Cache-Control", "no-store")
@@ -339,28 +360,48 @@ def make_handler(feed, token, allowed_hosts=None):
             self.send_header("Referrer-Policy", "no-referrer")
             self.send_header("Cross-Origin-Resource-Policy", "same-origin")
             if ctype == "text/html":
-                self.send_header("Content-Security-Policy", CSP)
+                self.send_header("Content-Security-Policy", CSP.format(nonce=nonce or secrets.token_urlsafe(18)))
             self.end_headers()
             self.wfile.write(data)
 
-        def _authorized(self, u):
+        def _cookie(self):
+            for part in self.headers.get("Cookie", "").split(";"):
+                k, _, v = part.strip().partition("=")
+                if k == COOKIE:
+                    return v
+            return ""
+
+        def _authorized(self):
             if not token:
                 return True
-            supplied = parse_qs(u.query).get("token", [""])[0]
             bearer = self.headers.get("Authorization", "")
             return hmac.compare_digest(bearer.encode(), f"Bearer {token}".encode()) or \
-                hmac.compare_digest(supplied.encode(), token.encode())
+                hmac.compare_digest(self._cookie().encode(), _session(token).encode())
+
+        def _exchange(self, u):
+            """`/?token=…` once: the token becomes an HttpOnly cookie and the browser is sent to a URL without it."""
+            supplied = parse_qs(u.query).get("token", [""])[0]
+            return bool(token and supplied and u.path in ("/", "/index.html")
+                        and hmac.compare_digest(supplied.encode(), token.encode()))
 
         def do_GET(self):
             u = urlparse(self.path)
+            exchange = self._exchange(u)
+            authorized = exchange or self._authorized()
             # DNS-rebinding guard: a web page the user visits can make a browser send requests to
-            # 127.0.0.1 under an attacker-controlled name; only names we expect are served
-            if _host_only(self.headers.get("Host")) not in allowed:
+            # 127.0.0.1 under an attacker-controlled name; only names we expect are served, and any
+            # other name (a wildcard bind reached by its LAN address) only with the token
+            if _host_only(self.headers.get("Host")) not in allowed and not (token and authorized):
                 return self._send(403, '{"error":"unexpected Host header"}')
-            if not self._authorized(u):
+            if not authorized:
                 return self._send(401, '{"error":"missing or wrong token"}')
+            if exchange:
+                return self._send(303, "", "text/plain", headers=[
+                    ("Location", u.path),
+                    ("Set-Cookie", f"{COOKIE}={_session(token)}; HttpOnly; SameSite=Strict; Path=/")])
             if u.path in ("/", "/index.html"):
-                return self._send(200, read_text(UI).replace("/*__TRACE_DATA__*/null", "null").replace("/*__RAW_DATA__*/null", "null"), "text/html")
+                nonce = secrets.token_urlsafe(18)
+                return self._send(200, _page(nonce=nonce), "text/html", nonce=nonce)
             if u.path == "/api/snapshot":
                 with feed.lock:
                     body = {"next": feed.base + len(feed.records), "dropped": feed.base, "records": feed.records}
@@ -443,8 +484,11 @@ def main(argv=None):
         path, code = _open_bundle(a.bundle)
         if path is None:
             return 1
-        print(f"tracekit observe: bundle {a.bundle} " + ("verified" if code == 0 else f"FAILED verification (exit {code}); showing it anyway"),
-              file=sys.stderr)
+        if code != 0:
+            print(f"tracekit observe: bundle {a.bundle} FAILED verification (exit {code}); refusing to show it. "
+                  f"Run `tracekit verify {a.bundle}` for the details.", file=sys.stderr)
+            return code
+        print(f"tracekit observe: bundle {a.bundle} verified", file=sys.stderr)
     else:
         home = a.home or client.client_config().get("signer_home") or "/var/lib/tracekit"
         path = os.path.join(home, "ledger", "ledger.jsonl")
@@ -457,8 +501,7 @@ def main(argv=None):
             if isinstance(rec, dict):
                 raw_recs.append(rec)
                 recs += tr.feed(rec)
-        boot = _script_json(recs)
-        page = read_text(UI).replace("/*__TRACE_DATA__*/null", boot).replace("/*__RAW_DATA__*/null", _script_json(raw_recs))
+        page = _page(_script_json(recs), _script_json(raw_recs))
         tmp = f"{a.export}.tmp-{os.getpid()}"
         with open(tmp, "w", encoding="utf-8") as f:
             f.write(page)

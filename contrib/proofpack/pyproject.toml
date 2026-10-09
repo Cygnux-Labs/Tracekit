@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tracekit-proofpack"
+version = "0.1.0"
+description = "Tracekit proof packs: bundle, readable report, control map and a stdlib-only verifier in one zip"
+license = "MIT"
+requires-python = ">=3.9"
+dependencies = ["tracekit"]
+
+[project.scripts]
+tracekit-proofpack = "tracekit_proofpack:main"
+tracekit-report = "tracekit_proofpack:report_main"
+
+[tool.setuptools]
+py-modules = ["tracekit_proofpack"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

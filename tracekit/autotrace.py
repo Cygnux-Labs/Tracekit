@@ -7,8 +7,8 @@
 Every call becomes two signed ``model.exchange`` events in the tracer's run: a request (written before the call
 is sent, so a crash mid-call still leaves evidence it was made) and a response with the model, finish reason, the
 tool calls the model asked for, error, HTTP status, latency and time to first chunk. Sync, async and streaming calls
-are covered; a stream is recorded when it is exhausted, closed or garbage collected, so an abandoned stream still
-leaves a response event marked as such.
+are covered; a stream is recorded when it is exhausted or closed, and a garbage-collected one at the next model
+call or exit, so an abandoned stream still leaves a response event marked as such.
 
 Content (prompts, outputs) is redacted and hashed by default, exactly as for every other Tracekit capture path;
 ``content_capture: full`` in the policy records it in clear.
@@ -22,6 +22,7 @@ Guarantees
   through these SDKs, not of calls made any other way (raw HTTP, other SDKs, other processes).
 """
 import atexit
+import collections
 import functools
 import importlib
 import os
@@ -36,6 +37,7 @@ from .core import jsonable
 
 MAX_TEXT = 1024 * 1024   # streamed text kept for the (hashed) response content
 _STATE = {"tracer": None, "patched": [], "lock": threading.RLock()}
+_LATE = collections.deque()   # exchanges of garbage-collected streams, recorded on the next flush (never from __del__)
 
 
 # ------------------------------------------------------------------ helpers
@@ -95,7 +97,13 @@ class _Exchange:
         self.done = False
         self.lock = threading.Lock()
         self.stop_reason, self.tool_uses, self.text, self.resp_model, self.chunks = None, {}, [], None, 0
+        self.text_len = 0
         self.usage = None
+
+    def add_text(self, t):
+        if isinstance(t, str) and self.text_len < MAX_TEXT:
+            self.text.append(t)
+            self.text_len += len(t)
 
     def add_usage(self, u):
         self.usage = _usage.merge(self.usage, u)
@@ -114,7 +122,9 @@ class _Exchange:
             self.tracer._send(self.tracer._event("model.exchange", data))
         except client.SignerUnavailable as e:
             raise PermissionError(f"Tracekit: signer unavailable and fail_mode=closed; model call refused: {e}") from e
-        except Exception:
+        except Exception as e:
+            if self.tracer._policy.get("fail_mode") == "closed":
+                raise PermissionError(f"Tracekit: request not recorded and fail_mode=closed; model call refused: {e}") from e
             _note_failure()
 
     def chunk(self):
@@ -127,7 +137,13 @@ class _Exchange:
             if self.done:
                 return
             self.done = True
-        if self.tracer._ended:  # e.g. a stream garbage-collected after the run ended: nothing left to attach it to
+        if self.tracer._ended:  # e.g. a stream finished after the run ended: its response can no longer be recorded
+            try:
+                self.tracer._send(self.tracer._event("capture.gap", {
+                    "reason": f"model call {self.id} finished after the run ended; its response was not recorded",
+                    "kind": "late_stream"}))
+            except Exception:
+                _note_failure()
             return
         try:
             tools = [{"id": str(i)[:200], "name": str(n)[:200]} for i, n in list(self.tool_uses.items())[:128] if i and n]
@@ -184,8 +200,7 @@ def _openai_chat_chunk(ex, chunk):
             ex.stop_reason = _get(ch, "finish_reason")
         d = _get(ch, "delta")
         t = _get(d, "content")
-        if isinstance(t, str) and sum(map(len, ex.text)) < MAX_TEXT:
-            ex.text.append(t)
+        ex.add_text(t)
         for tc in _get(d, "tool_calls", default=[]) or []:
             idx = _get(tc, "index", default=0)
             key = _get(tc, "id")
@@ -215,8 +230,7 @@ def _openai_responses_event(ex, ev):
         _openai_responses(ex, _get(ev, "response"))
     elif t == "response.output_text.delta":
         d = _get(ev, "delta")
-        if isinstance(d, str) and sum(map(len, ex.text)) < MAX_TEXT:
-            ex.text.append(d)
+        ex.add_text(d)
     elif t == "response.output_item.added":
         item = _get(ev, "item")
         if _get(item, "type") in ("function_call", "custom_tool_call", "mcp_call"):
@@ -243,8 +257,7 @@ def _anthropic_event(ex, ev):
             ex.tool_uses[_get(b, "id")] = _get(b, "name")
     elif t == "content_block_delta":
         txt = _get(ev, "delta", "text")
-        if isinstance(txt, str) and sum(map(len, ex.text)) < MAX_TEXT:
-            ex.text.append(txt)
+        ex.add_text(txt)
     elif t == "message_delta":
         ex.stop_reason = _get(ev, "delta", "stop_reason") or ex.stop_reason
         ex.add_usage(_usage.from_anthropic(_get(ev, "usage")))
@@ -262,8 +275,8 @@ def _gemini(ex, resp):
             if fc is not None:
                 ex.tool_uses[_get(fc, "id") or f"{ex.id}:{i}:{_get(fc, 'name')}"] = _get(fc, "name")
             t = _get(p, "text")
-            if ex.streamed and isinstance(t, str) and sum(map(len, ex.text)) < MAX_TEXT:
-                ex.text.append(t)
+            if ex.streamed:
+                ex.add_text(t)
 
 
 # ------------------------------------------------------------------ stream proxies
@@ -414,11 +427,8 @@ class _StreamProxy:
             self._end(abandoned=not self._completed())
 
     def __del__(self):
-        try:
-            if not self._tk_ex.done:
-                self._end(abandoned=True)
-        except Exception:
-            pass
+        if not self._tk_ex.done:
+            _LATE.append(self._tk_ex)
 
 
 class _ManagerProxy:
@@ -502,8 +512,19 @@ TARGETS = [
 PROVIDERS = ("openai", "anthropic", "gemini")
 
 
+def flush():
+    """Record the streams that were garbage-collected before they finished."""
+    while _LATE:
+        try:
+            ex = _LATE.popleft()
+        except IndexError:
+            return
+        ex.finish(abandoned=True)
+
+
 def _wrap(orig, provider, operation, is_async, on_resp, on_item, stream_kind):
     def make_ex(kwargs, streamed):
+        flush()
         t = _STATE["tracer"]
         if t is None or getattr(t, "_ended", False):
             return None
@@ -629,6 +650,7 @@ def init(agent=None, session_id=None, providers=PROVIDERS, cwd=None):
 
 def _atexit(t):
     try:
+        flush()
         if _STATE["tracer"] is t and not t._ended:
             t.end("process exit")
     except Exception:
@@ -638,6 +660,7 @@ def _atexit(t):
 def shutdown(reason="done"):
     with _STATE["lock"]:
         t = _STATE["tracer"]
+        flush()
         uninstrument()
         if t is not None and not t._ended:
             t.end(reason)
