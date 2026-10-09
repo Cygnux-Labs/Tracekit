@@ -98,6 +98,15 @@ class Scenarios(rc.Harness):
         fresh = self.call("approval_request", self.run_req(tool_call_id="tc-1", attempt=1))["approval_id"]
         self.assertNotEqual(fresh, aid)
 
+    def test_abandoned_approval_is_never_consumed(self):
+        aid = self.ask(PAY)
+        self.approve(aid)
+        out = self.call("approval_abandon", self.run_req(approval_id=aid))
+        self.assertEqual(out["state"], "expired")
+        self.refused_with("TK-APPROVAL-EXPIRED", self.consume(hint=aid))
+        self.refused("approval_not_pending", "approval_abandon", self.run_req(approval_id=aid))
+        self.assertIn("approval.abandoned", self.types())
+
     def test_one_approval_per_call_attempt(self):
         aid = self.ask(PAY)
         self.approve(aid, "reject")
@@ -251,7 +260,7 @@ def tracekit(*args, env=None):
 class TestCli(unittest.TestCase):
     def test_show_prints_the_real_args_and_approve_reject_round_trip(self):
         d = ts.tmpdir(self)
-        cfg = {"data_dir": d, "socket": os.path.join(d, "s.sock")}
+        cfg = {"data_dir": d, "socket": os.path.join(d, "s.sock"), "approvals": {"self_approval": "allow"}}
         service = svc.open_service(cfg, policy=ts.PAY_ASKS)
         self.addCleanup(service.close)
         for srv in svc.serve(cfg, service):

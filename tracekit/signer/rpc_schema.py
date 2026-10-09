@@ -1,4 +1,4 @@
-"""The signer RPC contract, version 5: one JSON Schema per request and response, the error shape, and `SignerAPI`.
+"""The signer RPC contract, version 6: one JSON Schema per request and response, the error shape, and `SignerAPI`.
 
 Frozen: a change to any schema here is a new RPC_VERSION. The caller's identity comes from the transport (peer
 credentials, token, mTLS), never from a request field. Calls that change state carry `request_id`, scoped to that
@@ -12,7 +12,7 @@ from typing import Protocol
 from tracekit.format.canon import MAX_SAFE_INT
 from tracekit.schema import _check
 
-RPC_VERSION = 5
+RPC_VERSION = 6
 MAX_RAW_ARGS = 1 << 20   # characters of a raw arguments string
 MAX_RESULTS_SENT = 1024
 
@@ -118,7 +118,10 @@ REQUESTS = {
                           timeout_ms={"type": "integer", "minimum": 0, "maximum": 300000}),
     "approval_consume": _consume,
     "approval_get": _obj(["approval_id"], approval_id=ID),
-    "approval_list": _obj([], run_id=ID),
+    # a page of the approvals the caller may see, oldest first; `cursor` is the previous page's next_cursor
+    "approval_list": _obj([], run_id=ID, cursor=ID, limit={"type": "integer", "minimum": 1, "maximum": 1000}),
+    # the adapter will never resume this paused call: the approval ends at once and a later consume is refused
+    "approval_abandon": _obj(_RUN_REQ + ["approval_id"], **_RUN, approval_id=ID, reason=REASON),
     "close_run": _obj(_RUN_REQ, **_RUN, reason=_str(256)),
     "status": _obj([]),
     "read": _obj(["run_id", "run_token"], run_id=ID, run_token=TOKEN, from_seq=SEQ,
@@ -144,12 +147,16 @@ RESPONSES = {
     "approval_wait": _obj(["approval_id", "state"], approval_id=ID, state=APPROVAL_STATE, reason=REASON),
     # ok: the call may run now (an approval is consumed, or the call needed none); else rule_ids say why not
     "approval_consume": _obj(["ok", "rule_ids"], ok={"type": "boolean"}, rule_ids=RULE_IDS, approval_id=ID,
-                             reason=REASON),
+                             reason=REASON,
+                             args=ANY),   # a T2 approval: the approved args from the signer's copy, to run exactly
+
     # the signer's copy of the arguments, not the agent's description of them
     "approval_get": dict(_SUMMARY, required=_SUMMARY["required"] + ["args_source", "args", "binding_digest"],
                          properties=dict(_SUMMARY["properties"], args_source={"enum": ["raw", "parsed", "coerced"]},
                                          args=ANY, binding_digest=DIGEST, reason=REASON)),
-    "approval_list": _obj(["approvals"], approvals={"type": "array", "maxItems": 1000, "items": _SUMMARY}),
+    "approval_list": _obj(["approvals", "next_cursor"], approvals={"type": "array", "maxItems": 1000, "items": _SUMMARY},
+                          next_cursor={"oneOf": [ID, {"type": "null"}]}),
+    "approval_abandon": _obj(["approval_id", "state"], approval_id=ID, state=APPROVAL_STATE),
     "close_run": _obj(["run_id", "state", "run_seq"], run_id=ID, state={"const": "closing"}, run_seq=SEQ),
     "status": _obj(["rpc_version", "signer", "identity"], rpc_version={"const": RPC_VERSION},
                    signer=_obj(["name", "version"], name=_str(128), version=_str(64)),
@@ -201,6 +208,7 @@ class SignerAPI(Protocol):
     def approval_consume(self, req: dict) -> dict: ...
     def approval_get(self, req: dict) -> dict: ...
     def approval_list(self, req: dict) -> dict: ...
+    def approval_abandon(self, req: dict) -> dict: ...
     def close_run(self, req: dict) -> dict: ...
     def status(self, req: dict) -> dict: ...
     def read(self, req: dict) -> dict: ...

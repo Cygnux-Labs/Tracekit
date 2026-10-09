@@ -49,10 +49,11 @@ def approval(tenant, run_id, data):
     return {"run_key": (tenant, run_id), "tool_call_id": b["tool_call_id"], "attempt": b["attempt"], "tool": b["tool"],
             "args_source": b["args_source"], "decision_id": data["decision_id"], "commitment": b["args_commitment"],
             "rule_ids": data["rule_ids"], "policy_hash": data["policy_hash"], "requester": data["requester"],
-            "expires_at": data["expires_at"], "binding_digest": data["binding_digest"], "state": "requested"}
+            "expires_at": data["expires_at"], "binding_digest": data["binding_digest"], "state": "requested",
+            "executor": data.get("executor", "t1")}
 
 
-APPROVAL_ENDS = {"approval.consumed": "consumed", "approval.expired": "expired"}
+APPROVAL_ENDS = {"approval.consumed": "consumed", "approval.expired": "expired", "approval.abandoned": "expired"}
 
 
 def subject(identity):

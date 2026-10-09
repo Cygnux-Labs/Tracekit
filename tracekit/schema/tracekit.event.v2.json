@@ -104,6 +104,7 @@
         "approval.expired",
         "approval.refused",
         "approval.binding_mismatch",
+        "approval.abandoned",
         "state.write",
         "signer.epoch",
         "key.retire",
@@ -601,6 +602,22 @@
         "properties": {
           "data": {
             "$ref": "#/$defs/approval_binding_mismatch"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "approval.abandoned"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/approval_abandoned"
           }
         }
       }
@@ -1172,6 +1189,33 @@
         "reason": {
           "type": "string",
           "maxLength": 1024
+        },
+        "approver_identity": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "scheme",
+            "subject",
+            "attested"
+          ],
+          "properties": {
+            "scheme": {
+              "type": "string",
+              "maxLength": 32
+            },
+            "subject": {
+              "type": "string",
+              "maxLength": 256
+            },
+            "attested": {
+              "type": "boolean"
+            }
+          },
+          "description": "the approver as the signer's transport established it"
+        },
+        "break_glass": {
+          "type": "boolean",
+          "description": "answered under the break-glass role, which may answer any approval"
         }
       }
     },
@@ -1847,6 +1891,13 @@
         },
         "binding_digest": {
           "$ref": "#/$defs/hash"
+        },
+        "executor": {
+          "enum": [
+            "t1",
+            "t2"
+          ],
+          "description": "t2: approval_consume returns the approved arguments and its caller runs exactly those"
         }
       }
     },
@@ -1930,6 +1981,23 @@
           "maxLength": 76
         }
       }
+    },
+    "approval_abandoned": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "approval_id"
+      ],
+      "properties": {
+        "approval_id": {
+          "$ref": "#/$defs/id"
+        },
+        "reason": {
+          "type": "string",
+          "maxLength": 1024
+        }
+      },
+      "description": "the adapter will never resume the paused call; the approval ends at once"
     },
     "state_write": {
       "type": "object",

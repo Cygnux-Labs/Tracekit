@@ -83,7 +83,9 @@ reordered after it was signed.
   attempts visible and blocks the obvious ones. It can't make them impossible.
 - **No witness** has cosigned a checkpoint, so nothing outside this machine can show that the log was not rolled back or
   forked.
-- **Approvals are self-approvals**: the same user who runs the agent approved them, and the bundle says so.
+- **Approvals are self-approvals**: the same user who runs the agent approved them, and the bundle says so. A signer
+  started with a config refuses self-approvals: list who may answer under `approvals: {approvers: [...]}` in
+  `signer.yaml` (see `tracekit/signer/service.py`).
 
 Dev mode is for trying Tracekit and for catching mistakes, not attacks. Stronger assurance (`local`, `witnessed`) needs
 a signer that runs as a different user or on another host, plus witnesses that cosign its checkpoints. Those are later
