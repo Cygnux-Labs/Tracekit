@@ -1,11 +1,24 @@
 #!/bin/sh
 # Claude Code hook entry point for the Tracekit plugin. Needs the `tracekit` Python package:
 #   pip install tracekit-ai && tracekit init --dev --no-hooks     (or a system-mode signer)
-# Python runs isolated (-I), so the project directory and PYTHON* variables never decide which tracekit runs;
-# the user site-packages directory is added back explicitly for `pip install --user` installs.
-# If the package is missing the hook says so on stderr and lets the call proceed, unless the system config
-# (/etc/tracekit/client.json) sets fail_mode closed (the default there), in which case it blocks.
+# Python runs isolated (-I), so the project directory and PYTHON* variables never decide which tracekit runs.
+# In system mode (/etc/tracekit/client.json exists) only the root-owned runtime runs the hook; TRACEKIT_PYTHON and
+# PATH are ignored. If it cannot import tracekit the call is blocked, unless that config sets fail_mode open.
+# Otherwise the hook tries TRACEKIT_PYTHON, python3 and python, with the user site-packages directory added back
+# explicitly for `pip install --user` installs; if none has the package it says so on stderr and lets the call proceed.
 SYSTEM_CONFIG=/etc/tracekit/client.json
+SYSTEM_PYTHON=/opt/tracekit/bin/python
+if [ -e "$SYSTEM_CONFIG" ]; then
+  if "$SYSTEM_PYTHON" -I -c "import tracekit.hook" >/dev/null 2>&1; then
+    exec "$SYSTEM_PYTHON" -I -m tracekit.hook
+  fi
+  if grep -Eq '"fail_mode"[[:space:]]*:[[:space:]]*"open"' "$SYSTEM_CONFIG" 2>/dev/null; then
+    echo "tracekit plugin: $SYSTEM_PYTHON cannot import tracekit, so this call was NOT recorded. Re-run system init from a root-owned clone: sudo /usr/bin/python3 -m tracekit init --user <agent-user>" >&2
+    exit 0
+  fi
+  echo "tracekit plugin: $SYSTEM_PYTHON cannot import tracekit and $SYSTEM_CONFIG requires fail-closed, so this call was blocked. Re-run system init from a root-owned clone: sudo /usr/bin/python3 -m tracekit init --user <agent-user>" >&2
+  exit 2
+fi
 PATHS='import site, sys; site.addsitedir(site.getusersitepackages())'
 for py in "${TRACEKIT_PYTHON:-}" python3 python; do
   [ -n "$py" ] || continue
@@ -13,9 +26,5 @@ for py in "${TRACEKIT_PYTHON:-}" python3 python; do
     exec "$py" -I -c "$PATHS; from tracekit.hook import _entry; raise SystemExit(_entry())"
   fi
 done
-if [ -e "$SYSTEM_CONFIG" ] && ! grep -Eq '"fail_mode"[[:space:]]*:[[:space:]]*"open"' "$SYSTEM_CONFIG" 2>/dev/null; then
-  echo "tracekit plugin: the 'tracekit' Python package is not installed for python3 and $SYSTEM_CONFIG requires fail-closed, so this call was blocked. Run: pip install tracekit-ai" >&2
-  exit 2
-fi
 echo "tracekit plugin: the 'tracekit' Python package is not installed for python3, so this call was NOT recorded. Run: pip install tracekit-ai && tracekit init --dev --no-hooks" >&2
 exit 0
