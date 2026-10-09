@@ -26,7 +26,8 @@ from .daemon import trusted_file
 from .deploy import files
 
 OK, WARN, FAIL = "ok", "warn", "fail"
-NETWORK_FS = {"nfs", "nfs4", "cifs", "smb", "smb3", "smbfs", "afpfs", "webdav", "fuse", "fuseblk", "9p"}
+NETWORK_FS = {"nfs", "nfs4", "cifs", "smb", "smb3", "smbfs", "afpfs", "webdav", "fuse", "fuseblk", "9p", "macfuse",
+              "osxfuse"}
 MAX_SKEW_S = 300
 REINIT = "sudo /usr/bin/python3 -m tracekit init --v2 --user <agent-user>"
 
@@ -131,7 +132,7 @@ def _hooks(settings):
     """{tool event: [v2 hook entries]} of a Claude Code settings file."""
     hooks = (read_json(settings) or {}).get("hooks") or {}
     return {ev: [h for g in hooks.get(ev) or () if isinstance(g, dict) and install._hook_version(g) == "v2"
-                 for h in g.get("hooks", ())] for ev in install.TOOL_EVENTS}
+                 for h in g.get("hooks") or () if isinstance(h, dict)] for ev in install.TOOL_EVENTS}
 
 
 def v2_checks(config, profile="production", agent=None, settings=None, signer=None, opt=None, unit=None,
@@ -242,7 +243,7 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
     else:
         try:
             hooks = _hooks(settings)
-        except (OSError, ValueError, AttributeError) as e:
+        except (OSError, ValueError, AttributeError, TypeError) as e:   # the agent's own file: any shape
             hooks = None
             add("D-HOOKS-PRESENT", False, f"{settings}: {e}", hook_fix, bad=sev)
         if hooks is not None:
@@ -255,13 +256,14 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
                 stray = [c for c in cmds if c != install._hook_command(install.V2_HOOK, python=python)]
                 add("D-HOOKS-VENV", not stray, f"{len(stray)} hooks run another Python than {python}" if stray else
                     f"hooks run {python}", REINIT)
-            pre = [h.get("timeout", 60) for h in hooks["PreToolUse"]]
+            pre = [t if type(t) in (int, float) else 0 for t in (h.get("timeout", 60) for h in hooks["PreToolUse"])]
             if pre:
                 add("D-HOOKS-TIMEOUT", min(pre) >= APPROVAL_WAIT_S, f"PreToolUse timeout {min(pre)} s, approval wait "
                     f"{APPROVAL_WAIT_S} s", f"set the PreToolUse hook timeout to {install.HOOK_TIMEOUT['PreToolUse']}")
             if signer:
-                env = (read_json(settings).get("env") or {}).get("TRACEKIT_SIGNER")
-                add("D-SIGNER-ENV", env in (None, signer), f"TRACEKIT_SIGNER is {env}, not {signer}" if env not in
+                env = (read_json(settings) or {}).get("env")
+                env = env.get("TRACEKIT_SIGNER") if isinstance(env, dict) else None
+                add("D-SIGNER-ENV", env in (None, signer), f"TRACEKIT_SIGNER is {str(env)[:256]!r}, not {signer}" if env not in
                     (None, signer) else "TRACEKIT_SIGNER names the system socket or is unset",
                     f"remove env.TRACEKIT_SIGNER from {settings} (the hook refuses it and blocks every call)")
 

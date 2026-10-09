@@ -35,6 +35,24 @@ class E16(unittest.TestCase):
                 got = {r["id"]: r["status"] for r in e16.run_case(mutate)}
                 self.assertIn(got.get(want), ("warn", "fail"), name)
 
+    def test_malformed_agent_settings_are_results_not_crashes(self):
+        def bad(shape):
+            def mutate(L):
+                with open(L.settings) as f:
+                    s = json.load(f)
+                shape(s)
+                with open(L.settings, "w") as f:
+                    json.dump(s, f)
+            return mutate
+        for name, shape, want in (
+                ("timeout", lambda s: s["hooks"]["PreToolUse"][0]["hooks"][0].update(timeout="600"), "D-HOOKS-TIMEOUT"),
+                ("env", lambda s: s.update(env=["x"]), "D-SIGNER-ENV"),
+                ("hooks", lambda s: s["hooks"]["PreToolUse"][0].update(hooks=5), "D-HOOKS-PRESENT"),
+                ("entry", lambda s: s["hooks"]["PreToolUse"][0]["hooks"].append("x"), "D-HOOKS-PRESENT")):
+            with self.subTest(name), contextlib.redirect_stdout(io.StringIO()):
+                got = {r["id"]: r["status"] for r in e16.run_case(bad(shape))}
+                self.assertIn(want, got)
+
     def test_data_dir_of_the_agents_user_fails_the_boundary(self):
         def agent_is_me(L):
             L.kw["agent"] = types.SimpleNamespace(**dict(vars(e16.AGENT), pw_uid=os.getuid()))
