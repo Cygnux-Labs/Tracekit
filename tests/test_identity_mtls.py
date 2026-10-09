@@ -98,7 +98,8 @@ class TestMtls(unittest.TestCase):
         d = tmpdir(self)
         self.pki, self.other = Pki(d), Pki(d, "other-ca")
         cert, key = self.pki.issue("server")
-        self.port = serve(self, {"cert": cert, "key": key, "client_ca": self.pki.path, "authenticators": ["mtls"]}, echo)
+        self.port = serve(self, {"cert": cert, "key": key, "client_ca": {"example.org": self.pki.path},
+                                 "authenticators": ["mtls"]}, echo)
 
     def ctx(self, pki=None, sans=()):
         ctx = ssl.create_default_context(cafile=self.pki.path)
@@ -123,6 +124,25 @@ class TestMtls(unittest.TestCase):
                      [x509.UniformResourceIdentifier("spiffe://x/a"), x509.UniformResourceIdentifier("spiffe://x/b")]):
             out = post(self.port, {"method": "status"}, self.ctx(self.pki, sans))[1]
             self.assertEqual(out["error"]["code"], "unauthenticated", sans)
+
+
+    def test_each_trust_domain_only_from_its_own_ca(self):
+        cert, key = self.pki.issue("server2")
+        self.port = serve(self, {"cert": cert, "key": key, "authenticators": ["mtls"],
+                                 "client_ca": {"example.org": self.pki.path, "other.org": self.other.path}}, echo)
+        ok = post(self.port, {"method": "status"}, self.ctx(self.other, [x509.UniformResourceIdentifier("spiffe://other.org/a")]))
+        self.assertEqual(ok[1], {"scheme": "mtls", "subject": "spiffe://other.org/a"})
+        for pki, sid in ((self.other, "spiffe://example.org/a"), (self.pki, "spiffe://other.org/a"),
+                         (self.pki, "spiffe://unknown.org/a")):
+            out = post(self.port, {"method": "status"}, self.ctx(pki, [x509.UniformResourceIdentifier(sid)]))[1]
+            self.assertEqual(out["error"]["code"], "unauthenticated", sid)
+
+    def test_client_ca_is_a_trust_domain_map(self):
+        cert, key = self.pki.issue("server3")
+        for cas in (self.pki.path, {}, {"example.org": 1}):
+            with self.subTest(cas), self.assertRaises(ValueError):
+                tk_http.configure({"listen": "127.0.0.1:0", "cert": cert, "key": key, "client_ca": cas,
+                                   "authenticators": ["mtls"]})
 
 
 if __name__ == "__main__":

@@ -2,15 +2,23 @@
 # ported to the RE2 subset and to signer-side classes. Rule ids are kept where the meaning is the same.
 #
 # Shell rules without a field match each command's argv (wrappers, paths and quoting resolved by policy2/shell.py);
-# `field: command` matches the raw command line. File rules match the signer-normalised `path`. Rules stay
-# tripwires: the protection is the signer, its storage and the witnesses.
+# `field: command` matches the raw command line; `field: line` matches it and each line policy2/shell.py normalised
+# (quotes and escapes resolved, redirections kept). File rules match the signer-normalised `path` (and, with `..`, the lexically
+# normalised one). Rules stay tripwires: the protection is the signer, its storage and the witnesses.
 
 version: '2026.10-v2-1'
 description: coding agents on a laptop (Claude Code, Codex, Cursor, Gemini)
+# laptop: a tool the pack does not map is flagged, not held; server.yaml holds it for a person (ask)
 unknown_tools: flag
 
 tools:
   Bash: shell
+  run_shell_command: shell   # Gemini CLI
+  shell: shell               # Codex, OpenAI Agents ShellTool
+  local_shell: shell         # OpenAI Agents LocalShellTool
+  container.exec: shell      # OpenAI hosted container
+  run_terminal_cmd: shell    # Cursor
+  terminal: shell            # LangChain ShellTool
   Write: fs
   Edit: fs
   MultiEdit: fs
@@ -32,14 +40,15 @@ deny:
     rationale: An agent should never need root; escalation widens every other risk and would let it reach the signer.
   - id: TK-D002
     class: shell
-    field: command
+    field: line
     pattern: '(curl|wget)[^|;&]*\|\s*(sudo\s+)?(\S*/)?((ba|z|da)?sh|python3?|perl|ruby|node)\b|(ba|z)?sh\s+<\(\s*(curl|wget)|\$\(\s*(curl|wget)|\b(curl|wget)\b[^\n]*(&&|;)\s*(sudo\s+)?((ba|z|da)?sh\s+\S|\./\S|chmod\s+\+x[^\n]*(&&|;)\s*\./)|\b(exec|eval)\(\s*[A-Za-z_.]*urlopen'
     reason: running a downloaded script
     rationale: Remote code execution without review.
   - id: TK-D003
     class: shell
-    field: command
-    pattern: 'git\s+push\b.*(--force\b|-f\b|--force-with-lease|\s\+\S)'
+    field: line
+    # global options may come before `push` (git -C dir push)
+    pattern: 'git\s+(-[Cc]\s+\S+\s+|--?[A-Za-z][-A-Za-z]*(=\S*)?\s+){0,8}push\b.*(--force\b|-f\b|--force-with-lease|\s\+\S)'
     reason: force push
     rationale: Rewrites shared history.
   - id: TK-D004
@@ -49,26 +58,26 @@ deny:
     rationale: Irrecoverable data loss.
   - id: TK-D010
     class: shell
-    field: command
+    field: line
     # every .env variant, templates included: a whole command can name several files, so no `unless` here
     pattern: '(>>?|\btee\b(\s+-a)?)\s*\S*(\.env(\.[A-Za-z0-9._-]+)?|id_rsa|id_ed25519|authorized_keys|\.aws/credentials)(\s|$|[;&|)''"])|\b(cp|mv|install)\b[^\n|;&]*\s\S*(\.env(\.[A-Za-z0-9._-]+)?|id_rsa|id_ed25519|authorized_keys|\.aws/credentials)\s*($|[;&|)])'
     reason: writing to a credentials file from the shell
     rationale: The shell twin of TK-D005. Redirects, tee, cp and mv reach the same files the file-editing tools are blocked from.
   - id: TK-D011
     class: shell
-    field: command
+    field: line
     pattern: '\b(cat|tar|zip|base64|gzip)\b[^\n]*(\.ssh|id_rsa|id_ed25519|\.aws|\.netrc|/etc/shadow|/etc/passwd)[^\n]*\|\s*(curl|nc|ncat|socat|wget)\b|\b(scp|rsync|curl|wget)\b[^\n]*(\.ssh/|id_rsa|id_ed25519|\.aws/credentials|\.netrc|--post-file[ =]/etc/(passwd|shadow))'
     reason: sending credential files off the machine
     rationale: Keys and cloud credentials leaving the host are exfiltration. TK-D006 covers .env files.
   - id: TK-D006
     class: shell
-    field: command
+    field: line
     pattern: '\bcat\s+\S*\.env\b[^\n]*\|\s*(curl|wget|nc|ncat)\b|(curl|wget|http|nc|ncat|scp|rsync)\b[^\n]*(@\S*\.env\b|--data[-a-z]*[ =]@?\S*\.env\b|--upload-file\s+\S*\.env\b|--post-file[ =]\S*\.env\b|\s\S*\.env\s+\S+:|<\s*\S*\.env\b)'
     reason: uploading a secrets file
     rationale: Sending .env off the machine is exfiltration.
   - id: TK-D008
     class: shell
-    field: command
+    field: line
     pattern: '(\brm\b|\bunlink\b|\btruncate\b|\bshred\b|\bsed\s+(-[a-zA-Z]*\s+)*-i|\bperl\s+-[a-zA-Z]*i|\bmv\b|\bln\s+-[a-zA-Z]*f|\bdd\b[^\n]*\bof=|\btee\b|>|\bfind\b[^\n]*-(delete|exec\s+(rm|truncate|sed)))[^\n]*(\.claude/projects|\.codex/sessions|\.gemini/tmp|\.config/opencode)|\bfind\s[^\n]*(\.claude/projects|\.codex/sessions|\.gemini/tmp|\.config/opencode)[^\n]*-(delete|exec\s+(rm|truncate|sed|shred))'
     reason: modifying the agent harness's transcripts
     rationale: Transcripts are evidence; the agent has no reason to write them. Reading them is allowed.
@@ -93,17 +102,19 @@ deny:
   # --- harness self-protection ---
   - id: TK-D007
     class: shell
-    field: command
-    pattern: '/var/lib/tracekit|/etc/tracekit|/run/tracekit|\.tracekit-signer|\.tracekit-client|\btracekitd\b|tracekit\.(daemon|proxy|signer)\b|\btracekit\s+signer\b|\b(pkill|killall|kill)\b[^\n]*tracekit|\bsystemctl\s+(stop|disable|kill|mask)\s+tracekit|\blaunchctl\s+(bootout|unload|stop|remove|kill|disable)\b[^\n]*tracekit'
+    field: line
+    # the dev signer's data and runtime dirs (signer/service.py dev_data_dir, sdk/autospawn.py runtime_dir) and the
+    # installed packs too
+    pattern: '/var/lib/tracekit|/etc/tracekit|/run/tracekit|Library/Application Support/tracekit|\.local/share/tracekit|XDG_DATA_HOME\}?/tracekit|XDG_RUNTIME_DIR\}?/tracekit|AppData[/\\]Local[/\\]tracekit|LOCALAPPDATA%?[/\\]tracekit|/run/user/[0-9]+/tracekit|/tmp/(tracekit|tk)-[0-9]+|(site|dist)-packages/tracekit/policy2/packs|\.tracekit-signer|\.tracekit-client|\btracekitd\b|tracekit\.(daemon|proxy|signer)\b|\btracekit\s+signer\b|\b(pkill|killall|kill)\b[^\n]*tracekit|\bsystemctl\s+(stop|disable|kill|mask)\s+tracekit|\blaunchctl\s+(bootout|unload|stop|remove|kill|disable)\b[^\n]*tracekit'
     reason: touching Tracekit's own files or signer
     rationale: The audit trail must not be modified by the audited agent. Ownership already blocks this in system mode; the rule makes the attempt visible and blocks it in dev mode too.
   - id: TK-D013
     class: fs
     tool: Write|Edit|MultiEdit|NotebookEdit
     field: path
-    pattern: '(^|/)(etc/tracekit|var/lib/tracekit[^/]*|run/tracekit|\.tracekit-signer|\.tracekit-client)(/|$)'
+    pattern: '(^|/)(etc/tracekit|var/lib/tracekit[^/]*|run/tracekit|\.tracekit-signer|\.tracekit-client|Library/Application Support/tracekit|\.local/share/tracekit|run/user/[0-9]+/tracekit|tmp/(tracekit|tk)-[0-9]+|(site|dist)-packages/tracekit/policy2/packs)(/|$)|[/\\]AppData[/\\]Local[/\\]tracekit([/\\]|$)'
     reason: writing Tracekit's own files, signer state or policy
-    rationale: The file-editing twin of TK-D007; /etc/tracekit holds the signer config and policy.
+    rationale: The file-editing twin of TK-D007; /etc/tracekit holds the signer config and policy, the dev data dir its keys and store.
 
 flag:
   - id: TK-F001

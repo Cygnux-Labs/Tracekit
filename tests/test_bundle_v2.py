@@ -8,6 +8,8 @@ import os
 import random
 import shutil
 import struct
+import subprocess
+import sys
 import tempfile
 import unittest
 import zipfile
@@ -205,7 +207,9 @@ class TestVerifyV2(Case):
         rep, code = self.verify(out)
         self.assertEqual((code, rep.failures, rep.integrity), (0, [], "VERIFIED"), rep.checks)
         self.assertEqual(rep.assurance, f"witnessed; records ed25519; checkpoint ed25519 ({ORIGIN}); cosigned ed25519 "
-                                        f"by {WITNESS} (customer) at 2025-10-09T08:53:20Z")
+                                        f"by {WITNESS} (customer) at 2025-10-09T08:53:20Z; key retirements not proven "
+                                        "complete")
+        self.assertEqual(rep.warnings, ["keys"])   # one run, no run-set: a withheld key.retire would not show
         with zipfile.ZipFile(out) as z:
             names = set(z.namelist())
         self.assertFalse({n for n in names if n.endswith((".html", ".py", ".js"))})
@@ -320,16 +324,62 @@ class TestVerifyV2(Case):
         _, out = self.honest()
         rep, code = self.verify(self.mutate(out, edit=lambda f, m: m.update(verifier_min_version="99.0")))
         self.assertEqual((code, rep.integrity), (2, "UNVERIFIABLE (needs tracekit >= 99.0)"))
+        for bad in ("99.0\x1b[2J", "1.2.3.4", "v1", "", 4):
+            with self.subTest(bad):
+                rep, code = self.verify(self.mutate(out, edit=lambda f, m: m.update(verifier_min_version=bad)))
+                self.assertEqual((code, rep.integrity), (2, "UNUSABLE BUNDLE"))
+                self.assertNotIn("99.0", str(rep.checks))
+
+    def test_report_drops_control_characters(self):
+        rep, esc = v2.Report(), "a\x1b]0;x\x07\x1b[2J\x9bb\nc"
+        rep.check("break-glass approvals", False, esc, [esc], warn=True)
+        rep.integrity, rep.assurance = "FAILED", esc
+        buf = io.StringIO()
+        v2.print_report(rep, 1, buf)
+        self.assertEqual(buf.getvalue().count("a]0;x[2Jbc"), 3)
+        self.assertNotRegex(buf.getvalue(), r"[\x00-\x09\x0b-\x1f\x7f-\x9f]")
+
+    def cli(self, *args):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            return cli.main(["verify", *args]), out.getvalue(), err.getvalue()
 
     def test_cli_dispatches_on_format(self):
         _, out = self.honest()
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            code = cli.main(["verify", out, "--trust", self.trust])
+        code, stdout, _ = self.cli(out, "--trust", self.trust)
         self.assertEqual(code, 0)
-        self.assertIn("Integrity: VERIFIED.\nAssurance: witnessed;", buf.getvalue())
-        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-            self.assertEqual(cli.main(["verify", out]), 2)
+        self.assertIn("Integrity: VERIFIED.\nAssurance: witnessed;", stdout)
+        self.assertEqual(self.cli(out)[0], 2)
+        self.assertEqual(self.cli(out, "--trust", self.trust, "--strict")[0], 3)   # the keys warning
+
+    def test_cli_refuses_flags_of_the_other_format(self):
+        _, out = self.honest()
+        v1 = os.path.join(os.path.dirname(TESTS), "docs", "sample", "demo-run.tkb")
+        pubf = os.path.join(os.path.dirname(TESTS), "docs", "sample", "signer.pub")
+        cases = {
+            "--trust with a v1 bundle": (v1, "--trust", self.trust),
+            "--v1-ledger with a v1 bundle": (v1, "--v1-ledger", pubf, "--v1-key", pubf),
+            "--key with a v2 bundle": (out, "--trust", self.trust, "--key", pubf),
+            "--witness with a v2 bundle": (out, "--trust", self.trust, "--witness", "file:/nonexistent"),
+        }
+        for why, args in cases.items():
+            with self.subTest(why):
+                code, stdout, err = self.cli(*args)
+                self.assertEqual((code, stdout), (2, ""), err)
+        with self.subTest("a manifest that is not v2 is refused under --trust"):
+            code, stdout, _ = self.cli(self.mutate(out, edit=lambda f, m: m.update(format="tracekit.bundle.v1")),
+                                       "--trust", self.trust)
+            self.assertEqual((code, stdout), (2, ""))
+
+    def test_v1_verify_needs_only_the_standard_library(self):
+        v1 = os.path.join(os.path.dirname(TESTS), "docs", "sample", "demo-run.tkb")
+        code = ("import sys; sys.modules['rfc8785'] = None\n"
+                "from tracekit import cli\n"
+                f"sys.exit(cli.main(['verify', {v1!r}]))")
+        p = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                           cwd=os.path.dirname(TESTS))
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("VERIFIED", p.stdout)
 
 
 class TestMalformedInput(Case):

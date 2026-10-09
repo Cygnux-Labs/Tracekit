@@ -245,6 +245,36 @@ class SystemSigner(unittest.TestCase):
         self.assertEqual(self.client("/tmp/dev.sock", {"socket": "/var/lib/tracekit/tracekitd.sock"}).signer,
                          "/tmp/dev.sock")
 
+    def hook(self, env, sid="s1"):
+        from tracekit.integrations import claude_code
+        system = {"signer": os.path.join(self.tmp, "absent.sock")}
+        payload = {"hook_event_name": "PreToolUse", "session_id": sid, "tool_use_id": "t1", "tool_name": "Bash",
+                   "tool_input": {"command": "ls"}}
+        with mock.patch.dict(os.environ, dict(env, TRACEKIT_RUNTIME_DIR=self.tmp)), \
+                mock.patch("tracekit.client.system_config", return_value=system), \
+                mock.patch.object(claude_code, "system_config", return_value=system), \
+                mock.patch("sys.stdin", io.StringIO(json.dumps(payload))), contextlib.redirect_stderr(io.StringIO()):
+            if "TRACEKIT_SIGNER" not in env:
+                os.environ.pop("TRACEKIT_SIGNER", None)
+            return claude_code._entry()
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+
+    def test_hook_blocks_a_decoy_signer(self):
+        self.assertEqual(self.hook({"TRACEKIT_SIGNER": "/tmp/decoy.sock"}), 2)
+
+    def test_hook_is_fail_closed_whatever_the_state_says(self):
+        from tracekit.integrations import claude_code
+        with mock.patch.dict(os.environ, {"TRACEKIT_RUNTIME_DIR": self.tmp}):
+            path = claude_code._state("s1")
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w") as f:   # the agent's uid can write its own state
+                json.dump({"run_id": "r", "run_token": "x.y", "fail_modes": {"default": "open"}, "stream": "a",
+                           "seq": 0}, f)
+        self.assertEqual(self.hook({}), 2)
+
 
 class CliUninstall(unittest.TestCase):
     def test_purge_needs_v2(self):

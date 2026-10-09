@@ -6,6 +6,7 @@ import socket
 import threading
 import time
 import unittest
+import uuid
 
 import test_bundle_v2 as tb
 import test_signer_service as ts
@@ -52,7 +53,7 @@ class Signer(unittest.TestCase):
         return self.s.approval_request({"request_id": "a", **self.run, "tool_call_id": "tc-1"})["approval_id"]
 
     def decide(self, aid, who=APPROVER, decision="approve", **kw):
-        return self.s.call(who, "approval_decide", {"request_id": f"h{time.monotonic_ns()}", "approval_id": aid,
+        return self.s.call(who, "approval_decide", {"request_id": f"h{uuid.uuid4().hex}", "approval_id": aid,
                                                     "decision": decision, **kw})
 
     def refused(self, code, fn, *args, **kw):
@@ -62,7 +63,7 @@ class Signer(unittest.TestCase):
         return cm.exception
 
     def consume(self, args=PAY, tool="pay"):
-        return self.s.approval_consume({"request_id": f"c{time.monotonic_ns()}", **self.run, "tool_call_id": "tc-1",
+        return self.s.approval_consume({"request_id": f"c{uuid.uuid4().hex}", **self.run, "tool_call_id": "tc-1",
                                         "tool": tool, "args_source": "parsed", "args": args})
 
     def records(self, typ):

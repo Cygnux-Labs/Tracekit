@@ -89,7 +89,7 @@ With the v2 signer service (`tracekit signer serve`), the signer redacts itself,
   commitment needs that salt. A record's `binding_digest` is a sha256 over its published binding only.
 - **Reveal for one record.** `tracekit signer reveal --record <seq>` (the owner of the signer's keys only) prints the
   salt of that record. An auditor who holds the content can then recompute that record's commitments; the salt opens
-  no other call's records. A decision, its `approval.request` and any `approval.binding_mismatch` share one salt.
+  no other record. Every record has its own salt, so a reveal opens exactly one record.
   Verifying a bundle never needs a salt.
 
 ## What leaves the machine

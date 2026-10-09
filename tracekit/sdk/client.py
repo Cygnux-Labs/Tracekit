@@ -72,6 +72,8 @@ def connect(path, timeout=CONNECT_TIMEOUT_S, token=None):
     try:
         if path.startswith("tcp://"):
             host, _, port = path[len("tcp://"):].rpartition(":")
+            if host not in ("127.0.0.1", "::1", "localhost"):   # frames after the handshake are plaintext
+                raise SignerUnavailable(f"{path}: tcp:// signers must be on loopback (127.0.0.1, ::1 or localhost)")
             token = token or os.environ.get("TRACEKIT_SIGNER_TOKEN")
             if not token:
                 raise SignerUnavailable(f"{path}: tcp:// signers need TRACEKIT_SIGNER_TOKEN")
@@ -126,8 +128,11 @@ class _Https:
         """The answer frame; _ConnectionLost when the request may not have arrived, SignerUnavailable on a timeout."""
         headers = {"Content-Type": "application/json"}
         if self.token_file:
-            with open(self.token_file, encoding="utf-8") as f:
-                headers["Authorization"] = "Bearer " + f.read().strip()
+            try:
+                with open(self.token_file, encoding="utf-8") as f:
+                    headers["Authorization"] = "Bearer " + f.read().strip()
+            except OSError as e:
+                raise SignerUnavailable(f"cannot read the signer token file: {e}") from None
         if self.pid != os.getpid():   # a forked child: its own connections
             self.pid, self.local = os.getpid(), threading.local()
         conn = getattr(self.local, "conn", None)
@@ -217,6 +222,9 @@ class Client:
                 raise SignerUnavailable(f"no answer from the signer within {timeout:g}s") from None
             if "error" in reply:
                 e = reply["error"]
+                if e.get("code") in ("run_closed", "unknown_run"):   # no more events for it: drop its counter
+                    with self._lock:
+                        self._seqs.pop(req.get("run_id"), None)
                 raise RPCError(e.get("code"), e.get("message", ""), e.get("retry_after_ms"))
             return reply
         raise SignerUnavailable(f"lost the connection to the signer {RETRIES} times")
@@ -231,6 +239,8 @@ class Client:
         """Fills in `stream` and `client_seq` and validates `req`; counts the event once `connect()` has not raised.
         Call under self._lock."""
         if self._pid != os.getpid():   # new client, or a forked child: its own stream and connection
+            # lean: one counter per run until it is closed or refused as closed; a run abandoned without either keeps
+            # its entry for the client's life
             self._pid, self._conn, self.stream, self._seqs = os.getpid(), None, _new_id(), {}
         run_id = req.get("run_id")
         fresh = method in _EVENT_METHODS and "client_seq" not in req
@@ -305,6 +315,13 @@ class Client:
             conn.sock.close()
             while conn.pending:
                 conn.pending.popleft().set_exception(_ConnectionLost())
+
+
+def fail_open(fail_modes, tool_class=None):
+    """Whether a call of `tool_class` may run while the signer cannot be reached: the class's entry in register_run's
+    `fail_modes`, else their `default`, else closed. A signer refusal is never a reason to fail open."""
+    modes = fail_modes or {}
+    return modes.get(tool_class, modes.get("default", "closed")) == "open"
 
 
 def _validate(method, req):
