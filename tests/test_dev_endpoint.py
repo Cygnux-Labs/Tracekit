@@ -45,14 +45,14 @@ class ReplaceRetry(unittest.TestCase):
                 raise PermissionError(5, "Access is denied")
         with mock.patch.object(files.os, "name", "nt"), mock.patch.object(files.os, "replace", flaky), \
                 mock.patch.object(files.time, "sleep"):
-            files._replace_retrying("a", "b")
+            files.replace_retrying("a", "b")
         self.assertEqual(len(calls), 3)
 
     def test_no_retry_off_windows(self):
         with mock.patch.object(files.os, "name", "posix"), \
                 mock.patch.object(files.os, "replace", side_effect=PermissionError(13, "denied")):
             with self.assertRaises(PermissionError):
-                files._replace_retrying("a", "b")
+                files.replace_retrying("a", "b")
 
 
 if __name__ == "__main__":
