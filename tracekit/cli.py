@@ -104,7 +104,7 @@ def main(argv=None):
     p.add_argument("rest", nargs=argparse.REMAINDER)
     p = sub.add_parser("witness", help="run a witness log: `witness init|token|serve` (append-only, Merkle tree, signed heads)", add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
-    p = sub.add_parser("signer", help="the v2 signer service: `signer serve|fsck --config signer.yaml`", add_help=False)
+    p = sub.add_parser("signer", help="the v2 signer service: `signer serve --dev`, `signer serve|fsck --config signer.yaml`", add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
     p = sub.add_parser("otel", help="OpenTelemetry receiver: `otel serve` records agent spans sent over OTLP/HTTP", add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)

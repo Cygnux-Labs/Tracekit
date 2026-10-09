@@ -6,8 +6,8 @@
 It follows the RPC contract (schemas, error codes, idempotency, run tokens, client_seq gaps) but signs nothing,
 keeps nothing on disk and has one caller identity, so approvals are always self-approvals. Ids are deterministic.
 
-`serve_fake(runtime_dir)` serves one as a dev signer the way tracekit/sdk/autospawn.py expects; run it as
-`TRACEKIT_DEV_SIGNER_CMD="python -m tracekit.testing"` to have clients auto-spawn it.
+`serve_fake(runtime_dir)` serves one as a dev signer the way tracekit/sdk/autospawn.py expects; to have clients
+auto-spawn it, set `tracekit.sdk.autospawn.SIGNER_ARGV = [sys.executable, "-m", "tracekit.testing"]` in your test.
 """
 import argparse
 import copy
@@ -15,17 +15,13 @@ import hashlib
 import hmac
 import json
 import os
-import pathlib
-import signal
 import sys
 import threading
-import time
 
 import rfc8785
 
 from tracekit import __version__
 from tracekit.format.canon import StrictJSONError, event_hash, loads_strict
-from tracekit.locking import lock_file
 from tracekit.signer import rpc_schema
 from tracekit.signer.rpc_schema import RPCError
 
@@ -233,54 +229,19 @@ class FakeSigner:
 
 def serve_fake(runtime_dir, signer=None, proto=(rpc_schema.RPC_VERSION, rpc_schema.RPC_VERSION), version=__version__,
                idle_s=900):
-    """Serve `signer` (a new FakeSigner by default) in `runtime_dir` until SIGTERM or `idle_s` seconds without a
-    frame (0: never). Follows decision S3: lock signer.lock first (give up after 1 s), then replace the socket, then
-    publish endpoint.json; unpublish before exiting. Call it from the main thread; returns an exit code."""
-    from tracekit.deploy import files
-    from tracekit.sdk import autospawn
-    from tracekit.transport.unix import UnixServer
+    """Serve `signer` (a new FakeSigner by default) as the dev signer of `runtime_dir`, with the real dev signer's
+    lifecycle (tracekit.signer.service.serve_dev). Call it from the main thread; returns an exit code."""
+    from tracekit.signer.service import serve_dev
 
-    lock = open(os.path.join(runtime_dir, autospawn.LOCK), "a")
-    deadline = time.monotonic() + 1
-    while True:
-        try:
-            lock_file(lock, blocking=False)
-            break
-        except OSError:
-            if time.monotonic() > deadline:
-                print("LOST: another dev signer holds signer.lock", file=sys.stderr)
-                return 1
-            time.sleep(0.05)
-    sock, endpoint = os.path.join(runtime_dir, autospawn.SOCK), os.path.join(runtime_dir, autospawn.ENDPOINT)
-    for p in (sock, endpoint):
-        pathlib.Path(p).unlink(missing_ok=True)
-    signer, mutex, last = signer or FakeSigner(), threading.Lock(), [time.monotonic()]
-    hello = {"proto": list(proto), "version": version, "pid": os.getpid()}
+    signer, mutex = signer or FakeSigner(), threading.Lock()
 
     def handle(identity, frame):
-        last[0] = time.monotonic()
         method = frame.pop("method", None)
-        if method == "hello":
-            return hello
         if method not in rpc_schema.REQUESTS:
             raise RPCError("invalid_request", f"unknown method {str(method)[:64]}")
         with mutex:
             return getattr(signer, method)(frame)
-
-    server = UnixServer(sock, handle)
-    files.write_json(endpoint, hello)
-    stop = threading.Event()
-    signal.signal(signal.SIGTERM, lambda *_: stop.set())
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    print(f"SERVING pid {os.getpid()}", file=sys.stderr, flush=True)
-    while not stop.wait(0.1):
-        if idle_s and time.monotonic() - last[0] > idle_s:
-            break
-    for p in (endpoint, sock):
-        pathlib.Path(p).unlink(missing_ok=True)
-    server.shutdown()
-    server.server_close()
-    return 0
+    return serve_dev(runtime_dir, lambda: (handle, lambda: None), proto, version, idle_s)
 
 
 if __name__ == "__main__":
