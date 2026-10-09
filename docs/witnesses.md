@@ -92,3 +92,54 @@ Exit codes: `0` verified, `1` failed, `2` unusable bundle, `3` warnings with `--
 ## Choosing one
 
 Put the witness where the agent host has **append-only** access at most: a separate GitHub repo with branch protection written by a deploy key, or a machine you control. A witness the attacker can also rewrite adds nothing against A4 (root on the agent host).
+
+## v2: C2SP tlog-witnesses
+
+The v2 signer (`tracekit signer serve`) signs C2SP checkpoint notes of its record log and of each tenant's registry
+log, and publishes every new note to the witnesses in signer.yaml with the [tlog-witness](https://c2sp.org/tlog-witness)
+`add-checkpoint` call. Each witness's cosignature line is verified and added to the stored note (the note's body never
+changes), so bundles exported afterwards carry it.
+
+```yaml
+# signer.yaml
+witnesses:
+  - {url: "https://witness.example.org", vkey: "witness.example.org/w1+1234abcd+BA...", class: customer}
+contact: ops@example.org              # the contact line of the logs list
+metrics: {listen: 0.0.0.0:9464, allow_remote: true}   # serves GET /logs/v0 to the witness host
+```
+
+- `vkey` is the witness's cosignature (type 0x04) verifier key; its name names the witness in metrics and gaps.
+  `class` (`public`, `customer`, `tracekit` or `operator`) is copied into the trust config by `tracekit signer trust`.
+- Witnesses get the note text and the log's Ed25519 signature only, in at most 10 KiB. A `409` makes the signer resend
+  from the witness's size. Failures are retried with backoff, and the retry state is kept in the store
+  (`witness-queue.json`), so a restart resumes it. A log a witness has not cosigned for 5 minutes gets one signed
+  `capture.gap{kind: witness_failed}` per outage. Metrics: `tracekit_signer_witness_lag_records`,
+  `tracekit_signer_witness_publish_failures_total` (docs/observability.md).
+- At startup the signer asks each witness for the size it last cosigned; a local log behind it is a rollback.
+- The signer's logs list, in the witness network's `logs/v0` format (vkey, qpd, contact per log), is at
+  `GET /logs/v0` on the metrics port. A new tenant adds a registry log to it.
+
+**omniwitness** (shipped; Apache-2.0, built from a pinned commit of github.com/transparency-dev/witness). Its key file
+is a note signing key, `PRIVATE+KEY+<name>+<key id>+<base64(0x01 ‖ Ed25519 seed)>`; it registers the signer's logs by
+polling the list:
+
+```bash
+omniwitness --listen=:8080 --private_key_path=/etc/omniwitness/key --db_file=/var/lib/omniwitness/w.db \
+  --public_witness_config_url=http://signer.internal:9464/logs/v0 --public_witness_config_poll_interval=1m \
+  --rate_limit=10
+```
+
+**litewitness** (supported; BSD-3-Clause, `go install filippo.io/torchwood/cmd/litewitness@v0.10.0`). Its key lives in
+an ssh-agent on a dedicated socket. Register the logs from the list with `witnessctl pull-logs` (from cron, so new
+tenants' registry logs are added):
+
+```bash
+litewitness -ssh-agent /run/litewitness/agent.sock -key SHA256:<key fingerprint> -name witness.example.org/w1 \
+  -db /var/lib/litewitness/w.db -listen :7380
+witnessctl pull-logs -db /var/lib/litewitness/w.db -source http://signer.internal:9464/logs/v0
+```
+
+litewitness refuses bodies over 10 KiB; omniwitness accepts 16 KiB. Verify with a trust config that pins the witness:
+`tracekit signer trust -o trust.json` pins every configured witness with its class, and `tracekit verify` reports
+`Assurance: witnessed` once a non-`operator` pinned witness has cosigned the bundle's checkpoint. A signature line from
+a key the trust config does not pin is ignored; a pinned witness's bad cosignature fails the bundle.

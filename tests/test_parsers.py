@@ -99,6 +99,30 @@ class Rules(unittest.TestCase):
             self.assertEqual(rpc_schema.validate(schema["tool_uses"], out["tool_uses"]), [], raw)
             self.assertEqual(rpc_schema.validate(schema["tool_results_sent"], out["tool_results_sent"]), [], raw)
 
+    def test_hosted_shell_and_tool_search_are_run_by_the_provider(self):
+        out = parsers.parse("openai:responses", {"id": "resp_1", "output": [
+            {"type": "shell_call", "call_id": "sh_1", "action": {"commands": ["ls"]},
+             "environment": {"type": "container_reference", "container_id": "c"}},
+            {"type": "shell_call", "call_id": "sh_2", "action": {"commands": ["ls"]}},
+            {"type": "tool_search_call", "call_id": "ts_1", "execution": "server", "arguments": {"q": "x"}},
+            {"type": "tool_search_call", "call_id": "ts_2", "execution": "client", "arguments": {"q": "x"}}]})
+        self.assertEqual([(t["id"], t["executed_by"]) for t in out["tool_uses"]],
+                         [("sh_1", "provider"), ("sh_2", "client"), ("ts_1", "provider"), ("ts_2", "client")])
+
+    def test_a_missing_call_id_gets_a_synthetic_one(self):
+        out = parsers.parse("openai:responses", {"id": "resp_1", "output": [
+            {"type": "function_call", "name": "t", "arguments": "{}"}]})
+        self.assertEqual(out["tool_uses"][0]["id"], "openai:resp_1:0")
+        self.assertTrue(out["tool_uses"][0]["id_synthetic"])
+        resp = {"candidates": [{"content": {"parts": [{"function_call": {"name": "t", "args": {}}}]}}]}
+        a, b = (parsers.parse("gemini:generate_content", resp)["tool_uses"][0]["id"] for _ in range(2))
+        self.assertNotEqual(a, b)   # no response id: never the same synthetic id twice
+        for kind, out in (("openai:responses", out),
+                          ("gemini:generate_content", parsers.parse("gemini:generate_content", resp))):
+            self.assertNotIn("None", [t["id"] for t in out["tool_uses"]])
+            self.assertEqual(rpc_schema.validate(rpc_schema.REQUESTS["model_event"]["properties"]["tool_uses"],
+                                                 out["tool_uses"]), [], kind)
+
     def test_streamed_chat_custom_tool_call(self):
         # the SDK's chunk type has no custom tool calls yet, so this shape is a dict only
         s = parsers.Stream("openai:chat")

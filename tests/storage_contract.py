@@ -140,10 +140,18 @@ class StorageContract:
         s.checkpoint_put(1, note(1), beta)
         with self.assertRaises(ValueError):
             s.checkpoint_put(3, note(3), acme)
+        s.checkpoint_put(5, note(5) + "— w.example/w c2ln\n", acme)   # cosigned: replaces the note of its size
         s = self.reopen(s)
-        self.assertEqual((s.checkpoint_latest(acme), s.checkpoint_latest(beta)), ((5, note(5)), (1, note(1))))
+        self.assertEqual((s.checkpoint_latest(acme), s.checkpoint_latest(beta)),
+                         ((5, note(5) + "— w.example/w c2ln\n"), (1, note(1))))
         self.assertEqual((s.checkpoint_at(acme, 2), s.checkpoint_at(acme, 3)), (note(2), None))
         self.assertIsNone(s.checkpoint_latest())   # the record tree's notes are apart
+
+    def test_witness_queue_round_trip(self):
+        s = self.store()
+        self.assertEqual(s.witness_queue(), {})
+        s.witness_queue_put({"w": {"records": {"size": 3}}})
+        self.assertEqual(self.reopen(s).witness_queue(), {"w": {"records": {"size": 3}}})
 
     def test_merkle_roots_match_merkle_tiles(self):
         s, c = self.store(), Chain()

@@ -2,8 +2,8 @@
 
     metrics: {listen: 127.0.0.1:9464}        # in signer.yaml; a non-loopback listen needs allow_remote: true
 
-Label values come only from signer-defined sets (record types, gap kinds, refusal codes, verdicts), never a run id,
-tenant or identity; past MAX_VALUES a label value is counted as "other", so the series count stays bounded.
+Label values come only from signer-defined sets (record types, gap kinds, refusal codes, verdicts, the witness names
+of signer.yaml), never a run id, tenant or identity; past MAX_VALUES a label value is counted as "other", so the series count stays bounded.
 docs/observability.md lists every metric.
 """
 import ipaddress
@@ -44,13 +44,17 @@ class Counter:
 
 
 class Gauge:
-    """Read at scrape time from `fn()`."""
+    """Read at scrape time from `fn()`: a number, or with a `label` a {label value: number} dict."""
 
-    def __init__(self, name, help, fn):
-        self.name, self.help, self.type, self.fn = name, help, "gauge", fn
+    def __init__(self, name, help, fn, label=None):
+        self.name, self.help, self.type, self.fn, self.label = name, help, "gauge", fn, label
 
     def samples(self):
-        yield self.name, "", self.fn()
+        if not self.label:
+            yield self.name, "", self.fn()
+            return
+        for value, n in sorted(self.fn().items()):
+            yield self.name, _labels(**{self.label: value}), n
 
 
 class Histogram:
@@ -95,7 +99,10 @@ class SignerMetrics:
                                                  "Policy decisions that hit the regex timeout (denied)."))
         self.checkpoints = self.add(Counter("tracekit_signer_checkpoints_total",
                                             "Signed checkpoint notes of the record tree written."))
-        # lean: no witness lag until checkpoints are published to witnesses (M1b-02); add it with that
+        self.witness_failures = self.add(Counter("tracekit_signer_witness_publish_failures_total",
+                                                 "Checkpoint notes a witness did not cosign, by witness.", "witness"))
+        self.loop_errors = self.add(Counter("tracekit_signer_loop_errors_total",
+                                            "Unexpected errors of a background loop, which carried on, by loop.", "loop"))
 
     def add(self, m):
         self.metrics.append(m)
@@ -128,9 +135,9 @@ def _loopback(host):
         return False
 
 
-def server(cfg, registry):
-    """A bound, not yet started, HTTP server answering only `GET /metrics` with `registry`. `cfg` is the `metrics`
-    section of signer.yaml. Start it with serve_forever(); stop it with shutdown() and server_close()."""
+def server(cfg, registry, logs=None):
+    """A bound, not yet started, HTTP server answering only `GET /metrics` with `registry`, and `GET /logs/v0` with
+    `logs()` (the signer's logs list) when given. `cfg` is the `metrics` section of signer.yaml. Start it with serve_forever(); stop it with shutdown() and server_close()."""
     if not isinstance(cfg, dict) or set(cfg) - {"listen", "allow_remote"}:
         raise ValueError("metrics: takes listen and allow_remote")
     host, _, port = str(cfg.get("listen", DEFAULT_LISTEN)).rpartition(":")
@@ -139,12 +146,16 @@ def server(cfg, registry):
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
-            if self.path.split("?")[0] != "/metrics":
+            path = self.path.split("?")[0]
+            if path == "/metrics":
+                body, typ = registry.render().encode("utf-8"), CONTENT_TYPE
+            elif path == "/logs/v0" and logs:
+                body, typ = logs().encode("utf-8"), "text/plain; charset=utf-8"
+            else:
                 self.send_error(404)
                 return
-            body = registry.render().encode("utf-8")
             self.send_response(200)
-            self.send_header("Content-Type", CONTENT_TYPE)
+            self.send_header("Content-Type", typ)
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
