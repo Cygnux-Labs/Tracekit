@@ -124,15 +124,21 @@ class Tx:
 
 
 class RecordLog:
-    def __init__(self, storage, open_storage, sign, quotas, salt):
+    def __init__(self, storage, open_storage, sign, quotas, salt, bridge=None):
         """`storage` is open (and holds its lock); `open_storage()` reopens it after a disk error. `sign` is a
-        format.records.RecordSigner; `salt` the secret the registry's per-tenant salts derive from."""
+        format.records.RecordSigner; `salt` the secret the registry's per-tenant salts derive from. `bridge`: the v1
+        ledger this log continues (signer.epoch `bridge`), refused unless the log is empty or already starts with it."""
         self.storage, self.open_storage, self.sign, self.quotas, self.salt = storage, open_storage, sign, quotas, salt
+        self.bridge = bridge
         self.log_id = None
         self.done = OrderedDict()   # (scheme, subject, request_id) -> (payload digest, response)
         self.refuse_writes = None   # a reason to answer client writes `unavailable`, e.g. an unacknowledged rollback
         self.down, self._last_try = None, 0.0
         self._replay()
+        if bridge and self.head["seq"]:
+            first = next(storage.iter_range(0, 1))["event"]
+            if first["type"] != "signer.epoch" or first["data"].get("bridge") != bridge:
+                raise ValueError("the v2 store already has records: the format bridge must be its first record")
         self._q = queue.SimpleQueue()
         self._writer = threading.Thread(target=self._loop, name="tracekit-signer-writer", daemon=True)
         self._writer.start()
@@ -207,7 +213,8 @@ class RecordLog:
     def _startup_records(self, tx):
         if self.head["seq"] == 0:
             key = {"kid": self.sign.kid, "alg": self.sign.alg, "spki": base64.b64encode(self.sign.spki).decode("ascii")}
-            tx.emit(self.signer_run(tx), "signer.epoch", {"keys": [key]}, source="signer")
+            tx.emit(self.signer_run(tx), "signer.epoch", {"keys": [key], **({"bridge": self.bridge} if self.bridge else {})},
+                    source="signer")
         for t in self.storage.torn:
             tx.gap("signer_unavailable", f"torn last line of {t['log']} set aside to {t['path']} "
                                          f"({t['length']} bytes at offset {t['offset']}): a write cut short")
