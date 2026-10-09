@@ -111,7 +111,7 @@ def build(path, seen=()):
     """Return (effective_policy, errors). `extends` names a relative file; the result records its policy_hash."""
     try:
         pol = _read(path)
-    except (OSError, ValueError) as e:
+    except Exception as e:   # OSError, JSON or YAML syntax: all reported as lint errors
         return {}, [f"{path}: {e}"]
     if not isinstance(pol, dict):
         return {}, [f"{path}: not a mapping"]
@@ -127,17 +127,17 @@ def build(path, seen=()):
     if base is not None:
         if not isinstance(base, str) or posixpath.isabs(base) or ntpath.isabs(base) or base.startswith("~"):
             errors.append(f"{path}: extends must be a relative path; the compiled policy names the parent by hash")
-        elif os.path.join(os.path.dirname(path), base) in seen + (path,):
+        elif os.path.realpath(os.path.join(os.path.dirname(path), base)) in seen + (os.path.realpath(path),):
             errors.append(f"{path}: extends loop at {base}")
         else:
-            parent, perr = build(os.path.join(os.path.dirname(path), base), seen + (path,))
+            parent, perr = build(os.path.join(os.path.dirname(path), base), seen + (os.path.realpath(path),))
             errors += perr
             own = {r.get("id") for sec in SECTIONS for r in pol.get(sec, []) if isinstance(r, dict)}
             merged = {k: v for k, v in parent.items() if k not in SECTIONS + ("extends",)}
             merged.update({k: v for k, v in pol.items() if k not in SECTIONS})
             merged["tools"] = {**parent.get("tools", {}), **pol.get("tools", {})}
             for sec in SECTIONS:
-                merged[sec] = [r for r in parent.get(sec, []) if r.get("id") not in own] + pol.get(sec, [])
+                merged[sec] = [r for r in parent.get(sec, []) if isinstance(r, dict) and r.get("id") not in own] + pol.get(sec, [])
             merged["extends"] = policy_hash(parent)
             pol = merged
     return pol, errors + _lint(pol, path)
