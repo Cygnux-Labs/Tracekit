@@ -243,6 +243,8 @@ class Publisher(unittest.TestCase):
         self.finished_run()
         self.s.checkpoint()
         self.assertTrue(wait_for(lambda: len(self.w.bodies) > sent, 5))
+        attempts = lambda: self.s.log.storage.witness_queue().get(NAME, {}).get(RECORDS, {}).get("attempts", 0)  # noqa: E731
+        self.assertTrue(wait_for(lambda: attempts() >= 1, 10))   # the failure recorded, not only the request sent
         self.s.close()
         state = self.s.log.storage.witness_queue()[NAME][RECORDS]
         self.assertGreaterEqual(state["attempts"], 1)
@@ -254,7 +256,8 @@ class Publisher(unittest.TestCase):
         heads = [b.decode().split("\n") for b in self.w.bodies[sent:]]   # old, ..., "", origin, size: past the startup check
         self.assertEqual([h[0] for h in heads if h[h.index("") + 1:h.index("") + 3] != [ORIGIN, "0"]
                           and h[h.index("") + 1] == ORIGIN][0], f"old {cosigned}")
-        self.assertEqual(self.s.log.storage.witness_queue()[NAME][RECORDS]["attempts"], 0)
+        # the cosignature is merged before the queue records the success: wait for it
+        self.assertTrue(wait_for(lambda: self.s.log.storage.witness_queue()[NAME][RECORDS]["attempts"] == 0, 10))
 
     def test_witness_down_gets_one_gap_then_catches_up(self):
         port = self.w.server.server_address[1]
@@ -263,7 +266,7 @@ class Publisher(unittest.TestCase):
             self.finished_run()
             self.s.checkpoint()
             gaps = lambda: [r for r in records(self.dir) if r["event"]["type"] == "capture.gap"]   # noqa: E731
-            self.assertTrue(wait_for(gaps, 5))
+            self.assertTrue(wait_for(lambda: len(gaps()) == 2, 15))   # one per log (slow runners need the time)
             time.sleep(0.5)   # more failed retries, still one gap per log
             self.assertEqual([g["event"]["data"]["kind"] for g in gaps()], ["witness_failed"] * 2)
             self.assertEqual(sorted(g["event"]["data"]["reason"].split(" ")[5] for g in gaps()), sorted(self.w.logs))
@@ -304,8 +307,9 @@ class Publisher(unittest.TestCase):
 
     def test_logs_list(self):
         self.finished_run()
-        servers = svc.serve({"socket": os.path.join(self.dir, "s.sock"), "metrics": {"listen": "127.0.0.1:0"}},
-                            self.s)
+        transport = ({"socket": os.path.join(self.dir, "s.sock")} if hasattr(socket, "AF_UNIX")
+                     else {"tcp_endpoint": os.path.join(self.dir, "endpoint.json")})   # Windows: no Unix sockets
+        servers = svc.serve({**transport, "metrics": {"listen": "127.0.0.1:0"}}, self.s)
         for x in servers:
             self.addCleanup(x.server_close)
             self.addCleanup(x.shutdown)

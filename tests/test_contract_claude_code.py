@@ -43,8 +43,7 @@ class Driver:
         case.addCleanup(self.client.close)
 
     def run(self):
-        with open(claude_code._state("s1")) as f:
-            st = json.load(f)
+        st = claude_code._load(claude_code._state("s1"))   # retries while a hook replaces it (Windows)
         return {"run_id": st["run_id"], "run_token": st["run_token"]}
 
     def hook(self, event, tcid, tool, args, **fields):
