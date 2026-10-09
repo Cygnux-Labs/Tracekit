@@ -69,7 +69,7 @@ class RunSet(unittest.TestCase):
 
     def assert_incomplete(self, path, why):
         code, rep, line = self.check(path, "run-set")
-        self.assertEqual((code, rep.integrity, line["detail"]), (1, "FAILED", "INCOMPLETE"), rep.checks)
+        self.assertEqual((code, rep.integrity, line["detail"].split(",")[0]), (1, "FAILED", "INCOMPLETE"), rep.checks)
         self.assertIn(why, str(line["problems"]))
 
     def mutate(self, src, edit):
@@ -91,7 +91,7 @@ class TestRunSet(RunSet):
         out, runs = self.honest()
         code, rep, line = self.check(out, "run-set")
         self.assertEqual((code, rep.integrity), (0, "VERIFIED"), rep.checks)
-        self.assertEqual(line["detail"], "COMPLETE (3 runs registered, 2 final, 1 open)")
+        self.assertEqual(line["detail"], "COMPLETE, registry 0..5 (3 runs registered, 2 final, 1 open)")
         self.assertEqual(rep.warnings, ["log tail"])   # the log is still open: its tail is unproven
         with zipfile.ZipFile(out) as z:
             blob = b"".join(z.read(n) for n in z.namelist())
@@ -164,10 +164,51 @@ class TestRunSet(RunSet):
         self.assertEqual((code, line["status"]), (1, "fail"), rep.checks)
         self.assertIn("key.retire withheld", str(line["problems"]))
 
-        # a per-run bundle without a run-set behaves as before: it cannot tell
+        # a per-run bundle without a run-set cannot tell, and says so
         st, single = self.s.log.storage, os.path.join(self.dir, "one.tkb")
         export(st, "acme", a["run_id"], st.checkpoint_latest()[1], single)
-        self.assertEqual(self.check(self.mutate(single, withhold), "keys")[0], 0)
+        for path in (single, self.mutate(single, withhold)):
+            code, rep, _ = self.check(path, "keys")
+            self.assertEqual((code, rep.warnings), (0, ["keys"]), rep.checks)
+            self.assertIn({"check": "keys", "status": "warn", "detail": "retirements not proven complete"},
+                          [{k: c[k] for k in ("check", "status", "detail")} for c in rep.checks])
+            self.assertTrue(rep.assurance.endswith("; key retirements not proven complete"), rep.assurance)
+
+    def test_empty_range_is_incomplete(self):
+        out, _ = self.honest()
+
+        def empty(files, manifest):
+            rs = json.loads(files["registry/run-set.json"])
+            rs.update({"to": 0, "leaves": []})
+            files["registry/run-set.json"] = json.dumps(rs).encode()
+        self.assert_incomplete(self.mutate(out, empty), "bad registry range 0..0")
+        self.assertEqual(self.check(self.mutate(out, empty), "run-set")[2]["detail"], "INCOMPLETE, registry 0..0")
+
+    def test_only_the_selected_run_may_be_outside_the_range(self):
+        x, y = self.register(), self.register()
+        self.finish(x, y)
+        self.s.checkpoint()
+        n1 = self.registry_note()[0]
+        self.finish(self.register())
+        self.s.checkpoint()
+        n2 = self.registry_note()[0]
+        out = self.export(run_set=(n1, n2), run_id=x["run_id"])
+        code, rep, line = self.check(out, "run-set")
+        self.assertEqual((code, line["status"]), (0, "pass"), rep.checks)
+        other = self.export(run_set=(n1, n2), run_id=y["run_id"], name="y.tkb")
+        with zipfile.ZipFile(other) as z:
+            y_run = run_name("acme", y["run_id"])
+            y_files = {y_run: z.read(y_run)}
+            y_proofs = json.loads(z.read("proofs/records.json"))
+
+        def add_y(files, manifest):
+            proofs = json.loads(files["proofs/records.json"])
+            self.assertEqual(proofs["tree_size"], y_proofs["tree_size"])
+            proofs["inclusion"].update(y_proofs["inclusion"])
+            files["proofs/records.json"] = json.dumps(proofs).encode()
+            files.update(y_files)
+            manifest["files"].update(dict.fromkeys(y_files, ""))
+        self.assert_incomplete(self.mutate(out, add_y), "only the selected run may be in no leaf")
 
     def test_registry_notes_grow_survive_restart_and_are_consistent(self):
         self.finish(self.register())
@@ -191,7 +232,8 @@ class TestRunSet(RunSet):
 
         out = self.export(run_set=(n1, n2))
         code, rep, line = self.check(out, "run-set")
-        self.assertEqual((code, line["detail"]), (0, "COMPLETE (2 runs registered, 2 final, 0 open)"), rep.checks)
+        self.assertEqual((code, line["detail"]), (0, "COMPLETE, registry 2..6 (2 runs registered, 2 final, 0 open)"), rep.checks)
+        self.assertIn("keys", rep.warnings)   # the range starts after registry size 0: retirements before it unseen
 
         def bad_proof(files, manifest):
             rs = json.loads(files["registry/run-set.json"])
