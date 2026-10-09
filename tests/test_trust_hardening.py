@@ -23,7 +23,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 from tracekit import autotrace, bridge, client, hook, migrate, policy  # noqa: E402
 from tracekit.core import GENESIS, SCHEMA_VERSION, canon, new_id, now_ts  # noqa: E402
-from factories import DaemonCase, make_signer, run_start, tool_call  # noqa: E402
+from factories import DaemonCase, ev, ledger_records, make_signer, run_start, tool_call  # noqa: E402
 
 AGENT_UID, OTHER_UID = 1001, 1002
 
@@ -244,6 +244,15 @@ class Approvals(unittest.TestCase):
         r = s.handle({"op": "approval_request", "run_id": "late", "tool_use_id": "t1", "timeout_s": 30}, AGENT_UID, 999999)
         self.assertTrue(r["ok"], r)
         self.assertFalse(s.handle({"op": "append", "cseq": 1, "event": tool_call("t2", run="late")}, OTHER_UID, 1)["ok"])
+
+    def test_every_user_can_record_gaps_in_the_unattributed_run(self):
+        s = self.signer()
+        gap = ev("capture.gap", {"reason": "hook payload has no session_id", "kind": "missing_ids"}, "_unattributed")
+        for uid in (AGENT_UID, OTHER_UID):
+            self.assertTrue(s.handle({"op": "append", "cseq": 0, "event": gap}, uid, 1)["ok"], uid)
+        self.assertIsNone(s.runs["_unattributed"]["agent_uid"])
+        kinds = [r["event"]["data"]["kind"] for r in ledger_records(s.home) if r["event"]["type"] == "capture.gap"]
+        self.assertNotIn("counter", kinds)
 
     @unittest.skipIf(pwd is None, "needs a passwd database")
     def test_numeric_owner_without_passwd_entry_is_restored(self):
