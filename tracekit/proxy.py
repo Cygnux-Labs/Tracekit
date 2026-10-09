@@ -380,7 +380,7 @@ def serve(home, port=None, upstream=None, host="127.0.0.1"):
     CFG.update({k: v for k, v in pc.items() if k in CFG})
     if upstream:
         CFG["upstream"] = upstream
-    port = int(port or pc.get("port") or 8787)
+    port = int(pc.get("port") or 8787) if port is None else int(port)  # --port 0: any free port, printed below
     if home:
         os.environ.setdefault("TRACEKIT_CLIENT_HOME", os.path.join(home, "proxy-client"))
         os.environ.setdefault("TRACEKIT_SOCKET", cfg.get("socket", os.path.join(home, "tracekitd.sock")))

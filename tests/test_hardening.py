@@ -11,7 +11,6 @@ import subprocess
 import sys
 import tempfile
 import threading
-import time
 import unittest
 import zipfile
 from http.server import ThreadingHTTPServer
@@ -23,6 +22,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from tracekit import bundle, cli, core, hook, install, observe, policy, privacy  # noqa: E402
 from tracekit.witness import FileWitness, GitWitness, make_checkpoint  # noqa: E402
 from test_v02 import ev, run_start, signer  # noqa: E402
+from tests.factories import wait_for  # noqa: E402
 
 
 def make_bundle(d):
@@ -573,9 +573,7 @@ class BoundedFeed(unittest.TestCase):
         for i in range(1, 30):
             s.handle({"op": "append", "cseq": i, "event": ev("user.prompt", {"content": core.content_ref(f"p{i}")}, "r")})
         feed = observe.Feed(os.path.join(home, "ledger", "ledger.jsonl"), max_records=10)
-        deadline = time.time() + 5
-        while time.time() < deadline and feed.base + len(feed.records) < 25:
-            time.sleep(0.1)
+        wait_for(lambda: feed.base + len(feed.records) >= 25, timeout=5)
         self.assertLessEqual(len(feed.records), 10)
         self.assertGreater(feed.base, 0)
         srv = ThreadingHTTPServer(("127.0.0.1", 0), observe.make_handler(feed, None))
@@ -728,8 +726,4 @@ class PidAlive(unittest.TestCase):
         self.assertTrue(install._pid_alive(os.getpid()))
         p = subprocess.Popen([sys.executable, "-c", "pass"])
         p.wait()
-        for _ in range(50):
-            if not install._pid_alive(p.pid):
-                break
-            time.sleep(0.05)
-        self.assertFalse(install._pid_alive(p.pid))
+        self.assertTrue(wait_for(lambda: not install._pid_alive(p.pid), timeout=5))

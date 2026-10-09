@@ -11,6 +11,8 @@ import sys
 import tempfile
 import unittest
 
+import pytest
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 from tracekit import bundle, client, policy  # noqa: E402
@@ -75,17 +77,20 @@ class SystemConfigTrust(_SystemConfig):
         self.assertIsNone(client.system_config())
         self.assertFalse(client.system_fail_closed())
 
+    @pytest.mark.root
     @unittest.skipUnless(IS_ROOT, "needs root to create a root-owned file")
     def test_root_owned_is_trusted(self):
         self.write({"socket": "/var/lib/tracekit/tracekitd.sock", "mode": "system"})
         self.assertEqual(client.system_config()["mode"], "system")
 
+    @pytest.mark.root
     @unittest.skipUnless(IS_ROOT, "needs root to chown")
     def test_not_root_owned_is_ignored(self):
         self.write({"socket": "/x"})
         os.chown(client.SYSTEM_CONFIG, 65534, 65534)
         self.assertIsNone(client.system_config())
 
+    @pytest.mark.root
     @unittest.skipUnless(IS_ROOT, "needs root to create a root-owned file")
     def test_group_or_world_writable_is_ignored(self):
         for mode in (0o664, 0o666, 0o646):
@@ -105,6 +110,7 @@ class SystemConfigTrust(_SystemConfig):
         self.assertIsNone(client.system_config())
 
 
+@pytest.mark.root
 @unittest.skipUnless(IS_ROOT, "system config must be root-owned to be trusted")
 class SystemConfigOverrides(_SystemConfig):
     def test_socket_env_and_home_config_are_ignored(self):
