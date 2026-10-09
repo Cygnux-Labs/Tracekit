@@ -29,11 +29,12 @@ class TracekitMiddleware(AgentMiddleware):
         super().__init__()
         self.signer, self.run = signer, {"run_id": run_id, "run_token": run_token}
         self.stream, self._seq = "langchain-" + uuid.uuid4().hex, itertools.count()
+        # lean: one entry per executed tool call for the middleware's life; prune at run end if agents run for days
+        self._attempts = {}   # tool_call_id -> the attempt its next execution is (a retry runs the same call again)
 
     def _event(self, call, **kw):
         return {"request_id": uuid.uuid4().hex, **self.run, "stream": self.stream, "client_seq": next(self._seq),
-                # lean: attempt is always 0; count per tool_call_id once retry middleware is supported
-                "tool_call_id": call["id"], "attempt": 0, **kw}
+                "tool_call_id": call["id"], "attempt": self._attempts.get(call["id"], 0), **kw}
 
     def _decide(self, call, **kw):
         # LangChain hands over JSON-decoded args, never the model's raw string
@@ -42,6 +43,7 @@ class TracekitMiddleware(AgentMiddleware):
     def _gate(self, request):
         """(the error ToolMessage that replaces a refused call or None when it may run, the decision)"""
         call, hint = request.tool_call, None
+        attempt = self._attempts.get(call["id"], 0)
         d = self._decide(call)
         if d["decision"] == "deny":
             return self._refusal(call, ", ".join(d["rule_ids"]) or "deny"), d
@@ -51,14 +53,14 @@ class TracekitMiddleware(AgentMiddleware):
             # the signer keeps one approval per call attempt, so the re-run on resume (even in another process) gets
             # the same approval back
             apr = self.signer.approval_request({"request_id": uuid.uuid4().hex, **self.run, "tool_call_id": call["id"],
-                                                "attempt": 0})
+                                                "attempt": attempt})
             resume = interrupt({"tracekit": {"approval_id": apr["approval_id"], "tool_call_id": call["id"],
                                              "tool": call["name"], "rule_ids": d["rule_ids"]}})
             hint = resume.get("approval_id") if isinstance(resume, dict) else None
         # every call, allowed or approved: the saved state can't vouch that no approval is needed
         try:
             c = self.signer.approval_consume({"request_id": uuid.uuid4().hex, **self.run, "tool_call_id": call["id"],
-                                              "attempt": 0, "tool": call["name"], "args_source": "parsed",
+                                              "attempt": attempt, "tool": call["name"], "args_source": "parsed",
                                               "args": call["args"], **({"approval_id_hint": hint} if hint else {})})
         except RPCError as e:   # e.g. a hint that is not an id at all
             c = {"ok": False, "rule_ids": [], "reason": e.message}
@@ -73,6 +75,7 @@ class TracekitMiddleware(AgentMiddleware):
     def _complete(self, call, decision, out=None, exc=None):
         req = self._event(call, status="ok", decision_id=decision["decision_id"],
                           args_digest=event_hash({"tool": call["name"], "args": call["args"]}))
+        self._attempts[call["id"]] = req["attempt"] + 1
         if exc is not None:
             req.update(status="error", error=f"{type(exc).__name__}: {exc}"[:4096])
         elif isinstance(out, ToolMessage):
