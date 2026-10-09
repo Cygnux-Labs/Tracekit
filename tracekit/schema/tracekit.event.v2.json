@@ -1451,7 +1451,8 @@
             "log_closed",
             "quota_refused",
             "identity_refused",
-            "approval_expired"
+            "approval_expired",
+            "executed_against_policy"
           ],
           "description": "Gap and tamper kinds (signer-written only)."
         },
