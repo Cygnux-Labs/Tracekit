@@ -12,8 +12,7 @@ import uuid
 from unittest import mock
 
 import adapter_contract as ac
-from tracekit.sdk.client import Client
-from tracekit.signer.rpc_schema import RPCError
+from tracekit.sdk.client import Client, SignerUnavailable
 
 try:
     from claude_agent_sdk import ClaudeAgentOptions, InMemorySessionStore, query
@@ -176,10 +175,25 @@ class TestOnRealSigner(ac.Contract, ac.OnReal, unittest.TestCase):
             out = out if out["approval_id"] is None else self.d.resume()
         self.refused(out, "R-PAY not approved: requested")
 
-    def test_signer_unreachable_blocks_the_call(self):
-        hooks = cas.tracekit_hooks(Client(os.path.join(ac.tmpdir(self), "none.sock")), self.d.run())
-        self.d.options.hooks = hooks
-        self.refused(self.d.call("echo", {"text": "hi"}), "signer error")
+    def test_signer_unreachable_follows_the_fail_mode(self):
+        down = Client(os.path.join(ac.tmpdir(self), "none.sock"))
+        self.d.options.hooks = cas.tracekit_hooks(down, self.d.run())
+        self.refused(self.d.call("echo", {"text": "hi"}), "signer unavailable")
+        self.d.options.hooks = cas.tracekit_hooks(down, {**self.d.run(), "fail_modes": {"default": "open"}})
+        self.assertEqual(self.d.call("echo", {"text": "hi"}, "call-2")["ran"], ["echo"])
+
+    def test_a_refusal_blocks_even_when_the_run_fails_open(self):
+        self.client.close_run(dict(self.d.run()))
+        self.d.options.hooks = cas.tracekit_hooks(self.d.signer, {**self.d.run(), "fail_modes": {"default": "open"}})
+        self.refused(self.d.call("echo", {"text": "hi"}), "run_closed")
+
+    def test_a_failed_complete_leaves_the_result_unchanged(self):
+        signer = mock.Mock(wraps=self.d.signer)
+        signer.complete.side_effect = SignerUnavailable("gone")
+        self.d.options.hooks = cas.tracekit_hooks(signer, self.d.run())
+        with self.assertWarns(UserWarning):
+            out = self.d.call("echo", {"text": "hi"})
+        self.assertEqual((out["ran"], out["seen"], out["is_error"]), (["echo"], "hi", False))
 
     def test_session_end_closes_the_run(self):
         self.d.call("echo", {"text": "hi"}, end_session=True)
@@ -208,20 +222,39 @@ class TestOnRealSigner(ac.Contract, ac.OnReal, unittest.TestCase):
         store = InMemorySessionStore()
         wrapped = cas.TracekitSessionStore(store, self.client, self.d.run())
         asyncio.run(wrapped.append(key, [{"type": "user", "uuid": "u1", "message": "one"}]))
-        real = wrapped._rpc
-        lost = [False]
+        real, sent = wrapped._rpc.send, []
 
-        async def fails_once(method, **req):
-            if method == "state_write" and not lost[0]:
-                lost[0] = True
-                raise RPCError("unavailable", "signer restarting")
-            return await real(method, **req)
-        wrapped._rpc = fails_once
-        with self.assertWarns(UserWarning):   # the store has the entries: the SDK must not append them again
-            asyncio.run(wrapped.append(key, [{"type": "user", "uuid": "u2", "message": "two"}]))
+        async def lost(method, req, committed):
+            sent.append(req["request_id"])
+            if committed:
+                await real(method, req)
+            raise SignerUnavailable("no answer")
+
+        async def send(method, req):
+            sent.append(req["request_id"])
+            return await real(method, req)
+        for committed in (False, True):   # lost before the signer recorded it, or only its answer was
+            with mock.patch.object(wrapped._rpc, "send", lambda m, r: lost(m, r, committed)):
+                with self.assertWarns(UserWarning):   # the store has the entries: the SDK must not append them again
+                    asyncio.run(wrapped.append(key, [{"type": "user", "uuid": f"u{committed}", "message": "two"}]))
+            with mock.patch.object(wrapped._rpc, "send", send):
+                asyncio.run(wrapped.append(key, [{"type": "user", "uuid": f"v{committed}", "message": "three"}]))
+            self.assertEqual(sent[-3], sent[-2])   # the lost write went again, as it was
+        self.assertEqual(len(asyncio.run(store.load(key))), 5)
+        self.assertEqual([e["data"]["kind"] for e in self.events(self.d.run()) if e["type"] == "capture.gap"], [])
+
+    def test_a_transcript_that_is_not_canonical_json_is_not_committed(self):
+        key = {"project_key": "p", "session_id": "s3"}
+        store = InMemorySessionStore()
+        wrapped = cas.TracekitSessionStore(store, self.client, self.d.run())
+        asyncio.run(wrapped.append(key, [{"type": "user", "uuid": "u1", "message": "one"}]))
+        with self.assertWarns(UserWarning):
+            asyncio.run(wrapped.append(key, [{"type": "user", "uuid": "u2", "message": 2 ** 60}]))
         asyncio.run(wrapped.append(key, [{"type": "user", "uuid": "u3", "message": "three"}]))
         self.assertEqual(len(asyncio.run(store.load(key))), 3)
-        self.assertEqual([e["data"]["kind"] for e in self.events(self.d.run()) if e["type"] == "capture.gap"], [])
+        with self.assertWarns(UserWarning):   # a new process resumes it
+            asyncio.run(cas.TracekitSessionStore(store, self.client, self.d.run()).load(key))
+        self.assertEqual(len(self.recorded("state.write")), 1)
 
 if __name__ == "__main__":
     unittest.main()
