@@ -206,6 +206,9 @@ class Client:
                 raise SignerUnavailable(f"no answer from the signer within {timeout:g}s") from None
             if "error" in reply:
                 e = reply["error"]
+                if e.get("code") in ("run_closed", "unknown_run"):   # no more events for it: drop its counter
+                    with self._lock:
+                        self._seqs.pop(req.get("run_id"), None)
                 raise RPCError(e.get("code"), e.get("message", ""), e.get("retry_after_ms"))
             return reply
         raise SignerUnavailable(f"lost the connection to the signer {RETRIES} times")
@@ -220,6 +223,8 @@ class Client:
         """Fills in `stream` and `client_seq` and validates `req`; counts the event once `connect()` has not raised.
         Call under self._lock."""
         if self._pid != os.getpid():   # new client, or a forked child: its own stream and connection
+            # lean: one counter per run until it is closed or refused as closed; a run abandoned without either keeps
+            # its entry for the client's life
             self._pid, self._conn, self.stream, self._seqs = os.getpid(), None, _new_id(), {}
         run_id = req.get("run_id")
         fresh = method in _EVENT_METHODS and "client_seq" not in req
@@ -294,6 +299,13 @@ class Client:
             conn.sock.close()
             while conn.pending:
                 conn.pending.popleft().set_exception(_ConnectionLost())
+
+
+def fail_open(fail_modes, tool_class=None):
+    """Whether a call of `tool_class` may run while the signer cannot be reached: the class's entry in register_run's
+    `fail_modes`, else their `default`, else closed. A signer refusal is never a reason to fail open."""
+    modes = fail_modes or {}
+    return modes.get(tool_class, modes.get("default", "closed")) == "open"
 
 
 def _validate(method, req):
