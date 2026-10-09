@@ -144,6 +144,32 @@ class DevSignerEndToEnd(unittest.TestCase):
             self.assertEqual(read_frame(rfile)["proto"], [RPC_VERSION, RPC_VERSION])
 
 
+class SpawnAndStatus(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.dir, True)
+        self.run_dir = os.path.join(self.dir, "run")
+        env = mock.patch.dict(os.environ, {"TRACEKIT_RUNTIME_DIR": self.run_dir})
+        env.start()
+        self.addCleanup(env.stop)
+        os.environ.pop("TRACEKIT_SIGNER", None)
+
+    def test_signer_starts_in_the_private_runtime_dir_with_cwd_off_sys_path(self):
+        os.makedirs(self.run_dir, 0o700)
+        with mock.patch.object(autospawn.subprocess, "Popen") as popen:
+            popen.return_value.wait.return_value = 0
+            autospawn.spawn(self.run_dir)
+        (argv,), kw = popen.call_args
+        self.assertEqual(kw["cwd"], self.run_dir)
+        self.assertEqual(argv[argv.index("-m") - 1] == "-P", sys.version_info >= (3, 11))
+
+    def test_status_creates_nothing(self):
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(cli.main(["status"]), 0)
+        self.assertFalse(json.loads(out.getvalue())["signer_v2"]["running"])
+        self.assertFalse(os.path.exists(self.run_dir))
+
+
 class DevSignerOverTcp(unittest.TestCase):
     """The loopback TCP transport (Windows, decision S3), forced on every OS by hiding AF_UNIX from both sides."""
     NO_UNIX = "import socket, sys; socket.__dict__.pop('AF_UNIX', None); from tracekit.cli import main; sys.exit(main())"

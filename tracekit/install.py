@@ -152,9 +152,18 @@ def _hook_command(module="tracekit.hook", func="_entry", args=(), python=None):
     return f'{py} -I -c "{code}"' if os.name == "nt" else f"{py} -I -c {shlex.quote(code)}"
 
 
+def _hook_version(group):
+    """"v2" for a group running the v2 hook, "v1" for the v1 hook, else None."""
+    cmds = [h.get("command") or "" for h in group.get("hooks", [])]
+    if any(V2_HOOK in c for c in cmds):
+        return "v2"
+    if any("tracekit.hook" in c or ("tracekit" in c and "hook.py" in c) for c in cmds):
+        return "v1"
+    return None
+
+
 def _is_ours(group):
-    return any("tracekit.hook" in (h.get("command") or "") or V2_HOOK in (h.get("command") or "") or ("tracekit" in (h.get("command") or "") and "hook.py" in (h.get("command") or ""))
-               for h in group.get("hooks", []))
+    return _hook_version(group) is not None
 
 
 class SettingsError(Exception):
@@ -210,11 +219,18 @@ def _install_hooks_at(d, settings_path, uninstall, proxy_url, extra, mode, pytho
     hooks = s.setdefault("hooks", {})
     if not isinstance(hooks, dict):
         raise SettingsError(f"'hooks' in {settings_path} must be an object; Tracekit did not change it.")
+    new, replaced = "v2" if module == V2_HOOK else "v1", set()
     for ev in TOOL_EVENTS + OTHER_EVENTS:
         existing = hooks.get(ev, [])
         if not isinstance(existing, list):
             raise SettingsError(f"hooks.{ev} in {settings_path} must be a list; Tracekit did not change it.")
-        groups = [g for g in existing if not (isinstance(g, dict) and _is_ours(g))]
+        groups = []
+        for g in existing:
+            v = _hook_version(g) if isinstance(g, dict) else None
+            if v is None:
+                groups.append(g)
+            elif uninstall or v != new:
+                replaced.add(v)
         if not uninstall:
             e = {"hooks": [{"type": "command", "command": _hook_command(module, python=python), "timeout": HOOK_TIMEOUT.get(ev, 30)}]}
             groups.append({"matcher": "*", **e} if ev in TOOL_EVENTS else e)
@@ -253,6 +269,10 @@ def _install_hooks_at(d, settings_path, uninstall, proxy_url, extra, mode, pytho
             return
         files.backup(d, name, raw)
     files.write(d, name, files.json_bytes(s), mode)
+    if replaced:
+        old = " and ".join(sorted(replaced))
+        print(f"Tracekit {old} hooks removed from {settings_path}" if uninstall else
+              f"Tracekit {old} hooks replaced by {new} hooks in {settings_path}")
 
 
 def _my_uid():
@@ -812,6 +832,8 @@ def doctor(checks=None):
     line per check with a fix; returns 1 if any check fails."""
     from .daemon import trusted_file
     if checks is None:
+        for h in _installed_hooks():
+            print(f"info  hooks: {' and '.join(h.get('versions', ())) or h.get('error') or 'none'} in {h['settings']}")
         try:
             sc = client.system_config()
         except client.SystemConfigError as e:
@@ -942,6 +964,12 @@ def init_system(target_user, witnesses, checkpoint_every=50, project=None, no_se
     return cfg, settings
 
 
+def _hook_summary(settings):
+    """{"events": events with a Tracekit hook, "versions": which hooks (v1, v2)} of a settings object."""
+    found = {(ev, _hook_version(g)) for ev, gs in settings.get("hooks", {}).items() for g in gs if _is_ours(g)}
+    return {"events": sorted({ev for ev, _ in found}), "versions": sorted({v for _, v in found})}
+
+
 def status():
     cfg = client.client_config()
     visible_cfg = {k: v for k, v in cfg.items() if k != "socket_token"}
@@ -957,28 +985,7 @@ def status():
         out["signer"] = client.status()
     except client.SignerUnavailable as e:
         out["signer"] = {"ok": False, "error": f"unreachable at {client.socket_path()}: {e}"}
-    hooks = []
-    seen = set()
-    for p in (os.path.expanduser("~/.claude/settings.json"), os.path.join(os.getcwd(), ".claude", "settings.json")):
-        if os.path.realpath(p) in seen:  # cwd is the home directory: one file, listed once
-            continue
-        seen.add(os.path.realpath(p))
-        if os.path.exists(p):
-            try:
-                s = read_json(p)
-                evs = [ev for ev, gs in s.get("hooks", {}).items() if any(_is_ours(g) for g in gs)]
-                hooks.append({"settings": p, "events": evs})
-            except ValueError:
-                hooks.append({"settings": p, "error": "unreadable"})
-    for p in MANAGED_SETTINGS.values():
-        if os.path.exists(p):
-            try:
-                s = read_json(p)
-                evs = [ev for ev, gs in s.get("hooks", {}).items() if any(_is_ours(g) for g in gs)]
-                hooks.append({"settings": p, "managed": True, "events": evs, "allowManagedHooksOnly": bool(s.get("allowManagedHooksOnly"))})
-            except (ValueError, OSError):
-                hooks.append({"settings": p, "managed": True, "error": "unreadable"})
-    out["hooks"] = hooks
+    out["hooks"] = _installed_hooks()
     out["capture_sources"] = ["hook"] + (["proxy"] if cfg.get("proxy") else []) + \
         (["transcript"] if out["policy"].get("reasoning_capture") else [])
     if cfg.get("proxy_url"):
@@ -990,6 +997,31 @@ def status():
             reachable = "HTTP Error" in str(e)
             out["proxy"] = {"url": cfg["proxy_url"], "reachable": reachable, **({} if reachable else {"error": str(e)[:200]})}
     return out
+
+
+def _installed_hooks():
+    """Tracekit's hooks (events, v1/v2) in the user, project and managed Claude Code settings files that exist."""
+    hooks = []
+    seen = set()
+    for p in (os.path.expanduser("~/.claude/settings.json"), os.path.join(os.getcwd(), ".claude", "settings.json")):
+        if os.path.realpath(p) in seen:  # cwd is the home directory: one file, listed once
+            continue
+        seen.add(os.path.realpath(p))
+        if os.path.exists(p):
+            try:
+                s = read_json(p)
+                hooks.append({"settings": p, **_hook_summary(s)})
+            except ValueError:
+                hooks.append({"settings": p, "error": "unreadable"})
+    for p in MANAGED_SETTINGS.values():
+        if os.path.exists(p):
+            try:
+                s = read_json(p)
+                hooks.append({"settings": p, "managed": True, **_hook_summary(s),
+                              "allowManagedHooksOnly": bool(s.get("allowManagedHooksOnly"))})
+            except (ValueError, OSError):
+                hooks.append({"settings": p, "managed": True, "error": "unreadable"})
+    return hooks
 
 
 def uninstall(project=None):

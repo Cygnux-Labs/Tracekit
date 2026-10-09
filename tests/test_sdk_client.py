@@ -234,5 +234,23 @@ class DevSigner(unittest.TestCase):
         self.assertFalse(os.path.exists(self.run_dir))
 
 
+class Transports(unittest.TestCase):
+    def test_tcp_signer_must_be_on_loopback(self):
+        with mock.patch.object(client.tcp_dev, "dial", side_effect=OSError("refused")) as dial:
+            for host in ("10.0.0.5", "example.org", "0.0.0.0"):
+                with self.assertRaisesRegex(client.SignerUnavailable, "must be on loopback"):
+                    client.connect(f"tcp://{host}:7000", token="t")
+            for host in ("127.0.0.1", "::1", "localhost"):
+                with self.assertRaisesRegex(client.SignerUnavailable, "refused"):
+                    client.connect(f"tcp://{host}:7000", token="t")
+        self.assertEqual(dial.call_count, 3)
+
+    def test_missing_token_file_is_signer_unavailable(self):
+        with mock.patch.dict(os.environ, {"TRACEKIT_SIGNER_TOKEN_FILE": os.path.join(tempfile.gettempdir(), "no-such")}):
+            c = Client("https://127.0.0.1:1", timeout=1)
+        with self.assertRaisesRegex(client.SignerUnavailable, "token file"):
+            c.status()
+
+
 if __name__ == "__main__":
     unittest.main()

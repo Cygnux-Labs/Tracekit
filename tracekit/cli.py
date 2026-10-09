@@ -288,6 +288,8 @@ def _run(a):
             hooks = None if a.no_hooks else (os.path.join(os.getcwd(), ".claude", "settings.json") if a.project
                                             else os.path.expanduser("~/.claude/settings.json"))
             if a.v2:
+                if not _signer_extra():
+                    return 2
                 try:
                     if hooks:
                         install.install_hooks(hooks, module=install.V2_HOOK)
@@ -327,6 +329,8 @@ def _run(a):
         return 0
     if a.cmd == "up":
         from .sdk import autospawn
+        if not _signer_extra():
+            return 2
         if a.replace:
             autospawn.down()
         conn = autospawn.ensure(wait=a.wait or a.json)
@@ -461,6 +465,17 @@ def _run(a):
         from . import demo
         return demo.main(real=a.real, keep=a.keep, agent=a.agent)
     return 2
+
+
+def _signer_extra():
+    """True when the v2 signer's policy engine imports; else says how to install it."""
+    from .policy2 import engine
+    try:
+        engine._backend(None)
+    except ImportError:
+        print("tracekit: the v2 signer needs its policy engine: pip install 'tracekit-ai[signer]'", file=sys.stderr)
+        return False
+    return True
 
 
 def _export_v2(a):

@@ -40,7 +40,11 @@ class Quotas:
     def take_event(self, identity):
         """Spend one event from the identity's token bucket. Not keyed by tenant: the app may assert any tenant (design
         §2.2), so a per-tenant bucket would hand a fresh burst to every tenant it names."""
-        lim, key = self.limits, (identity.scheme, identity.subject)
+        self.take((identity.scheme, identity.subject), "event rate limit")
+
+    def take(self, key, what):
+        """Spend one token from `key`'s bucket; quota_exceeded naming `what` when it is empty."""
+        lim = self.limits
         with self._lock:
             now = self.clock()
             tokens, last = self._buckets.pop(key, (lim.burst, now))
@@ -50,7 +54,7 @@ class Quotas:
             while len(self._buckets) > lim.buckets:
                 self._buckets.popitem(last=False)
         if not ok:
-            raise RPCError("quota_exceeded", "event rate limit",
+            raise RPCError("quota_exceeded", what,
                            retry_after_ms=math.ceil((1 - tokens) / lim.events_per_s * 1000))
 
     def check_count(self, name, current):
