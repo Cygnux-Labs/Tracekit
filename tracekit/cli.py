@@ -7,6 +7,8 @@ import sys
 
 from . import __version__
 
+NUDGE_WAIT_S = 5.0
+
 
 def experimental_gate(enabled, what):
     """Experimental servers run only with --experimental, and always say they are being rebuilt."""
@@ -147,6 +149,10 @@ def main(argv=None):
     p.add_argument("--otel-header", action="append", default=[], metavar="KEY=VALUE",
                    help="header for --otel-endpoint (repeatable; also read from OTEL_EXPORTER_OTLP_HEADERS)")
     p.add_argument("--home", help="signer home to read the ledger from")
+    p.add_argument("--v2", action="store_true", help="format v2, from the v2 signer's store (with --run)")
+    p.add_argument("--tenant", help="with --v2: the run's tenant (default: the signer's default tenant)")
+    p.add_argument("--config", help="with --v2: the signer's config (default: the same-user dev signer)")
+    p.add_argument("--dev", action="store_true", help="with --v2: the same-user dev signer (the default)")
 
     p = sub.add_parser("verify", help="verify a .tkb offline")
     p.add_argument("bundle")
@@ -389,6 +395,8 @@ def _run(a):
         return 0 if r.get("ok") else 1
     if a.cmd == "approvals":
         return _approvals(a)
+    if a.cmd == "export" and a.v2:
+        return _export_v2(a)
     if a.cmd == "export":
         from . import bundle
         from .otel import parse_headers
@@ -438,6 +446,58 @@ def _run(a):
         from . import demo
         return demo.main(real=a.real, keep=a.keep, agent=a.agent)
     return 2
+
+
+def _export_v2(a):
+    """`tracekit export --v2`: read the store without its lock, with the newest checkpoint note. When none covers the
+    run's last record yet, nudge the running signer and wait up to NUDGE_WAIT_S for one."""
+    import time
+
+    from .bundle_v2 import export
+    from .sdk.client import Client, Incompatible, SignerUnavailable
+    from .signer.rpc_schema import RPCError
+    from .signer.service import signer_config
+    from .storage.base import StorageCorrupt
+    from .storage.file import FileReader
+    if not a.run or a.dev and a.config:
+        print("tracekit export --v2: needs --run RUN_ID, and --dev or --config (not both)", file=sys.stderr)
+        return 2
+    try:
+        cfg = signer_config(a.config)
+        store, tenant = os.path.join(cfg["data_dir"], "store"), a.tenant or cfg.get("tenant", "default")
+        reader = FileReader(store)
+        run = reader.runs.get((tenant, a.run))
+        if run is None:
+            raise ValueError(f"no run {a.run!r} of tenant {tenant!r} in {store}")
+        last = run["seqs"][-1]
+
+        def covering():
+            note = reader.checkpoint_latest()
+            return note if note and note[0] > last else None
+        note = covering()
+        if note is None:
+            try:
+                if not cfg.get("socket"):
+                    raise SignerUnavailable("the config names no socket")
+                c = Client(cfg["socket"], timeout=NUDGE_WAIT_S)
+                try:
+                    c.checkpoint_nudge({})
+                finally:
+                    c.close()
+            except (SignerUnavailable, Incompatible, RPCError) as e:
+                raise ValueError(f"no checkpoint covers run {a.run!r} yet and no signer answered to write one ({e}); "
+                                 "start the signer and export again") from None
+            deadline = time.monotonic() + NUDGE_WAIT_S
+            while (note := covering()) is None and time.monotonic() < deadline:
+                time.sleep(0.1)
+            if note is None:
+                raise ValueError(f"the signer wrote no checkpoint covering run {a.run!r} within {NUDGE_WAIT_S:g}s")
+        info = export(FileReader(store), tenant, a.run, note[1], a.out)   # opened after the note: holds its records
+    except (OSError, ValueError, SignerUnavailable, StorageCorrupt) as e:
+        print(f"tracekit export: {e}", file=sys.stderr)
+        return 1
+    print(json.dumps(info, indent=2))
+    return 0
 
 
 def _approvals(a):
