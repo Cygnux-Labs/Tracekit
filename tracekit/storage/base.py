@@ -1,0 +1,77 @@
+"""The storage interface the signer writes through (04-design §2.5). Backends: `file` (here), Postgres (M3).
+
+A record log holds format v2 records in `seq` order (0, 1, 2, ...). Its Merkle tree has one leaf per record,
+`0x00 ‖ record_hash` (RFC 6962), and its hashes live in tiles (`tracekit.merkle.tiles`) under the tree name
+`RECORDS`. Each tenant also has a registry log of fixed-width binary leaves (§1.5), with a tree named
+`registry_tree(tenant)`."""
+import functools
+import hashlib
+import types
+
+ACK_ON_WRITE, ACK_ON_FSYNC = "ack-on-write", "ack-on-fsync"
+ZERO_HASH = "sha256:" + "0" * 64  # prev_hash of seq 0, run_prev_hash of run_seq 0
+RECORDS = "records"
+
+
+def registry_tree(tenant):
+    return "registry-" + hashlib.sha256(tenant.encode("utf-8")).hexdigest()[:32]
+
+
+class StorageUnavailable(Exception):
+    """The disk refused a write (EIO, ENOSPC); the signer answers `unavailable` until it is reopened."""
+
+
+class StorageCorrupt(Exception):
+    """A log can't be read as written: a damaged line before the tail, or a seq out of order."""
+
+
+class Storage:
+    torn = ()  # torn last lines (a write cut short by a crash) set aside on open: [{"log", "offset", "length", "path"}]
+
+    def append_batch(self, records):
+        """Append v2 records whose seqs continue the log, with one write. Returns once written; with
+        `ack-on-fsync` also once durable, with `ack-on-write` a background sync follows within 5 ms."""
+        raise NotImplementedError
+
+    def tail_state(self):
+        """{"seq": last seq or None, "prev_hash": hash of the last record (ZERO_HASH if none), "tree_size",
+        "tree_root" (bytes), "runs": {(tenant, run_id): get_run(...)}, "registry": {tenant: (size, root)}}."""
+        raise NotImplementedError
+
+    def iter_range(self, lo, hi):
+        """Records with lo <= seq < hi, in order."""
+        raise NotImplementedError
+
+    def iter_run(self, tenant, run_id):
+        """The run's records in run_seq order."""
+        raise NotImplementedError
+
+    def get_run(self, tenant, run_id):
+        """{"run_seq": last run_seq, "head": its record hash, "count"}, or None for an unknown run."""
+        raise NotImplementedError
+
+    def registry_append(self, tenant, leaf):
+        """Append one registry leaf (bytes) to the tenant's registry log."""
+        raise NotImplementedError
+
+    def registry_iter(self, tenant):
+        """The tenant's registry leaves, in order."""
+        raise NotImplementedError
+
+    def tiles_get(self, tree, level, index, width):
+        raise NotImplementedError
+
+    def tiles_put(self, tree, level, index, width, data):
+        raise NotImplementedError
+
+    def fsck(self):
+        """Full check of every log: a list of problems, empty when the store is intact."""
+        raise NotImplementedError
+
+    def close(self):
+        raise NotImplementedError
+
+    def tile_store(self, tree):
+        """A `merkle.tiles` tile store over this storage's tiles of `tree`."""
+        return types.SimpleNamespace(get=functools.partial(self.tiles_get, tree),
+                                     put=functools.partial(self.tiles_put, tree))
