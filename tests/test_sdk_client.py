@@ -161,7 +161,7 @@ class DevSigner(unittest.TestCase):
         self.assertIsNone(current_run.get())
         self.assertTrue(run.closed)
         types = [e["type"] for e in run.call("read")["events"]]
-        self.assertEqual(types, ["run.registered", "tool.decision", "tool.result", "state.write", "run.closing"])
+        self.assertEqual(types, ["run.registered", "policy.decision", "tool.result", "state.write", "run.closing"])
         with self.assertRaises(client.RPCError) as cm:
             c.decide({"run_id": "r1"})   # refused before sending
         self.assertEqual(cm.exception.code, "invalid_request")
