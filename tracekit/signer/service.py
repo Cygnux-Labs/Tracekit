@@ -524,12 +524,19 @@ class SignerService:
                            {"store": "default", "key": req["key"], "digest": req["value_digest"]})
 
     def _model_event(self, identity, req):
-        data = {"exchange_id": req["request_id"], "phase": req["phase"], "streamed": False, "model": req["model"],
-                "upstream": req["provider"]}
-        if "content_digest" in req:
-            data["content_digest"] = req["content_digest"]
-        if len(req.get("usage", {})) == 2:   # the event schema needs both counts
+        data = {"exchange_id": req.get("exchange_id", req["request_id"]), "phase": req["phase"],
+                "streamed": req.get("streamed", False), "model": req["model"], "upstream": req["provider"]}
+        for k in ("content_digest", "stop_reason", "error", "tool_results_sent"):
+            if k in req:
+                data[k] = req[k]
+        if {"input_tokens", "output_tokens"} <= req.get("usage", {}).keys():   # the event schema needs both counts
             data["usage"] = req["usage"]
+        if "tool_uses" in req:   # the digests are published as commitments, salted per record and tool use
+            data["tool_uses"] = [{k: v for k, v in t.items() if k != "args_digest"} for t in req["tool_uses"]]
+            for i, t in enumerate(req["tool_uses"]):
+                if "args_digest" in t:
+                    data["tool_uses"][i]["args_commitment"] = self._commit(
+                        f"model:{req['run_id']}:{req['request_id']}:{i}", t["args_digest"])
         return self._event(identity, "model_event", req, "model.exchange", data)
 
     def _approval_request(self, identity, req):

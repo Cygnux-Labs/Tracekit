@@ -57,12 +57,16 @@ def from_openai(u):
     prompt = _int(_g(u, "prompt_tokens"))
     if prompt is not None or _g(u, "completion_tokens") is not None:
         cached = _int(_g(u, "prompt_tokens_details", "cached_tokens")) or 0
-        return _clean({"input_tokens": max(0, (prompt or 0) - cached), "output_tokens": _g(u, "completion_tokens"),
-                       "cache_read_tokens": cached or None, "reasoning_tokens": _g(u, "completion_tokens_details", "reasoning_tokens")})
+        write = _int(_g(u, "prompt_tokens_details", "cache_write_tokens")) or 0
+        return _clean({"input_tokens": max(0, (prompt or 0) - cached - write), "output_tokens": _g(u, "completion_tokens"),
+                       "cache_read_tokens": cached or None, "cache_write_tokens": write or None,
+                       "reasoning_tokens": _g(u, "completion_tokens_details", "reasoning_tokens")})
     inp = _int(_g(u, "input_tokens"))
     cached = _int(_g(u, "input_tokens_details", "cached_tokens")) or 0
-    return _clean({"input_tokens": None if inp is None else max(0, inp - cached), "output_tokens": _g(u, "output_tokens"),
-                   "cache_read_tokens": cached or None, "reasoning_tokens": _g(u, "output_tokens_details", "reasoning_tokens")})
+    write = _int(_g(u, "input_tokens_details", "cache_write_tokens")) or 0
+    return _clean({"input_tokens": None if inp is None else max(0, inp - cached - write), "output_tokens": _g(u, "output_tokens"),
+                   "cache_read_tokens": cached or None, "cache_write_tokens": write or None,
+                   "reasoning_tokens": _g(u, "output_tokens_details", "reasoning_tokens")})
 
 
 def from_anthropic(u):
@@ -77,8 +81,11 @@ def from_gemini(u):
         return None
     prompt = _int(_g(u, "prompt_token_count"))
     cached = _int(_g(u, "cached_content_token_count")) or 0
-    return _clean({"input_tokens": None if prompt is None else max(0, prompt - cached), "output_tokens": _g(u, "candidates_token_count"),
-                   "cache_read_tokens": cached or None, "reasoning_tokens": _g(u, "thoughts_token_count")})
+    out, thoughts = _int(_g(u, "candidates_token_count")), _int(_g(u, "thoughts_token_count"))
+    # Gemini counts thoughts apart from candidates; reasoning_tokens is a breakdown of output_tokens
+    return _clean({"input_tokens": None if prompt is None else max(0, prompt - cached),
+                   "output_tokens": None if out is None and thoughts is None else (out or 0) + (thoughts or 0),
+                   "cache_read_tokens": cached or None, "reasoning_tokens": thoughts})
 
 
 def from_otel(a):
