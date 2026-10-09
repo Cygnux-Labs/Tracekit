@@ -49,7 +49,7 @@ def _base(p):
 
 
 def _started_flag(run_id):
-    return os.path.join(client.client_dir(), "runs", client.state_name(run_id) + ".started")
+    return client.state_file(run_id, ".started")
 
 
 def run_start_event(p, pol, cwd):
@@ -74,7 +74,7 @@ def _transcript_events(p, pol):
     path = p.get("transcript_path")
     if not pol.get("reasoning_capture") or not path or not os.path.exists(path):
         return []
-    off_file = _started_flag(p["session_id"]) + ".txoff"
+    off_file = client.state_file(p["session_id"], ".started.txoff")
     try:
         off = int(read_text(off_file))
     except (OSError, ValueError):
@@ -311,15 +311,20 @@ def main(harness_reasoning=True):
         pol, pol_raw = policy_mod.load()
     except policy_mod.PolicyError as e:
         # an unusable policy never silently means "no rules": block tool calls, say why
-        if p.get("hook_event_name") == "PreToolUse":
-            print(f"[tracekit] {e}; blocking tool calls until the policy is fixed", file=sys.stderr)
-            return 2
-        return 0
+        pre = isinstance(p, dict) and p.get("hook_event_name") == "PreToolUse"
+        print(f"[tracekit] {e}" + ("; blocking tool calls until it is fixed" if pre else ""), file=sys.stderr)
+        return 2 if pre else 0
     name = p.get("hook_event_name") if isinstance(p, dict) else None
     missing = [k for k in ("session_id",) + (("tool_use_id",) if name in TOOL_EVENTS else ())
                if not isinstance(p.get(k), str) or not p[k]] if isinstance(p, dict) else ["payload"]
     if missing:
         print(f"[tracekit] hook payload has no {', '.join(missing)}; event not recorded", file=sys.stderr)
+        try:
+            client.send({"run_id": p["session_id"] if missing == ["tool_use_id"] else "_unattributed", "agent_id": "main",
+                         "parent_id": None, "source": "hook", "ts": now_ts(), "type": "capture.gap",
+                         "data": {"reason": f"{name or 'hook'} payload has no {', '.join(missing)}", "kind": "missing_ids"}})
+        except client.SignerUnavailable:
+            pass
         if name != "PreToolUse":
             return 0
         d = policy_mod.evaluate(pol, p.get("tool_name") or "?", _as_dict(p.get("tool_input")), p.get("cwd"))
@@ -341,6 +346,9 @@ def main(harness_reasoning=True):
                 save_ack(ev["transcript"]["path"], resp["transcript_ack"])
         except client.SignerUnavailable as e:
             signer_down = str(e)
+    if rejected and pol.get("fail_mode") == "closed":
+        print(f"[tracekit] signer rejected the tool call ({rejected}); fail_mode=closed blocks it", file=sys.stderr)
+        return 2
     if deny and deny["decision"] == "ask":
         call = next(e for e in evs if e["type"] == "tool.call")
         ok, msg = wait_for_approval(call, deny, pol)
@@ -355,9 +363,6 @@ def main(harness_reasoning=True):
         return 2
     if signer_down and p.get("hook_event_name") == "PreToolUse" and pol.get("fail_mode") == "closed":
         print(f"[tracekit] signer unavailable ({signer_down}); fail_mode=closed blocks tool calls", file=sys.stderr)
-        return 2
-    if rejected and pol.get("fail_mode") == "closed":
-        print(f"[tracekit] signer rejected the tool call ({rejected}); fail_mode=closed blocks it", file=sys.stderr)
         return 2
     return 0
 
