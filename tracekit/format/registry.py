@@ -3,13 +3,16 @@
     type u8 ‖ H(tenant_salt ‖ run_id) 32B ‖ record log_id 16B ‖ seq u64 ‖ record_hash 32B
 
 tenant_salt = HMAC-SHA256(the signer's registry salt, tenant). run.registered and run.final get a leaf in their run's
-tenant's registry; log.closed and key.retire (signer-level) one in every tenant's registry. The registry's checkpoint
-origin is `<record log origin>/registry/<id>`, where id is derived from the tenant salt, never the tenant's name."""
+tenant's registry; log.closed, key.retire and the tenant-level gaps (signer-level capture.gap and trace.tamper records
+marked `tenant_level`) one in every tenant's registry. The registry's checkpoint origin is
+`<record log origin>/registry/<id>`, where id is derived from the tenant salt, never the tenant's name."""
 import hashlib
 import hmac
 
-LEAF_TYPES = {"run.registered": 1, "run.final": 2, "log.closed": 3, "key.retire": 4}
-SIGNER_LEAVES = ("log.closed", "key.retire")
+LEAF_TYPES = {"run.registered": 1, "run.final": 2, "log.closed": 3, "key.retire": 4, "capture.gap": 5,
+              "trace.tamper": 6}
+SIGNER_LEAVES = ("log.closed", "key.retire", "capture.gap", "trace.tamper")
+GAP_LEAVES = ("capture.gap", "trace.tamper")
 LEAF_SIZE = 89
 _NAMES = {v: k for k, v in LEAF_TYPES.items()}
 
