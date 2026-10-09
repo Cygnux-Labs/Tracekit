@@ -163,7 +163,7 @@ class Decisions(unittest.TestCase):
         self.assertEqual([r["result"] for r in sent], [event_hash("hi")])
         self.assertEqual(RAN, ["echo"])
         self.assertEqual(tool_message(out).content, "hi")
-        [d] = self.recorded("tool.decision")
+        [d] = self.recorded("policy.decision")
         self.assertEqual((d["tool"], d["args_source"], d["decision"]), ("echo", "parsed", "allow"))
         self.assertEqual(self.recorded("tool.result"), [{"tool_call_id": "call-1", "attempt": 0, "status": "ok"}])
 

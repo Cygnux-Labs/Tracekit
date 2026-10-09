@@ -40,8 +40,8 @@ class RunTokens:
                              separators=(",", ":"), sort_keys=True).encode()
         return _b64(payload) + "." + _b64(self._mac(payload))
 
-    def verify(self, token, tenant, run_id, identity):
-        """Refuses a token that is malformed, tampered, expired, or issued for another run or identity."""
+    def claims(self, token):
+        """The claims of a token this signer issued; refuses a malformed or tampered one. Checks nothing else."""
         try:
             p, m = token.split(".")
             payload, mac = _unb64(p), _unb64(m)
@@ -49,7 +49,11 @@ class RunTokens:
             raise RPCError("run_token_invalid", "malformed run token") from None
         if not hmac.compare_digest(mac, self._mac(payload)):
             raise RPCError("run_token_invalid", "run token signature mismatch")
-        claims = json.loads(payload)
+        return json.loads(payload)
+
+    def verify(self, token, tenant, run_id, identity):
+        """Refuses a token that is malformed, tampered, expired, or issued for another run or identity."""
+        claims = self.claims(token)
         if (claims["tenant"], claims["run_id"], claims["sub"]) != (tenant, run_id, _sub(identity)):
             raise RPCError("run_token_invalid", "run token belongs to another run or identity")
         if self.clock() >= claims["exp"]:
