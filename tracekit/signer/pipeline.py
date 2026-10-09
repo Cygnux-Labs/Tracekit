@@ -39,7 +39,7 @@ def new_run(tenant, run_id):
     """`closed`: run.closing written, late records only; `final`: run.final written, nothing more. `active` and
     `closing_at` are monotonic times for the idle and grace clocks."""
     return {"tenant": tenant, "run_id": run_id, "run_seq": 0, "head": ZERO_HASH, "streams": {}, "closed": False,
-            "final": False, "calls": {}, "decisions": {}, "denied": {}, "owner": None, "source": "sdk",
+            "final": False, "calls": {}, "decisions": {}, "denied": {}, "states": {}, "owner": None, "source": "sdk",
             "active": time.monotonic(), "closing_at": None}
 
 
@@ -191,6 +191,8 @@ class RecordLog:
                 run["calls"][e["tool_call_id"]] = call
                 if call["decision_id"]:
                     run["decisions"][call["decision_id"]] = call
+            elif e["type"] == "state.write":
+                run["states"][e["data"]["key"]] = e["data"]["digest"]
             elif e["type"] == "tool.result" and "decision_id" in e["data"]:
                 run["decisions"][e["data"]["decision_id"]] = None
             elif e["type"] == "approval.request":

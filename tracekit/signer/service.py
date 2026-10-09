@@ -635,8 +635,22 @@ class SignerService:
         return self.log.submit(identity, "complete", req, fn, key, late=True)
 
     def _state_write(self, identity, req):
-        return self._event(identity, "state_write", req, "state.write",
-                           {"store": "default", "key": req["key"], "digest": req["value_digest"]})
+        key, sk = self._authorize(identity, req), req["key"]
+        self.quotas.take_event(identity)
+
+        def fn(tx, run):
+            data = {"store": "default", "key": sk, "digest": req["value_digest"]}
+            if "prev_digest" in req:
+                data["prev_digest"] = req["prev_digest"]
+            seq = tx.event(run, req, "state.write", data)
+            if "prev_digest" in req and sk in run["states"] and run["states"][sk] != req["prev_digest"]:
+                # the agent's own earlier write says the state was something else: it changed outside its writes
+                tx.emit(run, "capture.gap", {"kind": "state_tamper", "reason": f"state {sk[:200]} changed between "
+                                             f"writes: last written {run['states'][sk]}, now from {req['prev_digest']}"},
+                        source="signer")
+            tx.set(run["states"], sk, req["value_digest"])
+            return {"run_seq": seq}
+        return self.log.submit(identity, "state_write", req, fn, key, late=True)
 
     def _model_event(self, identity, req):
         data = {"exchange_id": req.get("exchange_id", req["request_id"]), "phase": req["phase"],
