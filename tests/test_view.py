@@ -49,7 +49,7 @@ class View(unittest.TestCase):
         run.close()
         storage = self.service.log.storage
         self.assertTrue(wait_for(lambda: list(storage.iter_run("default", run.run_id))[-1]["event"]["type"] == "run.final"
-                                 and storage.checkpoint_latest()[0] == storage.tree.size, 20))
+                                 and (storage.checkpoint_latest() or (0,))[0] == storage.tree.size, 20))
         return run.run_id
 
     def rows(self, feed, run_id):
