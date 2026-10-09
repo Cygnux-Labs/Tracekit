@@ -1,6 +1,7 @@
 """Backend-independent storage contract (tracekit.storage.base). A backend's test case mixes in StorageContract with
 unittest.TestCase and supplies open() (a store over the same location every call), tear() (cut the last record's
 line short, as a crash mid-write does) and damage(seq) (change a stored record's event in place)."""
+from tracekit.format import checkpoint
 from tracekit.format.records import make_record
 from tracekit.merkle import leaf_hash, root
 from tracekit.merkle.tiles import MemoryTileStore, Tree
@@ -114,6 +115,19 @@ class StorageContract:
         s = self.reopen(s)
         self.assertEqual(s.tiles_get("t", 0, 0, 3), b"x" * 96)
         self.assertIsNone(s.tiles_get(registry_tree("acme"), 0, 0, 3))
+
+    def test_checkpoint_notes(self):
+        def note(n):
+            return checkpoint.body("example.org/log", n, bytes(32)) + "\n— example.org/log c2ln\n"
+        s = self.store()
+        self.assertIsNone(s.checkpoint_latest())
+        s.checkpoint_put(3, note(3))
+        s.checkpoint_put(3, note(3))
+        s.checkpoint_put(7, note(7))
+        with self.assertRaises(ValueError):
+            s.checkpoint_put(5, note(5))   # never older than the stored one
+        self.assertEqual(s.checkpoint_latest(), (7, note(7)))
+        self.assertEqual(self.reopen(s).checkpoint_latest(), (7, note(7)))
 
     def test_merkle_roots_match_merkle_tiles(self):
         s, c = self.store(), Chain()

@@ -124,11 +124,13 @@ class Tx:
 
 
 class RecordLog:
-    def __init__(self, storage, open_storage, sign, quotas, salt, bridge=None):
+    def __init__(self, storage, open_storage, sign, quotas, salt, metrics, bridge=None):
         """`storage` is open (and holds its lock); `open_storage()` reopens it after a disk error. `sign` is a
-        format.records.RecordSigner; `salt` the secret the registry's per-tenant salts derive from. `bridge`: the v1
-        ledger this log continues (signer.epoch `bridge`), refused unless the log is empty or already starts with it."""
+        format.records.RecordSigner; `salt` the secret the registry's per-tenant salts derive from; `metrics` a
+        signer.metrics.SignerMetrics. `bridge`: the v1 ledger this log continues (signer.epoch `bridge`), refused
+        unless the log is empty or already starts with it."""
         self.storage, self.open_storage, self.sign, self.quotas, self.salt = storage, open_storage, sign, quotas, salt
+        self.metrics = metrics
         self.bridge = bridge
         self.log_id = None
         self.done = OrderedDict()   # (scheme, subject, request_id) -> (payload digest, response)
@@ -230,7 +232,10 @@ class RecordLog:
         if self.refuse_writes:
             raise RPCError("unavailable", self.refuse_writes)
         digest = hashlib.sha256(json.dumps([method, req], sort_keys=True, default=repr).encode()).hexdigest()
-        return self._wait(lambda tx: self._item(tx, identity, req, digest, fn, run_key, late))
+        start = time.monotonic()
+        out = self._wait(lambda tx: self._item(tx, identity, req, digest, fn, run_key, late))
+        self.metrics.ack_seconds.observe(time.monotonic() - start)
+        return out
 
     def write(self, fn):
         """Run `fn(tx)` on the writer: the signer's own records, which no refuse_writes holds back."""
@@ -292,7 +297,11 @@ class RecordLog:
         return RPCError("unavailable", f"storage refused writes since {self.down[0]}: {self.down[1]}",
                         retry_after_ms=int(RECOVER_S * 1000))
 
+    def queue_depth(self):
+        return self._q.qsize()
+
     def _commit(self, batch):
+        self.metrics.batch_size.observe(len(batch))
         tx, done = Tx(self), []
         for fn, fut in batch:
             mark = tx.mark()
@@ -310,6 +319,7 @@ class RecordLog:
                 for fut, _ in done:
                     fut.set_exception(self._unavailable())
                 return
+            self.metrics.written(tx.records)
             try:
                 for r in tx.records:
                     if r["event"]["type"] in LEAF_TYPES:

@@ -58,11 +58,24 @@ class Storage:
         """The tenant's registry leaves, in order."""
         raise NotImplementedError
 
+    def checkpoint_put(self, size, note):
+        """Store the signed checkpoint note (str) of the record tree at `size` as the latest; ValueError when an older
+        stored note is of a larger tree."""
+        raise NotImplementedError
+
+    def checkpoint_latest(self):
+        """(size, note) of the latest stored checkpoint note, or None."""
+        raise NotImplementedError
+
     def tiles_get(self, tree, level, index, width):
         raise NotImplementedError
 
     def tiles_put(self, tree, level, index, width, data):
         raise NotImplementedError
+
+    def unsynced_s(self):
+        """Seconds the oldest written but not yet synced record has waited; 0 when everything written is durable."""
+        return 0.0
 
     def fsck(self):
         """Full check of every log: a list of problems, empty when the store is intact."""
