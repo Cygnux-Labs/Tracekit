@@ -17,10 +17,10 @@ Signed with the same key as the records (over the canonical form without `sig`).
 | Witness | Who controls it | What it retains | What an attacker can still rewrite |
 |---|---|---|---|
 | git repo with a remote (recommended) | Whoever owns the remote. Recommended: the security team, protected branch, written with a deploy key the agent's user cannot read, no push access for the agent's user | Every checkpoint (head seq, head hash, key id, time, signature) as a commit, forever | Nothing already pushed, unless they can force-push the remote. Records after the last pushed checkpoint are unprotected |
-| git repo without a remote | The signer's user on this machine | Same, locally | Root (L4) can rewrite it with the ledger. Protects against the agent's user (L1–L3) only |
+| git repo without a remote | The signer's user on this machine | Same, locally | Root (A4) can rewrite it with the ledger. In system mode it protects against the agent's user (A1–A3); in dev mode the agent's user owns it and can rewrite it too. Not off-machine |
 | file | Whoever can write the file | Checkpoint lines | Anyone who can write the file; use storage the host cannot rewrite (WORM, another machine's mount) |
 | Rekor (experimental) | Sigstore's public log | Retains each signed checkpoint publicly and permanently | Append-only and not controlled by the host, but publishing reveals activity timing to everyone; off by default |
-| witness service (`tracekit witness serve`) | Whoever runs it: the security team, or a third party | Every checkpoint in an append-only RFC 6962 Merkle log with signed tree heads | Nothing logged, without detection: a second history for a logged sequence number is refused (fork), and readers check inclusion proofs and consistency between tree heads they have seen, so the operator cannot drop or rewrite entries quietly either |
+| witness service (`tracekit witness serve`) | Whoever runs it: the security team, or a third party | Every checkpoint in an append-only RFC 6962 Merkle log with signed tree heads | Nothing logged, without detection: a second history for a logged sequence number is refused (fork), and readers with a pinned witness key check inclusion proofs. A reader that also keeps a `state=` file checks each new tree head is consistent with the last one it saw, so the operator cannot drop or rewrite entries that reader has already seen. Without `state=`, a rewrite is not detected |
 
 ## Witness service
 
@@ -90,4 +90,4 @@ Exit codes: `0` verified, `1` failed, `2` unusable bundle, `3` warnings with `--
 
 ## Choosing one
 
-Put the witness where the agent host has **append-only** access at most: a separate GitHub repo with branch protection written by a deploy key, or a machine you control. A witness the attacker can also rewrite adds nothing against L4 (root on the agent host).
+Put the witness where the agent host has **append-only** access at most: a separate GitHub repo with branch protection written by a deploy key, or a machine you control. A witness the attacker can also rewrite adds nothing against A4 (root on the agent host).

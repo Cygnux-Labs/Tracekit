@@ -11,6 +11,8 @@ help:
 	@echo "make demo      run the scripted end-to-end demo"
 	@echo "make eval      offline evaluations E1 (integrity), E2 (overhead), E3 (policy gate), E4 (seeded faults), E6 (findings); rewrites eval/results/"
 	@echo "make eval-agents  E5: real Claude Code runs (needs the claude CLI; spends model usage)"
+	@echo "make eval-scale   E7: SQL index over a million-event ledger (contrib/query)"
+	@echo "E8 (insider attacks) needs root and a Linux system-mode signer; CI runs it, see eval/e8_insider.py"
 	@echo "make clean     remove build artefacts"
 
 install:

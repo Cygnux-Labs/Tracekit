@@ -236,7 +236,7 @@ def find_harness(pid, harnesses, limit=64):
                     return None, f"registered harness file {f} can be replaced by a non-root user: {bad}"
             return {"name": h["name"], "exe": exe, "pid": apid, "start_time": _start_time(apid)}, None
     if not readable and len(_ancestors(pid, limit)) > 1:
-        return None, "signer cannot read process executables (needs CAP_SYS_PTRACE; see docs/threat-model.md)"
+        return None, "signer cannot read process executables (needs CAP_SYS_PTRACE; see docs/threat-model-laptop.md)"
     return None, "no registered harness among the sender's ancestor processes"
 
 

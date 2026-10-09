@@ -4,14 +4,13 @@
 
 **Your coding agent tells you what it did. Tracekit keeps a signed record of what it actually did.**
 
-*Tamper-evident tracing, policy gates and cross-checks for AI coding agents. Every tool call is signed by a separate OS user, hash-chained, checkpointed to an external witness, and exported as a bundle anyone can verify offline.*
+*Tamper-evident tracing, policy gates and cross-checks for AI coding agents. Tool calls that pass through a capture path (coding-agent hooks, or code wrapped with the SDKs) are signed, hash-chained, checkpointed to a witness, and exported as a bundle anyone can verify offline. In Linux system mode the signer runs as its own OS user; in dev mode it runs as yours.*
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](./LICENSE)
 [![Python](https://img.shields.io/badge/python-%E2%89%A53.9-3776AB?style=flat-square&logo=python&logoColor=white)](./pyproject.toml)
 [![Status](https://img.shields.io/badge/status-v0.2%20release%20candidate-orange?style=flat-square)](https://github.com/Cygnux-Labs/Tracekit/issues/1)
 [![CI](https://img.shields.io/github/actions/workflow/status/Cygnux-Labs/Tracekit/ci.yml?branch=main&style=flat-square&label=tests)](https://github.com/Cygnux-Labs/Tracekit/actions/workflows/ci.yml)
 [![Signing](https://img.shields.io/badge/signing-Ed25519-blueviolet?style=flat-square)](./docs/signing.md)
-[![Paper](https://img.shields.io/badge/paper-PDF-b31b1b?style=flat-square)](./paper/main.pdf)
 
 <video src="https://github.com/user-attachments/assets/46640e32-82e2-46ef-a318-a9220f04714c" width="100%" autoplay loop muted playsinline>Tracekit demo video: the live observer shows agents, tool calls, policy blocks and the hash-chain status as a coding agent works.</video>
 
@@ -33,9 +32,9 @@ Tracekit is a small, auditable layer that deals with these:
 | | What it does | How it's enforced |
 |---|---|---|
 | ✍️ **Separate signer** | In Linux system mode, `tracekitd` runs as its own OS user and the agent never holds the key. | File ownership plus `sudo tracekit init --user "$USER"`; dev mode is same-user and explicitly weaker |
-| 🔗 **Signed hash chain** | Each record carries the previous record's hash, a contiguous `seq`, and an Ed25519 signature over `(hash, prev_hash, seq)`. | `tracekit verify` rejects edited, deleted, reordered or forged records |
-| 🧾 **External witness** | The chain head is checkpointed to a git or file witness off the machine, so a chain rebuilt with the real key still fails. | `--witness git:...` at init, `--witness` / `--key` at verify |
-| 🛡️ **Policy gate** | Versioned rules with stable ids (`TK-D006`) block dangerous calls before they run; `ask` rules hold a call until a *different* OS user approves it. | Claude Code `PreToolUse` hook, `tracekit approve` / `reject` |
+| 🔗 **Signed hash chain** | Each record carries the previous record's hash, a contiguous `seq`, and an Ed25519 signature over `(hash, prev_hash, seq)`. | `tracekit verify` rejects edited, deleted, reordered or forged records. Deleting the whole ledger and key is detectable only against a witness outside the attacker's reach |
+| 🧾 **Witness** | The chain head is checkpointed to a git, file or witness-service log. If the witness is out of the attacker's reach (a git remote it cannot force-push, another machine), a chain rebuilt with the real key still fails. A local git repo is not off-machine and, in dev mode, the agent's user can rewrite it. | `--witness git:...` at init, `--witness` / `--key` at verify |
+| 🛡️ **Policy gate** | Versioned rules with stable ids (`TK-D006`) block dangerous calls before they run; `ask` rules hold a call until a *different* OS user approves it; an approval names the held call, not yet its exact arguments. | Claude Code `PreToolUse` hook, `tracekit approve` / `reject` |
 | 🩺 **Transcript checks** | Hashes the agent's session transcript at every hook. Deleting, truncating or editing earlier parts produces a `trace.tamper` event. | On by default (`transcript_hashing: true`) |
 | 🔎 **Model proxy cross-check** | An opt-in local proxy records each model exchange. A tool call the model requested with no hook record means hooks were disabled; the reverse means the proxy was bypassed or an event was fabricated. | `tracekit init --proxy --experimental` |
 | 📦 **Offline evidence bundle** | A run exports as a `.tkb` with the events, policy snapshots, checkpoints and a replay page. Optional OTLP/JSON for Jaeger and friends. | `tracekit export`, `tracekit verify` |
@@ -61,10 +60,14 @@ $ pip install . && tracekit demo
 == verify offline against the git witness
 [PASS] chain intact — 23 records linked from genesis
 [PASS] signatures valid — 23 Ed25519 signatures valid (ed25519:b20650723afaca1b)
-[PASS] head matches a witness checkpoint — covered by checkpoint(s) [22]
-[PASS] policy hash consistent — every decision is bound to a policy snapshot in the bundle
+[PASS] head matches a witness checkpoint — covered by checkpoint(s) [22]; checked against git:/tmp/.../signer/witness
+[PASS] policy hash consistent — every decision is bound to a policy snapshot in the bundle and cites rules that exist in it
+[WARN] harness attribution
+        run demo-run-1: no harness binding, so its hook events could have been sent by any process running as the agent's user (tracekit init --harness)
 [PASS] harness transcript unchanged — prefix matched at all 14 transcript marks
-[WARN] coverage — signer ran as the agent's own user (dev mode): the agent could have rewritten the ledger
+[WARN] coverage — clean on observed paths
+        run demo-run-1: signer ran as the agent's own user (dev mode): the agent could have rewritten the ledger
+
 Integrity: VERIFIED.
 Assurance: dev (signer ran as the agent's own user: the agent could have rewritten the ledger).
 
@@ -73,7 +76,7 @@ Assurance: dev (signer ran as the agent's own user: the agent could have rewritt
   original bundle exit 0, tampered bundle exit 1
 ```
 
-That is real output (trimmed). The demo uses dev mode, so the verifier warns that the signer shared the agent's user. That warning is the point: Tracekit says what it could not observe instead of staying quiet.
+That is real output (trimmed). Read `VERIFIED.` together with the `Assurance:` line under it: the demo uses dev mode, so the records are intact but the agent's own user could have rewritten them, and the "git witness" is a local folder on the same machine. That warning is the point: Tracekit says what it could not observe instead of staying quiet.
 
 ---
 
@@ -94,7 +97,7 @@ sudo tracekit init --user "$USER" --managed      # or: hooks in Claude Code's ad
 tracekit status
 ```
 
-Install the agent CLI system-wide (root-owned, for example `sudo npm install -g @anthropic-ai/claude-code`) and init registers it as the **harness**: the signer then accepts a run only from that program's process tree, so a script the agent starts elsewhere cannot fabricate a run (`--harness [NAME=]PATH` to name it explicitly; see the [threat model](docs/threat-model.md)).
+Install the agent CLI system-wide (root-owned, for example `sudo npm install -g @anthropic-ai/claude-code`) and init registers it as the **harness** (Linux): the signer then accepts a run only from that program's process tree, so a script the agent starts elsewhere cannot fabricate a run (`--harness [NAME=]PATH` to name it explicitly; see the [threat model](docs/threat-model-laptop.md)).
 
 **Anywhere, to try it.** A same-user signer; bundles are marked and the verifier warns:
 
@@ -106,9 +109,10 @@ The model proxy (`init --proxy`, `tracekit proxy`), the OTLP receiver (`tracekit
 (`tracekit ingest serve`) are experimental while they are rebuilt: each needs `--experimental` and prints a warning.
 `tracekit init` never starts them by default.
 
-On platforms without kernel peer credentials (including Windows and macOS), dev mode uses an
-authenticated loopback TCP connection. Caller identity cannot be attested there, so approvals are
-explicitly untrusted. macOS has kernel peer credentials, so there dev mode attests callers too, and an experimental system mode exists (`sudo tracekit init --experimental-macos`, see [platforms](docs/portability.md)).
+What runs where: Linux runs dev mode and system mode, including harness binding. macOS runs dev mode with kernel peer
+credentials (callers are attested) and an experimental system mode (`sudo tracekit init --experimental-macos`) without
+harness binding. Windows runs dev mode only, over an authenticated loopback TCP connection: callers cannot be attested,
+so held calls cannot be approved there. See [platforms](docs/portability.md).
 
 `--project` writes hooks to `./.claude/settings.json` instead of `~/.claude`. `tracekit uninstall` removes the hooks and keeps the ledger.
 
@@ -132,11 +136,11 @@ agent.end()
 
 `Tracer` writes signed v0.2 SDK events when a v0.2 client config is present. `tool()` evaluates policy before the wrapped operation and records the result; a denied call never enters the `with` body. `subagent()` produces a child lane in the observer. Prompts are hashed by default; `say()` and `think()` are recorded only when `reasoning_capture: true`. The SDK needs a configured v0.2 signer (`tracekit init --dev`).
 
-**One line for model calls.** `tracekit.init(agent="research-bot")` (same as `tracekit_sdk.init()`) records every call made through the OpenAI, Anthropic and Google Gen AI Python SDKs (chat, Responses, Messages, generate_content; sync, async and streaming) as signed `model.exchange` events: model, finish reason, the tool calls the model asked for, errors, status, latency and time to first chunk, with prompts and outputs redacted and hashed. Pass the model's call id to `tracer.tool(name, args, tool_use_id=call.id)` and the request and the execution share one id in the ledger. Recording never changes what the SDK returns; with `fail_mode: closed`, a call that cannot be recorded is refused before it is sent. An offline example for all three providers is in [`examples/model_calls.py`](examples/model_calls.py).
+**One line for model calls.** `tracekit.init(agent="research-bot")` (same as `tracekit_sdk.init()`) records the calls made through the OpenAI, Anthropic and Google Gen AI Python SDKs in that process (chat, Responses, Messages, generate_content; sync, async and streaming) as signed `model.exchange` events: model, finish reason, the tool calls the model asked for, errors, status, latency and time to first chunk, with prompts and outputs redacted and hashed. Pass the model's call id to `tracer.tool(name, args, tool_use_id=call.id)` and the request and the execution share one id in the ledger. Calls made any other way (raw HTTP, other SDKs, other processes) are not seen. Responses come back as the SDK returns them (streams through a recording wrapper); with `fail_mode: closed`, a call that cannot be recorded is refused before it is sent. An offline example for all three providers is in [`examples/model_calls.py`](examples/model_calls.py).
 
 **TypeScript.** `@cygnux/tracekit` (in `sdk/typescript`) gives JS/TS agents the same policy-gated `tool()` and signed model calls (`instrumentOpenAI`, `instrumentAnthropic`, `instrumentStagehand`, a Vercel AI SDK middleware). It drives Tracekit's Python engine through a stdio bridge, so policy, redaction and the event format are identical across languages.
 
-**Frameworks.** `@traced(tracer)` (from `tracekit.adapters`) wraps any sync or async function, and `tracekit.adapters.langchain.TracekitCallbackHandler` covers LangChain and LangGraph tools (`pip install "tracekit-ai[langchain]"`), with a denied call blocked before the tool body runs; `TracekitCallbackHandler(tracer, nodes=True)` also records each LangGraph node as a policy-checked `node:<name>` step. Policy rules match on tool names, so name your shell tool `Bash` or add rules for it. `tracekit.adapters.mcp.traced_session` gates and records every MCP tool call made through a client session, and Vercel AI SDK telemetry spans are understood by the OpenTelemetry receiver. **Browser agents:** `tracekit.adapters.browser` gates and records Browser Use actions (a denied action comes back to the agent as an error); Python Stagehand hooks are in [contrib/stagehand](contrib/stagehand/README.md). Runnable examples for every adapter are in [`examples/`](examples/) and [`sdk/typescript/examples/`](sdk/typescript/examples/), and run in CI. See [adapters](docs/adapters.md).
+**Frameworks.** `@traced(tracer)` (from `tracekit.adapters`) wraps any sync or async function, and `tracekit.adapters.langchain.TracekitCallbackHandler` covers LangChain and LangGraph tools (`pip install "tracekit-ai[langchain]"`), with a denied call blocked before the tool body runs; `TracekitCallbackHandler(tracer, nodes=True)` also records each LangGraph node as a policy-checked `node:<name>` step. Policy rules match on tool names, so name your shell tool `Bash` or add rules for it. `tracekit.adapters.mcp.traced_session` gates and records the MCP tool calls made through a client session, and Vercel AI SDK telemetry spans are understood by the OpenTelemetry receiver. **Browser agents:** `tracekit.adapters.browser` gates and records Browser Use actions (a denied action comes back to the agent as an error); Python Stagehand hooks are in [contrib/stagehand](contrib/stagehand/README.md). Runnable examples for every adapter are in [`examples/`](examples/) and [`sdk/typescript/examples/`](sdk/typescript/examples/), and run in CI. See [adapters](docs/adapters.md).
 
 **Codex CLI, Cursor and Gemini CLI.** `tracekit init --dev --agent codex|cursor|gemini` installs hooks on the same pipeline as Claude Code: the policy gate before each tool call (deny blocks, ask holds for approval), signed events, transcript hashing. Tool names are mapped onto the policy vocabulary (`run_shell_command` and `Shell` become `Bash`, `apply_patch` becomes `Edit` with the patched file), so the default rules apply. See [coding agents](docs/coding-agents.md); `tracekit demo --agent codex|cursor|gemini` runs the scripted demo in that agent's own hook format.
 
@@ -156,7 +160,7 @@ Anything an agent does outside its capture path (a tool that shells out on its o
 
 **Proof packs for auditors** ([contrib/proofpack](contrib/proofpack/README.md), a separate package). `tracekit-proofpack --run R` writes one zip: the bundle, a readable report (the run, every verification check, findings, coverage, and which evidence is relevant to EU AI Act Art. 12, SOC 2 CC7.2 and ISO/IEC 42001 A.6.2.8), and `verify.pyz`, a verifier that runs with nothing but Python.
 
-**Witness service, hardware keys.** `tracekit witness serve` runs an append-only, Merkle-tree checkpoint log with signed tree heads: it refuses a second history for the same sequence number, and clients check inclusion and consistency proofs, so the witness cannot quietly rewrite its log either. `tracekit init --signer-cmd ... --signer-pub ...` keeps the signing key in a TPM, HSM or enclave through a small helper process; `--key-attestation FILE` adds the device's attestation document, whose hash is signed into checkpoints and reported by `verify` (Tracekit checks the key's identity, not the vendor's attestation contents). See [witnesses](docs/witnesses.md) and [signing](docs/signing.md).
+**Witness service, hardware keys.** `tracekit witness serve` runs an append-only, Merkle-tree checkpoint log with signed tree heads: it refuses a second history for the same sequence number, and verifiers with the pinned witness key check inclusion proofs. A verifier that keeps a `state=` file also checks consistency with the last tree head it saw, so the witness cannot rewrite entries that verifier has already seen; without `state=` a rewritten log is not detected. `tracekit init --signer-cmd ... --signer-pub ...` keeps the signing key in a TPM, HSM or enclave through a small helper process; `--key-attestation FILE` adds the device's attestation document, whose hash is signed into checkpoints and reported by `verify` (Tracekit checks the key's identity, not the vendor's attestation contents). See [witnesses](docs/witnesses.md) and [signing](docs/signing.md).
 
 **Causeway and onchain agents** (separate packages under `contrib/`). `tracekit-causeway anchor|verify|import-tests|export` makes Causeway's causal logs tamper-evident under Tracekit's signer and turns its counterfactual verdicts into signed findings. `tracekit_onchain.guarded_tx` records a transaction guard's verdict (Proof-Gated Signing's `Guard.check` interface) before the wallet signs, and never signs a blocked transaction. See [contrib/causeway](contrib/causeway/README.md) and [contrib/onchain](contrib/onchain/README.md).
 
@@ -198,10 +202,10 @@ Anything an agent does outside its capture path (a tool that shells out on its o
                                          tracekit export ──▶ run.tkb ──▶ tracekit verify (offline, anyone)
 ```
 
-- **Hooks (always).** Every tool call, its policy decision and its result, recorded before and after the tool runs. Deny rules block before the tool runs.
+- **Hooks (always).** Each tool call the agent harness reports to its hooks, its policy decision and its result, recorded before and after the tool runs. Deny rules block before the tool runs. What a command does inside its own subprocesses is not reported.
 - **Transcript checks (on by default).** The signer compares each transcript hash with the previous mark and emits `trace.tamper` (`deleted`, `truncated`, `edited`). Changes after the session's last hook are not seen.
 - **Model proxy (opt-in).** Sits at `ANTHROPIC_BASE_URL`, records each request before forwarding and each response when it completes (hashed by default; headers and API keys are never recorded), and streams responses through. In one real Claude Code session (6 requests) it added 3–28 ms per request before forwarding. That is a single-session measurement, not a benchmark.
-- **Approvals.** A matching Bash, Write, Edit, WebFetch or MCP call is held until someone approves it. Outside dev mode the approver must be a **different OS user** or one listed in `approvers`, because the agent can always start a process as its own user. Unanswered holds are rejected after `approval_timeout_s`.
+- **Approvals.** A call matching an `ask` rule is held until someone approves it. Outside dev mode the approver must be a **different OS user** or one listed in `approvers`, because the agent can always start a process as its own user; dev mode accepts same-user approvals and the verifier warns about them. An approval is recorded against the held call's id: it is not yet bound to the call's exact arguments. Unanswered holds are rejected after `approval_timeout_s`.
 
 ## What the verifier checks
 
@@ -215,7 +219,7 @@ Anything an agent does outside its capture path (a tool that shells out on its o
 
 ## Policy
 
-`tracekit/policy/default.yaml` holds versioned rules, each with an id, a reason shown to the agent and a rationale. Use `extends: default` for your own, or start from `strict.yaml`. Every decision records the hash of the policy that produced it.
+`tracekit/policy/default.yaml` holds versioned rules, each with an id, a reason shown to the agent and a rationale. Use `extends: default` for your own, or start from `strict.yaml` (fail closed, `ask` for pushes, publishes, uploads, web fetches and MCP calls). Dev mode reads the policy named by `TRACEKIT_POLICY` in the agent's environment; system mode ignores that and reads only the `policy` path in the root-owned `/etc/tracekit/client.json` (re-pin with `sudo tracekit migrate --system`). The comment at the top of `strict.yaml` has the steps. Every decision records the hash of the policy that produced it.
 
 | Section | Effect | Examples from the default policy |
 |---|---|---|
@@ -261,11 +265,12 @@ Tracekit proves what its capture path recorded, and that the record has not chan
 - **Inside subprocesses.** Hooks see the Bash command line, not every file or network call the command makes.
 - **After the last hook.** Activity and transcript edits after the session's final hook are not seen.
 - **Host compromise.** An attacker with root can take the key. That needs key storage outside the OS or the proxy on another machine.
-- **Witness independence.** A witness the attacker can also rewrite adds nothing.
+- **Witness independence.** A witness the attacker can also rewrite adds nothing. Without one, deleting the whole ledger and key (dev mode: the agent's user can) is undetectable.
+- **Approvals.** An approval names the held call, not yet its exact arguments.
 - **Clock.** Timestamps come from the host. `seq` and the chain prove order; `ts` does not prove when.
 - **Reasoning is self-reported.** Models can leave out or rationalise their real reasons, and some providers hide reasoning. Tracekit flags gaps between words and actions; it does not read the model's internal computation.
 
-All of these are mapped claim by claim in [the threat model](docs/threat-model.md), which has not been externally reviewed yet. If you find a gap that isn't there, [open an issue](https://github.com/Cygnux-Labs/Tracekit/issues).
+All of these are mapped claim by claim in [the threat model](docs/threat-model-laptop.md), which has not been externally reviewed yet. If you find a gap that isn't there, [open an issue](https://github.com/Cygnux-Labs/Tracekit/issues).
 
 ## Use in CI
 
@@ -289,13 +294,13 @@ Without a pinned key or a witness the result is reported as unanchored, exactly 
 - **Bundles follow the ledger's rules.** Records from other runs are elided to `seq`, `hash`, `prev_hash`, `sig`.
 - **Fail mode is explicit and recorded.** Linux system mode fails closed by default: tool calls are blocked while the signer is down, unless the root-owned `/etc/tracekit/client.json` sets `fail_mode: open`. Dev mode defaults to `open`. Every `run.start` records which one was in effect.
 
-Details: [threat model](docs/threat-model.md) · [signing](docs/signing.md) · [witnesses](docs/witnesses.md) · [privacy](docs/privacy.md) · [platforms](docs/portability.md) · [adapters](docs/adapters.md) · [remote ingestion](docs/remote-ingest.md) · [evaluation](docs/evaluation.md) · [event schema](tracekit/schema/tracekit.event.v1.json). Trying Tracekit with a team: the [design-partner kit](docs/design-partner-kit.md). Reviewing it: the [review packet](docs/review-packet.md).
+Details: [threat model](docs/threat-model-laptop.md) · [signing](docs/signing.md) · [witnesses](docs/witnesses.md) · [privacy](docs/privacy.md) · [platforms](docs/portability.md) · [adapters](docs/adapters.md) · [remote ingestion](docs/remote-ingest.md) · [evaluation](docs/evaluation.md) · [event schema](tracekit/schema/tracekit.event.v1.json). Reviewing it: the [review packet](docs/review-packet.md).
 
 ## Limits and not done yet
 
 Known limits, stated plainly:
 
-- Tracekit records what is routed through its hooks, proxy, transcript reader and SDK. Anything outside those channels is reported as a coverage gap, not silently assumed clean ([threat model](docs/threat-model.md)).
+- Tracekit records only what is routed through a capture path: the coding-agent hooks, the proxy, the transcript reader, the SDKs and their adapters, and the OTLP receiver. Anything outside those channels is not seen and not reported. The verifier's coverage check lists which paths a run used and which known blind spots it touched (for example network commands whose payloads were not observed), but it cannot list actions it never saw ([threat model](docs/threat-model-laptop.md)).
 - The policy gate is a regex gate. It stops the obvious and tells you when a rule could not be evaluated; it is not a sandbox (`make eval` measures it on a labelled corpus, and the misses are listed in the results).
 - Regexes in a policy are checked at load time for catastrophic-backtracking shapes, and each match has a 0.5 s budget where the platform allows (POSIX, main thread). A match that times out counts as a match.
 - The live observer keeps the most recent 50,000 records in memory (`TRACEKIT_OBSERVE_MAX_RECORDS`); older ones stay in the ledger and in exports.
@@ -313,7 +318,7 @@ Not built yet (tracked in [issue #1](https://github.com/Cygnux-Labs/Tracekit/iss
 
 ## Evaluation and paper
 
-`make eval` runs five offline experiments (E1 to E4 and E6) against the v0.2 code and writes JSON to `eval/results/`; `make eval-agents` runs E5 with real Claude Code sessions, and `make eval-scale` runs E7 (`contrib/query`). Results and caveats: [docs/evaluation.md](docs/evaluation.md).
+`make eval` runs five offline experiments (E1 to E4 and E6) against the v0.2 code and writes JSON to `eval/results/`; `make eval-agents` runs E5 with real Claude Code sessions, `make eval-scale` runs E7 (`contrib/query`), and E8 (insider attacks against a Linux system-mode signer, as root) runs in CI as a merge gate. Results and caveats: [docs/evaluation.md](docs/evaluation.md).
 
 | Experiment | Script | What it measures |
 |---|---|---|
@@ -324,8 +329,9 @@ Not built yet (tracked in [issue #1](https://github.com/Cygnux-Labs/Tracekit/iss
 | E5 real agents | `eval/e5_agents.py` | 12 real Claude Code runs (opt-in, spends model usage): capture, verification and false blocks; the planted injections were ignored by the model, so the gate was not exercised |
 | E6 findings | `eval/e6_findings.py` | The say-vs-do detectors on 2,000 synthetic sessions, half with one spliced misbehaviour: precision 1.00 (0 of 1,000 honest sessions flagged), recall 0.84 overall; structural detectors are exact, but held-out paraphrases of "tests pass" / "I did not push" are caught only 29% / 40% of the time |
 | E7 SQL at scale | `contrib/query/e7_sql_scale.py` | The SQL index over a 1,000,001-event ledger (604 MB): every typical query under 1 s on 2 vCPUs, index build 36 s, and a rebuilt index returns identical rows |
+| E8 insider attacks | `eval/e8_insider.py` | Eight attacks on the path that feeds the ledger, as real separate OS users against a system-mode signer with a registered harness (decoy signer, restored counters, another user's injected event, signer down, swapped policy, fabricated runs); CI fails unless all eight are caught |
 
-The ledger alone cannot detect truncation or a full re-sign by a key holder; the witness closes that gap. Both limits show up in the E1 output.
+The ledger alone cannot detect truncation or a full re-sign by a key holder; a witness the key holder cannot rewrite closes that gap. Both limits show up in the E1 output.
 
 The white paper, *Tracekit: Tamper-Evident Intent–Reasoning–Action Auditing for Autonomous Coding Agents* (Bravish Ghosh), is in [`paper/`](paper/) with the PDF at [`paper/main.pdf`](paper/main.pdf). It describes the v0.1 prototype and its measurements; the v0.1 scripts and their experiment code were removed from this tree and are in the git history before the v0.2 release. A v0.2 update of the paper is pending.
 
