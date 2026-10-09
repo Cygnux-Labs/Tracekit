@@ -424,10 +424,15 @@ class FileReader(_Records):
         newest one. It may be of a larger tree than the records this reader holds; open a new reader to cover it."""
         if tree != RECORDS:
             return (self.notes.get(tree) or [None])[-1]
-        try:
-            return _parse_note(self._read(os.path.join(self.root, NOTE)))
-        except FileNotFoundError:
-            return None
+        for i in range(20):
+            try:
+                return _parse_note(self._read(os.path.join(self.root, NOTE)))
+            except FileNotFoundError:
+                return None
+            except PermissionError:   # Windows: the writer is replacing the note this instant
+                if os.name != "nt" or i == 19:
+                    raise
+                time.sleep(0.05)
 
 
 def fsck(root):
