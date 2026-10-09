@@ -180,3 +180,44 @@ def verify(public, msg, sig):
 
 def kid(public):
     return "ed25519:" + hashlib.sha256(public).hexdigest()[:16]
+
+
+# ---------------- format v2 ----------------
+# DER SubjectPublicKeyInfo header of an Ed25519 key (RFC 8410)
+_ED25519_SPKI = bytes.fromhex("302a300506032b6570032100")
+_IDENTITY = (0, 1, 1, 0)
+
+
+def spki(public):
+    """DER SubjectPublicKeyInfo of a raw Ed25519 public key."""
+    return _ED25519_SPKI + public
+
+
+def key_alg(spki_der):
+    """The algorithm a SubjectPublicKeyInfo is for, or None if it is not one we support."""
+    if len(spki_der) == 44 and spki_der.startswith(_ED25519_SPKI):
+        return "ed25519"
+    return None
+
+
+def spki_kid(spki_der):
+    """v2 key id. It hashes the whole SubjectPublicKeyInfo, so it binds the key's algorithm too."""
+    return "sha256:" + hashlib.sha256(spki_der).hexdigest()
+
+
+def _verify_ed25519_strict(public, msg, sig):
+    """The v2 Ed25519 rules, identical on both backends: S < L, a canonically encoded public key that is not of small
+    order, and the cofactorless equation [S]B = R + [k]A (both backends check it that way)."""
+    if len(public) != 32 or len(sig) != 64 or int.from_bytes(sig[32:], "little") >= _L:
+        return False
+    A = _decompress(public)
+    if A is None or _equal(_mul(8, A), _IDENTITY):
+        return False
+    return verify(public, msg, sig)
+
+
+def verify_v2(alg, spki_der, msg, sig):
+    """False unless `alg` is the key's own algorithm and the signature holds under that algorithm's v2 rules."""
+    if key_alg(spki_der) != alg:
+        return False
+    return _verify_ed25519_strict(spki_der[len(_ED25519_SPKI):], msg, sig)
