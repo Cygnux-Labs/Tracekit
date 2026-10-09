@@ -339,7 +339,8 @@ class SocketSigner:
 class TestServeContract(SignerContract, unittest.TestCase):
     def make_signer(self):
         d = tmpdir(self)
-        cfg = {"data_dir": d, "socket": os.path.join(d, "s.sock"), "multi_tenant_apps": [f"uid:{ME.subject}"]}
+        cfg = {"data_dir": d, "socket": os.path.join(d, "s.sock"), "multi_tenant_apps": [f"uid:{ME.subject}"],
+               "approvals": {"self_approval": "allow"}}   # one uid runs and approves
         service = svc.open_service(cfg, policy=PAY_ASKS)
         servers = svc.serve(cfg, service)
         for srv in servers:

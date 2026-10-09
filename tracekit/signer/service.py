@@ -32,6 +32,8 @@ signer.yaml:
     witnesses:                               # C2SP tlog-witnesses that cosign every new note (tracekit.tlog_witness)
       - {url: https://witness.example.org, vkey: "witness.example.org/w1+1234abcd+BA...", class: customer}
     contact: ops@example.org                 # the logs list's contact line; default the origin
+    approvals: {self_approval: deny, approvers: ["uid:1001", "mtls:spiffe://acme/ops/*"],   # identity or prefix*
+                break_glass: ["uid:0"]}      # may answer any approval, with a reason; recorded break_glass
     acknowledge_rollback: false
 
 Startup (04-design §2.6): the storage lock is taken before any socket is touched; the log is replayed, its chain
@@ -66,9 +68,14 @@ Approvals (04-design §5, decision S6): one per (tenant, run, tool_call_id, atte
 approval.request record binds it to the call (binding_digest); `approval_consume` lets the call run once, only with the
 approved arguments, and records every refusal. Approvals and the index are rebuilt from the log on start; the
 signer's copy of a pending call's arguments (what the approver is shown) is kept encrypted under keys/approval_args.key
-and deleted once the approval is consumed, rejected or expired. An approval expires after APPROVAL_TTL_S, or when its
-run ends. Dev stubs: any identity of the run's tenant may answer an approval, and a self-approval is labelled
-(`self_approved`).
+and deleted once the approval is consumed, rejected or expired. An approval expires after APPROVAL_TTL_S, when its
+run ends, or at once when the adapter abandons it (`approval.abandoned`). An ask rule with `approval: {executor: t2}`
+makes the consume return the approved arguments from that copy: its caller runs exactly those.
+Who answers (design §5): with a config (`approvals`), only an approver of the run's tenant or a break-glass identity
+(any tenant, a reason required, recorded `break_glass`), never the requester or the run's owner unless
+`self_approval: allow`. Without one (the dev signer), any identity of the run's tenant, a self-approval labelled
+(`self_approved`). The `approval` record carries the approver's identity as the transport established it. Approvals
+are listed and shown only to the run's owner and to those who may answer them.
 
 Privacy (04-design §1.2, §2.4; docs/privacy.md): a result and the approver's copy of the arguments go through
 privacy.redact before they are committed or stored; a result's record carries a `redaction` manifest (the rules that
@@ -122,7 +129,7 @@ DECISION_TTL_S = 300
 REFUSAL_WINDOW_S = 60
 STRICTNESS = ("allow", "flag", "ask", "deny")
 LIVE = ("requested", "approved")   # approval states that may still lead to a consume
-LIST_MAX = 1000
+LIST_PAGE = 100
 TICK_S = 1.0
 CHECKPOINT_S, CHECKPOINT_MIN_S = 10.0, 1.0
 WITNESS_GAP_S, BACKOFF_S = 300.0, (1.0, 300.0)
@@ -131,7 +138,8 @@ GRACE_S, IDLE_S = 5.0, 3600.0
 FAIL_MODES = {"default": "closed"}
 CONFIG_KEYS = {"data_dir", "socket", "tcp_endpoint", "http", "durability", "tenant", "tenants", "authorize", "limits",
                "acknowledge_rollback", "policy", "multi_tenant_apps", "migrators", "analyzers", "fail_modes", "grace_s",
-               "idle_s", "origin", "metrics", "witnesses", "contact"}
+               "idle_s", "origin", "metrics", "witnesses", "contact", "approvals"}
+APPROVAL_KEYS = {"self_approval", "approvers", "break_glass"}
 
 
 def load_policy(path=DEFAULT_POLICY, backend=None):
@@ -209,17 +217,23 @@ class SignerService:
     def __init__(self, data_dir, policy=None, identity=None, tenant="default", tenants=None, limits=Limits(),
                  durability=ACK_ON_WRITE, witnesses=(), acknowledge_rollback=False, open_storage=None, isolation=None,
                  multi_tenant_apps=(), migrators=(), analyzers=(), fail_modes=None, grace_s=GRACE_S, idle_s=IDLE_S,
-                 bridge=None, origin=None, authorize=None, contact=None):
+                 bridge=None, origin=None, authorize=None, contact=None, approvals=None):
         """`identity` answers the in-process SignerAPI calls (default: this process's uid); transports call
         handle_frame with the identity they established. `policy` is a policy2 Engine (default: load_policy()).
         `open_storage()` defaults to file storage in data_dir/store. `origin` names the log in its checkpoints, `contact`
         its operator in the logs list. `witnesses` cosign its notes (see the module docstring).
         `multi_tenant_apps`, `migrators` and `analyzers` are identities ("scheme:subject"); `tenants` and `authorize`
         map identities or `prefix*` to a tenant and to the methods they may call.
-        `isolation` fixes the signer_isolation label of every run (a dev signer: same-user). `bridge`: see RecordLog."""
+        `isolation` fixes the signer_isolation label of every run (a dev signer: same-user). `bridge`: see RecordLog.
+        `approvals`: who answers approvals (the `approvals` config section); None for the dev signer's rules."""
         fail_modes = dict(fail_modes or FAIL_MODES)
         if not all(isinstance(k, str) and v in ("open", "closed") for k, v in fail_modes.items()):
             raise ValueError("fail_modes maps tool classes to open or closed")
+        if approvals is not None and not (
+                isinstance(approvals, dict) and set(approvals) <= APPROVAL_KEYS
+                and approvals.get("self_approval", "deny") in ("allow", "deny")
+                and all(isinstance(approvals.get(k, []), list) for k in ("approvers", "break_glass"))):
+            raise ValueError("approvals takes self_approval (allow|deny), approvers and break_glass (identity lists)")
         self.metrics = metrics.SignerMetrics()
         authorize = dict(authorize or {})
         if not all(isinstance(m, list) and set(m) <= set(REQUESTS) for m in authorize.values()):
@@ -247,6 +261,9 @@ class SignerService:
         self.tenant, self.tenants, self.authorize = tenant, dict(tenants or {}), authorize
         self.multi_tenant_apps, self.migrators, self.analyzers = set(multi_tenant_apps), set(migrators), set(analyzers)
         self.fail_modes, self.grace_s, self.idle_s = fail_modes, grace_s, idle_s
+        self.approvals = approvals
+        self._approvers, self._break_glass = ({k: True for k in (approvals or {}).get(name, ())}
+                                              for name in ("approvers", "break_glass"))
         self._swept = self._noted = time.monotonic()
         self._args_dir = os.path.join(data_dir, "approvals")   # approval_id -> the encrypted args of a live approval
         self._cond = threading.Condition()
@@ -577,9 +594,13 @@ class SignerService:
         return a
 
     def _may_see(self, identity, a):
-        """Whether `identity` may see and answer approval `a`: the run's owner, or an identity of the run's tenant."""
+        """Whether `identity` may see approval `a`: the run's owner, a break-glass identity, or an identity of the
+        run's tenant (with a config, only an approver of it)."""
         sub = subject(identity)
-        return sub == self.log.runs[a["run_key"]]["owner"] or a["run_key"][0] == lookup(self.tenants, sub, self.tenant)
+        if sub == self.log.runs[a["run_key"]]["owner"] or lookup(self._break_glass, sub, False):
+            return True
+        return (self.approvals is None or lookup(self._approvers, sub, False)) and \
+            a["run_key"][0] == lookup(self.tenants, sub, self.tenant)
 
     def _visible(self, identity, approval_id):
         a = self.log.approvals.get(approval_id)
@@ -844,11 +865,16 @@ class SignerService:
             data = {"approval_id": aid, "decision_id": call["decision_id"], "policy_hash": self.policy.policy_hash,
                     "rule_ids": call["rule_ids"], "expires_at": expires_at, "requester": sub, "binding": binding,
                     "binding_digest": "sha256:" + hashlib.sha256(canonical(binding)).hexdigest()}
+            if any(r.get("approval") == {"executor": "t2"} for _, r, *_ in self.policy.rules
+                   if r["id"] in call["rule_ids"]):
+                data["executor"] = "t2"
             args = self._args(p)[0]
             shown = privacy.redact(args, call["dotenv"])[0]   # redact the parsed args, so a raw copy stays valid JSON
             if p["args_source"] == "raw":
                 shown = p["args"] if shown == args else canonical(shown).decode()
             copy = {"args_source": p["args_source"], "args": shown}
+            if data.get("executor") == "t2":   # what the executor runs: the real arguments, never shown to approvers
+                copy["exec_args"] = p["args"]
             if "reason" in req:
                 copy["reason"] = privacy.redact(req["reason"], call["dotenv"])[0]
             _write_new(os.path.join(self._args_dir, aid), self._seal(aid, copy))
@@ -860,7 +886,20 @@ class SignerService:
 
     def _approval_decide(self, identity, req):
         aid, sub = req["approval_id"], subject(identity)
-        run_key = self._visible(identity, aid)["run_key"]
+        a = self._visible(identity, aid)
+        run_key = a["run_key"]
+        same = sub in (a["requester"], self.log.runs[run_key]["owner"])
+        glass = False
+        if self.approvals is not None:
+            if same:
+                if self.approvals.get("self_approval") != "allow":
+                    raise RPCError("forbidden", f"{sub[:256]} may not answer its own run's approval")
+            elif not lookup(self._approvers, sub, False):
+                glass = bool(lookup(self._break_glass, sub, False))
+                if not glass:
+                    raise RPCError("forbidden", f"{sub[:256]} is not an approver")
+                if "reason" not in req:
+                    raise RPCError("forbidden", "a break-glass answer needs a reason")
 
         def fn(tx, run):
             a = self.log.approvals[aid]
@@ -869,9 +908,12 @@ class SignerService:
             if a["expires_at"] <= _iso(time.time()):
                 raise RPCError("approval_not_pending", "expired")
             tx.set(a, "state", "approved" if req["decision"] == "approve" else "rejected")
-            same = a["requester"] == sub
             data = {"tool_use_id": a["tool_call_id"], "approval_id": aid, "decision": req["decision"], "approver": sub,
+                    "approver_identity": {"scheme": identity.scheme, "subject": identity.subject[:256],
+                                          "attested": identity.attested},
                     "channel": "rpc", "self_approved": same}
+            if glass:
+                data["break_glass"] = True
             if "reason" in req:
                 data["reason"] = req["reason"]
             tx.emit(run, "approval", data, request_id=req["request_id"], tool_call_id=a["tool_call_id"])
@@ -886,7 +928,7 @@ class SignerService:
     def _approval_wait(self, identity, req):
         aid = req["approval_id"]
         self._approval(self._authorize(identity, req), aid)
-        with self._cond:
+        with self.quotas.wait_slot(identity), self._cond:
             self._cond.wait_for(lambda: self.log.approvals[aid]["state"] != "requested", req.get("timeout_ms", 0) / 1000)
         return {"approval_id": aid, "state": self.log.approvals[aid]["state"]}
 
@@ -895,6 +937,9 @@ class SignerService:
             req.get("approval_id_hint")
         self.quotas.take_event(identity)
         _, digest = self._args(req)
+        bound = self.log.approval_index.get((*key, tcid, attempt))
+        # read before the writer runs: the copy is deleted once the approval is consumed
+        copy = self._unseal(bound) if bound and self.log.approvals[bound]["executor"] == "t2" else None
 
         def fn(tx, run):
             aid = self.log.approval_index.get((*key, tcid, attempt))
@@ -920,9 +965,14 @@ class SignerService:
             elif a["expires_at"] <= _iso(time.time()):
                 why = "TK-APPROVAL-EXPIRED", "the approval expired"
             else:
+                out = {"ok": True, "rule_ids": ["TK-APPROVED"], "approval_id": aid}
+                if a["executor"] == "t2":
+                    if copy is None:
+                        raise RPCError("unavailable", f"the stored arguments of {aid} are gone")
+                    out["args"] = loads_strict(copy["exec_args"]) if copy["args_source"] == "raw" else copy["exec_args"]
                 tx.set(a, "state", "consumed")
                 tx.emit(run, "approval.consumed", {"approval_id": aid}, source="signer", **top)
-                return {"ok": True, "rule_ids": ["TK-APPROVED"], "approval_id": aid}
+                return out
             data = {"tool_use_id": tcid, "rule_ids": [why[0]], "reason": why[1]}
             if a is not None:
                 data["approval_id"] = aid
@@ -936,14 +986,42 @@ class SignerService:
     def _approval_get(self, identity, req):
         aid = req["approval_id"]
         a = self._visible(identity, aid)
-        return {**self._summary(aid, a), "binding_digest": a["binding_digest"],
-                **(self._unseal(aid) or {"args_source": a["args_source"], "args": None})}
+        copy = self._unseal(aid) or {"args_source": a["args_source"], "args": None}
+        copy.pop("exec_args", None)   # the approver sees the redacted copy only
+        return {**self._summary(aid, a), "binding_digest": a["binding_digest"], **copy}
 
     def _approval_list(self, identity, req):
-        mine = [(aid, a) for aid, a in list(self.log.approvals.items())
-                if req.get("run_id") in (None, a["run_key"][1]) and self._may_see(identity, a)]
-        recent = [x for x in mine if x[1]["state"] in LIVE] + [x for x in reversed(mine) if x[1]["state"] not in LIVE]
-        return {"approvals": [self._summary(aid, a) for aid, a in recent[:LIST_MAX]]}
+        items, page, cursor = iter(list(self.log.approvals.items())), [], req.get("cursor")
+        # lean: every page scans the approvals from the first; index them by tenant once a signer holds ~100k
+        if cursor is not None:
+            for aid, _ in items:
+                if aid == cursor:
+                    break
+        for aid, a in items:
+            if req.get("run_id") in (None, a["run_key"][1]) and self._may_see(identity, a):
+                if len(page) == req.get("limit", LIST_PAGE):
+                    return {"approvals": page, "next_cursor": page[-1]["approval_id"]}
+                page.append(self._summary(aid, a))
+        return {"approvals": page, "next_cursor": None}
+
+    def _approval_abandon(self, identity, req):
+        key, aid = self._authorize(identity, req), req["approval_id"]
+        self._approval(key, aid)
+
+        def fn(tx, run):
+            a = self.log.approvals[aid]
+            if a["state"] not in LIVE:
+                raise RPCError("approval_not_pending", a["state"])
+            tx.set(a, "state", "expired")
+            data = {"approval_id": aid, **({"reason": privacy.redact_text(req["reason"])[0]} if "reason" in req else {})}
+            tx.emit(run, "approval.abandoned", data, request_id=req["request_id"], tool_call_id=a["tool_call_id"],
+                    attempt=a["attempt"])
+            return {"approval_id": aid, "state": "expired"}
+        out = self.log.submit(identity, "approval_abandon", req, fn, key)
+        self._drop_args(aid)
+        with self._cond:
+            self._cond.notify_all()
+        return out
 
     def _close_run(self, identity, req):
         key = self._authorize(identity, req)
@@ -1051,7 +1129,7 @@ def open_service(cfg, **kw):
                          multi_tenant_apps=cfg.get("multi_tenant_apps", ()), migrators=cfg.get("migrators", ()),
                          analyzers=cfg.get("analyzers", ()), fail_modes=cfg.get("fail_modes"),
                          grace_s=float(cfg.get("grace_s", GRACE_S)), idle_s=float(cfg.get("idle_s", IDLE_S)),
-                         origin=cfg.get("origin"), contact=cfg.get("contact"),
+                         origin=cfg.get("origin"), contact=cfg.get("contact"), approvals=cfg.get("approvals") or {},
                          authorize=cfg.get("authorize"), **kw)
 
 
