@@ -71,7 +71,10 @@ class TestStrictParser(unittest.TestCase):
         self.rejects("[" * 100000, "syntax")
 
     def test_canonical_refuses_what_the_parser_rejects(self):
-        for bad in (float("nan"), 2 ** 53, "\ud800"):
+        deep = []
+        for _ in range(100000):
+            deep = [deep]
+        for bad in (float("nan"), 2 ** 53, "\ud800", {"\ud800": 1}, deep):
             with self.assertRaises(rfc8785.CanonicalizationError):
                 canonical(bad)
 

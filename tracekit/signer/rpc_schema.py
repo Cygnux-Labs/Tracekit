@@ -1,8 +1,9 @@
 """The signer RPC contract, version 1: one JSON Schema per request and response, the error shape, and `SignerAPI`.
 
 Frozen: a change to any schema here is a new RPC_VERSION. The caller's identity comes from the transport (peer
-credentials, token, mTLS), never from a request field. Calls that change state carry `request_id`: a retry with the
-same id and payload gets the original response, the same id with another payload is refused with `conflict`.
+credentials, token, mTLS), never from a request field. Calls that change state carry `request_id`, scoped to that
+identity: a retry with the same id and payload gets the original response, the same id with another payload is refused
+with `conflict`, and the same id from another identity is a different request.
 Per-run calls carry the `run_token` that `register_run` returned. Event calls carry `stream` and `client_seq`
 (one counter per client process); a skipped value becomes a signer-written gap record, a reused one is refused.
 """

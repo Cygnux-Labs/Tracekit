@@ -206,11 +206,13 @@ class SignerContract:
         self.register()
         _, d = self.decide(args_source="raw", args='{"path": "a.txt"}')
         self.assertEqual(d["decision"], "allow")
-        for i, raw in enumerate(('{"a":1,"a":2}', '{"n": NaN}', '{"id": 9007199254740993}', '{"a": ')):
+        for i, raw in enumerate(('{"a":1,"a":2}', '{"n": NaN}', '{"id": 9007199254740993}', '{"a": ',
+                                 "[" * 990 + "]" * 990)):
             _, d = self.decide(tcid=f"bad-{i}", args_source="raw", args=raw)
             self.assertEqual((d["decision"], d["rule_ids"]), ("deny", ["TK-ARGS-INVALID"]), raw)
-        _, d = self.decide(tcid="big", args={"id": 2 ** 60})
-        self.assertEqual(d["rule_ids"], ["TK-ARGS-INVALID"])
+        for i, args in enumerate(({"id": 2 ** 60}, {"\ud800": 1})):
+            _, d = self.decide(tcid=f"parsed-{i}", args=args)
+            self.assertEqual(d["rule_ids"], ["TK-ARGS-INVALID"])
 
     # --- approvals ---
 
@@ -269,6 +271,13 @@ class SignerContract:
         self.refused("unknown_approval", "approval_wait", {"run_id": self.run_id, "run_token": self.token,
                                                            "approval_id": "apr-x"})
 
+    def test_no_approval_after_close(self):
+        aid = self.ask()
+        self.call("close_run", self.run_req())
+        self.refused("run_closed", "approval_decide", {"request_id": self.rid(), "approval_id": aid,
+                                                       "decision": "approve"})
+        self.assertEqual(self.types()[-1], "run.closing")
+
 
 def _pay_asks(tool, args):
     return ("ask", ["TEST-PAY"]) if tool == "pay" else ("allow", [])
@@ -277,6 +286,12 @@ def _pay_asks(tool, args):
 class TestFakeSigner(SignerContract, unittest.TestCase):
     def make_signer(self):
         return FakeSigner(rule=_pay_asks)
+
+    def test_request_id_is_scoped_to_the_identity(self):
+        reg = {"request_id": "reg-1", "agent": {"name": "a"}}
+        first = self.call("register_run", dict(reg))
+        self.signer.identity = "someone-else"
+        self.assertNotEqual(self.call("register_run", dict(reg))["run_token"], first["run_token"])
 
 
 if __name__ == "__main__":

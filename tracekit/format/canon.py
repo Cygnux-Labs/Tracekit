@@ -20,8 +20,11 @@ class StrictJSONError(ValueError):
 
 
 def canonical(obj):
-    """JCS bytes of a JSON value; raises rfc8785 errors for NaN/Inf, unsafe ints, lone surrogates."""
-    return rfc8785.dumps(obj)
+    """JCS bytes of a JSON value; raises rfc8785.CanonicalizationError for anything JCS can't encode."""
+    try:
+        return rfc8785.dumps(obj)
+    except (UnicodeEncodeError, RecursionError) as e:   # lone-surrogate key; nesting deeper than the stack
+        raise rfc8785.CanonicalizationError(str(e)) from None
 
 
 def event_hash(event):

@@ -28,7 +28,7 @@ class FakeSigner:
         """`rule(tool, args) -> (decision, rule_ids)` with decision allow|deny|ask; args are the parsed value."""
         self.rule, self.identity, self.tenant = rule, identity, tenant
         self._n = 0
-        self._done = {}        # request_id -> (payload digest, response)
+        self._done = {}        # (identity, request_id) -> (payload digest, response)
         self._runs = {}
         self._approvals = {}
 
@@ -40,11 +40,11 @@ class FakeSigner:
         errs = rpc_schema.validate(rpc_schema.REQUESTS[method], req)
         if errs:
             raise RPCError("invalid_request", "; ".join(errs))
-        rid = req.get("request_id")
+        rid = (self.identity, req["request_id"]) if "request_id" in req else None
         key = hashlib.sha256(json.dumps([method, req], sort_keys=True, default=repr).encode()).hexdigest()
         if rid in self._done:
             if self._done[rid][0] != key:
-                raise RPCError("conflict", f"request_id {rid} was used with another payload")
+                raise RPCError("conflict", f"request_id {rid[1]} was used with another payload")
             return copy.deepcopy(self._done[rid][1])
         out = handler(req)   # handlers raise before changing any state, so refusals are not cached
         if rid is not None:
@@ -169,8 +169,11 @@ class FakeSigner:
                 raise RPCError("unknown_approval", req["approval_id"])
             if a["state"] != "requested":
                 raise RPCError("approval_not_pending", a["state"])
+            run = self._runs[a["run_id"]]
+            if run["closed"]:
+                raise RPCError("run_closed", a["run_id"])
             a["state"] = "approved" if req["decision"] == "approve" else "rejected"
-            self._append(self._runs[a["run_id"]], "approval", {"approval_id": req["approval_id"],
+            self._append(run, "approval", {"approval_id": req["approval_id"],
                                                                "decision": req["decision"], "approver": self.identity})
             return {"approval_id": req["approval_id"], "state": a["state"], "self_approved": True}
         return self._call("approval_decide", req, handle)
