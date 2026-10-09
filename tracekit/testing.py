@@ -155,7 +155,9 @@ class FakeSigner:
         return self._event("state_write", "state.write", ("key", "value_digest"), req)
 
     def model_event(self, req):
-        return self._event("model_event", "model.event", ("provider", "model", "phase", "content_digest", "usage"), req)
+        return self._event("model_event", "model.event", ("provider", "model", "phase", "content_digest", "usage",
+                                                          "exchange_id", "streamed", "stop_reason", "error", "tool_uses",
+                                                          "tool_results_sent"), req)
 
     def approval_request(self, req):
         def handle(req):

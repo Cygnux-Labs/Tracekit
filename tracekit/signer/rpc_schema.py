@@ -1,4 +1,4 @@
-"""The signer RPC contract, version 4: one JSON Schema per request and response, the error shape, and `SignerAPI`.
+"""The signer RPC contract, version 5: one JSON Schema per request and response, the error shape, and `SignerAPI`.
 
 Frozen: a change to any schema here is a new RPC_VERSION. The caller's identity comes from the transport (peer
 credentials, token, mTLS), never from a request field. Calls that change state carry `request_id`, scoped to that
@@ -12,8 +12,9 @@ from typing import Protocol
 from tracekit.format.canon import MAX_SAFE_INT
 from tracekit.schema import _check
 
-RPC_VERSION = 4
+RPC_VERSION = 5
 MAX_RAW_ARGS = 1 << 20   # characters of a raw arguments string
+MAX_RESULTS_SENT = 1024
 
 ERROR_CODES = [
     "invalid_request",      # fails the request schema
@@ -72,6 +73,17 @@ _consume = _obj(_RUN_REQ + ["tool_call_id", "tool", "args_source", "args"], **_R
                 tool=_str(256, minLength=1), args_source={"enum": ["raw", "parsed", "coerced"]}, args=ANY,
                 approval_id_hint=ID)   # from the framework's saved state: checked against the signer's index, never trusted
 _consume.update(_RAW)
+# a tool the model asked for: one the client runs has its args digest, or args_unparseable when the raw string failed
+# strict parsing; one the provider runs itself has neither
+_TOOL_USE = dict(_obj(["id", "name", "executed_by"], id=ID, name=_str(256, minLength=1),
+                      executed_by={"enum": ["client", "provider"]}, args_source={"enum": ["raw", "parsed", "coerced"]},
+                      args_digest=DIGEST, args_unparseable={"const": True},
+                      id_synthetic={"const": True}),   # the provider gave no id
+                 oneOf=[{"additionalProperties": False,
+                         "properties": {"id": {}, "name": {}, "executed_by": {"const": "provider"}, "id_synthetic": {}}},
+                        {"required": ["args_source", "args_digest"], "properties": {"executed_by": {"const": "client"}}},
+                        {"required": ["args_source", "args_unparseable"],
+                         "properties": {"executed_by": {"const": "client"}}}])
 _SUMMARY = _obj(["approval_id", "state", "run_id", "tool_call_id", "attempt", "tool", "rule_ids", "policy_hash",
                  "requester", "expires_at"],
                 approval_id=ID, state=APPROVAL_STATE, run_id=ID, tool_call_id=ID, attempt=SEQ, tool=_str(256),
@@ -89,9 +101,15 @@ REQUESTS = {
                      args_digest=DIGEST,   # sha256(JCS({"tool", "args"})) of the args that ran
                      status={"enum": ["ok", "error"]}, result=ANY, error=_str(4096)),
     "state_write": _obj(_EVENT_REQ + ["key", "value_digest"], **_EVENT, key=_str(256, minLength=1), value_digest=DIGEST),
+    # agent-reported (L3): what the model asked to run, and the tool results the request sent back
     "model_event": _obj(_EVENT_REQ + ["provider", "model", "phase"], **_EVENT, provider=_str(64), model=_str(128),
                         phase={"enum": ["request", "response"]}, content_digest=DIGEST,
-                        usage=_obj([], input_tokens=SEQ, output_tokens=SEQ)),
+                        exchange_id=ID,   # the same on a call's request and response
+                        streamed={"type": "boolean"}, stop_reason=_str(100), error=REASON,
+                        usage=_obj([], input_tokens=SEQ, output_tokens=SEQ, cache_read_tokens=SEQ,
+                                   cache_write_tokens=SEQ, reasoning_tokens=SEQ),
+                        tool_uses={"type": "array", "maxItems": 128, "items": _TOOL_USE},
+                        tool_results_sent={"type": "array", "maxItems": MAX_RESULTS_SENT, "items": ID}),
     "approval_request": _obj(_RUN_REQ + ["tool_call_id"], **_RUN, tool_call_id=ID, attempt=SEQ,
                              reason=REASON),   # the agent's words: shown to the approver as such, never as the args
     "approval_decide": _obj(["request_id", "approval_id", "decision"], request_id=ID, approval_id=ID,
