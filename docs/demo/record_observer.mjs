@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 
 const here = process.env.DEMO_DIR || dirname(fileURLToPath(import.meta.url));  // where the scene lives and outputs go
-const seconds = Number(process.argv[2] || 40);
+const seconds = Number(process.argv[2] || 26);
 const scene = spawn(process.env.PYTHON || "python3", [join(here, "observer_scene.py")], { stdio: ["ignore", "pipe", "inherit"] });
 const url = await new Promise((res, rej) => {
   scene.stdout.on("data", (b) => { const m = String(b).match(/observer: (\S+)/); if (m) res(m[1]); });
@@ -21,7 +21,7 @@ const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 }, r
 const page = await ctx.newPage();
 await page.goto(url);
 await page.waitForTimeout((seconds - 6) * 1000);
-const blocked = page.locator("#tape td", { hasText: "BLOCKED" }).first();  // show the evidence behind a blocked upload
+const blocked = page.locator("#tape tr", { hasText: "tracekitd" }).first();  // end on the agent that tried to stop the recorder
 if (await blocked.count()) await blocked.click();
 await page.waitForTimeout(6000);
 await ctx.close();
