@@ -1,15 +1,18 @@
 """Dev tokens: a random secret the signer writes to a user-only file, with an expiry and a set of allowed methods.
 
 The secret never goes on the wire: each side proves it holds it with an HMAC over the other side's fresh nonce
-(transport/tcp_dev.py), compared in constant time.
+(transport/tcp_dev.py), compared in constant time. Over HTTPS (transport/http.py) a BearerToken is sent as is: TLS
+protects it there.
 """
 import hashlib
 import hmac
 import secrets
 import time
 
-from tracekit.identity.base import CallerIdentity
+from tracekit.identity.base import CallerIdentity, bearer
 from tracekit.signer.rpc_schema import RPCError
+
+MIN_SECRET = 32
 
 
 def proof(secret, label, nonce):
@@ -35,3 +38,21 @@ class DevToken:
         if not isinstance(method, str) or method not in self.scope:
             raise RPCError("forbidden", f"dev token not scoped for {str(method)[:64]}")
         return CallerIdentity("token", self.subject, True, {"expires_at": self.expires_at})
+
+
+class BearerToken:
+    """HTTP transport: a bearer secret the operator writes to `path`, compared in constant time. Identity token:http;
+    what it may call comes from the signer's `authorize` config."""
+
+    def __init__(self, path):
+        with open(path, encoding="utf-8") as f:
+            self.secret = f.read().strip().encode()
+        if len(self.secret) < MIN_SECRET:
+            raise ValueError(f"{path}: a bearer token needs at least {MIN_SECRET} characters")
+
+    def authenticate(self, conn, frame):
+        """None when the request carries no bearer token or another one (a k8s_sa token, say)."""
+        token = bearer(conn)
+        if token is None or not hmac.compare_digest(token.encode(), self.secret):
+            return None
+        return CallerIdentity("token", "http", True)
