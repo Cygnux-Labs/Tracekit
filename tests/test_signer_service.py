@@ -46,7 +46,7 @@ def records(data_dir):
 class TestServiceContract(SignerContract, unittest.TestCase):
     def make_signer(self):
         self.dir = tmpdir(self)
-        s = svc.SignerService(self.dir, policy=PAY_ASKS)
+        s = svc.SignerService(self.dir, policy=PAY_ASKS, multi_tenant_apps=[f"uid:{ME.subject}"])
         self.addCleanup(s.close)
         return s
 
@@ -291,7 +291,7 @@ class SocketSigner:
 class TestServeContract(SignerContract, unittest.TestCase):
     def make_signer(self):
         d = tmpdir(self)
-        cfg = {"data_dir": d, "socket": os.path.join(d, "s.sock")}
+        cfg = {"data_dir": d, "socket": os.path.join(d, "s.sock"), "multi_tenant_apps": [f"uid:{ME.subject}"]}
         service = svc.open_service(cfg, policy=PAY_ASKS)
         servers = svc.serve(cfg, service)
         for srv in servers:

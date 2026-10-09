@@ -10,6 +10,12 @@ signer.yaml:
     durability: ack-on-write                 # or ack-on-fsync
     tenant: default                          # tenant of callers not in `tenants`
     tenants: {"uid:1001": acme}              # identity -> tenant (recorded as attested)
+    multi_tenant_apps: ["uid:1002"]          # may assert a tenant per run (recorded as not attested)
+    migrators: ["uid:1003"]                  # may register `migrated` runs
+    analyzers: ["uid:1004"]                  # may register findings runs, each bound to the run it analyses
+    fail_modes: {default: closed, read: open}   # tool class -> fail mode, recorded and returned by register_run
+    grace_s: 5                               # reconciliation window between run.closing and run.final
+    idle_s: 3600                             # a run without calls for this long is closed
     limits: {events_per_s: 200, burst: 400}  # tracekit.signer.quotas.Limits
     policy: /etc/tracekit/policy.yaml        # policy v2 (YAML or JSON); default tracekit/policy2/packs/dev.yaml
     acknowledge_rollback: false
@@ -19,6 +25,12 @@ checked and its tail signatures verified; then the configured witnesses are aske
 A witness is any object with `latest() -> (tree_size, root_bytes)` that raises when unreachable. A local log behind the
 witnessed one is a rollback: a signed `trace.tamper{rollback}`, then client writes are refused until it is
 acknowledged. No witness reachable: a signed `degraded_unanchored` gap, and the signer runs.
+
+Run lifecycle (04-design §2.7): run.registered → events → close_run or the idle timeout (paused while an approval is
+pending) → run.closing → grace window, where only late records (complete, state_write, model_event) are accepted →
+run.final{head}. run.registered and run.final also get a leaf in the tenant's registry log. Gap and tamper records are
+written by the signer only: no request can carry an event type, source, isolation or fail mode.
+
 
 Policy (04-design §4): the signer classifies the tool and decides with policy2; every decide gets a fresh decision_id
 that one `complete` with the same arguments consumes. Only deny and ask are memoised, per (tool_call_id, attempt).
@@ -45,7 +57,7 @@ from tracekit.identity.base import CallerIdentity
 from tracekit.policy2 import compile as policy_compile
 from tracekit.policy2.engine import Engine
 from tracekit.signer import rpc_schema
-from tracekit.signer.pipeline import RecordLog, subject
+from tracekit.signer.pipeline import SIGNER_RUN, RecordLog, subject
 from tracekit.signer.quotas import Limits, Quotas
 from tracekit.signer.rpc_schema import REQUESTS, RPCError
 from tracekit.signer.runtoken import RunTokens
@@ -58,8 +70,11 @@ APPROVAL_TTL_S = 3600
 DECISION_TTL_S = 300
 REFUSAL_WINDOW_S = 60
 STRICTNESS = ("allow", "flag", "ask", "deny")
+TICK_S = 1.0
+GRACE_S, IDLE_S = 5.0, 3600.0
+FAIL_MODES = {"default": "closed"}
 CONFIG_KEYS = {"data_dir", "socket", "tcp_endpoint", "durability", "tenant", "tenants", "limits", "acknowledge_rollback",
-               "policy"}
+               "policy", "multi_tenant_apps", "migrators", "analyzers", "fail_modes", "grace_s", "idle_s"}
 
 
 def load_policy(path=DEFAULT_POLICY, backend=None):
@@ -102,10 +117,15 @@ def _process_identity():
 
 class SignerService:
     def __init__(self, data_dir, policy=None, identity=None, tenant="default", tenants=None, limits=Limits(),
-                 durability=ACK_ON_WRITE, witnesses=(), acknowledge_rollback=False, open_storage=None):
+                 durability=ACK_ON_WRITE, witnesses=(), acknowledge_rollback=False, open_storage=None,
+                 multi_tenant_apps=(), migrators=(), analyzers=(), fail_modes=None, grace_s=GRACE_S, idle_s=IDLE_S):
         """`identity` answers the in-process SignerAPI calls (default: this process's uid); transports call
         handle_frame with the identity they established. `policy` is a policy2 Engine (default: load_policy()).
-        `open_storage()` defaults to file storage in data_dir/store."""
+        `open_storage()` defaults to file storage in data_dir/store.
+        `multi_tenant_apps`, `migrators` and `analyzers` are identities ("scheme:subject")."""
+        fail_modes = dict(fail_modes or FAIL_MODES)
+        if not all(isinstance(k, str) and v in ("open", "closed") for k, v in fail_modes.items()):
+            raise ValueError("fail_modes maps tool classes to open or closed")
         open_storage = open_storage or (lambda: FileStorage(os.path.join(data_dir, "store"), durability))
         storage = open_storage()   # takes the storage lock before anything else
         try:
@@ -116,12 +136,16 @@ class SignerService:
             self.tokens = RunTokens(_secret(os.path.join(keys, "run_token.key"), lambda: os.urandom(32)))
             self._salt_key = _secret(os.path.join(keys, "args_salt.key"), lambda: os.urandom(32))
             self.quotas = Quotas(limits)
-            self.log = RecordLog(storage, open_storage, sign, self.quotas)
+            salt = _secret(os.path.join(keys, "registry_salt.key"), lambda: os.urandom(32))
+            self.log = RecordLog(storage, open_storage, sign, self.quotas, salt)
         except BaseException:
             storage.close()
             raise
         self.policy, self.identity = policy or load_policy(), identity or _process_identity()
         self.tenant, self.tenants = tenant, dict(tenants or {})
+        self.multi_tenant_apps, self.migrators, self.analyzers = set(multi_tenant_apps), set(migrators), set(analyzers)
+        self.fail_modes, self.grace_s, self.idle_s = fail_modes, grace_s, idle_s
+        self._swept = time.monotonic()
         self._approvals = {}   # approval_id -> {"run_key", "tool_call_id", "decision_id", "commitment", "state", ...}
         self._cond = threading.Condition()
         self._refusals, self._refusals_lock = {}, threading.Lock()
@@ -131,8 +155,8 @@ class SignerService:
         except BaseException:
             self.log.close()
             raise
-        self._flusher = threading.Thread(target=self._flush_loop, name="tracekit-signer-refusals", daemon=True)
-        self._flusher.start()
+        self._ticker = threading.Thread(target=self._tick_loop, name="tracekit-signer-ticker", daemon=True)
+        self._ticker.start()
 
     def _check_witnesses(self, witnesses, acknowledged):
         if not witnesses:
@@ -180,9 +204,38 @@ class SignerService:
                 self._refusals[k] = (first, now, n + 1)
             raise
 
-    def _flush_loop(self):
-        while not self._stop.wait(REFUSAL_WINDOW_S):
-            self.flush_refusals()
+    def _tick_loop(self):
+        flushed = time.monotonic()
+        while not self._stop.wait(TICK_S):
+            try:
+                self.sweep()
+            except RPCError:   # storage down: the next tick retries
+                pass
+            if time.monotonic() - flushed >= REFUSAL_WINDOW_S:
+                flushed = time.monotonic()
+                self.flush_refusals()
+
+    def sweep(self, now=None):
+        """Close idle runs and write run.final for runs whose grace window has passed. `now`: a monotonic time."""
+        def fn(tx):
+            t = time.monotonic() if now is None else now
+            paused = max(0.0, t - self._swept)
+            self._swept = max(self._swept, t)
+            pending = {a["run_key"] for a in self._approvals.values() if a["state"] == "requested"}
+            # lean: visits every run on each tick, O(runs); keep a deadline heap once a signer holds ~100k runs
+            for key, run in self.log.runs.items():
+                if key == SIGNER_RUN or run["final"]:
+                    continue
+                if run["closed"]:
+                    if t - run["closing_at"] >= self.grace_s:
+                        tx.set(run, "final", True)
+                        tx.emit(run, "run.final", {"head_run_seq": run["run_seq"] - 1, "head_hash": run["head"]},
+                                source="signer")
+                elif key in pending:   # the idle clock pauses while an approval is pending
+                    tx.set(run, "active", run["active"] + paused)
+                elif t - run["active"] >= self.idle_s:
+                    tx.closing(run, "idle_timeout", source="signer")
+        self.log.write(fn)
 
     def flush_refusals(self):
         """Write the refusals counted since the last flush as `refusal.summary` records, one per identity and code."""
@@ -206,7 +259,7 @@ class SignerService:
 
     def close(self):
         self._stop.set()
-        self._flusher.join()
+        self._ticker.join()
         self.flush_refusals()
         self.log.close()
 
@@ -257,26 +310,35 @@ class SignerService:
 
     def _register_run(self, identity, req):
         sub = subject(identity)
+        for field, allowed in (("tenant", self.multi_tenant_apps), ("source", self.migrators),
+                               ("analyzes", self.analyzers)):
+            if field in req and sub not in allowed:
+                raise RPCError("forbidden", f"{sub[:256]} is not configured to register runs with `{field}`")
         tenant = req.get("tenant") or self.tenants.get(sub, self.tenant)
         run_id = req.get("run_id") or secrets.token_hex(16)
 
         def fn(tx, _):
             if (tenant, run_id) in self.log.runs:
                 raise RPCError("run_exists", run_id)
+            if "analyzes" in req and (tenant, req["analyzes"]) not in self.log.runs:
+                raise RPCError("unknown_run", req["analyzes"])
             # lean: counts by scanning every run, O(runs); keep a per-owner counter when runs reach the thousands
             self.quotas.check_count("open_runs", sum(r["owner"] == sub and not r["closed"]
                                                      for r in self.log.runs.values()))
             run = tx.new_run(tenant, run_id)
             tx.set(run, "owner", sub)
+            tx.set(run, "source", req.get("source", "sdk"))
             out = {"run_id": run_id, "run_token": self.tokens.issue(tenant, run_id, identity), "tenant": tenant,
-                   "tenant_attested": "tenant" not in req, "principal_attested": False}
+                   "tenant_attested": "tenant" not in req, "principal_attested": False, "fail_modes": self.fail_modes}
             top = {"tenant_attested": out["tenant_attested"], "principal_attested": False}
             if "principal" in req:
                 out["principal"] = top["principal"] = req["principal"]
-            tx.emit(run, "run.registered", {
-                "agent": req["agent"], "signer_isolation": self._isolation(identity),
-                "identity": {"scheme": identity.scheme, "subject": identity.subject[:256], "attested": identity.attested}},
-                request_id=req["request_id"], **top)
+            data = {"agent": req["agent"], "signer_isolation": self._isolation(identity), "fail_modes": self.fail_modes,
+                    "identity": {"scheme": identity.scheme, "subject": identity.subject[:256],
+                                 "attested": identity.attested}}
+            if "analyzes" in req:
+                data["analyzes"] = req["analyzes"]
+            tx.emit(run, "run.registered", data, request_id=req["request_id"], **top)
             return out
         return self.log.submit(identity, "register_run", req, fn)
 
@@ -342,11 +404,15 @@ class SignerService:
                     "run_seq": seq, "expires_at": expires_at}
         return self.log.submit(identity, "decide", req, fn, key)
 
-    def _event(self, identity, method, req, typ, data, **top):
+    def _event(self, identity, method, req, typ, data, need_call=False, **top):
         key = self._authorize(identity, req)
         self.quotas.take_event(identity)
-        return self.log.submit(identity, method, req, lambda tx, run: {"run_seq": tx.event(run, req, typ, data, **top)},
-                               key)
+
+        def fn(tx, run):
+            if need_call and req["tool_call_id"] not in run["calls"]:
+                raise RPCError("unknown_tool_call", req["tool_call_id"])
+            return {"run_seq": tx.event(run, req, typ, data, **top)}
+        return self.log.submit(identity, method, req, fn, key, late=True)
 
     def _complete(self, identity, req):
         try:
@@ -366,7 +432,7 @@ class SignerService:
             return {"run_seq": tx.event(run, req, "tool.result", {"tool_use_id": tcid, "ok": req["status"] == "ok",
                                                                   "output": output, "decision_id": did},
                                         tool_call_id=tcid, attempt=attempt)}
-        return self.log.submit(identity, "complete", req, fn, key)
+        return self.log.submit(identity, "complete", req, fn, key, late=True)
 
     def _state_write(self, identity, req):
         return self._event(identity, "state_write", req, "state.write",
@@ -431,9 +497,8 @@ class SignerService:
         key = self._authorize(identity, req)
 
         def fn(tx, run):
-            tx.set(run, "closed", True)
             return {"run_id": req["run_id"], "state": "closing",
-                    "run_seq": tx.emit(run, "run.closing", {"reason": "close_run"}, request_id=req["request_id"])}
+                    "run_seq": tx.closing(run, "close_run", request_id=req["request_id"])}
         return self.log.submit(identity, "close_run", req, fn, key)
 
     def _status(self, identity, req):
@@ -491,7 +556,10 @@ def open_service(cfg, **kw):
     return SignerService(cfg["data_dir"], durability=cfg.get("durability", ACK_ON_WRITE),
                          tenant=cfg.get("tenant", "default"), tenants=cfg.get("tenants"),
                          limits=Limits(**cfg.get("limits", {})),
-                         acknowledge_rollback=bool(cfg.get("acknowledge_rollback")), **kw)
+                         acknowledge_rollback=bool(cfg.get("acknowledge_rollback")),
+                         multi_tenant_apps=cfg.get("multi_tenant_apps", ()), migrators=cfg.get("migrators", ()),
+                         analyzers=cfg.get("analyzers", ()), fail_modes=cfg.get("fail_modes"),
+                         grace_s=float(cfg.get("grace_s", GRACE_S)), idle_s=float(cfg.get("idle_s", IDLE_S)), **kw)
 
 
 def serve(cfg, service):

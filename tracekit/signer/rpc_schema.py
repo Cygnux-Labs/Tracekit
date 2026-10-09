@@ -73,6 +73,8 @@ _decide["then"] = {"properties": {"args": _str(MAX_RAW_ARGS)}}
 REQUESTS = {
     "register_run": _obj(["request_id", "agent"], request_id=ID, run_id=ID,
                          tenant=ID, principal=_str(256),   # app-asserted; recorded as not attested
+                         source={"const": "migrated"},     # events imported from another log
+                         analyzes=ID,                      # a findings run about this run of the same tenant
                          agent=_obj(["name"], name=_str(128, minLength=1), version=_str(64))),
     "decide": _decide,
     "complete": _obj(_EVENT_REQ + ["tool_call_id", "decision_id", "args_digest", "status"], **_EVENT,
@@ -98,7 +100,8 @@ REQUESTS = {
 RESPONSES = {
     "register_run": _obj(["run_id", "run_token", "tenant", "tenant_attested", "principal_attested"],
                          run_id=ID, run_token=TOKEN, tenant=ID, tenant_attested={"type": "boolean"},
-                         principal=_str(256), principal_attested={"type": "boolean"}),
+                         principal=_str(256), principal_attested={"type": "boolean"},
+                         fail_modes={"type": "object", "additionalProperties": {"enum": ["open", "closed"]}}),
     "decide": _obj(["decision", "decision_id", "rule_ids", "run_seq"], decision={"enum": ["allow", "deny", "ask"]},
                    decision_id=ID,   # fresh for every decide; `complete` consumes it once
                    rule_ids=RULE_IDS, reason=REASON, run_seq=SEQ, expires_at=_str(40)),
