@@ -428,6 +428,15 @@ class _Parser:
                 j += 1
             if j >= len(s):
                 raise ParseError("unterminated $((")
+            # arithmetic only if the inner "(" closes right before the outer ")": bash runs `$((cmd) )` as a subshell
+            inner, k = 0, self.i + 2
+            while k < j:
+                inner += {"(": 1, ")": -1}.get(s[k], 0)
+                if inner == 0:
+                    break
+                k += 1
+            if k != j - 1:
+                raise ParseError("$(( that is not arithmetic (a subshell inside $( )) is not supported")
             if "$(" in s[self.i + 3:j] or "`" in s[self.i + 3:j]:
                 raise ParseError("command substitution inside $(( )) is not supported")
             self.i = j + 1

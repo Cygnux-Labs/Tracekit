@@ -278,7 +278,7 @@ class Shell(unittest.TestCase):
     def test_parse_failures(self):
         for cmd in ('echo "open', "echo $(ls", "ls )", "case x in a) ls;; esac", "cat <<EOF\nno end", "f() { ls; }",
                     "a &&", "| ls", "echo 'open", "echo `ls", "eval " * 40 + "id",
-                    "echo $(( $(sudo id) ))", "echo $(( `sudo id` ))"):
+                    "echo $(( $(sudo id) ))", "echo $(( `sudo id` ))", "echo $((sudo id) )", 'echo "$((sudo id) )"'):
             with self.subTest(cmd=cmd), self.assertRaises(shell.ParseError):
                 shell.parse(cmd)
 
