@@ -9,7 +9,8 @@
 The signer is the Unix socket in `$TRACEKIT_SIGNER`, `tcp://host:port` with `$TRACEKIT_SIGNER_TOKEN` (the dev
 transport), or an `https://host:port` URL (each call is one POST /v2/rpc; `$TRACEKIT_SIGNER_TOKEN_FILE` names a bearer
 token file, re-read per call so a rotated service-account token is picked up; `$TRACEKIT_SIGNER_CERT`/`_KEY` a client
-certificate for mTLS; `$TRACEKIT_SIGNER_CA` pins the signer's CA). Without it, a same-user dev signer is found or started
+certificate for mTLS; `$TRACEKIT_SIGNER_CA` pins the signer's CA). In system mode (`tracekit init --v2`) the signer is
+the one the root-owned /etc/tracekit/client.json names. Without either, a same-user dev signer is found or started
 (tracekit/sdk/autospawn.py). Requests go out in order on one connection and the signer answers them in order, so any
 number of threads can have calls in flight; a call that may block (`approval_wait`) gets a connection of its own so it
 holds up no one. Every request is validated against the RPC contract before it is sent.
@@ -172,12 +173,22 @@ class _Conn:
             pass
 
 
+def _default_signer():
+    """$TRACEKIT_SIGNER, or in system mode the signer the root-owned config names: there a $TRACEKIT_SIGNER that names
+    another signer is refused, so an agent cannot point its hooks at a signer it runs itself."""
+    from tracekit.client import system_config
+    env, system = os.environ.get("TRACEKIT_SIGNER"), (system_config() or {}).get("signer")
+    if system and env and env != system:
+        raise SignerUnavailable(f"TRACEKIT_SIGNER={env[:256]} is not the system signer {system}; refused")
+    return system or env
+
+
 class Client:
     """Thread-safe. Methods named after the RPCs (`decide`, `status`, ...) take the request dict and return the
     response dict, or raise RPCError; `request_id`, `stream` and `client_seq` are filled in when missing."""
 
     def __init__(self, signer=None, timeout=30.0):
-        self.signer = signer or os.environ.get("TRACEKIT_SIGNER")
+        self.signer = signer or _default_signer()
         self.timeout, self.hello = timeout, None
         self._https = _Https(self.signer) if (self.signer or "").startswith("https://") else None
         self._lock = threading.Lock()
