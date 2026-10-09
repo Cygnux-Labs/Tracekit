@@ -646,7 +646,7 @@ def migrate_system(fail_mode=None, harnesses=None):
         raise SystemExit("migrate --system needs root: sudo tracekit migrate --system")
     signer_cfg = os.path.join(SYS_HOME, "config.json")
     if not os.path.exists(signer_cfg):
-        raise SystemExit(f"no system-mode signer at {SYS_HOME}; run `sudo tracekit init --user <agent-user>` instead")
+        raise SystemExit(f"no system-mode signer at {SYS_HOME}; run `sudo /usr/bin/python3 -m tracekit init --user <agent-user>` from a clone instead")
     with open(signer_cfg, encoding="utf-8") as f:
         scfg = json.load(f)
     cfg = {"socket": scfg.get("socket") or os.path.join(SYS_HOME, "tracekitd.sock"), "signer_home": SYS_HOME,
@@ -742,10 +742,10 @@ def doctor(checks=None):
         sc = client.system_config()
         if sc is None:
             print(f"FAIL  system mode: {client.SYSTEM_CONFIG} is missing or not root-owned\n"
-                  "      fix: sudo tracekit init --user <agent-user>")
+                  "      fix: sudo /usr/bin/python3 -m tracekit init --user <agent-user> (from a clone)")
             return 1
         from .policy import DEFAULT_POLICY
-        reinstall = "re-run sudo tracekit init --user <agent-user> to reinstall into " + OPT
+        reinstall = "re-run sudo /usr/bin/python3 -m tracekit init --user <agent-user> (from a clone) to reinstall into " + OPT
         checks = [("signer python", OPT_PYTHON, reinstall)]
         checks += [("tracekit package", p, reinstall) for p in glob.glob(os.path.join(OPT, "lib", "python*", "site-packages", "tracekit"))
                    ] or [("tracekit package", os.path.join(OPT, "lib", "site-packages", "tracekit"), reinstall)]
