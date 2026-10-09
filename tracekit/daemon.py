@@ -33,11 +33,6 @@ import threading
 import time
 from urllib.parse import urlsplit
 
-try:
-    import pwd
-except ImportError:
-    pwd = None
-
 from . import peercred
 from . import schema as schema_mod
 from .core import GENESIS, SCHEMA_VERSION, new_id, now_ts, scrub
@@ -298,11 +293,13 @@ class Signer:
             st["last"] = time.time()
             if ev["type"] == "run.start":
                 st.update(started=True, ended=False, proxy="proxy" in ev["data"].get("capture_sources", []))
-                if ev["data"].get("os_user_attested") and ev["data"].get("os_user"):
+                user = ev["data"].get("os_user")
+                if ev["data"].get("os_user_attested") and isinstance(user, str) and user:
                     try:  # restore run ownership after a restart
-                        st["agent_uid"] = pwd.getpwnam(ev["data"]["os_user"]).pw_uid
+                        st["agent_uid"] = pwd.getpwnam(user).pw_uid
                     except (KeyError, AttributeError):
-                        pass
+                        if user.isdecimal():  # _user_name() records a uid with no passwd entry as its number
+                            st["agent_uid"] = int(user)
                 h = ev["data"].get("harness")
                 if isinstance(h, dict) and h.get("pid"):  # 0.3: restore the run's harness binding after a restart
                     st["harness"] = (h["pid"], h.get("start_time"))
@@ -578,9 +575,12 @@ class Signer:
 
     # ---------- C8: approvals ----------
     def _approval_request(self, req, peer):
-        run_id, tid = req.get("run_id"), req.get("tool_use_id")
-        if not run_id or not tid:
-            return {"ok": False, "error": "run_id and tool_use_id required"}
+        run_id, tid, agent_id, rule_ids = req.get("run_id"), req.get("tool_use_id"), req.get("agent_id", "main"), req.get("rule_ids", [])
+        if not all(isinstance(v, str) and 0 < len(v) <= 200 for v in (run_id, tid, agent_id)):
+            return {"ok": False, "error": "run_id, tool_use_id and agent_id must be non-empty strings of at most 200 characters"}
+        if (not isinstance(rule_ids, list) or len(rule_ids) > 32
+                or not all(isinstance(r, str) and len(r) <= 100 for r in rule_ids)):
+            return {"ok": False, "error": "rule_ids must be a list of at most 32 strings of at most 100 characters"}
         st = self.runs.get(run_id)
         agent_uid = peer[1] if peer else None
         if not st or not st.get("started") or st.get("agent_uid") != agent_uid:
@@ -605,19 +605,19 @@ class Signer:
         while aid in self.approvals:
             aid = new_id()
         hpid, htty = harness_of(peer[0]) if peer and peer[0] else (None, 0)
-        self.approvals[aid] = {"id": aid, "run_id": run_id, "tool_use_id": tid, "agent_id": req.get("agent_id") or "main",
-                               "summary": str(req.get("summary") or "")[:500], "rule_ids": req.get("rule_ids") or [],
+        self.approvals[aid] = {"id": aid, "run_id": run_id, "tool_use_id": tid, "agent_id": agent_id,
+                               "summary": str(req.get("summary") or "")[:500], "rule_ids": rule_ids,
                                "agent_uid": agent_uid, "hook_pid": peer[0] if peer else None,
                                "harness_pid": hpid, "harness_tty": htty, "created": time.time(), "deadline": time.time() + timeout,
                                "decision": None, "approver": None, "channel": None}
         return {"ok": True, "approval_id": aid, "timeout_s": timeout}
 
     def _record_approval(self, a, decision, approver, channel, approver_uid=None, same_user=None):
-        a["decision"], a["approver"], a["channel"] = decision, approver, channel
-        a["decided_at"] = time.time()
         self._internal("approval", {"tool_use_id": a["tool_use_id"], "decision": decision, "approver": approver, "channel": channel,
                                     "approver_uid": approver_uid, "same_user": same_user,
                                     "wait_ms": int((time.time() - a["created"]) * 1000)}, a["run_id"])
+        a["decision"], a["approver"], a["channel"] = decision, approver, channel
+        a["decided_at"] = time.time()
         self.cond.notify_all()
 
     def _identity_reason(self, a, uid):
@@ -655,13 +655,13 @@ class Signer:
             return why
         if uid is None:
             return "approvals need an interactive terminal the signer can observe (no peer credentials)"
+        if pid is None:
+            return "cannot identify the approving process"
         if stdin_is_tty(pid) is False:
             return "approvals need an interactive terminal"
         if uid != a["agent_uid"] or self.cfg.get("approvers"):
             return None
         # dev mode only: best-effort checks that stop accidents, not a determined agent
-        if pid is None:
-            return "cannot identify the approving process"
         chain = _ancestors(pid)
         if a["harness_pid"] and any(p == a["harness_pid"] for p, _, _ in chain):
             return "the approving process runs inside the agent's own session"
@@ -730,7 +730,8 @@ class Signer:
         now, uid = time.time(), peer[1] if peer else None
         return {"ok": True, "pending": [{k: a[k] for k in ("id", "run_id", "tool_use_id", "agent_id", "summary", "rule_ids")}
                                         | {"expires_in_s": int(a["deadline"] - now)}
-                                        for a in self._pending_approvals() if self._identity_reason(a, uid) is None]}
+                                        for a in self._pending_approvals()
+                                        if uid is not None and self._identity_reason(a, uid) is None]}
 
     # ---------- requests ----------
     def handle(self, req, peer_uid=None, peer_pid=None):
@@ -893,7 +894,7 @@ class Signer:
         elif not st["started"]:
             self._internal("capture.gap", {"reason": "events before run.start (hooks installed mid-run or run.start lost)",
                                            "kind": "no_run_start"}, run_id)
-            st["started"] = True
+            st.update(started=True, agent_uid=peer_uid)
         elif st["ended"]:
             self._internal("capture.gap", {"reason": "event after run.end", "kind": "after_run_end"}, run_id)
         if ev.get("transcript"):
