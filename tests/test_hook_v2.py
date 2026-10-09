@@ -1,6 +1,7 @@
 """The v2 Claude Code hook (tracekit/integrations/claude_code.py) against the real dev signer, auto-spawned in a temp
 runtime dir, invoked through the command `tracekit init --v2` wires."""
 import contextlib
+import hmac
 import io
 import json
 import os
@@ -16,6 +17,7 @@ from unittest import mock
 from test_bundle_v2 import LOG_SECRET, ORIGIN, pub
 from tracekit import cli, install, privacy
 from tracekit.bundle_v2 import export
+from tracekit.format.canon import event_hash
 from tracekit.format import checkpoint
 from tracekit.format.checkpoint import ED25519
 from tracekit.integrations import claude_code
@@ -118,8 +120,14 @@ class HookV2(unittest.TestCase):
             self.pre("cat .env", tid=tid)
             self.assertEqual(self.hook("PostToolUse", tool_name="Bash", tool_input={"command": "cat .env"},
                                        tool_use_id=tid, tool_response=resp), (0, ""))
-            out = self.events()[-1]["data"]["output"]
-            self.assertEqual(out["hash"], service._ref({"result": privacy.content(resp, cc, True)})["hash"], cc)
+            data = self.events()[-1]["data"]
+            with open(os.path.join(service.dev_data_dir(), "store", "records.jsonl"), "rb") as f:
+                [seq] = [e["seq"] for e in (json.loads(line)["event"] for line in f)
+                         if e["data"].get("decision_id") == data["decision_id"] and e["type"] == "tool.result"]
+            salt = bytes.fromhex(service.reveal(service.dev_data_dir(), seq)["salt"])
+            digest = event_hash({"result": privacy.content(resp, cc, True)})   # the hook redacted it all already
+            self.assertEqual(data["output"]["hash"], "hmac-sha256:" + hmac.new(salt, digest.encode(), "sha256").hexdigest())
+            self.assertEqual(data["redaction"]["count"], 0, cc)
 
     def test_deny(self):
         code, err = self.pre("pkill tracekitd")
