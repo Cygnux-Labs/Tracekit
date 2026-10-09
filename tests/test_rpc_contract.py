@@ -243,6 +243,46 @@ class SignerContract(Harness):
             else:
                 self.assertEqual(d["rule_ids"], ["TK-ARGS-INVALID"])
 
+    # --- model events (agent-reported L3) ---
+
+    TOOL_USES = [{"id": "call_a", "name": "Bash", "executed_by": "client", "args_source": "raw",
+                  "args_digest": "sha256:" + "a" * 64},
+                 {"id": "call_b", "name": "Bash", "executed_by": "client", "args_source": "raw", "args_unparseable": True},
+                 {"id": "gemini:r-1:0", "name": "get_time", "executed_by": "client", "args_source": "parsed",
+                  "args_digest": "sha256:" + "b" * 64, "id_synthetic": True},
+                 {"id": "ws_1", "name": "web_search", "executed_by": "provider"}]
+
+    def test_model_event_tool_uses_and_results_sent(self):
+        self.register()
+        self.call("model_event", self.ev(provider="openai", model="gpt", phase="request", exchange_id="ex-1",
+                                         tool_results_sent=["call_prev"]))
+        self.call("model_event", self.ev(provider="openai", model="gpt", phase="response", exchange_id="ex-1",
+                                         streamed=True, stop_reason="tool_calls", tool_uses=self.TOOL_USES,
+                                         tool_results_sent=["call_prev"],
+                                         usage={"input_tokens": 1, "output_tokens": 2, "reasoning_tokens": 1}))
+        req, resp = [e["data"] for e in self.read() if e["type"] in ("model.exchange", "model.event")]
+        self.assertEqual((req["exchange_id"], req["tool_results_sent"]), ("ex-1", ["call_prev"]))
+        self.assertEqual((resp["exchange_id"], resp["streamed"], resp["stop_reason"]), ("ex-1", True, "tool_calls"))
+        self.assertEqual([(t["id"], t["executed_by"], t.get("args_unparseable")) for t in resp["tool_uses"]],
+                         [(t["id"], t["executed_by"], t.get("args_unparseable")) for t in self.TOOL_USES])
+
+    def test_model_event_refuses_malformed_tool_uses(self):
+        self.register()
+        a, b, _, ws = self.TOOL_USES
+        for bad in ([dict(a, args_unparseable=True)],                          # a digest and unparseable
+                    [{k: v for k, v in a.items() if k != "args_digest"}],     # neither
+                    [{k: v for k, v in a.items() if k != "args_source"}],
+                    [dict(ws, executed_by="model")],
+                    [dict(ws, args_digest=a["args_digest"])],                # a provider-run tool has no args
+                    [dict(a, id="call a")],
+                    [dict(a, args_digest="sha256:x")],
+                    [dict(a, extra=1)],
+                    [a] * 129):
+            self.refused("invalid_request", "model_event", self.ev(provider="p", model="m", phase="response",
+                                                                   tool_uses=bad))
+        self.refused("invalid_request", "model_event", self.ev(provider="p", model="m", phase="request",
+                                                               tool_results_sent=["x"] * 1025))
+
     # --- approvals (the binding rule: tests/test_signer_approvals.py) ---
 
     def test_approval_refusals(self):
