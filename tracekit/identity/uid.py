@@ -1,9 +1,14 @@
 """Peer credentials of a Unix socket: Linux SO_PEERCRED, macOS LOCAL_PEERCRED (what getpeereid reads).
 
-Both are recorded by the kernel at connect() and never change, so they are read once per connection. On Linux each
-frame is then tied to that uid by SCM_CREDENTIALS: with SO_PASSCRED set, the kernel stamps every chunk with its
-sender's credentials (an unprivileged sender can't claim another uid), and CredentialReader refuses a chunk whose uid
-differs. A socket fd handed to another user's process therefore can't speak with the connecting user's identity.
+The caller is the effective uid of the connecting process: what both record at connect(). They never change, so they
+are read once per connection. On Linux each frame is then tied to that same uid by SCM_CREDENTIALS: with SO_PASSCRED
+set, the kernel stamps every chunk with credentials of its sender (an unprivileged sender can't claim a uid other than
+its real, effective or saved one), and CredentialReader refuses a chunk whose uid is not the connecting effective uid.
+A socket fd handed to another user's process therefore can't speak with the connecting user's identity.
+
+A sender that attaches no credentials of its own is stamped with its real uid. So a process whose real and effective
+uids differ (a setuid program, or one that changed only its effective uid) is refused on every frame unless it attaches
+SCM_CREDENTIALS carrying its effective uid itself: fail-safe, never a frame accepted under the wrong uid.
 """
 import socket
 import struct
@@ -51,8 +56,10 @@ class CredentialReader:
             data, anc, _flags, _addr = self.sock.recvmsg(65536, socket.CMSG_SPACE(_UCRED))
             if not data:
                 break
-            if scm_uid(anc) != self.uid:
-                raise RPCError("unauthenticated", "frame not sent by the connecting uid")
+            sender = scm_uid(anc)
+            if sender != self.uid:
+                raise RPCError("unauthenticated", f"frame sent as uid {sender}, not the connecting effective uid "
+                                                  f"{self.uid} (real and effective uids must match)")
             self.buf += data
         end = self.buf.find(b"\n", 0, limit)
         n = limit if end < 0 else end + 1

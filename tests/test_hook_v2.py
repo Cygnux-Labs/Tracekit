@@ -233,6 +233,32 @@ class InitV2(unittest.TestCase):
         self.assertTrue(os.path.isabs(shlex.split(cmd)[0]), cmd)
         self.assertTrue(all(install._is_ours(g) for gs in hooks.values() for g in gs))
 
+    def test_v2_without_the_signer_extra_is_refused(self):
+        from tracekit.policy2 import engine
+        with mock.patch.object(engine, "_backend", side_effect=ImportError("no regex")):
+            for argv in (["init", "--dev", "--v2", "--no-hooks"], ["up"]):
+                err = io.StringIO()
+                with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+                    self.assertEqual(cli.main(argv), 2, argv)
+                self.assertIn("pip install 'tracekit-ai[signer]'", err.getvalue())
+
+    def test_replacing_hooks_of_the_other_version_is_reported(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        settings = os.path.join(d, ".claude", "settings.json")
+        install.install_hooks(settings)   # v1
+        with mock.patch("os.getcwd", return_value=d), mock.patch.dict(os.environ, {"HOME": d}):
+            self.assertEqual([h["versions"] for h in install.status()["hooks"]], [["v1"]])
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                self.assertEqual(cli.main(["init", "--dev", "--v2", "--project"]), 0)
+            self.assertIn(f"Tracekit v1 hooks replaced by v2 hooks in {settings}", out.getvalue())
+            self.assertEqual([h["versions"] for h in install.status()["hooks"]], [["v2"]])
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                install.install_hooks(settings, uninstall=True)
+            self.assertIn(f"Tracekit v2 hooks removed from {settings}", out.getvalue())
+
     def test_v2_refuses_system_mode(self):
         code, err = self.init("--v2")
         self.assertEqual(code, 2)

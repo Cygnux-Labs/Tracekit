@@ -5,6 +5,8 @@ verify.v2, the code `tracekit verify` runs, against a trust config that pins the
 and security are the observer's (observe.py): each run's verifier report is an alert on the run's lane, followed by its
 events only when it verifies; a run that fails is shown only as the failure report. A run whose last record no
 checkpoint covers yet waits for the signer's next note (at most CHECKPOINT_S). The viewer never opens a signing key.
+Every request needs the token in the printed URL ($TRACEKIT_VIEW_TOKEN, else a random one), exchanged once for a
+session cookie, also on loopback, where any local user or process could otherwise connect.
 
 Dev assurance: the pinned log key is read from the directory being checked, so a run that verifies matches the key of
 whoever can write that directory, the same user as the dev signer and this viewer.
@@ -160,8 +162,11 @@ class _TLSServer(ThreadingHTTPServer):
             super().finish_request(s, client_address)
 
 
-def server(feed, host, port, token=None, tls=None):
-    """The viewer's HTTP server (HTTPS with `tls`, an ssl.SSLContext); call serve_forever()."""
+def server(feed, host, port, token, tls=None):
+    """The viewer's HTTP server (HTTPS with `tls`, an ssl.SSLContext), open to requests that present `token` (or the
+    session cookie it is exchanged for); call serve_forever()."""
+    if not token:
+        raise ValueError("the viewer needs a token")
     srv = (_TLSServer if tls else ThreadingHTTPServer)((host, port),
                                                        observe.make_handler(feed, token, [host], secure=bool(tls)))
     srv.tls, srv.daemon_threads = tls, True
@@ -191,7 +196,7 @@ def main(argv=None):
             return 2
         print("tracekit view: WARNING: plain HTTP beyond loopback; the token and every record cross the network "
               "unencrypted", file=sys.stderr)
-    token = os.environ.get("TRACEKIT_VIEW_TOKEN") or (None if loopback else secrets.token_urlsafe(24))
+    token = os.environ.get("TRACEKIT_VIEW_TOKEN") or secrets.token_urlsafe(24)
     try:
         tls = None
         if a.tls_cert:
@@ -205,7 +210,7 @@ def main(argv=None):
         return 1
     scheme = "https" if tls else "http"
     print(f"tracekit view on {scheme}://{a.host}:{srv.server_address[1]}/"
-          + (f"?token={token}" if token and not os.environ.get("TRACEKIT_VIEW_TOKEN") else "")
+          + ("" if os.environ.get("TRACEKIT_VIEW_TOKEN") else f"?token={token}")
           + f"  (store: {feed.store}, read-only; {DEV_NOTE})", flush=True)
     try:
         srv.serve_forever()

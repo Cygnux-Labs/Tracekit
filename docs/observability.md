@@ -7,7 +7,7 @@ The v2 signer serves Prometheus metrics (text exposition format 0.0.4) on a port
 metrics: {listen: 127.0.0.1:9464}
 ```
 
-Only `GET /metrics` is served there. The default and any loopback address need nothing more; a non-loopback listen
+`GET /metrics` and `GET /logs/v0` (the signer's logs list for witnesses, see below) are served there. The default and any loopback address need nothing more; a non-loopback listen
 (for example `0.0.0.0:9464` in a pod) needs `allow_remote: true` and refuses to start without it.
 
 No metric carries a run id, tenant, identity, key or argument. Label values come from fixed signer-defined sets (event
