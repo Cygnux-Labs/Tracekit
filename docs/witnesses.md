@@ -148,3 +148,43 @@ a key the trust config does not pin is ignored; a pinned witness's bad cosignatu
 v2 assurance levels (`dev`, `local`, `witnessed`) describe checkpoint cosigning only, not signer isolation: a same-user
 dev signer with a witness verifies as `witnessed`. The witness shows the log was not rolled back or forked after it
 cosigned; whether the agent could reach the signer is each run's `signer_isolation` (`same-user`, `separate-user`).
+
+## v2: Rekor v2 anchors and RFC 3161 timestamps
+
+The v2 signer can also anchor its record log's checkpoint notes in [Rekor v2](https://blog.sigstore.dev/rekor-v2-ga),
+Sigstore's public transparency log, at most once an hour. Each anchor is a `hashedrekord` v0.0.2 entry over the note
+bytes (the note text and the log's signature line), signed with a P-256 publishing key (`keys/rekor.key`; Rekor v2
+does not accept plain Ed25519), plus an RFC 3161 timestamp of the same bytes from the Sigstore TSA: Rekor v2 entries
+carry no time, so the anchor's time is the timestamp's. Rekor's own checkpoint comes back cosigned by public witnesses.
+
+```yaml
+# signer.yaml
+anchors:
+  rekor:
+    signing_config: sigstage-signing_config.json   # Sigstore TUF signing_config: the Rekor v2 and TSA write URLs
+    trusted_root: sigstage-trusted_root.json       # Sigstore TUF trusted_root: the Rekor shard keys and TSA chains
+    every_s: 3600                                  # at least 3600 (at most 24 anchors a day)
+```
+
+- **Staging first.** Copy `signing_config.v0.2.json` and `trusted_root.json` from the staging TUF repository
+  (`tuf-repo-cdn.sigstage.dev`): its signing config lists the Rekor v2 write URL. Switch to production
+  (`tuf-repo-cdn.sigstore.dev`) once its signing config lists a Rekor v2 log (`majorApiVersion: 2`); until then the
+  signer refuses to start with it. URLs always come from the signing config, never from Tracekit. The files are pinned
+  local copies, not fetched through TUF yet: refresh them when Sigstore rotates a shard (yearly). Entries are public
+  and permanent, and the publishing key links all of a signer's anchors.
+- Anchoring runs in its own worker, named `rekor`, with the witnesses' retry queue and backoff (`witness-queue.json`,
+  so the hourly cadence holds across restarts) and their signed `capture.gap{kind: witness_failed}` when Rekor or the
+  TSA fails for 5 minutes. Each answer is verified before it is stored (`anchors.jsonl` in the store). Metric:
+  `tracekit_signer_anchor_lag_records`.
+- `tracekit export --v2 --run` uses the newest anchored note that covers the run, so the bundle carries its Rekor entry
+  (`rekor/<size>.json`) and timestamp (`tsa/<size>.tsr`).
+- `tracekit signer trust` adds `"rekor": {"trusted_root", "publishing_key", "class": "public"}` to the trust config.
+  `tracekit verify` then checks the anchor offline: the timestamp against the trusted root's TSA certificates, the
+  entry binding the exact note bytes and the pinned publishing key, its inclusion proof, and Rekor's checkpoint under
+  the key of the shard (found by log id, valid at the timestamp's time) that wrote it. A pinned anchor that does not
+  verify fails the bundle; with no `rekor` in the trust config, anchors are ignored. A verified anchor counts toward
+  `Assurance: witnessed` unless its class is `operator`, and the report gives its time.
+
+To check a timestamp by hand, use OpenSSL 3 (`openssl ts -verify -data note.bin -in 42.tsr -CAfile tsa-root.pem
+-untrusted tsa-leaf.pem`) or `tracekit verify`. The system `openssl` on macOS is LibreSSL, which cannot verify these
+tokens (it fails on their ESSCertIDv2 attribute).

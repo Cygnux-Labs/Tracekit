@@ -804,7 +804,7 @@ def _privileges(pw):
     for gid in os.getgrouplist(pw.pw_name, pw.pw_gid):
         try:
             names.add(grp.getgrgid(gid).gr_name)
-        except KeyError:
+        except (KeyError, OverflowError):   # macOS may list an out-of-range gid for a user with no groups entry
             pass
     return [f"it is in the {g} group" for g in sorted(names & PRIVILEGED_GROUPS)]
 
@@ -900,21 +900,28 @@ def _unit_path():
 
 
 def doctor(checks=None):
-    """`tracekit doctor`: check that system mode runs only code and policy the agent's user cannot modify. Prints one
-    line per check with a fix; returns 1 if any check fails."""
+    """The v1 system mode doctor: prints one line per check with a fix; returns 1 if any check fails."""
+    from .doctor import report
+    return report(v1_results(checks))
+
+
+def v1_results(checks=None):
+    """v1 system mode checks (tracekit.doctor results): the signer and policy run only from code and policy the agent's
+    user cannot modify. checks: [(label, path, fix)] instead of the installed files."""
     from .daemon import trusted_file
+    from .doctor import FAIL, OK, result
+    out = []
     if checks is None:
         for h in _installed_hooks():
-            print(f"info  hooks: {' and '.join(h.get('versions', ())) or h.get('error') or 'none'} in {h['settings']}")
+            out.append(result("D-V1-HOOKS", OK, "hooks: " + (' and '.join(h.get('versions', ())) or h.get('error')
+                                                             or 'none') + f" in {h['settings']}"))
         try:
             sc = client.system_config()
         except client.SystemConfigError as e:
-            print(f"FAIL  system mode: {e}\n      fix: sudo tracekit init --user <agent-user>")
-            return 1
+            return out + [result("D-SYSTEM-CONFIG", FAIL, f"system mode: {e}", "sudo tracekit init --user <agent-user>")]
         if sc is None:
-            print(f"FAIL  system mode: {client.SYSTEM_CONFIG} is missing or not root-owned\n"
-                  "      fix: sudo /usr/bin/python3 -m tracekit init --user <agent-user>")
-            return 1
+            return out + [result("D-SYSTEM-CONFIG", FAIL, f"system mode: {client.SYSTEM_CONFIG} is missing or not "
+                                 "root-owned", "sudo /usr/bin/python3 -m tracekit init --user <agent-user>")]
         from .policy import DEFAULT_POLICY
         reinstall = "re-run sudo /usr/bin/python3 -m tracekit init --user <agent-user> to reinstall into " + OPT
         checks = [("signer python", OPT_PYTHON, reinstall), ("venv config", os.path.join(OPT, "pyvenv.cfg"), reinstall),
@@ -922,17 +929,12 @@ def doctor(checks=None):
                    ("policy file", sc.get("policy") or DEFAULT_POLICY,
                     "make it and every directory above it root-owned and not group/world-writable (sudo chown root:root, "
                     "sudo chmod go-w), then sudo tracekit migrate --system")]
-    failed = 0
     for label, path, fix in checks:
         bad = trusted_file(path)
         if bad is None and os.path.isdir(path):
             bad = _first_problem(path, _root_only)
-        if bad:
-            failed += 1
-            print(f"FAIL  {label}: {bad}\n      fix: {fix}")
-        else:
-            print(f"ok    {label}: {path}")
-    return 1 if failed else 0
+        out.append(result("D-V1-" + label.upper().replace(" ", "-"), FAIL if bad else OK, f"{label}: {bad or path}", fix))
+    return out
 
 
 def _require_system(experimental_macos):
