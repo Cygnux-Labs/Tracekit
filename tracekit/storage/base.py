@@ -89,7 +89,7 @@ class Storage:
         raise NotImplementedError
 
     def anchors(self):
-        """Every stored anchor, {"size", **anchor}, oldest first."""
+        """Every stored anchor, {"size", **anchor}, oldest first; the last one stored for each size."""
         raise NotImplementedError
 
     def tiles_get(self, tree, level, index, width):

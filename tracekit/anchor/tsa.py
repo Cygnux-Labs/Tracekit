@@ -29,8 +29,11 @@ SIGNATURES = {bytes.fromhex("2a8648ce3d040302"): ("ecdsa", "SHA256"), bytes.from
 
 
 class AnchorError(WitnessError, ValueError):
-    def __init__(self, msg, retryable=False):
+    """`written`: Rekor may have logged the entry, so a retry before the next cadence slot could log another."""
+
+    def __init__(self, msg, retryable=False, written=False):
         super().__init__(msg, retryable)
+        self.written = written
 
 
 def der(tag, *parts):

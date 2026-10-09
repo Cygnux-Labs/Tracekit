@@ -171,8 +171,13 @@ class RekorAnchor:
                 tle = json.loads(r.read(MAX_RESPONSE))
         except urllib.error.HTTPError as e:
             raise AnchorError(f"Rekor {rekor}: HTTP {e.code}", e.code == 429 or e.code >= 500) from None
-        except (OSError, ValueError) as e:   # refused, reset, timeout, not JSON
-            raise AnchorError(f"Rekor {rekor}: {e}", True) from None
+        except urllib.error.URLError as e:   # refused, DNS, TLS: not sent; a timeout may be after the write
+            raise AnchorError(f"Rekor {rekor}: {e}", True, isinstance(e.reason, TimeoutError)) from None
+        except (OSError, ValueError) as e:   # reset, timeout or not JSON after the answer began
+            raise AnchorError(f"Rekor {rekor}: {e}", True, True) from None
         anchor = {"rekor": tle, "tsa": b64(tsr)}
-        verify(anchor, data, self.spki, self.trusted_root)
+        try:
+            verify(anchor, data, self.spki, self.trusted_root)
+        except AnchorError as e:
+            raise AnchorError(str(e), False, True) from None
         return anchor
