@@ -256,7 +256,8 @@ class Publisher(unittest.TestCase):
         heads = [b.decode().split("\n") for b in self.w.bodies[sent:]]   # old, ..., "", origin, size: past the startup check
         self.assertEqual([h[0] for h in heads if h[h.index("") + 1:h.index("") + 3] != [ORIGIN, "0"]
                           and h[h.index("") + 1] == ORIGIN][0], f"old {cosigned}")
-        self.assertEqual(self.s.log.storage.witness_queue()[NAME][RECORDS]["attempts"], 0)
+        # the cosignature is merged before the queue records the success: wait for it
+        self.assertTrue(wait_for(lambda: self.s.log.storage.witness_queue()[NAME][RECORDS]["attempts"] == 0, 10))
 
     def test_witness_down_gets_one_gap_then_catches_up(self):
         port = self.w.server.server_address[1]
