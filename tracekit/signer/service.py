@@ -96,7 +96,7 @@ from tracekit.locking import lock_file
 from tracekit.policy2 import compile as policy_compile
 from tracekit.policy2.engine import Engine
 from tracekit.signer import metrics, rpc_schema
-from tracekit.signer.pipeline import SIGNER_RUN, RecordLog, approval, subject
+from tracekit.signer.pipeline import SIGNER_RUN, RecordLog, approval, salt_label, subject
 from tracekit.signer.quotas import Limits, Quotas
 from tracekit.signer.rpc_schema import REQUESTS, RPCError
 from tracekit.signer.runtoken import RunTokens
@@ -138,18 +138,6 @@ MARK = re.compile(r"\[REDACTED:([a-z_]+)\]")
 
 def _salt(key, label):
     return hmac.new(key, label.encode(), "sha256").digest()
-
-
-def salt_label(e):
-    """What the salt of event `e`'s commitments is derived from; None when it has none."""
-    d = e["data"]
-    if e["type"] in ("policy.decision", "approval.request", "approval.binding_mismatch"):
-        return d.get("decision_id")
-    if e["type"] == "tool.result":
-        return "result:" + d["decision_id"]
-    if e["type"] in ("model.exchange", "state.write"):
-        return f"{e['type']}:{e['tenant']}:{e['run_id']}:{e['request_id']}"
-    return None
 
 
 def _redact(value, dotenv, claim=None):
@@ -686,8 +674,27 @@ class SignerService:
         return self.log.submit(identity, "complete", req, fn, key, late=True)
 
     def _state_write(self, identity, req):
-        return self._event(identity, "state_write", req, "state.write",
-                           lambda commit: {"store": "default", "key": req["key"], "digest": commit(req["value_digest"])})
+        key, sk = self._authorize(identity, req), req["key"]
+        self.quotas.take_event(identity)
+        label = salt_label({"type": "state.write", "data": None, "tenant": key[0], "run_id": key[1],
+                            "request_id": req["request_id"]})
+        digest = self._commit(label, req["value_digest"])
+
+        def fn(tx, run):
+            data = {"store": "default", "key": sk, "digest": digest}
+            prev = req.get("prev_digest", ...)
+            if prev is not ...:
+                data["prev_digest"] = prev and self._commit(label, prev)
+            seq = tx.event(run, req, "state.write", data)
+            last = run["states"].get(sk)   # (salt label, commitment) of the last write of this key
+            if prev is not ... and last and self._commit(last[0], prev or "") != last[1]:
+                # the agent's own earlier write says the state was something else: it changed outside its writes
+                tx.emit(run, "capture.gap", {"kind": "state_tamper", "reason": f"state {sk[:200]} changed between "
+                                             "writes: the write starts from another state than the last one written"},
+                        source="signer")
+            tx.set(run["states"], sk, (label, digest))
+            return {"run_seq": seq}
+        return self.log.submit(identity, "state_write", req, fn, key, late=True)
 
     def _model_event(self, identity, req):
         def data(commit):
