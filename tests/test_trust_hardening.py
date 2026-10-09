@@ -183,6 +183,9 @@ class FakeTracer:
 
 
 class Autotrace(unittest.TestCase):
+    def tearDown(self):
+        autotrace._LATE.clear()
+
     def stream(self, t):
         ex = autotrace._Exchange(t, "openai", "chat", "m", {}, True)
         ex.begin()
@@ -201,8 +204,49 @@ class Autotrace(unittest.TestCase):
         s = self.stream(t)
         s.__del__()
         self.assertEqual(len(t.events), 1, "nothing is sent from __del__")
-        autotrace.flush()
+        autotrace._wrap(lambda self: None, "openai", "chat", False, None, None, None)(None)  # the next model call flushes
         self.assertIn("abandoned", t.events[-1]["data"]["error"])
+
+    def test_generator_finalisation_queues_instead_of_sending(self):
+        t = FakeTracer()
+        s = self.stream(t)
+        it = iter(s)
+        next(it)
+        it.close()  # GeneratorExit, as when the GC finalises a half-read stream
+        self.assertEqual(len(t.events), 1, "nothing is sent from a finaliser")
+        self.assertEqual(list(autotrace._LATE), [s._tk_ex])
+
+    def test_tracer_end_records_abandoned_streams_before_run_end(self):
+        from tracekit.agent_sdk import Tracer
+        sent = []
+        with mock.patch.object(client, "send", lambda ev, **kw: (sent.append(ev), {"ok": True})[1]):
+            t = Tracer(agent="a", cwd=tempfile.gettempdir())
+            self.stream(t).__del__()
+            t.end()
+        self.assertEqual([e["type"] for e in sent], ["run.start", "model.exchange", "model.exchange", "run.end"])
+        self.assertIn("abandoned", sent[2]["data"]["error"])
+        self.assertFalse(autotrace._LATE)
+
+    def test_queued_streams_are_flushed_at_exit_without_init(self):
+        import subprocess
+        code = "from tracekit import autotrace\nclass E:\n    def finish(self, **k): print('flushed')\nautotrace._LATE.append(E())"
+        out = subprocess.run([sys.executable, "-c", code], cwd=ROOT, capture_output=True, text=True, timeout=60)
+        self.assertEqual(out.stdout.strip(), "flushed", out.stderr)
+
+    def test_model_calls_after_the_run_ended_follow_the_fail_mode(self):
+        ran = []
+        call = autotrace._wrap(lambda self: ran.append(1), "openai", "chat", False, lambda ex, out: None, None, None)
+        for mode in ("open", "closed"):
+            t = FakeTracer(mode)
+            t._ended = True
+            autotrace._STATE["tracer"] = t
+            self.addCleanup(autotrace._STATE.__setitem__, "tracer", None)
+            if mode == "closed":
+                with self.assertRaises(PermissionError):
+                    call(None)
+            else:
+                call(None)
+        self.assertEqual(ran, [1], "open runs the call unrecorded; closed refuses it")
 
     def test_signer_rejection_honours_fail_closed(self):
         with self.assertRaises(PermissionError):
@@ -238,17 +282,53 @@ class BridgeTimeouts(unittest.TestCase):
         release = threading.Event()
         b.op_hold = lambda r: release.wait(5)
         first = b.submit({"id": 1, "op": "hold"}, slots)
-        started = threading.Event()
-        threading.Thread(target=lambda: (started.set(), b.submit({"id": 2, "op": "ping"}, slots)), daemon=True).start()
-        started.wait(5)
-        time.sleep(0.1)
-        self.assertNotIn('"id": 2', b.out.getvalue(), "the second request waits for a free worker")
+        self.assertIsNone(b.submit({"id": 2, "op": "ping"}, slots), "a full pool never blocks the reader")
+        self.assertEqual(json.loads(b.out.getvalue())["error"], "bridge busy")
         release.set()
         first.join(5)
-        end = time.time() + 5
-        while '"id": 2' not in b.out.getvalue() and time.time() < end:
-            time.sleep(0.02)
-        self.assertIn('"id": 2', b.out.getvalue())
+        b.submit({"id": 3, "op": "ping"}, slots).join(5)
+        self.assertIn('"id": 3, "ok": true', b.out.getvalue())
+
+    def late(self, op, req, run):
+        out = io.StringIO()
+        b = bridge.Bridge(out)
+        b.runs["r1"] = run
+        b.submit({"id": 1, "op": op, "run": "r1", "timeout_s": 0.05, **req}, threading.BoundedSemaphore(1)).join(5)
+        self.assertEqual([json.loads(x)["error"] for x in out.getvalue().splitlines()], ["request timed out after 0.05 s"])
+        return b
+
+    def test_a_late_tool_begin_ends_its_call(self):
+        class SlowCall:
+            tool_use_id, exits = "t1", []
+
+            def __enter__(self):
+                time.sleep(0.3)
+
+            def __exit__(self, et, e, tb):
+                self.exits.append(str(e))
+        call = SlowCall()
+        b = self.late("tool_begin", {"name": "Bash", "args": {}}, mock.Mock(tool=lambda *a: call))
+        self.assertEqual((b.calls, call.exits), ({}, ["caller timed out"]))
+
+    def test_a_late_model_begin_finishes_its_exchange(self):
+        t = FakeTracer()
+        with mock.patch.object(autotrace._Exchange, "begin", lambda self: time.sleep(0.3)):
+            b = self.late("model_begin", {"provider": "openai", "request": {}}, t)
+        self.assertEqual(b.exchanges, {})
+        self.assertEqual([(e["data"]["phase"], e["data"]["error"]) for e in t.events], [("response", "caller timed out")])
+
+    def test_a_request_past_its_deadline_before_a_worker_starts_does_not_run(self):
+        b = bridge.Bridge(io.StringIO())
+        ran, held = [], []
+        b.op_mark = lambda r: ran.append(1)
+        start = threading.Thread.start
+        with mock.patch.object(threading.Thread, "start", lambda th: start(th) if isinstance(th, threading.Timer) else held.append(th)):
+            b.submit({"id": 1, "op": "mark", "timeout_s": 0.01}, threading.BoundedSemaphore(1))
+        time.sleep(0.2)
+        start(held[0])
+        held[0].join(5)
+        self.assertEqual(ran, [])
+        self.assertIn("timed out", json.loads(b.out.getvalue())["error"])
 
 
 class Migrate(unittest.TestCase):
