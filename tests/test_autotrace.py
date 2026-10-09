@@ -260,6 +260,7 @@ class Gemini(Base):
 class Lifecycle(unittest.TestCase):
     def tearDown(self):
         autotrace.uninstrument()
+        autotrace._LATE.clear()
 
     def test_idempotent_patch_and_clean_restore(self):
         from openai.resources.chat.completions import Completions
@@ -295,8 +296,9 @@ class Lifecycle(unittest.TestCase):
         s = c.chat.completions.create(model="m", messages=[], stream=True)
         del s
         gc.collect()
-        autotrace.flush()  # queued by __del__, recorded at the next call, shutdown or exit
-        self.assertEqual(len(t.pairs()[1]), 1)
+        self.assertEqual(len(t.pairs()[1]), 0, "queued by __del__, not sent from it")
+        c.chat.completions.create(model="m", messages=[], stream=True).close()  # the next model call records it
+        self.assertEqual(len(t.pairs()[1]), 2)
         self.assertIn("abandoned", t.pairs()[1][0]["error"])
 
     def test_no_tracer_means_no_overhead_path(self):

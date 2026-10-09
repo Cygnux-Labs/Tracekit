@@ -100,6 +100,17 @@ class Cost(unittest.TestCase):
         with self.assertRaises(ValueError):
             usage.Prices({"nope": 1})
 
+    def test_missing_ledger_is_an_error_not_an_empty_table(self):
+        import io
+        from unittest import mock
+        from tracekit import cost
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        with mock.patch("sys.stderr", io.StringIO()) as err, mock.patch("sys.stdout", io.StringIO()) as out:
+            self.assertEqual(cost.main(["--home", d]), 2)
+        self.assertIn("no ledger at " + os.path.join(d, "ledger", "ledger.jsonl"), err.getvalue())
+        self.assertEqual(out.getvalue(), "")
+
     @unittest.skipUnless(T.openai is not None and T.httpx is not None, "openai SDK not installed")
     def test_cli_end_to_end(self):
         import subprocess

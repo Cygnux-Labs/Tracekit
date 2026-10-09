@@ -78,6 +78,13 @@ class Bridge {
       for (const p of this.pending.values()) p.reject(err);
       this.pending.clear();
     });
+    this.proc.stdin.on("error", (e) => {  // EPIPE when the bridge dies or closes its stdin: never an uncaught error
+      this.closed = true;
+      const err = new BridgeClosed(`Tracekit bridge stopped reading requests (${e.message})`);
+      for (const p of this.pending.values()) p.reject(err);
+      this.pending.clear();
+      this.proc.kill();
+    });
     createInterface({ input: this.proc.stdout }).on("line", (line) => {
       let msg: any;
       try { msg = JSON.parse(line); } catch { return; }
@@ -108,10 +115,14 @@ class Bridge {
 
   private async send(id: number, op: string, args: Record<string, unknown>, timeoutMs: number): Promise<any> {
     await this.ready;
-    if (this.closed) throw new BridgeClosed("Tracekit bridge is closed");
+    if (this.closed || !this.proc.stdin.writable) throw new BridgeClosed("Tracekit bridge is closed");
     const p = new Promise((resolve, reject) => this.pending.set(id, { resolve, reject }));
     this.proc.stdin.write(JSON.stringify({ id, op, timeout_s: timeoutMs / 1000, ...args }) + "\n");
     return p;
+  }
+
+  kill(): void {
+    this.proc.kill();
   }
 
   async close(): Promise<void> {
@@ -126,7 +137,7 @@ export class Tracekit {
   readonly sessionId: string;
   /** Recording failures after a wrapped call had already succeeded: reported on stderr, never thrown. */
   recordFailures = 0;
-  private warnedClosed = false;
+  private warned = new Set<string>();
   private constructor(private bridge: Bridge, private run: string, sessionId: string, private failMode: string,
                       private timeoutMs: number, private approvalTimeoutMs: number) {
     this.sessionId = sessionId;
@@ -137,7 +148,13 @@ export class Tracekit {
     const python = opts.python ?? process.env.TRACEKIT_PYTHON ?? "python3";
     const timeoutMs = opts.timeoutMs ?? 30_000;
     const bridge = new Bridge(python, opts.env);
-    const r = await bridge.call("start", { agent: opts.agent ?? "ts-agent", session_id: opts.sessionId, cwd: opts.cwd ?? process.cwd() }, timeoutMs);
+    let r: any;
+    try {
+      r = await bridge.call("start", { agent: opts.agent ?? "ts-agent", session_id: opts.sessionId, cwd: opts.cwd ?? process.cwd() }, timeoutMs);
+    } catch (e) {
+      bridge.kill();
+      throw e;
+    }
     return new Tracekit(bridge, r.run, r.session_id, r.fail_mode, timeoutMs, opts.approvalTimeoutMs ?? 3_660_000);
   }
 
@@ -151,12 +168,30 @@ export class Tracekit {
     } catch (e: any) {
       if (!(e instanceof BridgeClosed)) throw e;
       if (this.failMode === "closed") throw new TracekitDenied(`${e.message}; fail_mode=closed refuses the call`);
-      if (!this.warnedClosed) {
-        this.warnedClosed = true;
-        process.stderr.write(`[tracekit] ${e.message}; fail_mode=open, continuing unrecorded\n`);
-      }
+      this.warnOnce("closed", `${e.message}; fail_mode=open, continuing unrecorded`);
       return null;
     }
+  }
+
+  /**
+   * A record that gates nothing (model_begin, prompt, say, think): under fail_mode=open a timeout or bridge error lets
+   * the caller proceed unrecorded, as the Python SDK does. tool_begin never goes through here: a timeout there can be
+   * an unanswered approval hold.
+   */
+  private async record(op: string, args: Record<string, unknown>): Promise<any> {
+    try {
+      return await this.call(op, args);
+    } catch (e: any) {
+      if (e instanceof TracekitDenied || this.failMode === "closed") throw e;
+      this.warnOnce(op, `${op} not recorded (${e?.message ?? e}); fail_mode=open, continuing unrecorded`);
+      return null;
+    }
+  }
+
+  private warnOnce(kind: string, message: string): void {
+    if (this.warned.has(kind)) return;
+    this.warned.add(kind);
+    process.stderr.write(`[tracekit] ${message}\n`);
   }
 
   /** Record after the wrapped call succeeded: a failure here is reported, never thrown over the call's result. */
@@ -169,9 +204,9 @@ export class Tracekit {
     }
   }
 
-  prompt(text: string): Promise<void> { return this.call("prompt", { run: this.run, text }).then(() => undefined); }
-  say(text: string): Promise<void> { return this.call("say", { run: this.run, text }).then(() => undefined); }
-  think(text: string): Promise<void> { return this.call("think", { run: this.run, text }).then(() => undefined); }
+  prompt(text: string): Promise<void> { return this.record("prompt", { run: this.run, text }).then(() => undefined); }
+  say(text: string): Promise<void> { return this.record("say", { run: this.run, text }).then(() => undefined); }
+  think(text: string): Promise<void> { return this.record("think", { run: this.run, text }).then(() => undefined); }
 
   /**
    * Run a tool through the policy gate. The policy decision is made and signed before `fn` runs; a denied (or held and
@@ -194,7 +229,7 @@ export class Tracekit {
 
   /** Low level: record a model call yourself. begin() is written before the request is sent. Null: not recorded. */
   async modelBegin(provider: string, operation: string, model: string | null, request: unknown, streamed = false): Promise<string | null> {
-    const r = await this.call("model_begin", { run: this.run, provider, operation, model, request: toJSON(request), streamed });
+    const r = await this.record("model_begin", { run: this.run, provider, operation, model, request: toJSON(request), streamed });
     return r === null ? null : r.exchange;
   }
 
