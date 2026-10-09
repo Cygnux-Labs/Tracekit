@@ -213,10 +213,7 @@ class SignerService:
 
     def handle_frame(self, identity, frame):
         req = dict(frame)
-        method = req.pop("method", None)
-        if method == "hello":   # the client's handshake (tracekit/sdk/client.py `connect`)
-            return {"proto": [rpc_schema.RPC_VERSION, rpc_schema.RPC_VERSION], "version": __version__, "pid": os.getpid()}
-        return self.call(identity, method, req)
+        return self.call(identity, req.pop("method", None), req)
 
     def call(self, identity, method, req):
         try:

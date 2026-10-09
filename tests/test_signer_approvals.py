@@ -5,7 +5,6 @@ import contextlib
 import hashlib
 import io
 import os
-import shlex
 import shutil
 import socket
 import subprocess
@@ -13,6 +12,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 import test_bundle_v2 as tb
 import test_rpc_contract as rc
@@ -288,8 +288,10 @@ class TestCliDevSigner(unittest.TestCase):
     def test_approve_round_trip_with_the_dev_signer(self):
         d = tempfile.mkdtemp(dir="/tmp")
         self.addCleanup(shutil.rmtree, d, True)
-        env = {"TRACEKIT_RUNTIME_DIR": os.path.join(d, "run"), "TRACEKIT_DEV_SIGNER_CMD":
-               shlex.join([sys.executable, "-m", "tracekit.testing", "--ask", "pay"]), "TRACEKIT_DEV_IDLE": "60", "PYTHONPATH": ts.ROOT}
+        env = {"TRACEKIT_RUNTIME_DIR": os.path.join(d, "run"), "TRACEKIT_DEV_IDLE": "60", "PYTHONPATH": ts.ROOT}
+        fake = mock.patch.object(autospawn, "SIGNER_ARGV", [sys.executable, "-m", "tracekit.testing", "--ask", "pay"])
+        fake.start()
+        self.addCleanup(fake.stop)
         os.environ.pop("TRACEKIT_SIGNER", None)
         saved = {k: os.environ.get(k) for k in env}
         os.environ.update(env)
