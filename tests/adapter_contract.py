@@ -3,7 +3,7 @@
 An adapter plugs in through a driver; subclass `Contract` with a `driver(case, signer_path)` and mix in `OnFake` or
 `OnReal` (tests/test_contract_langchain.py). Each case runs against FakeSigner and the real signer, both served in
 this process on a Unix socket (loopback TCP where there are none), so the adapter and its resumed processes reach them as they would a deployed signer.
-The policy: `pay` asks (R-PAY), `wipe` is denied (R-WIPE), everything else is allowed.
+The policy: `pay` asks (R-PAY, with a T2 executor), `wipe` is denied (R-WIPE), everything else is allowed.
 
 A driver has:
 - `run()`: {"run_id", "run_token"} of the run its calls went to;
@@ -95,7 +95,7 @@ def _serve(case, handle_frame):
 
 class OnFake:
     def serve_signer(self):
-        signer, mutex = FakeSigner(_rule), threading.Lock()
+        signer, mutex = FakeSigner(_rule, t2=["R-PAY"]), threading.Lock()
 
         def handle(identity, frame):
             with mutex:
@@ -108,7 +108,8 @@ class OnFake:
 
 class OnReal:
     def serve_signer(self):
-        self.service = s = SignerService(tmpdir(self), policy=Engine({"ask": [{"id": "R-PAY", "tool": "^pay$", "pattern": "^"}],
+        self.service = s = SignerService(tmpdir(self), policy=Engine({"ask": [{"id": "R-PAY", "tool": "^pay$", "pattern": "^",
+                                                                               "approval": {"executor": "t2"}}],
                                                        "deny": [{"id": "R-WIPE", "tool": "^wipe$", "pattern": "^"}]}))
         self.addCleanup(s.close)
         return _serve(self, s.handle_frame)
@@ -257,6 +258,20 @@ class Contract:
         self.approve(self.paused())
         self.d.tamper(args=dict(PAY, cents=9), tool_call_id="call-x")
         self.refused(self.d.resume(), "TK-APPROVAL-UNBOUND")
+
+    def test_t2_executor_gets_only_the_approved_args(self):
+        self.needs("saved_state")   # an adapter that holds the call consumes the approval itself the moment it lands
+        aid = self.paused()
+        self.approve(aid)
+        a = self.client.approval_get({"approval_id": aid})
+
+        def execute(args):   # a T2 gateway: consumes, then runs only what the signer returns
+            return self.client.approval_consume({**self.d.run(), "tool_call_id": a["tool_call_id"], "attempt": a["attempt"],
+                                                 "tool": "pay", "args_source": "parsed", "args": args})
+        self.assertEqual(execute(dict(PAY, cents=1500000))["rule_ids"], ["TK-APPROVAL-MISMATCH"])
+        out = execute(PAY)
+        self.assertEqual((out["ok"], out["args"]), (True, PAY))
+        self.refused(self.d.resume(), "TK-APPROVAL-CONSUMED")   # the agent's own resume runs nothing
 
     # --- modes and L1 ---
 

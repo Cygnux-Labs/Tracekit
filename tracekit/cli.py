@@ -529,12 +529,17 @@ def _approvals(a):
     c = Client(a.signer)
     try:
         if a.action == "list":
-            items = c.approval_list({})["approvals"]
-            if not items:
+            page, shown = {"next_cursor": None}, 0
+            while True:
+                page = c.approval_list({"cursor": page["next_cursor"]} if page["next_cursor"] else {})
+                for x in page["approvals"]:
+                    shown += 1
+                    print(f"{x['approval_id']}  {x['state']}  run={x['run_id']}  tool={json.dumps(x['tool'])}  "
+                          f"rules={','.join(x['rule_ids'])}  expires {x['expires_at']}")
+                if page["next_cursor"] is None:
+                    break
+            if not shown:
                 print("no approvals")
-            for x in items:
-                print(f"{x['approval_id']}  {x['state']}  run={x['run_id']}  tool={json.dumps(x['tool'])}  "
-                      f"rules={','.join(x['rule_ids'])}  expires {x['expires_at']}")
         elif a.action == "show":
             x = c.approval_get({"approval_id": a.approval_id})
             args = loads_strict(x["args"]) if x["args_source"] == "raw" and x["args"] is not None else x["args"]
