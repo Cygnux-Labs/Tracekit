@@ -3,7 +3,7 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import OpenAI from "openai";
@@ -156,5 +156,63 @@ test("bridge requests time out, and a bridge exit follows the fail mode (open: r
   bridge.proc.kill();
   await new Promise((res) => bridge.proc.once("exit", res));
   assert.equal(await tk.tool("Bash", { command: "ls" }, () => "ran"), "ran");
+  await tk.end();
+});
+
+// Fake bridges: a `tracekit.bridge` module earlier on PYTHONPATH that answers start, then misbehaves per FAKE_MODE.
+const fake = join(dir, "fake");
+mkdirSync(join(fake, "tracekit"), { recursive: true });
+writeFileSync(join(fake, "tracekit", "__init__.py"), "");
+writeFileSync(join(fake, "tracekit", "bridge.py"), `
+import json, os, sys, time
+mode = os.environ["FAKE_MODE"]
+def reply(o):
+    sys.stdout.write(json.dumps(o) + "\\n"); sys.stdout.flush()
+reply({"id": 0, "ok": True, "ready": True})
+while True:
+    line = sys.stdin.readline()
+    if not line:
+        break
+    req = json.loads(line)
+    if req["op"] == "start":
+        reply({"id": req["id"], "ok": True, "run": "r1", "session_id": "s", "fail_mode": os.environ["FAKE_FAIL_MODE"]})
+        if mode == "exit":
+            os.read(0, 1)
+            os._exit(0)
+        if mode == "close":
+            os.close(0)
+            time.sleep(30)
+    elif not (mode == "silent" and req["op"] in ("model_begin", "tool_begin")):
+        reply({"id": req["id"], "ok": True})
+`);
+const fakeStart = (mode, failMode, timeoutMs) =>
+  Tracekit.start({ timeoutMs, approvalTimeoutMs: timeoutMs, env: { PYTHONPATH: fake, FAKE_MODE: mode, FAKE_FAIL_MODE: failMode } });
+
+for (const mode of ["exit", "close"]) {
+  test(`a bridge that ${mode === "exit" ? "exits mid-write" : "closes its stdin"} never crashes the host; the call follows the fail mode`, async () => {
+    const big = { data: "x".repeat(8_000_000) };
+    const open = await fakeStart(mode, "open");
+    assert.equal(await open.tool("Bash", big, () => "ran"), "ran");
+    await open.end();
+    const closed = await fakeStart(mode, "closed");
+    const ran = [];
+    await assert.rejects(closed.tool("Bash", big, () => ran.push(1)), TracekitDenied);
+    assert.deepEqual(ran, []);
+    await assert.rejects(closed.end(), TracekitDenied);
+  });
+}
+
+test("a failed start does not leave the bridge running", () => {
+  const code = `import { Tracekit } from ${JSON.stringify(resolve(import.meta.dirname, "../dist/index.js"))};
+    await Tracekit.start({ sessionId: "x".repeat(300), env: ${JSON.stringify(env)} }).then(() => process.exit(3), () => console.log("rejected"));`;
+  const out = execFileSync(process.execPath, ["--input-type=module", "-e", code], { encoding: "utf8", timeout: 20_000 });
+  assert.equal(out.trim(), "rejected");  // and the process exited on its own (no timeout)
+});
+
+test("fail_mode=open: an unanswered model_begin lets the model call proceed unrecorded", async () => {
+  const tk = await fakeStart("silent", "open", 200);
+  const client = instrumentAnthropic({ messages: { create: async () => ({ content: [], stop_reason: "end_turn" }) } }, tk);
+  assert.equal((await client.messages.create({ model: "m", messages: [] })).stop_reason, "end_turn");
+  await assert.rejects(tk.tool("Bash", { command: "ls" }, () => "ran"), /timed out/);  // tool_begin still refuses
   await tk.end();
 });

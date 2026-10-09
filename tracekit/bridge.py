@@ -16,9 +16,11 @@ ops
   end          run, reason?
   ping
 
-Requests run concurrently on a bounded pool of worker threads, so a call held for approval does not stall the others.
-A request that has not finished within its timeout_s (default 300 s, at most an hour) is answered with an error; its
-late result is dropped. If the signer is unreachable the Tracer's fail mode applies exactly as in Python: open records
+Requests run concurrently on a bounded pool of worker threads, so a call held for approval does not stall the others;
+when every worker is busy a request is answered at once with the error "bridge busy". A request that has not finished
+within its timeout_s (default 300 s, at most an hour, counted from when it was received) is answered with an error; if
+it finishes late, a tool call it opened is ended and a model call it began is finished, both with the error "caller
+timed out". If the signer is unreachable the Tracer's fail mode applies exactly as in Python: open records
 a gap later, closed refuses."""
 import json
 import math
@@ -61,19 +63,31 @@ class Bridge:
             out = {"id": rid, "ok": False, "denied": True, "error": str(e)}
         except Exception as e:
             out = {"id": rid, "ok": False, "denied": False, "error": f"{type(e).__name__}: {e}"}
-        self._answer(answered, out)
+        if not self._answer(answered, out) and out["ok"]:
+            self._abandon(out)
 
     def _answer(self, answered, out):
+        """Reply unless already answered; True if this reply was sent."""
         with self.lock:
             if answered is not None:
                 if answered.is_set():
-                    return
+                    return False
                 answered.set()
         self.reply(out)
+        return True
+
+    def _abandon(self, out):
+        """The caller gave up on this request: close what it opened so no late evidence or state is left."""
+        call = self.calls.pop(out.get("call"), None)
+        if call is not None:
+            call.__exit__(RuntimeError, RuntimeError("caller timed out"), None)
+        ex = self.exchanges.pop(out.get("exchange"), None)
+        if ex is not None:
+            ex.finish(error="caller timed out")
 
     def submit(self, req, slots):
-        """Run req on a worker thread (waiting for a free one of the bounded slots), with a timer that answers it
-        with an error if it runs past its timeout."""
+        """Run req on a worker thread if one of the bounded slots is free (else answer "bridge busy"), with a timer
+        that answers it with an error if it runs past its timeout. Returns the thread, or None when busy."""
         t = req.get("timeout_s", DEFAULT_TIMEOUT_S)
         if isinstance(t, bool) or not isinstance(t, (int, float)) or not math.isfinite(t) or t <= 0:
             t = DEFAULT_TIMEOUT_S
@@ -84,12 +98,16 @@ class Bridge:
 
         def work():
             try:
-                self.handle(req, answered)
+                if not answered.is_set():  # its deadline may have passed before the worker started
+                    self.handle(req, answered)
             finally:
                 timer.cancel()
                 slots.release()
-        slots.acquire()
         timer.start()
+        if not slots.acquire(blocking=False):
+            timer.cancel()
+            self._answer(answered, {"id": req.get("id"), "ok": False, "denied": False, "error": "bridge busy"})
+            return None
         th = threading.Thread(target=work, daemon=True)
         th.start()
         return th
@@ -184,7 +202,8 @@ def main():
         if not isinstance(req, dict):
             b.reply({"id": None, "ok": False, "error": "request must be a JSON object"})
             continue
-        threads = [x for x in threads if x.is_alive()] + [b.submit(req, slots)]
+        th = b.submit(req, slots)
+        threads = [x for x in threads if x.is_alive()] + ([th] if th else [])
     deadline = time.time() + 10
     for th in threads:  # stdin closed: let in-flight requests finish, then end any run still open
         th.join(max(0.0, deadline - time.time()))
