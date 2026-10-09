@@ -7,7 +7,7 @@
 
 ## One-time PyPI setup (trusted publishing, no stored token)
 
-1. On pypi.org create the project `tracekit` (or reserve the name) and under *Publishing* add a trusted
+1. On pypi.org create the project `tracekit-ai` (or reserve the name) and under *Publishing* add a trusted
    publisher: owner `Cygnux-Labs`, repository `Tracekit`, workflow `release.yml`, environment `pypi`.
 2. In the GitHub repository settings create an environment named `pypi`, ideally with required reviewers.
 

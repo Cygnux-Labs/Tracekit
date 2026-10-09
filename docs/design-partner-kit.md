@@ -10,7 +10,7 @@ bundles are files you choose to share.
 
 ## Day 0: setup (30 minutes)
 
-1. `pip install tracekit` (or the plugin: `/plugin marketplace add Cygnux-Labs/Tracekit`).
+1. `pip install tracekit-ai` (or the plugin: `/plugin marketplace add Cygnux-Labs/Tracekit`).
 2. Run `tracekit demo` and open the replay it writes. Confirm the tampered bundle fails.
 3. Pick the mode that matches your threat. Dev mode (`tracekit init --dev`) is for trying it out: the agent's own
    user can rewrite the ledger. Linux system mode (`sudo tracekit init`) gives a separate signer user.
