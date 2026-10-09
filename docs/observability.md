@@ -31,5 +31,8 @@ types, gap kinds, RPC error codes, verdicts); past 64 distinct values a label is
 | `tracekit_signer_pending_approvals` | gauge | | Approvals requested and not yet answered. |
 | `tracekit_signer_checkpoints_total` | counter | | Signed checkpoint notes of the record tree written. |
 | `tracekit_signer_checkpoint_age_seconds` | gauge | | Seconds since this signer last wrote a checkpoint note (since start when it has written none). Alert when it grows well past the 10 s cadence while records are written. |
+| `tracekit_signer_witness_publish_failures_total` | counter | `witness` | Checkpoint notes a configured witness did not cosign (unreachable, refused, bad cosignature), by witness name. |
+| `tracekit_signer_witness_lag_records` | gauge | `witness` | Records in the latest record tree note that the witness has not cosigned yet; it should return to 0 within seconds. |
 
-Witness lag arrives when checkpoints are published to witnesses.
+`witness` values are the names of the witnesses in signer.yaml. The metrics port also serves `GET /logs/v0`, the
+signer's logs list for witnesses (docs/witnesses.md).

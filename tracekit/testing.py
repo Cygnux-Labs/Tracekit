@@ -153,7 +153,7 @@ class FakeSigner:
                            check=consume)
 
     def state_write(self, req):
-        return self._event("state_write", "state.write", ("key", "value_digest"), req)
+        return self._event("state_write", "state.write", ("key", "value_digest", "prev_digest"), req)
 
     def model_event(self, req):
         return self._event("model_event", "model.event", ("provider", "model", "phase", "content_digest", "usage",

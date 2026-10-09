@@ -1,4 +1,4 @@
-"""The signer RPC contract, version 6: one JSON Schema per request and response, the error shape, and `SignerAPI`.
+"""The signer RPC contract, version 7: one JSON Schema per request and response, the error shape, and `SignerAPI`.
 
 Frozen: a change to any schema here is a new RPC_VERSION. The caller's identity comes from the transport (peer
 credentials, token, mTLS), never from a request field. Calls that change state carry `request_id`, scoped to that
@@ -12,7 +12,7 @@ from typing import Protocol
 from tracekit.format.canon import MAX_SAFE_INT
 from tracekit.schema import _check
 
-RPC_VERSION = 6
+RPC_VERSION = 7
 MAX_RAW_ARGS = 1 << 20   # characters of a raw arguments string
 MAX_RESULTS_SENT = 1024
 
@@ -102,7 +102,8 @@ REQUESTS = {
                      status={"enum": ["ok", "error"]}, result=ANY, error=_str(4096),
                      # the client redacted result/error already; recorded as its claim, the signer redacts regardless
                      redacted={"const": True}, redaction=_obj([], rules=RULE_IDS, count=SEQ)),
-    "state_write": _obj(_EVENT_REQ + ["key", "value_digest"], **_EVENT, key=_str(256, minLength=1), value_digest=DIGEST),
+    "state_write": _obj(_EVENT_REQ + ["key", "value_digest"], **_EVENT, key=_str(256, minLength=1), value_digest=DIGEST,
+                        prev_digest={"oneOf": [DIGEST, {"type": "null"}]}),   # the state the write started from
     # agent-reported (L3): what the model asked to run, and the tool results the request sent back
     "model_event": _obj(_EVENT_REQ + ["provider", "model", "phase"], **_EVENT, provider=_str(64), model=_str(128),
                         phase={"enum": ["request", "response"]}, content_digest=DIGEST,

@@ -160,6 +160,13 @@ class TestExecutorAndListing(Signer):
         self.assertEqual(len(errs), 2, errs)
         self.assertTrue(all("approval must be" in e for e in errs), errs)
 
+    def test_abandon_reason_is_redacted_before_signing(self):
+        aid = self.pending()
+        secret = "sk-ant-" + "x" * 24   # a redaction fixture
+        self.s.approval_abandon({"request_id": "ab", **self.run, "approval_id": aid, "reason": f"lost {secret}"})
+        [rec] = self.records("approval.abandoned")
+        self.assertNotIn(secret, rec["reason"])
+
     def test_abandoned_approval_refuses_consume(self):
         aid = self.pending()
         self.decide(aid)
