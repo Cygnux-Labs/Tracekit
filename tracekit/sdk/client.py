@@ -6,7 +6,9 @@
         if d["decision"] == "allow":
             run.complete("call-1", "ok")
 
-The signer is the Unix socket in `$TRACEKIT_SIGNER`; without it, a same-user dev signer is found or started
+The signer is the Unix socket in `$TRACEKIT_SIGNER`, or an `https://host:port` URL (each call is one POST /v2/rpc;
+`$TRACEKIT_SIGNER_TOKEN_FILE` names a bearer token file, re-read per call so a rotated service-account token is picked
+up; `$TRACEKIT_SIGNER_CERT`/`_KEY` a client certificate for mTLS; `$TRACEKIT_SIGNER_CA` pins the signer's CA). Without it, a same-user dev signer is found or started
 (tracekit/sdk/autospawn.py). Requests go out in order on one connection and the signer answers them in order, so any
 number of threads can have calls in flight; a call that may block (`approval_wait`) gets a connection of its own so it
 holds up no one. Every request is validated against the RPC contract before it is sent.
@@ -18,9 +20,13 @@ import asyncio
 import collections
 import concurrent.futures
 import contextvars
+import http.client
+import json
 import os
 import socket
+import ssl
 import threading
+import urllib.parse
 import uuid
 import warnings
 
@@ -30,7 +36,7 @@ from tracekit import __version__
 from tracekit.format.canon import StrictJSONError, event_hash, loads_strict
 from tracekit.signer import rpc_schema
 from tracekit.signer.rpc_schema import RPC_VERSION, RPCError
-from tracekit.transport import read_frame, write_frame
+from tracekit.transport import parse_frame, read_frame, write_frame
 
 CONNECT_TIMEOUT_S = 2
 RETRIES = 3
@@ -71,18 +77,72 @@ def connect(path, timeout=CONNECT_TIMEOUT_S):
     except (OSError, RPCError) as e:
         sock.close()
         raise SignerUnavailable(f"no signer answering at {path}: {e}") from None
+    sock.settimeout(None)
+    try:
+        _check(hello, path)
+    except Incompatible:
+        sock.close()
+        raise
+    return sock, rfile, hello
+
+
+def _check(hello, where):
+    """Refuses a signer whose `hello` names no protocol range holding this client's."""
     proto = (hello or {}).get("proto")
     if not (isinstance(proto, list) and len(proto) == 2 and proto[0] <= RPC_VERSION <= proto[1]):
-        sock.close()
         hello = hello or {}
         raise Incompatible(
-            f"the Tracekit signer {hello.get('version', '?')} (pid {hello.get('pid', '?')}, protocol {proto}) at {path} "
+            f"the Tracekit signer {hello.get('version', '?')} (pid {hello.get('pid', '?')}, protocol {proto}) at {where} "
             f"cannot serve this client {__version__} (protocol {RPC_VERSION}). It was left running. Stop it with "
             "`tracekit down`, or replace it with `tracekit up --replace`")
     if hello.get("version") != __version__:
-        warnings.warn(f"Tracekit signer {hello.get('version')} serves client {__version__}", stacklevel=2)
-    sock.settimeout(None)
-    return sock, rfile, hello
+        warnings.warn(f"Tracekit signer {hello.get('version')} serves client {__version__}", stacklevel=3)
+
+
+class _Https:
+    """POST /v2/rpc to an HTTPS signer: one kept-alive connection per thread, the bearer token re-read per call."""
+
+    def __init__(self, url):
+        u = urllib.parse.urlsplit(url)
+        self.host, self.port = u.hostname, u.port or 443
+        self.ctx = ssl.create_default_context(cafile=os.environ.get("TRACEKIT_SIGNER_CA"))
+        if os.environ.get("TRACEKIT_SIGNER_CERT"):
+            self.ctx.load_cert_chain(os.environ["TRACEKIT_SIGNER_CERT"], os.environ.get("TRACEKIT_SIGNER_KEY"))
+        self.token_file, self.pid, self.hello = os.environ.get("TRACEKIT_SIGNER_TOKEN_FILE"), None, None
+
+    def post(self, frame, timeout):
+        """The answer frame; _ConnectionLost when the request may not have arrived, SignerUnavailable on a timeout."""
+        headers = {"Content-Type": "application/json"}
+        if self.token_file:
+            with open(self.token_file, encoding="utf-8") as f:
+                headers["Authorization"] = "Bearer " + f.read().strip()
+        if self.pid != os.getpid():   # a forked child: its own connections
+            self.pid, self.local = os.getpid(), threading.local()
+        conn = getattr(self.local, "conn", None)
+        if conn is None:
+            conn = self.local.conn = http.client.HTTPSConnection(self.host, self.port, context=self.ctx)
+        conn.timeout = timeout
+        if conn.sock:
+            conn.sock.settimeout(timeout)
+        try:
+            conn.request("POST", "/v2/rpc", json.dumps(frame, separators=(",", ":"), ensure_ascii=False).encode(), headers)
+            return parse_frame(conn.getresponse().read())
+        except socket.timeout:
+            conn.close()   # reopened by the next request
+            raise SignerUnavailable(f"no answer from the signer within {timeout:g}s") from None
+        except (OSError, http.client.HTTPException, RPCError):
+            conn.close()
+            raise _ConnectionLost() from None
+
+    def rpc(self, method, req, timeout):
+        if self.hello is None:
+            hello = self.post({"method": "hello"}, timeout)
+            if "error" in hello:
+                e = hello["error"]
+                raise RPCError(e.get("code"), e.get("message", ""))
+            _check(hello, f"https://{self.host}:{self.port}")
+            self.hello = hello
+        return self.post({"method": method, **req}, timeout)
 
 
 class _Conn:
@@ -103,6 +163,7 @@ class Client:
     def __init__(self, signer=None, timeout=30.0):
         self.signer = signer or os.environ.get("TRACEKIT_SIGNER")
         self.timeout, self.hello = timeout, None
+        self._https = _Https(self.signer) if (self.signer or "").startswith("https://") else None
         self._lock = threading.Lock()
         self._pid = self._conn = None
 
@@ -118,7 +179,12 @@ class Client:
         timeout = self.timeout + req.get("timeout_ms", 0) / 1000
         for _ in range(RETRIES):
             try:
-                if method in _LONG_POLLS:
+                if self._https:
+                    with self._lock:
+                        self._prepare(method, req)
+                    reply = self._https.rpc(method, req, timeout)
+                    self.hello = self._https.hello
+                elif method in _LONG_POLLS:
                     reply = self._poll(method, req, timeout)
                 else:
                     reply = self._send(method, req).result(timeout)
@@ -139,21 +205,26 @@ class Client:
         if conn:
             conn.drop()
 
+    def _prepare(self, method, req, connect=lambda: None):
+        """Fills in `stream` and `client_seq` and validates `req`; counts the event once `connect()` has not raised.
+        Call under self._lock."""
+        if self._pid != os.getpid():   # new client, or a forked child: its own stream and connection
+            self._pid, self._conn, self.stream, self._seqs = os.getpid(), None, _new_id(), {}
+        run_id = req.get("run_id")
+        fresh = method in _EVENT_METHODS and "client_seq" not in req
+        if fresh:
+            req.update(stream=self.stream, client_seq=self._seqs.get(run_id, 0))
+        _validate(method, req)
+        connect()
+        if fresh:
+            self._seqs[run_id] = req["client_seq"] + 1
+        elif method == "close_run":   # no events after close: drop the counter
+            self._seqs.pop(run_id, None)
+        return req
+
     def _send(self, method, req):
         with self._lock:
-            if self._pid != os.getpid():   # new client, or a forked child: its own stream and connection
-                self._pid, self._conn, self.stream, self._seqs = os.getpid(), None, _new_id(), {}
-            run_id = req.get("run_id")
-            fresh = method in _EVENT_METHODS and "client_seq" not in req
-            if fresh:
-                req.update(stream=self.stream, client_seq=self._seqs.get(run_id, 0))
-            _validate(method, req)
-            if self._conn is None:
-                self._conn = self._connect()
-            if fresh:
-                self._seqs[run_id] = req["client_seq"] + 1
-            elif method == "close_run":   # no events after close: drop the counter
-                self._seqs.pop(run_id, None)
+            self._prepare(method, req, self._ensure_conn)
             fut = concurrent.futures.Future()
             self._conn.pending.append(fut)
             try:
@@ -161,6 +232,10 @@ class Client:
             except OSError:
                 self._conn.drop()
             return fut
+
+    def _ensure_conn(self):
+        if self._conn is None:
+            self._conn = self._connect()
 
     def _poll(self, method, req, timeout):
         """One request on a connection of its own, closed after the answer."""
