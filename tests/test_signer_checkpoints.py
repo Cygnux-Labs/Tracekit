@@ -5,6 +5,7 @@ import io
 import json
 import os
 import unittest
+from unittest import mock
 
 from factories import wait_for
 from storage_contract import Chain
@@ -13,6 +14,7 @@ from tracekit import cli, crypto
 from tracekit.bundle_v2 import export
 from tracekit.format import checkpoint
 from tracekit.signer import service as svc
+from tracekit.storage import file as file_storage
 from tracekit.storage.file import FileReader, FileStorage
 from tracekit.verify import v2
 
@@ -121,6 +123,14 @@ class Reader(unittest.TestCase):
         self.store.checkpoint_put(5, note)
         self.assertEqual(r.checkpoint_latest(), (5, note))
 
+    def test_note_is_written_after_its_records_are_synced(self):
+        calls = []
+        sync, write = file_storage._sync, file_storage._write_new
+        with mock.patch.object(file_storage, "_sync", lambda fd, full: calls.append(("sync", fd)) or sync(fd, full)), \
+                mock.patch.object(file_storage, "_write_new", lambda p, d: calls.append(("note", p)) or write(p, d)):
+            self.store.checkpoint_put(5, checkpoint.body("example.org/log", 5, self.store.tree.root()))
+        self.assertEqual(calls, [("sync", self.store.log.fd), ("note", os.path.join(self.root, file_storage.NOTE))])
+
     @unittest.skipUnless(os.name == "posix", "modes and owners are POSIX")
     def test_refuses_a_file_others_may_write(self):
         os.chmod(os.path.join(self.root, "records.jsonl"), 0o666)
@@ -129,18 +139,45 @@ class Reader(unittest.TestCase):
 
 
 class ExportWithoutSigner(unittest.TestCase):
+    def setUp(self):
+        self.dir = tmpdir(self)
+        self.cfg = os.path.join(self.dir, "signer.yaml")
+        with open(self.cfg, "w") as f:
+            json.dump({"data_dir": ".", "socket": "nobody.sock", "tenant": "acme"}, f)
+
+    def test_note_newer_than_the_first_reader_still_exports(self):
+        store, chain, key = FileStorage(os.path.join(self.dir, "store")), Chain(), crypto.generate()[0]
+        self.addCleanup(store.close)
+
+        def note():
+            text = checkpoint.body("example.org/log", store.tree.size, store.tree.root())
+            store.checkpoint_put(store.tree.size, text + "\n" + checkpoint.sign(text, "example.org/log", key))
+        store.append_batch(chain.batch(3))
+        note()
+        opened = []
+
+        def reader(root):
+            r = FileReader(root)
+            if not opened:   # the signer appends and writes a newer note after the first reader opened
+                opened.append(r)
+                store.append_batch(chain.batch(2, runs=("run-2",)))
+                note()
+            return r
+        out = os.path.join(self.dir, "x.tkb")
+        with mock.patch.object(file_storage, "FileReader", reader):
+            code, stdout, err = run_cli("export", "--v2", "--run", "run-1", "--config", self.cfg, "-o", out)
+        self.assertEqual((code, err), (0, ""))
+        self.assertEqual(json.loads(stdout)["tree_size"], 5)
+
     def test_no_covering_note_and_no_signer_is_a_clear_error(self):
-        d = tmpdir(self)
-        store = FileStorage(os.path.join(d, "store"))
+        store = FileStorage(os.path.join(self.dir, "store"))
         store.append_batch(Chain().batch(3))
         store.close()
-        cfg = os.path.join(d, "signer.yaml")
-        with open(cfg, "w") as f:
-            json.dump({"data_dir": ".", "socket": "nobody.sock", "tenant": "acme"}, f)
-        code, _, err = run_cli("export", "--v2", "--run", "run-1", "--config", cfg, "-o", os.path.join(d, "x.tkb"))
+        out = os.path.join(self.dir, "x.tkb")
+        code, _, err = run_cli("export", "--v2", "--run", "run-1", "--config", self.cfg, "-o", out)
         self.assertEqual(code, 1)
         self.assertIn("no checkpoint covers run 'run-1' yet and no signer answered", err)
-        self.assertFalse(os.path.exists(os.path.join(d, "x.tkb")))
+        self.assertFalse(os.path.exists(out))
 
 
 if __name__ == "__main__":

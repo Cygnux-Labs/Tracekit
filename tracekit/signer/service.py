@@ -281,9 +281,8 @@ class SignerService:
     def checkpoint(self):
         """Sign and store a note of the record tree when it grew since the latest stored one."""
         def head(tx):
-            # lean: tail_state also lists every run, O(runs) on the writer per note; read only the tree head if it shows
-            t = self.log.storage.tail_state()
-            return t["tree_size"], t["tree_root"]
+            t = self.log.storage.tree
+            return t.size, t.root()
         size, root = self.log.write(head)
         latest = self.log.storage.checkpoint_latest()
         if size and (latest is None or size > latest[0]):

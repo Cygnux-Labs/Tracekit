@@ -433,6 +433,7 @@ def _export_v2(a):
     from .sdk.client import Client, Incompatible, SignerUnavailable
     from .signer.rpc_schema import RPCError
     from .signer.service import signer_config
+    from .storage.base import StorageCorrupt
     from .storage.file import FileReader
     if not a.run or a.dev and a.config:
         print("tracekit export --v2: needs --run RUN_ID, and --dev or --config (not both)", file=sys.stderr)
@@ -467,9 +468,8 @@ def _export_v2(a):
                 time.sleep(0.1)
             if note is None:
                 raise ValueError(f"the signer wrote no checkpoint covering run {a.run!r} within {NUDGE_WAIT_S:g}s")
-            reader = FileReader(store)   # the note may be of records written after the reader opened
-        info = export(reader, tenant, a.run, note[1], a.out)
-    except (OSError, ValueError, SignerUnavailable) as e:
+        info = export(FileReader(store), tenant, a.run, note[1], a.out)   # opened after the note: holds its records
+    except (OSError, ValueError, SignerUnavailable, StorageCorrupt) as e:
         print(f"tracekit export: {e}", file=sys.stderr)
         return 1
     print(json.dumps(info, indent=2))
