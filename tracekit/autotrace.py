@@ -10,6 +10,11 @@ tool calls the model asked for, error, HTTP status, latency and time to first ch
 are covered; a stream is recorded when it is exhausted or closed, and a garbage-collected one at the next model
 call, the end of the run or exit, so an abandoned stream still leaves a response event marked as such.
 
+Into a v2 run (``init(run=handle)``, or any call made inside ``with client.run(...)``, see tracekit.sdk.client) the
+two events go through the signer's ``model_event``: the request lists the tool results it sends back, the response
+the tool calls tracekit.parsers read from it. The fail mode is the run's, from register_run (``model``, else
+``default``), in place of the policy's ``fail_mode``.
+
 Content (prompts, outputs) is redacted and hashed by default, exactly as for every other Tracekit capture path;
 ``content_capture: full`` in the policy records it in clear.
 
@@ -33,9 +38,12 @@ import threading
 import time
 import uuid
 
-from . import client, privacy
+from . import client, parsers, privacy
 from . import usage as _usage
 from .core import jsonable
+from .parsers import _get
+from .sdk.client import AsyncRunHandle, RunHandle, current_run
+from .signer.rpc_schema import MAX_RESULTS_SENT
 
 MAX_TEXT = 1024 * 1024   # streamed text kept for the (hashed) response content
 _STATE = {"tracer": None, "patched": [], "lock": threading.RLock()}
@@ -43,22 +51,6 @@ _LATE = collections.deque()   # exchanges of garbage-collected streams, recorded
 
 
 # ------------------------------------------------------------------ helpers
-
-def _get(obj, *path, default=None):
-    for p in path:
-        if obj is None:
-            return default
-        if isinstance(obj, dict):
-            obj = obj.get(p)
-        elif isinstance(p, int):
-            try:
-                obj = obj[p]
-            except (IndexError, KeyError, TypeError):
-                return default
-        else:
-            obj = getattr(obj, p, None)
-    return default if obj is None else obj
-
 
 def _dump(obj):
     """Pydantic models (all three SDKs) -> plain data; anything else -> jsonable."""
@@ -90,9 +82,10 @@ def _status_of(exc):
 class _Exchange:
     """One model call. begin() -> request event; finish() -> response event (exactly once)."""
 
-    def __init__(self, tracer, provider, operation, model, kwargs, streamed):
+    def __init__(self, tracer, provider, operation, model, kwargs, streamed, on_resp=None, on_item=None):
         self.tracer, self.provider, self.operation = tracer, provider, operation
         self.model, self.kwargs, self.streamed = model, kwargs, streamed
+        self.on_resp, self.on_item = on_resp, on_item
         self.id = "ex_" + uuid.uuid4().hex[:20]
         self.t0 = time.monotonic()
         self.first_byte = None
@@ -101,6 +94,14 @@ class _Exchange:
         self.stop_reason, self.tool_uses, self.text, self.resp_model, self.chunks = None, {}, [], None, 0
         self.text_len = 0
         self.usage = None
+
+    def response(self, resp):
+        if self.on_resp:
+            self.on_resp(self, resp)
+
+    def item(self, item):
+        if self.on_item:
+            self.on_item(self, item)
 
     def add_text(self, t):
         if isinstance(t, str) and self.text_len < MAX_TEXT:
@@ -169,6 +170,77 @@ class _Exchange:
             if content is not None:
                 data["response"] = privacy.content(content, self._capture())
             self.tracer._send(self.tracer._event("model.exchange", data))
+        except Exception:
+            _note_failure()
+
+
+class _RunExchange:
+    """One model call recorded into a v2 run as two `model_event`s: the request (with the tool results it sends back)
+    before the call, and the response with what tracekit.parsers read from it."""
+
+    def __init__(self, run, provider, operation, kwargs, streamed):
+        self.run, self.provider, self.kwargs, self.streamed = run, provider, kwargs, streamed
+        self.kind, self.model = f"{provider}:{operation}", _model_kw(kwargs)
+        self.id = "ex_" + uuid.uuid4().hex[:20]
+        self.stream = parsers.Stream(self.kind) if streamed else None
+        self.parsed, self.chunks, self.done, self.lock = None, 0, False, threading.Lock()
+
+    def _fail_closed(self):
+        """The run's fail mode for model calls: `model` in register_run's fail_modes, else `default`."""
+        modes = self.run.registered.get("fail_modes") or {}
+        return modes.get("model", modes.get("default", "closed")) == "closed"
+
+    def _send(self, phase, model, out, **fields):
+        # lean: async calls record through the sync client, holding the event loop for one local round trip; use
+        # AsyncClient's thread hop if that shows up in latency
+        sent = out["tool_results_sent"][-MAX_RESULTS_SENT:]   # lean: the newest results only, in very long histories
+        self.run.call("model_event", provider=self.provider, model=str(model or "")[:128], phase=phase,
+                      exchange_id=self.id, streamed=self.streamed, **({"tool_results_sent": sent} if sent else {}),
+                      **fields)
+
+    def begin(self):
+        if self.run.closed:
+            self.done = True
+            if self._fail_closed():
+                raise PermissionError("Tracekit: the run has ended and its fail mode is closed; model call refused")
+            return
+        try:
+            self._send("request", self.model, parsers.parse(self.kind, None, self.kwargs))
+        except Exception as e:
+            if self._fail_closed():
+                raise PermissionError(f"Tracekit: request not recorded and the run's fail mode is closed; model call "
+                                      f"refused: {e}") from e
+            _note_failure()
+
+    def response(self, resp):
+        self.parsed = parsers.parse(self.kind, resp, self.kwargs)
+
+    def item(self, item):
+        self.stream.add(item)
+
+    def chunk(self):
+        self.chunks += 1
+
+    def _out(self):
+        return self.stream.parse(self.kwargs) if self.stream and self.stream.seen else self.parsed
+
+    @property
+    def stop_reason(self):
+        return (self._out() or {}).get("finish")
+
+    def finish(self, response=None, error=None, status=None, abandoned=False):
+        with self.lock:
+            if self.done:
+                return
+            self.done = True
+        try:
+            out = self._out() or parsers.parse(self.kind, None, self.kwargs)
+            if abandoned and not error:
+                error = f"stream abandoned after {self.chunks} chunk(s)"
+            fields = {"stop_reason": out["finish"] and str(out["finish"])[:100], "usage": out["usage"],
+                      "tool_uses": out["tool_uses"][:128],   # lean: the RPC's cap; v1 caps the same way
+                      "error": error and str(error)[:1024]}
+            self._send("response", out["model"] or self.model, out, **{k: v for k, v in fields.items() if v})
         except Exception:
             _note_failure()
 
@@ -286,11 +358,9 @@ def _gemini(ex, resp):
 class _StreamProxy:
     """Wraps an SDK stream (sync and/or async). Delegates everything; records the response when the stream ends."""
 
-    def __init__(self, inner, ex, on_item, final=None):
+    def __init__(self, inner, ex):
         object.__setattr__(self, "_tk_inner", inner)
         object.__setattr__(self, "_tk_ex", ex)
-        object.__setattr__(self, "_tk_on", on_item)
-        object.__setattr__(self, "_tk_final", final)
         object.__setattr__(self, "_tk_it", None)
 
     def __getattr__(self, name):
@@ -302,27 +372,13 @@ class _StreamProxy:
     def _item(self, item):
         self._tk_ex.chunk()
         try:
-            self._tk_on(self._tk_ex, item)
+            self._tk_ex.item(item)
         except Exception:
             pass
         return item
 
     def _end(self, error=None, abandoned=False):
-        resp = None
-        if self._tk_final and not error:
-            try:
-                resp = self._tk_final(self._tk_inner)
-            except Exception:
-                resp = None
-        if resp is not None:
-            self._tk_on_final(resp)
         self._tk_ex.finish(response=None, error=error, status=_status_of(error) if error else None, abandoned=abandoned)
-
-    def _tk_on_final(self, resp):
-        try:
-            self._tk_on(self._tk_ex, resp)
-        except Exception:
-            pass
 
     # sync
     def __iter__(self):
@@ -443,7 +499,7 @@ class _ManagerProxy:
         return getattr(self._inner, name)
 
     def _wrap(self, stream, ex):
-        self._proxy = _StreamProxy(stream, ex, _anthropic_event)
+        self._proxy = _StreamProxy(stream, ex)
         return self._proxy
 
     def __enter__(self):
@@ -481,7 +537,7 @@ class _ManagerProxy:
         snap = getattr(p._tk_inner, "current_message_snapshot", None)
         try:
             if snap is not None and not e:
-                _anthropic_msg(p._tk_ex, snap)
+                p._tk_ex.response(snap)
         except Exception:
             pass
         p._tk_ex.finish(error=repr(e) if e else None, status=_status_of(e) if e else None,
@@ -500,10 +556,16 @@ def _model_kw(kwargs):
 TARGETS = [
     ("openai", "openai.resources.chat.completions", "Completions", "create", "chat", False, _openai_chat, _openai_chat_chunk, "kwarg"),
     ("openai", "openai.resources.chat.completions", "AsyncCompletions", "create", "chat", True, _openai_chat, _openai_chat_chunk, "kwarg"),
+    ("openai", "openai.resources.chat.completions", "Completions", "parse", "chat", False, _openai_chat, _openai_chat_chunk, None),
+    ("openai", "openai.resources.chat.completions", "AsyncCompletions", "parse", "chat", True, _openai_chat, _openai_chat_chunk, None),
     ("openai", "openai.resources.responses", "Responses", "create", "responses", False, _openai_responses, _openai_responses_event, "kwarg"),
     ("openai", "openai.resources.responses", "AsyncResponses", "create", "responses", True, _openai_responses, _openai_responses_event, "kwarg"),
+    ("openai", "openai.resources.responses", "Responses", "parse", "responses", False, _openai_responses, _openai_responses_event, None),
+    ("openai", "openai.resources.responses", "AsyncResponses", "parse", "responses", True, _openai_responses, _openai_responses_event, None),
     ("anthropic", "anthropic.resources.messages", "Messages", "create", "messages", False, _anthropic_msg, _anthropic_event, "kwarg"),
     ("anthropic", "anthropic.resources.messages", "AsyncMessages", "create", "messages", True, _anthropic_msg, _anthropic_event, "kwarg"),
+    ("anthropic", "anthropic.resources.messages", "Messages", "parse", "messages", False, _anthropic_msg, _anthropic_event, None),
+    ("anthropic", "anthropic.resources.messages", "AsyncMessages", "parse", "messages", True, _anthropic_msg, _anthropic_event, None),
     ("anthropic", "anthropic.resources.messages", "Messages", "stream", "messages", False, _anthropic_msg, _anthropic_event, "manager"),
     ("anthropic", "anthropic.resources.messages", "AsyncMessages", "stream", "messages", False, _anthropic_msg, _anthropic_event, "manager"),
     ("gemini", "google.genai.models", "Models", "generate_content", "generate_content", False, _gemini, _gemini, None),
@@ -530,14 +592,17 @@ atexit.register(flush)
 def _wrap(orig, provider, operation, is_async, on_resp, on_item, stream_kind):
     def make_ex(kwargs, streamed):
         flush()
-        t = _STATE["tracer"]
+        t = _target()
         if t is None:
             return None
-        if getattr(t, "_ended", False):
+        if isinstance(t, (RunHandle, AsyncRunHandle)):
+            ex = _RunExchange(getattr(t, "_sync", t), provider, operation, kwargs, streamed)
+        elif getattr(t, "_ended", False):
             if t._policy.get("fail_mode") == "closed":
                 raise PermissionError("Tracekit: the run has ended and fail_mode=closed; model call refused")
             return None
-        ex = _Exchange(t, provider, operation, _model_kw(kwargs), kwargs, streamed)
+        else:
+            ex = _Exchange(t, provider, operation, _model_kw(kwargs), kwargs, streamed, on_resp, on_item)
         ex.begin()
         return ex
 
@@ -545,7 +610,7 @@ def _wrap(orig, provider, operation, is_async, on_resp, on_item, stream_kind):
         @functools.wraps(orig)
         def manager(self, *args, **kwargs):
             inner = orig(self, *args, **kwargs)
-            if _STATE["tracer"] is None:
+            if _target() is None:
                 return inner
             return _ManagerProxy(inner, lambda: make_ex(kwargs, True) or _NullEx())
         manager.__tracekit_wrapped__ = orig
@@ -567,9 +632,9 @@ def _wrap(orig, provider, operation, is_async, on_resp, on_item, stream_kind):
                 ex.finish(error=repr(e), status=_status_of(e))
                 raise
             if streamed:
-                return _StreamProxy(out, ex, on_item)
+                return _StreamProxy(out, ex)
             try:
-                on_resp(ex, out)
+                ex.response(out)
             except Exception:
                 pass
             ex.finish(response=out)
@@ -589,15 +654,21 @@ def _wrap(orig, provider, operation, is_async, on_resp, on_item, stream_kind):
             ex.finish(error=repr(e), status=_status_of(e))
             raise
         if streamed:
-            return _StreamProxy(out, ex, on_item)
+            return _StreamProxy(out, ex)
         try:
-            on_resp(ex, out)
+            ex.response(out)
         except Exception:
             pass
         ex.finish(response=out)
         return out
     wrapper.__tracekit_wrapped__ = orig
     return wrapper
+
+
+def _target():
+    """What a model call records into: the current v2 run (`with client.run(...)`), else what `instrument` was given."""
+    run = current_run.get()
+    return run if run is not None else _STATE["tracer"]
 
 
 class _NullEx:
@@ -607,12 +678,19 @@ class _NullEx:
     def chunk(self):
         pass
 
+    def item(self, item):
+        pass
+
+    def response(self, resp):
+        pass
+
     def finish(self, *a, **k):
         pass
 
 
 def instrument(tracer, providers=PROVIDERS):
-    """Patch the installed provider SDKs to record into ``tracer``. Returns the list of patched methods."""
+    """Patch the installed provider SDKs to record into ``tracer``: a v1 ``Tracer``, a v2 run handle, or None for
+    only the current v2 run. Returns the list of patched methods."""
     with _STATE["lock"]:
         _STATE["tracer"] = tracer
         done = []
@@ -642,13 +720,19 @@ def uninstrument():
         _STATE["tracer"] = None
 
 
-def init(agent=None, session_id=None, providers=PROVIDERS, cwd=None):
+def init(agent=None, session_id=None, providers=PROVIDERS, cwd=None, run=None):
     """Start a run and record every model call made through the installed provider SDKs. Idempotent: a second call
-    returns the active tracer. The run ends at interpreter exit (or call ``tracer.end()`` / ``shutdown()``)."""
+    returns the active tracer. The run ends at interpreter exit (or call ``tracer.end()`` / ``shutdown()``).
+
+    With ``run``, a v2 run handle (tracekit.sdk.client), model calls are recorded into that run instead; you close it.
+    Either way, a call made inside ``with client.run(...)`` goes to that block's run."""
     from .agent_sdk import Tracer
+    if run is not None:
+        instrument(run, providers)
+        return run
     with _STATE["lock"]:
         t = _STATE["tracer"]
-        if t is not None and not t._ended:
+        if t is not None and not getattr(t, "_ended", True):
             return t
         name = agent or os.environ.get("TRACEKIT_AGENT") or os.path.splitext(os.path.basename(sys.argv[0] or "python"))[0] or "python"
         t = Tracer(agent=name, session_id=session_id, cwd=cwd)
@@ -671,5 +755,5 @@ def shutdown(reason="done"):
         t = _STATE["tracer"]
         flush()
         uninstrument()
-        if t is not None and not t._ended:
+        if t is not None and not getattr(t, "_ended", True):   # a v2 run handle is closed by its owner
             t.end(reason)
