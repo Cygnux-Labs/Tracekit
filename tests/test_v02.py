@@ -11,6 +11,8 @@ import time
 import unittest
 import zipfile
 
+import pytest
+
 try:
     import pwd
 except ImportError:
@@ -24,6 +26,7 @@ from tracekit.daemon import Signer, load_config  # noqa: E402
 from tracekit.ledger import Keys, read_records  # noqa: E402
 from tracekit.witness import make_checkpoint  # noqa: E402
 from tracekit.core import read_json, read_text, write_json  # noqa: E402
+from tests.factories import wait_for  # noqa: E402
 
 
 _SAVED_POLICY = None
@@ -703,6 +706,7 @@ class Migration(unittest.TestCase):
         self.assertTrue(all(e["source"] == "migrated" for e in evs))
 
 
+@pytest.mark.root
 @unittest.skipUnless(hasattr(os, "geteuid") and os.geteuid() == 0 and shutil.which("runuser") and shutil.which("useradd"),
                      "needs root + runuser/useradd (creates two throwaway OS users)")
 class Isolation(unittest.TestCase):
@@ -726,10 +730,7 @@ class Isolation(unittest.TestCase):
         os.chown(os.path.join(cls.home, "config.json"), su.pw_uid, su.pw_gid)
         cls.proc = subprocess.Popen(["runuser", "-u", cls.SIGNER, "--", sys.executable, "-m", "tracekit.daemon", "--home", cls.home],
                                     env=dict(os.environ, PYTHONPATH=cls.pkg), stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-        for _ in range(100):
-            if os.path.exists(os.path.join(cls.home, "tracekitd.sock")):
-                break
-            time.sleep(0.05)
+        wait_for(lambda: os.path.exists(os.path.join(cls.home, "tracekitd.sock")), timeout=5)
         write_json(os.path.join(cls.client, "config.json"), {"socket": os.path.join(cls.home, "tracekitd.sock"), "signer_isolation": "separate-user"})
         os.chown(os.path.join(cls.client, "config.json"), ag.pw_uid, ag.pw_gid)
 
