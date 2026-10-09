@@ -46,7 +46,8 @@ class _Conn(socketserver.StreamRequestHandler):
 
 
 class TcpDevServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
-    # lean: one thread per connection; a bounded pool when the signer service needs a connection cap
+    # lean: one thread per connection, and the read timeout is per recv, not per frame; a bounded pool and a frame
+    # deadline when the signer service needs a connection cap
     daemon_threads = True
 
     def __init__(self, endpoint_path, token, handle_frame, read_timeout=READ_TIMEOUT_S):

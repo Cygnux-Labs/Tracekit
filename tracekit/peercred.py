@@ -15,7 +15,7 @@ LOCAL_PEERCRED = 0x001
 LOCAL_PEERPID = 0x002
 XUCRED_VERSION = 0
 _XUCRED_FMT = "IIh16I"  # cr_version, cr_uid, cr_ngroups, cr_groups[16]  (NGROUPS == 16)
-_UCRED_FMT = "iII"      # struct ucred: pid_t pid, uid_t uid, gid_t gid (uid_t and gid_t are unsigned)
+UCRED_FMT = "iII"      # struct ucred: pid_t pid, uid_t uid, gid_t gid (uid_t and gid_t are unsigned)
 
 
 def _darwinish():
@@ -36,7 +36,7 @@ def parse_xucred(raw):
 
 def parse_ucred(raw):
     """Linux SO_PEERCRED bytes -> (pid, uid)."""
-    pid, uid, _gid = struct.unpack(_UCRED_FMT, raw)
+    pid, uid, _gid = struct.unpack(UCRED_FMT, raw)
     return pid, uid
 
 
@@ -44,7 +44,7 @@ def peer(conn):
     """(pid, uid) of the connected process, or (None, None) when it cannot be attested."""
     try:
         if hasattr(socket, "SO_PEERCRED"):
-            return parse_ucred(conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize(_UCRED_FMT)))
+            return parse_ucred(conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize(UCRED_FMT)))
         if _darwinish():
             uid = parse_xucred(conn.getsockopt(SOL_LOCAL, LOCAL_PEERCRED, struct.calcsize(_XUCRED_FMT)))
             try:
