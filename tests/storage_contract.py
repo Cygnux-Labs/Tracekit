@@ -129,6 +129,22 @@ class StorageContract:
         self.assertEqual(s.checkpoint_latest(), (7, note(7)))
         self.assertEqual(self.reopen(s).checkpoint_latest(), (7, note(7)))
 
+    def test_registry_notes_are_per_tree_and_all_kept(self):
+        def note(n):
+            return checkpoint.body("example.org/log/registry/x", n, bytes(32)) + "\n— example.org/log c2ln\n"
+        s, acme, beta = self.store(), registry_tree("acme"), registry_tree("beta")
+        self.assertIsNone(s.checkpoint_latest(acme))
+        s.checkpoint_put(2, note(2), acme)
+        s.checkpoint_put(2, note(2), acme)
+        s.checkpoint_put(5, note(5), acme)
+        s.checkpoint_put(1, note(1), beta)
+        with self.assertRaises(ValueError):
+            s.checkpoint_put(3, note(3), acme)
+        s = self.reopen(s)
+        self.assertEqual((s.checkpoint_latest(acme), s.checkpoint_latest(beta)), ((5, note(5)), (1, note(1))))
+        self.assertEqual((s.checkpoint_at(acme, 2), s.checkpoint_at(acme, 3)), (note(2), None))
+        self.assertIsNone(s.checkpoint_latest())   # the record tree's notes are apart
+
     def test_merkle_roots_match_merkle_tiles(self):
         s, c = self.store(), Chain()
         records = c.batch(300)
