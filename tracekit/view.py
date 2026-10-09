@@ -36,6 +36,7 @@ from .storage.file import NOTE, FileReader
 from .verify import v2
 
 POLL_S = 1.0
+HANDSHAKE_S = 30
 DEV_NOTE = ("trust pins this store's own log.vkey: dev assurance, the viewer runs as the same user as the dev signer "
             "and proves only that the records match that key")
 
@@ -150,7 +151,12 @@ class _TLSServer(ThreadingHTTPServer):
     tls = None
 
     def finish_request(self, request, client_address):
-        with self.tls.wrap_socket(request, server_side=True) as s:
+        request.settimeout(HANDSHAKE_S)   # a client that connects and stays silent frees its thread
+        try:
+            s = self.tls.wrap_socket(request, server_side=True)
+        except OSError:   # the timeout, or not TLS
+            return
+        with s:
             super().finish_request(s, client_address)
 
 
