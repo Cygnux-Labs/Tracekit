@@ -61,7 +61,7 @@ def _run(client, sid, register=True, stale=None):
             out = client.register_run({"agent": {"name": AGENT, **({"version": version[:64]} if version else {})}})
             # lean: any process of the agent's uid can read and use this token (another uid cannot); binding runs to
             # the harness's processes (a root-owned harness helper) narrows that
-            st ={"run_id": out["run_id"], "run_token": out["run_token"]}
+            st = {"run_id": out["run_id"], "run_token": out["run_token"]}
             files.write_json(path, st)
     return st and RunHandle(client, st)
 
