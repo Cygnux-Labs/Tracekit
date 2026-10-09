@@ -48,8 +48,12 @@ def main(argv=None):
         print(f"tracekit cost: {e}", file=sys.stderr)
         return 2
     from .ledger import read_records
+    path = os.path.join(home, "ledger", "ledger.jsonl")
+    if not os.path.exists(path):
+        print(f"tracekit cost: no ledger at {path}", file=sys.stderr)
+        return 2
     rows = []
-    for _, r, _ in read_records(os.path.join(home, "ledger", "ledger.jsonl")):
+    for _, r, _ in read_records(path):
         ev = (r or {}).get("event") or {}
         d = ev.get("data") if isinstance(ev.get("data"), dict) else {}
         u = d.get("usage") if isinstance(d.get("usage"), dict) else {}
