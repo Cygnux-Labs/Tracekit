@@ -85,17 +85,24 @@ class UnixTransport(unittest.TestCase):
         self.addCleanup(s.close)
         return Client(s)
 
-    def test_identity_is_peer_uid_and_socket_is_private(self):
-        self.assertEqual(self.connect().call({"method": "status"}), {"subject": str(os.getuid()), "method": "status"})
-        self.assertEqual(stat.S_IMODE(os.stat(self.path).st_mode), 0o600)
-
-    def test_identity_is_read_for_every_frame(self):
+    def test_identity_is_peer_uid(self):
         c = self.connect()
-        with mock.patch.object(uid_auth.peercred, "peer", side_effect=[(1, 1000), (1, 1001), (None, None)]):
-            self.assertEqual(c.call({"method": "status"})["subject"], "1000")
-            self.assertEqual(c.call({"method": "status"})["subject"], "1001")
+        for _ in range(2):
+            self.assertEqual(c.call({"method": "status"}), {"subject": str(os.getuid()), "method": "status"})
+
+    def test_no_peer_credentials_is_refused(self):
+        with mock.patch.object(uid_auth.peercred, "peer", return_value=(None, None)):
+            c = self.connect()
+            self.assertEqual(c.recv()["error"]["code"], "unauthenticated")
+        self.assertIsNone(c.recv())
+
+    @unittest.skipUnless(uid_auth.PER_FRAME, "per-frame credentials are Linux-only")
+    def test_frame_from_another_uid_closes(self):
+        c = self.connect()
+        self.assertEqual(c.call({"method": "status"})["method"], "status")
+        with mock.patch.object(uid_auth, "scm_uid", return_value=os.getuid() + 1):
             self.assertEqual(c.call({"method": "status"})["error"]["code"], "unauthenticated")
-        self.assertIsNone(c.recv())   # closed after the failed frame
+        self.assertIsNone(c.recv())
 
     def test_refusals_keep_the_connection(self):
         c = self.connect()

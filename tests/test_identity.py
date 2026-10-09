@@ -9,6 +9,7 @@ from unittest import mock
 from tracekit import peercred
 from tracekit.identity import token
 from tracekit.identity.base import CallerIdentity
+from tracekit.identity import uid
 from tracekit.identity.uid import UidAuthenticator
 from tracekit.signer.rpc_schema import RPCError
 
@@ -23,21 +24,66 @@ class Identity(unittest.TestCase):
 
 class PeerUid(unittest.TestCase):
     def test_linux_uid_above_2_31_stays_unsigned(self):
-        for uid in (2 ** 31 + 5, 2 ** 32 - 2):
-            self.assertEqual(peercred.parse_ucred(struct.pack("iII", 42, uid, 7)), (42, uid))
+        for u in (2 ** 31 + 5, 2 ** 32 - 2):
+            self.assertEqual(peercred.parse_ucred(struct.pack("iII", 42, u, 7)), (42, u))
 
     @unittest.skipUnless(hasattr(socket, "AF_UNIX") and peercred.has_peer_credentials(), "no Unix peer credentials")
     def test_real_socket_reports_own_uid(self):
         a, b = socket.socketpair(socket.AF_UNIX)
         with a, b:
-            ident = UidAuthenticator().authenticate(a, {})
+            ident = UidAuthenticator(a).authenticate(a, {})
         self.assertEqual((ident.scheme, ident.subject, ident.attested), ("uid", str(os.getuid()), True))
 
     def test_no_credentials_is_unauthenticated(self):
         with mock.patch.object(peercred, "peer", return_value=(None, None)):
             with self.assertRaises(RPCError) as cm:
-                UidAuthenticator().authenticate(object(), {})
+                UidAuthenticator(object())
         self.assertEqual(cm.exception.code, "unauthenticated")
+
+
+@unittest.skipUnless(uid.PER_FRAME, "SO_PASSCRED / SCM_CREDENTIALS are Linux-only; macOS identity is fixed at connect")
+class FrameCredentials(unittest.TestCase):
+    def pair(self, passcred=True):
+        a, b = socket.socketpair(socket.AF_UNIX)
+        self.addCleanup(a.close)
+        self.addCleanup(b.close)
+        if passcred:
+            a.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
+        return a, b
+
+    def refused(self, reader):
+        with self.assertRaises(RPCError) as cm:
+            reader.readline(100)
+        self.assertEqual(cm.exception.code, "unauthenticated")
+
+    def test_frames_from_the_connecting_uid_are_read(self):
+        a, b = self.pair()
+        b.sendall(b'{"n":1}\n{"n":2}\n{"n"')
+        b.shutdown(socket.SHUT_WR)
+        r = uid.CredentialReader(a, os.getuid())
+        self.assertEqual([r.readline(100) for _ in range(4)], [b'{"n":1}\n', b'{"n":2}\n', b'{"n"', b""])
+        self.assertEqual(r.readline(4), b"")
+
+    def test_line_limit(self):
+        a, b = self.pair()
+        b.sendall(b"x" * 10 + b"\n")
+        self.assertEqual(uid.CredentialReader(a, os.getuid()).readline(5), b"xxxxx")
+
+    def test_frame_from_another_uid_is_refused(self):
+        a, b = self.pair()
+        b.sendall(b'{"n":1}\n')
+        self.refused(uid.CredentialReader(a, os.getuid() + 1))
+
+    def test_frame_without_credentials_is_refused(self):
+        a, b = self.pair(passcred=False)
+        b.sendall(b'{"n":1}\n')
+        self.refused(uid.CredentialReader(a, os.getuid()))
+
+    @unittest.skipUnless(os.geteuid() == 0, "only a privileged sender may stamp another uid")
+    def test_sender_stamping_another_uid_is_refused(self):
+        a, b = self.pair()
+        b.sendmsg([b'{"n":1}\n'], [(socket.SOL_SOCKET, socket.SCM_CREDENTIALS, struct.pack("iII", os.getpid(), 65534, 65534))])
+        self.refused(uid.CredentialReader(a, 0))
 
 
 class DevToken(unittest.TestCase):

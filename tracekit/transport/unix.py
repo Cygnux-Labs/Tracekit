@@ -1,9 +1,11 @@
-"""Unix socket transport: the caller's identity is its peer uid, read again for every frame."""
-import os
+"""Unix socket transport: the caller's identity is its peer uid; on Linux every frame must carry that uid in
+SCM_CREDENTIALS (tracekit/identity/uid.py). Who may connect at all is up to the permissions of the socket's directory."""
+import socket
 import socketserver
 
-from tracekit.identity.uid import UidAuthenticator
-from tracekit.transport import READ_TIMEOUT_S, serve
+from tracekit.identity import uid
+from tracekit.signer.rpc_schema import RPCError
+from tracekit.transport import READ_TIMEOUT_S, serve, write_frame
 
 
 class _Conn(socketserver.StreamRequestHandler):
@@ -12,15 +14,28 @@ class _Conn(socketserver.StreamRequestHandler):
         super().setup()
 
     def handle(self):
-        serve(self.request, self.rfile, self.server.authenticator.authenticate, self.server.handle_frame)
+        try:
+            auth = uid.UidAuthenticator(self.request)
+        except RPCError as e:
+            try:
+                write_frame(self.request, e.wire())
+            except OSError:
+                pass
+            return
+        rfile = uid.CredentialReader(self.request, auth.uid) if uid.PER_FRAME else self.rfile
+        serve(self.request, rfile, auth.authenticate, self.server.handle_frame)
 
 
 class UnixServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
-    # lean: one thread per connection; a bounded pool when the signer service needs a connection cap
+    # lean: one thread per connection, and the read timeout is per recv, not per frame; a bounded pool and a frame
+    # deadline when the signer service needs a connection cap
     daemon_threads = True
 
-    def __init__(self, path, handle_frame, authenticator=None, read_timeout=READ_TIMEOUT_S):
+    def __init__(self, path, handle_frame, read_timeout=READ_TIMEOUT_S):
         self.handle_frame, self.read_timeout = handle_frame, read_timeout
-        self.authenticator = authenticator or UidAuthenticator()
         super().__init__(path, _Conn)
-        os.chmod(path, 0o600)
+
+    def server_bind(self):
+        if uid.PER_FRAME:   # set before listen(): accepted sockets inherit it, so no frame arrives unstamped
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
+        super().server_bind()

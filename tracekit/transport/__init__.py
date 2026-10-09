@@ -38,23 +38,24 @@ def serve(conn, rfile, authenticate, handle):
     `authenticate(conn, frame)` returns a CallerIdentity; `handle(identity, frame)` returns the response dict. Both
     raise RPCError for a refusal.
     """
-    while True:
-        try:
-            frame = read_frame(rfile)
-        except OSError:   # includes the read timeout
-            return
-        except RPCError as e:
-            write_frame(conn, e.wire())
-            if e.code == "invalid_request":
-                continue
-            return   # the rest of an oversized line can't be framed
-        if frame is None:
-            return
-        try:
-            out = handle(authenticate(conn, frame), frame)
-        except RPCError as e:
-            write_frame(conn, e.wire())
-            if e.code == "unauthenticated":
+    try:
+        while True:
+            try:
+                frame = read_frame(rfile)
+            except RPCError as e:
+                write_frame(conn, e.wire())
+                if e.code == "invalid_request":
+                    continue
+                return   # an oversized line can't be framed; a frame from another uid ends the connection
+            if frame is None:
                 return
-            continue
-        write_frame(conn, out)
+            try:
+                out = handle(authenticate(conn, frame), frame)
+            except RPCError as e:
+                write_frame(conn, e.wire())
+                if e.code == "unauthenticated":
+                    return
+                continue
+            write_frame(conn, out)
+    except OSError:   # the read timeout, or the peer went away
+        return
