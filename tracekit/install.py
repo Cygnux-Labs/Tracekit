@@ -419,12 +419,19 @@ def load_proxy_port(home):
         return int(json.load(f).get("proxy", {}).get("port", 8787))
 
 
+MAX_UNIX_SOCKET_PATH = 103  # sun_path holds 104 bytes on macOS/BSD (108 on Linux), including the final NUL
+
+
 def _dev_socket(home):
     """Unix socket where the kernel names the caller, else token-authenticated TCP on port 0: tracekitd binds a free
     port itself and writes it to its config (daemon.serve). A signer that is already running keeps its endpoint."""
     from .peercred import has_peer_credentials
     if hasattr(socket, "AF_UNIX") and has_peer_credentials():
-        return os.path.join(home, "tracekitd.sock"), None
+        path = os.path.join(os.path.abspath(home), "tracekitd.sock")
+        if len(path.encode()) > MAX_UNIX_SOCKET_PATH:
+            raise SystemExit(f"the signer home path is too long for a Unix socket ({len(path.encode())} bytes, the "
+                             f"limit is {MAX_UNIX_SOCKET_PATH}): use a shorter --home (or TMPDIR for `tracekit demo`)")
+        return path, None
     if _signer_healthy(home):
         old = read_json(os.path.join(home, "config.json"))
         if str(old.get("socket", "")).startswith("tcp://") and old.get("socket_token"):
