@@ -6,10 +6,10 @@
                          middleware=[TracekitMiddleware(signer, run["run_id"], run["run_token"])])
 
 `deny` replaces the call with an error ToolMessage and the run goes on. `ask` pauses the run with LangGraph
-`interrupt()`; on resume the approval is checked by the signer, never by the saved state. `ask` needs a checkpointer:
-without one the call is denied.
+`interrupt()`; resume it with `Command(resume={"approval_id": ...})`. Every call that is not denied runs only after the
+signer's `approval_consume` agrees, so an approval is checked by the signer, never by the saved state. `ask` needs a
+checkpointer: without one the call is denied.
 """
-import hashlib
 import itertools
 import uuid
 
@@ -40,26 +40,31 @@ class TracekitMiddleware(AgentMiddleware):
         return self.signer.decide(self._event(call, tool=call["name"], args_source="parsed", args=call["args"], **kw))
 
     def _gate(self, request):
-        """(the error ToolMessage that replaces a refused call or None when it may run, the last decision)"""
-        call = request.tool_call
+        """(the error ToolMessage that replaces a refused call or None when it may run, the decision)"""
+        call, hint = request.tool_call, None
         d = self._decide(call)
+        if d["decision"] == "deny":
+            return self._refusal(call, ", ".join(d["rule_ids"]) or "deny"), d
         if d["decision"] == "ask":
             if request.runtime.config["configurable"].get(CONFIG_KEY_CHECKPOINTER) is None:
                 return self._refusal(call, "approval required, and the agent has no checkpointer to wait for it"), d
-            # a fixed request_id, so the re-run on resume (even in another process) gets the same approval back
-            key = hashlib.sha256(f"{self.run['run_id']}\0{call['id']}".encode()).hexdigest()[:32]
-            apr = self.signer.approval_request({"request_id": "approval:" + key, **self.run, "tool_call_id": call["id"]})
+            # the signer keeps one approval per call attempt, so the re-run on resume (even in another process) gets
+            # the same approval back
+            apr = self.signer.approval_request({"request_id": uuid.uuid4().hex, **self.run, "tool_call_id": call["id"],
+                                                "attempt": 0})
             resume = interrupt({"tracekit": {"approval_id": apr["approval_id"], "tool_call_id": call["id"],
                                              "tool": call["name"], "rule_ids": d["rule_ids"]}})
-            # the resume value is only a hint: the signer re-checks the call against its own approval record
             hint = resume.get("approval_id") if isinstance(resume, dict) else None
-            try:
-                d = self._decide(call, approval_id=hint or apr["approval_id"])
-            except RPCError as e:
-                d = {"decision": "deny", "rule_ids": [], "reason": e.message}
-        if d["decision"] == "allow":
+        # every call, allowed or approved: the saved state can't vouch that no approval is needed
+        try:
+            c = self.signer.approval_consume({"request_id": uuid.uuid4().hex, **self.run, "tool_call_id": call["id"],
+                                              "attempt": 0, "tool": call["name"], "args_source": "parsed",
+                                              "args": call["args"], **({"approval_id_hint": hint} if hint else {})})
+        except RPCError as e:   # e.g. a hint that is not an id at all
+            c = {"ok": False, "rule_ids": [], "reason": e.message}
+        if c["ok"]:
             return None, d
-        return self._refusal(call, d.get("reason") or ", ".join(d["rule_ids"]) or d["decision"]), d
+        return self._refusal(call, ", ".join(c["rule_ids"]) + (f": {c['reason']}" if c.get("reason") else "")), d
 
     def _refusal(self, call, why):
         return ToolMessage(f"Tool call blocked by policy: {why}", tool_call_id=call["id"], name=call["name"],
