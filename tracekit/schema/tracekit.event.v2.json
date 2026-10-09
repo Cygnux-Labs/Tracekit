@@ -1352,6 +1352,9 @@
         "after"
       ],
       "properties": {
+        "tenant_level": {
+          "type": "boolean"
+        },
         "path": {
           "type": "string",
           "maxLength": 4096
@@ -1403,6 +1406,9 @@
         "reason"
       ],
       "properties": {
+        "tenant_level": {
+          "type": "boolean"
+        },
         "reason": {
           "type": "string",
           "maxLength": 4096

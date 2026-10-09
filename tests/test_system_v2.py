@@ -22,6 +22,7 @@ AGENT = types.SimpleNamespace(pw_uid=64101, pw_gid=64101, pw_name="agent", pw_di
 POLICY = "/opt/tracekit/lib/python3/site-packages/tracekit/policy2/packs/coding.yaml"
 
 
+@unittest.skipIf(os.name == "nt", "system mode is POSIX-only")
 class SignerConfig(unittest.TestCase):
     def test_signer_yaml_loads_with_tenants_approvals_and_policy(self):
         d = tempfile.mkdtemp()
