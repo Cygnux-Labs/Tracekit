@@ -165,7 +165,8 @@ class Decisions(unittest.TestCase):
         self.assertEqual(tool_message(out).content, "hi")
         [d] = self.recorded("policy.decision")
         self.assertEqual((d["tool"], d["args_source"], d["decision"]), ("echo", "parsed", "allow"))
-        self.assertEqual(self.recorded("tool.result"), [{"tool_call_id": "call-1", "attempt": 0, "status": "ok"}])
+        self.assertEqual(self.recorded("tool.result"), [{"tool_call_id": "call-1", "decision_id": d["decision_id"],
+                                                         "attempt": 0, "status": "ok"}])
 
     def test_deny_blocks_the_tool_and_the_run_continues(self):
         out = agent(self.signer, self.run).invoke(prompt("wipe", path="/"))
