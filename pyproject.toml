@@ -48,7 +48,7 @@ Changelog = "https://github.com/Cygnux-Labs/Tracekit/blob/main/CHANGELOG.md"
 Security = "https://github.com/Cygnux-Labs/Tracekit/blob/main/SECURITY.md"
 
 [tool.setuptools]
-packages = ["tracekit", "tracekit.adapters", "tracekit.deploy"]
+packages = ["tracekit", "tracekit.adapters", "tracekit.deploy", "tracekit.merkle"]
 py-modules = ["tracekit_sdk"]
 
 [tool.setuptools.dynamic]
