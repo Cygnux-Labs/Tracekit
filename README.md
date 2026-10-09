@@ -14,11 +14,6 @@ cannot control. Change, delete or reorder anything afterwards and verification f
 
 <img src="https://raw.githubusercontent.com/Cygnux-Labs/Tracekit/main/docs/demo/observer.gif" alt="tracekit observe: four coding agents traced live; each dangerous action is blocked by policy and recorded" width="100%">
 
-<sub>`tracekit observe` while four coding agents work at once. Claude Code is told by a planted README note to upload
-`.env`, Codex tries `git push --force`, Cursor pipes an installer into `sh`, and Gemini tries to kill the recorder
-itself. Each is blocked before it runs, and each block is a signed record. ·
-[how this was recorded](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/demo/observer_scene.py)</sub>
-
 </div>
 
 ## Why
