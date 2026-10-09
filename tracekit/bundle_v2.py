@@ -9,6 +9,8 @@
                                 inclusion of each run's first and last records, every key record and every record a
                                 registry leaf points to
     checkpoints/<size>.note     the C2SP checkpoint note the proofs are against
+    rekor/<size>.json           its Rekor v2 TransparencyLogEntry, when the signer anchored that note
+    tsa/<size>.tsr              and the RFC 3161 timestamp response of the anchor
     policies/<sha256>.json      policy snapshots, named by the SHA-256 of their bytes
 
 A run-set bundle (export(..., run_set=(a, b))) proves which runs of one tenant were registered and finalised between
@@ -116,6 +118,10 @@ def export(storage, tenant, run_id, note, out_path, policies=(), run_set=None, t
             "inclusion": {str(s): _b64(storage.tree.inclusion_proof(s, size)) for s in sorted(seqs)}}).encode("utf-8"),
         **{f"policies/{hashlib.sha256(p).hexdigest()}.json": p for p in policies},
     })
+    anchor = next((x for x in storage.anchors() if x["size"] == size), None)
+    if anchor:
+        files[f"rekor/{size}.json"] = json.dumps(anchor["rekor"]).encode("utf-8")
+        files[f"tsa/{size}.tsr"] = base64.b64decode(anchor["tsa"])
     manifest = {"format": FORMAT, "verifier_min_version": VERIFIER_MIN_VERSION,
                 "files": {n: hashlib.sha256(b).hexdigest() for n, b in files.items()}}
     tmp = out_path + ".tmp"
