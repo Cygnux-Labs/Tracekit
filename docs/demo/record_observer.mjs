@@ -15,6 +15,7 @@ const url = await new Promise((res, rej) => {
   scene.stdout.on("data", (b) => { const m = String(b).match(/observer: (\S+)/); if (m) res(m[1]); });
   scene.on("exit", () => rej(new Error("scene exited before the observer started")));
 });
+// the first seconds show the page before the agents start: both outputs skip them (-ss 4)
 const dir = mkdtempSync(join(tmpdir(), "tk-video-"));
 const browser = await chromium.launch();
 const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 }, recordVideo: { dir, size: { width: 1440, height: 900 } } });
@@ -29,8 +30,8 @@ await browser.close();
 scene.kill("SIGINT");
 const webm = join(dir, readdirSync(dir).find((f) => f.endsWith(".webm")));
 const mp4 = join(here, "observer.mp4"), gif = join(here, "observer.gif");
-execFileSync("ffmpeg", ["-loglevel", "error", "-y", "-i", webm, "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "26", "-movflags", "+faststart", mp4]);
-execFileSync("ffmpeg", ["-loglevel", "error", "-y", "-i", webm, "-vf",
+execFileSync("ffmpeg", ["-loglevel", "error", "-y", "-ss", "4", "-i", webm, "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "26", "-movflags", "+faststart", mp4]);
+execFileSync("ffmpeg", ["-loglevel", "error", "-y", "-ss", "4", "-i", webm, "-vf",
   "fps=4,scale=880:-1:flags=lanczos,split[a][b];[a]palettegen=max_colors=48:stats_mode=diff[p];[b][p]paletteuse=dither=none:diff_mode=rectangle", gif]);
 rmSync(dir, { recursive: true, force: true });
 console.log(`wrote ${mp4} and ${gif}`);
