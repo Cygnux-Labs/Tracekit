@@ -13,11 +13,10 @@ import zipfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
-sys.path.insert(0, os.path.join(ROOT, "tests"))
 from tracekit import bundle, policy  # noqa: E402
 from tracekit.core import sha256_hex  # noqa: E402
 from tracekit.ledger import read_records  # noqa: E402
-from test_hotfix_021 import ev, make_signer, run_start, tool_call  # noqa: E402
+from factories import ev, make_signer, run_start, tool_call  # noqa: E402
 
 
 def rewrite(src, dst, recs_fn, cps_fn=None):
@@ -48,7 +47,7 @@ class Completeness(unittest.TestCase):
     def setUp(self):
         self.d = tempfile.mkdtemp()
         self.home = os.path.join(self.d, "signer")
-        self.s = make_signer(self.home, {"checkpoint_every": 1000})
+        self.s = make_signer(self.home, checkpoint_every=1000)
         self.pol, self.pol_raw = policy.load()
         self.cseq = {}
         self.key = os.path.join(self.home, "ledger", "signer.pub")

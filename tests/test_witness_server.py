@@ -10,15 +10,17 @@ import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from tracekit import bundle, install, witness_server  # noqa: E402
 from tracekit.agent_sdk import Tracer  # noqa: E402
 from tracekit.witness import HttpWitness, from_spec  # noqa: E402
+from factories import patch_env  # noqa: E402
 
 
 class Service(unittest.TestCase):
     def setUp(self):
         self.d = tempfile.mkdtemp()
-        self.old = os.environ.get("TRACEKIT_CLIENT_HOME")
+        patch_env(self)
         os.environ["TRACEKIT_CLIENT_HOME"] = os.path.join(self.d, "client")
         self.whome = os.path.join(self.d, "witness")
         self.wpub, _ = witness_server.init(self.whome)
@@ -39,10 +41,6 @@ class Service(unittest.TestCase):
         install.stop_dev_daemon(self.home)
         self.srv.shutdown()
         self.srv.server_close()
-        if self.old is None:
-            os.environ.pop("TRACEKIT_CLIENT_HOME", None)
-        else:
-            os.environ["TRACEKIT_CLIENT_HOME"] = self.old
         shutil.rmtree(self.d, ignore_errors=True)
 
     def run_agent(self, sid="w-1"):
@@ -114,6 +112,25 @@ class Service(unittest.TestCase):
         with self.assertRaises(ValueError) as cm:
             reader.read()
         self.assertIn("not consistent", str(cm.exception))
+
+
+class TornLog(unittest.TestCase):
+    def test_witness_starts_when_the_last_line_is_torn(self):
+        d = tempfile.mkdtemp()
+        try:
+            witness_server.init(d)
+            log = witness_server.Log(d)
+            log.add("box", {"kid": "ed25519:k", "head_seq": 1, "head_hash": "a" * 64})
+            logp = os.path.join(d, "log.jsonl")
+            with open(logp, "a") as f:
+                f.write('{"cp": {"kid": "ed25519:k", "head_se')  # a write cut short
+            log = witness_server.Log(d)
+            self.assertEqual(len(log.entries), 1)
+            self.assertTrue(os.path.exists(logp + ".torn"))
+            log.add("box", {"kid": "ed25519:k", "head_seq": 2, "head_hash": "b" * 64})
+            self.assertEqual([e["cp"]["head_seq"] for e in witness_server.Log(d).entries], [1, 2])
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
 
 
 if __name__ == "__main__":

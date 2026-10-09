@@ -17,7 +17,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 from tracekit import policy  # noqa: E402
 from tracekit.core import read_text  # noqa: E402
-from tests.test_hotfix_021 import ev, make_signer, run_start, tool_call  # noqa: E402
+from factories import ev, make_signer, run_start, tool_call  # noqa: E402
 
 POL = policy.load()[0]
 

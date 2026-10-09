@@ -15,7 +15,7 @@ import os
 import urllib.error
 import urllib.request
 
-from .core import b64d, canon
+from .core import b64d, b64e, canon
 
 MAX_ENTRIES = 5000
 _ED25519_SPKI_PREFIX = bytes.fromhex("302a300506032b6570032100")
@@ -74,11 +74,13 @@ def verify_set(entry, rekor_pubkey_pem):
 
 
 def entry_checkpoint(entry):
-    """The checkpoint JSON a rekord entry commits to, or None."""
+    """The signed checkpoint a rekord entry commits to (its content plus the entry's signature), or None."""
     try:
         body = json.loads(base64.b64decode(entry["body"]))
         cp = json.loads(base64.b64decode(body["spec"]["data"]["content"]))
-        return cp if isinstance(cp, dict) else None
+        if not isinstance(cp, dict):
+            return None
+        return dict(cp, sig=b64e(base64.b64decode(body["spec"]["signature"]["content"])))
     except (KeyError, TypeError, ValueError):
         return None
 

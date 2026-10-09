@@ -20,13 +20,13 @@ except ImportError:
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from tracekit import bundle, crypto, policy, privacy, schema  # noqa: E402
-from tracekit.core import GENESIS, SCHEMA_VERSION, b64e, event_hash, new_id, now_ts, sig_message  # noqa: E402
-from tracekit.daemon import Signer, load_config  # noqa: E402
-from tracekit.ledger import Keys, read_records  # noqa: E402
+from tracekit.core import GENESIS, SCHEMA_VERSION, b64e, event_hash, new_id, sig_message  # noqa: E402
+from tracekit.ledger import Keys  # noqa: E402
 from tracekit.witness import make_checkpoint  # noqa: E402
 from tracekit.core import read_json, read_text, write_json  # noqa: E402
-from tests.factories import wait_for  # noqa: E402
+from factories import ev, ledger_records, make_signer, patch_env, run_start, wait_for  # noqa: E402
 
 
 _SAVED_POLICY = None
@@ -41,25 +41,6 @@ def setUpModule():
 def tearDownModule():
     if _SAVED_POLICY is not None:
         os.environ["TRACEKIT_POLICY"] = _SAVED_POLICY
-
-
-def ev(typ, data, run="r1", agent="main", source="hook"):
-    return {"run_id": run, "agent_id": agent, "parent_id": None if agent == "main" else "main", "source": source,
-            "type": typ, "ts": now_ts(), "data": data}
-
-
-def run_start(run="r1", pol=None):
-    pol = pol or policy.load()[0]
-    return ev("run.start", {"agent": {"name": "test", "version": None}, "host": "h", "os_user": "u", "fail_mode": "open",
-                            "policy": {"version": pol["version"], "hash": policy.policy_hash(pol)}, "capture_sources": ["hook"],
-                            "sandbox": "unknown", "content_capture": "hashed", "signer_isolation": "same-user"}, run)
-
-
-def signer(home, witnesses=None, every=50):
-    os.makedirs(home, exist_ok=True)
-    with open(os.path.join(home, "config.json"), "w") as f:
-        json.dump({"checkpoint_every": every, "witnesses": witnesses if witnesses is not None else [f"file:{home}/witness.jsonl"]}, f)
-    return Signer(home, load_config(home))
 
 
 class Crypto(unittest.TestCase):
@@ -143,7 +124,7 @@ class Policy(unittest.TestCase):
 class SignerTests(unittest.TestCase):
     def setUp(self):
         self.home = tempfile.mkdtemp()
-        self.s = signer(self.home, every=3)
+        self.s = make_signer(self.home, checkpoint_every=3)
 
     def send(self, e, cseq):
         return self.s.handle({"op": "append", "cseq": cseq, "event": e})
@@ -173,7 +154,7 @@ class SignerTests(unittest.TestCase):
 
     def test_witness_unreachable_then_late(self):
         home = tempfile.mkdtemp()
-        s = signer(home, witnesses=["git:/nonexistent-dir/for-sure@/nonexistent/remote.git"], every=1)
+        s = make_signer(home, witnesses=["git:/nonexistent-dir/for-sure@/nonexistent/remote.git"], checkpoint_every=1)
         s.handle({"op": "append", "cseq": 0, "event": run_start()})
         gaps = [json.loads(l)["event"]["data"].get("reason", "") for l in read_text(os.path.join(home, "ledger", "ledger.jsonl")).splitlines()]
         self.assertTrue(any("not yet on git:" in g for g in gaps))
@@ -248,7 +229,7 @@ class Tamper(unittest.TestCase):
         cls.d = tempfile.mkdtemp()
         cls.home = os.path.join(cls.d, "signer")
         cls.wit = os.path.join(cls.d, "witness.jsonl")
-        s = signer(cls.home, witnesses=[f"file:{cls.wit}"], every=4)
+        s = make_signer(cls.home, witnesses=[f"file:{cls.wit}"], checkpoint_every=4)
         for rid in ("other", "target"):
             s.handle({"op": "append", "cseq": 0, "event": run_start(rid), "attach": {"policy": policy.load()[1]}})
             for i in range(5):
@@ -360,7 +341,7 @@ class Tamper(unittest.TestCase):
 class ExportAndDemo(unittest.TestCase):
     def test_filters_and_otel(self):
         d = tempfile.mkdtemp(); home = os.path.join(d, "s")
-        s = signer(home, witnesses=[f"file:{d}/w.jsonl"], every=100)
+        s = make_signer(home, witnesses=[f"file:{d}/w.jsonl"], checkpoint_every=100)
         for rid in ("a", "b"):
             s.handle({"op": "append", "cseq": 0, "event": run_start(rid), "attach": {"policy": policy.load()[1]}})
             s.handle({"op": "append", "cseq": 1, "event": ev("run.end", {"reason": "x"}, rid)})
@@ -433,7 +414,7 @@ class InstallConfig(unittest.TestCase):
         from unittest.mock import patch
         from tracekit import install
         d = tempfile.mkdtemp()
-        old_client_home = os.environ.get("TRACEKIT_CLIENT_HOME")
+        patch_env(self)
         try:
             os.environ["TRACEKIT_CLIENT_HOME"] = os.path.join(d, "client")
             settings = os.path.join(d, "project", ".claude", "settings.json")
@@ -445,17 +426,13 @@ class InstallConfig(unittest.TestCase):
                                     env=os.environ.copy(), timeout=15)
             self.assertEqual(result.returncode, 0, result.stderr)
         finally:
-            if old_client_home is None:
-                os.environ.pop("TRACEKIT_CLIENT_HOME", None)
-            else:
-                os.environ["TRACEKIT_CLIENT_HOME"] = old_client_home
             shutil.rmtree(d, ignore_errors=True)
 
     def test_client_config_redacts_tcp_token_and_is_private(self):
         from tracekit import install
         d = tempfile.mkdtemp()
         client_home = os.path.join(d, "client")
-        old_client_home = os.environ.get("TRACEKIT_CLIENT_HOME")
+        patch_env(self)
         try:
             os.environ["TRACEKIT_CLIENT_HOME"] = client_home
             install.init_dev(os.path.join(d, "signer"), [], start=False)
@@ -468,16 +445,12 @@ class InstallConfig(unittest.TestCase):
                 self.assertEqual(os.stat(client_config).st_mode & 0o077, 0)
                 self.assertEqual(os.stat(os.path.join(d, "signer", "config.json")).st_mode & 0o077, 0)
         finally:
-            if old_client_home is None:
-                os.environ.pop("TRACEKIT_CLIENT_HOME", None)
-            else:
-                os.environ["TRACEKIT_CLIENT_HOME"] = old_client_home
             shutil.rmtree(d, ignore_errors=True)
 
     def test_failed_proxy_start_stops_signer(self):
         from tracekit import install
         d = tempfile.mkdtemp()
-        old_client_home = os.environ.get("TRACEKIT_CLIENT_HOME")
+        patch_env(self)
         with socket.socket() as occupied:
             occupied.bind(("127.0.0.1", 0))
             port = occupied.getsockname()[1]
@@ -487,10 +460,6 @@ class InstallConfig(unittest.TestCase):
                     install.init_dev(os.path.join(d, "signer"), [], proxy=True, proxy_port=port)
                 self.assertEqual(install._CHILDREN, {})
             finally:
-                if old_client_home is None:
-                    os.environ.pop("TRACEKIT_CLIENT_HOME", None)
-                else:
-                    os.environ["TRACEKIT_CLIENT_HOME"] = old_client_home
                 shutil.rmtree(d, ignore_errors=True)
 
 
@@ -498,7 +467,7 @@ class RuntimeStateRetention(unittest.TestCase):
     def test_hard_cache_limits_evict_with_gap_records(self):
         from unittest.mock import patch
         d = tempfile.mkdtemp()
-        s = signer(d, witnesses=[])
+        s = make_signer(d, witnesses=[])
         try:
             now = time.time()
             with patch("tracekit.daemon.MAX_CACHED_RUNS", 2), \
@@ -515,7 +484,7 @@ class RuntimeStateRetention(unittest.TestCase):
             self.assertLessEqual(len(s.runs), 2)
             self.assertLessEqual(len(s.transcripts), 2)
             self.assertLessEqual(len(s.approvals), 2)
-            events = [rec["event"] for _, rec, _ in read_records(s.ledger.path) if rec and not rec.get("elided")]
+            events = [rec["event"] for rec in ledger_records(s.home) if not rec.get("elided")]
             kinds = {ev["data"].get("kind") for ev in events if ev["type"] == "capture.gap"}
             self.assertIn("run_state_evicted", kinds)
             self.assertIn("transcript_state_evicted", kinds)
@@ -525,7 +494,7 @@ class RuntimeStateRetention(unittest.TestCase):
 
     def test_old_run_transcript_and_approval_state_is_pruned(self):
         d = tempfile.mkdtemp()
-        s = signer(d, witnesses=[])
+        s = make_signer(d, witnesses=[])
         try:
             now = time.time()
             s.cfg["state_retention_s"] = 1
@@ -538,7 +507,7 @@ class RuntimeStateRetention(unittest.TestCase):
             self.assertNotIn("old-run", s.runs)
             self.assertNotIn("old-transcript", s.transcripts)
             self.assertNotIn("old-approval", s.approvals)
-            events = [rec["event"] for _, rec, _ in read_records(s.ledger.path) if rec and not rec.get("elided")]
+            events = [rec["event"] for rec in ledger_records(s.home) if not rec.get("elided")]
             self.assertTrue(any(ev["type"] == "capture.gap" and ev["data"].get("kind") == "transcript_state_expired"
                                 for ev in events))
         finally:
@@ -547,7 +516,8 @@ class RuntimeStateRetention(unittest.TestCase):
 
     def test_expired_pending_approval_is_resolved_during_pruning(self):
         d = tempfile.mkdtemp()
-        s = signer(d, witnesses=[])
+        s = make_signer(d, witnesses=[])
+        s._run("r")["started"] = True
         try:
             approval_id = s._approval_request({"run_id": "r", "tool_use_id": "t"}, None)["approval_id"]
             s.approvals[approval_id]["deadline"] = time.time() - 1
@@ -560,7 +530,8 @@ class RuntimeStateRetention(unittest.TestCase):
     def test_pending_approval_limit_rejects_additional_requests(self):
         from unittest.mock import patch
         d = tempfile.mkdtemp()
-        s = signer(d, witnesses=[])
+        s = make_signer(d, witnesses=[])
+        s._run("r")["started"] = True
         try:
             with patch("tracekit.daemon.MAX_CACHED_APPROVALS", 1):
                 first = s._approval_request({"run_id": "r", "tool_use_id": "1"}, None)
@@ -575,12 +546,11 @@ class RuntimeStateRetention(unittest.TestCase):
 class AgentSDK(unittest.TestCase):
     def test_tracer_records_signed_events(self):
         from tracekit import bundle, install
-        from tracekit.ledger import read_records
         from tracekit.observe import Translator
         from tracekit_sdk import Tracer
         d = tempfile.mkdtemp()
         home = os.path.join(d, "signer")
-        old_client_home = os.environ.get("TRACEKIT_CLIENT_HOME")
+        patch_env(self)
         try:
             os.environ["TRACEKIT_CLIENT_HOME"] = os.path.join(d, "client")
             install.init_dev(home, [], start=True)
@@ -597,8 +567,8 @@ class AgentSDK(unittest.TestCase):
             child.done("fetched")
             tracer.end()
 
-            records = [rec for _, rec, _ in read_records(os.path.join(home, "ledger", "ledger.jsonl"))
-                       if rec and not rec.get("elided")]
+            records = [rec for rec in ledger_records(home)
+                       if not rec.get("elided")]
             events = [rec["event"] for rec in records]
             run_start = next(ev for ev in events if ev["type"] == "run.start")
             self.assertEqual(run_start["data"]["agent"]["name"], "pi-agent")
@@ -623,10 +593,6 @@ class AgentSDK(unittest.TestCase):
         finally:
             if os.path.exists(os.path.join(home, "tracekitd.pid")):
                 install.stop_dev_daemon(home)
-            if old_client_home is None:
-                os.environ.pop("TRACEKIT_CLIENT_HOME", None)
-            else:
-                os.environ["TRACEKIT_CLIENT_HOME"] = old_client_home
             shutil.rmtree(d, ignore_errors=True)
 
     def test_fail_closed_signer_outage_blocks_wrapped_tool(self):
@@ -634,8 +600,7 @@ class AgentSDK(unittest.TestCase):
         from tracekit_sdk import Tracer
         d = tempfile.mkdtemp()
         home = os.path.join(d, "signer")
-        old_client_home = os.environ.get("TRACEKIT_CLIENT_HOME")
-        old_policy = os.environ.get("TRACEKIT_POLICY")
+        patch_env(self)
         try:
             os.environ["TRACEKIT_CLIENT_HOME"] = os.path.join(d, "client")
             policy_path = os.path.join(d, "closed.yaml")
@@ -653,14 +618,6 @@ class AgentSDK(unittest.TestCase):
         finally:
             if os.path.exists(os.path.join(home, "tracekitd.pid")):
                 install.stop_dev_daemon(home)
-            if old_client_home is None:
-                os.environ.pop("TRACEKIT_CLIENT_HOME", None)
-            else:
-                os.environ["TRACEKIT_CLIENT_HOME"] = old_client_home
-            if old_policy is None:
-                os.environ.pop("TRACEKIT_POLICY", None)
-            else:
-                os.environ["TRACEKIT_POLICY"] = old_policy
             shutil.rmtree(d, ignore_errors=True)
 
 

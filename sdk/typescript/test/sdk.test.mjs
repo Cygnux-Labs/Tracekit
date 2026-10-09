@@ -133,3 +133,28 @@ test("Stagehand: page actions are policy-checked steps", async () => {
   assert.deepEqual(evs.filter((e) => e.type === "tool.call").map((e) => e.data.name), ["browser:act", "browser:extract", "browser:goto"]);
   assert.deepEqual(evs.filter((e) => e.type === "tool.result").map((e) => e.data.ok), [true, true, true]);
 });
+
+test("a recording failure after the wrapped call succeeded never throws over its result", async () => {
+  const tk = await Tracekit.start({ agent: "nt", sessionId: "ts-no-throw", cwd: dir, env });
+  const bridge = tk.bridge, call = bridge.call.bind(bridge);
+  bridge.call = (op, args, t) => (op === "tool_end" || op === "model_end" ? Promise.reject(new Error("bridge hiccup")) : call(op, args, t));
+  assert.equal(await tk.tool("Bash", { command: "ls" }, () => "a.txt"), "a.txt");
+  const client = instrumentOpenAI(new OpenAI({ apiKey: "k", baseURL: "http://mock/v1", maxRetries: 0,
+    fetch: async () => json({ id: "c1", object: "chat.completion", created: 1, model: "m", choices: [] }) }), tk);
+  assert.equal((await client.chat.completions.create({ model: "m", messages: [] })).id, "c1");
+  assert.equal(tk.recordFailures, 2);
+  bridge.call = call;
+  await tk.end();
+});
+
+test("bridge requests time out, and a bridge exit follows the fail mode (open: run unrecorded)", async () => {
+  const tk = await Tracekit.start({ agent: "bx", sessionId: "ts-bridge-exit", cwd: dir, env });
+  const bridge = tk.bridge;
+  bridge.proc.kill("SIGSTOP");  // a bridge that stops answering
+  await assert.rejects(bridge.call("ping", {}, 50), /timed out/);
+  bridge.proc.kill("SIGCONT");
+  bridge.proc.kill();
+  await new Promise((res) => bridge.proc.once("exit", res));
+  assert.equal(await tk.tool("Bash", { command: "ls" }, () => "ran"), "ran");
+  await tk.end();
+});

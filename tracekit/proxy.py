@@ -1,6 +1,6 @@
 """Model proxy (C3, opt-in): records every model API exchange before forwarding it.
 
-Runs as the `tracekit` user on 127.0.0.1. `tracekit init --proxy` points Claude Code at it
+Runs as the `tracekit` user on 127.0.0.1. `tracekit init --proxy --experimental` points Claude Code at it
 with ANTHROPIC_BASE_URL (settings.json `env`). For each request it:
   1. records a `model.exchange` (phase=request) with the request hashed per docs/privacy.md,
      *before* anything is forwarded; if that fails, fail_mode=open forwards anyway (the client

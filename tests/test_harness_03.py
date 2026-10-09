@@ -17,9 +17,10 @@ import pytest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from tracekit import daemon, policy  # noqa: E402
 from tracekit.daemon import Signer, find_harness, load_config, trusted_file  # noqa: E402
-from tests.test_hotfix_021 import make_signer, run_start, tool_call  # noqa: E402
+from factories import ledger_records, make_signer, run_start, tool_call  # noqa: E402
 
 LINUX_PROC = sys.platform.startswith("linux") and os.path.isdir("/proc/self")
 # must differ from the uid running the tests (1001 on GitHub runners), or the signer treats the agent as itself
@@ -164,7 +165,7 @@ class SignerBinding(_Harness):
         super().tearDown()
 
     def signer(self, binding):
-        return make_signer(self.home, {"harnesses": self.harnesses(), "harness_binding": binding, "mode": "system"})
+        return make_signer(self.home, harnesses=self.harnesses(), harness_binding=binding, mode="system")
 
     def append(self, e, pid, uid=AGENT_UID):
         n = self.cseq[e["run_id"]] = self.cseq.get(e["run_id"], -1) + 1
@@ -174,8 +175,7 @@ class SignerBinding(_Harness):
         return self.s.handle(req, peer_uid=uid, peer_pid=pid)
 
     def events(self):
-        from tracekit.ledger import read_records
-        return [r["event"] for _, r, _ in read_records(self.s.ledger.path) if r]
+        return [r["event"] for r in ledger_records(self.s.home)]
 
     def gaps(self, kind):
         return [e for e in self.events() if e["type"] == "capture.gap" and e["data"].get("kind") == kind]
@@ -301,10 +301,10 @@ class DefaultsAndConfig(unittest.TestCase):
     def test_registered_harness_defaults_to_enforce_in_system_mode(self):
         d = tempfile.mkdtemp()
         try:
-            s = make_signer(d, {"harnesses": [{"exe": "/bin/sh"}]})
+            s = make_signer(d, harnesses=[{"exe": "/bin/sh"}])
             self.assertEqual(s.binding, "enforce")
             s.ledger.close()
-            s = make_signer(os.path.join(d, "dev"), {"harnesses": [{"exe": "/bin/sh"}], "mode": "dev"})
+            s = make_signer(os.path.join(d, "dev"), harnesses=[{"exe": "/bin/sh"}], mode="dev")
             self.assertEqual(s.binding, "off")
             s.ledger.close()
         finally:
@@ -313,7 +313,7 @@ class DefaultsAndConfig(unittest.TestCase):
     def test_unknown_binding_mode_fails_closed(self):
         d = tempfile.mkdtemp()
         try:
-            s = make_signer(d, {"harnesses": [{"exe": "/bin/sh"}], "harness_binding": "maybe"})
+            s = make_signer(d, harnesses=[{"exe": "/bin/sh"}], harness_binding="maybe")
             self.assertEqual(s.binding, "enforce")
             s.ledger.close()
         finally:
