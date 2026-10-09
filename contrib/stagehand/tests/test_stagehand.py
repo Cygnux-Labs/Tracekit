@@ -9,12 +9,10 @@ import tempfile
 import unittest
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-ROOT = os.path.dirname(os.path.dirname(HERE))
-sys.path[:0] = [ROOT, HERE]
-from tracekit_stagehand import instrument_stagehand  # noqa: E402
-from tracekit import bundle, install  # noqa: E402
-from tracekit.agent_sdk import Tracer  # noqa: E402
-from tracekit.ledger import read_records  # noqa: E402
+from tracekit_stagehand import instrument_stagehand
+from tracekit import bundle, install
+from tracekit.agent_sdk import Tracer
+from tracekit.ledger import read_records
 
 
 class Page:
@@ -70,7 +68,7 @@ class Stagehand(unittest.TestCase):
         self.assertEqual(names, ["browser:act", "browser:goto", "browser:goto"])
 
     def test_example(self):
-        p = subprocess.run([sys.executable, os.path.join(HERE, "browser_agent.py")], cwd=self.d, capture_output=True, text=True, timeout=120)
+        p = subprocess.run([sys.executable, os.path.join(HERE, "browser_agent.py")], cwd=self.d, env=dict(os.environ, TMPDIR=self.d), capture_output=True, text=True, timeout=120)
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
         self.assertIn("denied:", p.stdout)
         names = [e["data"]["name"] for e in self.events() if e["type"] == "tool.call"]

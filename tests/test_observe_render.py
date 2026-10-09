@@ -7,6 +7,7 @@ import http.client
 import json
 import os
 import re
+import shutil
 import sys
 import tempfile
 import threading
@@ -184,6 +185,7 @@ class ObserverHttp(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.d = tempfile.mkdtemp()
+        cls.addClassCleanup(shutil.rmtree, cls.d, True)
         home = os.path.join(cls.d, "s")
         s = make_signer(home, witnesses=[f"file:{cls.d}/w.jsonl"], checkpoint_every=100)
         s.handle({"op": "append", "cseq": 0, "event": run_start("r"), "attach": {"policy": policy.load()[1]}})
@@ -260,6 +262,7 @@ class ObserverHttp(unittest.TestCase):
 class ObserveBundle(unittest.TestCase):
     def test_tampered_bundle_is_refused(self):
         d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
         good, _ = make_bundle(d)
         bad = os.path.join(d, "bad.tkb")
 

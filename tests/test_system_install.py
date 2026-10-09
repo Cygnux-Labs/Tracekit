@@ -13,6 +13,8 @@ import types
 import unittest
 from unittest import mock
 
+import pytest
+
 from tracekit import __version__, client, install
 from tracekit.ledger import Keys, Ledger
 
@@ -168,7 +170,9 @@ class SystemModeUsesOpt(unittest.TestCase):
             self.assertEqual(sys_cfg.call_args.args[0]["policy"], expected)
 
     def test_release_install_pins_the_pypi_name_and_version(self):
-        with mock.patch.object(install, "ROOT", tempfile.mkdtemp()), \
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        with mock.patch.object(install, "ROOT", d), \
                 mock.patch("tracekit.daemon.trusted_file", return_value=None):
             req = install._install_source()
         self.assertEqual(req[-1], f"tracekit-ai=={__version__}")
@@ -354,6 +358,7 @@ class Doctor(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("link is not owned by root", out)
 
+    @pytest.mark.root
     @unittest.skipUnless(IS_ROOT and os.path.isdir("/var/lib"), "needs root to make a root-owned package dir")
     def test_passes_when_root_owned_and_fails_once_writable(self):
         pkg = tempfile.mkdtemp(dir="/var/lib")

@@ -3,6 +3,7 @@ import base64
 import hashlib
 import json
 import os
+import shutil
 import sys
 import tempfile
 import unittest
@@ -104,6 +105,7 @@ class FakeLog(rekor.RekorWitness):
 class RekorFlow(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.tmp, True)
         self.keys = Keys(*crypto.generate())
         self.log = FakeLog(self.tmp)
         self.log.bind_key(self.keys.public)

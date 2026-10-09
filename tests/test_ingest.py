@@ -51,6 +51,7 @@ class Sanitize(unittest.TestCase):
 class Tokens(unittest.TestCase):
     def test_token_is_stored_hashed_and_authenticates(self):
         d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
         token = ingest.add_token(d, "build-1")
         raw = open(os.path.join(d, ingest.TOKENS_FILE)).read()
         self.assertNotIn(token, raw)
@@ -63,7 +64,6 @@ class Tokens(unittest.TestCase):
             ingest.add_token(d, "bad name!")
         if os.name != "nt":  # Windows has no POSIX permission bits
             self.assertEqual(oct(os.stat(os.path.join(d, ingest.TOKENS_FILE)).st_mode & 0o777), "0o600")
-        shutil.rmtree(d)
 
 
 class EndToEnd(unittest.TestCase):
