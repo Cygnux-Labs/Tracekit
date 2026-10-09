@@ -1025,6 +1025,11 @@
         "policy_version": {
           "type": "string",
           "maxLength": 4096
+        },
+        "tool": {
+          "type": "string",
+          "maxLength": 256,
+          "description": "tool name the decision is for"
         }
       }
     },
@@ -1181,7 +1186,8 @@
             "deleted",
             "truncated",
             "edited",
-            "prefix_unverifiable"
+            "prefix_unverifiable",
+            "rollback"
           ]
         }
       }
@@ -1485,6 +1491,9 @@
               "minimum": 0
             }
           }
+        },
+        "content_digest": {
+          "$ref": "#/$defs/hash"
         }
       }
     },
@@ -1547,6 +1556,14 @@
               "type": "boolean"
             }
           }
+        },
+        "signer_isolation": {
+          "enum": [
+            "same-user",
+            "separate-user",
+            "unknown"
+          ],
+          "description": "measured by the signer from the caller's identity, never taken from the client"
         }
       }
     },

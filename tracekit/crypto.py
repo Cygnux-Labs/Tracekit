@@ -163,9 +163,14 @@ def public_from_secret(secret):
     return k.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
 
 
-def sign(secret, msg):
+def sign_fn(secret):
+    """sign(msg) bound to one key, for signing many messages without reloading it."""
     _require_backend()
-    return Ed25519PrivateKey.from_private_bytes(secret).sign(msg)
+    return Ed25519PrivateKey.from_private_bytes(secret).sign
+
+
+def sign(secret, msg):
+    return sign_fn(secret)(msg)
 
 
 def verify(public, msg, sig):

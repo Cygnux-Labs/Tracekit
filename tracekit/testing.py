@@ -130,7 +130,7 @@ class FakeSigner:
                     decision, rule_ids = {"approved": ("allow", ["TK-APPROVED"]), "requested": ("ask", a["rule_ids"])
                                           }.get(a["state"], ("deny", ["TK-APPROVAL-" + a["state"].upper()]))
             run["calls"][req["tool_call_id"]] = {"args_digest": digest, "decision": decision, "rule_ids": rule_ids}
-            seq = self._append(run, "tool.decision", {"tool_call_id": req["tool_call_id"], "tool": req["tool"],
+            seq = self._append(run, "policy.decision", {"tool_call_id": req["tool_call_id"], "tool": req["tool"],
                                                       "attempt": req.get("attempt", 0), "args_source": req["args_source"],
                                                       "decision": decision, "rule_ids": rule_ids}, req)
             if decision == "allow" and a is not None:
