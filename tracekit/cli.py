@@ -86,6 +86,11 @@ def main(argv=None):
                                              "exports carry it")
 
     sub.add_parser("status", help="hooks, signer, witnesses, policy, fail mode, capture sources")
+    p = sub.add_parser("up", help="find or start the same-user v2 dev signer")
+    p.add_argument("--wait", action="store_true", help="return once it answers")
+    p.add_argument("--json", action="store_true", help="wait, then print its hello as JSON")
+    p.add_argument("--replace", action="store_true", help="stop the running dev signer first, even an incompatible one")
+    sub.add_parser("down", help="stop the same-user v2 dev signer")
     sub.add_parser("doctor", help="system mode: check the signer and policy run from files the agent cannot modify")
     p = sub.add_parser("uninstall", help="remove hooks (the ledger is kept)")
     p.add_argument("--project", action="store_true")
@@ -276,7 +281,26 @@ def _run(a):
         return 0
     if a.cmd == "status":
         from . import install
-        print(json.dumps(install.status(), indent=2))
+        from .sdk import autospawn
+        print(json.dumps({**install.status(), "signer_v2": autospawn.status()}, indent=2))
+        return 0
+    if a.cmd == "up":
+        from .sdk import autospawn
+        if a.replace:
+            autospawn.down()
+        conn = autospawn.ensure(wait=a.wait or a.json)
+        hello = conn and conn[2]
+        if conn:
+            conn[0].close()
+        if a.json:
+            print(json.dumps(hello))
+        else:
+            print(f"dev signer {hello['version']} running (pid {hello['pid']})" if hello else "dev signer starting")
+        return 0
+    if a.cmd == "down":
+        from .sdk import autospawn
+        pid = autospawn.down()
+        print(f"dev signer stopped (pid {pid})" if pid else "no dev signer running")
         return 0
     if a.cmd == "doctor":
         from . import install
