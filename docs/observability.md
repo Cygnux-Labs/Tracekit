@@ -29,5 +29,7 @@ types, gap kinds, RPC error codes, verdicts); past 64 distinct values a label is
 | `tracekit_signer_fsync_lag_seconds` | gauge | | Seconds the oldest written but not yet synced record has waited; 0 with `ack-on-fsync`. |
 | `tracekit_signer_open_runs` | gauge | | Runs registered and not yet closing. |
 | `tracekit_signer_pending_approvals` | gauge | | Approvals requested and not yet answered. |
+| `tracekit_signer_checkpoints_total` | counter | | Signed checkpoint notes of the record tree written. |
+| `tracekit_signer_checkpoint_age_seconds` | gauge | | Seconds since this signer last wrote a checkpoint note (since start when it has written none). Alert when it grows well past the 10 s cadence while records are written. |
 
-Witness lag and checkpoint metrics arrive with the v2 checkpointer.
+Witness lag arrives when checkpoints are published to witnesses.

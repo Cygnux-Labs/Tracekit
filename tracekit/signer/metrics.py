@@ -93,7 +93,9 @@ class SignerMetrics:
                                           "policy.decision records written, by verdict.", "verdict"))
         self.nondeterministic = self.add(Counter("tracekit_signer_policy_nondeterministic_total",
                                                  "Policy decisions that hit the regex timeout (denied)."))
-        # lean: no witness lag or checkpoint metrics until the v2 checkpointer lands (M1b-02); add them with it
+        self.checkpoints = self.add(Counter("tracekit_signer_checkpoints_total",
+                                            "Signed checkpoint notes of the record tree written."))
+        # lean: no witness lag until checkpoints are published to witnesses (M1b-02); add it with that
 
     def add(self, m):
         self.metrics.append(m)

@@ -5,6 +5,7 @@ import re
 import shutil
 import tempfile
 import threading
+import time
 import types
 import unittest
 import urllib.error
@@ -88,6 +89,16 @@ class TestScrape(Harness, unittest.TestCase):
         with self.assertRaises(urllib.error.HTTPError) as cm:
             self.scrape("/")
         self.assertEqual(cm.exception.code, 404)
+
+    def test_checkpoint_notes_are_counted_and_aged(self):
+        self.serve()
+        samples, _ = self.scrape()
+        self.assertEqual(samples["tracekit_signer_checkpoints_total"], 0)
+        time.sleep(0.05)
+        self.signer.checkpoint()   # the signer.epoch record is in the tree: one note
+        after, _ = self.scrape()
+        self.assertEqual(after["tracekit_signer_checkpoints_total"], 1)
+        self.assertLess(after["tracekit_signer_checkpoint_age_seconds"], samples["tracekit_signer_checkpoint_age_seconds"] + 0.05)
 
     def test_histograms_are_consistent(self):
         self.register()

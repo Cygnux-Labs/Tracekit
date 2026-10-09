@@ -10,11 +10,13 @@ import time
 import unittest
 from unittest import mock
 
+from factories import wait_for
 from tracekit import __version__, cli
 from tracekit.sdk import autospawn
 from tracekit.sdk.client import Client
 from tracekit.signer import service
 from tracekit.signer.rpc_schema import RPC_VERSION
+from tracekit.storage.file import FileReader
 from tracekit.transport import tcp_dev, read_frame, write_frame
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -87,6 +89,25 @@ class DevSignerEndToEnd(unittest.TestCase):
         third.close()
         self.cli("down")
         self.assertEqual(service.fsck(data_dir), [])   # one chain across all three signers, every signature valid
+
+    def test_dev_run_exports_and_verifies_while_the_signer_runs(self):
+        c = Client()
+        self.addCleanup(c.close)
+        with c.run("e2e") as run:
+            self.assertEqual(run.decide("c1", "Bash", '{"command": "ls"}')["decision"], "allow")
+            run.complete("c1")
+            self.assertEqual(run.decide("c2", "tracekit_demo_denied", "{}")["decision"], "deny")
+        store = os.path.join(service.dev_data_dir(), "store")
+        self.assertTrue(wait_for(lambda: list(FileReader(store).iter_run("default", run.run_id))[-1]["event"]["type"]
+                                 == "run.final", 20), "no run.final after the grace window")
+        vkey = self.cli("signer", "vkey", "--dev").strip()
+        trust, out = os.path.join(self.dir, "trust.json"), os.path.join(self.dir, "run.tkb")
+        self.cli("signer", "trust", "--dev", "-o", trust)
+        with open(trust) as f:
+            self.assertEqual(json.load(f), {"logs": [vkey], "witnesses": [], "algs": ["ed25519"], "witnesses_required": 0})
+        self.cli("export", "--v2", "--run", run.run_id, "--dev", "-o", out)
+        self.assertIn("Integrity: VERIFIED.\nAssurance: dev;", self.cli("verify", out, "--trust", trust))
+        self.assertTrue(self.held())   # the signer kept running throughout
 
     def test_idle_exit(self):
         os.environ["TRACEKIT_DEV_IDLE"] = "1"
