@@ -51,7 +51,7 @@ caller and are recorded as failed calls.
 ## Model calls, onchain transactions, other harnesses
 
 - Model calls: `tracekit_sdk.init()` (OpenAI, Anthropic, Google Gen AI) or OpenTelemetry ([otel](otel.md)).
-- Onchain transactions behind a guard: `tracekit.adapters.onchain.guarded_tx` ([integrations](integrations.md)).
+- Onchain transactions behind a guard: `tracekit_onchain.guarded_tx` ([contrib/onchain](../contrib/onchain/README.md)).
 - Codex CLI, Cursor and Gemini CLI: hooks, `tracekit init --dev --agent ...` ([coding agents](coding-agents.md)).
 
 To add an adapter for something else: translate each tool call into `tracer.tool(name, args)` and write a test that

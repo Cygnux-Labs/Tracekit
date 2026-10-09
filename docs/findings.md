@@ -11,7 +11,7 @@ tracekit analyze --run R --dry-run   # print only
 tracekit analyze --all --json        # every run, machine-readable; exit code 4 if anything high or critical
 tracekit export --run R -o r.tkb     # the bundle carries findings:R with the run
 tracekit verify r.tkb                # [PASS] findings cite intact evidence
-tracekit sql "SELECT rule, severity, title FROM findings WHERE run_id='R'"
+tracekit-sql "SELECT rule, severity, title FROM findings WHERE run_id='R'"   # contrib/query
 ```
 
 Findings also appear live in `tracekit observe` (Alerts panel, tape entry `FINDING`).
@@ -29,10 +29,10 @@ Findings also appear live in `tracekit observe` (Alerts panel, tape entry `FINDI
 | TK-X105 | critical | the agent said tests pass after the last test run failed | agent text in clear |
 | TK-X111..114 | critical | the agent denied pushing, deleting, editing or network calls that it made | agent text in clear |
 | TK-X120 | high | a risky action that nothing the agent said afterwards mentions | agent text in clear |
-| TK-X006 | critical | an onchain transaction was signed without a recorded guard verdict | `adapters.onchain` |
-| TK-X007 | critical | an onchain transaction was executed although the guard denied it | `adapters.onchain` |
-| TK-X008 | medium | an onchain transaction was blocked by the guard | `adapters.onchain` |
-| TK-C001..C004 | high..low | imported Causeway counterfactual verdicts: confirmed cause, suppressive, ruled out, not applied | `tracekit causeway import-tests` |
+| TK-X006 | critical | an onchain transaction was signed without a recorded guard verdict | `tracekit_onchain.analyze` (contrib/onchain) |
+| TK-X007 | critical | an onchain transaction was executed although the guard denied it | `tracekit_onchain.analyze` (contrib/onchain) |
+| TK-X008 | medium | an onchain transaction was blocked by the guard | `tracekit_onchain.analyze` (contrib/onchain) |
+| TK-C001..C004 | high..low | imported Causeway counterfactual verdicts: confirmed cause, suppressive, ruled out, not applied | `tracekit-causeway import-tests` (contrib/causeway) |
 | TK-X000, TK-X100 | info | a check could not run (no model exchanges captured / agent text only hashed) | - |
 
 Detectors never pass silently: when the ledger holds only hashes of what the agent said, TK-X100 says the text checks

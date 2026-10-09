@@ -6,7 +6,7 @@ and checks every query returns identical rows.
 Records are hash-chained like the signer's but carry a placeholder signature: the index never checks signatures (it is
 not evidence; `tracekit verify` is), so signing a million records would only measure Ed25519.
 
-    python3 eval/e7_sql_scale.py [--events 1000000] [--out eval/results/e7_sql_scale.json]"""
+    python3 contrib/query/e7_sql_scale.py [--events 1000000] [--out contrib/query/e7_sql_scale.json]"""
 import argparse
 import json
 import os
@@ -16,9 +16,10 @@ import sys
 import tempfile
 import time
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, ROOT)
-from tracekit import __version__, query  # noqa: E402
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path[:0] = [os.path.dirname(os.path.dirname(HERE)), HERE]
+import tracekit_query as query  # noqa: E402
+from tracekit import __version__  # noqa: E402
 from tracekit.core import GENESIS, SCHEMA_VERSION, event_hash  # noqa: E402
 
 TOOLS = [("Bash", "command", ["pytest -q", "git status", "ls -la", "npm test", "curl -s https://api.example/x", "sudo rm -rf /tmp/x"]),
@@ -92,7 +93,7 @@ def timed(fn):
 def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--events", type=int, default=1_000_000)
-    ap.add_argument("--out", default=os.path.join(ROOT, "eval", "results", "e7_sql_scale.json"))
+    ap.add_argument("--out", default=os.path.join(HERE, "e7_sql_scale.json"))
     a = ap.parse_args(argv)
     d = tempfile.mkdtemp(prefix="tk-e7-")
     try:

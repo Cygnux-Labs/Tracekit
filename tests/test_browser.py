@@ -1,4 +1,4 @@
-"""Browser Use and Stagehand action hooks, against duck-typed stand-ins (neither library is a test dependency)."""
+"""Browser Use action hooks, against duck-typed stand-ins (browser-use is not a test dependency)."""
 import asyncio
 import os
 import sys
@@ -7,7 +7,7 @@ import unittest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from tracekit.adapters.browser import instrument_browser_use, instrument_stagehand  # noqa: E402
+from tracekit.adapters.browser import instrument_browser_use  # noqa: E402
 from tracekit.agent_sdk import Tracer  # noqa: E402
 from factories import DaemonCase  # noqa: E402
 
@@ -35,19 +35,6 @@ class Registry:
 class Tools:
     def __init__(self):
         self.registry = Registry()
-
-
-class Page:
-    def __init__(self):
-        self.ran = []
-
-    async def act(self, instruction):
-        self.ran.append(instruction)
-        return {"success": True}
-
-    def goto(self, url):
-        self.ran.append(url)
-        return "loaded"
 
 
 class Browser(DaemonCase):
@@ -81,18 +68,6 @@ class Browser(DaemonCase):
         self.assertEqual([e["data"]["decision"] for e in evs if e["type"] == "policy.decision"], ["allow", "deny", "allow"])
         self.assertEqual([e["data"]["ok"] for e in evs if e["type"] == "tool.result"], [True, False])
         self.assertEqual(err.error, "element not found")
-
-    def test_stagehand_page_methods(self):
-        page = Page()
-        with Tracer(agent="sh", cwd=self.d) as t:
-            instrument_stagehand(page, t)
-            self.assertEqual(asyncio.run(page.act("click the login button")), {"success": True})
-            self.assertEqual(page.goto("https://docs.example"), "loaded")
-            with self.assertRaises(PermissionError):
-                page.goto("https://bank.example")
-        self.assertEqual(page.ran, ["click the login button", "https://docs.example"])
-        names = [e["data"]["name"] for e in self.events() if e["type"] == "tool.call"]
-        self.assertEqual(names, ["browser:act", "browser:goto", "browser:goto"])
 
 
 if __name__ == "__main__":

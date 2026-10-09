@@ -1,15 +1,16 @@
 """SQL over the ledger (#8): incremental index, chain-link checks, rebuild on rewrite, read-only queries, MCP.
-python3 -m pytest tests/test_query.py -q"""
+python3 -m pytest contrib/query/tests -q"""
 import io
 import json
 import os
 import sys
 import unittest
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, ROOT)
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from tracekit import install, query  # noqa: E402
+HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ROOT = os.path.dirname(os.path.dirname(HERE))
+sys.path[:0] = [ROOT, HERE, os.path.join(ROOT, "tests")]
+import tracekit_query as query  # noqa: E402
+from tracekit import install  # noqa: E402
 from tracekit.agent_sdk import Tracer  # noqa: E402
 from factories import DaemonCase  # noqa: E402
 
@@ -94,11 +95,15 @@ class SQL(DaemonCase):
         self.assertEqual(resp[5]["error"]["code"], -32601)
         self.assertNotIn(None, resp)  # the notification got no reply
 
+    def test_model_exchange_tokens(self):
+        u = {"input_tokens": 10, "cache_read_tokens": 5, "cache_write_tokens": 1, "output_tokens": 3}
+        self.assertEqual(query._columns("model.exchange", {"model": "m", "usage": u}), ("m", None, None, 16, 3))
+
     def test_cli(self):
         import subprocess
         self.run_agent("a")
-        p = subprocess.run([sys.executable, "-m", "tracekit", "sql", "--home", self.home, "--index", self.idx.path, "--format", "csv",
-                            "SELECT run_id, tool_calls FROM runs"], capture_output=True, text=True, cwd=ROOT)
+        p = subprocess.run([sys.executable, "-m", "tracekit_query", "--home", self.home, "--index", self.idx.path, "--format", "csv",
+                            "SELECT run_id, tool_calls FROM runs"], capture_output=True, text=True, cwd=HERE, env=dict(os.environ, PYTHONPATH=ROOT))
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertEqual(p.stdout.split(), ["run_id,tool_calls", "a,4"])
 

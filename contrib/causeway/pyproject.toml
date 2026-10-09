@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tracekit-causeway"
+version = "0.1.0"
+description = "Causeway integration for Tracekit: signed anchors, imported test verdicts, export"
+license = "MIT"
+requires-python = ">=3.9"
+dependencies = ["tracekit"]
+
+[project.scripts]
+tracekit-causeway = "tracekit_causeway:main"
+
+[tool.setuptools]
+py-modules = ["tracekit_causeway"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
