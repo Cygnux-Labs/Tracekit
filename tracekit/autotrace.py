@@ -42,7 +42,7 @@ from . import client, parsers, privacy
 from . import usage as _usage
 from .core import jsonable
 from .parsers import _get
-from .sdk.client import AsyncRunHandle, RunHandle, current_run
+from .sdk.client import AsyncRunHandle, RunHandle, current_run, fail_open
 from .signer.rpc_schema import MAX_RESULTS_SENT
 
 MAX_TEXT = 1024 * 1024   # streamed text kept for the (hashed) response content
@@ -187,8 +187,7 @@ class _RunExchange:
 
     def _fail_closed(self):
         """The run's fail mode for model calls: `model` in register_run's fail_modes, else `default`."""
-        modes = self.run.registered.get("fail_modes") or {}
-        return modes.get("model", modes.get("default", "closed")) == "closed"
+        return not fail_open(self.run.registered.get("fail_modes"), "model")
 
     def _send(self, phase, model, out, **fields):
         # lean: async calls record through the sync client, holding the event loop for one local round trip; use
@@ -222,7 +221,11 @@ class _RunExchange:
         self.chunks += 1
 
     def _out(self):
-        return self.stream.parse(self.kwargs) if self.stream and self.stream.seen else self.parsed
+        """The complete message when the SDK handed one over (a stream finished with get_final_message() after part of
+        it went through the proxy), else what the proxy saw of the stream."""
+        if self.parsed is not None:
+            return self.parsed
+        return self.stream.parse(self.kwargs) if self.stream and self.stream.seen else None
 
     @property
     def stop_reason(self):
