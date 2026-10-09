@@ -34,7 +34,8 @@ dependencies = ["cryptography>=41", "rfc8785>=0.1,<0.2"]   # signing (`tracekit 
 yaml = ["PyYAML>=6"]   # optional: policies are parsed with a built-in YAML subset otherwise
 langchain = ["langchain-core>=0.2"]   # tracekit.adapters.langchain (LangChain / LangGraph tools)
 grpc = ["grpcio>=1.50"]   # `tracekit otel serve --grpc-port 4317`
-dev = ["pytest>=7", "PyYAML>=6", "pyflakes", "langchain-core>=0.2; python_version>='3.10'", "langgraph>=0.2; python_version>='3.10'",
+signer = ["google-re2>=1.1; python_version>='3.10'", "regex>=2023.8"]   # tracekit.policy2 engine; regex is the fallback where RE2 has no wheel
+dev = ["pytest>=7", "PyYAML>=6", "pyflakes", "regex>=2023.8", "google-re2>=1.1; python_version>='3.10'", "langchain-core>=0.2; python_version>='3.10'", "langgraph>=0.2; python_version>='3.10'",
        "opentelemetry-sdk>=1.20", "opentelemetry-exporter-otlp-proto-http>=1.20", "opentelemetry-exporter-otlp-proto-grpc>=1.20",   # only tests use these: the receiver has no deps
        "openai>=1.0", "anthropic>=0.30", "google-genai>=1.0"]   # tests for tracekit_sdk.init(); patched only when installed
 
@@ -48,9 +49,10 @@ Changelog = "https://github.com/Cygnux-Labs/Tracekit/blob/main/CHANGELOG.md"
 Security = "https://github.com/Cygnux-Labs/Tracekit/blob/main/SECURITY.md"
 
 [tool.setuptools]
-packages = ["tracekit", "tracekit.adapters", "tracekit.deploy", "tracekit.format", "tracekit.merkle", "tracekit.signer",
-            "tracekit.storage"]
 py-modules = ["tracekit_sdk"]
+
+[tool.setuptools.packages.find]
+include = ["tracekit", "tracekit.*"]   # every subpackage; new modules need no edit here
 
 [tool.setuptools.dynamic]
 version = { attr = "tracekit.__version__" }
