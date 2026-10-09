@@ -1,6 +1,6 @@
 {
   "name": "@cygnux/tracekit",
-  "version": "0.2.0-rc.1",
+  "version": "0.3.0",
   "description": "Tracekit for TypeScript/JavaScript agents: policy-gated tool calls and signed model-call evidence, through the same engine as the Python SDK.",
   "author": "Cygnux Labs",
   "license": "MIT",

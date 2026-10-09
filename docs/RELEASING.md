@@ -2,7 +2,7 @@
 
 1. Update `__version__` in `tracekit/__init__.py` and add a dated entry to `CHANGELOG.md`.
 2. `make check` locally; CI must be green on `main`.
-3. Tag and push: `git tag v0.2.0 && git push --tags`. The `Release` workflow refuses a tag that does not
+3. Tag and push: `git tag v0.3.0 && git push origin v0.3.0`. The `Release` workflow refuses a tag that does not
    match `__version__`, builds the sdist and wheel, runs `twine check`, and publishes to PyPI.
 
 ## One-time PyPI setup (trusted publishing, no stored token)

@@ -1,10 +1,10 @@
-"""Tracekit v0.2: signed, checkpointed evidence of what coding agents did.
+"""Tracekit 0.3: signed, checkpointed evidence of what AI agents did.
 
 Tracekit proves what its capture path recorded, and that it hasn't changed since it was
 signed and checkpointed. It does not prove intent, complete coverage, or that a reported
 result is real. See docs/threat-model-laptop.md.
 """
-__version__ = "0.2.0rc1"
+__version__ = "0.3.0"
 
 
 def __getattr__(name):
