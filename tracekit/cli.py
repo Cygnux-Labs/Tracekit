@@ -124,6 +124,16 @@ def main(argv=None):
         p = sub.add_parser(name, help=f"{name} a held tool call (run from a terminal outside the agent's session)")
         p.add_argument("approval_id", nargs="?", help="id from `tracekit pending` (default: the only pending one)")
 
+    p = sub.add_parser("approvals", help="approvals on the v2 signer: `approvals list|show ID|approve ID|reject ID`")
+    p.add_argument("--signer", help="the signer's Unix socket (default: the same-user dev signer)")
+    acts = p.add_subparsers(dest="action", required=True)
+    acts.add_parser("list", help="pending and recent approvals")
+    acts.add_parser("show", help="one approval, with the signer's copy of the arguments in full").add_argument("approval_id")
+    for name in ("approve", "reject"):
+        q = acts.add_parser(name, help=f"{name} a pending approval")
+        q.add_argument("approval_id")
+        q.add_argument("--reason")
+
     p = sub.add_parser("export", help="write a .tkb evidence bundle")
     p.add_argument("-o", "--out", default="tracekit.tkb")
     g = p.add_mutually_exclusive_group()
@@ -356,6 +366,8 @@ def _run(a):
             return 2
         print(("ok: " + r["decision"]) if r.get("ok") else r.get("error"), file=sys.stdout if r.get("ok") else sys.stderr)
         return 0 if r.get("ok") else 1
+    if a.cmd == "approvals":
+        return _approvals(a)
     if a.cmd == "export":
         from . import bundle
         from .otel import parse_headers
@@ -402,6 +414,49 @@ def _run(a):
         from . import demo
         return demo.main(real=a.real, keep=a.keep, agent=a.agent)
     return 2
+
+
+def _approvals(a):
+    """`tracekit approvals`. Strings an agent chose (tool, args, reason) are printed JSON-escaped, never raw."""
+    import pydoc
+
+    from .format.canon import loads_strict
+    from .sdk.client import Client, Incompatible, SignerUnavailable
+    from .signer.rpc_schema import RPCError
+    c = Client(a.signer)
+    try:
+        if a.action == "list":
+            items = c.approval_list({})["approvals"]
+            if not items:
+                print("no approvals")
+            for x in items:
+                print(f"{x['approval_id']}  {x['state']}  run={x['run_id']}  tool={json.dumps(x['tool'])}  "
+                      f"rules={','.join(x['rule_ids'])}  expires {x['expires_at']}")
+        elif a.action == "show":
+            x = c.approval_get({"approval_id": a.approval_id})
+            args = loads_strict(x["args"]) if x["args_source"] == "raw" and x["args"] is not None else x["args"]
+            lines = [f"approval    {x['approval_id']} ({x['state']})", f"tool        {json.dumps(x['tool'])}",
+                     f"rules       {', '.join(x['rule_ids'])}", f"policy      {x['policy_hash']}",
+                     f"requester   {json.dumps(x['requester'])}", f"run         {x['run_id']}",
+                     f"call        {x['tool_call_id']} attempt {x['attempt']}", f"expires     {x['expires_at']}",
+                     f"binding     {x['binding_digest']}", "arguments (the signer's copy, in full):",
+                     json.dumps(args, indent=2) if x["args"] is not None else "  (deleted: the approval is no longer live)"]
+            if "reason" in x:
+                lines.append(f"reason given by the agent (unverified): {json.dumps(x['reason'])}")
+            pydoc.pager("\n".join(lines))
+        else:
+            req = {"approval_id": a.approval_id, "decision": a.action, **({"reason": a.reason} if a.reason else {})}
+            r = c.approval_decide(req)
+            print(f"{r['state']}: {r['approval_id']}" + (" (self-approved: dev mode only)" if r["self_approved"] else ""))
+    except (SignerUnavailable, Incompatible) as e:
+        print(f"signer unavailable: {e}", file=sys.stderr)
+        return 2
+    except RPCError as e:
+        print(f"tracekit approvals: {e}", file=sys.stderr)
+        return 1
+    finally:
+        c.close()
+    return 0
 
 
 if __name__ == "__main__":
