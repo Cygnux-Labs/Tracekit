@@ -27,6 +27,7 @@ try:
 except ImportError:  # pragma: no cover
     fcntl = None
 
+from tracekit.deploy.files import replace_retrying
 from tracekit.format.canon import event_hash, loads_strict
 from tracekit.locking import lock_file
 from tracekit.merkle import leaf_hash
@@ -86,7 +87,7 @@ def _write_new(path, data):
         os.fsync(fd)
     finally:
         os.close(fd)
-    os.replace(tmp, path)
+    replace_retrying(tmp, path)   # a FileReader may be reading the old file
     _sync_dir(os.path.dirname(path))
 
 
@@ -446,10 +447,15 @@ class FileReader(_Records):
         newest one. It may be of a larger tree than the records this reader holds; open a new reader to cover it."""
         if tree != RECORDS:
             return (self.notes.get(tree) or [None])[-1]
-        try:
-            return _parse_note(self._read(os.path.join(self.root, NOTE)))
-        except FileNotFoundError:
-            return None
+        for i in range(20):
+            try:
+                return _parse_note(self._read(os.path.join(self.root, NOTE)))
+            except FileNotFoundError:
+                return None
+            except PermissionError:   # Windows: the writer is replacing the note this instant
+                if os.name != "nt" or i == 19:
+                    raise
+                time.sleep(0.05)
 
 
 def fsck(root):

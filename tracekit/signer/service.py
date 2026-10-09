@@ -16,7 +16,7 @@ signer.yaml:
     tenant: default                          # tenant of callers not in `tenants`
     tenants: {"uid:1001": acme, "k8s_sa:system:serviceaccount:acme:*": acme}   # identity or prefix* -> tenant (attested)
     authorize: {"mtls:spiffe://acme/agent": [register_run, decide, complete, close_run]}   # identity or prefix* ->
-                                             # methods; uid callers default to all, every other scheme to none
+                                             # methods; uid and token:dev default to all, the rest to none
     multi_tenant_apps: ["uid:1002"]          # may assert a tenant per run (recorded as not attested)
     migrators: ["uid:1003"]                  # may register `migrated` runs
     analyzers: ["uid:1004"]                  # may register findings runs, each bound to the run it analyses
@@ -123,7 +123,6 @@ FAIL_MODES = {"default": "closed"}
 CONFIG_KEYS = {"data_dir", "socket", "tcp_endpoint", "http", "durability", "tenant", "tenants", "authorize", "limits",
                "acknowledge_rollback", "policy", "multi_tenant_apps", "migrators", "analyzers", "fail_modes", "grace_s",
                "idle_s", "origin", "metrics", "witnesses", "contact"}
-DEV_GRANT = {"token:dev": sorted(REQUESTS)}   # the dev token of the loopback TCP transport (scoped by DevToken itself)
 
 
 def load_policy(path=DEFAULT_POLICY, backend=None):
@@ -304,8 +303,8 @@ class SignerService:
             if not isinstance(method, str) or method not in REQUESTS:
                 raise RPCError("invalid_request", f"unknown method {str(method)[:64]}")
             granted = lookup(self.authorize, subject(identity))
-            if granted is None:   # unconfigured: a uid keeps every method, any other scheme gets none
-                granted = REQUESTS if identity.scheme == "uid" else ()
+            if granted is None:   # unconfigured: a uid or the dev token (scoped by DevToken) keeps every method
+                granted = REQUESTS if identity.scheme == "uid" or subject(identity) == "token:dev" else ()
             if method not in granted:
                 raise RPCError("forbidden", f"{subject(identity)[:256]} is not authorized for {method}")
             errs = rpc_schema.validate(REQUESTS[method], req)
@@ -985,7 +984,7 @@ def open_service(cfg, **kw):
                          analyzers=cfg.get("analyzers", ()), fail_modes=cfg.get("fail_modes"),
                          grace_s=float(cfg.get("grace_s", GRACE_S)), idle_s=float(cfg.get("idle_s", IDLE_S)),
                          origin=cfg.get("origin"), contact=cfg.get("contact"),
-                         authorize={**(DEV_GRANT if cfg.get("tcp_endpoint") else {}), **(cfg.get("authorize") or {})}, **kw)
+                         authorize=cfg.get("authorize"), **kw)
 
 
 def serve(cfg, service):
@@ -1100,7 +1099,7 @@ def _serve_dev():
     from tracekit.sdk.autospawn import runtime_dir
 
     def open_handler():
-        service = SignerService(dev_data_dir(), isolation="same-user", authorize=DEV_GRANT)
+        service = SignerService(dev_data_dir(), isolation="same-user")
         return service.handle_frame, service.close
     try:
         return serve_dev(runtime_dir(), open_handler, idle_s=float(os.environ.get("TRACEKIT_DEV_IDLE", 900)))
