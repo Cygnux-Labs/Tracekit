@@ -17,8 +17,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from tracekit import observe, policy, replay  # noqa: E402
-from test_hardening import make_bundle, rewrite  # noqa: E402
-from test_v02 import run_start, signer  # noqa: E402
+from factories import make_signer, rewrite_bundle, run_start  # noqa: E402
+from test_hardening import make_bundle  # noqa: E402
 
 XSS = '"><img src=x onerror=alert(1)>\'</script>__RECORDS__/*__RAW_DATA__*/null'
 HTML_TAG = re.compile(r"<[a-zA-Z/!]")
@@ -185,7 +185,7 @@ class ObserverHttp(unittest.TestCase):
     def setUpClass(cls):
         cls.d = tempfile.mkdtemp()
         home = os.path.join(cls.d, "s")
-        s = signer(home, witnesses=[f"file:{cls.d}/w.jsonl"], every=100)
+        s = make_signer(home, witnesses=[f"file:{cls.d}/w.jsonl"], checkpoint_every=100)
         s.handle({"op": "append", "cseq": 0, "event": run_start("r"), "attach": {"policy": policy.load()[1]}})
         cls.path = os.path.join(home, "ledger", "ledger.jsonl")
 
@@ -267,7 +267,7 @@ class ObserveBundle(unittest.TestCase):
             recs = [json.loads(x) for x in files["records.jsonl"].splitlines()]
             recs[-1]["event"]["data"]["reason"] = "edited after signing"
             files["records.jsonl"] = "".join(json.dumps(r) + "\n" for r in recs).encode()
-        rewrite(good, bad, edit)
+        rewrite_bundle(good, bad, edit)
         out = os.path.join(d, "o.html")
         self.assertEqual(observe.main(["--bundle", good, "--export", out]), 0)
         os.remove(out)
