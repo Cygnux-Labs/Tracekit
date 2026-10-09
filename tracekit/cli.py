@@ -135,6 +135,10 @@ def main(argv=None):
     p.add_argument("--strict", action="store_true", help="exit 3 on warnings")
     p.add_argument("--json", action="store_true")
 
+    p = sub.add_parser("policy", help="policy v2: `policy compile FILE` prints canonical JSON and its hash; `policy lint FILE`")
+    p.add_argument("action", choices=("compile", "lint"))
+    p.add_argument("file")
+
     p = sub.add_parser("migrate", help="read or convert a v0.1 ledger; `migrate --system` upgrades a 0.2.0 system install")
     p.add_argument("rest", nargs=argparse.REMAINDER)
 
@@ -341,6 +345,19 @@ def _run(a):
         else:
             bundle.print_report(rep, code)
         return code
+    if a.cmd == "policy":
+        from .policy2 import compile as policy_compile
+        pol, errors = policy_compile.build(a.file)
+        for e in errors:
+            print(e, file=sys.stderr)
+        if errors:
+            return 1
+        if a.action == "compile":
+            print(policy_compile.canonical(pol))
+            print(f"policy_hash: {policy_compile.policy_hash(pol)}", file=sys.stderr)
+        else:
+            print(f"ok: {a.file}")
+        return 0
     if a.cmd == "migrate":
         from . import migrate
         return migrate.main(a.rest)
