@@ -21,6 +21,7 @@ from tracekit.ledger import Keys, Ledger
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 IS_ROOT = hasattr(os, "geteuid") and os.geteuid() == 0
 POLICY = os.path.join(install.OPT, "lib", "python3", "site-packages", "tracekit", "policy", "default.yaml")
+V2_KEYS = {"signer": "/run/tracekit-signer/signer.sock", "hooks": {"user": "agent", "settings": None}}
 
 
 @contextlib.contextmanager
@@ -47,6 +48,7 @@ class SystemModeUsesOpt(unittest.TestCase):
                 mock.patch.object(install, "_install_venv", return_value=POLICY), \
                 mock.patch.object(install.subprocess, "run", run), \
                 mock.patch.object(install, "_write_client_config"), \
+                mock.patch.object(install.client, "system_config", return_value=dict(V2_KEYS, mode="system")), \
                 mock.patch.object(install, "_write_system_client_config") as sys_cfg, \
                 mock.patch.object(install, "_pin_policy"), \
                 mock.patch.object(install, "install_hooks") as hooks, \
@@ -62,6 +64,7 @@ class SystemModeUsesOpt(unittest.TestCase):
         self.assertIn(install.OPT_PYTHON, keygen)
         self.assertEqual(hooks.call_args.kwargs["python"], install.OPT_PYTHON)
         self.assertEqual(sys_cfg.call_args.args[0]["policy"], POLICY)
+        self.assertLessEqual(V2_KEYS.items(), sys_cfg.call_args.args[0].items())  # a v2 install keeps its signer pin
         for sub in ("ledger", "blobs"):
             self.assertEqual(stat.S_IMODE(os.stat(os.path.join(home, sub)).st_mode), 0o750)
         cmds = [c.args[0] for c in run.call_args_list]
@@ -154,7 +157,7 @@ class SystemModeUsesOpt(unittest.TestCase):
     def test_migrate_keeps_a_policy_path(self):
         d = self.migrate_dir()
         me = install.pwd.getpwuid(os.getuid())
-        for existing, expected in (({"policy": "/etc/tracekit/p.yaml"}, "/etc/tracekit/p.yaml"), (None, POLICY)):
+        for existing, expected in (({"policy": "/etc/tracekit/p.yaml", **V2_KEYS}, "/etc/tracekit/p.yaml"), (None, POLICY)):
             with as_root_on_linux(), mock.patch.object(install, "SYS_HOME", d), \
                     mock.patch.object(install, "SYSTEMD_DIR", d), \
                     mock.patch.object(install.client, "system_config", return_value=existing), \
@@ -168,6 +171,7 @@ class SystemModeUsesOpt(unittest.TestCase):
                     contextlib.redirect_stdout(io.StringIO()):
                 install.migrate_system()
             self.assertEqual(sys_cfg.call_args.args[0]["policy"], expected)
+            self.assertEqual(sys_cfg.call_args.args[0].get("signer"), existing and V2_KEYS["signer"])
 
     def test_release_install_pins_the_pypi_name_and_version(self):
         d = tempfile.mkdtemp()

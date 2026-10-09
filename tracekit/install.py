@@ -678,6 +678,15 @@ def _write_system_client_config(cfg):
     _write_root_file(client.SYSTEM_CONFIG, files.json_bytes(cfg))
 
 
+def _v2_client_keys():
+    """The v2 system mode keys of the existing system config, which a v1 (re)install must keep."""
+    try:
+        sc = client.system_config() or {}
+    except client.SystemConfigError:
+        sc = {}
+    return {k: sc[k] for k in ("signer", "hooks") if k in sc}
+
+
 def _write_root_file(path, data):
     """Write `path` root-owned and 0644, in a root-owned 0755 directory (created if missing), following no symlink."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -738,7 +747,7 @@ def migrate_system(fail_mode=None, harnesses=None):
         cfg.update(proxy=True, proxy_url=f"http://127.0.0.1:{scfg['proxy'].get('port', 8787)}")
     policy = (client.system_config() or {}).get("policy")
     cfg["policy"] = policy or _opt_default_policy()  # 0.2.x configs have no policy key; use the root-owned default
-    _write_system_client_config(cfg)
+    _write_system_client_config(dict(cfg, **_v2_client_keys()))
     tk = pwd.getpwnam(SYS_USER)
     hcfg = harness_config(harnesses) if harnesses or not scfg.get("harnesses") else {}
     _update_signer_config(SYS_HOME, hcfg, tk)
@@ -1045,7 +1054,7 @@ def uninstall_system_v2(purge=False):
     unit = not darwin and os.path.exists(removed[0])   # none after --no-service: nothing to stop
     if unit:
         subprocess.run(["systemctl", "disable", "--now", V2_UNIT], check=False)
-    rest ={k: v for k, v in sc.items() if k not in ("signer", "hooks")}
+    rest = {k: v for k, v in sc.items() if k not in ("signer", "hooks")}
     if "socket" in rest:   # v1 system mode
         _write_system_client_config(rest)
     else:
@@ -1144,7 +1153,7 @@ def init_system(target_user, witnesses, checkpoint_every=50, project=None, no_se
     if proxy:
         cfg.update(proxy=True, proxy_url=f"http://127.0.0.1:{proxy_port}")
     _write_client_config(owner.pw_dir, cfg, owner)
-    _write_system_client_config(dict(cfg, fail_mode=fail_mode or "closed", policy=policy))
+    _write_system_client_config(dict(cfg, fail_mode=fail_mode or "closed", policy=policy, **_v2_client_keys()))
     _pin_policy(SYS_HOME, tk)
     if not no_service and not darwin:  # restart, not enable --now: a running signer must reload its config
         units = ["tracekitd", *(["tracekit-proxy"] if proxy else [])]
