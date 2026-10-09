@@ -17,7 +17,7 @@ make check          # lint + tests + build
 
 ## Developer Certificate of Origin
 
-Every commit must be signed off under the [Developer Certificate of Origin 1.1](https://developercertificate.org/):
+Every commit in a pull request from a fork must be signed off under the [Developer Certificate of Origin 1.1](https://developercertificate.org/):
 by adding the line below you certify that you wrote the change, or otherwise have the right to submit it
 under the project's license.
 
@@ -25,6 +25,6 @@ under the project's license.
 Signed-off-by: Your Name <you@example.com>
 ```
 
-`git commit -s` adds it, using your `user.name` and `user.email`. A CI check fails the pull request if any
-commit lacks a sign-off. To fix older commits on your branch, run `git rebase --signoff main` and push the
+`git commit -s` adds it, using your `user.name` and `user.email`. A CI check fails a pull request from a fork if
+any commit lacks a sign-off; branches pushed to this repository by its maintainers are not checked. To fix older commits on your branch, run `git rebase --signoff main` and push the
 branch again.

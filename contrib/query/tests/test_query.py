@@ -3,46 +3,22 @@ python3 -m pytest contrib/query/tests -q"""
 import io
 import json
 import os
-import shutil
 import sys
-import tempfile
 import unittest
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ROOT = os.path.dirname(os.path.dirname(HERE))
-sys.path[:0] = [ROOT, HERE]
+sys.path[:0] = [ROOT, HERE, os.path.join(ROOT, "tests")]
 import tracekit_query as query  # noqa: E402
 from tracekit import install  # noqa: E402
 from tracekit.agent_sdk import Tracer  # noqa: E402
-
-_SAVED = {}
-
-
-def setUpModule():
-    _SAVED["policy"] = os.environ.pop("TRACEKIT_POLICY", None)
+from factories import DaemonCase  # noqa: E402
 
 
-def tearDownModule():
-    if _SAVED.get("policy") is not None:
-        os.environ["TRACEKIT_POLICY"] = _SAVED["policy"]
-
-
-class SQL(unittest.TestCase):
+class SQL(DaemonCase):
     def setUp(self):
-        self.d = tempfile.mkdtemp()
-        self.home = os.path.join(self.d, "signer")
-        self.old = os.environ.get("TRACEKIT_CLIENT_HOME")
-        os.environ["TRACEKIT_CLIENT_HOME"] = os.path.join(self.d, "client")
-        install.init_dev(self.home, [], start=True)
+        super().setUp()
         self.idx = query.Index(self.home, os.path.join(self.d, "idx.sqlite"))
-
-    def tearDown(self):
-        install.stop_dev_daemon(self.home)
-        if self.old is None:
-            os.environ.pop("TRACEKIT_CLIENT_HOME", None)
-        else:
-            os.environ["TRACEKIT_CLIENT_HOME"] = self.old
-        shutil.rmtree(self.d, ignore_errors=True)
 
     def run_agent(self, sid, n=3):
         with Tracer(agent="bot", session_id=sid, cwd=self.d) as t:

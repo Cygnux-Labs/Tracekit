@@ -27,10 +27,11 @@ import secrets
 import ssl
 import sys
 import threading
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 from urllib.parse import parse_qs, urlsplit
 
 from . import crypto, merkle
+from .netserver import Server
 from .core import b64d, b64e, canon, now_ts
 from .witness import CP_TYPE, verify_checkpoint
 
@@ -62,10 +63,20 @@ class Log:
         self.kid = crypto.kid(self.public)
         self.entries, self.hashes, self.by_kid_seq = [], [], {}
         if os.path.exists(self.leaves_path):
-            with open(self.leaves_path, encoding="utf-8") as f:
-                for line in f:
-                    if line.strip():
-                        self._index(json.loads(line))
+            with open(self.leaves_path, "rb+") as f:
+                data = f.read()
+                good = data[:data.rfind(b"\n") + 1]
+                if len(good) < len(data):
+                    # a write cut short before its newline was never fsynced or acknowledged: set it aside, so the
+                    # next entry starts on a fresh line
+                    print(f"tracekit witness: warning: last line of {self.leaves_path} is incomplete; moved it to "
+                          f"{self.leaves_path}.torn", file=sys.stderr)
+                    with open(self.leaves_path + ".torn", "ab") as t:
+                        t.write(data[len(good):] + b"\n")
+                    f.truncate(len(good))
+            for line in good.decode("utf-8").splitlines():
+                if line.strip():
+                    self._index(json.loads(line))
 
     def _index(self, e):
         self.entries.append(e)
@@ -238,10 +249,8 @@ def make_handler(log):
     return H
 
 
-def serve(home, host="127.0.0.1", port=8444):
-    srv = ThreadingHTTPServer((host, port), make_handler(Log(home)))
-    srv.daemon_threads = True
-    return srv
+def serve(home, host="127.0.0.1", port=8444, ssl_context=None):
+    return Server((host, port), make_handler(Log(home)), ssl_context)
 
 
 def main(argv=None):
@@ -281,12 +290,12 @@ def main(argv=None):
     if not a.cert and not loopback and not a.insecure_http:
         print("tracekit witness: refusing plain HTTP on a non-loopback address; pass --cert/--key", file=sys.stderr)
         return 2
-    srv = serve(a.home, a.host, a.port)
+    ctx = None
     if a.cert:
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         ctx.minimum_version = ssl.TLSVersion.TLSv1_2
         ctx.load_cert_chain(a.cert, a.key)
-        srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
+    srv = serve(a.home, a.host, a.port, ctx)
     print(f"tracekit witness: listening on {'https' if a.cert else 'http'}://{a.host}:{srv.server_address[1]}", flush=True)
     try:
         srv.serve_forever()

@@ -27,6 +27,10 @@ export interface StartOptions {
   cwd?: string;
   python?: string;
   env?: Record<string, string>;
+  /** Per-request timeout for the bridge (default 30 s). */
+  timeoutMs?: number;
+  /** Timeout for a tool call held for approval (default 61 min: the signer caps an approval at one hour). */
+  approvalTimeoutMs?: number;
 }
 
 export interface Usage {
@@ -50,6 +54,8 @@ export interface ModelEnd {
 
 type Pending = { resolve: (v: any) => void; reject: (e: Error) => void };
 
+class BridgeClosed extends Error {}
+
 class Bridge {
   private proc: ChildProcessWithoutNullStreams;
   private pending = new Map<number, Pending>();
@@ -67,7 +73,7 @@ class Bridge {
     this.proc.on("error", (e) => readyReject(new Error(`could not start the Tracekit bridge (${python}): ${e.message}`)));
     this.proc.on("exit", (code) => {
       this.closed = true;
-      const err = new Error(`Tracekit bridge exited (code ${code}). ${stderr.trim().split("\n").slice(-3).join(" ")}`);
+      const err = new BridgeClosed(`Tracekit bridge exited (code ${code}). ${stderr.trim().split("\n").slice(-3).join(" ")}`);
       readyReject(err);
       for (const p of this.pending.values()) p.reject(err);
       this.pending.clear();
@@ -84,12 +90,27 @@ class Bridge {
     });
   }
 
-  async call(op: string, args: Record<string, unknown> = {}): Promise<any> {
-    await this.ready;
-    if (this.closed) throw new Error("Tracekit bridge is closed");
+  async call(op: string, args: Record<string, unknown>, timeoutMs: number): Promise<any> {
     const id = this.next++;
+    let timer: NodeJS.Timeout | undefined;
+    const timeout = new Promise<never>((_res, rej) => {
+      timer = setTimeout(() => {
+        this.pending.delete(id);
+        rej(new Error(`Tracekit: bridge request ${op} timed out after ${timeoutMs} ms`));
+      }, timeoutMs);
+    });
+    try {
+      return await Promise.race([this.send(id, op, args, timeoutMs), timeout]);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  private async send(id: number, op: string, args: Record<string, unknown>, timeoutMs: number): Promise<any> {
+    await this.ready;
+    if (this.closed) throw new BridgeClosed("Tracekit bridge is closed");
     const p = new Promise((resolve, reject) => this.pending.set(id, { resolve, reject }));
-    this.proc.stdin.write(JSON.stringify({ id, op, ...args }) + "\n");
+    this.proc.stdin.write(JSON.stringify({ id, op, timeout_s: timeoutMs / 1000, ...args }) + "\n");
     return p;
   }
 
@@ -103,21 +124,54 @@ class Bridge {
 
 export class Tracekit {
   readonly sessionId: string;
-  private constructor(private bridge: Bridge, private run: string, sessionId: string) {
+  /** Recording failures after a wrapped call had already succeeded: reported on stderr, never thrown. */
+  recordFailures = 0;
+  private warnedClosed = false;
+  private constructor(private bridge: Bridge, private run: string, sessionId: string, private failMode: string,
+                      private timeoutMs: number, private approvalTimeoutMs: number) {
     this.sessionId = sessionId;
   }
 
   /** Start a run. One Tracekit per run; call end() when the agent is done. */
   static async start(opts: StartOptions = {}): Promise<Tracekit> {
     const python = opts.python ?? process.env.TRACEKIT_PYTHON ?? "python3";
+    const timeoutMs = opts.timeoutMs ?? 30_000;
     const bridge = new Bridge(python, opts.env);
-    const r = await bridge.call("start", { agent: opts.agent ?? "ts-agent", session_id: opts.sessionId, cwd: opts.cwd ?? process.cwd() });
-    return new Tracekit(bridge, r.run, r.session_id);
+    const r = await bridge.call("start", { agent: opts.agent ?? "ts-agent", session_id: opts.sessionId, cwd: opts.cwd ?? process.cwd() }, timeoutMs);
+    return new Tracekit(bridge, r.run, r.session_id, r.fail_mode, timeoutMs, opts.approvalTimeoutMs ?? 3_660_000);
   }
 
-  prompt(text: string): Promise<void> { return this.bridge.call("prompt", { run: this.run, text }).then(() => undefined); }
-  say(text: string): Promise<void> { return this.bridge.call("say", { run: this.run, text }).then(() => undefined); }
-  think(text: string): Promise<void> { return this.bridge.call("think", { run: this.run, text }).then(() => undefined); }
+  /**
+   * One bridge request. If the bridge has exited, the run's fail mode decides: open returns null (the caller proceeds
+   * unrecorded, with a warning), closed refuses with TracekitDenied.
+   */
+  private async call(op: string, args: Record<string, unknown>, timeoutMs = this.timeoutMs): Promise<any> {
+    try {
+      return await this.bridge.call(op, args, timeoutMs);
+    } catch (e: any) {
+      if (!(e instanceof BridgeClosed)) throw e;
+      if (this.failMode === "closed") throw new TracekitDenied(`${e.message}; fail_mode=closed refuses the call`);
+      if (!this.warnedClosed) {
+        this.warnedClosed = true;
+        process.stderr.write(`[tracekit] ${e.message}; fail_mode=open, continuing unrecorded\n`);
+      }
+      return null;
+    }
+  }
+
+  /** Record after the wrapped call succeeded: a failure here is reported, never thrown over the call's result. */
+  async settle(p: Promise<unknown>): Promise<void> {
+    try {
+      await p;
+    } catch (e: any) {
+      this.recordFailures++;
+      process.stderr.write(`[tracekit] could not record a completed call: ${e?.message ?? e}\n`);
+    }
+  }
+
+  prompt(text: string): Promise<void> { return this.call("prompt", { run: this.run, text }).then(() => undefined); }
+  say(text: string): Promise<void> { return this.call("say", { run: this.run, text }).then(() => undefined); }
+  think(text: string): Promise<void> { return this.call("think", { run: this.run, text }).then(() => undefined); }
 
   /**
    * Run a tool through the policy gate. The policy decision is made and signed before `fn` runs; a denied (or held and
@@ -125,30 +179,32 @@ export class Tracekit {
    * Pass the model's tool-call id as toolUseId to link the execution to the model request that asked for it.
    */
   async tool<T>(name: string, args: Record<string, unknown>, fn: () => T | Promise<T>, opts: { toolUseId?: string } = {}): Promise<T> {
-    const c = await this.bridge.call("tool_begin", { run: this.run, name, args, tool_use_id: opts.toolUseId });
+    const c = await this.call("tool_begin", { run: this.run, name, args, tool_use_id: opts.toolUseId }, this.approvalTimeoutMs);
+    if (c === null) return fn();
     let result: T;
     try {
       result = await fn();
     } catch (e: any) {
-      await this.bridge.call("tool_end", { call: c.call, error: String(e?.stack ?? e) });
+      await this.settle(this.call("tool_end", { call: c.call, error: String(e?.stack ?? e) }));
       throw e;
     }
-    await this.bridge.call("tool_end", { call: c.call, result: toJSON(result) });
+    await this.settle(this.call("tool_end", { call: c.call, result: toJSON(result) }));
     return result;
   }
 
-  /** Low level: record a model call yourself. begin() is written before the request is sent. */
-  async modelBegin(provider: string, operation: string, model: string | null, request: unknown, streamed = false): Promise<string> {
-    const r = await this.bridge.call("model_begin", { run: this.run, provider, operation, model, request: toJSON(request), streamed });
-    return r.exchange;
+  /** Low level: record a model call yourself. begin() is written before the request is sent. Null: not recorded. */
+  async modelBegin(provider: string, operation: string, model: string | null, request: unknown, streamed = false): Promise<string | null> {
+    const r = await this.call("model_begin", { run: this.run, provider, operation, model, request: toJSON(request), streamed });
+    return r === null ? null : r.exchange;
   }
 
-  async modelEnd(exchange: string, end: ModelEnd): Promise<void> {
-    await this.bridge.call("model_end", { exchange, ...end, response: toJSON(end.response) });
+  async modelEnd(exchange: string | null, end: ModelEnd): Promise<void> {
+    if (exchange === null) return;
+    await this.call("model_end", { exchange, ...end, response: toJSON(end.response) });
   }
 
   async end(reason = "done"): Promise<void> {
-    try { await this.bridge.call("end", { run: this.run, reason }); } finally { await this.bridge.close(); }
+    try { await this.call("end", { run: this.run, reason }); } finally { await this.bridge.close(); }
   }
 }
 
@@ -232,7 +288,7 @@ export function instrumentOpenAI<C extends Record<string, any>>(client: C, tk: T
       const x = await tk.modelBegin("openai", operation, body?.model ?? null, body, !!body?.stream);
       let out: any;
       try { out = await orig(body, options); } catch (e: any) {
-        await tk.modelEnd(x, { error: String(e?.message ?? e), status: statusOf(e) });
+        await tk.settle(tk.modelEnd(x, { error: String(e?.message ?? e), status: statusOf(e) }));
         throw e;
       }
       if (body?.stream && isAsyncIterable(out)) {
@@ -253,14 +309,14 @@ export function instrumentOpenAI<C extends Record<string, any>>(client: C, tk: T
           }
           if (ch.type === "response.output_item.added" && ch.item?.type === "function_call") tools.set(ch.item.call_id ?? ch.item.id, ch.item.name);
           if (ch.type === "response.completed") stop = ch.response?.status ?? stop;
-        }, (err) => tk.modelEnd(x, { response: { text }, error: err ?? null, model, stop_reason: stop, usage, first_byte_ms: first,
-                                      tool_uses: [...tools].map(([id, name]) => ({ id, name })) }));
+        }, (err) => tk.settle(tk.modelEnd(x, { response: { text }, error: err ?? null, model, stop_reason: stop, usage, first_byte_ms: first,
+                                                   tool_uses: [...tools].map(([id, name]) => ({ id, name })) })));
       }
       const tools: { id: string; name: string }[] = [];
       for (const c of out?.choices ?? []) for (const tc of c.message?.tool_calls ?? []) tools.push({ id: tc.id, name: tc.function?.name ?? tc.type });
       for (const it of out?.output ?? []) if (it.type === "function_call") tools.push({ id: it.call_id ?? it.id, name: it.name });
-      await tk.modelEnd(x, { response: out, model: out?.model ?? null, stop_reason: out?.choices?.[0]?.finish_reason ?? out?.status ?? null,
-                             usage: usageFromOpenAI(out?.usage), tool_uses: tools, status: 200 });
+      await tk.settle(tk.modelEnd(x, { response: out, model: out?.model ?? null, stop_reason: out?.choices?.[0]?.finish_reason ?? out?.status ?? null,
+                                       usage: usageFromOpenAI(out?.usage), tool_uses: tools, status: 200 }));
       return out;
     };
     (wrapped as any).__tracekit = true;
@@ -281,7 +337,7 @@ export function instrumentAnthropic<C extends Record<string, any>>(client: C, tk
     const x = await tk.modelBegin("anthropic", "messages", body?.model ?? null, body, !!body?.stream);
     let out: any;
     try { out = await orig(body, options); } catch (e: any) {
-      await tk.modelEnd(x, { error: String(e?.message ?? e), status: statusOf(e) });
+      await tk.settle(tk.modelEnd(x, { error: String(e?.message ?? e), status: statusOf(e) }));
       throw e;
     }
     if (body?.stream && isAsyncIterable(out)) {
@@ -294,12 +350,12 @@ export function instrumentAnthropic<C extends Record<string, any>>(client: C, tk
           tools.push({ id: ev.content_block.id, name: ev.content_block.name });
         if (ev.type === "content_block_delta" && typeof ev.delta?.text === "string" && text.length < 1_000_000) text += ev.delta.text;
         if (ev.type === "message_delta") { stop = ev.delta?.stop_reason ?? stop; usage = mergeUsage(usage, usageFromAnthropic(ev.usage)); }
-      }, (err) => tk.modelEnd(x, { response: { text }, error: err ?? null, model, stop_reason: stop, usage, first_byte_ms: first, tool_uses: tools }));
+      }, (err) => tk.settle(tk.modelEnd(x, { response: { text }, error: err ?? null, model, stop_reason: stop, usage, first_byte_ms: first, tool_uses: tools })));
     }
     const tools = (out?.content ?? []).filter((b: any) => ["tool_use", "server_tool_use", "mcp_tool_use"].includes(b.type))
       .map((b: any) => ({ id: b.id, name: b.name }));
-    await tk.modelEnd(x, { response: out, model: out?.model ?? null, stop_reason: out?.stop_reason ?? null,
-                           usage: usageFromAnthropic(out?.usage), tool_uses: tools, status: 200 });
+    await tk.settle(tk.modelEnd(x, { response: out, model: out?.model ?? null, stop_reason: out?.stop_reason ?? null,
+                                     usage: usageFromAnthropic(out?.usage), tool_uses: tools, status: 200 }));
     return out;
   };
   (wrapped as any).__tracekit = true;
@@ -329,25 +385,24 @@ export function tracekitMiddleware(tk: Tracekit, provider = "ai-sdk") {
   return {
     wrapGenerate: async ({ doGenerate, params, model }: any) => {
       const x = await tk.modelBegin(model?.provider ?? provider, "generate", model?.modelId ?? null, params, false);
-      try {
-        const r = await doGenerate();
-        const fr = r?.finishReason;
-        await tk.modelEnd(x, { response: { text: r?.text, content: r?.content }, model: model?.modelId ?? null,
-                               stop_reason: typeof fr === "string" ? fr : fr?.unified ?? null, usage: usageOf(r?.usage), tool_uses: toolsOf(r), status: 200 });
-        return r;
-      } catch (e: any) { await tk.modelEnd(x, { error: String(e?.message ?? e), status: statusOf(e) }); throw e; }
+      let r: any;
+      try { r = await doGenerate(); } catch (e: any) { await tk.settle(tk.modelEnd(x, { error: String(e?.message ?? e), status: statusOf(e) })); throw e; }
+      const fr = r?.finishReason;
+      await tk.settle(tk.modelEnd(x, { response: { text: r?.text, content: r?.content }, model: model?.modelId ?? null,
+                                       stop_reason: typeof fr === "string" ? fr : fr?.unified ?? null, usage: usageOf(r?.usage), tool_uses: toolsOf(r), status: 200 }));
+      return r;
     },
     wrapStream: async ({ doStream, params, model }: any) => {
       const t0 = Date.now();
       const x = await tk.modelBegin(model?.provider ?? provider, "stream", model?.modelId ?? null, params, true);
       let res: any;
-      try { res = await doStream(); } catch (e: any) { await tk.modelEnd(x, { error: String(e?.message ?? e), status: statusOf(e) }); throw e; }
+      try { res = await doStream(); } catch (e: any) { await tk.settle(tk.modelEnd(x, { error: String(e?.message ?? e), status: statusOf(e) })); throw e; }
       const tools: { id: string; name: string }[] = [];
       let usage: Usage | null = null, stop: string | null = null, first: number | null = null, text = "", ended = false;
       const finish = async (err?: string) => {
         if (ended) return;
         ended = true;
-        await tk.modelEnd(x, { response: { text }, error: err ?? null, model: model?.modelId ?? null, stop_reason: stop, usage, first_byte_ms: first, tool_uses: tools });
+        await tk.settle(tk.modelEnd(x, { response: { text }, error: err ?? null, model: model?.modelId ?? null, stop_reason: stop, usage, first_byte_ms: first, tool_uses: tools }));
       };
       const transform = new TransformStream({
         transform(part: any, controller) {

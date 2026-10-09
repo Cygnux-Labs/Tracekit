@@ -7,6 +7,7 @@ import http.server
 import importlib
 import json
 import os
+import re
 import socket
 import socketserver
 import subprocess
@@ -20,8 +21,10 @@ import urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from tracekit import bundle, install, peercred, policy, privacy, yamlmini  # noqa: E402
 from tracekit.core import read_json, read_text, write_bytes, write_json, write_text  # noqa: E402
+from factories import make_signer, wait_for  # noqa: E402
 
 _SAVED_POLICY = None
 
@@ -38,13 +41,6 @@ def tearDownModule():
 
 
 PY = sys.executable
-
-
-def free_port():
-    import socket
-    s = socket.socket(); s.bind(("127.0.0.1", 0)); p = s.getsockname()[1]; s.close()
-    return p
-
 
 
 def run_in_pty(argv, env, timeout=30):
@@ -369,27 +365,23 @@ class ProxyStack(Stack):
 
     def setUp(self):
         FakeAnthropic.mode, FakeAnthropic.tool_id = "tool", "toolu_fake_1"
-        self.up_port, self.px_port = free_port(), free_port()
-        self.up = TS(("127.0.0.1", self.up_port), FakeAnthropic)
+        self.up = TS(("127.0.0.1", 0), FakeAnthropic)
         threading.Thread(target=self.up.serve_forever, daemon=True).start()
-        self.extra_cfg = dict(self.extra_cfg, proxy={"port": self.px_port, "upstream": f"http://127.0.0.1:{self.up_port}",
+        self.extra_cfg = dict(self.extra_cfg, proxy={"upstream": f"http://127.0.0.1:{self.up.server_address[1]}",
                                                      "fail_mode": self.fail_mode})
         super().setUp()
+        penv = dict(self.env, NO_PROXY="127.0.0.1,localhost", no_proxy="127.0.0.1,localhost")
+        penv.pop("TRACEKIT_CLIENT_HOME")
+        self.px = subprocess.Popen([PY, "-m", "tracekit.proxy", "--home", self.home, "--port", "0"], env=penv,
+                                   stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+        # the proxy prints its listening address once its socket is bound
+        self.px_port = int(self.px.stdout.readline().split(" -> ")[0].rsplit(":", 1)[1])
         cc = read_json(os.path.join(self.env["TRACEKIT_CLIENT_HOME"], "config.json"))
         cc.update(proxy=True, proxy_url=f"http://127.0.0.1:{self.px_port}")
         write_json(os.path.join(self.env["TRACEKIT_CLIENT_HOME"], "config.json"), cc)
-        penv = dict(self.env, NO_PROXY="127.0.0.1,localhost", no_proxy="127.0.0.1,localhost")
-        penv.pop("TRACEKIT_CLIENT_HOME")
-        self.px = subprocess.Popen([PY, "-m", "tracekit.proxy", "--home", self.home], env=penv,
-                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        for _ in range(100):
-            try:
-                urllib.request.urlopen(f"http://127.0.0.1:{self.px_port}/__tracekit_health", timeout=1); break
-            except Exception:
-                time.sleep(0.05)
 
     def tearDown(self):
-        self.px.terminate(); self.px.wait(5)
+        self.px.terminate(); self.px.wait(5); self.px.stdout.close()
         self.up.shutdown()
         self.up.server_close()
         super().tearDown()
@@ -407,15 +399,6 @@ class ProxyStack(Stack):
         t_first = time.perf_counter() - t0
         rest = r.read()
         return r.status, first + rest, t_first, time.perf_counter() - t0
-
-    def wait_for(self, fn, timeout=8):
-        end = time.time() + timeout
-        while time.time() < end:
-            v = fn()
-            if v:
-                return v
-            time.sleep(0.2)
-        return fn()
 
 
 class Proxy(ProxyStack):
@@ -447,7 +430,7 @@ class Proxy(ProxyStack):
         self.assertEqual(status, 200)
         self.assertIn(b"toolu_fake_1", body)
         self.assertLess(t_first, total - 0.2, "first chunk must arrive before the upstream finished (streaming)")
-        ex = self.wait_for(lambda: self.of("model.exchange", phase="response"))
+        ex = wait_for(lambda: self.of("model.exchange", phase="response"))
         d = ex[0]["data"]
         self.assertEqual(d["tool_uses"], [{"id": "toolu_fake_1", "name": "Bash"}])
         self.assertEqual(d["stop_reason"], "tool_use")
@@ -470,18 +453,17 @@ class Proxy(ProxyStack):
         self.assertEqual(cm.exception.code, 429)
         self.assertEqual(cm.exception.headers.get("retry-after"), "7")
         self.assertIn(b"rate_limit_error", cm.exception.read())
-        self.assertEqual(self.wait_for(lambda: self.of("model.exchange", phase="response"))[0]["data"]["status"], 429)
+        self.assertEqual(wait_for(lambda: self.of("model.exchange", phase="response"))[0]["data"]["status"], 429)
 
     def test_crosscheck_clean(self):
         self.hook("SessionStart")
         self.call_model()
-        self.wait_for(lambda: self.of("model.exchange", phase="response"))
+        wait_for(lambda: self.of("model.exchange", phase="response"))
         self.pre("toolu_fake_1", "ls"); self.post("toolu_fake_1", "ls")
         FakeAnthropic.mode = "text"
         self.call_model()
-        self.wait_for(lambda: len(self.of("model.exchange", phase="response")) == 2)
+        wait_for(lambda: len(self.of("model.exchange", phase="response")) == 2)
         self.hook("SessionEnd")
-        time.sleep(2.5)
         self.assertEqual([g for g in self.of("capture.gap") if g["data"].get("kind") in ("hook_missing", "proxy_missing")], [])
         out = os.path.join(self.d, "b.tkb")
         bundle.export(self.home, out)
@@ -494,7 +476,7 @@ class Proxy(ProxyStack):
         self.hook("SessionStart")
         self.call_model()   # model asks for toolu_fake_1 ...
         # ... but the hook never fires (hooks removed / disableAllHooks)
-        gaps = self.wait_for(lambda: self.of("capture.gap", kind="hook_missing"))
+        gaps = wait_for(lambda: self.of("capture.gap", kind="hook_missing"))
         self.assertTrue(gaps)
         self.assertEqual(gaps[0]["data"]["tool_use_id"], "toolu_fake_1")
         self.assertEqual(gaps[0]["run_id"], self.run_id)
@@ -504,7 +486,7 @@ class Proxy(ProxyStack):
         # agent unsets ANTHROPIC_BASE_URL: model traffic skips the proxy, hooks still fire
         self.pre("toolu_direct_9", "ls"); self.post("toolu_direct_9", "ls")
         self.hook("SessionEnd")
-        gaps = self.wait_for(lambda: self.of("capture.gap", kind="proxy_missing"))
+        gaps = wait_for(lambda: self.of("capture.gap", kind="proxy_missing"))
         self.assertEqual(gaps[0]["data"]["tool_use_id"], "toolu_direct_9")
 
 
@@ -534,7 +516,7 @@ class ProxyFailOpen(ProxyStack):
         install.start_dev_daemon(self.home)
         FakeAnthropic.mode = "text"
         self.call_model()
-        gaps = self.wait_for(lambda: [g for g in self.of("capture.gap") if g["data"].get("kind") == "signer_down"])
+        gaps = wait_for(lambda: [g for g in self.of("capture.gap") if g["data"].get("kind") == "signer_down"])
         self.assertTrue(gaps)
         self.assertEqual(gaps[0]["source"], "proxy")
         self.assertEqual(gaps[0]["data"]["missed_events"], 2)
@@ -546,11 +528,7 @@ class StaleRun(Stack):
     def test_run_without_run_end_is_flagged(self):
         self.hook("SessionStart")
         self.pre("t1", "ls")
-        gaps = []
-        end = time.time() + 12
-        while time.time() < end and not gaps:
-            time.sleep(0.5)
-            gaps = self.of("capture.gap", kind="stale_run")
+        gaps = wait_for(lambda: self.of("capture.gap", kind="stale_run"), timeout=12)
         self.assertTrue(gaps)
         self.assertEqual(gaps[0]["run_id"], self.run_id)
 
@@ -572,18 +550,20 @@ class Approvals(Stack):
     HARNESS = """
 import json, os, subprocess, sys, time
 payload = sys.stdin.read()
-hook = subprocess.Popen([sys.argv[1], '-m', 'tracekit.hook'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-hook.stdin.write(payload); hook.stdin.close()
 ctl = sys.argv[2]
+err = open(os.path.join(ctl, 'hook.err'), 'w')
+hook = subprocess.Popen([sys.argv[1], '-m', 'tracekit.hook'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=err, text=True)
+hook.stdin.write(payload); hook.stdin.close()
 while hook.poll() is None:
     # the 'agent' may run commands inside its own session while the call is held
     for name in sorted(os.listdir(ctl)):
         if name.endswith('.cmd'):
             cmd = open(os.path.join(ctl, name)).read(); os.remove(os.path.join(ctl, name))
             r = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-            open(os.path.join(ctl, name[:-4] + '.out'), 'w').write(r.stdout + r.stderr)
+            open(os.path.join(ctl, name[:-4] + '.tmp'), 'w').write(r.stdout + r.stderr)
+            os.replace(os.path.join(ctl, name[:-4] + '.tmp'), os.path.join(ctl, name[:-4] + '.out'))
     time.sleep(0.1)
-sys.stderr.write(hook.stderr.read()); sys.exit(hook.returncode)
+err.close(); sys.stderr.write(open(os.path.join(ctl, 'hook.err')).read()); sys.exit(hook.returncode)
 """
 
     def start_held_call(self, tid="tp1"):
@@ -608,12 +588,10 @@ sys.stderr.write(hook.stderr.read()); sys.exit(hook.returncode)
 
     def in_session(self, cmd, name="a"):
         """Run a shell command as a child of the harness (i.e. from inside the agent's session)."""
-        write_text(os.path.join(self.ctl, name + ".cmd"), cmd)
+        write_text(os.path.join(self.ctl, name + ".part"), cmd)
+        os.replace(os.path.join(self.ctl, name + ".part"), os.path.join(self.ctl, name + ".cmd"))
         out = os.path.join(self.ctl, name + ".out")
-        end = time.time() + 30
-        while not os.path.exists(out) and time.time() < end:
-            time.sleep(0.1)
-        time.sleep(0.2)
+        self.assertTrue(wait_for(lambda: os.path.exists(out), timeout=30), f"no output from {cmd!r}")
         return read_text(out)
 
     def pending(self):
@@ -621,13 +599,7 @@ sys.stderr.write(hook.stderr.read()); sys.exit(hook.returncode)
         return client.rpc({"op": "approval_list"})["pending"]
 
     def wait_pending(self):
-        end = time.time() + 10
-        while time.time() < end:
-            p = self.pending()
-            if p:
-                return p
-            time.sleep(0.1)
-        self.fail("no pending approval")
+        return wait_for(self.pending) or self.fail("no pending approval")
 
     def approve_from_terminal(self, aid, decision="approve"):
         """Run `tracekit approve` in a fresh pseudo-terminal, outside the harness's process tree."""
@@ -640,8 +612,7 @@ sys.stderr.write(hook.stderr.read()); sys.exit(hook.returncode)
     def test_action_held_until_approved(self):
         proc = self.start_held_call()
         p = self.wait_pending()
-        time.sleep(1.0)
-        self.assertIsNone(proc.poll(), "the tool call must not proceed before approval")
+        self.assertFalse(wait_for(lambda: proc.poll() is not None, timeout=1.0), "the tool call must not proceed before approval")
         r = self.approve_from_terminal(p[0]["id"])
         self.assertIn("ok: approve", r.stdout + r.stderr)
         self.assertEqual(proc.wait(20), 0)
@@ -687,7 +658,7 @@ sys.stderr.write(hook.stderr.read()); sys.exit(hook.returncode)
         proc = self.start_held_call()
         p = self.wait_pending()
         r = subprocess.run([PY, "-m", "tracekit", "approve", p[0]["id"]], capture_output=True, text=True, env=self.env,
-                           stdin=subprocess.DEVNULL, timeout=30)
+                           stdin=subprocess.DEVNULL, timeout=30, start_new_session=True)
         self.assertIn("interactive terminal", r.stderr)
         self.approve_from_terminal(p[0]["id"], "reject")
         proc.wait(20)
@@ -705,10 +676,21 @@ class ApprovalsSystemMode(Approvals):
     process-tree and terminal checks can be sidestepped by the agent, the OS user cannot."""
     extra_cfg = {"mode": "system", "allow_same_user_approval": False}
 
+    def held_approval_id(self):
+        """The agent's own user is not shown the approval (it may not decide it); the hook prints its id."""
+        end = time.time() + 10
+        while time.time() < end:
+            err = os.path.join(self.ctl, "hook.err")
+            m = re.search(r"waiting for approval (\S+):", read_text(err) if os.path.exists(err) else "")
+            if m:
+                return m.group(1)
+            time.sleep(0.1)
+        self.fail("no pending approval")
+
     def test_same_user_approval_from_a_fresh_terminal_is_refused(self):
         proc = self.start_held_call()
-        p = self.wait_pending()
-        r = self.approve_from_terminal(p[0]["id"])  # a new pty, outside the harness's process tree
+        self.assertEqual(self.pending(), [], "the agent's own user is not offered the approval")
+        r = self.approve_from_terminal(self.held_approval_id())  # a new pty, outside the harness's process tree
         self.assertIn("different OS user", r.stdout + r.stderr)
         self.assertIsNone(proc.poll(), "the held call must still be waiting")
         refused = self.of("approval", decision="self_approval_refused")
@@ -725,12 +707,10 @@ class ApprovalIdentity(unittest.TestCase):
     """The signer's approval rule, driven directly with chosen peer credentials."""
 
     def signer(self, **cfg):
-        from tracekit.daemon import Signer, load_config
-        home = tempfile.mkdtemp()
-        write_json(os.path.join(home, "config.json"), {"checkpoint_every": 100, "witnesses": [], **cfg})
-        return Signer(home, load_config(home))
+        return make_signer(tempfile.mkdtemp(), checkpoint_every=100, witnesses=[], **cfg)
 
     def request(self, s, agent_uid):
+        s._run("r").update(started=True, agent_uid=agent_uid)
         r = s.handle({"op": "approval_request", "run_id": "r", "tool_use_id": "t", "timeout_s": 30}, agent_uid, 999999)
         return r["approval_id"]
 
@@ -749,11 +729,12 @@ class ApprovalIdentity(unittest.TestCase):
     def test_configured_approvers(self):
         s = self.signer(approvers=["4242"])
         aid = self.request(s, 1000)
-        self.assertFalse(s.handle({"op": "approve", "approval_id": aid, "decision": "approve"}, 1001, 1)["ok"])
-        self.assertTrue(s.handle({"op": "approve", "approval_id": aid, "decision": "reject"}, 4242, 1)["ok"])
+        self.assertFalse(s.handle({"op": "approve", "approval_id": aid, "decision": "approve"}, 1001, 999997)["ok"])
+        self.assertTrue(s.handle({"op": "approve", "approval_id": aid, "decision": "reject"}, 4242, 999997)["ok"])
 
     def test_invalid_approval_timeouts_are_rejected(self):
         s = self.signer()
+        s._run("r").update(started=True, agent_uid=1000)
         for timeout in (float("nan"), float("inf"), -1, "not-a-number"):
             response = s.handle({"op": "approval_request", "run_id": "r", "tool_use_id": str(timeout),
                                  "timeout_s": timeout}, 1000, 1)

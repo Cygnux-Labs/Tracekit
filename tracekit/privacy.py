@@ -8,15 +8,21 @@ import re
 
 from .core import content_ref, content_value
 
+# Every pattern must stay linear on large adversarial input (tests/test_redaction_runtime.py):
+# no unbounded repeat that many match starts can each scan to the end of the string.
 SECRET_PATTERNS = [
-    ("private_key", re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----")),
+    ("private_key", re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----(?:(?!-----BEGIN )[\s\S])*?"
+                               r"-----END [A-Z0-9 ]*PRIVATE KEY-----")),
     ("anthropic_key", re.compile(r"sk-ant-[A-Za-z0-9_\-]{16,}")),
     ("openai_key", re.compile(r"sk-(?:proj-)?[A-Za-z0-9_\-]{20,}")),
     ("github_token", re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{40,})")),
     ("aws_access_key", re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b")),
     ("slack_token", re.compile(r"\bxox[abposr]-[A-Za-z0-9\-]{10,}")),
-    ("jwt", re.compile(r"\beyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}")),
-    ("connection_string", re.compile(r"\b[a-z][a-z0-9+.\-]*://[^\s:/@]+:[^\s@]+@[^\s]+", re.I)),
+    # a header segment starting a run is unbounded; one after "-" (many such starts can share a run) is bounded.
+    # lean: a JWT header over 512 chars right after "-" is not redacted; scan runs in code if that shows up
+    ("jwt", re.compile(r"\beyJ(?:(?<!-eyJ)[A-Za-z0-9_\-]{8,}|[A-Za-z0-9_\-]{8,512})"
+                       r"\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}")),
+    ("connection_string", re.compile(r"\b[a-z][a-z0-9+.\-]{0,31}://[^\s:/@]{0,256}:[^\s@]{1,256}@[^\s]+", re.I)),
     ("google_api_key", re.compile(r"\bAIza[0-9A-Za-z_\-]{35}\b")),
     ("stripe_key", re.compile(r"\b(?:sk|rk)_(?:live|test)_[0-9A-Za-z]{16,}\b")),
     ("npm_token", re.compile(r"\bnpm_[A-Za-z0-9]{36}\b")),
@@ -24,7 +30,7 @@ SECRET_PATTERNS = [
     ("aws_secret_key", re.compile(r"(?i)(aws_secret_access_key[\"']?\s*[=:]\s*[\"']?)[A-Za-z0-9/+]{40}")),
 ]
 # dotenv-style lines: every value is treated as secret when the content comes from a .env file
-DOTENV_LINE = re.compile(r"(?m)^(\s*(?:export\s+)?[A-Za-z_][A-Za-z0-9_.]*\s*=\s*)([\"']?)([^\n\"']+)")
+DOTENV_LINE = re.compile(r"(?m)^([ \t]*(?:export\s+)?[A-Za-z_][A-Za-z0-9_.]*\s*=\s*)([\"']?)([^\n\"']+)")
 DOTENV_PATH = re.compile(r"(^|[/\s'\"=@<])\.env(\.[A-Za-z0-9_-]+)?\b")
 # KEY=value / key: value assignments whose key looks secret (.env files, configs, commands)
 ASSIGNMENT = re.compile(
@@ -79,9 +85,9 @@ def _redact_assignments(s):
     hits = _kw_hits(s)
     if not hits:
         return s, 0
-    out, last, n, pos = [], 0, 0, 0
+    out, last, n, pos, b = [], 0, 0, 0, 0
     for ks, ke in hits:
-        if ks < pos:
+        if ks < pos or ks < b:  # ks < b: same identifier as the previous hit, already handled
             continue
         a, b = ks, ke
         while a > 0 and s[a - 1] in _IDCH:
@@ -144,10 +150,11 @@ ALWAYS_CLEAR = {"command", "file_path", "notebook_path", "path", "url", "pattern
 
 def tool_input(tool, ti, content_capture="hashed"):
     """Map a raw tool_input dict to {field: content} per docs/privacy.md."""
-    out = {}
-    for k, v in (ti or {}).items():
+    out, ti = {}, ti or {}
+    dotenv = mentions_dotenv(ti.get("command"), ti.get("file_path"), ti.get("path"), ti.get("pattern"))
+    for k, v in ti.items():
         rk = redact_text(k)[0] if isinstance(k, str) else k
-        rv, red = redact(v)
+        rv, red = redact(v, dotenv)
         if content_capture == "full" or k in ALWAYS_CLEAR:
             out[rk] = content_value(rv, red)
         else:

@@ -1,6 +1,6 @@
-"""Compliance proof packs (#12): report, control map, and a verifier that runs with nothing but Python.
+"""Compliance proof packs (#12): report and control map; the pack carries no verifier.
 python3 -m pytest contrib/proofpack/tests -q"""
-import hashlib
+import io
 import os
 import shutil
 import subprocess
@@ -11,10 +11,11 @@ import zipfile
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ROOT = os.path.dirname(os.path.dirname(HERE))
-sys.path[:0] = [ROOT, HERE]
+sys.path[:0] = [ROOT, HERE, os.path.join(ROOT, "tests")]
 import tracekit_proofpack as proofpack  # noqa: E402
 from tracekit import bundle, install  # noqa: E402
 from tracekit.agent_sdk import Tracer  # noqa: E402
+from factories import patch_env  # noqa: E402
 
 
 class Pack(unittest.TestCase):
@@ -22,7 +23,7 @@ class Pack(unittest.TestCase):
     def setUpClass(cls):
         cls.d = tempfile.mkdtemp()
         cls.home = os.path.join(cls.d, "signer")
-        cls.old = os.environ.get("TRACEKIT_CLIENT_HOME")
+        patch_env(cls)
         os.environ["TRACEKIT_CLIENT_HOME"] = os.path.join(cls.d, "client")
         install.init_dev(cls.home, [], start=True)
         with Tracer(agent="audit-bot", session_id="pp-1", cwd=cls.d) as t:
@@ -41,10 +42,6 @@ class Pack(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         install.stop_dev_daemon(cls.home)
-        if cls.old is None:
-            os.environ.pop("TRACEKIT_CLIENT_HOME", None)
-        else:
-            os.environ["TRACEKIT_CLIENT_HOME"] = cls.old
         shutil.rmtree(cls.d, ignore_errors=True)
 
     def unpack(self, key=None):
@@ -55,15 +52,27 @@ class Pack(unittest.TestCase):
             z.extractall(x)
         return code, x
 
-    def test_pack_contents_and_sums(self):
+    def test_pack_carries_no_verifier(self):
         code, x = self.unpack()
         self.assertEqual(code, 0)
-        self.assertEqual(sorted(os.listdir(x)), ["REPORT.md", "SHA256SUMS", "controls.json", "run.tkb", "verify.pyz"])
-        for line in open(os.path.join(x, "SHA256SUMS")):
-            h, name = line.split()
-            self.assertEqual(hashlib.sha256(open(os.path.join(x, name), "rb").read()).hexdigest(), h)
+        self.assertEqual(sorted(os.listdir(x)), ["REPORT.md", "controls.json", "run.tkb"])
         with open(os.path.join(x, "run.tkb"), "rb") as a, open(self.tkb, "rb") as b:
             self.assertEqual(a.read(), b.read(), "the bundle goes in unchanged")
+        self.assertNotIn("verify.pyz", open(os.path.join(x, "REPORT.md")).read())
+
+    def test_swapped_replay_does_not_change_the_verdict(self):
+        rep0, code0 = bundle.verify(self.tkb, (), False, self.pub)
+        self.assertEqual(rep0.notes, [], "a freshly exported replay.html matches what the verifier generates")
+        fake = os.path.join(self.d, "swapped.tkb")
+        with zipfile.ZipFile(self.tkb) as z, zipfile.ZipFile(fake, "w") as o:
+            for n in z.namelist():
+                o.writestr(n, b"<html>all good</html>" if n == "replay.html" else z.read(n))
+        rep1, code1 = bundle.verify(fake, (), False, self.pub)
+        self.assertEqual((code1, rep1.checks), (code0, rep0.checks))
+        self.assertTrue(any("replay.html" in n for n in rep1.notes))
+        out = io.StringIO()
+        bundle.print_report(rep1, code1, out)
+        self.assertIn("warning: replay.html differs", out.getvalue())
 
     def test_report_says_what_it_proves_and_what_it_does_not(self):
         md, code = proofpack.report(self.tkb, key=self.pub)
@@ -75,25 +84,6 @@ class Pack(unittest.TestCase):
         self.assertIn("not a compliance determination", md)
         unanchored, _ = proofpack.report(self.tkb)
         self.assertIn("unanchored", unanchored)
-
-    def test_verifier_runs_with_only_the_standard_library(self):
-        _, x = self.unpack()
-        env = {"PATH": os.environ.get("PATH", ""), "HOME": x}
-        if os.name == "nt":
-            env["SYSTEMROOT"] = os.environ.get("SYSTEMROOT", r"C:\Windows")  # Python cannot start without it
-        # -I: isolated, -S: no site-packages, so no `cryptography`: pure-Python Ed25519 does the signature checks
-        p = subprocess.run([sys.executable, "-I", "-S", os.path.join(x, "verify.pyz"), os.path.join(x, "run.tkb"), "--key", self.pub],
-                           capture_output=True, text=True, cwd=x, env=env, timeout=300)
-        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
-        self.assertIn("signatures valid", p.stdout)
-        self.assertIn("VERIFIED", p.stdout)
-        bad = os.path.join(x, "bad.tkb")
-        with zipfile.ZipFile(os.path.join(x, "run.tkb")) as z, zipfile.ZipFile(bad, "w") as o:
-            for n in z.namelist():
-                b = z.read(n)
-                o.writestr(n, b.replace(b'"ls"', b'"id"') if n == "records.jsonl" else b)
-        p = subprocess.run([sys.executable, "-I", "-S", os.path.join(x, "verify.pyz"), bad], capture_output=True, text=True, cwd=x, env=env, timeout=300)
-        self.assertEqual(p.returncode, 1)
 
     def test_cli(self):
         out = os.path.join(self.d, "cli.zip")

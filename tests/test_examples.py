@@ -2,16 +2,15 @@
 Examples whose framework isn't installed are skipped, not failed."""
 import importlib.util
 import os
-import shutil
 import subprocess
 import sys
-import tempfile
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
-from tracekit import bundle, install  # noqa: E402
-from tracekit.ledger import read_records  # noqa: E402
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from tracekit import bundle  # noqa: E402
+from factories import DaemonCase  # noqa: E402
 
 EXAMPLES = {  # file -> (modules it needs, tool names the ledger must show)
     "custom_agent.py": ((), ["http_get", "parse_table", "Bash"]),
@@ -21,23 +20,10 @@ EXAMPLES = {  # file -> (modules it needs, tool names the ledger must show)
 }
 
 
-class Examples(unittest.TestCase):
+class Examples(DaemonCase):
     def setUp(self):
-        self.d = tempfile.mkdtemp()
-        self.home = os.path.join(self.d, "signer")
-        self.env = dict(os.environ, TRACEKIT_CLIENT_HOME=os.path.join(self.d, "client"), PYTHONPATH=ROOT)
-        self.env.pop("TRACEKIT_POLICY", None)
-        self.old = os.environ.get("TRACEKIT_CLIENT_HOME")
-        os.environ["TRACEKIT_CLIENT_HOME"] = self.env["TRACEKIT_CLIENT_HOME"]
-        install.init_dev(self.home, [], start=True)
-
-    def tearDown(self):
-        install.stop_dev_daemon(self.home)
-        if self.old is None:
-            os.environ.pop("TRACEKIT_CLIENT_HOME", None)
-        else:
-            os.environ["TRACEKIT_CLIENT_HOME"] = self.old
-        shutil.rmtree(self.d, ignore_errors=True)
+        super().setUp()
+        self.env = dict(os.environ, PYTHONPATH=ROOT)
 
     def run_example(self, name):
         needs, expected = EXAMPLES[name]
@@ -48,7 +34,7 @@ class Examples(unittest.TestCase):
                            capture_output=True, text=True, timeout=120)
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
         self.assertIn("finished", p.stdout)
-        events = [r["event"] for _, r, _ in read_records(os.path.join(self.home, "ledger", "ledger.jsonl")) if r]
+        events = [r["event"] for r in self.records()]
         names = [e["data"]["name"] for e in events if e["type"] == "tool.call"]
         for n in expected:
             self.assertIn(n, names)
