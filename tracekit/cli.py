@@ -413,20 +413,31 @@ def _run(a):
         print(json.dumps(info, indent=2))
         return 0
     if a.cmd == "verify":
-        from .verify import v1, v2
-        mod = v2 if v2.is_v2(a.bundle) else v1
-        if mod is v2:
+        from .verify import is_v2
+        if is_v2(a.bundle):
+            from .verify import v2 as mod
+            if a.key or a.witness:
+                print("tracekit verify: --key and --witness are for v1 bundles; a v2 bundle is checked against --trust",
+                      file=sys.stderr)
+                return 2
             if not a.trust:
                 print("tracekit verify: a v2 bundle needs --trust (the verifier's pinned trust config)", file=sys.stderr)
                 return 2
             if bool(a.v1_ledger) != bool(a.v1_key):
                 print("tracekit verify: --v1-ledger and --v1-key go together", file=sys.stderr)
                 return 2
-            rep, code = v2.verify(a.bundle, a.trust, a.v1_ledger, a.v1_key)
+            rep, code = mod.verify(a.bundle, a.trust, a.v1_ledger, a.v1_key)
+            if code == 0 and a.strict and rep.warnings:
+                code = 3
             integrity, assurance = rep.integrity, rep.assurance
         else:
-            rep, code = v1.verify(a.bundle, a.witness, a.strict, a.key)
-            integrity, assurance = v1.integrity(rep, code), v1.assurance(rep)
+            from .verify import v1 as mod
+            if a.trust or a.v1_ledger or a.v1_key:
+                print("tracekit verify: --trust, --v1-ledger and --v1-key are for v2 bundles; this is not a v2 bundle",
+                      file=sys.stderr)
+                return 2
+            rep, code = mod.verify(a.bundle, a.witness, a.strict, a.key)
+            integrity, assurance = mod.integrity(rep, code), mod.assurance(rep)
         if a.json:
             print(json.dumps({"exit_code": code, "checks": rep.checks, "failures": rep.failures, "warnings": rep.warnings,
                               "integrity": integrity, "assurance": assurance, "notes": rep.notes},

@@ -289,3 +289,19 @@ class Contract:
         self.needs("l1")
         self.d.call("echo", {"text": "hi"})
         self.assertTrue(self.recorded("state.write"))
+
+    def test_l1_saved_state_edited_between_pause_and_resume_is_a_state_tamper(self):
+        self.needs("l1")
+        self.needs("saved_state")
+        if isinstance(self, OnFake):
+            self.skipTest("FakeSigner does not check prev_digest")
+
+        def gaps():
+            return [e["data"]["kind"] for e in self.events(self.d.run()) if e["type"] == "capture.gap"]
+        self.approve(self.paused("call-0"))
+        self.assertEqual(self.d.resume()["ran"], ["pay"])
+        self.assertEqual(gaps(), [])   # resumed in a new process from the state as saved
+        self.approve(self.paused())
+        self.d.tamper(args=dict(PAY, cents=1500000))
+        self.refused(self.d.resume(), "TK-APPROVAL-MISMATCH")
+        self.assertEqual(gaps(), ["state_tamper"])
