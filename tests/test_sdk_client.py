@@ -18,6 +18,7 @@ import unittest
 from unittest import mock
 
 from tracekit import __version__, cli
+from tracekit.signer.rpc_schema import RPC_VERSION  # noqa: E402
 from tracekit.sdk import autospawn, client
 from tracekit.sdk.client import AsyncClient, Client, Incompatible, current_run
 
@@ -67,13 +68,13 @@ class DevSigner(unittest.TestCase):
             self.assertLess(time.monotonic(), deadline)
             time.sleep(0.05)
         self.assertTrue(os.path.exists(os.path.join(self.run_dir, autospawn.ENDPOINT)))   # left behind by the kill
-        self.assertEqual(c.status()["rpc_version"], 1)   # the same client reconnects to a new signer
+        self.assertEqual(c.status()["rpc_version"], RPC_VERSION)   # the same client reconnects to a new signer
         self.assertNotEqual(c.hello["pid"], old)
         self.assertEqual(self.python(SAY_PID).stdout.strip(), str(c.hello["pid"]))
 
     def test_incompatible_signer_is_refused_and_left_running(self):
         os.makedirs(self.run_dir, 0o700)
-        p = subprocess.Popen(shlex.split(FAKE_CMD) + ["--proto", "2-3", "--version", "9.9.9"], start_new_session=True,
+        p = subprocess.Popen(shlex.split(FAKE_CMD) + ["--proto", f"{RPC_VERSION + 1}-{RPC_VERSION + 2}", "--version", "9.9.9"], start_new_session=True,
                              stderr=subprocess.DEVNULL)
         self.addCleanup(p.wait, 10)
         while autospawn._pid(self.run_dir) is None:
@@ -86,7 +87,7 @@ class DevSigner(unittest.TestCase):
         self.assertIsNone(p.poll())
         self.assertIn(f"dev signer {__version__} running", self.cli("up", "--replace", "--wait"))
         self.assertEqual(p.wait(10), 0)
-        self.assertEqual(Client().status()["rpc_version"], 1)
+        self.assertEqual(Client().status()["rpc_version"], RPC_VERSION)
 
     def test_read_only_home_with_tracekit_signer(self):
         hello = json.loads(self.cli("up", "--json"))   # --json waits for the signer it starts
@@ -130,7 +131,7 @@ class DevSigner(unittest.TestCase):
 
         def handle(identity, frame):
             if frame["method"] == "hello":
-                return {"proto": [1, 1], "version": __version__, "pid": os.getpid()}
+                return {"proto": [RPC_VERSION, RPC_VERSION], "version": __version__, "pid": os.getpid()}
             if frame["method"] == "approval_wait":
                 release.wait(10)   # a real signer blocks up to timeout_ms
                 return {"approval_id": frame["approval_id"], "state": "approved"}
