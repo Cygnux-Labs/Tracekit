@@ -131,7 +131,7 @@ class HookV2(unittest.TestCase):
         self.assertEqual(self.approve_next("approve", 'echo "open')[0], 0)
         self.assertEqual(self.post('echo "open'), (0, ""))
         types = [e["type"] for e in self.events()]
-        self.assertEqual(types[-4:], ["approval", "policy.decision", "approval.consumed", "tool.result"])
+        self.assertEqual(types[-4:], ["approval.request", "approval", "approval.consumed", "tool.result"])
 
     def test_ask_rejected_blocks(self):
         code, err = self.approve_next("reject", 'echo "open')
