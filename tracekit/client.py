@@ -8,7 +8,7 @@ import socket
 import time
 from urllib.parse import urlsplit
 
-from .core import now_ts
+from .core import now_ts, scrub
 from .locking import lock_file, unlock_file
 
 DEFAULT_SOCKET = "/var/lib/tracekit/tracekitd.sock"
@@ -71,6 +71,24 @@ def system_fail_closed():
 def state_name(run_id):
     """Collision-free file name for a run's client state: distinct run ids never share a file."""
     return hashlib.sha256(run_id.encode("utf-8", "surrogatepass")).hexdigest()
+
+
+def _legacy_state_name(run_id):
+    """The file name used before state_name(); read only to carry an existing run's state over."""
+    return "".join(c if c.isalnum() or c in "-_." else "_" for c in run_id)[:120]
+
+
+def state_file(run_id, suffix):
+    """Path of a run's client state file; a file under the legacy name is renamed to it once."""
+    runs = os.path.join(client_dir(), "runs")
+    path = os.path.join(runs, state_name(run_id) + suffix)
+    old = os.path.join(runs, _legacy_state_name(run_id) + suffix)
+    if not os.path.exists(path) and os.path.exists(old):
+        try:
+            os.replace(old, path)
+        except OSError:
+            pass  # another process moved it first
+    return path
 
 
 def client_config():
@@ -167,6 +185,7 @@ def is_remote(config=None):
 
 
 def _rpc(req, timeout=5.0, config=None):
+    req = scrub(req)  # lone surrogates cannot be encoded as UTF-8 for the wire
     cfg = config if config is not None else client_config()
     endpoint = cfg.get("socket", DEFAULT_SOCKET) if config is not None else socket_path()
     if endpoint == "tcp://127.0.0.1:0" and cfg.get("signer_home"):
@@ -233,7 +252,7 @@ def rpc(req, timeout=5.0):
 class _RunLock:
     def __init__(self, run_id, stream="hook"):
         suffix = "" if stream == "hook" else "." + stream
-        self.path = os.path.join(client_dir(), "runs", state_name(run_id) + suffix + ".json")
+        self.path = state_file(run_id, suffix + ".json")
 
     def __enter__(self):
         self.fh = open(self.path + ".lock", "a")
