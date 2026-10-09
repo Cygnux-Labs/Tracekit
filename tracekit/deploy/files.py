@@ -6,6 +6,7 @@ same directory. Ownership and mode are set on the open fd. Writes into another u
 a forked child that has dropped to that user (as_user), so the kernel enforces that user's permissions.
 Where the OS has no *at() calls (Windows) the same steps run on paths.
 """
+import errno
 import json
 import os
 import secrets
@@ -17,6 +18,7 @@ _NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 _DIRECTORY = getattr(os, "O_DIRECTORY", 0)
 _CLOEXEC = getattr(os, "O_CLOEXEC", 0)
 _BINARY = getattr(os, "O_BINARY", 0)
+_NONBLOCK = getattr(os, "O_NONBLOCK", 0)
 
 
 class UnsafePath(OSError):
@@ -80,16 +82,21 @@ def close(d):
 
 
 def read(d, name):
-    """Contents of file `name` in d, or None if it does not exist. Refuses a symlink."""
+    """Contents of file `name` in d, or None if it does not exist. Refuses a symlink or anything but a regular file."""
     path, at = _at(d, name)
+    if not _NOFOLLOW and os.path.islink(path):
+        raise UnsafePath(f"{name} is a symlink; Tracekit did not touch it")
     try:
-        st = os.stat(path, follow_symlinks=False, **at)
+        fd = os.open(path, os.O_RDONLY | _NONBLOCK | _NOFOLLOW | _CLOEXEC | _BINARY, **at)
     except FileNotFoundError:
         return None
-    if not stat.S_ISREG(st.st_mode):
-        raise UnsafePath(f"{name} is not a regular file (a symlink?); Tracekit did not touch it")
-    fd = os.open(path, os.O_RDONLY | _NOFOLLOW | _CLOEXEC | _BINARY, **at)
+    except OSError as e:
+        if e.errno == errno.ELOOP:
+            raise UnsafePath(f"{name} is a symlink; Tracekit did not touch it") from e
+        raise
     with os.fdopen(fd, "rb") as f:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise UnsafePath(f"{name} is not a regular file; Tracekit did not touch it")
         return f.read()
 
 
@@ -183,7 +190,7 @@ def as_user(pw, fn, *args, errors=()):
         try:
             os.close(r)
             try:
-                os.setgroups(os.getgrouplist(pw.pw_name, pw.pw_gid))
+                os.initgroups(pw.pw_name, pw.pw_gid)
                 os.setgid(pw.pw_gid)
                 os.setuid(pw.pw_uid)
                 out = {"ok": True, "result": fn(*args)}

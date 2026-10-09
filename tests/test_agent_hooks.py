@@ -100,6 +100,25 @@ class Harnesses(DaemonCase):
         self.assertEqual(p.returncode, 0)
 
 
+class ReasoningCaptureOn(DaemonCase):
+    """reasoning_capture in the policy must not break runs of harnesses whose transcripts Tracekit never parses."""
+    policy_yaml = "extends: default\nversion: reasoning-on\nreasoning_capture: true\n"
+    hook, events = Harnesses.hook, Harnesses.events
+
+    def test_run_start_and_policy_are_recorded(self):
+        base = {"session_id": "gm-r", "cwd": self.d, "hook_event_name": "SessionStart"}
+        self.assertEqual(self.hook("gemini", base)[0], 0)
+        self.hook("gemini", {**base, "hook_event_name": "BeforeTool", "tool_name": "run_shell_command",
+                             "tool_input": {"command": "ls"}})
+        evs = self.events("gm-r")
+        start = [e for e in evs if e["type"] == "run.start"]
+        self.assertEqual(len(start), 1)
+        self.assertFalse(start[0]["data"]["reasoning_capture"])  # this harness's transcript is hashed, never parsed
+        self.assertEqual([e["data"]["kind"] for e in evs if e["type"] == "capture.gap"], [])
+        decision = next(e for e in evs if e["type"] == "policy.decision")
+        self.assertEqual(decision["data"]["policy_hash"], start[0]["data"]["policy"]["hash"])
+
+
 class Installer(unittest.TestCase):
     def test_install_merge_idempotent_uninstall(self):
         d = tempfile.mkdtemp()

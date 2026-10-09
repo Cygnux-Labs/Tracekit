@@ -1138,7 +1138,7 @@
       return a;
     }
     function label(a) {
-      if (!a.sub) return "main·" + a.session.slice(-4);
+      if (!a.sub) return "main·" + (a.session.length <= 16 ? a.session : a.session.slice(-4));
       const w = a.desc ? a.desc.split(/\s+/)[0] : a.type.split(/[-_ ]/)[0];
       return w.toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 8) + "·" + a.id.slice(0, 4);
     }
@@ -1296,7 +1296,7 @@
       m.title = mode === "live" && !liveOk ? liveErr : "";
       const c = $("chain");
       c.className = "chain" + (chainState.ok === true ? " ok" : chainState.ok === false ? " bad" : "");
-      c.textContent = chainState.ok === true ? `CHAIN ✓ ${chainState.n} RECORDS` : chainState.ok === false ? `CHAIN ✗ BROKEN` : chainState.detail ? "CHAIN n/a" : "CHAIN …";
+      c.textContent = chainState.ok === true ? `CHAIN ✓ ${chainState.n} SIGNED RECORDS` : chainState.ok === false ? `CHAIN ✗ BROKEN` : chainState.detail ? "CHAIN n/a" : "CHAIN …";
       c.title = chainState.detail || "";
       $("clock").textContent = new Date(nowTs() * 1000).toTimeString().slice(0, 8) + (mode === "replay" ? " (REPLAY)" : "");
       const chips = [];
@@ -1316,7 +1316,7 @@
         ["TOKENS IN", fmtN(S.tokIn), ""], ["TOKENS OUT", fmtN(S.tokOut), ""],
         ...(S.costSeen ? [["COST " + (S.currency || ""), S.cost.toFixed(4), ""]] : []),
         ["BLOCKED", blocked, blocked ? "dn" : ""], ["FLAGGED", flagged, flagged ? "am" : ""], ["ERRORS", errors, errors ? "dn" : ""],
-        ["FILES", S.files.size, ""], ["ELAPSED", fmtDur(elapsed), ""], ["LEDGER", S.recs.length, ""]];
+        ["FILES", S.files.size, ""], ["ELAPSED", fmtDur(elapsed), ""], ["EVENTS", S.recs.length, ""]];
       $("ticker").innerHTML = items.map(([k, v, c]) => {
         const fl = lastCounts[k] !== undefined && lastCounts[k] !== v ? " flash" : ""; lastCounts[k] = v;
         return `<div class="tk${esc(fl)}"><b>${esc(k)}</b><i class="${esc(c)}">${esc(v)}</i></div>`;
@@ -1329,7 +1329,7 @@
       for (const [sid, list] of [...by.entries()].reverse()) {
         const s = S.sessions.get(sid) || { prompts: [] };
         list.sort((x, y) => (x.sub - y.sub) || (x.first - y.first));
-        html += `<div class="sess"><div class="sess-h">SESSION ${esc(sid.slice(0, 8))} · ${esc((s.cwd || "").split("/").slice(-2).join("/"))}<div class="prompt">${esc(s.prompts[s.prompts.length - 1] || "(no prompt recorded)")}</div></div>`;
+        html += `<div class="sess"><div class="sess-h">SESSION ${esc(sid.length <= 16 ? sid : sid.slice(0, 8))} · ${esc((s.cwd || "").split("/").slice(-2).join("/"))}<div class="prompt">${esc(s.prompts[s.prompts.length - 1] || "(no prompt recorded)")}</div></div>`;
         for (const a of list) {
           const sel = F.agent && agentMatch(a) ? " sel" : "";
           const st = a.status;
