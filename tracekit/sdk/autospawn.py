@@ -3,8 +3,9 @@
 The runtime dir (0700, ours) holds `signer.lock`, which the signer locks for its whole life before it touches anything
 else (the kernel drops the lock when the process dies, so liveness never depends on pids); `spawn.lock`, which a
 client holds while it decides whether to start one; `signer.sock`; `endpoint.json` ({"pid", ...}, written by the
-signer after it binds) and `signer.log`. A signer that answers `hello` with a protocol range that excludes this
-client is refused and left running: only `tracekit up --replace` stops it.
+signer after it binds; without Unix sockets also the loopback port and token, decision S3) and `signer.log`. A
+signer that answers `hello` with a protocol range that excludes this client is refused and left running: only
+`tracekit up --replace` stops it.
 
 Off in system mode and when TRACEKIT_SIGNER is set: an agent must not be able to substitute its own signer there.
 """
@@ -12,6 +13,7 @@ import json
 import os
 import pathlib
 import signal
+import socket
 import stat
 import subprocess
 import sys
@@ -25,7 +27,7 @@ from tracekit.sdk.client import Incompatible, SignerUnavailable, connect
 SOCK, LOCK, SPAWN_LOCK, ENDPOINT, LOG = "signer.sock", "signer.lock", "spawn.lock", "endpoint.json", "signer.log"
 SIGNER_ARGV = [sys.executable, "-m", "tracekit", "signer", "serve", "--dev"]
 _ENV = ("PATH", "HOME", "USER", "LOGNAME", "LANG", "TMPDIR", "XDG_RUNTIME_DIR", "XDG_DATA_HOME", "LOCALAPPDATA",
-        "PYTHONPATH")
+        "SYSTEMROOT", "PYTHONPATH")   # SYSTEMROOT: Windows sockets need it
 
 
 class Hung(SignerUnavailable):
@@ -36,7 +38,9 @@ def runtime_dir():
     """The per-user runtime dir ($TRACEKIT_RUNTIME_DIR overrides), created 0700; refused unless it is ours and private
     (on POSIX; Windows has no uid, so it relies on the user-only profile ACL as S3 decides)."""
     d = os.environ.get("TRACEKIT_RUNTIME_DIR")
-    if not d and sys.platform == "darwin":
+    if not d and os.name == "nt":
+        d = os.path.join(os.environ["LOCALAPPDATA"], "tracekit", "run")
+    elif not d and sys.platform == "darwin":
         d = os.path.expanduser("~/Library/Application Support/tracekit/run")
         if len(os.path.join(d, SOCK).encode()) > 103:   # macOS caps socket paths at 104 bytes
             d = f"/tmp/tk-{os.getuid()}"
@@ -61,9 +65,29 @@ def _held(path):
         return False
 
 
-def _try(sock):
+def address(d):
+    """(path, token) for `connect` to the dev signer of runtime dir `d`: its Unix socket, or where there are none the
+    loopback port and token it published in endpoint.json, which must be ours and private. OSError or ValueError while
+    nothing is published."""
+    if hasattr(socket, "AF_UNIX"):
+        return os.path.join(d, SOCK), None
+    with open(os.path.join(d, ENDPOINT)) as f:
+        st = os.fstat(f.fileno())
+        if os.name == "posix" and (st.st_uid != os.getuid() or st.st_mode & 0o077):
+            raise SignerUnavailable(f"{f.name} must be owned by you and readable by no one else")
+        ep = json.load(f)
+    if not isinstance(ep, dict) or not isinstance(ep.get("port"), int) or not isinstance(ep.get("token"), str):
+        raise ValueError(f"{f.name} has no port and token yet")
+    return f"tcp://127.0.0.1:{ep['port']}", ep["token"]
+
+
+def _try(d):
     try:
-        return connect(sock)
+        path, token = address(d)
+    except (OSError, ValueError):
+        return None
+    try:
+        return connect(path, token=token)
     except SignerUnavailable:
         return None
 
@@ -93,25 +117,25 @@ def ensure(wait=True, timeout=10):
     if os.environ.get("TRACEKIT_SIGNER") or os.path.exists(SYSTEM_CONFIG):
         raise SignerUnavailable("dev auto-spawn is off when TRACEKIT_SIGNER is set or in system mode")
     d = runtime_dir()
-    sock, lock = os.path.join(d, SOCK), os.path.join(d, LOCK)
-    conn = _try(sock)
+    lock = os.path.join(d, LOCK)
+    conn = _try(d)
     if conn:
         return conn
     with open(os.path.join(d, SPAWN_LOCK), "a") as spawn_lock:
         lock_file(spawn_lock)
-        conn = _try(sock)
+        conn = _try(d)
         if conn:
             return conn
         p = None
         if not _held(lock):   # nothing alive: whatever is left belongs to a dead signer
-            for f in (sock, os.path.join(d, ENDPOINT)):
+            for f in (os.path.join(d, SOCK), os.path.join(d, ENDPOINT)):
                 pathlib.Path(f).unlink(missing_ok=True)
             p = spawn(d)
             if not wait:
                 return None
         deadline = time.monotonic() + timeout
         while True:
-            conn = _try(sock)
+            conn = _try(d)
             if conn:
                 return conn
             exited = p is not None and p.poll() is not None
@@ -143,11 +167,14 @@ def down(timeout=10):
 
 def status():
     """The v2 signer section of `tracekit status`. Starts nothing."""
-    path = os.environ.get("TRACEKIT_SIGNER")
+    path, token = os.environ.get("TRACEKIT_SIGNER"), None
     try:
-        path = path or os.path.join(runtime_dir(), SOCK)
-        sock, _, hello = connect(path)
-    except (SignerUnavailable, Incompatible, OSError) as e:
+        if not path:
+            d = runtime_dir()
+            path = os.path.join(d, SOCK if hasattr(socket, "AF_UNIX") else ENDPOINT)
+            path, token = address(d)
+        sock, _, hello = connect(path, token=token)
+    except (SignerUnavailable, Incompatible, OSError, ValueError) as e:
         return {"socket": path, "running": isinstance(e, Incompatible), "error": str(e)}
     sock.close()
     return {"socket": path, "running": True, **hello}

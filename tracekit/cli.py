@@ -129,7 +129,7 @@ def main(argv=None):
         p.add_argument("approval_id", nargs="?", help="id from `tracekit pending` (default: the only pending one)")
 
     p = sub.add_parser("approvals", help="approvals on the v2 signer: `approvals list|show ID|approve ID|reject ID`")
-    p.add_argument("--signer", help="the signer's Unix socket (default: the same-user dev signer)")
+    p.add_argument("--signer", help="the signer's Unix socket or tcp://host:port (default: the same-user dev signer)")
     acts = p.add_subparsers(dest="action", required=True)
     acts.add_parser("list", help="pending and recent approvals")
     acts.add_parser("show", help="one approval, with the signer's copy of the arguments in full").add_argument("approval_id")
@@ -477,9 +477,9 @@ def _export_v2(a):
         note = covering()
         if note is None:
             try:
-                if not cfg.get("socket"):
+                if a.config and not cfg.get("socket"):
                     raise SignerUnavailable("the config names no socket")
-                c = Client(cfg["socket"], timeout=NUDGE_WAIT_S)
+                c = Client(cfg["socket"] if a.config else None, timeout=NUDGE_WAIT_S)   # None: the dev signer
                 try:
                     c.checkpoint_nudge({})
                 finally:
