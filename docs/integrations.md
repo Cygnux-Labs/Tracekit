@@ -74,6 +74,6 @@ errors stay results for the caller (as the protocol intends) and are recorded as
 
 ## Vercel AI SDK
 
-With `experimental_telemetry` enabled, the AI SDK's spans go to `tracekit otel serve` unchanged: provider calls
+With `experimental_telemetry` enabled, the AI SDK's spans go to `tracekit otel serve --experimental` unchanged: provider calls
 (`ai.*.doGenerate`, `ai.*.doStream`) become model exchanges with the tool calls they requested and token usage, and
 `ai.toolCall` spans become tool calls with their arguments and results.

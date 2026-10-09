@@ -1,6 +1,7 @@
 """Client side: send events to tracekitd over its local transport. Runs as the agent's user and
 never writes the ledger. Its own small state (per-run counters, pending gaps) is agent-writable
 by design: tampering with it only produces capture.gap events on the signer side."""
+import hashlib
 import json
 import os
 import socket
@@ -26,30 +27,50 @@ def client_dir():
 SYSTEM_CONFIG = "/etc/tracekit/client.json"
 
 
+class SystemConfigError(RuntimeError):
+    """/etc/tracekit/client.json exists but cannot be trusted or read: the client must fail closed."""
+
+
 def system_config():
-    """The root-owned client config written by `sudo tracekit init` (0.2.1), or None.
+    """The root-owned client config written by `sudo tracekit init` (0.2.1), or None when there is none.
 
     When it exists it is the only source of the signer address, policy path and fail mode: the agent's own
     ~/.tracekit-client/config.json and TRACEKIT_SOCKET are ignored, so the agent cannot point its hooks at a
-    signer it runs itself. A file that is not owned by root, or that others can write, is not trusted."""
+    signer it runs itself. A file that exists but is unreadable, malformed, not owned by root, or writable by
+    others raises SystemConfigError instead of falling back to the agent's own settings.
+    Windows has no root-owned config (no os.getuid): system mode is unsupported there and the file is ignored."""
+    if not hasattr(os, "getuid"):
+        return None
     try:
         st = os.stat(SYSTEM_CONFIG)
-    except OSError:
+    except FileNotFoundError:
         return None
-    if hasattr(os, "getuid") and (st.st_uid != 0 or st.st_mode & 0o022):
-        return None
+    except OSError as e:
+        raise SystemConfigError(f"{SYSTEM_CONFIG} cannot be read: {e}") from e
+    if st.st_uid != 0 or st.st_mode & 0o022:
+        raise SystemConfigError(f"{SYSTEM_CONFIG} must be owned by root and not group- or world-writable")
     try:
         with open(SYSTEM_CONFIG, encoding="utf-8") as f:
             cfg = json.load(f)
-    except (OSError, ValueError):
-        return None
-    return cfg if isinstance(cfg, dict) else None
+    except (OSError, ValueError) as e:
+        raise SystemConfigError(f"{SYSTEM_CONFIG} cannot be parsed: {e}") from e
+    if not isinstance(cfg, dict):
+        raise SystemConfigError(f"{SYSTEM_CONFIG} must hold a JSON object")
+    return cfg
 
 
 def system_fail_closed():
-    """True in system mode unless the root-owned config explicitly allows fail-open."""
-    sc = system_config()
+    """True in system mode unless the root-owned config explicitly allows fail-open; True when it is untrusted."""
+    try:
+        sc = system_config()
+    except SystemConfigError:
+        return True
     return sc is not None and sc.get("fail_mode", "closed") != "open"
+
+
+def state_name(run_id):
+    """Collision-free file name for a run's client state: distinct run ids never share a file."""
+    return hashlib.sha256(run_id.encode("utf-8", "surrogatepass")).hexdigest()
 
 
 def client_config():
@@ -211,9 +232,8 @@ def rpc(req, timeout=5.0):
 
 class _RunLock:
     def __init__(self, run_id, stream="hook"):
-        safe = "".join(c if c.isalnum() or c in "-_." else "_" for c in run_id)[:120]
         suffix = "" if stream == "hook" else "." + stream
-        self.path = os.path.join(client_dir(), "runs", safe + suffix + ".json")
+        self.path = os.path.join(client_dir(), "runs", state_name(run_id) + suffix + ".json")
 
     def __enter__(self):
         self.fh = open(self.path + ".lock", "a")
