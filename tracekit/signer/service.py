@@ -58,7 +58,6 @@ state (witness-queue.json), so a restart resumes where it left off; retries back
 (a refusal waits the longest). A log a witness has failed to cosign for WITNESS_GAP_S gets one signed
 `capture.gap{witness_failed}` per outage.
 
-
 Policy (04-design §4): the signer classifies the tool and decides with policy2; every decide gets a fresh decision_id
 that one `complete` with the same arguments consumes. Only deny and ask are memoised, per (tool_call_id, attempt).
 
@@ -396,8 +395,8 @@ class SignerService:
         origin = note.split("\n", 1)[0]
         log_vkey = checkpoint.vkey(origin, checkpoint.ED25519, crypto.public_from_secret(self._log_key))
         try:
-            lines, _ = w.add_checkpoint(note, log_vkey, old,
-                                        lambda n: self.log.write(lambda tx: merkle_tree.consistency_proof(n, size)))
+            lines = w.add_checkpoint(note, log_vkey, old,
+                                     lambda n: self.log.write(lambda tx: merkle_tree.consistency_proof(n, size)))
         except WitnessError as e:
             self.metrics.witness_failures.inc(w.name)
             with self._queue_lock:
@@ -432,7 +431,7 @@ class SignerService:
     def logs_list(self):
         """This signer's logs (the record log and each tenant's registry log) in the witness network's `logs/v0`
         format, for a witness to register them from."""
-        tenants = self.log.write(lambda tx: sorted(self.log.tenants))
+        tenants = sorted(self.log.tenants)   # a set of str: copied under the GIL, no writer needed
         public = crypto.public_from_secret(self._log_key)
         out = ["logs/v0", ""]
         for origin in [self.origin] + [registry.origin(self.origin, self.log.tenant_salt(t)) for t in tenants]:
@@ -941,10 +940,14 @@ def load_config(path):
                 if isinstance(section, dict) and section.get(k):
                     section[k] = os.path.join(base, section[k])
         http.configure(h)   # validates the section now; serve() builds it again
+    names = set()
     for w in cfg.get("witnesses") or ():
         if not (isinstance(w, dict) and set(w) == {"url", "vkey", "class"} and w["class"] in CLASSES):
             raise ValueError(f"{path}: each witness is {{url, vkey, class}}, class one of {', '.join(CLASSES)}")
-        TlogWitness(w["url"], w["vkey"])   # a cosignature vkey
+        name = TlogWitness(w["url"], w["vkey"]).name   # a cosignature vkey
+        if name in names:
+            raise ValueError(f"{path}: two witnesses named {name}")
+        names.add(name)
     return cfg
 
 

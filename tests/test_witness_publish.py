@@ -106,16 +106,16 @@ class Client(unittest.TestCase):
                                           old, lambda m: merkle.consistency_proof(m, self.leaves[:n]))
 
     def test_cosigns_and_the_cosignature_verifies(self):
-        lines, old = self.add(5, 0)
+        lines = self.add(5, 0)
         note = signed_note(self.origin, self.leaves[:5], self.secret) + lines
         self.assertEqual(len(checkpoint.open_note(note, [self.log_vkey], [VKEY])[3]), 1)
-        self.assertEqual(self.add(9, 5)[1], 5)   # with a consistency proof from 5
+        self.assertTrue(self.add(9, 5))   # with a consistency proof from 5
+        self.assertEqual(self.w.sizes[self.origin][0], 9)
 
     def test_409_resyncs_from_the_witness_size(self):
         self.add(7, 0)
-        lines, old = self.add(12, 0)   # the client thought the witness was new
-        self.assertEqual((old, self.w.sizes[self.origin][0]), (7, 12))
-        self.assertTrue(lines)
+        self.assertTrue(self.add(12, 0))   # the client thought the witness was new
+        self.assertEqual(self.w.sizes[self.origin][0], 12)
         self.assertEqual([b.split(b"\n")[0] for b in self.w.bodies[-2:]], [b"old 0", b"old 7"])
 
     def test_only_the_log_signature_is_sent(self):
@@ -128,7 +128,7 @@ class Client(unittest.TestCase):
 
     def test_errors_are_classified(self):
         big = signed_note(self.origin, self.leaves[:3], self.secret) + "— x " + "A" * MAX_BODY + "\n"
-        self.assertTrue(self.client.add_checkpoint(big, self.log_vkey, 0, list)[0])   # the big line is stripped
+        self.assertTrue(self.client.add_checkpoint(big, self.log_vkey, 0, list))   # the big line is stripped
         for status, retryable in ((503, True), (429, True), (404, False), (403, False)):
             self.w.status = status
             with self.assertRaises(WitnessError) as cm:
@@ -228,18 +228,25 @@ class Publisher(unittest.TestCase):
         self.assertTrue(rep.assurance.startswith("dev;"), rep.assurance)
 
     def test_retry_queue_survives_restart(self):
-        self.w.status = 503
-        self.w.bodies.clear()   # of the startup check
         self.finished_run()
         self.s.checkpoint()
-        self.assertTrue(wait_for(lambda: self.w.bodies, 5))
+        cosigned, _ = wait_for(self.cosigned, 5)
+        self.w.status = 503
+        sent = len(self.w.bodies)
+        self.finished_run()
+        self.s.checkpoint()
+        self.assertTrue(wait_for(lambda: len(self.w.bodies) > sent, 5))
         self.s.close()
         state = self.s.log.storage.witness_queue()[NAME][RECORDS]
         self.assertGreaterEqual(state["attempts"], 1)
-        self.assertEqual(state["size"], 0)
+        self.assertEqual(state["size"], cosigned)
         self.w.status = None
-        self.s = self.open()   # the stored note is published from the persisted queue, with no new checkpoint
-        self.assertTrue(wait_for(self.cosigned, 5))
+        sent = len(self.w.bodies)
+        self.s = self.open()   # resumes from the persisted size: no 409 round trip from 0
+        self.assertTrue(wait_for(lambda: self.cosigned() and self.cosigned()[0] > cosigned, 5))
+        heads = [b.decode().split("\n") for b in self.w.bodies[sent:]]   # old, ..., "", origin, size: past the startup check
+        self.assertEqual([h[0] for h in heads if h[h.index("") + 1:h.index("") + 3] != [ORIGIN, "0"]
+                          and h[h.index("") + 1] == ORIGIN][0], f"old {cosigned}")
         self.assertEqual(self.s.log.storage.witness_queue()[NAME][RECORDS]["attempts"], 0)
 
     def test_witness_down_gets_one_gap_then_catches_up(self):
@@ -295,7 +302,8 @@ class Publisher(unittest.TestCase):
         for witnesses, ok in (([{"url": self.w.url, "vkey": VKEY, "class": "customer"}], True),
                               ([{"url": self.w.url, "vkey": VKEY}], False),
                               ([{"url": self.w.url, "vkey": VKEY, "class": "friend"}], False),
-                              ([{"url": self.w.url, "vkey": self.s.vkey, "class": "customer"}], False)):
+                              ([{"url": self.w.url, "vkey": self.s.vkey, "class": "customer"}], False),
+                              ([{"url": self.w.url, "vkey": VKEY, "class": "customer"}] * 2, False)):
             with open(cfg, "w") as f:
                 json.dump({"data_dir": "d", "witnesses": witnesses}, f)
             if ok:

@@ -81,8 +81,8 @@ class TlogWitness:
 
     def add_checkpoint(self, note, log_vkey, old, proof):
         """Submit `note` (signed by `log_vkey`) as the successor of the witness's checkpoint of size `old`;
-        `proof(n)` gives the consistency proof (raw hashes) from size n to the note's size. Returns (the witness's
-        cosignature lines, verified, as one string; the old size the witness turned out to hold)."""
+        `proof(n)` gives the consistency proof (raw hashes) from size n to the note's size. Returns the witness's
+        cosignature lines, verified, as one string."""
         signed = log_signed(note, log_vkey)
         size = int(signed.split("\n")[1])
         status, resp = self._post(old, proof(old) if 0 < old < size else [], signed)
@@ -97,7 +97,7 @@ class TlogWitness:
                 raise checkpoint.NoteError("no cosignature from its key")
         except checkpoint.NoteError as e:
             raise WitnessError(f"{self.name}: {e}", False) from None
-        return lines, old
+        return lines
 
     def latest(self, empty_note, log_vkey):
         """(the size this witness last cosigned for the log, None: the protocol gives no root). `empty_note` is the

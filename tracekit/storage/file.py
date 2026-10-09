@@ -354,6 +354,8 @@ class FileStorage(_Records, Storage):
                 return json.loads(f.read())
         except FileNotFoundError:
             return {}
+        except ValueError as e:
+            raise StorageCorrupt(f"{QUEUE}: {e}; run fsck") from None
 
     def witness_queue_put(self, state):
         with self._disk():
