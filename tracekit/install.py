@@ -18,9 +18,10 @@ import sys
 import time
 
 try:
+    import grp
     import pwd
 except ImportError:
-    pwd = None
+    grp = pwd = None
 
 from .core import read_json, read_text
 from . import client
@@ -30,6 +31,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 SYS_HOME = "/var/lib/tracekit"
 SYS_USER = "tracekit"
+OPT = "/opt/tracekit"   # system mode: root-owned virtualenv the signer and hooks run from
+OPT_PYTHON = os.path.join(OPT, "bin", "python")
+SYSTEMD_DIR = "/etc/systemd/system"
 TOOL_EVENTS = ["PreToolUse", "PostToolUse", "PostToolUseFailure"]
 OTHER_EVENTS = ["UserPromptSubmit", "Stop", "SubagentStart", "SubagentStop", "SessionStart", "SessionEnd"]
 UNIT = """[Unit]
@@ -39,10 +43,9 @@ After=network.target
 [Service]
 User={user}
 Group={user}
-ExecStart={python} -m tracekit.daemon --home {home}
-Environment=PYTHONPATH={pythonpath}
+ExecStart={python} -I -m tracekit.daemon --home {home}
 Restart=on-failure
-UMask=0022
+UMask=0027
 NoNewPrivileges=true
 ProtectSystem=strict
 ReadWritePaths={home}
@@ -59,9 +62,9 @@ Requires=tracekitd.service
 [Service]
 User={user}
 Group={user}
-ExecStart={python} -m tracekit.proxy --home {home}
-Environment=PYTHONPATH={pythonpath}
+ExecStart={python} -I -m tracekit.proxy --home {home}
 Restart=on-failure
+UMask=0027
 NoNewPrivileges=true
 ProtectSystem=strict
 ReadWritePaths={home}
@@ -74,14 +77,14 @@ LAUNCHD_DIR = "/Library/LaunchDaemons"
 SYS_USER_DARWIN = "_tracekit"  # macOS system accounts are underscore-prefixed
 
 
-def launchd_plist(label, user, python, module, home, pythonpath, extra_args=()):
-    """A LaunchDaemon that runs `python -m <module> --home <home>` as the signer's own account."""
+def launchd_plist(label, user, python, module, home, extra_args=()):
+    """A LaunchDaemon that runs `python -I -m <module> --home <home>` as the signer's own account."""
     import plistlib
     return plistlib.dumps({
         "Label": label, "UserName": user, "GroupName": user,
-        "ProgramArguments": [python, "-m", module, "--home", home, *extra_args],
-        "EnvironmentVariables": {"PYTHONPATH": pythonpath}, "RunAtLoad": True, "KeepAlive": True,
-        "Umask": 0o022, "WorkingDirectory": home,
+        "ProgramArguments": [python, "-I", "-m", module, "--home", home, *extra_args],
+        "RunAtLoad": True, "KeepAlive": True,
+        "Umask": 0o027, "WorkingDirectory": home,
         "StandardErrorPath": os.path.join(home, module.split(".")[-1] + ".log"),
     })
 
@@ -117,9 +120,12 @@ def _create_system_user_darwin(name):
 MANAGED_SETTINGS = {"linux": "/etc/claude-code/managed-settings.json",
                     "darwin": "/Library/Application Support/ClaudeCode/managed-settings.json"}
 HOOK_TIMEOUT = {"PreToolUse": 600, "SessionEnd": 15}   # PreToolUse may hold a call for approval (C8)
-def _hook_command(module="tracekit.hook", func="_entry", args=()):
+def _hook_command(module="tracekit.hook", func="_entry", args=(), python=None):
     """Shell command that runs `module.func(*args)`. Python runs isolated (-I): the working directory, user
-    site-packages and PYTHON* variables are not on the import path, so the harness's cwd cannot shadow tracekit."""
+    site-packages and PYTHON* variables are not on the import path, so the harness's cwd cannot shadow tracekit.
+    python: an interpreter that has tracekit installed (system mode: OPT_PYTHON)."""
+    if python:
+        return " ".join([shlex.quote(python), "-I", "-m", module, *args])
     try:
         import importlib.util
         import site
@@ -159,27 +165,27 @@ def _backup(path, data):
         files.close(d)
 
 
-def install_hooks(settings_path, uninstall=False, owner=None, proxy_url=None, extra=None, mode=0o600):
+def install_hooks(settings_path, uninstall=False, owner=None, proxy_url=None, extra=None, mode=0o600, python=None):
     """Add (or remove) Tracekit's hooks in a Claude Code settings file. Idempotent; backs up the
     file before changing it; leaves other hooks and settings alone. proxy_url sets
     env.ANTHROPIC_BASE_URL (C3). Raises SettingsError instead of overwriting a file it cannot parse,
-    or one that is a symlink. With owner (as root) the whole edit runs as that user."""
+    or one that is a symlink. With owner (as root) the whole edit runs as that user. python: see _hook_command."""
     if owner is not None:
-        return files.as_user(owner, install_hooks, settings_path, uninstall, None, proxy_url, extra, mode,
+        return files.as_user(owner, install_hooks, settings_path, uninstall, None, proxy_url, extra, mode, python,
                              errors=(SettingsError,))
     settings_path = os.path.abspath(settings_path)
     os.makedirs(os.path.dirname(settings_path), exist_ok=True)
     try:
         d = files.open_dir(os.path.dirname(settings_path))
         try:
-            _install_hooks_at(d, settings_path, uninstall, proxy_url, extra, mode)
+            _install_hooks_at(d, settings_path, uninstall, proxy_url, extra, mode, python)
         finally:
             files.close(d)
     except files.UnsafePath as e:
         raise SettingsError(f"{settings_path}: {e}") from e
 
 
-def _install_hooks_at(d, settings_path, uninstall, proxy_url, extra, mode):
+def _install_hooks_at(d, settings_path, uninstall, proxy_url, extra, mode, python=None):
     name = os.path.basename(settings_path)
     s, raw = {}, files.read(d, name)
     original = None
@@ -201,7 +207,7 @@ def _install_hooks_at(d, settings_path, uninstall, proxy_url, extra, mode):
             raise SettingsError(f"hooks.{ev} in {settings_path} must be a list; Tracekit did not change it.")
         groups = [g for g in existing if not (isinstance(g, dict) and _is_ours(g))]
         if not uninstall:
-            e = {"hooks": [{"type": "command", "command": _hook_command(), "timeout": HOOK_TIMEOUT.get(ev, 30)}]}
+            e = {"hooks": [{"type": "command", "command": _hook_command(python=python), "timeout": HOOK_TIMEOUT.get(ev, 30)}]}
             groups.append({"matcher": "*", **e} if ev in TOOL_EVENTS else e)
         if groups:
             hooks[ev] = groups
@@ -586,11 +592,12 @@ def stop_dev_daemon(home):
     _stop_pidfile(os.path.join(home, "tracekitd.pid"))
 
 
-def install_managed(proxy_url=None, managed_only=False, path=None):
+def install_managed(proxy_url=None, managed_only=False, path=None, python=None):
     """C5: put the hooks in Claude Code's admin-managed settings, which users and projects cannot
     override. managed_only additionally sets allowManagedHooksOnly (user/project hooks stop running)."""
     path = path or MANAGED_SETTINGS["darwin" if sys.platform == "darwin" else "linux"]
-    install_hooks(path, proxy_url=proxy_url, extra={"allowManagedHooksOnly": True} if managed_only else None, mode=0o644)
+    install_hooks(path, proxy_url=proxy_url, extra={"allowManagedHooksOnly": True} if managed_only else None, mode=0o644,
+                  python=python)
     return path
 
 
@@ -646,11 +653,16 @@ def migrate_system(fail_mode=None, harnesses=None):
            "signer_isolation": "separate-user", "mode": "system", "fail_mode": fail_mode or "closed"}
     if scfg.get("proxy"):
         cfg.update(proxy=True, proxy_url=f"http://127.0.0.1:{scfg['proxy'].get('port', 8787)}")
+    policy = (client.system_config() or {}).get("policy")
+    if not policy and os.path.exists(OPT_PYTHON):  # 0.2.x configs have no policy key; use the root-owned default
+        policy = _opt_default_policy()
+    if policy:
+        cfg["policy"] = policy
     _write_system_client_config(cfg)
     tk = pwd.getpwnam(SYS_USER)
     hcfg = harness_config(harnesses)
     _update_signer_config(SYS_HOME, hcfg, tk)
-    unit = "/etc/systemd/system/tracekitd.service"
+    unit = os.path.join(SYSTEMD_DIR, "tracekitd.service")
     if hcfg.get("harnesses") and os.path.exists(unit):
         with open(unit) as f:
             text = f.read()
@@ -667,9 +679,98 @@ def migrate_system(fail_mode=None, harnesses=None):
     return 0
 
 
+PRIVILEGED_GROUPS = {"sudo", "wheel", "admin", "docker", SYS_USER, SYS_USER_DARWIN}
+
+
+def _privileges(pw):
+    """Why the agent's user could take over the signer (root, or a member of an admin, docker or tracekit group)."""
+    if pw.pw_uid == 0:
+        return ["it is root"]
+    names = set()
+    for gid in os.getgrouplist(pw.pw_name, pw.pw_gid):
+        try:
+            names.add(grp.getgrgid(gid).gr_name)
+        except KeyError:
+            pass
+    return [f"it is in the {g} group" for g in sorted(names & PRIVILEGED_GROUPS)]
+
+
+def _install_venv():
+    """Install this Tracekit into a root-owned virtualenv at OPT, so the signer and hooks never run code the agent's
+    user can modify. Returns the default policy path inside it."""
+    from .daemon import trusted_file
+    for f in (sys.executable, os.path.dirname(os.__file__)):
+        bad = trusted_file(f)
+        if bad:
+            raise SystemExit(f"the Python running init could be modified by a non-root user ({bad}). Run init with a "
+                             "root-owned Python, e.g. sudo /usr/bin/python3 -m tracekit init")
+    if not os.path.isfile(os.path.join(ROOT, "pyproject.toml")):
+        # lean: source checkout only; install from a pinned wheel once the distribution name is settled
+        raise SystemExit("system mode installs from a Tracekit source checkout: run it from the repository, e.g. "
+                         "cd tracekit && sudo /usr/bin/python3 -m tracekit init --user <agent-user>")
+    src = ROOT
+    old = os.umask(0o022)
+    try:
+        subprocess.run([sys.executable, "-m", "venv", "--clear", OPT], check=True)
+        subprocess.run([OPT_PYTHON, "-m", "pip", "install", "--quiet", "--no-cache-dir", src], check=True)
+    finally:
+        os.umask(old)
+    for dirpath, dirnames, filenames in os.walk(OPT):
+        for p in [dirpath] + [os.path.join(dirpath, n) for n in dirnames + filenames]:
+            os.lchown(p, 0, 0)
+            if not os.path.islink(p):
+                os.chmod(p, os.stat(p).st_mode & ~0o022)
+    return _opt_default_policy()
+
+
+def _opt_default_policy():
+    return subprocess.run([OPT_PYTHON, "-I", "-c", "from tracekit.policy import DEFAULT_POLICY; print(DEFAULT_POLICY)"],
+                          check=True, capture_output=True, text=True).stdout.strip()
+
+
+def _unit_path():
+    return (os.path.join(LAUNCHD_DIR, "dev.tracekit.tracekitd.plist") if sys.platform == "darwin"
+            else os.path.join(SYSTEMD_DIR, "tracekitd.service"))
+
+
+def doctor(checks=None):
+    """`tracekit doctor`: check that system mode runs only code and policy the agent's user cannot modify. Prints one
+    line per check with a fix; returns 1 if any check fails."""
+    from .daemon import trusted_file
+    if checks is None:
+        import glob
+        sc = client.system_config()
+        if sc is None:
+            print(f"FAIL  system mode: {client.SYSTEM_CONFIG} is missing or not root-owned\n"
+                  "      fix: sudo tracekit init --user <agent-user>")
+            return 1
+        from .policy import DEFAULT_POLICY
+        reinstall = "re-run sudo tracekit init --user <agent-user> to reinstall into " + OPT
+        checks = [("signer python", OPT_PYTHON, reinstall)]
+        checks += [("tracekit package", p, reinstall) for p in glob.glob(os.path.join(OPT, "lib", "python*", "site-packages", "tracekit"))
+                   ] or [("tracekit package", os.path.join(OPT, "lib", "site-packages", "tracekit"), reinstall)]
+        checks += [("unit file", _unit_path(), reinstall),
+                   ("policy file", sc.get("policy") or DEFAULT_POLICY,
+                    "make it and every directory above it root-owned and not group/world-writable (sudo chown root:root, "
+                    "sudo chmod go-w), then sudo tracekit migrate --system")]
+    failed = 0
+    for label, path, fix in checks:
+        bad = trusted_file(path)
+        if bad is None and os.path.isdir(path):
+            # lean: one stat per file and ancestor; fine for a package of a few hundred files
+            bad = next((b for dp, dns, fns in os.walk(path) for n in dns + fns
+                        for b in [trusted_file(os.path.join(dp, n))] if b), None)
+        if bad:
+            failed += 1
+            print(f"FAIL  {label}: {bad}\n      fix: {fix}")
+        else:
+            print(f"ok    {label}: {path}")
+    return 1 if failed else 0
+
+
 def init_system(target_user, witnesses, checkpoint_every=50, project=None, no_service=False, proxy=False, proxy_port=8787,
                 managed=False, managed_only=False, fail_mode=None, experimental_macos=False, hooks=True, signer=None,
-                harnesses=None, agent="claude"):
+                harnesses=None, agent="claude", allow_privileged=False):
     darwin = sys.platform == "darwin"
     if not (sys.platform.startswith("linux") or darwin):
         raise SystemExit("v0.2 system mode runs on Linux and (experimentally) macOS: tracekitd must identify callers "
@@ -683,6 +784,10 @@ def init_system(target_user, witnesses, checkpoint_every=50, project=None, no_se
         raise SystemExit("system mode needs root: sudo tracekit init   (or tracekit init --dev for a same-user signer)")
     checkpoint_every, proxy_port = _validate_init_options(checkpoint_every, proxy, proxy_port)
     owner = pwd.getpwnam(target_user)
+    why = _privileges(owner)
+    if why and not allow_privileged:
+        raise SystemExit(f"refusing to trace {target_user}: {'; '.join(why)}, so its agents could stop or replace the "
+                         "signer. Trace an unprivileged user, or re-run with --i-understand-agent-is-privileged.")
     user = SYS_USER_DARWIN if darwin else SYS_USER
     try:
         pwd.getpwnam(user)
@@ -696,7 +801,7 @@ def init_system(target_user, witnesses, checkpoint_every=50, project=None, no_se
     os.makedirs(SYS_HOME, exist_ok=True)
     home_fd = files.open_dir(SYS_HOME, {0, tk.pw_uid})
     try:
-        for sub, mode in (("keys", 0o700), ("ledger", 0o755), ("blobs", 0o755), ("", 0o755)):
+        for sub, mode in (("keys", 0o700), ("ledger", 0o750), ("blobs", 0o750), ("", 0o755)):
             fd = files.subdir(home_fd, sub, mode, {0, tk.pw_uid}) if sub else home_fd
             try:
                 os.fchown(fd, tk.pw_uid, tk.pw_gid)
@@ -714,11 +819,11 @@ def init_system(target_user, witnesses, checkpoint_every=50, project=None, no_se
     pcfg = {"port": proxy_port, "upstream": _upstream(), "fail_mode": fail_mode or "open"} if proxy else None
     extra = dict({"signer": signer} if signer else {}, **({} if darwin else harness_config(harnesses, agent)))
     _write_signer_config(SYS_HOME, witnesses, checkpoint_every, sock, pcfg, extra or None, tk)
+    policy = _install_venv()
     # generate the key as the tracekit user so root-only reads are the only other path to it
-    env = dict(os.environ, PYTHONPATH=ROOT)
-    subprocess.run(["runuser" if shutil.which("runuser") else "sudo", "-u", tk.pw_name, "--", sys.executable, "-c",
-                    f"import sys; sys.path.insert(0,{ROOT!r}); from tracekit.ledger import Keys; Keys.load_or_create({os.path.join(SYS_HOME, 'keys')!r})"],
-                   check=True, env=env)
+    subprocess.run(["runuser" if shutil.which("runuser") else "sudo", "-u", tk.pw_name, "--", OPT_PYTHON, "-I", "-c",
+                    f"from tracekit.ledger import Keys; Keys.load_or_create({os.path.join(SYS_HOME, 'keys')!r})"],
+                   check=True)
     if not no_service:
         if darwin:
             for label, module, enabled in (("dev.tracekit.tracekitd", "tracekit.daemon", True),
@@ -727,16 +832,16 @@ def init_system(target_user, witnesses, checkpoint_every=50, project=None, no_se
                     continue
                 plist = os.path.join(LAUNCHD_DIR, label + ".plist")
                 with open(plist, "wb") as f:
-                    f.write(launchd_plist(label, tk.pw_name, sys.executable, module, SYS_HOME, ROOT))
+                    f.write(launchd_plist(label, tk.pw_name, OPT_PYTHON, module, SYS_HOME))
                 os.chmod(plist, 0o644)
                 subprocess.run(["launchctl", "bootstrap", "system", plist], check=False)
         else:  # systemd
-            with open("/etc/systemd/system/tracekitd.service", "w") as f:
-                f.write(UNIT.format(user=tk.pw_name, python=sys.executable, home=SYS_HOME, pythonpath=ROOT,
+            with open(os.path.join(SYSTEMD_DIR, "tracekitd.service"), "w") as f:
+                f.write(UNIT.format(user=tk.pw_name, python=OPT_PYTHON, home=SYS_HOME,
                                     caps=UNIT_CAPS if extra.get("harnesses") else ""))
             if proxy:
-                with open("/etc/systemd/system/tracekit-proxy.service", "w") as f:
-                    f.write(PROXY_UNIT.format(user=tk.pw_name, python=sys.executable, home=SYS_HOME, pythonpath=ROOT))
+                with open(os.path.join(SYSTEMD_DIR, "tracekit-proxy.service"), "w") as f:
+                    f.write(PROXY_UNIT.format(user=tk.pw_name, python=OPT_PYTHON, home=SYS_HOME))
             subprocess.run(["systemctl", "daemon-reload"], check=False)
             subprocess.run(["systemctl", "enable", "--now", "tracekitd"], check=False)
             if proxy:
@@ -745,15 +850,15 @@ def init_system(target_user, witnesses, checkpoint_every=50, project=None, no_se
     if proxy:
         cfg.update(proxy=True, proxy_url=f"http://127.0.0.1:{proxy_port}")
     _write_client_config(owner.pw_dir, cfg, owner)
-    _write_system_client_config(dict(cfg, fail_mode=fail_mode or "closed"))
+    _write_system_client_config(dict(cfg, fail_mode=fail_mode or "closed", policy=policy))
     _pin_policy(SYS_HOME, tk)
     if not hooks:
         settings = None  # hooks come from elsewhere (the Claude Code plugin)
     elif managed:
-        settings = install_managed(cfg.get("proxy_url"), managed_only)
+        settings = install_managed(cfg.get("proxy_url"), managed_only, python=OPT_PYTHON)
     else:
         settings = os.path.join(project, ".claude", "settings.json") if project else os.path.join(owner.pw_dir, ".claude", "settings.json")
-        install_hooks(settings, owner=owner, proxy_url=cfg.get("proxy_url"))
+        install_hooks(settings, owner=owner, proxy_url=cfg.get("proxy_url"), python=OPT_PYTHON)
     return cfg, settings
 
 

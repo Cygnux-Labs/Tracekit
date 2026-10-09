@@ -47,20 +47,19 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install system mode with separate agent and attacker users
+      - name: Install system mode from a root-owned Python
         run: |
-          PY="$(which python)"
-          sudo cp -r "$GITHUB_WORKSPACE" /opt/tracekit
-          sudo chmod -R a+rX /opt/tracekit
+          sudo apt-get install -y -q python3-cryptography python3-venv
+          sudo cp -r "$GITHUB_WORKSPACE" /usr/local/src/tracekit
+          sudo chmod -R a+rX /usr/local/src/tracekit
           sudo useradd -m agent
           sudo useradd -m mallory
           sudo install -D -m755 "$(readlink -f /bin/dash)" /usr/local/lib/tracekit-e8/agent
-          sudo "$PY" -m pip install /opt/tracekit
-          cd /tmp && sudo "$PY" -m tracekit init --user agent --no-service --no-hooks --harness agent=/usr/local/lib/tracekit-e8/agent
+          cd /usr/local/src/tracekit && sudo /usr/bin/python3 -m tracekit init --user agent --no-service --no-hooks --harness agent=/usr/local/lib/tracekit-e8/agent
       - name: Run E8
-        run: cd /opt/tracekit && sudo "$(which python)" eval/e8_insider.py --out /tmp/e8_insider.json
+        run: cd /usr/local/src/tracekit && sudo /opt/tracekit/bin/python eval/e8_insider.py --out /tmp/e8_insider.json
       - name: Root-only installer tests
-        run: cd /opt/tracekit && sudo "$(which python)" -m pip install pytest && sudo "$(which python)" -m pytest -q -m root tests/test_install_files.py
+        run: cd /usr/local/src/tracekit && sudo /opt/tracekit/bin/python -m pip install pytest==8.3.5 && sudo /opt/tracekit/bin/python -m pytest -q -m root tests/test_install_files.py
       - if: always()
         uses: actions/upload-artifact@v4
         with:

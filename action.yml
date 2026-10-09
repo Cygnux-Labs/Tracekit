@@ -17,10 +17,18 @@ inputs:
     description: "Fail on warnings too (exit code 3)"
     required: false
     default: "false"
+  require-anchor:
+    description: "Fail when nothing outside the bundle vouches for its signer (no key or witness given)"
+    required: false
+    default: "true"
   version:
     description: "Tracekit version to install from PyPI (empty: install from this action's repository checkout)"
     required: false
     default: ""
+outputs:
+  json:
+    description: "The verifier's report (tracekit verify --json)"
+    value: ${{ steps.verify.outputs.json }}
 runs:
   using: composite
   steps:
@@ -29,22 +37,37 @@ runs:
         python-version: "3.12"
     - name: Install Tracekit
       shell: bash
+      env:
+        TK_VERSION: ${{ inputs.version }}
+        TK_ACTION_PATH: ${{ github.action_path }}
       run: |
-        if [ -n "${{ inputs.version }}" ]; then
-          python -m pip install "tracekit==${{ inputs.version }}"
+        if [ -n "$TK_VERSION" ]; then
+          python -m pip install "tracekit==$TK_VERSION"
         else
-          python -m pip install "${{ github.action_path }}"
+          python -m pip install "$TK_ACTION_PATH"
         fi
     - name: Verify bundle
+      id: verify
       shell: bash
       env:
         TK_BUNDLE: ${{ inputs.bundle }}
         TK_KEY: ${{ inputs.key }}
         TK_WITNESS: ${{ inputs.witness }}
         TK_STRICT: ${{ inputs.strict }}
+        TK_REQUIRE_ANCHOR: ${{ inputs.require-anchor }}
       run: |
-        args=("$TK_BUNDLE")
+        args=("$TK_BUNDLE" --json)
         [ -n "$TK_KEY" ] && args+=(--key "$TK_KEY")
         [ -n "$TK_WITNESS" ] && args+=(--witness "$TK_WITNESS")
         [ "$TK_STRICT" = "true" ] && args+=(--strict)
-        tracekit verify "${args[@]}"
+        report="$RUNNER_TEMP/tracekit-verify.json"
+        code=0
+        tracekit verify "${args[@]}" > "$report" || code=$?
+        cat "$report"
+        delim="tracekit_$(python -c 'import secrets; print(secrets.token_hex(16))')"
+        { echo "json<<$delim"; cat "$report"; echo "$delim"; } >> "$GITHUB_OUTPUT"
+        if [ "$code" = 0 ] && [ "$TK_REQUIRE_ANCHOR" = "true" ]; then
+          python -c 'import json, sys; r = json.load(open(sys.argv[1])); sys.exit(not any(c["check"] == "trust root" and c["status"] == "pass" for c in r["checks"]))' "$report" \
+            || { echo "::error::bundle is unanchored: pass key or witness, or set require-anchor: false"; code=1; }
+        fi
+        exit "$code"
