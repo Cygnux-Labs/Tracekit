@@ -5,16 +5,27 @@
 
 It follows the RPC contract (schemas, error codes, idempotency, run tokens, client_seq gaps) but signs nothing,
 keeps nothing on disk and has one caller identity, so approvals are always self-approvals. Ids are deterministic.
+
+`serve_fake(runtime_dir)` serves one as a dev signer the way tracekit/sdk/autospawn.py expects; run it as
+`TRACEKIT_DEV_SIGNER_CMD="python -m tracekit.testing"` to have clients auto-spawn it.
 """
+import argparse
 import copy
 import hashlib
 import hmac
 import json
+import os
+import pathlib
+import signal
+import sys
+import threading
+import time
 
 import rfc8785
 
 from tracekit import __version__
 from tracekit.format.canon import StrictJSONError, event_hash, loads_strict
+from tracekit.locking import lock_file
 from tracekit.signer import rpc_schema
 from tracekit.signer.rpc_schema import RPCError
 
@@ -208,3 +219,65 @@ class FakeSigner:
 
     def checkpoint_nudge(self, req):
         return self._call("checkpoint_nudge", req, lambda req: {"scheduled": True})
+
+
+def serve_fake(runtime_dir, signer=None, proto=(rpc_schema.RPC_VERSION, rpc_schema.RPC_VERSION), version=__version__,
+               idle_s=900):
+    """Serve `signer` (a new FakeSigner by default) in `runtime_dir` until SIGTERM or `idle_s` seconds without a
+    frame (0: never). Follows decision S3: lock signer.lock first (give up after 1 s), then replace the socket, then
+    publish endpoint.json; unpublish before exiting. Call it from the main thread; returns an exit code."""
+    from tracekit.deploy import files
+    from tracekit.sdk import autospawn
+    from tracekit.transport.unix import UnixServer
+
+    lock = open(os.path.join(runtime_dir, autospawn.LOCK), "a")
+    deadline = time.monotonic() + 1
+    while True:
+        try:
+            lock_file(lock, blocking=False)
+            break
+        except OSError:
+            if time.monotonic() > deadline:
+                print("LOST: another dev signer holds signer.lock", file=sys.stderr)
+                return 1
+            time.sleep(0.05)
+    sock, endpoint = os.path.join(runtime_dir, autospawn.SOCK), os.path.join(runtime_dir, autospawn.ENDPOINT)
+    for p in (sock, endpoint):
+        pathlib.Path(p).unlink(missing_ok=True)
+    signer, mutex, last = signer or FakeSigner(), threading.Lock(), [time.monotonic()]
+    hello = {"proto": list(proto), "version": version, "pid": os.getpid()}
+
+    def handle(identity, frame):
+        last[0] = time.monotonic()
+        method = frame.pop("method", None)
+        if method == "hello":
+            return hello
+        if method not in rpc_schema.REQUESTS:
+            raise RPCError("invalid_request", f"unknown method {str(method)[:64]}")
+        with mutex:
+            return getattr(signer, method)(frame)
+
+    server = UnixServer(sock, handle)
+    files.write_json(endpoint, hello)
+    stop = threading.Event()
+    signal.signal(signal.SIGTERM, lambda *_: stop.set())
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    print(f"SERVING pid {os.getpid()}", file=sys.stderr, flush=True)
+    while not stop.wait(0.1):
+        if idle_s and time.monotonic() - last[0] > idle_s:
+            break
+    for p in (endpoint, sock):
+        pathlib.Path(p).unlink(missing_ok=True)
+    server.shutdown()
+    server.server_close()
+    return 0
+
+
+if __name__ == "__main__":
+    from tracekit.sdk.autospawn import runtime_dir
+    ap = argparse.ArgumentParser(prog="python -m tracekit.testing", description="serve a FakeSigner as the dev signer")
+    ap.add_argument("--proto", default=f"{rpc_schema.RPC_VERSION}-{rpc_schema.RPC_VERSION}", help="MIN-MAX")
+    ap.add_argument("--version", default=__version__)
+    a = ap.parse_args()
+    sys.exit(serve_fake(runtime_dir(), proto=tuple(map(int, a.proto.split("-"))), version=a.version,
+                        idle_s=float(os.environ.get("TRACEKIT_DEV_IDLE", 900))))
