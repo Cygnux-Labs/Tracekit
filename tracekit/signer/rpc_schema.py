@@ -100,7 +100,8 @@ REQUESTS = {
                      tool_call_id=ID, attempt=SEQ, decision_id=ID,
                      args_digest=DIGEST,   # sha256(JCS({"tool", "args"})) of the args that ran
                      status={"enum": ["ok", "error"]}, result=ANY, error=_str(4096)),
-    "state_write": _obj(_EVENT_REQ + ["key", "value_digest"], **_EVENT, key=_str(256, minLength=1), value_digest=DIGEST),
+    "state_write": _obj(_EVENT_REQ + ["key", "value_digest"], **_EVENT, key=_str(256, minLength=1), value_digest=DIGEST,
+                        prev_digest={"oneOf": [DIGEST, {"type": "null"}]}),   # the state the write started from
     # agent-reported (L3): what the model asked to run, and the tool results the request sent back
     "model_event": _obj(_EVENT_REQ + ["provider", "model", "phase"], **_EVENT, provider=_str(64), model=_str(128),
                         phase={"enum": ["request", "response"]}, content_digest=DIGEST,
