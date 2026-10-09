@@ -140,7 +140,7 @@
           "minimum": 0
         },
         "hash": {
-          "$ref": "#/$defs/hash"
+          "$ref": "#/$defs/commitment"
         },
         "prefix_length": {
           "type": [
@@ -153,7 +153,7 @@
         "prefix_hash": {
           "oneOf": [
             {
-              "$ref": "#/$defs/hash"
+              "$ref": "#/$defs/commitment"
             },
             {
               "type": "null"
@@ -805,6 +805,64 @@
       "pattern": "^sha256:[0-9a-f]{64}$",
       "maxLength": 71
     },
+    "commitment": {
+      "type": "string",
+      "pattern": "^hmac-sha256:[0-9a-f]{64}$",
+      "maxLength": 76,
+      "description": "HMAC-SHA256 of a sha256: digest of agent content under a per-record salt the signer keeps and can reveal for that one record (tracekit signer reveal)"
+    },
+    "redaction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "rules",
+        "count",
+        "client_claimed"
+      ],
+      "description": "what the signer redacted from this record's content before committing to it; never the values",
+      "properties": {
+        "rules": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "type": "string",
+            "maxLength": 64
+          },
+          "description": "the redaction rules that fired"
+        },
+        "count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "client_claimed": {
+          "type": "boolean",
+          "description": "the client said it redacted the content already"
+        },
+        "client": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "the client's own manifest, as it claimed it",
+          "properties": {
+            "rules": {
+              "type": "array",
+              "maxItems": 32,
+              "items": {
+                "type": "string",
+                "maxLength": 64
+              }
+            },
+            "count": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        },
+        "client_redaction_incomplete": {
+          "const": true,
+          "description": "the client claimed redaction and the signer still found a secret"
+        }
+      }
+    },
     "content": {
       "description": "Either the (redacted) value or a reference to it. Which one is decided by docs/privacy.md, never by the caller.",
       "oneOf": [
@@ -832,7 +890,7 @@
           ],
           "properties": {
             "hash": {
-              "$ref": "#/$defs/hash"
+              "$ref": "#/$defs/commitment"
             },
             "size": {
               "type": "integer",
@@ -1247,6 +1305,9 @@
         "decision_id": {
           "$ref": "#/$defs/id",
           "description": "the policy.decision this result consumes"
+        },
+        "redaction": {
+          "$ref": "#/$defs/redaction"
         }
       }
     },
@@ -1658,7 +1719,7 @@
           }
         },
         "content_digest": {
-          "$ref": "#/$defs/hash"
+          "$ref": "#/$defs/commitment"
         }
       }
     },
@@ -1836,7 +1897,7 @@
             "nonce",
             "expires_at"
           ],
-          "description": "what the approval is bound to; binding_digest is sha256(JCS(binding)) with the args digest in place of args_commitment, which only the signer can reveal",
+          "description": "what the approval is bound to; binding_digest is sha256(JCS(binding)), the args bound through args_commitment",
           "properties": {
             "v": {
               "const": 1
@@ -1979,6 +2040,10 @@
           "type": "string",
           "pattern": "^hmac-sha256:[0-9a-f]{64}$",
           "maxLength": 76
+        },
+        "decision_id": {
+          "$ref": "#/$defs/id",
+          "description": "the decision whose salt both commitments are under"
         }
       }
     },
@@ -2019,7 +2084,7 @@
         "prev_digest": {
           "oneOf": [
             {
-              "$ref": "#/$defs/hash"
+              "$ref": "#/$defs/commitment"
             },
             {
               "type": "null"
@@ -2027,7 +2092,7 @@
           ]
         },
         "digest": {
-          "$ref": "#/$defs/hash"
+          "$ref": "#/$defs/commitment"
         }
       }
     },
