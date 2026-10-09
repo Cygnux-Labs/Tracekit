@@ -1,13 +1,22 @@
 """Claude Code hook on the v2 signer RPC: a thin client. The signer decides with its policy packs, signs and stores;
 this process holds no key, evaluates no policy and writes no ledger.
 
-    python -I -m tracekit.integrations.claude_code   (wired by `tracekit init --dev --v2`)
+    python -I -m tracekit.integrations.claude_code   (wired by `tracekit init --dev --v2`, or as root by
+                                                      `tracekit init --v2 --user AGENT`: system mode)
 
 Each hook is a new process, so the run of a Claude Code session (id, token, fail modes, and the one event stream and
 next client_seq all its hooks share) and the decision binding of a tool call are kept in the runtime dir between hooks.
 Exit 0 lets the call proceed, exit 2 blocks it (reason on stderr). The signer unreachable: the run's fail mode for the
 tool's class, from register_run (closed before a run is registered). A signer refusal, a failure while a call waits for
 its approval, or any other error: blocked.
+
+System mode: the signer runs as its own user and the hook reaches it only through the socket the root-owned
+/etc/tracekit/client.json names (a TRACEKIT_SIGNER naming another is refused, and the call blocked); the signer
+unreachable is always fail-closed there, whatever the agent-writable state says. The run token stays in the agent's
+own 0700 runtime dir, and the signer accepts it only from the uid that registered the run: another local user can
+neither read it nor use it. The agent never holds the signing keys, assigns sequence numbers, chooses the policy (the
+signer decides), or answers its own approvals (signer.yaml names a different approver uid). Its own uid can still use
+its run token, from any process it runs.
 """
 import glob
 import hashlib
@@ -18,6 +27,7 @@ import time
 import uuid
 
 from tracekit import privacy
+from tracekit.client import system_config
 from tracekit.deploy import files
 from tracekit.format.canon import event_hash
 from tracekit.locking import lock_file
@@ -72,8 +82,8 @@ def _run(client, sid, register=True, send=None, **fields):
 def _register(client, path):
     version = os.environ.get("CLAUDE_CODE_VERSION")
     out = client.register_run({"agent": {"name": AGENT, **({"version": version[:64]} if version else {})}})
-    # lean: same-user dev mode, so the agent can read its own run token and edit its fail modes here (dev
-    # assurance); system mode moves this state out of the agent's reach
+    # lean: any process of the agent's uid can read and use this token (another uid cannot); binding runs to the
+    # harness's processes (a root-owned harness helper) narrows that
     st = {"run_id": out["run_id"], "run_token": out["run_token"], "fail_modes": out.get("fail_modes") or {},
           "stream": uuid.uuid4().hex, "seq": 0}
     files.write_json(path, st)
@@ -199,12 +209,17 @@ def _entry():
         print(f"[tracekit] hook payload has no {', '.join(missing)}; "
               + ("tool call blocked" if pre else "event not recorded"), file=sys.stderr)
         return 2 if pre else 0
-    client = Client()
+    try:
+        client = Client()
+    except Exception as e:   # a TRACEKIT_SIGNER that is not the system signer, or an unreadable system config
+        print(f"[tracekit] {e}; blocking", file=sys.stderr)
+        return 2
     try:
         return _handle(client, p, name, sid, tid)
     except (SignerUnavailable, OSError) as e:   # the signer unreachable: the run's fail mode for the tool's class
         try:
-            closed = not fail_open((_load(_state(sid)) or {}).get("fail_modes"), _tool_class(p.get("tool_name") or "?"))
+            closed = bool((system_config() or {}).get("signer")) or not fail_open(   # system mode: always closed
+                (_load(_state(sid)) or {}).get("fail_modes"), _tool_class(p.get("tool_name") or "?"))
         except Exception:
             closed = True
         print(f"[tracekit] signer unreachable ({e}); " + ("blocking (fail-closed)" if closed else "allowing (fail-open)"),
