@@ -17,12 +17,14 @@ import itertools
 import threading
 import time
 import uuid
+import warnings
 
 import anyio
 from claude_agent_sdk import HookMatcher
 
 from tracekit.format.canon import event_hash
 from tracekit.signer import rpc_schema
+from tracekit.sdk.client import SignerUnavailable
 from tracekit.signer.rpc_schema import RPCError
 
 BLOCKED = "Tool call blocked by policy: "
@@ -132,7 +134,8 @@ class TracekitSessionStore:
     def __init__(self, store, signer, run):
         self._store, self._rpc = store, _Run(signer, run)
         # lean: one digest per transcript for the store's life; prune at session end if one process serves many
-        self._digests = {}
+        self._digests = {}   # what the store holds now
+        self._acked = {}     # what the signer last recorded: the next state_write's prev_digest
 
     def __getattr__(self, name):   # list_sessions, delete, ...: the wrapped store's
         return getattr(self._store, name)
@@ -143,7 +146,8 @@ class TracekitSessionStore:
 
     async def load(self, key):
         entries = await self._store.load(key)
-        self._digests[self._key(key)] = _chain(entries or [])
+        k = self._key(key)
+        self._digests[k] = self._acked[k] = _chain(entries or [])
         return entries
 
     async def append(self, key, entries):
@@ -151,6 +155,12 @@ class TracekitSessionStore:
         if k not in self._digests:   # the first write this process makes to it: from what the store holds
             await self.load(key)
         await self._store.append(key, entries)
-        digest = _chain(entries, self._digests[k])
-        await self._rpc("state_write", key=k, value_digest=digest, prev_digest=self._digests[k])
-        self._digests[k] = digest
+        digest = self._digests[k] = _chain(entries, self._digests[k])
+        try:
+            await self._rpc("state_write", key=k, value_digest=digest, prev_digest=self._acked[k])
+        except (RPCError, SignerUnavailable) as e:
+            # the store has the entries: raising would make the SDK append them again. The next state_write chains
+            # from the last digest the signer recorded, so a lost write never reads as tampering.
+            warnings.warn(f"tracekit: transcript commitment for {k} not recorded: {e}", stacklevel=2)
+            return
+        self._acked[k] = digest
