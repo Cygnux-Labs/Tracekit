@@ -25,6 +25,7 @@ signer.yaml:
     limits: {events_per_s: 200, burst: 400}  # tracekit.signer.quotas.Limits
     policy: /etc/tracekit/policy.yaml        # policy v2 (YAML or JSON); default tracekit/policy2/packs/dev.yaml
     origin: tracekit.example.org/log/1       # checkpoint origin, the log key's name; default tracekit.local/<log_id>
+    metrics: {listen: 127.0.0.1:9464}        # Prometheus GET /metrics on its own port (tracekit.signer.metrics)
     acknowledge_rollback: false
 
 Startup (04-design §2.6): the storage lock is taken before any socket is touched; the log is replayed, its chain
@@ -82,7 +83,7 @@ from tracekit.identity.base import CallerIdentity
 from tracekit.locking import lock_file
 from tracekit.policy2 import compile as policy_compile
 from tracekit.policy2.engine import Engine
-from tracekit.signer import rpc_schema
+from tracekit.signer import metrics, rpc_schema
 from tracekit.signer.pipeline import SIGNER_RUN, RecordLog, approval, subject
 from tracekit.signer.quotas import Limits, Quotas
 from tracekit.signer.rpc_schema import REQUESTS, RPCError
@@ -105,7 +106,7 @@ GRACE_S, IDLE_S = 5.0, 3600.0
 FAIL_MODES = {"default": "closed"}
 CONFIG_KEYS = {"data_dir", "socket", "tcp_endpoint", "http", "durability", "tenant", "tenants", "authorize", "limits",
                "acknowledge_rollback", "policy", "multi_tenant_apps", "migrators", "analyzers", "fail_modes", "grace_s",
-               "idle_s", "origin"}
+               "idle_s", "origin", "metrics"}
 DEV_GRANT = {"token:dev": sorted(REQUESTS)}   # the dev token of the loopback TCP transport (scoped by DevToken itself)
 
 
@@ -174,10 +175,12 @@ class SignerService:
         fail_modes = dict(fail_modes or FAIL_MODES)
         if not all(isinstance(k, str) and v in ("open", "closed") for k, v in fail_modes.items()):
             raise ValueError("fail_modes maps tool classes to open or closed")
+        self.metrics = metrics.SignerMetrics()
         authorize = dict(authorize or {})
         if not all(isinstance(m, list) and set(m) <= set(REQUESTS) for m in authorize.values()):
             raise ValueError(f"authorize maps identities to lists of methods out of {sorted(REQUESTS)}")
-        open_storage = open_storage or (lambda: FileStorage(os.path.join(data_dir, "store"), durability))
+        open_storage = open_storage or (lambda: FileStorage(os.path.join(data_dir, "store"), durability,
+                                                            self.metrics.fsync_seconds.observe))
         storage = open_storage()   # takes the storage lock before anything else
         try:
             keys = os.path.join(data_dir, "keys")
@@ -190,7 +193,7 @@ class SignerService:
             self.quotas = Quotas(limits)
             salt = _secret(os.path.join(keys, "registry_salt.key"), lambda: os.urandom(32))
             self._log_key = _secret(os.path.join(keys, "log.key"), lambda: crypto.generate()[0])
-            self.log = RecordLog(storage, open_storage, sign, self.quotas, salt, bridge)
+            self.log = RecordLog(storage, open_storage, sign, self.quotas, salt, self.metrics, bridge)
         except BaseException:
             storage.close()
             raise
@@ -199,7 +202,7 @@ class SignerService:
         self.tenant, self.tenants, self.authorize = tenant, dict(tenants or {}), authorize
         self.multi_tenant_apps, self.migrators, self.analyzers = set(multi_tenant_apps), set(migrators), set(analyzers)
         self.fail_modes, self.grace_s, self.idle_s = fail_modes, grace_s, idle_s
-        self._swept = time.monotonic()
+        self._swept = self._noted = time.monotonic()
         self._args_dir = os.path.join(data_dir, "approvals")   # approval_id -> the encrypted args of a live approval
         self._cond = threading.Condition()
         self._refusals, self._refusals_lock = {}, threading.Lock()
@@ -221,6 +224,17 @@ class SignerService:
         except BaseException:
             self.log.close()
             raise
+        for name, help, fn in (
+                ("tracekit_signer_queue_depth", "Items waiting for the writer.", self.log.queue_depth),
+                ("tracekit_signer_fsync_lag_seconds", "Seconds the oldest written but unsynced record has waited.",
+                 lambda: self.log.storage.unsynced_s()),
+                ("tracekit_signer_open_runs", "Runs registered and not yet closing.",
+                 lambda: sum(not r["closed"] for k, r in list(self.log.runs.items()) if k != SIGNER_RUN)),
+                ("tracekit_signer_pending_approvals", "Approvals requested and not yet answered.",
+                 lambda: sum(a["state"] == "requested" for a in list(self.log.approvals.values()))),
+                ("tracekit_signer_checkpoint_age_seconds", "Seconds since this signer last wrote a checkpoint note "
+                 "(since start when it has written none).", lambda: time.monotonic() - self._noted)):
+            self.metrics.add(metrics.Gauge(name, help, fn))
         self._ticker = threading.Thread(target=self._tick_loop, name="tracekit-signer-ticker", daemon=True)
         self._ticker.start()
         self._checkpointer = threading.Thread(target=self._checkpoint_loop, name="tracekit-signer-checkpointer",
@@ -272,6 +286,7 @@ class SignerService:
             self.quotas.check_strings(req)
             return getattr(self, "_" + method)(identity, req)
         except RPCError as e:
+            self.metrics.refusals.inc(e.code)
             now, k = time.time(), (identity.scheme, identity.subject, e.code)
             with self._refusals_lock:
                 first, _, n = self._refusals.get(k, (now, now, 0))
@@ -312,6 +327,8 @@ class SignerService:
         if size and (latest is None or size > latest[0]):
             text = checkpoint.body(self.origin, size, root)
             self.log.storage.checkpoint_put(size, text + "\n" + checkpoint.sign(text, self.origin, self._log_key))
+            self.metrics.checkpoints.inc()
+            self._noted = time.monotonic()
 
     def sweep(self, now=None, wall=None):
         """Close idle runs, write run.final for runs whose grace window has passed and expire approvals.
@@ -839,7 +856,10 @@ def open_service(cfg, **kw):
 def serve(cfg, service):
     """Bind the configured transports for `service` (whose storage lock is already held) and start answering.
     Returns the servers; stop each with shutdown() and server_close()."""
-    servers, handle = [], answering_hello(service.handle_frame, hello())
+    if not (cfg.get("socket") or cfg.get("tcp_endpoint") or cfg.get("http")):
+        raise ValueError("configure socket, tcp_endpoint and/or http")
+    servers = [metrics.server(cfg["metrics"], service.metrics)] if "metrics" in cfg else []
+    handle = answering_hello(service.handle_frame, hello())
     if cfg.get("socket"):
         from tracekit.transport.unix import UnixServer
         try:
@@ -853,8 +873,6 @@ def serve(cfg, service):
     if cfg.get("http"):
         from tracekit.transport import http
         servers.append(http.HttpServer(*http.configure(cfg["http"]), handle))
-    if not servers:
-        raise ValueError("configure socket, tcp_endpoint and/or http")
     for s in servers:
         threading.Thread(target=s.serve_forever, args=(0.2,), daemon=True).start()
     return servers
