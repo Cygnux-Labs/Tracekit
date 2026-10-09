@@ -3,6 +3,8 @@
     tracekit signer serve --config signer.yaml
     tracekit signer serve --dev               # the same-user dev signer clients auto-spawn (decision S3)
     tracekit signer fsck  --config signer.yaml
+    tracekit signer vkey  [--dev | --config signer.yaml]               # the log's verifier key
+    tracekit signer trust [--dev | --config signer.yaml] -o trust.json  # a v2 trust config pinning it, no witnesses
 
 signer.yaml:
     data_dir: /var/lib/tracekit-signer      # keys/ and store/; relative paths are from the config file
@@ -19,6 +21,7 @@ signer.yaml:
     idle_s: 3600                             # a run without calls for this long is closed
     limits: {events_per_s: 200, burst: 400}  # tracekit.signer.quotas.Limits
     policy: /etc/tracekit/policy.yaml        # policy v2 (YAML or JSON); default tracekit/policy2/packs/dev.yaml
+    origin: tracekit.example.org/log/1       # checkpoint origin, the log key's name; default tracekit.local/<log_id>
     acknowledge_rollback: false
 
 Startup (04-design §2.6): the storage lock is taken before any socket is touched; the log is replayed, its chain
@@ -32,6 +35,11 @@ pending) → run.closing → grace window, where only late records (complete, st
 run.final{head}. run.registered and run.final also get a leaf in the tenant's registry log. Gap and tamper records are
 written by the signer only: no request can carry an event type, source, isolation or fail mode.
 
+Checkpoints (04-design §1.6, §2.9): a C2SP note of the record tree, signed by the log key (keys/log.key, Ed25519, named
+after the origin, signs notes only) and stored through the storage, after a run.final, on `checkpoint_nudge` (at most
+one note per CHECKPOINT_MIN_S), every CHECKPOINT_S while the tree grows, and on close. The log key's vkey is written to
+<data_dir>/log.vkey on start. Notes are signed off the writer thread; the writer only reads the tree head.
+
 
 Policy (04-design §4): the signer classifies the tool and decides with policy2; every decide gets a fresh decision_id
 that one `complete` with the same arguments consumes. Only deny and ask are memoised, per (tool_call_id, attempt).
@@ -42,7 +50,7 @@ approved arguments, and records every refusal. Approvals and the index are rebui
 signer's copy of a pending call's arguments (what the approver is shown) is kept encrypted under keys/approval_args.key
 and deleted once the approval is consumed, rejected or expired. An approval expires after APPROVAL_TTL_S, or when its
 run ends. Dev stubs: any identity of the run's tenant may answer an approval, and a self-approval is labelled
-(`self_approved`); `checkpoint_nudge` schedules nothing.
+(`self_approved`).
 """
 import argparse
 import datetime
@@ -62,6 +70,8 @@ from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from tracekit import __version__, crypto, yamlmini
+from tracekit.deploy import files
+from tracekit.format import checkpoint
 from tracekit.format.canon import StrictJSONError, canonical, event_hash, loads_strict
 from tracekit.format.records import RecordError, RecordSigner, verify_record
 from tracekit.identity.base import CallerIdentity
@@ -86,10 +96,11 @@ STRICTNESS = ("allow", "flag", "ask", "deny")
 LIVE = ("requested", "approved")   # approval states that may still lead to a consume
 LIST_MAX = 1000
 TICK_S = 1.0
+CHECKPOINT_S, CHECKPOINT_MIN_S = 10.0, 1.0
 GRACE_S, IDLE_S = 5.0, 3600.0
 FAIL_MODES = {"default": "closed"}
 CONFIG_KEYS = {"data_dir", "socket", "tcp_endpoint", "durability", "tenant", "tenants", "limits", "acknowledge_rollback",
-               "policy", "multi_tenant_apps", "migrators", "analyzers", "fail_modes", "grace_s", "idle_s"}
+               "policy", "multi_tenant_apps", "migrators", "analyzers", "fail_modes", "grace_s", "idle_s", "origin"}
 
 
 def load_policy(path=DEFAULT_POLICY, backend=None):
@@ -137,10 +148,11 @@ def _process_identity():
 class SignerService:
     def __init__(self, data_dir, policy=None, identity=None, tenant="default", tenants=None, limits=Limits(),
                  durability=ACK_ON_WRITE, witnesses=(), acknowledge_rollback=False, open_storage=None, isolation=None,
-                 multi_tenant_apps=(), migrators=(), analyzers=(), fail_modes=None, grace_s=GRACE_S, idle_s=IDLE_S):
+                 multi_tenant_apps=(), migrators=(), analyzers=(), fail_modes=None, grace_s=GRACE_S, idle_s=IDLE_S,
+                 origin=None):
         """`identity` answers the in-process SignerAPI calls (default: this process's uid); transports call
         handle_frame with the identity they established. `policy` is a policy2 Engine (default: load_policy()).
-        `open_storage()` defaults to file storage in data_dir/store.
+        `open_storage()` defaults to file storage in data_dir/store. `origin` names the log in its checkpoints.
         `multi_tenant_apps`, `migrators` and `analyzers` are identities ("scheme:subject").
         `isolation` fixes the signer_isolation label of every run (a dev signer: same-user)."""
         fail_modes = dict(fail_modes or FAIL_MODES)
@@ -158,6 +170,7 @@ class SignerService:
             self._args_key = AESGCM(_secret(os.path.join(keys, "approval_args.key"), lambda: os.urandom(32)))
             self.quotas = Quotas(limits)
             salt = _secret(os.path.join(keys, "registry_salt.key"), lambda: os.urandom(32))
+            self._log_key = _secret(os.path.join(keys, "log.key"), lambda: crypto.generate()[0])
             self.log = RecordLog(storage, open_storage, sign, self.quotas, salt)
         except BaseException:
             storage.close()
@@ -171,8 +184,15 @@ class SignerService:
         self._args_dir = os.path.join(data_dir, "approvals")   # approval_id -> the encrypted args of a live approval
         self._cond = threading.Condition()
         self._refusals, self._refusals_lock = {}, threading.Lock()
-        self._stop = threading.Event()
+        self._stop, self._nudged = threading.Event(), threading.Event()
+        self.origin = origin or f"tracekit.local/{self.log.log_id}"
         try:
+            self.vkey = checkpoint.vkey(self.origin, checkpoint.ED25519, crypto.public_from_secret(self._log_key))
+            d = files.open_dir(data_dir)
+            try:
+                files.write(d, "log.vkey", (self.vkey + "\n").encode("ascii"), 0o644)
+            finally:
+                files.close(d)
             _mkdir(self._args_dir)
             os.chmod(self._args_dir, 0o700)
             for aid in os.listdir(self._args_dir):   # left by a crash, or by an approval_request that was rolled back
@@ -184,6 +204,9 @@ class SignerService:
             raise
         self._ticker = threading.Thread(target=self._tick_loop, name="tracekit-signer-ticker", daemon=True)
         self._ticker.start()
+        self._checkpointer = threading.Thread(target=self._checkpoint_loop, name="tracekit-signer-checkpointer",
+                                              daemon=True)
+        self._checkpointer.start()
 
     def _check_witnesses(self, witnesses, acknowledged):
         if not witnesses:
@@ -242,9 +265,36 @@ class SignerService:
                 flushed = time.monotonic()
                 self.flush_refusals()
 
+    def _checkpoint_loop(self):
+        """A note after each nudge (a run.final nudges too), at most one per CHECKPOINT_MIN_S, and every CHECKPOINT_S."""
+        while True:
+            self._nudged.wait(CHECKPOINT_S)
+            if self._stop.is_set():   # close() writes the last note
+                return
+            self._nudged.clear()
+            try:
+                self.checkpoint()
+            except (RPCError, StorageUnavailable, OSError):   # storage down: the next round retries
+                pass
+            self._stop.wait(CHECKPOINT_MIN_S)
+
+    def checkpoint(self):
+        """Sign and store a note of the record tree when it grew since the latest stored one."""
+        def head(tx):
+            # lean: tail_state also lists every run, O(runs) on the writer per note; read only the tree head if it shows
+            t = self.log.storage.tail_state()
+            return t["tree_size"], t["tree_root"]
+        size, root = self.log.write(head)
+        latest = self.log.storage.checkpoint_latest()
+        if size and (latest is None or size > latest[0]):
+            text = checkpoint.body(self.origin, size, root)
+            self.log.storage.checkpoint_put(size, text + "\n" + checkpoint.sign(text, self.origin, self._log_key))
+
     def sweep(self, now=None, wall=None):
         """Close idle runs, write run.final for runs whose grace window has passed and expire approvals.
         `now`: a monotonic time; `wall`: a time.time() for approval expiry."""
+        finals = []
+
         def fn(tx):
             t = time.monotonic() if now is None else now
             paused = max(0.0, t - self._swept)
@@ -268,6 +318,7 @@ class SignerService:
                     tx.set(run, "final", True)
                     tx.emit(run, "run.final", {"head_run_seq": run["run_seq"] - 1, "head_hash": run["head"]},
                             source="signer")
+                    finals.append(key)
                     continue
                 expire(run, [aid for aid in live.get(key, ()) if self.log.approvals[aid]["expires_at"] <= deadline])
                 if run["closed"]:
@@ -278,6 +329,8 @@ class SignerService:
                     tx.closing(run, "idle_timeout", source="signer")
             return expired
         expired = self.log.write(fn)
+        if finals:
+            self._nudged.set()
         for aid in expired:
             self._drop_args(aid)
         if expired:
@@ -305,9 +358,17 @@ class SignerService:
                     self._refusals[k] = (min(first, f2), max(last, l2), n + n2)
 
     def close(self):
+        if self._stop.is_set():
+            return
         self._stop.set()
+        self._nudged.set()
         self._ticker.join()
+        self._checkpointer.join()
         self.flush_refusals()
+        try:
+            self.checkpoint()
+        except (RPCError, StorageUnavailable, OSError):   # storage down: the next start's notes cover these records
+            pass
         self.log.close()
 
     # --- helpers ---
@@ -683,7 +744,8 @@ class SignerService:
         return {"events": events, "next_seq": next_seq}
 
     def _checkpoint_nudge(self, identity, req):
-        return {"scheduled": False}   # no checkpointer yet (04-design §2.9)
+        self._nudged.set()
+        return {"scheduled": True}
 
 
 # the SignerAPI methods, answered for the in-process identity
@@ -706,6 +768,28 @@ def load_config(path):
     return cfg
 
 
+def signer_config(path=None):
+    """The config at `path`, or the same-user dev signer's (data_dir and socket)."""
+    if path:
+        return load_config(path)
+    from tracekit.sdk.autospawn import SOCK, runtime_dir
+    return {"data_dir": dev_data_dir(), "socket": os.path.join(runtime_dir(), SOCK)}
+
+
+def read_vkey(data_dir):
+    """The log key's vkey the signer of `data_dir` wrote on start."""
+    d = files.open_dir(data_dir)
+    try:
+        data = files.read(d, "log.vkey")
+    finally:
+        files.close(d)
+    if data is None:
+        raise ValueError(f"{data_dir} has no log.vkey yet: start the signer once")
+    vkey = data.decode("ascii").strip()
+    checkpoint.parse_vkey(vkey)
+    return vkey
+
+
 def open_service(cfg, **kw):
     if cfg.get("policy"):
         kw.setdefault("policy", load_policy(cfg["policy"]))
@@ -716,7 +800,8 @@ def open_service(cfg, **kw):
                          acknowledge_rollback=bool(cfg.get("acknowledge_rollback")),
                          multi_tenant_apps=cfg.get("multi_tenant_apps", ()), migrators=cfg.get("migrators", ()),
                          analyzers=cfg.get("analyzers", ()), fail_modes=cfg.get("fail_modes"),
-                         grace_s=float(cfg.get("grace_s", GRACE_S)), idle_s=float(cfg.get("idle_s", IDLE_S)), **kw)
+                         grace_s=float(cfg.get("grace_s", GRACE_S)), idle_s=float(cfg.get("idle_s", IDLE_S)),
+                         origin=cfg.get("origin"), **kw)
 
 
 def serve(cfg, service):
@@ -816,7 +901,6 @@ def serve_dev(runtime_dir, open_handler, proto=(rpc_schema.RPC_VERSION, rpc_sche
                     break
     except KeyboardInterrupt:
         pass
-    # lean: no v2 checkpointer yet (04-design §2.9), so there is no final checkpoint to write; write it here first
     for p in (endpoint, sock):
         pathlib.Path(p).unlink(missing_ok=True)
     server.shutdown()
@@ -868,9 +952,29 @@ def main(argv=None):
     mode.add_argument("--dev", action="store_true",
                       help="the same-user dev signer of the runtime dir ($TRACEKIT_RUNTIME_DIR); clients start it")
     sub.add_parser("fsck", help="check every record of the store").add_argument("--config", required=True)
+    for name, text in (("vkey", "print the log key's verifier key (C2SP vkey)"),
+                       ("trust", "write a v2 trust config that pins the log key, with no witnesses")):
+        q = sub.add_parser(name, help=text)
+        g = q.add_mutually_exclusive_group()
+        g.add_argument("--config")
+        g.add_argument("--dev", action="store_true", help="the same-user dev signer (the default)")
+        if name == "trust":
+            q.add_argument("-o", "--out", required=True)
     a = ap.parse_args(argv)
     if a.cmd == "serve" and a.dev:
         return _serve_dev()
+    if a.cmd in ("vkey", "trust"):
+        from tracekit.sdk.client import SignerUnavailable
+        try:
+            vkey = read_vkey(signer_config(a.config)["data_dir"])
+            if a.cmd == "trust":
+                files.write_json(a.out, {"logs": [vkey], "witnesses": [], "algs": [RecordSigner.alg],
+                                         "witnesses_required": 0}, 0o644)
+        except (OSError, ValueError, SignerUnavailable) as e:
+            print(f"tracekit signer: {e}", file=sys.stderr)
+            return 2
+        print(vkey if a.cmd == "vkey" else f"wrote {a.out}: pins log {vkey.split('+')[0]}, no witnesses")
+        return 0
     try:
         cfg = load_config(a.config)
     except (OSError, ValueError) as e:
