@@ -6,7 +6,8 @@
     tiles/<tree>/<level>/<index>.<width>
 
 Files are 0640 and directories 0750; creating or renaming a file syncs it and its directory. The run index and the
-trees are rebuilt from the logs on open; a full tile that is already on disk is never rewritten."""
+trees are rebuilt from the logs on open, rewriting any tile that no longer matches them (an ack-on-write tile can
+outlive the log lines it covers after a power loss)."""
 import contextlib
 import errno
 import json
@@ -93,19 +94,23 @@ class _Log:
         new = not os.path.exists(path)
         self.path, self.dirty = path, False
         self.fd = os.open(path, os.O_RDWR | os.O_APPEND | os.O_CREAT | _BINARY, 0o640)
-        if new:
-            os.chmod(path, 0o640)
-            _sync_dir(os.path.dirname(path))
-        # lean: reads the whole log on open; replay a snapshot plus the tail once logs outgrow memory
-        with open(path, "rb") as f:
-            data = f.read()
-        end = data.rfind(b"\n") + 1
-        if end < len(data):
-            aside = f"{path}.torn-{end}-{time.time_ns()}"
-            _write_new(aside, data[end:])
-            os.ftruncate(self.fd, end)
-            os.fsync(self.fd)
-            torn.append({"log": os.path.basename(path), "offset": end, "length": len(data) - end, "path": aside})
+        try:
+            if new:
+                os.chmod(path, 0o640)
+                _sync_dir(os.path.dirname(path))
+            # lean: reads the whole log on open; replay a snapshot plus the tail once logs outgrow memory
+            with open(path, "rb") as f:
+                data = f.read()
+            end = data.rfind(b"\n") + 1
+            if end < len(data):
+                aside = f"{path}.torn-{end}-{time.time_ns()}"
+                _write_new(aside, data[end:])
+                os.ftruncate(self.fd, end)
+                os.fsync(self.fd)
+                torn.append({"log": os.path.basename(path), "offset": end, "length": len(data) - end, "path": aside})
+        except BaseException:
+            os.close(self.fd)
+            raise
         self.lines = data[:end].split(b"\n")[:-1]  # for the caller to index once, then dropped
         self.offsets = [0]
         for line in self.lines:
@@ -146,20 +151,28 @@ class FileStorage(Storage):
         # lean: run and registry indexes live in memory, O(records); snapshot them when logs reach millions of records
         self.tree = Tree(self.tile_store(RECORDS))
         self.prev = ZERO_HASH
-        self.log = _Log(os.path.join(root, "records.jsonl"), self.torn)
-        self.reg_log = _Log(os.path.join(root, "registry.jsonl"), self.torn)
-        with self._disk():
-            for n, line in enumerate(self.log.lines, 1):
-                try:
-                    self._index(json.loads(line))
-                except (ValueError, KeyError, TypeError) as e:
-                    raise StorageCorrupt(f"records.jsonl line {n}: {e}; run fsck") from None
-            for n, line in enumerate(self.reg_log.lines):
-                try:
-                    r = json.loads(line)
-                    self._index_leaf(r["tenant"], bytes.fromhex(r["leaf"]), n)
-                except (ValueError, KeyError, TypeError) as e:
-                    raise StorageCorrupt(f"registry.jsonl line {n + 1}: {e}; run fsck") from None
+        self.log = self.reg_log = None
+        try:
+            self.log = _Log(os.path.join(root, "records.jsonl"), self.torn)
+            self.reg_log = _Log(os.path.join(root, "registry.jsonl"), self.torn)
+            with self._disk():
+                for n, line in enumerate(self.log.lines, 1):
+                    try:
+                        self._index(json.loads(line))
+                    except (ValueError, KeyError, TypeError) as e:
+                        raise StorageCorrupt(f"records.jsonl line {n}: {e}; run fsck") from None
+                for n, line in enumerate(self.reg_log.lines):
+                    try:
+                        r = json.loads(line)
+                        self._index_leaf(r["tenant"], bytes.fromhex(r["leaf"]), n)
+                    except (ValueError, KeyError, TypeError) as e:
+                        raise StorageCorrupt(f"registry.jsonl line {n + 1}: {e}; run fsck") from None
+        except BaseException:
+            for log in (self.log, self.reg_log):
+                if log:
+                    os.close(log.fd)
+            self._lock.close()
+            raise
         del self.log.lines, self.reg_log.lines
         self._stop = threading.Event()
         self._syncer = None
@@ -259,9 +272,9 @@ class FileStorage(Storage):
             return None
 
     def tiles_put(self, tree, level, index, width, data):
-        p = self._tile_path(tree, level, index, width)
-        if os.path.exists(p):  # a tile's name fixes its contents (tlog-tiles), so an existing one is already right
+        if self.tiles_get(tree, level, index, width) == data:
             return
+        p = self._tile_path(tree, level, index, width)
         with self._disk():
             _mkdir(os.path.dirname(p))
             _write_new(p, data)
