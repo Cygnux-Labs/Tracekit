@@ -300,12 +300,13 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key):
                   warn=True)
     finals = [rs[-1]["event"]["data"]["coverage"] for rs in runs.values()
               if rs[-1]["event"].get("type") == "run.final" and "coverage" in rs[-1]["event"]["data"]]
-    if finals:
+    unreconciled = {}   # from the signed reconcile.* records themselves, not run.final's summary of them
+    for r in every:
+        if str(r["event"].get("type")).startswith("reconcile."):
+            k = r["event"]["type"][len("reconcile."):]
+            unreconciled[k] = unreconciled.get(k, 0) + 1
+    if finals or unreconciled:
         layers = sorted({x for c in finals for x in c["layers"]})
-        unreconciled = {}
-        for c in finals:
-            for k, n in c["unreconciled"].items():
-                unreconciled[k] = unreconciled.get(k, 0) + n
         rep.check("coverage", not unreconciled,
                   f"layers {'+'.join(layers) or 'none'}" + ("" if "L3" in layers else " (L3 absent)")
                   + f"; {sum(c['reconciled'] for c in finals)} call(s) reconciled; unreconciled: "
