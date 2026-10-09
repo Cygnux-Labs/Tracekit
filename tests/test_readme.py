@@ -45,4 +45,11 @@ class Readme(unittest.TestCase):
         self.assertIn("Output docs/demo/demo.gif", tape)
         self.assertIn('Type "tracekit demo"', tape)
         with open(os.path.join(ROOT, "README.md"), encoding="utf-8") as f:
-            self.assertIn('src="docs/demo/demo.gif"', f.read())
+            self.assertIn('src="https://raw.githubusercontent.com/Cygnux-Labs/Tracekit/main/docs/demo/demo.gif"', f.read())
+
+    def test_repo_links_point_at_existing_files(self):
+        # README links are absolute so they work on PyPI too; each must still name a file in this repository
+        with open(os.path.join(ROOT, "README.md"), encoding="utf-8") as f:
+            paths = re.findall(r"https://github\.com/Cygnux-Labs/Tracekit/(?:blob|tree)/main/([^)#\s\"]+)", f.read())
+        self.assertTrue(paths)
+        self.assertEqual([p for p in paths if not os.path.exists(os.path.join(ROOT, p))], [])
