@@ -33,9 +33,16 @@ def ev(type_="tool.call", data=None, **kw):
     e = {"schema_version": "tracekit.event.v2", "id": "0" * 31 + "1", "seq": 1, "prev_hash": H,
          "ts": "2026-10-09T12:00:00.000000Z", "run_id": "run-1", "agent_id": "main", "parent_id": None,
          "source": "signer", "type": type_,
-         "data": {"tool_use_id": "t1", "name": "Bash", "input": {}} if data is None else data}
+         "data": {"tool_use_id": "t1", "name": "Bash", "input": {}} if data is None else data,
+         "log_id": "f" * 32, "tenant": "acme", "run_seq": 1, "run_prev_hash": H}
     e.update(kw)
     return e
+
+
+def as_v1(e):
+    """`e` as a v1 event: v1 schema, v1 genesis hash, none of the v2 record fields."""
+    return {**{k: v for k, v in e.items() if k not in ("log_id", "tenant", "run_seq", "run_prev_hash")},
+            "schema_version": "tracekit.event.v1", "prev_hash": "0" * 64}
 
 
 class TestVectors(unittest.TestCase):
@@ -173,21 +180,27 @@ class TestSchemaV2(unittest.TestCase):
                        ("engine", "noversion"), ("prev_hash", "0" * 64)):
             self.assertTrue(schema.validate(dict(good, **{k: bad})), k)
 
+    def test_signed_record_fields_are_required(self):
+        for k in ("log_id", "tenant", "run_seq", "run_prev_hash"):
+            e = ev()
+            del e[k]
+            self.assertEqual(schema.validate(e), [f"event: missing required '{k}'"])
+        self.assertTrue(schema.validate(ev("key.retire", {"kid": "ed25519:0123456789abcdef", "last_seq": 9})))
+
     def test_gap_kind_is_an_enum(self):
         self.assertEqual(schema.validate(ev("capture.gap", {"reason": "x", "kind": "reconcile.fabricated"})), [])
         self.assertTrue(schema.validate(ev("capture.gap", {"reason": "x", "kind": "counter_jump"})))
-        self.assertEqual(schema.validate(dict(ev("capture.gap", {"reason": "x", "kind": "counter_jump"}),
-                                              schema_version="tracekit.event.v1", prev_hash="0" * 64)), [])
+        self.assertEqual(schema.validate(as_v1(ev("capture.gap", {"reason": "x", "kind": "counter_jump"}))), [])
 
     def test_full_match_ascii(self):
         for k, bad in (("id", "0" * 31 + "1\n"), ("ts", "2026-10-09T12:00:00.00000١Z")):
             self.assertTrue(schema.validate(ev(**{k: bad})), k)
-            v1 = dict(ev(**{k: bad}), schema_version="tracekit.event.v1", prev_hash="0" * 64)
+            v1 = as_v1(ev(**{k: bad}))
             warns = []
             self.assertEqual(schema.validate(v1, warns), [], k)
             self.assertEqual(len(warns), 1, k)
         warns = []
-        self.assertEqual(schema.validate(dict(ev(), schema_version="tracekit.event.v1", prev_hash="0" * 64), warns), [])
+        self.assertEqual(schema.validate(as_v1(ev()), warns), [])
         self.assertEqual(warns, [])
 
     def test_every_string_and_array_is_bounded(self):
