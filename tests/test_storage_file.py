@@ -12,7 +12,8 @@ import unittest
 from unittest import mock
 
 from factories import wait_for
-from storage_contract import Chain, StorageContract
+from storage_contract import Chain, StorageContract, leaves
+from tracekit.merkle import root
 from tracekit.storage import file as file_storage
 from tracekit.storage.base import ACK_ON_FSYNC, ACK_ON_WRITE, StorageCorrupt, StorageUnavailable
 from tracekit.storage.file import FileStorage, fsck
@@ -59,6 +60,36 @@ class TestFileStorage(FileCase):
             self.open()
         problems = fsck(self.root)
         self.assertTrue(problems[0].startswith("records.jsonl line 2: unreadable"), problems)
+
+    def test_tile_outliving_lost_log_lines_is_rewritten(self):
+        s = self.open()
+        s.append_batch(Chain().batch(300))
+        s.close()
+        with open(self.log, "rb") as f:
+            kept = f.readlines()[:250]
+        with open(self.log, "wb") as f:
+            f.writelines(kept)
+        c = Chain()
+        records = c.batch(250) + c.batch(50, ("other",))
+        s = self.open()
+        s.append_batch(records[250:])
+        s.close()
+        s = self.open()
+        self.addCleanup(s.close)
+        self.assertEqual(s.tail_state()["tree_root"], root(leaves(records)))
+        self.assertEqual(s.tree.root_at(255), root(leaves(records[:255])))
+
+    @unittest.skipIf(not os.path.isdir("/dev/fd"), "needs /dev/fd")
+    def test_failed_open_releases_files(self):
+        s = self.open()
+        s.append_batch(Chain().batch(2))
+        s.close()
+        with open(self.log, "ab") as f:
+            f.write(b"{}\n")
+        before = len(os.listdir("/dev/fd"))
+        with self.assertRaises(StorageCorrupt):
+            self.open()
+        self.assertEqual(len(os.listdir("/dev/fd")), before)
 
     @unittest.skipIf(os.name == "nt", "POSIX modes")
     def test_modes(self):
