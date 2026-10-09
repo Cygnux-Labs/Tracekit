@@ -543,7 +543,7 @@ def main(argv=None):
     a = ap.parse_args(argv)
     from tracekit.signer import format_bridge
     try:
-        cfg = {"data_dir": format_bridge.DEV_DATA_DIR} if getattr(a, "dev", False) else load_config(a.config)
+        cfg = {"data_dir": dev_data_dir()} if getattr(a, "dev", False) else load_config(a.config)
     except (OSError, ValueError) as e:
         print(f"tracekit signer: {e}", file=sys.stderr)
         return 2
