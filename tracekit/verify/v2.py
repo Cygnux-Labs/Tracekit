@@ -11,10 +11,11 @@ Trust comes only from the verifier's own pinned config (JSON):
 
 Integrity VERIFIED needs: a checkpoint note signed by the pinned log key of its origin (and cosigned by the required
 number of pinned witnesses); with `rekor` pinned, the checkpoint's Rekor anchor (rekor/, tsa/) when the bundle has one
-(tracekit.anchor.rekor2: an anchor that does not verify fails the bundle; without `rekor` it is ignored); every record signed with an allowed algorithm by a key that the log declared in a
-signer.epoch record before it and had not retired (key.retire) by then; schema-valid events; one run's chain, contiguous
-from run_seq 0 to a run.final record; the run's first and last records and every key record included in the
-checkpointed tree. A run without run.final verifies only to its head. The bundle's manifest is an index, never trusted.
+(tracekit.anchor.rekor2: an anchor that does not verify fails the bundle; without `rekor` it is ignored); every record
+signed with an allowed algorithm by a key that the log declared in a signer.epoch record before it and had not retired
+(key.retire) by then; schema-valid events; one run's chain, contiguous from run_seq 0 to a run.final record; the run's
+first and last records and every key record included in the checkpointed tree. A run without run.final verifies only
+to its head. The bundle's manifest is an index, never trusted.
 A run with any self-approval (dev mode: the approver was the requester) is reported `approvals: self`, assurance dev.
 Approvals answered under the break-glass role are listed, as a warning.
 A tool call that ran against a deny, or an ask with no consumed approval, is signed by the signer as a capture.gap

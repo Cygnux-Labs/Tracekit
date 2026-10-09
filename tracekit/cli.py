@@ -516,12 +516,15 @@ def _export_v2(a):
             raise ValueError(f"no run {a.run!r} of tenant {tenant!r} in {store}")
         last = run["seqs"][-1]
 
-        def covering():   # the newest anchored note covering the run, else the newest note
-            note, anchored = reader.checkpoint_latest(), [(x["size"], x["note"]) for x in reader.anchors()[-1:]]
-            for n in anchored + [note]:
-                if n and n[0] > last and (n is note or not note or note[0] != n[0]):   # same size: the stored copy
-                    return n
-            return None
+        def signers(n):
+            return {line.split(" ")[1] for line in n.split("\n\n", 1)[1].splitlines()}
+
+        def covering():   # the newest anchored note covering the run with every cosigner of the newest note, else that
+            note = reader.checkpoint_latest()
+            for x in reader.anchors()[-1:]:
+                if x["size"] > last and note and x["size"] < note[0] and signers(x["note"]) >= signers(note[1]):
+                    return x["size"], x["note"]
+            return note if note and note[0] > last else None
         note = covering()
         if note is None:
             try:

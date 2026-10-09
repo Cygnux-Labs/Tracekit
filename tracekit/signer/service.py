@@ -300,6 +300,7 @@ class SignerService:
         self.origin = origin or f"tracekit.local/{self.log.log_id}"
         self.contact, self.witnesses = contact or self.origin, list(witnesses)
         self._queue, self._queue_lock = storage.witness_queue(), threading.Lock()
+        self._anchor = next(((a.pop("size"), a) for a in storage.anchors()[-1:]), None)   # (size, the latest anchor)
         self._wake = {w.name: threading.Event() for w in self.witnesses + self.anchors}
         try:
             self.vkey = checkpoint.vkey(self.origin, checkpoint.ED25519, crypto.public_from_secret(self._log_key))
@@ -521,8 +522,9 @@ class SignerService:
             with self._queue_lock:
                 st["attempts"] += 1
                 st["since"] = st["since"] or time.time()
-                st["next"] = time.time() + (BACKOFF_S[1] if not e.retryable else
-                                            min(BACKOFF_S[1], BACKOFF_S[0] * 2 ** (st["attempts"] - 1)))
+                st["next"] = time.time() + (w.every_s if getattr(e, "written", False)   # an anchor Rekor may hold
+                                            else BACKOFF_S[1] if not e.retryable
+                                            else min(BACKOFF_S[1], BACKOFF_S[0] * 2 ** (st["attempts"] - 1)))
                 gap = not st["gapped"] and time.time() - st["since"] >= WITNESS_GAP_S
                 reason = f"witness {w.name} has not cosigned {origin} since {_iso(st['since'])}: {str(e)[:512]}"
                 self.log.storage.witness_queue_put(self._queue)
@@ -532,13 +534,18 @@ class SignerService:
                     st["gapped"] = True
                     self.log.storage.witness_queue_put(self._queue)
             return
-        if w in self.anchors:
-            self.log.storage.anchor_put(size, {"note": note, **lines})
-        else:
-            with self._checkpointing:   # merged into the stored note unless a newer note replaced it meanwhile
-                stored = self.log.storage.checkpoint_latest(tree)
+        with self._checkpointing:   # merged into the stored note unless a newer note replaced it meanwhile
+            stored = self.log.storage.checkpoint_latest(tree)
+            if w in self.anchors:   # the stored copy, with the cosignatures merged since
+                self._anchor = size, {"note": stored[1] if stored and stored[0] == size else note, **lines}
+                self.log.storage.anchor_put(*self._anchor)
+            else:
                 if stored and stored[0] == size and not signed_by(stored[1].split("\n\n", 1)[1], w.vkey):
                     self.log.storage.checkpoint_put(size, stored[1] + lines, tree)
+                a = self._anchor   # and into the anchored copy, which exports use once a newer note replaces it
+                if tree == RECORDS and a and a[0] == size and not signed_by(a[1]["note"].split("\n\n", 1)[1], w.vkey):
+                    self._anchor = size, dict(a[1], note=a[1]["note"] + lines)
+                    self.log.storage.anchor_put(*self._anchor)
         with self._queue_lock:
             st.update(size=size, attempts=0, next=time.time() + getattr(w, "every_s", 0), since=None, gapped=False)
             self.log.storage.witness_queue_put(self._queue)

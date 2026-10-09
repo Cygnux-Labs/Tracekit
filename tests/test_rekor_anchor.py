@@ -21,16 +21,16 @@ from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
 from factories import wait_for
 from test_signer_service import ME, records, tmpdir
-from test_witness_publish import signed_note
+from test_witness_publish import NAME, VKEY, FakeWitness, signed_note
 from tracekit import cli, crypto, merkle
 from tracekit.anchor import rekor2, tsa
 from tracekit.anchor.rekor2 import RekorAnchor
 from tracekit.anchor.tsa import AnchorError, der, der_int
 from tracekit.bundle_v2 import export
-from tracekit.format import checkpoint
+from tracekit.format import checkpoint, registry
 from tracekit.signer import service as svc
 from tracekit.storage.base import RECORDS
-from tracekit.tlog_witness import log_signed
+from tracekit.tlog_witness import TlogWitness, log_signed
 from tracekit.verify import v2
 
 GOLDEN = os.path.join(os.path.dirname(os.path.abspath(__file__)), "golden", "rekor_staging")
@@ -360,6 +360,60 @@ class SignerAnchors(unittest.TestCase):
         self.s = self.open()   # the cadence holds across a restart
         time.sleep(0.3)
         self.assertEqual(len(self.fake.entries), 1)
+
+    def test_an_entry_that_does_not_verify_waits_every_s(self):
+        self.fake.log_key = ed25519.Ed25519PrivateKey.generate()   # a shard the pinned trusted root does not list
+        self.fake.log_id = hashlib.sha256(spki(self.fake.log_key)).digest()
+        self.finished_run()
+        self.assertTrue(wait_for(lambda: self.fake.entries, 10))
+        time.sleep(0.5)   # ten backoff rounds
+        self.assertEqual(len(self.fake.entries), 1)
+        st = self.s.log.storage.witness_queue()["rekor"][RECORDS]
+        self.assertEqual(st["attempts"], 1)
+        self.assertGreater(st["next"], time.time() + 3000)
+
+    def test_anchored_export_keeps_witness_cosignatures(self):
+        w = FakeWitness()
+        self.addCleanup(w.stop)
+        answer = w.answer
+        w.answer = lambda body: (time.sleep(0.5), answer(body))[1]   # cosigns after the anchor is stored
+        public = checkpoint.parse_vkey(self.s.vkey)[3]
+        for origin in (ORIGIN, registry.origin(ORIGIN, self.s.log.tenant_salt("default"))):
+            w.logs[origin] = checkpoint.vkey(origin, checkpoint.ED25519, public)
+        self.s.close()
+        self.s = svc.SignerService(self.dir, grace_s=0, origin=ORIGIN, witnesses=[TlogWitness(w.url, VKEY, timeout=5)],
+                                   rekor={"signing_config": self.sc, "trusted_root": self.tr})
+        self.addCleanup(self.s.close)
+        cosigned = lambda: f"— {NAME} " in self.s.log.storage.checkpoint_latest()[1]   # noqa: E731
+        run = self.finished_run()
+        self.assertTrue(wait_for(lambda: self.s.log.storage.anchors() and cosigned(), 10))
+        self.finished_run()
+        self.assertTrue(wait_for(cosigned, 10))
+        size = self.s.log.storage.anchors()[-1]["size"]
+        self.assertLess(size, self.s.log.storage.checkpoint_latest()[0])
+        cfg, out = os.path.join(self.dir, "signer.yaml"), os.path.join(self.dir, "run.tkb")
+        with open(cfg, "w") as f:
+            json.dump({"data_dir": self.dir}, f)
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(cli.main(["export", "--v2", "--config", cfg, "--run", run, "-o", out]), 0)
+        with zipfile.ZipFile(out) as z:
+            self.assertIn(f"rekor/{size}.json", z.namelist())
+        path = os.path.join(self.dir, "trust.json")
+        with open(path, "w") as f:
+            json.dump({"logs": [self.s.vkey], "witnesses": [{"vkey": VKEY, "class": "customer"}], "algs": ["ed25519"],
+                       "witnesses_required": 1}, f)
+        rep, code = v2.verify(out, path)
+        self.assertEqual((rep.integrity, code), ("VERIFIED", 0), rep.checks)
+
+    def test_export_from_a_store_without_anchors(self):   # a store from before anchors
+        run = self.finished_run()
+        self.s.close()
+        os.remove(os.path.join(self.dir, "store", "anchors.jsonl"))
+        cfg, out = os.path.join(self.dir, "signer.yaml"), os.path.join(self.dir, "run.tkb")
+        with open(cfg, "w") as f:
+            json.dump({"data_dir": self.dir}, f)
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(cli.main(["export", "--v2", "--config", cfg, "--run", run, "-o", out]), 0)
 
     def test_config(self):
         cfg = os.path.join(self.dir, "signer.yaml")

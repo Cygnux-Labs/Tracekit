@@ -7,7 +7,8 @@
     registry-notes.jsonl {"tree", "size", "note"} per line, every signed note of every registry tree (a later line of
                          the same size is that note cosigned, and replaces it)
     witness-queue.json   the witness publisher's state, replaced whole
-    anchors.jsonl        {"size", "note", "rekor", "tsa"} per line: each record tree note anchored in Rekor
+    anchors.jsonl        {"size", "note", "rekor", "tsa"} per line: each record tree note anchored in Rekor (a later
+                         line of the same size is that note cosigned, and replaces it)
     tiles/<tree>/<level>/<index>.<width>
 
 Files are 0640 and directories 0750; creating or renaming a file syncs it and its directory. The run index and the
@@ -108,6 +109,8 @@ class _Lines:
             self.offsets.append(self.offsets[-1] + len(line) + 1)
 
     def read(self, indices):
+        if not indices:   # a reader's missing file
+            return
         with open(self.path, "rb") as f:
             for i in indices:
                 f.seek(self.offsets[i])
@@ -225,7 +228,8 @@ class _Records:
 
     def anchors(self):
         # lean: reads every anchor per call (at most 24 a day); index anchors by size if exports become frequent
-        return [json.loads(line) for line in self.anchor_log.read(range(len(self.anchor_log.offsets) - 1))]
+        anchors = (json.loads(line) for line in self.anchor_log.read(range(len(self.anchor_log.offsets) - 1)))
+        return list({a["size"]: a for a in anchors}.values())
 
     def _index(self, record):
         e = record["event"]
