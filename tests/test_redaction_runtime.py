@@ -73,6 +73,20 @@ class RedactionRuntimeTests(unittest.TestCase):
         plain = privacy.tool_input("Bash", {"command": "FOO=bar make test"})
         self.assertEqual(plain["command"]["value"], "FOO=bar make test")
 
+    def test_action_fields_mentioning_dotenv_are_recorded_in_full(self):
+        rec = privacy.tool_input("Bash", {"command": "API_TOKEN=abcd1234 DEBUG=1 cp .env .env.bak"})
+        self.assertEqual(rec["command"]["value"], "API_TOKEN=[REDACTED:assignment] DEBUG=1 cp .env .env.bak")
+        rec = privacy.tool_input("Write", {"file_path": ".env", "content": "DB_HOST=internal.example"}, "full")
+        self.assertEqual(rec["file_path"]["value"], ".env")
+        self.assertEqual(rec["content"]["value"], "DB_HOST=[REDACTED:dotenv]")
+
+    def test_long_connection_string_passwords_redacted(self):
+        for n in (257, 10000):
+            with self.subTest(length=n):
+                out, hit = privacy.redact_text(f"connect postgres://u:{'p' * n}@host/db now")
+                self.assertTrue(hit)
+                self.assertEqual(out, "connect [REDACTED:connection_string] now")
+
     def test_realistic_secrets_still_redacted(self):
         # fake redaction fixtures  agent-flow:allow-secret
         jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"

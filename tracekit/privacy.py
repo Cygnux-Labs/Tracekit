@@ -6,7 +6,7 @@ never contain more than the ledger does.
 """
 import re
 
-from .core import content_ref, content_value
+from .core import content_ref, content_value, scrub
 
 # Every pattern must stay linear on large adversarial input (tests/test_redaction_runtime.py):
 # no unbounded repeat that many match starts can each scan to the end of the string.
@@ -22,7 +22,8 @@ SECRET_PATTERNS = [
     # lean: a JWT header over 512 chars right after "-" is not redacted; scan runs in code if that shows up
     ("jwt", re.compile(r"\beyJ(?:(?<!-eyJ)[A-Za-z0-9_\-]{8,}|[A-Za-z0-9_\-]{8,512})"
                        r"\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}")),
-    ("connection_string", re.compile(r"\b[a-z][a-z0-9+.\-]{0,31}://[^\s:/@]{0,256}:[^\s@]{1,256}@[^\s]+", re.I)),
+    # scheme://user: only; _redact_connections() finds the password and host without backtracking
+    ("connection_string", re.compile(r"\b[a-z][a-z0-9+.\-]{0,31}://[^\s:/@]{0,256}:", re.I)),
     ("google_api_key", re.compile(r"\bAIza[0-9A-Za-z_\-]{35}\b")),
     ("stripe_key", re.compile(r"\b(?:sk|rk)_(?:live|test)_[0-9A-Za-z]{16,}\b")),
     ("npm_token", re.compile(r"\bnpm_[A-Za-z0-9]{36}\b")),
@@ -52,13 +53,43 @@ def redact_text(s):
     for name, pat in SECRET_PATTERNS:
         if not any(x in low for x in _PREFILTER.get(name, ("",))):
             continue
-        if pat.groups:  # keep the label part (e.g. "Authorization: Bearer "), drop the secret
+        if name == "connection_string":
+            out, n = _redact_connections(pat, out)
+        elif pat.groups:  # keep the label part (e.g. "Authorization: Bearer "), drop the secret
             out, n = pat.subn(lambda m, name=name: m.group(1) + f"[REDACTED:{name}]", out)
         else:
             out, n = pat.subn(f"[REDACTED:{name}]", out)
         hit = hit or n > 0
     out, n = _redact_assignments(out)
     return out, hit or n > 0
+
+
+_PW_STOP = re.compile(r"[\s@]")
+_HOST_END = re.compile(r"\s|\Z")
+
+
+def _redact_connections(prefix, s):
+    """Redact scheme://user:password@host. The password runs to the first whitespace or "@" after the
+    prefix; every prefix inside one such run shares that end, so it is found once per run and the
+    scan stays linear however many prefixes the input repeats."""
+    out, last, n, pos, stop = [], 0, 0, 0, -1
+    while True:
+        m = prefix.search(s, pos)
+        if not m:
+            break
+        if m.end() > stop:
+            st = _PW_STOP.search(s, m.end())
+            stop = st.start() if st else len(s)
+        if stop > m.end() and s.startswith("@", stop):
+            end = _HOST_END.search(s, stop + 1).start()
+            if end > stop + 1:
+                out += [s[last:m.start()], "[REDACTED:connection_string]"]
+                last = pos = end
+                n += 1
+                continue
+        pos = m.start() + 1
+    out.append(s[last:])
+    return "".join(out), n
 
 
 _AFTER = re.compile(r"(\s*[=:]\s*)([\"']?)([^\s\"'#]{4,})")
@@ -146,15 +177,31 @@ def redact(obj, dotenv=False, _depth=0):
 # to see *what* was done. Everything else is recorded as a hash unless content_capture=full.
 ALWAYS_CLEAR = {"command", "file_path", "notebook_path", "path", "url", "pattern", "query", "glob",
                 "description", "subagent_type", "child_agent_id", "timeout", "run_in_background", "offset", "limit"}
+# fields that say which action ran: a .env mention in them turns on dotenv redaction for the others, never for them
+ACTION_FIELDS = ("command", "file_path", "path", "pattern")
+
+
+def _redact_heredocs(cmd):
+    """Dotenv-redact what follows the first line of a heredoc (`<<`) in a command; the command line stays."""
+    # lean: every line after the first heredoc line counts as body; parse terminators if later lines must stay clear
+    i = cmd.find("<<")
+    j = cmd.find("\n", i) if i >= 0 else -1
+    if j < 0:
+        return cmd, False
+    body, hit = redact_dotenv(cmd[j:])
+    return cmd[:j] + body, hit
 
 
 def tool_input(tool, ti, content_capture="hashed"):
     """Map a raw tool_input dict to {field: content} per docs/privacy.md."""
-    out, ti = {}, ti or {}
-    dotenv = mentions_dotenv(ti.get("command"), ti.get("file_path"), ti.get("path"), ti.get("pattern"))
+    out, ti = {}, scrub(ti or {})
+    dotenv = mentions_dotenv(*(ti.get(k) for k in ACTION_FIELDS))
     for k, v in ti.items():
         rk = redact_text(k)[0] if isinstance(k, str) else k
-        rv, red = redact(v, dotenv)
+        rv, red = redact(v, dotenv and k not in ACTION_FIELDS)
+        if dotenv and k == "command" and isinstance(rv, str):
+            rv, hit = _redact_heredocs(rv)
+            red = red or hit
         if content_capture == "full" or k in ALWAYS_CLEAR:
             out[rk] = content_value(rv, red)
         else:
@@ -165,5 +212,5 @@ def tool_input(tool, ti, content_capture="hashed"):
 def content(value, content_capture="hashed", dotenv=False):
     """Tool results, prompts and model text: hashed unless content_capture=full.
     dotenv=True (the call read or printed a .env file) redacts every KEY=value line."""
-    rv, red = redact(value, dotenv)
+    rv, red = redact(scrub(value), dotenv)
     return content_value(rv, red) if content_capture == "full" else content_ref(rv, red)
