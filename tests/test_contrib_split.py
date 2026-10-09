@@ -1,7 +1,6 @@
 """Niche modules live in contrib/ as separate packages: core neither ships nor imports them, and their old subcommands
 say where they went.  python3 -m pytest tests/test_contrib_split.py -q"""
 import contextlib
-import importlib.util
 import io
 import os
 import re
@@ -18,7 +17,7 @@ MOVED = ("causeway", "proofpack", "query", "adapters.onchain")
 class Split(unittest.TestCase):
     def test_core_does_not_ship_or_import_moved_modules(self):
         for m in MOVED:
-            self.assertIsNone(importlib.util.find_spec("tracekit." + m), m)
+            self.assertFalse(os.path.exists(os.path.join(ROOT, "tracekit", *m.split(".")) + ".py"), m)
         pat = re.compile(r"^\s*(from|import)\s+(tracekit_(causeway|proofpack|query|onchain|stagehand)\b|\S*\b(causeway|proofpack|query|onchain)\b)", re.M)
         for root, _, files in os.walk(os.path.join(ROOT, "tracekit")):
             for f in files:
