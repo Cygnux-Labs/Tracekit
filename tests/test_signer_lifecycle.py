@@ -7,11 +7,11 @@ import time
 import unittest
 
 from test_bundle_v2 import LOG_SECRET, ORIGIN, pub
-from test_rpc_contract import _pay_asks
-from test_signer_service import ME, OTHER, records, tmpdir
+from test_signer_service import ME, OTHER, PAY_ASKS, records, tmpdir
 from tracekit import merkle
 from tracekit.bundle_v2 import export
 from tracekit.format import checkpoint
+from tracekit.format.canon import event_hash
 from tracekit.format.checkpoint import ED25519
 from tracekit.identity.base import CallerIdentity
 from tracekit.signer import service as svc
@@ -28,7 +28,7 @@ FAIL_MODES = {"default": "closed", "read": "open"}
 class Lifecycle(unittest.TestCase):
     def setUp(self):
         self.dir, self.n = tmpdir(self), 0
-        self.s = svc.SignerService(self.dir, rule=_pay_asks, tenants={"uid:999003": "beta"},
+        self.s = svc.SignerService(self.dir, policy=PAY_ASKS, tenants={"uid:999003": "beta"},
                                    multi_tenant_apps=[f"uid:{ME.subject}"], migrators=["uid:999001"],
                                    analyzers=["uid:999002", "uid:999003"], fail_modes=FAIL_MODES, grace_s=60, idle_s=60)
         self.closed = False
@@ -123,16 +123,17 @@ class TestSignerOnlyRecords(Lifecycle):
 class TestLifecycle(Lifecycle):
     def test_close_grace_window_and_final(self):
         run = self.register()
-        self.decide(run, 0)
+        done = {"decision_id": self.decide(run, 0)["decision_id"],
+                "args_digest": event_hash({"tool": "read_file", "args": {}}), "status": "ok"}
         self.call("close_run", run)
         self.refused("run_closed", "decide", self.ev(run, 1, tool_call_id="tc-2", tool="t", args_source="parsed",
                                                      args={}))
         self.refused("run_closed", "close_run", run)
-        self.call("complete", self.ev(run, 2, tool_call_id="tc-1", status="ok"))   # a late record
+        self.call("complete", self.ev(run, 2, tool_call_id="tc-1", **done))   # a late record
         self.s.sweep(time.monotonic() + 30)
         self.call("model_event", self.ev(run, 3, provider="p", model="m", phase="response"))
         self.s.sweep(time.monotonic() + 61)
-        self.refused("run_closed", "complete", self.ev(run, 4, tool_call_id="tc-1", status="ok"))
+        self.refused("run_closed", "complete", self.ev(run, 4, tool_call_id="tc-1", **done))
         es = self.events(run["run_id"])
         self.assertEqual([e["type"] for e in es], ["run.registered", "policy.decision", "run.closing", "capture.gap",
                                                     "tool.result", "model.exchange", "run.final"])

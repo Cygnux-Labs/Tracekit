@@ -1,0 +1,10 @@
+# The signer's default policy: the coding pack plus one visible demo deny rule, so a deny is easy to see.
+extends: coding.yaml
+description: dev default (coding pack and a demo deny)
+
+deny:
+  - id: TK-DEMO-DENY
+    tool: tracekit_demo_denied
+    pattern: '^'
+    reason: demo deny rule
+    rationale: Shows what a signed deny looks like.
