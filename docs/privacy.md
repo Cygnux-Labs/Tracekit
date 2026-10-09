@@ -1,8 +1,33 @@
-# Privacy (v0.2)
+# Privacy
 
 Default: **redact, then hash.** Content is replaced by `{"hash": "sha256:…", "size": N, "redacted": bool}`, so a reviewer can check that a file or output matches a known one without the bundle carrying it. Operational fields needed to review an action stay in clear, after redaction.
 
-Set `content_capture: "full"` in the policy to keep redacted content in clear. Set `reasoning_capture: true` to record model text from the transcript. Both are off by default, recorded in `run.start`, and flagged by the verifier.
+## Content capture: hashed or full
+
+What the agent did (the command, the file path, the URL) is always recorded in clear. What it read or wrote (file
+contents, command output, prompts, fetched pages) is controlled by `content_capture` in the policy:
+
+- `hashed` (default): the content is stored as a SHA-256 hash and its size. You can prove a file or output matches a
+  known one, but you cannot read the content back from the log, so the log never becomes a copy of your code or data.
+- `full`: the content is stored as text, so you can read exactly what the agent saw before each call. Known secrets
+  (API keys, tokens, private keys, `.env` values) are still replaced by `[REDACTED:<kind>]`. The log now holds that
+  data: protect bundles accordingly.
+
+To turn it on, add one line to your policy file:
+
+```yaml
+extends: default
+content_capture: full        # keep content readable
+reasoning_capture: true      # also record the model's own text from the Claude Code transcript
+```
+
+Point Tracekit at it:
+
+- **dev mode:** set `TRACEKIT_POLICY=/path/to/policy.yaml` in the environment the agent (and so its hooks) runs in.
+- **system mode:** `TRACEKIT_POLICY` is ignored. Put a root-owned copy outside the agent's reach, set `"policy"` to its
+  path in `/etc/tracekit/client.json`, then run `sudo tracekit migrate --system` to pin it and restart `tracekitd`.
+
+Both settings are off by default, recorded in each run's `run.start`, and the verifier flags runs that used them.
 
 ## Field by field
 
