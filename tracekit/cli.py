@@ -149,7 +149,9 @@ def main(argv=None):
     p.add_argument("--otel-header", action="append", default=[], metavar="KEY=VALUE",
                    help="header for --otel-endpoint (repeatable; also read from OTEL_EXPORTER_OTLP_HEADERS)")
     p.add_argument("--home", help="signer home to read the ledger from")
-    p.add_argument("--v2", action="store_true", help="format v2, from the v2 signer's store (with --run)")
+    p.add_argument("--v2", action="store_true", help="format v2, from the v2 signer's store (with --run or --run-set)")
+    p.add_argument("--run-set", action="store_true", help="with --v2: the tenant's run-set, every registry leaf up to "
+                   "its latest registry checkpoint and the runs finalised in it (reads the signer's keys/)")
     p.add_argument("--tenant", help="with --v2: the run's tenant (default: the signer's default tenant)")
     p.add_argument("--config", help="with --v2: the signer's config (default: the same-user dev signer)")
     p.add_argument("--dev", action="store_true", help="with --v2: the same-user dev signer (the default)")
@@ -454,18 +456,33 @@ def _export_v2(a):
     import time
 
     from .bundle_v2 import export
+    from .format import registry
     from .sdk.client import Client, Incompatible, SignerUnavailable
     from .signer.rpc_schema import RPCError
     from .signer.service import signer_config
-    from .storage.base import StorageCorrupt
+    from .storage.base import StorageCorrupt, registry_tree
     from .storage.file import FileReader
-    if not a.run or a.dev and a.config:
-        print("tracekit export --v2: needs --run RUN_ID, and --dev or --config (not both)", file=sys.stderr)
+    if not (a.run or a.run_set) or a.dev and a.config:
+        print("tracekit export --v2: needs --run RUN_ID or --run-set, and --dev or --config (not both)", file=sys.stderr)
         return 2
     try:
         cfg = signer_config(a.config)
         store, tenant = os.path.join(cfg["data_dir"], "store"), a.tenant or cfg.get("tenant", "default")
         reader = FileReader(store)
+        if a.run_set:
+            with open(os.path.join(cfg["data_dir"], "keys", "registry_salt.key"), "rb") as f:
+                tsalt = registry.tenant_salt(f.read(), tenant)
+            for _ in range(5):   # a reader opened after reading the record note holds the registry notes it covers
+                note = reader.checkpoint_latest()
+                reader = FileReader(store)
+                if reader.checkpoint_latest() == note:
+                    break
+            reg = reader.checkpoint_latest(registry_tree(tenant))
+            if note is None or reg is None:
+                raise ValueError(f"no registry checkpoint of tenant {tenant!r} in {store} yet")
+            print(json.dumps(export(reader, tenant, a.run, note[1], a.out, run_set=(0, reg[0]), tenant_salt=tsalt),
+                             indent=2))
+            return 0
         run = reader.runs.get((tenant, a.run))
         if run is None:
             raise ValueError(f"no run {a.run!r} of tenant {tenant!r} in {store}")
