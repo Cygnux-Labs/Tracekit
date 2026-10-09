@@ -1,0 +1,1800 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Cygnux-Labs/Tracekit/schema/tracekit.event.v2.json",
+  "title": "Tracekit event v2",
+  "description": "One event in a format v2 record log. Additive over tracekit.event.v1: new optional fields and types, and bounds on every string and array. Validated with full-match ASCII patterns.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "id",
+    "seq",
+    "prev_hash",
+    "ts",
+    "run_id",
+    "agent_id",
+    "parent_id",
+    "source",
+    "type",
+    "data"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "tracekit.event.v2"
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{32}$",
+      "description": "Random 128-bit id, hex.",
+      "maxLength": 4096
+    },
+    "seq": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991,
+      "description": "Signer's monotonic counter. Assigned by tracekitd, never by the client."
+    },
+    "prev_hash": {
+      "$ref": "#/$defs/hash",
+      "description": "Hash of the previous record in this log; sha256: and 64 zeros for seq 0."
+    },
+    "ts": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{6}Z$",
+      "description": "Client-reported time, UTC, microseconds.",
+      "maxLength": 4096
+    },
+    "ts_signed": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{6}Z$",
+      "description": "Time the signer accepted the event.",
+      "maxLength": 4096
+    },
+    "run_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "agent_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200,
+      "description": "\"main\" for the top-level agent, otherwise the harness's sub-agent id."
+    },
+    "parent_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 200,
+      "description": "agent_id of the spawning agent, or null."
+    },
+    "source": {
+      "enum": [
+        "hook",
+        "proxy",
+        "transcript",
+        "signer",
+        "sdk",
+        "migrated"
+      ],
+      "description": "Capture path. transcript = harness-reported, lower trust."
+    },
+    "type": {
+      "enum": [
+        "run.start",
+        "run.end",
+        "tool.call",
+        "policy.decision",
+        "approval",
+        "tool.result",
+        "error",
+        "review",
+        "trace.tamper",
+        "capture.gap",
+        "checkpoint",
+        "user.prompt",
+        "model.message",
+        "model.exchange",
+        "run.registered",
+        "run.closing",
+        "run.final",
+        "approval.request",
+        "approval.consumed",
+        "state.write",
+        "signer.epoch",
+        "key.retire",
+        "log.closed",
+        "reconcile.hook_missing",
+        "reconcile.fabricated",
+        "reconcile.args_mismatch",
+        "reconcile.result_without_call",
+        "reconcile.unexplained_effect",
+        "reconcile.args_unparseable",
+        "refusal.summary"
+      ]
+    },
+    "data": {
+      "type": "object"
+    },
+    "transcript": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "length",
+        "hash"
+      ],
+      "description": "C2: what the hook read of the harness transcript at this point (prefix hash). Lets the signer detect later edits, truncation or deletion.",
+      "properties": {
+        "path": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "length": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "hash": {
+          "$ref": "#/$defs/hash"
+        },
+        "prefix_length": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "description": "Length the signer last acknowledged for this path."
+        },
+        "prefix_hash": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/hash"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Hash of the first prefix_length bytes as read now."
+        },
+        "missing": {
+          "type": "boolean"
+        }
+      }
+    },
+    "log_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{32}$",
+      "description": "The record log this event belongs to.",
+      "maxLength": 4096
+    },
+    "tenant": {
+      "$ref": "#/$defs/id"
+    },
+    "tenant_attested": {
+      "type": "boolean"
+    },
+    "principal": {
+      "type": "string",
+      "maxLength": 256
+    },
+    "principal_attested": {
+      "type": "boolean"
+    },
+    "request_id": {
+      "$ref": "#/$defs/id"
+    },
+    "stream": {
+      "$ref": "#/$defs/id"
+    },
+    "client_seq": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "tool_call_id": {
+      "$ref": "#/$defs/id"
+    },
+    "attempt": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "step": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "run_seq": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "run_prev_hash": {
+      "$ref": "#/$defs/hash"
+    },
+    "capture_layer": {
+      "enum": [
+        "L1",
+        "L2",
+        "L3",
+        "L4",
+        "L5",
+        "L6"
+      ]
+    },
+    "tier": {
+      "enum": [
+        "T1",
+        "T2",
+        "T3"
+      ]
+    },
+    "args_commitment": {
+      "type": "string",
+      "pattern": "^hmac-sha256:[0-9a-f]{64}$",
+      "maxLength": 4096
+    },
+    "args_source": {
+      "enum": [
+        "raw",
+        "parsed",
+        "coerced"
+      ]
+    },
+    "engine": {
+      "type": "string",
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9._-]+@[A-Za-z0-9._+-]+$",
+      "description": "Policy engine id@version."
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "run.start"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/run_start"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "run.end"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/run_end"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "tool.call"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/tool_call"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "policy.decision"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/policy_decision"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "approval"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/approval"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "tool.result"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/tool_result"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "error"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/error"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "review"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/review"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "trace.tamper"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/trace_tamper"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "capture.gap"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/capture_gap"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "checkpoint"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/checkpoint"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "user.prompt"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/user_prompt"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "model.message"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/model_message"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "model.exchange"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/model_exchange"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "run.registered"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/run_registered"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "run.closing"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/run_closing"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "run.final"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/run_final"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "approval.request"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/approval_request"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "approval.consumed"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/approval_consumed"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "state.write"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/state_write"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "signer.epoch"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/signer_epoch"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "key.retire"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/key_retire"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "log.closed"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/log_closed"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "reconcile.hook_missing"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/reconcile"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "reconcile.fabricated"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/reconcile"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "reconcile.args_mismatch"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/reconcile"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "reconcile.result_without_call"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/reconcile"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "reconcile.unexplained_effect"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/reconcile"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "reconcile.args_unparseable"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/reconcile"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "refusal.summary"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/refusal_summary"
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "hash": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "maxLength": 71
+    },
+    "content": {
+      "description": "Either the (redacted) value or a reference to it. Which one is decided by docs/privacy.md, never by the caller.",
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "value",
+            "redacted"
+          ],
+          "properties": {
+            "value": {},
+            "redacted": {
+              "type": "boolean"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "hash",
+            "size",
+            "redacted"
+          ],
+          "properties": {
+            "hash": {
+              "$ref": "#/$defs/hash"
+            },
+            "size": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "redacted": {
+              "type": "boolean"
+            }
+          }
+        }
+      ]
+    },
+    "run_start": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "agent",
+        "host",
+        "os_user",
+        "fail_mode",
+        "policy",
+        "capture_sources",
+        "sandbox",
+        "content_capture",
+        "signer_isolation"
+      ],
+      "properties": {
+        "agent": {
+          "type": "object",
+          "required": [
+            "name"
+          ],
+          "properties": {
+            "name": {
+              "type": "string",
+              "maxLength": 4096
+            },
+            "version": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "maxLength": 4096
+            }
+          }
+        },
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 4096
+        },
+        "repo": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 4096
+        },
+        "commit": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 4096
+        },
+        "cwd": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 4096
+        },
+        "host": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "os_user": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "fail_mode": {
+          "enum": [
+            "open",
+            "closed"
+          ]
+        },
+        "policy": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "version",
+            "hash"
+          ],
+          "properties": {
+            "version": {
+              "type": "string",
+              "maxLength": 4096
+            },
+            "hash": {
+              "$ref": "#/$defs/hash"
+            }
+          }
+        },
+        "capture_sources": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "hook",
+              "proxy",
+              "transcript",
+              "sdk"
+            ]
+          },
+          "maxItems": 1024
+        },
+        "sandbox": {
+          "enum": [
+            "none",
+            "unknown",
+            "self-reported-active"
+          ]
+        },
+        "content_capture": {
+          "enum": [
+            "hashed",
+            "full"
+          ]
+        },
+        "reasoning_capture": {
+          "type": "boolean"
+        },
+        "signer_isolation": {
+          "enum": [
+            "separate-user",
+            "same-user"
+          ]
+        },
+        "os_user_attested": {
+          "type": "boolean",
+          "description": "true when tracekitd set os_user from the socket peer's credentials rather than trusting the client."
+        },
+        "harness": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "0.3: set only by the signer. The registered harness instance the run.start came from (pid + kernel start time), found from the kernel's view of the sender's process tree.",
+          "required": [
+            "name",
+            "exe",
+            "pid",
+            "attested"
+          ],
+          "properties": {
+            "name": {
+              "type": "string",
+              "maxLength": 4096
+            },
+            "exe": {
+              "type": "string",
+              "maxLength": 4096
+            },
+            "pid": {
+              "type": "integer"
+            },
+            "start_time": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "attested": {
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    },
+    "run_end": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reason"
+      ],
+      "properties": {
+        "reason": {
+          "type": "string",
+          "maxLength": 4096
+        }
+      }
+    },
+    "tool_call": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tool_use_id",
+        "name",
+        "input"
+      ],
+      "properties": {
+        "tool_use_id": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "name": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "input": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/content"
+          }
+        }
+      }
+    },
+    "policy_decision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tool_use_id",
+        "decision",
+        "rule_ids"
+      ],
+      "properties": {
+        "tool_use_id": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "decision": {
+          "enum": [
+            "allow",
+            "deny",
+            "flag",
+            "ask"
+          ]
+        },
+        "rule_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 4096
+          },
+          "maxItems": 1024
+        },
+        "reasons": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 4096
+          },
+          "maxItems": 1024
+        },
+        "policy_hash": {
+          "$ref": "#/$defs/hash",
+          "description": "hash of the policy that produced this decision"
+        },
+        "policy_version": {
+          "type": "string",
+          "maxLength": 4096
+        }
+      }
+    },
+    "approval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tool_use_id",
+        "decision",
+        "approver",
+        "channel"
+      ],
+      "properties": {
+        "tool_use_id": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "decision": {
+          "enum": [
+            "approve",
+            "reject",
+            "timeout",
+            "self_approval_refused"
+          ]
+        },
+        "approver": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "channel": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "approver_uid": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "wait_ms": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "same_user": {
+          "type": [
+            "boolean",
+            "null"
+          ],
+          "description": "true when the approver is the agent's own OS user (dev mode only; not trustworthy)"
+        }
+      }
+    },
+    "tool_result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tool_use_id",
+        "ok",
+        "output"
+      ],
+      "properties": {
+        "tool_use_id": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "ok": {
+          "type": "boolean"
+        },
+        "output": {
+          "$ref": "#/$defs/content"
+        },
+        "duration_ms": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      }
+    },
+    "error": {
+      "type": "object",
+      "required": [
+        "message"
+      ],
+      "properties": {
+        "message": {
+          "type": "string",
+          "maxLength": 4096
+        }
+      }
+    },
+    "review": {
+      "type": "object",
+      "required": [
+        "reviewer",
+        "verdict"
+      ],
+      "properties": {
+        "reviewer": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "verdict": {
+          "type": "object"
+        }
+      }
+    },
+    "trace_tamper": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "before",
+        "after"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "before": {
+          "type": "object",
+          "properties": {
+            "hash": {
+              "$ref": "#/$defs/hash"
+            },
+            "length": {
+              "type": "integer"
+            }
+          }
+        },
+        "after": {
+          "type": "object",
+          "properties": {
+            "hash": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "maxLength": 4096
+            },
+            "length": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            }
+          }
+        },
+        "kind": {
+          "enum": [
+            "deleted",
+            "truncated",
+            "edited",
+            "prefix_unverifiable"
+          ]
+        }
+      }
+    },
+    "capture_gap": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reason"
+      ],
+      "properties": {
+        "reason": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "from_ts": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 4096
+        },
+        "to_ts": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 4096
+        },
+        "missed_events": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "kind": {
+          "enum": [
+            "signer_unavailable",
+            "client_counter_gap",
+            "retry_conflict",
+            "run_abandoned",
+            "witness_late",
+            "witness_failed",
+            "degraded_unanchored",
+            "format_upgrade",
+            "policy_timeout",
+            "decision_flip",
+            "class_mismatch",
+            "args_coerced",
+            "reconcile.hook_missing",
+            "reconcile.fabricated",
+            "reconcile.args_mismatch",
+            "reconcile.result_without_call",
+            "reconcile.unexplained_effect",
+            "state_tamper",
+            "tailer_lost",
+            "rollback",
+            "clock_skew",
+            "key_retired",
+            "key_revoked",
+            "log_closed",
+            "quota_refused",
+            "identity_refused",
+            "approval_expired"
+          ],
+          "description": "Gap and tamper kinds (signer-written only)."
+        },
+        "tool_use_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 4096
+        }
+      }
+    },
+    "checkpoint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "head_seq",
+        "head_hash",
+        "kid",
+        "witnesses"
+      ],
+      "properties": {
+        "head_seq": {
+          "type": "integer"
+        },
+        "head_hash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "maxLength": 4096
+        },
+        "kid": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "witnesses": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 4096
+          },
+          "maxItems": 1024
+        }
+      }
+    },
+    "user_prompt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "content"
+      ],
+      "properties": {
+        "content": {
+          "$ref": "#/$defs/content"
+        }
+      }
+    },
+    "model_message": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "content"
+      ],
+      "description": "Self-reported model output read from the harness transcript. Opt-in, off by default, lower trust.",
+      "properties": {
+        "kind": {
+          "enum": [
+            "text",
+            "thinking",
+            "thinking_withheld"
+          ]
+        },
+        "message_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 4096
+        },
+        "content": {
+          "$ref": "#/$defs/content"
+        }
+      }
+    },
+    "model_exchange": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "exchange_id",
+        "phase",
+        "streamed"
+      ],
+      "description": "C3: one model API request/response recorded by the proxy (source=proxy) before the request was forwarded and when the response completed.",
+      "properties": {
+        "exchange_id": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "phase": {
+          "enum": [
+            "request",
+            "response"
+          ]
+        },
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 4096
+        },
+        "request": {
+          "$ref": "#/$defs/content"
+        },
+        "response": {
+          "$ref": "#/$defs/content"
+        },
+        "status": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "streamed": {
+          "type": "boolean"
+        },
+        "duration_ms": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "first_byte_ms": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "added_latency_ms": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "tool_uses": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "name"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "maxLength": 4096
+              },
+              "name": {
+                "type": "string",
+                "maxLength": 4096
+              }
+            }
+          },
+          "maxItems": 1024
+        },
+        "tool_results_sent": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 4096
+          },
+          "description": "tool_use ids whose results the harness sent back in this request",
+          "maxItems": 1024
+        },
+        "stop_reason": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 4096
+        },
+        "upstream": {
+          "type": "string",
+          "maxLength": 4096
+        },
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 4096
+        },
+        "attribution": {
+          "enum": [
+            "metadata",
+            "tool_use_id",
+            "none"
+          ]
+        },
+        "usage": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "input_tokens",
+            "output_tokens"
+          ],
+          "description": "Token usage on the response (optional). input_tokens excludes cache reads; reasoning_tokens is part of output_tokens.",
+          "properties": {
+            "input_tokens": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "output_tokens": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "cache_read_tokens": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0
+            },
+            "cache_write_tokens": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0
+            },
+            "reasoning_tokens": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0
+            }
+          }
+        }
+      }
+    },
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9._:-]+$"
+    },
+    "run_registered": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "agent",
+        "identity"
+      ],
+      "properties": {
+        "agent": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "name"
+          ],
+          "properties": {
+            "name": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "version": {
+              "type": "string",
+              "maxLength": 64
+            }
+          }
+        },
+        "identity": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "scheme",
+            "subject",
+            "attested"
+          ],
+          "properties": {
+            "scheme": {
+              "enum": [
+                "uid",
+                "harness",
+                "token",
+                "k8s_sa",
+                "mtls",
+                "oidc"
+              ]
+            },
+            "subject": {
+              "type": "string",
+              "maxLength": 256
+            },
+            "attested": {
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    },
+    "run_closing": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reason"
+      ],
+      "properties": {
+        "reason": {
+          "enum": [
+            "close_run",
+            "idle_timeout"
+          ]
+        }
+      }
+    },
+    "run_final": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "head_run_seq",
+        "head_hash"
+      ],
+      "properties": {
+        "head_run_seq": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "head_hash": {
+          "$ref": "#/$defs/hash"
+        }
+      }
+    },
+    "approval_request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "approval_id",
+        "policy_hash",
+        "rule_ids",
+        "expires_at",
+        "requester"
+      ],
+      "properties": {
+        "approval_id": {
+          "$ref": "#/$defs/id"
+        },
+        "policy_hash": {
+          "$ref": "#/$defs/hash"
+        },
+        "rule_ids": {
+          "type": "array",
+          "maxItems": 32,
+          "items": {
+            "type": "string",
+            "maxLength": 64
+          }
+        },
+        "expires_at": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{6}Z$",
+          "maxLength": 4096
+        },
+        "requester": {
+          "type": "string",
+          "maxLength": 256
+        }
+      }
+    },
+    "approval_consumed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "approval_id"
+      ],
+      "properties": {
+        "approval_id": {
+          "$ref": "#/$defs/id"
+        }
+      }
+    },
+    "state_write": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "store",
+        "key",
+        "digest"
+      ],
+      "properties": {
+        "store": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "key": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "prev_digest": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/hash"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "digest": {
+          "$ref": "#/$defs/hash"
+        }
+      }
+    },
+    "signer_epoch": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "keys"
+      ],
+      "properties": {
+        "keys": {
+          "type": "array",
+          "maxItems": 16,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "kid",
+              "alg",
+              "spki"
+            ],
+            "properties": {
+              "kid": {
+                "$ref": "#/$defs/hash"
+              },
+              "alg": {
+                "type": "string",
+                "maxLength": 32,
+                "pattern": "^[a-z0-9-]+$"
+              },
+              "spki": {
+                "type": "string",
+                "maxLength": 4096,
+                "pattern": "^[A-Za-z0-9+/]+={0,2}$",
+                "description": "base64 DER SubjectPublicKeyInfo"
+              }
+            }
+          }
+        }
+      }
+    },
+    "key_retire": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kid",
+        "last_seq"
+      ],
+      "properties": {
+        "kid": {
+          "type": "string",
+          "maxLength": 71
+        },
+        "last_seq": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      }
+    },
+    "log_closed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "final_seq"
+      ],
+      "properties": {
+        "final_seq": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      }
+    },
+    "reconcile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "layers"
+      ],
+      "properties": {
+        "layers": {
+          "type": "array",
+          "maxItems": 6,
+          "items": {
+            "enum": [
+              "L1",
+              "L2",
+              "L3",
+              "L4",
+              "L5",
+              "L6"
+            ]
+          }
+        },
+        "detail": {
+          "type": "string",
+          "maxLength": 1024
+        }
+      }
+    },
+    "refusal_summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "code",
+        "count",
+        "from_ts",
+        "to_ts"
+      ],
+      "properties": {
+        "code": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "count": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "from_ts": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{6}Z$",
+          "maxLength": 4096
+        },
+        "to_ts": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{6}Z$",
+          "maxLength": 4096
+        },
+        "identity": {
+          "type": "string",
+          "maxLength": 256
+        }
+      }
+    }
+  }
+}
