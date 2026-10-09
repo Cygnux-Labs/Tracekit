@@ -2,6 +2,7 @@
 
 Any SignerAPI implementation must pass `SignerContract`: subclass it with a `make_signer()` whose policy answers
 `ask` for the tool "pay" and `allow` for everything else. It runs here against tracekit.testing.FakeSigner.
+`Harness` holds the helpers alone, for other suites over the same signers (tests/test_signer_approvals.py).
 """
 import unittest
 
@@ -45,7 +46,7 @@ class TestSchemas(unittest.TestCase):
         self.assertEqual(rpc_schema.validate(rpc_schema.ID, "run-1"), [])
 
 
-class SignerContract:
+class Harness:
     def make_signer(self) -> SignerAPI:
         raise NotImplementedError
 
@@ -91,6 +92,12 @@ class SignerContract:
                       args={"path": "a.txt"} if args is None else args, **kw)
         return req, self.call("decide", req)
 
+    def complete(self, req, d, **kw):
+        """`complete` for the call `req` that `decide` answered with `d`."""
+        return self.call("complete", self.ev(tool_call_id=req["tool_call_id"], decision_id=d["decision_id"],
+                                             args_digest=event_hash({"tool": req["tool"], "args": req["args"]}),
+                                             status="ok", **kw))
+
     def read(self):
         return self.call("read", {"run_id": self.run_id, "run_token": self.token, "limit": 1000})["events"]
 
@@ -100,6 +107,24 @@ class SignerContract:
     def run_req(self, **kw):
         return {"request_id": self.rid(), "run_id": self.run_id, "run_token": self.token, **kw}
 
+    def ask(self, args=None):
+        """A new run whose call tc-1 is answered `ask`; the id of its approval."""
+        self.register()
+        _, d = self.decide(tool="pay", args=args or {"amount": 5})
+        self.assertEqual(d["decision"], "ask")
+        out = self.call("approval_request", self.run_req(tool_call_id="tc-1"))
+        self.assertEqual(out["state"], "requested")
+        return out["approval_id"]
+
+    def wait(self, aid):
+        return self.call("approval_wait", {"run_id": self.run_id, "run_token": self.token, "approval_id": aid,
+                                           "timeout_ms": 0})["state"]
+
+    def approve(self, aid, decision="approve"):
+        return self.call("approval_decide", {"request_id": self.rid(), "approval_id": aid, "decision": decision})
+
+
+class SignerContract(Harness):
     # --- lifecycle ---
 
     def test_status(self):
@@ -110,9 +135,9 @@ class SignerContract:
     def test_run_lifecycle(self):
         reg = self.register()
         self.assertTrue(reg["tenant_attested"])
-        _, d = self.decide()
+        req, d = self.decide()
         self.assertEqual((d["decision"], d["rule_ids"]), ("allow", []))
-        self.call("complete", self.ev(tool_call_id="tc-1", status="ok", result={"bytes": 3}))
+        self.complete(req, d, result={"bytes": 3})
         self.call("state_write", self.ev(key="memory/notes", value_digest="sha256:" + "0" * 64))
         self.call("model_event", self.ev(provider="openai", model="gpt", phase="response",
                                          usage={"input_tokens": 10, "output_tokens": 2}))
@@ -218,62 +243,20 @@ class SignerContract:
             else:
                 self.assertEqual(d["rule_ids"], ["TK-ARGS-INVALID"])
 
-    # --- approvals ---
-
-    def ask(self, args=None):
-        self.register()
-        _, d = self.decide(tool="pay", args=args or {"amount": 5})
-        self.assertEqual(d["decision"], "ask")
-        out = self.call("approval_request", self.run_req(tool_call_id="tc-1"))
-        self.assertEqual(out["state"], "requested")
-        return out["approval_id"]
-
-    def wait(self, aid):
-        return self.call("approval_wait", {"run_id": self.run_id, "run_token": self.token, "approval_id": aid,
-                                           "timeout_ms": 0})["state"]
-
-    def approve(self, aid, decision="approve"):
-        return self.call("approval_decide", {"request_id": self.rid(), "approval_id": aid, "decision": decision})
-
-    def test_approval_approved_then_consumed_once(self):
-        aid = self.ask()
-        self.assertEqual(self.wait(aid), "requested")
-        _, d = self.decide(tool="pay", args={"amount": 5}, approval_id=aid)
-        self.assertEqual(d["decision"], "ask")
-        self.assertEqual(self.approve(aid)["state"], "approved")
-        self.refused("approval_not_pending", "approval_decide", {"request_id": self.rid(), "approval_id": aid,
-                                                                 "decision": "reject"})
-        _, d = self.decide(tool="pay", args={"amount": 5}, approval_id=aid)
-        self.assertEqual((d["decision"], d["rule_ids"]), ("allow", ["TK-APPROVED"]))
-        self.assertEqual(self.wait(aid), "consumed")
-        _, d = self.decide(tool="pay", args={"amount": 5}, approval_id=aid)
-        self.assertEqual(d["decision"], "deny")
-        self.assertEqual(self.types().count("approval.consumed"), 1)
-
-    def test_approval_binds_the_arguments(self):
-        aid = self.ask()
-        self.approve(aid)
-        _, d = self.decide(tool="pay", args={"amount": 5000}, approval_id=aid)
-        self.assertEqual((d["decision"], d["rule_ids"]), ("deny", ["TK-APPROVAL-MISMATCH"]))
-        _, d = self.decide(tool="pay", args={"amount": 5}, tcid="tc-other", approval_id=aid)
-        self.assertEqual(d["decision"], "deny")
-
-    def test_rejected_approval_denies(self):
-        aid = self.ask()
-        self.assertEqual(self.approve(aid, "reject")["state"], "rejected")
-        _, d = self.decide(tool="pay", args={"amount": 5}, approval_id=aid)
-        self.assertEqual(d["decision"], "deny")
+    # --- approvals (the binding rule: tests/test_signer_approvals.py) ---
 
     def test_approval_refusals(self):
         self.register()
         self.decide()   # allowed, so nothing to approve
         self.refused("unknown_tool_call", "approval_request", self.run_req(tool_call_id="tc-1"))
         self.refused("unknown_tool_call", "approval_request", self.run_req(tool_call_id="never"))
-        self.refused("unknown_tool_call", "complete", self.ev(tool_call_id="never", status="ok"))
+        self.refused("unknown_decision", "complete", self.ev(tool_call_id="never", decision_id="dec-x",
+                                                             args_digest="sha256:" + "0" * 64, status="ok"))
         self.refused("unknown_approval", "approval_decide", {"request_id": self.rid(), "approval_id": "apr-x",
                                                              "decision": "approve"})
         self.refused("unknown_approval", "approval_wait", {"run_id": self.run_id, "run_token": self.token,
                                                            "approval_id": "apr-x"})
+        self.refused("unknown_approval", "approval_get", {"approval_id": "apr-x"})
 
     def test_no_approval_after_close(self):
         aid = self.ask()

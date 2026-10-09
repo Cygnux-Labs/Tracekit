@@ -40,7 +40,20 @@ def new_run(tenant, run_id):
     """`closed`: run.closing written, late records only; `final`: run.final written, nothing more. `active` and
     `closing_at` are monotonic times for the idle and grace clocks."""
     return {"tenant": tenant, "run_id": run_id, "run_seq": 0, "head": ZERO_HASH, "streams": {}, "closed": False,
-            "final": False, "calls": {}, "owner": None, "source": "sdk", "active": time.monotonic(), "closing_at": None}
+            "final": False, "calls": {}, "decisions": {}, "denied": {}, "owner": None, "source": "sdk",
+            "active": time.monotonic(), "closing_at": None}
+
+
+def approval(tenant, run_id, data):
+    """The signer's state for the approval an `approval.request` record (`data`) opened."""
+    b = data["binding"]
+    return {"run_key": (tenant, run_id), "tool_call_id": b["tool_call_id"], "attempt": b["attempt"], "tool": b["tool"],
+            "args_source": b["args_source"], "decision_id": data["decision_id"], "commitment": b["args_commitment"],
+            "rule_ids": data["rule_ids"], "policy_hash": data["policy_hash"], "requester": data["requester"],
+            "expires_at": data["expires_at"], "binding_digest": data["binding_digest"], "state": "requested"}
+
+
+APPROVAL_ENDS = {"approval.consumed": "consumed", "approval.expired": "expired"}
 
 
 def subject(identity):
@@ -139,7 +152,7 @@ class RecordLog:
         s = self.storage
         tail = s.tail_state()
         size = tail["tree_size"]
-        runs, prev, leaves = {}, ZERO_HASH, {}
+        runs, prev, leaves, approvals, index = {}, ZERO_HASH, {}, {}, {}
         for r in s.iter_range(0, size):
             e = r["event"]
             run = runs.get((e["tenant"], e["run_id"]))
@@ -165,12 +178,26 @@ class RecordLog:
             elif e["type"] == "run.final":
                 run["final"] = True
             elif e["type"] == "policy.decision":
-                # lean: argument digests are not in the log, so a call decided before a restart can't be approved
-                # after it; persist them with the pending approvals (M1a-09cef)
-                run["calls"][e["tool_call_id"]] = {"decision": e["data"]["decision"], "rule_ids": e["data"]["rule_ids"],
-                                                   "args_digest": None}
+                d = e["data"]
+                call = {"tool_call_id": e["tool_call_id"], "attempt": e.get("attempt", 0), "decision": d["decision"],
+                        "rule_ids": d["rule_ids"], "decision_id": d.get("decision_id"),
+                        "commitment": d.get("args_commitment")}
+                run["calls"][e["tool_call_id"]] = call
+                if call["decision_id"]:
+                    run["decisions"][call["decision_id"]] = call
+            elif e["type"] == "tool.result" and "decision_id" in e["data"]:
+                run["decisions"][e["data"]["decision_id"]] = None
+            elif e["type"] == "approval.request":
+                a = approvals[e["data"]["approval_id"]] = approval(e["tenant"], e["run_id"], e["data"])
+                index[(e["tenant"], e["run_id"], a["tool_call_id"], a["attempt"])] = e["data"]["approval_id"]
+            elif e["type"] == "approval":
+                approvals[e["data"]["approval_id"]]["state"] = ("approved" if e["data"]["decision"] == "approve"
+                                                                 else "rejected")
+            elif e["type"] in APPROVAL_ENDS:
+                approvals[e["data"]["approval_id"]]["state"] = APPROVAL_ENDS[e["type"]]
         self.log_id = self.log_id or secrets.token_hex(16)
         self.runs, self.head = runs, {"seq": size, "prev": prev}
+        self.approvals, self.approval_index = approvals, index   # approval_id -> state; (tenant, run, call, attempt) -> id
         for tenant, rs in leaves.items():
             for r in rs[tail["registry"].get(tenant, (0,))[0]:]:
                 s.registry_append(tenant, self.leaf(r))
