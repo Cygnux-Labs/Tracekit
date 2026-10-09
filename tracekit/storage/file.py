@@ -90,9 +90,10 @@ def _raw(h):
 class _Log:
     """An append-only file of lines; offsets[i] is where line i starts and offsets[-1] where the file ends."""
 
-    def __init__(self, path, torn):
+    def __init__(self, path, torn, on_sync):
         new = not os.path.exists(path)
-        self.path, self.dirty = path, False
+        self.path, self.on_sync = path, on_sync
+        self.dirty_since = self.syncing_since = None   # monotonic time of the oldest line not yet synced
         self.fd = os.open(path, os.O_RDWR | os.O_APPEND | os.O_CREAT | _BINARY, 0o640)
         try:
             if new:
@@ -121,9 +122,15 @@ class _Log:
         for line in lines:
             self.offsets.append(self.offsets[-1] + len(line))
         if full:
-            _sync(self.fd, True)
-        else:
-            self.dirty = True
+            self.sync(True)
+        elif self.dirty_since is None:
+            self.dirty_since = time.monotonic()
+
+    def sync(self, full):
+        start = time.monotonic()
+        _sync(self.fd, full)
+        if self.on_sync:
+            self.on_sync(time.monotonic() - start)
 
     def read(self, indices):
         with open(self.path, "rb") as f:
@@ -133,7 +140,8 @@ class _Log:
 
 
 class FileStorage(Storage):
-    def __init__(self, root, mode=ACK_ON_WRITE):
+    def __init__(self, root, mode=ACK_ON_WRITE, on_sync=None):
+        """`on_sync(seconds)` is called after each sync of a log."""
         if mode not in (ACK_ON_WRITE, ACK_ON_FSYNC):
             raise ValueError(f"unknown durability mode {mode!r}")
         _mkdir(root)
@@ -153,8 +161,8 @@ class FileStorage(Storage):
         self.prev = ZERO_HASH
         self.log = self.reg_log = None
         try:
-            self.log = _Log(os.path.join(root, "records.jsonl"), self.torn)
-            self.reg_log = _Log(os.path.join(root, "registry.jsonl"), self.torn)
+            self.log = _Log(os.path.join(root, "records.jsonl"), self.torn, on_sync)
+            self.reg_log = _Log(os.path.join(root, "registry.jsonl"), self.torn, on_sync)
             with self._disk():
                 for n, line in enumerate(self.log.lines, 1):
                     try:
@@ -195,12 +203,17 @@ class FileStorage(Storage):
     def _sync_loop(self):
         while not self._stop.wait(SYNC_INTERVAL):
             for log in (self.log, self.reg_log):
-                if log.dirty:
-                    log.dirty = False
+                if log.dirty_since is not None:
+                    log.syncing_since, log.dirty_since = log.dirty_since, None
                     try:
-                        _sync(log.fd, False)
+                        log.sync(False)
                     except OSError as e:
                         self._error = StorageUnavailable(os.strerror(e.errno))
+                    log.syncing_since = None
+
+    def unsynced_s(self):
+        since = [t for log in (self.log, self.reg_log) for t in (log.syncing_since, log.dirty_since) if t is not None]
+        return time.monotonic() - min(since) if since else 0.0
 
     def _index(self, record):
         e = record["event"]

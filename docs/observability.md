@@ -1,0 +1,33 @@
+# Signer observability
+
+The v2 signer serves Prometheus metrics (text exposition format 0.0.4) on a port of its own:
+
+```yaml
+# signer.yaml
+metrics: {listen: 127.0.0.1:9464}
+```
+
+Only `GET /metrics` is served there. The default and any loopback address need nothing more; a non-loopback listen
+(for example `0.0.0.0:9464` in a pod) needs `allow_remote: true` and refuses to start without it.
+
+No metric carries a run id, tenant, identity, key or argument. Label values come from fixed signer-defined sets (event
+types, gap kinds, RPC error codes, verdicts); past 64 distinct values a label is counted as `other`.
+
+## Metrics
+
+| Metric | Type | Labels | Meaning |
+|---|---|---|---|
+| `tracekit_signer_batch_size` | histogram | | Items the writer took in one batch. |
+| `tracekit_signer_ack_seconds` | histogram | | Seconds from a client write's submit to its answer (includes the queue wait and, with `ack-on-fsync`, the sync). |
+| `tracekit_signer_fsync_seconds` | histogram | | Seconds one sync of a log took (background syncs with `ack-on-write`, every batch with `ack-on-fsync`). |
+| `tracekit_signer_records_total` | counter | `type` | Records written, by event type. |
+| `tracekit_signer_gaps_total` | counter | `kind` | `capture.gap` records written, by gap kind (`client_counter_gap`, `signer_unavailable`, ...). |
+| `tracekit_signer_refusals_total` | counter | `code` | RPC calls refused, by error code (`quota_exceeded`, `unavailable`, ...). |
+| `tracekit_signer_policy_decisions_total` | counter | `verdict` | `policy.decision` records written, by verdict (`allow`, `flag`, `ask`, `deny`). |
+| `tracekit_signer_policy_nondeterministic_total` | counter | | Policy decisions where a regex ran out of time (the call is denied and the record marked `nondeterministic`). |
+| `tracekit_signer_queue_depth` | gauge | | Items waiting for the writer. |
+| `tracekit_signer_fsync_lag_seconds` | gauge | | Seconds the oldest written but not yet synced record has waited; 0 with `ack-on-fsync`. |
+| `tracekit_signer_open_runs` | gauge | | Runs registered and not yet closing. |
+| `tracekit_signer_pending_approvals` | gauge | | Approvals requested and not yet answered. |
+
+Witness lag and checkpoint metrics arrive with the v2 checkpointer.
