@@ -3,16 +3,18 @@
     lock                 held while open, so one process writes
     records.jsonl        one v2 record per line, seq order
     registry.jsonl       {"tenant", "leaf": hex} per line, every tenant's registry log
+    checkpoint.note      the latest signed checkpoint note of the record tree, replaced whole
     tiles/<tree>/<level>/<index>.<width>
 
 Files are 0640 and directories 0750; creating or renaming a file syncs it and its directory. The run index and the
 trees are rebuilt from the logs on open, rewriting any tile that no longer matches them (an ack-on-write tile can
-outlive the log lines it covers after a power loss)."""
+outlive the log lines it covers after a power loss). `FileReader` reads a store while its writer runs."""
 import contextlib
 import errno
 import json
 import os
 import re
+import stat
 import sys
 import threading
 import time
@@ -25,7 +27,7 @@ except ImportError:  # pragma: no cover
 from tracekit.format.canon import event_hash, loads_strict
 from tracekit.locking import lock_file
 from tracekit.merkle import leaf_hash
-from tracekit.merkle.tiles import Tree
+from tracekit.merkle.tiles import MemoryTileStore, Tree
 
 from .base import (ACK_ON_FSYNC, ACK_ON_WRITE, RECORDS, ZERO_HASH, Storage, StorageCorrupt, StorageUnavailable,
                    registry_tree)
@@ -33,6 +35,7 @@ from .base import (ACK_ON_FSYNC, ACK_ON_WRITE, RECORDS, ZERO_HASH, Storage, Stor
 SYNC_INTERVAL = 0.005  # ack-on-write: the longest a written record waits for the background sync
 _UNAVAILABLE = {errno.EIO, errno.ENOSPC}
 _BINARY = getattr(os, "O_BINARY", 0)
+NOTE = "checkpoint.note"
 
 
 def _sync(fd, full):
@@ -87,12 +90,30 @@ def _raw(h):
     return bytes.fromhex(h[len("sha256:"):])
 
 
-class _Log:
-    """An append-only file of lines; offsets[i] is where line i starts and offsets[-1] where the file ends."""
+class _Lines:
+    """The complete lines of a file; offsets[i] is where line i starts and offsets[-1] where the last one ends."""
 
-    def __init__(self, path, torn):
+    def __init__(self, path, data):
+        self.path = path
+        self.lines = data[:data.rfind(b"\n") + 1].split(b"\n")[:-1]  # for the caller to index once, then dropped
+        self.offsets = [0]
+        for line in self.lines:
+            self.offsets.append(self.offsets[-1] + len(line) + 1)
+
+    def read(self, indices):
+        with open(self.path, "rb") as f:
+            for i in indices:
+                f.seek(self.offsets[i])
+                yield f.read(self.offsets[i + 1] - self.offsets[i])
+
+
+class _Log(_Lines):
+    """An append-only file of lines, open for writing."""
+
+    def __init__(self, path, torn, on_sync):
         new = not os.path.exists(path)
-        self.path, self.dirty = path, False
+        self.on_sync = on_sync
+        self.dirty_since = self.syncing_since = None   # monotonic time of the oldest line not yet synced
         self.fd = os.open(path, os.O_RDWR | os.O_APPEND | os.O_CREAT | _BINARY, 0o640)
         try:
             if new:
@@ -111,29 +132,67 @@ class _Log:
         except BaseException:
             os.close(self.fd)
             raise
-        self.lines = data[:end].split(b"\n")[:-1]  # for the caller to index once, then dropped
-        self.offsets = [0]
-        for line in self.lines:
-            self.offsets.append(self.offsets[-1] + len(line) + 1)
+        super().__init__(path, data)
 
     def append(self, lines, full):
         _write_all(self.fd, b"".join(lines))
         for line in lines:
             self.offsets.append(self.offsets[-1] + len(line))
         if full:
-            _sync(self.fd, True)
-        else:
-            self.dirty = True
+            self.sync(True)
+        elif self.dirty_since is None:
+            self.dirty_since = time.monotonic()
 
-    def read(self, indices):
-        with open(self.path, "rb") as f:
-            for i in indices:
-                f.seek(self.offsets[i])
-                yield f.read(self.offsets[i + 1] - self.offsets[i])
+    def sync(self, full):
+        start = time.monotonic()
+        _sync(self.fd, full)
+        if self.on_sync:
+            self.on_sync(time.monotonic() - start)
 
 
-class FileStorage(Storage):
-    def __init__(self, root, mode=ACK_ON_WRITE):
+def _parse_note(data):
+    note = data.decode("utf-8")
+    return int(note.split("\n", 2)[1]), note
+
+
+class _Records:
+    """The run index and record tree over records.jsonl, shared by the writer and the reader."""
+
+    def _index_log(self):
+        for n, line in enumerate(self.log.lines, 1):
+            try:
+                self._index(json.loads(line))
+            except (ValueError, KeyError, TypeError) as e:
+                raise StorageCorrupt(f"records.jsonl line {n}: {e}; run fsck") from None
+        del self.log.lines
+
+    def _index(self, record):
+        e = record["event"]
+        if e["seq"] != self.tree.size:
+            raise StorageCorrupt(f"seq {e['seq']} where {self.tree.size} was expected")
+        run = self.runs.setdefault((e["tenant"], e["run_id"]), {"seqs": [], "run_seq": None, "head": None})
+        run["seqs"].append(e["seq"])
+        run["run_seq"], run["head"] = e["run_seq"], record["hash"]
+        self.tree.append(leaf_hash(_raw(record["hash"])))
+        self.prev = record["hash"]
+
+    def iter_range(self, lo, hi):
+        for line in self.log.read(range(max(lo, 0), min(hi, self.tree.size))):
+            yield json.loads(line)
+
+    def iter_run(self, tenant, run_id):
+        run = self.runs.get((tenant, run_id))
+        for line in self.log.read(list(run["seqs"]) if run else []):
+            yield json.loads(line)
+
+    def get_run(self, tenant, run_id):
+        run = self.runs.get((tenant, run_id))
+        return run and {"run_seq": run["run_seq"], "head": run["head"], "count": len(run["seqs"])}
+
+
+class FileStorage(_Records, Storage):
+    def __init__(self, root, mode=ACK_ON_WRITE, on_sync=None):
+        """`on_sync(seconds)` is called after each sync of a log."""
         if mode not in (ACK_ON_WRITE, ACK_ON_FSYNC):
             raise ValueError(f"unknown durability mode {mode!r}")
         _mkdir(root)
@@ -153,27 +212,28 @@ class FileStorage(Storage):
         self.prev = ZERO_HASH
         self.log = self.reg_log = None
         try:
-            self.log = _Log(os.path.join(root, "records.jsonl"), self.torn)
-            self.reg_log = _Log(os.path.join(root, "registry.jsonl"), self.torn)
+            self.log = _Log(os.path.join(root, "records.jsonl"), self.torn, on_sync)
+            self.reg_log = _Log(os.path.join(root, "registry.jsonl"), self.torn, on_sync)
             with self._disk():
-                for n, line in enumerate(self.log.lines, 1):
-                    try:
-                        self._index(json.loads(line))
-                    except (ValueError, KeyError, TypeError) as e:
-                        raise StorageCorrupt(f"records.jsonl line {n}: {e}; run fsck") from None
+                self._index_log()
                 for n, line in enumerate(self.reg_log.lines):
                     try:
                         r = json.loads(line)
                         self._index_leaf(r["tenant"], bytes.fromhex(r["leaf"]), n)
                     except (ValueError, KeyError, TypeError) as e:
                         raise StorageCorrupt(f"registry.jsonl line {n + 1}: {e}; run fsck") from None
+                try:
+                    with open(os.path.join(root, NOTE), "rb") as f:
+                        self._note = _parse_note(f.read())
+                except FileNotFoundError:
+                    self._note = None
         except BaseException:
             for log in (self.log, self.reg_log):
                 if log:
                     os.close(log.fd)
             self._lock.close()
             raise
-        del self.log.lines, self.reg_log.lines
+        del self.reg_log.lines
         self._stop = threading.Event()
         self._syncer = None
         if not self.full:
@@ -195,22 +255,17 @@ class FileStorage(Storage):
     def _sync_loop(self):
         while not self._stop.wait(SYNC_INTERVAL):
             for log in (self.log, self.reg_log):
-                if log.dirty:
-                    log.dirty = False
+                if log.dirty_since is not None:
+                    log.syncing_since, log.dirty_since = log.dirty_since, None
                     try:
-                        _sync(log.fd, False)
+                        log.sync(False)
                     except OSError as e:
                         self._error = StorageUnavailable(os.strerror(e.errno))
+                    log.syncing_since = None
 
-    def _index(self, record):
-        e = record["event"]
-        if e["seq"] != self.tree.size:
-            raise StorageCorrupt(f"seq {e['seq']} where {self.tree.size} was expected")
-        run = self.runs.setdefault((e["tenant"], e["run_id"]), {"seqs": [], "run_seq": None, "head": None})
-        run["seqs"].append(e["seq"])
-        run["run_seq"], run["head"] = e["run_seq"], record["hash"]
-        self.tree.append(leaf_hash(_raw(record["hash"])))
-        self.prev = record["hash"]
+    def unsynced_s(self):
+        since = [t for log in (self.log, self.reg_log) for t in (log.syncing_since, log.dirty_since) if t is not None]
+        return time.monotonic() - min(since) if since else 0.0
 
     def _index_leaf(self, tenant, leaf, n):
         if tenant not in self.registry:
@@ -235,19 +290,6 @@ class FileStorage(Storage):
                 "runs": {k: self.get_run(*k) for k in self.runs},
                 "registry": {t: (tree.size, tree.root()) for t, (_, tree) in self.registry.items()}}
 
-    def iter_range(self, lo, hi):
-        for line in self.log.read(range(max(lo, 0), min(hi, self.tree.size))):
-            yield json.loads(line)
-
-    def iter_run(self, tenant, run_id):
-        run = self.runs.get((tenant, run_id))
-        for line in self.log.read(list(run["seqs"]) if run else []):
-            yield json.loads(line)
-
-    def get_run(self, tenant, run_id):
-        run = self.runs.get((tenant, run_id))
-        return run and {"run_seq": run["run_seq"], "head": run["head"], "count": len(run["seqs"])}
-
     def registry_append(self, tenant, leaf):
         line = json.dumps({"tenant": tenant, "leaf": leaf.hex()}, ensure_ascii=False).encode("utf-8") + b"\n"
         with self._disk():
@@ -258,6 +300,17 @@ class FileStorage(Storage):
         lines, _ = self.registry.get(tenant, ([], None))
         for line in self.reg_log.read(list(lines)):
             yield bytes.fromhex(json.loads(line)["leaf"])
+
+    def checkpoint_put(self, size, note):
+        if self._note and size < self._note[0]:
+            raise ValueError(f"a checkpoint of size {size} is older than the stored one of size {self._note[0]}")
+        with self._disk():
+            _sync(self.log.fd, True)   # the records a note covers are durable before the note
+            _write_new(os.path.join(self.root, NOTE), note.encode("utf-8"))
+        self._note = (size, note)
+
+    def checkpoint_latest(self):
+        return self._note
 
     def _tile_path(self, tree, level, index, width):
         if not re.fullmatch(r"[a-z0-9-]{1,64}", tree):
@@ -293,6 +346,45 @@ class FileStorage(Storage):
                 _sync(log.fd, True)
             os.close(log.fd)
         self._lock.close()
+
+
+class FileReader(_Records):
+    """A read-only view of a file store, safe while its writer appends: takes no lock, opens files read-only and never
+    writes. It holds the records that were complete when it was opened (a partial last line is the writer mid-append,
+    so it stops before it) and sees every checkpoint note written since. On POSIX it refuses a store whose directory or
+    files are symlinks, writable by group or others, or owned by another user than the directory.
+
+    Offers what `bundle_v2.export` reads: iter_run, iter_range, get_run, `runs`, `tree` (size, root_at, inclusion
+    proofs) and checkpoint_latest()."""
+
+    def __init__(self, root):
+        self.root, self.runs, self.prev = root, {}, ZERO_HASH
+        st = os.lstat(root)
+        self._owner = st.st_uid
+        self._check(root, st, stat.S_ISDIR)
+        # lean: rebuilds the tree in memory from every leaf, O(records) per open; read the tiles once views stay open
+        self.tree = Tree(MemoryTileStore())
+        path = os.path.join(root, "records.jsonl")
+        self.log = _Lines(path, self._read(path))
+        self._index_log()
+
+    def _check(self, path, st, kind):
+        if not kind(st.st_mode) or os.name == "posix" and (st.st_mode & 0o022 or st.st_uid != self._owner):
+            raise PermissionError(f"{path}: not a file of the store's owner, or writable by group or others")
+
+    def _read(self, path):
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | _BINARY)
+        with os.fdopen(fd, "rb") as f:
+            self._check(path, os.fstat(fd), stat.S_ISREG)
+            return f.read()
+
+    def checkpoint_latest(self):
+        """Read again on every call: the writer replaces the note whole, so each call sees the newest one. It may be
+        of a larger tree than the records this reader holds; open a new reader to cover it."""
+        try:
+            return _parse_note(self._read(os.path.join(self.root, NOTE)))
+        except FileNotFoundError:
+            return None
 
 
 def fsck(root):

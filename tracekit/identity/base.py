@@ -11,6 +11,12 @@ class CallerIdentity:
     claims: dict = field(default_factory=dict, hash=False)
 
 
+def bearer(conn):
+    """The bearer token of an HTTP request handler's Authorization header, or None."""
+    scheme, _, token = conn.headers.get("Authorization", "").partition(" ")
+    return (token.strip() or None) if scheme.lower() == "bearer" else None
+
+
 class Authenticator(Protocol):
     def authenticate(self, conn, frame: dict) -> CallerIdentity:
         """Identity for one frame read from `conn`; raises RPCError("unauthenticated") or RPCError("forbidden")."""

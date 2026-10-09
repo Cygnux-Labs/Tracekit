@@ -28,7 +28,7 @@ def _jsonl(records):
 
 
 def export(storage, tenant, run_id, note, out_path, policies=()):
-    """Write the bundle of run (tenant, run_id) from a FileStorage. `note` is a checkpoint of the store's record tree
+    """Write the bundle of run (tenant, run_id) from a FileStorage or FileReader. `note` is a checkpoint of the store's record tree
     that covers the run's last record; `policies` are policy snapshots (bytes)."""
     records = list(storage.iter_run(tenant, run_id))
     if not records:
