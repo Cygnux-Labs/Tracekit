@@ -13,7 +13,6 @@ from unittest import mock
 
 import adapter_contract as ac
 from tracekit.sdk.client import Client, SignerUnavailable
-from tracekit.signer.rpc_schema import RPCError
 
 try:
     from claude_agent_sdk import ClaudeAgentOptions, InMemorySessionStore, query

@@ -9,6 +9,7 @@ import contextlib
 import io
 import json
 import os
+import random
 import threading
 import time
 import unittest
@@ -154,6 +155,50 @@ class TestHookOnRealSigner(ac.OnReal, unittest.TestCase):
                 code, err = self.pre("pay", ac.PAY, tcid=method)
             self.assertEqual(code, 2, method)
             self.assertIn("not approved", err)
+
+    def test_an_approved_call_blocks_when_its_consume_fails(self):
+        self.set_fail_modes({"default": "open"})
+        real = Client.call
+
+        def call(client, m, req=None):
+            if m == "approval_wait":
+                return {"state": "approved"}
+            if m == "approval_consume":
+                raise SignerUnavailable("gone")
+            return real(client, m, req)
+        with mock.patch.object(Client, "call", call):
+            code, err = self.pre("pay", ac.PAY)
+        self.assertEqual(code, 2)
+        self.assertIn("not approved: SignerUnavailable", err)
+
+    def test_parallel_hooks_reach_the_signer_in_order(self):
+        self.assertEqual(self.d.hook("SessionStart", None, None, None)[0], 0)
+        n, go, codes, real = 16, threading.Barrier(16), [], Client.call
+
+        def jittered(client, m, req=None):   # each hook a process the OS schedules as it likes
+            time.sleep(random.random() / 50)
+            return real(client, m, req)
+
+        def tool_call(i):   # Claude Code runs the hooks of parallel tool calls at the same time
+            go.wait()
+            for name in ("PreToolUse", "PostToolUse"):
+                c = Client()
+                try:
+                    codes.append(claude_code._handle(c, {"hook_event_name": name, "tool_name": "echo",
+                                                         "tool_input": {"text": "x"}, "tool_response": "x"},
+                                                     name, "s1", f"t{i}"))
+                finally:
+                    c.close()
+        threads = [threading.Thread(target=tool_call, args=(i,)) for i in range(n)]
+        with mock.patch.object(Client, "call", jittered):
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join(60)
+        self.assertEqual(codes, [0] * 2 * n)
+        types = [e["type"] for e in self.events(self.d.run())]
+        self.assertEqual((types.count("policy.decision"), types.count("tool.result")), (n, n))
+        self.assertFalse([t for t in types if "gap" in t], types)
 
     def test_signer_unreachable_follows_the_runs_fail_mode(self):
         self.set_fail_modes({"default": "closed"})
