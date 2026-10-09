@@ -54,6 +54,15 @@ v1 signatures cover `(hash, prev_hash, seq)` only, so an elided stub does not sa
 - When a tool call mentions a `.env` file, every `KEY=value` line in its inputs, including the fields always recorded
   in clear (such as `command`), is redacted.
 
+### Security (observer and replay rendering)
+- `tracekit observe` and `replay.html` escape every record-derived value they put into HTML, and fill their data
+  slots in one pass, so bundle content cannot inject markup or script.
+- The observer's CSP allows only its own script, by a per-response nonce (no `'unsafe-inline'` scripts).
+- `observe --bundle` refuses a bundle that fails verification (non-zero exit) instead of showing it.
+- With `TRACEKIT_OBSERVE_TOKEN`, open `/?token=…` once: the token is exchanged for an HttpOnly, SameSite=Strict
+  cookie and the browser is redirected to a URL without it. API calls take the cookie or `Authorization: Bearer`,
+  no longer `?token=`. A `--host 0.0.0.0` observer now answers on its LAN address for authorized requests.
+
 ### Security (0.3: harness binding, closing fabricated runs)
 After 0.2.1, any process running as the agent's user could still drive the real hook with a complete, well-formed
 run that never happened, and it verified as `VERIFIED` (E8.6). The signer now checks *which program* sent each event,
