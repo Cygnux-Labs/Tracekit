@@ -42,7 +42,13 @@ class Pki:
         b = (x509.CertificateBuilder().subject_name(subject).issuer_name(subject if ca else issuer)
              .public_key(public_key).serial_number(x509.random_serial_number())
              .not_valid_before(now - datetime.timedelta(hours=1)).not_valid_after(now + datetime.timedelta(hours=1))
-             .add_extension(x509.BasicConstraints(ca=ca, path_length=None), critical=True))
+             .add_extension(x509.BasicConstraints(ca=ca, path_length=None), critical=True)
+             # what Python 3.13's strict X.509 verification (ssl.create_default_context) requires of a chain
+             .add_extension(x509.SubjectKeyIdentifier.from_public_key(public_key), critical=False)
+             .add_extension(x509.AuthorityKeyIdentifier.from_issuer_public_key(self.key.public_key()), critical=False)
+             .add_extension(x509.KeyUsage(digital_signature=not ca, key_cert_sign=ca, crl_sign=ca, content_commitment=False,
+                                          key_encipherment=False, data_encipherment=False, key_agreement=False,
+                                          encipher_only=False, decipher_only=False), critical=True))
         if sans:
             b = b.add_extension(x509.SubjectAlternativeName(sans), critical=False)
         return b.sign(self.key, hashes.SHA256())
