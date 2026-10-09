@@ -78,10 +78,10 @@ def _pid(d):
 
 def spawn(d):
     """Start a detached `tracekit signer serve --dev` for runtime dir `d`."""
-    env ={k: v for k, v in os.environ.items() if k in _ENV or k.startswith(("LC_", "TRACEKIT_"))}
+    env = {k: v for k, v in os.environ.items() if k in _ENV or k.startswith(("LC_", "TRACEKIT_"))}
     env["TRACEKIT_RUNTIME_DIR"] = d
     with open(os.path.join(d, LOG), "ab") as log:
-        p = subprocess.Popen(SIGNER_ARGV,stdin=subprocess.DEVNULL, stdout=log, stderr=log, cwd="/", env=env,
+        p = subprocess.Popen(SIGNER_ARGV, stdin=subprocess.DEVNULL, stdout=log, stderr=log, cwd="/", env=env,
                              start_new_session=True, umask=0o077)
     threading.Thread(target=p.wait, daemon=True).start()   # reap it if it exits while we live
     return p

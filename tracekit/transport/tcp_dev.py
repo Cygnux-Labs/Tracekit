@@ -64,7 +64,7 @@ class TcpDevServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
             pass
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
         with os.fdopen(fd, "w") as f:
-            json.dump({**(publish or {}), "port":self.server_address[1], "token": token.secret}, f)
+            json.dump({**(publish or {}), "port": self.server_address[1], "token": token.secret}, f)
         os.replace(tmp, endpoint_path)
 
 

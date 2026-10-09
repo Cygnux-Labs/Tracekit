@@ -14,9 +14,11 @@ import unittest
 
 import pytest
 
-from test_rpc_contract import SignerContract, _pay_asks
+from test_rpc_contract import SignerContract
 from tracekit import schema
+from tracekit.format.canon import event_hash
 from tracekit.identity.base import CallerIdentity
+from tracekit.policy2.engine import Engine
 from tracekit.signer import service as svc
 from tracekit.signer.pipeline import SIGNER_RUN
 from tracekit.signer.quotas import Limits
@@ -27,6 +29,7 @@ from tracekit.storage.file import FileStorage
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ME = CallerIdentity("uid", str(os.getuid()) if hasattr(os, "getuid") else "0", True)
 OTHER = CallerIdentity("uid", "999999", True)
+PAY_ASKS = Engine({"ask": [{"id": "TEST-PAY", "tool": "pay", "pattern": "^"}]})
 
 
 def tmpdir(case):
@@ -43,14 +46,13 @@ def records(data_dir):
 class TestServiceContract(SignerContract, unittest.TestCase):
     def make_signer(self):
         self.dir = tmpdir(self)
-        s = svc.SignerService(self.dir, rule=_pay_asks)
+        s = svc.SignerService(self.dir, policy=PAY_ASKS, multi_tenant_apps=[f"uid:{ME.subject}"])
         self.addCleanup(s.close)
         return s
 
     def test_records_are_signed_schema_valid_and_fsck_clean(self):
         self.register(tenant="acme")
-        self.decide()
-        self.call("complete", self.ev(tool_call_id="tc-1", status="ok", result={"n": 1}))
+        self.complete(*self.decide(), result={"n": 1})
         self.call("state_write", self.ev(key="k", value_digest="sha256:" + "0" * 64))
         self.call("model_event", self.ev(provider="openai", model="gpt", phase="request",
                                          content_digest="sha256:" + "1" * 64, usage={"input_tokens": 1, "output_tokens": 2}))
@@ -88,7 +90,7 @@ class TestServiceContract(SignerContract, unittest.TestCase):
         self.addCleanup(s.close)
         self.signer = s
         self.register()
-        self.assertEqual(self.decide(tool=svc.DEMO_DENY_TOOL)[1]["rule_ids"], ["TK-DEMO-DENY"])
+        self.assertIn("TK-DEMO-DENY", self.decide(tool="tracekit_demo_denied")[1]["rule_ids"])
         self.assertEqual(self.decide(tool="pay", tcid="tc-2")[1]["decision"], "allow")
 
 
@@ -109,7 +111,7 @@ class TestService(unittest.TestCase):
         Disk.fail = 0
 
     def open(self, **kw):
-        s = svc.SignerService(self.dir, rule=_pay_asks, open_storage=lambda: Disk(os.path.join(self.dir, "store")), **kw)
+        s = svc.SignerService(self.dir, policy=PAY_ASKS, open_storage=lambda: Disk(os.path.join(self.dir, "store")), **kw)
         self.addCleanup(s.close)
         return s
 
@@ -135,7 +137,8 @@ class TestService(unittest.TestCase):
         before = self.state(s)
         self.refused("client_seq_reused", s, "decide", self.ev(run, 0, tool_call_id="x", tool="t", args_source="parsed", args={}))
         self.refused("conflict", s, "decide", self.ev(run, 5, rid="d0", tool_call_id="tc", tool="t", args_source="parsed", args={}))
-        self.refused("unknown_tool_call", s, "complete", self.ev(run, 7, tool_call_id="never", status="ok"))
+        self.refused("unknown_decision", s, "complete", self.ev(run, 7, tool_call_id="never", decision_id="dec-x",
+                                                                args_digest="sha256:" + "0" * 64, status="ok"))
         self.refused("unknown_approval", s, "decide", self.ev(run, 9, tool_call_id="x", tool="t", args_source="parsed",
                                                              args={}, approval_id="apr-x"))
         self.assertEqual(self.state(s), before)
@@ -179,13 +182,14 @@ class TestService(unittest.TestCase):
     def test_restart_keeps_counters_and_sets_a_torn_tail_aside(self):
         s = self.open()
         run = self.register(s)
-        s.decide(self.ev(run, 0, tool_call_id="t", tool="t", args_source="parsed", args={}))
+        d = s.decide(self.ev(run, 0, tool_call_id="t", tool="t", args_source="parsed", args={}))
         s.close()
         with open(os.path.join(self.dir, "store", "records.jsonl"), "ab") as f:
             f.write(b'{"v":2,"event":{"seq":')
         s = self.open()
         self.refused("client_seq_reused", s, "decide", self.ev(run, 0, tool_call_id="t2", tool="t", args_source="parsed", args={}))
-        self.assertEqual(s.complete(self.ev(run, 1, tool_call_id="t", status="ok"))["run_seq"], 2)
+        self.assertEqual(s.complete(self.ev(run, 1, tool_call_id="t", decision_id=d["decision_id"], status="ok",
+                                            args_digest=event_hash({"tool": "t", "args": {}})))["run_seq"], 2)
         s.close()
         gaps = [r["event"]["data"] for r in records(self.dir) if r["event"]["type"] == "capture.gap"]
         self.assertEqual(len(gaps), 1)
@@ -287,8 +291,8 @@ class SocketSigner:
 class TestServeContract(SignerContract, unittest.TestCase):
     def make_signer(self):
         d = tmpdir(self)
-        cfg = {"data_dir": d, "socket": os.path.join(d, "s.sock")}
-        service = svc.open_service(cfg, rule=_pay_asks)
+        cfg = {"data_dir": d, "socket": os.path.join(d, "s.sock"), "multi_tenant_apps": [f"uid:{ME.subject}"]}
+        service = svc.open_service(cfg, policy=PAY_ASKS)
         servers = svc.serve(cfg, service)
         for srv in servers:
             self.addCleanup(service.close)

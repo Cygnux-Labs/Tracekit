@@ -1030,6 +1030,35 @@
           "type": "string",
           "maxLength": 256,
           "description": "tool name the decision is for"
+        },
+        "decision_id": {
+          "$ref": "#/$defs/id",
+          "description": "signer-assigned; `complete` consumes it once"
+        },
+        "args_commitment": {
+          "type": "string",
+          "pattern": "^hmac-sha256:[0-9a-f]{64}$",
+          "maxLength": 76,
+          "description": "HMAC of the signer's args digest under a per-decision salt the signer can reveal to an auditor; absent when the args failed strict parsing"
+        },
+        "engine": {
+          "type": "string",
+          "maxLength": 64,
+          "description": "matching engine id@version"
+        },
+        "nonce": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{32}$",
+          "maxLength": 32
+        },
+        "expires_at": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{6}Z$",
+          "maxLength": 27
+        },
+        "nondeterministic": {
+          "type": "boolean",
+          "description": "a fallback-engine match ran out of time and denied"
         }
       }
     },
@@ -1108,6 +1137,10 @@
             "integer",
             "null"
           ]
+        },
+        "decision_id": {
+          "$ref": "#/$defs/id",
+          "description": "the policy.decision this result consumes"
         }
       }
     },
@@ -1564,6 +1597,20 @@
             "unknown"
           ],
           "description": "measured by the signer from the caller's identity, never taken from the client"
+        },
+        "fail_modes": {
+          "type": "object",
+          "additionalProperties": {
+            "enum": [
+              "open",
+              "closed"
+            ]
+          },
+          "description": "tool class -> fail mode, from the signer's config, never from the client"
+        },
+        "analyzes": {
+          "$ref": "#/$defs/id",
+          "description": "a findings run: the run_id of the run of the same tenant it analyses"
         }
       }
     },

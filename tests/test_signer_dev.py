@@ -14,6 +14,7 @@ from tracekit import __version__, cli
 from tracekit.sdk import autospawn
 from tracekit.sdk.client import Client
 from tracekit.signer import service
+from tracekit.signer.rpc_schema import RPC_VERSION
 from tracekit.transport import tcp_dev, read_frame, write_frame
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -100,7 +101,7 @@ class DevSignerEndToEnd(unittest.TestCase):
 
     def test_up_wait_json(self):
         hello = json.loads(self.cli("up", "--wait", "--json"))
-        self.assertEqual(hello["proto"], [1, 1])
+        self.assertEqual(hello["proto"], [RPC_VERSION, RPC_VERSION])
         self.assertEqual(hello["version"], __version__)
         with open(self.path(autospawn.ENDPOINT)) as f:
             self.assertEqual(json.load(f), hello)
@@ -116,7 +117,7 @@ class DevSignerEndToEnd(unittest.TestCase):
         sock, rfile = tcp_dev.connect(ep)
         with sock:
             write_frame(sock, {"method": "hello"})
-            self.assertEqual(read_frame(rfile)["proto"], [1, 1])
+            self.assertEqual(read_frame(rfile)["proto"], [RPC_VERSION, RPC_VERSION])
 
 
 if __name__ == "__main__":
