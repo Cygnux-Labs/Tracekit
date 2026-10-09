@@ -57,11 +57,11 @@ def _reduce(hashes):
 
 
 class Tree:
-    def __init__(self, store, size=0):
-        """Open the tree of `size` leaves in `store`, whose right edge was written by the last flush()."""
+    def __init__(self, store, size=0, edge=None):
+        """Open the tree of `size` leaves in `store`, whose right edge is `edge` or was written by the last flush()."""
         self.store, self.size = store, size
-        self.edge = []  # edge[L]: the hashes of the unfinished tile at level L
-        while size >> (H * len(self.edge)):
+        self.edge = [] if edge is None else edge  # edge[L]: the hashes of the unfinished tile at level L
+        while edge is None and size >> (H * len(self.edge)):
             c = size >> (H * len(self.edge))
             self.edge.append(self._read(len(self.edge), c // W, c % W) if c % W else [])
 
