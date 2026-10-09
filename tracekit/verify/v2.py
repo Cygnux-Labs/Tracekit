@@ -14,6 +14,14 @@ from run_seq 0 to a run.final record; the run's first and last records and every
 checkpointed tree. A run without run.final verifies only to its head. The bundle's manifest is an index, never trusted.
 A run with any self-approval (dev mode: the approver was the requester) is reported `approvals: self`, assurance dev.
 
+Run-set (a bundle with registry/run-set.json): the tenant's registry notes, signed by the pinned log key under the
+origin `<origin>/registry/<id of the bundle's tenant salt>`, and consistent with each other; every leaf of the range
+present and in the registry tree; each pointing to a record of the checkpointed tree with that hash, seq, type and
+H(tenant_salt ‖ run_id); one run.final per run; every run final in the range in the bundle from its run.registered (when
+in the range) to that run.final. Anything else is `run-set: INCOMPLETE` (FAILED). Every key.retire leaf in the range
+must be among the key records, so a withheld retirement fails `keys`. The log tail after the checkpoint is reported
+unproven (a warning) unless a log.closed in the range is the checkpoint's last record.
+
 Format bridge (04-design §1.9): when the log's first record, signer.epoch, has `bridge`, the v1 ledger it continues can
 be checked too (verify(..., v1_ledger, v1_key)): its chain verifies by v1 rules up to `v1_last_seq`, that last record
 has hash `v1_head` and is the retirement of key `v1_kid`, and no v1 record follows it. The frozen v1 verifier sees the
@@ -28,14 +36,14 @@ import zipfile
 
 from tracekit import __version__, crypto
 from tracekit.bundle import EXIT_BAD, EXIT_FAIL, EXIT_OK, Report, _load_trusted_key
-from tracekit.bundle_v2 import FORMAT, KEY_TYPES
+from tracekit.bundle_v2 import FORMAT, KEY_TYPES, run_name
 from tracekit.core import GENESIS
 from tracekit.core import event_hash as v1_event_hash
-from tracekit.format import checkpoint
+from tracekit.format import checkpoint, registry
 from tracekit.format.canon import loads_strict
 from tracekit.format.records import RecordError, verify_record
 from tracekit.ledger import read_records, verify_record_sig
-from tracekit.merkle import leaf_hash, verify_inclusion
+from tracekit.merkle import leaf_hash, verify_consistency, verify_inclusion
 from tracekit.schema import V2, validate
 from tracekit.signer.format_bridge import retire_data
 from tracekit.storage.base import ZERO_HASH
@@ -216,39 +224,123 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key):
             else:
                 timeline[e["data"]["kid"]]["until"] = e["data"]["last_seq"]
         timeline.update(declared)
-    # lean: a withheld key.retire can't be noticed here; the registry log's key.retire leaves prove the full set (M1b)
+
+    # the runs: one, or with a run-set any number
+    names = sorted(n for n in files if n.startswith("runs/"))
+    run_set = "registry/run-set.json" in files
+    if len(names) != 1 and not run_set:
+        raise ValueError("a v2 bundle holds exactly one run, or a run-set")
+    runs, problems, chain, outside = {}, [], [], []
+    for name in names:
+        records = runs[name] = _jsonl(files[name])
+        if not records:
+            raise ValueError("a run has no records")
+        head = records[0]["event"]
+        for i, r in enumerate(records):
+            check_record(r, keys_at(r["event"]["seq"]), problems)
+            e = r["event"]
+            if (e.get("run_seq") != i or e.get("run_prev_hash") != (records[i - 1]["hash"] if i else ZERO_HASH)
+                    or (e.get("tenant"), e.get("run_id")) != (head.get("tenant"), head.get("run_id"))
+                    or (i and e["seq"] <= records[i - 1]["event"]["seq"])):
+                chain.append(f"run {str(head.get('run_id'))[:200]!r} run_seq {i} (seq {e.get('seq')!r}) does not "
+                             "continue the run")
+        if not (included(records[0]) and included(records[-1])):
+            outside.append(f"run {str(head.get('run_id'))[:200]!r}")
+    if run_set:
+        retired = _run_set(rep, files, trust, origin, size, runs, included, lambda r, p: check_record(
+            r, keys_at(r["event"]["seq"]), p))
+        listed = {(r["event"]["seq"], r["hash"]) for r in key_records}
+        key_problems.extend(f"seq {seq}: key.retire withheld (the registry log has it)"
+                            for seq, h in retired if (seq, h) not in listed)
     rep.check("keys", bool(timeline) and not key_problems,
               f"{len(timeline)} record key(s) from {len(key_records)} key record(s)", key_problems)
     _bridge(rep, key_records, v1_ledger, v1_key)
-
-    # the run
-    runs = [n for n in files if n.startswith("runs/")]
-    if len(runs) != 1:
-        raise ValueError("a v2 bundle holds exactly one run")
-    records, problems, chain = _jsonl(files[runs[0]]), [], []
-    if not records:
-        raise ValueError("the run has no records")
-    head = records[0]["event"]
-    for i, r in enumerate(records):
-        check_record(r, keys_at(r["event"]["seq"]), problems)
-        e = r["event"]
-        if (e.get("run_seq") != i or e.get("run_prev_hash") != (records[i - 1]["hash"] if i else ZERO_HASH)
-                or (e.get("tenant"), e.get("run_id")) != (head.get("tenant"), head.get("run_id"))
-                or (i and e["seq"] <= records[i - 1]["event"]["seq"])):
-            chain.append(f"run_seq {i} (seq {e.get('seq')!r}) does not continue the run")
-    rep.check("signatures", not problems, f"{len(records)} record(s), keys valid at their position", problems)
-    rep.check("run chain", not chain, f"run {str(head.get('run_id'))[:200]!r} of tenant {head.get('tenant')!r}, "
-                                      "contiguous from run_seq 0", chain)
-    rep.check("inclusion", included(records[0]) and included(records[-1]),
-              f"first and last records are in the checkpointed tree of size {size}")
+    count = sum(map(len, runs.values()))
+    rep.check("signatures", not problems, f"{count} record(s), keys valid at their position", problems)
+    only = len(runs) == 1 and next(iter(runs.values()))[0]["event"]
+    rep.check("run chain", not chain, f"run {str(only.get('run_id'))[:200]!r} of tenant {only.get('tenant')!r}, "
+                                      "contiguous from run_seq 0" if only else
+              f"{len(runs)} run(s), each contiguous from run_seq 0", chain)
+    rep.check("inclusion", not outside, f"first and last records of {len(runs)} run(s) are in the checkpointed tree "
+                                        f"of size {size}", outside)
     for p in sorted(n for n in files if n.startswith("policies/")):
         rep.check("policy snapshot", p == f"policies/{hashlib.sha256(files[p]).hexdigest()}.json", p)
 
-    n = records[-1]["event"].get("run_seq")
-    rep.integrity = "VERIFIED" if records[-1]["event"].get("type") == "run.final" else f"VERIFIED TO HEAD {n} (open)"
+    still_open = [rs for rs in runs.values() if rs[-1]["event"].get("type") != "run.final"]
+    rep.integrity = ("VERIFIED" if not still_open else f"VERIFIED TO HEAD {still_open[0][-1]['event'].get('run_seq')} "
+                     "(open)" if only else f"VERIFIED ({len(still_open)} run(s) open)")
+    every = [r for rs in runs.values() for r in rs]
     self_approved = any(r["event"].get("type") == "approval" and r["event"]["data"].get("self_approved") is True
-                        for r in records)
-    rep.assurance = _assurance(origin, cosigs, witnesses, trust, {r["alg"] for r in records}, self_approved)
+                        for r in every)
+    rep.assurance = _assurance(origin, cosigs, witnesses, trust, {r["alg"] for r in every + key_records}, self_approved)
+
+
+def _run_set(rep, files, trust, origin, size, runs, included, check_record):
+    """The run-set line (COMPLETE or INCOMPLETE) and the log tail line. Returns the (seq, hash) of every key.retire
+    the registry range points to."""
+    rs, problems = loads_strict(files["registry/run-set.json"]), []
+    tsalt = base64.b64decode(rs["tenant_salt"], validate=True)
+    lo, hi, reg_origin = rs["from"], rs["to"], registry.origin(origin, tsalt)
+    # the registry notes are signed by the record log's own pinned key, under the registry origin
+    vkeys = [checkpoint.vkey(reg_origin, checkpoint.ED25519, checkpoint.parse_vkey(k)[3]) for k in trust["logs"]
+             if checkpoint.parse_vkey(k)[0] == origin]
+    roots = {}
+    for n in sorted({lo, hi} - {0}):
+        try:
+            _, n2, roots[n], _ = checkpoint.open_note(files[f"checkpoints/registry-{n}.note"], vkeys)
+        except (checkpoint.NoteError, KeyError) as e:
+            n2 = f"unusable ({type(e).__name__}: {e})"
+        if n2 != n:
+            problems.append(f"registry checkpoint at size {n}: {n2}")
+    if problems or not 0 <= lo <= hi:
+        rep.check("run-set", False, "INCOMPLETE", problems or [f"bad registry range {lo}..{hi}"])
+        return []
+    if 0 < lo < hi and not verify_consistency(lo, hi, roots[lo], roots[hi], [
+            base64.b64decode(p, validate=True) for p in rs["consistency"]]):
+        problems.append(f"registry checkpoint {lo} is not a prefix of {hi}")
+    leaves, pointed = rs["leaves"], {r["event"]["seq"]: r for r in _jsonl(files["registry/records.jsonl"])}
+    if len(leaves) != hi - lo:
+        problems.append(f"{hi - lo} leaves in {lo}..{hi}, {len(leaves)} in the bundle: a leaf is missing")
+    registered, finals, retired, closed, tenant = {}, {}, [], None, None
+    for i, x in enumerate(leaves[:hi - lo], lo):
+        leaf = base64.b64decode(x["leaf"], validate=True)
+        if not verify_inclusion(i, hi, leaf_hash(leaf), [base64.b64decode(p, validate=True) for p in x["inclusion"]],
+                                roots.get(hi)):
+            problems.append(f"leaf {i} is not in the registry tree of size {hi}")
+            continue
+        typ, run_hash, log_id, seq, h = registry.parse(leaf)
+        r = pointed.get(seq)
+        e = r and r["event"]
+        if (r is None or r["hash"] != h or e["type"] != typ or e["log_id"] != log_id or not included(r)
+                or registry.run_hash(tsalt, e["run_id"]) != run_hash
+                or typ not in registry.SIGNER_LEAVES and tenant not in (None, e["tenant"])):
+            problems.append(f"leaf {i} points to a missing or different record (seq {seq})")
+            continue
+        check_record(r, problems)
+        if typ == "run.registered":
+            tenant, registered[e["run_id"]] = e["tenant"], r
+        elif typ == "run.final":
+            tenant = e["tenant"]
+            if e["run_id"] in finals:
+                problems.append(f"a second run.final for run {e['run_id'][:200]!r} (seq {seq})")
+            finals[e["run_id"]] = r
+        elif typ == "key.retire":
+            retired.append((seq, h))
+        else:
+            closed = e
+    for run_id, final in finals.items():
+        recs = runs.get(run_name(tenant, run_id))
+        if (not recs or recs[-1]["hash"] != final["hash"]
+                or run_id in registered and recs[0]["hash"] != registered[run_id]["hash"]):
+            problems.append(f"run {run_id[:200]!r} is final in the range but its records are not in the bundle")
+    if closed and size > closed["data"]["final_seq"] + 1:
+        problems.append(f"records after log.closed at seq {closed['seq']}")
+    rep.check("run-set", not problems, f"COMPLETE ({len(registered)} runs registered, {len(finals)} final, "
+                                       f"{len(set(registered) - set(finals))} open)" if not problems else "INCOMPLETE",
+              problems)
+    rep.check("log tail", bool(closed), f"none: log.closed at seq {closed['seq']} is the last record" if closed else
+              f"records after tree size {size} are unproven (no log.closed in the range)", warn=True)
+    return retired
 
 
 def _bridge(rep, key_records, v1_ledger, v1_key):

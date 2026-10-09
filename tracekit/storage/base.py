@@ -58,13 +58,22 @@ class Storage:
         """The tenant's registry leaves, in order."""
         raise NotImplementedError
 
-    def checkpoint_put(self, size, note):
-        """Store the signed checkpoint note (str) of the record tree at `size` as the latest; ValueError when an older
-        stored note is of a larger tree."""
+    def registry_merkle(self, tenant):
+        """The tenant's registry Merkle tree (`merkle.tiles.Tree`: size, root_at, proofs), or None."""
         raise NotImplementedError
 
-    def checkpoint_latest(self):
-        """(size, note) of the latest stored checkpoint note, or None."""
+    def checkpoint_put(self, size, note, tree=RECORDS):
+        """Store the signed checkpoint note (str) of `tree` (RECORDS or a registry_tree) at `size` as the latest;
+        ValueError when an older stored note is of a larger tree. The record tree keeps only its latest note, a
+        registry tree every note (a run-set export proves consistency between two of them)."""
+        raise NotImplementedError
+
+    def checkpoint_latest(self, tree=RECORDS):
+        """(size, note) of the latest stored checkpoint note of `tree`, or None."""
+        raise NotImplementedError
+
+    def checkpoint_at(self, tree, size):
+        """The stored note of registry tree `tree` at `size`, or None."""
         raise NotImplementedError
 
     def tiles_get(self, tree, level, index, width):
