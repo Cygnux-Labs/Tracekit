@@ -50,8 +50,8 @@ deny:
   - id: TK-D010
     class: shell
     field: command
-    # lean: RE2 has no lookahead, so .env variants are listed instead of "anything but .example"; add names as needed
-    pattern: '(>>?|\btee\b(\s+-a)?)\s*\S*(\.env(\.(local|dev|development|prod|production|staging|test))*|id_rsa|id_ed25519|authorized_keys|\.aws/credentials)(\s|$|[;&|)''"])|\b(cp|mv|install)\b[^\n|;&]*\s\S*(\.env(\.(local|dev|development|prod|production|staging|test))*|id_rsa|id_ed25519|authorized_keys|\.aws/credentials)\s*($|[;&|)])'
+    # every .env variant, templates included: a whole command can name several files, so no `unless` here
+    pattern: '(>>?|\btee\b(\s+-a)?)\s*\S*(\.env(\.[A-Za-z0-9._-]+)?|id_rsa|id_ed25519|authorized_keys|\.aws/credentials)(\s|$|[;&|)''"])|\b(cp|mv|install)\b[^\n|;&]*\s\S*(\.env(\.[A-Za-z0-9._-]+)?|id_rsa|id_ed25519|authorized_keys|\.aws/credentials)\s*($|[;&|)])'
     reason: writing to a credentials file from the shell
     rationale: The shell twin of TK-D005. Redirects, tee, cp and mv reach the same files the file-editing tools are blocked from.
   - id: TK-D011
@@ -78,7 +78,8 @@ deny:
     class: fs
     tool: Write|Edit|MultiEdit|NotebookEdit
     field: path
-    pattern: '(^|/)(\.env(\.(local|dev|development|prod|production|staging|test))*|id_rsa|id_ed25519|credentials)$|(^|/)\.ssh/|(^|/)\.aws/'
+    pattern: '(^|/)(\.env(\.[A-Za-z0-9._-]+)?|id_rsa|id_ed25519|credentials)$|(^|/)\.ssh/|(^|/)\.aws/'
+    unless: '(^|/)\.env\.(example|sample|template|dist)$'
     reason: writing to a credentials file
     rationale: Credential files are high-value and rarely a legitimate agent target.
   - id: TK-D009

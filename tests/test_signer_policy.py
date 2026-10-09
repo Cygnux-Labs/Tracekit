@@ -219,3 +219,21 @@ class SignerPolicy(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EnvFiles(unittest.TestCase):
+    """Every .env variant is protected (not a fixed list of names); templates stay writable with the file tools."""
+
+    def test_env_variants_and_templates(self):
+        from tracekit.policy2 import compile as C, engine as E
+        pol = C.build(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                   "tracekit", "policy2", "packs", "dev.yaml"))
+        pol = pol[0] if isinstance(pol, tuple) else pol
+        e = E.Engine(pol)
+        cases = [("Write", {"file_path": "/p/.env.staging2"}, "deny"), ("Write", {"file_path": "/p/.env.a.b"}, "deny"),
+                 ("Write", {"file_path": "/p/.env.example"}, "allow"), ("Write", {"file_path": "/p/.env.sample"}, "allow"),
+                 ("Bash", {"command": "echo K=1 > .env.custom"}, "deny"),
+                 ("Bash", {"command": "cp .env.example .env.prod2"}, "deny")]
+        for tool, args, want in cases:
+            with self.subTest(tool=tool, args=args):
+                self.assertEqual(e.decide(tool, args)["verdict"], want)
