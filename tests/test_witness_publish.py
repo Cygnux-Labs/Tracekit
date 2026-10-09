@@ -157,6 +157,13 @@ class Client(unittest.TestCase):
             self.add(3, 0)
         self.assertFalse(cm.exception.retryable)
 
+    def test_malformed_answers_are_witness_errors(self):
+        for answer in ((409, "\u0661\u0662\n"), (200, f"\u2014 {NAME} \u00e9\n")):   # non-ASCII digits; a non-ASCII line
+            self.w.answer = lambda body, a=answer: (a[0], a[1].encode())
+            with self.assertRaises(WitnessError) as cm:
+                self.add(3, 0)
+            self.assertFalse(cm.exception.retryable)
+
     def test_latest_is_the_witness_size(self):
         empty = signed_note(self.origin, [], self.secret)
         self.assertEqual(self.client.latest(empty, self.log_vkey), (0, None))
@@ -269,6 +276,16 @@ class Publisher(unittest.TestCase):
         lag = self.s.metrics.render()
         self.assertIn(f'tracekit_signer_witness_lag_records{{witness="{NAME}"}} 0', lag)
         self.assertRegex(lag, rf'tracekit_signer_witness_publish_failures_total{{witness="{NAME}"}} [1-9]')
+
+    def test_an_unexpected_witness_failure_is_a_gap(self):
+        with mock.patch.object(svc, "WITNESS_GAP_S", 0), \
+                mock.patch.object(TlogWitness, "add_checkpoint", side_effect=KeyError("x")):
+            self.finished_run()
+            self.s.checkpoint()
+            gaps = lambda: [r for r in records(self.dir) if r["event"]["type"] == "capture.gap"]   # noqa: E731
+            self.assertTrue(wait_for(gaps, 5))
+        self.assertEqual(gaps()[0]["event"]["data"]["kind"], "witness_failed")
+        self.assertIn("KeyError", gaps()[0]["event"]["data"]["reason"])
 
     def test_checkpoint_spam_is_coalesced(self):
         with mock.patch.object(svc, "CHECKPOINT_MIN_S", 0.2):

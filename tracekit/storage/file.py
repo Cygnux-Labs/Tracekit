@@ -118,6 +118,7 @@ class _Log(_Lines):
     def __init__(self, path, torn, on_sync):
         new = not os.path.exists(path)
         self.on_sync = on_sync
+        self.synced = 0   # lines known durable; set on open and after each sync
         self.dirty_since = self.syncing_since = None   # monotonic time of the oldest line not yet synced
         self.fd = os.open(path, os.O_RDWR | os.O_APPEND | os.O_CREAT | _BINARY, 0o640)
         try:
@@ -138,14 +139,22 @@ class _Log(_Lines):
             os.close(self.fd)
             raise
         super().__init__(path, data)
+        self.synced = len(self.lines)
 
     def append(self, lines, full):
-        _write_all(self.fd, b"".join(lines))
-        for line in lines:
-            self.offsets.append(self.offsets[-1] + len(line))
-        if full:
-            self.sync(True)
-        elif self.dirty_since is None:
+        """All of `lines` or, when the write or sync fails, none: the file is cut back to where it ended."""
+        end, n = self.offsets[-1], len(self.offsets)
+        try:
+            _write_all(self.fd, b"".join(lines))
+            for line in lines:
+                self.offsets.append(self.offsets[-1] + len(line))
+            if full:
+                self.sync(True)
+        except BaseException:
+            del self.offsets[n:]
+            os.ftruncate(self.fd, end)
+            raise
+        if not full and self.dirty_since is None:
             self.dirty_since = time.monotonic()
 
     def sync(self, full):
@@ -293,13 +302,18 @@ class FileStorage(_Records, Storage):
 
     def _sync_loop(self):
         while not self._stop.wait(SYNC_INTERVAL):
-            for log in (self.log, self.reg_log):
+            # registry leaves first: a leaf is appended after its record, so every leaf synced has its record synced
+            for log in (self.reg_log, self.log):
                 if log.dirty_since is not None:
                     log.syncing_since, log.dirty_since = log.dirty_since, None
+                    n = len(log.offsets) - 1
                     try:
                         log.sync(False)
+                        log.synced = n
                     except OSError as e:
-                        self._error = StorageUnavailable(os.strerror(e.errno))
+                        what = "records from seq" if log is self.log else "registry leaves from line"
+                        self._error = StorageUnavailable(f"background sync failed ({e.strerror or e}): {what} "
+                                                         f"{log.synced} on are not known durable")
                     log.syncing_since = None
 
     def unsynced_s(self):
