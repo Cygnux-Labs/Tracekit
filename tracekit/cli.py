@@ -42,7 +42,8 @@ def main(argv=None):
         from . import install
         return install.migrate_system(fm, harnesses)
     if args and args[0] in _MOVED:
-        print(f"tracekit {args[0]}: moved to contrib/{_MOVED[args[0]]} (pip install ./contrib/{_MOVED[args[0]]})", file=sys.stderr)
+        print(f"tracekit {args[0]}: moved to a separate package, https://github.com/Cygnux-Labs/Tracekit/tree/main/contrib/{_MOVED[args[0]]}",
+              file=sys.stderr)
         return 2
     if args and args[0] in _DELEGATED:  # before argparse: REMAINDER would not pass a leading --option through
         import importlib

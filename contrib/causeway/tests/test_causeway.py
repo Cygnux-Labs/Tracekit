@@ -8,13 +8,10 @@ import subprocess
 import sys
 import unittest
 
-HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-ROOT = os.path.dirname(os.path.dirname(HERE))
-sys.path[:0] = [ROOT, HERE, os.path.join(ROOT, "tests")]
-import tracekit_causeway as causeway  # noqa: E402
-from tracekit import bundle  # noqa: E402
-from tracekit.agent_sdk import Tracer  # noqa: E402
-from factories import DaemonCase  # noqa: E402
+import tracekit_causeway as causeway
+from tracekit import bundle
+from tracekit.agent_sdk import Tracer
+from factories import DaemonCase
 
 try:
     from causeway.core import load_run as cw_load, verify as cw_verify
@@ -140,7 +137,7 @@ class Integration(DaemonCase):
         self.assertEqual(causeway.anchor(self.home, run)[0], "anchored")
         wrote = causeway.import_tests(self.home, run)
         self.assertTrue(any(w["rule"] == "TK-C001" and "vendor" in w["title"] for w in wrote))
-        p = subprocess.run([sys.executable, "-m", "tracekit_causeway", "verify", "--home", self.home, run], capture_output=True, text=True, cwd=HERE, env=dict(os.environ, PYTHONPATH=ROOT))
+        p = subprocess.run([sys.executable, "-m", "tracekit_causeway", "verify", "--home", self.home, run], capture_output=True, text=True)
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
 
 

@@ -3,10 +3,10 @@ include tracekit_sdk.py
 recursive-include tracekit/schema *.json
 recursive-include tracekit/policy *.yaml
 recursive-include tracekit/ui *.html
-recursive-include tests *.py *.jsonl
+recursive-include tests *.py *.jsonl *.json *.tkb *.pub *.html
 recursive-include docs *.md *.png *.tkb *.pub *.html
 recursive-include plugin *
-include .claude-plugin/marketplace.json action.yml Makefile CONTRIBUTING.md
+include .claude-plugin/marketplace.json action.yml Makefile CONTRIBUTING.md sdk/typescript/package.json
 recursive-include examples *.py
 prune paper
 prune eval

@@ -51,6 +51,7 @@ class HookCommand(unittest.TestCase):
 
     def test_init_dev_writes_hooks_that_point_at_the_hook(self):
         d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
         settings = os.path.join(d, ".claude", "settings.json")
         os.environ["TRACEKIT_CLIENT_HOME"] = os.path.join(d, "client")
         try:
@@ -65,6 +66,7 @@ class HookCommand(unittest.TestCase):
 class SettingsFile(unittest.TestCase):
     def setUp(self):
         self.d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.d, True)
         self.p = os.path.join(self.d, "settings.json")
 
     def test_invalid_json_is_never_overwritten(self):
@@ -155,6 +157,7 @@ class VerifierNeverCrashes(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.d = tempfile.mkdtemp()
+        cls.addClassCleanup(shutil.rmtree, cls.d, True)
         cls.good, cls.wit = make_bundle(cls.d)
 
     def test_baseline_verifies(self):
@@ -227,6 +230,7 @@ class VerifierNeverCrashes(unittest.TestCase):
 
     def test_export_is_atomic(self):
         d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
         home = os.path.join(d, "s")
         s = make_signer(home, witnesses=[f"file:{d}/w.jsonl"], checkpoint_every=100)
         s.handle({"op": "append", "cseq": 0, "event": run_start("a"), "attach": {"policy": policy.load()[1]}})
@@ -242,11 +246,14 @@ class VerifierNeverCrashes(unittest.TestCase):
 class Witnesses(unittest.TestCase):
     def cp(self, seq=0):
         from tracekit.ledger import Keys
-        keys = Keys.load_or_create(os.path.join(tempfile.mkdtemp(), "k"))
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        keys = Keys.load_or_create(os.path.join(d, "k"))
         return make_checkpoint(seq, "a" * 64, keys)
 
     def test_git_publish_twice_is_idempotent(self):
         d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
         w = GitWitness(os.path.join(d, "wit"))
         cp = self.cp()
         w.publish(cp)
@@ -255,6 +262,7 @@ class Witnesses(unittest.TestCase):
 
     def test_git_init_without_dash_b(self):
         d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
         w = GitWitness(os.path.join(d, "wit"))
         real = subprocess.run
 
@@ -269,6 +277,7 @@ class Witnesses(unittest.TestCase):
 
     def test_readers_ignore_non_object_json(self):
         d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
         p = os.path.join(d, "w.jsonl")
         with open(p, "w") as f:
             f.write('[1]\n"x"\n42\n{"head_seq": 1}\nnot json\n')
@@ -304,6 +313,7 @@ class Sanitising(unittest.TestCase):
 
     def test_signer_records_events_with_lone_surrogates_and_nan(self):
         home = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, home, True)
         s = make_signer(home)
         s.handle({"op": "append", "cseq": 0, "event": run_start("r")})
         r = s.handle({"op": "append", "cseq": 1, "event": ev("tool.call", {
@@ -333,6 +343,7 @@ class PolicyEdges(unittest.TestCase):
 class HookEdges(unittest.TestCase):
     def test_transcript_mark_matches_naive_hashing_for_every_ack(self):
         d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
         os.environ["TRACEKIT_CLIENT_HOME"] = os.path.join(d, "c")
         try:
             data = os.urandom(3 * 1024 * 1024 + 17)
@@ -353,6 +364,7 @@ class HookEdges(unittest.TestCase):
 
     def test_odd_tool_input_shapes_do_not_crash_the_hook(self):
         d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
         os.environ["TRACEKIT_CLIENT_HOME"] = os.path.join(d, "c")
         try:
             pol = policy.load()[0]
@@ -367,6 +379,7 @@ class HookEdges(unittest.TestCase):
 
     def test_transcript_events_ignore_malformed_blocks(self):
         d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
         os.environ["TRACEKIT_CLIENT_HOME"] = os.path.join(d, "c")
         try:
             path = os.path.join(d, "t.jsonl")
@@ -384,6 +397,7 @@ class ObserverServer(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.d = tempfile.mkdtemp()
+        cls.addClassCleanup(shutil.rmtree, cls.d, True)
         cls.home = os.path.join(cls.d, "s")
         s = make_signer(cls.home, witnesses=[f"file:{cls.d}/w.jsonl"], checkpoint_every=100)
         s.handle({"op": "append", "cseq": 0, "event": run_start("r"), "attach": {"policy": policy.load()[1]}})
@@ -466,6 +480,7 @@ class ObserverServer(unittest.TestCase):
 class AgentSdkEdges(unittest.TestCase):
     def test_tracer_is_a_context_manager_and_never_raises_on_odd_values(self):
         d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
         home = os.path.join(d, "signer")
         os.environ["TRACEKIT_CLIENT_HOME"] = os.path.join(d, "client")
         try:
@@ -511,13 +526,13 @@ class PolicySafety(unittest.TestCase):
 
     def test_policy_with_risky_regex_is_refused_with_rule_id(self):
         d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
         path = os.path.join(d, "p.yaml")
         with open(path, "w") as f:
             f.write("extends: default\ndeny:\n  - id: X1\n    tool: Bash\n    pattern: '(a+)+$'\n")
         with self.assertRaises(policy.PolicyError) as cm:
             policy.load(path)
         self.assertIn("X1", str(cm.exception))
-        shutil.rmtree(d, ignore_errors=True)
 
     @unittest.skipUnless(hasattr(signal, "setitimer"), "the regex budget needs SIGALRM; Windows relies on check_regex alone")
     def test_runaway_match_is_bounded_and_counts_as_match(self):
@@ -599,6 +614,7 @@ class DefaultPolicyCoverage(unittest.TestCase):
 class TrustedKeyFile(unittest.TestCase):
     def test_raw_key_starting_or_ending_with_whitespace_bytes_is_read_whole(self):
         d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
         for key in (b"\n" + bytes(range(1, 32)), bytes(range(1, 32)) + b" ", b"\t" + bytes(range(2, 32)) + b"\r"):
             self.assertEqual(len(key), 32)
             p = os.path.join(d, "k.pub")
@@ -614,12 +630,12 @@ class TrustedKeyFile(unittest.TestCase):
             f.write(b"short")
         with self.assertRaises(ValueError):
             bundle._load_trusted_key(p)
-        shutil.rmtree(d, ignore_errors=True)
 
 
 class RejectionFlood(unittest.TestCase):
     def test_retrying_one_invalid_event_cannot_grow_the_ledger_without_bound(self):
         d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
         s = make_signer(os.path.join(d, "s"), witnesses=[f"file:{d}/w.jsonl"], checkpoint_every=100000)
         s.handle({"op": "append", "cseq": 0, "event": run_start("r"), "attach": {"policy": policy.load()[1]}})
         bad = ev("tool.call", {"tool_use_id": "t", "name": "Bash", "input": {"command": "plain string, not a content ref"}}, "r")
@@ -630,7 +646,6 @@ class RejectionFlood(unittest.TestCase):
         self.assertLessEqual(len(errors), 10 + 3)          # 10 individual + summaries at 100, 1000
         self.assertTrue(any("1000 times" in m for m in errors))
         s.ledger.close()
-        shutil.rmtree(d, ignore_errors=True)
 
 
 class LongInputs(unittest.TestCase):

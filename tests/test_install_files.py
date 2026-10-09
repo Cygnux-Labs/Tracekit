@@ -21,7 +21,9 @@ class _Sentinel:
 
     def setUp(self):
         self.d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.d, True)
         self.outside = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.outside, True)
         self.sentinel = os.path.join(self.outside, "sentinel")
         with open(self.sentinel, "w") as f:
             f.write("do not touch")
@@ -147,6 +149,7 @@ class SignerConfig(_Sentinel, unittest.TestCase):
 class ModeFromCreation(unittest.TestCase):
     def test_temp_file_is_0600_before_rename_even_with_umask_0(self):
         d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
         seen = []
         real = os.replace
 
@@ -190,14 +193,17 @@ class ReadAndDropPrivileges(unittest.TestCase):
 
 class DevTcpEndpoint(unittest.TestCase):
     def test_dev_socket_opens_no_socket(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
         with mock.patch("tracekit.peercred.has_peer_credentials", return_value=False), \
                 mock.patch.object(install.socket, "socket", side_effect=AssertionError("bound a probe socket")):
-            sock, token = install._dev_socket(tempfile.mkdtemp())
+            sock, token = install._dev_socket(d)
         self.assertEqual(sock, "tcp://127.0.0.1:0")
         self.assertGreaterEqual(len(token), 32)
 
     def test_signer_binds_its_own_port_and_init_reads_it_back(self):
         d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
         home = os.path.join(d, "signer")
         os.environ["TRACEKIT_CLIENT_HOME"] = os.path.join(d, "client")
         try:

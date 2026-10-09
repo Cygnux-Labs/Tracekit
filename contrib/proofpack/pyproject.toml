@@ -16,6 +16,3 @@ tracekit-report = "tracekit_proofpack:report_main"
 
 [tool.setuptools]
 py-modules = ["tracekit_proofpack"]
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]

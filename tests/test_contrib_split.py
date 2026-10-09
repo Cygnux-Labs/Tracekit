@@ -30,7 +30,7 @@ class Split(unittest.TestCase):
             err = io.StringIO()
             with contextlib.redirect_stderr(err):
                 self.assertEqual(cli.main([cmd, "--help"]), 2)
-            self.assertIn(f"moved to contrib/{pkg}", err.getvalue())
+            self.assertIn(f"https://github.com/Cygnux-Labs/Tracekit/tree/main/contrib/{pkg}\n", err.getvalue())
 
 
 if __name__ == "__main__":

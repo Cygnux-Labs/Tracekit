@@ -4,7 +4,7 @@ PY ?= python3
 help:
 	@echo "make install   editable install with dev extras"
 	@echo "make test      run the test suite"
-	@echo "make test-contrib  run each contrib/ package's own tests"
+	@echo "make test-contrib  run the contrib/ packages' tests against the installed packages (pip install . ./contrib/*)"
 	@echo "make lint      pyflakes over the package, SDK and tests"
 	@echo "make build     build the sdist and wheel into dist/"
 	@echo "make check     lint + test + build + twine check"
@@ -25,7 +25,7 @@ eval-scale:
 	$(PY) contrib/query/e7_sql_scale.py
 
 test-contrib:
-	for d in contrib/*/; do (cd $$d && $(PY) -m pytest -q) || exit 1; done
+	$(PY) -m pytest -q contrib
 
 test-ts:
 	cd sdk/typescript && npm install --no-audit --no-fund && npm test

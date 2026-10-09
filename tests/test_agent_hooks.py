@@ -167,6 +167,7 @@ class DemoPerAgent(unittest.TestCase):
         import tempfile
         from tracekit import demo, install as inst
         d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
         patch_env(self, TRACEKIT_CLIENT_HOME=os.path.join(d, "client"))
         env = dict(os.environ, PYTHONPATH=ROOT)
         home = os.path.join(d, "signer")

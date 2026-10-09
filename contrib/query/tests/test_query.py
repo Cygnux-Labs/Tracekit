@@ -6,13 +6,10 @@ import os
 import sys
 import unittest
 
-HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-ROOT = os.path.dirname(os.path.dirname(HERE))
-sys.path[:0] = [ROOT, HERE, os.path.join(ROOT, "tests")]
-import tracekit_query as query  # noqa: E402
-from tracekit import install  # noqa: E402
-from tracekit.agent_sdk import Tracer  # noqa: E402
-from factories import DaemonCase  # noqa: E402
+import tracekit_query as query
+from tracekit import install
+from tracekit.agent_sdk import Tracer
+from factories import DaemonCase
 
 
 class SQL(DaemonCase):
@@ -103,7 +100,7 @@ class SQL(DaemonCase):
         import subprocess
         self.run_agent("a")
         p = subprocess.run([sys.executable, "-m", "tracekit_query", "--home", self.home, "--index", self.idx.path, "--format", "csv",
-                            "SELECT run_id, tool_calls FROM runs"], capture_output=True, text=True, cwd=HERE, env=dict(os.environ, PYTHONPATH=ROOT))
+                            "SELECT run_id, tool_calls FROM runs"], capture_output=True, text=True)
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertEqual(p.stdout.split(), ["run_id,tool_calls", "a,4"])
 

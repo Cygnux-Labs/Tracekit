@@ -15,6 +15,3 @@ tracekit-causeway = "tracekit_causeway:main"
 
 [tool.setuptools]
 py-modules = ["tracekit_causeway"]
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
