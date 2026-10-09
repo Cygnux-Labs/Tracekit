@@ -243,6 +243,8 @@ class Publisher(unittest.TestCase):
         self.finished_run()
         self.s.checkpoint()
         self.assertTrue(wait_for(lambda: len(self.w.bodies) > sent, 5))
+        attempts = lambda: self.s.log.storage.witness_queue().get(NAME, {}).get(RECORDS, {}).get("attempts", 0)  # noqa: E731
+        self.assertTrue(wait_for(lambda: attempts() >= 1, 10))   # the failure recorded, not only the request sent
         self.s.close()
         state = self.s.log.storage.witness_queue()[NAME][RECORDS]
         self.assertGreaterEqual(state["attempts"], 1)

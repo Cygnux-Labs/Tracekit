@@ -50,6 +50,8 @@ class SignerPrivacy(Harness, unittest.TestCase):
         out = b""
         for root, _, names in os.walk(self.dir):
             for n in names:
+                if n == "lock":   # the storage lock holds nothing; Windows refuses reads of a locked byte range
+                    continue
                 for i in range(40):   # Windows: the signer may be replacing the file this instant
                     try:
                         with open(os.path.join(root, n), "rb") as f:
