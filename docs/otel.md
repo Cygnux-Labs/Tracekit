@@ -19,7 +19,7 @@ OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://127.0.0.1:4318/v1/traces python my_age
 ```
 
 Any OTLP/HTTP exporter works: protobuf or JSON bodies, `gzip` or `deflate` encoding. For exporters that default to
-gRPC, add `--grpc-port 4317` (needs `pip install "tracekit[grpc]"`): the same receiver handles both, a signer outage is
+gRPC, add `--grpc-port 4317` (needs `pip install "tracekit-ai[grpc]"`): the same receiver handles both, a signer outage is
 answered with `UNAVAILABLE` (exporters retry) and a malformed request with `INVALID_ARGUMENT`. The receiver has no
 dependencies of its own; it decodes protobuf itself. It listens on loopback only. Agents on other machines send to
 the ingest gateway instead, which serves the same `/v1/traces` path behind TLS and per-client tokens:

@@ -42,7 +42,7 @@ runs:
         TK_ACTION_PATH: ${{ github.action_path }}
       run: |
         if [ -n "$TK_VERSION" ]; then
-          python -m pip install "tracekit==$TK_VERSION"
+          python -m pip install "tracekit-ai==$TK_VERSION"
         else
           python -m pip install "$TK_ACTION_PATH"
         fi
