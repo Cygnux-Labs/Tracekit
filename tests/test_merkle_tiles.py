@@ -106,6 +106,31 @@ class TileTreeTest(unittest.TestCase):
                     lambda: t.consistency_proof(0, 5), lambda: t.consistency_proof(4, 6), lambda: t.consistency_proof(5, 4)):
             self.assertRaises(ValueError, bad)
 
+    def test_verifiers_reject_bad_proofs(self):
+        leaves = [leaf(i) for i in range(13)]
+        t, x, r13 = build(MemoryTileStore(), 13), H(b"x"), mth(leaves)
+        for m in (4, 5):   # a power of two and not: the consistency verifier treats them differently
+            p, c, rm = t.inclusion_proof(m, 13), t.consistency_proof(m, 13), mth(leaves[:m])
+            self.assertTrue(verify_inclusion(m, 13, leaves[m], p, r13) and verify_consistency(m, 13, rm, r13, c))
+            cases = {
+                "index = size": verify_inclusion(13, 13, leaves[m], p, r13),
+                "index > size": verify_inclusion(14, 13, leaves[m], p, r13),
+                "size 0": verify_inclusion(0, 0, leaves[0], [], H(b"")),
+                "inclusion proof one node too long": verify_inclusion(m, 13, leaves[m], p + [x], r13),
+                "inclusion proof one node too short": verify_inclusion(m, 13, leaves[m], p[:-1], r13),
+                "inclusion against a wrong root": verify_inclusion(m, 13, leaves[m], p, rm),
+                "consistency from size 0": verify_consistency(0, 13, H(b""), r13, c),
+                "consistency proof one node too long": verify_consistency(m, 13, rm, r13, c + [x]),
+                "consistency proof one node too short": verify_consistency(m, 13, rm, r13, c[:-1]),
+                "first == second with a proof": verify_consistency(13, 13, r13, r13, [x]),
+                "first > second": verify_consistency(13, m, r13, rm, c),
+                "wrong first root": verify_consistency(m, 13, x, r13, c),
+                "wrong second root": verify_consistency(m, 13, rm, x, c),
+            }
+            for why, ok in cases.items():
+                with self.subTest(m=m, case=why):
+                    self.assertFalse(ok)
+
     def test_million_leaves(self):
         n = 10 ** 6
         rng = random.Random(n)
