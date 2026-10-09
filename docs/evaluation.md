@@ -1,7 +1,8 @@
 # Evaluation (v0.2)
 
-Seven experiments run against the v0.2 code. E1 to E4 and E6 are offline and run with `make eval`; E5 uses real Claude Code
-runs and is opt-in (`make eval-agents`, needs the `claude` CLI and spends model usage). Results are written to
+Eight experiments. E1 to E4 and E6 are offline and run with `make eval`; E5 uses real Claude Code runs and is opt-in
+(`make eval-agents`, needs the `claude` CLI and spends model usage); E7 is `make eval-scale`; E8 needs root and a Linux
+system-mode signer and runs in CI as a merge gate. Results are written to
 `eval/results/`. The experiments are small, synthetic and written by the authors. They show how the mechanisms
 behave, not how Tracekit performs across real agents and projects. The v0.1 paper's experiments (14 Claude Code
 runs, seeded faults, hook latency) were ported to v0.2 as E2, E4 and E5, with different scenarios and numbers.
@@ -184,9 +185,31 @@ second timed), then rebuilds a second index from the same ledger and compares ev
   records would only time Ed25519. The backend is SQLite from the standard library, not DuckDB or ClickHouse: no extra
   dependency, and fast enough at this size. Free-text search is a full scan (`LIKE`), linear in ledger size.
 
+## E8: insider attacks
+
+`eval/e8_insider.py` attacks the path that feeds the ledger (E1 and E4 only mutate a finished ledger). It runs as real
+unprivileged users (the agent's user and a second local user) against a Linux system-mode signer with a registered
+harness, and fails unless every case is caught. The CI job "E8 insider attacks (Linux system mode)" runs it on every
+pull request and blocks the merge on a miss. Results: `eval/results/e8_insider.json`.
+
+| Case | Attack | Caught by |
+|---|---|---|
+| E8.1 | redirect the hooks to a decoy signer | system mode reads only the root-owned client config |
+| E8.2 | the same, then restore the client counters | the same; a `capture.gap` |
+| E8.3 | another local user writes into the agent's live run | refused and recorded (`VERIFIED WITH GAPS`) |
+| E8.4 | stop the signer | `fail_mode: closed` blocks the tool call |
+| E8.5 | swap in an empty policy through `TRACEKIT_POLICY` | ignored in system mode; the call is still denied |
+| E8.6 | fabricate a whole run from a script outside the harness | refused; nothing recorded |
+| E8.7 | fabricate a second run from inside a live harness session | `concurrent_run` gap |
+| E8.8 | write into the live run from a process outside its harness session | refused and recorded |
+
+Run it yourself as root after `sudo tracekit init --user AGENT --harness agent=HARNESS` (the script's docstring has the
+setup). E8 does not cover fabricated events sent into the live run from inside the harness session; only the model
+proxy cross-check catches those.
+
 ## What is not measured
 
 Signer throughput with a separate-user signer or over the remote gateway, durability across crashes beyond the
-`kill -9` test in the suite, bypass attempts by an adversarial agent, redaction leaks across real transcripts,
+`kill -9` test in the suite, bypass attempts by an adversarial model (E8 scripts its attacks by hand), redaction leaks across real transcripts,
 behaviour on Windows or with macOS system mode, and any evaluation with an external reviewer. These are the
 release-gating items still listed in the README.

@@ -9,7 +9,7 @@ make check          # lint + tests + build
 
 - Tests are plain `unittest` classes run by pytest. Add a regression test with every fix.
 - `make eval` re-runs the offline evaluations; if you change the policy or the verifier, run it and commit the new `eval/results/`.
-- Security claims live in `docs/threat-model.md`. If a change alters what Tracekit proves or what it
+- Security claims live in `docs/threat-model-laptop.md`. If a change alters what Tracekit proves or what it
   cannot see, update that file in the same pull request.
 - Tracekit says what it could not observe instead of staying quiet. Keep that property: a check that
   cannot run should warn, never pass.

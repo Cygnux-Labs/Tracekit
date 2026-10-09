@@ -33,7 +33,7 @@ patched.
 
 Tracekit proves what its capture path recorded and that the record has not changed since it was signed
 and checkpointed. It does not prove intent, complete coverage, or that a reported tool result is real.
-The full claim-by-claim analysis is in [docs/threat-model.md](docs/threat-model.md); the threat model has
+The full claim-by-claim analysis is in [docs/threat-model-laptop.md](docs/threat-model-laptop.md); the threat model has
 not yet had an external review, so findings against it are especially welcome.
 
 In scope: bypasses of the signer, ledger, witness, bundle verification, policy gate, approval flow,
@@ -46,7 +46,7 @@ Out of scope:
   checkpoints go to an independent witness the operator cannot rewrite, and then only for history that
   was already witnessed. A report that the operator can forge records without such a witness is
   expected behaviour, not a vulnerability.
-- An attacker who already has root on the signer host (the same caveat; see L4 in the threat model).
+- An attacker who already has root on the signer host (the same caveat; see A4 in the threat model).
 - Dev mode's same-user signer, which is labelled weaker in every bundle.
 - Denial of service against a local signer by a user who can already stop it.
 

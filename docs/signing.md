@@ -75,13 +75,13 @@ The socket accepts `status`, `append`, `checkpoint` (adds a checkpoint, nothing 
 
 ## What a signature proves, per attacker level
 
-(levels as in [threat-model.md](threat-model.md))
+(levels as in [threat-model-laptop.md](threat-model-laptop.md))
 
 | Level | A valid signature + a checkpoint on an independent witness means |
 |---|---|
-| L1 compromised agent / L2 compromised hook / L3 compromised user account (system mode) | tracekitd accepted this record from a caller with the recorded OS user, at this position, and nobody has changed, removed or reordered it since. It does **not** mean the event is true: the agent's user could have sent it. A tool call backed by a matching proxy-recorded model exchange is much stronger evidence than one without |
+| A1 compromised agent / A2 compromised hook / A3 compromised user account (system mode) | tracekitd accepted this record from a caller with the recorded OS user, at this position, and nobody has changed, removed or reordered it since. It does **not** mean the event is true: the agent's user could have sent it. A tool call backed by a matching proxy-recorded model exchange is much stronger evidence than one without |
 | Same, dev mode (signer is the agent's user) | Only that the file has not changed since signing by someone without the key. The agent could have held the key, so it proves little |
-| L4 root | Records up to the latest witnessed checkpoint are unchanged. Later records, or runs with no checkpoint, could have been fabricated with the real key |
+| A4 root | Records up to the latest witnessed checkpoint are unchanged. Later records, or runs with no checkpoint, could have been fabricated with the real key |
 | Harness itself lying | Nothing about whether the harness told the truth |
 
 ## Key lifecycle

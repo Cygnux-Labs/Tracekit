@@ -4,7 +4,7 @@
 - [ ] `make check` passes (lint, tests, build)
 - [ ] a regression test covers the change
 - [ ] `CHANGELOG.md` updated
-- [ ] docs updated if behaviour or a security claim changed (`docs/threat-model.md`)
+- [ ] docs updated if behaviour or a security claim changed (`docs/threat-model-laptop.md`)
 - [ ] every commit is signed off (`git commit -s`, see `CONTRIBUTING.md`)
 
 ## Security invariants
