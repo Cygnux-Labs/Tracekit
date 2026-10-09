@@ -5,6 +5,7 @@ import io
 import os
 import sys
 import unittest
+from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -31,6 +32,11 @@ class Experimental(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("experimental and being rebuilt", err)
         self.assertIn("no client tokens", err)
+
+    def test_proxy_port_zero_is_passed_on(self):
+        with mock.patch("tracekit.proxy.main", return_value=0) as m:
+            self.run_cli(["proxy", "--experimental", "--home", "/nonexistent", "--port", "0"])
+        self.assertEqual(m.call_args[0][0][-2:], ["--port", "0"])
 
 
 if __name__ == "__main__":

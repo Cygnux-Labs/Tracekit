@@ -3,10 +3,12 @@ and a witness that rewrites its own log is caught.  python3 -m pytest tests/test
 import json
 import os
 import shutil
+import socket
 import sys
 import tempfile
 import threading
 import unittest
+from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -93,6 +95,25 @@ class Service(unittest.TestCase):
             HttpWitness(self.url).read()
         with self.assertRaises(ValueError):
             HttpWitness("http://example.com")  # plain http off-loopback
+        for url in ("http://localhost.example", "http://127.0.0.1@example.com"):
+            with self.assertRaises(ValueError, msg=url):
+                HttpWitness(url)
+
+    def test_redirects_are_not_followed(self):
+        import http.server
+
+        class Redirect(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(302)
+                self.send_header("Location", "http://127.0.0.1:1/v1/sth")
+                self.end_headers()
+
+            def log_message(self, *a):
+                pass
+        srv = http.server.HTTPServer(("127.0.0.1", 0), Redirect)
+        self.addCleanup(srv.server_close)
+        threading.Thread(target=srv.handle_request, daemon=True).start()
+        self.assertEqual(HttpWitness(f"http://127.0.0.1:{srv.server_address[1]}")._http("GET", "/v1/sth", token="t")[0], 302)
 
     def test_a_witness_that_rewrites_its_log_is_caught(self):
         self.run_agent("w-a")
@@ -114,6 +135,44 @@ class Service(unittest.TestCase):
         self.assertIn("not consistent", str(cm.exception))
 
 
+class LogWrites(unittest.TestCase):
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.d, True)
+        witness_server.init(self.d)
+
+    def test_failed_write_leaves_no_partial_entry(self):
+        log = witness_server.Log(self.d)
+        self.addCleanup(log.close)
+        log.add("box", {"kid": "ed25519:k", "head_seq": 1, "head_hash": "a" * 64})
+        logp = os.path.join(self.d, "log.jsonl")
+        size = os.path.getsize(logp)
+        with mock.patch("os.fsync", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                log.add("box", {"kid": "ed25519:k", "head_seq": 2, "head_hash": "b" * 64})
+        self.assertEqual(os.path.getsize(logp), size)
+        self.assertEqual(len(log.entries), 1)
+
+    def test_second_instance_is_refused_while_one_runs(self):
+        log = witness_server.Log(self.d)
+        with self.assertRaises(RuntimeError):
+            witness_server.Log(self.d)
+        log.close()
+        witness_server.Log(self.d).close()
+
+    def test_serve_binds_before_touching_the_log(self):
+        logp = os.path.join(self.d, "log.jsonl")
+        with open(logp, "w") as f:
+            f.write('{"cp": {"kid"')  # torn tail that loading the log would set aside
+        busy = socket.socket()
+        busy.bind(("127.0.0.1", 0))
+        busy.listen()
+        self.addCleanup(busy.close)
+        with self.assertRaises(OSError):
+            witness_server.serve(self.d, "127.0.0.1", busy.getsockname()[1])
+        self.assertFalse(os.path.exists(logp + ".torn"))
+
+
 class TornLog(unittest.TestCase):
     def test_witness_starts_when_the_last_line_is_torn(self):
         d = tempfile.mkdtemp()
@@ -124,10 +183,12 @@ class TornLog(unittest.TestCase):
             logp = os.path.join(d, "log.jsonl")
             with open(logp, "a") as f:
                 f.write('{"cp": {"kid": "ed25519:k", "head_se')  # a write cut short
+            log.close()
             log = witness_server.Log(d)
             self.assertEqual(len(log.entries), 1)
             self.assertTrue(os.path.exists(logp + ".torn"))
             log.add("box", {"kid": "ed25519:k", "head_seq": 2, "head_hash": "b" * 64})
+            log.close()
             self.assertEqual([e["cp"]["head_seq"] for e in witness_server.Log(d).entries], [1, 2])
         finally:
             shutil.rmtree(d, ignore_errors=True)

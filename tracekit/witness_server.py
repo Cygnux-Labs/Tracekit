@@ -33,6 +33,7 @@ from urllib.parse import parse_qs, urlsplit
 from . import crypto, merkle
 from .netserver import Server
 from .core import b64d, b64e, canon, now_ts
+from .locking import lock_file
 from .witness import CP_TYPE, verify_checkpoint
 
 STH_TYPE = "tracekit.witness.sth.v1"
@@ -57,6 +58,12 @@ class Log:
         self.lock = threading.Lock()
         self.leaves_path = os.path.join(home, "log.jsonl")
         self.conflicts_path = os.path.join(home, "conflicts.jsonl")
+        self._lockf = open(os.path.join(home, "log.lock"), "a+b")  # held for the Log's lifetime
+        try:
+            lock_file(self._lockf, blocking=False)
+        except OSError:
+            self._lockf.close()
+            raise RuntimeError(f"another witness is already using {home}") from None
         with open(os.path.join(home, "witness.key"), "rb") as f:
             self.secret = f.read()
         self.public = crypto.public_from_secret(self.secret)
@@ -77,6 +84,9 @@ class Log:
             for line in good.decode("utf-8").splitlines():
                 if line.strip():
                     self._index(json.loads(line))
+
+    def close(self):
+        self._lockf.close()
 
     def _index(self, e):
         self.entries.append(e)
@@ -110,10 +120,16 @@ class Log:
                     f.write(json.dumps(rec) + "\n")
                 return 409, {"error": "fork: a different head is already logged for this sequence number", "conflict": rec}
             e = {"cp": cp, "client": client, "received": now_ts()}
-            with open(self.leaves_path, "a", encoding="utf-8") as f:
-                f.write(json.dumps(e, sort_keys=True) + "\n")
-                f.flush()
-                os.fsync(f.fileno())
+            data = (json.dumps(e, sort_keys=True) + "\n").encode("utf-8")
+            with open(self.leaves_path, "ab", buffering=0) as f:
+                size = f.seek(0, os.SEEK_END)
+                try:
+                    if f.write(data) != len(data):
+                        raise OSError("short write to the witness log")
+                    os.fsync(f.fileno())
+                except OSError:
+                    f.truncate(size)  # never leave an unacknowledged entry in the log
+                    raise
             self._index(e)
             return 201, self._receipt(len(self.entries) - 1)
 
@@ -249,8 +265,24 @@ def make_handler(log):
     return H
 
 
+class _Server(Server):
+    log = None
+
+    def server_close(self):
+        super().server_close()
+        if self.log:
+            self.log.close()
+
+
 def serve(home, host="127.0.0.1", port=8444, ssl_context=None):
-    return Server((host, port), make_handler(Log(home)), ssl_context)
+    srv = _Server((host, port), BaseHTTPRequestHandler, ssl_context)  # bind first: a second instance stops here
+    try:
+        srv.log = Log(home)
+    except BaseException:
+        srv.server_close()
+        raise
+    srv.RequestHandlerClass = make_handler(srv.log)
+    return srv
 
 
 def main(argv=None):
