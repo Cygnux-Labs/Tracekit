@@ -5,7 +5,6 @@ import contextlib
 import io
 import json
 import os
-import shlex
 import shutil
 import signal
 import stat
@@ -23,8 +22,9 @@ from tracekit.sdk import autospawn, client
 from tracekit.sdk.client import AsyncClient, Client, Incompatible, current_run
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-FAKE_CMD = shlex.join([sys.executable, "-m", "tracekit.testing"])
-SAY_PID = "from tracekit.sdk.client import Client; c = Client(); c.status(); print(c.hello['pid'])"
+FAKE_ARGV = [sys.executable, "-m", "tracekit.testing"]
+USE_FAKE = f"from tracekit.sdk import autospawn; autospawn.SIGNER_ARGV = {FAKE_ARGV!r}\n"   # the test-only hook
+SAY_PID = USE_FAKE + "from tracekit.sdk.client import Client; c = Client(); c.status(); print(c.hello['pid'])"
 
 
 @unittest.skipUnless(os.name == "posix", "the v2 client speaks Unix sockets only")
@@ -33,10 +33,13 @@ class DevSigner(unittest.TestCase):
         self.dir = tempfile.mkdtemp(dir="/tmp")   # short path: macOS caps socket paths at 104 bytes
         self.addCleanup(shutil.rmtree, self.dir, True)
         self.run_dir = os.path.join(self.dir, "run")
-        self.env = {"TRACEKIT_RUNTIME_DIR": self.run_dir, "TRACEKIT_DEV_SIGNER_CMD": FAKE_CMD, "TRACEKIT_DEV_IDLE": "60",
+        self.env = {"TRACEKIT_RUNTIME_DIR": self.run_dir, "TRACEKIT_DEV_IDLE": "60",
                     "PYTHONPATH": ROOT}
         os.environ.pop("TRACEKIT_SIGNER", None)
         os.environ.update(self.env)
+        fake = mock.patch.object(autospawn, "SIGNER_ARGV", FAKE_ARGV)
+        fake.start()
+        self.addCleanup(fake.stop)
         self.addCleanup(autospawn.down)
 
     def python(self, code, **env):
@@ -74,7 +77,8 @@ class DevSigner(unittest.TestCase):
 
     def test_incompatible_signer_is_refused_and_left_running(self):
         os.makedirs(self.run_dir, 0o700)
-        p = subprocess.Popen(shlex.split(FAKE_CMD) + ["--proto", f"{RPC_VERSION + 1}-{RPC_VERSION + 2}", "--version", "9.9.9"], start_new_session=True,
+        p = subprocess.Popen(FAKE_ARGV + ["--proto", f"{RPC_VERSION + 1}-{RPC_VERSION + 2}", "--version", "9.9.9"],
+                             start_new_session=True,
                              stderr=subprocess.DEVNULL)
         self.addCleanup(p.wait, 10)
         while autospawn._pid(self.run_dir) is None:
@@ -99,7 +103,7 @@ class DevSigner(unittest.TestCase):
                         "    assert run.decide('c1', 'Bash', '{\"command\": \"ls\"}')['decision'] == 'allow'\n"
                         "    run.complete('c1')\n",
                         HOME=home, TRACEKIT_SIGNER=os.path.join(self.run_dir, autospawn.SOCK), TRACEKIT_RUNTIME_DIR="",
-                        XDG_RUNTIME_DIR=os.path.join(home, "xdg"), TRACEKIT_DEV_SIGNER_CMD="false")
+                        XDG_RUNTIME_DIR=os.path.join(home, "xdg"))
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(os.listdir(home), [])
         self.assertEqual(hello["pid"], autospawn._pid(self.run_dir))
