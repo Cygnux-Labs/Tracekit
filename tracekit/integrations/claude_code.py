@@ -44,41 +44,49 @@ def _load(path):
         return None
 
 
-def _run(client, sid, register=True, stale=None, event=False):
-    """(the session's run, registered on its first event or again when `stale` is the stored run's id; with `event`,
-    the `stream` and `client_seq` for one event call, taken under the session lock so no two hooks share a value)"""
-    path, ev = _state(sid), None
+def _run(client, sid, register=True, send=None, **fields):
+    """(the session's run, registered on its first event; with `send`, the signer's reply to that event call, sent with
+    the session's stream and next client_seq under the session lock so parallel hooks reach the signer in client_seq
+    order, and sent again on a new run when the signer has closed the stored one (idle))"""
+    path = _state(sid)
     with open(path[:-len(".json")] + ".lock", "a") as lk:   # parallel tool calls must not register two runs
         lock_file(lk)
         st = _load(path)
-        if register and (st is None or st["run_id"] == stale):
-            version = os.environ.get("CLAUDE_CODE_VERSION")
-            out = client.register_run({"agent": {"name": AGENT, **({"version": version[:64]} if version else {})}})
-            # lean: same-user dev mode, so the agent can read its own run token and edit its fail modes here (dev
-            # assurance); system mode moves this state out of the agent's reach
-            st = {"run_id": out["run_id"], "run_token": out["run_token"], "fail_modes": out.get("fail_modes") or {},
-                  "stream": uuid.uuid4().hex, "seq": 0}
-            files.write_json(path, st)
-        if st and event:
-            ev = {"stream": st["stream"], "client_seq": st["seq"]}
-            files.write_json(path, dict(st, seq=st["seq"] + 1))
-    return st and RunHandle(client, st), ev
+        if register and st is None:
+            st = _register(client, path)
+        if not (st and send):
+            return st and RunHandle(client, st), None
+        try:
+            return _send(client, path, st, send, fields)
+        except RPCError as e:
+            if not register or e.code not in ("run_closed", "unknown_run"):
+                raise
+            return _send(client, path, _register(client, path), send, fields)
+
+
+def _register(client, path):
+    version = os.environ.get("CLAUDE_CODE_VERSION")
+    out = client.register_run({"agent": {"name": AGENT, **({"version": version[:64]} if version else {})}})
+    # lean: same-user dev mode, so the agent can read its own run token and edit its fail modes here (dev
+    # assurance); system mode moves this state out of the agent's reach
+    st = {"run_id": out["run_id"], "run_token": out["run_token"], "fail_modes": out.get("fail_modes") or {},
+          "stream": uuid.uuid4().hex, "seq": 0}
+    files.write_json(path, st)
+    return st
+
+
+def _send(client, path, st, method, fields):
+    run = RunHandle(client, st)
+    files.write_json(path, dict(st, seq=st["seq"] + 1))
+    return run, run.call(method, stream=st["stream"], client_seq=st["seq"], **fields)
 
 
 def _pre(client, p, sid, tid):
     tool, args = p.get("tool_name") or "?", p.get("tool_input")
-    run, ev = _run(client, sid, event=True)
-    try:
-        d = run.call("decide", tool_call_id=tid, tool=tool, args=args, args_source="parsed", **ev)
-    except RPCError as e:
-        if e.code not in ("run_closed", "unknown_run"):
-            raise
-        run, ev = _run(client, sid, stale=run.run_id, event=True)   # the signer closed the run (idle): a new one
-        d = run.call("decide", tool_call_id=tid, tool=tool, args=args, args_source="parsed", **ev)
+    run, d = _run(client, sid, send="decide", tool_call_id=tid, tool=tool, args=args, args_source="parsed")
     if d["decision"] == "deny":
         print(f"Blocked by tracekit policy: {'; '.join(d['rule_ids'])} {d.get('reason', '')}".rstrip(), file=sys.stderr)
         return 2
-    aid = None
     if d["decision"] == "ask":
         try:
             aid = run.call("approval_request", tool_call_id=tid)["approval_id"]
@@ -87,12 +95,14 @@ def _pre(client, p, sid, tid):
             while state == "requested" and deadline > time.monotonic():
                 left_ms = int(min(deadline - time.monotonic(), 300) * 1000)
                 state = run.call("approval_wait", approval_id=aid, timeout_ms=left_ms)["state"]
+            c = run.approval_consume(tid, tool, args, approval_id_hint=aid) if state == "approved" else None
         except Exception as e:   # no fail mode once the policy asked: a call nobody approved never runs
-            state = f"{type(e).__name__}: {e}"
-        if state != "approved":
+            state, c = f"{type(e).__name__}: {e}", None
+        if c is None:
             print(f"Held by tracekit policy ({'; '.join(d['rule_ids'])}) and not approved: {state}", file=sys.stderr)
             return 2
-    c = run.approval_consume(tid, tool, args, approval_id_hint=aid)   # every call that runs: once, for the decided args
+    else:
+        c = run.approval_consume(tid, tool, args)   # every call that runs: once, for the decided args
     if not c["ok"]:
         print(f"Held by tracekit policy: {'; '.join(c['rule_ids'])} {c.get('reason', '')}".rstrip(), file=sys.stderr)
         return 2
@@ -103,8 +113,8 @@ def _pre(client, p, sid, tid):
 
 def _post(client, p, sid, tid):
     path = _state(sid, tid)
-    call, (run, _) = _load(path), _run(client, sid, register=False)
-    if not call or not run or call["run_id"] != run.run_id:
+    call, st = _load(path), _load(_state(sid))
+    if not call or not st or call["run_id"] != st["run_id"]:
         print(f"[tracekit] no decision for tool call {tid}; result not recorded", file=sys.stderr)
         return 0
     from tracekit import policy as policy_mod
@@ -114,9 +124,9 @@ def _post(client, p, sid, tid):
     ok = not failed and not (isinstance(resp, dict) and (resp.get("is_error") or resp.get("interrupted")))
     ti = p.get("tool_input") if isinstance(p.get("tool_input"), dict) else {}
     dotenv = privacy.mentions_dotenv(ti.get("command"), ti.get("file_path"), ti.get("path"), ti.get("pattern"))
-    run, ev = _run(client, sid, register=False, event=True)
-    run.call("complete", tool_call_id=tid, decision_id=call["decision_id"], args_digest=call["args_digest"],
-             status="ok" if ok else "error", result=privacy.content(resp if resp is not None else "", cc, dotenv), **ev)
+    _run(client, sid, register=False, send="complete", tool_call_id=tid, decision_id=call["decision_id"],
+         args_digest=call["args_digest"], status="ok" if ok else "error",
+         result=privacy.content(resp if resp is not None else "", cc, dotenv))
     os.remove(path)
     return 0
 
