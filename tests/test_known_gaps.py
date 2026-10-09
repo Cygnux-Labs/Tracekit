@@ -116,7 +116,6 @@ class SignerGaps(unittest.TestCase):
         self.append(tool_call("t1", "cat /etc/hosts"))
         self.assertTrue(self.flagged("t1"))
 
-    @GAP
     def test_kg11_signer_isolation_not_taken_from_client(self):
         start = run_start()
         start["data"]["signer_isolation"] = "separate-user"

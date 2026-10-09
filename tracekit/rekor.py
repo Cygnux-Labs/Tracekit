@@ -15,6 +15,7 @@ import os
 import urllib.error
 import urllib.request
 
+from .client import no_redirect_opener, remote_url_error
 from .core import b64d, b64e, canon
 
 MAX_ENTRIES = 5000
@@ -107,8 +108,9 @@ class RekorWitness:
 
     def __init__(self, url, pubkey_path=None):
         self.url = url.rstrip("/")
-        if not self.url.startswith("https://") and not self.url.startswith("http://127.0.0.1"):
-            raise ValueError("rekor URL must be https://")
+        err = remote_url_error(self.url)
+        if err:
+            raise ValueError(f"rekor {err}")
         self.name = f"rekor:{self.url}"
         self.pubkey_path = pubkey_path or os.environ.get("TRACEKIT_REKOR_PUBKEY")
         self.public = None
@@ -122,7 +124,7 @@ class RekorWitness:
         req = urllib.request.Request(self.url + path, data=data, method=method,
                                      headers={"Content-Type": "application/json", "Accept": "application/json"})
         try:
-            with urllib.request.urlopen(req, timeout=10) as r:
+            with no_redirect_opener().open(req, timeout=10) as r:
                 return r.status, json.loads(r.read() or b"null")
         except urllib.error.HTTPError as e:
             return e.code, None

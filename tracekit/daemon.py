@@ -830,6 +830,7 @@ class Signer:
             if peer_uid is not None:
                 ev["data"]["os_user"] = _user_name(peer_uid)
                 ev["data"]["os_user_attested"] = True
+                ev["data"]["signer_isolation"] = "same-user" if peer_is_signer else "separate-user"
             else:
                 ev["data"]["os_user_attested"] = False
             ev["data"].pop("harness", None)  # only the signer may say which harness sent a run.start
