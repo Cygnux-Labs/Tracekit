@@ -176,7 +176,7 @@ class ClientConfig(unittest.TestCase):
             open(tf, "w").write("tk_abc\n")
             open(os.path.join(d, "config.json"), "w").close()
             os.chmod(os.path.join(d, "config.json"), 0o644)  # an existing readable file must not keep its mode
-            rc =cli._init_remote(argparse.Namespace(remote="https://tk.example:8443/", token_file=tf))
+            rc = cli._init_remote(argparse.Namespace(remote="https://tk.example:8443/", token_file=tf))
             self.assertEqual(rc, 0)
             cfg = json.load(open(os.path.join(d, "config.json")))
             self.assertEqual((cfg["socket"], cfg["socket_token"]), ("https://tk.example:8443", "tk_abc"))
