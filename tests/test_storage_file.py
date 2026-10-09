@@ -130,6 +130,32 @@ class TestFileStorage(FileCase):
         with self.assertRaises(StorageUnavailable):
             s.append_batch(c.batch(1))
 
+    def test_a_failed_batch_leaves_no_line_on_disk(self):
+        s = self.open(ACK_ON_FSYNC)
+        self.addCleanup(s.close)
+        c = Chain()
+        s.append_batch(c.batch(1))
+        size = os.path.getsize(self.log)
+        with mock.patch.object(file_storage, "_sync", side_effect=OSError(errno.EIO, "EIO")):
+            with self.assertRaises(StorageUnavailable):
+                s.append_batch(c.batch(2))   # every line written, then the sync fails
+        self.assertEqual((os.path.getsize(self.log), len(s.log.offsets)), (size, 2))
+        s.close()
+        self.assertEqual(self.open(ACK_ON_FSYNC).tree.size, 1)
+
+    def test_a_failed_background_sync_names_the_records_not_known_durable(self):
+        s = self.open()
+        self.addCleanup(s.close)
+        c = Chain()
+        s.append_batch(c.batch(2))
+        self.assertTrue(wait_for(lambda: s.log.dirty_since is None and s.log.syncing_since is None, timeout=2))
+        with mock.patch.object(file_storage, "_sync", side_effect=OSError(errno.EIO, "Input/output error")):
+            s.append_batch(c.batch(1))
+            self.assertTrue(wait_for(lambda: s._error, timeout=2))
+        with self.assertRaises(StorageUnavailable) as cm:
+            s.append_batch(c.batch(1))
+        self.assertIn("records from seq 2 on are not known durable", str(cm.exception))
+
     def test_durability_modes(self):
         with mock.patch.object(file_storage, "_sync", wraps=file_storage._sync) as sync:
             s = self.open(ACK_ON_FSYNC)

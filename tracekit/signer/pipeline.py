@@ -11,6 +11,7 @@ after RECOVER_S reopens the storage, rebuilds the run state from it and writes a
 """
 import base64
 import copy
+import datetime
 import hashlib
 import json
 import queue
@@ -43,6 +44,20 @@ def new_run(tenant, run_id):
             "active": time.monotonic(), "closing_at": None}
 
 
+FINAL_KEYS = ("tenant", "run_id", "run_seq", "head", "closed", "final", "owner", "source")
+
+
+def final_run(run):
+    """What a final run keeps: enough to refuse late writes, check a token's run and answer its owner."""
+    return {k: run[k] for k in FINAL_KEYS}
+
+
+def since(ts):
+    """The monotonic time at which a record with wall-clock `ts` was written (never in the future)."""
+    t = datetime.datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
+    return time.monotonic() - max(0.0, time.time() - t)
+
+
 def approval(tenant, run_id, data):
     """The signer's state for the approval an `approval.request` record (`data`) opened."""
     b = data["binding"]
@@ -72,6 +87,13 @@ def subject(identity):
     return f"{identity.scheme}:{identity.subject}"
 
 
+def owner(identity):
+    """A run's owner as run.registered records it, so the signer answers the same after a restart."""
+    # lean: identities whose first 256 subject characters agree count as one owner; record a digest of the full
+    # subject in run.registered if such subjects appear
+    return f"{identity.scheme}:{identity.subject[:256]}"
+
+
 class Tx:
     """One batch: the records to append and an undo log covering every state change made while building them."""
 
@@ -81,6 +103,9 @@ class Tx:
     def set(self, d, k, v):
         self.undo.append((d, k, d.get(k, _MISSING)))
         d[k] = v
+
+    def pop(self, d, k):
+        self.undo.append((d, k, d.pop(k)))
 
     def mark(self):
         return len(self.undo), len(self.records)
@@ -131,6 +156,11 @@ class Tx:
 
     def closing(self, run, reason, **top):
         self.set(run, "closed", True)
+        n = self.log.open_runs[run["owner"]] - 1
+        if n:
+            self.set(self.log.open_runs, run["owner"], n)
+        else:
+            self.pop(self.log.open_runs, run["owner"])
         self.set(run, "closing_at", time.monotonic())
         return self.emit(run, "run.closing", {"reason": reason}, **top)
 
@@ -157,7 +187,7 @@ class RecordLog:
             first = next(storage.iter_range(0, 1))["event"]
             if first["type"] != "signer.epoch" or first["data"].get("bridge") != bridge:
                 raise ValueError("the v2 store already has records: the format bridge must be its first record")
-        self._q = queue.SimpleQueue()
+        self._q, self._closed, self._closing = queue.SimpleQueue(), False, threading.Lock()
         self._writer = threading.Thread(target=self._loop, name="tracekit-signer-writer", daemon=True)
         self._writer.start()
         self.write(self._startup_records)
@@ -171,6 +201,7 @@ class RecordLog:
         tail = s.tail_state()
         size = tail["tree_size"]
         runs, prev, leaves, approvals, index, tenants, closed = {}, ZERO_HASH, {}, {}, {}, set(), False
+        open_runs, by_run = {}, {}   # owner -> runs not closing; run key -> its approval ids
         for r in s.iter_range(0, size):
             e = r["event"]
             run = runs.get((e["tenant"], e["run_id"]))
@@ -190,12 +221,21 @@ class RecordLog:
             for tenant, leaf in self.leaves(r, tenants):
                 leaves.setdefault(tenant, []).append(leaf)
             closed = closed or e["type"] == "log.closed"
+            if not run["final"]:
+                run["active"] = since(e["ts"])
             if e["type"] == "run.registered":
                 run["owner"], run["source"] = "{scheme}:{subject}".format(**e["data"]["identity"]), e["source"]
+                open_runs[run["owner"]] = open_runs.get(run["owner"], 0) + 1
             elif e["type"] == "run.closing":
-                run["closed"], run["closing_at"] = True, time.monotonic()
+                run["closed"], run["closing_at"] = True, run["active"]
+                open_runs[run["owner"]] -= 1
             elif e["type"] == "run.final":
                 run["final"] = True
+                key = (e["tenant"], e["run_id"])
+                runs[key] = final_run(run)
+                for aid in by_run.pop(key, ()):
+                    a = approvals.pop(aid)
+                    del index[(*key, a["tool_call_id"], a["attempt"])]
             elif e["type"] == "policy.decision":
                 d = e["data"]
                 call = {"tool_call_id": e["tool_call_id"], "attempt": e.get("attempt", 0), "decision": d["decision"],
@@ -211,6 +251,7 @@ class RecordLog:
             elif e["type"] == "approval.request":
                 a = approvals[e["data"]["approval_id"]] = approval(e["tenant"], e["run_id"], e["data"])
                 index[(e["tenant"], e["run_id"], a["tool_call_id"], a["attempt"])] = e["data"]["approval_id"]
+                by_run.setdefault(a["run_key"], []).append(e["data"]["approval_id"])
             elif e["type"] == "approval":
                 approvals[e["data"]["approval_id"]]["state"] = ("approved" if e["data"]["decision"] == "approve"
                                                                  else "rejected")
@@ -219,8 +260,12 @@ class RecordLog:
         self.log_id = self.log_id or secrets.token_hex(16)
         self.runs, self.head, self.tenants = runs, {"seq": size, "prev": prev, "closed": closed}, tenants
         self.approvals, self.approval_index = approvals, index   # approval_id -> state; (tenant, run, call, attempt) -> id
-        for tenant, ls in leaves.items():
-            for leaf in ls[tail["registry"].get(tenant, (0,))[0]:]:
+        self.open_runs = {k: n for k, n in open_runs.items() if n}
+        for tenant in sorted(set(leaves) | set(tail["registry"])):
+            ls, stored = leaves.get(tenant, []), list(s.registry_iter(tenant))
+            if stored != ls[:len(stored)]:
+                raise StorageCorrupt(f"the registry log of tenant {tenant[:64]!r} holds leaves its records do not give")
+            for leaf in ls[len(stored):]:
                 s.registry_append(tenant, leaf)
 
     def tenant_salt(self, tenant):
@@ -272,7 +317,10 @@ class RecordLog:
 
     def _wait(self, fn):
         fut = Future()
-        self._q.put((fn, fut))
+        with self._closing:   # nothing is queued behind close()'s None, which the writer never reads past
+            if self._closed:
+                raise RPCError("unavailable", "the signer is shutting down")
+            self._q.put((fn, fut))
         return fut.result()
 
     def _item(self, tx, identity, req, digest, fn, run_key, late):
@@ -382,6 +430,8 @@ class RecordLog:
         return self.down is None
 
     def close(self):
-        self._q.put(None)
+        with self._closing:
+            self._closed = True
+            self._q.put(None)
         self._writer.join()
         self.storage.close()
