@@ -7,11 +7,13 @@ Real processes are used throughout: a copy of /bin/sh plays the harness, and `sl
 """
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
-import time
 import unittest
+
+import pytest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -27,8 +29,9 @@ SH = shutil.which("dash") or shutil.which("sh")
 
 
 def _spawn(argv, cwd=None):
-    """Start argv; it prints the pid of a `sleep` child it keeps running. Returns (process, child pid)."""
-    p = subprocess.Popen(argv, stdout=subprocess.PIPE, text=True, cwd=cwd)
+    """Start argv in its own process group; it prints the pid of a `sleep` child it keeps running.
+    Returns (process, child pid)."""
+    p = subprocess.Popen(argv, stdout=subprocess.PIPE, text=True, cwd=cwd, start_new_session=True)
     line = p.stdout.readline().strip()
     return p, int(line)
 
@@ -47,9 +50,13 @@ class _Harness(unittest.TestCase):
 
     def tearDown(self):
         daemon.trusted_file = self._trusted
-        for p in self.procs:
-            p.kill()
+        for p in self.procs:  # the whole group, so no `sleep` child outlives the test
+            try:
+                os.killpg(p.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
             p.wait()
+            p.stdout.close()
         shutil.rmtree(self.d, ignore_errors=True)
 
     def hook_under_harness(self, exe=None):
@@ -92,10 +99,9 @@ class FindHarness(_Harness):
 
     def test_detached_process_is_not(self):
         # a double fork reparents the process to init, out from under the harness
-        p, pid = _spawn([self.harness, "-c", "(setsid sleep 60 >/dev/null 2>&1 & echo $!) ; sleep 0.3"])
+        p, pid = _spawn([self.harness, "-c", "(setsid sleep 60 >/dev/null 2>&1 & echo $!)"])
         self.procs.append(p)
-        p.wait()
-        time.sleep(0.2)
+        p.wait()  # the harness and the subshell are gone: the kernel reparented the sleep when they exited
         try:
             inst, _ = find_harness(pid, self.harnesses())
             self.assertIsNone(inst)
@@ -137,6 +143,7 @@ class TrustedFile(unittest.TestCase):
         finally:
             shutil.rmtree(d, ignore_errors=True)
 
+    @pytest.mark.root
     @unittest.skipUnless(hasattr(os, "geteuid") and os.geteuid() == 0 and os.path.exists("/bin/sh"), "needs root-owned /bin/sh")
     def test_root_owned_system_binary_is_trusted(self):
         self.assertIsNone(trusted_file("/bin/sh"))
