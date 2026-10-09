@@ -27,6 +27,11 @@ class StorageCorrupt(Exception):
 
 class Storage:
     torn = ()  # torn last lines (a write cut short by a crash) set aside on open: [{"log", "offset", "length", "path"}]
+    snapshot = None  # the snapshot the store opened from: {"size", "hash" of record size-1, "state"}, or None
+
+    def snapshot_put(self, state):
+        """Store a snapshot of the indexes at the current tree size with `state` (JSON), the caller's state at that
+        size, so the next open replays only the records after it. Call it with no append in flight."""
 
     def append_batch(self, records):
         """Append v2 records whose seqs continue the log, with one write. Returns once written; with
@@ -54,8 +59,8 @@ class Storage:
         """Append one registry leaf (bytes) to the tenant's registry log."""
         raise NotImplementedError
 
-    def registry_iter(self, tenant):
-        """The tenant's registry leaves, in order."""
+    def registry_iter(self, tenant, start=0):
+        """The tenant's registry leaves from index `start`, in order."""
         raise NotImplementedError
 
     def registry_merkle(self, tenant):
