@@ -678,9 +678,11 @@ class SignerService:
         def data(commit):
             d = {"exchange_id": req.get("exchange_id", req["request_id"]), "phase": req["phase"],
                  "streamed": req.get("streamed", False), "model": req["model"], "upstream": req["provider"]}
-            for k in ("stop_reason", "error", "tool_results_sent"):
+            for k in ("stop_reason", "tool_results_sent"):
                 if k in req:
                     d[k] = req[k]
+            if "error" in req:
+                d["error"] = privacy.redact_text(req["error"])[0]
             if "content_digest" in req:
                 d["content_digest"] = commit(req["content_digest"])
             if {"input_tokens", "output_tokens"} <= req.get("usage", {}).keys():   # the event schema needs both counts
@@ -716,7 +718,11 @@ class SignerService:
             data = {"approval_id": aid, "decision_id": call["decision_id"], "policy_hash": self.policy.policy_hash,
                     "rule_ids": call["rule_ids"], "expires_at": expires_at, "requester": sub, "binding": binding,
                     "binding_digest": "sha256:" + hashlib.sha256(canonical(binding)).hexdigest()}
-            copy = {"args_source": p["args_source"], "args": privacy.redact(p["args"], call["dotenv"])[0]}
+            args = self._args(p)[0]
+            shown = privacy.redact(args, call["dotenv"])[0]   # redact the parsed args, so a raw copy stays valid JSON
+            if p["args_source"] == "raw":
+                shown = p["args"] if shown == args else canonical(shown).decode()
+            copy = {"args_source": p["args_source"], "args": shown}
             if "reason" in req:
                 copy["reason"] = privacy.redact(req["reason"], call["dotenv"])[0]
             _write_new(os.path.join(self._args_dir, aid), self._seal(aid, copy))
