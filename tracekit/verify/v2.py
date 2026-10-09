@@ -14,6 +14,8 @@ from run_seq 0 to a run.final record; the run's first and last records and every
 checkpointed tree. A run without run.final verifies only to its head. The bundle's manifest is an index, never trusted.
 A run with any self-approval (dev mode: the approver was the requester) is reported `approvals: self`, assurance dev.
 Approvals answered under the break-glass role are listed, as a warning.
+A tool call that ran against a deny, or an ask with no consumed approval, is signed by the signer as a capture.gap
+`executed_against_policy`; each is a `policy` warning.
 
 Run-set (a bundle with registry/run-set.json): the tenant's registry notes, signed by the pinned log key under the
 origin `<origin>/registry/<id of the bundle's tenant salt>`, and consistent with each other; every leaf of the range
@@ -273,6 +275,11 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key):
     every = [r for rs in runs.values() for r in rs]
     self_approved = any(r["event"].get("type") == "approval" and r["event"]["data"].get("self_approved") is True
                         for r in every)
+    against = [f"seq {r['event']['seq']}: {str(r['event']['data'].get('reason'))[:200]}" for r in every
+               if r["event"].get("type") == "capture.gap" and r["event"]["data"].get("kind") == "executed_against_policy"]
+    if against:
+        rep.check("policy", False, f"{len(against)} tool call(s) ran against a deny or an unapproved ask", against[:20],
+                  warn=True)
     rep.assurance = _assurance(origin, cosigs, witnesses, trust, {r["alg"] for r in every + key_records}, self_approved)
     glass = [r["event"] for r in every if r["event"].get("type") == "approval"
              and r["event"]["data"].get("break_glass") is True]

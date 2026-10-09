@@ -709,9 +709,11 @@ class SignerService:
         return "hmac-sha256:" + hmac.new(_salt(self._salt_key, label), digest.encode(), "sha256").hexdigest()
 
     def _same(self, call, digest):
-        """Whether `digest` is the args digest the decision (or approval) `call` was made for."""
-        return bool(call["commitment"] and digest) and hmac.compare_digest(call["commitment"],
-                                                                            self._commit(call["decision_id"], digest))
+        """Whether `digest` is the args digest the decision `call` was made for."""
+        return self._opens(call["commitment"], call["decision_id"], digest)
+
+    def _opens(self, commitment, label, digest):
+        return bool(commitment and digest) and hmac.compare_digest(commitment, self._commit(label, digest))
 
     def _evaluate(self, tool, args, hint):
         """(policy decision, hint disagreed). A class hint that disagrees with the policy's class gets the stricter of
@@ -820,9 +822,9 @@ class SignerService:
         """`data(commit)`: the event's data, given `commit(digest)`, the commitment under this record's salt."""
         key = self._authorize(identity, req)
         self.quotas.take_event(identity)
-        label = salt_label({"type": typ, "data": None, "tenant": key[0], "run_id": key[1],
-                            "request_id": req["request_id"]})
-        data = data(lambda digest: self._commit(label, digest))
+        sid = secrets.token_hex(16)
+        label = salt_label({"type": typ, "data": {"salt_id": sid}})
+        data = {**data(lambda digest: self._commit(label, digest)), "salt_id": sid}
 
         def fn(tx, run):
             if need_call and req["tool_call_id"] not in run["calls"]:
@@ -852,21 +854,27 @@ class SignerService:
             if not self._same(call, req["args_digest"]):
                 raise RPCError("args_mismatch", f"{tcid} ran with other arguments than decision {did}")
             tx.set(run["decisions"], did, None)
-            return {"run_seq": tx.event(run, req, "tool.result", {"tool_use_id": tcid, "ok": req["status"] == "ok",
-                                                                  "output": output, "decision_id": did,
-                                                                  "redaction": manifest},
-                                        tool_call_id=tcid, attempt=attempt)}
+            seq = tx.event(run, req, "tool.result", {"tool_use_id": tcid, "ok": req["status"] == "ok", "output": output,
+                                                     "decision_id": did, "redaction": manifest},
+                           tool_call_id=tcid, attempt=attempt)
+            approved = self.log.approvals.get(self.log.approval_index.get((*key, tcid, attempt)), {}).get("state")
+            if call["decision"] == "deny" or (call["decision"] == "ask" and approved != "consumed"):
+                tx.emit(run, "capture.gap", {"kind": "executed_against_policy", "tool_use_id": tcid,
+                                             "reason": f"{tcid} ran after a {call['decision']} decision"
+                                                       + (" with no consumed approval" if call["decision"] == "ask" else "")},
+                        source="signer", tool_call_id=tcid)
+            return {"run_seq": seq}
         return self.log.submit(identity, "complete", req, fn, key, late=True)
 
     def _state_write(self, identity, req):
         key, sk = self._authorize(identity, req), req["key"]
         self.quotas.take_event(identity)
-        label = salt_label({"type": "state.write", "data": None, "tenant": key[0], "run_id": key[1],
-                            "request_id": req["request_id"]})
+        sid = secrets.token_hex(16)
+        label = salt_label({"type": "state.write", "data": {"salt_id": sid}})
         digest = self._commit(label, req["value_digest"])
 
         def fn(tx, run):
-            data = {"store": "default", "key": sk, "digest": digest}
+            data = {"store": "default", "key": sk, "digest": digest, "salt_id": sid}
             prev = req.get("prev_digest", ...)
             if prev is not ...:
                 data["prev_digest"] = prev and self._commit(label, prev)
@@ -918,18 +926,18 @@ class SignerService:
             self.quotas.check_count("pending_approvals", sum(a["requester"] == sub and a["state"] == "requested"
                                                              for a in self.log.approvals.values()))
             p = call["pending"]
-            aid, expires_at = "apr-" + secrets.token_hex(16), _iso(time.time() + APPROVAL_TTL_S)
+            aid, expires_at, sid = "apr-" + secrets.token_hex(16), _iso(time.time() + APPROVAL_TTL_S), secrets.token_hex(16)
+            args, digest = self._args(p)
             binding = {"v": 1, "approval_id": aid, "tenant": key[0], "run_id": key[1], "tool_call_id": tcid,
-                       "attempt": attempt, "tool": p["tool"], "args_commitment": call["commitment"],
+                       "attempt": attempt, "tool": p["tool"], "args_commitment": self._commit("approval.request:" + sid, digest),
                        "args_source": p["args_source"],
                        "policy_hash": self.policy.policy_hash, "nonce": secrets.token_hex(16), "expires_at": expires_at}
             data = {"approval_id": aid, "decision_id": call["decision_id"], "policy_hash": self.policy.policy_hash,
                     "rule_ids": call["rule_ids"], "expires_at": expires_at, "requester": sub, "binding": binding,
-                    "binding_digest": "sha256:" + hashlib.sha256(canonical(binding)).hexdigest()}
+                    "binding_digest": "sha256:" + hashlib.sha256(canonical(binding)).hexdigest(), "salt_id": sid}
             if any(r.get("approval") == {"executor": "t2"} for _, r, *_ in self.policy.rules
                    if r["id"] in call["rule_ids"]):
                 data["executor"] = "t2"
-            args = self._args(p)[0]
             shown = privacy.redact(args, call["dotenv"])[0]   # redact the parsed args, so a raw copy stays valid JSON
             if p["args_source"] == "raw":
                 shown = p["args"] if shown == args else canonical(shown).decode()
@@ -1019,11 +1027,13 @@ class SignerService:
                         and self._same(call, digest)):
                     return {"ok": True, "rule_ids": []}   # needed no approval
                 why = "TK-APPROVAL-REQUIRED", "approval required but none was requested for this call"
-            elif not self._same(a, digest):
+            elif not self._opens(a["commitment"], a["label"], digest):
+                sid = secrets.token_hex(16)
                 tx.emit(run, "approval.binding_mismatch", {
                     "approval_id": aid, "decision_id": a["decision_id"], "tool_use_id": tcid,
                     "approved_commitment": a["commitment"],
-                    "args_commitment": self._commit(a["decision_id"], digest)}, source="signer", **top)
+                    "args_commitment": self._commit("approval.binding_mismatch:" + sid, digest), "salt_id": sid},
+                        source="signer", **top)
                 return {"ok": False, "rule_ids": ["TK-APPROVAL-MISMATCH"], "approval_id": aid,
                         "reason": "the arguments differ from the approved ones"}
             elif a["state"] != "approved":

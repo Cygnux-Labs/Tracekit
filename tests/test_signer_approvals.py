@@ -4,6 +4,7 @@ self-approval and the verifier's cap, and the `tracekit approvals` CLI against t
 import contextlib
 import hashlib
 import io
+import json
 import os
 import shutil
 import socket
@@ -24,6 +25,7 @@ from tracekit.sdk import autospawn
 from tracekit.sdk.client import Client
 from tracekit.signer import service as svc
 from tracekit.signer.rpc_schema import RPCError
+from test_signer_privacy import SECRET
 
 PAY = {"to": "acct-42", "cents": 1500}
 
@@ -131,8 +133,38 @@ class Scenarios(rc.Harness):
         self.assertEqual(self.call("approval_list", {"run_id": "no-such-run"})["approvals"], [])
 
 
+    def test_approver_copy_is_redacted_and_an_unknown_cursor_is_an_empty_page(self):
+        self.register()
+        self.decide(tool="pay", args={"key": SECRET})
+        aid = self.call("approval_request", self.run_req(tool_call_id="tc-1", reason=f"uses {SECRET}"))["approval_id"]
+        self.assertNotIn(SECRET, json.dumps(self.call("approval_get", {"approval_id": aid})))
+        self.assertEqual(self.call("approval_list", {"cursor": "apr-unknown"}), {"approvals": [], "next_cursor": None})
+
+    def test_a_call_run_without_a_consumed_approval_is_a_signed_gap(self):
+        self.register()
+        for tcid in ("tc-1", "tc-2"):
+            req, d = self.decide(tool="pay", args=PAY, tcid=tcid)
+            if tcid == "tc-2":
+                aid = self.call("approval_request", self.run_req(tool_call_id=tcid))["approval_id"]
+                self.approve(aid)
+                self.assertTrue(self.consume(tcid=tcid, hint=aid)["ok"])
+            self.complete(req, d)
+        self.assertEqual([(e["data"]["kind"], e["data"]["tool_use_id"]) for e in self.read() if e["type"] == "capture.gap"],
+                         [("executed_against_policy", "tc-1")])
+
+
 class TestFakeApprovals(Scenarios, unittest.TestCase):
     make_signer = rc.TestFakeSigner.make_signer
+
+    def test_approvals_follow_the_dev_signers_visibility_and_self_approval_rules(self):
+        aid = self.ask(PAY)
+        self.signer.identity, self.signer.tenant = "someone-else", "acme"
+        self.assertEqual(self.call("approval_list", {})["approvals"], [])
+        self.refused("unknown_approval", "approval_get", {"approval_id": aid})
+        self.refused("unknown_approval", "approval_decide", {"request_id": self.rid(), "approval_id": aid,
+                                                             "decision": "approve"})
+        self.signer.tenant = "default"   # another identity of the run's tenant may answer: not a self-approval
+        self.assertFalse(self.approve(aid)["self_approved"])
 
 
 class TestServiceApprovals(Scenarios, unittest.TestCase):
@@ -231,6 +263,24 @@ class TestRealSigner(unittest.TestCase):
         with self.assertRaises(RPCError) as cm:
             self.s.call(ts.OTHER, "approval_decide", {"request_id": "h", "approval_id": aid, "decision": "approve"})
         self.assertEqual(cm.exception.code, "unknown_approval")
+
+
+class TestExecutedAgainstPolicy(tb.Case):
+    def test_a_call_run_against_the_policy_is_a_counted_warning(self):
+        log = self.log()
+        log.epoch(tb.KEY1)
+        log.register()
+        for tcid in ("t1", "t2"):
+            log.add("capture.gap", {"kind": "executed_against_policy", "tool_use_id": tcid,
+                                    "reason": f"{tcid} ran after a deny decision"})
+        log.final()
+        out = os.path.join(self.d, "a.tkb")
+        export(log.store, "acme", "run-a", log.note(), out)
+        rep, code = self.verify(out)
+        self.assertEqual((code, rep.integrity), (0, "VERIFIED"), rep.checks)
+        [check] = [c for c in rep.checks if c["check"] == "policy"]
+        self.assertEqual((check["status"], len(check["problems"])), ("warn", 2))
+        self.assertIn("2 tool call(s)", check["detail"])
 
 
 class TestSelfApprovalCapsAssurance(tb.Case):
