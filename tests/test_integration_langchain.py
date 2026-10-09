@@ -21,9 +21,11 @@ try:
     from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
     from langchain_core.outputs import ChatGeneration, ChatResult
     from langchain_core.tools import tool
+    from langgraph.checkpoint.memory import InMemorySaver
     from langgraph.checkpoint.sqlite import SqliteSaver
-    from langgraph.types import Command
+    from langgraph.types import Command, interrupt
 
+    from tracekit.format.canon import event_hash
     from tracekit.integrations.langchain import TracekitMiddleware
 except ImportError:   # optional: the dev extra installs them
     HAVE_LC = False
@@ -70,6 +72,12 @@ else:
         """Always raises."""
         raise ValueError(why)
 
+    @tool
+    def confirm(question: str) -> str:
+        """Ask the user, pausing the run."""
+        RAN.append("confirm")
+        return interrupt(question)
+
 RAN = []
 THREAD = {"configurable": {"thread_id": "t"}}
 
@@ -88,7 +96,7 @@ def register(signer):
 
 
 def agent(signer, run, checkpointer=None):
-    return create_agent(StubModel(), [echo, pay, wipe, fail], checkpointer=checkpointer,
+    return create_agent(StubModel(), [echo, pay, wipe, fail, confirm], checkpointer=checkpointer,
                         middleware=[TracekitMiddleware(signer, run["run_id"], run["run_token"])])
 
 
@@ -148,7 +156,11 @@ class Decisions(unittest.TestCase):
         return [e["data"] for e in events(self.signer, self.run) if e["type"] == typ]
 
     def test_allow_runs_the_tool_and_records_decision_and_result(self):
+        sent = []
+        complete = self.signer.complete
+        self.signer.complete = lambda req: sent.append(req) or complete(req)
         out = agent(self.signer, self.run).invoke(prompt("echo", text="hi"))
+        self.assertEqual([r["result"] for r in sent], [event_hash("hi")])
         self.assertEqual(RAN, ["echo"])
         self.assertEqual(tool_message(out).content, "hi")
         [d] = self.recorded("tool.decision")
@@ -177,6 +189,14 @@ class Decisions(unittest.TestCase):
         [r] = self.recorded("tool.result")
         self.assertEqual((r["status"], r["error"]), ("error", "ValueError: boom"))
 
+    def test_interrupt_inside_a_tool_is_not_recorded_as_an_outcome(self):
+        a = agent(self.signer, self.run, InMemorySaver())
+        a.invoke(prompt("confirm", question="sure?"), THREAD)
+        self.assertEqual(self.recorded("tool.result"), [])
+        out = a.invoke(Command(resume="yes"), THREAD)
+        self.assertEqual(tool_message(out).content, "yes")
+        self.assertEqual([r["status"] for r in self.recorded("tool.result")], ["ok"])
+
     def test_async_path(self):
         a = agent(self.signer, self.run)
         out = asyncio.run(a.ainvoke(prompt("echo", text="hi")))
@@ -190,7 +210,9 @@ class Decisions(unittest.TestCase):
 @unittest.skipUnless(HAVE_LC, "langchain>=1 / langgraph-checkpoint-sqlite not installed")
 class ApprovalAcrossProcesses(unittest.TestCase):
     def setUp(self):
-        self.dir = tempfile.mkdtemp()
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        self.dir = d.name
         payload = self.step("start")["interrupt"]["tracekit"]
         self.assertEqual((payload["tool"], payload["rule_ids"]), ("pay", ["R-PAY"]))
         self.approval_id = payload["approval_id"]
