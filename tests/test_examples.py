@@ -23,7 +23,7 @@ EXAMPLES = {  # file -> (modules it needs, tool names the ledger must show)
 class Examples(DaemonCase):
     def setUp(self):
         super().setUp()
-        self.env = dict(os.environ, PYTHONPATH=ROOT)
+        self.env = dict(os.environ, PYTHONPATH=ROOT, TMPDIR=self.d)  # what an example leaves in its temp dir goes with self.d
 
     def run_example(self, name):
         needs, expected = EXAMPLES[name]

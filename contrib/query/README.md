@@ -39,4 +39,4 @@ tracekit cost --by model --prices prices.json   # adds cost
 (`{"per": 1000000, "models": {"gpt-4o*": {"input": 2.5, "output": 10, "cache_read": 1.25}}}`; exact names first, then the
 longest matching glob). A model without a price shows `-`, never a guess.
 
-**Scale** (E7, `eval/e7_sql_scale.py`: synthetic 1,000,001-event ledger, 604 MB, 2 vCPUs): index build 36.2 s; refresh with nothing new 0.55 s; every typical query (rollups over all runs, tool calls grouped by name with their decisions, tokens by model, per-run lookups) under 1 s, per-run lookups about 1 ms. See [evaluation](evaluation.md#e7-sql-index-at-a-million-events).
+**Scale** (E7, `e7_sql_scale.py` in this directory: synthetic 1,000,001-event ledger, 604 MB, 2 vCPUs): index build 36.2 s; refresh with nothing new 0.55 s; every typical query (rollups over all runs, tool calls grouped by name with their decisions, tokens by model, per-run lookups) under 1 s, per-run lookups about 1 ms. See [evaluation](../../docs/evaluation.md#e7-sql-index-at-a-million-events).
