@@ -17,6 +17,7 @@ signer.yaml:
     grace_s: 5                               # reconciliation window between run.closing and run.final
     idle_s: 3600                             # a run without calls for this long is closed
     limits: {events_per_s: 200, burst: 400}  # tracekit.signer.quotas.Limits
+    policy: /etc/tracekit/policy.yaml        # policy v2 (YAML or JSON); default tracekit/policy2/packs/dev.yaml
     acknowledge_rollback: false
 
 Startup (04-design §2.6): the storage lock is taken before any socket is touched; the log is replayed, its chain
@@ -30,12 +31,16 @@ pending) → run.closing → grace window, where only late records (complete, st
 run.final{head}. run.registered and run.final also get a leaf in the tenant's registry log. Gap and tamper records are
 written by the signer only: no request can carry an event type, source, isolation or fail mode.
 
-Policy, approvals and checkpoints are stubs that keep the contract until M1a-09cef: `decide` allows, except one visible
-demo deny rule; any identity may answer an approval and self-approval is labelled; `checkpoint_nudge` schedules nothing.
+
+Policy (04-design §4): the signer classifies the tool and decides with policy2; every decide gets a fresh decision_id
+that one `complete` with the same arguments consumes. Only deny and ask are memoised, per (tool_call_id, attempt).
+Approvals and checkpoints are still stubs: any identity may answer an approval and self-approval is labelled;
+`checkpoint_nudge` schedules nothing.
 """
 import argparse
 import datetime
 import hashlib
+import hmac
 import os
 import secrets
 import signal
@@ -49,6 +54,8 @@ from tracekit import __version__, crypto, yamlmini
 from tracekit.format.canon import StrictJSONError, canonical, event_hash, loads_strict
 from tracekit.format.records import RecordError, RecordSigner, verify_record
 from tracekit.identity.base import CallerIdentity
+from tracekit.policy2 import compile as policy_compile
+from tracekit.policy2.engine import Engine
 from tracekit.signer import rpc_schema
 from tracekit.signer.pipeline import SIGNER_RUN, RecordLog, subject
 from tracekit.signer.quotas import Limits, Quotas
@@ -58,20 +65,24 @@ from tracekit.storage.base import ACK_ON_WRITE, StorageUnavailable
 from tracekit.storage.file import FileStorage, _mkdir
 from tracekit.storage.file import fsck as fsck_store
 
-DEMO_DENY_TOOL = "tracekit_demo_denied"
-STUB_POLICY_HASH = event_hash({"policy": "tracekit-stub", "deny_tools": [DEMO_DENY_TOOL]})
+DEFAULT_POLICY = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "policy2", "packs", "dev.yaml")
 APPROVAL_TTL_S = 3600
+DECISION_TTL_S = 300
 REFUSAL_WINDOW_S = 60
+STRICTNESS = ("allow", "flag", "ask", "deny")
 TICK_S = 1.0
 GRACE_S, IDLE_S = 5.0, 3600.0
 FAIL_MODES = {"default": "closed"}
 CONFIG_KEYS = {"data_dir", "socket", "tcp_endpoint", "durability", "tenant", "tenants", "limits", "acknowledge_rollback",
-               "multi_tenant_apps", "migrators", "analyzers", "fail_modes", "grace_s", "idle_s"}
+               "policy", "multi_tenant_apps", "migrators", "analyzers", "fail_modes", "grace_s", "idle_s"}
 
 
-def demo_rule(tool, args):
-    """The stub policy: allow everything except the tool `tracekit_demo_denied`, so a deny is easy to see."""
-    return ("deny", ["TK-DEMO-DENY"]) if tool == DEMO_DENY_TOOL else ("allow", [])
+def load_policy(path=DEFAULT_POLICY, backend=None):
+    """The policy2 Engine for a policy file; ValueError lists every lint error."""
+    pol, errors = policy_compile.build(path)
+    if errors:
+        raise ValueError("; ".join(errors))
+    return Engine(pol, backend)
 
 
 def _iso(ts):
@@ -105,11 +116,12 @@ def _process_identity():
 
 
 class SignerService:
-    def __init__(self, data_dir, rule=demo_rule, identity=None, tenant="default", tenants=None, limits=Limits(),
+    def __init__(self, data_dir, policy=None, identity=None, tenant="default", tenants=None, limits=Limits(),
                  durability=ACK_ON_WRITE, witnesses=(), acknowledge_rollback=False, open_storage=None,
                  multi_tenant_apps=(), migrators=(), analyzers=(), fail_modes=None, grace_s=GRACE_S, idle_s=IDLE_S):
         """`identity` answers the in-process SignerAPI calls (default: this process's uid); transports call
-        handle_frame with the identity they established. `open_storage()` defaults to file storage in data_dir/store.
+        handle_frame with the identity they established. `policy` is a policy2 Engine (default: load_policy()).
+        `open_storage()` defaults to file storage in data_dir/store.
         `multi_tenant_apps`, `migrators` and `analyzers` are identities ("scheme:subject")."""
         fail_modes = dict(fail_modes or FAIL_MODES)
         if not all(isinstance(k, str) and v in ("open", "closed") for k, v in fail_modes.items()):
@@ -122,18 +134,19 @@ class SignerService:
             os.chmod(keys, 0o700)
             sign = RecordSigner(_secret(os.path.join(keys, "record.key"), lambda: crypto.generate()[0]))
             self.tokens = RunTokens(_secret(os.path.join(keys, "run_token.key"), lambda: os.urandom(32)))
+            self._salt_key = _secret(os.path.join(keys, "args_salt.key"), lambda: os.urandom(32))
             self.quotas = Quotas(limits)
             salt = _secret(os.path.join(keys, "registry_salt.key"), lambda: os.urandom(32))
             self.log = RecordLog(storage, open_storage, sign, self.quotas, salt)
         except BaseException:
             storage.close()
             raise
-        self.rule, self.identity = rule, identity or _process_identity()
+        self.policy, self.identity = policy or load_policy(), identity or _process_identity()
         self.tenant, self.tenants = tenant, dict(tenants or {})
         self.multi_tenant_apps, self.migrators, self.analyzers = set(multi_tenant_apps), set(migrators), set(analyzers)
         self.fail_modes, self.grace_s, self.idle_s = fail_modes, grace_s, idle_s
         self._swept = time.monotonic()
-        self._approvals = {}   # approval_id -> {"run_key", "tool_call_id", "args_digest", "rule_ids", "state", ...}
+        self._approvals = {}   # approval_id -> {"run_key", "tool_call_id", "decision_id", "commitment", "state", ...}
         self._cond = threading.Condition()
         self._refusals, self._refusals_lock = {}, threading.Lock()
         self._stop = threading.Event()
@@ -267,6 +280,26 @@ class SignerService:
             raise RPCError("unknown_approval", approval_id)
         return a
 
+    def _commit(self, decision_id, digest):
+        """The published args_commitment: HMAC of the args digest under the decision's own salt, which the signer can
+        reveal to an auditor for that one record."""
+        salt = hmac.new(self._salt_key, decision_id.encode(), "sha256").digest()
+        return "hmac-sha256:" + hmac.new(salt, digest.encode(), "sha256").hexdigest()
+
+    def _same(self, call, digest):
+        """Whether `digest` is the args digest the decision (or approval) `call` was made for."""
+        return bool(call["commitment"] and digest) and hmac.compare_digest(call["commitment"],
+                                                                            self._commit(call["decision_id"], digest))
+
+    def _evaluate(self, tool, args, hint):
+        """(policy decision, hint disagreed). A class hint that disagrees with the policy's class gets the stricter of
+        the two decisions."""
+        d = self.policy.decide(tool, args)
+        if hint is None or hint == self.policy.tool_class(tool):
+            return d, False
+        h = self.policy.decide(tool, args, hint if hint in policy_compile.CLASSES else "unknown")
+        return max(d, h, key=lambda x: STRICTNESS.index(x["verdict"])), True
+
     @staticmethod
     def _isolation(identity):
         if identity.scheme == "uid" and hasattr(os, "getuid"):
@@ -312,33 +345,63 @@ class SignerService:
     def _decide(self, identity, req):
         key = self._authorize(identity, req)
         self.quotas.take_event(identity)
+        tool, tcid, attempt, hint = req["tool"], req["tool_call_id"], req.get("attempt", 0), req.get("tool_class_hint")
         try:
             args = loads_strict(req["args"]) if req["args_source"] == "raw" else req["args"]
-            digest = event_hash({"tool": req["tool"], "args": args})
+            digest = event_hash({"tool": tool, "args": args})
         except (StrictJSONError, rfc8785.CanonicalizationError):
             digest = None
-        ruled = self.rule(req["tool"], args) if digest and "approval_id" not in req else None
-        tcid = req["tool_call_id"]
+        # matched here, off the writer thread; the writer picks a memoised deny/ask or this result
+        ruled = self._evaluate(tool, args, hint) if digest and "approval_id" not in req else None
+        did = "dec-" + secrets.token_hex(16)
+        commitment = self._commit(did, digest) if digest else None
+        # lean: expires_at is signed but `complete` does not enforce it; enforce once executors check it before running
+        expires_at = _iso(time.time() + DECISION_TTL_S)
 
         def fn(tx, run):
             a = self._approval(key, req["approval_id"]) if "approval_id" in req else None
+            memo, gaps = run["calls"].get(tcid), []
+            data = {"tool_use_id": tcid, "tool": tool, "decision_id": did, "policy_hash": self.policy.policy_hash,
+                    "engine": self.policy.engine, "nonce": secrets.token_hex(16), "expires_at": expires_at}
             if digest is None:
-                decision, rule_ids = "deny", ["TK-ARGS-INVALID"]
-            elif a is None:
-                decision, rule_ids = ruled
-            elif a["tool_call_id"] != tcid or a["args_digest"] != digest:
-                decision, rule_ids = "deny", ["TK-APPROVAL-MISMATCH"]
+                verdict, rule_ids = "deny", ["TK-ARGS-INVALID"]
+            elif a is not None:
+                if a["tool_call_id"] != tcid or not self._same(a, digest):
+                    verdict, rule_ids = "deny", ["TK-APPROVAL-MISMATCH"]
+                else:
+                    verdict, rule_ids = {"approved": ("allow", ["TK-APPROVED"]), "requested": ("ask", a["rule_ids"])
+                                         }.get(a["state"], ("deny", ["TK-APPROVAL-" + a["state"].upper()]))
+            elif memo and memo["attempt"] == attempt and memo["decision"] in ("deny", "ask") and self._same(memo, digest):
+                verdict, rule_ids = memo["decision"], memo["rule_ids"]
             else:
-                decision, rule_ids = {"approved": ("allow", ["TK-APPROVED"]), "requested": ("ask", a["rule_ids"])
-                                      }.get(a["state"], ("deny", ["TK-APPROVAL-" + a["state"].upper()]))
-            tx.set(run["calls"], tcid, {"args_digest": digest, "decision": decision, "rule_ids": rule_ids})
-            seq = tx.event(run, req, "policy.decision", {"tool_use_id": tcid, "tool": req["tool"], "decision": decision,
-                                                         "rule_ids": rule_ids, "policy_hash": STUB_POLICY_HASH},
-                           tool_call_id=tcid, attempt=req.get("attempt", 0), args_source=req["args_source"])
-            if decision == "allow" and a is not None:
+                d, mismatch = ruled
+                verdict, rule_ids = d["verdict"], d["rule_ids"]
+                if d.get("nondeterministic"):
+                    data["nondeterministic"] = True
+                if mismatch:
+                    gaps.append(("class_mismatch", f"class hint {hint!r} disagrees with the policy's class "
+                                                   f"{self.policy.tool_class(tool)!r}; the stricter decision applies"))
+                # lean: the deny set lives in memory, so a flip across a signer restart goes unflagged
+                if verdict == "deny":
+                    tx.set(run["denied"], digest, True)
+                elif verdict != "ask" and digest in run["denied"]:
+                    gaps.append(("decision_flip", f"{verdict} after a deny for the same arguments in this run"))
+            if commitment:
+                data["args_commitment"] = commitment
+            call = {"tool_call_id": tcid, "attempt": attempt, "decision": verdict, "rule_ids": rule_ids,
+                    "decision_id": did, "commitment": commitment}
+            tx.set(run["calls"], tcid, call)
+            tx.set(run["decisions"], did, call)
+            seq = tx.event(run, req, "policy.decision", dict(data, decision=verdict, rule_ids=rule_ids),
+                           tool_call_id=tcid, attempt=attempt, args_source=req["args_source"])
+            for kind, reason in gaps:
+                tx.emit(run, "capture.gap", {"kind": kind, "reason": reason, "tool_use_id": tcid}, source="signer",
+                        tool_call_id=tcid)
+            if verdict == "allow" and a is not None:
                 tx.set(a, "state", "consumed")
                 tx.emit(run, "approval.consumed", {"approval_id": req["approval_id"]}, source="signer")
-            return {"decision": decision, "rule_ids": rule_ids, "run_seq": seq}
+            return {"decision": "allow" if verdict == "flag" else verdict, "decision_id": did, "rule_ids": rule_ids,
+                    "run_seq": seq, "expires_at": expires_at}
         return self.log.submit(identity, "decide", req, fn, key)
 
     def _event(self, identity, method, req, typ, data, need_call=False, **top):
@@ -356,9 +419,20 @@ class SignerService:
             output = _ref({k: req[k] for k in ("result", "error") if k in req})
         except rfc8785.CanonicalizationError as e:
             raise RPCError("invalid_request", f"result is not canonical JSON: {e}") from None
-        return self._event(identity, "complete", req, "tool.result",
-                           {"tool_use_id": req["tool_call_id"], "ok": req["status"] == "ok", "output": output},
-                           need_call=True, tool_call_id=req["tool_call_id"], attempt=req.get("attempt", 0))
+        key, tcid, attempt, did = self._authorize(identity, req), req["tool_call_id"], req.get("attempt", 0), req["decision_id"]
+        self.quotas.take_event(identity)
+
+        def fn(tx, run):
+            call = run["decisions"].get(did)
+            if call is None or (call["tool_call_id"], call["attempt"]) != (tcid, attempt):
+                raise RPCError("unknown_decision", f"{did} is not an open decision for {tcid} attempt {attempt}")
+            if not self._same(call, req["args_digest"]):
+                raise RPCError("args_mismatch", f"{tcid} ran with other arguments than decision {did}")
+            tx.set(run["decisions"], did, None)
+            return {"run_seq": tx.event(run, req, "tool.result", {"tool_use_id": tcid, "ok": req["status"] == "ok",
+                                                                  "output": output, "decision_id": did},
+                                        tool_call_id=tcid, attempt=attempt)}
+        return self.log.submit(identity, "complete", req, fn, key, late=True)
 
     def _state_write(self, identity, req):
         return self._event(identity, "state_write", req, "state.write",
@@ -384,9 +458,10 @@ class SignerService:
                                                              for a in self._approvals.values()))
             aid, expires_at = "apr-" + secrets.token_hex(16), _iso(time.time() + APPROVAL_TTL_S)
             # lean: the stub records expires_at but never expires an approval; the approvals task enforces it
-            tx.set(self._approvals, aid, {"run_key": key, "tool_call_id": tcid, "args_digest": call["args_digest"],
-                                          "rule_ids": call["rule_ids"], "state": "requested", "requester": sub})
-            tx.emit(run, "approval.request", {"approval_id": aid, "policy_hash": STUB_POLICY_HASH,
+            tx.set(self._approvals, aid, {"run_key": key, "tool_call_id": tcid, "decision_id": call["decision_id"],
+                                          "commitment": call["commitment"], "rule_ids": call["rule_ids"],
+                                          "state": "requested", "requester": sub})
+            tx.emit(run, "approval.request", {"approval_id": aid, "policy_hash": self.policy.policy_hash,
                                               "rule_ids": call["rule_ids"], "expires_at": expires_at, "requester": sub},
                     request_id=req["request_id"], tool_call_id=tcid)
             return {"approval_id": aid, "state": "requested", "expires_at": expires_at}
@@ -468,13 +543,15 @@ def load_config(path):
     if unknown or "data_dir" not in cfg:
         raise ValueError(f"{path}: needs data_dir; unknown keys {sorted(unknown)}")
     base = os.path.dirname(os.path.abspath(path))
-    for k in ("data_dir", "socket", "tcp_endpoint"):
+    for k in ("data_dir", "socket", "tcp_endpoint", "policy"):
         if cfg.get(k):
             cfg[k] = os.path.join(base, cfg[k])
     return cfg
 
 
 def open_service(cfg, **kw):
+    if cfg.get("policy"):
+        kw.setdefault("policy", load_policy(cfg["policy"]))
     # lean: no witness client until the checkpointer exists (04-design §2.9); pass witnesses= in process meanwhile
     return SignerService(cfg["data_dir"], durability=cfg.get("durability", ACK_ON_WRITE),
                          tenant=cfg.get("tenant", "default"), tenants=cfg.get("tenants"),

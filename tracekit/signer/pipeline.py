@@ -40,7 +40,8 @@ def new_run(tenant, run_id):
     """`closed`: run.closing written, late records only; `final`: run.final written, nothing more. `active` and
     `closing_at` are monotonic times for the idle and grace clocks."""
     return {"tenant": tenant, "run_id": run_id, "run_seq": 0, "head": ZERO_HASH, "streams": {}, "closed": False,
-            "final": False, "calls": {}, "owner": None, "source": "sdk", "active": time.monotonic(), "closing_at": None}
+            "final": False, "calls": {}, "decisions": {}, "denied": {}, "owner": None, "source": "sdk",
+            "active": time.monotonic(), "closing_at": None}
 
 
 def subject(identity):
@@ -159,10 +160,15 @@ class RecordLog:
             elif e["type"] == "run.final":
                 run["final"] = True
             elif e["type"] == "policy.decision":
-                # lean: argument digests are not in the log, so a call decided before a restart can't be approved
-                # after it; persist them with the pending approvals (M1a-09cef)
-                run["calls"][e["tool_call_id"]] = {"decision": e["data"]["decision"], "rule_ids": e["data"]["rule_ids"],
-                                                   "args_digest": None}
+                d = e["data"]
+                call = {"tool_call_id": e["tool_call_id"], "attempt": e.get("attempt", 0), "decision": d["decision"],
+                        "rule_ids": d["rule_ids"], "decision_id": d.get("decision_id"),
+                        "commitment": d.get("args_commitment")}
+                run["calls"][e["tool_call_id"]] = call
+                if call["decision_id"]:
+                    run["decisions"][call["decision_id"]] = call
+            elif e["type"] == "tool.result" and "decision_id" in e["data"]:
+                run["decisions"][e["data"]["decision_id"]] = None
         self.log_id = self.log_id or secrets.token_hex(16)
         self.runs, self.head = runs, {"seq": size, "prev": prev}
         for tenant, rs in leaves.items():

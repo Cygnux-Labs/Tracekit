@@ -24,7 +24,10 @@ import threading
 import uuid
 import warnings
 
+import rfc8785
+
 from tracekit import __version__
+from tracekit.format.canon import StrictJSONError, event_hash, loads_strict
 from tracekit.signer import rpc_schema
 from tracekit.signer.rpc_schema import RPC_VERSION, RPCError
 from tracekit.transport import read_frame, write_frame
@@ -231,6 +234,7 @@ class RunHandle:
         self.client, self.registered = client, registered
         self.run_id, self.run_token = registered["run_id"], registered["run_token"]
         self.closed = False
+        self._decided = {}   # tool_call_id -> the decision_id and args_digest its `complete` must name
 
     def call(self, method, **fields):
         """Any per-run RPC (`state_write`, `approval_wait`, `read`, ...) with this run's id and token."""
@@ -238,11 +242,19 @@ class RunHandle:
 
     def decide(self, tool_call_id, tool, args, **fields):
         """`args` is the model's raw arguments string, or an already parsed value."""
-        return self.call("decide", tool_call_id=tool_call_id, tool=tool, args=args,
-                         **{"args_source": "raw" if isinstance(args, str) else "parsed", **fields})
+        d = self.call("decide", tool_call_id=tool_call_id, tool=tool, args=args,
+                      **{"args_source": "raw" if isinstance(args, str) else "parsed", **fields})
+        try:
+            digest = event_hash({"tool": tool, "args": loads_strict(args) if isinstance(args, str) else args})
+        except (StrictJSONError, rfc8785.CanonicalizationError):
+            return d   # the signer has no args digest to bind either; complete needs explicit fields
+        self._decided[tool_call_id] = {"decision_id": d["decision_id"], "args_digest": digest}
+        return d
 
     def complete(self, tool_call_id, status="ok", **fields):
-        return self.call("complete", tool_call_id=tool_call_id, status=status, **fields)
+        """Defaults decision_id and args_digest to those of the last `decide` for this tool call."""
+        return self.call("complete", tool_call_id=tool_call_id, status=status,
+                         **{**self._decided.pop(tool_call_id, {}), **fields})
 
     def close(self, reason=None):
         if not self.closed:

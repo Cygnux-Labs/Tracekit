@@ -101,7 +101,7 @@ class FakeSigner:
                 raise RPCError("run_exists", run_id)
             tenant = req.get("tenant", self.tenant)
             run = self._runs[run_id] = {"token": self._id("tok"), "closed": False, "events": [], "streams": {},
-                                        "calls": {}}
+                                        "calls": {}, "decisions": {}}
             out = {"run_id": run_id, "run_token": run["token"], "tenant": tenant,
                    "tenant_attested": "tenant" not in req, "principal_attested": False}
             if "principal" in req:
@@ -130,27 +130,37 @@ class FakeSigner:
                     decision, rule_ids = {"approved": ("allow", ["TK-APPROVED"]), "requested": ("ask", a["rule_ids"])
                                           }.get(a["state"], ("deny", ["TK-APPROVAL-" + a["state"].upper()]))
             run["calls"][req["tool_call_id"]] = {"args_digest": digest, "decision": decision, "rule_ids": rule_ids}
+            decision_id = self._id("dec")
+            run["decisions"][decision_id] = (req["tool_call_id"], req.get("attempt", 0), digest)
             seq = self._append(run, "policy.decision", {"tool_call_id": req["tool_call_id"], "tool": req["tool"],
+                                                      "decision_id": decision_id,
                                                       "attempt": req.get("attempt", 0), "args_source": req["args_source"],
                                                       "decision": decision, "rule_ids": rule_ids}, req)
             if decision == "allow" and a is not None:
                 a["state"] = "consumed"
                 self._append(run, "approval.consumed", {"approval_id": req["approval_id"]})
-            return {"decision": decision, "rule_ids": rule_ids, "run_seq": seq}
+            return {"decision": decision, "decision_id": decision_id, "rule_ids": rule_ids, "run_seq": seq}
         return self._call("decide", req, handle)
 
-    def _event(self, method, typ, fields, req, need_call=False):
+    def _event(self, method, typ, fields, req, check=None):
         def handle(req):
             run = self._run(req)
             self._check_seq(run, req)
-            if need_call and req["tool_call_id"] not in run["calls"]:
-                raise RPCError("unknown_tool_call", req["tool_call_id"])
+            if check:
+                check(run, req)
             return {"run_seq": self._append(run, typ, {k: req[k] for k in fields if k in req}, req)}
         return self._call(method, req, handle)
 
     def complete(self, req):
-        return self._event("complete", "tool.result", ("tool_call_id", "attempt", "status", "error"), req,
-                           need_call=True)
+        def consume(run, req):
+            d = run["decisions"].get(req["decision_id"])
+            if d is None or d[:2] != (req["tool_call_id"], req.get("attempt", 0)):
+                raise RPCError("unknown_decision", req["decision_id"])
+            if d[2] != req["args_digest"]:
+                raise RPCError("args_mismatch", req["tool_call_id"])
+            run["decisions"][req["decision_id"]] = None
+        return self._event("complete", "tool.result", ("tool_call_id", "decision_id", "attempt", "status", "error"), req,
+                           check=consume)
 
     def state_write(self, req):
         return self._event("state_write", "state.write", ("key", "value_digest"), req)
