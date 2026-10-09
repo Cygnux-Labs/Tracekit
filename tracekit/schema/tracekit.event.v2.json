@@ -16,7 +16,11 @@
     "parent_id",
     "source",
     "type",
-    "data"
+    "data",
+    "log_id",
+    "tenant",
+    "run_seq",
+    "run_prev_hash"
   ],
   "properties": {
     "schema_version": {
@@ -2187,8 +2191,7 @@
       ],
       "properties": {
         "kid": {
-          "type": "string",
-          "maxLength": 71
+          "$ref": "#/$defs/hash"
         },
         "last_seq": {
           "type": "integer",
