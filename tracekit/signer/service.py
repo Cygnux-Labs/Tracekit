@@ -1195,6 +1195,8 @@ class SignerService:
 
     def _delegate_run(self, identity, req):
         tenant, run_id = self._authorize(identity, req)
+        if lookup(self.authorize, req["identity"]) is None:   # unconfigured, it would keep every method of the run
+            raise RPCError("forbidden", f"{req['identity'][:256]} has no authorize entry to delegate the run to")
         scheme, sub = req["identity"].split(":", 1)
         return {"run_token": self.tokens.issue(tenant, run_id, CallerIdentity(scheme, sub, True))}
 
@@ -1205,7 +1207,8 @@ class SignerService:
         def fn(tx, run):
             return {"run_seq": tx.emit(run, "capture.gap", {
                 "kind": "tailer_lost",
-                "reason": f"{privacy.redact_text(req['reason'])[0]} (at transcript offset {req['offset']})"},
+                "reason": f"{privacy.redact_text(req['reason'])[0]} (at transcript offset {req['offset']}; "
+                          f"reported by {subject(identity)[:256]})"},
                 source="signer", request_id=req["request_id"])}
         return self.log.submit(identity, "tailer_lost", req, fn, key, late=True)
 

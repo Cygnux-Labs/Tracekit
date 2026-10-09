@@ -6,7 +6,9 @@ import io
 import json
 import os
 import shutil
+import sys
 import tempfile
+import time
 import unittest
 import uuid
 from unittest import mock
@@ -136,7 +138,8 @@ class Tailer(unittest.TestCase):
             os.remove(self.path)
             os.symlink(other, self.path)
         self.tail(swap)
-        self.assertEqual(self.lost(), ["a symlink replaced the transcript (at transcript offset %d)" % len(line(TOOL_USE))])
+        self.assertEqual(self.lost(), [f"a symlink replaced the transcript (at transcript offset {len(line(TOOL_USE))}; "
+                                       f"reported by uid:{ME.subject})"])
 
     def test_truncation_between_polls_is_lost(self):
         self.write(TOOL_USE, RESULT)
@@ -165,7 +168,29 @@ class Tailer(unittest.TestCase):
         self.write(TOOL_USE, b"{not json\n")
         self.tail()
         self.assertEqual(self.lost(), [f"the line at offset {len(line(TOOL_USE))} is not a JSON object "
-                                       f"(at transcript offset {len(line(TOOL_USE))})"])
+                                       f"(at transcript offset {len(line(TOOL_USE))}; reported by uid:{ME.subject})"])
+
+    def test_a_transcript_that_never_appears_is_lost(self):
+        self.tail(lambda: None)
+        self.assertIn("the transcript never appeared", self.lost()[0])
+
+    @unittest.skipIf(os.name != "nt" and os.getuid() == 0, "root reads past the permissions")
+    def test_a_transcript_it_may_not_reach_is_lost(self):
+        sub = os.path.join(self.d, "projects")
+        os.mkdir(sub, 0o700)
+        self.path = os.path.join(sub, "session.jsonl")
+        self.write(TOOL_USE)
+        os.chmod(sub, 0o600)   # no search: the file exists but cannot be opened
+        self.addCleanup(os.chmod, sub, 0o700)
+        self.tail()
+        self.assertIn("cannot open the transcript: Permission denied", self.lost()[0])
+
+    def test_a_tailer_that_stops_while_the_run_is_open_is_lost(self):
+        self.write(TOOL_USE)
+        with mock.patch.object(tailer, "IDLE_TAILER_S", -1):
+            self.tail(lambda: self.fail("still tailing after the idle limit"))
+        self.assertIn("the tailer stopped", self.lost()[0])
+        self.assertEqual(len([e for e in self.events() if e["type"] == "model.exchange"]), 1)
 
     def test_a_partial_line_waits_for_its_end(self):
         raw = line(TOOL_USE)
@@ -209,6 +234,21 @@ class Tailer(unittest.TestCase):
         with self.assertRaises(RPCError) as cm:   # nor the tailer's the owner's
             Run(self.signer, self.out, ME, token).call("model_event", provider="p", model="m", phase="request")
         self.assertEqual(cm.exception.code, "run_token_invalid")
+        self.assertIn(f"reported by uid:{TAILER.subject}", self.lost()[0])
+
+    def test_a_run_is_delegated_only_to_an_identity_with_an_authorize_entry(self):
+        with self.assertRaises(RPCError) as cm:   # unconfigured, a uid would keep every method of the run
+            self.run.call("delegate_run", identity="uid:4242")
+        self.assertEqual(cm.exception.code, "forbidden")
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "inotify is Linux-only")
+    def test_inotify_wakes_on_an_append(self):
+        self.write(TOOL_USE)
+        wait = tailer._waiter(self.path)
+        self.write(NEXT)
+        t = time.monotonic()
+        wait()
+        self.assertLess(time.monotonic() - t, tailer.POLL_S / 2)
 
 
 @unittest.skipIf(os.name == "nt", "the tailer is POSIX-only")
@@ -252,6 +292,28 @@ class HookStartsTheTailer(unittest.TestCase):
                          ("delegate_run", {"run_id": "run-1", "run_token": "tok", "identity": "uid:999998"}))
         handle = json.loads(popen.return_value.stdin.write.call_args.args[0])
         self.assertEqual(handle, {"run_id": "run-1", "run_token": "delegated", "path": "/home/agent/t.jsonl"})
+
+    def test_system_mode_without_a_tailer_records_a_tailer_lost_gap(self):
+        self.start({"signer": "/run/s.sock"}).assert_not_called()
+        self.assertEqual(self.client.call.call_args.args, ("tailer_lost", {
+            "run_id": "run-1", "run_token": "tok", "reason": "no transcript tailer is installed", "offset": 0}))
+
+    def test_a_run_registered_after_an_idle_close_gets_its_own_tailer(self):
+        self.start()
+        self.client.register_run.return_value = {"run_id": "run-2", "run_token": "tok-2"}
+        closed = [True]
+
+        def call(method, req):
+            if closed.pop() if closed else False:
+                raise RPCError("run_closed", req["run_id"])
+            return {"decision": "allow"}
+        self.client.call.side_effect = call
+        popen = mock.Mock()
+        with mock.patch.object(self.cc.subprocess, "Popen", popen), \
+                mock.patch.object(self.cc, "system_config", return_value=None):
+            self.cc._run(self.client, "s1", send="decide", tool_call_id="t", tool="Bash", args={}, args_source="parsed")
+        handle = json.loads(popen.return_value.stdin.write.call_args.args[0])
+        self.assertEqual((handle["run_id"], handle["path"]), ("run-2", "/home/agent/t.jsonl"))
 
 
 if __name__ == "__main__":

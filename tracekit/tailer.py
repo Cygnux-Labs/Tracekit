@@ -15,7 +15,8 @@ complete line must be a JSON object. Otherwise the tailer sends `tailer_lost` (t
 tailer never writes one) and exits. An assistant line with tool_use blocks becomes a model_event response (exchange id:
 the message id; each tool use with the digest of its arguments; the tool results sent since the last one); a user
 prompt becomes a model_event request carrying only the prompt's digest, which the signer publishes as a salted
-commitment. It also exits once the signer says the run is over, or after IDLE_S without a new line.
+commitment. It exits once the signer says the run is over, or (dev mode) once `until` is gone. A transcript that never
+appears or cannot be reached, and a tailer that stops after IDLE_TAILER_S without a new line, are a tailer_lost too.
 """
 import ctypes
 import json
@@ -33,6 +34,9 @@ from tracekit.signer.rpc_schema import RPCError
 from tracekit.signer.service import IDLE_S
 
 POLL_S = 1.0
+# lean: twice the signer's default run idle timeout, so a quiet run has closed before the tailer gives up on it; ask the
+# signer for the run's state instead if signers run with a longer idle_s
+IDLE_TAILER_S = 2 * IDLE_S
 ENDED = ("run_closed", "unknown_run", "run_token_invalid")
 IN_EVENTS = 0x2 | 0x4 | 0x40 | 0x80 | 0x100 | 0x200   # MODIFY, ATTRIB, MOVED_FROM, MOVED_TO, CREATE, DELETE
 
@@ -42,9 +46,12 @@ class Lost(Exception):
 
 
 def _open(path, uid):
+    """The transcript, kept open; None while it does not exist (Claude Code may create it only after SessionStart)."""
     try:   # O_NONBLOCK: a FIFO put in its place must not block the open
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-    except OSError as e:
+    except FileNotFoundError:
+        return None
+    except OSError as e:   # e.g. EACCES: no read access, or no search on a directory above it
         raise Lost(f"cannot open the transcript: {e.strerror}") from None
     st = os.fstat(fd)
     if not stat.S_ISREG(st.st_mode) or st.st_uid != uid:
@@ -115,8 +122,8 @@ def tail(run, path, uid, until=None, wait=None):
     wait, f, off, sent, grew = wait or _waiter(path), None, 0, [], time.monotonic()
     try:
         while True:
-            ending = (until is not None and not os.path.exists(until)) or time.monotonic() - grew > IDLE_S
-            if f is None and os.path.lexists(path):   # Claude Code may create it only after SessionStart
+            gone, idle = until is not None and not os.path.exists(until), time.monotonic() - grew > IDLE_TAILER_S
+            if f is None:
                 f = _open(path, uid)
             if f is not None:
                 _check(f, path, uid, off)
@@ -139,7 +146,11 @@ def tail(run, path, uid, until=None, wait=None):
                         grew = time.monotonic()
                 except SignerUnavailable:   # read again from `off` on the next wake
                     pass
-            if ending:
+            if f is None and (gone or idle):
+                raise Lost("the transcript never appeared")
+            if idle:
+                raise Lost(f"no new transcript line for {IDLE_TAILER_S:.0f}s: the tailer stopped")
+            if gone:
                 return
             wait()
     except Lost as e:
