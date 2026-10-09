@@ -13,8 +13,10 @@ import shlex
 import socket
 import shutil
 import signal
+import stat
 import subprocess
 import sys
+import tempfile
 import time
 
 try:
@@ -123,9 +125,14 @@ HOOK_TIMEOUT = {"PreToolUse": 600, "SessionEnd": 15}   # PreToolUse may hold a c
 def _hook_command(module="tracekit.hook", func="_entry", args=(), python=None):
     """Shell command that runs `module.func(*args)`. Python runs isolated (-I): the working directory, user
     site-packages and PYTHON* variables are not on the import path, so the harness's cwd cannot shadow tracekit.
-    python: an interpreter that has tracekit installed (system mode: OPT_PYTHON)."""
+    python: an interpreter that has tracekit installed (system mode: OPT_PYTHON). If it cannot run the hook (the
+    package or interpreter is missing), the call is blocked unless the system config sets fail_mode open."""
     if python:
-        return " ".join([shlex.quote(python), "-I", "-m", module, *args])
+        run = " ".join([shlex.quote(python), "-I", "-m", module, *args])
+        script = (f"{run}; s=$?; [ $s = 0 ] || [ $s = 2 ] && exit $s; "
+                  f"grep -Eq '\"fail_mode\"[[:space:]]*:[[:space:]]*\"open\"' {client.SYSTEM_CONFIG} 2>/dev/null && exit 0; "
+                  "echo 'tracekit: the hook could not run; call blocked (fail-closed)' >&2; exit 2")
+        return f"/bin/sh -c {shlex.quote(script)}"
     try:
         import importlib.util
         import site
@@ -257,8 +264,9 @@ def _write_client_config(user_home, cfg, owner=None):
 
 def _write_client_dir(path, cfg):
     """Create path/ and path/runs (owned by the current user) and write path/config.json (0600), following no symlink."""
-    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-    parent = files.open_dir(os.path.dirname(os.path.abspath(path)))
+    path = os.path.abspath(path)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    parent = files.open_dir(os.path.dirname(path))
     try:
         d = files.subdir(parent, os.path.basename(path), 0o755, _my_uid())
     finally:
@@ -295,12 +303,16 @@ def _write_signer_config(home, witnesses, checkpoint_every, socket_path, proxy=N
     cfg.update(extra or {})
     d = _signer_dir(home, tk_user)
     try:
-        # re-running init must never drop a configured external signer: the daemon would fall back to a new file key
-        if "signer" not in cfg and _read_config(d).get("signer"):
-            cfg["signer"] = _read_config(d)["signer"]
+        # re-running init keeps what it does not replace: dropping the external signer would make the daemon fall back
+        # to a new file key, dropping the pin or the harnesses would loosen the policy and harness checks
+        old = _read_config(d)
+        for k in ("signer", "pinned_policy_hash", "harnesses", "harness_binding"):
+            if k not in cfg and k in old:
+                cfg[k] = old[k]
         _save_config(d, cfg, tk_user)
     finally:
         files.close(d)
+    return cfg
 
 
 HARNESS_COMMANDS = {"claude": "claude", "codex": "codex", "cursor": "cursor-agent", "gemini": "gemini"}
@@ -647,6 +659,14 @@ def migrate_system(fail_mode=None, harnesses=None):
     signer_cfg = os.path.join(SYS_HOME, "config.json")
     if not os.path.exists(signer_cfg):
         raise SystemExit(f"no system-mode signer at {SYS_HOME}; run `sudo tracekit init --user <agent-user>` instead")
+    unit = os.path.join(SYSTEMD_DIR, "tracekitd.service")
+    try:
+        runs_opt = f"ExecStart={OPT_PYTHON} " in read_text(unit)
+    except OSError:
+        runs_opt = False
+    if not runs_opt:
+        raise SystemExit("this install predates the root-owned runtime: re-run `sudo /usr/bin/python3 -m tracekit init "
+                         "--user <agent-user>` from a root-owned clone")
     with open(signer_cfg, encoding="utf-8") as f:
         scfg = json.load(f)
     cfg = {"socket": scfg.get("socket") or os.path.join(SYS_HOME, "tracekitd.sock"), "signer_home": SYS_HOME,
@@ -654,16 +674,12 @@ def migrate_system(fail_mode=None, harnesses=None):
     if scfg.get("proxy"):
         cfg.update(proxy=True, proxy_url=f"http://127.0.0.1:{scfg['proxy'].get('port', 8787)}")
     policy = (client.system_config() or {}).get("policy")
-    if not policy and os.path.exists(OPT_PYTHON):  # 0.2.x configs have no policy key; use the root-owned default
-        policy = _opt_default_policy()
-    if policy:
-        cfg["policy"] = policy
+    cfg["policy"] = policy or _opt_default_policy()  # 0.2.x configs have no policy key; use the root-owned default
     _write_system_client_config(cfg)
     tk = pwd.getpwnam(SYS_USER)
-    hcfg = harness_config(harnesses)
+    hcfg = harness_config(harnesses) if harnesses or not scfg.get("harnesses") else {}
     _update_signer_config(SYS_HOME, hcfg, tk)
-    unit = os.path.join(SYSTEMD_DIR, "tracekitd.service")
-    if hcfg.get("harnesses") and os.path.exists(unit):
+    if hcfg.get("harnesses"):
         with open(unit) as f:
             text = f.read()
         if "CAP_SYS_PTRACE" not in text:
@@ -679,7 +695,7 @@ def migrate_system(fail_mode=None, harnesses=None):
     return 0
 
 
-PRIVILEGED_GROUPS = {"sudo", "wheel", "admin", "docker", SYS_USER, SYS_USER_DARWIN}
+PRIVILEGED_GROUPS = {"sudo", "wheel", "admin", "docker", "lxd", "libvirt", "disk", SYS_USER, SYS_USER_DARWIN}
 
 
 def _privileges(pw):
@@ -695,9 +711,30 @@ def _privileges(pw):
     return [f"it is in the {g} group" for g in sorted(names & PRIVILEGED_GROUPS)]
 
 
-def _install_venv():
-    """Install this Tracekit into a root-owned virtualenv at OPT, so the signer and hooks never run code the agent's
-    user can modify. Returns the default policy path inside it."""
+def _first_problem(top, check, skip=()):
+    """The first problem check() reports for a file or directory below top (directories named in skip are not entered)."""
+    for dirpath, dirnames, filenames in os.walk(top):
+        dirnames[:] = [n for n in dirnames if n not in skip]
+        for n in dirnames + filenames:
+            bad = check(os.path.join(dirpath, n))
+            if bad:
+                return bad
+    return None
+
+
+def _root_only(path):
+    """Problem with `path` itself (a symlink is not followed): it must be root-owned and not group/world-writable."""
+    st = os.lstat(path)
+    if st.st_uid != 0:
+        return f"{path} is not owned by root"
+    if not stat.S_ISLNK(st.st_mode) and st.st_mode & 0o022:
+        return f"{path} is group- or world-writable"
+    return None
+
+
+def _install_source():
+    """Check, before init changes anything, that it runs a root-owned Python and installs Tracekit from a source the
+    agent's user cannot modify. Returns the pip requirement for an installed release, or None for this source checkout."""
     from .daemon import trusted_file
     for f in (sys.executable, os.path.dirname(os.__file__)):
         bad = trusted_file(f)
@@ -705,21 +742,49 @@ def _install_venv():
             raise SystemExit(f"the Python running init could be modified by a non-root user ({bad}). Run init with a "
                              "root-owned Python, e.g. sudo /usr/bin/python3 -m tracekit init")
     if not os.path.isfile(os.path.join(ROOT, "pyproject.toml")):
-        # lean: source checkout only; install from a pinned wheel once the distribution name is settled
-        raise SystemExit("system mode installs from a Tracekit source checkout: run it from the repository, e.g. "
-                         "cd tracekit && sudo /usr/bin/python3 -m tracekit init --user <agent-user>")
-    src = ROOT
+        from . import __version__
+        # lean: trusts PyPI over TLS for the exact version; hash pinning comes with signed release artifacts (M3-15)
+        return (["--pre"] if any(c.isalpha() for c in __version__) else []) + [f"tracekit-ai=={__version__}"]
+    # lean: one stat per file and ancestor; fine for a checkout of a few thousand files
+    bad = trusted_file(ROOT) or _first_problem(ROOT, trusted_file, skip=(".git",))
+    if bad:
+        raise SystemExit(f"the source checkout could be modified by a non-root user ({bad}). Clone into a root-owned "
+                         "directory, e.g. sudo git clone https://github.com/Cygnux-Labs/Tracekit /usr/local/src/Tracekit, "
+                         "then cd /usr/local/src/Tracekit && sudo /usr/bin/python3 -m tracekit init --user <agent-user>")
+    return None
+
+
+def _install_venv(requirement):
+    """Install Tracekit (requirement from _install_source) into a root-owned virtualenv at OPT, so the signer and hooks
+    never run code the agent's user can modify. The new venv is built beside OPT and swapped in only once it imports
+    tracekit; if any step fails the existing OPT is untouched. Returns the default policy path inside it."""
+    new, old_opt = OPT + ".new", OPT + ".old"
+    new_python = os.path.join(new, "bin", "python")
+    shutil.rmtree(new, ignore_errors=True)
+    tmp = None
     old = os.umask(0o022)
     try:
-        subprocess.run([sys.executable, "-m", "venv", "--clear", OPT], check=True)
-        subprocess.run([OPT_PYTHON, "-m", "pip", "install", "--quiet", "--no-cache-dir", src], check=True)
+        if requirement is None:  # build from a root-owned copy so the checkout gets no build/ or *.egg-info
+            tmp = tempfile.mkdtemp()
+            requirement = [os.path.join(tmp, "Tracekit")]
+            shutil.copytree(ROOT, requirement[0], ignore=shutil.ignore_patterns(".git"))
+        subprocess.run([sys.executable, "-m", "venv", "--clear", new], check=True)
+        subprocess.run([new_python, "-m", "pip", "install", "--quiet", "--no-cache-dir", *requirement], check=True)
+        subprocess.run([new_python, "-I", "-c", "import tracekit"], check=True)
     finally:
         os.umask(old)
-    for dirpath, dirnames, filenames in os.walk(OPT):
+        if tmp:
+            shutil.rmtree(tmp, ignore_errors=True)
+    for dirpath, dirnames, filenames in os.walk(new):
         for p in [dirpath] + [os.path.join(dirpath, n) for n in dirnames + filenames]:
             os.lchown(p, 0, 0)
             if not os.path.islink(p):
                 os.chmod(p, os.stat(p).st_mode & ~0o022)
+    shutil.rmtree(old_opt, ignore_errors=True)
+    if os.path.lexists(OPT):
+        os.rename(OPT, old_opt)
+    os.rename(new, OPT)
+    shutil.rmtree(old_opt, ignore_errors=True)
     return _opt_default_policy()
 
 
@@ -738,18 +803,19 @@ def doctor(checks=None):
     line per check with a fix; returns 1 if any check fails."""
     from .daemon import trusted_file
     if checks is None:
-        import glob
-        sc = client.system_config()
+        try:
+            sc = client.system_config()
+        except client.SystemConfigError as e:
+            print(f"FAIL  system mode: {e}\n      fix: sudo tracekit init --user <agent-user>")
+            return 1
         if sc is None:
             print(f"FAIL  system mode: {client.SYSTEM_CONFIG} is missing or not root-owned\n"
                   "      fix: sudo tracekit init --user <agent-user>")
             return 1
         from .policy import DEFAULT_POLICY
         reinstall = "re-run sudo tracekit init --user <agent-user> to reinstall into " + OPT
-        checks = [("signer python", OPT_PYTHON, reinstall)]
-        checks += [("tracekit package", p, reinstall) for p in glob.glob(os.path.join(OPT, "lib", "python*", "site-packages", "tracekit"))
-                   ] or [("tracekit package", os.path.join(OPT, "lib", "site-packages", "tracekit"), reinstall)]
-        checks += [("unit file", _unit_path(), reinstall),
+        checks = [("signer python", OPT_PYTHON, reinstall), ("venv config", os.path.join(OPT, "pyvenv.cfg"), reinstall),
+                  ("runtime", OPT, reinstall), ("unit file", _unit_path(), reinstall),
                    ("policy file", sc.get("policy") or DEFAULT_POLICY,
                     "make it and every directory above it root-owned and not group/world-writable (sudo chown root:root, "
                     "sudo chmod go-w), then sudo tracekit migrate --system")]
@@ -757,9 +823,7 @@ def doctor(checks=None):
     for label, path, fix in checks:
         bad = trusted_file(path)
         if bad is None and os.path.isdir(path):
-            # lean: one stat per file and ancestor; fine for a package of a few hundred files
-            bad = next((b for dp, dns, fns in os.walk(path) for n in dns + fns
-                        for b in [trusted_file(os.path.join(dp, n))] if b), None)
+            bad = _first_problem(path, _root_only)
         if bad:
             failed += 1
             print(f"FAIL  {label}: {bad}\n      fix: {fix}")
@@ -788,6 +852,7 @@ def init_system(target_user, witnesses, checkpoint_every=50, project=None, no_se
     if why and not allow_privileged:
         raise SystemExit(f"refusing to trace {target_user}: {'; '.join(why)}, so its agents could stop or replace the "
                          "signer. Trace an unprivileged user, or re-run with --i-understand-agent-is-privileged.")
+    requirement = _install_source()
     user = SYS_USER_DARWIN if darwin else SYS_USER
     try:
         pwd.getpwnam(user)
@@ -809,6 +874,7 @@ def init_system(target_user, witnesses, checkpoint_every=50, project=None, no_se
             finally:
                 if sub:
                     files.close(fd)
+        kept_harnesses = _read_config(home_fd).get("harnesses")
     finally:
         files.close(home_fd)
     sock = os.path.join(SYS_HOME, "tracekitd.sock")
@@ -817,9 +883,11 @@ def init_system(target_user, witnesses, checkpoint_every=50, project=None, no_se
         print("note: using a local git witness only. It protects against the agent's user, not against root on this "
               "machine. Point --witness at a remote repository the security team owns (docs/witnesses.md).")
     pcfg = {"port": proxy_port, "upstream": _upstream(), "fail_mode": fail_mode or "open"} if proxy else None
-    extra = dict({"signer": signer} if signer else {}, **({} if darwin else harness_config(harnesses, agent)))
-    _write_signer_config(SYS_HOME, witnesses, checkpoint_every, sock, pcfg, extra or None, tk)
-    policy = _install_venv()
+    extra = {"signer": signer} if signer else {}
+    if not darwin and (harnesses or not kept_harnesses):  # a registered harness stays until --harness replaces it
+        extra.update(harness_config(harnesses, agent))
+    scfg = _write_signer_config(SYS_HOME, witnesses, checkpoint_every, sock, pcfg, extra or None, tk)
+    policy = _install_venv(requirement)
     # generate the key as the tracekit user so root-only reads are the only other path to it
     subprocess.run(["runuser" if shutil.which("runuser") else "sudo", "-u", tk.pw_name, "--", OPT_PYTHON, "-I", "-c",
                     f"from tracekit.ledger import Keys; Keys.load_or_create({os.path.join(SYS_HOME, 'keys')!r})"],
@@ -838,20 +906,23 @@ def init_system(target_user, witnesses, checkpoint_every=50, project=None, no_se
         else:  # systemd
             with open(os.path.join(SYSTEMD_DIR, "tracekitd.service"), "w") as f:
                 f.write(UNIT.format(user=tk.pw_name, python=OPT_PYTHON, home=SYS_HOME,
-                                    caps=UNIT_CAPS if extra.get("harnesses") else ""))
+                                    caps=UNIT_CAPS if scfg.get("harnesses") else ""))
             if proxy:
                 with open(os.path.join(SYSTEMD_DIR, "tracekit-proxy.service"), "w") as f:
                     f.write(PROXY_UNIT.format(user=tk.pw_name, python=OPT_PYTHON, home=SYS_HOME))
             subprocess.run(["systemctl", "daemon-reload"], check=False)
-            subprocess.run(["systemctl", "enable", "--now", "tracekitd"], check=False)
-            if proxy:
-                subprocess.run(["systemctl", "enable", "--now", "tracekit-proxy"], check=False)
+            subprocess.run(["systemctl", "enable", "tracekitd", *(["tracekit-proxy"] if proxy else [])], check=False)
     cfg = {"socket": sock, "signer_home": SYS_HOME, "signer_isolation": "separate-user", "mode": "system"}
     if proxy:
         cfg.update(proxy=True, proxy_url=f"http://127.0.0.1:{proxy_port}")
     _write_client_config(owner.pw_dir, cfg, owner)
     _write_system_client_config(dict(cfg, fail_mode=fail_mode or "closed", policy=policy))
     _pin_policy(SYS_HOME, tk)
+    if not no_service and not darwin:  # restart, not enable --now: a running signer must reload its config
+        units = ["tracekitd", *(["tracekit-proxy"] if proxy else [])]
+        r = subprocess.run(["systemctl", "restart", *units], check=False)
+        print(f"restarted {' and '.join(units)}" if r.returncode == 0 else
+              f"could not restart {' and '.join(units)}: see systemctl status tracekitd")
     if not hooks:
         settings = None  # hooks come from elsewhere (the Claude Code plugin)
     elif managed:
