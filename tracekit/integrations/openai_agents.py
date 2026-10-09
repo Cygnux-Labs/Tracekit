@@ -33,6 +33,7 @@ from agents import (ApplyPatchTool, FunctionTool, LocalShellTool, RunHooks, Shel
 from agents.editor import ApplyPatchResult
 from agents.tool import maybe_invoke_function_tool_failure_error_function, set_function_tool_failure_error_function
 
+from tracekit import parsers
 from tracekit.format.canon import event_hash, loads_strict
 from tracekit.signer.rpc_schema import RPCError
 
@@ -204,11 +205,12 @@ class TracekitAgents(RunHooks):
 
     async def on_llm_end(self, context, agent, response):
         """T3: each model response as a commitment, hosted tool calls, computer actions and handoffs included."""
-        u = response.usage
-        await self._rpc("model_event", provider="openai", phase="response",
-                        model=agent.model if isinstance(agent.model, str) else type(agent.model).__name__,
+        out = parsers.parse("openai:responses", {"output": response.output, "usage": response.usage})
+        model = agent.model if isinstance(agent.model, str) else getattr(agent.model, "model", None)
+        fields = {"usage": out["usage"], "tool_uses": out["tool_uses"][:128]}   # lean: the RPC's cap, as autotrace
+        await self._rpc("model_event", provider="openai", phase="response", model=str(model or "")[:128],
                         content_digest=event_hash([i.model_dump(mode="json") for i in response.output]),
-                        usage={"input_tokens": u.input_tokens, "output_tokens": u.output_tokens})
+                        **{k: v for k, v in fields.items() if v})
 
 
 class _Editor:
