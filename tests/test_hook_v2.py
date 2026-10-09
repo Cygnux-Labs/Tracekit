@@ -193,15 +193,24 @@ class HookV2(unittest.TestCase):
         self.assertEqual(self.hook("SessionStart", sid=None)[0], 0)
         self.assertFalse(os.path.exists(os.path.join(self.dir, "run", autospawn.SOCK)))   # nothing was sent
 
-    def test_signer_unreachable_follows_the_fail_mode(self):
+    def test_signer_unreachable_follows_the_runs_fail_mode(self):
         os.environ["TRACEKIT_SIGNER"] = os.path.join(self.dir, "nowhere.sock")
-        code, err = self.pre("ls")
-        self.assertEqual(code, 0)
-        self.assertIn("allowing (fail-open)", err)
-        os.environ["TRACEKIT_FAIL_CLOSED"] = "1"
-        code, err = self.pre("ls")
+        os.environ["TRACEKIT_FAIL_CLOSED"] = "0"   # the v1 hook's setting does not apply
+        code, err = self.pre("ls", sid="unregistered")
         self.assertEqual(code, 2)
         self.assertIn("blocking (fail-closed)", err)
+        del os.environ["TRACEKIT_SIGNER"]
+        self.assertEqual(self.hook("SessionStart")[0], 0)
+        with open(claude_code._state("s1")) as f:
+            st = json.load(f)
+        self.assertEqual(st["fail_modes"], {"default": "closed"})   # the signer's
+        with open(claude_code._state("s1"), "w") as f:
+            json.dump(dict(st, fail_modes={"default": "closed", "fs": "open"}), f)
+        os.environ["TRACEKIT_SIGNER"] = os.path.join(self.dir, "nowhere.sock")
+        self.assertEqual(self.pre("ls")[0], 2)
+        code, err = self.hook("PreToolUse", tool_name="Read", tool_input={"file_path": "a"}, tool_use_id="t2")
+        self.assertEqual(code, 0)
+        self.assertIn("allowing (fail-open)", err)
 
     def test_overhead(self):
         self.pre("ls", tid="warm")

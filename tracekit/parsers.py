@@ -10,11 +10,13 @@ A tool use is {id, name, executed_by: client|provider, args_source, args_digest 
 sha256(JCS({"tool", "args"})) over the strictly parsed arguments: a raw arguments string that fails strict parsing
 gives `args_unparseable: true` and no digest. Tools the provider runs itself (web search, file search, code
 interpreter, hosted MCP, ...) are `executed_by: provider` and carry no arguments: no signer decision covers them.
-Gemini function calls without an id get `gemini:<response id>:<index>` and `id_synthetic: true`.
+A tool use the provider sent without an id gets `<provider>:<response id>:<index>` and `id_synthetic: true` (a random
+nonce in place of a missing response id, so two such responses never share one).
 
 `Stream(kind)` accumulates a streamed response, chunk by chunk, into the shape `parse` reads.
 """
 import hashlib
+import uuid
 
 import rfc8785
 
@@ -52,7 +54,8 @@ def _id(x):
 
 
 def tool_use(id, name, args=None, args_source="parsed", executed_by="client"):
-    t = {"id": _id(id), "name": str(name)[:256] or "?", "executed_by": executed_by}
+    """`id` None or empty: `parse` gives the tool use a synthetic one."""
+    t = {"id": _id(id) if id not in (None, "") else None, "name": str(name)[:256] or "?", "executed_by": executed_by}
     if executed_by == "provider":
         return t
     t["args_source"] = args_source
@@ -125,14 +128,18 @@ PROVIDER_ITEMS = {"web_search_call": "web_search", "file_search_call": "file_sea
 CLIENT_ITEMS = {"function_call": (None, "arguments", "raw"), "custom_tool_call": (None, "input", "parsed"),
                 "computer_call": ("computer", "action", "parsed"),
                 "local_shell_call": ("local_shell", "action", "parsed"), "shell_call": ("shell", "action", "parsed"),
-                "apply_patch_call": ("apply_patch", "operation", "parsed")}
+                "apply_patch_call": ("apply_patch", "operation", "parsed"),
+                "tool_search_call": ("tool_search", "arguments", "parsed")}
 
 
 def openai_responses(resp, request=None):
     uses = []
     for item in _list(resp, "output"):
         typ = _get(item, "type")
-        if typ in CLIENT_ITEMS:
+        if (typ == "shell_call" and _get(item, "environment", "type") == "container_reference"
+                or typ == "tool_search_call" and _get(item, "execution") == "server"):   # hosted: the provider runs it
+            uses.append(tool_use(_get(item, "call_id") or _get(item, "id"), CLIENT_ITEMS[typ][0], executed_by="provider"))
+        elif typ in CLIENT_ITEMS:
             name, field, source = CLIENT_ITEMS[typ]
             uses.append(tool_use(_get(item, "call_id"), name or _get(item, "name"), _get(item, field), source))
         elif typ in PROVIDER_ITEMS:
@@ -206,10 +213,7 @@ def gemini(resp, request=None):
             fc = _get(p, "function_call")
             if fc is None:
                 continue
-            t = tool_use(_get(fc, "id") or f"gemini:{rid or ''}:{len(uses)}", _get(fc, "name"), _get(fc, "args", default={}))
-            if not _get(fc, "id"):
-                t["id_synthetic"] = True
-            uses.append(t)
+            uses.append(tool_use(_get(fc, "id"), _get(fc, "name"), _get(fc, "args", default={})))
     contents = _get(request, "contents")
     sent = [_get(p, "function_response", "id") for c in (contents if isinstance(contents, list) else [contents])
             for p in _list(c, "parts")]
@@ -237,7 +241,12 @@ PARSERS = {"openai:chat": (openai_chat, _openai_chat_chunk), "openai:responses":
 
 
 def parse(kind, response, request=None):
-    return PARSERS[kind][0](response, request)
+    out = PARSERS[kind][0](response, request)
+    nonce = out["exchange_id"] or uuid.uuid4().hex
+    for i, t in enumerate(out["tool_uses"]):
+        if t["id"] is None:
+            t.update(id=_id(f"{kind.split(':')[0]}:{nonce}:{i}"), id_synthetic=True)
+    return out
 
 
 class Stream:

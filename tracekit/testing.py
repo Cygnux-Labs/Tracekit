@@ -22,7 +22,7 @@ import threading
 
 import rfc8785
 
-from tracekit import __version__
+from tracekit import __version__, privacy
 from tracekit.format.canon import StrictJSONError, event_hash, loads_strict
 from tracekit.signer import rpc_schema
 from tracekit.signer.rpc_schema import RPCError
@@ -91,6 +91,17 @@ class FakeSigner:
         run["events"].append(ev)
         return ev["run_seq"]
 
+    def _may_see(self, a):
+        """The real signer's rule: the run's owner, or an identity of the run's tenant (here: this signer's tenant)."""
+        run = self._runs[a["run_id"]]
+        return run["owner"] == self.identity or run["tenant"] == self.tenant
+
+    def _visible(self, approval_id):
+        a = self._approvals.get(approval_id)
+        if a is None or not self._may_see(a):
+            raise RPCError("unknown_approval", approval_id)
+        return a
+
     def _approval(self, run_id, approval_id):
         a = self._approvals.get(approval_id)
         if a is None or a["run_id"] != run_id:
@@ -104,7 +115,7 @@ class FakeSigner:
                 raise RPCError("run_exists", run_id)
             tenant = req.get("tenant", self.tenant)
             run = self._runs[run_id] = {"token": self._id("tok"), "closed": False, "events": [], "streams": {},
-                                        "calls": {}, "decisions": {}}
+                                        "calls": {}, "decisions": {}, "owner": self.identity, "tenant": tenant}
             out = {"run_id": run_id, "run_token": run["token"], "tenant": tenant,
                    "tenant_attested": "tenant" not in req, "principal_attested": False}
             if "principal" in req:
@@ -124,7 +135,7 @@ class FakeSigner:
                                                  "attempt": req.get("attempt", 0), "tool": req["tool"],
                                                  "args_source": req["args_source"], "args": req["args"]}
             decision_id = self._id("dec")
-            run["decisions"][decision_id] = (req["tool_call_id"], req.get("attempt", 0), digest)
+            run["decisions"][decision_id] = (req["tool_call_id"], req.get("attempt", 0), digest, decision)
             seq = self._append(run, "policy.decision", {"tool_call_id": req["tool_call_id"], "tool": req["tool"],
                                                       "decision_id": decision_id,
                                                       "attempt": req.get("attempt", 0), "args_source": req["args_source"],
@@ -133,22 +144,31 @@ class FakeSigner:
         return self._call("decide", req, handle)
 
     def _event(self, method, typ, fields, req, check=None):
+        """`check(run, req)` refuses the call, or returns the data of a gap to record after the event."""
         def handle(req):
             run = self._run(req)
             self._check_seq(run, req)
-            if check:
-                check(run, req)
-            return {"run_seq": self._append(run, typ, {k: req[k] for k in fields if k in req}, req)}
+            gap = check(run, req) if check else None
+            seq = self._append(run, typ, {k: req[k] for k in fields if k in req}, req)
+            if gap:
+                self._append(run, "capture.gap", gap)
+            return {"run_seq": seq}
         return self._call(method, req, handle)
 
     def complete(self, req):
         def consume(run, req):
+            tcid, attempt = req["tool_call_id"], req.get("attempt", 0)
             d = run["decisions"].get(req["decision_id"])
-            if d is None or d[:2] != (req["tool_call_id"], req.get("attempt", 0)):
+            if d is None or d[:2] != (tcid, attempt):
                 raise RPCError("unknown_decision", req["decision_id"])
             if d[2] != req["args_digest"]:
-                raise RPCError("args_mismatch", req["tool_call_id"])
+                raise RPCError("args_mismatch", tcid)
             run["decisions"][req["decision_id"]] = None
+            a = self._approvals.get(self._index.get((req["run_id"], tcid, attempt)), {})
+            if d[3] == "deny" or (d[3] == "ask" and a.get("state") != "consumed"):
+                return {"kind": "executed_against_policy", "tool_use_id": tcid,
+                        "reason": f"{tcid} ran after a {d[3]} decision"}
+            return None
         return self._event("complete", "tool.result", ("tool_call_id", "decision_id", "attempt", "status", "error"), req,
                            check=consume)
 
@@ -174,11 +194,19 @@ class FakeSigner:
             # lean: approvals never expire here; the real signer enforces expires_at
             expires_at = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=1)
                           ).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+            # the approver's copy is redacted as the real signer does it (a raw copy stays valid JSON)
+            from tracekit.signer.service import _dotenv
+            args = _digest(call)[0]
+            dotenv = _dotenv(args)
+            shown = privacy.redact(args, dotenv)[0]
+            if call["args_source"] == "raw":
+                shown = call["args"] if shown == args else rfc8785.dumps(shown).decode()
             a = self._approvals[approval_id] = {
                 "run_id": req["run_id"], "tool_call_id": req["tool_call_id"], "attempt": attempt, "tool": call["tool"],
-                "args_source": call["args_source"], "args": call["args"], "args_digest": call["args_digest"],
+                "args_source": call["args_source"], "args": shown, "args_digest": call["args_digest"],
                 "rule_ids": call["rule_ids"], "policy_hash": POLICY_HASH, "requester": self.identity,
-                "expires_at": expires_at, "state": "requested", **({"reason": req["reason"]} if "reason" in req else {}),
+                "expires_at": expires_at, "state": "requested",
+                **({"reason": privacy.redact(req["reason"], dotenv)[0]} if "reason" in req else {}),
                 "executor": "t2" if self.t2 & set(call["rule_ids"]) else "t1"}
             a["binding_digest"] = event_hash({"v": 1, "approval_id": approval_id, "nonce": self._id("nonce"),
                                               **{k: a[k] for k in ("run_id", "tool_call_id", "attempt", "tool",
@@ -191,18 +219,17 @@ class FakeSigner:
 
     def approval_decide(self, req):
         def handle(req):
-            a = self._approvals.get(req["approval_id"])
-            if a is None:
-                raise RPCError("unknown_approval", req["approval_id"])
+            a = self._visible(req["approval_id"])
             if a["state"] != "requested":
                 raise RPCError("approval_not_pending", a["state"])
             run = self._runs[a["run_id"]]
             if run["closed"]:
                 raise RPCError("run_closed", a["run_id"])
             a["state"] = "approved" if req["decision"] == "approve" else "rejected"
+            same = self.identity in (a["requester"], run["owner"])
             self._append(run, "approval", {"approval_id": req["approval_id"], "decision": req["decision"],
-                                           "approver": self.identity, "self_approved": True})
-            return {"approval_id": req["approval_id"], "state": a["state"], "self_approved": True}
+                                           "approver": self.identity, "self_approved": same})
+            return {"approval_id": req["approval_id"], "state": a["state"], "self_approved": same}
         return self._call("approval_decide", req, handle)
 
     def approval_wait(self, req):
@@ -244,16 +271,15 @@ class FakeSigner:
 
     def approval_get(self, req):
         def handle(req):
-            a = self._approvals.get(req["approval_id"])
-            if a is None:
-                raise RPCError("unknown_approval", req["approval_id"])
+            a = self._visible(req["approval_id"])
             return {"approval_id": req["approval_id"], **{k: v for k, v in a.items() if k not in ("args_digest", "executor")}}
         return self._call("approval_get", req, handle)
 
     def approval_list(self, req):
         def handle(req):
-            ids = [aid for aid, a in self._approvals.items() if req.get("run_id") in (None, a["run_id"])]
-            start = ids.index(req["cursor"]) + 1 if req.get("cursor") in ids else 0
+            ids = [aid for aid, a in self._approvals.items()
+                   if req.get("run_id") in (None, a["run_id"]) and self._may_see(a)]
+            start = 0 if req.get("cursor") is None else ids.index(req["cursor"]) + 1 if req["cursor"] in ids else len(ids)
             page, more = ids[start:start + req.get("limit", 100)], ids[start + req.get("limit", 100):]
             keys = rpc_schema.RESPONSES["approval_list"]["properties"]["approvals"]["items"]["required"]
             return {"approvals": [{"approval_id": aid, **{k: self._approvals[aid][k] for k in keys if k != "approval_id"}}

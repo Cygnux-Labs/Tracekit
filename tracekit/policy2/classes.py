@@ -8,11 +8,13 @@ from urllib.parse import urlsplit
 
 from tracekit.format.canon import event_hash
 
+SHELL_KEYS = ("command", "cmd", "commands")
+PATH_KEYS = ("file_path", "notebook_path", "path")
 FS_OPS = {"Write": "write", "Edit": "edit", "MultiEdit": "edit", "NotebookEdit": "edit", "Read": "read",
           "Grep": "read", "Glob": "read"}
 
 
-def _first(args, *keys):
+def first(args, *keys):
     return next((args[k] for k in keys if args.get(k) is not None), None)
 
 
@@ -26,6 +28,16 @@ def fs_path(raw):
     return "/".join(p for p in tail if p not in ("", "."))
 
 
+def fs_forms(raw):
+    """What a path rule matches: fs_path(raw) and, when a `..` cut it short, also the lexically normalised path (the
+    target unless a symlink redirects it)."""
+    if not isinstance(raw, str):
+        return []
+    if ".." not in raw.split("/"):
+        return [fs_path(raw)]
+    return list(dict.fromkeys([fs_path(raw), posixpath.normpath(raw)]))
+
+
 def _host(url):
     try:
         return urlsplit(url).hostname
@@ -36,26 +48,26 @@ def _host(url):
 def extract(cls, tool, args):
     """{field: value} for `cls`; a missing value is left out."""
     if cls == "shell":
-        out = {"command": _first(args, "command", "cmd")}
+        out = {"command": first(args, *SHELL_KEYS)}
     elif cls == "fs":
-        path = _first(args, "file_path", "notebook_path", "path")
-        content = _first(args, "content", "new_string", "new_source", "edits")
+        path = first(args, *PATH_KEYS)
+        content = first(args, "content", "new_string", "new_source", "edits")
         out = {"path": fs_path(path) if isinstance(path, str) else path, "op": FS_OPS.get(tool) or args.get("op"),
                "content_digest": None if content is None else event_hash(content)}
     elif cls in ("http", "browser"):
-        url = _first(args, "url")
+        url = first(args, "url")
         if cls == "browser":
             out = {"url": url, "action": args.get("action")}
         else:
             out = {"url": url, "method": str(args.get("method") or "GET").upper(),
                    "host": _host(url) if isinstance(url, str) else None}
     elif cls == "sql":
-        stmt = _first(args, "sql", "query", "statement")
-        out = {"statement": stmt, "db": _first(args, "db", "database"),
+        stmt = first(args, "sql", "query", "statement")
+        out = {"statement": stmt, "db": first(args, "db", "database"),
                "verb": stmt.split()[0].upper() if isinstance(stmt, str) and stmt.split() else None}
     elif cls == "payment":
-        out = {"amount": _first(args, "amount", "amount_cents"), "currency": args.get("currency"),
-               "payee": _first(args, "payee", "to", "recipient")}
+        out = {"amount": first(args, "amount", "amount_cents"), "currency": args.get("currency"),
+               "payee": first(args, "payee", "to", "recipient")}
     elif cls == "email":
         to = args.get("to")
         to = [to] if isinstance(to, str) else to if isinstance(to, list) else []
