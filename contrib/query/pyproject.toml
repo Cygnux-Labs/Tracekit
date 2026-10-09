@@ -15,6 +15,3 @@ tracekit-sql = "tracekit_query:main"
 
 [tool.setuptools]
 py-modules = ["tracekit_query"]
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]

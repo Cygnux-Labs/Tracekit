@@ -12,6 +12,3 @@ dependencies = ["tracekit-ai"]
 
 [tool.setuptools]
 py-modules = ["tracekit_stagehand"]
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]

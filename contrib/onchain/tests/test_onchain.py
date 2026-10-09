@@ -9,12 +9,10 @@ import tempfile
 import unittest
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-ROOT = os.path.dirname(os.path.dirname(HERE))
-sys.path[:0] = [ROOT, HERE, os.path.join(ROOT, "tests")]
-from tracekit import bundle, install  # noqa: E402
-from tracekit_onchain import analyze, guarded_tx  # noqa: E402
-from tracekit.agent_sdk import Tracer  # noqa: E402
-from factories import ledger_records, patch_env  # noqa: E402
+from tracekit import bundle, install
+from tracekit_onchain import analyze, guarded_tx
+from tracekit.agent_sdk import Tracer
+from factories import ledger_records, patch_env
 
 ROUTER = "0x" + "11" * 20
 ATTACKER = "0x" + "66" * 20

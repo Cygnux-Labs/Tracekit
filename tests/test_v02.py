@@ -117,6 +117,7 @@ class Policy(unittest.TestCase):
     def test_unusable_policy_raises(self):
         with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
             f.write('{"deny":[{"id":"x","pattern":"("}]}')
+        self.addCleanup(os.remove, f.name)
         with self.assertRaises(policy.PolicyError):
             policy.load(f.name)
 
@@ -124,6 +125,7 @@ class Policy(unittest.TestCase):
 class SignerTests(unittest.TestCase):
     def setUp(self):
         self.home = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.home, True)
         self.s = make_signer(self.home, checkpoint_every=3)
 
     def send(self, e, cseq):
@@ -154,6 +156,7 @@ class SignerTests(unittest.TestCase):
 
     def test_witness_unreachable_then_late(self):
         home = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, home, True)
         s = make_signer(home, witnesses=["git:/nonexistent-dir/for-sure@/nonexistent/remote.git"], checkpoint_every=1)
         s.handle({"op": "append", "cseq": 0, "event": run_start()})
         gaps = [json.loads(l)["event"]["data"].get("reason", "") for l in read_text(os.path.join(home, "ledger", "ledger.jsonl")).splitlines()]
@@ -166,6 +169,7 @@ class DevStack(unittest.TestCase):
 
     def setUp(self):
         self.d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.d, True)
         self.env = dict(os.environ, TRACEKIT_CLIENT_HOME=os.path.join(self.d, "client"), PYTHONPATH=ROOT)
         self.home = os.path.join(self.d, "signer")
         code = f"import sys; sys.path.insert(0,{ROOT!r}); from tracekit import install; install.init_dev({self.home!r}, [], 4)"
@@ -227,6 +231,7 @@ class Tamper(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.d = tempfile.mkdtemp()
+        cls.addClassCleanup(shutil.rmtree, cls.d, True)
         cls.home = os.path.join(cls.d, "signer")
         cls.wit = os.path.join(cls.d, "witness.jsonl")
         s = make_signer(cls.home, witnesses=[f"file:{cls.wit}"], checkpoint_every=4)
@@ -341,6 +346,7 @@ class Tamper(unittest.TestCase):
 class ExportAndDemo(unittest.TestCase):
     def test_filters_and_otel(self):
         d = tempfile.mkdtemp(); home = os.path.join(d, "s")
+        self.addCleanup(shutil.rmtree, d, True)
         s = make_signer(home, witnesses=[f"file:{d}/w.jsonl"], checkpoint_every=100)
         for rid in ("a", "b"):
             s.handle({"op": "append", "cseq": 0, "event": run_start(rid), "attach": {"policy": policy.load()[1]}})
@@ -675,6 +681,7 @@ class Isolation(unittest.TestCase):
         for u in (cls.SIGNER, cls.AGENT):
             subprocess.run(["useradd", "--system", "--no-create-home", "--shell", "/bin/sh", u], capture_output=True)
         cls.d = tempfile.mkdtemp(); os.chmod(cls.d, 0o755)
+        cls.addClassCleanup(shutil.rmtree, cls.d, True)
         # the repo may sit under a directory the throwaway users cannot read: use a world-readable copy
         cls.pkg = os.path.join(cls.d, "pkg"); shutil.copytree(os.path.join(ROOT, "tracekit"), os.path.join(cls.pkg, "tracekit"))
         subprocess.run(["chmod", "-R", "a+rX", cls.pkg], check=True)

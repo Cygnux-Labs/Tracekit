@@ -20,7 +20,8 @@ cases report as not configured and only the 0.2.1 gate applies.
 Linux, as root, after `sudo install -D -m755 /bin/dash HARNESS` and
 `sudo tracekit init --user AGENT --harness agent=HARNESS` (signer running):
     sudo python3 eval/e8_insider.py --agent agent --mallory mallory
-Writes eval/results/e8_insider.json; exit 0 when every case in the applicable gate is caught.
+Writes eval/results/e8_insider.json; exit 0 when every case in the applicable gate is caught. --require-harness
+exits 1 when harness binding is off, so the 0.2.1 gate alone cannot pass.
 """
 import argparse
 import json
@@ -278,6 +279,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--agent", default="agent")
     ap.add_argument("--mallory", default="mallory")
+    ap.add_argument("--require-harness", action="store_true", help="fail unless harness binding is on (the 0.3 gate)")
     ap.add_argument("--out", default=os.path.join(ROOT, "eval", "results", "e8_insider.json"))
     a = ap.parse_args()
     if os.geteuid() != 0:
@@ -316,6 +318,9 @@ def main():
             print(f"{'CAUGHT' if v['caught'] else 'OPEN  '}  {k}: {detail}")
     print("0.2.1 gate:", "PASS" if res["_gate_0.2.1"]["passed"] else "FAIL")
     print("0.3 gate:  ", "PASS" if res["_gate_0.3"]["passed"] else ("FAIL" if on else "not configured"))
+    if a.require_harness and not on:
+        print("--require-harness: harness binding is off")
+        return 1
     return 0 if (res["_gate_0.3"]["passed"] if on else res["_gate_0.2.1"]["passed"]) else 1
 
 

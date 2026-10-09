@@ -9,13 +9,10 @@ import tempfile
 import unittest
 import zipfile
 
-HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-ROOT = os.path.dirname(os.path.dirname(HERE))
-sys.path[:0] = [ROOT, HERE, os.path.join(ROOT, "tests")]
-import tracekit_proofpack as proofpack  # noqa: E402
-from tracekit import bundle, install  # noqa: E402
-from tracekit.agent_sdk import Tracer  # noqa: E402
-from factories import patch_env  # noqa: E402
+import tracekit_proofpack as proofpack
+from tracekit import bundle, install
+from tracekit.agent_sdk import Tracer
+from factories import patch_env
 
 
 class Pack(unittest.TestCase):
@@ -34,7 +31,7 @@ class Pack(unittest.TestCase):
                     pass
             except PermissionError:
                 pass
-        subprocess.run([sys.executable, "-m", "tracekit", "analyze", "--home", cls.home, "--run", "pp-1"], capture_output=True, cwd=ROOT)
+        subprocess.run([sys.executable, "-m", "tracekit", "analyze", "--home", cls.home, "--run", "pp-1"], capture_output=True)
         cls.tkb = os.path.join(cls.d, "run.tkb")
         bundle.export(cls.home, cls.tkb, run="pp-1")
         cls.pub = os.path.join(cls.home, "ledger", "signer.pub")
@@ -48,6 +45,7 @@ class Pack(unittest.TestCase):
         out = os.path.join(self.d, "pack.zip")
         code = proofpack.build(out, self.tkb, key=key)
         x = tempfile.mkdtemp(dir=self.d)
+        self.addCleanup(shutil.rmtree, x, True)
         with zipfile.ZipFile(out) as z:
             z.extractall(x)
         return code, x
@@ -88,9 +86,9 @@ class Pack(unittest.TestCase):
     def test_cli(self):
         out = os.path.join(self.d, "cli.zip")
         p = subprocess.run([sys.executable, "-m", "tracekit_proofpack", "--home", self.home, "--run", "pp-1", "-o", out],
-                           capture_output=True, text=True, cwd=HERE, env=dict(os.environ, PYTHONPATH=ROOT))
+                           capture_output=True, text=True)
         self.assertEqual(p.returncode, 0, p.stderr)
-        p = subprocess.run([sys.executable, "-m", "tracekit_proofpack", "--report-only", self.tkb], capture_output=True, text=True, cwd=HERE, env=dict(os.environ, PYTHONPATH=ROOT))
+        p = subprocess.run([sys.executable, "-m", "tracekit_proofpack", "--report-only", self.tkb], capture_output=True, text=True)
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertTrue(p.stdout.startswith("# Evidence report: pp-1"))
 

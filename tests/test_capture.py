@@ -8,6 +8,7 @@ import importlib
 import json
 import os
 import re
+import shutil
 import socket
 import socketserver
 import subprocess
@@ -94,6 +95,7 @@ class Stack(unittest.TestCase):
 
     def setUp(self):
         self.d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.d, True)
         self.env = dict(os.environ, TRACEKIT_CLIENT_HOME=os.path.join(self.d, "client"), PYTHONPATH=ROOT)
         self.env.pop("TRACEKIT_POLICY", None)
         self.home = os.path.join(self.d, "signer")
@@ -707,7 +709,9 @@ class ApprovalIdentity(unittest.TestCase):
     """The signer's approval rule, driven directly with chosen peer credentials."""
 
     def signer(self, **cfg):
-        return make_signer(tempfile.mkdtemp(), checkpoint_every=100, witnesses=[], **cfg)
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        return make_signer(d, checkpoint_every=100, witnesses=[], **cfg)
 
     def request(self, s, agent_uid):
         s._run("r").update(started=True, agent_uid=agent_uid)
@@ -838,6 +842,7 @@ class PolicyYAML(unittest.TestCase):
 
     def test_bad_policies_raise(self):
         d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
         for i, text in enumerate(["deny:\n  - id: X\n    pattern: '('\n", "deny:\n  - pattern: 'x'\n", "fail_mode: maybe\n",
                                   "deny:\n  - id: A\n    pattern: a\n  - id: A\n    pattern: b\n", "bogus_key: 1\n"]):
             p = os.path.join(d, f"p{i}.yaml"); write_text(p, text)
