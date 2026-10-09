@@ -17,13 +17,25 @@ def _message(event, alg, kid, h):
     return sig_message_v2({**{k: event.get(k) for k in _EVENT_FIELDS}, "alg": alg, "kid": kid, "hash": h})
 
 
+class RecordSigner:
+    """Signs records with one Ed25519 secret key, derived into a signing key, SPKI and kid once."""
+    alg = "ed25519"
+
+    def __init__(self, secret):
+        self.spki = crypto.spki(crypto.public_from_secret(secret))
+        self.kid = crypto.spki_kid(self.spki)
+        self._sign = crypto.sign_fn(secret)
+
+    def __call__(self, event):
+        h = event_hash(event)
+        sig = self._sign(_message(event, self.alg, self.kid, h))
+        return {"v": 2, "event": event, "hash": h, "alg": self.alg, "kid": self.kid,
+                "sig": base64.b64encode(sig).decode("ascii")}
+
+
 def make_record(event, secret):
     """Sign `event` with an Ed25519 secret key."""
-    alg = "ed25519"
-    kid = crypto.spki_kid(crypto.spki(crypto.public_from_secret(secret)))
-    h = event_hash(event)
-    sig = crypto.sign(secret, _message(event, alg, kid, h))
-    return {"v": 2, "event": event, "hash": h, "alg": alg, "kid": kid, "sig": base64.b64encode(sig).decode("ascii")}
+    return RecordSigner(secret)(event)
 
 
 def verify_record(record, keys, algs):
