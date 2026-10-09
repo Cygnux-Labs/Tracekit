@@ -101,6 +101,7 @@ class Completeness(unittest.TestCase):
         self.assertEqual(integ, "Integrity: VERIFIED.")
         self.assertEqual(chk["run boundaries"]["status"], "pass")
         self.assertEqual(chk["run tail witnessed"]["status"], "pass")
+        self.assertEqual(chk["run completeness"]["problems"], [])  # a whole bundle lists no elision problems
         integ, code, chk, _ = self.verdict(self.export(run="r2"), [self.witness])
         self.assertEqual(code, 0)  # r1 is elided: a warning, never a failure
         self.assertIn("WITH GAPS (run completeness)", integ)
