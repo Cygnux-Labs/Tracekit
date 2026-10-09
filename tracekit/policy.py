@@ -180,8 +180,11 @@ def validate(pol):
 
 def load(path=None):
     """Return (effective_policy, canonical_json_text). Raises PolicyError on an unusable file."""
-    from .client import system_config
-    sc = system_config()
+    from .client import SystemConfigError, system_config
+    try:
+        sc = system_config()
+    except SystemConfigError as e:
+        raise PolicyError(str(e)) from e
     if sc is not None:  # 0.2.1 system mode: the agent's environment cannot choose the policy or the fail mode
         path = path or sc.get("policy") or DEFAULT_POLICY
     else:

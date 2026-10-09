@@ -81,9 +81,12 @@ class PluginShim(unittest.TestCase):
         with open(os.path.join(ROOT, "plugin", "bin", "tracekit-hook"), encoding="utf-8") as f:
             text = f.read()
         self.assertIn("SYSTEM_CONFIG=/etc/tracekit/client.json", text)
+        self.assertIn("SYSTEM_PYTHON=/opt/tracekit/bin/python", text)
+        self.system_python = os.path.join(self.d, "opt-python")
         self.script = os.path.join(self.d, "tracekit-hook")
         with open(self.script, "w", encoding="utf-8") as f:
-            f.write(text.replace("SYSTEM_CONFIG=/etc/tracekit/client.json", f"SYSTEM_CONFIG={self.config}"))
+            f.write(text.replace("SYSTEM_CONFIG=/etc/tracekit/client.json", f"SYSTEM_CONFIG={self.config}")
+                    .replace("SYSTEM_PYTHON=/opt/tracekit/bin/python", f"SYSTEM_PYTHON={self.system_python}"))
         self.bin = os.path.join(self.d, "bin")  # grep only: no python on PATH, so the package is missing
         os.makedirs(self.bin)
         os.symlink(shutil.which("grep"), os.path.join(self.bin, "grep"))
@@ -102,6 +105,37 @@ class PluginShim(unittest.TestCase):
     def test_missing_package_allows_when_fail_open_or_no_system_config(self):
         self.assertEqual(self.run_missing_package(None), 0)
         self.assertEqual(self.run_missing_package("open"), 0)
+
+    def fake_python(self, path):
+        """A python that has tracekit: it logs how it was called."""
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(f'#!/bin/sh\necho "$0 $*" >> {self.d}/calls\nexit 0\n')
+        os.chmod(path, 0o755)
+        return path
+
+    def calls(self):
+        try:
+            with open(os.path.join(self.d, "calls"), encoding="utf-8") as f:
+                return f.read()
+        except FileNotFoundError:
+            return ""
+
+    def run_system_mode(self):
+        with open(self.config, "w", encoding="utf-8") as f:
+            json.dump({}, f)
+        user_python = self.fake_python(os.path.join(self.bin, "python3"))
+        return subprocess.run(["/bin/sh", self.script], input="{}", capture_output=True, text=True,
+                              env={"PATH": self.bin, "TRACEKIT_PYTHON": user_python}).returncode
+
+    def test_system_mode_runs_only_the_root_owned_runtime(self):
+        self.fake_python(self.system_python)
+        self.assertEqual(self.run_system_mode(), 0)
+        self.assertIn(f"{self.system_python} -I -m tracekit.hook", self.calls())
+        self.assertNotIn("python3", self.calls())
+
+    def test_system_mode_blocks_without_the_runtime_and_ignores_other_pythons(self):
+        self.assertEqual(self.run_system_mode(), 2)
+        self.assertEqual(self.calls(), "")
 
 
 if __name__ == "__main__":

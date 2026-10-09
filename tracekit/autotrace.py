@@ -8,7 +8,7 @@ Every call becomes two signed ``model.exchange`` events in the tracer's run: a r
 is sent, so a crash mid-call still leaves evidence it was made) and a response with the model, finish reason, the
 tool calls the model asked for, error, HTTP status, latency and time to first chunk. Sync, async and streaming calls
 are covered; a stream is recorded when it is exhausted or closed, and a garbage-collected one at the next model
-call or exit, so an abandoned stream still leaves a response event marked as such.
+call, the end of the run or exit, so an abandoned stream still leaves a response event marked as such.
 
 Content (prompts, outputs) is redacted and hashed by default, exactly as for every other Tracekit capture path;
 ``content_capture: full`` in the policy records it in clear.
@@ -18,6 +18,8 @@ Guarantees
   policy says ``fail_mode: closed``, in which case a call whose request cannot be recorded is refused
   (``PermissionError``) before it is sent.
 * ``init`` is idempotent and ``shutdown`` restores the original methods.
+* Once the tracer's run has ended, model calls are no longer recorded: under ``fail_mode: closed`` they are refused
+  (``PermissionError``), under ``open`` they run unrecorded.
 * Events are ``source=sdk``: the application reported them. They are evidence of what the process sent and received
   through these SDKs, not of calls made any other way (raw HTTP, other SDKs, other processes).
 """
@@ -330,7 +332,7 @@ class _StreamProxy:
             for item in it:
                 yield self._item(item)
         except GeneratorExit:
-            self._end(abandoned=True)
+            _LATE.append(self._tk_ex)  # finalisation may run from the GC: no signer I/O here
             raise
         except BaseException as e:
             self._end(error=repr(e))
@@ -383,7 +385,7 @@ class _StreamProxy:
             async for item in self._tk_inner:
                 yield self._item(item)
         except GeneratorExit:
-            self._end(abandoned=True)
+            _LATE.append(self._tk_ex)  # finalisation may run from the GC: no signer I/O here
             raise
         except BaseException as e:
             self._end(error=repr(e))
@@ -522,11 +524,18 @@ def flush():
         ex.finish(abandoned=True)
 
 
+atexit.register(flush)
+
+
 def _wrap(orig, provider, operation, is_async, on_resp, on_item, stream_kind):
     def make_ex(kwargs, streamed):
         flush()
         t = _STATE["tracer"]
-        if t is None or getattr(t, "_ended", False):
+        if t is None:
+            return None
+        if getattr(t, "_ended", False):
+            if t._policy.get("fail_mode") == "closed":
+                raise PermissionError("Tracekit: the run has ended and fail_mode=closed; model call refused")
             return None
         ex = _Exchange(t, provider, operation, _model_kw(kwargs), kwargs, streamed)
         ex.begin()

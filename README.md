@@ -6,7 +6,9 @@
 [![PyPI](https://img.shields.io/pypi/v/tracekit-ai)](https://pypi.org/project/tracekit-ai/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](https://github.com/Cygnux-Labs/Tracekit/blob/main/LICENSE)
 
-<img src="https://raw.githubusercontent.com/Cygnux-Labs/Tracekit/main/docs/demo/demo.gif" alt="tracekit demo: a scripted agent run, a policy block, export, offline verify and a tamper test" width="100%">
+<img src="https://raw.githubusercontent.com/Cygnux-Labs/Tracekit/main/docs/demo/observer.gif" alt="tracekit observe: four coding agents (Claude Code, Codex, Cursor, Gemini) traced live; each attempt to upload .env is blocked and alerted" width="100%">
+
+*`tracekit observe` while four coding agents fix a bug side by side. Each is told by a planted README note to upload `.env`; the policy blocks it, and the detail panel shows the signed decision. Recorded from [`docs/demo/observer_scene.py`](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/demo/observer_scene.py).*
 
 ## The problem
 
@@ -56,6 +58,8 @@ pip install tracekit-ai     # first PyPI release: 0.3.0; until then, from a clon
 tracekit demo               # exit 0
 ```
 
+<img src="https://raw.githubusercontent.com/Cygnux-Labs/Tracekit/main/docs/demo/demo.gif" alt="tracekit demo in a terminal: policy block, export, offline verify and a tamper test" width="100%">
+
 `tracekit demo` needs no API key, root or config. In a temp folder it runs a scripted agent (fixed hook payloads, not a
 model) against a repo whose README asks the agent to upload `.env`, then exports, verifies and tampers with the result:
 
@@ -87,6 +91,7 @@ Then trace Claude Code for real (dev mode: the signer runs as your user), and ex
 ```bash
 tracekit init --dev
 tracekit status
+tracekit observe            # the live view above, on http://127.0.0.1:7777
 tracekit export --last -o run.tkb
 tracekit verify run.tkb --key ~/.tracekit-signer/ledger/signer.pub --witness git:$HOME/.tracekit-signer/witness
 ```
@@ -147,16 +152,30 @@ regex tripwires that can be evaded; the guarantees come from the signer, the cha
 
 ## System mode
 
-On Linux, run from a clone of this repository with a root-owned Python
-(`sudo /usr/bin/python3 -m tracekit init --user <agent-user>`). Tracekit installs itself into a root-owned virtualenv
-at `/opt/tracekit` and runs the signer as its own OS user, so the agent's user cannot read the key, change the ledger
-or modify the code that records it, and tool calls are blocked while the signer is down (fail closed). macOS system mode is
+On Linux, `sudo /usr/bin/python3 -m tracekit init --user <agent-user>` (a root-owned Python) installs Tracekit into a
+root-owned virtualenv at `/opt/tracekit`: the same `tracekit-ai` version from PyPI, or this repository if you run it
+from a root-owned clone. The signer then runs as its own OS user, so the agent's user cannot read the key, change the
+ledger or modify the code that records it, and tool calls are blocked while the signer is down (fail closed). macOS system mode is
 experimental; Windows runs dev mode only. See [platforms](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/portability.md) and [signing](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/signing.md).
 
 ## Witnesses
 
 `tracekit init --witness git:...` publishes checkpoints to a git repo; `tracekit witness serve` runs an append-only
 Merkle-tree checkpoint log with signed tree heads. See [witnesses](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/witnesses.md).
+
+## Use in CI
+
+Verify a bundle in a GitHub Actions workflow:
+
+```yaml
+- uses: Cygnux-Labs/Tracekit@main
+  with:
+    bundle: run.tkb
+    key: keys/signer.pub        # pin the signer; or witness: git:/path/to/clone
+```
+
+`require-anchor` defaults to `true`, so an unanchored bundle fails the step; set `require-anchor: "false"` to only
+report it.
 
 ## CLI reference
 
