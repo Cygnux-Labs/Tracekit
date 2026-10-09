@@ -96,9 +96,10 @@ class DevToken(unittest.TestCase):
         self.assertEqual((ident.scheme, ident.subject), ("token", "dev"))
 
     def test_out_of_scope_is_forbidden(self):
-        with self.assertRaises(RPCError) as cm:
-            self.tok.authenticate(None, {"method": "approval_decide"})
-        self.assertEqual(cm.exception.code, "forbidden")
+        for method in ("approval_decide", [], None):
+            with self.assertRaises(RPCError) as cm:
+                self.tok.authenticate(None, {"method": method})
+            self.assertEqual(cm.exception.code, "forbidden")
 
     def test_expired_is_unauthenticated(self):
         self.now += 60

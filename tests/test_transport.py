@@ -145,6 +145,16 @@ class TcpDevTransport(unittest.TestCase):
         if os.name == "posix":
             self.assertEqual(stat.S_IMODE(os.stat(self.endpoint).st_mode), 0o600)
 
+    @unittest.skipUnless(os.name == "posix", "file modes are POSIX")
+    def test_stale_tmp_file_does_not_keep_its_mode(self):
+        tmp = self.endpoint + ".tmp"
+        with open(tmp, "w"):
+            pass
+        os.chmod(tmp, 0o644)
+        server = tcp_dev.TcpDevServer(self.endpoint, self.token, echo)
+        server.server_close()
+        self.assertEqual(stat.S_IMODE(os.stat(self.endpoint).st_mode), 0o600)
+
     def test_mutual_proof_then_scoped_frames(self):
         c = self.connect()
         self.assertEqual(c.call({"method": "status"}), {"subject": "dev", "method": "status"})

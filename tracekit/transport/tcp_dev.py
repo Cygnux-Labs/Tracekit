@@ -38,7 +38,10 @@ class _Conn(socketserver.StreamRequestHandler):
             write_frame(self.request, {"proof": proof(token.secret, "signer", nonce_c), "nonce": nonce_s})
             check_proof(token.secret, (read_frame(self.rfile) or {}).get("proof"), "client", nonce_s)
         except RPCError as e:
-            write_frame(self.request, e.wire())
+            try:
+                write_frame(self.request, e.wire())
+            except OSError:
+                pass
             return
         except OSError:
             return
@@ -54,9 +57,13 @@ class TcpDevServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
         self.token, self.handle_frame, self.read_timeout = token, handle_frame, read_timeout
         super().__init__((HOST, 0), _Conn)
         tmp = endpoint_path + ".tmp"
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
         with os.fdopen(fd, "w") as f:
-            json.dump({"host": HOST, "port": self.server_address[1], "token": token.secret, "pid": os.getpid()}, f)
+            json.dump({"port": self.server_address[1], "token": token.secret}, f)
         os.replace(tmp, endpoint_path)
 
 

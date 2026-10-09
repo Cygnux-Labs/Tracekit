@@ -1,4 +1,4 @@
-"""Quotas per (identity, tenant): event rate, open runs, pending approvals, streams per run, string and line sizes.
+"""Quotas: event rate per identity; open runs, pending approvals, streams per run, string and line sizes.
 
 Refusals raise RPCError("quota_exceeded") at once. The rate limiter keeps a fixed number of buckets, evicting the least
 recently used; nothing resets them all. `summarise` folds the refusals of a window into `refusal.summary` records so a
@@ -33,9 +33,10 @@ class Quotas:
         self._buckets = OrderedDict()   # key -> (tokens, last refill)
         self._lock = threading.Lock()
 
-    def take_event(self, identity, tenant):
-        """Spend one event from the (identity, tenant) token bucket."""
-        lim, key = self.limits, (identity.scheme, identity.subject, tenant)
+    def take_event(self, identity):
+        """Spend one event from the identity's token bucket. Not keyed by tenant: the app may assert any tenant (design
+        §2.2), so a per-tenant bucket would hand a fresh burst to every tenant it names."""
+        lim, key = self.limits, (identity.scheme, identity.subject)
         with self._lock:
             now = self.clock()
             tokens, last = self._buckets.pop(key, (lim.burst, now))

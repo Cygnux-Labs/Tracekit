@@ -62,25 +62,24 @@ class RateLimit(unittest.TestCase):
 
     def test_bucket_refuses_then_refills(self):
         for _ in range(3):
-            self.q.take_event(ALICE, "acme")
+            self.q.take_event(ALICE)
         with self.assertRaises(RPCError) as cm:
-            self.q.take_event(ALICE, "acme")
+            self.q.take_event(ALICE)
         self.assertEqual((cm.exception.code, cm.exception.retry_after_ms), ("quota_exceeded", 100))
-        self.q.take_event(ALICE, "other")   # another tenant has its own bucket
-        self.q.take_event(BOB, "acme")
+        self.q.take_event(BOB)
         self.clock.t += 0.1
-        self.q.take_event(ALICE, "acme")
+        self.q.take_event(ALICE)
 
     def test_state_is_fixed_size_lru(self):
         for _ in range(3):
-            self.q.take_event(ALICE, "acme")
-        self.q.take_event(BOB, "acme")
+            self.q.take_event(ALICE)
+        self.q.take_event(BOB)
         with self.assertRaises(RPCError):   # a refusal counts as a use
-            self.q.take_event(ALICE, "acme")
-        self.q.take_event(ALICE, "other")   # evicts BOB, the least recently used
-        self.assertEqual(list(self.q._buckets), [("uid", "1000", "acme"), ("uid", "1000", "other")])
+            self.q.take_event(ALICE)
+        self.q.take_event(CallerIdentity("token", "dev", True))   # evicts BOB, the least recently used
+        self.assertEqual(list(self.q._buckets), [("uid", "1000"), ("token", "dev")])
         with self.assertRaises(RPCError):
-            self.q.take_event(ALICE, "acme")
+            self.q.take_event(ALICE)
 
 
 class Counts(unittest.TestCase):
