@@ -94,4 +94,41 @@ In dev mode the signer is not protected against the agent:
   `signer.yaml` (see `tracekit/signer/service.py`).
 
 Dev mode is for trying Tracekit and for catching mistakes, not attacks. Protection against the agent needs a signer
-that runs as a different user or on another host (a later milestone), plus witnesses that cosign its checkpoints.
+that runs as a different user or on another host (system mode, below), plus witnesses that cosign its checkpoints.
+
+## System mode (Linux; macOS experimental)
+
+System mode runs the signer as its own OS user, so the agent's user can't reach its keys, its store or its policy.
+As root, from a root-owned Python and checkout:
+
+```bash
+sudo /usr/bin/python3 -m tracekit init --v2 --user AGENT [--approver ADMIN] [--policy /etc/tracekit/policy.yaml]
+```
+
+This installs Tracekit into the root-owned virtualenv `/opt/tracekit` and creates the `tracekit-signer` user with its
+data dir `/var/lib/tracekit-signer` (0700). It writes `/etc/tracekit/signer.yaml` and runs `tracekit signer serve
+--config` under a hardened systemd unit (`tracekit-signer`: no capabilities, `ProtectSystem=strict`, a system-call
+filter). The socket is `/run/tracekit-signer/signer.sock`. The command also wires the v2 Claude Code hook for AGENT.
+The root-owned `/etc/tracekit/client.json` names the socket. Dev auto-spawn is then off, and a `TRACEKIT_SIGNER` that
+names another signer is refused, so the call is blocked.
+
+It refuses an AGENT that is root or in a sudo, wheel, admin, docker or similar group. The approver defaults to the
+admin running `sudo` and must be another user than AGENT: approve from that account with `tracekit approvals`. A
+`--policy` file must be root-owned. `sudo tracekit uninstall --v2` removes the service, the configs, the venv (unless
+v1 system mode still uses it) and the hooks. It keeps the signer's data dir and user, which `--purge` also deletes.
+
+What system mode protects, and what it doesn't:
+
+- **Protected:** the signing keys, the store and the sequence numbers (they belong to the signer's user), the policy
+  (the signer decides; `TRACEKIT_POLICY` in the agent's environment changes nothing), and approvals (the agent's uid
+  can't answer its own). Another local user can't write into the agent's runs either. The hook keeps a run's token in
+  the agent's own 0700 runtime dir, and the signer accepts that token only from the uid that registered the run.
+- **Not protected:** any process the agent's user runs can read that user's run tokens and write into the agent's own
+  runs, or start runs of its own. Binding runs to the harness's processes needs harness binding, which the v2 signer
+  doesn't have yet. Root on the machine can do anything; witnesses on another host are the defence against that.
+- **Not protected either:** the hook lives in AGENT's own `~/.claude/settings.json`, which AGENT can edit. Removing
+  the hook, or running tools outside Claude Code, leaves no record and no gap; system mode secures what is recorded,
+  not that everything is.
+
+`eval/e8_insider_v2.py` checks these properties as real separate users (decoy signer, cross-user injection, signer
+down, policy through the environment, self-approval).

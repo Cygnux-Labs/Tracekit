@@ -3,6 +3,8 @@ import json
 import os
 import shutil
 import stat
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -266,6 +268,62 @@ class RootWritesAsUser(_Sentinel, unittest.TestCase):
         with self.assertRaises(files.UnsafePath):
             install._write_signer_config(self.d, [], 50, "s", tk_user=self.user)
         self.assertSentinelUntouched()
+
+
+@pytest.mark.root
+@unittest.skipUnless(IS_ROOT and sys.platform.startswith("linux"), "needs root on Linux to create the signer's user")
+class SystemV2Install(unittest.TestCase):
+    """`tracekit init --v2` for real (users, ownership, modes), then `uninstall --v2 --purge`, under a temp root. The
+    venv build and the service are left out: E8 v2 runs those."""
+
+    def test_install_then_purge(self):
+        import pwd
+        from tracekit import client
+        from tracekit.signer import service
+        base = tempfile.mkdtemp(dir="/var/lib")   # root-owned all the way up, as a trusted --policy must be
+        self.addCleanup(shutil.rmtree, base, True)
+        os.chmod(base, 0o755)
+        agent = pwd.getpwnam("nobody")
+        project = os.path.join(base, "project")
+        os.mkdir(project, 0o755)
+        os.chown(project, agent.pw_uid, agent.pw_gid)
+        policy = os.path.join(base, "policy.yaml")
+        with open(policy, "w") as f:
+            f.write("version: test\n")
+        etc = os.path.join(base, "etc")
+        patches = [mock.patch.object(install, k, v) for k, v in {
+            "V2_DATA": os.path.join(base, "data"), "V2_CONFIG": os.path.join(etc, "signer.yaml"), "SYSTEMD_DIR": base,
+            "OPT": os.path.join(base, "opt"), "V2_USER": "tk-test-signer", "V2_UNIT": "tk-test-signer",
+            "_install_source": mock.Mock(return_value=None), "_install_venv": mock.Mock()}.items()]
+        patches.append(mock.patch.object(client, "SYSTEM_CONFIG", os.path.join(etc, "client.json")))
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
+        self.addCleanup(subprocess.run, ["userdel", "tk-test-signer"], capture_output=True)
+        sock, settings = install.init_system_v2("nobody", approver="root", policy=policy, project=project,
+                                                no_service=True)
+        sig = pwd.getpwnam("tk-test-signer")
+        st = os.stat(install.V2_DATA)
+        self.assertEqual((st.st_uid, stat.S_IMODE(st.st_mode)), (sig.pw_uid, 0o700))
+        for p in (install.V2_CONFIG, client.SYSTEM_CONFIG):
+            st = os.stat(p)
+            self.assertEqual((st.st_uid, stat.S_IMODE(st.st_mode)), (0, 0o644))
+        cfg = service.load_config(install.V2_CONFIG)
+        self.assertEqual(cfg["approvals"], {"self_approval": "deny", "approvers": ["uid:0"]})
+        self.assertEqual(cfg["tenants"], {f"uid:{agent.pw_uid}": "nobody", "uid:0": "nobody"})
+        self.assertEqual(client.system_config()["signer"], sock)
+        self.assertEqual(os.stat(settings).st_uid, agent.pw_uid)
+        with open(settings) as f:
+            s = json.load(f)
+        self.assertEqual(s["env"], {"TRACEKIT_SIGNER": sock})
+        self.assertIn(f"{install.OPT_PYTHON} -I -m {install.V2_HOOK}", s["hooks"]["PreToolUse"][0]["hooks"][0]["command"])
+        self.assertEqual(install.uninstall_system_v2(purge=True), [])
+        for p in (install.V2_DATA, install.V2_CONFIG, client.SYSTEM_CONFIG):
+            self.assertFalse(os.path.exists(p), p)
+        with open(settings) as f:
+            self.assertEqual(json.load(f), {})
+        with self.assertRaises(KeyError):
+            pwd.getpwnam("tk-test-signer")
 
 
 if __name__ == "__main__":
