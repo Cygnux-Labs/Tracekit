@@ -389,8 +389,9 @@ def _verify(rep, manifest, blobs, witness_specs, strict, trusted_key):
     #     belonged to, and a stub of a selected run looks exactly like a stub of another run
     stubs = sum(1 for r in recs if r and r.get("elided"))
     rep.check("run completeness", not stubs, "no elided records: every record in the bundle is whole" if not stubs else "",
-              [f"{stubs} elided record(s): v1 signatures do not bind a stub to its run"] +
-              [f"run {x}: run completeness unproven (v1 bundle with elided records)" for x in sorted(map(str, sel_runs))][:20],
+              ([f"{stubs} elided record(s): v1 signatures do not bind a stub to its run"] +
+               [f"run {x}: run completeness unproven (v1 bundle with elided records)" for x in sorted(map(str, sel_runs))])[:20]
+              if stubs else [],
               warn=True)
     bound_runs = sorted(str(x) for x in sel_runs if not str(x).startswith(COMPANION_PREFIXES))
     run_ends = {x: max((e["seq"] for e in sel if e.get("run_id") == x and e.get("type") == "run.end"), default=None)
