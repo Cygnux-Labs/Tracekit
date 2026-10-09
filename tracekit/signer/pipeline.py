@@ -45,6 +45,8 @@ def new_run(tenant, run_id):
 
 
 FINAL_KEYS = ("tenant", "run_id", "run_seq", "head", "closed", "final", "owner", "source")
+CALL_KEYS = ("tool_call_id", "attempt", "decision", "rule_ids", "decision_id", "commitment")   # a call as replay has it
+TENANT_GAPS = ("witness_failed", "witness_late", "clock_skew", "degraded_unanchored")
 
 
 def final_run(run):
@@ -52,10 +54,14 @@ def final_run(run):
     return {k: run[k] for k in FINAL_KEYS}
 
 
+def _monotonic(t):
+    """The monotonic time of wall-clock time `t` (never in the future)."""
+    return time.monotonic() - max(0.0, time.time() - t)
+
+
 def since(ts):
     """The monotonic time at which a record with wall-clock `ts` was written (never in the future)."""
-    t = datetime.datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
-    return time.monotonic() - max(0.0, time.time() - t)
+    return _monotonic(datetime.datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp())
 
 
 def approval(tenant, run_id, data):
@@ -168,6 +174,9 @@ class Tx:
         return self.emit(run, "run.closing", {"reason": reason}, **top)
 
     def gap(self, kind, reason, **data):
+        """A signer-level gap; one of TENANT_GAPS is marked `tenant_level` and gets a leaf in every tenant's registry."""
+        if kind in TENANT_GAPS:
+            data["tenant_level"] = True
         return self.emit(self.log.signer_run(self), "capture.gap", {"kind": kind, "reason": reason, **data},
                          source="signer")
 
@@ -197,15 +206,63 @@ class RecordLog:
 
     # --- state from storage ---
 
+    def _state(self):
+        """The run state as replay rebuilds it, as JSON: no deny sets, no pending arguments; monotonic times as wall
+        clock times."""
+        wall, runs = time.time() - time.monotonic(), []
+        for run in self.runs.values():
+            r = {k: v for k, v in run.items() if k != "denied"}
+            if "calls" in r:
+                r["calls"] = {t: {k: c[k] for k in CALL_KEYS} for t, c in run["calls"].items()}
+                r["decisions"] = {d: c and {k: c[k] for k in CALL_KEYS} for d, c in run["decisions"].items()}
+            for k in ("active", "closing_at"):
+                if r.get(k) is not None:
+                    r[k] += wall
+            runs.append(r)
+        return {"log_id": self.log_id, "closed": self.head["closed"], "runs": runs, "tenants": sorted(self.tenants),
+                "open_runs": self.open_runs, "approvals": self.approvals, "index": [[*k, a] for k, a in
+                                                                                   self.approval_index.items()],
+                "registry": {t: size for t, (size, _) in self.storage.tail_state()["registry"].items()}}
+
+    def snapshot(self):
+        """Have the storage snapshot its indexes and the run state, unless a write is in flight or the storage is
+        down (the next snapshot covers it)."""
+        # lean: serialised and written on the writer, pausing writes for O(state); copy the state on the writer and
+        # write it off it once snapshots take more than a few hundred ms
+        def fn(tx):
+            if not tx.records and not self.down:
+                self.storage.snapshot_put(self._state())
+        self.write(fn)
+
     def _replay(self):
-        """Rebuild the run state from the log, checking every chain link and the signatures of the last TAIL records,
-        and append the registry leaves a crash or disk error left out."""
+        """Rebuild the run state from the storage's snapshot and the log after it (the whole log without one), checking
+        every chain link replayed, the snapshot's last record and the signatures of the last TAIL records, and append
+        the registry leaves a crash or disk error left out."""
         s = self.storage
         tail = s.tail_state()
         size = tail["tree_size"]
         runs, prev, leaves, approvals, index, tenants, closed = {}, ZERO_HASH, {}, {}, {}, set(), False
-        open_runs, by_run = {}, {}   # owner -> runs not closing; run key -> its approval ids
-        for r in s.iter_range(0, size):
+        open_runs, by_run, start, base = {}, {}, 0, {}   # owner -> runs not closing; run key -> its approval ids
+        if s.snapshot:
+            st, start, prev = s.snapshot["state"], s.snapshot["size"], s.snapshot["hash"]
+            try:
+                verify_record(next(s.iter_range(start - 1, start)), [self.sign.spki], {self.sign.alg})
+            except RecordError as x:
+                raise StorageCorrupt(f"seq {start - 1}: {x}; run `tracekit signer fsck`") from None
+            for r in st["runs"]:
+                for k in ("active", "closing_at"):
+                    if r.get(k) is not None:
+                        r[k] = _monotonic(r[k])
+                if "states" in r:
+                    r["denied"] = {}
+                runs[(r["tenant"], r["run_id"])] = r
+            approvals = {aid: dict(a, run_key=tuple(a["run_key"])) for aid, a in st["approvals"].items()}
+            index = {tuple(k[:4]): k[4] for k in st["index"]}
+            for aid, a in approvals.items():
+                by_run.setdefault(a["run_key"], []).append(aid)
+            self.log_id, closed, tenants, open_runs, base = (st["log_id"], st["closed"], set(st["tenants"]),
+                                                             st["open_runs"], st["registry"])
+        for r in s.iter_range(start, size):
             e = r["event"]
             run = runs.get((e["tenant"], e["run_id"]))
             if run is None:
@@ -265,7 +322,7 @@ class RecordLog:
         self.approvals, self.approval_index = approvals, index   # approval_id -> state; (tenant, run, call, attempt) -> id
         self.open_runs = {k: n for k, n in open_runs.items() if n}
         for tenant in sorted(set(leaves) | set(tail["registry"])):
-            ls, stored = leaves.get(tenant, []), list(s.registry_iter(tenant))
+            ls, stored = leaves.get(tenant, []), list(s.registry_iter(tenant, base.get(tenant, 0)))
             if stored != ls[:len(stored)]:
                 raise StorageCorrupt(f"the registry log of tenant {tenant[:64]!r} holds leaves its records do not give")
             for leaf in ls[len(stored):]:
@@ -280,8 +337,10 @@ class RecordLog:
 
     def leaves(self, r, tenants):
         """[(tenant, leaf)] of record `r`: none, its tenant's (added to `tenants`, the tenants with a registry), or
-        for a signer-level record one in every registry."""
+        for a signer-level record (a gap or tamper record only when marked `tenant_level`) one in every registry."""
         typ, tenant = r["event"]["type"], r["event"]["tenant"]
+        if typ in registry.GAP_LEAVES and not r["event"]["data"].get("tenant_level"):
+            return []
         if typ in registry.SIGNER_LEAVES:
             return [(t, self.leaf(r, t)) for t in sorted(tenants)]
         if typ not in registry.LEAF_TYPES:
