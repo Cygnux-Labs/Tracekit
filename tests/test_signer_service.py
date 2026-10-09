@@ -18,6 +18,7 @@ import pytest
 
 from test_rpc_contract import SignerContract
 from tracekit import locking, schema
+from tracekit.format import checkpoint
 from tracekit.format.canon import event_hash
 from tracekit.identity.base import CallerIdentity
 from tracekit.policy2.engine import Engine
@@ -27,6 +28,7 @@ from tracekit.signer.quotas import Limits
 from tracekit.signer.rpc_schema import RPCError
 from tracekit.storage.base import StorageCorrupt, StorageUnavailable
 from tracekit.storage.file import FileStorage
+from tracekit.tlog_witness import TlogWitness
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ME = CallerIdentity("uid", str(os.getuid()) if hasattr(os, "getuid") else "0", True)
@@ -34,6 +36,11 @@ OTHER = CallerIdentity("uid", "999999", True)
 # what the signer measures for a uid caller (ME, OTHER): Windows has no uid of its own to compare with
 SAME_USER, SEPARATE_USER = ("same-user", "separate-user") if hasattr(os, "getuid") else ("unknown", "unknown")
 PAY_ASKS = Engine({"ask": [{"id": "TEST-PAY", "tool": "pay", "pattern": "^"}]})
+
+
+class Unreachable(TlogWitness):
+    def __init__(self):
+        super().__init__("http://127.0.0.1:9", checkpoint.vkey("w.example/w", checkpoint.COSIGNATURE, bytes(32)))
 
 
 def tmpdir(case):
@@ -241,8 +248,8 @@ class TestService(unittest.TestCase):
         size, root = s.log.storage.tail_state()["tree_size"] + 5, b"\x01" * 32
         s.close()
 
-        class Witness:
-            def latest(self):
+        class Witness(Unreachable):
+            def latest(self, empty_note, log_vkey):
                 return size, root
         s = self.open(witnesses=[Witness()])
         self.refused("unavailable", s, "close_run", {"request_id": "c", "run_id": run["run_id"], "run_token": run["run_token"]})
@@ -253,8 +260,8 @@ class TestService(unittest.TestCase):
         s.close_run({"request_id": "c", "run_id": run["run_id"], "run_token": run["run_token"]})
 
     def test_unreachable_witness_starts_degraded(self):
-        class Down:
-            def latest(self):
+        class Down(Unreachable):
+            def latest(self, empty_note, log_vkey):
                 raise OSError("connection refused")
         s = self.open(witnesses=[Down()])
         self.register(s)

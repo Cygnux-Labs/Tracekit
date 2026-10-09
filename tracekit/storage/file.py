@@ -4,7 +4,9 @@
     records.jsonl        one v2 record per line, seq order
     registry.jsonl       {"tenant", "leaf": hex} per line, every tenant's registry log
     checkpoint.note      the latest signed checkpoint note of the record tree, replaced whole
-    registry-notes.jsonl {"tree", "size", "note"} per line, every signed note of every registry tree
+    registry-notes.jsonl {"tree", "size", "note"} per line, every signed note of every registry tree (a later line of
+                         the same size is that note cosigned, and replaces it)
+    witness-queue.json   the witness publisher's state, replaced whole
     tiles/<tree>/<level>/<index>.<width>
 
 Files are 0640 and directories 0750; creating or renaming a file syncs it and its directory. The run index and the
@@ -37,6 +39,7 @@ SYNC_INTERVAL = 0.005  # ack-on-write: the longest a written record waits for th
 _UNAVAILABLE = {errno.EIO, errno.ENOSPC}
 _BINARY = getattr(os, "O_BINARY", 0)
 NOTE = "checkpoint.note"
+QUEUE = "witness-queue.json"
 
 
 def _sync(fd, full):
@@ -177,7 +180,7 @@ class _Records:
                     if log is self.reg_log:
                         self._index_leaf(r["tenant"], bytes.fromhex(r["leaf"]), n)
                     else:
-                        self.notes.setdefault(r["tree"], []).append((r["size"], r["note"]))
+                        self._index_note(r["tree"], r["size"], r["note"])
                 except (ValueError, KeyError, TypeError) as e:
                     raise StorageCorrupt(f"{name} line {n + 1}: {e}; run fsck") from None
             del log.lines
@@ -188,6 +191,13 @@ class _Records:
         lines, tree = self.registry[tenant]
         lines.append(n)
         tree.append(leaf_hash(leaf))
+
+    def _index_note(self, tree, size, note):
+        notes = self.notes.setdefault(tree, [])
+        if notes and notes[-1][0] == size:
+            notes[-1] = (size, note)
+        else:
+            notes.append((size, note))
 
     def registry_iter(self, tenant):
         lines, _ = self.registry.get(tenant, ([], None))
@@ -329,14 +339,25 @@ class FileStorage(_Records, Storage):
                 _sync(self.log.fd, True)   # the records a note covers are durable before the note
                 _write_new(os.path.join(self.root, NOTE), note.encode("utf-8"))
                 self._note = (size, note)
-            elif not latest or size > latest[0]:
+            else:
                 _sync(self.reg_log.fd, True)
                 line = json.dumps({"tree": tree, "size": size, "note": note}, ensure_ascii=False).encode("utf-8")
                 self.note_log.append([line + b"\n"], True)
-                self.notes.setdefault(tree, []).append((size, note))
+                self._index_note(tree, size, note)
 
     def checkpoint_latest(self, tree=RECORDS):
         return self._note if tree == RECORDS else (self.notes.get(tree) or [None])[-1]
+
+    def witness_queue(self):
+        try:
+            with open(os.path.join(self.root, QUEUE), "rb") as f:
+                return json.loads(f.read())
+        except FileNotFoundError:
+            return {}
+
+    def witness_queue_put(self, state):
+        with self._disk():
+            _write_new(os.path.join(self.root, QUEUE), json.dumps(state, sort_keys=True).encode("utf-8"))
 
     def _tile_path(self, tree, level, index, width):
         if not re.fullmatch(r"[a-z0-9-]{1,64}", tree):
