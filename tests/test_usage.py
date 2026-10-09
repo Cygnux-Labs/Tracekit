@@ -25,10 +25,20 @@ class Normalise(unittest.TestCase):
                                             "completion_tokens_details": {"reasoning_tokens": 5}}),
                          {"input_tokens": 40, "output_tokens": 20, "cache_read_tokens": 60, "cache_write_tokens": None, "reasoning_tokens": 5})
         self.assertEqual(usage.from_openai({"input_tokens": 10, "output_tokens": 3, "input_tokens_details": {"cached_tokens": 4}})["input_tokens"], 6)
+        # OpenAI counts cache writes inside the input too: they get their own bucket, as Anthropic reports them
+        for u in ({"prompt_tokens": 100, "completion_tokens": 1, "prompt_tokens_details": {"cached_tokens": 60, "cache_write_tokens": 30}},
+                  {"input_tokens": 100, "output_tokens": 1, "input_tokens_details": {"cached_tokens": 60, "cache_write_tokens": 30}}):
+            self.assertEqual({k: v for k, v in usage.from_openai(u).items() if k.startswith(("input", "cache"))},
+                             {"input_tokens": 10, "cache_read_tokens": 60, "cache_write_tokens": 30})
         self.assertEqual(usage.from_anthropic({"input_tokens": 7, "output_tokens": 9, "cache_read_input_tokens": 100, "cache_creation_input_tokens": 50}),
                          {"input_tokens": 7, "output_tokens": 9, "cache_read_tokens": 100, "cache_write_tokens": 50, "reasoning_tokens": None})
         self.assertEqual(usage.from_gemini({"prompt_token_count": 30, "candidates_token_count": 8, "cached_content_token_count": 10,
                                             "thoughts_token_count": 2})["input_tokens"], 20)
+        # Gemini reports thoughts apart from candidates: both are output, and reasoning is part of it
+        self.assertEqual(usage.from_gemini({"prompt_token_count": 30, "candidates_token_count": 8,
+                                            "thoughts_token_count": 2}),
+                         {"input_tokens": 30, "output_tokens": 10, "cache_read_tokens": None, "cache_write_tokens": None,
+                          "reasoning_tokens": 2})
         self.assertEqual(usage.from_otel({"gen_ai.usage.input_tokens": 12, "gen_ai.usage.output_tokens": 4})["output_tokens"], 4)
         self.assertEqual(usage.from_otel({"llm.token_count.prompt": 5, "llm.token_count.completion": 1})["input_tokens"], 5)
 

@@ -1,0 +1,33 @@
+[
+  {
+    "name": "function calls with and without a part id; thoughts count as output",
+    "request": {"model": "gemini-3-pro", "contents": [
+      {"role": "user", "parts": [{"text": "weather?"}]},
+      {"role": "model", "parts": [{"function_call": {"id": "fc-prev", "name": "get_weather", "args": {"city": "Paris"}}}]},
+      {"role": "user", "parts": [{"function_response": {"id": "fc-prev", "name": "get_weather", "response": {"t": 20}}},
+                                 {"function_response": {"name": "no_id", "response": {}}}]}]},
+    "response": {"response_id": "r-1", "model_version": "gemini-3-pro-001",
+      "candidates": [{"index": 0, "finish_reason": "STOP", "content": {"role": "model", "parts": [
+        {"text": "checking"},
+        {"function_call": {"id": "fc-1", "name": "get_weather", "args": {"city": "Oslo"}}},
+        {"function_call": {"name": "get_time", "args": {"tz": "UTC"}}}]}}],
+      "usage_metadata": {"prompt_token_count": 30, "candidates_token_count": 8, "cached_content_token_count": 10,
+                         "thoughts_token_count": 2, "total_token_count": 40}},
+    "expect": {"exchange_id": "r-1", "model": "gemini-3-pro-001", "finish": "STOP", "usage": {"input_tokens": 20, "output_tokens": 10, "cache_read_tokens": 10, "reasoning_tokens": 2}, "tool_uses": [{"id": "fc-1", "name": "get_weather", "executed_by": "client", "args_source": "parsed", "args_digest": "sha256:bdfd58b6c88ba7bb48742089605d349be229e3502331bb1b685c5de2a8c9e0a1"}, {"id": "gemini:r-1:1", "name": "get_time", "executed_by": "client", "args_source": "parsed", "args_digest": "sha256:60f8967cfb775eceb9b1aebec9f0fef8e0294f7bbfb719f77d12e0213ff489f1", "id_synthetic": true}], "tool_results_sent": ["fc-prev"]}
+  },
+  {
+    "name": "stream: function calls from every chunk, usage and finish from the last",
+    "request": {"model": "gemini-3-pro", "contents": "weather?"},
+    "stream": [
+      {"response_id": "r-2", "model_version": "gemini-3-pro-001",
+       "candidates": [{"index": 0, "content": {"role": "model", "parts": [{"text": "one"}]}}]},
+      {"response_id": "r-2", "model_version": "gemini-3-pro-001",
+       "candidates": [{"index": 0, "content": {"role": "model", "parts": [
+         {"function_call": {"name": "get_weather", "args": {"city": "Oslo"}}}]}}]},
+      {"response_id": "r-2", "model_version": "gemini-3-pro-001",
+       "candidates": [{"index": 0, "finish_reason": "STOP", "content": {"role": "model", "parts": [
+         {"function_call": {"id": "fc-9", "name": "get_time", "args": {}}}]}}],
+       "usage_metadata": {"prompt_token_count": 4, "candidates_token_count": 6, "total_token_count": 10}}],
+    "expect": {"exchange_id": "r-2", "model": "gemini-3-pro-001", "finish": "STOP", "usage": {"input_tokens": 4, "output_tokens": 6}, "tool_uses": [{"id": "gemini:r-2:0", "name": "get_weather", "executed_by": "client", "args_source": "parsed", "args_digest": "sha256:bdfd58b6c88ba7bb48742089605d349be229e3502331bb1b685c5de2a8c9e0a1", "id_synthetic": true}, {"id": "fc-9", "name": "get_time", "executed_by": "client", "args_source": "parsed", "args_digest": "sha256:c65a6b2cc6c1156048595f71a695005b62938f1c6a6ca9514a45dd4c5c471e84"}], "tool_results_sent": []}
+  }
+]
