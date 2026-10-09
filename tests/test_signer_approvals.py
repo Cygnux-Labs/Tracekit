@@ -19,7 +19,7 @@ import test_rpc_contract as rc
 import test_signer_service as ts
 from tracekit import cli, schema
 from tracekit.bundle_v2 import export
-from tracekit.format.canon import canonical, event_hash
+from tracekit.format.canon import canonical
 from tracekit.sdk import autospawn
 from tracekit.sdk.client import Client
 from tracekit.signer import service as svc
@@ -209,9 +209,7 @@ class TestRealSigner(unittest.TestCase):
         self.consume(args=dict(PAY, cents=1))
         es = {e["type"]: e for e in self.events()}
         req = es["approval.request"]["data"]
-        binding = {k: v for k, v in req["binding"].items() if k != "args_commitment"}
-        binding["args_digest"] = event_hash({"tool": "pay", "args": PAY})
-        self.assertEqual(req["binding_digest"], "sha256:" + hashlib.sha256(canonical(binding)).hexdigest())
+        self.assertEqual(req["binding_digest"], "sha256:" + hashlib.sha256(canonical(req["binding"])).hexdigest())
         self.assertEqual((req["binding"]["approval_id"], req["binding"]["attempt"]), (aid, 0))
         self.assertNotIn("args_digest", req["binding"])
         self.assertTrue(es["approval"]["data"]["self_approved"])

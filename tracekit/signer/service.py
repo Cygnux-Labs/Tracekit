@@ -5,6 +5,7 @@
     tracekit signer fsck  --config signer.yaml
     tracekit signer vkey  [--dev | --config signer.yaml]               # the log's verifier key
     tracekit signer trust [--dev | --config signer.yaml] -o trust.json  # a v2 trust config pinning it, no witnesses
+    tracekit signer reveal --record SEQ [--dev | --config signer.yaml]  # the salt of one record's commitments
 
 signer.yaml:
     data_dir: /var/lib/tracekit-signer      # keys/ and store/; relative paths are from the config file
@@ -55,14 +56,22 @@ signer's copy of a pending call's arguments (what the approver is shown) is kept
 and deleted once the approval is consumed, rejected or expired. An approval expires after APPROVAL_TTL_S, or when its
 run ends. Dev stubs: any identity of the run's tenant may answer an approval, and a self-approval is labelled
 (`self_approved`).
+
+Privacy (04-design §1.2, §2.4; docs/privacy.md): a result and the approver's copy of the arguments go through
+privacy.redact before they are committed or stored; a result's record carries a `redaction` manifest (the rules that
+fired, never the values). A client may say it redacted already; the signer redacts again regardless and flags a secret
+it still finds. Every published digest of agent content is an HMAC under a per-record salt derived from
+keys/args_salt.key (`salt_label`), which `reveal` prints for one record. Policy decides on the unredacted arguments.
 """
 import argparse
+import collections
 import datetime
 import hashlib
 import hmac
 import json
 import os
 import pathlib
+import re
 import secrets
 import signal
 import socket
@@ -74,7 +83,7 @@ import rfc8785
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-from tracekit import __version__, crypto, yamlmini
+from tracekit import __version__, crypto, privacy, yamlmini
 from tracekit.deploy import files
 from tracekit.format import checkpoint
 from tracekit.format.canon import StrictJSONError, canonical, event_hash, loads_strict
@@ -122,9 +131,41 @@ def _iso(ts):
     return datetime.datetime.fromtimestamp(ts, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
-def _ref(value):
-    c = canonical(value)
-    return {"hash": "sha256:" + hashlib.sha256(c).hexdigest(), "size": len(c), "redacted": False}
+MARK = re.compile(r"\[REDACTED:([a-z_]+)\]")
+
+
+def _salt(key, label):
+    return hmac.new(key, label.encode(), "sha256").digest()
+
+
+def salt_label(e):
+    """What the salt of event `e`'s commitments is derived from; None when it has none."""
+    d = e["data"]
+    if e["type"] in ("policy.decision", "approval.request", "approval.binding_mismatch"):
+        return d.get("decision_id")
+    if e["type"] == "tool.result":
+        return "result:" + d["decision_id"]
+    if e["type"] in ("model.exchange", "state.write"):
+        return f"{e['type']}:{e['tenant']}:{e['run_id']}:{e['request_id']}"
+    return None
+
+
+def _redact(value, dotenv, claim=None):
+    """(`value` through privacy.redact, its manifest). `claim`: the client's manifest when it says it redacted."""
+    before = collections.Counter(MARK.findall(canonical(value).decode()))
+    out = privacy.redact(value, dotenv)[0]
+    fired = collections.Counter(MARK.findall(canonical(out).decode())) - before
+    manifest = {"rules": sorted(fired), "count": sum(fired.values()), "client_claimed": claim is not None}
+    if claim is not None:
+        manifest["client"] = claim
+        if fired:
+            manifest["client_redaction_incomplete"] = True
+    return out, manifest
+
+
+def _dotenv(args):
+    """Whether a call touched a .env path, as v1 decides it: from the fields that say which action ran."""
+    return isinstance(args, dict) and privacy.mentions_dotenv(*(args.get(k) for k in privacy.ACTION_FIELDS))
 
 
 def _write_new(path, data):
@@ -476,11 +517,10 @@ class SignerService:
         except (StrictJSONError, rfc8785.CanonicalizationError):
             return None, None
 
-    def _commit(self, decision_id, digest):
-        """The published args_commitment: HMAC of the args digest under the decision's own salt, which the signer can
-        reveal to an auditor for that one record."""
-        salt = hmac.new(self._salt_key, decision_id.encode(), "sha256").digest()
-        return "hmac-sha256:" + hmac.new(salt, digest.encode(), "sha256").hexdigest()
+    def _commit(self, label, digest):
+        """A published commitment: HMAC of `digest` under the salt of `label` (a record's salt_label), which the signer
+        can reveal to an auditor for that one record."""
+        return "hmac-sha256:" + hmac.new(_salt(self._salt_key, label), digest.encode(), "sha256").hexdigest()
 
     def _same(self, call, digest):
         """Whether `digest` is the args digest the decision (or approval) `call` was made for."""
@@ -574,9 +614,9 @@ class SignerService:
             if commitment:
                 data["args_commitment"] = commitment
             call = {"tool_call_id": tcid, "attempt": attempt, "decision": verdict, "rule_ids": rule_ids,
-                    "decision_id": did, "commitment": commitment}
+                    "decision_id": did, "commitment": commitment, "dotenv": _dotenv(args)}
             if verdict == "ask":   # the signer's copy, for the approval request (memory only: decide again after a restart)
-                call["pending"] = {"tool": tool, "args_source": req["args_source"], "args": req["args"], "digest": digest}
+                call["pending"] = {"tool": tool, "args_source": req["args_source"], "args": req["args"]}
             tx.set(run["calls"], tcid, call)
             tx.set(run["decisions"], did, call)
             seq = tx.event(run, req, "policy.decision", dict(data, decision=verdict, rule_ids=rule_ids),
@@ -589,8 +629,12 @@ class SignerService:
         return self.log.submit(identity, "decide", req, fn, key)
 
     def _event(self, identity, method, req, typ, data, need_call=False, **top):
+        """`data(commit)`: the event's data, given `commit(digest)`, the commitment under this record's salt."""
         key = self._authorize(identity, req)
         self.quotas.take_event(identity)
+        label = salt_label({"type": typ, "data": None, "tenant": key[0], "run_id": key[1],
+                            "request_id": req["request_id"]})
+        data = data(lambda digest: self._commit(label, digest))
 
         def fn(tx, run):
             if need_call and req["tool_call_id"] not in run["calls"]:
@@ -599,11 +643,18 @@ class SignerService:
         return self.log.submit(identity, method, req, fn, key, late=True)
 
     def _complete(self, identity, req):
+        key, tcid, attempt, did = self._authorize(identity, req), req["tool_call_id"], req.get("attempt", 0), req["decision_id"]
+        # read off the writer thread, which checks the decision again; unknown after a restart (arguments are never
+        # logged), so a replayed decision redacts as if the call touched a .env file
+        dotenv = (self.log.runs[key]["decisions"].get(did) or {}).get("dotenv", True)
         try:
-            output = _ref({k: req[k] for k in ("result", "error") if k in req})
+            value, manifest = _redact({k: req[k] for k in ("result", "error") if k in req}, dotenv,
+                                      req.get("redaction", {}) if req.get("redacted") else None)
+            c = canonical(value)
         except rfc8785.CanonicalizationError as e:
             raise RPCError("invalid_request", f"result is not canonical JSON: {e}") from None
-        key, tcid, attempt, did = self._authorize(identity, req), req["tool_call_id"], req.get("attempt", 0), req["decision_id"]
+        output = {"hash": self._commit("result:" + did, "sha256:" + hashlib.sha256(c).hexdigest()), "size": len(c),
+                  "redacted": manifest["count"] > 0 or manifest["client_claimed"]}
         self.quotas.take_event(identity)
 
         def fn(tx, run):
@@ -614,28 +665,32 @@ class SignerService:
                 raise RPCError("args_mismatch", f"{tcid} ran with other arguments than decision {did}")
             tx.set(run["decisions"], did, None)
             return {"run_seq": tx.event(run, req, "tool.result", {"tool_use_id": tcid, "ok": req["status"] == "ok",
-                                                                  "output": output, "decision_id": did},
+                                                                  "output": output, "decision_id": did,
+                                                                  "redaction": manifest},
                                         tool_call_id=tcid, attempt=attempt)}
         return self.log.submit(identity, "complete", req, fn, key, late=True)
 
     def _state_write(self, identity, req):
         return self._event(identity, "state_write", req, "state.write",
-                           {"store": "default", "key": req["key"], "digest": req["value_digest"]})
+                           lambda commit: {"store": "default", "key": req["key"], "digest": commit(req["value_digest"])})
 
     def _model_event(self, identity, req):
-        data = {"exchange_id": req.get("exchange_id", req["request_id"]), "phase": req["phase"],
-                "streamed": req.get("streamed", False), "model": req["model"], "upstream": req["provider"]}
-        for k in ("content_digest", "stop_reason", "error", "tool_results_sent"):
-            if k in req:
-                data[k] = req[k]
-        if {"input_tokens", "output_tokens"} <= req.get("usage", {}).keys():   # the event schema needs both counts
-            data["usage"] = req["usage"]
-        if "tool_uses" in req:   # the digests are published as commitments, salted per record and tool use
-            data["tool_uses"] = [{k: v for k, v in t.items() if k != "args_digest"} for t in req["tool_uses"]]
-            for i, t in enumerate(req["tool_uses"]):
-                if "args_digest" in t:
-                    data["tool_uses"][i]["args_commitment"] = self._commit(
-                        f"model:{req['run_id']}:{req['request_id']}:{i}", t["args_digest"])
+        def data(commit):
+            d = {"exchange_id": req.get("exchange_id", req["request_id"]), "phase": req["phase"],
+                 "streamed": req.get("streamed", False), "model": req["model"], "upstream": req["provider"]}
+            for k in ("stop_reason", "error", "tool_results_sent"):
+                if k in req:
+                    d[k] = req[k]
+            if "content_digest" in req:
+                d["content_digest"] = commit(req["content_digest"])
+            if {"input_tokens", "output_tokens"} <= req.get("usage", {}).keys():   # the event schema needs both counts
+                d["usage"] = req["usage"]
+            if "tool_uses" in req:
+                d["tool_uses"] = [{k: v for k, v in t.items() if k != "args_digest"} for t in req["tool_uses"]]
+                for t, u in zip(req["tool_uses"], d["tool_uses"]):
+                    if "args_digest" in t:
+                        u["args_commitment"] = commit(t["args_digest"])
+            return d
         return self._event(identity, "model_event", req, "model.exchange", data)
 
     def _approval_request(self, identity, req):
@@ -655,16 +710,15 @@ class SignerService:
             p = call["pending"]
             aid, expires_at = "apr-" + secrets.token_hex(16), _iso(time.time() + APPROVAL_TTL_S)
             binding = {"v": 1, "approval_id": aid, "tenant": key[0], "run_id": key[1], "tool_call_id": tcid,
-                       "attempt": attempt, "tool": p["tool"], "args_digest": p["digest"], "args_source": p["args_source"],
+                       "attempt": attempt, "tool": p["tool"], "args_commitment": call["commitment"],
+                       "args_source": p["args_source"],
                        "policy_hash": self.policy.policy_hash, "nonce": secrets.token_hex(16), "expires_at": expires_at}
-            published = {k: v for k, v in binding.items() if k != "args_digest"}
             data = {"approval_id": aid, "decision_id": call["decision_id"], "policy_hash": self.policy.policy_hash,
-                    "rule_ids": call["rule_ids"], "expires_at": expires_at, "requester": sub,
-                    "binding": dict(published, args_commitment=call["commitment"]),
+                    "rule_ids": call["rule_ids"], "expires_at": expires_at, "requester": sub, "binding": binding,
                     "binding_digest": "sha256:" + hashlib.sha256(canonical(binding)).hexdigest()}
-            copy = {"args_source": p["args_source"], "args": p["args"]}
+            copy = {"args_source": p["args_source"], "args": privacy.redact(p["args"], call["dotenv"])[0]}
             if "reason" in req:
-                copy["reason"] = req["reason"]
+                copy["reason"] = privacy.redact(req["reason"], call["dotenv"])[0]
             _write_new(os.path.join(self._args_dir, aid), self._seal(aid, copy))
             tx.set(self.log.approvals, aid, approval(*key, data))
             tx.set(self.log.approval_index, (*key, tcid, attempt), aid)
@@ -724,7 +778,8 @@ class SignerService:
                 why = "TK-APPROVAL-REQUIRED", "approval required but none was requested for this call"
             elif not self._same(a, digest):
                 tx.emit(run, "approval.binding_mismatch", {
-                    "approval_id": aid, "tool_use_id": tcid, "approved_commitment": a["commitment"],
+                    "approval_id": aid, "decision_id": a["decision_id"], "tool_use_id": tcid,
+                    "approved_commitment": a["commitment"],
                     "args_commitment": self._commit(a["decision_id"], digest)}, source="signer", **top)
                 return {"ok": False, "rule_ids": ["TK-APPROVAL-MISMATCH"], "approval_id": aid,
                         "reason": "the arguments differ from the approved ones"}
@@ -1003,6 +1058,22 @@ def fsck(data_dir):
     return problems
 
 
+def reveal(data_dir, seq):
+    """{"seq", "type", "salt"}: the salt of record `seq`'s commitments, for an auditor who holds that record's content.
+    Only the owner of the signer's keys may ask."""
+    keys = os.path.join(data_dir, "keys")
+    if hasattr(os, "getuid") and os.stat(keys).st_uid != os.getuid():
+        raise PermissionError(f"{keys} belongs to another user: only the signer's owner reveals salts")
+    with open(os.path.join(data_dir, "store", "records.jsonl"), "rb") as f:
+        # lean: scans the store from the start; seek by an offset index once stores reach gigabytes
+        e = next((e for e in (loads_strict(line)["event"] for line in f) if e["seq"] == seq), None)
+    label = e and salt_label(e)
+    if label is None:
+        raise ValueError(f"record {seq} " + ("does not exist" if e is None else f"({e['type']}) has no commitments"))
+    with open(os.path.join(keys, "args_salt.key"), "rb") as f:
+        return {"seq": seq, "type": e["type"], "salt": _salt(f.read(), label).hex()}
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="tracekit signer", description="the v2 signer service")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -1019,6 +1090,11 @@ def main(argv=None):
         g.add_argument("--dev", action="store_true", help="the same-user dev signer (the default)")
         if name == "trust":
             q.add_argument("-o", "--out", required=True)
+    q = sub.add_parser("reveal", help="print the salt of one record's commitments (the signer's owner only)")
+    q.add_argument("--record", type=int, required=True, metavar="SEQ")
+    g = q.add_mutually_exclusive_group()
+    g.add_argument("--config")
+    g.add_argument("--dev", action="store_true", help="the same-user dev signer (the default)")
     p = sub.add_parser("bridge", help="continue a v1 ledger in this signer's log and destroy the v1 key")
     p.add_argument("--v1-home", required=True)
     g = p.add_mutually_exclusive_group(required=True)
@@ -1027,6 +1103,13 @@ def main(argv=None):
     a = ap.parse_args(argv)
     if a.cmd == "serve" and a.dev:
         return _serve_dev()
+    if a.cmd == "reveal":
+        try:
+            print(json.dumps(reveal(signer_config(a.config)["data_dir"], a.record)))
+        except (OSError, ValueError) as e:
+            print(f"tracekit signer: {e}", file=sys.stderr)
+            return 2
+        return 0
     if a.cmd in ("vkey", "trust"):
         from tracekit.sdk.client import SignerUnavailable
         try:
