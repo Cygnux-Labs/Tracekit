@@ -9,7 +9,6 @@ client resends once from that size with a matching proof. Every other failure ra
 network errors, timeouts, a second 409 (a race), 429 and 5xx; not for 400/403/404/422 (malformed, unknown key or origin, inconsistent tree)
 or a bad cosignature."""
 import base64
-import binascii
 import urllib.error
 import urllib.request
 
@@ -34,7 +33,7 @@ def signed_by(lines, vkey):
         try:
             if len(parts) == 3 and parts[:2] == ["—", name] and base64.b64decode(parts[2], validate=True)[:4] == kid:
                 out += line + "\n"
-        except binascii.Error:
+        except ValueError:   # not base64, or not ASCII
             continue
     return out
 
@@ -75,7 +74,7 @@ class TlogWitness:
 
     def _size(self, resp, at_most):
         size = resp.strip()
-        if not size.isdigit() or int(size) > at_most:
+        if not (size.isascii() and size.isdigit()) or int(size) > at_most:
             raise WitnessError(f"{self.name}: witness is at size {size[:32]!r}, past {at_most}", False)
         return int(size)
 
