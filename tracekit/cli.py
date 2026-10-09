@@ -98,7 +98,9 @@ def main(argv=None):
     p.add_argument("--json", action="store_true", help="wait, then print its hello as JSON")
     p.add_argument("--replace", action="store_true", help="stop the running dev signer first, even an incompatible one")
     sub.add_parser("down", help="stop the same-user v2 dev signer")
-    sub.add_parser("doctor", help="system mode: check the signer and policy run from files the agent cannot modify")
+    p = sub.add_parser("doctor", help="check this setup (v1/v2 system mode, the dev signer); docs/doctor.md")
+    p.add_argument("--json", action="store_true", help="print [{id, status, detail, fix}]")
+    p.add_argument("--config", help="check the v2 signer of this signer.yaml")
     p = sub.add_parser("uninstall", help="remove hooks (the ledger is kept)")
     p.add_argument("--project", action="store_true")
     p.add_argument("--v2", action="store_true", help="as root: remove v2 system mode (service, configs, hooks)")
@@ -369,8 +371,8 @@ def _run(a):
         print(f"dev signer stopped (pid {pid})" if pid else "no dev signer running")
         return 0
     if a.cmd == "doctor":
-        from . import install
-        return install.doctor()
+        from . import doctor
+        return doctor.main(a.config, a.json)
     if a.cmd == "uninstall" and (a.v2 or a.purge):
         from . import install
         if not a.v2 or a.project or a.agent != "claude":
