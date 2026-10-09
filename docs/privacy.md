@@ -60,7 +60,7 @@ Redaction is pattern-based and will miss secrets it doesn't recognise. A command
 ## What hashes and metadata still leak
 
 - **Paths and commands are in clear** (after redaction): file names, URLs, search queries and whole command lines can themselves be sensitive.
-- **Hashes of low-entropy content can be guessed**: a hashed "yes", a short prompt or a known file can be confirmed by hashing candidates. Hashes are unsalted so reviewers can match known files; treat them as confirmable.
+- **Hashes of low-entropy content can be guessed**: a hashed "yes", a short prompt or a known file can be confirmed by hashing candidates. Hashes are unsalted so reviewers can match known files; treat them as confirmable. The v2 signer publishes salted commitments instead (below).
 - **Sizes and timing**: content sizes, tool durations and timestamps reveal activity patterns even when content is hashed.
 - **Correlation**: the same file hashed in two runs links them; tool_use ids link proxy and hook events by design.
 - **Witnesses** learn when checkpoints happen and how many records exist, nothing else.
@@ -68,6 +68,29 @@ Redaction is pattern-based and will miss secrets it doesn't recognise. A command
 ## Bundles follow the ledger's rules
 
 Export never re-reads the original content: a bundle holds exactly the event bodies the ledger holds (same redaction, same hashing), with records from other runs elided. `--otel` exports the same fields as spans and nothing more.
+
+## The v2 signer
+
+With the v2 signer service (`tracekit signer serve`), the signer redacts itself, whatever the client did:
+
+- **What is redacted where.** A tool result and error (`complete`) go through the same redaction patterns before the
+  signer commits to them; when the call's `command`, `file_path`, `path` or `pattern` mentions a `.env` file, every
+  `KEY=value` line is redacted too. The signer's copy of a pending call's arguments, which the approver sees, is
+  redacted the same way and shows `[REDACTED:<kind>]` markers. The policy decides on the unredacted arguments: the
+  signer saw them, the record never holds them.
+- **The manifest.** A `tool.result` record carries `redaction: {rules, count, client_claimed}`: the rules that fired
+  and how often, never the values. A client may send content it already redacted (`redacted: true` and its own
+  `redaction: {rules, count}`); the signer records that claim under `client`, redacts again anyway, and adds
+  `client_redaction_incomplete: true` when it still found a secret. A claim never lowers what the signer redacts.
+- **Commitments, not hashes.** Every published digest of agent content (`args_commitment` on decisions, approvals
+  and model tool uses, a result's `output.hash`, `state.write` and `model.exchange` digests) is
+  `hmac-sha256:HMAC(salt, digest)`, where `digest` is the `sha256:` of the canonical JSON (for a result: after
+  redaction) and `salt` is derived per record from a key only the signer holds. Guessing a 4-digit PIN from its
+  commitment needs that salt. A record's `binding_digest` is a sha256 over its published binding only.
+- **Reveal for one record.** `tracekit signer reveal --record <seq>` (the owner of the signer's keys only) prints the
+  salt of that record. An auditor who holds the content can then recompute that record's commitments; the salt opens
+  no other call's records. A decision, its `approval.request` and any `approval.binding_mismatch` share one salt.
+  Verifying a bundle never needs a salt.
 
 ## What leaves the machine
 

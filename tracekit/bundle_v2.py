@@ -36,7 +36,7 @@ from tracekit.format import checkpoint, registry
 from tracekit.storage.base import registry_tree
 
 FORMAT = "tracekit.bundle.v2"
-VERIFIER_MIN_VERSION = "0.3.0"
+VERIFIER_MIN_VERSION = "0.4.0"
 KEY_TYPES = ("signer.epoch", "key.retire")
 
 

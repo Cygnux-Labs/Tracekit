@@ -1,5 +1,6 @@
 """E13: approvals on a signer with an approver config (04-design §5, decision S6). The approver is another identity, the
 CLI answers as this process's uid, and each test fails without the part of the approvals it names."""
+import json
 import os
 import socket
 import threading
@@ -42,12 +43,12 @@ class Signer(unittest.TestCase):
         self.s.close()
         self.s = self.open()
 
-    def pending(self, tool="pay"):
+    def pending(self, tool="pay", raw='{"to": "acct-42", "cents": 1500}'):
         """A run of this process whose call tc-1 waits for approval; its approval_id."""
         run = self.s.register_run({"request_id": "reg", "agent": {"name": "a"}})
         self.run = {"run_id": run["run_id"], "run_token": run["run_token"]}
         self.s.decide({"request_id": "d", **self.run, "stream": "s", "client_seq": 0, "tool_call_id": "tc-1",
-                       "tool": tool, "args_source": "raw", "args": '{"to": "acct-42", "cents": 1500}'})
+                       "tool": tool, "args_source": "raw", "args": raw})
         return self.s.approval_request({"request_id": "a", **self.run, "tool_call_id": "tc-1"})["approval_id"]
 
     def decide(self, aid, who=APPROVER, decision="approve", **kw):
@@ -135,6 +136,16 @@ class TestExecutorAndListing(Signer):
         self.assertEqual(self.consume(dict(PAY, cents=1))["rule_ids"], ["TK-APPROVAL-MISMATCH"])
         out = self.consume()
         self.assertEqual((out["ok"], out["args"]), (True, PAY))   # parsed from the signer's raw copy
+
+    def test_t2_executor_gets_the_real_args_and_the_approver_only_the_redacted_copy(self):
+        secret = {"to": "acct-42", "cents": 1500, "key": "sk-ant-" + "x" * 24}   # a redaction fixture
+        aid = self.pending(raw=json.dumps(secret))
+        shown = self.s.call(APPROVER, "approval_get", {"approval_id": aid})
+        self.assertNotIn(secret["key"], json.dumps(shown))
+        self.assertNotIn("exec_args", shown)
+        self.decide(aid)
+        out = self.consume(secret)
+        self.assertEqual((out["ok"], out["args"]), (True, secret))
 
     def test_t1_consume_returns_no_args(self):
         self.decide(self.pending("mail"))

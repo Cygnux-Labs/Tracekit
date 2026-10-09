@@ -137,7 +137,7 @@ NEW_TYPES = {
                                   "approved_commitment": "hmac-sha256:" + "0" * 64,
                                   "args_commitment": "hmac-sha256:" + "1" * 64},
     "approval.abandoned": {"approval_id": "ap-1", "reason": "the run state could not be resumed"},
-    "state.write": {"store": "langgraph", "key": "thread-1", "prev_digest": None, "digest": H},
+    "state.write": {"store": "langgraph", "key": "thread-1", "prev_digest": None, "digest": "hmac-sha256:" + "ab" * 32},
     "signer.epoch": {"keys": [{"kid": H, "alg": "ed25519", "spki": "MCowBQYDK2VwAyEA"}]},
     "key.retire": {"kid": H, "last_seq": 9},
     "log.closed": {"final_seq": 9},

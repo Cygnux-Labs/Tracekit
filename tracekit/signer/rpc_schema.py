@@ -99,7 +99,9 @@ REQUESTS = {
     "complete": _obj(_EVENT_REQ + ["tool_call_id", "decision_id", "args_digest", "status"], **_EVENT,
                      tool_call_id=ID, attempt=SEQ, decision_id=ID,
                      args_digest=DIGEST,   # sha256(JCS({"tool", "args"})) of the args that ran
-                     status={"enum": ["ok", "error"]}, result=ANY, error=_str(4096)),
+                     status={"enum": ["ok", "error"]}, result=ANY, error=_str(4096),
+                     # the client redacted result/error already; recorded as its claim, the signer redacts regardless
+                     redacted={"const": True}, redaction=_obj([], rules=RULE_IDS, count=SEQ)),
     "state_write": _obj(_EVENT_REQ + ["key", "value_digest"], **_EVENT, key=_str(256, minLength=1), value_digest=DIGEST),
     # agent-reported (L3): what the model asked to run, and the tool results the request sent back
     "model_event": _obj(_EVENT_REQ + ["provider", "model", "phase"], **_EVENT, provider=_str(64), model=_str(128),
