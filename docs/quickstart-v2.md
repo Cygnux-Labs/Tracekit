@@ -130,5 +130,7 @@ What system mode protects, and what it doesn't:
   the hook, or running tools outside Claude Code, leaves no record and no gap; system mode secures what is recorded,
   not that everything is.
 
+Check an install with `sudo tracekit doctor` ([docs/doctor.md](doctor.md) lists every check and its fix).
+
 `eval/e8_insider_v2.py` checks these properties as real separate users (decoy signer, cross-user injection, signer
 down, policy through the environment, self-approval).

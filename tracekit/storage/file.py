@@ -7,6 +7,8 @@
     registry-notes.jsonl {"tree", "size", "note"} per line, every signed note of every registry tree (a later line of
                          the same size is that note cosigned, and replaces it)
     witness-queue.json   the witness publisher's state, replaced whole
+    anchors.jsonl        {"size", "note", "rekor", "tsa"} per line: each record tree note anchored in Rekor (a later
+                         line of the same size is that note cosigned, and replaces it)
     snapshots/<size>.json  the indexes at a record tree size, the logs' line offsets, and the signer's state; the
                          newest two are kept
     tiles/<tree>/<level>/<index>.<width>
@@ -47,6 +49,7 @@ _UNAVAILABLE = {errno.EIO, errno.ENOSPC}
 _BINARY = getattr(os, "O_BINARY", 0)
 NOTE = "checkpoint.note"
 QUEUE = "witness-queue.json"
+ANCHORS = "anchors.jsonl"
 LOGS = ("records.jsonl", "registry.jsonl", "registry-notes.jsonl")
 SNAPSHOTS = "snapshots"
 
@@ -115,6 +118,8 @@ class _Lines:
             self.offsets.append(self.offsets[-1] + len(line) + 1)
 
     def read(self, indices):
+        if not indices:   # a reader's missing file
+            return
         with open(self.path, "rb") as f:
             for i in indices:
                 f.seek(self.offsets[i])
@@ -280,6 +285,7 @@ class _Records:
                 except (ValueError, KeyError, TypeError) as e:
                     raise StorageCorrupt(f"{name} line {n + 1}: {e}; run fsck") from None
             del log.lines
+        del self.anchor_log.lines   # read on demand, by anchors()
 
     def _index_leaf(self, tenant, leaf, n):
         if tenant not in self.registry:
@@ -305,6 +311,11 @@ class _Records:
 
     def checkpoint_at(self, tree, size):
         return next((note for s, note in self.notes.get(tree, ()) if s == size), None)
+
+    def anchors(self):
+        # lean: reads every anchor per call (at most 24 a day); index anchors by size if exports become frequent
+        anchors = (json.loads(line) for line in self.anchor_log.read(range(len(self.anchor_log.offsets) - 1)))
+        return list({a["size"]: a for a in anchors}.values())
 
     def _index(self, record):
         e = record["event"]
@@ -352,13 +363,14 @@ class FileStorage(_Records, Storage):
         # lean: run and registry indexes live in memory, O(records); keep them on disk past tens of millions of records
         self.tree = Tree(self.tile_store(RECORDS))
         self.prev = ZERO_HASH
-        self.log = self.reg_log = self.note_log = None
+        self.log = self.reg_log = self.note_log = self.anchor_log = None
         try:
             self.snapshot_key = snapshot_key
             self.snapshot = snap = snapshot_key and _latest_snapshot(root, snapshot_key)
             offsets = snap["offsets"] if snap else {}
             for attr, name in zip(("log", "reg_log", "note_log"), LOGS):
                 setattr(self, attr, _Log(os.path.join(root, name), self.torn, on_sync, offsets.get(name, (0,))))
+            self.anchor_log = _Log(os.path.join(root, ANCHORS), self.torn, on_sync)
             with self._disk():
                 if snap:
                     self._restore(snap)
@@ -370,7 +382,7 @@ class FileStorage(_Records, Storage):
                 except FileNotFoundError:
                     self._note = None
         except BaseException:
-            for log in (self.log, self.reg_log, self.note_log):
+            for log in (self.log, self.reg_log, self.note_log, self.anchor_log):
                 if log:
                     os.close(log.fd)
             self._lock.close()
@@ -495,6 +507,11 @@ class FileStorage(_Records, Storage):
         with self._disk():
             _write_new(os.path.join(self.root, QUEUE), json.dumps(state, sort_keys=True).encode("utf-8"))
 
+    def anchor_put(self, size, anchor):
+        line = json.dumps({"size": size, **anchor}, sort_keys=True).encode("utf-8") + b"\n"
+        with self._disk():
+            self.anchor_log.append([line], True)
+
     def _tile_path(self, tree, level, index, width):
         if not re.fullmatch(r"[a-z0-9-]{1,64}", tree):
             raise ValueError(f"bad tree name {tree!r}")
@@ -524,7 +541,7 @@ class FileStorage(_Records, Storage):
         self._stop.set()
         if self._syncer:
             self._syncer.join()
-        for log in (self.log, self.reg_log, self.note_log):
+        for log in (self.log, self.reg_log, self.note_log, self.anchor_log):
             with contextlib.suppress(OSError):
                 _sync(log.fd, True)
             os.close(log.fd)
@@ -538,8 +555,9 @@ class FileReader(_Records):
     files are symlinks, writable by group or others, or owned by another user than the directory.
 
     Offers what `bundle_v2.export` reads: iter_run, iter_range, get_run, `runs`, `tree` (size, root_at, inclusion
-    proofs), checkpoint_latest(), and the registry: registry_iter, registry_merkle and checkpoint_at. Registry leaves
-    and notes are those written when it was opened; open it after reading the record note an export uses."""
+    proofs), checkpoint_latest(), anchors(), and the registry: registry_iter, registry_merkle and checkpoint_at.
+    Registry leaves, notes and anchors are those written when it was opened; open it after reading the record note an
+    export uses."""
 
     def __init__(self, root):
         self.root, self.runs, self.prev, self.registry, self.notes = root, {}, ZERO_HASH, {}, {}
@@ -548,8 +566,8 @@ class FileReader(_Records):
         self._check(root, st, stat.S_ISDIR)
         # lean: rebuilds the trees in memory from every leaf, O(records) per open; read the tiles once views stay open
         self.tree = Tree(MemoryTileStore())
-        self.log, self.reg_log, self.note_log = (self._lines(n) for n in (
-            "records.jsonl", "registry.jsonl", "registry-notes.jsonl"))
+        self.log, self.reg_log, self.note_log, self.anchor_log = (self._lines(n) for n in (
+            "records.jsonl", "registry.jsonl", "registry-notes.jsonl", ANCHORS))
         self._index_log()
         self._index_registry()
 
