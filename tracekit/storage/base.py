@@ -58,6 +58,15 @@ class Storage:
         """The tenant's registry leaves, in order."""
         raise NotImplementedError
 
+    def checkpoint_put(self, size, note):
+        """Store the signed checkpoint note (str) of the record tree at `size` as the latest; ValueError when an older
+        stored note is of a larger tree."""
+        raise NotImplementedError
+
+    def checkpoint_latest(self):
+        """(size, note) of the latest stored checkpoint note, or None."""
+        raise NotImplementedError
+
     def tiles_get(self, tree, level, index, width):
         raise NotImplementedError
 
