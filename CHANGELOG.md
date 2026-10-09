@@ -29,6 +29,9 @@ the v2 pieces are opt-in. Formats and the signer RPC may still change before 1.0
   assurance at `dev`.
 - **Checkpoints, export and viewing**: signed notes after each run ends and on a cadence; `tracekit export --v2`;
   `tracekit view`, a read-only laptop viewer where every run is checked by the verifier.
+- **Privacy**: tool results and the approver's copy of arguments are redacted inside the signer before anything is
+  committed, with a manifest of the rules that fired; every published digest of agent content is a salted commitment,
+  and `tracekit signer reveal --record N` gives an auditor the salt for that one record ([docs/privacy.md](docs/privacy.md)).
 - **Metrics**: Prometheus `/metrics` on its own port ([docs/observability.md](docs/observability.md)).
 - **Run-set completeness**: per-tenant registry logs are checkpointed; `tracekit export --v2 --run-set` bundles every
   run a tenant registered in a window, so a deleted run or a withheld key retirement fails verification.
