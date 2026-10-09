@@ -31,6 +31,6 @@ const webm = join(dir, readdirSync(dir).find((f) => f.endsWith(".webm")));
 const mp4 = join(here, "observer.mp4"), gif = join(here, "observer.gif");
 execFileSync("ffmpeg", ["-loglevel", "error", "-y", "-i", webm, "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "26", "-movflags", "+faststart", mp4]);
 execFileSync("ffmpeg", ["-loglevel", "error", "-y", "-i", webm, "-vf",
-  "fps=5,scale=960:-1:flags=lanczos,split[a][b];[a]palettegen=max_colors=64:stats_mode=diff[p];[b][p]paletteuse=dither=none:diff_mode=rectangle", gif]);
+  "fps=4,scale=880:-1:flags=lanczos,split[a][b];[a]palettegen=max_colors=48:stats_mode=diff[p];[b][p]paletteuse=dither=none:diff_mode=rectangle", gif]);
 rmSync(dir, { recursive: true, force: true });
 console.log(`wrote ${mp4} and ${gif}`);
