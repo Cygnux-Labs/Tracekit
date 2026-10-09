@@ -811,6 +811,8 @@ class Signer:
         if not isinstance(run_id, str) or not run_id:
             return {"ok": False, "error": "event.run_id must be a non-empty string"}
         stream = str(req.get("stream") or ev.get("source") or "hook")[:32]
+        if run_id == "_unattributed":  # each user's client keeps its own counter for this shared run
+            stream = f"{stream}:{peer_uid}"
         if ev.get("source") not in CLIENT_SOURCES:
             return {"ok": False, "error": f"source must be one of {sorted(CLIENT_SOURCES)}"}
         uncredentialed_dev = self.cfg.get("mode") == "dev" and peer_uid is None
@@ -894,7 +896,8 @@ class Signer:
         elif not st["started"]:
             self._internal("capture.gap", {"reason": "events before run.start (hooks installed mid-run or run.start lost)",
                                            "kind": "no_run_start"}, run_id)
-            st.update(started=True, agent_uid=peer_uid)
+            # the host-wide run for hook payloads without ids takes gaps from every user, so it has no owner
+            st.update(started=True, agent_uid=None if run_id == "_unattributed" else peer_uid)
         elif st["ended"]:
             self._internal("capture.gap", {"reason": "event after run.end", "kind": "after_run_end"}, run_id)
         if ev.get("transcript"):
