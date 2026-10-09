@@ -13,6 +13,7 @@ from unittest import mock
 
 import adapter_contract as ac
 from tracekit.sdk.client import Client
+from tracekit.signer.rpc_schema import RPCError
 
 try:
     from claude_agent_sdk import ClaudeAgentOptions, InMemorySessionStore, query
@@ -201,6 +202,26 @@ class TestOnRealSigner(ac.Contract, ac.OnReal, unittest.TestCase):
         writes = self.recorded("state.write")
         self.assertEqual(len(writes), 3)
 
+
+    def test_a_lost_state_write_neither_raises_nor_reads_as_tampering(self):
+        key = {"project_key": "p", "session_id": "s2"}
+        store = InMemorySessionStore()
+        wrapped = cas.TracekitSessionStore(store, self.client, self.d.run())
+        asyncio.run(wrapped.append(key, [{"type": "user", "uuid": "u1", "message": "one"}]))
+        real = wrapped._rpc
+        lost = [False]
+
+        async def fails_once(method, **req):
+            if method == "state_write" and not lost[0]:
+                lost[0] = True
+                raise RPCError("unavailable", "signer restarting")
+            return await real(method, **req)
+        wrapped._rpc = fails_once
+        with self.assertWarns(UserWarning):   # the store has the entries: the SDK must not append them again
+            asyncio.run(wrapped.append(key, [{"type": "user", "uuid": "u2", "message": "two"}]))
+        asyncio.run(wrapped.append(key, [{"type": "user", "uuid": "u3", "message": "three"}]))
+        self.assertEqual(len(asyncio.run(store.load(key))), 3)
+        self.assertEqual([e["data"]["kind"] for e in self.events(self.d.run()) if e["type"] == "capture.gap"], [])
 
 if __name__ == "__main__":
     unittest.main()
