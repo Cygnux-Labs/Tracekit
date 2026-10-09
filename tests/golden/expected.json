@@ -1,0 +1,585 @@
+{
+  "files": {
+    "v1/demo-run-replay.html": "1f299db12df86d2a9455e4fefee50647ebff9173e1f0e6bbd2507b6da2edbb74",
+    "v1/demo-run-tampered.tkb": "886f4ec72226c5fa42738817089d034d724042a003ac644b79887e3f0320453d",
+    "v1/demo-run.tkb": "309d3faeff0cbd8d13c9b6d9a249d7dce94b5697fdbfb85f11bfe7c1214aeb4d",
+    "v1/external-signer.pub": "3396aafad0218103b75bf6a6f3b94f08811f28c4af5d5ca3060a52829444f185",
+    "v1/external-signer.tkb": "3dc3d110c994768b0dda54a836822813eb86ebe638ea1abd48119eb8605b68ed",
+    "v1/golden.pub": "9caef443ba2c754e4b281913bfc1158634de9e31ffce2d4a538b1a530a5dbeee",
+    "v1/multi-run.tkb": "a2145e636130cfd6b282e38d4401b1dd93675b094a1b4b7780fa7c266336888c",
+    "v1/multi-run.witness.jsonl": "1a8f4d2ccb42d9f811ad50b8987a46ff767508db3e5c5433f1ed4e83e4e991dc",
+    "v1/signer.pub": "8a6e4f0cfe1d7fe8c93c30dc90f3fa3acd83abad5cc5f5746039cc7b9364052b",
+    "v1/torn-ledger.tkb": "71d86124b554e22bdd4892fb8a5572e549609ce921e19013cee26b6ab7bc548a",
+    "v01/v01-ledger.jsonl": "f68967c39876c1a9fc63562303b32d9d638e4c64a5e0c3a2ee6071ab0b172e71"
+  },
+  "cases": [
+    {
+      "name": "v1 sample",
+      "dir": "v1",
+      "command": "verify",
+      "args": [
+        "demo-run.tkb",
+        "--key",
+        "signer.pub"
+      ],
+      "files": {
+        "demo-run.tkb": "309d3faeff0cbd8d13c9b6d9a249d7dce94b5697fdbfb85f11bfe7c1214aeb4d",
+        "signer.pub": "8a6e4f0cfe1d7fe8c93c30dc90f3fa3acd83abad5cc5f5746039cc7b9364052b"
+      },
+      "expected": {
+        "exit_code": 0,
+        "integrity": "Integrity: VERIFIED.",
+        "assurance": "Assurance: dev (signer ran as the agent's own user: the agent could have rewritten the ledger).",
+        "checks": [
+          [
+            "files match manifest",
+            "pass"
+          ],
+          [
+            "chain intact",
+            "pass"
+          ],
+          [
+            "signatures valid",
+            "pass"
+          ],
+          [
+            "events match schema v1",
+            "pass"
+          ],
+          [
+            "counter has no gaps",
+            "pass"
+          ],
+          [
+            "capture gaps",
+            "pass"
+          ],
+          [
+            "rejected writes",
+            "pass"
+          ],
+          [
+            "run completeness",
+            "pass"
+          ],
+          [
+            "run boundaries",
+            "pass"
+          ],
+          [
+            "head matches a witness checkpoint",
+            "pass"
+          ],
+          [
+            "trust root",
+            "pass"
+          ],
+          [
+            "signing key",
+            "warn"
+          ],
+          [
+            "policy hash consistent",
+            "pass"
+          ],
+          [
+            "capture sources",
+            "pass"
+          ],
+          [
+            "harness attribution",
+            "warn"
+          ],
+          [
+            "harness transcript unchanged",
+            "pass"
+          ],
+          [
+            "coverage",
+            "warn"
+          ],
+          [
+            "opt-in content capture",
+            "pass"
+          ]
+        ]
+      }
+    },
+    {
+      "name": "v1 sample, unpinned",
+      "dir": "v1",
+      "command": "verify",
+      "args": [
+        "demo-run.tkb"
+      ],
+      "files": {
+        "demo-run.tkb": "309d3faeff0cbd8d13c9b6d9a249d7dce94b5697fdbfb85f11bfe7c1214aeb4d"
+      },
+      "expected": {
+        "exit_code": 0,
+        "integrity": "Integrity: VERIFIED BUT UNANCHORED (internally consistent only; no trusted key or witness was checked).",
+        "assurance": "Assurance: dev (signer ran as the agent's own user: the agent could have rewritten the ledger).",
+        "checks": [
+          [
+            "files match manifest",
+            "pass"
+          ],
+          [
+            "chain intact",
+            "pass"
+          ],
+          [
+            "signatures valid",
+            "pass"
+          ],
+          [
+            "events match schema v1",
+            "pass"
+          ],
+          [
+            "counter has no gaps",
+            "pass"
+          ],
+          [
+            "capture gaps",
+            "pass"
+          ],
+          [
+            "rejected writes",
+            "pass"
+          ],
+          [
+            "run completeness",
+            "pass"
+          ],
+          [
+            "run boundaries",
+            "pass"
+          ],
+          [
+            "head matches a witness checkpoint",
+            "pass"
+          ],
+          [
+            "trust root",
+            "warn"
+          ],
+          [
+            "signing key",
+            "warn"
+          ],
+          [
+            "policy hash consistent",
+            "pass"
+          ],
+          [
+            "capture sources",
+            "pass"
+          ],
+          [
+            "harness attribution",
+            "warn"
+          ],
+          [
+            "harness transcript unchanged",
+            "pass"
+          ],
+          [
+            "coverage",
+            "warn"
+          ],
+          [
+            "opt-in content capture",
+            "pass"
+          ]
+        ]
+      }
+    },
+    {
+      "name": "v1 sample, tampered",
+      "dir": "v1",
+      "command": "verify",
+      "args": [
+        "demo-run-tampered.tkb",
+        "--key",
+        "signer.pub"
+      ],
+      "files": {
+        "demo-run-tampered.tkb": "886f4ec72226c5fa42738817089d034d724042a003ac644b79887e3f0320453d",
+        "signer.pub": "8a6e4f0cfe1d7fe8c93c30dc90f3fa3acd83abad5cc5f5746039cc7b9364052b"
+      },
+      "expected": {
+        "exit_code": 1,
+        "integrity": "Integrity: VERIFICATION FAILED.",
+        "assurance": "Assurance: dev (signer ran as the agent's own user: the agent could have rewritten the ledger).",
+        "checks": [
+          [
+            "files match manifest",
+            "pass"
+          ],
+          [
+            "chain intact",
+            "fail"
+          ],
+          [
+            "signatures valid",
+            "pass"
+          ],
+          [
+            "events match schema v1",
+            "pass"
+          ],
+          [
+            "counter has no gaps",
+            "pass"
+          ],
+          [
+            "capture gaps",
+            "pass"
+          ],
+          [
+            "rejected writes",
+            "pass"
+          ],
+          [
+            "run completeness",
+            "pass"
+          ],
+          [
+            "run boundaries",
+            "pass"
+          ],
+          [
+            "head matches a witness checkpoint",
+            "pass"
+          ],
+          [
+            "trust root",
+            "pass"
+          ],
+          [
+            "signing key",
+            "warn"
+          ],
+          [
+            "policy hash consistent",
+            "pass"
+          ],
+          [
+            "capture sources",
+            "pass"
+          ],
+          [
+            "harness attribution",
+            "warn"
+          ],
+          [
+            "harness transcript unchanged",
+            "pass"
+          ],
+          [
+            "coverage",
+            "warn"
+          ],
+          [
+            "opt-in content capture",
+            "pass"
+          ]
+        ]
+      }
+    },
+    {
+      "name": "v1 multi-run export, other run elided",
+      "dir": "v1",
+      "command": "verify",
+      "args": [
+        "multi-run.tkb",
+        "--key",
+        "golden.pub",
+        "--witness",
+        "file:multi-run.witness.jsonl"
+      ],
+      "files": {
+        "multi-run.tkb": "a2145e636130cfd6b282e38d4401b1dd93675b094a1b4b7780fa7c266336888c",
+        "golden.pub": "9caef443ba2c754e4b281913bfc1158634de9e31ffce2d4a538b1a530a5dbeee",
+        "multi-run.witness.jsonl": "1a8f4d2ccb42d9f811ad50b8987a46ff767508db3e5c5433f1ed4e83e4e991dc"
+      },
+      "expected": {
+        "exit_code": 0,
+        "integrity": "Integrity: VERIFIED WITH GAPS (run completeness).",
+        "assurance": "Assurance: signer_isolation=separate-user (as stated in run.start).",
+        "checks": [
+          [
+            "files match manifest",
+            "pass"
+          ],
+          [
+            "chain intact",
+            "pass"
+          ],
+          [
+            "signatures valid",
+            "pass"
+          ],
+          [
+            "events match schema v1",
+            "pass"
+          ],
+          [
+            "counter has no gaps",
+            "pass"
+          ],
+          [
+            "capture gaps",
+            "pass"
+          ],
+          [
+            "rejected writes",
+            "pass"
+          ],
+          [
+            "run completeness",
+            "warn"
+          ],
+          [
+            "run boundaries",
+            "pass"
+          ],
+          [
+            "run tail witnessed",
+            "pass"
+          ],
+          [
+            "head matches a witness checkpoint",
+            "pass"
+          ],
+          [
+            "trust root",
+            "pass"
+          ],
+          [
+            "signing key",
+            "warn"
+          ],
+          [
+            "policy hash consistent",
+            "pass"
+          ],
+          [
+            "capture sources",
+            "pass"
+          ],
+          [
+            "harness transcript unchanged",
+            "pass"
+          ],
+          [
+            "coverage",
+            "warn"
+          ],
+          [
+            "opt-in content capture",
+            "pass"
+          ]
+        ]
+      }
+    },
+    {
+      "name": "v1 external signer checkpoints",
+      "dir": "v1",
+      "command": "verify",
+      "args": [
+        "external-signer.tkb",
+        "--key",
+        "external-signer.pub"
+      ],
+      "files": {
+        "external-signer.tkb": "3dc3d110c994768b0dda54a836822813eb86ebe638ea1abd48119eb8605b68ed",
+        "external-signer.pub": "3396aafad0218103b75bf6a6f3b94f08811f28c4af5d5ca3060a52829444f185"
+      },
+      "expected": {
+        "exit_code": 0,
+        "integrity": "Integrity: VERIFIED.",
+        "assurance": "Assurance: signer_isolation=separate-user (as stated in run.start).",
+        "checks": [
+          [
+            "files match manifest",
+            "pass"
+          ],
+          [
+            "chain intact",
+            "pass"
+          ],
+          [
+            "signatures valid",
+            "pass"
+          ],
+          [
+            "events match schema v1",
+            "pass"
+          ],
+          [
+            "counter has no gaps",
+            "pass"
+          ],
+          [
+            "capture gaps",
+            "pass"
+          ],
+          [
+            "rejected writes",
+            "pass"
+          ],
+          [
+            "run completeness",
+            "pass"
+          ],
+          [
+            "run boundaries",
+            "pass"
+          ],
+          [
+            "head matches a witness checkpoint",
+            "pass"
+          ],
+          [
+            "trust root",
+            "pass"
+          ],
+          [
+            "signing key",
+            "pass"
+          ],
+          [
+            "policy hash consistent",
+            "pass"
+          ],
+          [
+            "capture sources",
+            "pass"
+          ],
+          [
+            "harness transcript unchanged",
+            "pass"
+          ],
+          [
+            "coverage",
+            "warn"
+          ],
+          [
+            "opt-in content capture",
+            "pass"
+          ]
+        ]
+      }
+    },
+    {
+      "name": "v1 export of a ledger with a torn last line",
+      "dir": "v1",
+      "command": "verify",
+      "args": [
+        "torn-ledger.tkb",
+        "--key",
+        "golden.pub"
+      ],
+      "files": {
+        "torn-ledger.tkb": "71d86124b554e22bdd4892fb8a5572e549609ce921e19013cee26b6ab7bc548a",
+        "golden.pub": "9caef443ba2c754e4b281913bfc1158634de9e31ffce2d4a538b1a530a5dbeee"
+      },
+      "expected": {
+        "exit_code": 0,
+        "integrity": "Integrity: VERIFIED.",
+        "assurance": "Assurance: signer_isolation=separate-user (as stated in run.start).",
+        "checks": [
+          [
+            "files match manifest",
+            "pass"
+          ],
+          [
+            "chain intact",
+            "pass"
+          ],
+          [
+            "signatures valid",
+            "pass"
+          ],
+          [
+            "events match schema v1",
+            "pass"
+          ],
+          [
+            "counter has no gaps",
+            "pass"
+          ],
+          [
+            "capture gaps",
+            "pass"
+          ],
+          [
+            "rejected writes",
+            "pass"
+          ],
+          [
+            "run completeness",
+            "pass"
+          ],
+          [
+            "run boundaries",
+            "pass"
+          ],
+          [
+            "head matches a witness checkpoint",
+            "pass"
+          ],
+          [
+            "trust root",
+            "pass"
+          ],
+          [
+            "signing key",
+            "warn"
+          ],
+          [
+            "policy hash consistent",
+            "pass"
+          ],
+          [
+            "capture sources",
+            "pass"
+          ],
+          [
+            "harness transcript unchanged",
+            "pass"
+          ],
+          [
+            "coverage",
+            "warn"
+          ],
+          [
+            "opt-in content capture",
+            "pass"
+          ]
+        ]
+      }
+    },
+    {
+      "name": "v0.1 ledger",
+      "dir": "v01",
+      "command": "migrate",
+      "args": [
+        "v01-ledger.jsonl"
+      ],
+      "files": {
+        "v01-ledger.jsonl": "f68967c39876c1a9fc63562303b32d9d638e4c64a5e0c3a2ee6071ab0b172e71"
+      },
+      "expected": {
+        "exit_code": 0,
+        "output": [
+          "v0.1 ledger: 29 records; chain intact",
+          "converted to 28 v1 events (source=migrated)"
+        ]
+      }
+    }
+  ]
+}
