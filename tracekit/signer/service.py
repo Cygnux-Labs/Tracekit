@@ -762,14 +762,14 @@ class SignerService:
         """`data(commit)`: the event's data, given `commit(digest)`, the commitment under this record's salt."""
         key = self._authorize(identity, req)
         self.quotas.take_event(identity)
-        rid = secrets.token_hex(16)
-        label = salt_label({"type": typ, "data": None, "id": rid})
-        data = data(lambda digest: self._commit(label, digest))
+        sid = secrets.token_hex(16)
+        label = salt_label({"type": typ, "data": {"salt_id": sid}})
+        data = {**data(lambda digest: self._commit(label, digest)), "salt_id": sid}
 
         def fn(tx, run):
             if need_call and req["tool_call_id"] not in run["calls"]:
                 raise RPCError("unknown_tool_call", req["tool_call_id"])
-            return {"run_seq": tx.event(run, req, typ, data, id=rid, **top)}
+            return {"run_seq": tx.event(run, req, typ, data, **top)}
         return self.log.submit(identity, method, req, fn, key, late=True)
 
     def _complete(self, identity, req):
@@ -809,16 +809,16 @@ class SignerService:
     def _state_write(self, identity, req):
         key, sk = self._authorize(identity, req), req["key"]
         self.quotas.take_event(identity)
-        rid = secrets.token_hex(16)
-        label = salt_label({"type": "state.write", "data": None, "id": rid})
+        sid = secrets.token_hex(16)
+        label = salt_label({"type": "state.write", "data": {"salt_id": sid}})
         digest = self._commit(label, req["value_digest"])
 
         def fn(tx, run):
-            data = {"store": "default", "key": sk, "digest": digest}
+            data = {"store": "default", "key": sk, "digest": digest, "salt_id": sid}
             prev = req.get("prev_digest", ...)
             if prev is not ...:
                 data["prev_digest"] = prev and self._commit(label, prev)
-            seq = tx.event(run, req, "state.write", data, id=rid)
+            seq = tx.event(run, req, "state.write", data)
             last = run["states"].get(sk)   # (salt label, commitment) of the last write of this key
             if prev is not ... and last and self._commit(last[0], prev or "") != last[1]:
                 # the agent's own earlier write says the state was something else: it changed outside its writes
@@ -865,15 +865,15 @@ class SignerService:
             self.quotas.check_count("pending_approvals", sum(a["requester"] == sub and a["state"] == "requested"
                                                              for a in self.log.approvals.values()))
             p = call["pending"]
-            aid, expires_at = "apr-" + secrets.token_hex(16), _iso(time.time() + APPROVAL_TTL_S)
+            aid, expires_at, sid = "apr-" + secrets.token_hex(16), _iso(time.time() + APPROVAL_TTL_S), secrets.token_hex(16)
             args, digest = self._args(p)
             binding = {"v": 1, "approval_id": aid, "tenant": key[0], "run_id": key[1], "tool_call_id": tcid,
-                       "attempt": attempt, "tool": p["tool"], "args_commitment": self._commit("approval:" + aid, digest),
+                       "attempt": attempt, "tool": p["tool"], "args_commitment": self._commit("approval.request:" + sid, digest),
                        "args_source": p["args_source"],
                        "policy_hash": self.policy.policy_hash, "nonce": secrets.token_hex(16), "expires_at": expires_at}
             data = {"approval_id": aid, "decision_id": call["decision_id"], "policy_hash": self.policy.policy_hash,
                     "rule_ids": call["rule_ids"], "expires_at": expires_at, "requester": sub, "binding": binding,
-                    "binding_digest": "sha256:" + hashlib.sha256(canonical(binding)).hexdigest()}
+                    "binding_digest": "sha256:" + hashlib.sha256(canonical(binding)).hexdigest(), "salt_id": sid}
             if any(r.get("approval") == {"executor": "t2"} for _, r, *_ in self.policy.rules
                    if r["id"] in call["rule_ids"]):
                 data["executor"] = "t2"
@@ -961,14 +961,13 @@ class SignerService:
                         and self._same(call, digest)):
                     return {"ok": True, "rule_ids": []}   # needed no approval
                 why = "TK-APPROVAL-REQUIRED", "approval required but none was requested for this call"
-            elif not self._opens(a["commitment"], "approval:" + aid, digest):
-                rid = secrets.token_hex(16)
+            elif not self._opens(a["commitment"], a["label"], digest):
+                sid = secrets.token_hex(16)
                 tx.emit(run, "approval.binding_mismatch", {
                     "approval_id": aid, "decision_id": a["decision_id"], "tool_use_id": tcid,
                     "approved_commitment": a["commitment"],
-                    "args_commitment": self._commit(salt_label({"type": "approval.binding_mismatch", "data": None,
-                                                                "id": rid}), digest)},
-                        source="signer", id=rid, **top)
+                    "args_commitment": self._commit("approval.binding_mismatch:" + sid, digest), "salt_id": sid},
+                        source="signer", **top)
                 return {"ok": False, "rule_ids": ["TK-APPROVAL-MISMATCH"], "approval_id": aid,
                         "reason": "the arguments differ from the approved ones"}
             elif a["state"] != "approved":

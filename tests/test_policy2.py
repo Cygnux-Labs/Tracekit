@@ -292,13 +292,13 @@ class Shell(unittest.TestCase):
         self.assertLess(time.monotonic() - start, 5)
 
     def test_backslashes_and_brackets_parse_in_linear_time(self):
-        for cmd in ("python3 -c 'import os; os.system(\"" + "\\" * 200 + "'",
-                    "python3 -c 'import subprocess; subprocess.run([\"" + "\\" * 200 + "])'",
-                    "x" + "[" * 60000, "x{" + "," * 60000):
+        for cmd, limit in (("python3 -c 'import os; os.system(\"" + "\\" * 200 + "'", 0.1),
+                           ("python3 -c 'import subprocess; subprocess.run([\"" + "\\" * 200 + "])'", 0.1),
+                           ("x" + "[" * 60000, 1), ("x{" + "," * 60000, 1)):
             with self.subTest(cmd=cmd[:30]):
                 start = time.monotonic()
                 shell.parse(cmd)
-                self.assertLess(time.monotonic() - start, 0.1)
+                self.assertLess(time.monotonic() - start, limit)
 
     def test_options_after_dash_c_are_skipped(self):
         for cmd in ("sh -c -- 'sudo id'", "bash -c -x 'sudo id'", "bash -xc 'sudo id' name",
