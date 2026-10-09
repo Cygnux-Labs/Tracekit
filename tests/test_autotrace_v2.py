@@ -111,6 +111,13 @@ class Recording:
         self.assertEqual([t.get("args_unparseable") for t in resp["tool_uses"]][:2], [None, True])
         self.assertEqual((streamed["streamed"], self.ids(streamed)), (True, [("call_s", "client")]))
 
+    def test_responses_parse_sync_and_async(self):
+        openai_client(lambda r: (200, RESPONSES["response"], False)).responses.parse(model="gpt-5", input="hi")
+        asyncio.run(openai_client(lambda r: (200, RESPONSES["response"], False), openai.AsyncOpenAI)
+                    .responses.parse(model="gpt-5", input="hi"))
+        want = [(t["id"], t["executed_by"]) for t in RESPONSES["expect"]["tool_uses"]]
+        self.assertEqual([self.ids(resp) for _, resp in self.exchanges()], [want, want])
+
     # --- Anthropic ---
 
     def test_messages_create_and_stream_true(self):
