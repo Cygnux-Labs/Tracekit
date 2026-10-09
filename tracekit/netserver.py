@@ -41,7 +41,7 @@ class Server(ThreadingHTTPServer):
         if over:
             self.shutdown_request(request)
             return
-        if not self._slots.acquire(timeout=SLOT_WAIT_S):  # no slot frees while this waits: nothing else could run
+        if not self._slots.acquire(timeout=SLOT_WAIT_S):  # the accept loop pauses while this waits
             self._ip_release(ip)
             self.shutdown_request(request)
             return
@@ -53,7 +53,7 @@ class Server(ThreadingHTTPServer):
             raise
 
     def process_request_thread(self, request, client_address):
-        raw = request
+        raw = request.dup()  # wrap_socket detaches request; the dup still reaches the connection
         timer = threading.Timer(self.deadline, self._cut, (raw,))  # handshake, request line, headers and body
         timer.daemon = True
         timer.start()
@@ -69,6 +69,7 @@ class Server(ThreadingHTTPServer):
             self.handle_error(request, client_address)
         finally:
             timer.cancel()
+            raw.close()
             self.shutdown_request(request)
             self._slots.release()
             self._ip_release(client_address[0])

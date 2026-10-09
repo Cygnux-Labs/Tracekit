@@ -104,14 +104,23 @@ class SilentClient(unittest.TestCase):
         return witness_server.make_handler(log)
 
     def test_dripping_clients_do_not_block_a_request(self):
+        self.drip_then_request(tls=False)
+
+    def test_dripping_tls_clients_do_not_block_a_request(self):
+        self.drip_then_request(tls=True)
+
+    def drip_then_request(self, tls):
         witness_server.init(os.path.join(self.d, "w"))
-        srv = netserver.Server(("127.0.0.1", 0), self.handler(), timeout=0.3, max_threads=3, deadline=1.0)
+        srv = netserver.Server(("127.0.0.1", 0), self.handler(), self.ctx if tls else None, timeout=0.3, max_threads=3,
+                               deadline=1.0)
         port = self.start(srv)
         stop = threading.Event()
         self.addCleanup(stop.set)
 
         def drip():  # one byte just inside every read timeout, a request line that never ends
             s = socket.create_connection(("127.0.0.1", port))
+            if tls:  # the deadline must hold after the handshake too
+                s = ssl._create_unverified_context().wrap_socket(s)
             self.socks.append(s)
             try:
                 while not stop.wait(0.15):
@@ -121,7 +130,7 @@ class SilentClient(unittest.TestCase):
         for _ in range(3):
             threading.Thread(target=drip, daemon=True).start()
         time.sleep(0.4)  # every handler slot is held by a dripping client
-        self.assertEqual(self.request(port, "GET", "/v1/sth", tls=False), 200)
+        self.assertEqual(self.request(port, "GET", "/v1/sth", tls=tls), 200)
 
     def test_connections_per_ip_are_capped(self):
         witness_server.init(os.path.join(self.d, "w"))
