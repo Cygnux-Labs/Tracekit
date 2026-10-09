@@ -5,6 +5,7 @@ import hmac
 import io
 import json
 import os
+import shlex
 import shutil
 import statistics
 import subprocess
@@ -229,7 +230,7 @@ class InitV2(unittest.TestCase):
         cmd = hooks["PreToolUse"][0]["hooks"][0]["command"]
         self.assertEqual(cmd, HOOK)
         self.assertIn(" -I ", cmd)
-        self.assertTrue(cmd.startswith(("/", "'/")), cmd)
+        self.assertTrue(os.path.isabs(shlex.split(cmd)[0]), cmd)
         self.assertTrue(all(install._is_ours(g) for gs in hooks.values() for g in gs))
 
     def test_v2_refuses_system_mode(self):
