@@ -176,6 +176,27 @@ class TestService(unittest.TestCase):
         events = s.read({"run_id": run["run_id"], "run_token": run["run_token"], "limit": 1000})["events"]
         self.assertEqual([e["run_seq"] for e in events], list(range(1 + n // 2)))
 
+    def test_state_write_from_another_state_than_the_last_written_is_a_signed_state_tamper(self):
+        d1, d2, d3, other = ("sha256:" + c * 64 for c in "1234")
+        s = self.open()
+        run = self.register(s)
+        s.state_write(self.ev(run, 0, key="k", value_digest=d1, prev_digest=None))
+        s.state_write(self.ev(run, 1, key="k", value_digest=d2, prev_digest=d1))
+        s.state_write(self.ev(run, 2, key="j", value_digest=d1, prev_digest=other))   # no earlier write to compare
+        s.state_write(self.ev(run, 3, key="k", value_digest=d3, prev_digest=other))
+        s.close()
+        s = self.open()   # the last digest per key survives a restart
+        s.state_write(self.ev(run, 4, key="k", value_digest=d1, prev_digest=d2))
+        s.close()
+        events = [r["event"] for r in records(self.dir) if r["event"].get("run_id") == run["run_id"]]
+        for e in events:
+            self.assertEqual(schema.validate(e), [], e)
+        gaps = [e["data"] for e in events if e["type"] == "capture.gap"]
+        self.assertEqual([g["kind"] for g in gaps], ["state_tamper", "state_tamper"])
+        for g in gaps:   # the reason names the key; the state digests stay commitments, never in clear
+            self.assertIn("state k ", g["reason"])
+            self.assertFalse(any(d in g["reason"] for d in (d1, d2, d3, other)), g["reason"])
+
     def test_disk_error_is_unavailable_then_a_signed_gap(self):
         s = self.open()
         run = self.register(s)
