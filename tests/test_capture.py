@@ -7,6 +7,7 @@ import http.server
 import importlib
 import json
 import os
+import re
 import socket
 import socketserver
 import subprocess
@@ -20,9 +21,10 @@ import urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from tracekit import bundle, install, peercred, policy, privacy, yamlmini  # noqa: E402
 from tracekit.core import read_json, read_text, write_bytes, write_json, write_text  # noqa: E402
-from tests.factories import wait_for  # noqa: E402
+from factories import make_signer, wait_for  # noqa: E402
 
 _SAVED_POLICY = None
 
@@ -548,9 +550,10 @@ class Approvals(Stack):
     HARNESS = """
 import json, os, subprocess, sys, time
 payload = sys.stdin.read()
-hook = subprocess.Popen([sys.argv[1], '-m', 'tracekit.hook'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-hook.stdin.write(payload); hook.stdin.close()
 ctl = sys.argv[2]
+err = open(os.path.join(ctl, 'hook.err'), 'w')
+hook = subprocess.Popen([sys.argv[1], '-m', 'tracekit.hook'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=err, text=True)
+hook.stdin.write(payload); hook.stdin.close()
 while hook.poll() is None:
     # the 'agent' may run commands inside its own session while the call is held
     for name in sorted(os.listdir(ctl)):
@@ -560,7 +563,7 @@ while hook.poll() is None:
             open(os.path.join(ctl, name[:-4] + '.tmp'), 'w').write(r.stdout + r.stderr)
             os.replace(os.path.join(ctl, name[:-4] + '.tmp'), os.path.join(ctl, name[:-4] + '.out'))
     time.sleep(0.1)
-sys.stderr.write(hook.stderr.read()); sys.exit(hook.returncode)
+err.close(); sys.stderr.write(open(os.path.join(ctl, 'hook.err')).read()); sys.exit(hook.returncode)
 """
 
     def start_held_call(self, tid="tp1"):
@@ -655,7 +658,7 @@ sys.stderr.write(hook.stderr.read()); sys.exit(hook.returncode)
         proc = self.start_held_call()
         p = self.wait_pending()
         r = subprocess.run([PY, "-m", "tracekit", "approve", p[0]["id"]], capture_output=True, text=True, env=self.env,
-                           stdin=subprocess.DEVNULL, timeout=30)
+                           stdin=subprocess.DEVNULL, timeout=30, start_new_session=True)
         self.assertIn("interactive terminal", r.stderr)
         self.approve_from_terminal(p[0]["id"], "reject")
         proc.wait(20)
@@ -673,10 +676,21 @@ class ApprovalsSystemMode(Approvals):
     process-tree and terminal checks can be sidestepped by the agent, the OS user cannot."""
     extra_cfg = {"mode": "system", "allow_same_user_approval": False}
 
+    def held_approval_id(self):
+        """The agent's own user is not shown the approval (it may not decide it); the hook prints its id."""
+        end = time.time() + 10
+        while time.time() < end:
+            err = os.path.join(self.ctl, "hook.err")
+            m = re.search(r"waiting for approval (\S+):", read_text(err) if os.path.exists(err) else "")
+            if m:
+                return m.group(1)
+            time.sleep(0.1)
+        self.fail("no pending approval")
+
     def test_same_user_approval_from_a_fresh_terminal_is_refused(self):
         proc = self.start_held_call()
-        p = self.wait_pending()
-        r = self.approve_from_terminal(p[0]["id"])  # a new pty, outside the harness's process tree
+        self.assertEqual(self.pending(), [], "the agent's own user is not offered the approval")
+        r = self.approve_from_terminal(self.held_approval_id())  # a new pty, outside the harness's process tree
         self.assertIn("different OS user", r.stdout + r.stderr)
         self.assertIsNone(proc.poll(), "the held call must still be waiting")
         refused = self.of("approval", decision="self_approval_refused")
@@ -693,12 +707,10 @@ class ApprovalIdentity(unittest.TestCase):
     """The signer's approval rule, driven directly with chosen peer credentials."""
 
     def signer(self, **cfg):
-        from tracekit.daemon import Signer, load_config
-        home = tempfile.mkdtemp()
-        write_json(os.path.join(home, "config.json"), {"checkpoint_every": 100, "witnesses": [], **cfg})
-        return Signer(home, load_config(home))
+        return make_signer(tempfile.mkdtemp(), checkpoint_every=100, witnesses=[], **cfg)
 
     def request(self, s, agent_uid):
+        s._run("r").update(started=True, agent_uid=agent_uid)
         r = s.handle({"op": "approval_request", "run_id": "r", "tool_use_id": "t", "timeout_s": 30}, agent_uid, 999999)
         return r["approval_id"]
 
@@ -717,11 +729,12 @@ class ApprovalIdentity(unittest.TestCase):
     def test_configured_approvers(self):
         s = self.signer(approvers=["4242"])
         aid = self.request(s, 1000)
-        self.assertFalse(s.handle({"op": "approve", "approval_id": aid, "decision": "approve"}, 1001, 1)["ok"])
-        self.assertTrue(s.handle({"op": "approve", "approval_id": aid, "decision": "reject"}, 4242, 1)["ok"])
+        self.assertFalse(s.handle({"op": "approve", "approval_id": aid, "decision": "approve"}, 1001, 999997)["ok"])
+        self.assertTrue(s.handle({"op": "approve", "approval_id": aid, "decision": "reject"}, 4242, 999997)["ok"])
 
     def test_invalid_approval_timeouts_are_rejected(self):
         s = self.signer()
+        s._run("r").update(started=True, agent_uid=1000)
         for timeout in (float("nan"), float("inf"), -1, "not-a-number"):
             response = s.handle({"op": "approval_request", "run_id": "r", "tool_use_id": str(timeout),
                                  "timeout_s": timeout}, 1000, 1)
