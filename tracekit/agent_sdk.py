@@ -246,5 +246,7 @@ class Tracer:
             self.done(reason)
             self._ended = True
             return
+        from . import autotrace  # lazy: autotrace.init imports this module
+        autotrace.flush()  # streams abandoned during the run are recorded before run.end, not as late
         self._send(self._event("run.end", {"reason": str(reason)[:500]}))
         self._ended = True
