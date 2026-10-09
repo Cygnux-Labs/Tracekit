@@ -84,7 +84,7 @@ def main(argv=None):
                                              "exports carry it")
 
     sub.add_parser("status", help="hooks, signer, witnesses, policy, fail mode, capture sources")
-    sub.add_parser("doctor", help="system mode: check the signer, hooks and policy run from files the agent cannot modify")
+    sub.add_parser("doctor", help="system mode: check the signer and policy run from files the agent cannot modify")
     p = sub.add_parser("uninstall", help="remove hooks (the ledger is kept)")
     p.add_argument("--project", action="store_true")
     p.add_argument("--agent", choices=("claude", "codex", "cursor", "gemini"), default="claude")
@@ -162,6 +162,7 @@ def main(argv=None):
 
 def _init_remote(a):
     from . import client
+    from .deploy import files
     url = a.remote.rstrip("/")
     err = client.remote_url_error(url)
     if err:
@@ -175,9 +176,7 @@ def _init_remote(a):
         print("tracekit: give the client token with --token-file or TRACEKIT_REMOTE_TOKEN", file=sys.stderr)
         return 2
     path = os.path.join(client.client_dir(), "config.json")
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0), 0o600)
-    with os.fdopen(fd, "w") as f:
-        json.dump({"socket": url, "socket_token": token, "mode": "remote", "signer_isolation": "remote"}, f, indent=2)
+    files.write_json(path, {"socket": url, "socket_token": token, "mode": "remote", "signer_isolation": "remote"}, 0o600)
     print(f"remote signer configured: {url} (SDK only: Claude Code hooks are not installed; held calls are refused)")
     return 0
 
