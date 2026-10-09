@@ -8,6 +8,7 @@ Every tool call is checked against your policy before it runs, then signed and h
 cannot control. Change, delete or reorder anything afterwards and verification fails.
 
 [![CI](https://img.shields.io/github/actions/workflow/status/Cygnux-Labs/Tracekit/ci.yml?branch=main&label=CI)](https://github.com/Cygnux-Labs/Tracekit/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/tracekit-ai)](https://pypi.org/project/tracekit-ai/)
 [![Python](https://img.shields.io/badge/python-3.9%E2%80%933.13-blue)](https://github.com/Cygnux-Labs/Tracekit/blob/main/pyproject.toml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](https://github.com/Cygnux-Labs/Tracekit/blob/main/LICENSE)
 
@@ -35,7 +36,7 @@ record so it can be checked by anyone, offline, without trusting the agent or th
 ## Quickstart
 
 ```bash
-pip install tracekit-ai     # first PyPI release: 0.3.0; until then, from a clone: pip install .
+pip install tracekit-ai
 tracekit demo               # exit 0
 ```
 
