@@ -36,7 +36,8 @@ class Engine:
         """`policy` is a compiled policy (compile.build); `backend` forces "re2" or "regex"."""
         self.policy, self.policy_hash = policy, policy_hash(policy)
         self.engine, compile_, self._match = _backend(backend)
-        self.rules = [(sec, r, compile_(r["tool"]) if "tool" in r else None, compile_(r["pattern"]))
+        self.rules = [(sec, r, compile_(r["tool"]) if "tool" in r else None, compile_(r["pattern"]),
+                       compile_(r["unless"]) if "unless" in r else None)
                       for sec in SECTIONS for r in self.policy.get(sec, [])]
 
     def tool_class(self, tool):
@@ -65,7 +66,7 @@ class Engine:
                     cmds = shell.parse(command)
                 except shell.ParseError:
                     hits["ask"].append("TK-SHELL-PARSE")
-        for sec, rule, tool_re, pat in self.rules:
+        for sec, rule, tool_re, pat, unless in self.rules:
             if rule.get("class", cls) != cls:
                 continue
             try:
@@ -76,7 +77,9 @@ class Engine:
                     if len(subject.encode("utf-8")) > MAX_SUBJECT:
                         hits["deny"].append("TK-OVERSIZE")
                         break
-                    if self._match(pat, subject, False):
+                    # `unless`: an exemption checked against the same subject (use it only where the subject is one
+                    # target, e.g. a file path; in a whole command it could exempt a different target)
+                    if self._match(pat, subject, False) and not (unless is not None and self._match(unless, subject, False)):
                         hits[sec].append(rule["id"])
                         break
             except TimeoutError:
