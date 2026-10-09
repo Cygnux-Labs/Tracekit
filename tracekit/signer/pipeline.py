@@ -12,6 +12,7 @@ after RECOVER_S reopens the storage, rebuilds the run state from it and writes a
 import base64
 import copy
 import hashlib
+import hmac
 import json
 import queue
 import secrets
@@ -31,12 +32,15 @@ TAIL = 1024          # records whose signatures are checked on every open; `trac
 RECOVER_S = 1.0
 DONE_MAX = 100_000   # request_ids remembered for retries
 SIGNER_RUN = ("tracekit", "tracekit/signer")   # signer-level records; "/" keeps it out of reach of client run_ids
+LEAF_TYPES = {"run.registered": 1, "run.final": 2}   # records with a registry leaf, and the leaf's type byte
 _MISSING = object()
 
 
 def new_run(tenant, run_id):
+    """`closed`: run.closing written, late records only; `final`: run.final written, nothing more. `active` and
+    `closing_at` are monotonic times for the idle and grace clocks."""
     return {"tenant": tenant, "run_id": run_id, "run_seq": 0, "head": ZERO_HASH, "streams": {}, "closed": False,
-            "calls": {}, "owner": None}
+            "final": False, "calls": {}, "owner": None, "source": "sdk", "active": time.monotonic(), "closing_at": None}
 
 
 def subject(identity):
@@ -70,11 +74,11 @@ class Tx:
         self.set(self.log.runs, (tenant, run_id), run)
         return run
 
-    def emit(self, run, typ, data, source="sdk", **top):
-        """Sign one event into `run`; returns its run_seq."""
+    def emit(self, run, typ, data, source=None, **top):
+        """Sign one event into `run` (source: the run's unless given); returns its run_seq."""
         log = self.log
         e = {"schema_version": V2, "id": secrets.token_hex(16), "seq": log.head["seq"], "prev_hash": log.head["prev"],
-             "ts": now_ts(), "run_id": run["run_id"], "agent_id": "main", "parent_id": None, "source": source,
+             "ts": now_ts(), "run_id": run["run_id"], "agent_id": "main", "parent_id": None, "source": source or run["source"],
              "type": typ, "data": data, "tenant": run["tenant"], "log_id": log.log_id, "run_seq": run["run_seq"],
              "run_prev_hash": run["head"], **top}
         r = log.sign(e)
@@ -96,16 +100,21 @@ class Tx:
         self.set(run["streams"], stream, cseq)
         return self.emit(run, typ, data, request_id=req["request_id"], stream=stream, client_seq=cseq, **top)
 
+    def closing(self, run, reason, **top):
+        self.set(run, "closed", True)
+        self.set(run, "closing_at", time.monotonic())
+        return self.emit(run, "run.closing", {"reason": reason}, **top)
+
     def gap(self, kind, reason, **data):
         return self.emit(self.log.signer_run(self), "capture.gap", {"kind": kind, "reason": reason, **data},
                          source="signer")
 
 
 class RecordLog:
-    def __init__(self, storage, open_storage, sign, quotas):
+    def __init__(self, storage, open_storage, sign, quotas, salt):
         """`storage` is open (and holds its lock); `open_storage()` reopens it after a disk error. `sign` is a
-        format.records.RecordSigner."""
-        self.storage, self.open_storage, self.sign, self.quotas = storage, open_storage, sign, quotas
+        format.records.RecordSigner; `salt` the secret the registry's per-tenant salts derive from."""
+        self.storage, self.open_storage, self.sign, self.quotas, self.salt = storage, open_storage, sign, quotas, salt
         self.log_id = None
         self.done = OrderedDict()   # (scheme, subject, request_id) -> (payload digest, response)
         self.refuse_writes = None   # a reason to answer client writes `unavailable`, e.g. an unacknowledged rollback
@@ -119,10 +128,12 @@ class RecordLog:
     # --- state from storage ---
 
     def _replay(self):
-        """Rebuild the run state from the log, checking every chain link and the signatures of the last TAIL records."""
+        """Rebuild the run state from the log, checking every chain link and the signatures of the last TAIL records,
+        and append the registry leaves a crash or disk error left out."""
         s = self.storage
-        size = s.tail_state()["tree_size"]
-        runs, prev = {}, ZERO_HASH
+        tail = s.tail_state()
+        size = tail["tree_size"]
+        runs, prev, leaves = {}, ZERO_HASH, {}
         for r in s.iter_range(0, size):
             e = r["event"]
             run = runs.get((e["tenant"], e["run_id"]))
@@ -139,10 +150,14 @@ class RecordLog:
             run["run_seq"], run["head"], prev = e["run_seq"] + 1, r["hash"], r["hash"]
             if "client_seq" in e:
                 run["streams"][e["stream"]] = max(e["client_seq"], run["streams"].get(e["stream"], -1))
+            if e["type"] in LEAF_TYPES:
+                leaves.setdefault(e["tenant"], []).append(r)
             if e["type"] == "run.registered":
-                run["owner"] = "{scheme}:{subject}".format(**e["data"]["identity"])
+                run["owner"], run["source"] = "{scheme}:{subject}".format(**e["data"]["identity"]), e["source"]
             elif e["type"] == "run.closing":
-                run["closed"] = True
+                run["closed"], run["closing_at"] = True, time.monotonic()
+            elif e["type"] == "run.final":
+                run["final"] = True
             elif e["type"] == "policy.decision":
                 # lean: argument digests are not in the log, so a call decided before a restart can't be approved
                 # after it; persist them with the pending approvals (M1a-09cef)
@@ -150,6 +165,17 @@ class RecordLog:
                                                    "args_digest": None}
         self.log_id = self.log_id or secrets.token_hex(16)
         self.runs, self.head = runs, {"seq": size, "prev": prev}
+        for tenant, rs in leaves.items():
+            for r in rs[tail["registry"].get(tenant, (0,))[0]:]:
+                s.registry_append(tenant, self.leaf(r))
+
+    def leaf(self, r):
+        """The registry leaf of a lifecycle record (04-design §1.5):
+        type u8 ‖ H(tenant_salt ‖ run_id) ‖ log_id 16B ‖ seq u64 ‖ record_hash."""
+        e = r["event"]
+        tenant_salt = hmac.new(self.salt, e["tenant"].encode("utf-8"), hashlib.sha256).digest()
+        return (bytes([LEAF_TYPES[e["type"]]]) + hashlib.sha256(tenant_salt + e["run_id"].encode("utf-8")).digest()
+                + bytes.fromhex(e["log_id"]) + e["seq"].to_bytes(8, "big") + bytes.fromhex(r["hash"][7:]))
 
     def _startup_records(self, tx):
         if self.head["seq"] == 0:
@@ -164,12 +190,13 @@ class RecordLog:
 
     # --- handlers ---
 
-    def submit(self, identity, method, req, fn, run_key=None):
-        """Run `fn(tx, run)` for a client request on the writer and return its response; refusals raise RPCError."""
+    def submit(self, identity, method, req, fn, run_key=None, late=False):
+        """Run `fn(tx, run)` for a client request on the writer and return its response; refusals raise RPCError.
+        `late`: also accepted while the run is closing (a late record), not only while it is open."""
         if self.refuse_writes:
             raise RPCError("unavailable", self.refuse_writes)
         digest = hashlib.sha256(json.dumps([method, req], sort_keys=True, default=repr).encode()).hexdigest()
-        return self._wait(lambda tx: self._item(tx, identity, req, digest, fn, run_key))
+        return self._wait(lambda tx: self._item(tx, identity, req, digest, fn, run_key, late))
 
     def write(self, fn):
         """Run `fn(tx)` on the writer: the signer's own records, which no refuse_writes holds back."""
@@ -180,7 +207,7 @@ class RecordLog:
         self._q.put((fn, fut))
         return fut.result()
 
-    def _item(self, tx, identity, req, digest, fn, run_key):
+    def _item(self, tx, identity, req, digest, fn, run_key, late):
         rid = (identity.scheme, identity.subject, req["request_id"]) if "request_id" in req else None
         if rid in self.done:
             if self.done[rid][0] != digest:
@@ -191,8 +218,9 @@ class RecordLog:
             run = self.runs.get(run_key)
             if run is None:
                 raise RPCError("unknown_run", run_key[1])
-            if run["closed"]:
+            if run["final"] or (run["closed"] and not late):
                 raise RPCError("run_closed", run_key[1])
+            tx.set(run, "active", time.monotonic())
             if "client_seq" in req:
                 last = run["streams"].get(req["stream"])
                 if last is None:
@@ -248,6 +276,12 @@ class RecordLog:
                 for fut, _ in done:
                     fut.set_exception(self._unavailable())
                 return
+            try:
+                for r in tx.records:
+                    if r["event"]["type"] in LEAF_TYPES:
+                        self.storage.registry_append(r["event"]["tenant"], self.leaf(r))
+            except Exception as e:   # the records are written; the recovery's replay appends the missing leaves
+                self.down, self._last_try = (now_ts(), str(e) or type(e).__name__), time.monotonic()
         while len(self.done) > DONE_MAX:
             self.done.popitem(last=False)
         for fut, out in done:

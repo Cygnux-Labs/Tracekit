@@ -1564,6 +1564,20 @@
             "unknown"
           ],
           "description": "measured by the signer from the caller's identity, never taken from the client"
+        },
+        "fail_modes": {
+          "type": "object",
+          "additionalProperties": {
+            "enum": [
+              "open",
+              "closed"
+            ]
+          },
+          "description": "tool class -> fail mode, from the signer's config, never from the client"
+        },
+        "analyzes": {
+          "$ref": "#/$defs/id",
+          "description": "a findings run: the run_id of the run of the same tenant it analyses"
         }
       }
     },
