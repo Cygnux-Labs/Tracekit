@@ -37,7 +37,7 @@ Tracekit is a small, auditable layer that deals with these:
 | 🧾 **External witness** | The chain head is checkpointed to a git or file witness off the machine, so a chain rebuilt with the real key still fails. | `--witness git:...` at init, `--witness` / `--key` at verify |
 | 🛡️ **Policy gate** | Versioned rules with stable ids (`TK-D006`) block dangerous calls before they run; `ask` rules hold a call until a *different* OS user approves it. | Claude Code `PreToolUse` hook, `tracekit approve` / `reject` |
 | 🩺 **Transcript checks** | Hashes the agent's session transcript at every hook. Deleting, truncating or editing earlier parts produces a `trace.tamper` event. | On by default (`transcript_hashing: true`) |
-| 🔎 **Model proxy cross-check** | An opt-in local proxy records each model exchange. A tool call the model requested with no hook record means hooks were disabled; the reverse means the proxy was bypassed or an event was fabricated. | `tracekit init --proxy` |
+| 🔎 **Model proxy cross-check** | An opt-in local proxy records each model exchange. A tool call the model requested with no hook record means hooks were disabled; the reverse means the proxy was bypassed or an event was fabricated. | `tracekit init --proxy --experimental` |
 | 📦 **Offline evidence bundle** | A run exports as a `.tkb` with the events, policy snapshots, checkpoints and a replay page. Optional OTLP/JSON for Jaeger and friends. | `tracekit export`, `tracekit verify` |
 
 Content is hashed by default, secrets are redacted before anything is written, and the model's reasoning is **self-reported, optional and off by default**. It is never treated as evidence.
@@ -86,10 +86,10 @@ pip install git+https://github.com/Cygnux-Labs/Tracekit   # or, from a clone: pi
 # adds the `tracekit` command; needs `cryptography` (installed automatically)
 ```
 
-**Linux, real use.** Signer as its own OS user, hooks for the agent's user, optional model proxy:
+**Linux, real use.** Signer as its own OS user, hooks for the agent's user:
 
 ```bash
-sudo tracekit init --user "$USER" --witness git:/var/lib/tracekit/witness@git@github.com:you/tk-witness.git --proxy
+sudo tracekit init --user "$USER" --witness git:/var/lib/tracekit/witness@git@github.com:you/tk-witness.git
 sudo tracekit init --user "$USER" --managed      # or: hooks in Claude Code's admin-managed settings
 tracekit status
 ```
@@ -99,8 +99,12 @@ Install the agent CLI system-wide (root-owned, for example `sudo npm install -g 
 **Anywhere, to try it.** A same-user signer; bundles are marked and the verifier warns:
 
 ```bash
-tracekit init --dev [--proxy]
+tracekit init --dev
 ```
+
+The model proxy (`init --proxy`, `tracekit proxy`), the OTLP receiver (`tracekit otel serve`) and the ingest gateway
+(`tracekit ingest serve`) are experimental while they are rebuilt: each needs `--experimental` and prints a warning.
+`tracekit init` never starts them by default.
 
 On platforms without kernel peer credentials (including Windows and macOS), dev mode uses an
 authenticated loopback TCP connection. Caller identity cannot be attested there, so approvals are
@@ -143,7 +147,7 @@ What each capture path can and cannot guarantee:
 | Claude Code hooks | yes (deny; ask holds for approval) | yes | yes, with the model proxy | yes (transcript) |
 | Codex CLI, Cursor, Gemini CLI hooks | yes (deny; ask holds for approval) | yes | with `tracekit.init()` or OTel in the agent's process, not via the proxy | no |
 | Python / TypeScript SDK, LangChain/LangGraph, MCP, browser hooks | yes, for calls made through the wrapper | yes | with `tracekit.init()` | only what the code reports (`think`, `say`) |
-| OpenTelemetry ingest (`tracekit otel serve`) | no: spans arrive after the fact; would-deny calls become flags | yes | the spans themselves | no |
+| OpenTelemetry ingest (`tracekit otel serve --experimental`) | no: spans arrive after the fact; would-deny calls become flags | yes | the spans themselves | no |
 | `tracekit.init()` model-call tracing | no tools gated: records model calls | n/a | is the model side | no |
 
 Anything an agent does outside its capture path (a tool that shells out on its own, a process Tracekit doesn't wrap) is not seen.
@@ -156,13 +160,13 @@ Anything an agent does outside its capture path (a tool that shells out on its o
 
 **Causeway and onchain agents.** `tracekit causeway anchor|verify|import-tests|export` makes Causeway's causal logs tamper-evident under Tracekit's signer and turns its counterfactual verdicts into signed findings. `tracekit.adapters.onchain.guarded_tx` records a transaction guard's verdict (Proof-Gated Signing's `Guard.check` interface) before the wallet signs, and never signs a blocked transaction. See [integrations](docs/integrations.md).
 
-**Anything instrumented with OpenTelemetry.** `tracekit otel serve` is an OTLP/HTTP receiver on `127.0.0.1:4318` (protobuf or JSON, gzip), and with `--grpc-port 4317` also OTLP/gRPC (`pip install "tracekit[grpc]"`). Point any exporter at it (`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://127.0.0.1:4318/v1/traces`) and the agent spans (GenAI semantic conventions, OpenLLMetry and OpenInference) become signed ledger events: model calls, tool calls with a retrospective policy check, and one run per trace. No code changes in the agent. Spans arrive after the work is done, so nothing is gated, and the coverage report says so. See [OpenTelemetry](docs/otel.md).
+**Anything instrumented with OpenTelemetry.** `tracekit otel serve --experimental` is an OTLP/HTTP receiver on `127.0.0.1:4318` (protobuf or JSON, gzip), and with `--grpc-port 4317` also OTLP/gRPC (`pip install "tracekit[grpc]"`). Point any exporter at it (`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://127.0.0.1:4318/v1/traces`) and the agent spans (GenAI semantic conventions, OpenLLMetry and OpenInference) become signed ledger events: model calls, tool calls with a retrospective policy check, and one run per trace. No code changes in the agent. Spans arrive after the work is done, so nothing is gated, and the coverage report says so. See [OpenTelemetry](docs/otel.md).
 
 **Findings, signed.** `tracekit analyze` runs deterministic detectors over a run (claimed tests that never ran, "tests pass" after a failed run, a denied push that happened, a force push left out of the summary, tool calls the model never asked for, secrets in output, retrospective policy violations) and signs each finding into the ledger, citing the exact records it rests on. The signer refuses a finding whose cited evidence does not match the ledger, and `tracekit verify` fails if a finding cites evidence that is missing or altered. See [findings](docs/findings.md).
 
 **SQL and MCP.** `tracekit sql "SELECT ..."` queries the ledger through views (`runs`, `tool_calls`, `model_exchanges`, `findings`, `gaps`), with a stdlib SQLite index that checks the hash chain as it loads. `tracekit sql --mcp` lets coding agents query traces. See [SQL](docs/sql.md).
 
-**Agents on other machines.** `tracekit ingest serve` runs an authenticated, TLS gateway; clients configure it with `tracekit init --remote URL`. Remote events are recorded as `sdk` evidence in a namespaced run, and held (`ask`) calls are refused. See [remote ingestion](docs/remote-ingest.md).
+**Agents on other machines.** `tracekit ingest serve --experimental` runs an authenticated, TLS gateway; clients configure it with `tracekit init --remote URL`. Remote events are recorded as `sdk` evidence in a namespaced run, and held (`ask`) calls are refused. See [remote ingestion](docs/remote-ingest.md).
 
 ## Use
 
@@ -172,7 +176,7 @@ Anything an agent does outside its capture path (a tool that shells out on its o
 | `tracekit status` | Hooks, signer, witnesses, policy, fail mode and capture sources. |
 | `tracekit observe` | Live terminal at `http://127.0.0.1:7777`. Read-only. `--bundle run.tkb` views an exported bundle (verified first), `--prices p.json` adds cost, `--export replay.html` writes a single file anyone can open. |
 | `tracekit pending` / `approve <id>` / `reject <id>` | Answer held `ask` calls, from a terminal outside the agent's session. |
-| `tracekit otel serve [--grpc-port 4317]` | Receive OTLP/HTTP (and optionally gRPC) traces on `127.0.0.1:4318` and record the agent spans. |
+| `tracekit otel serve --experimental [--grpc-port 4317]` | Receive OTLP/HTTP (and optionally gRPC) traces on `127.0.0.1:4318` and record the agent spans. |
 | `tracekit otel push --endpoint URL --header K=V --follow` | Stream signed runs to Jaeger, Tempo or any OTLP/HTTP backend as they finish. |
 | `tracekit analyze --last` | Run the detectors and sign the findings into the ledger. Exit 4 on high or critical findings. |
 | `tracekit sql "SELECT ..."` | Read-only SQL over the ledger; `--mcp` serves it to coding agents. |

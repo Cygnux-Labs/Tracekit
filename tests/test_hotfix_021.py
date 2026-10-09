@@ -51,28 +51,35 @@ class SystemConfigTrust(_SystemConfig):
         self.assertEqual(client.system_config()["mode"], "system")
 
     @unittest.skipUnless(IS_ROOT, "needs root to chown")
-    def test_not_root_owned_is_ignored(self):
+    def test_not_root_owned_fails_closed(self):
         self.write({"socket": "/x"})
         os.chown(client.SYSTEM_CONFIG, 65534, 65534)
-        self.assertIsNone(client.system_config())
+        self.assertRaises(client.SystemConfigError, client.system_config)
 
     @unittest.skipUnless(IS_ROOT, "needs root to create a root-owned file")
-    def test_group_or_world_writable_is_ignored(self):
+    def test_group_or_world_writable_fails_closed(self):
         for mode in (0o664, 0o666, 0o646):
             self.write({"socket": "/x"}, mode)
-            self.assertIsNone(client.system_config(), oct(mode))
+            self.assertRaises(client.SystemConfigError, client.system_config)
+            self.assertTrue(client.system_fail_closed(), oct(mode))
 
     @unittest.skipIf(IS_ROOT, "as root every file is root-owned")
     @unittest.skipIf(os.name == "nt", "Windows reports every file as uid 0")
-    def test_user_owned_file_is_ignored(self):
-        self.write({"socket": "/x"})
-        self.assertIsNone(client.system_config())
+    def test_user_owned_file_fails_closed_without_falling_back(self):
+        self.write({"socket": "/x", "fail_mode": "open"})
+        os.environ["TRACEKIT_SOCKET"] = os.path.join(self.d, "agent.sock")
+        self.assertRaises(client.SystemConfigError, client.system_config)
+        self.assertRaises(client.SystemConfigError, client.socket_path)
+        self.assertRaises(client.SystemConfigError, client.client_config)
+        self.assertTrue(client.system_fail_closed())
 
-    def test_bad_json_is_ignored(self):
+    @unittest.skipIf(os.name == "nt", "system config is unsupported on Windows")
+    def test_bad_json_fails_closed(self):
         with open(client.SYSTEM_CONFIG, "w") as f:
             f.write("{ nope")
         os.chmod(client.SYSTEM_CONFIG, 0o644)
-        self.assertIsNone(client.system_config())
+        self.assertRaises(client.SystemConfigError, client.system_config)
+        self.assertTrue(client.system_fail_closed())
 
 
 @unittest.skipUnless(IS_ROOT, "system config must be root-owned to be trusted")
