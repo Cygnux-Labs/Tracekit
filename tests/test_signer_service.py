@@ -56,6 +56,9 @@ class TestServiceContract(SignerContract, unittest.TestCase):
         self.call("state_write", self.ev(key="k", value_digest="sha256:" + "0" * 64))
         self.call("model_event", self.ev(provider="openai", model="gpt", phase="request",
                                          content_digest="sha256:" + "1" * 64, usage={"input_tokens": 1, "output_tokens": 2}))
+        self.call("model_event", self.ev(provider="openai", model="gpt", phase="response", exchange_id="ex-1",
+                                         tool_uses=self.TOOL_USES, tool_results_sent=["call_prev"], error="x" * 1024,
+                                         usage={"input_tokens": 1, "output_tokens": 2, "cache_read_tokens": 3}))
         self.seq += 3
         self.decide(tcid="tc-2")
         self.call("close_run", self.run_req())
@@ -69,6 +72,11 @@ class TestServiceContract(SignerContract, unittest.TestCase):
         reg = [r["event"] for r in rs if r["event"]["type"] == "run.registered"][0]
         self.assertEqual(reg["data"]["signer_isolation"], "same-user")
         self.assertFalse(reg["tenant_attested"])
+        resp = [r["event"]["data"] for r in rs if r["event"]["type"] == "model.exchange"][-1]
+        self.assertEqual(resp["usage"]["cache_read_tokens"], 3)
+        self.assertNotIn("a" * 64, json.dumps(resp), "args digests are published only as commitments")
+        self.assertEqual([("args_commitment" in t, t.get("args_unparseable")) for t in resp["tool_uses"]],
+                         [(True, None), (False, True), (True, None), (False, None)])
 
     def test_isolation_is_measured_from_the_caller(self):
         self.signer.call(OTHER, "register_run", {"request_id": "r", "agent": {"name": "a"}})

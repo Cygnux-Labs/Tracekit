@@ -1,0 +1,37 @@
+[
+  {
+    "name": "function and custom tool calls, a malformed and a duplicate-key arguments string",
+    "request": {"model": "gpt-4o", "messages": [
+      {"role": "user", "content": "list files"},
+      {"role": "assistant", "content": null, "tool_calls": [
+        {"id": "call_prev", "type": "function", "function": {"name": "Bash", "arguments": "{\"command\": \"pwd\"}"}}]},
+      {"role": "tool", "tool_call_id": "call_prev", "content": "/tmp"}]},
+    "response": {"id": "chatcmpl-1", "object": "chat.completion", "created": 1, "model": "gpt-4o-2024-08-06",
+      "choices": [{"index": 0, "finish_reason": "tool_calls", "message": {"role": "assistant", "content": null,
+        "tool_calls": [
+          {"id": "call_a", "type": "function", "function": {"name": "Bash", "arguments": "{\"command\": \"ls\"}"}},
+          {"id": "call_b", "type": "function", "function": {"name": "Bash", "arguments": "{\"command\": \"ls\""}},
+          {"id": "call_d", "type": "function", "function": {"name": "Bash", "arguments": "{\"a\": 1, \"a\": 2}"}},
+          {"id": "call_c", "type": "custom", "custom": {"name": "apply_patch", "input": "*** Begin Patch"}}]}}],
+      "usage": {"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120,
+                "prompt_tokens_details": {"cached_tokens": 60}, "completion_tokens_details": {"reasoning_tokens": 5}}},
+    "expect": {"exchange_id": "chatcmpl-1", "model": "gpt-4o-2024-08-06", "finish": "tool_calls", "usage": {"input_tokens": 40, "output_tokens": 20, "cache_read_tokens": 60, "reasoning_tokens": 5}, "tool_uses": [{"id": "call_a", "name": "Bash", "executed_by": "client", "args_source": "raw", "args_digest": "sha256:3c4c0234f3fd581a998c6c92ee8487a3bf04eca566ab7e58f0a5f67dbd9fc504"}, {"id": "call_b", "name": "Bash", "executed_by": "client", "args_source": "raw", "args_unparseable": true}, {"id": "call_d", "name": "Bash", "executed_by": "client", "args_source": "raw", "args_unparseable": true}, {"id": "call_c", "name": "apply_patch", "executed_by": "client", "args_source": "parsed", "args_digest": "sha256:4c52a917564d072cd5fa91ff4067f0271f7d327a8bebc941813d87ca7c2e6a67"}], "tool_results_sent": ["call_prev"]}
+  },
+  {
+    "name": "stream: arguments split across chunks, usage on the last chunk",
+    "request": {"model": "gpt-4o", "stream": true, "messages": [{"role": "user", "content": "read a.txt"}]},
+    "stream": [
+      {"id": "chatcmpl-2", "object": "chat.completion.chunk", "created": 1, "model": "gpt-4o-2024-08-06",
+       "choices": [{"index": 0, "delta": {"role": "assistant", "content": "Sure"}}]},
+      {"id": "chatcmpl-2", "object": "chat.completion.chunk", "created": 1, "model": "gpt-4o-2024-08-06",
+       "choices": [{"index": 0, "delta": {"tool_calls": [{"index": 0, "id": "call_s", "type": "function",
+                                                          "function": {"name": "Read", "arguments": "{\"pa"}}]}}]},
+      {"id": "chatcmpl-2", "object": "chat.completion.chunk", "created": 1, "model": "gpt-4o-2024-08-06",
+       "choices": [{"index": 0, "delta": {"tool_calls": [{"index": 0, "function": {"arguments": "th\": \"a.txt\"}"}}]}}]},
+      {"id": "chatcmpl-2", "object": "chat.completion.chunk", "created": 1, "model": "gpt-4o-2024-08-06",
+       "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]},
+      {"id": "chatcmpl-2", "object": "chat.completion.chunk", "created": 1, "model": "gpt-4o-2024-08-06", "choices": [],
+       "usage": {"prompt_tokens": 12, "completion_tokens": 7, "total_tokens": 19}}],
+    "expect": {"exchange_id": "chatcmpl-2", "model": "gpt-4o-2024-08-06", "finish": "tool_calls", "usage": {"input_tokens": 12, "output_tokens": 7}, "tool_uses": [{"id": "call_s", "name": "Read", "executed_by": "client", "args_source": "raw", "args_digest": "sha256:d8f471ef2561713d96d66115ee0df7f16a01a583e7c068468b28139727db56e7"}], "tool_results_sent": []}
+  }
+]
