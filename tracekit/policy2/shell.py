@@ -19,7 +19,8 @@ class ParseError(ValueError):
 
 
 MAX_DEPTH = 32
-MAX_WORK = 1 << 20   # characters parsed in total, re-parsed consumer strings included
+MAX_WORK = 1 << 18   # characters parsed in total, re-parsed consumer strings included: 4 × the largest subject, so
+                     # a worst-case command costs a fraction of a second of the signer (the parser holds the GIL)
 SHELLS = {"sh", "bash", "zsh", "dash", "ksh", "ash"}
 # wrapper -> (options that take a value, positional arguments before the command)
 WRAPPERS = {"command": ((), 0), "env": (("-u", "-C", "--unset", "--chdir"), 0), "nohup": ((), 0),
