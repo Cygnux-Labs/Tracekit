@@ -167,6 +167,9 @@ class RekorFlow(unittest.TestCase):
             self.assertIsInstance(witness.from_spec("rekor:https://rekor.sigstore.dev"), rekor.RekorWitness)
             with self.assertRaises(ValueError):
                 witness.from_spec("rekor:http://example.com")
+            for url in ("http://localhost.example", "http://127.0.0.1@example.com"):
+                with self.assertRaises(ValueError, msg=url):
+                    witness.from_spec("rekor:" + url)
         finally:
             os.environ.pop("TRACEKIT_ENABLE_REKOR", None)
 

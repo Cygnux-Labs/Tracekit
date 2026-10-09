@@ -28,6 +28,7 @@ from urllib.parse import parse_qs, urlparse
 
 from .core import event_hash, read_text
 from .ledger import read_records, verify_record_sig
+from .replay import CSP_META
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 UI = os.path.join(HERE, "ui", "terminal.html")
@@ -501,7 +502,7 @@ def main(argv=None):
             if isinstance(rec, dict):
                 raw_recs.append(rec)
                 recs += tr.feed(rec)
-        page = _page(_script_json(recs), _script_json(raw_recs))
+        page = _page(_script_json(recs), _script_json(raw_recs)).replace("<head>", "<head>" + CSP_META, 1)
         tmp = f"{a.export}.tmp-{os.getpid()}"
         with open(tmp, "w", encoding="utf-8") as f:
             f.write(page)

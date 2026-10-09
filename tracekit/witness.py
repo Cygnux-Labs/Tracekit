@@ -14,6 +14,7 @@ import os
 import subprocess
 
 from . import crypto
+from .client import no_redirect_opener, remote_url_error
 from .core import b64d, b64e, canon, now_ts
 
 CP_TYPE = "tracekit.checkpoint.v1"
@@ -157,8 +158,9 @@ class HttpWitness:
         self.key_path = opts.get("key") or os.environ.get("TRACEKIT_WITNESS_PUBKEY")
         self.state_path = opts.get("state")
         self.name = f"witness:{self.url}"
-        if not (self.url.startswith("https://") or self.url.startswith(("http://127.0.0.1", "http://localhost", "http://[::1]"))):
-            raise ValueError("witness URLs must use https (plain http only for localhost)")
+        err = remote_url_error(self.url)
+        if err:
+            raise ValueError(f"witness {err}")
 
     def _key(self):
         if not self.key_path:
@@ -176,9 +178,8 @@ class HttpWitness:
         if token:
             h["Authorization"] = "Bearer " + token
         req = urllib.request.Request(self.url + path, data=json.dumps(body).encode() if body is not None else None, method=method, headers=h)
-        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
         try:
-            with opener.open(req, timeout=15) as r:
+            with no_redirect_opener().open(req, timeout=15) as r:
                 return r.status, json.loads(r.read() or b"{}")
         except urllib.error.HTTPError as e:
             try:
