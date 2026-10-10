@@ -1,0 +1,130 @@
+{
+  "control_exit": 0,
+  "control_integrity": "VERIFIED",
+  "platform": "darwin",
+  "python": "3.11.15",
+  "results": [
+    {
+      "detected": 30,
+      "fault": "edit record bytes (any record file)",
+      "first_failing_check": {
+        "bundle structure": 9,
+        "keys": 6,
+        "run-set": 1,
+        "signatures": 14
+      },
+      "trials": 30
+    },
+    {
+      "detected": 30,
+      "fault": "flip a bit of a record signature",
+      "first_failing_check": {
+        "keys": 8,
+        "run-set": 5,
+        "signatures": 17
+      },
+      "trials": 30
+    },
+    {
+      "detected": 30,
+      "fault": "break a chain link (prev_hash, run_prev_hash, run_seq; hash recomputed)",
+      "first_failing_check": {
+        "run-set": 7,
+        "signatures": 23
+      },
+      "trials": 30
+    },
+    {
+      "detected": 30,
+      "fault": "flip a bit of an inclusion proof (record tree or registry tree)",
+      "first_failing_check": {
+        "run-set": 30
+      },
+      "trials": 30
+    },
+    {
+      "detected": 30,
+      "fault": "edit a checkpoint note's body or signature lines (record or registry note)",
+      "first_failing_check": {
+        "checkpoint": 14,
+        "run-set": 16
+      },
+      "trials": 30
+    },
+    {
+      "detected": 30,
+      "fault": "flip a bit of a registry leaf",
+      "first_failing_check": {
+        "run-set": 30
+      },
+      "trials": 30
+    },
+    {
+      "detected": 30,
+      "fault": "edit the run-set (range end, tenant salt, drop or swap leaves)",
+      "first_failing_check": {
+        "run-set": 30
+      },
+      "trials": 30
+    },
+    {
+      "detected": 30,
+      "fault": "edit the manifest without the files (hash, drop, phantom, unlisted file)",
+      "first_failing_check": {
+        "manifest": 30
+      },
+      "trials": 30
+    },
+    {
+      "detected": 30,
+      "fault": "drop a record of the run",
+      "first_failing_check": {
+        "run chain": 27,
+        "run-set": 3
+      },
+      "trials": 30
+    },
+    {
+      "detected": 30,
+      "fault": "reorder two records of the run",
+      "first_failing_check": {
+        "run chain": 22,
+        "run-set": 8
+      },
+      "trials": 30
+    },
+    {
+      "detected": 30,
+      "fault": "duplicate a record of the run",
+      "first_failing_check": {
+        "run chain": 29,
+        "run-set": 1
+      },
+      "trials": 30
+    },
+    {
+      "detected": 30,
+      "fault": "re-sign an edited record with a foreign key",
+      "first_failing_check": {
+        "keys": 14,
+        "run-set": 3,
+        "signatures": 13
+      },
+      "trials": 30
+    },
+    {
+      "detected": 30,
+      "fault": "remove the run's run.final",
+      "first_failing_check": {
+        "run-set": 30
+      },
+      "trials": 30
+    },
+    {
+      "detected": 30,
+      "fault": "truncate the zip file at a random byte",
+      "trials": 30
+    }
+  ],
+  "verifier_crashes": 0
+}

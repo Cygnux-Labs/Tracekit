@@ -71,6 +71,22 @@ class Stack:
         return done
 
 
+def v2_signer(data_dir, durability="ack-on-write"):
+    """Start `tracekit signer serve` (v2) on a Unix socket in data_dir, rate limits off. Returns (process, socket);
+    the process has said it is serving."""
+    os.makedirs(data_dir, exist_ok=True)
+    cfg, sock = os.path.join(data_dir, "signer.yaml"), os.path.join(data_dir, "s.sock")
+    with open(cfg, "w") as f:
+        f.write(f"data_dir: data\nsocket: s.sock\ndurability: {durability}\n"
+                "limits: {events_per_s: 1000000000, burst: 1000000000}\n")
+    p = subprocess.Popen([sys.executable, "-m", "tracekit", "signer", "serve", "--config", cfg], cwd=ROOT,
+                         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    if b"serving" not in p.stdout.readline():
+        p.kill()
+        raise SystemExit(f"the v2 signer did not start: {sys.executable} -m tracekit signer serve --config {cfg}")
+    return p, sock
+
+
 def pct(xs, p):
     xs = sorted(xs)
     return xs[min(len(xs) - 1, int(round(p / 100 * (len(xs) - 1))))]
