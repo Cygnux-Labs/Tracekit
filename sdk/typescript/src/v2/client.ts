@@ -247,6 +247,19 @@ function devAddress(d: string): [string, string?] {
   }
 }
 
+/** The URL for the run or approval `frame` names, from the signer's `url`. A central signer's replica
+ * (docs/deploy-kubernetes.md) prefixes its ids with its route, `<service>-<n>.`: such an id goes to host `<service>-<n>`
+ * in the signer's domain, as the Python client does. */
+export function routeUrl(url: URL, frame: Frame): URL {
+  const host = url.hostname, dot = host.indexOf("."), first = dot < 0 ? host : host.slice(0, dot);
+  const id = String(frame.run_id ?? frame.approval_id ?? frame.analyzes ?? ""), cut = id.indexOf(".");
+  const route = cut < 0 ? "" : id.slice(0, cut);
+  if (!route || !new RegExp("^" + first.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "-[0-9]+$").test(route)) return url;
+  const out = new URL(url.href);
+  out.hostname = dot < 0 ? route : route + host.slice(dot);
+  return out;
+}
+
 class Https {
   private agent: Agent;
   private url: URL;
@@ -272,7 +285,7 @@ class Https {
       }
     }
     return new Promise((resolve, reject) => {
-      const req = request(this.url, { method: "POST", agent: this.agent, headers, timeout: timeoutMs }, (res) => {
+      const req = request(routeUrl(this.url, frame), { method: "POST", agent: this.agent, headers, timeout: timeoutMs }, (res) => {
         let data = "";
         res.setEncoding("utf8");
         res.on("data", (d) => (data += d));

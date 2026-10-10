@@ -237,6 +237,20 @@ class Publisher(unittest.TestCase):
         self.assertEqual((rep.integrity, code), ("VERIFIED", 0), rep.checks)
         self.assertTrue(rep.assurance.startswith("dev;"), rep.assurance)
 
+    def test_close_log_waits_for_the_witness_to_cosign_the_final_notes(self):
+        self.finished_run()
+        self.assertTrue(self.s.close_log(wait_s=10))
+        last = next(self.s.log.storage.iter_range(self.s.log.head["seq"] - 1, self.s.log.head["seq"]))["event"]
+        self.assertEqual(last["type"], "log.closed")
+        self.assertEqual(self.cosigned()[0], last["seq"] + 1)   # a cosigned note covers log.closed: no unproven tail
+        self.assertTrue(self.cosigned(registry_tree("default")))
+
+    def test_close_log_stops_waiting_for_a_witness_that_is_down(self):
+        self.finished_run()
+        self.w.status = 503
+        self.assertFalse(self.s.close_log(wait_s=0.3))
+        self.assertEqual(self.s.log.storage.checkpoint_latest()[0], self.s.log.head["seq"])   # noted, not cosigned
+
     def test_retry_queue_survives_restart(self):
         self.finished_run()
         self.s.checkpoint()

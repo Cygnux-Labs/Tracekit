@@ -4,6 +4,7 @@ It detects the setup: v1 system mode (/etc/tracekit/client.json names a socket),
 the v2 dev signer (no system config), or the signer.yaml given with --config. Every check has a stable id and gives
 ok, warn or fail; docs/doctor.md lists them. Exit 0 when all are ok, 1 when any fails, 2 when there are only warnings.
 Run it as root for system mode: it then probes the files as the agent's user, in a forked child that dropped to it.
+`--k8s` checks the pod it runs in, or the manifests under `--manifests DIR`, instead.
 
 Doctor output is advice, not evidence: it reads the host as it is now, and nothing it prints is signed or verified.
 """
@@ -20,7 +21,7 @@ try:
 except ImportError:
     pwd = None
 
-from . import client, install
+from . import client, install, yamlmini
 from .core import read_json, read_text
 from .harness_helper import HELPER_CAPS, trusted_file
 from .deploy import files
@@ -48,11 +49,14 @@ def report(results, as_json=False):
     return 1 if FAIL in statuses else 2 if WARN in statuses else 0
 
 
-def main(config=None, as_json=False):
-    return report(collect(config), as_json)
+def main(config=None, as_json=False, k8s=False, manifests=None, issuer_key=None):
+    if not (k8s or manifests):
+        return report(collect(config, issuer_key), as_json)
+    out = k8s_checks(*load_manifests(manifests)) if manifests else in_pod()
+    return report(out + (v2_checks(config, issuer_key=issuer_key) if config else []), as_json)
 
 
-def collect(config=None):
+def collect(config=None, issuer_key=None):
     """The checks that apply to the setup on this host (or to signer.yaml `config`)."""
     try:
         sc = client.system_config()
@@ -68,7 +72,7 @@ def collect(config=None):
         settings = h.get("settings") if h.get("agent", "claude") == "claude" else None
         return out + v2_checks(config or install.V2_CONFIG, agent=_user(h.get("user")), settings=settings,
                                signer=(sc or {}).get("signer"), opt=install.OPT, unit=unit,
-                               client_json=client.SYSTEM_CONFIG if sc else None)
+                               client_json=client.SYSTEM_CONFIG if sc else None, issuer_key=issuer_key)
     if sc:
         return out
     from .signer.service import dev_data_dir
@@ -158,10 +162,11 @@ def _hooks(settings):
 
 
 def v2_checks(config, profile="production", agent=None, settings=None, signer=None, opt=None, unit=None,
-              client_json=None, now=None):
+              client_json=None, now=None, issuer_key=None):
     """Checks of a v2 signer. config: a signer.yaml path, or the dev signer's config dict. profile "dev" turns what
     a dev setup can't have into warnings. agent: the agent's pwd entry; settings: its Claude Code settings; signer: the
-    socket client.json names; opt: the root-owned venv; unit: the service file; client_json: the system client config."""
+    socket client.json names; opt: the root-owned venv; unit: the service file; client_json: the system client config;
+    issuer_key: the KMS key of the record key issuer, which this host's AWS principal must not sign with."""
     from .format import checkpoint
     from .integrations.claude_code import APPROVAL_WAIT_S
     from .signer import service
@@ -231,6 +236,10 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
                 "data_dir (its keys are made distinct); export what you need from this one first")
         except OSError as e:
             add("D-KEYS-DISTINCT", False, f"no keys yet ({e.strerror})", "start the signer once", bad=WARN)
+    if (cfg.get("log_key") or {}).get("aws_kms"):
+        out += kms_checks(cfg["log_key"]["aws_kms"], issuer_key)
+    if (cfg.get("storage") or {}).get("postgres") is not None:
+        out += pg_checks(cfg["storage"]["postgres"])
 
     try:
         with open(os.path.join(data, "hygiene.json"), encoding="utf-8") as f:
@@ -379,3 +388,249 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
         "put data_dir on a local disk")
     return out
 
+
+def kms_checks(kms, issuer_key=None):
+    """The KMS log key's spec and usage, and whether this host's AWS principal can also sign with `issuer_key`."""
+    from .signer import logkey
+    try:
+        import boto3
+        kms_client = boto3.client("kms", region_name=kms["region"])
+        logkey.AwsKmsKey(kms["key_id"], kms["region"], kms_client)
+    except ImportError:
+        return [result("D-KMS-LOG-KEY", WARN, "not checked: no boto3", "pip install 'tracekit-ai[aws]'")]
+    except ValueError as e:
+        return [result("D-KMS-LOG-KEY", FAIL, str(e), f"create the log key as {logkey.KEY_SPEC} {logkey.KEY_USAGE}")]
+    except Exception as e:   # botocore's errors: no credentials, access denied, network
+        return [result("D-KMS-LOG-KEY", WARN, f"not checked: {type(e).__name__}: {str(e)[:256]}",
+                       "run doctor with the signer's AWS credentials")]
+    out = [result("D-KMS-LOG-KEY", OK, f"{kms['key_id']} is a {logkey.KEY_SPEC} {logkey.KEY_USAGE} key")]
+    if issuer_key:
+        try:
+            alg = kms_client.get_public_key(KeyId=issuer_key)["SigningAlgorithms"][0]
+        except Exception:   # no kms:GetPublicKey on it: try the log key's algorithm
+            alg = logkey.ALGORITHM
+        try:
+            kms_client.sign(KeyId=issuer_key, Message=b"tracekit doctor", MessageType="RAW", SigningAlgorithm=alg,
+                            DryRun=True)
+            code = "DryRunOperationException"
+        except Exception as e:
+            code = (getattr(e, "response", None) or {}).get("Error", {}).get("Code") or type(e).__name__
+        status = {"DryRunOperationException": FAIL, "AccessDeniedException": OK}.get(code, WARN)
+        out.append(result("D-KMS-ISSUER-SIGN", status, {
+            FAIL: f"this principal may call kms:Sign on the issuer key {issuer_key}",
+            OK: f"this principal may not call kms:Sign on the issuer key {issuer_key}"}.get(status, f"not checked: {code}"),
+            "remove kms:Sign on the issuer's key from the signer's IAM role: only the issuer signs with it"))
+    return out
+
+
+LOG_TABLES = ["tracekit_records", "tracekit_registry", "tracekit_notes", "tracekit_anchors"]
+PG_WRITERS = """SELECT r.rolname, t FROM pg_roles r, unnest(%s::text[]) t
+WHERE r.rolname <> current_user AND r.rolname !~ '^pg_' AND NOT r.rolsuper
+  AND NOT pg_has_role(r.oid, (SELECT relowner FROM pg_class WHERE oid = t::regclass), 'USAGE')
+  AND has_table_privilege(r.oid, t, 'INSERT, UPDATE, DELETE, TRUNCATE') ORDER BY 1, 2"""
+
+
+def pg_checks(section):
+    """The signer's Postgres role, connected to as the signer, against the grants of postgres.GRANTS: no UPDATE, DELETE
+    or TRUNCATE on the logs and not superuser; and no other role but the tables' owner may write the logs."""
+    try:
+        import psycopg
+        from .storage import postgres
+    except ImportError:
+        return [result("D-PG-SIGNER-ROLE", WARN, "not checked: no psycopg", "pip install 'tracekit-ai[postgres]'")]
+    try:
+        with psycopg.connect(postgres.read_dsn(section), autocommit=True, connect_timeout=10) as c:
+            role, superuser = c.execute("SELECT rolname, rolsuper FROM pg_roles WHERE rolname = current_user").fetchone()
+            bad = c.execute("SELECT t || ': ' || p FROM unnest(%s::text[]) t, unnest(array['UPDATE', 'DELETE', "
+                            "'TRUNCATE']) p WHERE has_table_privilege(t, p) ORDER BY 1", (LOG_TABLES,)).fetchall()
+            writers = c.execute(PG_WRITERS, (LOG_TABLES,)).fetchall()
+    except (OSError, psycopg.Error) as e:
+        return [result("D-PG-SIGNER-ROLE", WARN, f"not checked: {str(e)[:256]}",
+                       "run doctor where the signer's DSN reaches Postgres, after `tracekit signer migrate`")]
+    bad = (["superuser"] if superuser else []) + [b for b, in bad]
+    return [result("D-PG-SIGNER-ROLE", FAIL if bad else OK, f"{role} has " + ", ".join(bad) if bad else
+                   f"{role} may only insert into and read the logs", f"grant {role} only postgres.GRANTS: REVOKE UPDATE, "
+                   f"DELETE, TRUNCATE ON {', '.join(LOG_TABLES)} FROM {role}; ALTER ROLE {role} NOSUPERUSER"),
+            result("D-PG-READER-ROLES", FAIL if writers else OK, "; ".join(f"{r} can write {t}" for r, t in writers)
+                   or f"no role but {role} and the tables' owner can write the logs",
+                   "readers get SELECT only: REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON the log tables FROM them")]
+
+
+# Kubernetes: the signer image's user and paths (deploy/docker), and what hands a pod cloud credentials
+# lean: the image's default socket dir and data_dir, not the signer.yaml the pod mounts; read it from the manifests'
+# ConfigMap if deployments move them
+SIGNER_UID, SOCKET_DIR, SIGNER_DATA = 10001, "/run/tracekit-signer", "/var/lib/tracekit-signer"
+SA_DIR = "/var/run/secrets/kubernetes.io/serviceaccount"
+WORKLOAD_IDENTITY = ("iam.gke.io/gcp-service-account", "eks.amazonaws.com/role-arn")
+CLOUD_ENV = ("AWS_ROLE_ARN", "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_CONTAINER_CREDENTIALS_FULL_URI",
+             "AWS_CONTAINER_AUTHORIZATION_TOKEN_FILE")   # what IRSA and EKS Pod Identity inject
+TEMPLATES = {"Deployment", "StatefulSet", "DaemonSet", "ReplicaSet", "ReplicationController", "Job"}
+K8S_FIX = {
+    "D-K8S-WORKLOADS": "point --manifests at the rendered manifests (helm template, kustomize build)",
+    "D-K8S-HOST-ACCESS": "remove hostPath volumes and hostPID, hostIPC and hostNetwork from the pod",
+    "D-K8S-SECURITY-CONTEXT": "set runAsNonRoot: true, readOnlyRootFilesystem: true, allowPrivilegeEscalation: false, "
+                              "capabilities: {drop: [ALL]} and no privileged on each container",
+    "D-K8S-RUN-AS-USER": f"run the agent container with its own runAsUser (not the signer's, {SIGNER_UID})",
+    "D-K8S-SHARED-VOLUME": f"share only the socket directory ({SOCKET_DIR}) between the agent and the signer",
+    "D-K8S-SIGNER-DATA": f"mount the signer's data volume ({SIGNER_DATA}) in the signer's container only",
+    "D-K8S-SA-TOKEN": "set automountServiceAccountToken: false on the agent's pod",
+    "D-K8S-WORKLOAD-IDENTITY": "give the agent's pod a service account without cloud identity; keep KMS credentials "
+                               "with a central signer, outside the agent's pod",
+}
+
+
+def load_manifests(top):
+    """(objects, problems) of the .yaml, .yml and .json files under `top`; a file that doesn't parse is a problem."""
+    try:
+        from yaml import YAMLError
+    except ImportError:
+        YAMLError = ValueError
+    docs, bad = [], []
+    for d, _, names in sorted(os.walk(top)):
+        for n in sorted(names):
+            if n.endswith((".yaml", ".yml", ".json")):
+                try:
+                    text = read_text(os.path.join(d, n))
+                    for part in [text] if n.endswith(".json") else re.split(r"(?m)^---[ \t]*$", text):
+                        docs.append(json.loads(part) if part.lstrip().startswith("{") else yamlmini.load_any(part))
+                except (OSError, ValueError, YAMLError) as e:
+                    bad.append(f"{os.path.join(d, n)}: {str(e)[:256]}")
+    return docs, bad
+
+
+def in_pod():
+    """The k8s checks of the pod doctor runs in, read from the API server with the pod's service account token."""
+    import socket
+    import ssl
+    import urllib.request
+    try:
+        host, port = os.environ["KUBERNETES_SERVICE_HOST"], os.environ.get("KUBERNETES_SERVICE_PORT", "443")
+        ns, token = (read_text(os.path.join(SA_DIR, n)).strip() for n in ("namespace", "token"))
+        ctx = ssl.create_default_context(cafile=os.path.join(SA_DIR, "ca.crt"))
+
+        def get(path):
+            req = urllib.request.Request(f"https://{host}:{port}/api/v1/namespaces/{ns}/{path}",
+                                         headers={"Authorization": f"Bearer {token}"})
+            with urllib.request.urlopen(req, context=ctx, timeout=10) as r:
+                return json.load(r)
+        docs = [get(f"pods/{os.environ.get('HOSTNAME') or socket.gethostname()}")]
+        docs.append(get(f"serviceaccounts/{docs[0]['spec'].get('serviceAccountName') or 'default'}"))
+    except (KeyError, OSError, ValueError) as e:
+        return [result("D-K8S-WORKLOADS", WARN, f"cannot read this pod from the API server: {type(e).__name__}: "
+                       f"{str(e)[:256]}", "grant get on pods and serviceaccounts, or run doctor --k8s --manifests DIR")]
+    return k8s_checks(docs)
+
+
+def _pods(docs):
+    """(name, namespace, pod spec) of every pod and pod template in `docs`."""
+    for d in docs:
+        if not isinstance(d, dict):
+            continue
+        kind, spec, meta = d.get("kind"), d.get("spec") or {}, d.get("metadata") or {}
+        if kind == "List":
+            yield from _pods(d.get("items") or [])
+            continue
+        pod = (d if kind == "Pod" else spec.get("template") if kind in TEMPLATES else
+               ((spec.get("jobTemplate") or {}).get("spec") or {}).get("template") if kind == "CronJob" else None)
+        if pod:
+            yield f"{kind}/{meta.get('name')}", meta.get("namespace") or "default", pod.get("spec") or {}
+
+
+def _is_signer(c):
+    cmd = [str(a) for a in (c.get("command") or []) + (c.get("args") or [])]
+    return "tracekit-signer" in str(c.get("image")) or "signer" in cmd and "serve" in cmd
+
+
+def _source(pod, v):
+    """What a volume is, so two pods mounting the same claim, secret or host path compare equal."""
+    for kind, key in (("persistentVolumeClaim", "claimName"), ("secret", "secretName"), ("configMap", "name"),
+                      ("hostPath", "path")):
+        if v.get(kind):
+            return kind, v[kind].get(key)
+    return pod, v.get("name")
+
+
+def _ns(d):
+    return (d.get("metadata") or {}).get("namespace") or "default"
+
+
+def _uid(c, spec):
+    return (c.get("securityContext") or {}).get("runAsUser", (spec.get("securityContext") or {}).get("runAsUser"))
+
+
+def _volume_mounts(cs):
+    return {m.get("name"): str(m.get("mountPath")) for c in cs for m in c.get("volumeMounts") or []}
+
+
+def k8s_checks(docs, problems=()):
+    """Checks of the pods in `docs` (manifests or API objects) that run a Tracekit signer or agent: an agent container
+    is one with a TRACEKIT_* env var, or one that mounts the volume the signer mounts at its socket dir."""
+    docs = [d for d in docs if isinstance(d, dict)]
+    found = {k: [] for k in K8S_FIX}
+    sas = {(_ns(d), (d.get("metadata") or {}).get("name")): d for d in docs if d.get("kind") == "ServiceAccount"}
+    pia = {((d.get("spec") or {}).get("namespace") or "default", (d.get("spec") or {}).get("serviceAccount"))
+           for d in docs if d.get("kind") == "PodIdentityAssociation"}
+    pods, data, agent_mounts, token_cloud = [], set(), [], False
+    for name, ns, spec in _pods(docs):
+        # lean: regular init containers are skipped (they exit before the agent starts); native sidecars count
+        cs = (spec.get("containers") or []) + [c for c in spec.get("initContainers") or []
+                                               if c.get("restartPolicy") == "Always"]
+        signers = [c for c in cs if _is_signer(c)]
+        sig = _volume_mounts(signers)
+        sock = {v for v, p in sig.items() if p.rstrip("/") == SOCKET_DIR}
+        agents = [c for c in cs if not _is_signer(c) and (sock & set(_volume_mounts([c])) or any(
+            str(e.get("name", "")).startswith("TRACEKIT_") for e in c.get("env") or []))]
+        if not (signers or agents):
+            continue
+        pods.append(name)
+        vols = {v.get("name"): _source(name, v) for v in spec.get("volumes") or []}
+        uid = {id(c): _uid(c, spec) for c in cs}
+        uid.update({id(c): SIGNER_UID for c in signers if uid[id(c)] is None})   # the image's USER
+        host = [k for k in ("hostPID", "hostIPC", "hostNetwork") if spec.get(k)]
+        host += [f"hostPath {s[1]}" for s in vols.values() if s[0] == "hostPath"]
+        if host:
+            found["D-K8S-HOST-ACCESS"].append(f"{name}: {', '.join(host)}")
+        for c in signers + agents:
+            sc = c.get("securityContext") or {}
+            non_root = sc.get("runAsNonRoot", (spec.get("securityContext") or {}).get("runAsNonRoot"))
+            weak = [why for why, ok in (
+                ("may run as root", uid[id(c)] not in (None, 0) or non_root is True),
+                ("privileged", sc.get("privileged") is not True),
+                ("root fs writable", sc.get("readOnlyRootFilesystem") is True),
+                ("privilege escalation allowed", sc.get("allowPrivilegeEscalation") is False),
+                ("capabilities not dropped", "ALL" in ((sc.get("capabilities") or {}).get("drop") or []))) if not ok]
+            if weak:
+                found["D-K8S-SECURITY-CONTEXT"].append(f"{name} {c.get('name')}: {', '.join(weak)}")
+        data |= {vols.get(v) for v, p in sig.items() if p.rstrip("/") == SIGNER_DATA or p.startswith(SIGNER_DATA + "/")}
+        agent_mounts += [(name, c.get("name"), vols.get(v)) for c in agents for v in _volume_mounts([c])]
+        if signers and agents:
+            shared = sorted(set(sig) & set(_volume_mounts(agents)) - sock)
+            if shared:
+                found["D-K8S-SHARED-VOLUME"].append(f"{name}: {', '.join(shared)}")
+            theirs = {uid[id(c)] for c in signers}
+            found["D-K8S-RUN-AS-USER"] += [f"{name} {c.get('name')}: runAsUser " + (
+                "not set" if uid[id(c)] is None else f"{uid[id(c)]}, the signer's") for c in agents
+                if uid[id(c)] is None or uid[id(c)] in theirs]
+        if agents:
+            sa_name = spec.get("serviceAccountName") or "default"
+            sa = sas.get((ns, sa_name)) or {}
+            notes = (sa.get("metadata") or {}).get("annotations") or {}
+            cloud = [f"{k} on {sa_name}" for k in WORKLOAD_IDENTITY if notes.get(k)]
+            cloud += [f"an EKS Pod Identity association for {sa_name}"] if (ns, sa_name) in pia else []
+            cloud += sorted({e.get("name") for c in cs for e in c.get("env") or [] if e.get("name") in CLOUD_ENV})
+            if cloud:
+                found["D-K8S-WORKLOAD-IDENTITY"].append(f"{name}: {', '.join(cloud)}")
+            projected = {v.get("name") for v in spec.get("volumes") or []
+                         if any("serviceAccountToken" in s for s in (v.get("projected") or {}).get("sources") or [])}
+            if (spec.get("automountServiceAccountToken", sa.get("automountServiceAccountToken")) is not False
+                    or projected & set(_volume_mounts(agents))):
+                token_cloud |= bool(cloud)
+                found["D-K8S-SA-TOKEN"].append(f"{name}: the agent gets {sa_name}'s token"
+                                               + (", which has cloud identity" if cloud else ""))
+    found["D-K8S-SIGNER-DATA"] = [f"{p} {c} mounts {s[1]}" for p, c, s in agent_mounts if s in data]
+    found["D-K8S-WORKLOADS"] = list(problems) + ([] if pods else ["no pod runs a Tracekit signer or agent"])
+    # a token without cloud identity reaches only what its RBAC grants: a warning
+    soft = {"D-K8S-WORKLOADS"} | (set() if token_cloud else {"D-K8S-SA-TOKEN"})
+    return [result(id, (WARN if id in soft else FAIL) if bad else OK, "; ".join(bad) or (
+        f"{len(pods)} pods checked" if id == "D-K8S-WORKLOADS" else "none found"), K8S_FIX[id])
+        for id, bad in found.items()]
