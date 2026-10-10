@@ -56,6 +56,8 @@ eval:
 	$(PY) eval/e4_seeded_faults_v2.py
 	$(PY) eval/e6_findings.py
 	$(PY) eval/e10_reconcile.py
+	$(PY) eval/e11_l1_tampering.py
+	$(PY) eval/e12_cross_tenant.py
 	$(PY) eval/e16_doctor.py
 	if [ "$$(uname)" = Linux ]; then $(PY) eval/e9_signer_perf.py --quick; fi
 
