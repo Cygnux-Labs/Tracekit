@@ -29,6 +29,7 @@ from tracekit.ledger import Keys
 from tracekit.signer import metrics
 from tracekit.transport import http as transport
 from tracekit.view import ApprovalDesk, OidcLogin, Runs
+from tracekit.why import cli as why_cli, server as why_server
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DOC = os.path.join(ROOT, "docs", "security-checklist.md")
@@ -51,6 +52,7 @@ SURFACES = {
     "tracekit/witness_server.py:H": "checkpoint witness",
     "tracekit/proxy.py:Handler": "Anthropic proxy",
     "tracekit/slack_approvals.py:Handler": "Slack approvals bridge (interactivity callbacks)",
+    "tracekit/why/server.py:H": "tracekit why serve (investigation app, its API and ingest)",
 }
 
 
@@ -193,10 +195,22 @@ class Surfaces(unittest.TestCase):
                              ("POST", slack_approvals.PATH, {**signed, "Content-Length": BIG}, 413),
                              ("GET", slack_approvals.PATH, {}, 501)]
 
+    def why(self):
+        srv, _ = why_server.serve(os.path.join(self.d, "why"), "127.0.0.1", 0, token=SECRET, watch=False)
+        auth = {"Authorization": f"Bearer {SECRET}"}
+        return srv, SECRET, [("GET", f"/nope?token={SECRET}", {}, 401), ("GET", "/nope", auth, 404),
+                             ("GET", f"/api/runs/{SECRET}", auth, 404), ("GET", "/api/runs/..%2f..", auth, 400),
+                             ("GET", "/api/workspace", {"Cookie": f"tracekit_why={SECRET}"}, 401),
+                             ("POST", "/v1/ingest", {"Cookie": f"tracekit_why={_session(SECRET)}"}, 401),
+                             ("POST", "/v1/ingest", {**auth, "Content-Length": BIG}, 413),
+                             ("POST", "/api/runs/x/tests", {"Content-Type": "application/json"}, 401),
+                             ("POST", "/api/runs/x/tests", auth, 403), ("PUT", "/", auth, 501)]
+
     PROBES = {"tracekit/observe.py:Handler": viewer, "tracekit/transport/http.py:_Handler": signer_http,
               "tracekit/gateway.py:_Handler": gateway, "tracekit/signer/metrics.py:Handler": metrics,
               "tracekit/otlp.py:H": otlp, "tracekit/ingest.py:H": ingest, "tracekit/witness_server.py:H": witness,
-              "tracekit/proxy.py:Handler": proxy, "tracekit/slack_approvals.py:Handler": slack}
+              "tracekit/proxy.py:Handler": proxy, "tracekit/slack_approvals.py:Handler": slack,
+              "tracekit/why/server.py:H": why}
 
     def request(self, port, method, path, headers):
         c = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
@@ -230,7 +244,7 @@ class Surfaces(unittest.TestCase):
                         self.assertNotIn(leak, body)
                     self.assertNotIn(secret, json.dumps(h))
                     self.assertNotIn(secret, err.getvalue() + logs.getvalue())
-                    if key == "tracekit/observe.py:Handler":   # the browser surface: every answer carries these
+                    if key in ("tracekit/observe.py:Handler", "tracekit/why/server.py:H"):   # browser surfaces
                         h = dict(h)
                         self.assertEqual((h.get("X-Content-Type-Options"), h.get("Referrer-Policy")),
                                          ("nosniff", "no-referrer"))
@@ -360,7 +374,8 @@ class PlainHttp(unittest.TestCase):
         for main, argv, code in ((observe.main, ["--host", "0.0.0.0", "--home", d], 1),
                                  (ingest.main, ["serve", "--experimental", "--home", d, "--host", "0.0.0.0"], 2),
                                  (witness_server.main, ["serve", "--home", d, "--host", "0.0.0.0"], 2),
-                                 (otlp.main, ["serve", "--experimental", "--host", "0.0.0.0"], 2)):
+                                 (otlp.main, ["serve", "--experimental", "--host", "0.0.0.0"], 2),
+                                 (why_cli.main, ["serve", d, "--host", "0.0.0.0"], 2)):
             with self.subTest(main.__module__), contextlib.redirect_stderr(io.StringIO()) as err:
                 self.assertEqual(main(argv), code)
                 self.assertRegex(err.getvalue(), "loopback")
