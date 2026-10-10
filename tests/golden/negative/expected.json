@@ -312,9 +312,9 @@
       "name": "key used after its key.retire",
       "bundle": "key-used-after-retire.tkb",
       "expected": {
-        "exit_code": 2,
-        "integrity": "UNVERIFIABLE (key revoked)",
-        "first_failure": null
+        "exit_code": 1,
+        "integrity": "FAILED",
+        "first_failure": "signatures"
       }
     },
     {

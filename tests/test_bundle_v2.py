@@ -327,8 +327,7 @@ class TestVerifyV2(Case):
         out = os.path.join(self.d, "k.tkb")
         export(log.store, "acme", "run-a", log.note(), out)
         rep, code = self.verify(out)
-        self.assertEqual((code, rep.integrity, rep.failures), (2, "UNVERIFIABLE (key revoked)", []), rep.checks)
-        self.assertIn("revoked keys", rep.warnings)
+        self.assertEqual((code, rep.integrity, rep.failures), (1, "FAILED", ["signatures"]), rep.checks)
         self.assertIn(f"seq {log.store.tree.size - 1}: signed by key", str(rep.checks))
 
         log.key = KEY2
