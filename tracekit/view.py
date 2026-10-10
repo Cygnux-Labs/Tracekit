@@ -1,7 +1,9 @@
 """`tracekit view`: the laptop viewer for the v2 signer's runs (04-design §10).
 
-Reads the signer's file store without its lock (FileReader), exports each run with bundle_v2 and checks it with
-verify.v2, the code `tracekit verify` runs, against a trust config that pins the store's own log.vkey. The page, server
+Reads the signer's store without its lock (signer.service.reader: FileReader, or PostgresReader for a Postgres store),
+exports each run with bundle_v2 and checks it with verify.v2, the code `tracekit verify` runs, against a trust config
+that pins --log-vkey, else the store's own log key (data_dir/log.vkey, or on Postgres the vkey the signer stored there,
+so the viewer needs no access to the signer's data dir). The page, server
 and security are the observer's (observe.py): each run's verifier report is an alert on the run's lane, followed by its
 events only when it verifies; a run that fails is shown only as the failure report. A run whose last record no
 checkpoint covers yet waits for the signer's next note (at most CHECKPOINT_S). The viewer never opens a signing key.
@@ -11,7 +13,7 @@ session cookie, also on loopback, where any local user or process could otherwis
 Dev assurance: the pinned log key is read from the directory being checked, so a run that verifies matches the key of
 whoever can write that directory, the same user as the dev signer and this viewer.
 
-    tracekit view [--dev | --config signer.yaml | --data-dir DIR] [--host H] [--port N]
+    tracekit view [--dev | --config signer.yaml | --data-dir DIR] [--log-vkey VKEY] [--host H] [--port N]
                   [--tls-cert FILE --tls-key FILE | --insecure-http]
 """
 import argparse
@@ -31,16 +33,19 @@ from http.server import ThreadingHTTPServer
 
 from . import observe
 from .bundle_v2 import export
+from .format import checkpoint
 from .format.records import RecordSigner
-from .signer.service import dev_data_dir, file_store, load_config, read_vkeys
-from .storage.base import StorageCorrupt
-from .storage.file import NOTE, FileReader
+from .signer.service import dev_data_dir, load_config, read_vkeys, reader
+from .storage.base import StorageCorrupt, StorageUnavailable
+from .storage.file import NOTE
 from .verify import v2
 
 POLL_S = 1.0
 HANDSHAKE_S = 30
 DEV_NOTE = ("trust pins this store's own log.vkey: dev assurance, the viewer runs as the same user as the dev signer "
             "and proves only that the records match that key")
+STORED_NOTE = ("trust pins the log vkey this store holds and proves only that the records match that key; pin the "
+               "signer's with --log-vkey")
 
 
 class Translator(observe.Translator):
@@ -62,10 +67,23 @@ class Translator(observe.Translator):
 
 
 class StoreFeed:
-    """What observe.make_handler serves (records, base, lock, verify()), from a v2 signer's data dir."""
+    """What observe.make_handler serves (records, base, lock, verify()), from the store of a v2 signer's config."""
 
-    def __init__(self, data_dir):
-        self.store = os.path.join(data_dir, "store")
+    def __init__(self, cfg, log_vkey=None):
+        self.cfg, self.pg = cfg, bool(cfg.get("storage"))
+        self.store = "the Postgres store" if self.pg else os.path.join(cfg["data_dir"], "store")
+        self.note = "trust pins --log-vkey" if log_vkey else STORED_NOTE if self.pg else DEV_NOTE
+        if not log_vkey and self.pg:
+            r = reader(cfg)
+            try:
+                log_vkey = r.meta("log_vkey")
+            finally:
+                r.close()
+            if log_vkey is None:
+                raise ValueError("the store holds no log vkey yet: start the signer once, or pass --log-vkey")
+        vkeys = [log_vkey] if log_vkey else read_vkeys(cfg["data_dir"])   # a file store: the hybrid key's too
+        for k in vkeys:
+            checkpoint.parse_vkey(k)
         self.records, self.base, self.lock = [], 0, threading.Condition()
         self.runs = {}   # (tenant, run_id) -> {"count": records verified, "shown": records translated, "failed": report}
         self.tr = Translator()
@@ -73,7 +91,7 @@ class StoreFeed:
         atexit.register(shutil.rmtree, self.tmp, True)
         self.trust = os.path.join(self.tmp, "trust.json")
         with open(self.trust, "w", encoding="utf-8") as f:
-            json.dump({"logs": read_vkeys(data_dir), "witnesses": [], "algs": [RecordSigner.alg],
+            json.dump({"logs": vkeys, "witnesses": [], "algs": [RecordSigner.alg],
                        "witnesses_required": 0}, f)
         threading.Thread(target=self._watch, daemon=True).start()
 
@@ -81,29 +99,34 @@ class StoreFeed:
         seen = None
         while True:
             stamp = []
-            for name in ("records.jsonl", NOTE):
+            for name in () if self.pg else ("records.jsonl", NOTE):
                 try:
                     st = os.stat(os.path.join(self.store, name))
                     stamp.append((st.st_size, st.st_mtime_ns))
                 except FileNotFoundError:
                     stamp.append(None)
-            if stamp != seen:
+            # lean: a Postgres store is read again every POLL_S; compare its latest note first if that loads the server
+            if stamp != seen or self.pg:
                 seen = stamp
                 try:
                     self.refresh()
-                except (OSError, ValueError, StorageCorrupt) as e:
+                except (OSError, ValueError, StorageCorrupt, StorageUnavailable) as e:
                     print(f"tracekit view: cannot read {self.store}: {e}", file=sys.stderr, flush=True)
             time.sleep(POLL_S)
 
     def refresh(self):
         """Verify every run that grew since it was last verified and a checkpoint now covers."""
-        reader = FileReader(self.store)
-        note = reader.checkpoint_latest()
-        if note and note[0] > reader.tree.size:
-            reader = FileReader(self.store)   # opened after the note: holds every record it covers
-        for key, run in list(reader.runs.items()):
-            if note and run["seqs"][-1] < note[0] and len(run["seqs"]) != self.runs.get(key, {}).get("count"):
-                self._verify(reader, note[1], key, len(run["seqs"]))
+        r = reader(self.cfg)
+        try:
+            note = r.checkpoint_latest()
+            if note and note[0] > r.tree.size:
+                r.close()
+                r = reader(self.cfg)   # opened after the note: holds every record it covers
+            for key, run in list(r.runs.items()):
+                if note and run["seqs"][-1] < note[0] and len(run["seqs"]) != self.runs.get(key, {}).get("count"):
+                    self._verify(r, note[1], key, len(run["seqs"]))
+        finally:
+            r.close()
 
     def _verify(self, reader, note, key, count):
         tenant, run_id = key
@@ -133,7 +156,7 @@ class StoreFeed:
                        + (", ".join(f"{v} {n}" for v, n in sorted(verdicts.items())) or "none")
                        + f" · approvals {types['approval']} · gaps {types['capture.gap']}")
             new.append(self.tr.alert(e, records[-1], "info", f"RUN {run_id} · Integrity {rep.integrity} · Assurance "
-                                     f"{rep.assurance.split(';')[0]}", f"{summary}\n{DEV_NOTE}\n\n{text.getvalue()}"))
+                                     f"{rep.assurance.split(';')[0]}", f"{summary}\n{self.note}\n\n{text.getvalue()}"))
             state = dict(state, count=count, shown=len(records), failed=None)
         with self.lock:
             self.runs[key] = state
@@ -179,6 +202,7 @@ def main(argv=None):
     g.add_argument("--dev", action="store_true", help="the same-user dev signer's data dir (the default)")
     g.add_argument("--config", help="signer.yaml: view its data_dir")
     g.add_argument("--data-dir", help="a signer data dir (holds store/ and log.vkey)")
+    ap.add_argument("--log-vkey", help="pin this log vkey (`tracekit signer vkey`) instead of the one the store names")
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=7778)
     ap.add_argument("--tls-cert", help="PEM certificate: serve HTTPS (required beyond loopback)")
@@ -203,17 +227,15 @@ def main(argv=None):
             tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
             tls.load_cert_chain(a.tls_cert, a.tls_key)
         cfg = load_config(a.config) if a.config else {"data_dir": a.data_dir or dev_data_dir()}
-        file_store(cfg, "tracekit view")
-        data_dir = cfg["data_dir"]
-        feed = StoreFeed(data_dir)
+        feed = StoreFeed(cfg, a.log_vkey)
         srv = server(feed, a.host, a.port, token, tls)
-    except (OSError, ValueError) as e:
+    except (OSError, ValueError, StorageUnavailable) as e:
         print(f"tracekit view: {e}", file=sys.stderr)
         return 1
     scheme = "https" if tls else "http"
     print(f"tracekit view on {scheme}://{a.host}:{srv.server_address[1]}/"
           + ("" if os.environ.get("TRACEKIT_VIEW_TOKEN") else f"?token={token}")
-          + f"  (store: {feed.store}, read-only; {DEV_NOTE})", flush=True)
+          + f"  (store: {feed.store}, read-only; {feed.note})", flush=True)
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

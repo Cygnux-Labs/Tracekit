@@ -66,6 +66,10 @@ class Storage:
         """Store a snapshot of the indexes at the current tree size with `state` (JSON), the caller's state at that
         size, so the next open replays only the records after it. Call it with no append in flight."""
 
+    def meta_put(self, key, value):
+        """Store `value` (str) for the store's readers that can't read the signer's data dir (the log key's vkey under
+        "log_vkey"); a store read through that dir (file) keeps none."""
+
     def append_batch(self, records):
         """Append v2 records whose seqs continue the log, with one write. Returns once written; with
         `ack-on-fsync` also once durable, with `ack-on-write` a background sync follows within 5 ms."""

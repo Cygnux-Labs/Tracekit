@@ -37,6 +37,7 @@ that a clean setup passes (`make eval`).
 | `D-KEYS-DISTINCT` | `keys/log.key` and `keys/record.key` | they're the same key (warn: none yet); ok when `log_key` names a KMS key | move both away and restart the signer: new keys start a new log |
 | `D-KEY-HYGIENE` | `data_dir/hygiene.json`, written by the signer on start | the signer process may dump core (RLIMIT_CORE not 0), is dumpable (Linux `PR_SET_DUMPABLE`), or could not mlock its key files (warn; also when the signer never started) | run it with `tracekit signer serve`; raise `LimitMEMLOCK` |
 | `D-UNIT-HARDENING` | `tracekit-signer.service` (or the launchd plist) | a hardening directive that init writes is missing: the detail gives the score and lists the missing directives (warn) | re-run init to rewrite the service file |
+| `D-HARNESS-HELPER` | `tracekit-harness-helper.service` (or its launchd plist), when signer.yaml has `harness_binding` | the file is missing, or its capability bounding set is anything but `CAP_SYS_PTRACE CAP_DAC_READ_SEARCH` | re-run init with `--harness` |
 | `D-HOOKS-PRESENT` | the agent's Claude Code settings | a tool event (PreToolUse, PostToolUse, PostToolUseFailure) has no v2 hook | re-run init |
 | `D-HOOKS-VENV` | the hook commands | a hook runs a Python other than the root-owned venv's | re-run init |
 | `D-HOOKS-TIMEOUT` | the PreToolUse hook's timeout | it's below the hook's approval wait (540 s), so Claude Code would kill a call that's waiting for approval | set it to 600 (re-run init) |
@@ -61,6 +62,7 @@ venv or unit checks. If there's no service file, `D-UNIT-HARDENING` warns.
 | `D-SYSTEM-CONFIG` | `/etc/tracekit/client.json` is missing, unreadable, or not root-owned |
 | `D-V1-SIGNER-PYTHON`, `D-V1-VENV-CONFIG`, `D-V1-RUNTIME`, `D-V1-UNIT-FILE`, `D-V1-POLICY-FILE` | the file, a file below it, or a directory above it isn't root-owned or is group- or world-writable |
 | `D-V1-HOOKS` | never: lists the Tracekit hooks it found (ok) |
+| `D-HARNESS-HELPER` | a harness is registered and `tracekitd-harness-helper.service` is missing or its capability bounding set is anything but `CAP_SYS_PTRACE CAP_DAC_READ_SEARCH` (fix: `sudo tracekit migrate --system`) |
 
 Fix: re-run `sudo /usr/bin/python3 -m tracekit init --user AGENT`. For the policy, make it root-owned, then run
 `sudo tracekit migrate --system`.
