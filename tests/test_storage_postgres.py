@@ -220,7 +220,8 @@ class OnPostgres:
             init(s, data_dir, *a, **{"storage_config": section(data_dir), **kw})
         for target, name, value in (
                 (svc.SignerService, "__init__", pg_init),
-                (svc, "fsck", lambda d, upto=None, storage=None: fsck(d, upto, storage or section(d))),
+                (svc, "fsck", lambda d, upto=None, storage=None, record_key=None: fsck(d, upto, storage or section(d),
+                                                                                       record_key)),
                 (self.suite, "records", lambda d: [r for (r,) in sql(dsn(d), "SELECT record FROM tracekit_records "
                                                                      "ORDER BY seq")]),
                 (self.suite, "FileStorage", lambda root, *a: PostgresStorage(dsn(os.path.dirname(root))))):
