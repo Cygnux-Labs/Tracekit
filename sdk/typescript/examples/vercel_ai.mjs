@@ -1,21 +1,20 @@
-// Vercel AI SDK middleware, offline: a stub language model wrapped with tracekitMiddleware, plus a policy-checked tool.
-// With the real SDK: wrapLanguageModel({ model: openai("gpt-4o"), middleware: tracekitMiddleware(tk) }).
-// Needs a running signer (tracekit init) and `npm run build` first.   node examples/vercel_ai.mjs
-import { Tracekit, TracekitDenied, tracekitMiddleware } from "../dist/index.js";
+// Vercel AI SDK adapter on the v2 signer, offline and without `ai` installed: a stub model call goes through
+// tk.middleware, then each tool call it asks for through tk.toolApproval and the gated execute, as generateText does.
+// With the real SDK see examples/v2_vercel_ai.mjs. Needs `npm run build` and Python with tracekit (a dev signer is
+// started on demand).   node examples/vercel_ai.mjs
+import { Client } from "../dist/v2/client.js";
+import { tracekitAI } from "../dist/v2/adapters/vercel-ai.js";
 
-const tk = await Tracekit.start({ agent: "vercel-example" });
-const mw = tracekitMiddleware(tk);
-const model = { provider: "openai.chat", modelId: "gpt-4o-mini" };
-const r = await mw.wrapGenerate({ model, params: { prompt: [] }, doGenerate: async () => ({
-  content: [{ type: "tool-call", toolCallId: "t1", toolName: "Bash", input: "{\"command\":\"ls\"}" }],
-  finishReason: "tool-calls", usage: { inputTokens: 42, outputTokens: 9 } }) });
-const call = r.content[0];
-console.log(await tk.tool("Bash", JSON.parse(call.input), () => "README.md", { toolUseId: call.toolCallId }));
-try {
-  await tk.tool("Bash", { command: "sudo rm -rf /" }, () => { throw new Error("must not run"); });
-} catch (e) {
-  if (!(e instanceof TracekitDenied)) throw e;
-  console.log("denied:", e.message);
+const client = new Client(), run = await client.registerRun("vercel-example");
+const tk = tracekitAI(run);
+const call = (id, command) => ({ type: "tool-call", toolCallId: id, toolName: "Bash", input: JSON.stringify({ command }) });
+const r = await tk.middleware.wrapGenerate({ model: { provider: "openai.chat", modelId: "gpt-4o-mini" }, doGenerate: async () => ({
+  content: [call("t1", "ls"), call("t2", "sudo rm -rf /")], finishReason: "tool-calls", usage: { inputTokens: { total: 42 }, outputTokens: { total: 9 } } }) });
+const { Bash } = tk.tools({ Bash: { execute: async ({ command }) => `(pretend) ran ${command}` } });
+for (const toolCall of r.content) {
+  const a = await tk.toolApproval({ toolCall });
+  console.log(a === "not-applicable" ? await Bash.execute(JSON.parse(toolCall.input), { toolCallId: toolCall.toolCallId }) : `${a.type}: ${a.reason}`);
 }
-await tk.end();
+await run.close();
+await client.close();
 console.log("vercel example finished");
