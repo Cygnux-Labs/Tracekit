@@ -1,0 +1,107 @@
+{{- $agentUid := int .Values.agent.uid }}
+{{- $signerUid := int .Values.signer.uid }}
+{{- if or (eq $agentUid 0) (eq $agentUid $signerUid) }}
+{{- fail "agent.uid must be neither 0 nor signer.uid: the signer knows the agent by its peer uid" }}
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}
+  labels: {app.kubernetes.io/name: tracekit-signer, app.kubernetes.io/instance: {{ .Release.Name }}}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}   # one signer per data volume: it holds the storage lock
+  selector:
+    matchLabels: {app.kubernetes.io/name: tracekit-signer, app.kubernetes.io/instance: {{ .Release.Name }}}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: tracekit-signer, app.kubernetes.io/instance: {{ .Release.Name }}}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+    spec:
+      automountServiceAccountToken: {{ .Values.automountServiceAccountToken }}
+      securityContext:   # the data PVC group-owned by the signer's gid, so uid 10001 can write it; every container
+        # gets this gid, so the data volume must never be mounted in the agent container (it is not)
+        fsGroup: {{ .Values.signer.uid }}
+        fsGroupChangePolicy: OnRootMismatch
+      initContainers:
+        - name: tracekit-signer
+          image: {{ .Values.signer.image }}
+          restartPolicy: Always   # a native sidecar: up before the agent starts, down after it stops
+          # The data volume's root may be any mode; data_dir is a 0700 directory the signer's uid makes in it.
+          command:
+            - sh
+            - -c
+            - |
+              set -eu
+              umask 077
+              mkdir -p /var/lib/tracekit-signer/data/keys
+              {{- if .Values.recordKey.secretName }}
+              k=/var/lib/tracekit-signer/data/keys/record.key
+              if [ -e "$k" ]; then
+                cmp -s /etc/tracekit-record-key/record.key "$k" || { echo "the record key Secret differs from $k" >&2; exit 1; }
+              else
+                cp /etc/tracekit-record-key/record.key "$k"
+              fi
+              {{- end }}
+              exec tracekit signer serve --config /etc/tracekit/signer.yaml
+          securityContext:
+            runAsUser: {{ $signerUid }}
+            runAsGroup: {{ $signerUid }}
+            runAsNonRoot: true
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+            seccompProfile: {type: RuntimeDefault}
+          startupProbe:
+            exec: {command: [test, -S, /run/tracekit-signer/signer.sock]}
+            periodSeconds: 1
+            failureThreshold: 120
+          {{- if .Values.metrics.remote }}
+          ports: [{name: metrics, containerPort: 9464}]
+          {{- end }}
+          volumeMounts:
+            - {name: signer-data, mountPath: /var/lib/tracekit-signer}
+            - {name: signer-socket, mountPath: /run/tracekit-signer}
+            # subPath: a root-owned file in the image's root-owned /etc/tracekit (doctor's D-CONFIG)
+            - {name: signer-config, mountPath: /etc/tracekit/signer.yaml, subPath: signer.yaml, readOnly: true}
+            {{- if .Values.recordKey.secretName }}
+            - {name: record-key, mountPath: /etc/tracekit-record-key, readOnly: true}
+            {{- end }}
+      containers:
+        - name: agent
+          image: {{ required "agent.image is required" .Values.agent.image }}
+          {{- with .Values.agent.command }}
+          command: {{ toJson . }}
+          {{- end }}
+          {{- with .Values.agent.args }}
+          args: {{ toJson . }}
+          {{- end }}
+          env:
+            - {name: TRACEKIT_SIGNER, value: /run/tracekit-signer/signer.sock}
+            {{- with .Values.agent.env }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          securityContext:
+            runAsUser: {{ $agentUid }}
+            runAsGroup: {{ int .Values.agent.gid }}
+            runAsNonRoot: true
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+            seccompProfile: {type: RuntimeDefault}
+          volumeMounts:
+            - {name: signer-socket, mountPath: /run/tracekit-signer}
+      volumes:
+        - name: signer-data
+          {{- if not .Values.persistence.enabled }}
+          emptyDir: {}
+          {{- else }}
+          persistentVolumeClaim: {claimName: {{ .Values.persistence.existingClaim | default (printf "%s-signer-data" .Release.Name) }}}
+          {{- end }}
+        - {name: signer-socket, emptyDir: {sizeLimit: 1Mi}}
+        - {name: signer-config, configMap: {name: {{ .Release.Name }}-signer}}
+        {{- if .Values.recordKey.secretName }}
+        # 0444: the files are root's, and only the sidecar mounts them
+        - {name: record-key, secret: {secretName: {{ .Values.recordKey.secretName }}, defaultMode: 0444, items: [{key: record.key, path: record.key}]}}
+        {{- end }}

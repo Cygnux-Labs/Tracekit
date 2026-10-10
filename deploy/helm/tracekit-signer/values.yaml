@@ -1,0 +1,44 @@
+# Values of the tracekit-signer chart: one agent pod with the signer as a native sidecar. docs/deploy-kubernetes.md.
+
+signer:
+  # The signer image (deploy/docker/Dockerfile). Pin it by digest: the image is the signer's code trust.
+  image: ghcr.io/cygnux-labs/tracekit-signer:0.4.0
+  uid: 10001               # the image's user; owns the signer's data
+  tenant: default          # the tenant of the agent's runs (signer.yaml `tenants`, keyed by the agent's uid)
+  durability: ack-on-fsync
+  # More signer.yaml keys (witnesses, limits, fail_modes, ...: tracekit/signer/service.py). data_dir, socket,
+  # socket_mode, durability, tenants and metrics are set by the chart.
+  config: {}
+
+agent:
+  image: ""                # required: your agent's image, with the tracekit client (pip install tracekit-ai)
+  command: []
+  args: []
+  env: []                  # TRACEKIT_SIGNER is set by the chart
+  uid: 1000                # not signer.uid and not 0: the signer knows the agent by its peer uid
+  gid: 1000
+
+# The signer's keys and log. enabled false: an emptyDir, lost with the pod (dev only).
+persistence:
+  enabled: true
+  existingClaim: ""        # a PVC whose root uid 10001 can write; else the chart makes one
+  storageClass: ""
+  size: 1Gi
+
+# A record key from a Secret (key `record.key`, 32 bytes), mounted only in the sidecar and copied into the empty data
+# volume on first start; a later start refuses a Secret that differs from the log's key. Empty: the signer makes one.
+recordKey:
+  secretName: ""
+
+# Serve the signer's metrics on the pod IP (0.0.0.0:9464, allow_remote) instead of 127.0.0.1.
+metrics:
+  remote: false
+
+# A NetworkPolicy admitting ingress to the pod only on 9464 from this namespace (needs metrics.remote).
+networkPolicy:
+  enabled: false
+  monitoringNamespace: monitoring
+
+# The pod's service-account token. Off: no API credentials in the pod. Don't give the pod cloud credentials either:
+# workload identity hands them to every container, the agent's too. A KMS log key belongs to the central signer.
+automountServiceAccountToken: false

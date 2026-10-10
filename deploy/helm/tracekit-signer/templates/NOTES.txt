@@ -1,0 +1,10 @@
+The agent container of deployment/{{ .Release.Name }} reaches the signer at TRACEKIT_SIGNER=/run/tracekit-signer/signer.sock
+as uid {{ .Values.agent.uid }} (tenant {{ .Values.signer.tenant }}).
+{{- if not .Values.persistence.enabled }}
+
+WARNING: persistence.enabled is false. The signer's keys and log are in an emptyDir and are lost with the pod, so its
+evidence can no longer be exported or verified against its key. Use this for development only.
+{{- end }}
+
+Check the signer:
+  kubectl exec deploy/{{ .Release.Name }} -c tracekit-signer -- tracekit doctor --config /etc/tracekit/signer.yaml
