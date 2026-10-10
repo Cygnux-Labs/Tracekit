@@ -6,7 +6,8 @@ FROM ${BASE} AS build
 WORKDIR /src
 COPY . .
 # google-re2 only as a binary wheel: where it has none, the signer runs on the regex backend (signed as its engine id)
-RUN pip wheel --no-cache-dir --wheel-dir /wheels . "regex>=2023.8" \
+# the postgres and aws extras: the central signer's store and KMS log key (deploy/helm/tracekit-central)
+RUN pip wheel --no-cache-dir --wheel-dir /wheels ".[postgres,aws]" "regex>=2023.8" \
  && { pip wheel --no-cache-dir --only-binary=:all: --wheel-dir /wheels "google-re2>=1.1" \
       || echo "no google-re2 wheel for this platform: the regex backend is used"; }
 
