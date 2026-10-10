@@ -25,7 +25,7 @@ def _signer_home(a):
 
 
 _DELEGATED = {"observe": "observe", "analyze": "findings", "otel": "otlp", "cost": "cost", "witness": "witness_server",
-              "signer": "signer.service", "view": "view", "monitor": "monitor"}  # subcommands with their own parsers
+              "signer": "signer.service", "view": "view", "monitor": "monitor", "gateway": "gateway"}  # subcommands with their own parsers
 _MOVED = {"sql": "query", "proofpack": "proofpack", "report": "proofpack", "causeway": "causeway"}  # now separate packages under contrib/
 
 
@@ -119,6 +119,8 @@ def main(argv=None):
     p.add_argument("rest", nargs=argparse.REMAINDER)
     p = sub.add_parser("monitor", help="follow a v2 signer's logs, check their rules, publish a signed monitor report",
                        add_help=False)
+    p.add_argument("rest", nargs=argparse.REMAINDER)
+    p = sub.add_parser("gateway", help="LLM gateway for the v2 signer: `gateway serve --config gateway.yaml`", add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
     p = sub.add_parser("otel", help="OpenTelemetry receiver: `otel serve` records agent spans sent over OTLP/HTTP", add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)

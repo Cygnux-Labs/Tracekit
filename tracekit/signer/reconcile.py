@@ -11,6 +11,10 @@ failed strict parsing → args_unparseable; another tool name, or (neither side 
 arguments → args_mismatch. Each decide with no L3 tool use → fabricated; each id in tool_results_sent with neither →
 result_without_call. A run with no L3 record gets none of these: its coverage says L3 is absent. The internal args
 digests live in the run's `digests`, which no snapshot holds.
+
+L3 from the LLM gateway (source gateway, tier T2) takes precedence over agent-reported L3 for the same tool use id. With
+`gateway_mandatory` (signer.yaml) only gateway L3 counts, and a run with none still has its decides checked: each
+decide the gateway did not see is fabricated, whatever the agent reported.
 """
 
 LAYERS = {"state.write": "L1", "policy.decision": "L2", "tool.result": "L2", "model.exchange": "L3"}
@@ -37,21 +41,26 @@ def observe(put, run, e, digests=None):
         put(rec["l2"], tcid, {"name": e["data"]["tool"], "coerced": e.get("args_source") == "coerced"})
         put(run["digests"], "l2:" + tcid, digests.get(tcid))
     elif e["type"] == "model.exchange":
+        gw = e["source"] == "gateway"
         for t in e["data"].get("tool_uses", ()):
-            if t["executed_by"] == "client":
+            if t["executed_by"] == "client" and (gw or not rec["l3"].get(t["id"], {}).get("gw")):
                 put(rec["l3"], t["id"], {"name": t["name"], "coerced": t.get("args_source") == "coerced",
-                                         "unparseable": t.get("args_unparseable", False)})
+                                         "unparseable": t.get("args_unparseable", False), "gw": gw})
                 put(run["digests"], "l3:" + t["id"], digests.get(t["id"]))
         for tcid in e["data"].get("tool_results_sent", ()):
             put(rec["sent"], tcid, True)
 
 
-def _found(run):
+def _l3(rec, mandatory):
+    return {t: u for t, u in rec["l3"].items() if u.get("gw") or not mandatory}
+
+
+def _found(run, mandatory):
     """[(kind, tool_call_id, layers, detail)] of the run's discrepancies."""
-    rec, digests, out = run["rec"], run["digests"], []
-    if "L3" not in rec["layers"]:
+    rec, digests, out, l3 = run["rec"], run["digests"], [], _l3(run["rec"], mandatory)
+    if "L3" not in rec["layers"] and not mandatory:
         return out
-    for tcid, u in rec["l3"].items():
+    for tcid, u in l3.items():
         d = rec["l2"].get(tcid)
         if d is None:
             out.append(("hook_missing", tcid, ["L2", "L3"], f"the model asked for {u['name'][:200]}; no decide"))
@@ -66,24 +75,25 @@ def _found(run):
         elif not (u["unparseable"] or d["coerced"] or u["coerced"]) and a and b and a != b:
             out.append(("args_mismatch", tcid, ["L2", "L3"], "decided other arguments than the model asked for"))
     for tcid, d in rec["l2"].items():
-        if tcid not in rec["l3"]:
+        if tcid not in l3:
             out.append(("fabricated", tcid, ["L2", "L3"], f"a decide for {d['name'][:200]} the model never asked for"))
     for tcid in rec["sent"]:
-        if tcid not in rec["l2"] and tcid not in rec["l3"]:
+        if tcid not in rec["l2"] and tcid not in l3:
             out.append(("result_without_call", tcid, ["L2", "L3"], "a result sent to the model for a call no layer "
                                                                    "reported"))
     return out
 
 
-def finish(tx, run):
+def finish(tx, run, mandatory=False):
     """Write the run's reconcile.* records; returns the coverage for its run.final (None for a run restored from a
-    snapshot written before reconciliation, which has no index, or for an imported run)."""
+    snapshot written before reconciliation, which has no index, or for an imported run). `mandatory`:
+    gateway_mandatory."""
     if run.get("rec") is None:
         return None
-    found, unreconciled = _found(run), {}
+    found, unreconciled = _found(run, mandatory), {}
     for kind, tcid, layers, detail in found:
         tx.emit(run, "reconcile." + kind, {"layers": layers, "detail": detail}, source="signer", tool_call_id=tcid)
         unreconciled[kind] = unreconciled.get(kind, 0) + 1
     rec, flagged = run["rec"], {tcid for _, tcid, _, _ in found}
     return {"layers": sorted(rec["layers"]), "unreconciled": unreconciled,
-            "reconciled": sum(t in rec["l2"] and t not in flagged for t in rec["l3"])}
+            "reconciled": sum(t in rec["l2"] and t not in flagged for t in _l3(rec, mandatory))}
