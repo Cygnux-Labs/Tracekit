@@ -119,3 +119,20 @@
 {"tool": "bash", "args": {"command": "hostname -f"}, "expect": "allow", "note": "routine server command"}
 {"tool": "shell", "args": {"command": "timedatectl"}, "expect": "allow", "note": "routine server command"}
 {"tool": "terminal", "args": {"command": "locale"}, "expect": "allow", "note": "routine server command"}
+{"tool": "Bash", "args": {"command": "grep -rn /run/secrets/ deploy/"}, "expect": "allow", "note": "searching for a path, not reading it"}
+{"tool": "Bash", "args": {"command": "git commit -m 'read token from /var/run/secrets/kubernetes.io'"}, "expect": "allow", "note": "commit message mentions a path"}
+{"tool": "Bash", "args": {"command": "git commit -m 'document the 169.254.169.254 block'"}, "expect": "allow", "note": "commit message mentions an address"}
+{"tool": "Bash", "args": {"command": "rg -n 'netrc' docs/"}, "expect": "allow", "note": "search pattern"}
+{"tool": "Bash", "args": {"command": "git push -u origin main"}, "expect": "allow", "note": "push with upstream"}
+{"tool": "Bash", "args": {"command": "git push --set-upstream origin feature/foo-fix"}, "expect": "allow", "note": "push with upstream"}
+{"tool": "Bash", "args": {"command": "git push origin my-feature-branch"}, "expect": "allow", "note": "branch name with dashes"}
+{"tool": "Bash", "args": {"command": "git push --follow-tags"}, "expect": "allow", "note": "push with tags"}
+{"tool": "Bash", "args": {"command": "python3 - <<'EOF'\nprint(sum(range(10)))\nEOF"}, "expect": "allow", "note": "python program from a heredoc"}
+{"tool": "Bash", "args": {"command": "$HOME/.local/bin/ruff check ."}, "expect": "allow", "note": "tool under a variable directory"}
+{"tool": "Bash", "args": {"command": "sed -i 's/foo/bar/g' src/app.py"}, "expect": "allow", "note": "sed substitution"}
+{"tool": "Bash", "args": {"command": "sed -n '/^def /p' src/app.py"}, "expect": "allow", "note": "sed print"}
+{"tool": "Bash", "args": {"command": "awk '{print $1}' access.log | sort | uniq -c"}, "expect": "allow", "note": "awk program"}
+{"tool": "Bash", "args": {"command": "parallel gzip ::: a.log b.log"}, "expect": "allow", "note": "parallel"}
+{"tool": "Bash", "args": {"command": "taskset -c 0 python3 bench.py"}, "expect": "allow", "note": "taskset"}
+{"tool": "Bash", "args": {"command": "find . -name '*.py' | xargs -I{} wc -l {}"}, "expect": "allow", "note": "xargs replace into a plain command"}
+{"tool": "Bash", "args": {"command": "env -u DEBUG make test"}, "expect": "allow", "note": "env unset"}

@@ -52,3 +52,19 @@
 {"tool": "mcp:postgres/query", "args": {"sql": "SELECT load_extension('/tmp/ext.so');"}, "expect": "deny", "note": "load_extension"}
 {"tool": "query_database", "args": {"statement": "ATTACH DATABASE '/tmp/copy.db' AS c;"}, "expect": "deny", "note": "sqlite attach"}
 {"tool": "mcp:sqlite/write_query", "args": {"query": "SELECT pg_read_binary_file('/var/lib/postgresql/data/pg_hba.conf')"}, "expect": "deny", "note": "pg_read_binary_file"}
+{"tool": "run_sql", "args": {"sql": "DROP/**/TABLE users"}, "expect": "deny", "note": "keyword split by a comment"}
+{"tool": "run_sql", "args": {"sql": "SELECT 1 -- '\nDROP TABLE users"}, "expect": "deny", "note": "quote inside a line comment"}
+{"tool": "run_sql", "args": {"sql": "SELECT 1 /* ' */; DROP TABLE users"}, "expect": "deny", "note": "quote inside a block comment"}
+{"tool": "run_sql", "args": {"sql": "SELECT $$'$$; DROP TABLE users; --'"}, "expect": "deny", "note": "quote inside a dollar-quoted literal"}
+{"tool": "run_sql", "args": {"sql": "SELECT E'\\''; DROP TABLE users; --'"}, "expect": "deny", "note": "escaped quote in an E'' literal"}
+{"tool": "run_sql", "args": {"sql": "SELECT 1 AS \"'\"; DROP TABLE users; --'"}, "expect": "deny", "note": "quote inside a quoted identifier"}
+{"tool": "run_sql", "args": {"sql": "GRANT/**/ALL ON x TO y"}, "expect": "deny", "note": "keyword split by a comment"}
+{"tool": "run_sql", "args": {"sql": "CREATE/**/ROLE x SUPERUSER"}, "expect": "deny", "note": "keyword split by a comment"}
+{"tool": "run_sql", "args": {"sql": "SELECT 1 -- '\nCOPY x TO PROGRAM 'id'"}, "expect": "deny", "note": "quote inside a line comment"}
+{"tool": "run_sql", "args": {"sql": "SELECT 1 -- '\nTRUNCATE users"}, "expect": "deny", "note": "quote inside a line comment"}
+{"tool": "run_sql", "args": {"sql": "SELECT 1 -- '\nDELETE FROM users"}, "expect": "deny", "note": "quote inside a line comment"}
+{"tool": "run_sql", "args": {"sql": "SELECT 'a\\'; DROP TABLE users; -- '"}, "expect": "deny", "note": "backslash ends the literal in one dialect only"}
+{"tool": "run_sql", "args": {"sql": "SELECT 1 /* /* */ ' */ DROP TABLE users; -- '"}, "expect": "deny", "note": "nested comment read two ways"}
+{"tool": "run_sql", "args": {"sql": "SELECT $$ ; DROP TABLE users; $$"}, "expect": "deny", "note": "dollar quotes are not quotes in every dialect"}
+{"tool": "run_sql", "args": {"sql": "DELETE FROM users WHERE 'a' = 'a'"}, "expect": "deny", "note": "always-true WHERE on literals"}
+{"tool": "run_sql", "args": {"sql": "SELECT 'unclosed; DROP TABLE users"}, "expect": "ask", "note": "no dialect can read it"}

@@ -75,8 +75,9 @@ person (`unknown_tools: ask`):
 
 | Rule | Decision | Matches |
 |---|---|---|
-| TK-B001 | deny | navigating to a `file:` URL |
-| TK-B002 | deny | navigating to loopback, private, link-local (cloud metadata) or IPv6 local addresses, and `.internal`/`.local` hosts |
+| TK-B001 | deny | navigating to a `file:` URL (also behind `view-source:` or `blob:`, or with controls in the scheme) |
+| TK-B002 | deny | navigating to a loopback, private, link-local (cloud metadata) or other non-global address, in any notation |
+| TK-B003 | deny | navigating to localhost, a name without a dot, or `.internal`/`.local`/`.svc` hosts |
 | TK-B010 | ask | `upload_file` |
 | TK-B011 | ask | `input` on a page outside the allowlist (`example.com` as shipped), or with no page |
 

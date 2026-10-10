@@ -1,10 +1,10 @@
 # Browser pack (policy v2): Browser Use actions, as tracekit.integrations.browser_use records them
 # (`browser_use:<action>`, with the URL of the page the action ran on as `page_url`). Rules stay tripwires.
 #
-# To allow a host TK-B002 denies, or to set the domains typing is allowed on (TK-B011), extend this pack and redefine
+# To allow a host TK-B002 or TK-B003 denies, or to set the domains typing is allowed on (TK-B011), extend this pack and redefine
 # the rule with the same id: a rule in the extending file replaces the parent's.
 
-version: '2026.10-browser-1'
+version: '2026.10-browser-2'
 description: browser agents (Browser Use)
 unknown_tools: ask
 
@@ -14,17 +14,25 @@ tools:
 deny:
   - id: TK-B001
     class: browser
-    field: url
-    pattern: '^\s*[Ff][Ii][Ll][Ee]:'
+    field: scheme
+    # the scheme as the browser reads it (controls, tabs and newlines dropped, view-source: and blob: peeled)
+    pattern: '^file$'
     reason: local file navigation
     rationale: A file:// page shows the agent's own disk to the model, and from there to any site it visits.
   - id: TK-B002
     class: browser
-    field: url
-    # loopback, private, link-local (cloud metadata), unspecified and IPv6 local addresses, and .internal/.local names
-    pattern: '^\s*([A-Za-z][A-Za-z0-9+.-]*://)?([^/@?#]*@)?(([Ll][Oo][Cc][Aa][Ll][Hh][Oo][Ss][Tt]|127\.[0-9.]+|10\.[0-9.]+|192\.168\.[0-9.]+|172\.(1[6-9]|2[0-9]|3[01])\.[0-9.]+|169\.254\.[0-9.]+|0\.0\.0\.0|0|\[[0-9A-Fa-f:.]*\]|[^/:?#]*\.([Ii][Nn][Tt][Ee][Rr][Nn][Aa][Ll]|[Ll][Oo][Cc][Aa][Ll]|[Ll][Oo][Cc][Aa][Ll][Hh][Oo][Ss][Tt]))\.?)(:[0-9]*)?([/?#]|$)'
+    field: internal
+    # loopback, private, link-local (cloud metadata), unspecified and other non-global addresses in any notation, as
+    # TK-N001 reads them
+    pattern: '^true$'
     reason: internal network navigation
     rationale: A browser on a server reaches what the server reaches; internal services and cloud metadata are not the web.
+  - id: TK-B003
+    class: browser
+    field: host
+    pattern: '^(localhost|[^.:\[]+|.*\.(localhost|internal|local|lan|corp|intranet|svc|home\.arpa))\.?$'
+    reason: internal name navigation
+    rationale: The name twin of TK-B002 (TK-N003 for the browser).
 
 ask:
   - id: TK-B010
