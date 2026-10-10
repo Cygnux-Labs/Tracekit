@@ -1,4 +1,4 @@
-.PHONY: help install test quickstart test-contrib test-ts eval-scale lint build check demo eval eval-agents clean
+.PHONY: help install test quickstart test-contrib test-ts release-dry-run eval-scale lint build check demo eval eval-agents clean
 PY ?= python3
 
 help:
@@ -9,6 +9,7 @@ help:
 	@echo "make lint      pyflakes over the package, SDK and tests"
 	@echo "make build     build the sdist and wheel into dist/"
 	@echo "make check     lint + test + build + twine check"
+	@echo "make release-dry-run  build every release artifact, SBOM and sum locally, publish nothing, and check them (needs the package index and npm)"
 	@echo "make demo      run the scripted end-to-end demo"
 	@echo "make eval      offline evaluations E1 (integrity), E2 (overhead), E3 (policy gate), E4 (seeded faults, v1 and v2), E6 (findings), on Linux E9 --quick (signer perf); rewrites eval/results/"
 	@echo "make eval-agents  E5: real Claude Code runs (needs the claude CLI; spends model usage)"
@@ -44,6 +45,10 @@ build:
 	$(PY) -m twine check dist/*
 
 check: lint test build
+
+release-dry-run:
+	$(PY) -m pip install -q -c scripts/release/constraints.txt build
+	TRACEKIT_RELEASE=1 $(PY) -m pytest -q tests/test_release.py
 
 demo:
 	$(PY) -m tracekit demo

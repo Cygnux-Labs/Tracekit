@@ -82,10 +82,12 @@ class SystemModeUsesOpt(unittest.TestCase):
         with open(os.path.join(home, "config.json"), "w") as f:
             json.dump({"harnesses": harnesses, "harness_binding": "enforce"}, f)
         run = mock.Mock(return_value=mock.Mock(returncode=0, stdout="", stderr=""))
+        me = install.pwd.getpwuid(os.getuid())
         with as_root_on_linux(), \
                 mock.patch.object(install, "SYS_HOME", home), mock.patch.object(install, "SYSTEMD_DIR", units), \
-                mock.patch.object(install.pwd, "getpwnam", return_value=install.pwd.getpwuid(os.getuid())), \
+                mock.patch.object(install.pwd, "getpwnam", return_value=me), \
                 mock.patch.object(install, "_privileges", return_value=[]), \
+                mock.patch.object(install, "_install_helper") as helper, \
                 mock.patch.object(install, "harness_config", return_value={"harness_binding": "off"}) as hc, \
                 mock.patch.object(install, "_install_source", return_value=None), \
                 mock.patch.object(install, "_install_venv", return_value=POLICY), \
@@ -100,8 +102,11 @@ class SystemModeUsesOpt(unittest.TestCase):
         with open(os.path.join(home, "config.json")) as f:
             cfg = json.load(f)
         self.assertEqual((cfg["harness_binding"], cfg["harnesses"]), ("enforce", harnesses))
+        self.assertEqual(cfg["harness_helper"], install.V1_HELPER_SOCKET)
+        helper.assert_called_once_with(install.V1_HELPER, "tracekitd", me, install.V1_HELPER_SOCKET, False)
+        self.assertEqual(stat.S_IMODE(os.stat(os.path.join(home, "helper")).st_mode), 0o700)
         with open(os.path.join(units, "tracekitd.service")) as f:
-            self.assertIn(install.UNIT_CAPS, f.read())
+            self.assertNotIn("CAP_", f.read())   # the helper reads /proc, not tracekitd
 
     def test_source_is_checked_before_any_system_change(self):
         d = tempfile.mkdtemp()
@@ -124,7 +129,8 @@ class SystemModeUsesOpt(unittest.TestCase):
         with open(os.path.join(d, "config.json"), "w") as f:
             f.write(signer_cfg)
         with open(os.path.join(d, "tracekitd.service"), "w") as f:
-            f.write(install.UNIT.format(user="tracekit", python=exec_python, home=d, caps=""))
+            f.write(install.UNIT.format(user="tracekit", python=exec_python, home=d).replace(
+                "PrivateTmp=true\n", "PrivateTmp=true\nAmbientCapabilities=CAP_SYS_PTRACE\n"))   # as 0.3 wrote it
         return d
 
     def test_migrate_refuses_an_install_without_the_root_owned_runtime(self):
@@ -145,14 +151,21 @@ class SystemModeUsesOpt(unittest.TestCase):
                     mock.patch.object(install.client, "system_config", return_value={"policy": POLICY}), \
                     mock.patch.object(install.pwd, "getpwnam", return_value=me), \
                     mock.patch.object(install, "harness_config", return_value={}) as hcfg, \
+                    mock.patch.object(install, "_install_helper") as helper, \
                     mock.patch.object(install, "_update_signer_config") as update, \
                     mock.patch.object(install, "_pin_policy", return_value="sha256:" + "0" * 64), \
+                    mock.patch.object(install.subprocess, "run"), \
                     mock.patch.object(install, "_write_system_client_config"), \
                     contextlib.redirect_stdout(io.StringIO()):
                 install.migrate_system(harnesses=given)
             self.assertEqual(hcfg.called, called)
             if not called:
-                self.assertEqual(update.call_args.args[1], {})
+                self.assertEqual(update.call_args.args[1], {"harness_helper": install.V1_HELPER_SOCKET})
+            helper.assert_called_once_with(install.V1_HELPER, "tracekitd", me, install.V1_HELPER_SOCKET, False)
+            with open(os.path.join(d, "tracekitd.service")) as f:
+                unit = f.read()
+            self.assertNotIn("CAP_", unit)
+            self.assertIn("ProtectKernelTunables=true\n", unit)
 
     def test_migrate_keeps_a_policy_path(self):
         d = self.migrate_dir()
@@ -167,6 +180,7 @@ class SystemModeUsesOpt(unittest.TestCase):
                     mock.patch.object(install, "harness_config", return_value={}), \
                     mock.patch.object(install, "_update_signer_config"), \
                     mock.patch.object(install, "_pin_policy", return_value="sha256:" + "0" * 64), \
+                    mock.patch.object(install.subprocess, "run"), \
                     mock.patch.object(install, "_write_system_client_config") as sys_cfg, \
                     contextlib.redirect_stdout(io.StringIO()):
                 install.migrate_system()
@@ -177,7 +191,7 @@ class SystemModeUsesOpt(unittest.TestCase):
         d = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, d, True)
         with mock.patch.object(install, "ROOT", d), \
-                mock.patch("tracekit.daemon.trusted_file", return_value=None):
+                mock.patch("tracekit.harness_helper.trusted_file", return_value=None):
             req = install._install_source()
         self.assertEqual(req[-1], f"tracekit-ai=={__version__}")
         self.assertEqual("--pre" in req, any(c.isalpha() for c in __version__))
@@ -192,13 +206,13 @@ class SystemModeUsesOpt(unittest.TestCase):
 
         def trusted_file(p):
             return None if p in (sys.executable, os.path.dirname(os.__file__), src) or p.startswith(vcs) else f"{p} is mine"
-        with mock.patch.object(install, "ROOT", src), mock.patch("tracekit.daemon.trusted_file", trusted_file):
+        with mock.patch.object(install, "ROOT", src), mock.patch("tracekit.harness_helper.trusted_file", trusted_file):
             with self.assertRaises(SystemExit) as cm:
                 install._install_source()
         self.assertIn("pyproject.toml is mine", str(cm.exception))
         self.assertIn("sudo git clone https://github.com/Cygnux-Labs/Tracekit /usr/local/src/Tracekit", str(cm.exception))
         with mock.patch.object(install, "ROOT", src), \
-                mock.patch("tracekit.daemon.trusted_file", lambda p: f"{p} is mine" if p.startswith(vcs) else None):
+                mock.patch("tracekit.harness_helper.trusted_file", lambda p: f"{p} is mine" if p.startswith(vcs) else None):
             self.assertIsNone(install._install_source())  # the repository metadata is not installed
 
     def opt(self):
@@ -357,7 +371,7 @@ class Doctor(unittest.TestCase):
         d = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, d, True)
         os.symlink("/", os.path.join(d, "link"))  # the target is root-owned; the link is ours
-        with mock.patch("tracekit.daemon.trusted_file", return_value=None):
+        with mock.patch("tracekit.harness_helper.trusted_file", return_value=None):
             code, out = self.run_doctor([("runtime", d, "reinstall")])
         self.assertEqual(code, 1)
         self.assertIn("link is not owned by root", out)
