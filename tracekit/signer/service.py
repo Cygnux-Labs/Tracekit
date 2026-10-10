@@ -1309,7 +1309,10 @@ class SignerService:
                      "source": {k: s[k] for k in ("run_seq", "tool", "tool_call_id") if s.get(k) is not None}}
                 if e not in entries:
                     entries.append(e)
-        out = {"provenance_state": state, **({"provenance": entries[:PROVENANCE_SHOWN]} if entries else {})}
+        # only when there is something to say, so a run with nothing untrusted in its arguments stays readable by a 1.0
+        # verifier (bundle_v2: these fields make a bundle need 1.1)
+        out = ({"provenance_state": state, **({"provenance": entries[:PROVENANCE_SHOWN]} if entries else {})}
+               if entries or state != "complete" else {})
         return (lambda subject: hits(subject) if state == "complete" else []), out
 
     def _chain(self, identity):
