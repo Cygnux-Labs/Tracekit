@@ -8,8 +8,6 @@ import functools
 import hashlib
 import types
 
-from tracekit.format.canon import event_hash, loads_strict
-
 ACK_ON_WRITE, ACK_ON_FSYNC = "ack-on-write", "ack-on-fsync"
 ZERO_HASH = "sha256:" + "0" * 64  # prev_hash of seq 0, run_prev_hash of run_seq 0
 RECORDS = "records"
@@ -23,6 +21,7 @@ def check_records(lines, name, verify=None):
     """The problems of a record log given as its records' JSON texts in seq order (line n holds seq n - 1): strict JSON,
     record hash, the seq/prev_hash chain, each run's chain and, with `verify(record)` (raises ValueError), the
     signatures."""
+    from tracekit.format.canon import event_hash, loads_strict   # not at import: v1 verification needs the stdlib only
     problems, prev, runs = [], ZERO_HASH, {}
     for n, line in enumerate(lines, 1):
         where = f"{name} line {n}"
