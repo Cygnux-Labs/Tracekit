@@ -46,6 +46,7 @@ DEV_NOTE = ("trust pins this store's own log.vkey: dev assurance, the viewer run
             "and proves only that the records match that key")
 STORED_NOTE = ("trust pins the log vkey this store holds and proves only that the records match that key; pin the "
                "signer's with --log-vkey")
+OPERATOR_SIDE = "operator-side view — re-verify with the signed release for evidence"
 
 
 class Translator(observe.Translator):
@@ -143,7 +144,8 @@ class StoreFeed:
         state = self.runs.get(key) or {"count": 0, "shown": 0, "failed": None}
         e = {"run_id": run_id}
         if code:
-            new = [self.tr.alert(e, {}, "high", f"RUN {run_id} · Integrity {rep.integrity}", text.getvalue())]
+            new = [self.tr.alert(e, {}, "high", f"RUN {run_id} · Integrity {rep.integrity}",
+                                 f"{OPERATOR_SIDE}\n\n{text.getvalue()}")]
             state = dict(state, count=count, failed=rep.integrity)
         else:
             records = list(reader.iter_run(tenant, run_id))
@@ -156,7 +158,7 @@ class StoreFeed:
                        + (", ".join(f"{v} {n}" for v, n in sorted(verdicts.items())) or "none")
                        + f" · approvals {types['approval']} · gaps {types['capture.gap']}")
             new.append(self.tr.alert(e, records[-1], "info", f"RUN {run_id} · Integrity {rep.integrity} · Assurance "
-                                     f"{rep.assurance.split(';')[0]}", f"{summary}\n{self.note}\n\n{text.getvalue()}"))
+                                     f"{rep.assurance.split(';')[0]}", f"{summary}\n{self.note}\n{OPERATOR_SIDE}\n\n{text.getvalue()}"))
             state = dict(state, count=count, shown=len(records), failed=None)
         with self.lock:
             self.runs[key] = state
