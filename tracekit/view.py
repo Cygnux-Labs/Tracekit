@@ -10,7 +10,9 @@ checkpoint covers yet waits for the signer's next note (at most CHECKPOINT_S). T
 Every request needs the token in the printed URL ($TRACEKIT_VIEW_TOKEN, else a random one), exchanged once for a
 session cookie, also on loopback, where any local user or process could otherwise connect. With the config's
 `view.oidc` section, /login also signs people in with an issuer of its `http.oidc` section (OidcLogin; docs/identity.md):
-a session of the auditor or approver role sees, read-only, the runs of its tenant (the issuer's tenant claim) only.
+a session of the auditor or approver role sees, read-only, the runs of its tenant (the issuer's tenant claim) only, and
+one of the operator-admin role every tenant's. With `view.logs` (the DSN file of each log of a central deployment, for
+a SELECT-only role) the viewer serves the run pages of every log instead (Runs; docs/viewer.md).
 With `view.signer` (the signer's address, as `tracekit approvals --signer` takes it), an approver's session also gets
 the approval pages (/approvals; ApprovalDesk): the viewer answers for that person over the signer RPC as a bridge
 identity (`authorize` grants it approval_decide_on_behalf), and the signer decides who may answer, verifies the passkey of a
@@ -29,6 +31,7 @@ import collections
 import hashlib
 import hmac
 import io
+import itertools
 import logging
 import json
 import os
@@ -64,7 +67,10 @@ STORED_NOTE = ("trust pins the log vkey this store holds and proves only that th
                "signer's with --log-vkey")
 OPERATOR_SIDE = "operator-side view — re-verify with the signed release for evidence"
 LOGIN_KEYS = {"issuer", "client_id", "client_secret_file", "redirect_uri", "roles"}
-ROLES = ("auditor", "approver")
+ROLES = ("auditor", "approver", "operator-admin")
+RUNS_PAGE, RECORDS_PAGE, VERDICTS_MAX = 50, 500, 4096
+SEARCH_KEYS = {"tenant", "run", "agent", "since", "until", "verdict", "gaps", "denies", "approvals", "after", "limit"}
+VERDICTS = ("verified", "failed", "pending")
 LOGIN_S, SESSION_S, PENDING_MAX, SESSIONS_MAX = 600, 8 * 3600, 1024, 4096
 log = logging.getLogger(__name__)
 
@@ -73,7 +79,8 @@ class OidcLogin:
     """Authorization code + PKCE (S256) login with the issuer `section["issuer"]` names in `issuers` (the signer's
     http.oidc section), its ID token's audience the client_id. A person whose identity keys (oidc.keys) are in
     roles.auditor or roles.approver and whose token carries the issuer's tenant claim gets a session of that tenant;
-    an approver's session also answers approvals (ApprovalDesk), with the session's CSRF token."""
+    an approver's session also answers approvals (ApprovalDesk), with the session's CSRF token. One in
+    roles.operator-admin gets a read-only session of every tenant."""
 
     def __init__(self, section, issuers, clock=time.time):
         if not isinstance(section, dict) or set(section) - LOGIN_KEYS or not {"issuer", "client_id", "redirect_uri",
@@ -138,10 +145,10 @@ class OidcLogin:
             log.warning("viewer login refused: %s", e)
             return None
         keys = oidc.keys(identity)
-        role = next((r for r in ("approver", "auditor") if any(lookup(self.roles.get(r, {}), k, False) for k in keys)),
-                    None)
+        role = next((r for r in ("approver", "operator-admin", "auditor")
+                     if any(lookup(self.roles.get(r, {}), k, False) for k in keys)), None)
         tenant = identity.claims.get("tenant")
-        if role is None or tenant is None:
+        if role is None or tenant is None and role != "operator-admin":
             log.warning("viewer login refused: %s has %s", identity.subject[:256],
                         "no tenant claim" if role else "no viewer role")
             return None
@@ -149,8 +156,8 @@ class OidcLogin:
         person = {"subject": identity.subject[:256], "person": identity.claims["person"],
                   "groups": identity.claims["groups"], "tenant": tenant}
         with self._lock:
-            self._sessions[sid] = {"tenant": tenant, "role": role, "person": person, "csrf": secrets.token_urlsafe(32),
-                                   "until": self.clock() + SESSION_S}
+            self._sessions[sid] = {"tenant": observe.ALL if role == "operator-admin" else tenant, "role": role,
+                                   "person": person, "csrf": secrets.token_urlsafe(32), "until": self.clock() + SESSION_S}
             while len(self._sessions) > SESSIONS_MAX:
                 self._sessions.popitem(last=False)
         return sid
@@ -165,7 +172,7 @@ class OidcLogin:
             return None
 
     def tenant(self, sid):
-        """The tenant of session `sid`, else None."""
+        """The tenant of session `sid` (observe.ALL for an operator-admin), else None."""
         s = self.session(sid)
         return s and s["tenant"]
 
@@ -257,10 +264,7 @@ class StoreFeed:
         self.tr = Translator()
         self.tmp = tempfile.mkdtemp(prefix="tk-view-")
         atexit.register(shutil.rmtree, self.tmp, True)
-        self.trust = os.path.join(self.tmp, "trust.json")
-        with open(self.trust, "w", encoding="utf-8") as f:
-            json.dump({"logs": vkeys, "witnesses": [], "algs": [RecordSigner.alg],
-                       "witnesses_required": 0}, f)
+        self.trust = write_trust(os.path.join(self.tmp, "trust.json"), vkeys)
         threading.Thread(target=self._watch, daemon=True).start()
 
     def _watch(self):
@@ -298,21 +302,12 @@ class StoreFeed:
 
     def _verify(self, reader, note, key, count):
         tenant, run_id = key
-        out = os.path.join(self.tmp, "run.tkb")
-        try:
-            export(reader, tenant, run_id, note, out)
-            rep, code = v2.verify(out, self.trust)
-        except ValueError as e:   # the store does not match its own checkpoint
-            rep, code = v2.Report(), v2.EXIT_FAIL
-            rep.integrity, rep.assurance = "FAILED", "none"
-            rep.check("export", False, str(e))
-        text = io.StringIO()
-        v2.print_report(rep, code, text)
+        rep, code, text = check(reader, tenant, run_id, note, self.trust, os.path.join(self.tmp, "run.tkb"))
         state = self.runs.get(key) or {"count": 0, "shown": 0, "failed": None}
         e = {"run_id": run_id}
         if code:
             new = [self.tr.alert(e, {}, "high", f"RUN {run_id} · Integrity {rep.integrity}",
-                                 f"{OPERATOR_SIDE}\n\n{text.getvalue()}")]
+                                 f"{OPERATOR_SIDE}\n\n{text}")]
             state = dict(state, count=count, failed=rep.integrity)
         else:
             records = list(reader.iter_run(tenant, run_id))
@@ -325,7 +320,7 @@ class StoreFeed:
                        + (", ".join(f"{v} {n}" for v, n in sorted(verdicts.items())) or "none")
                        + f" · approvals {types['approval']} · gaps {types['capture.gap']}")
             new.append(self.tr.alert(e, records[-1], "info", f"RUN {run_id} · Integrity {rep.integrity} · Assurance "
-                                     f"{rep.assurance.split(';')[0]}", f"{summary}\n{self.note}\n{OPERATOR_SIDE}\n\n{text.getvalue()}"))
+                                     f"{rep.assurance.split(';')[0]}", f"{summary}\n{self.note}\n{OPERATOR_SIDE}\n\n{text}"))
             state = dict(state, count=count, shown=len(records), failed=None)
         with self.lock:
             self.runs[key] = state
@@ -339,6 +334,175 @@ class StoreFeed:
             runs = {k: s for k, s in self.runs.items() if tenant is None or k[0] == tenant}
             return (sum(s["shown"] for s in runs.values() if not s["failed"]),
                     [f"run {k[1]} of tenant {k[0]}: {s['failed']}" for k, s in runs.items() if s["failed"]], None)
+
+
+def write_trust(path, vkeys):
+    """A verify.v2 trust config at `path` that pins the log vkeys `vkeys` and no witness; returns `path`."""
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump({"logs": vkeys, "witnesses": [], "algs": [RecordSigner.alg], "witnesses_required": 0}, f)
+    return path
+
+
+def check(reader, tenant, run_id, note, trust, out):
+    """(report, exit code, printed report) of verify.v2 on the run's bundle, exported from `reader` with `note` to
+    `out`."""
+    try:
+        export(reader, tenant, run_id, note, out)
+        rep, code = v2.verify(out, trust)
+    except ValueError as e:   # the store does not match its own checkpoint
+        rep, code = v2.Report(), v2.EXIT_FAIL
+        rep.integrity, rep.assurance = "FAILED", "none"
+        rep.check("export", False, str(e))
+    text = io.StringIO()
+    v2.print_report(rep, code, text)
+    return rep, code, text.getvalue()
+
+
+class Runs:
+    """The runs of every log of a central deployment (view.logs: the DSN file of each log's schema, for a role holding
+    postgres.READ_GRANTS only), for observe.make_handler's run pages. Each method takes the caller's scope (observe.ALL,
+    or one tenant) and reads that tenant's rows only, in its queries. A run's verdict is verify.v2's report on the bundle
+    exported from the store, against the log vkey the store holds (or --log-vkey), labelled OPERATOR_SIDE; the bundle is
+    served too, to re-verify with the signed release."""
+
+    def __init__(self, dsn_files, log_vkey=None):
+        from tracekit.storage import postgres
+        self.pg, self.logs, self.tmp = postgres, [], tempfile.mkdtemp(prefix="tk-view-")
+        atexit.register(shutil.rmtree, self.tmp, True)
+        for i, path in enumerate(dsn_files):
+            dsn, vkey = postgres.read_dsn({"dsn_file": path}), log_vkey
+            if not vkey:
+                r = postgres.PostgresReader(dsn)
+                try:
+                    vkey = r.meta("log_vkey")
+                finally:
+                    r.close()
+                if vkey is None:
+                    raise ValueError(f"log {i} holds no log vkey yet: start its signer once, or pass --log-vkey")
+            checkpoint.parse_vkey(vkey)
+            self.logs.append((dsn, write_trust(os.path.join(self.tmp, f"trust-{i}.json"), [vkey])))
+        self._lock, self._verdicts = threading.Lock(), collections.OrderedDict()
+
+    def _open(self, i):
+        """A reader of log `i` and its latest record note (size, note), or None: the reader holds what the note
+        covers."""
+        r = self.pg.PostgresReader(self.logs[i][0])
+        try:
+            return r, r.checkpoint_latest()
+        except BaseException:
+            r.close()
+            raise
+
+    def _key(self, scope, q):
+        """(log, tenant, run id) that query `q` names, or None when `scope` may not read its tenant."""
+        if not (q.get("log", "").isdecimal() and int(q["log"]) < len(self.logs) and q.get("tenant") and q.get("run")):
+            raise ValueError("needs log (a log number), tenant and run")
+        return (int(q["log"]), q["tenant"], q["run"]) if scope is observe.ALL or q["tenant"] == scope else None
+
+    def _verdict(self, r, i, note, tenant, run_id):
+        """{verdict (VERDICTS), integrity, assurance, label, report} of the run in reader `r` of log `i`, or None when it
+        holds no such run."""
+        run = r.runs.get((tenant, run_id))
+        if run is None:
+            return None
+        if not note or run["seqs"][-1] >= note[0]:
+            return {"verdict": "pending", "integrity": "PENDING", "assurance": "none", "label": OPERATOR_SIDE,
+                    "report": "No checkpoint covers the run's last record yet."}
+        key = (i, tenant, run_id, len(run["seqs"]))
+        with self._lock:
+            v = self._verdicts.get(key)
+        if v is None:
+            fd, out = tempfile.mkstemp(suffix=".tkb", dir=self.tmp)   # requests run concurrently: a file each
+            os.close(fd)
+            try:
+                rep, code, text = check(r, tenant, run_id, note[1], self.logs[i][1], out)
+            finally:
+                os.unlink(out)
+            v = {"verdict": "failed" if code else "verified", "integrity": rep.integrity,
+                 "assurance": rep.assurance.split(";")[0], "label": OPERATOR_SIDE, "report": text}
+            with self._lock:
+                self._verdicts[key] = v
+                while len(self._verdicts) > VERDICTS_MAX:
+                    self._verdicts.popitem(last=False)
+        return v
+
+    def search(self, scope, q):
+        """GET /api/runs: {runs, next}: at most `limit` (RUNS_PAGE) runs that `scope` may read and query `q` (SEARCH_KEYS)
+        matches, log by log, newest first, and the `after` of the next page or None. At most one query per log."""
+        if set(q) - SEARCH_KEYS or q.get("verdict", "verified") not in VERDICTS:
+            raise ValueError(f"the query takes {', '.join(sorted(SEARCH_KEYS))}; verdict is one of {', '.join(VERDICTS)}")
+        try:
+            limit = int(q.get("limit", RUNS_PAGE))
+            start, before = (int(x) for x in q["after"].split(":")) if "after" in q else (0, None)
+        except ValueError:
+            raise ValueError("limit is a number, after a cursor from `next`") from None
+        if not (0 < limit <= RUNS_PAGE and start >= 0):
+            raise ValueError(f"limit is 1 to {RUNS_PAGE}")
+        tenant = (q.get("tenant") or None) if scope is observe.ALL else scope
+        filters = {**{k: q[k] for k in ("run", "agent", "since", "until") if q.get(k)},
+                   **{k: True for k in ("gaps", "denies", "approvals") if k in q}}
+        out = []
+        for i in range(start, len(self.logs)):
+            want = limit - len(out)
+            rows = self.pg.search_runs(self.logs[i][0], tenant, want, before, **filters)
+            before = None
+            if rows:
+                r, note = self._open(i)
+                try:
+                    for row in rows:
+                        v = self._verdict(r, i, note, row["tenant"], row["run_id"])
+                        if v and q.get("verdict", v["verdict"]) == v["verdict"]:
+                            out.append({"log": i, **row, "verdict": {k: v[k] for k in v if k != "report"}})
+                finally:
+                    r.close()
+            if len(rows) == want:
+                return {"runs": out, "next": f"{i}:{rows[-1]['first']}"}
+        return {"runs": out, "next": None}
+
+    def run(self, scope, q):
+        """GET /api/run?log&tenant&run&from: the run's verdict with its report and, only when it verified, RECORDS_PAGE
+        of its records from the `from`th, and the `from` of the next page or None; None when `scope` may not read the
+        run or there is no such run."""
+        key = self._key(scope, q)
+        start = q.get("from", "0")
+        if not start.isdecimal():
+            raise ValueError("from is a number")
+        if key is None:
+            return None
+        i, tenant, run_id = key
+        start = int(start)
+        r, note = self._open(i)
+        try:
+            v = self._verdict(r, i, note, tenant, run_id)
+            if v is None:
+                return None
+            records = list(itertools.islice(r.iter_run(tenant, run_id), start, start + RECORDS_PAGE)) \
+                if v["verdict"] == "verified" else []
+        finally:
+            r.close()
+        return {"log": i, "tenant": tenant, "run_id": run_id, "verdict": v, "records": records,
+                "next": start + RECORDS_PAGE if len(records) == RECORDS_PAGE else None}
+
+    def bundle(self, scope, q):
+        """GET /api/bundle?log&tenant&run: the run's bundle (.tkb bytes); None when `scope` may not read the run, there is
+        no such run or no checkpoint covers its last record yet."""
+        key = self._key(scope, q)
+        if key is None:
+            return None
+        i, tenant, run_id = key
+        r, note = self._open(i)
+        fd, out = tempfile.mkstemp(suffix=".tkb", dir=self.tmp)
+        os.close(fd)
+        try:
+            run = r.runs.get((tenant, run_id))
+            if run is None or not note or run["seqs"][-1] >= note[0]:
+                return None
+            export(r, tenant, run_id, note[1], out)
+            with open(out, "rb") as f:
+                return f.read()
+        finally:
+            r.close()
+            os.unlink(out)
 
 
 class _TLSServer(ThreadingHTTPServer):
@@ -355,15 +519,16 @@ class _TLSServer(ThreadingHTTPServer):
             super().finish_request(s, client_address)
 
 
-def server(feed, host, port, token, tls=None, login=None, desk=None):
+def server(feed, host, port, token, tls=None, login=None, desk=None, runs=None):
     """The viewer's HTTP server (HTTPS with `tls`, an ssl.SSLContext), open to requests that present `token` (or the
     session cookie it is exchanged for), or with `login` (an OidcLogin) a session of its own, whose approver sessions
-    get the approval pages of `desk` (an ApprovalDesk); call serve_forever()."""
+    get the approval pages of `desk` (an ApprovalDesk); with `runs` (a Runs, and no `feed`), the run pages of a central
+    deployment's logs; call serve_forever()."""
     if not token:
         raise ValueError("the viewer needs a token")
     hosts = [host] + ([urlsplit(login.redirect_uri).hostname] if login else [])
     srv = (_TLSServer if tls else ThreadingHTTPServer)((host, port), observe.make_handler(
-        feed, token, hosts, secure=bool(tls), login=login, approvals=desk))
+        feed, token, hosts, secure=bool(tls), login=login, approvals=desk, runs=runs))
     srv.tls, srv.daemon_threads = tls, True
     return srv
 
@@ -403,15 +568,17 @@ def main(argv=None):
         login = view.get("oidc") and OidcLogin(view["oidc"], (cfg.get("http") or {}).get("oidc"))
         desk = login and view.get("signer") and ApprovalDesk(Client(view["signer"]),
                                                              (cfg.get("approvals") or {}).get("webauthn"))
-        feed = StoreFeed(cfg, a.log_vkey)
-        srv = server(feed, a.host, a.port, token, tls, login, desk)
+        runs = view.get("logs") and Runs(view["logs"], a.log_vkey)
+        feed = None if runs else StoreFeed(cfg, a.log_vkey)
+        srv = server(feed, a.host, a.port, token, tls, login, desk, runs)
     except (OSError, ValueError, StorageUnavailable) as e:
         print(f"tracekit view: {e}", file=sys.stderr)
         return 1
     scheme = "https" if tls else "http"
     print(f"tracekit view on {scheme}://{a.host}:{srv.server_address[1]}/"
           + ("" if os.environ.get("TRACEKIT_VIEW_TOKEN") else f"?token={token}")
-          + f"  (store: {feed.store}, read-only; {feed.note})", flush=True)
+          + (f"runs  ({len(runs.logs)} Postgres logs, read-only)" if runs else
+             f"  (store: {feed.store}, read-only; {feed.note})"), flush=True)
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
