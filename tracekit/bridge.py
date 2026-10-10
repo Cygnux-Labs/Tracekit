@@ -1,4 +1,6 @@
-"""Language bridge: other runtimes (the TypeScript SDK, sdk/typescript) drive the Python Tracer over stdio, so every
+"""Deprecated, removed in 0.5.0: the TypeScript SDK's native v2 client talks to the signer without it.
+
+Language bridge: other runtimes (the TypeScript SDK, sdk/typescript) drive the Python Tracer over stdio, so every
 language gets the same policy engine, redaction, signer client and event format, with nothing reimplemented.
 
     python -m tracekit.bridge          # started by the SDK; one JSON object per line in each direction
@@ -24,6 +26,7 @@ timed out". If the signer is unreachable the Tracer's fail mode applies exactly 
 a gap later, closed refuses."""
 import json
 import math
+import os
 import sys
 import threading
 import time
@@ -187,6 +190,10 @@ class Bridge:
 
 
 def main():
+    if not os.environ.get("TRACEKIT_NO_DEPRECATION"):
+        print("tracekit.bridge is deprecated and removed in 0.5.0: the TypeScript SDK's native v2 client "
+              "(import { Client } from \"@cygnux/tracekit\") needs no Python bridge. TRACEKIT_NO_DEPRECATION=1 silences this.",
+              file=sys.stderr, flush=True)
     b = Bridge(sys.stdout)
     b.reply({"id": 0, "ok": True, "ready": True, "protocol": 1})
     slots, threads = threading.BoundedSemaphore(MAX_WORKERS), []
