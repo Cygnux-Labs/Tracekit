@@ -19,9 +19,11 @@ metrics: {listen: 127.0.0.1:9464}            # Prometheus /metrics; the image HE
 #   cert: /etc/tracekit/tls/tls.crt
 #   key: /etc/tracekit/tls/tls.key
 #   authenticators: [k8s_sa]                 # Kubernetes service-account tokens, checked by TokenReview
-#   k8s_sa: {audience: tracekit-signer, tokenreview: https://kubernetes.default.svc,
-#            token_file: /var/run/secrets/kubernetes.io/serviceaccount/token,
-#            ca: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt}
+#   k8s_sa:
+#     audience: tracekit-signer
+#     tokenreview: https://kubernetes.default.svc
+#     token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+#     ca: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
 #   # or mTLS with SPIFFE ids: authenticators: [mtls] and client_ca: {example.org: /etc/tracekit/tls/client-ca.pem}
 # tenants: {"k8s_sa:system:serviceaccount:acme:*": acme}
 # authorize: {"k8s_sa:system:serviceaccount:acme:*": [register_run, decide, complete, close_run]}
