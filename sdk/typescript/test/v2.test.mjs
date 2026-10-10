@@ -163,8 +163,8 @@ run(srv, {"port": srv.server_address[1], "ca": pki.path, "token": "t" * 40})`);
 
 // An in-test signer on a Unix socket: "pay" asks, "rm" is denied, everything else allowed; approvals are granted after
 // 300 ms. `handle(frame)` may answer first. `frames` records each request with the number of its connection.
-async function fake(t, { hello = { proto: [RPC_VERSION, RPC_VERSION], version: "test", pid: 1 }, failModes = { default: "closed" }, handle = () => null } = {}) {
-  const path = join(tmp(t), "s.sock"), frames = [], socks = new Set();
+async function fake(t, { hello = { proto: [RPC_VERSION, RPC_VERSION], version: "test", pid: 1 }, failModes = { default: "closed" }, handle = () => null, path = join(tmp(t), "s.sock") } = {}) {
+  const frames = [], socks = new Set();
   let seq = 0, conns = 0;
   const answer = async (f) => {
     switch (f.method) {
@@ -195,7 +195,7 @@ async function fake(t, { hello = { proto: [RPC_VERSION, RPC_VERSION], version: "
   await new Promise((r) => server.listen(path, r));
   const stop = () => new Promise((r) => { server.close(r); socks.forEach((s) => s.destroy()); });
   t.after(stop);
-  return { client: new Client({ signer: path }), frames, stop };
+  return { client: new Client({ signer: path }), frames, stop, path };
 }
 
 test("fake: decide, complete, deny and continue; requests are validated before they are sent", async (t) => {
@@ -227,7 +227,7 @@ test("fake: ask, then the approval wait holds up no other call", async (t) => {
 });
 
 test("fake: the fail mode of the tool class applies only while the signer is unreachable", async (t) => {
-  const { client, stop } = await fake(t, { failModes: { default: "closed", net: "open" } });
+  const { client, stop, path } = await fake(t, { failModes: { default: "closed", net: "open" } });
   const run = await client.registerRun("a");
   await stop();
   const open = await run.decide("t1", "fetch", {}, { tool_class_hint: "net" });
@@ -236,6 +236,9 @@ test("fake: the fail mode of the tool class applies only while the signer is unr
   assert.deepEqual([closed.decision, closed.unavailable], ["deny", true]);
   assert.equal(await run.complete("t1"), null);   // never throws
   await assert.rejects(client.registerRun("b"), SignerUnavailable);
+  const back = await fake(t, { path });   // the decides the signer never saw used up client_seq 0-1: its gap covers them
+  await run.decide("t3", "Bash", {});
+  assert.deepEqual(back.frames.filter((f) => f.method === "decide").map((f) => f.client_seq), [2]);
 });
 
 test("fake: a refusal is never fail-open", async (t) => {
