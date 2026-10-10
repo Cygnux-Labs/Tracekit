@@ -99,11 +99,12 @@ export function canonicalize(v: unknown): string {
   throw new StrictJSONError("syntax", `${typeof v} is not JSON`);
 }
 
-function sha256(text: string): string {
-  return "sha256:" + createHash("sha256").update(text, "utf8").digest("hex");
+/** sha256(JCS(v)), as tracekit/format/canon.py `event_hash`. */
+export function digest(v: unknown): string {
+  return "sha256:" + createHash("sha256").update(canonicalize(v), "utf8").digest("hex");
 }
 
 /** sha256(JCS({tool, args})): `args` is the model's raw arguments string (strictly parsed first) or a parsed value. */
 export function argsDigest(tool: string, args: unknown): string {
-  return sha256(canonicalize({ tool, args: typeof args === "string" ? strictParse(args) : args }));
+  return digest({ tool, args: typeof args === "string" ? strictParse(args) : args });
 }
