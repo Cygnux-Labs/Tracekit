@@ -1068,6 +1068,7 @@ class SignerService:
             if not lookup(self._gateways, subject(identity), False):
                 raise RPCError("forbidden", f"{subject(identity)[:256]} is not a configured gateway")
             identity = CallerIdentity(*req["caller"].split(":", 1), True)
+            self._grant(identity, "model_event")
             top, out = {"source": "gateway"}, {"fail_modes": self.fail_modes}
 
         def data(commit):

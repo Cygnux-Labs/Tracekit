@@ -40,8 +40,8 @@ STREAM = sse({"id": "chatcmpl-2", "model": "gpt-x", "choices": [{"index": 0, "de
 
 
 class Upstream(http.server.BaseHTTPRequestHandler):
-    """Answers with the server's `reply`: ("json", obj), ("sse", bytes) or ("cut", bytes): a chunked stream that
-    breaks after `bytes`."""
+    """Answers with the server's `reply`: ("json", obj[, status]), ("sse", bytes) or ("cut", bytes): a chunked stream
+    that breaks after `bytes`; ("redirect", location)."""
     protocol_version = "HTTP/1.1"
 
     def log_message(self, *a):
@@ -49,8 +49,13 @@ class Upstream(http.server.BaseHTTPRequestHandler):
 
     def do_POST(self):
         self.server.seen.append((dict(self.headers), self.rfile.read(int(self.headers["content-length"]))))
-        how, data = self.server.reply
-        self.send_response(200)
+        how, data, *status = self.server.reply
+        if how == "redirect":
+            self.send_response(302)
+            self.send_header("location", data)
+            self.send_header("content-length", "0")
+            return self.end_headers()
+        self.send_response(*status or [200])
         if how == "json":
             body = json.dumps(data).encode()
             self.send_header("content-type", "application/json")
@@ -72,11 +77,13 @@ class InProcess:
     """The gateway's signer client: the in-process service, called as the gateway's identity."""
 
     def __init__(self, s):
-        self.s, self.down = s, False
+        self.s, self.down, self.refuse = s, False, False
 
     def model_event(self, req):
         if self.down:
             raise SignerUnavailable("down")
+        if self.refuse and req["phase"] == "response":
+            raise RPCError("run_closed", req["run_id"])
         return self.s.call(GW, "model_event", {"request_id": uuid.uuid4().hex, **req})
 
 
@@ -181,6 +188,11 @@ class TestAuth(Gateway):
         self.assertEqual(self.up.seen, [])
         self.assertEqual(self.exchanges(), [])
 
+    def test_caller_needs_its_own_model_event_grant(self):
+        self.s.authorize["token:http"] = ["register_run"]
+        self.assertEqual(self.post()[0], 403)
+        self.assertEqual(self.up.seen, [])
+
     def test_only_a_configured_gateway_may_name_a_caller(self):
         req = {"request_id": "r", **self.run, "stream": "s", "client_seq": 0, "provider": "openai", "model": "m",
                "phase": "request", "caller": "token:http"}
@@ -231,6 +243,25 @@ class TestExchange(Gateway):
         self.assertIn("stream broke", errors[0])
         self.assertIn("before its terminal event", errors[1])
 
+    def test_upstream_errors_are_passed_on_as_errors_and_recorded(self):
+        failed = sse({"type": "response.created", "response": {"id": "r1", "model": "gpt-x"}},
+                     {"type": "response.failed", "response": {"id": "r1", "error": {"message": "boom"}}})
+        for case, reply, path, want in (
+                ("status", ("json", {"error": {"message": "boom"}}, 500), "/v1/chat/completions", 500),
+                ("error event", ("sse", failed), "/v1/responses", 200),
+                ("redirect", ("redirect", "/elsewhere"), "/v1/chat/completions", 502)):
+            with self.subTest(case):
+                self.up.reply = reply
+                status, body = self.post({"model": "gpt-x", "input": [], "stream": case == "error event"}, path=path)
+                self.assertEqual(status, want)
+                if case == "error event":
+                    self.assertTrue(body.startswith(b"BROKEN:" + failed), body)
+                    self.assertIn(b"event: error", body)
+        self.assertEqual(len(self.up.seen), 3)
+        errors = [err for _, phase, err in self.exchanges() if phase == "response"]
+        self.assertEqual([e and e.split(":")[0] for e in errors],
+                         ["upstream status 500", "upstream error event", "upstream status 302"])
+
     def test_bodies_are_capped(self):
         self.assertEqual(self.post({"model": "gpt-x", "messages": [], "pad": "x" * 5000})[0], 413)
         self.assertEqual(self.up.seen, [])
@@ -258,6 +289,24 @@ class TestFailOpen(Gateway):
         self.signer.down = True
         self.assertEqual(self.post()[0], 200)
         self.assertEqual(len(self.up.seen), 2)
+
+    def test_a_refused_response_record_is_an_error_whatever_the_fail_mode(self):
+        self.signer.refuse = True
+        self.assertEqual(self.post()[0], 503)
+        self.up.reply = ("sse", STREAM)
+        status, body = self.post({"model": "gpt-x", "messages": [], "stream": True})
+        self.assertEqual(status, 200)
+        self.assertNotIn(b"[DONE]", body)
+        self.assertIn(b"event: error", body)
+
+    def test_exchanges_forwarded_while_the_signer_was_down_leave_a_gap(self):
+        self.post()
+        self.signer.down = True
+        self.post()
+        self.signer.down = False
+        self.post()
+        [gap] = [e for e in self.events() if e["type"] == "capture.gap"]
+        self.assertEqual((gap["data"]["kind"], gap["data"]["missed_events"]), ("client_counter_gap", 2))
 
 
 class TestHiddenCall(Gateway):

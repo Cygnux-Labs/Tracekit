@@ -19,11 +19,11 @@ run, identity or tenant: 403. Nothing is attributed by address or name. Relative
 
 For each exchange: model_event phase request (with the tool results it sends back) before forwarding; the response
 streams through, parsed by tracekit.parsers; model_event phase response (tool uses with args digests, usage, stop
-reason, error) is recorded before the stream's last chunk, or before any of a non-streamed response. An upstream error,
-a broken stream or one that ends before its terminal event is recorded with an error and ends, for the client, in an
-error (an SSE error event and a cut connection once the headers went out), never a clean end. Signer unreachable: the
-run's fail mode for class `model`, as the signer last answered it for this run, token and identity (closed when it has
-not): closed answers 503.
+reason, error) is recorded before the chunk with the stream's terminal event, or before any of a non-streamed
+response. An upstream error, a broken stream or one that ends before its terminal event is recorded with an error and
+ends, for the client, in an error (an SSE error event and a cut connection once the headers went out), never a clean
+end. Signer unreachable: the run's fail mode for class `model`, as the signer last answered it for this run, token and
+identity (closed when it has not): closed answers 503. A signer refusal is an error whatever the fail mode.
 """
 import argparse
 import collections
@@ -53,43 +53,56 @@ FAILED = {"error", "response.failed"}
 DROP = HOP | {"authorization", "x-api-key", "x-tracekit-run", "cookie"}   # never forwarded: the client's credentials
 KEYS = {"http", "upstream", "api_key_file", "api_key_header", "signer", "max_body"}
 MAX_BODY = 32 * 1024 * 1024
-MAX_RUNS = 10_000   # fail modes remembered, oldest dropped first
+MAX_RUNS = 10_000   # runs remembered (stream, counter, fail modes), least recently used dropped first
 UPSTREAM_TIMEOUT_S = 600
 
 
-def _digest(b):
-    return "sha256:" + hashlib.sha256(b).hexdigest()
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *a):   # a redirect would carry the provider credential to wherever it points
+        return None
+
+
+OPEN = urllib.request.build_opener(_NoRedirect).open
 
 
 class Gateway:
     def __init__(self, upstream, api_key, api_key_header="authorization", client=None, max_body=MAX_BODY):
         self.upstream, self.max_body, self.client = upstream.rstrip("/"), max_body, client
         self.auth = (api_key_header, "Bearer " + api_key if api_key_header == "authorization" else api_key)
-        self.modes, self.lock = collections.OrderedDict(), threading.Lock()
+        self.runs, self.lock = collections.OrderedDict(), threading.Lock()
 
-    def record(self, key, xid, seq, **fields):
-        """model_event for run `key` = (run_id, token, caller): True once recorded, False when the signer can't be
-        reached; RPCError for a refusal. Each exchange is a stream of its own, so a refused one leaves no counter gap."""
-        run_id, token, caller = key
-        try:
-            out = self.client.model_event({"run_id": run_id, "run_token": token, "caller": caller, "exchange_id": xid,
-                                           "stream": xid, "client_seq": seq, **fields})
-        except SignerUnavailable:
-            return False
-        except RPCError as e:
-            if e.code == "unavailable":
-                return False
-            raise
+    def _run(self, key):
         with self.lock:
-            self.modes[key] = out.get("fail_modes")
-            self.modes.move_to_end(key)
-            if len(self.modes) > MAX_RUNS:
-                self.modes.popitem(last=False)
+            run = self.runs.pop(key, None) or types.SimpleNamespace(
+                stream="gx-" + uuid.uuid4().hex, seq=0, modes=None, lock=threading.Lock())
+            self.runs[key] = run
+            if len(self.runs) > MAX_RUNS:
+                self.runs.popitem(last=False)
+            return run
+
+    def record(self, key, xid, **fields):
+        """model_event for run `key` = (run_id, token, caller): True once recorded, False when the signer can't be
+        reached; RPCError for a refusal. A run's records share one stream whose counter every attempt advances, so an
+        exchange the signer never got shows as a client_counter_gap once a later one of the run reaches it."""
+        # lean: no gap if no later exchange of the run reaches the signer; a gateway-side outbox if that matters
+        run_id, token, caller = key
+        run = self._run(key)
+        with run.lock:   # counter order is arrival order
+            seq, run.seq = run.seq, run.seq + 1
+            try:
+                out = self.client.model_event({"run_id": run_id, "run_token": token, "caller": caller,
+                                               "exchange_id": xid, "stream": run.stream, "client_seq": seq, **fields})
+            except SignerUnavailable:
+                return False
+            except RPCError as e:
+                if e.code == "unavailable":
+                    return False
+                raise
+            run.modes = out.get("fail_modes")
         return True
 
     def fail_open(self, key):
-        with self.lock:
-            return fail_open(self.modes.get(key), "model")
+        return fail_open(self._run(key).modes, "model")
 
 
 class _SSE:
@@ -180,8 +193,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 "streamed": req.get("stream") is True}
         sent = parsers.parse(kind, None, req)["tool_results_sent"][-MAX_RESULTS_SENT:]
         try:
-            ok = gw.record(key, xid, 0, phase="request", content_digest=_digest(body), **base,
-                           **({"tool_results_sent": sent} if sent else {}))
+            ok = gw.record(key, xid, phase="request", content_digest="sha256:" + hashlib.sha256(body).hexdigest(),
+                           **base, **({"tool_results_sent": sent} if sent else {}))
         except RPCError as e:
             return self._error(429 if e.code == "quota_exceeded" else 403, f"the signer refused the run: {e.message}")
         if not ok and not gw.fail_open(key):
@@ -201,16 +214,16 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                       "tool_uses": out["tool_uses"][:128],   # lean: the RPC's cap; split the record if models exceed it
                       "error": err and err[:1024]}
             try:
-                ok = gw.record(key, xid, 1, phase="response", content_digest="sha256:" + h.hexdigest(),
+                ok = gw.record(key, xid, phase="response", content_digest="sha256:" + h.hexdigest(),
                                **dict(base, model=str(out["model"] or base["model"])[:128]),
                                **{k: v for k, v in fields.items() if v})
-            except RPCError:   # the run closed meanwhile, say: the exchange stands unrecorded
-                ok = False
+            except RPCError:
+                return False
             return ok or gw.fail_open(key)
 
         try:
             try:
-                resp = urllib.request.urlopen(up, timeout=UPSTREAM_TIMEOUT_S)
+                resp = OPEN(up, timeout=UPSTREAM_TIMEOUT_S)
             except urllib.error.HTTPError as e:
                 resp = e
         except (urllib.error.URLError, http.client.HTTPException, OSError) as e:
@@ -219,7 +232,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             return self._error(502, err)
         try:
             status, ctype = resp.getcode(), resp.headers.get("content-type", "")
-            if status < 400 and "event-stream" in ctype:
+            if status < 300 and "event-stream" in ctype:
                 self._stream(resp, status, stream, h, done)
             else:
                 self._whole(gw, resp, status, kind, req, h, done)
@@ -236,7 +249,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
 
     def _whole(self, gw, resp, status, kind, req, h, done):
-        err, parsed = None if status < 400 else f"upstream status {status}", None
+        err, parsed = None if status < 300 else f"upstream status {status}", None
         try:
             data = resp.read(gw.max_body + 1)
         except (http.client.HTTPException, OSError) as e:
@@ -259,16 +272,19 @@ class _Handler(http.server.BaseHTTPRequestHandler):
 
     def _stream(self, resp, status, stream, h, done):
         self._send_head(resp, status, {"transfer-encoding": "chunked"})
-        sse, err = _SSE(stream), None
+        sse, err, last = _SSE(stream), None, b""
         try:
-            while True:
+            while not sse.done:   # the chunk with the terminal event waits for the record; anything after it is dropped
                 chunk = resp.read1(65536)
                 if not chunk:
                     break
                 h.update(chunk)
                 sse.feed(chunk)
-                self.wfile.write(b"%x\r\n%s\r\n" % (len(chunk), chunk))
-                self.wfile.flush()
+                if sse.done:
+                    last = chunk
+                else:
+                    self.wfile.write(b"%x\r\n%s\r\n" % (len(chunk), chunk))
+                    self.wfile.flush()
         except (http.client.HTTPException, OSError) as e:
             err = f"stream broke: {e}"
         err = err or sse.error or (None if sse.done else "upstream stream ended before its terminal event")
@@ -281,7 +297,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                     "type": "tracekit_gateway", "message": "tracekit gateway: " + err}}).encode() + b"\n\n"
                 self.wfile.write(b"%x\r\n%s\r\n" % (len(ev), ev))
             else:
-                self.wfile.write(b"0\r\n\r\n")
+                self.wfile.write(b"%x\r\n%s\r\n0\r\n\r\n" % (len(last), last))
             self.wfile.flush()
         except OSError:
             pass
