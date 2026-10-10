@@ -85,6 +85,8 @@ class Issuer:
         sub, who = claims.get("sub"), claims.get(self.person_claim)
         if not (isinstance(sub, str) and sub and isinstance(who, str) and who):
             raise _refuse(f"no sub or {self.person_claim} claim")
+        if self.person_claim == "email" and claims.get("email_verified") is not True:   # else anyone could claim one
+            raise _refuse("email not verified")
         if nonce is not None and claims.get("nonce") != nonce:
             raise _refuse("nonce")
         groups = claims.get(self.groups_claim)
