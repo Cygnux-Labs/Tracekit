@@ -35,7 +35,7 @@ from . import observe
 from .bundle_v2 import export
 from .format import checkpoint
 from .format.records import RecordSigner
-from .signer.service import dev_data_dir, load_config, read_vkey, reader
+from .signer.service import dev_data_dir, load_config, read_vkeys, reader
 from .storage.base import StorageCorrupt, StorageUnavailable
 from .storage.file import NOTE
 from .verify import v2
@@ -81,8 +81,9 @@ class StoreFeed:
                 r.close()
             if log_vkey is None:
                 raise ValueError("the store holds no log vkey yet: start the signer once, or pass --log-vkey")
-        log_vkey = log_vkey or read_vkey(cfg["data_dir"])
-        checkpoint.parse_vkey(log_vkey)
+        vkeys = [log_vkey] if log_vkey else read_vkeys(cfg["data_dir"])   # a file store: the hybrid key's too
+        for k in vkeys:
+            checkpoint.parse_vkey(k)
         self.records, self.base, self.lock = [], 0, threading.Condition()
         self.runs = {}   # (tenant, run_id) -> {"count": records verified, "shown": records translated, "failed": report}
         self.tr = Translator()
@@ -90,7 +91,7 @@ class StoreFeed:
         atexit.register(shutil.rmtree, self.tmp, True)
         self.trust = os.path.join(self.tmp, "trust.json")
         with open(self.trust, "w", encoding="utf-8") as f:
-            json.dump({"logs": [log_vkey], "witnesses": [], "algs": [RecordSigner.alg],
+            json.dump({"logs": vkeys, "witnesses": [], "algs": [RecordSigner.alg],
                        "witnesses_required": 0}, f)
         threading.Thread(target=self._watch, daemon=True).start()
 

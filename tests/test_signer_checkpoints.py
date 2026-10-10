@@ -73,7 +73,7 @@ class Notes(unittest.TestCase):
         if os.name == "posix":   # Windows has no permission bits
             self.assertEqual(os.stat(os.path.join(keys, "log.key")).st_mode & 0o777, 0o600)
             self.assertEqual(os.stat(os.path.join(self.dir, "log.vkey")).st_mode & 0o777, 0o644)
-        self.assertEqual(svc.read_vkey(self.dir), vkey)
+        self.assertEqual(svc.read_vkeys(self.dir), [vkey])
 
     def test_note_signed_by_another_key_fails(self):
         self.s.checkpoint()

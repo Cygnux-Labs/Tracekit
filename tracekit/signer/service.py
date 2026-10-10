@@ -20,6 +20,9 @@ signer.yaml:
     durability: ack-on-write                 # or ack-on-fsync
     log_key: {aws_kms: {key_id: alias/tracekit-log, region: eu-west-1}}   # the log key in AWS KMS
                                              # (tracekit.signer.logkey); default keys/log.key
+             {slh_dsa: {file: keys/log-slh.key}}   # and/or a hybrid SLH-DSA-SHA2-128s line on every stored note
+                                             # (created on first start; tracekit.format.checkpoint), never sent to
+                                             # witnesses; about 1 s of signing per note
     storage: {postgres: {dsn_file: pg.dsn}}  # a Postgres store (tracekit.storage.postgres): the DSN is read from the
                                              # file, never inline (no dsn_file: the libpq PG* variables); default the
                                              # file store in data_dir/store
@@ -58,6 +61,10 @@ signer.yaml:
     otlp: {max_spans: 512}                   # OTLP/HTTP POST /v1/traces on the `http` listener, for identities
                                              # `authorize` grants otlp_import (tracekit.signer.otel; docs/otel.md)
     otel_out: {endpoint: https://otel.example.org/v1/traces, headers: {x-api-key: "..."}}   # each final run's spans
+    harness_binding:                         # runs of these identities must come from a registered harness process
+      helper: /var/lib/tracekit-signer/harness-helper.sock   # tracekit.harness_helper (default: read /proc here)
+      required: ["uid:1001"]                 # identity or prefix:*; other uid callers are attributed when they can be
+      harnesses: {claude: /usr/local/bin/claude}   # name -> root-owned executable, or {exe, script} for an interpreter
 
 Startup (04-design §2.6): the storage lock is taken before any socket is touched; the log is replayed, its chain
 checked and its tail signatures verified; then the configured witnesses are asked for their latest cosigned checkpoint.
@@ -83,10 +90,11 @@ Checkpoints (04-design §1.6, §2.9): a C2SP note of the record tree, signed by 
 Ed25519, named after the origin, signs notes only) and stored through the storage, after a run.final, on
 `checkpoint_nudge` (at most one note per CHECKPOINT_MIN_S), every CHECKPOINT_S while the tree grows, and on close; then,
 signed by the same key, a note of each tenant registry that grew, under origin `<origin>/registry/<id of the tenant's
-salt>`. The log key's vkey is written to <data_dir>/log.vkey on start, and through the storage for readers without that
-dir (Postgres: tracekit_meta); start is refused when the stored notes were signed by another key. Notes are signed
-off the writer thread; the writer only reads the heads. A note the log key fails to sign waits for the next round; an
-outage of LOG_KEY_GAP_S gets one signed `capture.gap{degraded_unanchored}`.
+salt>`. The log key's vkey (then the hybrid key's, when configured) is written to <data_dir>/log.vkey on start, and
+the log key's through the storage for readers without that dir (Postgres: tracekit_meta); start is refused when the
+stored notes were signed by another key. Notes are signed off the writer thread; the writer only reads the heads. A
+note the log key fails to sign waits for the next round; an outage of LOG_KEY_GAP_S gets one signed
+`capture.gap{degraded_unanchored}`.
 
 Publishing (04-design §2.9, §8): one worker per configured witness sends each tree's latest note to it (add-checkpoint,
 off the writer: the writer only computes consistency proofs) and merges the verified cosignature lines into the stored
@@ -151,12 +159,12 @@ import rfc8785
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-from tracekit import __version__, crypto, merkle, otlp, privacy, yamlmini
+from tracekit import __version__, crypto, harness_helper, merkle, otlp, privacy, yamlmini
 from tracekit.client import remote_url_error
 from tracekit.anchor import rekor2
 from tracekit.anchor.rekor2 import RekorAnchor
 from tracekit.deploy import files
-from tracekit.format import checkpoint, registry
+from tracekit.format import checkpoint, registry, slh_dsa
 from tracekit.format.canon import StrictJSONError, canonical, event_hash, loads_strict
 from tracekit.format.records import RecordSigner, verify_record
 from tracekit.identity.base import CallerIdentity
@@ -196,7 +204,7 @@ CONFIG_KEYS = {"data_dir", "socket", "socket_mode", "tcp_endpoint", "http", "dur
                "authorize", "limits", "acknowledge_rollback", "policy", "multi_tenant_apps", "migrators", "analyzers",
                "fail_modes", "grace_s", "idle_s", "origin", "metrics", "witnesses", "contact", "approvals",
                "lock_timeout_s", "fsck_every_s", "clock_skew_s", "anchors", "otlp", "otel_out", "storage", "gateways",
-               "gateway_mandatory", "log_key"}
+               "gateway_mandatory", "log_key", "harness_binding"}
 APPROVAL_KEYS = {"self_approval", "approvers", "break_glass"}
 OTLP_IMPORT = "otlp_import"   # an `authorize` grant, never a default: OTLP/HTTP import (otlp config section)
 OTLP_MAX_SPANS = 512
@@ -318,7 +326,8 @@ class SignerService:
                  multi_tenant_apps=(), migrators=(), analyzers=(), fail_modes=None, grace_s=GRACE_S, idle_s=IDLE_S,
                  bridge=None, origin=None, authorize=None, contact=None, approvals=None, lock_timeout_s=0,
                  fsck_every_s=FSCK_S, clock_skew_s=CLOCK_SKEW_S, rekor=None, otlp=None, otel_out=None,
-                 storage_config=None, gateways=(), gateway_mandatory=False, log_key=None):
+                 storage_config=None, gateways=(), gateway_mandatory=False, log_key=None, slh_dsa_file=None,
+                 harness_binding=None):
         """`identity` answers the in-process SignerAPI calls (default: this process's uid); transports call
         handle_frame with the identity they established. `policy` is a policy2 Engine (default: load_policy()).
         `open_storage()` defaults to the store `storage_config` (the `storage` config section) names, else file storage
@@ -332,7 +341,9 @@ class SignerService:
         `rekor`: the `anchors.rekor` config section ({signing_config, trusted_root, every_s}), or None.
         `otlp` ({max_spans}) and `otel_out` ({endpoint, headers}): the config sections, or None.
         `gateways` (identities or prefixes) and `gateway_mandatory`: see the config keys.
-        `log_key`: a signer.logkey key (default: the file key in keys/log.key); it must be the key of the log's notes."""
+        `log_key`: a signer.logkey key (default: the file key in keys/log.key); it must be the key of the log's notes.
+        `slh_dsa_file`: the SLH-DSA secret key file (created on first use) that adds a hybrid line to every note.
+        `harness_binding` ({helper, required, harnesses}): the config section, or None."""
         fail_modes = dict(fail_modes or FAIL_MODES)
         if not all(isinstance(k, str) and v in ("open", "closed") for k, v in fail_modes.items()):
             raise ValueError("fail_modes maps tool classes to open or closed")
@@ -351,6 +362,15 @@ class SignerService:
                 and isinstance(otel_out.get("headers", {}), dict)
                 and all(isinstance(v, str) for v in otel_out.get("headers", {}).values())):
             raise ValueError("otel_out takes endpoint (https, or http to loopback) and headers (a string mapping)")
+        hb = {} if harness_binding is None else harness_binding
+        hs = hb.get("harnesses", {}) if isinstance(hb, dict) else None
+        harnesses = harness_helper.normalize_harnesses(
+            [{"name": n, **(h if isinstance(h, dict) else {"exe": h})} for n, h in hs.items()]
+            if isinstance(hs, dict) else ())
+        if not (isinstance(hs, dict) and set(hb) <= {"helper", "required", "harnesses"} and len(harnesses) == len(hs)
+                and isinstance(hb.get("helper", ""), str) and isinstance(hb.get("required", []), list)):
+            raise ValueError("harness_binding takes helper (a socket path), required (identities) and harnesses "
+                             "(name -> an absolute executable path, or {exe, script})")
         self.metrics = metrics.SignerMetrics()
         authorize = dict(authorize or {})
         if not all(isinstance(m, list) and set(m) <= {*REQUESTS, OTLP_IMPORT} for m in authorize.values()):
@@ -377,6 +397,7 @@ class SignerService:
             salt = _secret(os.path.join(keys, "registry_salt.key"), lambda: os.urandom(32))
             self._log_key = log_key or logkey.FileKey(_secret(os.path.join(keys, "log.key"),
                                                               lambda: crypto.generate()[0]))
+            self._slh = slh_dsa_file and _secret(slh_dsa_file, lambda: slh_dsa.keygen()[0], 2 * slh_dsa.PK_SIZE)
             self.anchors = [] if rekor is None else [RekorAnchor(
                 rekor["signing_config"], rekor["trusted_root"],
                 _secret(os.path.join(keys, "rekor.key"), rekor2.new_key), rekor.get("every_s", rekor2.MIN_EVERY_S))]
@@ -392,6 +413,9 @@ class SignerService:
         self.fail_modes, self.grace_s, self.idle_s = fail_modes, grace_s, idle_s
         self.otlp_max_spans = otlp.get("max_spans", OTLP_MAX_SPANS)
         self.approvals, self.data_dir, self.storage_config = approvals, data_dir, storage_config
+        self._harnesses, self._helper = harnesses, hb.get("helper")
+        self._harness_required = {k: True for k in hb.get("required", ())}
+        self._chains, self._chains_lock = {}, threading.Lock()   # pid -> (start time, its chain)
         self.fsck_every_s, self.clock_skew_s, self._skewed, self._fsck_seen = fsck_every_s, clock_skew_s, set(), set()
         self._snapped = storage.tail_state()["tree_size"]
         self._approvers, self._break_glass = ({k: True for k in (approvals or {}).get(name, ())}
@@ -409,6 +433,8 @@ class SignerService:
         self._key_down = None   # (since, gapped) while the log key fails to sign
         try:
             self.vkey = checkpoint.vkey(self.origin, checkpoint.ED25519, self._log_key.public)
+            vkeys = [self.vkey] + ([checkpoint.vkey(self.origin, checkpoint.HYBRID, self._slh_public)]
+                                   if self._slh else [])
             latest = storage.checkpoint_latest()
             if latest:   # the log key is stable: another key (a backend switch, a replaced log.key) never takes over
                 origin = latest[1].split("\n", 1)[0]   # signature checks of the note are the rollback check's job
@@ -416,9 +442,15 @@ class SignerService:
                         not in checkpoint.signers(latest[1]):
                     raise ValueError("the configured log key did not sign this log's notes: a log keeps its log key, "
                                      "so switch backends only to a key with the same public key")
+                hybrid = [line for line in latest[1].partition("\n\n")[2].splitlines()
+                          if len(line) > 4096 and line.startswith(f"{checkpoint.DASH}{origin} ")]   # SLH-DSA lines only
+                mine = self._slh and checkpoint.key_id(origin, checkpoint.HYBRID, self._slh_public)
+                if hybrid and not any(base64.b64decode(line.rsplit(" ", 1)[1])[:4] == mine for line in hybrid):
+                    raise ValueError("this log's notes carry a hybrid line from another SLH-DSA key, or the hybrid key "
+                                     "is no longer configured: restore the log's log-slh.key (pinned by verifiers)")
             d = files.open_dir(data_dir)
             try:
-                files.write(d, "log.vkey", (self.vkey + "\n").encode("ascii"), 0o644)
+                files.write(d, "log.vkey", "".join(k + "\n" for k in vkeys).encode("ascii"), 0o644)
                 storage.meta_put("log_vkey", self.vkey)
                 if logkey.HYGIENE.get("core_limit") is not None:   # a serving signer (harden() ran), not a CLI command
                     files.write(d, "hygiene.json", json.dumps(logkey.HYGIENE).encode("ascii"), 0o644)
@@ -652,8 +684,17 @@ class SignerService:
             wake.set()
         return True
 
+    @property
+    def _slh_public(self):
+        return checkpoint.SLH_DSA + slh_dsa.public(self._slh)
+
     def _note(self, text, origin):
-        return text + "\n" + checkpoint.log_line(origin, self._log_key.public, self._log_key.sign(text.encode("utf-8")))
+        data = text.encode("utf-8")
+        note = text + "\n" + checkpoint.log_line(origin, self._log_key.public, self._log_key.sign(data))
+        if self._slh:   # lean: pure-Python SLH-DSA, about 1 s per note and tree, one at a time; sign the trees in a
+            # process pool (or a native FIPS 205 library) once many tenants' registries grow every round
+            note += checkpoint.log_line(origin, self._slh_public, slh_dsa.sign(self._slh, data), checkpoint.HYBRID)
+        return note
 
     def _key_failed(self, e):
         """Count a failed signature of the log key; an outage of LOG_KEY_GAP_S gets one signed degraded_unanchored gap
@@ -922,6 +963,7 @@ class SignerService:
         if key not in self.log.runs:
             raise RPCError("unknown_run", req["run_id"])
         self.tokens.verify(req["run_token"], tenant, req["run_id"], identity)
+        self._check_harness(identity, key)
         return key
 
     def _approval(self, key, approval_id):
@@ -1003,6 +1045,36 @@ class SignerService:
         h = self.policy.decide(tool, args, hint if hint in policy_compile.CLASSES else "unknown")
         return max(d, h, key=lambda x: STRICTNESS.index(x["verdict"])), True
 
+    def _chain(self, identity):
+        """The caller's process chain (harness_helper.chain), [] when it can't be had. Cached per process instance:
+        a pid with another start time is another process."""
+        pid = identity.claims.get("pid") if identity.scheme == "uid" else None
+        if not pid:
+            return []
+        st = harness_helper.start_time(pid)
+        with self._chains_lock:
+            hit = self._chains.get(pid)
+        if hit and st is not None and hit[0] == st:
+            return hit[1]
+        try:
+            procs = harness_helper.ask(self._helper, pid) if self._helper else harness_helper.chain(pid)
+        except (OSError, ValueError):
+            return []
+        if procs and procs[0].get("start_time") == st:
+            with self._chains_lock:
+                if len(self._chains) >= 4096:   # lean: drops the whole cache when full; an LRU if hosts churn pids
+                    self._chains.clear()
+                self._chains[pid] = (st, procs)
+        return procs
+
+    def _check_harness(self, identity, key):
+        """A call on a run bound to a harness process, from the run's owner, must come from below that process."""
+        run = self.log.runs[key]
+        bound = run.get("harness")
+        if bound and owner(identity) == run["owner"] and tuple(bound) not in {
+                (p["pid"], p.get("start_time")) for p in self._chain(identity)[1:]}:
+            raise RPCError("forbidden", "not from the run's harness process")
+
     def _tenant_of(self, identity):
         """The identity's tenant: `tenants`, else the tenant its named token was issued for, else the default."""
         token = identity.claims.get("tenant") if identity.scheme == "token" else None
@@ -1025,6 +1097,13 @@ class SignerService:
                                ("analyzes", self.analyzers)):
             if field in req and sub not in allowed:
                 raise RPCError("forbidden", f"{sub[:256]} is not configured to register runs with `{field}`")
+        harness = None
+        if self._harnesses:
+            procs = self._chain(identity)
+            harness, why = harness_helper.match(procs, self._harnesses) if procs else (
+                None, "no process chain: no peer pid, or the harness helper did not answer")
+            if harness is None and lookup(self._harness_required, sub, False):
+                raise RPCError("forbidden", f"not from a registered harness ({why})")
         tenant = req.get("tenant") or self._tenant_of(identity)
         run_id = req.get("run_id") or secrets.token_hex(16)
         own = owner(identity)
@@ -1041,6 +1120,8 @@ class SignerService:
             tx.set(run, "owner", own)
             tx.set(self.log.open_runs, own, n + 1)
             tx.set(run, "source", req.get("source", "sdk"))
+            if harness:
+                tx.set(run, "harness", (harness["pid"], harness["start_time"]))
             out = {"run_id": run_id, "run_token": self.tokens.issue(tenant, run_id, identity), "tenant": tenant,
                    "tenant_attested": "tenant" not in req, "principal_attested": False, "fail_modes": self.fail_modes}
             top = {"tenant_attested": out["tenant_attested"], "principal_attested": False}
@@ -1051,6 +1132,8 @@ class SignerService:
                                  "attested": identity.attested}}
             if "analyzes" in req:
                 data["analyzes"] = req["analyzes"]
+            if harness:
+                data["harness"] = dict(harness, attested=True)
             tx.emit(run, "run.registered", data, request_id=req["request_id"], **top)
             return out
         return self.log.submit(identity, "register_run", req, fn)
@@ -1570,10 +1653,16 @@ def load_config(path):
         # lean: AWS KMS only; GCP Cloud KMS (EC_SIGN_ED25519, software-protected) through its REST API once a
         # deployment asks for it
         lk = cfg["log_key"]
-        kms = lk.get("aws_kms") if isinstance(lk, dict) and set(lk) == {"aws_kms"} else None
-        if not (isinstance(kms, dict) and set(kms) == {"key_id", "region"}
-                and all(isinstance(v, str) and v for v in kms.values())):
-            raise ValueError(f"{path}: log_key is {{aws_kms: {{key_id, region}}}} (default: keys/log.key)")
+        ok = isinstance(lk, dict) and lk and set(lk) <= {"aws_kms", "slh_dsa"}
+        kms, slh = (lk.get("aws_kms"), lk.get("slh_dsa")) if ok else (None, None)
+        if not (ok and (kms is None or isinstance(kms, dict) and set(kms) == {"key_id", "region"}
+                        and all(isinstance(v, str) and v for v in kms.values()))
+                and (slh is None or isinstance(slh, dict) and set(slh) == {"file"} and isinstance(slh["file"], str)
+                     and slh["file"])):
+            raise ValueError(f"{path}: log_key is {{aws_kms: {{key_id, region}}}} and/or {{slh_dsa: {{file}}}} "
+                             "(default: keys/log.key, no hybrid line)")
+        if slh:
+            slh["file"] = os.path.join(base, slh["file"])
     approvals = cfg.get("approvals") if isinstance(cfg.get("approvals"), dict) else {}
     for table in (cfg.get("tenants"), cfg.get("authorize"), approvals.get("approvers"), approvals.get("break_glass"),
                   cfg.get("gateways")):
@@ -1619,8 +1708,8 @@ def reader(cfg):
     return file.FileReader(os.path.join(cfg["data_dir"], "store"))
 
 
-def read_vkey(data_dir):
-    """The log key's vkey the signer of `data_dir` wrote on start."""
+def read_vkeys(data_dir):
+    """The vkeys of the log key, then of the hybrid key when configured, the signer of `data_dir` wrote on start."""
     d = files.open_dir(data_dir)
     try:
         data = files.read(d, "log.vkey")
@@ -1628,9 +1717,10 @@ def read_vkey(data_dir):
         files.close(d)
     if data is None:
         raise ValueError(f"{data_dir} has no log.vkey yet: start the signer once")
-    vkey = data.decode("ascii").strip()
-    checkpoint.parse_vkey(vkey)
-    return vkey
+    vkeys = data.decode("ascii").split()
+    for k in vkeys:
+        checkpoint.parse_vkey(k)
+    return vkeys
 
 
 def read_rekor_pub(data_dir):
@@ -1649,8 +1739,11 @@ def open_service(cfg, **kw):
     if cfg.get("policy"):
         kw.setdefault("policy", load_policy(cfg["policy"]))
     kw.setdefault("witnesses", [TlogWitness(w["url"], w["vkey"]) for w in cfg.get("witnesses", ())])
-    if cfg.get("log_key") and "log_key" not in kw:
-        kw["log_key"] = logkey.from_config(cfg["log_key"])
+    lk = cfg.get("log_key") or {}
+    if lk.get("aws_kms") and "log_key" not in kw:
+        kw["log_key"] = logkey.from_config(lk)
+    if lk.get("slh_dsa"):
+        kw.setdefault("slh_dsa_file", lk["slh_dsa"]["file"])
     return SignerService(cfg["data_dir"], durability=cfg.get("durability", ACK_ON_WRITE),
                          tenant=cfg.get("tenant", "default"), tenants=cfg.get("tenants"),
                          limits=Limits(**cfg.get("limits", {})),
@@ -1664,7 +1757,8 @@ def open_service(cfg, **kw):
                          clock_skew_s=float(cfg.get("clock_skew_s", CLOCK_SKEW_S)),
                          rekor=(cfg.get("anchors") or {}).get("rekor"), otlp=cfg.get("otlp"),
                          otel_out=cfg.get("otel_out"), storage_config=cfg.get("storage"), gateways=cfg.get("gateways", ()),
-                         gateway_mandatory=cfg.get("gateway_mandatory") is True, **kw)
+                         gateway_mandatory=cfg.get("gateway_mandatory") is True,
+                         harness_binding=cfg.get("harness_binding"), **kw)
 
 
 def serve(cfg, service):
@@ -1860,8 +1954,8 @@ def main(argv=None):
     sub.add_parser("migrate", help="create or check the Postgres store's tables").add_argument("--config", required=True)
     sub.add_parser("close-log", help="close the log for good: write log.closed and the final notes (signer stopped)"
                    ).add_argument("--config", required=True)
-    for name, text in (("vkey", "print the log key's verifier key (C2SP vkey)"),
-                       ("trust", "write a v2 trust config that pins the log key and the configured witnesses")):
+    for name, text in (("vkey", "print the log key's verifier key (C2SP vkey), then the hybrid key's"),
+                       ("trust", "write a v2 trust config that pins the log keys and the configured witnesses")):
         q = sub.add_parser(name, help=text)
         g = q.add_mutually_exclusive_group()
         g.add_argument("--config")
@@ -1903,7 +1997,7 @@ def main(argv=None):
         from tracekit.sdk.client import SignerUnavailable
         try:
             cfg = signer_config(a.config)
-            vkey = read_vkey(cfg["data_dir"])
+            vkeys = read_vkeys(cfg["data_dir"])
             if a.cmd == "trust":
                 witnesses = [{"vkey": w["vkey"], "class": w["class"]} for w in cfg.get("witnesses") or ()]
                 rekor = (cfg.get("anchors") or {}).get("rekor")
@@ -1911,13 +2005,13 @@ def main(argv=None):
                     with open(rekor["trusted_root"], "rb") as f:
                         rekor = {"trusted_root": json.loads(f.read()), "publishing_key": read_rekor_pub(cfg["data_dir"]),
                                  "class": "public"}
-                files.write_json(a.out, {"logs": [vkey], "witnesses": witnesses, "algs": [RecordSigner.alg],
+                files.write_json(a.out, {"logs": vkeys, "witnesses": witnesses, "algs": [RecordSigner.alg],
                                          "witnesses_required": 0, **({"rekor": rekor} if rekor else {})}, 0o644)
         except (OSError, ValueError, SignerUnavailable) as e:
             print(f"tracekit signer: {e}", file=sys.stderr)
             return 2
-        print(vkey if a.cmd == "vkey" else f"wrote {a.out}: pins log {vkey.split('+')[0]} and "
-              f"{len(witnesses) or 'no'} witness(es)")
+        print("\n".join(vkeys) if a.cmd == "vkey" else f"wrote {a.out}: pins log {vkeys[0].split('+')[0]}"
+              f"{' (Ed25519 + SLH-DSA)' if len(vkeys) > 1 else ''} and {len(witnesses) or 'no'} witness(es)")
         return 0
     from tracekit.signer import format_bridge
     try:

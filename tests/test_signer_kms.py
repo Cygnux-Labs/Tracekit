@@ -120,7 +120,7 @@ class Cases:
         s.close()
         with self.assertRaisesRegex(ValueError, "did not sign this log's notes"):
             svc.SignerService(self.dir, grace_s=0, log_key=self.kms_key())
-        self.assertEqual(svc.read_vkey(self.dir), file_vkey)
+        self.assertEqual(svc.read_vkeys(self.dir), [file_vkey])
         with open(os.path.join(self.dir, "keys", "log.key"), "rb") as f:
             same = logkey.FileKey(f.read())   # a backend holding the same key is allowed
         self.assertEqual(self.open(same).vkey, file_vkey)
