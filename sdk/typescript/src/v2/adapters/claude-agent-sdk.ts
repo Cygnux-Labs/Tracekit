@@ -47,7 +47,8 @@ export function tracekitHooks(run: RunHandle) {
     try {
       await run.close(String(inp.reason ?? "session end").slice(0, 256));
     } catch (e) {
-      if (!(e instanceof RPCError && e.code === "run_closed")) throw e;   // closed already (idle)
+      // the session is over either way: the signer closes the run on its idle timeout
+      if (!(e instanceof RPCError && e.code === "run_closed")) warn(`tracekit: could not close the run: ${(e as Error).message}`);
     }
     return {};
   }
