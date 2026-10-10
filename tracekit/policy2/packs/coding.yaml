@@ -49,12 +49,12 @@ deny:
     class: shell
     field: line
     # global options may come before `push` (git -C dir push); -f may be bundled (-uf)
-    pattern: 'git\s+(-[Cc]\s+\S+\s+|--?[A-Za-z][-A-Za-z]*(=\S*)?\s+){0,8}push\b.*(--force\b|\s-[A-Za-z]*f[A-Za-z]*\b|--force-with-lease|\s\+\S)'
+    pattern: 'git\s+(-[Cc]\s+\S+\s+|--?[A-Za-z][-A-Za-z]*(=\S*)?\s+){0,8}push\b.*(--force\b|\s-[A-Za-z]*f[A-Za-z]*\b|--force-with-lease|--mirror\b|\s\+\S)'
     reason: force push
     rationale: Rewrites shared history.
   - id: TK-D004
     class: shell
-    pattern: '^rm [-A-Za-z ]*-[A-Za-z]*[rR][-A-Za-z ]* (/|~|\$HOME|\$\{HOME\})/?\*?( |$)|^find / .*-delete( |$)'
+    pattern: '^rm [-A-Za-z ]*-[A-Za-z]*[rR][-A-Za-z ]* (/|~|\$HOME|\$\{HOME\}|/home|/Users|/root)/?\*?( |$)|^find / .*-delete( |$)'
     reason: recursive delete of root or home
     rationale: Irrecoverable data loss.
   - id: TK-D010

@@ -54,3 +54,4 @@
 {"tool": "http_get", "args": {"url": "http://metadata/computeMetadata/v1/"}, "expect": "deny", "note": "metadata short name"}
 {"tool": "http_get", "args": {"url": "http://instance-data/latest/meta-data/"}, "expect": "deny", "note": "metadata short name"}
 {"tool": "http_get", "args": {"url": "http://0x7f000001/"}, "expect": "deny", "note": "loopback in hex"}
+{"tool": "http_get", "args": {"url": "https://kubernetes.default/api"}, "expect": "deny", "note": "in-cluster API server"}

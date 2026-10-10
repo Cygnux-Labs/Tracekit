@@ -136,3 +136,4 @@
 {"tool": "Bash", "args": {"command": "taskset -c 0 python3 bench.py"}, "expect": "allow", "note": "taskset"}
 {"tool": "Bash", "args": {"command": "find . -name '*.py' | xargs -I{} wc -l {}"}, "expect": "allow", "note": "xargs replace into a plain command"}
 {"tool": "Bash", "args": {"command": "env -u DEBUG make test"}, "expect": "allow", "note": "env unset"}
+{"tool": "Bash", "args": {"command": "rm -rf /home/dev/project/build"}, "expect": "allow", "note": "delete inside a project"}
