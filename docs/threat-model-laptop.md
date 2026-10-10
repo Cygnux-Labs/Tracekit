@@ -11,7 +11,8 @@ the Python and TypeScript SDKs and the adapters built on them (calls made throug
 the OpenTelemetry receiver (both experimental, opt-in). Platforms: dev mode (same-user signer) on Linux, macOS and
 Windows; system mode (separate signer user) on Linux, with an experimental macOS port, because caller identity comes from
 kernel peer credentials (`SO_PEERCRED`, `LOCAL_PEERCRED`). Dev mode gives integrity checks only, not isolation; on
-Windows it also has no caller attestation.
+Windows it also has no caller attestation. The v2 signer and server-hosted agents have their own threat model
+([threat model: v2 signer](threat-model-server.md)).
 
 ## Two properties, kept apart
 
