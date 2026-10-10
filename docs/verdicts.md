@@ -35,6 +35,7 @@ Use `--strict` in CI or an audit when a warning should stop the pipeline: every 
 | `FAILED` | at least one check failed; the failed lines say which |
 | `UNUSABLE BUNDLE` | the trust config or the zip could not be read, or the manifest is not `tracekit.bundle.v2` |
 | `UNVERIFIABLE (needs tracekit >= x)` | the bundle asks for a newer verifier (`verifier_min_version`) |
+| `UNVERIFIABLE (key revoked)` | records signed by a record key whose certificate a passed `--revocations` file revokes ([issuer.md](issuer.md)) |
 
 `VERIFIED` means: the records were signed by keys the log declared and had not retired; they form one unbroken run
 chain; the run's first and last records are in a tree whose checkpoint the pinned log key signed; nothing was edited,

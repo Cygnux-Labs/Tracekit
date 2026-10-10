@@ -23,7 +23,7 @@ from concurrent.futures import Future
 
 from tracekit.core import now_ts
 from tracekit.format import registry
-from tracekit.format.records import RecordError, verify_record
+from tracekit.format.records import RecordError, RecordSigner, verify_record
 from tracekit.schema import V2
 from tracekit.signer import reconcile
 from tracekit.signer.rpc_schema import RPCError
@@ -186,14 +186,16 @@ class Tx:
 
 
 class RecordLog:
-    def __init__(self, storage, open_storage, sign, quotas, salt, metrics, bridge=None):
+    def __init__(self, storage, open_storage, sign, quotas, salt, metrics, bridge=None, certify=None):
         """`storage` is open (and holds its lock); `open_storage()` reopens it after a disk error. `sign` is a
         format.records.RecordSigner; `salt` the secret the registry's per-tenant salts derive from; `metrics` a
         signer.metrics.SignerMetrics. `bridge`: the v1 ledger this log continues (signer.epoch `bridge`), refused
-        unless the log is empty or already starts with it."""
+        unless the log is empty or already starts with it. `certify(log_id)` -> (RecordSigner, issuance entry): a
+        fresh certified record key (tracekit.issuer.certify), taken instead of `sign` once the log is replayed; its
+        signer.epoch retires the key before it."""
         self.storage, self.open_storage, self.sign, self.quotas, self.salt = storage, open_storage, sign, quotas, salt
         self.metrics = metrics
-        self.bridge = bridge
+        self.bridge, self.certify, self.cert = bridge, certify, None
         self.log_id = None
         self.done = OrderedDict()   # (scheme, subject, request_id) -> (payload digest, response)
         self.refuse_writes = None   # a reason to answer client writes `unavailable`, e.g. an unacknowledged rollback
@@ -203,6 +205,8 @@ class RecordLog:
             first = next(storage.iter_range(0, 1))["event"]
             if first["type"] != "signer.epoch" or first["data"].get("bridge") != bridge:
                 raise ValueError("the v2 store already has records: the format bridge must be its first record")
+        if certify:
+            self.sign, self.cert = certify(self.log_id)
         self._q, self._closed, self._closing = queue.SimpleQueue(), False, threading.Lock()
         self._writer = threading.Thread(target=self._loop, name="tracekit-signer-writer", daemon=True)
         self._writer.start()
@@ -226,7 +230,8 @@ class RecordLog:
         return {"log_id": self.log_id, "closed": self.head["closed"], "runs": runs, "tenants": sorted(self.tenants),
                 "open_runs": self.open_runs, "approvals": self.approvals, "index": [[*k, a] for k, a in
                                                                                    self.approval_index.items()],
-                "registry": {t: size for t, (size, _) in self.storage.tail_state()["registry"].items()}}
+                "registry": {t: size for t, (size, _) in self.storage.tail_state()["registry"].items()},
+                "keys": self.keys}
 
     def snapshot(self):
         """Have the storage snapshot its indexes and the run state, unless a write is in flight or the storage is
@@ -246,11 +251,15 @@ class RecordLog:
         tail = s.tail_state()
         size = tail["tree_size"]
         runs, prev, leaves, approvals, index, tenants, closed = {}, ZERO_HASH, {}, {}, {}, set(), False
-        open_runs, by_run, start, base = {}, {}, 0, {}   # owner -> runs not closing; run key -> its approval ids
+        open_runs, by_run, start, base, keys = {}, {}, 0, {}, []   # owner -> runs not closing; run key -> its approval ids
+
+        def spkis():   # the keys replayed records verify under: certified keys the log declared, else the file key
+            return [base64.b64decode(k) for _, k in keys] if self.certify else [self.sign.spki]
         if s.snapshot:
             st, start, prev = s.snapshot["state"], s.snapshot["size"], s.snapshot["hash"]
+            keys = st.get("keys", [])
             try:
-                verify_record(next(s.iter_range(start - 1, start)), [self.sign.spki], {self.sign.alg})
+                verify_record(next(s.iter_range(start - 1, start)), spkis(), {RecordSigner.alg})
             except RecordError as x:
                 raise StorageCorrupt(f"seq {start - 1}: {x}; run `tracekit signer fsck`") from None
             for r in st["runs"]:
@@ -273,9 +282,11 @@ class RecordLog:
                 run = runs[(e["tenant"], e["run_id"])] = new_run(e["tenant"], e["run_id"])
             if (e["prev_hash"], e["run_seq"], e["run_prev_hash"]) != (prev, run["run_seq"], run["head"]):
                 raise StorageCorrupt(f"seq {e['seq']} breaks the chain; run `tracekit signer fsck`")
+            if e["type"] == "signer.epoch":
+                keys = keys + [[k["kid"], k["spki"]] for k in e["data"]["keys"]]
             if e["seq"] >= size - TAIL:
                 try:
-                    verify_record(r, [self.sign.spki], {self.sign.alg})
+                    verify_record(r, spkis(), {RecordSigner.alg})
                 except RecordError as x:
                     raise StorageCorrupt(f"seq {e['seq']}: {x}; run `tracekit signer fsck`") from None
             self.log_id = self.log_id or e["log_id"]
@@ -329,7 +340,7 @@ class RecordLog:
             elif e["type"] in APPROVAL_ENDS:
                 approvals[e["data"]["approval_id"]]["state"] = APPROVAL_ENDS[e["type"]]
         self.log_id = self.log_id or secrets.token_hex(16)
-        self.runs, self.head, self.tenants = runs, {"seq": size, "prev": prev, "closed": closed}, tenants
+        self.runs, self.head, self.tenants, self.keys = runs, {"seq": size, "prev": prev, "closed": closed}, tenants, keys
         self.approvals, self.approval_index = approvals, index   # approval_id -> state; (tenant, run, call, attempt) -> id
         self.open_runs = {k: n for k, n in open_runs.items() if n}
         for tenant in sorted(set(leaves) | set(tail["registry"])):
@@ -360,13 +371,25 @@ class RecordLog:
         return [(tenant, self.leaf(r))]
 
     def _startup_records(self, tx):
-        if self.head["seq"] == 0:
-            key = {"kid": self.sign.kid, "alg": self.sign.alg, "spki": base64.b64encode(self.sign.spki).decode("ascii")}
-            tx.emit(self.signer_run(tx), "signer.epoch", {"keys": [key], **({"bridge": self.bridge} if self.bridge else {})},
-                    source="signer")
+        if self.head["seq"] == 0 or self.cert and self.keys[-1][0] != self.sign.kid:
+            self.epoch(tx, self.sign, self.cert)
         for t in self.storage.torn:
             tx.gap("signer_unavailable", f"torn last line of {t['log']} set aside to {t['path']} "
                                          f"({t['length']} bytes at offset {t['offset']}): a write cut short")
+
+    def epoch(self, tx, sign, cert=None):
+        """signer.epoch declaring `sign`'s key (with `cert`, its issuance entry) and signed by it, then key.retire of
+        the key declared before it, whose last record is the one before the epoch."""
+        last, key = self.head["seq"] - 1, {"kid": sign.kid, "alg": sign.alg,
+                                           "spki": base64.b64encode(sign.spki).decode("ascii")}
+        tx.set(vars(self), "sign", sign)
+        tx.set(vars(self), "cert", cert)
+        tx.emit(self.signer_run(tx), "signer.epoch", {"keys": [{**key, **({"cert": cert} if cert else {})}],
+                                                      **({"bridge": self.bridge} if self.bridge else {})},
+                source="signer")
+        if self.keys:
+            tx.emit(self.signer_run(tx), "key.retire", {"kid": self.keys[-1][0], "last_seq": last}, source="signer")
+        tx.set(vars(self), "keys", self.keys + [[key["kid"], key["spki"]]])
 
     def signer_run(self, tx):
         return self.runs.get(SIGNER_RUN) or tx.new_run(*SIGNER_RUN)
