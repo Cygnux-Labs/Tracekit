@@ -296,7 +296,7 @@ tracekit why serve runs --allow-program myapp.agents:SYSTEM
 Every request needs the token: `--token`, else `$TRACEKIT_WHY_TOKEN`, else a random one printed in the URL. The page
 exchanges the URL's `?token=` once for an HttpOnly, SameSite=Strict cookie; the API also takes the token as
 `Authorization: Bearer`, and `/v1/ingest` takes only that. Requests addressed to a Host other than loopback or the bound
-address need the token (DNS rebinding); POSTs always need an expected Host. The replay POSTs need a JSON body and a
+address need the token (DNS rebinding); POSTs need the bearer token or an expected Host. The replay POSTs need a JSON body and a
 same-origin `Origin`, if any. The page is served with a strict CSP (a script nonce per response, `default-src 'none'`).
 The server binds to 127.0.0.1; beyond loopback it needs `--tls-cert` and `--tls-key`, or `--insecure-http` when TLS is
 terminated in front. Connections are bounded overall and per client address, with read timeouts and deadlines.

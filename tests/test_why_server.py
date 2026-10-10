@@ -191,8 +191,12 @@ class Page(Server):
     def test_foreign_host_is_refused_without_the_token(self):
         self.assertEqual(self.request("GET", "/api/workspace", {"Host": "evil.example:7788"})[0], 403)
         self.assertEqual(self.request("GET", "/api/workspace", {**AUTH, "Host": "evil.example:7788"})[0], 200)
-        self.assertEqual(self.request("POST", "/api/runs/x/tests", {**JSON, "Host": "evil.example"}, b"{}")[0], 403)
-        self.assertEqual(self.request("POST", "/v1/ingest", {**JSON, "Host": "evil.example"}, b"{}")[0], 403)
+        session = {"Cookie": self.request("GET", f"/?token={TOKEN}")[1]["Set-Cookie"].split(";")[0]}
+        self.assertEqual(self.request("POST", "/api/runs/x/tests", {
+            **session, "Content-Type": "application/json", "Host": "evil.example"}, b"{}")[0], 403)
+        self.assertEqual(self.request("POST", "/v1/ingest", {"Host": "evil.example"}, b"{}")[0], 403)
+        # remote agents reach the server by its DNS name: the bearer token is enough
+        self.assertEqual(self.request("POST", "/v1/ingest", {**JSON, "Host": "why.example.com"}, b"{}")[0], 400)
 
     def test_replay_posts_need_the_token_and_a_same_origin_json_body(self):
         SYSTEM.run(seed=0, out_dir=self.store.root, run_id="r")
@@ -204,6 +208,11 @@ class Page(Server):
                                 ({**JSON, "Content-Length": "99999999"}, 413)):
             with self.subTest(headers=headers):
                 self.assertEqual(self.request("POST", "/api/runs/r/tests", headers, body)[0], status)
+        for bad in ({"n": "x"}, {"n": None}, {"n_max": [1]}):
+            with self.subTest(bad=bad):
+                bad_body = json.dumps({"intervention": "input:vendor:*", "target": EXFIL_TARGET, **bad}).encode()
+                self.assertEqual(self.request("POST", "/api/runs/r/tests", JSON, bad_body)[0], 400)
+                self.assertEqual(self.request("POST", "/api/runs/r/attribute", JSON, bad_body)[0], 400)
         self.assertEqual(self.request("POST", "/api/runs/r/tests", JSON, body)[0], 200)
         self.assertEqual(self.request("POST", "/api/runs/no-such/tests", JSON, body)[0], 404)
 

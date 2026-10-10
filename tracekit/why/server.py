@@ -60,6 +60,13 @@ class IngestError(ValueError):
         self.status = status
 
 
+def _int(val) -> int:
+    try:
+        return int(val)
+    except (TypeError, ValueError):
+        raise IngestError(400, "n and n_max must be integers")
+
+
 class Store:
     def __init__(self, root: str, token: Optional[str], allow_programs: Iterable[str] = (),
                  webhook: Optional[str] = None):
@@ -245,7 +252,7 @@ class Store:
 
     def attribute(self, run_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
         run, prog = self._replayable(run_id)
-        n, n_max = int(body.get("n", 10)), int(body.get("n_max", 80))
+        n, n_max = _int(body.get("n", 10)), _int(body.get("n_max", 80))
         target = str(body.get("target", ""))
         if not target or not 1 <= n <= n_max <= 400:
             raise IngestError(400, "target is required; 1 <= n <= n_max <= 400")
@@ -259,15 +266,9 @@ class Store:
         return out
 
     def test(self, run_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
-        path = self.run_path(run_id)
-        if not os.path.exists(os.path.join(path, "events.jsonl")):
-            raise IngestError(404, "no such run")
-        run = load_run(path)
-        prog = run.start.get("program")
-        if not prog or prog not in self.allow:
-            raise IngestError(403, f"replay of program {prog!r} is not allowed on this server (--allow-program)")
-        n = int(body.get("n", 30))
-        n_max = int(body["n_max"]) if body.get("n_max") else None
+        run, prog = self._replayable(run_id)
+        n = _int(body.get("n", 30))
+        n_max = _int(body["n_max"]) if body.get("n_max") else None
         if not 1 <= n <= 200 or (n_max is not None and not n <= n_max <= 400):
             raise IngestError(400, "n must be 1..200 and n_max n..400")
         inter, target = str(body.get("intervention", "")), str(body.get("target", ""))
@@ -410,7 +411,7 @@ def make_handler(store: Store, token: str, allowed_hosts: Iterable[str] = (), se
             self._send(404, {"error": "not found"})
 
         def _post(self):
-            if _host_only(self.headers.get("Host")) not in allowed:
+            if _host_only(self.headers.get("Host")) not in allowed and not self._bearer():
                 return self._send(403, {"error": "unexpected Host header"})
             p = urlparse(self.path).path
             if p == "/v1/ingest":
