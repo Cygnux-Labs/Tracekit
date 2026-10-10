@@ -56,13 +56,13 @@ class Log:
     def __init__(self, root, key=KEY1):
         self.store, self.key, self.prev, self.runs = FileStorage(root), key, ZERO_HASH, {}
 
-    def add(self, type_, data, run="run-a", key=None):
+    def add(self, type_, data, run="run-a", key=None, **fields):
         seq = self.store.tree.size
         run_seq, run_prev = self.runs.get(run, (0, ZERO_HASH))
         e = {"schema_version": "tracekit.event.v2", "id": f"{seq:032x}", "seq": seq, "prev_hash": self.prev,
              "ts": "2026-10-09T12:00:00.000000Z", "run_id": run, "agent_id": "main", "parent_id": None,
              "source": "signer", "type": type_, "data": data, "tenant": "acme", "log_id": "0" * 32,
-             "run_seq": run_seq, "run_prev_hash": run_prev}
+             "run_seq": run_seq, "run_prev_hash": run_prev, **fields}
         r = make_record(e, key or self.key)
         self.store.append_batch([r])
         self.prev, self.runs[run] = r["hash"], (run_seq + 1, r["hash"])
@@ -219,6 +219,28 @@ class TestVerifyV2(Case):
         rep, code = self.verify(out)
         self.assertEqual((code, rep.integrity), (0, "VERIFIED TO HEAD 3 (open)"), rep.checks)
 
+    def test_report_lines(self):
+        log = self.log()
+        log.epoch(KEY1)
+        log.add("run.registered", {"agent": {"name": "agent"}, "identity": {"scheme": "uid", "subject": "1", "attested": True},
+                                   "signer_isolation": "separate-user", "fail_modes": {"default": "closed", "read": "open"}})
+        for i, (tier, source) in enumerate((("T1", "parsed"), ("T2", "raw"), (None, "coerced"))):
+            log.add("tool.call", {"tool_use_id": f"tc-{i}", "name": "Bash", "input": {}}, tool_call_id=f"tc-{i}",
+                    args_source=source, **({"tier": tier} if tier else {}))
+        log.add("tool.call", {"tool_use_id": "tc-0", "name": "Bash", "input": {}}, tool_call_id="tc-0")   # same call
+        log.final()
+        out = os.path.join(self.d, "lines.tkb")
+        export(log.store, "acme", "run-a", log.note(), out)
+        rep, code = self.verify(out)
+        self.assertEqual((code, rep.integrity), (0, "VERIFIED"), rep.checks)
+        want = {"tiers": "3 tool call(s): T1 1, T2 1, T3 0, untiered 1",
+                "args source": "3 record(s): raw 1, parsed 1, coerced 1",
+                "isolation": "signer-reported: separate-user 1 run(s)",
+                "fail-open classes": "read",
+                "key assurance": "asserted: the log declares its record keys; none is attested"}
+        details = {c["check"]: c["detail"] for c in rep.checks if c["status"] == "pass"}
+        self.assertEqual({k: details.get(k) for k in want}, want)
+
     def test_assurance_levels(self):
         log = self.log()
         log.epoch(KEY1)
@@ -304,9 +326,10 @@ class TestVerifyV2(Case):
         log.final()  # signed with the retired KEY1
         out = os.path.join(self.d, "k.tkb")
         export(log.store, "acme", "run-a", log.note(), out)
-        rep, _ = self.verify(out)
-        self.assertEqual(rep.failures, ["signatures"], rep.checks)
-        self.assertIn("unknown kid", str(rep.checks))
+        rep, code = self.verify(out)
+        self.assertEqual((code, rep.integrity, rep.failures), (2, "UNVERIFIABLE (key revoked)", []), rep.checks)
+        self.assertIn("revoked keys", rep.warnings)
+        self.assertIn(f"seq {log.store.tree.size - 1}: signed by key", str(rep.checks))
 
         log.key = KEY2
         log.register("run-d")

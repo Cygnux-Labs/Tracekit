@@ -119,7 +119,7 @@ class StoreFeed:
         v2.print_report(rep, code, text)
         state = self.runs.get(key) or {"count": 0, "shown": 0, "failed": None}
         e = {"run_id": run_id}
-        if rep.failures:
+        if code:
             new = [self.tr.alert(e, {}, "high", f"RUN {run_id} · Integrity {rep.integrity}", text.getvalue())]
             state = dict(state, count=count, failed=rep.integrity)
         else:
