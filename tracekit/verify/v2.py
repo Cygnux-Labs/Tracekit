@@ -16,8 +16,8 @@ signed with an allowed algorithm by a key that the log declared in a signer.epoc
 (key.retire) by then; schema-valid events; one run's chain, contiguous from run_seq 0 to a run.final record; the run's
 first and last records and every key record included in the checkpointed tree. A run without run.final verifies only
 to its head. The bundle's manifest is an index, never trusted.
-A record signed by a key after that key's key.retire (and valid under it) makes the bundle `UNVERIFIABLE (key revoked)`
-(exit 2), not FAILED; the `revoked keys` line names the records. A record after a run's run.final breaks the run chain.
+A record signed by a key after that key's key.retire fails `signatures`, naming the retired key (keys are valid by
+position only). A record after a run's run.final breaks the run chain.
 Report lines (also in --json): tool calls by evidence tier (T1/T2/T3), records by args_source, the signer_isolation the
 signer recorded per run, the tool classes run.registered says fail open, and key assurance (asserted: the log declares
 its keys; this format has no key attestation). `witnessed+monitored` needs a monitor (M3) and is not reported yet.
@@ -170,8 +170,7 @@ def verify(path, trust_path, v1_ledger=None, v1_key=None):
         rep.check("bundle structure", False, "", [f"malformed and could not be fully checked: {type(e).__name__}: {e}"])
     if rep.failures:
         rep.integrity = "FAILED"
-        return rep, EXIT_FAIL
-    return rep, EXIT_BAD if rep.integrity.startswith("UNVERIFIABLE") else EXIT_OK
+    return rep, EXIT_FAIL if rep.failures else EXIT_OK
 
 
 def _verify(rep, manifest, files, trust, v1_ledger, v1_key):
@@ -204,7 +203,7 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key):
 
     def check_record(r, keys, problems):
         """Signature, schema and log membership of one record; `keys`: the SPKIs the log allows at its position. A
-        record valid only under a key retired before it goes to `revoked`."""
+        record valid only under a key retired before it is named as such."""
         try:
             verify_record(r, keys, trust["algs"])
         except RecordError as e:
@@ -213,7 +212,7 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key):
                        if type(seq) is int and k["until"] is not None and k["until"] < seq]
             try:
                 verify_record(r, retired, trust["algs"])
-                revoked.append(f"seq {seq}: signed by key {r['kid'][:80]} after its key.retire")
+                problems.append(f"seq {seq}: signed by key {r['kid'][:80]} after its key.retire")
             except RecordError:
                 problems.append(f"seq {r.get('event', {}).get('seq')!r}: {e}")
             return
@@ -224,7 +223,7 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key):
             problems.append(f"seq {e['seq']}: another log's record")
 
     # keys: declared and retired by records the checkpointed tree includes, so the log key vouches for them
-    key_records, key_problems, timeline, revoked = _jsonl(files["keys/records.jsonl"]), [], {}, []
+    key_records, key_problems, timeline = _jsonl(files["keys/records.jsonl"]), [], {}
     log_id = key_records[0]["event"].get("log_id") if key_records else None
 
     def keys_at(seq):
@@ -294,8 +293,6 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key):
     _bridge(rep, key_records, v1_ledger, v1_key)
     count = sum(map(len, runs.values()))
     rep.check("signatures", not problems, f"{count} record(s), keys valid at their position", problems)
-    if revoked:
-        rep.check("revoked keys", False, f"{len(revoked)} record(s) signed by a retired key", revoked[:20], warn=True)
     only = len(runs) == 1 and next(iter(runs.values()))[0]["event"]
     rep.check("run chain", not chain, f"run {str(only.get('run_id'))[:200]!r} of tenant {only.get('tenant')!r}, "
                                       "contiguous from run_seq 0" if only else
@@ -306,7 +303,7 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key):
         rep.check("policy snapshot", p == f"policies/{hashlib.sha256(files[p]).hexdigest()}.json", p)
 
     still_open = [rs for rs in runs.values() if rs[-1]["event"].get("type") != "run.final"]
-    rep.integrity = ("UNVERIFIABLE (key revoked)" if revoked else "VERIFIED" if not still_open else
+    rep.integrity = ("VERIFIED" if not still_open else
                      f"VERIFIED TO HEAD {still_open[0][-1]['event'].get('run_seq')} (open)" if only else
                      f"VERIFIED ({len(still_open)} run(s) open)")
     every = [r for rs in runs.values() for r in rs]
