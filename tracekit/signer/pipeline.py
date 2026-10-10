@@ -42,7 +42,7 @@ def new_run(tenant, run_id):
     `closing_at` are monotonic times for the idle and grace clocks."""
     return {"tenant": tenant, "run_id": run_id, "run_seq": 0, "head": ZERO_HASH, "streams": {}, "closed": False,
             "final": False, "calls": {}, "decisions": {}, "denied": {}, "states": {}, "owner": None, "source": "sdk",
-            "active": time.monotonic(), "closing_at": None, "rec": reconcile.new(), "digests": {}}
+            "harness": None, "active": time.monotonic(), "closing_at": None, "rec": reconcile.new(), "digests": {}}
 
 
 FINAL_KEYS = ("tenant", "run_id", "run_seq", "head", "closed", "final", "owner", "source")
@@ -303,6 +303,8 @@ class RecordLog:
                 run["spans"][f"{e['span_id']}:{e['type']}"] = True
             if e["type"] == "run.registered":
                 run["owner"], run["source"] = "{scheme}:{subject}".format(**e["data"]["identity"]), e["source"]
+                h = e["data"].get("harness")
+                run["harness"] = (h["pid"], h["start_time"]) if h else None   # the process its owner's calls come from
                 open_runs[run["owner"]] = open_runs.get(run["owner"], 0) + 1
                 if e["source"] == "import":   # not reconciled: no layer gates or reports its calls
                     run["rec"], run["spans"] = None, {}

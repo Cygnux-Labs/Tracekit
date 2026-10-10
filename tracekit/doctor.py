@@ -22,7 +22,7 @@ except ImportError:
 
 from . import client, install
 from .core import read_json, read_text
-from .daemon import trusted_file
+from .harness_helper import HELPER_CAPS, trusted_file
 from .deploy import files
 
 OK, WARN, FAIL = "ok", "warn", "fail"
@@ -128,7 +128,26 @@ def _hardening(unit):
     missing = [d for d in want if d not in lines]
     if not any(line.startswith("User=") and line != "User=root" for line in lines):
         missing.append("User=<signer user>")
+    if any(line.startswith(("CapabilityBoundingSet=", "AmbientCapabilities=")) and "CAP_" in line for line in lines):
+        missing.append("an empty capability set")
     return f"{len(want) + 1 - len(missing)}/{len(want) + 1}", missing
+
+
+def helper_result(unit, fix):
+    """D-HARNESS-HELPER: the harness helper's service file, whose capability bounding set must be exactly HELPER_CAPS
+    (it alone reads other users' /proc/<pid>/exe). macOS has no capability sets: there the plist must exist."""
+    if unit.endswith(".plist"):
+        ok = os.path.exists(unit)
+        return result("D-HARNESS-HELPER", OK if ok else FAIL, f"harness helper: {unit}" + ("" if ok else " is missing"),
+                      fix)
+    try:
+        caps = [line.split("=", 1)[1].strip() for line in read_text(unit).splitlines()
+                if line.startswith("CapabilityBoundingSet=")]
+    except OSError as e:
+        return result("D-HARNESS-HELPER", FAIL, f"harness binding is on but {unit}: {e.strerror}", fix)
+    return result("D-HARNESS-HELPER", OK if caps == [HELPER_CAPS] else FAIL,
+                  f"harness helper {os.path.basename(unit)}: CapabilityBoundingSet="
+                  + (" + ".join(caps) or "(unset: every capability)"), fix)
 
 
 def _hooks(settings):
@@ -253,6 +272,10 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
                 if missing else f" ({unit})"), "re-run init to rewrite the service file: " + REINIT, bad=WARN)
         except OSError as e:
             add("D-UNIT-HARDENING", False, f"no service file: {unit}: {e.strerror}", REINIT, bad=WARN)
+        if cfg.get("harness_binding"):
+            out.append(helper_result(
+                os.path.join(os.path.dirname(unit), (install.HELPER_LABEL + ".plist") if unit.endswith(".plist")
+                             else install.V2_HELPER + ".service"), REINIT + " --harness [NAME=]PATH"))
 
     hook_fix = REINIT if prod else "tracekit init --dev --v2"
     if not settings:

@@ -97,7 +97,8 @@ patterns are full-match ASCII; every string and array is bounded). It adds to v1
 `clock_skew`, `degraded_unanchored`, and rollback tamper records) concerns every tenant (§7).
 
 Lifecycle records: `run.registered` (agent, the caller identity, `signer_isolation` and `fail_modes` from the signer's
-own measurement and config), `run.closing`, the run's `reconcile.*` records, then `run.final{head_run_seq, head_hash,
+own measurement and config, and with harness binding the `harness{name, exe, pid, start_time, attested}` process the
+caller descends from), `run.closing`, the run's `reconcile.*` records, then `run.final{head_run_seq, head_hash,
 coverage}`. Key records: `signer.epoch{keys: [{kid, alg, spki, cert?}], bridge?}` (`cert`: the key's issuance entry from a
 record-key issuer, [issuer.md](issuer.md)) and `key.retire{kid, last_seq}`. The log's
 last record, if it is ever closed: `log.closed{final_seq}`.
