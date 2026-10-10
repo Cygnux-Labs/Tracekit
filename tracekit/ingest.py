@@ -1,5 +1,7 @@
 """Authenticated remote ingestion: let SDK agents on other machines write to this signer's ledger.
 
+Deprecated (DEPRECATION): the v2 signer's HTTPS transport replaces it (tracekit/transport/http.py, docs/remote-ingest.md).
+
     tracekit ingest token build-agent --home /var/lib/tracekit     # prints a token once; stores only its hash
     tracekit ingest serve --experimental --home /var/lib/tracekit --host 0.0.0.0 --port 8443 --cert c.pem --key k.pem
     # on the agent's machine:
@@ -26,6 +28,7 @@ import ssl
 import sys
 import threading
 import time
+from collections import OrderedDict
 from http.server import BaseHTTPRequestHandler
 
 from . import client
@@ -39,7 +42,12 @@ ALLOWED_TYPES = {"run.start", "user.prompt", "tool.call", "policy.decision", "to
 ALLOWED_OPS = {"append", "status"}
 OTLP_EXTRA_TYPES = {"model.exchange"}  # application-reported (source=sdk); never cross-checked as proxy evidence
 ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,120}$")
+CLIENT_RE = re.compile(r"^[A-Za-z0-9._-]{1,120}$")   # no ':', so remote:<client>:<run> names one client
+DEPRECATION = ("tracekit ingest is deprecated and is removed in tracekit 0.5: serve remote clients from the v2 signer's "
+               "HTTPS transport instead (`tracekit signer token add`, `tracekit init --remote URL --v2`; "
+               "docs/remote-ingest.md)")
 RATE_PER_S, BURST = 100.0, 300.0
+MAX_OTLP_RUNS = 4096   # per client: the runs whose OTLP event counter the gateway keeps
 
 
 def _tokens_path(home):
@@ -56,8 +64,8 @@ def load_tokens(home):
 
 
 def add_token(home, name):
-    if not ID_RE.match(name or ""):
-        raise ValueError("client name must be 1-120 characters of letters, digits, . _ : -")
+    if not CLIENT_RE.match(name or ""):
+        raise ValueError("client name must be 1-120 characters of letters, digits, . _ -")
     tokens = load_tokens(home)
     if name in tokens:
         raise ValueError(f"client {name!r} already has a token; remove it from {TOKENS_FILE} to rotate")
@@ -79,7 +87,7 @@ def authenticate(tokens, bearer):
     digest = hashlib.sha256(bearer[7:].strip().encode()).hexdigest()
     found = None
     for name, rec in tokens.items():
-        if isinstance(rec, dict) and hmac.compare_digest(str(rec.get("sha256", "")), digest):
+        if CLIENT_RE.match(name) and isinstance(rec, dict) and hmac.compare_digest(str(rec.get("sha256", "")), digest):
             found = name
     return found
 
@@ -136,11 +144,11 @@ def _otlp_receiver(cid, forward):
     """An OTLP receiver for one authenticated client: events are sanitised exactly like SDK events (namespaced
     run, source=sdk) and carry a per-run counter so the signer can see gaps."""
     from . import otlp
-    counters = {}
+    counters = OrderedDict()
 
     def sink(ev, attach):
         run = ev["run_id"]
-        req = {"op": "append", "event": ev, "cseq": counters.get(run, -1) + 1}
+        req = {"op": "append", "event": ev, "cseq": counters.pop(run, -1) + 1}
         if attach:
             req["attach"] = attach
         safe, err = sanitize(req, cid, getattr(_REQ, "addr", "?"), client.client_config().get("signer_isolation", "same-user"),
@@ -148,8 +156,11 @@ def _otlp_receiver(cid, forward):
         if err:
             return {"ok": False, "error": err}
         resp = forward(safe)
-        if resp.get("ok"):
-            counters[run] = req["cseq"]
+        counters[run] = req["cseq"] if resp.get("ok") else req["cseq"] - 1
+        # lean: an evicted run that sends again restarts at cseq 0 and the signer records each later event as a counter
+        # gap; fine for a gateway removed in 0.5
+        while len(counters) > MAX_OTLP_RUNS:
+            counters.popitem(last=False)
         return resp
     return otlp.Receiver(sink)
 
@@ -225,7 +236,7 @@ def make_handler(home, forward=None):
             if err:
                 return self._send(400, {"ok": False, "error": err})
             try:
-                return self._send(200, forward(safe))
+                return self._send(200, {k: v for k, v in forward(safe).items() if k in ("ok", "error", "retryable")})
             except client.SignerUnavailable as e:
                 return self._send(503, {"ok": False, "error": f"signer unavailable: {e}", "retryable": True})
     return H
@@ -250,6 +261,7 @@ def main(argv=None):
     s.add_argument("--insecure-http", action="store_true", help="plain HTTP on a non-loopback address (TLS terminated in front)")
     s.add_argument("--experimental", action="store_true", help="required: the ingest gateway is being rebuilt")
     a = ap.parse_args(argv)
+    print(f"warning: {DEPRECATION}", file=sys.stderr)
     if a.cmd == "token":
         try:
             token = add_token(a.home, a.name)

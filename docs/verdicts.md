@@ -103,7 +103,7 @@ is `witnessed` plus a fresh, conflict-free report of a monitor your trust config
 | `coverage` (no unreconciled calls) | the capture layers that reported (`L1`–`L6`; `(L3 absent)` when no model calls were seen) and the number of calls reconciled | completeness is only as good as the layers listed |
 | `tiers` | tool calls by evidence tier: `T1` adapter, `T2` gateway or executor, `T3` import; `untiered` when no record names one | T3 (OTLP import) proves receipt only |
 | `args source` | records by `args_source`: `raw` (the exact bytes the model produced), `parsed`, `coerced` (after the framework changed them) | coerced arguments can't be matched to the model's call byte for byte |
-| `isolation` | the `signer_isolation` the signer measured for each run: `same-user`, `separate-user`, `unknown` | `signer-reported`: the signer's own measurement of its caller, never the client's claim |
+| `isolation` | the `signer_isolation` the signer measured for each run: `same-user`, `separate-user`, `remote`, `unknown` | `signer-reported`: the signer's own measurement of its caller, never the client's claim |
 | `fail-open classes` | tool classes the signer's config lets run when the signer is down | calls of these classes may have run unrecorded during an outage |
 | `key assurance` | `asserted`: the log declares its own record keys; nothing attests them yet | trust in the keys is trust in the pinned log key |
 
