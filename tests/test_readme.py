@@ -39,21 +39,12 @@ class Readme(unittest.TestCase):
         self.assertEqual(p.returncode, 0)
         self.assertTrue(p.stdout.startswith("tracekit "))
 
-    def test_hero_is_the_reproducible_server_demo(self):
-        with open(os.path.join(ROOT, "docs", "demo", "server-demo.tape"), encoding="utf-8") as f:
-            tape = f.read()
-        self.assertIn("Output docs/demo/server-demo.gif", tape)
-        self.assertIn("python support_agent.py", tape)
-        self.assertTrue(os.path.exists(os.path.join(ROOT, "docs", "demo", "support_agent.py")))
+    def test_hero_is_the_reproducible_observer_video(self):
+        with open(os.path.join(ROOT, "docs", "demo", "record_observer.mjs"), encoding="utf-8") as f:
+            self.assertIn('"observer.gif"', f.read())
+        self.assertTrue(os.path.exists(os.path.join(ROOT, "docs", "demo", "observer_scene.py")))
         with open(os.path.join(ROOT, "README.md"), encoding="utf-8") as f:
-            self.assertIn('src="https://raw.githubusercontent.com/Cygnux-Labs/Tracekit/main/docs/demo/server-demo.gif"', f.read())
-
-    def test_server_demo_runs(self):
-        p = subprocess.run([sys.executable, os.path.join(ROOT, "docs", "demo", "support_agent.py")],
-                           env={**os.environ, "PACE": "0", "PYTHONIOENCODING": "utf-8"}, capture_output=True,
-                           encoding="utf-8", timeout=120)
-        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
-        self.assertIn("original bundle: exit 0    edited bundle: exit 1", p.stdout)
+            self.assertIn('src="https://raw.githubusercontent.com/Cygnux-Labs/Tracekit/main/docs/demo/observer.gif"', f.read())
 
     def test_repo_links_point_at_existing_files(self):
         # README links are absolute so they work on PyPI too; each must still name a file in this repository

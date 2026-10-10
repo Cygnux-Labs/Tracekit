@@ -2,6 +2,8 @@
 
 ## Laptop viewer
 
+![tracekit view: three runs with their verdicts, the support agent's run selected, its blocked calls with rule reasons, the held refund approved by an ops approver, and the run review](demo/viewer.png)
+
 `tracekit view [--dev | --config signer.yaml | --data-dir DIR]` reads one signer's store, read-only, and verifies each
 run with the code `tracekit verify` runs. The page is the observer's terminal, for runs:
 

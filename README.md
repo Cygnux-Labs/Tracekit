@@ -16,8 +16,6 @@ your policy, and it records every call as a signed, hash-chained event the agent
 to witnesses you choose, so even the signer's operator can't quietly rewrite it. A run exports as a `.tkb` bundle that
 anyone can verify offline, with a report that says what it proves and what it can't.
 
-<img src="https://raw.githubusercontent.com/Cygnux-Labs/Tracekit/main/docs/demo/server-demo.gif" alt="A support agent on a server: the signer allows two calls, denies a cloud-metadata request, a credentials read and a hidden DROP TABLE, holds a refund until an ops approver signs off; the exported bundle verifies offline and an edited copy fails" width="100%">
-
 ## The promise, and its limits
 
 - The agent never holds a signing key or assigns a sequence number; nothing it reports about itself (isolation, fail
@@ -76,11 +74,7 @@ tracekit verify docs/sample/demo-run.tkb --key docs/sample/signer.pub           
 tracekit verify docs/sample/demo-run-tampered.tkb --key docs/sample/signer.pub   # exit 1
 ```
 
-To watch runs as they happen, `tracekit view --dev` serves a local, read-only page over the dev signer's store: each
-run with its verifier verdict, the calls the policy allowed, denied and held with the rules' reasons, who approved, and
-a replay that steps to the next deny, hold or gap ([viewer](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/viewer.md)).
-
-<img src="https://raw.githubusercontent.com/Cygnux-Labs/Tracekit/main/docs/demo/viewer.png" alt="tracekit view: three runs with their verdicts, the support agent's run selected, its blocked calls with rule reasons, the held refund approved by an ops approver, and the run review" width="100%">
+<img src="https://raw.githubusercontent.com/Cygnux-Labs/Tracekit/main/docs/demo/observer.gif" alt="tracekit observe: four coding agents traced live; each dangerous action is blocked by policy and recorded" width="100%">
 
 ## Deployment modes
 
