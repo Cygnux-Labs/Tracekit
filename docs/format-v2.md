@@ -97,7 +97,8 @@ patterns are full-match ASCII; every string and array is bounded). It adds to v1
 
 Lifecycle records: `run.registered` (agent, the caller identity, `signer_isolation` and `fail_modes` from the signer's
 own measurement and config), `run.closing`, the run's `reconcile.*` records, then `run.final{head_run_seq, head_hash,
-coverage}`. Key records: `signer.epoch{keys: [{kid, alg, spki}], bridge?}` and `key.retire{kid, last_seq}`. The log's
+coverage}`. Key records: `signer.epoch{keys: [{kid, alg, spki, cert?}], bridge?}` (`cert`: the key's issuance entry from a
+record-key issuer, [issuer.md](issuer.md)) and `key.retire{kid, last_seq}`. The log's
 last record, if it is ever closed: `log.closed{final_seq}`.
 
 ## 4. Records and the signature message
@@ -147,7 +148,9 @@ cofactorless equation `[S]B = R + [k]A` (`crypto.verify_v2`; vectors `ed25519-*`
 is valid from the seq of the `signer.epoch` that declares it up to `last_seq` of a later `key.retire{kid, last_seq}`
 for it, inclusive; with no retirement, from then on. A record is valid only under a key valid at its own `seq`. A record
 signed by a retired key after its `last_seq` fails, and the report names the retired key. The signer writes one
-`signer.epoch` as the log's first record; it does not rotate keys yet.
+`signer.epoch` as the log's first record; with a record-key issuer, a `signer.epoch` and the previous key's
+`key.retire` (`last_seq`: the record before the epoch) at every start and before the certificate expires
+([issuer.md](issuer.md)).
 
 ## 5. Trees and tiles
 
@@ -313,7 +316,8 @@ line and verdict is in [verdicts](verdicts.md).
 5. **Keys.** Walk `keys/records.jsonl` in increasing seq: each must be a `signer.epoch` or `key.retire` record included
    in the checkpointed tree; each declared key's `kid` and `alg` must match its SPKI; each record must verify (§4)
    under the keys valid at its seq; a `key.retire` must name a declared key and sets its `last_seq`. All records must
-   share the first key record's `log_id`.
+   share the first key record's `log_id`. A key with `cert` is declared only if its certificate verifies under a
+   pinned issuer, for that key and `log_id`, in the issuer's cosigned issuance log ([issuer.md](issuer.md)).
 6. **Runs.** A bundle holds exactly one `runs/` file, or any number with a run-set. For each run, every record must:
    verify under the keys valid at its seq (§4); be a schema-valid `tracekit.event.v2` event of this `log_id`; have
    `run_seq` = its index, `run_prev_hash` = the previous record's `hash` (zeros first), the first record's tenant and

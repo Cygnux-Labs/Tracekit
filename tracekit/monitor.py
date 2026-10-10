@@ -183,6 +183,8 @@ def _check_records(state, records, allowed):
             if (d.get("head_run_seq"), d.get("head_hash")) != (run["run_seq"], run["head"]):
                 _conflict(state, "run.final head", f"seq {seq}: the run.final of {name} names another head")
             run["final"] = True
+        # lean: a certified key a rotating signer declares (tracekit.issuer) is a conflict too unless --allow lists it;
+        # accept keys whose certificates verify under a pinned issuer once monitors watch rotating signers
         elif typ in ("signer.epoch", "key.retire") and seq != 0:
             d = e.get("data") or {}
             for kid in [k.get("kid") for k in d.get("keys", [])] if typ == "signer.epoch" else [d.get("kid")]:
