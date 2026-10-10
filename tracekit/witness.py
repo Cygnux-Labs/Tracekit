@@ -6,7 +6,7 @@ A checkpoint commits to the ledger head:
 Published copies live where the agent's user cannot rewrite them, so rebuilding the whole
 chain on disk (even with the signing key) no longer matches what the witnesses hold.
 
-Witness specs:  file:/abs/path.jsonl   git:/abs/clone[@remote]   https://witness.example[#token=..&key=..]  (tracekit witness serve)
+Witness specs:  file:/abs/path.jsonl   git:/abs/clone[@remote]   https://witness.example[#token=..&key=..]  (a v1 witness log)
                 rekor:https://rekor.sigstore.dev  (experimental, TRACEKIT_ENABLE_REKOR=1)
 """
 import json
@@ -18,6 +18,7 @@ from .client import no_redirect_opener, remote_url_error
 from .core import b64d, b64e, canon, now_ts
 
 CP_TYPE = "tracekit.checkpoint.v1"
+STH_TYPE = "tracekit.witness.sth.v1"
 
 
 def make_checkpoint(head_seq, head_hash, keys, ts=None):
@@ -141,8 +142,17 @@ class GitWitness:
         return out
 
 
+def verify_sth(sth, public):
+    """A v1 witness log's signed tree head: Ed25519 over its canonical form without `sig`."""
+    try:
+        return sth.get("type") == STH_TYPE and crypto.verify(
+            public, canon({k: v for k, v in sth.items() if k != "sig"}).encode("utf-8"), b64d(sth["sig"]))
+    except Exception:
+        return False
+
+
 class HttpWitness:
-    """A `tracekit witness serve` log. Spec: https://host:port[#token=/path/token&key=/path/witness.pub&state=/path/sth.json]
+    """A v1 witness log (the HTTP API of docs/witnesses.md). Spec: https://host:port[#token=/path/token&key=/path/witness.pub&state=/path/sth.json]
 
     publish(): POST the checkpoint with the token; the receipt's tree head and inclusion proof are checked when a key is pinned.
     read(): every entry must come with a valid inclusion proof against a tree head signed by the pinned witness key, and
@@ -188,7 +198,6 @@ class HttpWitness:
                 return e.code, {}
 
     def _check_sth(self, sth, key):
-        from .witness_server import verify_sth
         if not verify_sth(sth, key):
             raise ValueError(f"{self.name}: tree head is not signed by the pinned witness key")
         if self.state_path:
@@ -243,7 +252,7 @@ class HttpWitness:
             if sth0 is None:
                 self._check_sth(sth, key)
                 sth0 = sth
-            elif not __import__("tracekit.witness_server", fromlist=["verify_sth"]).verify_sth(sth, key):
+            elif not verify_sth(sth, key):
                 raise ValueError(f"{self.name}: tree head is not signed by the pinned witness key")
             root = bytes.fromhex(sth["root_hash"])
             for e in r["entries"]:

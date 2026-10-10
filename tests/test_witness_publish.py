@@ -131,7 +131,8 @@ class Client(unittest.TestCase):
     def test_errors_are_classified(self):
         big = signed_note(self.origin, self.leaves[:3], self.secret) + "— x " + "A" * MAX_BODY + "\n"
         self.assertTrue(self.client.add_checkpoint(big, self.log_vkey, 0, list))   # the big line is stripped
-        for status, retryable in ((503, True), (429, True), (404, False), (403, False)):
+        # 404: a witness that registers logs from the signer's polled logs/v0 list knows a new one at its next poll
+        for status, retryable in ((503, True), (429, True), (404, True), (403, False)):
             self.w.status = status
             with self.assertRaises(WitnessError) as cm:
                 self.add(4, 3)
