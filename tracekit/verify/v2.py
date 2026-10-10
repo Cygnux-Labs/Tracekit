@@ -451,6 +451,11 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
     registered = [rs[0]["event"]["data"] if rs[0]["event"].get("type") == "run.registered" else {} for rs in runs.values()]
     isolation = collections.Counter(str(d.get("signer_isolation", "unreported"))[:64] for d in registered)
     rep.check("isolation", True, "signer-reported: " + ", ".join(f"{k} {n} run(s)" for k, n in sorted(isolation.items())))
+    principals = [f"{str(e['principal'])[:256]} ({'attested' if e.get('principal_attested') is True else 'app-asserted'})"
+                  for e in (rs[0]["event"] for rs in runs.values())
+                  if e.get("type") == "run.registered" and "principal" in e]
+    if principals:
+        rep.check("principals", True, ", ".join(principals[:20]) + (", ..." if len(principals) > 20 else ""))
     if any("harness" in d for d in registered):
         bound = [f"{str(rs[0]['event'].get('run_id'))[:200]} " + (
             str(d["harness"].get("name"))[:64] if isinstance(d.get("harness"), dict) else "none")

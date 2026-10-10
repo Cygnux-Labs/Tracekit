@@ -326,6 +326,8 @@ def _page(trace="null", raw="null", nonce=None):
 LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
 WILDCARD_HOSTS = {"0.0.0.0", "::", ""}
 COOKIE = "tracekit_observe"
+LOGIN_COOKIE = "tracekit_login"
+ALL = object()   # a session's scope: every tenant
 CSP = ("default-src 'none'; script-src 'nonce-{nonce}'; style-src 'unsafe-inline'; img-src data:; "
        "connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'")
 
@@ -343,9 +345,10 @@ def _session(token):
     return hmac.new(token.encode(), b"tracekit-observe-session", hashlib.sha256).hexdigest()
 
 
-def make_handler(feed, token, allowed_hosts=None, secure=False):
+def make_handler(feed, token, allowed_hosts=None, secure=False, login=None):
     """`feed`: records, base, lock and verify() -> (records, problems, head), as Feed has. `secure`: served over HTTPS,
-    so the session cookie is Secure."""
+    so the session cookie is Secure. `login`: a view.OidcLogin; its sessions see the records of their tenant only
+    (`feed.verify(tenant)` and each record's `tenant`)."""
     allowed = set(LOOPBACK_HOSTS) | {h.lower() for h in (allowed_hosts or ()) if h.lower() not in WILDCARD_HOSTS}
 
     class Handler(BaseHTTPRequestHandler):
@@ -373,19 +376,44 @@ def make_handler(feed, token, allowed_hosts=None, secure=False):
             self.end_headers()
             self.wfile.write(data)
 
-        def _cookie(self):
+        def _cookie(self, name=COOKIE):
             for part in self.headers.get("Cookie", "").split(";"):
                 k, _, v = part.strip().partition("=")
-                if k == COOKIE:
+                if k == name:
                     return v
             return ""
 
-        def _authorized(self):
+        def _scope(self):
+            """ALL for the token (or no token), a tenant for an OIDC session, else None."""
             if not token:
-                return True
+                return ALL
             bearer = self.headers.get("Authorization", "")
-            return hmac.compare_digest(bearer.encode(), f"Bearer {token}".encode()) or \
-                hmac.compare_digest(self._cookie().encode(), _session(token).encode())
+            if hmac.compare_digest(bearer.encode(), f"Bearer {token}".encode()) or \
+                    hmac.compare_digest(self._cookie().encode(), _session(token).encode()):
+                return ALL
+            return login and login.tenant(self._cookie())
+
+        def _cookie_attrs(self):
+            return "; HttpOnly; Path=/" + ("; Secure" if secure else "")
+
+        def _login(self, u):
+            """GET /login: to the issuer, a login cookie holding the state; GET /callback: back with a session cookie,
+            through a page of our own so the SameSite=Strict cookie is sent on the next request."""
+            if u.path == "/login":
+                try:
+                    location, state = login.start()
+                except (OSError, ValueError, KeyError, TypeError):
+                    return self._send(502, '{"error":"login unavailable"}')
+                return self._send(303, "", "text/plain", headers=[
+                    ("Location", location),
+                    ("Set-Cookie", f"{LOGIN_COOKIE}={state}; SameSite=Lax; Max-Age=600{self._cookie_attrs()}")])
+            q = parse_qs(u.query)
+            sid = login.finish(q.get("state", [""])[0], q.get("code", [""])[0], self._cookie(LOGIN_COOKIE))
+            if sid is None:
+                return self._send(403, '{"error":"login refused"}')
+            return self._send(200, '<!doctype html><meta http-equiv="refresh" content="0;url=/">', "text/html", headers=[
+                ("Set-Cookie", f"{LOGIN_COOKIE}=; Max-Age=0{self._cookie_attrs()}"),
+                ("Set-Cookie", f"{COOKIE}={sid}; SameSite=Strict{self._cookie_attrs()}")])
 
         def _exchange(self, u):
             """`/?token=…` once: the token becomes an HttpOnly cookie and the browser is sent to a URL without it."""
@@ -396,12 +424,15 @@ def make_handler(feed, token, allowed_hosts=None, secure=False):
         def do_GET(self):
             u = urlparse(self.path)
             exchange = self._exchange(u)
-            authorized = exchange or self._authorized()
+            scope = ALL if exchange else self._scope()
+            authorized = scope is not None
             # DNS-rebinding guard: a web page the user visits can make a browser send requests to
             # 127.0.0.1 under an attacker-controlled name; only names we expect are served, and any
             # other name (a wildcard bind reached by its LAN address) only with the token
             if _host_only(self.headers.get("Host")) not in allowed and not (token and authorized):
                 return self._send(403, '{"error":"unexpected Host header"}')
+            if login and u.path in ("/login", "/callback"):
+                return self._login(u)
             if not authorized:
                 return self._send(401, '{"error":"missing or wrong token"}')
             if exchange:
@@ -414,20 +445,21 @@ def make_handler(feed, token, allowed_hosts=None, secure=False):
                 return self._send(200, _page(nonce=nonce), "text/html", nonce=nonce)
             if u.path == "/api/snapshot":
                 with feed.lock:
-                    body = {"next": feed.base + len(feed.records), "dropped": feed.base, "records": feed.records}
+                    body = {"next": feed.base + len(feed.records), "dropped": feed.base,
+                            "records": [r for r in feed.records if scope is ALL or r.get("tenant") == scope]}
                     return self._send(200, json.dumps(body, ensure_ascii=False))
             if u.path == "/api/verify":
-                n, problems, head = feed.verify()
+                n, problems, head = feed.verify() if scope is ALL else feed.verify(scope)
                 return self._send(200, json.dumps({"records": n, "ok": not problems, "problems": problems, "head": head}))
             if u.path == "/api/stream":
                 try:
                     start = max(0, int(parse_qs(u.query).get("from", ["0"])[0]))
                 except ValueError:
                     return self._send(400, '{"error":"from must be an integer"}')
-                return self.stream(start)
+                return self.stream(start, scope)
             self._send(404, '{"error":"not found"}')
 
-        def stream(self, i):
+        def stream(self, i, scope=ALL):
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
             self.send_header("Cache-Control", "no-store")
@@ -440,7 +472,7 @@ def make_handler(feed, token, allowed_hosts=None, secure=False):
                         if i >= feed.base + len(feed.records):
                             feed.lock.wait(timeout=1.0)
                         batch = feed.records[i - feed.base:]
-                    for r in batch:
+                    for r in batch if scope is ALL else [r for r in batch if r.get("tenant") == scope]:
                         self.wfile.write(b"data: " + json.dumps(r, ensure_ascii=False).encode("utf-8") + b"\n\n")
                     i += len(batch)
                     if batch:

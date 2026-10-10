@@ -12,7 +12,7 @@ from typing import Protocol
 from tracekit.format.canon import MAX_SAFE_INT
 from tracekit.schema import _check
 
-RPC_VERSION = 9
+RPC_VERSION = 10
 MAX_RAW_ARGS = 1 << 20   # characters of a raw arguments string
 MAX_EXTERNAL_RECORD = 1 << 16   # characters of an external system's own decision record
 MAX_RESULTS_SENT = 1024
@@ -94,6 +94,7 @@ _SUMMARY = _obj(["approval_id", "state", "run_id", "tool_call_id", "attempt", "t
 REQUESTS = {
     "register_run": _obj(["request_id", "agent"], request_id=ID, run_id=ID,
                          tenant=ID, principal=_str(256),   # app-asserted; recorded as not attested
+                         principal_token=_str(16384),   # an end user's OIDC token: principal attested
                          source={"const": "migrated"},     # events imported from another log
                          analyzes=ID,                      # a findings run about this run of the same tenant
                          agent=_obj(["name"], name=_str(128, minLength=1), version=_str(64))),

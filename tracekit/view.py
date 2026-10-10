@@ -8,7 +8,9 @@ and security are the observer's (observe.py): each run's verifier report is an a
 events only when it verifies; a run that fails is shown only as the failure report. A run whose last record no
 checkpoint covers yet waits for the signer's next note (at most CHECKPOINT_S). The viewer never opens a signing key.
 Every request needs the token in the printed URL ($TRACEKIT_VIEW_TOKEN, else a random one), exchanged once for a
-session cookie, also on loopback, where any local user or process could otherwise connect.
+session cookie, also on loopback, where any local user or process could otherwise connect. With the config's
+`view.oidc` section, /login also signs people in with an issuer of its `http.oidc` section (OidcLogin; docs/identity.md):
+a session of the auditor or approver role sees, read-only, the runs of its tenant (the issuer's tenant claim) only.
 
 Dev assurance: the pinned log key is read from the directory being checked, so a run that verifies matches the key of
 whoever can write that directory, the same user as the dev signer and this viewer.
@@ -18,8 +20,12 @@ whoever can write that directory, the same user as the dev signer and this viewe
 """
 import argparse
 import atexit
+import base64
 import collections
+import hashlib
+import hmac
 import io
+import logging
 import json
 import os
 import secrets
@@ -29,13 +35,18 @@ import sys
 import tempfile
 import threading
 import time
+from http.client import HTTPException
 from http.server import ThreadingHTTPServer
+from urllib.parse import urlencode, urlsplit
 
 from . import observe
 from .bundle_v2 import export
 from .format import checkpoint
 from .format.records import RecordSigner
-from .signer.service import dev_data_dir, load_config, read_vkeys, reader
+from .identity import oidc
+from .identity.k8s_sa import _https
+from .signer.rpc_schema import RPCError
+from .signer.service import dev_data_dir, load_config, lookup, read_vkeys, reader
 from .storage.base import StorageCorrupt, StorageUnavailable
 from .storage.file import NOTE
 from .verify import v2
@@ -47,6 +58,102 @@ DEV_NOTE = ("trust pins this store's own log.vkey: dev assurance, the viewer run
 STORED_NOTE = ("trust pins the log vkey this store holds and proves only that the records match that key; pin the "
                "signer's with --log-vkey")
 OPERATOR_SIDE = "operator-side view — re-verify with the signed release for evidence"
+LOGIN_KEYS = {"issuer", "client_id", "client_secret_file", "redirect_uri", "roles"}
+ROLES = ("auditor", "approver")
+LOGIN_S, SESSION_S, PENDING_MAX, SESSIONS_MAX = 600, 8 * 3600, 1024, 4096
+log = logging.getLogger(__name__)
+
+
+class OidcLogin:
+    """Authorization code + PKCE (S256) login with the issuer `section["issuer"]` names in `issuers` (the signer's
+    http.oidc section), its ID token's audience the client_id. A person whose identity keys (oidc.keys) are in
+    roles.auditor or roles.approver and whose token carries the issuer's tenant claim gets a session of that tenant;
+    both roles are read-only here (approvals are answered over the signer RPC)."""
+
+    def __init__(self, section, issuers, clock=time.time):
+        if not isinstance(section, dict) or set(section) - LOGIN_KEYS or not {"issuer", "client_id", "redirect_uri",
+                                                                                "roles"} <= set(section):
+            raise ValueError("view.oidc: {issuer, client_id, redirect_uri, roles, client_secret_file?}")
+        alias, roles = section["issuer"], section["roles"]
+        if not isinstance(issuers, dict) or not isinstance(issuers.get(alias), dict):
+            raise ValueError(f"view.oidc.issuer: {alias!r} is not an issuer alias of http.oidc")
+        if not (isinstance(roles, dict) and roles and set(roles) <= set(ROLES)
+                and all(isinstance(v, list) for v in roles.values())):
+            raise ValueError(f"view.oidc.roles: {{{', '.join(ROLES)}: [identity, person:<id>, group:<alias>/<name>]}}")
+        if not str(section["redirect_uri"]).startswith(("https://", "http://127.0.0.1", "http://localhost")):
+            raise ValueError("view.oidc.redirect_uri: an https:// URL (http:// on loopback only)")
+        self.issuer = oidc.Issuer(alias, clock=clock, **dict(issuers[alias], audience=section["client_id"]))
+        self.client_id, self.redirect_uri, self.clock = section["client_id"], section["redirect_uri"], clock
+        self.roles = {r: {k: True for k in v} for r, v in roles.items()}
+        self.secret = None
+        if section.get("client_secret_file"):
+            with open(section["client_secret_file"], encoding="utf-8") as f:
+                self.secret = f.read().strip()
+        self._lock = threading.Lock()
+        # lean: sessions live in this process (a restart signs everyone out); a shared store once viewers are replicated
+        self._pending, self._sessions = collections.OrderedDict(), collections.OrderedDict()
+
+    def _endpoint(self, name):
+        url = self.issuer.document().get(name)
+        if not (isinstance(url, str) and url.startswith("https://")):
+            raise ValueError(f"the issuer's {name} is not an https:// URL")
+        return url
+
+    def start(self):
+        """(the issuer's authorization URL, state) for a new login."""
+        url = self._endpoint("authorization_endpoint")
+        state, nonce, verifier = secrets.token_urlsafe(32), secrets.token_urlsafe(32), secrets.token_urlsafe(48)
+        challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
+        with self._lock:
+            self._pending[state] = (verifier, nonce, self.clock() + LOGIN_S)
+            while len(self._pending) > PENDING_MAX:
+                self._pending.popitem(last=False)
+        return url + ("&" if "?" in url else "?") + urlencode({
+            "response_type": "code", "client_id": self.client_id, "redirect_uri": self.redirect_uri,
+            "scope": "openid", "state": state, "nonce": nonce, "code_challenge": challenge,
+            "code_challenge_method": "S256"}), state
+
+    def finish(self, state, code, browser_state):
+        """The session id of a login that `state` (also the browser's login cookie) and `code` complete, else None."""
+        if not (state and code and hmac.compare_digest(state.encode(), browser_state.encode())):
+            return None
+        with self._lock:
+            verifier, nonce, until = self._pending.pop(state, (None, None, 0))
+        if self.clock() >= until:
+            return None
+        form = {"grant_type": "authorization_code", "code": code, "redirect_uri": self.redirect_uri,
+                "client_id": self.client_id, "code_verifier": verifier}
+        if self.secret:
+            form["client_secret"] = self.secret
+        try:
+            answer = _https("POST", self._endpoint("token_endpoint"), self.issuer.ctx, urlencode(form),
+                            {"Content-Type": "application/x-www-form-urlencoded"})
+            identity = self.issuer.verify(answer["id_token"], nonce)
+        except (OSError, ValueError, KeyError, TypeError, AttributeError, HTTPException, RPCError) as e:
+            log.warning("viewer login refused: %s", e)
+            return None
+        keys = oidc.keys(identity)
+        role = next((r for r in ROLES if any(lookup(self.roles.get(r, {}), k, False) for k in keys)), None)
+        tenant = identity.claims.get("tenant")
+        if role is None or tenant is None:
+            log.warning("viewer login refused: %s has %s", identity.subject[:256],
+                        "no tenant claim" if role else "no viewer role")
+            return None
+        sid = secrets.token_urlsafe(32)
+        with self._lock:
+            self._sessions[sid] = (tenant, self.clock() + SESSION_S)
+            while len(self._sessions) > SESSIONS_MAX:
+                self._sessions.popitem(last=False)
+        return sid
+
+    def tenant(self, sid):
+        """The tenant of session `sid`, else None."""
+        with self._lock:
+            tenant, until = self._sessions.get(sid, (None, 0))
+            if self.clock() < until:
+                return tenant
+            self._sessions.pop(sid, None)
+            return None
 
 
 class Translator(observe.Translator):
@@ -163,14 +270,15 @@ class StoreFeed:
         with self.lock:
             self.runs[key] = state
             # lean: keeps every translated record in memory; bound it like observe.Feed once stores hold millions
-            self.records.extend(new)
+            self.records.extend(dict(x, tenant=tenant) for x in new)
             self.lock.notify_all()
 
-    def verify(self):
-        """For the page's chain badge: records verified, and the runs that failed."""
+    def verify(self, tenant=None):
+        """For the page's chain badge: records verified, and the runs that failed (of `tenant`, else of all)."""
         with self.lock:
-            return (sum(s["shown"] for s in self.runs.values() if not s["failed"]),
-                    [f"run {k[1]} of tenant {k[0]}: {s['failed']}" for k, s in self.runs.items() if s["failed"]], None)
+            runs = {k: s for k, s in self.runs.items() if tenant is None or k[0] == tenant}
+            return (sum(s["shown"] for s in runs.values() if not s["failed"]),
+                    [f"run {k[1]} of tenant {k[0]}: {s['failed']}" for k, s in runs.items() if s["failed"]], None)
 
 
 class _TLSServer(ThreadingHTTPServer):
@@ -187,13 +295,14 @@ class _TLSServer(ThreadingHTTPServer):
             super().finish_request(s, client_address)
 
 
-def server(feed, host, port, token, tls=None):
+def server(feed, host, port, token, tls=None, login=None):
     """The viewer's HTTP server (HTTPS with `tls`, an ssl.SSLContext), open to requests that present `token` (or the
-    session cookie it is exchanged for); call serve_forever()."""
+    session cookie it is exchanged for), or with `login` (an OidcLogin) a session of its own; call serve_forever()."""
     if not token:
         raise ValueError("the viewer needs a token")
-    srv = (_TLSServer if tls else ThreadingHTTPServer)((host, port),
-                                                       observe.make_handler(feed, token, [host], secure=bool(tls)))
+    hosts = [host] + ([urlsplit(login.redirect_uri).hostname] if login else [])
+    srv = (_TLSServer if tls else ThreadingHTTPServer)((host, port), observe.make_handler(
+        feed, token, hosts, secure=bool(tls), login=login))
     srv.tls, srv.daemon_threads = tls, True
     return srv
 
@@ -229,8 +338,10 @@ def main(argv=None):
             tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
             tls.load_cert_chain(a.tls_cert, a.tls_key)
         cfg = load_config(a.config) if a.config else {"data_dir": a.data_dir or dev_data_dir()}
+        section = (cfg.get("view") or {}).get("oidc")
+        login = section and OidcLogin(section, (cfg.get("http") or {}).get("oidc"))
         feed = StoreFeed(cfg, a.log_vkey)
-        srv = server(feed, a.host, a.port, token, tls)
+        srv = server(feed, a.host, a.port, token, tls, login)
     except (OSError, ValueError, StorageUnavailable) as e:
         print(f"tracekit view: {e}", file=sys.stderr)
         return 1
