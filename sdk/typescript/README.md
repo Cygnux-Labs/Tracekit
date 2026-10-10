@@ -1,47 +1,16 @@
 # @cygnux/tracekit
 
-Tracekit for TypeScript and JavaScript agents: tool calls pass Tracekit's policy gate before they run, and model calls
-become signed evidence, in the same ledger and format as the Python SDK.
+Tracekit for TypeScript and JavaScript agents: every tool call is decided by the Tracekit signer before it runs and
+recorded after, and model responses become signed evidence. The client talks to the signer directly; it needs no Python
+at runtime (the same-user dev signer is started with Python when none is running).
+
+## Signer client (`@cygnux/tracekit`)
+
+A native client of the v2 signer RPC with no runtime dependencies (Node ≥ 18 built-ins only, no Python bridge); also
+exported as `@cygnux/tracekit/v2`.
 
 ```ts
-import OpenAI from "openai";
-import { Tracekit, TracekitDenied, instrumentOpenAI } from "@cygnux/tracekit";
-
-const tk = await Tracekit.start({ agent: "research-bot" });
-const openai = instrumentOpenAI(new OpenAI(), tk);        // also: instrumentAnthropic(client, tk), tracekitMiddleware(tk) for the Vercel AI SDK
-
-const r = await openai.chat.completions.create({ model: "gpt-4o", messages, tools });
-for (const call of r.choices[0].message.tool_calls ?? []) {
-  await tk.tool("Bash", JSON.parse(call.function.arguments), () => runShell(call), { toolUseId: call.id });  // TracekitDenied if blocked
-}
-await tk.end();
-```
-
-- `tk.tool(name, args, fn)`: the policy decision is made and signed before `fn` runs; a denied (or held, not approved)
-  call throws `TracekitDenied` and `fn` never runs. Pass the model's call id as `toolUseId` to link request and execution.
-- `instrumentOpenAI` (chat completions, Responses), `instrumentAnthropic` (messages): a signed request event before the
-  call is sent, and a response event with model, finish reason, requested tool calls, token usage, error, status and
-  time to first chunk. Streams are recorded when they end, fail or are abandoned: the SDK replaces the stream's async
-  iterator in place with a recording one; non-streamed responses come back as the provider SDK returned them. The
-  wrapped `create` is an async function, so it returns a plain Promise: helpers on the SDK's own promise object (such
-  as `.withResponse()`) are not available through it. A provider error is recorded and rethrown. The request event is
-  written before the call is sent: if the bridge reports an error or times out, that error is thrown and the call is not sent; if the
-  bridge has exited, `fail_mode: closed` throws `TracekitDenied` and `fail_mode: open` sends the call unrecorded with a
-  warning on stderr. A failure to record a call that already completed is written to stderr and counted in
-  `tk.recordFailures`; it never replaces the call's result.
-- `tracekitMiddleware(tk)`: `wrapLanguageModel({ model, middleware: tracekitMiddleware(tk) })` in the Vercel AI SDK
-  (v4 and v5 result shapes).
-
-**How it works.** The SDK starts `python -m tracekit.bridge` and talks to it over stdio, so policy evaluation, secret
-redaction, the signer client and the event format are Tracekit's own Python code, not a second implementation. It needs
-the `tracekit` Python package and a signer (`tracekit init --dev`); set `TRACEKIT_PYTHON` to pick the interpreter.
-
-## v2 signer client (`@cygnux/tracekit/v2`)
-
-A native client of the v2 signer RPC with no runtime dependencies (Node ≥ 18 built-ins only, no Python bridge).
-
-```ts
-import { Client, withRun, currentRun } from "@cygnux/tracekit/v2";
+import { Client, withRun, currentRun } from "@cygnux/tracekit";
 
 const client = new Client();                              // or new Client({ signer: "https://signer:8443" })
 const run = await client.registerRun("research-bot");
@@ -144,7 +113,87 @@ then is blocked. `PostToolUse`/`PostToolUseFailure` complete the call, `SessionE
 wrapper commits each saved transcript as a `state_write` chained from the last one, so a transcript edited in the store
 between two writes shows up as a signed `state_tamper` gap.
 
-Tests (`npm test`) run the real OpenAI and Anthropic SDKs against a mocked fetch and a real signer, then verify the
+## Migrating from v1
+
+The v1 SDK (`Tracekit`, driving `python -m tracekit.bridge`) is deprecated and removed in 0.5.0. Until then it stays at
+`@cygnux/tracekit/v1`; `Tracekit.start` warns once per process (`DeprecationWarning`, code `TRACEKIT_V1`) and the bridge
+prints a matching notice on stderr; `TRACEKIT_NO_DEPRECATION=1` silences both. The import becomes
+`import { Tracekit } from "@cygnux/tracekit/v1"`.
+
+| v1 (`@cygnux/tracekit/v1`) | v2 (`@cygnux/tracekit`) |
+|---|---|
+| `await Tracekit.start({ agent })` | `const client = new Client(); const run = await client.registerRun(agent)` |
+| `await tk.tool(name, args, fn, { toolUseId })` | `await run.decide(toolUseId, name, args)`, run `fn` on `allow`, then `await run.complete(toolUseId, "ok", { result })` |
+| `TracekitDenied` | `d.decision === "deny"` (`d.rule_ids`); a refusal by the signer rejects with `RPCError` |
+| held for approval inside `tk.tool` | `d.decision === "ask"`: `run.approvalRequest(id)`, then `run.approvalWait(approval_id)` |
+| `instrumentOpenAI` / `instrumentAnthropic`, `tk.modelBegin` / `tk.modelEnd` | `run.modelEvent(provider, model, "response", { stop_reason, usage, tool_uses })`, or a framework adapter below |
+| `tracekitMiddleware(tk)` | `tracekitAI(run).middleware` from `@cygnux/tracekit/v2/vercel-ai`, with `tools` and `toolApproval` |
+| `tk.prompt` / `tk.say` / `tk.think` | not recorded by the v2 signer |
+| `tk.end(reason)` | `await run.close(reason); await client.close()` |
+
+```ts
+// v1
+import { Tracekit, TracekitDenied } from "@cygnux/tracekit/v1";
+const tk = await Tracekit.start({ agent: "research-bot" });
+try {
+  out = await tk.tool("Bash", args, () => runShell(args), { toolUseId: call.id });
+} catch (e) {
+  if (!(e instanceof TracekitDenied)) throw e;
+}
+await tk.end();
+
+// v2
+import { Client } from "@cygnux/tracekit";
+const client = new Client();
+const run = await client.registerRun("research-bot");
+const d = await run.decide(call.id, "Bash", call.function.arguments);
+if (d.decision === "allow") {
+  out = await runShell(args);
+  await run.complete(call.id, "ok", { result: out });
+}
+await run.close();
+await client.close();
+```
+
+## v1 SDK (deprecated, `@cygnux/tracekit/v1`)
+
+Removed in 0.5.0; see the migration above. Tool calls pass Tracekit's policy gate before they run, and model calls
+become signed evidence, in the same ledger and format as the Python SDK.
+
+```ts
+import OpenAI from "openai";
+import { Tracekit, TracekitDenied, instrumentOpenAI } from "@cygnux/tracekit/v1";
+
+const tk = await Tracekit.start({ agent: "research-bot" });
+const openai = instrumentOpenAI(new OpenAI(), tk);        // also: instrumentAnthropic(client, tk), tracekitMiddleware(tk) for the Vercel AI SDK
+
+const r = await openai.chat.completions.create({ model: "gpt-4o", messages, tools });
+for (const call of r.choices[0].message.tool_calls ?? []) {
+  await tk.tool("Bash", JSON.parse(call.function.arguments), () => runShell(call), { toolUseId: call.id });  // TracekitDenied if blocked
+}
+await tk.end();
+```
+
+- `tk.tool(name, args, fn)`: the policy decision is made and signed before `fn` runs; a denied (or held, not approved)
+  call throws `TracekitDenied` and `fn` never runs. Pass the model's call id as `toolUseId` to link request and execution.
+- `instrumentOpenAI` (chat completions, Responses), `instrumentAnthropic` (messages): a signed request event before the
+  call is sent, and a response event with model, finish reason, requested tool calls, token usage, error, status and
+  time to first chunk. Streams are recorded when they end, fail or are abandoned: the SDK replaces the stream's async
+  iterator in place with a recording one; non-streamed responses come back as the provider SDK returned them. The
+  wrapped `create` is an async function, so it returns a plain Promise: helpers on the SDK's own promise object (such
+  as `.withResponse()`) are not available through it. A provider error is recorded and rethrown. The request event is
+  written before the call is sent: if the bridge reports an error or times out, that error is thrown and the call is not sent; if the
+  bridge has exited, `fail_mode: closed` throws `TracekitDenied` and `fail_mode: open` sends the call unrecorded with a
+  warning on stderr. A failure to record a call that already completed is written to stderr and counted in
+  `tk.recordFailures`; it never replaces the call's result.
+- `tracekitMiddleware(tk)`: `wrapLanguageModel({ model, middleware: tracekitMiddleware(tk) })` in the Vercel AI SDK
+  (v4 and v5 result shapes).
+
+**How it works.** The SDK starts `python -m tracekit.bridge` and talks to it over stdio, so policy evaluation, secret
+redaction, the signer client and the event format are Tracekit's own Python code, not a second implementation. It needs
+the `tracekit` Python package and a signer (`tracekit init --dev`); set `TRACEKIT_PYTHON` to pick the interpreter.
+
+Tests (`npm test`): `test/sdk.test.mjs` runs the v1 SDK with the real OpenAI and Anthropic SDKs against a mocked fetch and a real signer, then verify the
 bundle; `test/adapters.test.mjs` runs the adapter contract for each adapter, through small stand-ins for the
 frameworks' hook and middleware interfaces, against an in-test fake signer and (with Python and the signer extra) the
 real one.
