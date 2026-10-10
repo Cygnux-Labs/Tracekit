@@ -16,6 +16,11 @@ signed with an allowed algorithm by a key that the log declared in a signer.epoc
 (key.retire) by then; schema-valid events; one run's chain, contiguous from run_seq 0 to a run.final record; the run's
 first and last records and every key record included in the checkpointed tree. A run without run.final verifies only
 to its head. The bundle's manifest is an index, never trusted.
+A record signed by a key after that key's key.retire fails `signatures`, naming the retired key (keys are valid by
+position only). A record after a run's run.final breaks the run chain.
+Report lines (also in --json): tool calls by evidence tier (T1/T2/T3), records by args_source, the signer_isolation the
+signer recorded per run, the tool classes run.registered says fail open, and key assurance (asserted: the log declares
+its keys; this format has no key attestation). `witnessed+monitored` needs a monitor (M3) and is not reported yet.
 A run with any self-approval (dev mode: the approver was the requester) is reported `approvals: self`, assurance dev.
 Approvals answered under the break-glass role are listed, as a warning.
 A tool call that ran against a deny, or an ask with no consumed approval, is signed by the signer as a capture.gap
@@ -40,6 +45,7 @@ has hash `v1_head` and is the retirement of key `v1_kid`, and no v1 record follo
 bridge's two records as ordinary signer capture.gap events (a `capture gaps` warning) and cannot tell a v1 record
 appended after them with a copy of the retired key from any other: only this check reports it."""
 import base64
+import collections
 import datetime
 import hashlib
 import re
@@ -196,11 +202,19 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key):
                                                      [base64.b64decode(p, validate=True) for p in path], root)
 
     def check_record(r, keys, problems):
-        """Signature, schema and log membership of one record; `keys`: the SPKIs the log allows at its position."""
+        """Signature, schema and log membership of one record; `keys`: the SPKIs the log allows at its position. A
+        record valid only under a key retired before it is named as such."""
         try:
             verify_record(r, keys, trust["algs"])
         except RecordError as e:
-            problems.append(f"seq {r.get('event', {}).get('seq')!r}: {e}")
+            seq = r["event"].get("seq") if str(e) == "unknown kid" else None   # a well-formed record by then
+            retired = [k["spki"] for k in timeline.values()
+                       if type(seq) is int and k["until"] is not None and k["until"] < seq]
+            try:
+                verify_record(r, retired, trust["algs"])
+                problems.append(f"seq {seq}: signed by key {r['kid'][:80]} after its key.retire")
+            except RecordError:
+                problems.append(f"seq {r.get('event', {}).get('seq')!r}: {e}")
             return
         e = r["event"]
         errs = validate(e) if e.get("schema_version") == V2 else ["not a tracekit.event.v2 event"]
@@ -253,7 +267,8 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key):
             e = r["event"]
             if (e.get("run_seq") != i or e.get("run_prev_hash") != (records[i - 1]["hash"] if i else ZERO_HASH)
                     or (e.get("tenant"), e.get("run_id")) != (head.get("tenant"), head.get("run_id"))
-                    or (i and e["seq"] <= records[i - 1]["event"]["seq"])):
+                    or (i and (e["seq"] <= records[i - 1]["event"]["seq"]
+                               or records[i - 1]["event"].get("type") == "run.final"))):
                 chain.append(f"run {str(head.get('run_id'))[:200]!r} run_seq {i} (seq {e.get('seq')!r}) does not "
                              "continue the run")
         if not (included(records[0]) and included(records[-1])):
@@ -288,8 +303,9 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key):
         rep.check("policy snapshot", p == f"policies/{hashlib.sha256(files[p]).hexdigest()}.json", p)
 
     still_open = [rs for rs in runs.values() if rs[-1]["event"].get("type") != "run.final"]
-    rep.integrity = ("VERIFIED" if not still_open else f"VERIFIED TO HEAD {still_open[0][-1]['event'].get('run_seq')} "
-                     "(open)" if only else f"VERIFIED ({len(still_open)} run(s) open)")
+    rep.integrity = ("VERIFIED" if not still_open else
+                     f"VERIFIED TO HEAD {still_open[0][-1]['event'].get('run_seq')} (open)" if only else
+                     f"VERIFIED ({len(still_open)} run(s) open)")
     every = [r for rs in runs.values() for r in rs]
     self_approved = any(r["event"].get("type") == "approval" and r["event"]["data"].get("self_approved") is True
                         for r in every)
@@ -314,6 +330,25 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key):
                   [f"seq {r['event']['seq']}: {r['event']['type']} {str(r['event'].get('tool_call_id'))[:200]}: "
                    f"{str(r['event']['data'].get('detail'))[:200]}" for r in every
                    if str(r["event"].get("type")).startswith("reconcile.")][:20], warn=True)
+    tiers = {}   # (run, tool_call_id) -> the tier any of its records names
+    for r in every:
+        e = r["event"]
+        if e.get("tool_call_id") is not None:
+            tiers[(e.get("run_id"), e["tool_call_id"])] = tiers.get((e.get("run_id"), e["tool_call_id"])) or e.get("tier")
+    if tiers:
+        n = collections.Counter(tiers.values())
+        rep.check("tiers", True, f"{len(tiers)} tool call(s): " + ", ".join(f"{t} {n[t]}" for t in ("T1", "T2", "T3"))
+                  + (f", untiered {n[None]}" if n[None] else ""))
+    sources = collections.Counter(r["event"]["args_source"] for r in every if "args_source" in r["event"])
+    if sources:
+        rep.check("args source", True, f"{sum(sources.values())} record(s): "
+                  + ", ".join(f"{s} {sources[s]}" for s in ("raw", "parsed", "coerced")))
+    registered = [rs[0]["event"]["data"] if rs[0]["event"].get("type") == "run.registered" else {} for rs in runs.values()]
+    isolation = collections.Counter(str(d.get("signer_isolation", "unreported"))[:64] for d in registered)
+    rep.check("isolation", True, "signer-reported: " + ", ".join(f"{k} {n} run(s)" for k, n in sorted(isolation.items())))
+    fail_open = sorted({str(c)[:64] for d in registered for c, m in (d.get("fail_modes") or {}).items() if m == "open"})
+    rep.check("fail-open classes", True, ", ".join(fail_open) or "none")
+    rep.check("key assurance", True, "asserted: the log declares its record keys; none is attested")
     rep.assurance = (_assurance(origin, cosigs, witnesses, trust, {r["alg"] for r in every + key_records}, self_approved,
                                 anchors)
                      + ("; key retirements not proven complete" if proven_to < relied else ""))
