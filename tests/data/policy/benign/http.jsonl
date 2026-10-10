@@ -89,3 +89,13 @@
 {"tool": "web_fetch", "args": {"url": "https://www.githubstatus.com/api/v2/summary.json"}, "expect": "allow", "note": "public GET"}
 {"tool": "http_request", "args": {"url": "https://catfact.ninja/fact"}, "expect": "allow", "note": "public GET"}
 {"tool": "requests_get", "args": {"url": "https://api.publicapis.org/entries"}, "expect": "allow", "note": "public GET"}
+{"tool": "http_get", "args": {"url": "HTTPS://Example.com/"}, "expect": "allow", "note": "public host in upper case"}
+{"tool": "http_get", "args": {"url": "https://example.com:443/path?q=1#frag"}, "expect": "allow", "note": "public host with port, query and fragment"}
+{"tool": "http_get", "args": {"url": "https://example.com./docs"}, "expect": "allow", "note": "public host with a trailing dot"}
+{"tool": "http_get", "args": {"url": "https://93.184.215.14/"}, "expect": "allow", "note": "public IPv4"}
+{"tool": "http_get", "args": {"url": "https://[2606:4700:4700::1111]/dns-query"}, "expect": "allow", "note": "public IPv6"}
+{"tool": "http_get", "args": {"url": "http:/example.com/"}, "expect": "allow", "note": "one slash after the scheme"}
+{"tool": "http_get", "args": {"url": "https://example.com/%7Euser/"}, "expect": "allow", "note": "percent-encoded path"}
+{"tool": "http_get", "args": {"url": "https://xn--bcher-kva.example/"}, "expect": "allow", "note": "punycode host"}
+{"tool": "http_get", "args": {"url": "https://user@example.com/"}, "expect": "allow", "note": "userinfo without a password"}
+{"tool": "http_get", "args": {"url": "https://docs.example.com/metadata/overview"}, "expect": "allow", "note": "metadata in a path"}

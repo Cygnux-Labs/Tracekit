@@ -40,3 +40,9 @@
 {"tool": "mcp:filesystem/search_files", "args": {"path": "/app", "pattern": "*.yaml"}, "expect": "allow", "note": "ordinary file through MCP or glob"}
 {"tool": "mcp:filesystem/write_file", "args": {"path": "/app/out/summary.md", "content": "done"}, "expect": "allow", "note": "ordinary file through MCP or glob"}
 {"tool": "mcp:filesystem/get_file_info", "args": {"path": "/app/data"}, "expect": "allow", "note": "ordinary file through MCP or glob"}
+{"tool": "Write", "args": {"file_path": "/repo/docker-compose.yaml", "content": "services:\n  db:\n    environment:\n      POSTGRES_PASSWORD_FILE: /run/secrets/pg.password\n"}, "expect": "allow", "note": "content mentions a credentials path"}
+{"tool": "Edit", "args": {"file_path": "/repo/README.md", "old_string": "a", "new_string": "Credentials are read from ~/.netrc or ~/.kube/config"}, "expect": "allow", "note": "content mentions credentials paths"}
+{"tool": "Write", "args": {"file_path": "/repo/app.py", "content": "requests.get('http://169.254.169.254/latest/meta-data/')  # documented"}, "expect": "allow", "note": "content mentions the metadata address"}
+{"tool": "Write", "args": {"file_path": "/repo/docs/aws.md", "content": "Configure ~/.aws/credentials with `aws configure`."}, "expect": "allow", "note": "content mentions a credentials path"}
+{"tool": "Write", "args": {"file_path": "C:\\proj\\src\\app.py", "content": "print(1)"}, "expect": "allow", "note": "Windows path"}
+{"tool": "Write", "args": {"file_path": "/Users/u/proj/.env.EXAMPLE", "content": "A="}, "expect": "allow", "note": "env template in upper case"}
