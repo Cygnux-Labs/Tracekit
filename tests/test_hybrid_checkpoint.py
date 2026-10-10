@@ -158,7 +158,7 @@ class Signer(unittest.TestCase):
                     svc.load_config(cfg)
         with open(cfg, "w") as f:
             json.dump({"data_dir": ".", "log_key": {"slh_dsa": {"file": "keys/log-slh.key"}}}, f)
-        self.assertEqual(svc.load_config(cfg)["log_key"]["slh_dsa"]["file"], self.key)
+        self.assertEqual(os.path.normpath(svc.load_config(cfg)["log_key"]["slh_dsa"]["file"]), self.key)
         printed = io.StringIO()
         with contextlib.redirect_stdout(printed):
             self.assertEqual(svc.main(["vkey", "--config", cfg]), 0)

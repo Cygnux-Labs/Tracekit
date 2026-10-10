@@ -33,6 +33,7 @@ class Chart(unittest.TestCase):
         self.assertEqual(p.returncode, 0, p.stderr)
         return {d["kind"]: d for d in yaml.safe_load_all(p.stdout) if d}
 
+    @unittest.skipIf(os.name == "nt", "the chart's config names Linux container paths")
     def test_sidecar_is_isolated_from_the_agent(self):
         m = self.manifests("recordKey.secretName=rk")
         pod = m["Deployment"]["spec"]["template"]["spec"]
@@ -118,6 +119,7 @@ class Central(unittest.TestCase):
                            timeout=60)
         self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
 
+    @unittest.skipIf(os.name == "nt", "the chart's config names Linux container paths")
     def test_one_writer_per_log(self):
         m = self.objects(*FULL)
         cfgs = self.configs(m)
