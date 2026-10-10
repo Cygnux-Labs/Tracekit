@@ -93,6 +93,8 @@ class SignerMetrics:
         self.records = self.add(Counter("tracekit_signer_records_total", "Records written, by event type.", "type"))
         self.gaps = self.add(Counter("tracekit_signer_gaps_total", "capture.gap records written, by kind.", "kind"))
         self.refusals = self.add(Counter("tracekit_signer_refusals_total", "RPC calls refused, by error code.", "code"))
+        self.auth_failures = self.add(Counter("tracekit_signer_auth_failures_total",
+                                              "Failed authentications on the HTTP transport."))
         self.decisions = self.add(Counter("tracekit_signer_policy_decisions_total",
                                           "policy.decision records written, by verdict.", "verdict"))
         self.nondeterministic = self.add(Counter("tracekit_signer_policy_nondeterministic_total",

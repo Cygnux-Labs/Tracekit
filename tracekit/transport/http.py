@@ -10,16 +10,22 @@ signer.yaml:
       authenticators: [k8s_sa, mtls, token]
       k8s_sa: {audience: tracekit-signer, ...}  # tracekit/identity/k8s_sa.py
       token_file: tls/bearer                     # token: a bearer secret (identity token:http)
+      tokens: tokens.json                        # token: named, expiring tokens (identity token:NAME), managed with
+                                                 # `tracekit signer token add|list|revoke` (identity/token.TokenStore)
       insecure_loopback: false                   # plain HTTP, only on a loopback address
 
 Every request is authenticated again (no session state): the authenticators are asked in order and the first that
-recognises its credential decides. Bodies over MAX_LINE are refused; reads time out like the other transports; the
+recognises its credential decides. Failed authentications are limited per source address and in total
+(FAILED_PER_ADDR, FAILED_TOTAL: token buckets in a fixed-size LRU); past either, requests are refused without looking
+at their credentials. Refusals carry only the error, never log state. Bodies over MAX_LINE are refused; reads time out like the other transports; the
 connection is kept alive between requests. RPC refusals are answered with status 200 and the error frame.
 
 With `otlp` (the signer's `otlp` config section), `POST /v1/traces` takes OTLP/HTTP (protobuf or JSON, bodies up to
 otlp_wire.MAX_BODY) from the same authenticators: the caller is authenticated before its body is read, and answered
-401 without a credential this signer accepts and 403 without the otlp_import grant.
+401 without a credential this signer accepts, 429 past the failed-authentication limit and 403 without the otlp_import
+grant.
 """
+import contextlib
 import ipaddress
 import json
 import os
@@ -29,15 +35,17 @@ from http.server import BaseHTTPRequestHandler
 
 from tracekit.identity.k8s_sa import K8sSaAuthenticator
 from tracekit.identity.mtls import MtlsAuthenticator
-from tracekit.identity.token import BearerToken
+from tracekit.identity.token import BearerToken, TokenStore
 from tracekit.otlp_wire import MAX_BODY as OTLP_MAX_BODY
-from tracekit.signer.quotas import MAX_LINE
+from tracekit.signer.quotas import MAX_LINE, Limits, Quotas
 from tracekit.signer.rpc_schema import RPCError
 from tracekit.transport import READ_TIMEOUT_S, parse_frame
 
 PATH = "/v2/rpc"
 OTLP_PATH = "/v1/traces"
-KEYS = {"listen", "cert", "key", "client_ca", "authenticators", "k8s_sa", "token_file", "insecure_loopback"}
+KEYS = {"listen", "cert", "key", "client_ca", "authenticators", "k8s_sa", "token_file", "tokens", "insecure_loopback"}
+FAILED_PER_ADDR = Limits(events_per_s=1, burst=20, buckets=4096)   # failed authentications per source address
+FAILED_TOTAL = Limits(events_per_s=50, burst=500, buckets=1)
 
 
 def configure(cfg):
@@ -74,9 +82,12 @@ def configure(cfg):
                 raise ValueError("http: mtls needs cert, key and client_ca")
             auths.append(MtlsAuthenticator(cfg["client_ca"]))
         elif name == "token":
-            if not cfg.get("token_file"):
-                raise ValueError("http: token needs token_file")
-            auths.append(BearerToken(cfg["token_file"]))
+            if not (cfg.get("token_file") or cfg.get("tokens")):
+                raise ValueError("http: token needs token_file and/or tokens")
+            if cfg.get("tokens"):
+                auths.append(TokenStore(cfg["tokens"]))
+            if cfg.get("token_file"):
+                auths.append(BearerToken(cfg["token_file"]))
         else:
             try:
                 auths.append(K8sSaAuthenticator(**cfg.get("k8s_sa", {})))
@@ -88,7 +99,7 @@ def configure(cfg):
 def resolve(cfg, base):
     """The `http` section `cfg` with its paths made absolute from `base`, in place."""
     for section in (cfg, cfg.get("k8s_sa")) if isinstance(cfg, dict) else ():
-        for k in ("cert", "key", "token_file", "ca"):
+        for k in ("cert", "key", "token_file", "tokens", "ca"):
             if isinstance(section, dict) and isinstance(section.get(k), str) and section[k]:
                 section[k] = os.path.join(base, section[k])
     if isinstance(cfg, dict) and isinstance(cfg.get("client_ca"), dict):
@@ -125,7 +136,7 @@ class _Handler(BaseHTTPRequestHandler):
             try:   # who asks, before reading what they send
                 identity = self.server.authenticate(self, {"method": "otlp_import"})
             except RPCError as e:
-                return self._reply(401 if e.code == "unauthenticated" else 403, e.wire(), close=True)
+                return self._reply({"unauthenticated": 401, "quota_exceeded": 429}.get(e.code, 403), e.wire(), close=True)
         try:
             body = self.rfile.read(int(n))
         except OSError:   # the read timeout, or the peer went away
@@ -172,11 +183,13 @@ class HttpServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
     allow_reuse_address = True
 
     def __init__(self, address, authenticators, tls, handle_frame, read_timeout=READ_TIMEOUT_S, otlp=None,
-                 handler=_Handler):
+                 handler=_Handler, on_auth_failure=lambda: None, failed=(FAILED_PER_ADDR, FAILED_TOTAL)):
         """`otlp(identity, body, content type, content encoding)` -> (status, headers, body) answers POST /v1/traces;
-        None: not served. `handler`: the request handler class (tracekit.gateway serves its own)."""
+        None: not served. `handler`: the request handler class (tracekit.gateway serves its own). `on_auth_failure()`
+        is called for each failed authentication; `failed`: the Limits per source address and in total."""
         self.authenticators, self.tls, self.handle_frame, self.read_timeout = authenticators, tls, handle_frame, read_timeout
-        self.otlp = otlp
+        self.otlp, self.on_auth_failure = otlp, on_auth_failure
+        self.failed = [Quotas(lim) for lim in failed]
         super().__init__(address, handler)
 
     def finish_request(self, request, client_address):
@@ -194,8 +207,19 @@ class HttpServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
             conn.close()
 
     def authenticate(self, conn, frame):
-        for a in self.authenticators:
-            identity = a.authenticate(conn, frame)
-            if identity is not None:
-                return identity
-        raise RPCError("unauthenticated", "no credential this signer accepts")
+        keys = [conn.client_address[0], None]
+        for q, k in zip(self.failed, keys):
+            q.take(k, "too many failed authentications", spend=0)
+        try:
+            for a in self.authenticators:
+                identity = a.authenticate(conn, frame)
+                if identity is not None:
+                    return identity
+            raise RPCError("unauthenticated", "no credential this signer accepts")
+        except RPCError as e:
+            if e.code == "unauthenticated":
+                self.on_auth_failure()
+                for q, k in zip(self.failed, keys):
+                    with contextlib.suppress(RPCError):   # emptied by a concurrent failure since the check
+                        q.take(k, "")
+            raise

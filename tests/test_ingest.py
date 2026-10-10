@@ -1,4 +1,7 @@
+import contextlib
+import hashlib
 import http.client
+import io
 import json
 import os
 import shutil
@@ -60,10 +63,25 @@ class Tokens(unittest.TestCase):
         self.assertIsNone(ingest.authenticate(ingest.load_tokens(d), token))
         with self.assertRaises(ValueError):
             ingest.add_token(d, "build-1")
-        with self.assertRaises(ValueError):
-            ingest.add_token(d, "bad name!")
+        for bad in ("bad name!", "a:b"):   # ':' would make remote:<client>:<run> name two clients
+            with self.assertRaises(ValueError):
+                ingest.add_token(d, bad)
         if os.name != "nt":  # Windows has no POSIX permission bits
             self.assertEqual(oct(os.stat(os.path.join(d, ingest.TOKENS_FILE)).st_mode & 0o777), "0o600")
+
+    def test_a_stored_client_name_with_a_colon_never_authenticates(self):
+        tokens = {"a:b": {"sha256": hashlib.sha256(b"t").hexdigest()}}
+        self.assertIsNone(ingest.authenticate(tokens, "Bearer t"))
+
+    def test_deprecation_warning(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        err = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            self.assertEqual(ingest.main(["token", "box", "--home", d]), 0)
+        self.assertEqual(err.getvalue().count("deprecated"), 1)
+        self.assertIn("removed in tracekit 0.5", err.getvalue())
+        self.assertIn("tracekit init --remote URL --v2", err.getvalue())
 
 
 class EndToEnd(unittest.TestCase):
