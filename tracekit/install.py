@@ -26,7 +26,7 @@ except ImportError:
     grp = pwd = None
 
 from .core import read_json, read_text
-from . import client
+from . import client, harness_helper
 from .deploy import files
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -38,6 +38,29 @@ OPT_PYTHON = os.path.join(OPT, "bin", "python")
 SYSTEMD_DIR = "/etc/systemd/system"
 TOOL_EVENTS = ["PreToolUse", "PostToolUse", "PostToolUseFailure"]
 OTHER_EVENTS = ["UserPromptSubmit", "Stop", "SubagentStart", "SubagentStop", "SessionStart", "SessionEnd"]
+# systemd hardening of every Tracekit service (04-design §9): no capabilities, a read-only system, no devices, kernel
+# knobs or namespaces. Services that need an exception (a device for an external signer, the harness helper's
+# capabilities) drop or replace a line.
+HARDENING = """NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+"""
 UNIT = """[Unit]
 Description=Tracekit signer daemon
 After=network.target
@@ -48,14 +71,12 @@ Group={user}
 ExecStart={python} -I -m tracekit.daemon --home {home}
 Restart=on-failure
 UMask=0027
-NoNewPrivileges=true
-ProtectSystem=strict
 ReadWritePaths={home}
-PrivateTmp=true
-{caps}
+""" + HARDENING.replace("PrivateDevices=true\n", "") + """RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
 [Install]
 WantedBy=multi-user.target
-"""
+"""   # an external signer (config.json `signer`) may talk to a TPM or HSM device, so tracekitd keeps /dev
 PROXY_UNIT = """[Unit]
 Description=Tracekit model proxy
 After=tracekitd.service
@@ -67,10 +88,8 @@ Group={user}
 ExecStart={python} -I -m tracekit.proxy --home {home}
 Restart=on-failure
 UMask=0027
-NoNewPrivileges=true
-ProtectSystem=strict
 ReadWritePaths={home}
-PrivateTmp=true
+""" + HARDENING + """RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 
 [Install]
 WantedBy=multi-user.target
@@ -101,30 +120,48 @@ UMask=0027
 RuntimeDirectory={unit}
 RuntimeDirectoryMode=0755
 ReadWritePaths={data}
-NoNewPrivileges=true
-CapabilityBoundingSet=
-AmbientCapabilities=
-ProtectSystem=strict
-ProtectHome=true
-PrivateTmp=true
-PrivateDevices=true
-ProtectKernelTunables=true
-ProtectKernelModules=true
-ProtectKernelLogs=true
-ProtectControlGroups=true
-ProtectClock=true
-ProtectHostname=true
-RestrictNamespaces=true
-RestrictRealtime=true
-RestrictSUIDSGID=true
-LockPersonality=true
-SystemCallArchitectures=native
-SystemCallFilter=@system-service
-RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+""" + HARDENING + """RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 
 [Install]
 WantedBy=multi-user.target
 """
+# the harness helper (tracekit.harness_helper): one per signer, socket-activated, the only process that reads the agent's
+# /proc/<pid>/exe; its socket is in a directory only the signer's user can reach (V2_DATA; HELPER_DIR for v1)
+V2_HELPER, V1_HELPER = "tracekit-harness-helper", "tracekitd-harness-helper"
+V2_HELPER_SOCKET = os.path.join(V2_DATA, "harness-helper.sock")
+HELPER_DIR = os.path.join(SYS_HOME, "helper")
+V1_HELPER_SOCKET = os.path.join(HELPER_DIR, "harness-helper.sock")
+HELPER_LABEL = "dev.tracekit.harness-helper"
+
+
+def helper_units(name, signer, sig, sock):
+    """(.socket, .service) unit texts of the harness helper that answers the signer unit `signer`, running as `sig`."""
+    socket_unit = (f"[Unit]\nDescription=Tracekit harness helper socket ({signer})\n\n[Socket]\nListenStream={sock}\n"
+                   f"SocketUser={sig.pw_name}\nSocketGroup={sig.pw_name}\nSocketMode=0600\nRemoveOnStop=true\n\n"
+                   "[Install]\nWantedBy=sockets.target\n")
+    service = (f"[Unit]\nDescription=Tracekit harness helper ({signer})\nRequires={name}.socket\n\n[Service]\n"
+               f"ExecStart={OPT_PYTHON} -I -m tracekit.harness_helper --allow-uid {sig.pw_uid}\nUMask=0077\n"
+               + HARDENING.replace("CapabilityBoundingSet=\n", f"CapabilityBoundingSet={harness_helper.HELPER_CAPS}\n")
+               + "RestrictAddressFamilies=AF_UNIX\nPrivateNetwork=true\n")
+    return socket_unit, service
+
+
+def _install_helper(name, signer, sig, sock, darwin):
+    """Write and start the harness helper for the signer `signer` running as `sig` (systemd; launchd on macOS)."""
+    if darwin:
+        import plistlib
+        plist = os.path.join(LAUNCHD_DIR, HELPER_LABEL + ".plist")
+        _write_root_file(plist, plistlib.dumps({
+            "Label": HELPER_LABEL, "RunAtLoad": True, "KeepAlive": True, "Umask": 0o077,
+            "ProgramArguments": [OPT_PYTHON, "-I", "-m", "tracekit.harness_helper", "--allow-uid", str(sig.pw_uid),
+                                 "--socket", sock]}))
+        subprocess.run(["launchctl", "bootout", "system", plist], check=False)
+        subprocess.run(["launchctl", "bootstrap", "system", plist], check=False)
+        return
+    for suffix, text in zip((".socket", ".service"), helper_units(name, signer, sig, sock)):
+        _write_root_file(os.path.join(SYSTEMD_DIR, name + suffix), text.encode())
+    subprocess.run(["systemctl", "daemon-reload"], check=False)
+    subprocess.run(["systemctl", "enable", "--now", name + ".socket"], check=False)
 
 
 def launchd_plist(label, user, python, module, home, extra_args=()):
@@ -393,10 +430,6 @@ def _write_signer_config(home, witnesses, checkpoint_every, socket_path, proxy=N
 
 
 HARNESS_COMMANDS = {"claude": "claude", "codex": "codex", "cursor": "cursor-agent", "gemini": "gemini"}
-# 0.3: lets tracekitd read /proc/<pid>/exe of the agent's processes to find the harness that sent an event. It is only
-# set when harnesses are registered. The signer already holds the signing key, so this does not widen what a
-# compromised signer could do to the record; it does let it inspect the agent's processes (docs/threat-model-laptop.md).
-UNIT_CAPS = "AmbientCapabilities=CAP_SYS_PTRACE\nCapabilityBoundingSet=CAP_SYS_PTRACE\n"
 
 
 def resolve_harness(spec, agent="claude"):
@@ -418,7 +451,7 @@ def resolve_harness(spec, agent="claude"):
         if not interp or not os.path.isabs(interp[0]):
             raise SystemExit(f"--harness: cannot resolve the interpreter of {real}")
         entry = {"name": entry["name"], "exe": os.path.realpath(interp[0]), "script": real}
-    from .daemon import trusted_file
+    from .harness_helper import trusted_file
     for f in (entry["exe"], entry.get("script")):
         bad = f and trusted_file(f)
         if bad:
@@ -775,14 +808,19 @@ def migrate_system(fail_mode=None, harnesses=None):
     _write_system_client_config(dict(cfg, **_v2_client_keys()))
     tk = pwd.getpwnam(SYS_USER)
     hcfg = harness_config(harnesses) if harnesses or not scfg.get("harnesses") else {}
-    _update_signer_config(SYS_HOME, hcfg, tk)
-    if hcfg.get("harnesses"):
-        with open(unit) as f:
-            text = f.read()
-        if "CAP_SYS_PTRACE" not in text:
-            with open(unit, "w") as f:
-                f.write(text.replace("PrivateTmp=true\n", "PrivateTmp=true\n" + UNIT_CAPS, 1))
-            subprocess.run(["systemctl", "daemon-reload"], check=False)
+    _update_signer_config(SYS_HOME, dict(hcfg, harness_helper=V1_HELPER_SOCKET), tk)
+    if hcfg.get("harnesses") or scfg.get("harnesses"):
+        d = files.open_dir(SYS_HOME, {0, tk.pw_uid})
+        try:
+            fd = files.subdir(d, "helper", 0o700, {0, tk.pw_uid})
+            os.fchown(fd, tk.pw_uid, tk.pw_gid)
+            files.close(fd)
+        finally:
+            files.close(d)
+        _install_helper(V1_HELPER, "tracekitd", tk, V1_HELPER_SOCKET, False)
+    with open(unit, "w") as f:   # the hardened unit, without the CAP_SYS_PTRACE of 0.3
+        f.write(UNIT.format(user=tk.pw_name, python=OPT_PYTHON, home=SYS_HOME))
+    subprocess.run(["systemctl", "daemon-reload"], check=False)
     pinned = _pin_policy(SYS_HOME, tk)
     print(f"wrote {client.SYSTEM_CONFIG} (root-owned; agent config and TRACEKIT_SOCKET/TRACEKIT_POLICY now ignored)")
     for h in hcfg.get("harnesses", []):
@@ -833,7 +871,7 @@ def _root_only(path):
 def _install_source():
     """Check, before init changes anything, that it runs a root-owned Python and installs Tracekit from a source the
     agent's user cannot modify. Returns the pip requirement for an installed release, or None for this source checkout."""
-    from .daemon import trusted_file
+    from .harness_helper import trusted_file
     for f in (sys.executable, os.path.dirname(os.__file__)):
         bad = trusted_file(f)
         if bad:
@@ -908,10 +946,16 @@ def doctor(checks=None):
 def v1_results(checks=None):
     """v1 system mode checks (tracekit.doctor results): the signer and policy run only from code and policy the agent's
     user cannot modify. checks: [(label, path, fix)] instead of the installed files."""
-    from .daemon import trusted_file
+    from .harness_helper import trusted_file
     from .doctor import FAIL, OK, result
-    out = []
+    out, helper = [], []
     if checks is None:
+        try:
+            if sys.platform.startswith("linux") and read_json(os.path.join(SYS_HOME, "config.json")).get("harnesses"):
+                from .doctor import helper_result
+                helper = [helper_result(os.path.join(SYSTEMD_DIR, V1_HELPER + ".service"), "sudo tracekit migrate --system")]
+        except (OSError, ValueError, AttributeError):   # no or unreadable signer config: the other checks say so
+            pass
         for h in _installed_hooks():
             out.append(result("D-V1-HOOKS", OK, "hooks: " + (' and '.join(h.get('versions', ())) or h.get('error')
                                                              or 'none') + f" in {h['settings']}"))
@@ -934,7 +978,7 @@ def v1_results(checks=None):
         if bad is None and os.path.isdir(path):
             bad = _first_problem(path, _root_only)
         out.append(result("D-V1-" + label.upper().replace(" ", "-"), FAIL if bad else OK, f"{label}: {bad or path}", fix))
-    return out
+    return out + helper
 
 
 def _require_system(experimental_macos):
@@ -976,17 +1020,23 @@ def _system_user(name, home, darwin):
     return pwd.getpwnam(name)
 
 
-def v2_signer_yaml(agent, approver_uid, policy, sock, tailer_uid):
+def v2_signer_yaml(agent, approver_uid, policy, sock, tailer_uid, harnesses=()):
     """signer.yaml of v2 system mode. The agent's uid gets its own tenant (named after it), and so does the approver's,
     who alone may answer its approvals; every other local user lands in tenant `local`. The tailer's uid may make only
-    the TAILER_METHODS calls. Scalars are JSON-quoted, which the built-in YAML subset reads back exactly."""
+    the TAILER_METHODS calls. With harnesses (resolve_harness entries), the agent's runs must come from one of them.
+    Scalars are JSON-quoted, which the built-in YAML subset reads back exactly."""
     q = json.dumps
     tenant, me, approver = q(agent.pw_name), q(f"uid:{agent.pw_uid}"), q(f"uid:{approver_uid}")
+    binding = ["harness_binding:", f"  helper: {q(V2_HELPER_SOCKET)}", f"  required: [{me}]", "  harnesses:"] + [
+        line for h in harnesses for line in ([f"    {q(h['name'])}:", f"      exe: {q(h['exe'])}",
+                                                f"      script: {q(h['script'])}"] if h.get("script")
+                                               else [f"    {q(h['name'])}: {q(h['exe'])}"])] if harnesses else []
     return "\n".join([
         "# written by `tracekit init --v2`; re-run it to change this file", f"data_dir: {q(V2_DATA)}",
         f"socket: {q(sock)}", 'socket_mode: "0666"', 'tenant: "local"', "tenants:", f"  {me}: {tenant}",
         f"  {approver}: {tenant}", "approvals:", '  self_approval: "deny"', "  approvers:", f"    - {approver}",
-        "authorize:", f"  {q(f'uid:{tailer_uid}')}: [{', '.join(TAILER_METHODS)}]", f"policy: {q(policy)}", ""])
+        "authorize:", f"  {q(f'uid:{tailer_uid}')}: [{', '.join(TAILER_METHODS)}]", f"policy: {q(policy)}",
+        *binding, ""])
 
 
 def _tailer_acl(owner, u, darwin, grant=True):
@@ -1053,10 +1103,11 @@ def v2_plist(user):
 
 
 def init_system_v2(target_user, approver=None, policy=None, project=None, no_service=False, hooks=True,
-                   experimental_macos=False, allow_privileged=False, agent="claude"):
+                   experimental_macos=False, allow_privileged=False, agent="claude", harnesses=()):
     """`sudo tracekit init --v2 --user AGENT`: the v2 signer service as its own user, from the root-owned venv, with
     the v2 hook of `agent` (Claude Code, or a harness of tracekit.agent_hooks) for AGENT. Approvals are answered only by `approver` (default: the admin who ran sudo), a
-    different uid from the agent's. Returns (socket, settings path or None)."""
+    different uid from the agent's. harnesses (`--harness [NAME=]PATH`): the agent's runs must come from one of them,
+    which the harness helper attests. Returns (socket, settings path or None)."""
     darwin = _require_system(experimental_macos)
     owner = _agent_user(target_user, allow_privileged)
     if approver:
@@ -1068,12 +1119,13 @@ def init_system_v2(target_user, approver=None, policy=None, project=None, no_ser
     if approver.pw_uid == owner.pw_uid:
         raise SystemExit(f"the approver must be another user than {target_user}: an agent may not approve its own calls")
     if policy:
-        from .daemon import trusted_file
+        from .harness_helper import trusted_file
         policy = os.path.abspath(policy)
         bad = trusted_file(policy)
         if bad:
             raise SystemExit(f"--policy: {bad}. The policy must be a root-owned file in root-owned directories, so "
                              f"{target_user} cannot change it")
+    harnesses = [resolve_harness(h, agent) for h in harnesses]
     requirement = _install_source()
     sig = _system_user(V2_USER_DARWIN if darwin else V2_USER, V2_DATA, darwin)
     run_dir = V2_RUN["darwin" if darwin else "linux"]   # on Linux systemd creates it (RuntimeDirectory=)
@@ -1096,7 +1148,7 @@ def init_system_v2(target_user, approver=None, policy=None, project=None, no_ser
         print(f"transcript tailer: {why}. No tailer is set up, so each run of {target_user}'s sessions records a "
               "tailer_lost gap instead of their tool uses and prompts")
     sock = os.path.join(run_dir, "signer.sock")
-    _write_root_file(V2_CONFIG, v2_signer_yaml(owner, approver.pw_uid, policy, sock, tailer.pw_uid).encode())
+    _write_root_file(V2_CONFIG, v2_signer_yaml(owner, approver.pw_uid, policy, sock, tailer.pw_uid, harnesses).encode())
     from . import agent_hooks
     settings = None if not hooks else (os.path.join(project or owner.pw_dir, ".claude", "settings.json")
                                        if agent == "claude" else agent_hooks.config_path(agent, project or owner.pw_dir))
@@ -1107,6 +1159,8 @@ def init_system_v2(target_user, approver=None, policy=None, project=None, no_ser
                                      **({"tailer": {"user": tailer.pw_name, "uid": tailer.pw_uid, "python": OPT_PYTHON}}
                                         if agent == "claude" and not why else {})))
     if not no_service:
+        if harnesses:   # before the signer, which asks it from its first register_run
+            _install_helper(V2_HELPER, V2_UNIT, sig, V2_HELPER_SOCKET, darwin)
         if darwin:
             plist = os.path.join(LAUNCHD_DIR, V2_LABEL + ".plist")
             _write_root_file(plist, v2_plist(sig.pw_name))
@@ -1151,14 +1205,18 @@ def uninstall_system_v2(purge=False):
         if why:
             print(f"transcript tailer: could not remove its ACL ({why})")
     if darwin:
-        plist = os.path.join(LAUNCHD_DIR, V2_LABEL + ".plist")
-        subprocess.run(["launchctl", "bootout", "system", plist], check=False)
-        removed = [plist, V2_RUN["darwin"]]
+        plist, helper = (os.path.join(LAUNCHD_DIR, label + ".plist") for label in (V2_LABEL, HELPER_LABEL))
+        for p in (plist, helper):
+            subprocess.run(["launchctl", "bootout", "system", p], check=False)
+        removed = [plist, V2_RUN["darwin"], helper]
     else:
-        removed = [os.path.join(SYSTEMD_DIR, V2_UNIT + ".service")]
+        removed = [os.path.join(SYSTEMD_DIR, n) for n in (V2_UNIT + ".service", V2_HELPER + ".socket",
+                                                          V2_HELPER + ".service")]
     unit = not darwin and os.path.exists(removed[0])   # none after --no-service: nothing to stop
     if unit:
         subprocess.run(["systemctl", "disable", "--now", V2_UNIT], check=False)
+    if not darwin and os.path.exists(removed[1]):
+        subprocess.run(["systemctl", "disable", "--now", V2_HELPER + ".socket", V2_HELPER], check=False)
     rest = {k: v for k, v in sc.items() if k not in ("signer", "hooks", "tailer")}
     if "socket" in rest:   # v1 system mode
         _write_system_client_config(rest)
@@ -1208,7 +1266,7 @@ def init_system(target_user, witnesses, checkpoint_every=50, project=None, no_se
     os.makedirs(SYS_HOME, exist_ok=True)
     home_fd = files.open_dir(SYS_HOME, {0, tk.pw_uid})
     try:
-        for sub, mode in (("keys", 0o700), ("ledger", 0o750), ("blobs", 0o750), ("", 0o755)):
+        for sub, mode in (("keys", 0o700), ("ledger", 0o750), ("blobs", 0o750), ("helper", 0o700), ("", 0o755)):
             fd = files.subdir(home_fd, sub, mode, {0, tk.pw_uid}) if sub else home_fd
             try:
                 os.fchown(fd, tk.pw_uid, tk.pw_gid)
@@ -1228,6 +1286,8 @@ def init_system(target_user, witnesses, checkpoint_every=50, project=None, no_se
     extra = {"signer": signer} if signer else {}
     if not darwin and (harnesses or not kept_harnesses):  # a registered harness stays until --harness replaces it
         extra.update(harness_config(harnesses, agent))
+    if not darwin:
+        extra["harness_helper"] = V1_HELPER_SOCKET
     scfg = _write_signer_config(SYS_HOME, witnesses, checkpoint_every, sock, pcfg, extra or None, tk)
     policy = _install_venv(requirement)
     # generate the key as the tracekit user so root-only reads are the only other path to it
@@ -1247,8 +1307,9 @@ def init_system(target_user, witnesses, checkpoint_every=50, project=None, no_se
                 subprocess.run(["launchctl", "bootstrap", "system", plist], check=False)
         else:  # systemd
             with open(os.path.join(SYSTEMD_DIR, "tracekitd.service"), "w") as f:
-                f.write(UNIT.format(user=tk.pw_name, python=OPT_PYTHON, home=SYS_HOME,
-                                    caps=UNIT_CAPS if scfg.get("harnesses") else ""))
+                f.write(UNIT.format(user=tk.pw_name, python=OPT_PYTHON, home=SYS_HOME))
+            if scfg.get("harnesses"):
+                _install_helper(V1_HELPER, "tracekitd", tk, V1_HELPER_SOCKET, False)
             if proxy:
                 with open(os.path.join(SYSTEMD_DIR, "tracekit-proxy.service"), "w") as f:
                     f.write(PROXY_UNIT.format(user=tk.pw_name, python=OPT_PYTHON, home=SYS_HOME))

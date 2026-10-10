@@ -5,21 +5,26 @@ Real processes are used throughout: a copy of /bin/sh plays the harness, and `sl
 
     python3 -m unittest tests.test_harness_03 -v
 """
+import json
 import os
 import shutil
 import signal
 import subprocess
 import sys
+import socket
 import tempfile
+import threading
 import unittest
+from unittest import mock
 
 import pytest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from tracekit import daemon, policy  # noqa: E402
-from tracekit.daemon import Signer, find_harness, load_config, trusted_file  # noqa: E402
+from tracekit import harness_helper, policy  # noqa: E402
+from tracekit.daemon import Signer, load_config  # noqa: E402
+from tracekit.harness_helper import find as find_harness, trusted_file  # noqa: E402
 from factories import ledger_records, make_signer, run_start, tool_call  # noqa: E402
 
 LINUX_PROC = sys.platform.startswith("linux") and os.path.isdir("/proc/self")
@@ -45,11 +50,11 @@ class _Harness(unittest.TestCase):
         os.chmod(self.harness, 0o755)
         self.procs = []
         # a temp dir is world-writable, so the trust check on the harness binary is tested on its own below
-        self._trusted = daemon.trusted_file
-        daemon.trusted_file = lambda p: None
+        self._trusted = harness_helper.trusted_file
+        harness_helper.trusted_file = lambda p: None
 
     def tearDown(self):
-        daemon.trusted_file = self._trusted
+        harness_helper.trusted_file = self._trusted
         for p in self.procs:  # the whole group, so no `sleep` child outlives the test
             try:
                 os.killpg(p.pid, signal.SIGKILL)
@@ -286,6 +291,17 @@ class SignerBinding(_Harness):
         sdk = {**tool_call("s1"), "source": "sdk"}
         self.assertTrue(self.append(sdk, self.hook_outside_harness())["ok"])
 
+    def test_signer_asks_the_helper_when_one_is_configured(self):
+        sock = os.path.join(tempfile.mkdtemp(dir="/tmp"), "h.sock")
+        self.addCleanup(shutil.rmtree, os.path.dirname(sock), True)
+        self.s.ledger.close()
+        self.s = make_signer(self.home, harnesses=self.harnesses(), mode="system", harness_helper=sock)
+        r = self.append(run_start("down"), self.hook_under_harness())
+        self.assertFalse(r["ok"])
+        self.assertIn("harness helper unavailable", r["error"])
+        start_helper(self, sock)
+        self.assertTrue(self.append(run_start("up"), self.hook_under_harness())["ok"])
+
 
 @unittest.skipUnless(LINUX_PROC, "Linux only")
 class DefaultsAndConfig(unittest.TestCase):
@@ -326,12 +342,12 @@ class DefaultsAndConfig(unittest.TestCase):
             f = os.path.join(d, "cli.js")
             with open(f, "w") as fh:
                 fh.write(f"#!/usr/bin/env {os.path.basename(sys.executable)}\nprint(1)\n")
-            saved = daemon.trusted_file
-            daemon.trusted_file = lambda p: None
+            saved = harness_helper.trusted_file
+            harness_helper.trusted_file = lambda p: None
             try:
                 h = install.resolve_harness(f"claude={f}")
             finally:
-                daemon.trusted_file = saved
+                harness_helper.trusted_file = saved
             self.assertEqual(h["name"], "claude")
             self.assertEqual(h["script"], os.path.realpath(f))
             self.assertTrue(os.path.isabs(h["exe"]))
@@ -349,6 +365,224 @@ class DefaultsAndConfig(unittest.TestCase):
                 install.resolve_harness(f)
         finally:
             shutil.rmtree(d, ignore_errors=True)
+
+
+def start_helper(case, sock, allow_uid=None, server=None):
+    srv = (server or harness_helper.serve)(sock, os.getuid() if allow_uid is None else allow_uid)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    case.addCleanup(srv.server_close)
+    case.addCleanup(srv.shutdown)
+    return srv
+
+
+def raw_request(sock, line):
+    with socket.socket(socket.AF_UNIX) as s:
+        s.settimeout(5)
+        s.connect(sock)
+        s.sendall(line)
+        return s.makefile("rb").readline()
+
+
+@unittest.skipUnless(hasattr(socket, "AF_UNIX") and hasattr(os, "getuid"), "Unix sockets")
+class Helper(unittest.TestCase):
+    def setUp(self):
+        d = tempfile.mkdtemp(dir="/tmp")   # short: macOS caps socket paths
+        self.addCleanup(shutil.rmtree, d, True)
+        self.sock = os.path.join(d, "h.sock")
+
+    def test_answers_the_chain_of_a_pid(self):
+        start_helper(self, self.sock)
+        procs = harness_helper.ask(self.sock, os.getpid())
+        self.assertEqual(procs[0]["pid"], os.getpid())
+        self.assertEqual(procs[1]["pid"], os.getppid())
+        self.assertEqual(procs[0]["start_time"], harness_helper.start_time(os.getpid()))
+        self.assertEqual(os.stat(self.sock).st_mode & 0o777, 0o600)
+
+    def test_answers_only_a_pid(self):
+        start_helper(self, self.sock)
+        for line in (b'{"pid": 1, "path": "/etc/shadow"}\n', b'{"cmd": "id"}\n', b'{"pid": "1"}\n', b'{"pid": 0}\n',
+                     b'[1]\n', b'{"pid": true}\n', b"x" * 4096 + b"\n"):
+            self.assertIn(b"error", raw_request(self.sock, line), line)
+
+    def test_answers_only_the_signers_uid(self):
+        start_helper(self, self.sock, os.getuid() + 1, harness_helper.Server)   # bound as is: no chown to another uid
+        self.assertEqual(raw_request(self.sock, b'{"pid": 1}\n'), b"")
+        with self.assertRaises(ValueError):
+            harness_helper.ask(self.sock, os.getpid())
+
+    @pytest.mark.root
+    @unittest.skipUnless(LINUX_PROC and hasattr(os, "geteuid") and os.geteuid() == 0, "needs root on Linux")
+    def test_real_helper_reads_another_users_exe_for_the_signer_only(self):
+        import pwd
+        nobody = pwd.getpwnam("nobody").pw_uid
+        os.chmod(os.path.dirname(self.sock), 0o755)
+        start_helper(self, self.sock, allow_uid=nobody)
+        code = ("import json, sys; from tracekit import harness_helper as h; "
+                "print(json.dumps(h.ask(sys.argv[1], int(sys.argv[2]))[0]))")
+        r = subprocess.run([sys.executable, "-c", code, self.sock, str(os.getpid())], user=nobody, capture_output=True,
+                           text=True, cwd="/", env={"PYTHONPATH": ROOT})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        me = json.loads(r.stdout)
+        self.assertEqual(me["exe"], os.path.realpath(sys.executable))   # root's process, which nobody can't read
+        with self.assertRaises(ValueError):   # root is not the signer: no answer
+            harness_helper.ask(self.sock, os.getpid())
+
+
+class Units(unittest.TestCase):
+    def test_signer_units_have_no_capabilities(self):
+        from tracekit import install
+        for text in (install.UNIT, install.PROXY_UNIT, install.V2_UNIT_TEXT):
+            self.assertNotIn("CAP_", text)
+            for line in ("CapabilityBoundingSet=", "AmbientCapabilities=", "NoNewPrivileges=true", "UMask=0027",
+                         "ProtectSystem=strict", "SystemCallFilter=@system-service"):
+                self.assertIn(line + "\n", text)
+
+    def test_helper_unit_has_exactly_the_helpers_capabilities(self):
+        import pwd
+        from tracekit import install
+        me = pwd.getpwuid(os.getuid())
+        sock_unit, service = install.helper_units(install.V2_HELPER, install.V2_UNIT, me, install.V2_HELPER_SOCKET)
+        caps = [line for line in service.splitlines() if line.startswith("CapabilityBoundingSet=")]
+        self.assertEqual(caps, ["CapabilityBoundingSet=CAP_SYS_PTRACE CAP_DAC_READ_SEARCH"])
+        for line in ("RestrictAddressFamilies=AF_UNIX", "PrivateNetwork=true", "NoNewPrivileges=true",
+                     f"ExecStart={install.OPT_PYTHON} -I -m tracekit.harness_helper --allow-uid {me.pw_uid}"):
+            self.assertIn(line + "\n", service)
+        for line in (f"ListenStream={install.V2_HELPER_SOCKET}", f"SocketUser={me.pw_name}", "SocketMode=0600"):
+            self.assertIn(line + "\n", sock_unit)
+
+    def test_doctor_reports_the_helper_and_its_capability_set(self):
+        from tracekit import doctor, install
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        unit = os.path.join(d, "h.service")
+        cases = (("CapabilityBoundingSet=CAP_SYS_PTRACE CAP_DAC_READ_SEARCH\n", "ok"),
+                 ("CapabilityBoundingSet=CAP_SYS_PTRACE CAP_DAC_READ_SEARCH\nCapabilityBoundingSet=CAP_SYS_ADMIN\n",
+                  "fail"), ("ExecStart=x\n", "fail"))
+        for text, status in cases:
+            with open(unit, "w") as f:
+                f.write(text)
+            r = doctor.helper_result(unit, "fix")
+            self.assertEqual((r["id"], r["status"]), ("D-HARNESS-HELPER", status), r)
+            self.assertIn("CapabilityBoundingSet=" + ("CAP_SYS_PTRACE" if "CAP_" in text else "(unset"), r["detail"])
+        self.assertEqual(doctor.helper_result(os.path.join(d, "none.service"), "fix")["status"], "fail")
+        signer = os.path.join(d, "s.service")
+        with open(signer, "w") as f:
+            f.write(install.V2_UNIT_TEXT.format(user="s", python="p", config="c", unit="u", data="d")
+                    .replace("AmbientCapabilities=\n", "AmbientCapabilities=CAP_SYS_PTRACE\n"))
+        self.assertIn("an empty capability set", doctor._hardening(signer)[1])
+
+
+HARNESS = "/usr/bin/fake-harness"
+
+
+def ident(pid, uid="4242"):
+    from tracekit.identity.base import CallerIdentity
+    return CallerIdentity("uid", uid, True, {"pid": pid})
+
+
+def proc(pid, exe, start):
+    return {"pid": pid, "exe": exe, "start_time": start, "script": None}
+
+
+@unittest.skipUnless(hasattr(socket, "AF_UNIX") and hasattr(os, "getuid"), "Unix sockets")
+class V2Binding(unittest.TestCase):
+    """The v2 signer binds a run to the harness process the helper finds above register_run's caller. The helper is
+    real; its view of the process tree is simulated."""
+
+    def setUp(self):
+        from tracekit.signer import service
+        self.d = tempfile.mkdtemp(dir="/tmp")
+        self.addCleanup(shutil.rmtree, self.d, True)
+        self.sock = os.path.join(self.d, "h.sock")
+        self.chains, self.asked = {}, []
+
+        def chain(pid, limit=64):
+            self.asked.append(pid)
+            return self.chains.get(pid, [])
+        for name, fn in (("chain", chain), ("trusted_file", lambda p: None),
+                         ("start_time", lambda pid: (self.chains.get(pid) or [{}])[0].get("start_time"))):
+            p = mock.patch.object(harness_helper, name, fn)
+            p.start()
+            self.addCleanup(p.stop)
+        start_helper(self, self.sock)
+        self.chains[100] = [proc(100, "/usr/bin/python3", 7), proc(90, "/bin/sh", 6), proc(80, HARNESS, 5)]
+        self.chains[200] = [proc(200, "/usr/bin/python3", 9), proc(1, "/sbin/init", 1)]
+        self.chains[300] = [proc(300, "/usr/bin/python3", 9), proc(80, HARNESS, 6)]   # pid 80 reused by another harness
+        self.cfg = {"data_dir": os.path.join(self.d, "data"),
+                    "harness_binding": {"helper": self.sock, "required": ["uid:4242"], "harnesses": {"fake": HARNESS}}}
+        self.service = service
+        self.s = self.open()
+
+    def open(self):
+        s = self.service.open_service(self.cfg)
+        self.addCleanup(s.close)
+        return s
+
+    def register(self, pid, uid="4242"):
+        run = self.s.call(ident(pid, uid), "register_run", {"request_id": f"r{pid}{uid}", "agent": {"name": "a"}})
+        return {"run_id": run["run_id"], "run_token": run["run_token"]}
+
+    def decide(self, run, pid, n=0):
+        self.seq = getattr(self, "seq", -1) + 1
+        return self.s.call(ident(pid), "decide", {"request_id": f"d{pid}-{n}", **run, "tool_call_id": f"t{pid}-{n}",
+                                                  "stream": "s", "client_seq": self.seq, "tool": "ls",
+                                                  "args_source": "parsed", "args": {}})
+
+    def refused(self, fn, *a):
+        from tracekit.signer.rpc_schema import RPCError
+        with self.assertRaises(RPCError) as cm:
+            fn(*a)
+        self.assertEqual(cm.exception.code, "forbidden")
+        return str(cm.exception)
+
+    def registered(self):
+        from test_signer_service import records
+        return [r["event"]["data"] for r in records(self.cfg["data_dir"]) if r["event"]["type"] == "run.registered"]
+
+    def test_run_from_the_harness_is_registered_with_it(self):
+        self.decide(self.register(100), 100)
+        self.assertEqual(self.registered()[0]["harness"],
+                         {"name": "fake", "exe": HARNESS, "pid": 80, "start_time": 5, "attested": True})
+
+    def test_run_from_outside_the_harness_is_refused(self):
+        self.assertIn("not from a registered harness", self.refused(self.register, 200))
+        self.assertEqual(self.registered(), [])
+
+    def test_identity_without_required_binding_registers_unbound(self):
+        self.register(200, uid="5151")
+        self.assertNotIn("harness", self.registered()[0])
+
+    def test_calls_must_come_from_below_the_runs_harness_process(self):
+        run = self.register(100)
+        self.refused(self.decide, run, 200)
+        self.refused(self.decide, run, 300)   # same harness pid, another start time: another process
+        self.decide(run, 100)
+
+    def test_chains_are_cached_per_process_instance(self):
+        run = self.register(100)
+        self.decide(run, 100, 1)
+        self.decide(run, 100, 2)
+        self.assertEqual(self.asked.count(100), 1)
+        self.chains[100] = [proc(100, "/usr/bin/python3", 8), proc(1, "/sbin/init", 1)]   # pid 100 reused
+        self.refused(self.decide, run, 100, 3)
+        self.assertEqual(self.asked.count(100), 2)
+
+    def test_binding_survives_a_restart(self):
+        run = self.register(100)
+        self.s.close()
+        self.s = self.open()
+        self.decide(run, 100)
+        self.refused(self.decide, run, 200)
+
+    def test_helper_down_refuses_a_required_identity(self):
+        os.unlink(self.sock)
+        self.assertIn("harness helper did not answer", self.refused(self.register, 100))
+
+    def test_bad_config_is_refused(self):
+        for bad in ({"harnesses": {"x": "relative/exe"}}, {"harnesses": ["/bin/sh"]}, {"helper": 1, "harnesses": {}},
+                    {"harnesses": {}, "extra": 1}):
+            with self.assertRaises(ValueError):
+                self.service.SignerService(os.path.join(self.d, "bad"), harness_binding=bad)
 
 
 if __name__ == "__main__":

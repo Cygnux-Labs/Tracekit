@@ -1821,6 +1821,41 @@
           ],
           "description": "measured by the signer from the caller's identity, never taken from the client"
         },
+        "harness": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "name",
+            "exe",
+            "pid",
+            "start_time",
+            "attested"
+          ],
+          "properties": {
+            "name": {
+              "type": "string",
+              "maxLength": 64
+            },
+            "exe": {
+              "type": "string",
+              "maxLength": 4096
+            },
+            "pid": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "start_time": {
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "attested": {
+              "const": true
+            }
+          },
+          "description": "the registered harness process the caller descends from, found by the signer through the harness helper"
+        },
         "fail_modes": {
           "type": "object",
           "additionalProperties": {
