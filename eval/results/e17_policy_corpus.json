@@ -1,13 +1,13 @@
 {
-  "policy_hash": "sha256:4180d883f54ac3ce50cf56e747a65700e23aad89c20b6491099b6c4e7a10c2ed",
+  "policy_hash": "sha256:a4a61f58c7df90cb2c915f1d7e06e7b6825ebc400adac2a63c3399ff9fff572e",
   "engines": [
     "re2@1.1.20251105",
     "regex@2026.9.29"
   ],
   "classes": {
     "browser": {
-      "deny": 12,
-      "caught": 12,
+      "deny": 22,
+      "caught": 22,
       "benign": 25,
       "fp": 0
     },
@@ -24,15 +24,15 @@
       "fp": 1
     },
     "fs": {
-      "deny": 22,
-      "caught": 22,
-      "benign": 42,
+      "deny": 28,
+      "caught": 28,
+      "benign": 48,
       "fp": 0
     },
     "http": {
-      "deny": 43,
-      "caught": 43,
-      "benign": 91,
+      "deny": 57,
+      "caught": 57,
+      "benign": 101,
       "fp": 0
     },
     "mcp": {
@@ -60,15 +60,15 @@
       "fp": 0
     },
     "shell": {
-      "deny": 39,
-      "caught": 39,
-      "benign": 121,
+      "deny": 90,
+      "caught": 90,
+      "benign": 139,
       "fp": 0
     },
     "sql": {
-      "deny": 54,
-      "caught": 54,
-      "benign": 112,
+      "deny": 70,
+      "caught": 70,
+      "benign": 123,
       "fp": 0
     }
   },
@@ -94,6 +94,6 @@
   "engine_mismatches": [],
   "unmapped": [],
   "deny_recall": 1.0,
-  "benign_fp_rate": 0.0016051364365971107,
+  "benign_fp_rate": 0.0014970059880239522,
   "ok": true
 }

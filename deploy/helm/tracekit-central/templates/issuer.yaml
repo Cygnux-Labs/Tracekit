@@ -68,6 +68,7 @@ spec:
             runAsUser: {{ int .Values.signer.uid }}
             runAsGroup: {{ int .Values.signer.uid }}
             {{- include "tc.hardened" . | nindent 12 }}
+          resources: {{- toYaml .Values.issuer.resources | nindent 12 }}
           ports: [{name: https, containerPort: 8444}]
           volumeMounts:
             - {name: data, mountPath: /var/lib/tracekit-issuer}

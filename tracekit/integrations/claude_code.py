@@ -41,7 +41,7 @@ from tracekit.signer.rpc_schema import RPCError
 
 AGENT = "claude-code"
 TOOL_EVENTS = ("PreToolUse", "PostToolUse", "PostToolUseFailure")
-APPROVAL_WAIT_S = 540   # below the PreToolUse hook timeout (install.HOOK_TIMEOUT)
+APPROVAL_WAIT_S = 540   # a PreToolUse hook, approval wait included, answers within this: below its timeout (install.HOOK_TIMEOUT)
 
 
 def _state(*ids):
@@ -141,19 +141,28 @@ def _send(client, path, st, method, fields):
 
 
 def _pre(client, p, sid, tid):
+    end, per_call = time.monotonic() + APPROVAL_WAIT_S, client.timeout   # every signer call is capped to the time left
+
+    def cap(wait_s=0.0):
+        client.timeout = max(min(per_call, end - time.monotonic() - wait_s), 0.001)
+
     tool, args = p.get("tool_name") or "?", p.get("tool_input")
+    cap()
     run, d = _run(client, sid, send="decide", tool_call_id=tid, tool=tool, args=args, args_source="parsed")
     if d["decision"] == "deny":
         print(f"Blocked by tracekit policy: {'; '.join(d['rule_ids'])} {d.get('reason', '')}".rstrip(), file=sys.stderr)
         return 2
     if d["decision"] == "ask":
         try:
+            cap()
             aid = run.call("approval_request", tool_call_id=tid)["approval_id"]
             print(f"[tracekit] waiting for approval {aid} ({'; '.join(d['rule_ids'])})", file=sys.stderr, flush=True)
-            state, deadline = "requested", time.monotonic() + APPROVAL_WAIT_S
+            state, deadline = "requested", end - 2 * per_call   # time left for the last wait's answer and the consume
             while state == "requested" and deadline > time.monotonic():
-                left_ms = int(min(deadline - time.monotonic(), 300) * 1000)
-                state = run.call("approval_wait", approval_id=aid, timeout_ms=left_ms)["state"]
+                left_s = min(deadline - time.monotonic(), 300)
+                cap(left_s)
+                state = run.call("approval_wait", approval_id=aid, timeout_ms=int(left_s * 1000))["state"]
+            cap()
             c = run.approval_consume(tid, tool, args, approval_id_hint=aid) if state == "approved" else None
         except Exception as e:   # no fail mode once the policy asked: a call nobody approved never runs
             state, c = f"{type(e).__name__}: {e}", None
@@ -161,6 +170,7 @@ def _pre(client, p, sid, tid):
             print(f"Held by tracekit policy ({'; '.join(d['rule_ids'])}) and not approved: {state}", file=sys.stderr)
             return 2
     else:
+        cap()
         c = run.approval_consume(tid, tool, args)   # every call that runs: once, for the decided args
     if not c["ok"]:
         print(f"Held by tracekit policy: {'; '.join(c['rule_ids'])} {c.get('reason', '')}".rstrip(), file=sys.stderr)

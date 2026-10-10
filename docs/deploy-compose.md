@@ -18,19 +18,21 @@ docker compose logs viewer                            # the viewer's URL with it
 | `postgres` | `postgres:17-bookworm`, pinned by digest; the store, on its own network | nothing |
 | `witness` | omniwitness built from a pinned commit (`deploy/compose/witness/Dockerfile`), uid 10002 | the signer's `/logs/v0` |
 | `viewer` | `tracekit view` as a SELECT-only role, published on 127.0.0.1 only | Postgres |
-| `agent` | an example agent, uid 1000, profile `agent` | only the signer's socket (`signer-run` volume) |
+| `agent` | an example agent, uid 1000, profile `agent` | only the signer's socket (`signer-run` volume, read-only) |
 
 Every network but the viewer's is `internal` (no route out). The agent's network has nothing else on it: the agent
 reaches the signer only through the Unix socket in the `signer-run` volume, which no other service mounts, and its
 identity is its peer uid (`tenants: {"uid:1000": default}` in signer.yaml). Replace the `agent` service with yours: same
-volume, same kind of network, a uid that is not 10001 or root, no secrets.
+volume mounted read-only (`:ro`: it can connect to the socket but not unlink or replace it), same kind of network, a
+uid that is not 10001 or root, no secrets.
 
 ## What `deploy compose` writes
 
 | File | |
 |---|---|
 | `docker-compose.yaml`, `.env.example`, `witness/`, `postgres/10-roles.sh` | the templates, copied (the compose file's build context set to the source checkout) |
-| `signer.yaml` | Postgres storage, metrics and `/logs/v0` on the internal network, the stack's witness pinned with its class |
+| `signer.yaml` | Postgres storage, metrics and `/logs/v0` on the internal network, the stack's witness pinned with its class, `policy: /etc/tracekit/policy.yaml` |
+| `policy.yaml` | the signer's policy, mounted at `/etc/tracekit/policy.yaml`: `extends: packs/server.yaml`, the server pack the image ships in `/etc/tracekit/packs` ([policy-v2.md](policy-v2.md#packs-shipped)). Yours to edit (map your tools, redefine rules by id) or replace; a rerun keeps it |
 | `viewer.yaml` | the viewer's store: the SELECT-only role's DSN |
 | `postgres/20-schema.sql` | the store's tables (`tracekit.storage.postgres`) and each role's grants: the signer's role inserts and selects on the logs, never updates or deletes them; the viewer's role selects only |
 | `witness.vkey` | the witness's cosignature verifier key |

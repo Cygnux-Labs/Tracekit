@@ -365,6 +365,25 @@ class PlainHttp(unittest.TestCase):
                 self.assertEqual(main(argv), code)
                 self.assertRegex(err.getvalue(), "loopback")
 
+    def test_loopback_receivers_answer_only_a_loopback_host(self):
+        """A web page can point a name it controls at 127.0.0.1; the OTLP receiver and the proxy answer only
+        requests addressed to a loopback name."""
+        for srv, method, path in ((ThreadingHTTPServer(("127.0.0.1", 0), otlp.make_handler(
+                otlp.Receiver(lambda event, attach: {}))), "POST", "/nope"),
+                                  (proxy.Server(("127.0.0.1", 0), proxy.Handler), "GET", "/__tracekit_health")):
+            srv.daemon_threads = True
+            threading.Thread(target=srv.serve_forever, daemon=True).start()
+            self.addCleanup(srv.server_close)
+            self.addCleanup(srv.shutdown)
+            port = srv.server_address[1]
+            for host, refused in (("evil.example", True), (f"evil.example:{port}", True), ("", True),
+                                  (f"127.0.0.1:{port}", False), (f"localhost:{port}", False), (f"[::1]:{port}", False)):
+                c = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+                c.request(method, path, headers={"Host": host})
+                with self.subTest(path=path, host=host):
+                    self.assertEqual(c.getresponse().status == 403, refused)
+                c.close()
+
 
 class Page(unittest.TestCase):
     """terminal.html's sinks: esc() is the one HTML/attribute escaper (test_observe_render checks every interpolation

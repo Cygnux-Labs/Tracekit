@@ -208,17 +208,34 @@ MANAGED_SETTINGS = {"linux": "/etc/claude-code/managed-settings.json",
                     "darwin": "/Library/Application Support/ClaudeCode/managed-settings.json"}
 HOOK_TIMEOUT = {"PreToolUse": 600, "SessionEnd": 15}   # PreToolUse may hold a call for approval (C8)
 V2_HOOK = "tracekit.integrations.claude_code"
+V2_HOOKS = (V2_HOOK, "tracekit.integrations.harness_hooks")   # Claude Code's, the other harnesses' (agent_hooks.V2_MODULE)
+
+
+def _blocking(run, unless=""):
+    """`run` in a shell that turns any exit status but 0 and 2 (the hook could not run) into 2, a blocked call, unless
+    the shell command `unless` exits 0 first."""
+    script = (f"{run}; s=$?; [ $s = 0 ] || [ $s = 2 ] && exit $s; {unless}"
+              "echo 'tracekit: the hook could not run; call blocked (fail-closed)' >&2; exit 2")
+    return f"/bin/sh -c {shlex.quote(script)}"
+
+
 def _hook_command(module="tracekit.hook", func="_entry", args=(), python=None):
     """Shell command that runs `module.func(*args)`. Python runs isolated (-I): the working directory, user
     site-packages and PYTHON* variables are not on the import path, so the harness's cwd cannot shadow tracekit.
     python: an interpreter that has tracekit installed (system mode: OPT_PYTHON). If it cannot run the hook (the
-    package or interpreter is missing), the call is blocked unless the system config sets fail_mode open."""
+    package or interpreter is missing), the call is blocked unless the system config sets fail_mode open; a v2 hook
+    that cannot run blocks the call in dev mode too."""
     if python:
-        run = " ".join([shlex.quote(python), "-I", "-m", module, *args])
-        script = (f"{run}; s=$?; [ $s = 0 ] || [ $s = 2 ] && exit $s; "
-                  f"grep -Eq '\"fail_mode\"[[:space:]]*:[[:space:]]*\"open\"' {client.SYSTEM_CONFIG} 2>/dev/null && exit 0; "
-                  "echo 'tracekit: the hook could not run; call blocked (fail-closed)' >&2; exit 2")
-        return f"/bin/sh -c {shlex.quote(script)}"
+        return _blocking(" ".join([shlex.quote(python), "-I", "-m", module, *args]),
+                         f"grep -Eq '\"fail_mode\"[[:space:]]*:[[:space:]]*\"open\"' {client.SYSTEM_CONFIG} 2>/dev/null "
+                         "&& exit 0; ")
+    cmd = _dev_hook_command(module, func, args)
+    # lean: on Windows a dev v2 hook that cannot start fails open (no POSIX shell to wrap it in); wrap it in
+    # PowerShell when Windows dev mode must fail closed
+    return _blocking(cmd) if module in V2_HOOKS and os.name != "nt" else cmd
+
+
+def _dev_hook_command(module, func, args):
     try:
         import importlib.util
         import site
@@ -239,7 +256,9 @@ def _hook_command(module="tracekit.hook", func="_entry", args=(), python=None):
 
 def _hook_version(group):
     """"v2" for a group running the v2 hook, "v1" for the v1 hook, else None."""
-    cmds = [h.get("command") or "" for h in group.get("hooks", [])]
+    hooks = group.get("hooks") if isinstance(group, dict) else None
+    cmds = [h["command"] for h in hooks if isinstance(h, dict) and isinstance(h.get("command"), str)] \
+        if isinstance(hooks, list) else []
     if any(V2_HOOK in c for c in cmds):
         return "v2"
     if any("tracekit.hook" in c or ("tracekit" in c and "hook.py" in c) for c in cmds):

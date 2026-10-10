@@ -4,9 +4,10 @@
 # Shell rules without a field match each command's argv (wrappers, paths and quoting resolved by policy2/shell.py);
 # `field: command` matches the raw command line; `field: line` matches it and each line policy2/shell.py normalised
 # (quotes and escapes resolved, redirections kept). File rules match the signer-normalised `path` (and, with `..`, the lexically
-# normalised one). Rules stay tripwires: the protection is the signer, its storage and the witnesses.
+# normalised one), with `\` as `/` and also casefolded (the agent's file system may ignore case). Rules stay tripwires: the
+# protection is the signer, its storage and the witnesses.
 
-version: '2026.10-v2-1'
+version: '2026.10-v2-2'
 description: coding agents on a laptop (Claude Code, Codex, Cursor, Gemini)
 # laptop: a tool the pack does not map is flagged, not held; server.yaml holds it for a person (ask)
 unknown_tools: flag
@@ -35,7 +36,7 @@ deny:
   # --- shell ---
   - id: TK-D001
     class: shell
-    pattern: '^(sudo|doas|pkexec)( |$)|^su (.* )?(-c|root)( |$)'
+    pattern: '^(sudo|sudoedit|doas|pkexec)( |$)|^su (.* )?(-c|root)( |$)'
     reason: privilege escalation
     rationale: An agent should never need root; escalation widens every other risk and would let it reach the signer.
   - id: TK-D002
@@ -47,13 +48,13 @@ deny:
   - id: TK-D003
     class: shell
     field: line
-    # global options may come before `push` (git -C dir push)
-    pattern: 'git\s+(-[Cc]\s+\S+\s+|--?[A-Za-z][-A-Za-z]*(=\S*)?\s+){0,8}push\b.*(--force\b|-f\b|--force-with-lease|\s\+\S)'
+    # global options may come before `push` (git -C dir push); -f may be bundled (-uf)
+    pattern: 'git\s+(-[Cc]\s+\S+\s+|--?[A-Za-z][-A-Za-z]*(=\S*)?\s+){0,8}push\b.*(--force\b|\s-[A-Za-z]*f[A-Za-z]*\b|--force-with-lease|--mirror\b|\s\+\S)'
     reason: force push
     rationale: Rewrites shared history.
   - id: TK-D004
     class: shell
-    pattern: '^rm [-A-Za-z ]*-[A-Za-z]*[rR][-A-Za-z ]* (/|~|\$HOME|\$\{HOME\})/?\*?( |$)|^find / .*-delete( |$)'
+    pattern: '^rm [-A-Za-z ]*-[A-Za-z]*[rR][-A-Za-z ]* (/|~|\$HOME|\$\{HOME\}|/home|/Users|/root)/?\*?( |$)|^find / .*-delete( |$)'
     reason: recursive delete of root or home
     rationale: Irrecoverable data loss.
   - id: TK-D010
@@ -88,7 +89,7 @@ deny:
     tool: Write|Edit|MultiEdit|NotebookEdit
     field: path
     pattern: '(^|/)(\.env(\.[A-Za-z0-9._-]+)?|id_rsa|id_ed25519|credentials)$|(^|/)\.ssh/|(^|/)\.aws/'
-    unless: '(^|/)\.env\.(example|sample|template|dist)$'
+    unless: '(^|/)\.[Ee][Nn][Vv]\.([Ee][Xx][Aa][Mm][Pp][Ll][Ee]|[Ss][Aa][Mm][Pp][Ll][Ee]|[Tt][Ee][Mm][Pp][Ll][Aa][Tt][Ee]|[Dd][Ii][Ss][Tt])$'
     reason: writing to a credentials file
     rationale: Credential files are high-value and rarely a legitimate agent target.
   - id: TK-D009
@@ -112,7 +113,7 @@ deny:
     class: fs
     tool: Write|Edit|MultiEdit|NotebookEdit
     field: path
-    pattern: '(^|/)(etc/tracekit|var/lib/tracekit[^/]*|run/tracekit|\.tracekit-signer|\.tracekit-client|Library/Application Support/tracekit|\.local/share/tracekit|run/user/[0-9]+/tracekit|tmp/(tracekit|tk)-[0-9]+|(site|dist)-packages/tracekit/policy2/packs)(/|$)|[/\\]AppData[/\\]Local[/\\]tracekit([/\\]|$)'
+    pattern: '(^|/)(etc/tracekit|var/lib/tracekit[^/]*|run/tracekit|\.tracekit-signer|\.tracekit-client|[Ll]ibrary/[Aa]pplication [Ss]upport/tracekit|\.local/share/tracekit|run/user/[0-9]+/tracekit|tmp/(tracekit|tk)-[0-9]+|(site|dist)-packages/tracekit/policy2/packs)(/|$)|/[Aa]pp[Dd]ata/[Ll]ocal/tracekit(/|$)'
     reason: writing Tracekit's own files, signer state or policy
     rationale: The file-editing twin of TK-D007; /etc/tracekit holds the signer config and policy, the dev data dir its keys and store.
 

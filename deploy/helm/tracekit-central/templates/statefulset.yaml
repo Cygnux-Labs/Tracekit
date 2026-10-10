@@ -71,6 +71,7 @@ spec:
             runAsUser: {{ $uid }}
             runAsGroup: {{ $uid }}
             {{- include "tc.hardened" . | nindent 12 }}
+          resources: {{- toYaml .Values.signer.resources | nindent 12 }}
           ports:
             - {name: https, containerPort: 8443}
             - {name: metrics, containerPort: 9464}
@@ -81,6 +82,7 @@ spec:
             - {name: data, mountPath: /var/lib/tracekit-signer}
             - {name: run, mountPath: /run/tracekit-signer}
             - {name: config, mountPath: /etc/tracekit/central, readOnly: true}
+            - {name: config, mountPath: /etc/tracekit/policy.yaml, subPath: policy.yaml, readOnly: true}
             - {name: dsn, mountPath: /etc/tracekit/dsn, readOnly: true}
             - {name: tls, mountPath: /etc/tracekit/tls, readOnly: true}
       volumes:
