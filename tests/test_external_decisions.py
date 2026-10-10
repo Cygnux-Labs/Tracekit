@@ -1,6 +1,6 @@
 """Other systems' policy decisions imported as signed inputs: decision_import in the v2 signer, the mappers of
-tracekit/integrations/external_decisions.py over the fixtures in tests/data/external/ (written from the documentation
-versions that module's docstring names), the decision_mismatch gap and the verifier's `external decisions` line."""
+tracekit/integrations/external_decisions.py over the fixtures in tests/data/external/ (shapes not yet checked against
+the published docs: see that module's docstring), the decision_mismatch gap and the verifier's `external decisions` line."""
 import base64
 import hashlib
 import os
@@ -77,6 +77,21 @@ class TestDecisionImport(Reconcile):
         self.assertIn("[PASS] external decisions — 1 imported: other-pdp 1; signatures verified 0, unverified 1; "
                       "0 disagree with the signer", text)
 
+    def test_an_undecided_call_or_another_tool_is_a_mismatch(self):
+        run = self.register()
+        self.run_call(run, "tc-1", "pay")   # PAY_ASKS: ask
+        for tcid, tool in (("tc-1", "refund"), ("tc-9", "pay")):
+            self.call("decision_import", {"run_id": run["run_id"], "system": "other-pdp", "decision": "ask",
+                                          "tool_call_id": tcid, "tool": tool, "record": "{}"}, PDP)
+        self.final(run)
+        es = [r["event"] for r in records(self.dir) if r["event"]["run_id"] == run["run_id"]]
+        self.assertEqual([(e["tool_call_id"], e["data"]["reason"]) for e in es if e["type"] == "capture.gap"],
+                         [("tc-1", "other-pdp decided ask on refund; the signer decided ask on pay"),
+                          ("tc-9", "other-pdp decided ask on pay; the signer decided nothing on this call")])
+        rep, _, text = self.verify(run)
+        self.assertIn("external decisions", rep.warnings)
+        self.assertIn("2 disagree with the signer", text)
+
     def test_only_granted_identities_of_the_runs_tenant(self):
         run, beta = self.register(), self.register(CallerIdentity("uid", "999003", True))
         req = {"run_id": run["run_id"], "system": "x", "decision": "deny", "tool_call_id": "tc-1", "tool": "t",
@@ -84,10 +99,11 @@ class TestDecisionImport(Reconcile):
         self.refused("forbidden", "decision_import", req)   # the run's own uid: never a default grant
         self.refused("unknown_run", "decision_import", dict(req, run_id=beta["run_id"]), PDP)   # another tenant's run
 
-    def test_a_signature_that_fails_its_pinned_key_is_refused(self):
+    def test_a_pinned_system_must_send_a_signature_that_verifies(self):
         run = self.register()
         req = {"run_id": run["run_id"], "system": "ms-agent-hooks", "decision": "deny", "tool_call_id": "tc-1",
                "tool": "t", "record": "{}", "signature": base64.b64encode(crypto.sign(SECRET, b"{ }")).decode()}
         self.refused("invalid_request", "decision_import", req, PDP)
         self.refused("invalid_request", "decision_import", dict(req, signature="not base64!"), PDP)
+        self.refused("invalid_request", "decision_import", {k: v for k, v in req.items() if k != "signature"}, PDP)
         self.assertEqual(self.call("decision_import", dict(req, system="unpinned"), PDP)["signature"], "unverified")

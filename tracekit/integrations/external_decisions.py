@@ -5,12 +5,15 @@ system emitted, so a signature the system made over it still verifies; the signe
 
 - `agentcore`: an Amazon Bedrock AgentCore Policy authorization decision log record (a Cedar decision on a tool call at
   an AgentCore Gateway): `decision` ALLOW|DENY, `action.actionId` the gateway tool, `determiningPolicies[].policyId`,
-  `errors[].errorDescription`. Field names follow the AgentCore Policy preview documentation (December 2025), whose
-  decision shape is the Amazon Verified Permissions IsAuthorized response. The record names no tool call id: the caller
-  supplies the one it correlated.
-- `ms_agent_hooks`: a Microsoft agent hook record: one PreToolUse hook's input and output, `{"input": {..., "tool_name",
-  "tool_use_id"}, "output": {"hookSpecificOutput": {"permissionDecision": allow|deny|ask, "permissionDecisionReason"}}}`.
-  Field names follow the VS Code agent hooks preview documentation (January 2026).
+  `errors[].errorDescription`, modelled on the Amazon Verified Permissions IsAuthorized response. The record names no
+  tool call id: the caller supplies the one it correlated.
+- `ms_agent_hooks`: one PreToolUse hook's stdin and stdout, which the hook emits as separate documents, paired in
+  Tracekit's own wrapper `{"input": {..., "tool_name", "tool_use_id"}, "output": {"hookSpecificOutput":
+  {"permissionDecision": allow|deny|ask, "permissionDecisionReason"}}}`.
+
+lean: both shapes, and the fixtures in tests/data/external/, follow no checked documentation version (written without
+access to the AgentCore Policy or VS Code agent hooks docs); check them against the published docs before relying on
+these mappers for real records.
 """
 import json
 

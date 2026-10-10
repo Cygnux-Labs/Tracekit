@@ -17,7 +17,8 @@ L3 from the LLM gateway (source gateway, tier T2) takes precedence over agent-re
 decide the gateway did not see is fabricated, whatever the agent reported.
 
 Decisions other systems made (policy.external, from decision_import) are indexed by tool call and system; each that
-disagrees with the signer's last decision for that call (flag counts as allow) is a signed
+disagrees with the signer's last decision for that call (flag counts as allow), names another tool, or names a call
+the signer never decided is a signed
 `capture.gap{decision_mismatch}` at the same point. The signer's decision stays the one that applied.
 """
 
@@ -38,8 +39,9 @@ def observe(put, run, e, digests=None):
     if rec is not None and e["type"] == "policy.external":
         if "ext" not in rec:
             put(rec, "ext", {})
-        tcid = e["data"]["tool_use_id"]
-        put(rec["ext"], tcid, {**rec["ext"].get(tcid, {}), e["data"]["system"]: e["data"]["decision"]})
+        d = e["data"]
+        tcid = d["tool_use_id"]
+        put(rec["ext"], tcid, {**rec["ext"].get(tcid, {}), d["system"]: [d["decision"], d["tool"]]})
     if rec is None or layer is None:
         return
     digests = digests or {}
@@ -102,13 +104,19 @@ def finish(tx, run, mandatory=False):
         return None
     rec = run["rec"]
     for tcid, systems in rec.get("ext", {}).items():
-        mine = rec["l2"].get(tcid, {}).get("decision")
-        mine = "allow" if mine == "flag" else mine
-        for system, theirs in systems.items():
-            if mine and theirs != mine:
-                tx.emit(run, "capture.gap", {"kind": "decision_mismatch", "tool_use_id": tcid,
-                                             "reason": f"{system[:64]} decided {theirs}; the signer decided {mine}"},
-                        source="signer", tool_call_id=tcid)
+        l2 = rec["l2"].get(tcid)
+        mine = l2 and ("allow" if l2.get("decision") == "flag" else l2.get("decision"))
+        for system, (theirs, tool) in systems.items():
+            if not l2:
+                reason = f"{system[:64]} decided {theirs} on {tool[:256]}; the signer decided nothing on this call"
+            elif tool != l2["name"]:
+                reason = f"{system[:64]} decided {theirs} on {tool[:256]}; the signer decided {mine} on {l2['name']}"
+            elif theirs != mine:
+                reason = f"{system[:64]} decided {theirs}; the signer decided {mine}"
+            else:
+                continue
+            tx.emit(run, "capture.gap", {"kind": "decision_mismatch", "tool_use_id": tcid, "reason": reason},
+                    source="signer", tool_call_id=tcid)
     found, unreconciled = _found(run, mandatory), {}
     for kind, tcid, layers, detail in found:
         tx.emit(run, "reconcile." + kind, {"layers": layers, "detail": detail}, source="signer", tool_call_id=tcid)

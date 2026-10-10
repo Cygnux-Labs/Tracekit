@@ -68,7 +68,7 @@ signer.yaml:
     otlp: {max_spans: 512}                   # OTLP/HTTP POST /v1/traces on the `http` listener, for identities
                                              # `authorize` grants otlp_import (tracekit.signer.otel; docs/otel.md)
     decision_keys: {ms-agent-hooks: "<base64 Ed25519 public key>"}   # external policy systems whose record signatures
-                                             # decision_import verifies (else they are recorded unverified)
+                                             # decision_import requires and verifies (others: unverified)
     otel_out: {endpoint: https://otel.example.org/v1/traces, headers: {x-api-key: "..."}}   # each final run's spans
     harness_binding:                         # runs of these identities must come from a registered harness process
       helper: /var/lib/tracekit-signer/harness-helper.sock   # tracekit.harness_helper (default: read /proc here)
@@ -1623,7 +1623,9 @@ class SignerService:
         key = (self._tenant_of(identity), req["run_id"])
         raw, sig = req["record"].encode("utf-8"), req.get("signature")
         signature = "unverified"
-        if sig is not None and req["system"] in self._decision_keys:
+        if req["system"] in self._decision_keys:
+            if sig is None:
+                raise RPCError("invalid_request", f"{req['system'][:64]} has a pinned key: its records must be signed")
             try:
                 ok = crypto.verify_v2("ed25519", self._decision_keys[req["system"]], raw, base64.b64decode(sig, validate=True))
             except ValueError:

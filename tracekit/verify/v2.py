@@ -39,7 +39,8 @@ A tool call that ran against a deny, or an ask with no consumed approval, is sig
 `executed_against_policy`; each is a `policy` warning.
 External decisions: policy.external records (other systems' decisions, imported at tier T3) are counted by system and
 by whether the signer verified the system's signature; each signer-written capture.gap `decision_mismatch` (the
-import disagreed with the signer's decision) makes the `external decisions` line a warning.
+import disagreed with the signer's decision or tool, or named a call the signer never decided) makes the
+`external decisions` line a warning.
 Coverage: a run.final that carries `coverage` (the capture layers that reported, calls reconciled, reconcile.* records
 by kind) gives a `coverage` line; unreconciled calls make it a warning, so `--strict` exits 3 on them.
 
