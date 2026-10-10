@@ -64,8 +64,8 @@ class TestSignerBundles(unittest.TestCase):
         linux = bsb.package_json("linux-arm64-gnu", "1.2.3")
         self.assertEqual((linux["name"], linux["version"], linux["os"], linux["cpu"], linux["libc"]),
                          ("@cygnux/tracekit-signer-linux-arm64-gnu", "1.2.3", ["linux"], ["arm64"], ["glibc"]))
-        mac = bsb.package_json("darwin-x64", "1.2.3")
-        self.assertEqual((mac["os"], mac["cpu"]), (["darwin"], ["x64"]))
+        mac = bsb.package_json("darwin-arm64", "1.2.3")
+        self.assertEqual((mac["os"], mac["cpu"]), (["darwin"], ["arm64"]))
         self.assertNotIn("libc", mac)
         self.assertNotIn("scripts", mac)   # no postinstall
 

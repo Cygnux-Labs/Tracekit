@@ -53,6 +53,5 @@ cannot rewrite (docs/witnesses.md).
 
 ## Python versions
 
-3.9 to 3.13 are declared. A static check finds nothing newer than 3.7 in the package, and CI is set up to run 3.9, but
-3.9 has not been executed yet. The LangChain adapter's tests need Python 3.10 or newer (LangChain's own requirement)
+3.9 to 3.13 are declared, and CI runs 3.9, 3.12 and 3.13. The LangChain adapter's tests need Python 3.10 or newer (LangChain's own requirement)
 and are skipped on 3.9.

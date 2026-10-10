@@ -185,8 +185,9 @@ Remote agents outside Kubernetes use named tokens: [remote clients](remote-inges
 
 ## Compose
 
-No compose file ships with Tracekit, and none is tested in CI. The image supports this layout: the signer and the
-agent as separate services on a private network, the agent with a token and the CA only.
+A ready-made stack ships in `deploy/compose/` ([the compose stack](deploy-compose.md)). The layout below builds the
+same idea by hand: the signer and the agent as separate services on a private network, the agent with a token and the
+CA only.
 
 ```yaml
 # signer.yaml: compose, agents identified by named tokens

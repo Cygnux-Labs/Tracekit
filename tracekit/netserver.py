@@ -16,6 +16,24 @@ DEADLINE_S = 30.0
 MAX_THREADS = 64
 MAX_PER_IP = 8
 SLOT_WAIT_S = 1.0
+DRAIN_BYTES, DRAIN_S = 1 << 20, 0.5
+
+
+def drain(sock):
+    """Before closing: read what the client already sent. A request answered without reading its body (a refused POST)
+    leaves that body unread, and closing a socket with unread data resets the connection, so the client can lose the
+    answer (on Windows, always). Up to DRAIN_BYTES, waiting at most DRAIN_S for each read."""
+    try:
+        sock.shutdown(socket.SHUT_WR)   # the answer is complete: the client reads it, then closes its side
+        sock.settimeout(DRAIN_S)
+        left = DRAIN_BYTES
+        while left > 0:
+            got = len(sock.recv(min(left, 65536)))
+            if not got:
+                return
+            left -= got
+    except OSError:
+        pass
 
 
 class Server(ThreadingHTTPServer):
@@ -71,6 +89,7 @@ class Server(ThreadingHTTPServer):
         finally:
             self.stop_deadline()
             raw.close()
+            drain(request)
             self.shutdown_request(request)
             self._slots.release()
             self._ip_release(client_address[0])
