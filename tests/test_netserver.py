@@ -1,4 +1,4 @@
-"""Network services that face other machines (witness, ingest gateway): a client that connects and says nothing
+"""Network services that face other machines (the ingest gateway): a client that connects and says nothing
 must not stall anyone else, over TLS or not.  python3 -m pytest tests/test_netserver.py -q"""
 import datetime
 import http.client
@@ -19,7 +19,7 @@ from cryptography.hazmat.primitives import hashes, serialization  # noqa: E402
 from cryptography.hazmat.primitives.asymmetric import ec  # noqa: E402
 from cryptography.x509.oid import NameOID  # noqa: E402
 
-from tracekit import ingest, netserver, witness_server  # noqa: E402
+from tracekit import ingest, netserver  # noqa: E402
 
 
 def self_signed(d):
@@ -63,7 +63,7 @@ class SilentClient(unittest.TestCase):
         self.socks.append(s)
         time.sleep(0.2)  # the server has accepted it and is waiting for a handshake that never comes
 
-    def request(self, port, method, path, tls=True):
+    def request(self, port, method="POST", path="/v1/rpc", tls=True):   # unauthenticated: 401
         c = (http.client.HTTPSConnection("127.0.0.1", port, timeout=3, context=ssl._create_unverified_context()) if tls
              else http.client.HTTPConnection("127.0.0.1", port, timeout=3))
         try:
@@ -72,19 +72,12 @@ class SilentClient(unittest.TestCase):
         finally:
             c.close()
 
-    def test_witness_serves_a_second_client_while_one_is_silent(self):
-        witness_server.init(os.path.join(self.d, "w"))
-        port = self.start(witness_server.serve(os.path.join(self.d, "w"), "127.0.0.1", 0, self.ctx))
-        self.silent(port)
-        self.assertEqual(self.request(port, "GET", "/v1/sth"), 200)
-
     def test_ingest_gateway_serves_a_second_client_while_one_is_silent(self):
         port = self.start(ingest.serve(self.d, "127.0.0.1", 0, self.ctx, forward=lambda req: {"ok": True}))
         self.silent(port)
-        self.assertEqual(self.request(port, "POST", "/v1/rpc"), 401)
+        self.assertEqual(self.request(port), 401)
 
     def test_silent_plain_http_client_times_out_and_threads_are_bounded(self):
-        witness_server.init(os.path.join(self.d, "w"))
         srv = netserver.Server(("127.0.0.1", 0), self.handler(), timeout=1.5, max_threads=1)
         port = self.start(srv)
         self.silent(port)  # holds the only handler slot
@@ -96,12 +89,10 @@ class SilentClient(unittest.TestCase):
         self.assertLess(time.monotonic() - t0, 1.4)
         self.socks[0].settimeout(3)
         self.assertEqual(self.socks[0].recv(1), b"", "the silent connection is closed when its read times out")
-        self.assertEqual(self.request(port, "GET", "/v1/sth", tls=False), 200)
+        self.assertEqual(self.request(port, tls=False), 401)
 
     def handler(self):
-        log = witness_server.Log(os.path.join(self.d, "w"))
-        self.addCleanup(log.close)
-        return witness_server.make_handler(log)
+        return ingest.make_handler(self.d, forward=lambda req: {"ok": True})
 
     def test_dripping_clients_do_not_block_a_request(self):
         self.drip_then_request(tls=False)
@@ -110,7 +101,6 @@ class SilentClient(unittest.TestCase):
         self.drip_then_request(tls=True)
 
     def drip_then_request(self, tls):
-        witness_server.init(os.path.join(self.d, "w"))
         srv = netserver.Server(("127.0.0.1", 0), self.handler(), self.ctx if tls else None, timeout=0.3, max_threads=3,
                                deadline=1.0)
         port = self.start(srv)
@@ -130,10 +120,9 @@ class SilentClient(unittest.TestCase):
         for _ in range(3):
             threading.Thread(target=drip, daemon=True).start()
         time.sleep(0.4)  # every handler slot is held by a dripping client
-        self.assertEqual(self.request(port, "GET", "/v1/sth", tls=tls), 200)
+        self.assertEqual(self.request(port, tls=tls), 401)
 
     def test_connections_per_ip_are_capped(self):
-        witness_server.init(os.path.join(self.d, "w"))
         port = self.start(netserver.Server(("127.0.0.1", 0), self.handler(), timeout=3, max_per_ip=1))
         self.silent(port)
         over = socket.create_connection(("127.0.0.1", port))
