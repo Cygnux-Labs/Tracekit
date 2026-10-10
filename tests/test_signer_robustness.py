@@ -114,7 +114,7 @@ class TestRollbackAgainstStoredNotes(Case):
         p = os.path.join(self.dir, "store", "checkpoint.note")
         note = open(p).read().split("\n")
         note[2] = base64.b64encode(b"\x01" * 32).decode()
-        with open(p, "w") as f:
+        with open(p, "w", newline="") as f:
             f.write("\n".join(note))
         self.assert_rolled_back(run, "records")
 

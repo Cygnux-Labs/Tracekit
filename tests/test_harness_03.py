@@ -440,6 +440,7 @@ class Units(unittest.TestCase):
                          "ProtectSystem=strict", "SystemCallFilter=@system-service"):
                 self.assertIn(line + "\n", text)
 
+    @unittest.skipIf(os.name == "nt", "POSIX users (pwd)")
     def test_helper_unit_has_exactly_the_helpers_capabilities(self):
         import pwd
         from tracekit import install

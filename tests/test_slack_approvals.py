@@ -56,6 +56,7 @@ def start(case, srv):
     return srv.server_address[1]
 
 
+@unittest.skipIf(os.name == "nt", "the bridge reaches the signer as a POSIX uid over a Unix socket")
 class Bridge(unittest.TestCase):
     def setUp(self):
         d = ts.tmpdir(self)
