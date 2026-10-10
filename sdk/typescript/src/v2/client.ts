@@ -27,7 +27,7 @@ import { createConnection, type Socket } from "node:net";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { argsDigest } from "./jcs.js";
-import { INSTALL_HINT, signerCommand } from "./launcher.js";
+import { INSTALL_HINT, signerCommand, signerEnv } from "./launcher.js";
 import { REQUESTS, RPC_VERSION } from "./rpc_schema.js";
 import { validate } from "./validate.js";
 
@@ -455,7 +455,7 @@ function startDevSigner(): Promise<void> {
   const cmd = signerCommand();
   if (!cmd) return Promise.reject(new SignerUnavailable(`no dev signer, and ${INSTALL_HINT}`));
   return new Promise((resolve, reject) => {
-    execFile(cmd[0], [...cmd.slice(1), "up", "--json"], { timeout: 30_000 }, (err, _out, stderr) =>
+    execFile(cmd[0], [...cmd.slice(1), "up", "--json"], { timeout: 30_000, env: signerEnv(cmd) }, (err, _out, stderr) =>
       err ? reject(new SignerUnavailable(`no dev signer, and \`${cmd.join(" ")} up\` failed: ${stderr.trim() || err.message}`)) : resolve());
   });
 }
