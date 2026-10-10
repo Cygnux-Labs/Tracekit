@@ -22,6 +22,7 @@ otlp_wire.MAX_BODY) from the same authenticators: the caller is authenticated be
 """
 import ipaddress
 import json
+import os
 import socketserver
 import ssl
 from http.server import BaseHTTPRequestHandler
@@ -82,6 +83,16 @@ def configure(cfg):
             except TypeError as e:
                 raise ValueError(f"http.k8s_sa: {e}") from None
     return (host, int(port)), auths, tls
+
+
+def resolve(cfg, base):
+    """The `http` section `cfg` with its paths made absolute from `base`, in place."""
+    for section in (cfg, cfg.get("k8s_sa")) if isinstance(cfg, dict) else ():
+        for k in ("cert", "key", "token_file", "ca"):
+            if isinstance(section, dict) and isinstance(section.get(k), str) and section[k]:
+                section[k] = os.path.join(base, section[k])
+    if isinstance(cfg, dict) and isinstance(cfg.get("client_ca"), dict):
+        cfg["client_ca"] = {td: os.path.join(base, p) if isinstance(p, str) else p for td, p in cfg["client_ca"].items()}
 
 
 def _loopback(host):
@@ -160,12 +171,13 @@ class HttpServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
     daemon_threads = True
     allow_reuse_address = True
 
-    def __init__(self, address, authenticators, tls, handle_frame, read_timeout=READ_TIMEOUT_S, otlp=None):
+    def __init__(self, address, authenticators, tls, handle_frame, read_timeout=READ_TIMEOUT_S, otlp=None,
+                 handler=_Handler):
         """`otlp(identity, body, content type, content encoding)` -> (status, headers, body) answers POST /v1/traces;
-        None: not served."""
+        None: not served. `handler`: the request handler class (tracekit.gateway serves its own)."""
         self.authenticators, self.tls, self.handle_frame, self.read_timeout = authenticators, tls, handle_frame, read_timeout
         self.otlp = otlp
-        super().__init__(address, _Handler)
+        super().__init__(address, handler)
 
     def finish_request(self, request, client_address):
         """In the connection's thread: the TLS handshake (under the read timeout), then the requests."""
