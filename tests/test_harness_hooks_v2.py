@@ -242,5 +242,19 @@ class Installer(unittest.TestCase):
         self.assertIn("no tool_use_id", p.stderr)
 
 
+
+class NoTailer(unittest.TestCase):
+    def test_other_harnesses_start_no_transcript_tailer(self):
+        """The tailer reads Claude Code transcripts only: another harness's run starts none and records no gap."""
+        st = {"run_id": "r1", "run_token": "x.y", "transcript": "/tmp/t.jsonl"}
+        client = mock.Mock()
+        with mock.patch.object(claude_code, "AGENT", "codex"), mock.patch.object(claude_code.subprocess, "Popen") as po, \
+                mock.patch.object(claude_code, "system_config", return_value={"signer": "/run/s.sock"}):
+            claude_code._tail(client, "/tmp/state.json", st)
+        po.assert_not_called()
+        client.assert_not_called()
+        self.assertNotIn("tailer", st)
+
+
 if __name__ == "__main__":
     unittest.main()

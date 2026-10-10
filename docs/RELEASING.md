@@ -12,3 +12,18 @@
 2. In the GitHub repository settings create an environment named `pypi`, ideally with required reviewers.
 
 Until that is done the `publish` job fails and nothing is released; the `build` job still checks the package.
+
+## npm signer packages (`npx @cygnux/tracekit up` without Python)
+
+`@cygnux/tracekit` lists `@cygnux/tracekit-signer-{darwin-arm64,darwin-x64,linux-x64-gnu,linux-arm64-gnu,win32-x64}`
+as `optionalDependencies` at its own version; npm installs the one matching the platform, with no postinstall. Each
+holds a python-build-standalone CPython (release and sha256 pinned in the script) with `tracekit-ai[signer]` and its
+wheels unpacked into site-packages. After tracekit-ai is on PyPI at the `sdk/typescript/package.json` version:
+
+1. `python3 scripts/build-signer-bundles.py` (or name some targets). It downloads and checks the pinned runtimes,
+   `pip download --platform … --only-binary :all:`s the wheels for every target from one machine, records their
+   hashes in `wheels.sha256`, strips tests and headers, writes `build/npm/tracekit-signer-<platform>/`, and prints each
+   package's unpacked size.
+2. `npm publish --access public` in each `build/npm/tracekit-signer-<platform>/`, then in `sdk/typescript/`.
+
+Rebuild for CPython and OpenSSL security releases by bumping the pinned release in the script.
