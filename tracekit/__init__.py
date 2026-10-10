@@ -4,7 +4,7 @@ Tracekit proves what its capture path recorded, and that it hasn't changed since
 signed and checkpointed. It does not prove intent, complete coverage, or that a reported
 result is real. See docs/threat-model-laptop.md.
 """
-__version__ = "0.4.0"
+__version__ = "1.0.0rc1"
 
 
 def __getattr__(name):
