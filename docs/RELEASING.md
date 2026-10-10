@@ -77,9 +77,11 @@ Until these are done the publish jobs fail and nothing is released; the build jo
 `@cygnux/tracekit` lists `@cygnux/tracekit-signer-{darwin-arm64,darwin-x64,linux-x64-gnu,linux-arm64-gnu,win32-x64}`
 as `optionalDependencies` at its own version; npm installs the one matching the platform, with no postinstall. Each
 holds a python-build-standalone CPython (release and sha256 pinned in the script) with `tracekit-ai[signer]` and its
-wheels unpacked into site-packages. The release workflow builds them after tracekit-ai is on PyPI:
-`python3 scripts/build-signer-bundles.py` downloads and checks the pinned runtimes, `pip download --platform …
---only-binary :all:`s the wheels for every target from one machine, records their hashes in `wheels.sha256`, strips
+wheels unpacked into site-packages. The release workflow builds them from the release's own files:
+`python3 scripts/build-signer-bundles.py [--release release]` checks the tracekit-ai wheel in `release/` against
+`release/SHA256SUMS` (never fetching it from PyPI), downloads and checks the pinned runtimes, `pip download --platform …
+--only-binary :all:`s that wheel's dependencies at the versions `scripts/release/runtime-constraints.txt` pins (the
+signer image's pins too) for every target from one machine, records their hashes in `wheels.sha256`, strips
 tests and headers, and writes `build/npm/tracekit-signer-<platform>/`.
 
 Rebuild for CPython and OpenSSL security releases by bumping the pinned release in the script.
@@ -188,8 +190,8 @@ jobs:
       - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
 
   npm:
-    # the signer packages bundle tracekit-ai from PyPI, so they build after it is published; they go up before
-    # @cygnux/tracekit, which depends on them
+    # the signer packages bundle the release's own tracekit-ai wheel (checked against SHA256SUMS); they go up after
+    # PyPI and before @cygnux/tracekit, which depends on them
     needs: pypi
     runs-on: ubuntu-latest
     environment: npm
