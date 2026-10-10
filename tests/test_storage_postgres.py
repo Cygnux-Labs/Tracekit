@@ -1,11 +1,15 @@
 """The Postgres storage backend: the storage contract run as a signer role holding only postgres.GRANTS, what only
 Postgres has (the advisory lock, a killed transaction, migrate, edited rows), and the signer's suites that take a storage
-(lifecycle, snapshots, witness queue) on Postgres. Needs psycopg and TRACEKIT_TEST_PG_DSN (a superuser DSN), or initdb
+(lifecycle, snapshots, witness queue) on Postgres, and PostgresReader as a role holding only postgres.READ_GRANTS. Needs psycopg and TRACEKIT_TEST_PG_DSN (a superuser DSN), or initdb
 and pg_ctl on PATH (a throwaway cluster in a temp dir); skipped otherwise."""
+import contextlib
+import hmac
+import io
 import json
 import os
 import secrets
 import shutil
+import socket
 import subprocess
 import tempfile
 import time
@@ -16,10 +20,16 @@ import test_format_bridge
 import test_signer_lifecycle
 import test_witness_publish
 from storage_contract import Chain, StorageContract
-from test_signer_service import ME
+from test_signer_checkpoints import run_cli
+from test_signer_service import ME, tmpdir
+from tracekit import view
+from tracekit.format.canon import event_hash
+from tracekit.format.records import RecordSigner
+from tracekit.sdk.client import Client
 from tracekit.signer import format_bridge
 from tracekit.signer import service as svc
-from tracekit.storage.base import ACK_ON_FSYNC, ACK_ON_WRITE, StorageUnavailable
+from tracekit.storage.base import ACK_ON_FSYNC, ACK_ON_WRITE, StorageUnavailable, registry_tree
+from tracekit.verify import v2
 
 try:
     import psycopg
@@ -30,7 +40,7 @@ except ImportError:
     psycopg = None
 
 ADMIN, CLUSTER = None, None
-SIGNER = "tracekit_signer_test"
+SIGNER, READER = "tracekit_signer_test", "tracekit_reader_test"
 
 
 def setUpModule():
@@ -49,7 +59,8 @@ def setUpModule():
                         f"-k {CLUSTER} -c listen_addresses='' -c fsync=off", "start"], check=True, capture_output=True)
         ADMIN = make_conninfo(host=CLUSTER, dbname="postgres", user="postgres")
     with psycopg.connect(ADMIN, autocommit=True) as c:
-        c.execute(f"DO $$ BEGIN CREATE ROLE {SIGNER} NOLOGIN; EXCEPTION WHEN duplicate_object THEN NULL; END $$")
+        for role in (SIGNER, READER):
+            c.execute(f"DO $$ BEGIN CREATE ROLE {role} NOLOGIN; EXCEPTION WHEN duplicate_object THEN NULL; END $$")
 
 
 def tearDownModule():
@@ -70,6 +81,13 @@ def new_log(case, migrate=True):
         with psycopg.connect(admin, autocommit=True) as c:
             c.execute(postgres.GRANTS.format(schema=schema, role=SIGNER))
     return admin, make_conninfo(ADMIN, options=f"-c search_path={schema} -c role={SIGNER}")
+
+
+def reader_dsn(admin):
+    """The DSN of the log of `admin` as the reader role, granted postgres.READ_GRANTS (SELECT only)."""
+    schema = sql(admin, "SELECT current_schema()")[0][0]
+    sql(admin, postgres.READ_GRANTS.format(schema=schema, role=READER))
+    return make_conninfo(ADMIN, options=f"-c search_path={schema} -c role={READER}")
 
 
 def sql(dsn, query, params=()):
@@ -193,6 +211,105 @@ class TestPostgresStorage(PgCase):
         self.addCleanup(s.close)
         self.assertIsNone(s.snapshot)
         self.assertEqual(s.tail_state()["tree_size"], 308)
+
+
+class TestPostgresReader(PgCase):
+    def test_reads_a_snapshot_of_the_store_with_select_only_and_no_lock(self):
+        s, c = self.open(), Chain()
+        self.addCleanup(s.close)
+        records = c.batch(600, runs=("run-1", "run-2"))
+        s.append_batch(records)
+        s.checkpoint_put(600, "note 600")
+        leaves = [bytes([i]) * 89 for i in range(3)]
+        for leaf in leaves:
+            s.registry_append("acme", leaf)
+        s.checkpoint_put(3, "registry note 3", registry_tree("acme"))
+        s.anchor_put(600, {"note": "note 600"})
+        records += c.batch(5)
+        s.append_batch(records[600:])
+        r = postgres.PostgresReader(reader_dsn(self.admin))   # while the writer holds the log's lock
+        self.addCleanup(r.close)
+        self.assertEqual((r.tree.size, r.tree.root()), (600, s.tree.root_at(600)))   # from the tiles: 2 full, 2 edges
+        for i in (0, 300, 599):
+            self.assertEqual(r.tree.inclusion_proof(i, 600), s.tree.inclusion_proof(i, 600))
+        self.assertEqual(r.runs[("acme", "run-2")]["seqs"], list(range(1, 600, 2)))
+        self.assertEqual(r.get_run("acme", "run-1"), s.get_run("acme", "run-1"))
+        self.assertEqual(list(r.iter_run("acme", "run-1"))[-1], records[604])
+        self.assertEqual(list(r.iter_range(598, 10**6)), records[598:])
+        self.assertEqual((r.checkpoint_latest(), r.anchors()), ((600, "note 600"), s.anchors()))
+        self.assertEqual((r.registry_merkle("acme").root(), list(r.registry_iter("acme"))),
+                         (s.registry_merkle("acme").root(), leaves))
+        self.assertEqual(r.checkpoint_at(registry_tree("acme"), 3), "registry note 3")
+        s.append_batch(c.batch(1))
+        s.checkpoint_put(606, "note 606")
+        self.assertEqual((len(list(r.iter_range(0, 10**6))), r.checkpoint_latest()), (605, (600, "note 600")))
+        s.close()
+        self.open().close()   # a writer opens alongside the reader
+        with self.assertRaises(psycopg.errors.ReadOnlySqlTransaction):
+            r.conn.execute("INSERT INTO tracekit_meta VALUES ('k', 'v')")
+        with self.assertRaises(psycopg.errors.InsufficientPrivilege):
+            sql(reader_dsn(self.admin), "INSERT INTO tracekit_meta VALUES ('k', 'v')")
+
+    def test_a_missing_tile_is_an_error_not_a_write(self):
+        s = self.open()
+        s.append_batch(Chain().batch(600))
+        s.checkpoint_put(600, "note 600")
+        s.close()
+        sql(self.admin, "DELETE FROM tracekit_tiles WHERE level = 0 AND idx = 1")
+        with self.assertRaisesRegex(ValueError, "tile 1/0.2 missing or damaged"):
+            postgres.PostgresReader(reader_dsn(self.admin))
+        self.assertEqual(sql(self.admin, "SELECT count(*) FROM tracekit_tiles"), [(1,)])
+
+
+@unittest.skipUnless(hasattr(socket, "AF_UNIX"), "no Unix sockets")
+class TestReadersOfAPostgresSigner(unittest.TestCase):
+    def test_export_view_and_reveal_as_a_select_only_role_while_the_signer_runs(self):
+        d = tmpdir(self)
+        admin, signer = new_log(self)
+        for name, dsn in (("signer.dsn", signer), ("reader.dsn", reader_dsn(admin))):
+            with open(os.path.join(d, name), "w") as f:
+                f.write(dsn)
+        cfg = {"data_dir": os.path.join(d, "data"), "socket": os.path.join(d, "s.sock"), "grace_s": 0,
+               "storage": {"postgres": {"dsn_file": os.path.join(d, "signer.dsn")}}}
+        service = svc.open_service(cfg)
+        self.addCleanup(service.close)
+        for srv in svc.serve(cfg, service):
+            self.addCleanup(srv.server_close)
+            self.addCleanup(srv.shutdown)
+        client = Client(cfg["socket"])
+        self.addCleanup(client.close)
+        run = client.run(agent="a")
+        self.assertEqual(run.decide("c1", "Bash", {"command": "ls"})["decision"], "allow")
+        run.complete("c1")
+        viewer = os.path.join(d, "viewer.yaml")   # its own data dir: never the signer's
+        with open(viewer, "w") as f:
+            json.dump({"data_dir": "viewer", "socket": "s.sock", "storage": {"postgres": {"dsn_file": "reader.dsn"}}}, f)
+        out = os.path.join(d, "run.tkb")
+        code, stdout, err = run_cli("export", "--v2", "--run", run.run_id, "--config", viewer, "-o", out)   # nudges
+        self.assertEqual((code, err), (0, ""))
+        trust = os.path.join(d, "trust.json")
+        with open(trust, "w") as f:
+            json.dump({"logs": [service.vkey], "witnesses": [], "algs": [RecordSigner.alg], "witnesses_required": 0}, f)
+        self.assertEqual(v2.verify(out, trust)[1], 0)
+        with mock.patch.object(view.StoreFeed, "_watch", lambda feed: None):
+            feed = view.StoreFeed(svc.load_config(viewer))   # pins the vkey the signer stored
+        feed.refresh()
+        [rep] = [r for r in feed.records if r.get("title", "").startswith(f"RUN {run.run_id}")]
+        self.assertEqual(rep["title"], f"RUN {run.run_id} · Integrity VERIFIED TO HEAD 2 (open) · Assurance dev")
+        self.assertIn(view.STORED_NOTE, rep["text"])
+        r = svc.reader(svc.load_config(viewer))
+        self.addCleanup(r.close)
+        self.assertEqual(r.meta("log_vkey"), service.vkey)
+        [decision] = [x["event"] for x in r.iter_run("default", run.run_id) if x["event"]["type"] == "policy.decision"]
+        auditor = os.path.join(d, "auditor.yaml")   # the signer's data dir, for the salt key; the store as the reader
+        with open(auditor, "w") as f:
+            json.dump({"data_dir": "data", "storage": {"postgres": {"dsn_file": "reader.dsn"}}}, f)
+        with contextlib.redirect_stdout(io.StringIO()) as printed:
+            self.assertEqual(svc.main(["reveal", "--record", str(decision["seq"]), "--config", auditor]), 0)
+        salt = bytes.fromhex(json.loads(printed.getvalue())["salt"])
+        digest = event_hash({"tool": "Bash", "args": {"command": "ls"}})
+        self.assertEqual(decision["data"]["args_commitment"],
+                         "hmac-sha256:" + hmac.new(salt, digest.encode(), "sha256").hexdigest())
 
 
 class OnPostgres:

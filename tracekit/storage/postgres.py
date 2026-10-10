@@ -11,10 +11,14 @@ picks the database, and its search_path the schema (`options=-csearch_path=trace
     tracekit_tiles          tree, level, idx, width, data
     tracekit_snapshots      size, mac, body: the indexes at a record tree size and the signer's state; the newest two
                             are kept
+    tracekit_meta           key, value: what readers need without the signer's data dir ("log_vkey", the log key's vkey)
 
 migrate() creates them (idempotent); run it as a migration role, `tracekit signer migrate --config signer.yaml`. The
 signer's role needs no UPDATE or DELETE on the logs: records, registry, notes and anchors are insert-only, and fsck
 finds a row edited behind the signer's back (hash, chains, signatures). GRANTS is the signer role's set.
+
+Export, view and reveal read through PostgresReader, with the DSN of their own config's dsn_file: give it a role
+holding READ_GRANTS only (SELECT), so a reader can't write even by mistake.
 
 One writer per log: open takes a session-level advisory lock keyed by the schema, waiting up to `lock_timeout_s`, and
 holds it on the connection every write goes through, so a lost connection loses the lock and the writes with it; a
@@ -44,7 +48,7 @@ from psycopg import errors
 
 from tracekit.format.canon import event_hash
 from tracekit.merkle import leaf_hash
-from tracekit.merkle.tiles import Tree
+from tracekit.merkle.tiles import W, Tree, _reduce
 
 from .base import (ACK_ON_FSYNC, ACK_ON_WRITE, RECORDS, ZERO_HASH, Storage, StorageCorrupt, StorageUnavailable,
                    check_records, registry_tree)
@@ -66,14 +70,20 @@ CREATE TABLE IF NOT EXISTS tracekit_witness_queue (id int PRIMARY KEY CHECK (id 
 CREATE TABLE IF NOT EXISTS tracekit_tiles (tree text, level int, idx bigint, width int, data bytea NOT NULL,
     PRIMARY KEY (tree, level, idx, width));
 CREATE TABLE IF NOT EXISTS tracekit_snapshots (size bigint PRIMARY KEY, mac text NOT NULL, body text NOT NULL);
+CREATE TABLE IF NOT EXISTS tracekit_meta (key text PRIMARY KEY, value text NOT NULL);
 """
 GRANTS = """
 GRANT USAGE ON SCHEMA {schema} TO {role};
 GRANT SELECT ON tracekit_schema TO {role};
 GRANT SELECT, INSERT ON tracekit_records, tracekit_registry, tracekit_notes, tracekit_anchors TO {role};
 GRANT USAGE ON SEQUENCE tracekit_notes_id_seq, tracekit_anchors_id_seq TO {role};
-GRANT SELECT, INSERT, UPDATE ON tracekit_witness_queue, tracekit_tiles TO {role};
+GRANT SELECT, INSERT, UPDATE ON tracekit_witness_queue, tracekit_tiles, tracekit_meta TO {role};
 GRANT SELECT, INSERT, UPDATE, DELETE ON tracekit_snapshots TO {role};
+"""
+READ_GRANTS = """
+GRANT USAGE ON SCHEMA {schema} TO {role};
+GRANT SELECT ON tracekit_schema, tracekit_records, tracekit_registry, tracekit_notes, tracekit_anchors, tracekit_tiles,
+    tracekit_meta TO {role};
 """
 
 
@@ -160,7 +170,76 @@ def _registry_counts(conn):
     return dict(conn.execute("SELECT tenant, count(*) FROM tracekit_registry GROUP BY tenant").fetchall())
 
 
-class PostgresStorage(Storage):
+class _Reads:
+    """The reads PostgresStorage and PostgresReader share, through self.conn under self._lock."""
+    _error = None
+
+    @contextlib.contextmanager
+    def _db(self):
+        """The connection, under the store's lock; a lost connection or a server refusing writes is
+        StorageUnavailable."""
+        with self._lock:
+            try:
+                yield self.conn
+            except psycopg.OperationalError as e:
+                self._error = self._error or StorageUnavailable(str(e).strip() or type(e).__name__)
+                raise StorageUnavailable(*self._error.args) from e
+
+    def _pages(self, sql, params, after, hi=None):
+        """The rows of `sql`, which takes the first column >= %(after)s and orders by it, read PAGE at a time (the lock
+        is not held between pages); with `hi`, only those < hi."""
+        while hi is None or after < hi:
+            with self._db() as conn:
+                rows = conn.execute(sql + " LIMIT %(page)s", {**params, "after": after, "page": PAGE}).fetchall()
+            for row in rows:
+                if hi is not None and row[0] >= hi:
+                    return
+                yield row
+            if len(rows) < PAGE:
+                return
+            after = rows[-1][0] + 1
+
+    def iter_run(self, tenant, run_id):
+        run = self.runs.get((tenant, run_id))
+        for _, r in self._pages("SELECT run_seq, record FROM tracekit_records WHERE tenant = %(t)s AND run_id = %(r)s "
+                                "AND run_seq >= %(after)s ORDER BY run_seq", {"t": tenant, "r": run_id}, 0,
+                                run["run_seq"] + 1 if run else 0):
+            yield r
+
+    def registry_iter(self, tenant, start=0):
+        tree = self.registry.get(tenant)
+        for _, leaf in self._pages("SELECT idx, leaf FROM tracekit_registry WHERE tenant = %(t)s AND idx >= %(after)s "
+                                   "ORDER BY idx", {"t": tenant}, start, tree.size if tree else 0):
+            yield bytes(leaf)
+
+    def registry_merkle(self, tenant):
+        return self.registry.get(tenant)
+
+    def checkpoint_latest(self, tree=RECORDS):
+        with self._db() as conn:
+            row = conn.execute("SELECT size, note FROM tracekit_notes WHERE tree = %s ORDER BY id DESC LIMIT 1",
+                               (tree,)).fetchone()
+        return row and tuple(row)
+
+    def checkpoint_at(self, tree, size):
+        with self._db() as conn:
+            row = conn.execute("SELECT note FROM tracekit_notes WHERE tree = %s AND size = %s ORDER BY id DESC LIMIT 1",
+                               (tree, size)).fetchone()
+        return row and row[0]
+
+    def anchors(self):
+        with self._db() as conn:
+            anchors = [json.loads(a) for (a,) in conn.execute("SELECT anchor FROM tracekit_anchors ORDER BY id")]
+        return list({a["size"]: a for a in anchors}.values())
+
+    def tiles_get(self, tree, level, index, width):
+        with self._db() as conn:
+            row = conn.execute("SELECT data FROM tracekit_tiles WHERE tree = %s AND level = %s AND idx = %s AND "
+                               "width = %s", (tree, level, index, width)).fetchone()
+        return row and bytes(row[0])
+
+
+class PostgresStorage(_Reads, Storage):
     def __init__(self, dsn, mode=ACK_ON_WRITE, lock_timeout_s=0, snapshot_key=None):
         """Another process holding the log's lock for `lock_timeout_s` raises BlockingIOError naming it. `snapshot_key`
         authenticates snapshots: without it none is read or written (set the attribute once the key exists)."""
@@ -219,17 +298,6 @@ class PostgresStorage(Storage):
         self.prev = h
 
     @contextlib.contextmanager
-    def _db(self):
-        """The connection, under the store's lock; a lost connection or a server refusing writes is
-        StorageUnavailable."""
-        with self._lock:
-            try:
-                yield self.conn
-            except psycopg.OperationalError as e:
-                self._error = self._error or StorageUnavailable(str(e).strip() or type(e).__name__)
-                raise StorageUnavailable(*self._error.args) from e
-
-    @contextlib.contextmanager
     def _write(self, durable=False, *trees):
         """One transaction; `durable` commits with synchronous_commit on in either mode. The right edges of `trees` and
         the record log's head are put back when it fails."""
@@ -247,20 +315,6 @@ class PostgresStorage(Storage):
                     t.size, t.edge = size, edge
                 self.prev = saved[1]
                 raise
-
-    def _pages(self, sql, params, after, hi=None):
-        """The rows of `sql`, which takes the first column >= %(after)s and orders by it, read PAGE at a time (the lock
-        is not held between pages); with `hi`, only those < hi."""
-        while hi is None or after < hi:
-            with self._db() as conn:
-                rows = conn.execute(sql + " LIMIT %(page)s", {**params, "after": after, "page": PAGE}).fetchall()
-            for row in rows:
-                if hi is not None and row[0] >= hi:
-                    return
-                yield row
-            if len(rows) < PAGE:
-                return
-            after = rows[-1][0] + 1
 
     def snapshot_put(self, state):
         if not (self.tree.size and self.snapshot_key):
@@ -303,13 +357,6 @@ class PostgresStorage(Storage):
                                 max(lo, 0), min(hi, self.tree.size)):
             yield r
 
-    def iter_run(self, tenant, run_id):
-        run = self.runs.get((tenant, run_id))
-        for _, r in self._pages("SELECT run_seq, record FROM tracekit_records WHERE tenant = %(t)s AND run_id = %(r)s "
-                                "AND run_seq >= %(after)s ORDER BY run_seq", {"t": tenant, "r": run_id}, 0,
-                                run["run_seq"] + 1 if run else 0):
-            yield r
-
     def get_run(self, tenant, run_id):
         run = self.runs.get((tenant, run_id))
         return run and dict(run)
@@ -321,33 +368,12 @@ class PostgresStorage(Storage):
             tree.append(leaf_hash(leaf))
         self.registry[tenant] = tree
 
-    def registry_iter(self, tenant, start=0):
-        tree = self.registry.get(tenant)
-        for _, leaf in self._pages("SELECT idx, leaf FROM tracekit_registry WHERE tenant = %(t)s AND idx >= %(after)s "
-                                   "ORDER BY idx", {"t": tenant}, start, tree.size if tree else 0):
-            yield bytes(leaf)
-
-    def registry_merkle(self, tenant):
-        return self.registry.get(tenant)
-
     def checkpoint_put(self, size, note, tree=RECORDS):
         latest = self.checkpoint_latest(tree)
         if latest and size < latest[0]:
             raise ValueError(f"a checkpoint of size {size} is older than the stored one of size {latest[0]}")
         with self._write(True) as conn:
             conn.execute("INSERT INTO tracekit_notes (tree, size, note) VALUES (%s, %s, %s)", (tree, size, note))
-
-    def checkpoint_latest(self, tree=RECORDS):
-        with self._db() as conn:
-            row = conn.execute("SELECT size, note FROM tracekit_notes WHERE tree = %s ORDER BY id DESC LIMIT 1",
-                               (tree,)).fetchone()
-        return row and tuple(row)
-
-    def checkpoint_at(self, tree, size):
-        with self._db() as conn:
-            row = conn.execute("SELECT note FROM tracekit_notes WHERE tree = %s AND size = %s ORDER BY id DESC LIMIT 1",
-                               (tree, size)).fetchone()
-        return row and row[0]
 
     def witness_queue(self):
         with self._db() as conn:
@@ -367,17 +393,6 @@ class PostgresStorage(Storage):
             conn.execute("INSERT INTO tracekit_anchors (size, anchor) VALUES (%s, %s)",
                          (size, json.dumps({"size": size, **anchor}, sort_keys=True)))
 
-    def anchors(self):
-        with self._db() as conn:
-            anchors = [json.loads(a) for (a,) in conn.execute("SELECT anchor FROM tracekit_anchors ORDER BY id")]
-        return list({a["size"]: a for a in anchors}.values())
-
-    def tiles_get(self, tree, level, index, width):
-        with self._db() as conn:
-            row = conn.execute("SELECT data FROM tracekit_tiles WHERE tree = %s AND level = %s AND idx = %s AND "
-                               "width = %s", (tree, level, index, width)).fetchone()
-        return row and bytes(row[0])
-
     def tiles_put(self, tree, level, index, width, data):
         """Within the caller's transaction when there is one (an append's full tiles commit with it)."""
         with self._db() as conn:
@@ -385,12 +400,98 @@ class PostgresStorage(Storage):
                          "DO UPDATE SET data = excluded.data WHERE tracekit_tiles.data <> excluded.data",
                          (tree, level, index, width, data))
 
+    def meta_put(self, key, value):
+        with self._write(True) as conn:
+            conn.execute("INSERT INTO tracekit_meta VALUES (%s, %s) ON CONFLICT (key) DO UPDATE SET value = "
+                         "excluded.value", (key, value))
+
     def fsck(self):
         return fsck(self.dsn, self.snapshot_key)
 
     def close(self):
         with self._lock:
             self.conn.close()   # ends the session, and its advisory lock
+
+
+class _EdgeTiles:
+    """The stored tiles of tree `name`, read only. The signer stores full tiles only (a tree's right edge lives in its
+    memory), so a partial tile is rebuilt from `leaves(lo, hi)` at level 0 and from the full tiles below it above;
+    a leaf or tile missing makes it short, which Tree refuses."""
+
+    def __init__(self, reader, name, leaves):
+        self.reader, self.name, self.leaves = reader, name, leaves
+
+    def get(self, level, index, width):
+        if width == W:
+            return self.reader.tiles_get(self.name, level, index, W)
+        lo = index * W
+        if level == 0:
+            return b"".join(self.leaves(lo, lo + width))
+        with self.reader._db() as conn:
+            tiles = [bytes(d) for (d,) in conn.execute(
+                "SELECT data FROM tracekit_tiles WHERE tree = %s AND level = %s AND width = %s AND idx >= %s AND idx < %s "
+                "ORDER BY idx", (self.name, level - 1, W, lo, lo + width))]
+        return b"".join(_reduce([t[i:i + 32] for i in range(0, len(t), 32)]) for t in tiles if len(t) == 32 * W)
+
+    def put(self, level, index, width, data):
+        raise PermissionError("a reader never writes tiles")
+
+
+class PostgresReader(_Reads):
+    """A read-only view of a Postgres store, safe while its signer writes: takes no lock and reads in one REPEATABLE
+    READ, READ ONLY transaction, so it holds the store as it was when opened. Open one per export or view request,
+    after reading the record note it uses, and close it. Its DSN's role needs SELECT only: READ_GRANTS.
+
+    Offers what FileReader offers: iter_run, iter_range, get_run, `runs` (with `seqs`), `tree` (the record tree at its
+    latest note's size), checkpoint_latest(), anchors(), registry_iter, registry_merkle (each tenant's registry tree at
+    its latest note's size) and checkpoint_at; and meta(key), what the signer stored for readers ("log_vkey")."""
+
+    def __init__(self, dsn):
+        self._lock, self.conn, self.runs, self.registry, self.size = threading.RLock(), _connect(dsn), {}, {}, 0
+        try:
+            with self._db() as conn:
+                conn.execute("BEGIN ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+                _check_version(conn)
+                tenants = [t for (t,) in conn.execute("SELECT DISTINCT tenant FROM tracekit_registry")]
+            # lean: the run index lives in memory, O(records) per open as FileReader's; query it past millions of runs
+            for seq, tenant, run_id, run_seq, h in self._pages("SELECT seq, tenant, run_id, run_seq, hash FROM "
+                                                               "tracekit_records WHERE seq >= %(after)s ORDER BY seq",
+                                                               {}, 0):
+                run = self.runs.setdefault((tenant, run_id), {"seqs": []})
+                run["seqs"].append(seq)
+                run["run_seq"], run["head"], self.size = run_seq, h, seq + 1
+            self.tree = self._tree(RECORDS, "SELECT hash FROM tracekit_records WHERE seq >= %s AND seq < %s ORDER BY "
+                                   "seq", (), lambda h: leaf_hash(_raw(h)))
+            for t in tenants:
+                self.registry[t] = self._tree(registry_tree(t), "SELECT leaf FROM tracekit_registry WHERE tenant = %s "
+                                              "AND idx >= %s AND idx < %s ORDER BY idx", (t,), lambda b: leaf_hash(bytes(b)))
+        except BaseException:
+            self.conn.close()
+            raise
+
+    def _tree(self, name, sql, params, leaf):
+        """Tree `name` at the size of its latest note, from its stored tiles."""
+        def leaves(lo, hi):
+            with self._db() as conn:
+                return [leaf(x) for (x,) in conn.execute(sql, (*params, lo, hi))]
+        return Tree(_EdgeTiles(self, name, leaves), (self.checkpoint_latest(name) or (0,))[0])
+
+    def iter_range(self, lo, hi):
+        for _, r in self._pages("SELECT seq, record FROM tracekit_records WHERE seq >= %(after)s ORDER BY seq", {},
+                                max(lo, 0), min(hi, self.size)):
+            yield r
+
+    def get_run(self, tenant, run_id):
+        run = self.runs.get((tenant, run_id))
+        return run and {"run_seq": run["run_seq"], "head": run["head"], "count": len(run["seqs"])}
+
+    def meta(self, key):
+        with self._db() as conn:
+            row = conn.execute("SELECT value FROM tracekit_meta WHERE key = %s", (key,)).fetchone()
+        return row and row[0]
+
+    def close(self):
+        self.conn.close()
 
 
 def fsck(dsn, snapshot_key=None, verify=None):
