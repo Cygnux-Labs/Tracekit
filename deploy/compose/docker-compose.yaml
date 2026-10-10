@@ -60,7 +60,10 @@ services:
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
     tmpfs: [/tmp]
-    healthcheck: {disable: true}
+    healthcheck:   # listening (`up --wait` needs every started service to report healthy)
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1', 7778), 2).close()"]
+      interval: 2s
+      retries: 30
     volumes: [./viewer.yaml:/etc/tracekit/viewer.yaml:ro]
     secrets: [viewer.dsn]                         # the SELECT-only role
     networks: [db, front]
