@@ -102,7 +102,7 @@ class Layout:
 
 
 def trusted_under(top, me):
-    """daemon.trusted_file with `me` as root and `top` as /."""
+    """harness_helper.trusted_file with `me` as root and `top` as /."""
     def check(path):
         p = os.path.realpath(path)
         while True:
