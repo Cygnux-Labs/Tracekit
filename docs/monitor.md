@@ -28,7 +28,7 @@ nothing.
 ## What it checks
 
 Each poll reads the record log's checkpoint, checks its signature, and checks it against the last one seen. A smaller
-tree is a **rollback**. A different root at a size already seen is a **fork**. Both are conflicts and keep both
+tree is a **rollback**. A tree that does not extend the last one (another root at its size) is a **fork**. Both are conflicts and keep both
 signed notes as evidence. The monitor then fetches the new records, rebuilds the tree and checks it matches the
 checkpoint. Each tenant's registry log in `/logs/v0` is read the same way. Then, over every record seen so far:
 
@@ -77,7 +77,7 @@ tracekit verify run.tkb --trust trust.json --monitor-report report.json
 ```
 
 A report counts when a pinned monitor signed it, it is no older than `max_age_s`, it is for the bundle's origin, it
-was checked to at least the checkpoint's size, and it lists no conflicts. A counting report raises `witnessed` to
+was checked to at least the checkpoint's size, it lists no conflicts, and its monitor is not classed `operator`. A counting report raises `witnessed` to
 `witnessed+monitored`. It never raises `dev` or `local`. If a pinned monitor reports conflicts for the origin, or a
 different root at the checkpoint's size, `monitor` fails and the conflicts are listed. A stale, unpinned or
 not-yet-covering report is a warning and is ignored.

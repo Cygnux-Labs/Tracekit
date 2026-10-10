@@ -142,6 +142,16 @@ class Rules(unittest.TestCase):
                                                   "size 2 after one of size 3 (rollback)", "notes": [first, self.log.note()]})
         self.assertEqual(report["checked_size"], 3)
 
+    def test_fork_then_growth(self):
+        self.poll(START)
+        first = self.log.note()
+        self.log.records = chain(START[:2] + [("r1", "tool.result"), ("r1", "tool.call")])   # rewritten, then grown
+        report = monitor.poll(self.dir, self.log.url, VKEY, MONITOR)["report"]
+        self.assertEqual(self.conflicts(report), [{"rule": "checkpoint consistency", "detail": f"{ORIGIN}: a checkpoint "
+                                                "of size 4 that does not extend the one of size 3 (fork)",
+                                                "notes": [first, self.log.note()]}])
+        self.assertEqual(report["checked_size"], 3)
+
     def test_restart_resumes(self):
         records = chain(START + [("r1", "tool.call")] * 300)
         self.log = FakeLog(records[:290])
@@ -251,6 +261,7 @@ class Signer(unittest.TestCase):
         pin = [{"vkey": MONITOR_VKEY, "class": "customer", "max_age_s": 3600}]
         self.assertEqual(assurance(pin), ("witnessed+monitored", 0))
         self.assertEqual(assurance([]), ("witnessed", 0))   # an unpinned monitor
+        self.assertEqual(assurance([dict(pin[0], **{"class": "operator"})]), ("witnessed", 0))
         with open(report) as f:
             doc = json.load(f)
         stale = os.path.join(self.dir, "stale.json")
