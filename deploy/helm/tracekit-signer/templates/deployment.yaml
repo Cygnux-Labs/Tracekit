@@ -20,6 +20,10 @@ spec:
         checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
     spec:
       automountServiceAccountToken: {{ .Values.automountServiceAccountToken }}
+      securityContext:   # the data PVC group-owned by the signer's gid, so uid 10001 can write it; every container
+        # gets this gid, so the data volume must never be mounted in the agent container (it is not)
+        fsGroup: {{ .Values.signer.uid }}
+        fsGroupChangePolicy: OnRootMismatch
       initContainers:
         - name: tracekit-signer
           image: {{ .Values.signer.image }}
