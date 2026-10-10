@@ -93,10 +93,11 @@ def tool(harness, name, ti):
     return name, ti
 
 
-def _gemini_ids(run_id, tool_name, ti, phase):
-    """Gemini CLI tool events carry no call id: pair BeforeTool/AfterTool by (tool, arguments), first in first out."""
+def _gemini_ids(run_id, tool_name, ti, phase, drop=None):
+    """Gemini CLI tool events carry no call id: pair BeforeTool/AfterTool by (tool, arguments), first in first out.
+    drop: the id of a blocked BeforeTool, which gets no AfterTool; it leaves the queue."""
     from . import client
-    key = hashlib.sha256((tool_name + "|" + canon(ti)).encode()).hexdigest()[:16]
+    key = drop.split("_")[1] if drop else hashlib.sha256((tool_name + "|" + canon(ti)).encode()).hexdigest()[:16]
     path = os.path.join(client.client_dir(), "runs", "gemini-" + hashlib.sha256(run_id.encode()).hexdigest()[:16] + ".json")
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path + ".lock", "a") as lk:
@@ -107,7 +108,14 @@ def _gemini_ids(run_id, tool_name, ti, phase):
                     st = json.load(f)
             except (OSError, ValueError):
                 st = {"n": 0, "pending": {}}
-            if phase == "pre":
+            if drop:
+                tid = drop
+                q = st["pending"].get(key) or []
+                if drop in q:
+                    q.remove(drop)
+                if not q:
+                    st["pending"].pop(key, None)
+            elif phase == "pre":
                 st["n"] += 1
                 tid = f"gem_{key}_{st['n']}"
                 st["pending"].setdefault(key, []).append(tid)
@@ -200,6 +208,9 @@ class Tee(io.StringIO):
         return super().write(s)
 
 
+PRE = ("PreToolUse", "preToolUse", "BeforeTool")
+
+
 def run(harness, raw, stdout=None, stderr=None):
     """Handle one hook invocation. -> exit code. Writes the harness's expected stdout."""
     stdout, stderr = stdout or sys.stdout, stderr or sys.stderr
@@ -207,7 +218,7 @@ def run(harness, raw, stdout=None, stderr=None):
         p = json.loads(raw) if raw.strip() else {}
     except ValueError:
         p = {}
-    is_pre = p.get("hook_event_name") in ("PreToolUse", "preToolUse", "BeforeTool")
+    is_pre = p.get("hook_event_name") in PRE
     q = normalise(harness, p) if isinstance(p, dict) else None
     if q is None:
         _reply(harness, stdout, True, "", is_pre)
