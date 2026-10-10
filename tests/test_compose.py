@@ -37,6 +37,7 @@ class DeployCompose(unittest.TestCase):
         with open(os.path.join(self.out, rel), encoding="utf-8") as f:
             return f.read()
 
+    @unittest.skipIf(os.name == "nt", "POSIX modes")
     def test_files_and_modes(self):
         for rel in compose.COPIED[1:]:   # the compose file only gets the source checkout as its build context
             with open(os.path.join(compose.TEMPLATES, rel), encoding="utf-8") as f:
@@ -55,6 +56,7 @@ class DeployCompose(unittest.TestCase):
         self.assertIn(f"user=tracekit_signer password='{pw}'", self.read("secrets/signer.dsn"))
         self.assertNotEqual(pw, self.read("secrets/pg-viewer.password").strip())
 
+    @unittest.skipIf(os.name == "nt", "the stack's config names Linux container paths (/run/secrets)")
     def test_signer_yaml_pins_the_stack_witness(self):
         cfg = load_config(os.path.join(self.out, "signer.yaml"))
         _, _, name, _, raw = self.read("secrets/witness.key").strip().split("+", 4)
