@@ -1,10 +1,12 @@
 """scripts/build-signer-bundles.py offline: the target table against the npm optionalDependencies, the generated
-package.json, a build with the PBS download and pip mocked, and the pinned-hash check."""
+package.json, a build with the PBS download and pip mocked, the pinned-hash checks of the runtime and of the release's
+own tracekit-ai wheel, and the pinned dependencies."""
 import importlib.util
 import io
 import json
 import os
 import re
+import shutil
 import tarfile
 import tempfile
 import unittest
@@ -31,11 +33,20 @@ def fake_pbs(url, digest, dest):
     return dest
 
 
-def fake_pip(platforms, version, dest):
-    os.makedirs(dest)
-    with zipfile.ZipFile(os.path.join(dest, f"tracekit_ai-{version}-py3-none-any.whl"), "w") as z:
+def fake_wheel(release, version):
+    os.makedirs(release, exist_ok=True)
+    name = f"tracekit_ai-{version}-py3-none-any.whl"
+    with zipfile.ZipFile(os.path.join(release, name), "w") as z:
         z.writestr("tracekit/__init__.py", f'__version__ = "{version}"\n')
         z.writestr("tracekit/tests/test_x.py", "")
+    with open(os.path.join(release, "SHA256SUMS"), "w") as f:
+        f.write(f"{'0' * 64}  tracekit_ai-{version}.tar.gz\n{bsb.sha256(os.path.join(release, name))}  {name}\n")
+    return os.path.join(release, name)
+
+
+def fake_pip(platforms, wheel, dest):
+    os.makedirs(dest)
+    shutil.copy(wheel, dest)
 
 
 class TestSignerBundles(unittest.TestCase):
@@ -61,9 +72,11 @@ class TestSignerBundles(unittest.TestCase):
     def test_build_offline(self):
         with tempfile.TemporaryDirectory() as out, mock.patch.object(bsb, "download", fake_pbs), \
                 mock.patch.object(bsb, "pip_download", fake_pip):
+            fake_wheel(os.path.join(out, "release"), "9.9.9")
+            wheel = bsb.release_wheel(os.path.join(out, "release"), "9.9.9")
             for key, site in [("linux-x64-gnu", "python/lib/python3.12/site-packages"),
                               ("win32-x64", "python/Lib/site-packages")]:
-                self.assertGreater(bsb.build(key, "9.9.9", out), 0)
+                self.assertGreater(bsb.build(key, wheel, "9.9.9", out), 0)
                 pkg = os.path.join(out, f"tracekit-signer-{key}")
                 with open(os.path.join(pkg, "package.json")) as f:
                     self.assertEqual(json.load(f), bsb.package_json(key, "9.9.9"))
@@ -78,6 +91,32 @@ class TestSignerBundles(unittest.TestCase):
                         self.assertEqual(f.read(), b"x")
                 with open(os.path.join(pkg, "wheels.sha256")) as f:
                     self.assertRegex(f.read(), re.compile(r"^[0-9a-f]{64}  tracekit_ai-9\.9\.9-py3-none-any\.whl\n$"))
+
+    def test_bundles_only_the_release_wheel_it_lists(self):
+        with tempfile.TemporaryDirectory() as d:
+            release = os.path.join(d, "release")
+            wheel = fake_wheel(release, "9.9.9")
+            self.assertEqual(bsb.release_wheel(release, "9.9.9"), wheel)
+            with self.assertRaises(SystemExit):   # another version's wheel is not listed
+                bsb.release_wheel(release, "9.9.8")
+            with open(wheel, "ab") as f:   # not the file SHA256SUMS lists
+                f.write(b"x")
+            with self.assertRaises(SystemExit):
+                bsb.release_wheel(release, "9.9.9")
+            os.remove(os.path.join(release, "SHA256SUMS"))
+            with self.assertRaises(SystemExit):
+                bsb.release_wheel(release, "9.9.9")
+
+    def test_pip_takes_the_wheel_and_the_pins(self):
+        with mock.patch.object(bsb.subprocess, "run") as run:
+            bsb.pip_download(["win_amd64"], "/r/tracekit_ai-9.9.9-py3-none-any.whl", "/d")
+        cmd = run.call_args[0][0]
+        self.assertIn("/r/tracekit_ai-9.9.9-py3-none-any.whl[signer]", cmd)
+        self.assertEqual(cmd[cmd.index("-c") + 1], bsb.CONSTRAINTS)
+        self.assertFalse([a for a in cmd if a.startswith("tracekit-ai")])   # never the package index's
+        with open(bsb.CONSTRAINTS) as f:
+            pins = [line for line in f.read().splitlines() if line and not line.startswith("#")]
+        self.assertTrue(pins and all("==" in p for p in pins))
 
     def test_download_refuses_a_wrong_hash(self):
         with tempfile.TemporaryDirectory() as d:

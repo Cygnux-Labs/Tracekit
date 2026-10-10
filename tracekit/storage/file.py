@@ -5,7 +5,7 @@
     registry.jsonl       {"tenant", "leaf": hex} per line, every tenant's registry log
     checkpoint.note      the latest signed checkpoint note of the record tree, replaced whole
     registry-notes.jsonl {"tree", "size", "note"} per line, every signed note of every registry tree (a later line of
-                         the same size is that note cosigned, and replaces it)
+                         the same size is that note cosigned, and replaces it); indexed by line, read on demand
     witness-queue.json   the witness publisher's state, replaced whole
     anchors.jsonl        {"size", "note", "rekor", "tsa"} per line: each record tree note anchored in Rekor (a later
                          line of the same size is that note cosigned, and replaces it)
@@ -18,6 +18,7 @@ writer's pid. On open the indexes and trees come from the newest snapshot whose 
 that hash (else from nothing), and the log lines after it are indexed, rewriting any tile that no longer matches them
 (an ack-on-write tile can outlive the log lines it covers after a power loss). `FileReader` reads a store while its
 writer runs."""
+import bisect
 import contextlib
 import errno
 import hashlib
@@ -42,7 +43,7 @@ from tracekit.merkle import leaf_hash
 from tracekit.merkle.tiles import MemoryTileStore, Tree
 
 from .base import (ACK_ON_FSYNC, ACK_ON_WRITE, RECORDS, ZERO_HASH, Storage, StorageCorrupt, StorageUnavailable,
-                   check_records, registry_tree)
+                   check_records, check_trees, registry_tree)
 
 SYNC_INTERVAL = 0.005  # ack-on-write: the longest a written record waits for the background sync
 _UNAVAILABLE = {errno.EIO, errno.ENOSPC}
@@ -102,6 +103,24 @@ def _write_new(path, data):
     _sync_dir(os.path.dirname(path))
 
 
+def _set_aside(fd, path, at, data, torn):
+    """Move `data`, the end of the file at `path` from offset `at`, to a file of its own and cut the file there."""
+    aside = f"{path}.torn-{at}-{time.time_ns()}"
+    _write_new(aside, data)
+    os.ftruncate(fd, at)
+    os.fsync(fd)
+    torn.append({"log": os.path.basename(path), "offset": at, "length": len(data), "path": aside})
+
+
+def _read_if(path):
+    """The bytes of the file at `path`, or None when there is none."""
+    try:
+        with open(path, "rb") as f:
+            return f.read()
+    except FileNotFoundError:
+        return None
+
+
 def _raw(h):
     return bytes.fromhex(h[len("sha256:"):])
 
@@ -145,12 +164,7 @@ class _Log(_Lines):
                 data = f.read()
             end = data.rfind(b"\n") + 1
             if end < len(data):
-                at = offsets[-1] + end
-                aside = f"{path}.torn-{at}-{time.time_ns()}"
-                _write_new(aside, data[end:])
-                os.ftruncate(self.fd, at)
-                os.fsync(self.fd)
-                torn.append({"log": os.path.basename(path), "offset": at, "length": len(data) - end, "path": aside})
+                _set_aside(self.fd, path, offsets[-1] + end, data[end:], torn)
         except BaseException:
             os.close(self.fd)
             raise
@@ -247,7 +261,7 @@ def _snapshot(root, path, key):
                 if end and f.read(1) != b"\n":
                     return None
         at = offsets[LOGS[0]]
-        if n < 1 or len(at) != n + 1:
+        if n < 1 or len(at) != n + 1 or "note_lines" not in snap:   # an older snapshot kept the notes themselves
             return None
         with open(os.path.join(root, LOGS[0]), "rb") as f:
             f.seek(at[n - 1])
@@ -281,7 +295,7 @@ class _Records:
                     if log is self.reg_log:
                         self._index_leaf(r["tenant"], bytes.fromhex(r["leaf"]), n)
                     else:
-                        self._index_note(r["tree"], r["size"], r["note"])
+                        self._index_note(r["tree"], r["size"], n, r["note"])
                 except (ValueError, KeyError, TypeError) as e:
                     raise StorageCorrupt(f"{name} line {n + 1}: {e}; run fsck") from None
             del log.lines
@@ -294,12 +308,30 @@ class _Records:
         lines.append(n)
         tree.append(leaf_hash(leaf))
 
-    def _index_note(self, tree, size, note):
+    def _index_note(self, tree, size, line, note):
+        """Index the note at line `line` of registry-notes.jsonl; only each tree's latest note stays in memory."""
         notes = self.notes.setdefault(tree, [])
         if notes and notes[-1][0] == size:
-            notes[-1] = (size, note)
+            notes[-1] = (size, line)
         else:
-            notes.append((size, note))
+            notes.append((size, line))
+        self.latest_notes[tree] = (size, note)
+
+    def _registry_note(self, tree, size=None):
+        """(size, note) of registry tree `tree`'s note at `size` (default: its latest), else None."""
+        # lean: the (size, line) index of every registry note is in memory and parsed from every line on open; keep it
+        # on disk, or drop notes no export uses, once tenants x checkpoints reach millions of notes
+        notes = self.notes.get(tree, [])
+        i = len(notes) - 1 if size is None else bisect.bisect_left(notes, (size,))
+        if not 0 <= i < len(notes) or size not in (None, notes[i][0]):
+            return None
+        s, line = notes[i]
+        if self.latest_notes.get(tree, (None,))[0] == s:
+            return self.latest_notes[tree]
+        note = s, json.loads(next(self.note_log.read([line])))["note"]
+        if i == len(notes) - 1:   # restored from a snapshot: read once
+            self.latest_notes[tree] = note
+        return note
 
     def registry_iter(self, tenant, start=0):
         lines, _ = self.registry.get(tenant, ([], None))
@@ -310,7 +342,8 @@ class _Records:
         return self.registry.get(tenant, (None, None))[1]
 
     def checkpoint_at(self, tree, size):
-        return next((note for s, note in self.notes.get(tree, ()) if s == size), None)
+        note = self._registry_note(tree, size)
+        return note and note[1]
 
     def anchors(self):
         # lean: reads every anchor per call (at most 24 a day); index anchors by size if exports become frequent
@@ -359,7 +392,8 @@ class FileStorage(_Records, Storage):
             raise
         self.torn = []
         self.runs = {}  # (tenant, run_id) -> {"seqs": [...], "run_seq", "head"}
-        self.registry, self.notes = {}, {}   # tenant -> ([line numbers], Tree); registry tree -> [(size, note)]
+        # tenant -> ([line numbers], Tree); registry tree -> [(size, line number)]; registry tree -> its latest (size, note)
+        self.registry, self.notes, self.latest_notes = {}, {}, {}
         # lean: run and registry indexes live in memory, O(records); keep them on disk past tens of millions of records
         self.tree = Tree(self.tile_store(RECORDS))
         self.prev = ZERO_HASH
@@ -405,10 +439,29 @@ class FileStorage(_Records, Storage):
             self._error = StorageUnavailable(os.strerror(e.errno))
             raise StorageUnavailable(*self._error.args) from e
 
+    def registry_set_aside(self, keep):
+        lines = {t: self.registry[t][0] for t in keep}
+        cut = min(lines[t][n] for t, n in keep.items())
+        if sum(len(lines[t]) - n for t, n in keep.items()) != len(self.reg_log.offsets) - 1 - cut:
+            raise StorageCorrupt("registry.jsonl: the leaves to set aside are not its last lines; run fsck")
+        log = self.reg_log
+        with self._disk():
+            with open(log.path, "rb") as f:
+                f.seek(log.offsets[cut])
+                data = f.read(log.offsets[-1] - log.offsets[cut])
+            _set_aside(log.fd, log.path, log.offsets[cut], data, self.torn)
+            del log.offsets[cut + 1:]
+            log.synced = min(log.synced, cut)
+        for t, n in keep.items():
+            self.registry[t] = (lines[t][:n], Tree(self._tiles(registry_tree(t))))
+            for leaf in self.registry_iter(t):
+                self.registry[t][1].append(leaf_hash(leaf))
+
     def _sync_loop(self):
         while not self._stop.wait(SYNC_INTERVAL):
-            # registry leaves first: a leaf is appended after its record, so every leaf synced has its record synced
-            for log in (self.reg_log, self.log):
+            # records first, as a leaf is appended after its record; a leaf durable without its record (written back
+            # by the OS, or appended between the two syncs) is set aside by the signer's replay (registry_set_aside)
+            for log in (self.log, self.reg_log):
                 if log.dirty_since is not None:
                     log.syncing_since, log.dirty_since = log.dirty_since, None
                     n = len(log.offsets) - 1
@@ -433,7 +486,7 @@ class FileStorage(_Records, Storage):
         self.runs = {(t, r): {"seqs": seqs, "run_seq": n, "head": h} for t, r, seqs, n, h in snap["runs"]}
         self.registry = {t: (lines, Tree(self._tiles(registry_tree(t)), size, _unedge(edge)))
                          for t, lines, size, edge in snap["registry"]}
-        self.notes = {tree: [tuple(x) for x in notes] for tree, notes in snap["notes"].items()}
+        self.notes = {tree: [tuple(x) for x in notes] for tree, notes in snap["note_lines"].items()}
         self.snapshot = {k: snap[k] for k in ("size", "hash", "state")}
 
     def snapshot_put(self, state):
@@ -444,7 +497,7 @@ class FileStorage(_Records, Storage):
             "size": self.tree.size, "hash": self.prev, "offsets": {n: log.offsets for n, log in zip(LOGS, logs)},
             "edge": _edge(self.tree.edge), "runs": [[*k, r["seqs"], r["run_seq"], r["head"]] for k, r in self.runs.items()],
             "registry": [[t, lines, tree.size, _edge(tree.edge)] for t, (lines, tree) in self.registry.items()],
-            "notes": self.notes, "state": state}, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+            "note_lines": self.notes, "state": state}, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
         d = os.path.join(self.root, SNAPSHOTS)
         with self._disk():
             for log in logs:   # the lines a snapshot covers are durable before it
@@ -489,10 +542,10 @@ class FileStorage(_Records, Storage):
                 _sync(self.reg_log.fd, True)
                 line = json.dumps({"tree": tree, "size": size, "note": note}, ensure_ascii=False).encode("utf-8")
                 self.note_log.append([line + b"\n"], True)
-                self._index_note(tree, size, note)
+                self._index_note(tree, size, len(self.note_log.offsets) - 2, note)
 
     def checkpoint_latest(self, tree=RECORDS):
-        return self._note if tree == RECORDS else (self.notes.get(tree) or [None])[-1]
+        return self._note if tree == RECORDS else self._registry_note(tree)
 
     def witness_queue(self):
         try:
@@ -560,7 +613,7 @@ class FileReader(_Records):
     export uses."""
 
     def __init__(self, root):
-        self.root, self.runs, self.prev, self.registry, self.notes = root, {}, ZERO_HASH, {}, {}
+        self.root, self.runs, self.prev, self.registry, self.notes, self.latest_notes = root, {}, ZERO_HASH, {}, {}, {}
         st = os.lstat(root)
         self._owner = st.st_uid
         self._check(root, st, stat.S_ISDIR)
@@ -600,7 +653,7 @@ class FileReader(_Records):
         """The record tree's note is read again on every call: the writer replaces it whole, so each call sees the
         newest one. It may be of a larger tree than the records this reader holds; open a new reader to cover it."""
         if tree != RECORDS:
-            return (self.notes.get(tree) or [None])[-1]
+            return self._registry_note(tree)
         for i in range(20):
             try:
                 return _parse_note(self._read(os.path.join(self.root, NOTE)))
@@ -614,9 +667,10 @@ class FileReader(_Records):
 
 def fsck(root, upto=None, snapshot_key=None, verify=None):
     """Check every line of a file store: strict JSON, record hash, the seq/prev_hash chain and each run's chain (and
-    each record with `verify`: see base.check_records), and every snapshot (one that no longer matches the logs, or
-    whose MAC under `snapshot_key` fails, is ignored on open). `upto` ({log name: lines}) checks only the lines a
-    running writer had written. Returns the problems found, empty when the store is intact."""
+    each record with `verify`: see base.check_records); when they read, the registry leaves, the notes and the stored
+    tiles against the logs (base.check_trees); and every snapshot (one that no longer matches the logs, or whose MAC
+    under `snapshot_key` fails, is ignored on open). `upto` ({log name: lines}) checks only the lines a running writer
+    had written. Returns the problems found, empty when the store is intact."""
     problems = []
 
     def lines(name):
@@ -634,15 +688,32 @@ def fsck(root, upto=None, snapshot_key=None, verify=None):
             problems.append(f"{name}: {len(parts) - 1} lines where {limit} were written")
         return parts[:min(limit, len(parts) - 1)]
 
-    problems.extend(check_records(lines("records.jsonl"), "records.jsonl", verify))
+    records, registry = lines("records.jsonl"), {}
+    problems.extend(check_records(records, "records.jsonl", verify))
     for n, line in enumerate(lines("registry.jsonl"), 1):
         try:
             r = loads_strict(line)
-            bytes.fromhex(r["leaf"])
+            leaf = bytes.fromhex(r["leaf"])
             if not isinstance(r["tenant"], str):
                 raise TypeError("tenant is not a string")
+            registry.setdefault(r["tenant"], []).append(leaf)
         except (ValueError, KeyError, TypeError) as x:
             problems.append(f"registry.jsonl line {n}: unreadable ({x})")
+    if not problems:
+        notes, note, written = [], _read_if(os.path.join(root, NOTE)), _read_if(os.path.join(root, LOGS[2])) or b""
+        if note:
+            notes.append((RECORDS, note.decode("utf-8")))
+        for n, line in enumerate(written[:written.rfind(b"\n") + 1].split(b"\n")[:-1], 1):   # a writer may be mid-line
+            try:
+                r = loads_strict(line)
+                notes.append((r["tree"], r["note"]))
+            except (ValueError, KeyError, TypeError) as x:
+                problems.append(f"{LOGS[2]} line {n}: unreadable ({x})")
+        events = [(r["event"], r["hash"]) for r in map(json.loads, records)]
+        problems.extend(check_trees(
+            [(e["seq"], e["type"], h, e["log_id"]) for e, h in events], registry, notes,
+            lambda tree, level, index, width: _read_if(os.path.join(root, "tiles", tree, str(level), f"{index}.{width}")),
+            upto is not None))
     if upto is None:
         problems.extend(f"{SNAPSHOTS}/{os.path.basename(path)}: does not match the logs or its MAC, so open ignores it and "
                         "replays them in full" for _, path in _snapshots(root) if _snapshot(root, path, snapshot_key) is None)

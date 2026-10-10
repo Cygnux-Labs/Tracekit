@@ -162,6 +162,16 @@ class Rules(unittest.TestCase):
         report = monitor.poll(self.dir, self.log.url, VKEY, MONITOR)["report"]   # a new poll reads the state dir
         self.assertEqual((report["checked_size"], self.conflicts(report), self.log.bundles), (len(records), [], [1]))
 
+    def test_state_is_written_durably_and_a_torn_one_is_an_error(self):
+        with mock.patch("os.fsync", wraps=os.fsync) as fsync:
+            self.poll(START)
+        self.assertGreaterEqual(fsync.call_count, 4)   # state.json and report.json: each file, then its directory
+        path = os.path.join(self.dir, "state.json")
+        with open(path, "r+b") as f:
+            f.truncate(os.path.getsize(path) // 2)
+        with self.assertRaisesRegex(monitor.MonitorError, "state.json"):
+            monitor.poll(self.dir, self.log.url, VKEY, MONITOR)
+
     def test_entries_must_be_the_checkpoint_tree(self):
         self.poll(START)
         self.log.records = chain(START + [("r1", "tool.call")])

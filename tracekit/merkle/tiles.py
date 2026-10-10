@@ -26,6 +26,21 @@ class MemoryTileStore:
         self.tiles[(level, index, width)] = data
 
 
+def write_durable(path, data):
+    """Replace the file at `path` with `data`, on stable storage before it returns (the file, then its directory)."""
+    with open(path + ".tmp", "wb") as f:
+        f.write(data)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(path + ".tmp", path)
+    if os.name != "nt":   # Windows can't open a directory to sync it
+        fd = os.open(os.path.dirname(path) or ".", os.O_RDONLY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+
+
 class DirTileStore:
     def __init__(self, root):
         self.root = root
@@ -41,12 +56,9 @@ class DirTileStore:
             return None
 
     def put(self, level, index, width, data):
-        # lean: no fsync, so a power loss can lose the latest tiles; the file storage backend adds file and dir fsync
         p = self._path(level, index, width)
         os.makedirs(os.path.dirname(p), exist_ok=True)
-        with open(p + ".tmp", "wb") as f:
-            f.write(data)
-        os.replace(p + ".tmp", p)
+        write_durable(p, data)
 
 
 def _reduce(hashes):

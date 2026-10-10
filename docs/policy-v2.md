@@ -10,8 +10,14 @@ tracekit policy compile my-policy.yaml    # canonical JSON and its policy_hash
 ```
 
 The signer loads `policy:` from `signer.yaml` (YAML or JSON), or `tracekit/policy2/packs/dev.yaml` by default, and
-refuses to start on a lint error. YAML policies are always read by Tracekit's own YAML subset (`tracekit/yamlmini.py`),
-never PyYAML, so a policy means the same on every signer: duplicate keys, anchors, aliases and merge keys are errors.
+refuses to start on a lint error. `dev.yaml` is the laptop pack: the server deployments set `policy:` to the server
+pack. The image links the installed packs at `/etc/tracekit/packs`; its example config runs
+`/etc/tracekit/packs/server.yaml`, and the Helm charts and the compose stack mount a `/etc/tracekit/policy.yaml` that
+says `extends: packs/server.yaml` (Helm value `signer.policy`; compose's `policy.yaml`). Replace that file with your
+own policy; `extends` takes relative paths only, so a policy at `/etc/tracekit/policy.yaml` reaches the server pack as
+`packs/server.yaml`.
+YAML policies are always read by Tracekit's own YAML subset (`tracekit/yamlmini.py`), never PyYAML, so a
+policy means the same on every signer: duplicate keys, anchors, aliases and merge keys are errors.
 
 ## Decisions
 

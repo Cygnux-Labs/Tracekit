@@ -144,6 +144,21 @@ class Installer(unittest.TestCase):
         finally:
             shutil.rmtree(d, ignore_errors=True)
 
+    def test_an_event_whose_hooks_are_not_a_list_is_refused_and_left_alone(self):
+        from tracekit.install import SettingsError
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        for h in agent_hooks.HARNESSES:
+            ev, bad = {"cursor": "preToolUse", "codex": "PreToolUse", "gemini": "BeforeTool"}[h], {"command": "echo mine"}
+            path = agent_hooks.config_path(h, d)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w") as f:
+                json.dump({"hooks": {ev: bad}}, f)
+            with self.assertRaises(SettingsError, msg=h):
+                agent_hooks.install(h, d, v2=True)
+            with open(path) as f:
+                self.assertEqual(json.load(f), {"hooks": {ev: bad}}, h)
+
 
 class DemoPerAgent(unittest.TestCase):
     """`tracekit demo --agent <name>` (#7): the scripted run in each harness's own hook format, end to end."""

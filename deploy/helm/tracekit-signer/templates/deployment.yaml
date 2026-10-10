@@ -53,6 +53,7 @@ spec:
             allowPrivilegeEscalation: false
             capabilities: {drop: [ALL]}
             seccompProfile: {type: RuntimeDefault}
+          resources: {{- toYaml .Values.signer.resources | nindent 12 }}
           startupProbe:
             exec: {command: [test, -S, /run/tracekit-signer/signer.sock]}
             periodSeconds: 1
@@ -65,6 +66,7 @@ spec:
             - {name: signer-socket, mountPath: /run/tracekit-signer}
             # subPath: a root-owned file in the image's root-owned /etc/tracekit (doctor's D-CONFIG)
             - {name: signer-config, mountPath: /etc/tracekit/signer.yaml, subPath: signer.yaml, readOnly: true}
+            - {name: signer-config, mountPath: /etc/tracekit/policy.yaml, subPath: policy.yaml, readOnly: true}
             {{- if .Values.recordKey.secretName }}
             - {name: record-key, mountPath: /etc/tracekit-record-key, readOnly: true}
             {{- end }}
@@ -90,8 +92,10 @@ spec:
             allowPrivilegeEscalation: false
             capabilities: {drop: [ALL]}
             seccompProfile: {type: RuntimeDefault}
+          resources: {{- toYaml .Values.agent.resources | nindent 12 }}
           volumeMounts:
-            - {name: signer-socket, mountPath: /run/tracekit-signer}
+            # read-only: connecting needs write access to the 0666 socket only; the agent can't unlink or replace it
+            - {name: signer-socket, mountPath: /run/tracekit-signer, readOnly: true}
       volumes:
         - name: signer-data
           {{- if not .Values.persistence.enabled }}

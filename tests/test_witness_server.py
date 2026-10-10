@@ -1,5 +1,6 @@
 """Witness service (#17): signer publishes checkpoints, verifiers check inclusion and consistency, forks are refused,
 and a witness that rewrites its own log is caught.  python3 -m pytest tests/test_witness_server.py -q"""
+import hashlib
 import json
 import os
 import shutil
@@ -13,7 +14,7 @@ from unittest import mock
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from tracekit import bundle, install, witness_server  # noqa: E402
+from tracekit import bundle, install, merkle, witness_server  # noqa: E402
 from tracekit.agent_sdk import Tracer  # noqa: E402
 from tracekit.witness import HttpWitness, from_spec  # noqa: E402
 from factories import patch_env  # noqa: E402
@@ -152,6 +153,27 @@ class LogWrites(unittest.TestCase):
                 log.add("box", {"kid": "ed25519:k", "head_seq": 2, "head_hash": "b" * 64})
         self.assertEqual(os.path.getsize(logp), size)
         self.assertEqual(len(log.entries), 1)
+
+    def test_a_page_of_proofs_does_not_rehash_the_whole_log(self):
+        log = witness_server.Log(self.d)
+        self.addCleanup(log.close)
+        n = 4096
+        for i in range(n):
+            log._index({"cp": {"kid": "ed25519:k", "head_seq": i, "head_hash": f"{i:064x}"}})
+        with mock.patch.object(witness_server.crypto, "sign", wraps=witness_server.crypto.sign) as sign:
+            self.assertIs(log.sth(), log.sth())   # signed once per tree size
+        self.assertEqual(sign.call_count, 1)
+        with mock.patch.object(witness_server, "PAGE", 8), \
+                mock.patch("hashlib.sha256", wraps=hashlib.sha256) as sha256:
+            page = log.page(after=n - 100)
+        self.assertLess(sha256.call_count, n)   # each proof reads O(log n) tiles, not every leaf
+        sth = page["sth"]
+        for e in page["entries"]:
+            leaf = merkle.leaf_hash(witness_server.canon(e["cp"]).encode("utf-8"))
+            self.assertTrue(merkle.verify_inclusion(e["index"], sth["tree_size"], leaf,
+                                                    [bytes.fromhex(h) for h in e["inclusion"]],
+                                                    bytes.fromhex(sth["root_hash"])))
+        self.assertEqual(len(page["entries"]), 8)
 
     def test_second_instance_is_refused_while_one_runs(self):
         log = witness_server.Log(self.d)

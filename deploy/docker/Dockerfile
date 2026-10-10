@@ -7,7 +7,9 @@ WORKDIR /src
 COPY . .
 # google-re2 only as a binary wheel: where it has none, the signer runs on the regex backend (signed as its engine id)
 # the postgres and aws extras: the central signer's store and KMS log key (deploy/helm/tracekit-central)
-RUN pip wheel --no-cache-dir --wheel-dir /wheels ".[postgres,aws]" "regex>=2023.8" \
+# PIP_CONSTRAINT pins the build backend (constraints.txt) and every runtime dependency (runtime-constraints.txt)
+RUN export PIP_CONSTRAINT="scripts/release/constraints.txt scripts/release/runtime-constraints.txt" \
+ && pip wheel --no-cache-dir --wheel-dir /wheels ".[postgres,aws]" "regex>=2023.8" \
  && { pip wheel --no-cache-dir --only-binary=:all: --wheel-dir /wheels "google-re2>=1.1" \
       || echo "no google-re2 wheel for this platform: the regex backend is used"; }
 
@@ -22,10 +24,13 @@ LABEL org.opencontainers.image.source="https://github.com/Cygnux-Labs/Tracekit" 
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 RUN --mount=type=bind,from=build,source=/wheels,target=/wheels \
     pip install --no-cache-dir --no-index /wheels/*.whl \
+ && install -d -m 0755 /etc/tracekit \
+ && python -c "import os, tracekit.policy2 as p; os.symlink(os.path.join(os.path.dirname(p.__file__), 'packs'), '/etc/tracekit/packs')" \
  && groupadd -g 10001 tracekit \
  && useradd -u 10001 -g 10001 -M -d /nonexistent -s /usr/sbin/nologin tracekit \
  && install -d -o 10001 -g 10001 -m 0700 /var/lib/tracekit-signer \
  && install -d -o 10001 -g 10001 -m 0755 /run/tracekit-signer
+# /etc/tracekit/packs: the installed policy packs (tracekit/policy2/packs); signer.yaml runs packs/server.yaml
 COPY deploy/docker/signer.yaml.example /etc/tracekit/signer.yaml
 VOLUME ["/var/lib/tracekit-signer", "/run/tracekit-signer"]
 USER 10001:10001

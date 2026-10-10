@@ -271,6 +271,9 @@ def poll(d, url, log_vkey, secret, allowed=(), rekor=None):
     except FileNotFoundError:
         state = {"logs": {}, "head": {"seq": 0, "hash": ZERO_HASH}, "log_id": None, "runs": {}, "life": {},
                  "leafed": {}, "unleafed": [], "pending": [], "rekor_unknown": [], "conflicts": []}
+    except (OSError, ValueError) as e:   # never started over silently: the state holds the conflicts found so far
+        raise MonitorError(f"{path}: {type(e).__name__}: {e}; restore it, or move the state directory aside to "
+                           "check the log again from size 0") from None
     origin, _, _, public = checkpoint.parse_vkey(log_vkey)
     tree, records = _follow(state, d, origin, url, lambda n: checkpoint.open_note(n, [log_vkey])[1:3], _records)
     _check_records(state, records, set(allowed))
@@ -297,9 +300,7 @@ def poll(d, url, log_vkey, secret, allowed=(), rekor=None):
               "conflicts": state["conflicts"], "rules_checked": RULES + (["rekor anchors"] if rekor else [])}
     signed = {"report": report, "sig": _b64(crypto.sign(secret, CONTEXT + canonical(report)))}
     for name, doc in (("state.json", state), ("report.json", signed)):
-        with open(os.path.join(d, name + ".tmp"), "w") as f:
-            json.dump(doc, f)
-        os.replace(os.path.join(d, name + ".tmp"), os.path.join(d, name))
+        tiles.write_durable(os.path.join(d, name), json.dumps(doc).encode("utf-8"))
     return signed
 
 
