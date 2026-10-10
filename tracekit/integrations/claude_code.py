@@ -80,7 +80,7 @@ def _run(client, sid, register=True, send=None, **fields):
 
 
 def _register(client, path):
-    version = os.environ.get("CLAUDE_CODE_VERSION")
+    version = os.environ.get("CLAUDE_CODE_VERSION") if AGENT == "claude-code" else None
     out = client.register_run({"agent": {"name": AGENT, **({"version": version[:64]} if version else {})}})
     # lean: any process of the agent's uid can read and use this token (another uid cannot); binding runs to the
     # harness's processes (a root-owned harness helper) narrows that
@@ -200,7 +200,12 @@ def _entry():
         p = json.loads(raw) if raw.strip() else {}
     except ValueError:
         p = {}
-    p = p if isinstance(p, dict) else {}
+    return handle(p if isinstance(p, dict) else {})
+
+
+def handle(p):
+    """One hook event in Claude Code's payload shape (tracekit.integrations.harness_hooks maps the other harnesses'
+    onto it). -> exit code: 0 lets the call proceed, 2 blocks it; the reason is on stderr."""
     name, sid, tid = p.get("hook_event_name"), p.get("session_id"), p.get("tool_use_id")
     missing = [k for k, v in (("session_id", sid), ("tool_use_id", tid if name in TOOL_EVENTS else "-"))
                if not isinstance(v, str) or not v]

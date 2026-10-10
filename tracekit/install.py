@@ -995,9 +995,9 @@ def v2_plist(user):
 
 
 def init_system_v2(target_user, approver=None, policy=None, project=None, no_service=False, hooks=True,
-                   experimental_macos=False, allow_privileged=False):
+                   experimental_macos=False, allow_privileged=False, agent="claude"):
     """`sudo tracekit init --v2 --user AGENT`: the v2 signer service as its own user, from the root-owned venv, with
-    the v2 Claude Code hook for AGENT. Approvals are answered only by `approver` (default: the admin who ran sudo), a
+    the v2 hook of `agent` (Claude Code, or a harness of tracekit.agent_hooks) for AGENT. Approvals are answered only by `approver` (default: the admin who ran sudo), a
     different uid from the agent's. Returns (socket, settings path or None)."""
     darwin = _require_system(experimental_macos)
     owner = _agent_user(target_user, allow_privileged)
@@ -1033,10 +1033,12 @@ def init_system_v2(target_user, approver=None, policy=None, project=None, no_ser
         check=True, capture_output=True, text=True).stdout.strip()
     sock = os.path.join(run_dir, "signer.sock")
     _write_root_file(V2_CONFIG, v2_signer_yaml(owner, approver.pw_uid, policy, sock).encode())
-    settings = os.path.join(project or owner.pw_dir, ".claude", "settings.json") if hooks else None
+    from . import agent_hooks
+    settings = None if not hooks else (os.path.join(project or owner.pw_dir, ".claude", "settings.json")
+                                       if agent == "claude" else agent_hooks.config_path(agent, project or owner.pw_dir))
     sc = client.system_config() or {}   # a v1 system mode install keeps its own keys
     _write_system_client_config(dict(sc, mode="system", signer=sock, fail_mode=sc.get("fail_mode", "closed"),
-                                     hooks={"user": target_user, "settings": settings}))
+                                     hooks={"user": target_user, "settings": settings, "agent": agent}))
     if not no_service:
         if darwin:
             plist = os.path.join(LAUNCHD_DIR, V2_LABEL + ".plist")
@@ -1051,8 +1053,10 @@ def init_system_v2(target_user, approver=None, policy=None, project=None, no_ser
             r = subprocess.run(["systemctl", "restart", V2_UNIT], check=False)
             if r.returncode:
                 print(f"could not start {V2_UNIT}: see systemctl status {V2_UNIT}")
-    if settings:
+    if settings and agent == "claude":
         install_hooks(settings, owner=owner, python=OPT_PYTHON, module=V2_HOOK, signer=sock)
+    elif settings:
+        files.as_user(owner, agent_hooks.install, agent, None, False, True, OPT_PYTHON, settings, errors=(SettingsError,))
     return sock, settings
 
 
@@ -1068,7 +1072,12 @@ def uninstall_system_v2(purge=False):
             owner = pwd.getpwnam(h["user"])
         except KeyError:
             owner = None
-        install_hooks(h["settings"], uninstall=True, owner=owner, signer=sc.get("signer"))
+        if h.get("agent", "claude") == "claude":
+            install_hooks(h["settings"], uninstall=True, owner=owner, signer=sc.get("signer"))
+        else:
+            from . import agent_hooks
+            files.as_user(owner, agent_hooks.install, h["agent"], None, True, True, None, h["settings"],
+                          errors=(SettingsError,))
     if darwin:
         plist = os.path.join(LAUNCHD_DIR, V2_LABEL + ".plist")
         subprocess.run(["launchctl", "bootout", "system", plist], check=False)
