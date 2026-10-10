@@ -12,81 +12,28 @@ to decide in the signer; with `approval_wait_s=0` the call is refused instead. E
 only after the signer's `approval_consume` agrees. A result with `isError: true` completes as an error; an exception
 from the session propagates unchanged and completes as an error. Only calls made through the wrapped session are seen.
 """
-import asyncio
-import itertools
 import re
-import threading
-import time
 import uuid
-import warnings
 
 from mcp.types import CallToolResult, TextContent
 
 from tracekit.format.canon import event_hash
-from tracekit.sdk.client import SignerUnavailable, fail_open
-from tracekit.signer.rpc_schema import RPCError
+from tracekit.integrations.held import HeldCalls
 
 BLOCKED = "Tool call blocked by policy: "
 _UNSAFE = re.compile(r"[^A-Za-z0-9_.-]+")
 
 
-class TracekitSession:
+class TracekitSession(HeldCalls):
+    CLASS = "mcp"
+
     def __init__(self, session, signer, run, approval_wait_s=300):
         """`signer` is any `SignerAPI`; `run` is its `register_run` response (`run_id`, `run_token`, `fail_modes`)."""
-        self._session, self.signer, self.wait_s = session, signer, approval_wait_s
-        self.fail_modes = run.get("fail_modes")
-        self.run = {"run_id": run["run_id"], "run_token": run["run_token"]}
-        self.stream, self._seq, self._lock = "mcp-" + uuid.uuid4().hex, itertools.count(), threading.Lock()
+        super().__init__(signer, run, approval_wait_s)
+        self._session = session
 
     def __getattr__(self, name):
         return getattr(self._session, name)
-
-    async def _rpc(self, method, **req):
-        req = {"request_id": uuid.uuid4().hex, **self.run, **req}
-
-        def call():
-            if method not in ("decide", "complete"):
-                return getattr(self.signer, method)(req)
-            # lean: one event at a time per session, so client_seq arrives in order; pipeline if it gets slow
-            with self._lock:
-                return getattr(self.signer, method)(dict(req, stream=self.stream, client_seq=next(self._seq)))
-        return await asyncio.to_thread(call)
-
-    async def _gate(self, call_id, tool, args):
-        """(the refusal that replaces the call or None when it may be sent, the decision)"""
-        try:
-            d = await self._rpc("decide", tool_call_id=call_id, tool=tool, tool_class_hint="mcp", args_source="parsed",
-                                args=args)
-        except SignerUnavailable as e:   # unreachable: the run's fail mode for mcp calls
-            return (None if fail_open(self.fail_modes, "mcp") else f"signer unavailable: {e}"), None
-        except RPCError as e:   # a refusal (a run closed after its idle timeout: register a new run) never lets it run
-            return f"signer refused the call: {e}", None
-        hint = None
-        if d["decision"] == "deny":
-            return ", ".join(d["rule_ids"]) or "deny", d
-        if d["decision"] == "ask":
-            if self.wait_s <= 0:
-                return "approval required, and this caller cannot wait for one", d
-            try:
-                hint = (await self._rpc("approval_request", tool_call_id=call_id))["approval_id"]
-                state, deadline = "requested", time.monotonic() + self.wait_s
-                while state == "requested" and deadline > time.monotonic():
-                    left_ms = int(min(deadline - time.monotonic(), 300) * 1000)
-                    state = (await asyncio.to_thread(self.signer.approval_wait, {**self.run, "approval_id": hint,
-                                                                                 "timeout_ms": left_ms}))["state"]
-            except (RPCError, SignerUnavailable) as e:   # once the policy asked, no fail mode applies
-                state = f"{type(e).__name__}: {e}"
-            if state != "approved":
-                return f"{', '.join(d['rule_ids'])}: approval {state}", d
-        # every call, allowed or approved: approval_consume is the signer's last word before it runs
-        try:
-            c = await self._rpc("approval_consume", tool_call_id=call_id, tool=tool, args_source="parsed", args=args,
-                                **({"approval_id_hint": hint} if hint else {}))
-        except (RPCError, SignerUnavailable) as e:
-            c = {"ok": False, "rule_ids": [], "reason": str(e)}
-        if not c["ok"]:
-            return ", ".join(c["rule_ids"]) + (f": {c['reason']}" if c.get("reason") else ""), d
-        return None, d
 
     async def call_tool(self, name, arguments=None, *a, **kw):
         server = getattr(self._session.server_info, "name", None)
@@ -106,10 +53,3 @@ class TracekitSession:
         await self._complete(call_id, req, status="error" if getattr(out, "is_error", False) else "ok",
                              result=event_hash(out.model_dump(mode="json", by_alias=True, exclude_none=True)))
         return out
-
-    async def _complete(self, call_id, req, **outcome):
-        """Record the outcome; a failure to record warns and leaves the call's result or exception as it was."""
-        try:
-            await self._rpc("complete", **req, **outcome)
-        except Exception as e:
-            warnings.warn(f"tracekit: outcome of MCP tool call {call_id} not recorded: {e}", stacklevel=2)
