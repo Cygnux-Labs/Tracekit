@@ -9,7 +9,9 @@ Trust comes only from the verifier's own pinned config (JSON):
      "witnesses_required": 0,                             pinned cosignatures a checkpoint must carry
      "rekor": {"trusted_root": {...}, "publishing_key": "<base64 SPKI>", "class": "public"},   optional: a Sigstore
                                                           trusted_root and the signer's P-256 Rekor publishing key
-     "monitors": [{"vkey": "<monitor vkey>", "class": "...", "max_age_s": 3600}]}   optional: `tracekit monitor` keys
+     "monitors": [{"vkey": "<monitor vkey>", "class": "...", "max_age_s": 3600}],   optional: `tracekit monitor` keys
+     "issuers": [{"vkey": "<CA vkey>", "issuance_log_vkey": "<log vkey>"}]}   optional: record-key issuers
+                                                          (tracekit.issuer, `tracekit issuer vkey`)
 
 Integrity VERIFIED needs: a checkpoint note signed by the pinned log key of its origin, and by the origin's pinned
 hybrid SLH-DSA key when there is one (registry notes too), and cosigned by the required number of pinned witnesses;
@@ -35,6 +37,10 @@ A run with any self-approval (dev mode: the approver was the requester) is repor
 Approvals answered under the break-glass role are listed, as a warning.
 A tool call that ran against a deny, or an ask with no consumed approval, is signed by the signer as a capture.gap
 `executed_against_policy`; each is a `policy` warning.
+External decisions: policy.external records (other systems' decisions, imported at tier T3) are counted by system and
+by whether the signer verified the system's signature; each signer-written capture.gap `decision_mismatch` (the
+import disagreed with the signer's decision or tool, or named a call the signer never decided) makes the
+`external decisions` line a warning.
 Coverage: a run.final that carries `coverage` (the capture layers that reported, calls reconciled, reconcile.* records
 by kind) gives a `coverage` line; unreconciled calls make it a warning, so `--strict` exits 3 on them.
 
@@ -48,6 +54,15 @@ and trace.tamper leaves: witness failures, clock skew, rollbacks) are counted by
 records, so a withheld retirement fails `keys`; without a range from size 0 that reaches every bundled record, that is
 unproven (a `keys` warning and an assurance note). The log tail after the checkpoint is reported
 unproven (a warning) unless a log.closed in the range is the checkpoint's last record.
+
+Certified record keys (docs/issuer.md): a signer.epoch key with `cert` is declared only when its certificate is signed
+by a pinned issuer, for that key and log, and included in the issuer's issuance log at a checkpoint the issuer's log
+key signed and max(1, witnesses_required) pinned witnesses cosigned; else `keys` fails and its records fail
+`signatures` (unknown kid). A record under a certified key must have its ts within the certificate's validity and its
+tenant in the certificate's tenants (the signer's own records excepted). Revocations come from the verifier's side,
+never the bundle: verify(..., revocations=[path]), JSON lines files of revocation documents (an issuer's
+issuance.jsonl will do; other lines are ignored). A record of a revoked certificate's key after the revocation's
+last_seq makes the bundle `UNVERIFIABLE (key revoked)` (exit 2), not FAILED, unless something else fails.
 
 Format bridge (04-design §1.9): when the log's first record, signer.epoch, has `bridge`, the v1 ledger it continues can
 be checked too (verify(..., v1_ledger, v1_key)): its chain verifies by v1 rules up to `v1_last_seq`, that last record
@@ -67,13 +82,14 @@ from tracekit.bundle import EXIT_BAD, EXIT_FAIL, EXIT_OK, Report, _load_trusted_
 from tracekit.bundle_v2 import FORMAT, KEY_TYPES, run_name
 from tracekit.core import GENESIS
 from tracekit.core import event_hash as v1_event_hash
-from tracekit.format import checkpoint, registry
+from tracekit.format import cert, checkpoint, registry
 from tracekit.format.canon import loads_strict
 from tracekit.format.records import RecordError, verify_record
 from tracekit.ledger import read_records, verify_record_sig
 from tracekit.merkle import leaf_hash, verify_consistency, verify_inclusion
 from tracekit.schema import V2, validate
 from tracekit.signer.format_bridge import retire_data
+from tracekit.signer.pipeline import SIGNER_RUN
 from tracekit.storage.base import ZERO_HASH
 
 MAX_ENTRIES = 10_000
@@ -119,7 +135,8 @@ def load_trust(path):
     with open(path, "rb") as f:
         t = loads_strict(f.read(MAX_LINE))
     r = t.get("rekor", {}) if isinstance(t, dict) else None
-    ok = (isinstance(t, dict) and set(t) <= {"logs", "witnesses", "algs", "witnesses_required", "rekor", "monitors"}
+    ok = (isinstance(t, dict) and set(t) <= {"logs", "witnesses", "algs", "witnesses_required", "rekor", "monitors",
+                                             "issuers"}
           and isinstance(r, dict) and (not r or set(r) == {"trusted_root", "publishing_key", "class"}
                                        and isinstance(r["trusted_root"], dict) and isinstance(r["publishing_key"], str)
                                        and r["class"] in CLASSES)
@@ -132,12 +149,17 @@ def load_trust(path):
           and isinstance(t.get("monitors", []), list)
           and all(isinstance(m, dict) and set(m) == {"vkey", "class", "max_age_s"} and isinstance(m["vkey"], str)
                   and m["class"] in CLASSES and type(m["max_age_s"]) is int and m["max_age_s"] > 0
-                  for m in t.get("monitors", [])))
+                  for m in t.get("monitors", []))
+          and isinstance(t.get("issuers", []), list)
+          and all(isinstance(i, dict) and set(i) == {"vkey", "issuance_log_vkey"}
+                  and all(isinstance(v, str) for v in i.values()) for i in t.get("issuers", [])))
     if not ok:
-        raise ValueError(f"{path}: not a v2 trust config (logs, witnesses, algs, witnesses_required, rekor, monitors)")
-    for k in t["logs"] + [w["vkey"] for w in t.get("witnesses", [])] + [m["vkey"] for m in t.get("monitors", [])]:
+        raise ValueError(f"{path}: not a v2 trust config (logs, witnesses, algs, witnesses_required, rekor, monitors, "
+                         "issuers)")
+    for k in (t["logs"] + [w["vkey"] for w in t.get("witnesses", [])] + [m["vkey"] for m in t.get("monitors", [])]
+              + [v for i in t.get("issuers", []) for v in i.values()]):
         checkpoint.parse_vkey(k)
-    return {"witnesses": [], "witnesses_required": 0, "monitors": [], **t}
+    return {"witnesses": [], "witnesses_required": 0, "monitors": [], "issuers": [], **t}
 
 
 def _jsonl(data):
@@ -153,10 +175,10 @@ def _version(v):
     return tuple(int(x) for x in re.findall(r"\d+", v)[:3])
 
 
-def verify(path, trust_path, v1_ledger=None, v1_key=None, monitor_reports=()):
+def verify(path, trust_path, v1_ledger=None, v1_key=None, monitor_reports=(), revocations=()):
     """Verify a v2 bundle against the pinned trust config at `trust_path`, with `v1_ledger` (a v1 ledger.jsonl) and
-    `v1_key` (its signer.pub) the format bridge into it, and with `monitor_reports` (paths) the log's monitoring.
-    Never raises on a malformed bundle."""
+    `v1_key` (its signer.pub) the format bridge into it, with `monitor_reports` (paths) the log's monitoring and with
+    `revocations` (paths) the record-key revocations known. Never raises on a malformed bundle."""
     rep = Report()
     rep.integrity, rep.assurance = "UNUSABLE BUNDLE", "none"
     try:
@@ -180,15 +202,40 @@ def verify(path, trust_path, v1_ledger=None, v1_key=None, monitor_reports=()):
         rep.check("bundle readable", False, f"cannot read bundle: {type(e).__name__}: {e}")
         return rep, EXIT_BAD
     try:
-        _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports)
+        _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, revocations)
     except Exception as e:
         rep.check("bundle structure", False, "", [f"malformed and could not be fully checked: {type(e).__name__}: {e}"])
     if rep.failures:
         rep.integrity = "FAILED"
-    return rep, EXIT_FAIL if rep.failures else EXIT_OK
+    return rep, EXIT_FAIL if rep.failures else EXIT_BAD if rep.integrity.startswith("UNVERIFIABLE") else EXIT_OK
 
 
-def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports):
+def _revocations(rep, trust, paths):
+    """{(issuer vkey, serial): last_seq} of the revocation documents in `paths` that a pinned issuer signed."""
+    out = {}
+    for path in paths:
+        try:
+            with open(path, "rb") as f:
+                docs = _jsonl(f.read(MAX_ENTRY))
+        except (OSError, ValueError) as e:
+            rep.check("revocations", False, f"{path}: {type(e).__name__}: {e}")
+            continue
+        for doc in docs:
+            try:
+                r = cert.revocation(doc, trust["issuers"])
+            except ValueError as e:
+                rep.check("revocations", False, f"{path}: {e} (ignored)", warn=True)
+                continue
+            if r is not None:
+                out[r[:2]] = min(r[2], out.get(r[:2], r[2]))
+    return out
+
+
+def _ts(ts):
+    return datetime.datetime.strptime(ts, "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=datetime.timezone.utc).timestamp()
+
+
+def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, revocations):
     listed = manifest.get("files")
     rep.check("manifest", isinstance(listed, dict) and listed == {n: hashlib.sha256(b).hexdigest()
                                                                   for n, b in files.items()},
@@ -237,10 +284,22 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports):
         problems.extend(f"seq {e.get('seq')!r}: {x}" for x in errs)
         if not errs and e.get("log_id") != log_id:
             problems.append(f"seq {e['seq']}: another log's record")
+        c = certs.get(r["kid"])
+        if errs or c is None:
+            return
+        if not c["not_before"] <= _ts(e["ts"]) <= c["not_after"]:
+            problems.append(f"seq {e['seq']}: at {e['ts']}, outside the validity of key {r['kid'][:80]}'s certificate")
+        elif e["tenant"] not in c["tenants"] and (e["tenant"], e["run_id"]) != SIGNER_RUN:
+            problems.append(f"seq {e['seq']}: tenant {e['tenant'][:64]!r} is outside key {r['kid'][:80]}'s certificate")
+        elif e["seq"] > revoked.get(r["kid"], e["seq"]):
+            revoked_records.append(f"seq {e['seq']}: key {r['kid'][:80]} (serial {c['serial'][:64]}) is revoked after "
+                                   f"seq {revoked[r['kid']]}")
 
     # keys: declared and retired by records the checkpointed tree includes, so the log key vouches for them
     key_records, key_problems, timeline = _jsonl(files["keys/records.jsonl"]), [], {}
     log_id = key_records[0]["event"].get("log_id") if key_records else None
+    certs, revoked, revoked_records, issued = {}, {}, [], {}   # kid -> certificate; kid -> last valid seq; issuer names
+    revocations = _revocations(rep, trust, revocations)
 
     def keys_at(seq):
         return [k["spki"] for k in timeline.values() if k["from"] <= seq and (k["until"] is None or seq <= k["until"])]
@@ -258,6 +317,22 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports):
                 der = base64.b64decode(k["spki"], validate=True)
                 if crypto.spki_kid(der) != k["kid"] or crypto.key_alg(der) != k["alg"]:
                     key_problems.append(f"seq {e['seq']}: key {k['kid']} does not match its SPKI")
+                if "cert" not in k and trust["issuers"] and not e["data"].get("bridge"):
+                    key_problems.append(f"seq {e['seq']}: key {k['kid'][:80]} has no certificate, and the trust "
+                                        "config pins issuers")
+                    continue
+                if "cert" in k:
+                    try:
+                        c, pin = cert.check(k["cert"], trust["issuers"], list(witnesses),
+                                            max(1, trust["witnesses_required"]))
+                        if (c["kid"], c["spki"], c["log_id"]) != (k["kid"], k["spki"], log_id):
+                            raise ValueError("the certificate is for another key or log")
+                    except ValueError as x:
+                        key_problems.append(f"seq {e['seq']}: key {k['kid'][:80]}: {x}")
+                        continue
+                    certs[k["kid"]], issued[k["kid"]] = c, pin["vkey"].split("+")[0]
+                    if (pin["vkey"], c["serial"]) in revocations:
+                        revoked[k["kid"]] = revocations[(pin["vkey"], c["serial"])]
                 declared[k["kid"]] = {"spki": der, "from": e["seq"], "until": None}
         check_record(r, keys_at(e["seq"]) + [k["spki"] for k in declared.values()], key_problems)
         if e["type"] == "key.retire":
@@ -322,6 +397,10 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports):
     rep.integrity = ("VERIFIED" if not still_open else
                      f"VERIFIED TO HEAD {still_open[0][-1]['event'].get('run_seq')} (open)" if only else
                      f"VERIFIED ({len(still_open)} run(s) open)")
+    if revoked_records:
+        rep.check("revocations", False, f"{len(revoked_records)} record(s) under a revoked key", revoked_records[:20],
+                  warn=True)
+        rep.integrity = "UNVERIFIABLE (key revoked)"
     every = [r for rs in runs.values() for r in rs]
     self_approved = any(r["event"].get("type") == "approval" and r["event"]["data"].get("self_approved") is True
                         for r in every)
@@ -330,6 +409,16 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports):
     if against:
         rep.check("policy", False, f"{len(against)} tool call(s) ran against a deny or an unapproved ask", against[:20],
                   warn=True)
+    external = [r["event"]["data"] for r in every if r["event"].get("type") == "policy.external"]
+    mismatched = [f"seq {r['event']['seq']}: {str(r['event']['data'].get('reason'))[:200]}" for r in every
+                  if r["event"].get("type") == "capture.gap" and r["event"]["data"].get("kind") == "decision_mismatch"]
+    if external or mismatched:
+        systems = collections.Counter(str(d["system"])[:64] for d in external)
+        verified = sum(d["signature"] == "verified" for d in external)
+        rep.check("external decisions", not mismatched,
+                  f"{len(external)} imported: " + (", ".join(f"{k} {n}" for k, n in sorted(systems.items())) or "none")
+                  + f"; signatures verified {verified}, unverified {len(external) - verified}; "
+                  + f"{len(mismatched)} disagree with the signer", mismatched[:20], warn=True)
     finals = [rs[-1]["event"]["data"]["coverage"] for rs in runs.values()
               if rs[-1]["event"].get("type") == "run.final" and "coverage" in rs[-1]["event"]["data"]]
     unreconciled = {}   # from the signed reconcile.* records themselves, not run.final's summary of them
@@ -369,7 +458,9 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports):
         rep.check("harness", True, "signer-attested: " + ", ".join(bound[:20]) + (", ..." if len(bound) > 20 else ""))
     fail_open = sorted({str(c)[:64] for d in registered for c, m in (d.get("fail_modes") or {}).items() if m == "open"})
     rep.check("fail-open classes", True, ", ".join(fail_open) or "none")
-    rep.check("key assurance", True, "asserted: the log declares its record keys; none is attested")
+    rep.check("key assurance", True, f"certified: {len(issued)} of {len(timeline)} record key(s) by pinned issuer(s) "
+                                     f"{', '.join(sorted(set(issued.values())))}" if issued else
+              "asserted: the log declares its record keys; none is attested")
     rep.assurance = (_assurance(origin, cosigs, witnesses, trust, {r["alg"] for r in every + key_records}, self_approved,
                                 anchors, monitored)
                      + ("; key retirements not proven complete" if proven_to < relied else ""))

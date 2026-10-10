@@ -1,6 +1,6 @@
 # The signer as a container
 
-`deploy/docker/Dockerfile` builds the v2 signer (`tracekit-ai[signer]`, with google-re2 where it has a wheel) on a
+`deploy/docker/Dockerfile` builds the v2 signer (`tracekit-ai[signer,postgres]`, with google-re2 where it has a wheel) on a
 digest-pinned `python:3.12-slim` base. It runs `tracekit signer serve --config /etc/tracekit/signer.yaml` as uid/gid
 10001 and works with a read-only root filesystem.
 
@@ -26,7 +26,8 @@ check to fail or warn there: they are about laptop system mode. The image is you
 ## Sidecar
 
 The signer runs next to the agent in the same pod, as a different user. The agent reaches it only through the socket
-and is identified by its peer uid (`tenants: {"uid:1000": ...}` in signer.yaml).
+and is identified by its peer uid (`tenants: {"uid:1000": ...}` in signer.yaml). The Helm chart renders this for you:
+[deploy-kubernetes.md](deploy-kubernetes.md).
 
 ```yaml
 spec:

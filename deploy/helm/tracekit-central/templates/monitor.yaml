@@ -1,0 +1,47 @@
+{{- if .Values.monitor.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-monitor
+  labels: {{- include "tc.labels" (dict "root" . "component" "monitor") | nindent 4 }}
+spec:
+  accessModes: [ReadWriteOnce]
+  {{- with .Values.monitor.storage.storageClass }}
+  storageClassName: {{ . }}
+  {{- end }}
+  resources: {requests: {storage: {{ .Values.monitor.storage.size }}}}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-monitor
+  labels: {{- include "tc.labels" (dict "root" . "component" "monitor") | nindent 4 }}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}   # one monitor per state directory
+  selector:
+    matchLabels: {{- include "tc.labels" (dict "root" . "component" "monitor") | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "tc.labels" (dict "root" . "component" "monitor") | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        fsGroup: {{ int .Values.signer.uid }}
+        fsGroupChangePolicy: OnRootMismatch
+      containers:
+        {{- range $i, $vkey := required "monitor.logKeys is required" .Values.monitor.logKeys }}
+        - name: monitor-{{ $i }}
+          image: {{ $.Values.signer.image }}
+          command: [tracekit, monitor, --log, "http://{{ $.Release.Name }}-{{ $i }}:9464", --log-key, {{ $vkey | quote }},
+                    --state, /var/lib/tracekit-monitor/{{ $i }}, --every, "{{ $.Values.monitor.everySeconds }}"]
+          securityContext:
+            runAsUser: {{ int $.Values.signer.uid }}
+            runAsGroup: {{ int $.Values.signer.uid }}
+            {{- include "tc.hardened" $ | nindent 12 }}
+          volumeMounts:
+            - {name: state, mountPath: /var/lib/tracekit-monitor}
+        {{- end }}
+      volumes:
+        - {name: state, persistentVolumeClaim: {claimName: {{ .Release.Name }}-monitor}}
+{{- end }}
