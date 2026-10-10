@@ -181,7 +181,7 @@ class TestStorageLock(Case):
         with open(cfg, "w") as f:
             f.write(f"data_dir: {self.dir}\nsocket: {self.dir}/s.sock\nlock_timeout_s: 0.1\n")
         err = io.StringIO()
-        with contextlib.redirect_stderr(err):
+        with contextlib.redirect_stderr(err), mock.patch.object(svc.logkey, "harden"):   # keeps pytest dumpable
             self.assertEqual(svc.main(["serve", "--config", cfg]), 1)
         self.assertIn(f"another signer holds {os.path.join(self.dir, 'store')}", err.getvalue())
 

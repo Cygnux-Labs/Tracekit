@@ -34,7 +34,8 @@ that a clean setup passes (`make eval`).
 | `D-AGENT-PROBE` | the agent's user's actual access | as that user (doctor forks and drops to its uid), it can read or write the data dir, the keys dir or a key, or write signer.yaml, the policy or `client.json` (warn: doctor isn't running as root or the agent) | `chmod o-rwx`, `go-w`; owner root or the signer's user |
 | `D-CODE-TRUST` | the root-owned venv `/opt/tracekit` | a file in it, or a directory above it, isn't root-owned or is group- or world-writable, or the venv is missing | re-run init to reinstall it |
 | `D-KEYS-MODE` | `data_dir` and `data_dir/keys` | either one isn't 0700, or a key isn't a 0600 file owned by the keys dir's owner (warn: doctor can't read them, so run it as root) | `chmod 700` the dirs, `chmod 600` the keys |
-| `D-KEYS-DISTINCT` | `keys/log.key` and `keys/record.key` | they're the same key (warn: none yet) | move both away and restart the signer: new keys start a new log |
+| `D-KEYS-DISTINCT` | `keys/log.key` and `keys/record.key` | they're the same key (warn: none yet); ok when `log_key` names a KMS key | move both away and restart the signer: new keys start a new log |
+| `D-KEY-HYGIENE` | `data_dir/hygiene.json`, written by the signer on start | the signer process may dump core (RLIMIT_CORE not 0), is dumpable (Linux `PR_SET_DUMPABLE`), or could not mlock its key files (warn; also when the signer never started) | run it with `tracekit signer serve`; raise `LimitMEMLOCK` |
 | `D-UNIT-HARDENING` | `tracekit-signer.service` (or the launchd plist) | a hardening directive that init writes is missing: the detail gives the score and lists the missing directives (warn) | re-run init to rewrite the service file |
 | `D-HOOKS-PRESENT` | the agent's Claude Code settings | a tool event (PreToolUse, PostToolUse, PostToolUseFailure) has no v2 hook | re-run init |
 | `D-HOOKS-VENV` | the hook commands | a hook runs a Python other than the root-owned venv's | re-run init |

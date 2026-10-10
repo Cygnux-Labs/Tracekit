@@ -76,8 +76,12 @@ def body(origin, size, root):
 
 def sign(text, name, secret):
     """A type 0x01 signature line over the note text."""
-    sig = crypto.sign(secret, text.encode("utf-8"))
-    return f"{DASH}{name} {_b64(key_id(name, ED25519, crypto.public_from_secret(secret)) + sig)}\n"
+    return log_line(name, crypto.public_from_secret(secret), crypto.sign(secret, text.encode("utf-8")))
+
+
+def log_line(name, public, sig):
+    """The type 0x01 signature line of `sig`, the signature of the note text by the key `public`."""
+    return f"{DASH}{name} {_b64(key_id(name, ED25519, public) + sig)}\n"
 
 
 def _cosigned(text, ts):

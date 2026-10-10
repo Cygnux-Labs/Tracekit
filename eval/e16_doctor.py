@@ -45,6 +45,7 @@ class Layout:
         self.write("data/keys/log.key", self.log_key, 0o600)
         self.log_vkey = checkpoint.vkey("e16.example/log", checkpoint.ED25519, crypto.public_from_secret(self.log_key))
         self.write("data/log.vkey", self.log_vkey.encode())
+        self.write("data/hygiene.json", b'{"core_limit": 0, "dumpable": false, "mlock": true}')
         self.wname = "e16.example/witness"
         self.wvkey = checkpoint.vkey(self.wname, checkpoint.COSIGNATURE, crypto.public_from_secret(self.witness_key))
         self.note(int(time.time()))
@@ -183,6 +184,8 @@ CASES = [
     ("data dir 0750", "D-KEYS-MODE", _chmod("data", 0o750)),
     ("log key is the record key", "D-KEYS-DISTINCT",
      lambda L: L.write("data/keys/log.key", open(L.path("data/keys/record.key"), "rb").read(), 0o600)),
+    ("signer may dump core", "D-KEY-HYGIENE",
+     lambda L: L.write("data/hygiene.json", b'{"core_limit": null, "dumpable": true, "mlock": false}')),
     ("unit without NoNewPrivileges and the syscall filter", "D-UNIT-HARDENING",
      _unit_without("NoNewPrivileges=true", "SystemCallFilter=@system-service")),
     ("no service unit", "D-UNIT-HARDENING", lambda L: os.remove(L.kw["unit"])),
