@@ -9,13 +9,20 @@
   "types": "dist/index.d.ts",
   "exports": {
     ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" },
-    "./v2": { "types": "./dist/v2/client.d.ts", "import": "./dist/v2/client.js" }
+    "./v2": { "types": "./dist/v2/client.d.ts", "import": "./dist/v2/client.js" },
+    "./v2/openai-agents": { "types": "./dist/v2/adapters/openai-agents.d.ts", "import": "./dist/v2/adapters/openai-agents.js" },
+    "./v2/vercel-ai": { "types": "./dist/v2/adapters/vercel-ai.d.ts", "import": "./dist/v2/adapters/vercel-ai.js" },
+    "./v2/claude-agent-sdk": { "types": "./dist/v2/adapters/claude-agent-sdk.d.ts", "import": "./dist/v2/adapters/claude-agent-sdk.js" }
   },
   "files": ["dist", "README.md"],
   "engines": { "node": ">=18" },
   "scripts": {
     "build": "tsc -p .",
     "test": "npm run build && node --test test/*.test.mjs"
+  },
+  "peerDependencies": { "@openai/agents": ">=0.20.0", "ai": ">=7.0.0", "@anthropic-ai/claude-agent-sdk": ">=0.3.0" },
+  "peerDependenciesMeta": {
+    "@openai/agents": { "optional": true }, "ai": { "optional": true }, "@anthropic-ai/claude-agent-sdk": { "optional": true }
   },
   "devDependencies": {
     "typescript": "^5.6.0",
