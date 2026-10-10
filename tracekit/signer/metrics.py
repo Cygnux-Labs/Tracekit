@@ -103,6 +103,8 @@ class SignerMetrics:
                                                  "Checkpoint notes a witness did not cosign, by witness.", "witness"))
         self.loop_errors = self.add(Counter("tracekit_signer_loop_errors_total",
                                             "Unexpected errors of a background loop, which carried on, by loop.", "loop"))
+        self.otel_dropped = self.add(Counter("tracekit_signer_otel_export_dropped_total",
+                                             "Runs the OTLP exporter (otel_out) did not deliver, by reason.", "reason"))
 
     def add(self, m):
         self.metrics.append(m)

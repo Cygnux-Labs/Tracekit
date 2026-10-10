@@ -1,0 +1,405 @@
+{
+  "files": {
+    "v2/approval.tkb": "e5df2efa6bd2752c14230de455154b4ef5c4293a02da78c77d43c720b6fb94b4",
+    "v2/closed.tkb": "fb9c9169bc24a82e81a5e7526b3ffd7ec5453454f0330100fd123971bea6b790",
+    "v2/open.tkb": "9f428387c61b0a5ea5dfdb991a6b7c4ede6cb722fb781a451a6c136dc1013218",
+    "v2/run-set.tkb": "cc426b4c9beaa7aab13284b3dc07ed9b99eda24e2b9eb52f2c931b7a595ea6ed",
+    "v2/trust-rekor.json": "c5ee64ae6b6405a077512826dbe3e56aa595b5369b5a815f497ddd34b2f88d6a",
+    "v2/trust.json": "dd13dfc84f8d3f13b70efa4ccd9e479c43e0e5078464cbd252c2c282e6bff699"
+  },
+  "cases": [
+    {
+      "name": "v2 closed run, witnessed",
+      "dir": "v2",
+      "command": "verify",
+      "args": [
+        "closed.tkb",
+        "--trust",
+        "trust.json"
+      ],
+      "files": {
+        "closed.tkb": "fb9c9169bc24a82e81a5e7526b3ffd7ec5453454f0330100fd123971bea6b790",
+        "trust.json": "dd13dfc84f8d3f13b70efa4ccd9e479c43e0e5078464cbd252c2c282e6bff699"
+      },
+      "expected": {
+        "exit_code": 0,
+        "integrity": "Integrity: VERIFIED.",
+        "assurance": "Assurance: witnessed; records ed25519; checkpoint ed25519 (tracekit.example.org/log/golden); cosigned ed25519 by witness.example.org/fake (customer) at 2026-10-10T00:19:23Z; key retirements not proven complete.",
+        "checks": [
+          [
+            "manifest",
+            "pass"
+          ],
+          [
+            "checkpoint",
+            "pass"
+          ],
+          [
+            "witness quorum",
+            "pass"
+          ],
+          [
+            "keys",
+            "pass"
+          ],
+          [
+            "keys",
+            "warn"
+          ],
+          [
+            "signatures",
+            "pass"
+          ],
+          [
+            "run chain",
+            "pass"
+          ],
+          [
+            "inclusion",
+            "pass"
+          ],
+          [
+            "coverage",
+            "pass"
+          ],
+          [
+            "tiers",
+            "pass"
+          ],
+          [
+            "args source",
+            "pass"
+          ],
+          [
+            "isolation",
+            "pass"
+          ],
+          [
+            "fail-open classes",
+            "pass"
+          ],
+          [
+            "key assurance",
+            "pass"
+          ]
+        ]
+      }
+    },
+    {
+      "name": "v2 closed run, Rekor anchor pinned",
+      "dir": "v2",
+      "command": "verify",
+      "args": [
+        "closed.tkb",
+        "--trust",
+        "trust-rekor.json"
+      ],
+      "files": {
+        "closed.tkb": "fb9c9169bc24a82e81a5e7526b3ffd7ec5453454f0330100fd123971bea6b790",
+        "trust-rekor.json": "c5ee64ae6b6405a077512826dbe3e56aa595b5369b5a815f497ddd34b2f88d6a"
+      },
+      "expected": {
+        "exit_code": 0,
+        "integrity": "Integrity: VERIFIED.",
+        "assurance": "Assurance: witnessed; records ed25519; checkpoint ed25519 (tracekit.example.org/log/golden); cosigned ed25519 by witness.example.org/fake (customer) at 2026-10-10T00:19:23Z; anchored in Rekor 127.0.0.1:53855 (public) at 2026-10-10T00:19:23Z; key retirements not proven complete.",
+        "checks": [
+          [
+            "manifest",
+            "pass"
+          ],
+          [
+            "checkpoint",
+            "pass"
+          ],
+          [
+            "witness quorum",
+            "pass"
+          ],
+          [
+            "rekor anchor",
+            "pass"
+          ],
+          [
+            "keys",
+            "pass"
+          ],
+          [
+            "keys",
+            "warn"
+          ],
+          [
+            "signatures",
+            "pass"
+          ],
+          [
+            "run chain",
+            "pass"
+          ],
+          [
+            "inclusion",
+            "pass"
+          ],
+          [
+            "coverage",
+            "pass"
+          ],
+          [
+            "tiers",
+            "pass"
+          ],
+          [
+            "args source",
+            "pass"
+          ],
+          [
+            "isolation",
+            "pass"
+          ],
+          [
+            "fail-open classes",
+            "pass"
+          ],
+          [
+            "key assurance",
+            "pass"
+          ]
+        ]
+      }
+    },
+    {
+      "name": "v2 open run",
+      "dir": "v2",
+      "command": "verify",
+      "args": [
+        "open.tkb",
+        "--trust",
+        "trust.json"
+      ],
+      "files": {
+        "open.tkb": "9f428387c61b0a5ea5dfdb991a6b7c4ede6cb722fb781a451a6c136dc1013218",
+        "trust.json": "dd13dfc84f8d3f13b70efa4ccd9e479c43e0e5078464cbd252c2c282e6bff699"
+      },
+      "expected": {
+        "exit_code": 0,
+        "integrity": "Integrity: VERIFIED TO HEAD 2 (open).",
+        "assurance": "Assurance: witnessed; records ed25519; checkpoint ed25519 (tracekit.example.org/log/golden); cosigned ed25519 by witness.example.org/fake (customer) at 2026-10-10T00:19:23Z; key retirements not proven complete.",
+        "checks": [
+          [
+            "manifest",
+            "pass"
+          ],
+          [
+            "checkpoint",
+            "pass"
+          ],
+          [
+            "witness quorum",
+            "pass"
+          ],
+          [
+            "keys",
+            "pass"
+          ],
+          [
+            "keys",
+            "warn"
+          ],
+          [
+            "signatures",
+            "pass"
+          ],
+          [
+            "run chain",
+            "pass"
+          ],
+          [
+            "inclusion",
+            "pass"
+          ],
+          [
+            "tiers",
+            "pass"
+          ],
+          [
+            "args source",
+            "pass"
+          ],
+          [
+            "isolation",
+            "pass"
+          ],
+          [
+            "fail-open classes",
+            "pass"
+          ],
+          [
+            "key assurance",
+            "pass"
+          ]
+        ]
+      }
+    },
+    {
+      "name": "v2 self-approved run",
+      "dir": "v2",
+      "command": "verify",
+      "args": [
+        "approval.tkb",
+        "--trust",
+        "trust.json"
+      ],
+      "files": {
+        "approval.tkb": "e5df2efa6bd2752c14230de455154b4ef5c4293a02da78c77d43c720b6fb94b4",
+        "trust.json": "dd13dfc84f8d3f13b70efa4ccd9e479c43e0e5078464cbd252c2c282e6bff699"
+      },
+      "expected": {
+        "exit_code": 0,
+        "integrity": "Integrity: VERIFIED.",
+        "assurance": "Assurance: dev; records ed25519; checkpoint ed25519 (tracekit.example.org/log/golden); cosigned ed25519 by witness.example.org/fake (customer) at 2026-10-10T00:19:23Z; approvals: self; key retirements not proven complete.",
+        "checks": [
+          [
+            "manifest",
+            "pass"
+          ],
+          [
+            "checkpoint",
+            "pass"
+          ],
+          [
+            "witness quorum",
+            "pass"
+          ],
+          [
+            "keys",
+            "pass"
+          ],
+          [
+            "keys",
+            "warn"
+          ],
+          [
+            "signatures",
+            "pass"
+          ],
+          [
+            "run chain",
+            "pass"
+          ],
+          [
+            "inclusion",
+            "pass"
+          ],
+          [
+            "coverage",
+            "pass"
+          ],
+          [
+            "tiers",
+            "pass"
+          ],
+          [
+            "args source",
+            "pass"
+          ],
+          [
+            "isolation",
+            "pass"
+          ],
+          [
+            "fail-open classes",
+            "pass"
+          ],
+          [
+            "key assurance",
+            "pass"
+          ]
+        ]
+      }
+    },
+    {
+      "name": "v2 run-set",
+      "dir": "v2",
+      "command": "verify",
+      "args": [
+        "run-set.tkb",
+        "--trust",
+        "trust.json"
+      ],
+      "files": {
+        "run-set.tkb": "cc426b4c9beaa7aab13284b3dc07ed9b99eda24e2b9eb52f2c931b7a595ea6ed",
+        "trust.json": "dd13dfc84f8d3f13b70efa4ccd9e479c43e0e5078464cbd252c2c282e6bff699"
+      },
+      "expected": {
+        "exit_code": 0,
+        "integrity": "Integrity: VERIFIED.",
+        "assurance": "Assurance: dev; records ed25519; checkpoint ed25519 (tracekit.example.org/log/golden); cosigned ed25519 by witness.example.org/fake (customer) at 2026-10-10T00:19:23Z; approvals: self.",
+        "checks": [
+          [
+            "manifest",
+            "pass"
+          ],
+          [
+            "checkpoint",
+            "pass"
+          ],
+          [
+            "witness quorum",
+            "pass"
+          ],
+          [
+            "run-set",
+            "pass"
+          ],
+          [
+            "tenant-level gaps",
+            "warn"
+          ],
+          [
+            "log tail",
+            "warn"
+          ],
+          [
+            "keys",
+            "pass"
+          ],
+          [
+            "signatures",
+            "pass"
+          ],
+          [
+            "run chain",
+            "pass"
+          ],
+          [
+            "inclusion",
+            "pass"
+          ],
+          [
+            "coverage",
+            "pass"
+          ],
+          [
+            "tiers",
+            "pass"
+          ],
+          [
+            "args source",
+            "pass"
+          ],
+          [
+            "isolation",
+            "pass"
+          ],
+          [
+            "fail-open classes",
+            "pass"
+          ],
+          [
+            "key assurance",
+            "pass"
+          ]
+        ]
+      }
+    }
+  ]
+}
