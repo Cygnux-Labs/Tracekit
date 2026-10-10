@@ -21,20 +21,19 @@ If a vulnerability is being actively exploited we may disclose sooner, and will 
 
 | Version | Supported |
 |---|---|
-| Latest stable release (0.x, newest minor) | Yes: security fixes |
+| Latest stable release (1.x, newest minor) | Yes: security fixes |
 | Older stable releases | No: upgrade to the latest stable release |
 | Release candidates and pre-releases | No: test builds only; fixes land in the next release |
 | `main` | Development branch: reports welcome, no backported fixes |
 
-Until the first stable release ships, fixes land on `main` and in the next release; no older line is
-patched.
+Fixes land on `main` and in the next 1.x release; 0.x and the 1.0 release candidates are not patched.
 
 ## Verifying a release
 
 From the first release made with the attested release workflow (see the status note in
 [docs/RELEASING.md](docs/RELEASING.md)), every PyPI file, npm package and signer image carries SLSA build provenance from
 this repository's release workflow, plus SBOMs and `SHA256SUMS`; the image is also cosign-signed. Earlier releases
-(0.4.0 and before) have neither.
+(1.0.0rc2 and before) have neither.
 [docs/RELEASING.md](docs/RELEASING.md#verifying-a-release) shows how to check a download with
 `scripts/release/verify-release.sh`.
 

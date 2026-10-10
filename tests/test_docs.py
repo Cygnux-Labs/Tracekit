@@ -56,6 +56,17 @@ class DocLinks(unittest.TestCase):
         self.assertEqual(broken, [])
 
 
+class LimitsIndex(unittest.TestCase):
+    def test_every_doc_with_a_limits_section_is_linked_from_limits_md(self):
+        limits = os.path.join(ROOT, "docs", "limits.md")
+        linked = {os.path.normpath(os.path.join(ROOT, "docs", t.split("#", 1)[0])) for t in LINK.findall(read(limits))}
+        section = re.compile(r"(?:\A|\n\n)(?:#+ [^\n]*\blimits\b|\**limits\b)", re.I)
+        pages = glob.glob(os.path.join(ROOT, "docs", "**", "*.md"), recursive=True)
+        with_limits = [p for p in pages if p != limits and section.search(read(p))]
+        self.assertIn(os.path.join(ROOT, "docs", "issuer.md"), with_limits)
+        self.assertEqual([os.path.relpath(p, ROOT) for p in with_limits if os.path.normpath(p) not in linked], [])
+
+
 class DocCommands(unittest.TestCase):
     def test_every_tracekit_command_in_a_code_block_exists(self):
         known = cli_commands()

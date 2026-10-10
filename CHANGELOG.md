@@ -2,6 +2,26 @@
 
 All notable changes to Tracekit. Versions follow [PEP 440](https://peps.python.org/pep-0440/).
 
+## 1.0.0 (2026-10-11) — first stable release
+
+1.0.0 is 1.0.0rc2 made stable: the v2 signer, evidence format v2 and its verifier, witnesses, the monitor, team approvals,
+server deployments (container, Kubernetes sidecar, central signer on Postgres) and the run viewer. The v2 format is now
+stable: 1.x verifiers verify every 1.0 bundle, and a bundle that needs a newer verifier says so (`UNVERIFIABLE`), never
+`FAILED`. The v1 laptop setup and v1 bundles keep working unchanged. Upgrade notes from 0.4.0: see 1.0.0rc1 below.
+
+### Fixed
+- A network service that refused a request before reading its body (wrong Host, missing session or CSRF token) could
+  reset the connection before the client read the answer, on Windows always and elsewhere while a large body was
+  still arriving. Each service now reads what the client sent, up to 1 MiB, before closing.
+
+### Release
+- npm: no `@cygnux/tracekit-signer-darwin-x64` package (google-re2 and cryptography publish no Intel-Mac wheels it can
+  use). On an Intel Mac, `pip install 'tracekit-ai[signer]'`; `@cygnux/tracekit` uses that `tracekit` from PATH.
+- Releases are built and published by the attested release workflow: PyPI files, npm packages and the signer image
+  carry SLSA build provenance and SBOMs, the image is cosign-signed, and `SHA256SUMS` is attached to the GitHub release
+  ([docs/RELEASING.md](docs/RELEASING.md#verifying-a-release)).
+- SECURITY.md: 1.x is the supported line.
+
 ## 1.0.0rc2 (2026-10-11) — the run viewer
 
 The second 1.0 release candidate. Nothing changes in the signer, the evidence formats, the verifier or the policy
