@@ -156,6 +156,27 @@ class DevSigner(unittest.TestCase):
         waiter.join(10)
         self.assertEqual(waited, [{"approval_id": "a1", "state": "approved"}])
 
+    def test_an_event_the_signer_never_saw_uses_up_its_client_seq(self):
+        from tracekit.transport.unix import UnixServer
+        seqs = []
+
+        def handle(identity, frame):
+            if frame["method"] == "hello":
+                return {"proto": [RPC_VERSION, RPC_VERSION], "version": __version__, "pid": os.getpid()}
+            seqs.append(frame["client_seq"])
+            return {"rpc_version": 1}
+        path = os.path.join(self.dir, "s.sock")
+        c = Client(path, timeout=5)
+        req = {"run_id": "r1", "run_token": "t", "tool": "Bash", "args_source": "raw", "args": "{}"}
+        with self.assertRaises(client.SignerUnavailable):   # no signer yet: the caller's fail mode decides
+            c.decide({**req, "tool_call_id": "c1"})
+        server = UnixServer(path, handle)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        c.decide({**req, "tool_call_id": "c2"})
+        self.assertEqual(seqs, [1])   # the skipped 0 is the signer's client_counter_gap
+
     def test_run_handle_and_current_run(self):
         c = Client()
         with c.run("agent", run_id="r1") as run:
