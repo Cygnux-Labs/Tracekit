@@ -7,8 +7,15 @@ signer:
   tenant: default          # the tenant of the agent's runs (signer.yaml `tenants`, keyed by the agent's uid)
   durability: ack-on-fsync
   # More signer.yaml keys (witnesses, limits, fail_modes, ...: tracekit/signer/service.py). data_dir, socket,
-  # socket_mode, durability, tenants and metrics are set by the chart.
+  # socket_mode, durability, tenants, metrics and policy are set by the chart.
   config: {}
+  # The signer's policy file (docs/policy-v2.md), mounted at /etc/tracekit/policy.yaml. The default runs the image's
+  # server pack (/etc/tracekit/packs/server.yaml); replace it with your own, which may extend packs/server.yaml.
+  policy: |
+    extends: packs/server.yaml
+  resources:
+    requests: {cpu: 100m, memory: 128Mi}
+    limits: {cpu: "1", memory: 512Mi}
 
 agent:
   image: ""                # required: your agent's image, with the tracekit client (pip install tracekit-ai)
@@ -17,6 +24,9 @@ agent:
   env: []                  # TRACEKIT_SIGNER is set by the chart
   uid: 1000                # not signer.uid and not 0: the signer knows the agent by its peer uid
   gid: 1000
+  resources:
+    requests: {cpu: 250m, memory: 256Mi}
+    limits: {cpu: "2", memory: 2Gi}
 
 # The signer's keys and log. enabled false: an emptyDir, lost with the pod (dev only).
 persistence:

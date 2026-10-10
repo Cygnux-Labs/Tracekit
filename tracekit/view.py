@@ -43,7 +43,6 @@ import tempfile
 import threading
 import time
 from http.client import HTTPException
-from http.server import ThreadingHTTPServer
 from urllib.parse import urlencode, urlsplit
 
 from . import observe
@@ -52,6 +51,7 @@ from .format import checkpoint
 from .format.records import RecordSigner
 from .identity import oidc, webauthn
 from .identity.k8s_sa import _https
+from .netserver import Server
 from .sdk.client import Client, Incompatible, SignerUnavailable
 from .signer.rpc_schema import RPCError
 from .signer.service import dev_data_dir, load_config, lookup, read_vkeys, reader
@@ -60,7 +60,7 @@ from .storage.file import NOTE
 from .verify import v2
 
 POLL_S = 1.0
-HANDSHAKE_S = 30
+THREADS, PER_IP = 512, 128   # each open page holds a connection for its event stream; a team may share one address
 DEV_NOTE = ("trust pins this store's own log.vkey: dev assurance, the viewer runs as the same user as the dev signer "
             "and proves only that the records match that key")
 STORED_NOTE = ("trust pins the log vkey this store holds and proves only that the records match that key; pin the "
@@ -71,7 +71,7 @@ ROLES = ("auditor", "approver", "operator-admin")
 RUNS_PAGE, RECORDS_PAGE, VERDICTS_MAX = 50, 500, 4096
 SEARCH_KEYS = {"tenant", "run", "agent", "since", "until", "verdict", "gaps", "denies", "approvals", "after", "limit"}
 VERDICTS = ("verified", "failed", "pending")
-LOGIN_S, SESSION_S, PENDING_MAX, SESSIONS_MAX = 600, 8 * 3600, 1024, 4096
+LOGIN_S, SESSION_S, SESSIONS_MAX = 600, 8 * 3600, 4096
 PASSKEY_LOGIN_S = 300   # a passkey is registered only this soon after the sign-in
 log = logging.getLogger(__name__)
 
@@ -104,7 +104,8 @@ class OidcLogin:
                 self.secret = f.read().strip()
         self._lock = threading.Lock()
         # lean: sessions live in this process (a restart signs everyone out); a shared store once viewers are replicated
-        self._pending, self._sessions = collections.OrderedDict(), collections.OrderedDict()
+        self._sessions = collections.OrderedDict()
+        self._key = secrets.token_bytes(32)   # seals login states; a pending login is held by its browser, not here
 
     def _endpoint(self, name):
         url = self.issuer.document().get(name)
@@ -112,15 +113,18 @@ class OidcLogin:
             raise ValueError(f"the issuer's {name} is not an https:// URL")
         return url
 
+    def _derive(self, label, state):
+        return base64.urlsafe_b64encode(hmac.new(self._key, f"{label}:{state}".encode(), hashlib.sha256).digest()) \
+            .rstrip(b"=").decode()
+
     def start(self):
-        """(the issuer's authorization URL, state) for a new login."""
+        """(the issuer's authorization URL, state) for a new login. The state carries its expiry under this viewer's
+        MAC, and the PKCE verifier and nonce are derived from it, so nothing is kept until the browser comes back."""
         url = self._endpoint("authorization_endpoint")
-        state, nonce, verifier = secrets.token_urlsafe(32), secrets.token_urlsafe(32), secrets.token_urlsafe(48)
+        body = f"{int(self.clock()) + LOGIN_S}.{secrets.token_urlsafe(24)}"
+        state = f"{body}.{self._derive('state', body)}"
+        verifier, nonce = self._derive("verifier", state), self._derive("nonce", state)
         challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).rstrip(b"=").decode()
-        with self._lock:
-            self._pending[state] = (verifier, nonce, self.clock() + LOGIN_S)
-            while len(self._pending) > PENDING_MAX:
-                self._pending.popitem(last=False)
         return url + ("&" if "?" in url else "?") + urlencode({
             "response_type": "code", "client_id": self.client_id, "redirect_uri": self.redirect_uri,
             "scope": "openid", "state": state, "nonce": nonce, "code_challenge": challenge,
@@ -130,10 +134,12 @@ class OidcLogin:
         """The session id of a login that `state` (also the browser's login cookie) and `code` complete, else None."""
         if not (state and code and hmac.compare_digest(state.encode(), browser_state.encode())):
             return None
-        with self._lock:
-            verifier, nonce, until = self._pending.pop(state, (None, None, 0))
-        if self.clock() >= until:
+        body, _, mac = state.rpartition(".")
+        until = body.partition(".")[0]
+        if not (hmac.compare_digest(mac.encode(), self._derive("state", body).encode()) and until.isdigit()
+                and self.clock() < int(until)):
             return None
+        verifier, nonce = self._derive("verifier", state), self._derive("nonce", state)
         form = {"grant_type": "authorization_code", "code": code, "redirect_uri": self.redirect_uri,
                 "client_id": self.client_id, "code_verifier": verifier}
         if self.secret:
@@ -514,20 +520,6 @@ class Runs:
             os.unlink(out)
 
 
-class _TLSServer(ThreadingHTTPServer):
-    """HTTPS, with each handshake on the request's own thread so a silent client never stalls the others."""
-    tls = None
-
-    def finish_request(self, request, client_address):
-        request.settimeout(HANDSHAKE_S)   # a client that connects and stays silent frees its thread
-        try:
-            s = self.tls.wrap_socket(request, server_side=True)
-        except OSError:   # the timeout, or not TLS
-            return
-        with s:
-            super().finish_request(s, client_address)
-
-
 def server(feed, host, port, token, tls=None, login=None, desk=None, runs=None):
     """The viewer's HTTP server (HTTPS with `tls`, an ssl.SSLContext), open to requests that present `token` (or the
     session cookie it is exchanged for), or with `login` (an OidcLogin) a session of its own, whose approver sessions
@@ -536,10 +528,12 @@ def server(feed, host, port, token, tls=None, login=None, desk=None, runs=None):
     if not token:
         raise ValueError("the viewer needs a token")
     hosts = [host] + ([urlsplit(login.redirect_uri).hostname] if login else [])
-    srv = (_TLSServer if tls else ThreadingHTTPServer)((host, port), observe.make_handler(
-        feed, token, hosts, secure=bool(tls), login=login, approvals=desk, runs=runs))
-    srv.tls, srv.daemon_threads = tls, True
-    return srv
+
+    class Handler(observe.make_handler(feed, token, hosts, secure=bool(tls), login=login, approvals=desk, runs=runs)):
+        def stream(self, *a):
+            self.server.stop_deadline()   # an event stream lasts as long as the page is open
+            return super().stream(*a)
+    return Server((host, port), Handler, tls, max_threads=THREADS, max_per_ip=PER_IP)
 
 
 def main(argv=None):

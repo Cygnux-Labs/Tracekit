@@ -48,6 +48,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from . import client, policy, privacy
+from .observe import LOOPBACK_HOSTS, _host_only
 from .usage import from_otel
 from .core import GENESIS, SCHEMA_VERSION, jsonable, now_ts
 from .otlp_wire import MAX_BODY, WireError, decode, encode_response_protobuf
@@ -528,6 +529,9 @@ def make_handler(receiver):
             self.wfile.write(data)
 
         def do_POST(self):
+            if _host_only(self.headers.get("Host")) not in LOOPBACK_HOSTS:   # a rebound DNS name: not a local exporter
+                self.close_connection = True
+                return self._out(403, {"Content-Type": "application/json"}, b'{"message":"unexpected Host header"}')
             if self.path.split("?")[0].rstrip("/") != "/v1/traces":
                 self.close_connection = True
                 return self._out(404, {"Content-Type": "application/json"}, b'{"message":"not found"}')

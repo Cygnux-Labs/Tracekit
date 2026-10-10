@@ -142,6 +142,10 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         self.timeout = self.server.read_timeout
         super().setup()
 
+    def handle_one_request(self):
+        self.server.restart_deadline()
+        super().handle_one_request()
+
     def log_message(self, *a):
         pass
 
@@ -182,6 +186,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         if len(body) < int(n):
             self.close_connection = True
             return
+        self.server.stop_deadline()   # the request is in; the upstream's answer may stream for minutes
         try:
             req = json.loads(body)
         except ValueError:
@@ -325,7 +330,6 @@ def serve(cfg, client=None):
     with open(cfg["api_key_file"], encoding="utf-8") as f:
         key = f.read().strip()
     srv = transport.HttpServer(*transport.configure(cfg["http"]), None, handler=_Handler)
-    # lean: one thread per connection, like the signer's listener; a bounded pool when a deployment needs a cap
     srv.gateway = Gateway(cfg["upstream"], key, cfg.get("api_key_header", "authorization"),
                           client or Client(cfg["signer"]), cfg.get("max_body", MAX_BODY))
     return srv

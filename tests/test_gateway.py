@@ -49,6 +49,7 @@ class Upstream(http.server.BaseHTTPRequestHandler):
 
     def do_POST(self):
         self.server.seen.append((dict(self.headers), self.rfile.read(int(self.headers["content-length"]))))
+        time.sleep(self.server.delay)
         how, data, *status = self.server.reply
         if how == "redirect":
             self.send_response(302)
@@ -106,7 +107,7 @@ class Gateway(unittest.TestCase):
         self.closed = False
         self.addCleanup(self.close)
         self.up = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Upstream)
-        self.up.seen, self.up.reply = [], ("json", COMPLETION)
+        self.up.seen, self.up.reply, self.up.delay = [], ("json", COMPLETION), 0
         up_port = serve(self, self.up)
         with open(os.path.join(self.dir, "provider.key"), "w") as f:
             f.write("provider-key\n")
@@ -118,7 +119,8 @@ class Gateway(unittest.TestCase):
                        "upstream": f"http://127.0.0.1:{up_port}", "api_key_file": "provider.key",
                        "signer": "unused", "max_body": 4096}, f)
         self.signer = InProcess(self.s)
-        self.port = serve(self, gateway.serve(gateway.load_config(os.path.join(self.dir, "gateway.yaml")), self.signer))
+        self.gw = gateway.serve(gateway.load_config(os.path.join(self.dir, "gateway.yaml")), self.signer)
+        self.port = serve(self, self.gw)
         self.run = self.register(AGENT)
 
     def close(self):
@@ -229,6 +231,10 @@ class TestExchange(Gateway):
         self.assertEqual(self.exchanges(), [("gateway", "request", None), ("gateway", "response", None)])
         [resp] = [e for e in self.events() if e["data"].get("phase") == "response"]
         self.assertEqual([t["id"] for t in resp["data"]["tool_uses"]], ["call_2"])
+
+    def test_a_slow_upstream_is_not_cut_by_the_request_deadline(self):
+        self.gw.deadline, self.up.delay = 0.2, 0.5   # the request is in at once; its answer takes longer
+        self.assertEqual(self.post()[0], 200)
 
     def test_upstream_cut_mid_stream_is_an_error_for_the_client_and_the_record(self):
         for case, data in (("broken", STREAM[:60]), ("no terminal event", STREAM[:-len(sse(b"[DONE]"))])):

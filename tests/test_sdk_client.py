@@ -1,12 +1,16 @@
 """v2 Python client (tracekit/sdk/client.py) and dev auto-spawn (tracekit/sdk/autospawn.py), against
 tracekit.testing.serve_fake running as a real detached process."""
 import asyncio
+import collections
 import contextlib
+import datetime
 import io
 import json
 import os
+import random
 import shutil
 import signal
+import socket
 import stat
 import subprocess
 import sys
@@ -271,6 +275,191 @@ class Transports(unittest.TestCase):
             c = Client("https://127.0.0.1:1", timeout=1)
         with self.assertRaisesRegex(client.SignerUnavailable, "token file"):
             c.status()
+
+    def https(self, answer, timeout=5):
+        """A Client of an HTTPS signer whose requests `answer(frame)` answers, in place of the network."""
+        def post(_, body, timeout, host=None):
+            frame = json.loads(body) if isinstance(body, bytes) else body
+            return HELLO if frame["method"] == "hello" else answer(frame)
+        patch = mock.patch.object(client._Https, "post", post)
+        patch.start()
+        self.addCleanup(patch.stop)
+        return Client("https://signer.test:8443", timeout=timeout)
+
+    def test_a_runs_events_reach_an_https_signer_in_client_seq_order(self):
+        arrived = collections.defaultdict(list)
+
+        def answer(frame):
+            time.sleep(random.random() / 200)   # the network: requests sent in order may arrive out of it
+            arrived[frame["run_id"]].append(frame["client_seq"])
+            return {"ok": True}
+        c = self.https(answer)
+
+        def work(run):
+            for i in range(10):
+                c.decide({**EVENT, "run_id": run, "tool_call_id": f"c{i}", "args": {}})
+        threads = [threading.Thread(target=work, args=(f"r{t % 2}",)) for t in range(6)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(30)
+        self.assertEqual(arrived, {"r0": list(range(30)), "r1": list(range(30))})
+
+    def test_an_event_waiting_behind_an_unanswered_one_gives_up_in_time_and_uses_its_client_seq(self):
+        release, arrived = threading.Event(), []
+
+        def answer(frame):
+            arrived.append(frame["client_seq"])
+            if frame["tool_call_id"] == "slow":
+                release.wait(10)
+            return {"ok": True}
+        c = self.https(answer, timeout=0.3)
+        slow = threading.Thread(target=c.decide, args=({**EVENT, "tool_call_id": "slow", "args": {}},))
+        slow.start()
+        while not arrived:
+            time.sleep(0.01)
+        t = time.monotonic()
+        with self.assertRaises(client.SignerUnavailable):
+            c.decide({**EVENT, "tool_call_id": "waits", "args": {}})
+        self.assertLess(time.monotonic() - t, 2)
+        release.set()
+        slow.join(10)
+        c.decide({**EVENT, "tool_call_id": "next", "args": {}})
+        self.assertEqual(arrived, [0, 2])   # 1, the call that gave up, is the signer's client_counter_gap
+
+    def test_close_closes_every_threads_https_connection(self):
+        conns, answers = [], iter([json.dumps(HELLO).encode(), b"{}", b"{}"])
+
+        def connection(*_, **__):
+            conns.append(mock.Mock(sock=None))
+            conns[-1].getresponse.return_value.read.side_effect = lambda: next(answers)
+            return conns[-1]
+        with mock.patch.object(client.http.client, "HTTPSConnection", connection):
+            c = Client("https://signer.test:8443", timeout=5)
+            c.status()
+            t = threading.Thread(target=c.status)
+            t.start()
+            t.join(10)
+            c.close()
+        self.assertEqual([conn.close.call_count for conn in conns], [1, 1])
+
+
+HELLO = {"proto": [RPC_VERSION, RPC_VERSION], "version": __version__, "pid": os.getpid()}
+EVENT = {"run_id": "r1", "run_token": "t", "tool": "Bash", "args_source": "parsed"}
+
+
+@unittest.skipUnless(os.name == "posix", "Unix sockets")
+class FakeSigners(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(dir="/tmp")   # short path: macOS caps socket paths at 104 bytes
+        self.addCleanup(shutil.rmtree, self.dir, True)
+        self.path = os.path.join(self.dir, "s.sock")
+
+    def serve(self, answer):
+        """A signer whose requests `answer(frame)` answers."""
+        from tracekit.transport.unix import UnixServer
+        server = UnixServer(self.path, lambda _, f: HELLO if f["method"] == "hello" else answer(f))
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+
+    def stalled(self, read=True):
+        """A signer that answers hello, then reads one request per connection (with `read`) and answers nothing. -> the
+        requests it read."""
+        srv, frames, held = socket.socket(socket.AF_UNIX), [], []
+        srv.bind(self.path)
+        srv.listen()
+
+        def serve():
+            with contextlib.suppress(OSError):   # closed by the cleanup
+                while True:
+                    conn, _ = srv.accept()
+                    held.append(conn)
+                    rfile = conn.makefile("rb")
+                    rfile.readline()
+                    conn.sendall((json.dumps(HELLO) + "\n").encode())
+                    if read:
+                        frames.append(json.loads(rfile.readline() or "null"))
+        threading.Thread(target=serve, daemon=True).start()
+        self.addCleanup(lambda: [s.close() for s in held + [srv]])
+        return frames
+
+    def test_a_request_that_is_not_json_takes_no_answer_and_no_client_seq(self):
+        seen = []
+
+        def answer(frame):
+            seen.append(frame.get("client_seq"))
+            return {"method": frame["method"], "tool_call_id": frame.get("tool_call_id")}
+        self.serve(answer)
+        c = Client(self.path, timeout=2)
+        with self.assertRaises(client.RPCError) as cm:
+            c.decide({**EVENT, "tool_call_id": "bad", "args": {"when": datetime.date(2026, 1, 1)}})
+        self.assertEqual(cm.exception.code, "invalid_request")
+        self.assertEqual(c.status(), {"method": "status", "tool_call_id": None})
+        self.assertEqual(c.decide({**EVENT, "tool_call_id": "c2", "args": {}})["tool_call_id"], "c2")
+        self.assertEqual(seen, [None, 0])
+
+    def test_a_request_over_the_frame_limit_is_refused_before_it_is_sent(self):
+        seen = []
+        self.serve(lambda frame: seen.append(frame["client_seq"]) or {"ok": True})
+        c = Client(self.path, timeout=2)
+        with self.assertRaisesRegex(client.RPCError, r"quota_exceeded: the decide request is \d+ bytes, over the "
+                                                     r"signer's limit of 1048576 bytes per request"):
+            c.decide({**EVENT, "tool_call_id": "big", "args": {"content": "x" * client.MAX_LINE}})
+        c.decide({**EVENT, "tool_call_id": "c2", "args": {}})
+        self.assertEqual(seen, [0])
+
+    def test_a_signer_that_stops_reading_fails_every_waiting_call_in_time(self):
+        self.stalled(read=False)
+        c, took = Client(self.path, timeout=0.5), {}
+
+        def call(run, size):
+            t = time.monotonic()
+            try:
+                c.decide({**EVENT, "run_id": run, "tool_call_id": run, "args": {"content": "x" * size}})
+            except client.SignerUnavailable:
+                took[run] = time.monotonic() - t
+        threads = [threading.Thread(target=call, args=("big", 900_000), daemon=True),
+                   threading.Thread(target=call, args=("small", 10), daemon=True)]
+        for t in threads:
+            t.start()
+            time.sleep(0.1)
+        for t in threads:
+            t.join(5)
+        self.assertEqual(sorted(took), ["big", "small"])
+        self.assertLess(max(took.values()), 3)
+        closer = threading.Thread(target=c.close, daemon=True)
+        closer.start()
+        closer.join(2)
+        self.assertFalse(closer.is_alive())
+
+    def test_a_long_poll_without_an_answer_is_not_sent_again(self):
+        frames = self.stalled()
+        c = Client(self.path, timeout=0.3)
+        with self.assertRaises(client.SignerUnavailable):
+            c.approval_wait({"run_id": "r1", "run_token": "t", "approval_id": "a1", "timeout_ms": 0})
+        self.assertEqual([f["method"] for f in frames], ["approval_wait"])
+
+    def test_a_forked_child_does_not_inherit_a_held_lock(self):
+        code = f"""if 1:
+            import os, signal, threading
+            from tracekit.sdk.client import Client, SignerUnavailable
+            c, held, done = Client({os.path.join(self.dir, "none.sock")!r}, timeout=1), threading.Event(), threading.Event()
+            threading.Thread(target=lambda: (c._lock.acquire(), held.set(), done.wait())).start()   # mid-call
+            held.wait()
+            pid = os.fork()
+            if pid == 0:
+                signal.alarm(5)
+                try:
+                    c.status()
+                except SignerUnavailable:
+                    os._exit(0)
+                os._exit(3)
+            done.set()
+            print(os.waitstatus_to_exitcode(os.waitpid(pid, 0)[1]))"""
+        p = subprocess.run([sys.executable, "-c", code], env={**os.environ, "PYTHONPATH": ROOT}, capture_output=True,
+                           text=True, timeout=30)
+        self.assertEqual(p.stdout.strip(), "0", p.stderr)
 
 
 if __name__ == "__main__":

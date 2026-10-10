@@ -18,7 +18,7 @@ import test_signer_service as ts
 from cryptography.hazmat.primitives.asymmetric import ec, ed25519, rsa
 from test_identity_k8s import b64, b64int, https_server, jwt
 from test_identity_mtls import Pki, serve, tmpdir
-from tracekit import observe
+from tracekit import observe, view
 from tracekit.identity import k8s_sa, oidc
 from tracekit.sdk.client import Client
 from tracekit.signer import service as svc
@@ -365,8 +365,43 @@ class TestViewerLogin(unittest.TestCase):
         state = parse_qs(urlsplit(r.getheader("Location")).query)["state"][0]
         for path, cookie in ((f"/callback?code=x&state={state}", ""),   # no login cookie: another browser's state
                              (f"/callback?code=x&state={state}", f"tracekit_login={state}"),   # the IdP refuses x
-                             (f"/callback?code=x&state={state}", f"tracekit_login={state}")):   # state used up
+                             (f"/callback?code=x&state={state}", f"tracekit_login={state}")):   # refused again
             self.assertEqual(self.get(path, cookie)[0].status, 403)
+
+
+class TestViewerLoginState(unittest.TestCase):
+    """A pending login is held by its browser: no number of other logins pushes it out."""
+
+    def setUp(self):
+        self.now = 1000.0
+        self.login = OidcLogin({"issuer": "corp", "client_id": "viewer", "redirect_uri": "http://127.0.0.1/callback",
+                                "roles": {"auditor": ["person:corp/a"]}},
+                               {"corp": {"issuer": "https://idp.invalid", "audience": "x"}}, clock=lambda: self.now)
+        self.login.issuer._doc = {"authorization_endpoint": "https://idp.invalid/auth",
+                                  "token_endpoint": "https://idp.invalid/token"}
+
+    def verifier(self, state):
+        """The code_verifier `state` sends to the token endpoint; None when it reaches no issuer."""
+        sent = []
+        with mock.patch.object(view, "_https", side_effect=lambda *a: sent.append(parse_qs(a[3])) or {}):
+            self.assertIsNone(self.login.finish(state, "c", state))   # the fake issuer gives no ID token
+        return sent[0]["code_verifier"][0] if sent else None
+
+    def test_other_logins_do_not_evict_a_pending_one(self):
+        url, state = self.login.start()
+        for _ in range(2000):
+            self.login.start()
+        challenge = parse_qs(urlsplit(url).query)["code_challenge"][0]
+        digest = hashlib.sha256(self.verifier(state).encode()).digest()
+        self.assertEqual(base64.urlsafe_b64encode(digest).rstrip(b"=").decode(), challenge)
+
+    def test_forged_or_expired_state_reaches_no_issuer(self):
+        _, state = self.login.start()
+        until, rand, mac = state.split(".")
+        for forged in (f"{int(until) + 3600}.{rand}.{mac}", f"{until}.{rand}", "x"):
+            self.assertIsNone(self.verifier(forged), forged)
+        self.now += view.LOGIN_S
+        self.assertIsNone(self.verifier(state))
 
 
 if __name__ == "__main__":
