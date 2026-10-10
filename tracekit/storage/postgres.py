@@ -502,7 +502,8 @@ def search_runs(dsn, tenant, limit, before=None, run=None, agent=None, since=Non
                              (f"{c['ended']} >= %(since)s", since), (f"{c['started']} <= %(until)s", until),
                              (f"{c['gaps']} > 0", gaps or None), (f"{c['denies']} > 0", denies or None),
                              (f"{c['approvals']} > 0", approvals or None)) if v is not None]
-    # lean: aggregates the tenant's records on every page; a run table the signer keeps once logs hold millions
+    # lean: aggregates the tenant's records on every page, and the viewer then opens a PostgresReader (O(records)) per log
+    # with matches; a run table the signer keeps once logs hold millions
     sql = ("SELECT tenant, run_id, " + ", ".join(f"{e} AS {k}" for k, e in c.items()) + " FROM tracekit_records"
            + (" WHERE " + " AND ".join(where) if where else "") + " GROUP BY tenant, run_id"
            + (" HAVING " + " AND ".join(having) if having else "") + " ORDER BY min(seq) DESC LIMIT %(limit)s")

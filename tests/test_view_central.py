@@ -141,7 +141,7 @@ class CentralViewer(unittest.TestCase):
                              ("?verdict=verified", ["a3", "a1", "a2"]), ("?verdict=failed", []), ("?gaps=1", []),
                              ("?approvals=1", [])):
             self.assertEqual(self.listed(query, self.acme), names, query)
-        for query in ("?limit=0", f"?limit={view.RUNS_PAGE + 1}", "?limit=x", "?after=x", "?verdict=good", "?nope=1"):
+        for query in ("?limit=0", f"?limit={view.RUNS_PAGE + 1}", "?limit=x", "?after=x", "?verdict=good", "?nope=1", "?gaps=0"):
             self.assertEqual(self.get("/api/runs" + query, self.acme)[0], 400, query)
         a1 = f"/api/run?log=0&tenant=acme&run={self.ids['a1']}"
         for query in ("&from=x", "&from=-1"):
@@ -165,11 +165,10 @@ class CentralViewer(unittest.TestCase):
         self.assertTrue(run["records"])
         pg.sql(self.admin1, "UPDATE tracekit_records SET record = regexp_replace(record::text, '\"tool\": ?\"Bash\"', "
                "'\"tool\":\"Bosh\"')::json WHERE run_id = %s", (self.ids["a2"],))
-        port = self.serve(view.Runs(self.files))   # verdicts are kept per run size: a viewer that has not seen it
-        run = json.loads(self.get(f"/api/run?log=1&tenant=acme&run={self.ids['a2']}", self.acme, port)[2])
+        run = json.loads(self.get(f"/api/run?log=1&tenant=acme&run={self.ids['a2']}", self.acme)[2])
         self.assertEqual((run["verdict"]["verdict"], run["verdict"]["integrity"], run["verdict"]["label"],
                           run["records"]), ("failed", "FAILED", view.OPERATOR_SIDE, []))
-        status, _, body = self.get("/api/runs?verdict=failed", self.acme, port)
+        status, _, body = self.get("/api/runs?verdict=failed", self.acme)
         self.assertEqual([(r["run_id"], r["verdict"]["label"]) for r in json.loads(body)["runs"]],
                          [(self.ids["a2"], view.OPERATOR_SIDE)])
 
