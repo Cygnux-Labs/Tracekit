@@ -223,7 +223,9 @@ class TestVerifyV2(Case):
         log = self.log()
         log.epoch(KEY1)
         log.add("run.registered", {"agent": {"name": "agent"}, "identity": {"scheme": "uid", "subject": "1", "attested": True},
-                                   "signer_isolation": "separate-user", "fail_modes": {"default": "closed", "read": "open"}})
+                                   "signer_isolation": "separate-user", "fail_modes": {"default": "closed", "read": "open"},
+                                   "harness": {"name": "claude", "exe": "/usr/bin/claude", "pid": 9, "start_time": 1,
+                                               "attested": True}})
         for i, (tier, source) in enumerate((("T1", "parsed"), ("T2", "raw"), (None, "coerced"))):
             log.add("tool.call", {"tool_use_id": f"tc-{i}", "name": "Bash", "input": {}}, tool_call_id=f"tc-{i}",
                     args_source=source, **({"tier": tier} if tier else {}))
@@ -236,6 +238,7 @@ class TestVerifyV2(Case):
         want = {"tiers": "3 tool call(s): T1 1, T2 1, T3 0, untiered 1",
                 "args source": "3 record(s): raw 1, parsed 1, coerced 1",
                 "isolation": "signer-reported: separate-user 1 run(s)",
+                "harness": "signer-attested: run-a claude",
                 "fail-open classes": "read",
                 "key assurance": "asserted: the log declares its record keys; none is attested"}
         details = {c["check"]: c["detail"] for c in rep.checks if c["status"] == "pass"}
