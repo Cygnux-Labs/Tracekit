@@ -135,7 +135,8 @@ class ShippedWitnessOnly(unittest.TestCase):
         files = subprocess.run(["git", "ls-files"], cwd=ROOT, capture_output=True, text=True, check=True).stdout.split()
         # context files, release notes and the frozen paper record history
         skip = ("CHANGELOG.md", "AGENTS.md", "CONTEXT_MANIFEST.json", "paper/", "tests/test_compose.py",
-                "tracekit/witness_server.py", "tests/test_witness_server.py", "tracekit/cli.py")
+                "tracekit/witness_server.py", "tests/test_witness_server.py", "tracekit/cli.py",
+                "docs/security-checklist.md", "tests/test_security_checklist.py")   # it is an HTTP surface until deleted
         hits = []
         for rel in files:
             if rel.startswith(skip) or not os.path.isfile(os.path.join(ROOT, rel)):
