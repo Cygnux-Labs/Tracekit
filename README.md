@@ -175,6 +175,17 @@ report it.
 [evaluation](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/evaluation.md) ·
 [review packet](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/review-packet.md)
 
+## v2 signer
+
+The v2 signer (preview) serves agents over RPC, decides policy itself and writes evidence format v2:
+[quickstart](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/quickstart-v2.md) ·
+[format spec](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/format-v2.md) ·
+[threat model](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/threat-model-server.md) ·
+[reading a verify report](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/verdicts.md) ·
+[auditor guide](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/auditor-guide.md) ·
+[approvals](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/approvals.md) ·
+[policy reference](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/policy-v2.md)
+
 ## Roadmap
 
 Tracekit is being extended from laptop coding agents to server-hosted agents: a signer service that agents reach over
