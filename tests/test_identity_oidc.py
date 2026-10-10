@@ -88,7 +88,8 @@ class Provider:
 
     def claims(self, sub="u-bob", **kw):
         now = int(time.time())
-        return {"iss": self.iss, "aud": AUD, "sub": sub, "email": sub.split("-", 1)[1] + "@corp.example", "tenant": "acme",
+        return {"iss": self.iss, "aud": AUD, "sub": sub, "email": sub.split("-", 1)[1] + "@corp.example", "email_verified": True,
+                "tenant": "acme",
                 "groups": [], "iat": now, "exp": now + 600, **kw}
 
     def token(self, kid="es", **kw):
@@ -124,6 +125,9 @@ class TestValidate(unittest.TestCase):
         now = int(time.time())
         es = self.idp.keys["es"]
         for why, tok in [("issuer", self.idp.token(iss="https://evil.example")),
+                         ("email not verified", self.idp.token(email_verified=False)),
+                         ("email not verified", token(es, "es", **{k: v for k, v in self.idp.claims().items()
+                                                                   if k != "email_verified"})),
                          ("audience", self.idp.token(aud="other")),
                          ("expired", self.idp.token(exp=now - 120)),
                          ("unknown kid", token(es, "nope", **self.idp.claims())),

@@ -20,7 +20,7 @@ http:
       audience: tracekit-signer
       discovery: https://...          # default <issuer>/.well-known/openid-configuration
       ca: corp-ca.pem                 # default: the system CAs
-      person_claim: email             # the stable person id (default sub)
+      person_claim: email             # the stable person id (default sub); with email, tokens need email_verified: true
       person_ns: corp                 # person ids are <person_ns>/<claim>; issuers that share it share people
       groups_claim: groups            # default groups
       tenant_claim: tenant            # optional: the identity's tenant
