@@ -1,5 +1,7 @@
 # FAQ and limits
 
+Every known limit and trade-off, from all the docs, is listed in one place: [known limits](limits.md).
+
 ## What does a verified bundle prove?
 
 That the records in it are the ones the signer signed: none edited, dropped, reordered or added after signing, all in

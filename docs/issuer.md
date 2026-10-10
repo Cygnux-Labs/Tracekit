@@ -123,6 +123,8 @@ ignored, and a revocation no pinned issuer signed is a warning. Records of a rev
 
 ## Limits
 
+All limits: [limits.md](limits.md).
+
 - `tracekit monitor` still flags each `signer.epoch` after seq 0 as a key announcement it was not told about. A
   rotating signer's kids can't be listed in advance with `--allow KID`, so expect those conflicts until the monitor
   can pin issuers.
