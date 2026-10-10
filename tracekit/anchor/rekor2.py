@@ -67,7 +67,7 @@ def _b64(s):
     return base64.b64decode(s, validate=True)
 
 
-def _rekor_checkpoint(envelope, tlog):
+def rekor_checkpoint(envelope, tlog):
     """(size, root) of a Rekor checkpoint note signed by `tlog`'s key. Rekor's key id is the first 4 bytes of its log
     id, not the C2SP key hash."""
     i = envelope.find("\n\n")
@@ -111,7 +111,7 @@ def verify(anchor, data, publishing_spki, trusted_root):
         size, root = int(ip["treeSize"]), _b64(ip["rootHash"])
         if not verify_inclusion(int(ip["logIndex"]), size, leaf_hash(body), [_b64(h) for h in ip["hashes"]], root):
             raise AnchorError("the Rekor inclusion proof does not verify")
-        if _rekor_checkpoint(ip["checkpoint"]["envelope"], tlog) != (size, root):
+        if rekor_checkpoint(ip["checkpoint"]["envelope"], tlog) != (size, root):
             raise AnchorError("the Rekor checkpoint is not of the proof's tree")
     except (KeyError, TypeError, ValueError, IndexError, AttributeError) as e:
         if isinstance(e, AnchorError):

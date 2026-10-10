@@ -11,7 +11,7 @@ import uuid
 
 from adapter_contract import tmpdir
 from test_reconcile import use
-from test_signer_service import ME, records
+from test_signer_service import records
 from tracekit import gateway
 from tracekit.identity.base import CallerIdentity
 from tracekit.sdk.client import SignerUnavailable
