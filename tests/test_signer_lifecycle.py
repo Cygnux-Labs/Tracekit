@@ -131,7 +131,9 @@ class TestLifecycle(Lifecycle):
         self.refused("run_closed", "close_run", run)
         self.call("complete", self.ev(run, 2, tool_call_id="tc-1", **done))   # a late record
         self.s.sweep(time.monotonic() + 30)
-        self.call("model_event", self.ev(run, 3, provider="p", model="m", phase="response"))
+        self.call("model_event", self.ev(run, 3, provider="p", model="m", phase="response", tool_uses=[   # late L3
+            {"id": "tc-1", "name": "read_file", "executed_by": "client", "args_source": "parsed",
+             "args_digest": done["args_digest"]}]))
         self.s.sweep(time.monotonic() + 61)
         self.refused("run_closed", "complete", self.ev(run, 4, tool_call_id="tc-1", **done))
         es = self.events(run["run_id"])
@@ -140,7 +142,8 @@ class TestLifecycle(Lifecycle):
         final = es[-1]
         self.assertEqual(final["source"], "signer")
         rs = {r["event"]["run_seq"]: r["hash"] for r in records(self.dir) if r["event"]["run_id"] == run["run_id"]}
-        self.assertEqual(final["data"], {"head_run_seq": 5, "head_hash": rs[5]})
+        self.assertEqual(final["data"], {"head_run_seq": 5, "head_hash": rs[5], "coverage": {
+            "layers": ["L2", "L3"], "reconciled": 1, "unreconciled": {}}})
 
     def test_idle_close_pauses_while_an_approval_is_pending(self):
         t0 = time.monotonic()
