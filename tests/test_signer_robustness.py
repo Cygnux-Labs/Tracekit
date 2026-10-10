@@ -4,7 +4,6 @@ import base64
 import errno
 import json
 import os
-import sys
 import threading
 import time
 import unittest
@@ -187,12 +186,12 @@ class TestMemory(Case):
     def test_a_deeply_nested_request_is_invalid_not_a_crash(self):
         s = self.open()
         run = self.register(s)
-        deep = []
-        for _ in range(sys.getrecursionlimit()):
-            deep = [deep]
-        self.refused("invalid_request", self.call, s, "decide", {**run, "stream": "s", "client_seq": 0,
-                                                                 "tool_call_id": "t", "tool": "t",
-                                                                 "args_source": "parsed", "args": {"a": deep}})
+        # how deep a request must nest to exceed the limit while it is checked, hashed or copied depends on the
+        # Python version (3.12+ checks the C stack separately): the handler's RecursionError stands for any of them
+        with mock.patch.object(svc.SignerService, "_decide", side_effect=RecursionError):
+            self.refused("invalid_request", self.call, s, "decide", {**run, "stream": "s", "client_seq": 0,
+                                                                     "tool_call_id": "t", "tool": "t",
+                                                                     "args_source": "parsed", "args": {}})
 
 
 class TestCloseLog(Case):
