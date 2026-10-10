@@ -31,7 +31,7 @@ import { REQUESTS, RPC_VERSION } from "./rpc_schema.js";
 import { validate } from "./validate.js";
 
 export { RPC_VERSION };
-export { argsDigest, canonicalize, strictParse, StrictJSONError } from "./jcs.js";
+export { argsDigest, canonicalize, digest, strictParse, StrictJSONError } from "./jcs.js";
 
 export const SYSTEM_CONFIG = "/etc/tracekit/client.json";
 const CONNECT_TIMEOUT_MS = 2000;
