@@ -274,7 +274,8 @@ class TestViewerLogin(unittest.TestCase):
             records=[{"tool_name": "a1", "tenant": "acme"}, {"tool_name": "b1", "tenant": "beta"}], base=0,
             lock=threading.Condition(), verify=lambda tenant=None: (0, [f"tenant {tenant}"], None))
         login = OidcLogin({"issuer": "corp", "client_id": AUD, "redirect_uri": "http://127.0.0.1/callback",
-                           "roles": {"auditor": ["group:corp/auditors"], "approver": ["person:corp/ann@corp.example"]}},
+                           "roles": {"auditor": ["group:corp/auditors"], "approver": ["person:corp/ann@corp.example"],
+                                     "operator-admin": ["group:corp/sre"]}},
                           self.idp.config(self.pki))
         self.calls = []
         desk = ApprovalDesk(types.SimpleNamespace(call=lambda m, req: self.calls.append(req) or {"approvals": []}))
@@ -340,6 +341,13 @@ class TestViewerLogin(unittest.TestCase):
         self.assertEqual(self.get("/api/approvals", cookie.split(";")[0])[0].status, 200)
         self.assertEqual(self.calls, [{"on_behalf": {"subject": "corp/u-ann", "person": "corp/ann@corp.example",
                                                      "groups": ["corp/auditors"], "tenant": "beta"}}])
+
+    def test_operator_admin_reads_every_tenant_and_gets_no_approval_pages(self):
+        r, _, cookie = self.sign_in(sub="u-sre", groups=["sre"], tenant=None)   # needs no tenant claim
+        self.assertEqual(r.status, 200)
+        _, body = self.get("/api/snapshot", cookie.split(";")[0])
+        self.assertEqual([x["tool_name"] for x in json.loads(body)["records"]], ["a1", "b1"])
+        self.assertEqual(self.get("/api/approvals", cookie.split(";")[0])[0].status, 403)
 
     def test_auditor_session_gets_no_approval_pages(self):
         _, _, cookie = self.sign_in(sub="u-aud", groups=["auditors"])

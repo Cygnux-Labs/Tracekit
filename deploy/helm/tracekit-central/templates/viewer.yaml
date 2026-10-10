@@ -1,18 +1,15 @@
 {{- if .Values.viewer.enabled }}
-{{- $n := int (include "tc.logs" .) }}
+{{- $logs := list }}
+{{- range $i := until (int (include "tc.logs" .)) }}{{ $logs = append $logs (printf "/etc/tracekit/dsn/dsn-%d" $i) }}{{ end }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: {{ .Release.Name }}-viewer
   labels: {{- include "tc.labels" (dict "root" . "component" "viewer") | nindent 4 }}
 data:
-  {{- range $i := until $n }}
-  viewer-{{ $i }}.yaml: |
-    data_dir: /tmp
-    storage: {postgres: {dsn_file: /etc/tracekit/dsn/dsn-{{ $i }}}}
-  {{- end }}
+  viewer.yaml: |
+    {{- mergeOverwrite (deepCopy .Values.viewer.config) (dict "data_dir" "/tmp" "view" (dict "logs" $logs)) | toYaml | nindent 4 }}
 ---
-# lean: one viewer process per log; a viewer of several logs once replicas are many
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -30,11 +27,10 @@ spec:
       securityContext:
         fsGroup: {{ int .Values.signer.uid }}
       containers:
-        {{- range $i := until $n }}
-        - name: viewer-{{ $i }}
+        - name: viewer
           image: {{ $.Values.signer.image }}
-          command: [tracekit, view, --config, /etc/tracekit/viewer/viewer-{{ $i }}.yaml, --host, 0.0.0.0,
-                    --port, "{{ add 7778 $i }}", --tls-cert, /etc/tracekit/tls/tls.crt, --tls-key, /etc/tracekit/tls/tls.key]
+          command: [tracekit, view, --config, /etc/tracekit/viewer/viewer.yaml, --host, 0.0.0.0, --port, "7778",
+                    --tls-cert, /etc/tracekit/tls/tls.crt, --tls-key, /etc/tracekit/tls/tls.key]
           env:
             - name: TRACEKIT_VIEW_TOKEN
               valueFrom: {secretKeyRef: {name: {{ required "viewer.tokenSecretName is required" $.Values.viewer.tokenSecretName }}, key: token}}
@@ -42,13 +38,12 @@ spec:
             runAsUser: {{ int $.Values.signer.uid }}
             runAsGroup: {{ int $.Values.signer.uid }}
             {{- include "tc.hardened" $ | nindent 12 }}
-          ports: [{name: view-{{ $i }}, containerPort: {{ add 7778 $i }}}]
+          ports: [{name: view, containerPort: 7778}]
           volumeMounts:
             - {name: tmp, mountPath: /tmp}
             - {name: config, mountPath: /etc/tracekit/viewer, readOnly: true}
             - {name: dsn, mountPath: /etc/tracekit/dsn, readOnly: true}
             - {name: tls, mountPath: /etc/tracekit/tls, readOnly: true}
-        {{- end }}
       volumes:
         - {name: tmp, emptyDir: {}}
         - {name: config, configMap: {name: {{ .Release.Name }}-viewer}}
@@ -56,7 +51,7 @@ spec:
           projected:
             defaultMode: 0440
             sources:
-              {{- range $i := until $n }}
+              {{- range $i, $_ := $logs }}
               - secret: {name: {{ printf "%s-%d" $.Values.viewer.dsnSecretPrefix $i }}, items: [{key: dsn, path: dsn-{{ $i }}}]}
               {{- end }}
         - {name: tls, secret: {secretName: {{ required "viewer.tlsSecretName is required" .Values.viewer.tlsSecretName }}, defaultMode: 0440}}
@@ -68,8 +63,5 @@ metadata:
   labels: {{- include "tc.labels" (dict "root" . "component" "viewer") | nindent 4 }}
 spec:
   selector: {{- include "tc.labels" (dict "root" . "component" "viewer") | nindent 4 }}
-  ports:
-    {{- range $i := until $n }}
-    - {name: view-{{ $i }}, port: {{ add 7778 $i }}, targetPort: view-{{ $i }}}
-    {{- end }}
+  ports: [{name: view, port: 7778, targetPort: view}]
 {{- end }}
