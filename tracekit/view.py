@@ -32,7 +32,7 @@ from http.server import ThreadingHTTPServer
 from . import observe
 from .bundle_v2 import export
 from .format.records import RecordSigner
-from .signer.service import dev_data_dir, file_store, load_config, read_vkey
+from .signer.service import dev_data_dir, file_store, load_config, read_vkeys
 from .storage.base import StorageCorrupt
 from .storage.file import NOTE, FileReader
 from .verify import v2
@@ -73,7 +73,7 @@ class StoreFeed:
         atexit.register(shutil.rmtree, self.tmp, True)
         self.trust = os.path.join(self.tmp, "trust.json")
         with open(self.trust, "w", encoding="utf-8") as f:
-            json.dump({"logs": [read_vkey(data_dir)], "witnesses": [], "algs": [RecordSigner.alg],
+            json.dump({"logs": read_vkeys(data_dir), "witnesses": [], "algs": [RecordSigner.alg],
                        "witnesses_required": 0}, f)
         threading.Thread(target=self._watch, daemon=True).start()
 

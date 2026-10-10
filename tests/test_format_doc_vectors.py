@@ -47,6 +47,9 @@ class FormatDocVectors(unittest.TestCase):
         for k in (v["log_vkey"], v["wit_vkey"]):
             self.assertIn(k, DOC)
         self.assertIn(f"key id\n`{checkpoint.parse_vkey(v['log_vkey'])[1].hex()}`", DOC)
+        h = json.loads(_read("tests", "vectors", "slh_dsa_note.json"))
+        checkpoint.open_note(h["note"], [h["log_vkey"], h["slh_vkey"]])
+        self.assertIn(f"`{h['slh_vkey']}` (key id `{checkpoint.parse_vkey(h['slh_vkey'])[1].hex()}`)", DOC)
 
     def test_args_commitment(self):
         _, digest = service.SignerService._args({"tool": "Bash", "args_source": "parsed", "args": {"command": "ls -la"}})
