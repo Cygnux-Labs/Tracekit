@@ -36,7 +36,7 @@ deny:
     field: host
     # internal names: localhost, a name without a dot (resolved through the server's search domains, as metadata is),
     # and internal suffixes; the host is canonical (lowercase, fullwidth letters folded, no port)
-    pattern: '^(localhost|[^.:\[]+|.*\.(localhost|internal|local|lan|corp|intranet|svc|home\.arpa))\.?$'
+    pattern: '^(localhost|[^.:\[]+|kubernetes\.default|.*\.(localhost|internal|local|lan|corp|intranet|svc|home\.arpa))\.?$'
     reason: request to an internal name
     rationale: The name twin of TK-N001; a deployment that calls an internal service by name redefines this rule with an unless.
   - id: TK-N002
