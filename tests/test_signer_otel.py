@@ -89,6 +89,14 @@ class TestImport(Signer):
         self.assertEqual((status, out["partialSuccess"]["rejectedSpans"]), (200, "1"))
         self.assertEqual(self.events("tool.call"), [])
 
+    def test_an_import_run_takes_spans_from_the_identity_that_started_it_only(self):
+        other = CallerIdentity("token", "other", True, {"tenant": "acme"})
+        s = self.open(authorize={"token:http": ["otlp_import"], "token:other": ["otlp_import"]})
+        self.post(s, body(span("aaaaaaaaaaaaaaaa", "t", TOOL)))
+        status, out = self.post(s, body(span("bbbbbbbbbbbbbbbb", "t", TOOL)), identity=other)
+        self.assertEqual((status, out["partialSuccess"]["rejectedSpans"]), (200, "1"))
+        self.assertEqual([e["span_id"] for e in self.events("tool.call")], ["aaaaaaaaaaaaaaaa"])
+
     def test_a_resent_batch_writes_nothing_after_a_restart_or_from_a_snapshot(self):
         data = json.dumps(agent_trace()).encode()
         s = self.open()

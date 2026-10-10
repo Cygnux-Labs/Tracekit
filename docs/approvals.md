@@ -106,9 +106,15 @@ principal (by person id) and other tenants are refused as they are on the CLI. T
 as `approver_identity` (`attested: false`: the bridge vouches for them), the bridge as `via`, and channel `web`.
 Every `POST` needs the session's CSRF token ([security-checklist.md](security-checklist.md)).
 
+A bridge acts for people of its own tenant (`tenants`) only: an `on_behalf` person of another tenant is refused
+(`forbidden`), and one without a tenant is in the bridge's. A viewer that serves the approvers of several tenants (each
+session's tenant comes from the issuer's tenant claim) is listed in `multi_tenant_apps`, which lets it name the
+person's tenant.
+
 ```yaml
 authorize: {"mtls:spiffe://corp/viewer": [approval_list, approval_get, approval_decide, passkey_register,
                                           approval_decide_on_behalf]}
+multi_tenant_apps: ["mtls:spiffe://corp/viewer"]   # only when it serves more than its own tenant
 approvals:
   approvers: ["group:corp/approvers"]
   break_glass: ["group:corp/oncall"]
@@ -128,6 +134,12 @@ passkey.
 An approver registers a passkey once from the page ("Register a passkey"), stored by person id in the signer's
 `data_dir/passkeys.json`. A person keeps the first passkey they register: to replace it, an operator removes their
 entry from that file.
+
+Trust assumption: the signer takes the bridge's word for who is registering. It has no proof of its own that the
+person behind the session is the person named, so whoever controls the bridge, or a session of that person, before
+their first registration can enrol a passkey for them. The viewer narrows this to a fresh sign-in: it registers a
+passkey only within 5 minutes of the session's OIDC login, else the page asks to sign in again. Have each approver
+register right after onboarding, and check `passkeys.json` against the approver list.
 
 ## Slack
 

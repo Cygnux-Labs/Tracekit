@@ -8,12 +8,15 @@ import unittest
 from unittest import mock
 
 from test_bundle_v2 import KEY1, KEY2, LOG_SECRET, ORIGIN, WIT_SECRET, WITNESS, Log, cosign, pub, spki
+from test_otlp import agent_trace
 from test_signer_service import ME, tmpdir
+from test_signer_service import records as ts_records
 from test_witness_publish import VKEY, FakeWitness
 from tracekit import crypto, issuer
 from tracekit.bundle_v2 import export
 from tracekit.format import cert, checkpoint
 from tracekit.identity.base import CallerIdentity
+from tracekit.signer import pipeline
 from tracekit.signer import service as svc
 from tracekit.signer.rpc_schema import RPCError
 from tracekit.tlog_witness import TlogWitness, WitnessError
@@ -150,6 +153,33 @@ class HttpIssuer(unittest.TestCase):
         self.assertEqual(e.exception.code, "unavailable")
         self.s._renew()   # the issuer is back
         self.s.call(ME, "register_run", {"request_id": "r2", "agent": {"name": "a"}})
+
+    def test_an_expired_key_signs_no_record_of_the_signer_either_until_renewed(self):
+        self.s = self.open()
+        run = self.s.call(ME, "register_run", {"request_id": "r1", "agent": {"name": "a"}})
+        self.s.call(ME, "close_run", {"request_id": "r2", "run_id": run["run_id"], "run_token": run["run_token"]})
+        c = self.s.log.cert["certificate"]["cert"]
+        with mock.patch.object(svc.time, "time", return_value=c["not_after"] + 1):
+            with self.assertRaises(RPCError) as e:
+                self.s.sweep()   # the ticker's next round retries
+            self.assertEqual(e.exception.code, "unavailable")
+        self.s.close()
+        self.assertNotIn("run.final", [r["event"]["type"] for r in ts_records(self.data)])
+        self.s = self.open()   # a fresh certified key
+        self.s.sweep()
+        self.assertIn("run.final", [r["event"]["type"] for r in self.s.log.storage.iter_run("default", run["run_id"])])
+
+    def test_runs_only_of_the_tenants_the_key_is_certified_for(self):
+        app = CallerIdentity("token", "app", True, {"tenant": "acme"})
+        self.s = svc.SignerService(self.data, record_key={"issuer": self.cfg}, tenants={f"uid:{ME.subject}": "acme"},
+                                   authorize={"token:app": ["otlp_import"]})
+        self.addCleanup(self.s.close)
+        with self.assertRaises(RPCError) as e:
+            self.s.call(ME, "register_run", {"request_id": "r1", "agent": {"name": "a"}})
+        self.assertEqual(e.exception.code, "forbidden")
+        status, _, out = self.s.otlp(app, json.dumps(agent_trace()).encode(), "application/json", None)
+        self.assertEqual((status, json.loads(out)["partialSuccess"]["rejectedSpans"]), (200, "2"))   # tool and llm spans
+        self.assertEqual(self.s.log.runs.keys() - {pipeline.SIGNER_RUN}, set())
 
     def test_scope_refusal_over_http(self):
         with self.assertRaisesRegex(RPCError, "forbidden: tenants"):
