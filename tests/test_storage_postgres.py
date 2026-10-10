@@ -12,10 +12,12 @@ import time
 import unittest
 from unittest import mock
 
+import test_format_bridge
 import test_signer_lifecycle
 import test_witness_publish
 from storage_contract import Chain, StorageContract
 from test_signer_service import ME
+from tracekit.signer import format_bridge
 from tracekit.signer import service as svc
 from tracekit.storage.base import ACK_ON_FSYNC, ACK_ON_WRITE, StorageUnavailable
 
@@ -273,10 +275,38 @@ class TestSignerOnPostgres(OnPostgres, unittest.TestCase):
         self.assertEqual(svc.main(["migrate", "--config", cfg]), 0)
         svc.open_service(svc.load_config(cfg)).close()
         self.assertEqual(svc.main(["fsck", "--config", cfg]), 0)
+        with open(os.path.join(d, "pg.dsn"), "w") as f:
+            f.write(new_log(self, migrate=False)[0])
+        self.assertEqual(svc.main(["fsck", "--config", cfg]), 2)   # not migrated: a message, not a traceback
         with open(cfg, "w") as f:
             f.write(f"data_dir: data\nstorage: {{postgres: {{dsn: {json.dumps(admin)}}}}}\n")
         with self.assertRaisesRegex(ValueError, "never inline"):
             svc.load_config(cfg)
+
+
+class TestBridgeOnPostgres(unittest.TestCase):
+    setUp = test_format_bridge.Bridge.setUp
+
+    def section(self):
+        path = os.path.join(self.home, "pg.dsn")
+        with open(path, "w") as f:
+            f.write(new_log(self)[1])
+        return {"postgres": {"dsn_file": path}}
+
+    def test_bridge_continues_into_the_configured_store(self):
+        section = self.section()
+        b = format_bridge.bridge(self.home, self.data, section)
+        (first,), = sql(postgres.read_dsn(section["postgres"]), "SELECT record FROM tracekit_records WHERE seq = 0")
+        self.assertEqual(first["event"]["data"]["bridge"], b)
+        self.assertFalse(os.path.exists(os.path.join(self.data, "store")))
+        self.assertFalse(os.path.exists(self.key))
+
+    def test_a_postgres_store_with_records_is_refused(self):
+        section = self.section()
+        svc.SignerService(self.data, storage_config=section).close()
+        with self.assertRaisesRegex(format_bridge.BridgeError, "already has records"):
+            format_bridge.bridge(self.home, self.data, section)
+        self.assertTrue(os.path.exists(self.key))
 
 
 if __name__ == "__main__":

@@ -1472,6 +1472,15 @@ def signer_config(path=None):
     return {"data_dir": dev_data_dir(), "socket": os.path.join(runtime_dir(), SOCK)}
 
 
+def file_store(cfg, cmd):
+    """data_dir/store, for `cmd`, which reads the file store without the signer; refuses a config with a storage section."""
+    # lean: reveal, export --v2 and view read the file store only; read through PostgresStorage once central signers
+    # need them
+    if cfg.get("storage"):
+        raise ValueError(f"{cmd} reads the file store only, and this config names a postgres store")
+    return os.path.join(cfg["data_dir"], "store")
+
+
 def read_vkey(data_dir):
     """The log key's vkey the signer of `data_dir` wrote on start."""
     d = files.open_dir(data_dir)
@@ -1709,7 +1718,9 @@ def main(argv=None):
         return _serve_dev()
     if a.cmd == "reveal":
         try:
-            print(json.dumps(reveal(signer_config(a.config)["data_dir"], a.record)))
+            cfg = signer_config(a.config)
+            file_store(cfg, "reveal")
+            print(json.dumps(reveal(cfg["data_dir"], a.record)))
         except (OSError, ValueError) as e:
             print(f"tracekit signer: {e}", file=sys.stderr)
             return 2
@@ -1744,8 +1755,8 @@ def main(argv=None):
         # lean: run by hand while v1 hooks still sign with the v1 key; run the bridge on first v2 start once the hook
         # speaks the RPC (M1a-14)
         try:
-            print(json.dumps(format_bridge.bridge(a.v1_home, cfg["data_dir"])))
-        except (OSError, format_bridge.BridgeError) as e:
+            print(json.dumps(format_bridge.bridge(a.v1_home, cfg["data_dir"], cfg.get("storage"))))
+        except (OSError, ValueError, StorageUnavailable, format_bridge.BridgeError) as e:
             print(f"tracekit signer bridge: {e}", file=sys.stderr)
             return 1
         return 0
@@ -1761,7 +1772,11 @@ def main(argv=None):
             return 1
         return 0
     if a.cmd == "fsck":
-        problems = fsck(cfg["data_dir"], storage=cfg.get("storage"))
+        try:
+            problems = fsck(cfg["data_dir"], storage=cfg.get("storage"))
+        except (OSError, ValueError, StorageUnavailable) as e:
+            print(f"tracekit signer fsck: {e}", file=sys.stderr)
+            return 2
         for p in problems:
             print(p)
         print("ok" if not problems else f"{len(problems)} problem(s)")
