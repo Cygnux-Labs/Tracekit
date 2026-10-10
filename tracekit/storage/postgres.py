@@ -446,6 +446,16 @@ class PostgresReader(_Reads):
     latest note's size), checkpoint_latest(), anchors(), registry_iter, registry_merkle (each tenant's registry tree at
     its latest note's size) and checkpoint_at; and meta(key), what the signer stored for readers ("log_vkey")."""
 
+    @contextlib.contextmanager
+    def _db(self):
+        """The connection; any database error (a lost connection, a role missing a grant) is StorageUnavailable, which
+        the readers' callers (export, view, reveal) report instead of failing with a traceback."""
+        with self._lock:
+            try:
+                yield self.conn
+            except psycopg.Error as e:
+                raise StorageUnavailable(f"Postgres: {str(e).strip() or type(e).__name__}") from e
+
     def __init__(self, dsn):
         self._lock, self.conn, self.runs, self.registry, self.size = threading.RLock(), _connect(dsn), {}, {}, 0
         try:
