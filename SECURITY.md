@@ -31,8 +31,10 @@ patched.
 
 ## Verifying a release
 
-Every PyPI file, npm package and signer image a release publishes carries SLSA build provenance from this
-repository's release workflow, plus SBOMs and `SHA256SUMS`; the image is also cosign-signed.
+From the first release made with the attested release workflow (see the status note in
+[docs/RELEASING.md](docs/RELEASING.md)), every PyPI file, npm package and signer image carries SLSA build provenance from
+this repository's release workflow, plus SBOMs and `SHA256SUMS`; the image is also cosign-signed. Earlier releases
+(0.4.0 and before) have neither.
 [docs/RELEASING.md](docs/RELEASING.md#verifying-a-release) shows how to check a download with
 `scripts/release/verify-release.sh`.
 
