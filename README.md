@@ -180,7 +180,14 @@ report it.
 Tracekit is being extended from laptop coding agents to server-hosted agents: a signer service that agents reach over
 the network, evidence format v2 and policy enforced inside the signer. Existing v1 bundles keep verifying. To try the v2
 signer, `pip install 'tracekit-ai[signer]'` and follow the
-[v2 quickstart](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/quickstart-v2.md).
+[v2 quickstart](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/quickstart-v2.md), or a framework quickstart
+with a runnable offline example:
+[LangChain / LangGraph](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/quickstarts/langchain.md),
+[OpenAI Agents SDK](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/quickstarts/openai-agents.md),
+[Claude Agent SDK](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/quickstarts/claude-agent-sdk.md),
+[MCP client](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/quickstarts/mcp.md),
+[custom agent](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/quickstarts/custom.md).
+`tracekit demo --server` runs the whole v2 loop in a temp dir.
 
 ## Contributing and security
 
