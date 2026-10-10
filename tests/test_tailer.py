@@ -158,6 +158,18 @@ class Tailer(unittest.TestCase):
         self.assertIn("another file replaced the transcript", self.lost()[0])
         self.assertEqual(len([e for e in self.events() if e["type"] == "model.exchange"]), 1)
 
+    def test_a_line_already_read_edited_in_place_is_lost(self):
+        self.write(TOOL_USE, RESULT)
+
+        def edit():   # same size, same inode
+            with open(self.path, "r+b") as f:
+                data = f.read()
+                f.seek(0)
+                f.write(data.replace(b"ls -la", b"ls -lR"))
+        self.tail(edit, lambda: self.write(NEXT))
+        self.assertIn("a line already read changed in place", self.lost()[0])
+        self.assertEqual(len([e for e in self.events() if e["type"] == "model.exchange"]), 1)
+
     def test_owner_mismatch_is_refused(self):
         self.write(TOOL_USE)
         self.tail(uid=os.getuid() + 1)

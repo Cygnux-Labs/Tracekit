@@ -1,0 +1,91 @@
+{
+  "all_refused_and_no_leak": true,
+  "calls_per_worker": 20,
+  "cross_tenant": {
+    "approvals": {
+      "attempts": {
+        "approval_consume with b's run": "TK-APPROVAL-UNBOUND",
+        "approval_decide": "unknown_approval",
+        "approval_get": "unknown_approval",
+        "approval_list": "not listed",
+        "approval_wait with b's run": "unknown_approval"
+      },
+      "refused": true
+    },
+    "control": {
+      "attempts": {
+        "own identity, own run": "all went through"
+      },
+      "refused": true
+    },
+    "delegate_run": {
+      "attempts": {
+        "a's run, with a's token, to b": "run_token_invalid",
+        "b's run to an identity without an authorize entry": "forbidden"
+      },
+      "refused": true
+    },
+    "guessed_id": {
+      "attempts": {
+        "a random run id, b's token": "unknown_run",
+        "a's run id, b's token": "unknown_run",
+        "b's token edited to name a's run": "run_token_invalid"
+      },
+      "refused": true
+    },
+    "observability": {
+      "attempts": {
+        "identities": "absent",
+        "run ids": "absent",
+        "tenants": "absent"
+      },
+      "refused": true
+    },
+    "otlp_import": {
+      "attempts": {
+        "a's trace run unchanged": "unchanged",
+        "b's spans went to b's own run": "own run"
+      },
+      "refused": true
+    },
+    "run_set": {
+      "attempts": {
+        "a's run-set names none of b's runs": "absent",
+        "a's run-set verifies": "baseline",
+        "b's run-set as a's": "exit 1"
+      },
+      "refused": true
+    },
+    "run_token": {
+      "attempts": {
+        "approval_abandon": "run_token_invalid",
+        "approval_request": "run_token_invalid",
+        "close_run": "run_token_invalid",
+        "complete": "run_token_invalid",
+        "decide": "run_token_invalid",
+        "delegate_run": "run_token_invalid",
+        "model_event": "run_token_invalid",
+        "read": "run_token_invalid",
+        "state_write": "run_token_invalid",
+        "tailer_lost": "run_token_invalid"
+      },
+      "refused": true
+    }
+  },
+  "in_process": {
+    "python_asyncio_tasks": {
+      "in_another_run": [],
+      "runs_missing_calls": []
+    },
+    "python_threads": {
+      "in_another_run": [],
+      "runs_missing_calls": []
+    }
+  },
+  "platform": "darwin",
+  "python": "3.11.15",
+  "skipped": {
+    "node_async_local_storage": "/Users/bravishghosh/Tracekit/.worktrees/pr133/sdk/typescript/dist/v2/client.js is not built (make test-ts)"
+  },
+  "workers": 8
+}
