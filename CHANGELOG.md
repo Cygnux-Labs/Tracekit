@@ -19,7 +19,7 @@ packs: rc1's bundles, configs and clients work unchanged (signer RPC version 12)
   and alerts; the timeline is scaled to the calls shown.
 
 ### Docs
-- README: a recording of a server deployment end to end, and the viewer.
+- [docs/viewer.md](docs/viewer.md): a screenshot of a run under review.
 
 ## 1.0.0rc1 (2026-10-10) — server deployments and teams
 
