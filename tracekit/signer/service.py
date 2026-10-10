@@ -1630,6 +1630,9 @@ class SignerService:
                 raise RPCError("approval_not_pending", a["state"])
             if a["expires_at"] <= _iso(time.time()):
                 raise RPCError("approval_not_pending", "expired")
+            # checked here too: a retry that skipped the assertion, if the cache has since dropped its answer
+            if a.get("passkey") and req["decision"] == "approve" and not credential:
+                raise RPCError("forbidden", "approving this call needs a passkey assertion")
             tx.set(a, "state", "approved" if req["decision"] == "approve" else "rejected")
             data = {"tool_use_id": a["tool_call_id"], "approval_id": aid, "decision": req["decision"], "approver": sub,
                     "approver_identity": _recorded(identity),

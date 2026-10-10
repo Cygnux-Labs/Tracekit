@@ -474,6 +474,24 @@ class TestWeb(Signer):
         first = self.s.call(BRIDGE, "approval_decide", req)
         self.assertEqual(self.s.call(BRIDGE, "approval_decide", dict(req)), first)
 
+    def test_a_retry_evicted_from_the_cache_still_needs_its_passkey(self):
+        self.register()
+        aid = self.pending("wire")
+        req = {"request_id": "web-1", "approval_id": aid, "on_behalf": ALICE, "decision": "approve"}
+        done = self.s.log.done
+
+        class Evicted(type(done)):   # the entry is there when the answer is checked, gone when the writer runs
+            seen = False
+
+            def __contains__(self, k):
+                if k == ("oidc", ALICE["subject"], "web-1") and not self.seen:
+                    self.seen = True
+                    return True
+                return super().__contains__(k)
+        self.s.log.done = Evicted(done)
+        self.refused("forbidden", self.s.call, BRIDGE, "approval_decide", req)
+        self.assertEqual(self.s.log.approvals[aid]["state"], "requested")
+
     def test_a_blank_break_glass_reason_is_refused(self):
         aid = self.pending("mail")
         self.assertEqual(self.approve(aid, OLIVE, reason=" \n")[0], 403)
