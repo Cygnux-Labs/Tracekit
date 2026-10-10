@@ -281,6 +281,9 @@ def _snapshot_key(keys):
     return key if len(key) == 32 else None
 
 
+EXPIRED = "the record key's certificate has expired and the issuer has not renewed it yet"
+
+
 def _secret(path, make, size=32):
     """The `size`-byte secret in `path`, created (0600) on first use. Called under the storage lock, so never by two
     signers. A file of another size stops the start: a key is never used cut short."""
@@ -581,6 +584,20 @@ class SignerService:
         sign, cert = self.log.certify(self.log.log_id)
         self.log.write(lambda tx: self.log.epoch(tx, sign, cert))
         self._renew_at = self._renewal()
+        if self.log.refuse_writes == EXPIRED:   # writes refused only for the expiry resume with the new key
+            self.log.refuse_writes = None
+
+    def _renew(self):
+        """Replace the record key; while the issuer can't, the current key stays, until its certificate expires: then
+        client writes are refused until a renewal succeeds (a key never signs past its certificate)."""
+        try:
+            self.rotate_key()
+        except Exception:   # issuer or storage down
+            self._renew_at = time.time() + RENEW_RETRY_S
+            self._loop_error("record key renewal")
+            c = self.log.cert and self.log.cert["certificate"]["cert"]
+            if c and time.time() >= c["not_after"] and not self.log.refuse_writes:
+                self.log.refuse_writes = EXPIRED
 
     def _tick_loop(self):
         flushed = time.monotonic()
@@ -592,11 +609,7 @@ class SignerService:
             except Exception:
                 self._loop_error("ticker")
             if self._renew_at and time.time() >= self._renew_at:
-                try:
-                    self.rotate_key()
-                except Exception:   # issuer or storage down: the current key stays until the next try
-                    self._renew_at = time.time() + RENEW_RETRY_S
-                    self._loop_error("record key renewal")
+                self._renew()
             if time.monotonic() - flushed >= REFUSAL_WINDOW_S:
                 flushed = time.monotonic()
                 try:

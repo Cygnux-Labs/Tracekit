@@ -308,6 +308,10 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
                 der = base64.b64decode(k["spki"], validate=True)
                 if crypto.spki_kid(der) != k["kid"] or crypto.key_alg(der) != k["alg"]:
                     key_problems.append(f"seq {e['seq']}: key {k['kid']} does not match its SPKI")
+                if "cert" not in k and trust["issuers"] and not e["data"].get("bridge"):
+                    key_problems.append(f"seq {e['seq']}: key {k['kid'][:80]} has no certificate, and the trust "
+                                        "config pins issuers")
+                    continue
                 if "cert" in k:
                     try:
                         c, pin = cert.check(k["cert"], trust["issuers"], list(witnesses),

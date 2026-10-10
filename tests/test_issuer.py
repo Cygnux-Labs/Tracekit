@@ -5,6 +5,7 @@ import json
 import os
 import threading
 import unittest
+from unittest import mock
 
 from test_bundle_v2 import KEY1, KEY2, LOG_SECRET, ORIGIN, WIT_SECRET, WITNESS, Log, cosign, pub, spki
 from test_signer_service import ME, tmpdir
@@ -138,6 +139,18 @@ class HttpIssuer(unittest.TestCase):
                        "issuers": issuers}, f)
         return path
 
+    def test_an_expired_key_never_signs_writes_wait_for_renewal(self):
+        self.s = self.open()
+        c = self.s.log.cert["certificate"]["cert"]
+        with mock.patch.object(self.s.log, "certify", side_effect=OSError("issuer down")), \
+                mock.patch.object(svc.time, "time", return_value=c["not_after"] + 1):
+            self.s._renew()
+        with self.assertRaises(RPCError) as e:
+            self.s.call(ME, "register_run", {"request_id": "r1", "agent": {"name": "a"}})
+        self.assertEqual(e.exception.code, "unavailable")
+        self.s._renew()   # the issuer is back
+        self.s.call(ME, "register_run", {"request_id": "r2", "agent": {"name": "a"}})
+
     def test_scope_refusal_over_http(self):
         with self.assertRaisesRegex(RPCError, "forbidden: tenants"):
             issuer.certify({**self.cfg, "tenants": ["other"]}, "0" * 32)
@@ -221,6 +234,18 @@ class CertifiedKeys(unittest.TestCase):
     def test_accepts_a_certified_key(self):
         rep, code = self.verify(self.bundle(self.iss.issue(SVC, request(KEY1))))
         self.assertEqual((rep.integrity, code), ("VERIFIED", 0), rep.checks)
+
+    def test_rejects_an_uncertified_key_when_issuers_are_pinned(self):
+        log = Log(os.path.join(self.dir, "store"))
+        self.addCleanup(log.store.close)
+        log.epoch(KEY1)
+        log.register()
+        log.final()
+        out = os.path.join(self.dir, "u.tkb")
+        export(log.store, "acme", "run-a", log.note(), out)
+        rep, code = self.verify(out)
+        self.assertEqual(code, 1)
+        self.assertTrue(any("has no certificate" in p for p in self.problems(rep)), rep.checks)
 
     def test_rejects_a_certificate_missing_from_the_issuance_log(self):
         entry = self.iss.issue(SVC, request(KEY1))
