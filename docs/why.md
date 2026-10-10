@@ -330,6 +330,8 @@ with `--allow-program`. The server is in the [HTTP security checklist](security-
 
 ## Limits
 
+All of Tracekit's limits: [limits.md](limits.md).
+
 - An effect is a total effect for this program on this task. It does not explain the model's internal reasons and may
   not transfer to other tasks.
 - `ruled-out` means smaller than 20 points, not zero. At n = 40 the demo's intervals are about ±18 points.

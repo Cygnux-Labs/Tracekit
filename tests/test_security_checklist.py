@@ -359,6 +359,9 @@ class Approvals(unittest.TestCase):
                 (self.good, b"[1]", 400)):
             with self.subTest(headers=headers, body=data):
                 self.assertEqual(self.request("POST", "/api/approvals/apr-1", headers, data)[0].status, status)
+        for _ in range(10):   # refused before its body is read: the answer still arrives (no reset on close)
+            self.assertEqual(self.request("POST", "/api/approvals/apr-1", {"Content-Type": "application/json"},
+                                          b"x" * (512 * 1024))[0].status, 403)
         self.assertEqual(self.calls, [])
         self.assertEqual(self.request("POST", "/api/approvals/apr-1", self.good, body)[0].status, 200)
         self.assertEqual(self.calls, ["approval_decide"])
