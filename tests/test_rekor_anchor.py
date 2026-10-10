@@ -386,7 +386,8 @@ class SignerAnchors(unittest.TestCase):
         self.addCleanup(self.s.close)
         cosigned = lambda: f"— {NAME} " in self.s.log.storage.checkpoint_latest()[1]   # noqa: E731
         run = self.finished_run()
-        self.assertTrue(wait_for(lambda: self.s.log.storage.anchors() and cosigned(), 10))
+        anchored = lambda: f"— {NAME} " in (self.s.log.storage.anchors() or [{"note": ""}])[-1]["note"]   # noqa: E731
+        self.assertTrue(wait_for(lambda: anchored() and cosigned(), 10))
         self.finished_run()
         self.assertTrue(wait_for(cosigned, 10))
         size = self.s.log.storage.anchors()[-1]["size"]
