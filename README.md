@@ -108,6 +108,7 @@ a laptop to a server: [migration](https://github.com/Cygnux-Labs/Tracekit/blob/m
 - Checking evidence: [reading a verify report](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/verdicts.md),
   [auditor guide](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/auditor-guide.md),
   [evaluation](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/evaluation.md),
+  [technical report](https://github.com/Cygnux-Labs/Tracekit/blob/main/report/tracekit-v2.md),
   [FAQ and limits](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/faq.md)
 - The v1 laptop signer (`tracekitd`, `tracekit init --dev`, `tracekit demo`, `tracekit observe`) and its bundles keep
   working: [coding agents](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/coding-agents.md),
