@@ -84,6 +84,18 @@ def log_line(name, public, sig):
     return f"{DASH}{name} {_b64(key_id(name, ED25519, public) + sig)}\n"
 
 
+def signers(note):
+    """(name, key id) of each readable signature line of a note, without verifying any signature."""
+    out = set()
+    for line in note.partition("\n\n")[2].splitlines():
+        name, _, blob = line[len(DASH):].partition(" ")
+        try:
+            out.add((name, _unb64(blob)[:4]))
+        except NoteError:
+            pass
+    return out
+
+
 def _cosigned(text, ts):
     return f"cosignature/v1\ntime {ts}\n{text}".encode("utf-8")
 
