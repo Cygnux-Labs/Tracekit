@@ -10,6 +10,11 @@ $extra = @{
 $root = (Resolve-Path "$PSScriptRoot\..\..").Path
 $work = Join-Path ([IO.Path]::GetTempPath()) ("tk-clean-" + [guid]::NewGuid().ToString("N").Substring(0, 8))
 New-Item -ItemType Directory -Path $work | Out-Null
+$saved = @{}   # this session's environment, restored at the end
+foreach ($k in "HOME", "USERPROFILE", "LOCALAPPDATA", "TRACEKIT_RUNTIME_DIR", "TRACEKIT_SIGNER", "PYTHONPATH") {
+    $saved[$k] = [Environment]::GetEnvironmentVariable($k)
+}
+$here = Get-Location
 $env:HOME = $env:USERPROFILE = "$work\home"
 $env:LOCALAPPDATA = "$work\home\local"
 $env:TRACEKIT_RUNTIME_DIR = "$work\run"
@@ -19,12 +24,12 @@ $clock = [Diagnostics.Stopwatch]::StartNew()
 try {
     python -m venv "$work\venv"; if ($LASTEXITCODE) { throw "venv failed" }
     & $py -m pip install -q "$root[signer]" @extra; if ($LASTEXITCODE) { throw "pip install failed" }
-    Push-Location $work
+    Set-Location $work
     & $py "$root\examples\v2\$Example\agent.py" --scripted; if ($LASTEXITCODE) { throw "the example failed" }
-    Pop-Location
     "clean-machine ${Example}: {0:N0} s" -f $clock.Elapsed.TotalSeconds
 } finally {
     if (Test-Path $py) { & $py -m tracekit down *> $null }
-    Set-Location $root
+    Set-Location $here
+    foreach ($k in $saved.Keys) { [Environment]::SetEnvironmentVariable($k, $saved[$k]) }
     Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
 }
