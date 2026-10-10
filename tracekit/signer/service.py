@@ -3,6 +3,7 @@
     tracekit signer serve --config signer.yaml
     tracekit signer serve --dev               # the same-user dev signer clients auto-spawn (decision S3)
     tracekit signer fsck  --config signer.yaml
+    tracekit signer migrate --config signer.yaml     # create the Postgres store's tables (as the migration role)
     tracekit signer close-log --config signer.yaml   # shut the log down for good (log.closed), signer stopped
     tracekit signer vkey  [--dev | --config signer.yaml]               # the log's verifier key
     tracekit signer trust [--dev | --config signer.yaml] -o trust.json  # a v2 trust config pinning it and the witnesses
@@ -15,6 +16,9 @@ signer.yaml:
     tcp_endpoint: /run/tracekit/endpoint.json   # loopback TCP dev transport (token, mutual HMAC)
     http: {listen: 0.0.0.0:8443, ...}        # HTTPS with k8s_sa, mtls or token identity (tracekit/transport/http.py)
     durability: ack-on-write                 # or ack-on-fsync
+    storage: {postgres: {dsn_file: pg.dsn}}  # a Postgres store (tracekit.storage.postgres): the DSN is read from the
+                                             # file, never inline (no dsn_file: the libpq PG* variables); default the
+                                             # file store in data_dir/store
     tenant: default                          # tenant of callers not in `tenants`
     tenants: {"uid:1001": acme, "k8s_sa:system:serviceaccount:acme:*": acme}   # identity or prefix:* -> tenant (attested)
     authorize: {"mtls:spiffe://acme/agent": [register_run, decide, complete, close_run]}   # identity or prefix:* ->
@@ -116,6 +120,7 @@ import argparse
 import base64
 import collections
 import datetime
+import functools
 import hashlib
 import hmac
 import itertools
@@ -143,7 +148,7 @@ from tracekit.anchor.rekor2 import RekorAnchor
 from tracekit.deploy import files
 from tracekit.format import checkpoint, registry
 from tracekit.format.canon import StrictJSONError, canonical, event_hash, loads_strict
-from tracekit.format.records import RecordError, RecordSigner, verify_record
+from tracekit.format.records import RecordSigner, verify_record
 from tracekit.identity.base import CallerIdentity
 from tracekit.locking import lock_file
 from tracekit.policy2 import compile as policy_compile
@@ -180,7 +185,7 @@ TLOG_PATH = re.compile(r"/(?:registry/([0-9a-f]{32})/)?(?:(checkpoint)|tile/(ent
 CONFIG_KEYS = {"data_dir", "socket", "socket_mode", "tcp_endpoint", "http", "durability", "tenant", "tenants",
                "authorize", "limits", "acknowledge_rollback", "policy", "multi_tenant_apps", "migrators", "analyzers",
                "fail_modes", "grace_s", "idle_s", "origin", "metrics", "witnesses", "contact", "approvals",
-               "lock_timeout_s", "fsck_every_s", "clock_skew_s", "anchors", "otlp", "otel_out"}
+               "lock_timeout_s", "fsck_every_s", "clock_skew_s", "anchors", "otlp", "otel_out", "storage"}
 APPROVAL_KEYS = {"self_approval", "approvers", "break_glass"}
 OTLP_IMPORT = "otlp_import"   # an `authorize` grant, never a default: OTLP/HTTP import (otlp config section)
 OTLP_MAX_SPANS = 512
@@ -300,11 +305,13 @@ class SignerService:
                  durability=ACK_ON_WRITE, witnesses=(), acknowledge_rollback=False, open_storage=None, isolation=None,
                  multi_tenant_apps=(), migrators=(), analyzers=(), fail_modes=None, grace_s=GRACE_S, idle_s=IDLE_S,
                  bridge=None, origin=None, authorize=None, contact=None, approvals=None, lock_timeout_s=0,
-                 fsck_every_s=FSCK_S, clock_skew_s=CLOCK_SKEW_S, rekor=None, otlp=None, otel_out=None):
+                 fsck_every_s=FSCK_S, clock_skew_s=CLOCK_SKEW_S, rekor=None, otlp=None, otel_out=None,
+                 storage_config=None):
         """`identity` answers the in-process SignerAPI calls (default: this process's uid); transports call
         handle_frame with the identity they established. `policy` is a policy2 Engine (default: load_policy()).
-        `open_storage()` defaults to file storage in data_dir/store. `origin` names the log in its checkpoints, `contact`
-        its operator in the logs list. `witnesses` cosign its notes (see the module docstring).
+        `open_storage()` defaults to the store `storage_config` (the `storage` config section) names, else file storage
+        in data_dir/store. `origin` names the log in its checkpoints, `contact` its operator in the logs list.
+        `witnesses` cosign its notes (see the module docstring).
         `multi_tenant_apps`, `migrators` and `analyzers` are identities ("scheme:subject"); `tenants` and `authorize`
         map identities or prefixes (`...:*`, `.../*`) to a tenant and to the methods they may call.
         `isolation` fixes the signer_isolation label of every run (a dev signer: same-user). `bridge`: see RecordLog.
@@ -335,6 +342,11 @@ class SignerService:
         if not all(isinstance(m, list) and set(m) <= {*REQUESTS, OTLP_IMPORT} for m in authorize.values()):
             raise ValueError(f"authorize maps identities to lists of methods out of {sorted({*REQUESTS, OTLP_IMPORT})}")
         keys = os.path.join(data_dir, "keys")
+        if open_storage is None and storage_config:
+            from tracekit.storage import postgres
+            section = storage_config["postgres"]
+            open_storage = lambda: postgres.PostgresStorage(postgres.read_dsn(section), durability,  # noqa: E731
+                                                            lock_timeout_s, _snapshot_key(keys))
         open_storage = open_storage or (lambda: FileStorage(os.path.join(data_dir, "store"), durability,
                                                             self.metrics.fsync_seconds.observe, lock_timeout_s,
                                                             _snapshot_key(keys)))
@@ -363,7 +375,7 @@ class SignerService:
         self.multi_tenant_apps, self.migrators, self.analyzers = set(multi_tenant_apps), set(migrators), set(analyzers)
         self.fail_modes, self.grace_s, self.idle_s = fail_modes, grace_s, idle_s
         self.otlp_max_spans = otlp.get("max_spans", OTLP_MAX_SPANS)
-        self.approvals, self.data_dir = approvals, data_dir
+        self.approvals, self.data_dir, self.storage_config = approvals, data_dir, storage_config
         self.fsck_every_s, self.clock_skew_s, self._skewed, self._fsck_seen = fsck_every_s, clock_skew_s, set(), set()
         self._snapped = storage.tail_state()["tree_size"]
         self._approvers, self._break_glass = ({k: True for k in (approvals or {}).get(name, ())}
@@ -574,7 +586,7 @@ class SignerService:
         def written(tx):
             t = self.log.storage.tail_state()
             return {"records.jsonl": t["tree_size"], "registry.jsonl": sum(n for n, _ in t["registry"].values())}
-        problems = fsck(self.data_dir, self.log.write(written))
+        problems = fsck(self.data_dir, self.log.write(written), self.storage_config)
         new = [p for p in problems if p not in self._fsck_seen]
         if new:   # acknowledge_rollback covers the rollback found at start, never a later finding
             self._fsck_seen.update(new)
@@ -1482,6 +1494,12 @@ def load_config(path):
         if isinstance(h, dict) and isinstance(h.get("client_ca"), dict):
             h["client_ca"] = {td: os.path.join(base, p) if isinstance(p, str) else p for td, p in h["client_ca"].items()}
         http.configure(h)   # validates the section now; serve() builds it again
+    if "storage" in cfg:
+        pg = cfg["storage"].get("postgres") if isinstance(cfg["storage"], dict) and set(cfg["storage"]) == {"postgres"} else None
+        if not (isinstance(pg, dict) and set(pg) <= {"dsn_file"} and isinstance(pg.get("dsn_file", ""), str)):
+            raise ValueError(f"{path}: storage is {{postgres: {{dsn_file}}}} (the DSN in a file, never inline)")
+        if pg.get("dsn_file"):
+            pg["dsn_file"] = os.path.join(base, pg["dsn_file"])
     approvals = cfg.get("approvals") if isinstance(cfg.get("approvals"), dict) else {}
     for table in (cfg.get("tenants"), cfg.get("authorize"), approvals.get("approvers"), approvals.get("break_glass")):
         for k in table or ():
@@ -1514,6 +1532,15 @@ def signer_config(path=None):
         return load_config(path)
     from tracekit.sdk.autospawn import SOCK, runtime_dir
     return {"data_dir": dev_data_dir(), "socket": os.path.join(runtime_dir(), SOCK)}
+
+
+def file_store(cfg, cmd):
+    """data_dir/store, for `cmd`, which reads the file store without the signer; refuses a config with a storage section."""
+    # lean: reveal, export --v2 and view read the file store only; read through PostgresStorage once central signers
+    # need them
+    if cfg.get("storage"):
+        raise ValueError(f"{cmd} reads the file store only, and this config names a postgres store")
+    return os.path.join(cfg["data_dir"], "store")
 
 
 def read_vkey(data_dir):
@@ -1558,7 +1585,7 @@ def open_service(cfg, **kw):
                          fsck_every_s=float(cfg.get("fsck_every_s", FSCK_S)),
                          clock_skew_s=float(cfg.get("clock_skew_s", CLOCK_SKEW_S)),
                          rekor=(cfg.get("anchors") or {}).get("rekor"), otlp=cfg.get("otlp"),
-                         otel_out=cfg.get("otel_out"), **kw)
+                         otel_out=cfg.get("otel_out"), storage_config=cfg.get("storage"), **kw)
 
 
 def serve(cfg, service):
@@ -1691,27 +1718,18 @@ def _serve_dev():
     return 1
 
 
-def fsck(data_dir, upto=None):
-    """Every problem in the store: the storage check (hashes, chains) plus every record's signature. `upto`: see
-    storage.file.fsck."""
-    store = os.path.join(data_dir, "store")
-    problems = fsck_store(store, upto, _snapshot_key(os.path.join(data_dir, "keys")))
-    with open(os.path.join(data_dir, "keys", "record.key"), "rb") as f:
+def fsck(data_dir, upto=None, storage=None):
+    """Every problem in the store (the `storage` config section's, else data_dir/store): the storage check (hashes,
+    chains) plus every record's signature. `upto`: see storage.file.fsck (a Postgres check reads one consistent
+    snapshot instead)."""
+    keys = os.path.join(data_dir, "keys")
+    with open(os.path.join(keys, "record.key"), "rb") as f:
         sign = RecordSigner(f.read())
-    try:
-        with open(os.path.join(store, "records.jsonl"), "rb") as f:
-            for n, line in enumerate(f, 1):
-                if upto and n > upto["records.jsonl"]:
-                    break
-                try:
-                    verify_record(loads_strict(line), [sign.spki], {sign.alg})
-                except RecordError as e:
-                    problems.append(f"records.jsonl line {n}: {e}")
-                except ValueError:
-                    pass   # unreadable: reported by the storage check
-    except FileNotFoundError:
-        pass
-    return problems
+    verify = functools.partial(verify_record, keys=[sign.spki], algs={sign.alg})
+    if storage:
+        from tracekit.storage import postgres
+        return postgres.fsck(postgres.read_dsn(storage["postgres"]), _snapshot_key(keys), verify)
+    return fsck_store(os.path.join(data_dir, "store"), upto, _snapshot_key(keys), verify)
 
 
 def reveal(data_dir, seq):
@@ -1738,6 +1756,7 @@ def main(argv=None):
     mode.add_argument("--dev", action="store_true",
                       help="the same-user dev signer of the runtime dir ($TRACEKIT_RUNTIME_DIR); clients start it")
     sub.add_parser("fsck", help="check every record of the store").add_argument("--config", required=True)
+    sub.add_parser("migrate", help="create or check the Postgres store's tables").add_argument("--config", required=True)
     sub.add_parser("close-log", help="close the log for good: write log.closed and the final notes (signer stopped)"
                    ).add_argument("--config", required=True)
     for name, text in (("vkey", "print the log key's verifier key (C2SP vkey)"),
@@ -1763,7 +1782,9 @@ def main(argv=None):
         return _serve_dev()
     if a.cmd == "reveal":
         try:
-            print(json.dumps(reveal(signer_config(a.config)["data_dir"], a.record)))
+            cfg = signer_config(a.config)
+            file_store(cfg, "reveal")
+            print(json.dumps(reveal(cfg["data_dir"], a.record)))
         except (OSError, ValueError) as e:
             print(f"tracekit signer: {e}", file=sys.stderr)
             return 2
@@ -1798,13 +1819,28 @@ def main(argv=None):
         # lean: run by hand while v1 hooks still sign with the v1 key; run the bridge on first v2 start once the hook
         # speaks the RPC (M1a-14)
         try:
-            print(json.dumps(format_bridge.bridge(a.v1_home, cfg["data_dir"])))
-        except (OSError, format_bridge.BridgeError) as e:
+            print(json.dumps(format_bridge.bridge(a.v1_home, cfg["data_dir"], cfg.get("storage"))))
+        except (OSError, ValueError, StorageUnavailable, format_bridge.BridgeError) as e:
             print(f"tracekit signer bridge: {e}", file=sys.stderr)
             return 1
         return 0
+    if a.cmd == "migrate":
+        if not cfg.get("storage"):
+            print("tracekit signer migrate: the config has no storage: {postgres: ...} section", file=sys.stderr)
+            return 2
+        from tracekit.storage import postgres
+        try:
+            print(f"schema version {postgres.migrate(postgres.read_dsn(cfg['storage']['postgres']))}")
+        except (OSError, ValueError, StorageUnavailable) as e:
+            print(f"tracekit signer migrate: {e}", file=sys.stderr)
+            return 1
+        return 0
     if a.cmd == "fsck":
-        problems = fsck(cfg["data_dir"])
+        try:
+            problems = fsck(cfg["data_dir"], storage=cfg.get("storage"))
+        except (OSError, ValueError, StorageUnavailable) as e:
+            print(f"tracekit signer fsck: {e}", file=sys.stderr)
+            return 2
         for p in problems:
             print(p)
         print("ok" if not problems else f"{len(problems)} problem(s)")
