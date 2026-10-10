@@ -11,6 +11,10 @@ Every request needs the token in the printed URL ($TRACEKIT_VIEW_TOKEN, else a r
 session cookie, also on loopback, where any local user or process could otherwise connect. With the config's
 `view.oidc` section, /login also signs people in with an issuer of its `http.oidc` section (OidcLogin; docs/identity.md):
 a session of the auditor or approver role sees, read-only, the runs of its tenant (the issuer's tenant claim) only.
+With `view.signer` (the signer's address, as `tracekit approvals --signer` takes it), an approver's session also gets
+the approval pages (/approvals; ApprovalDesk): the viewer answers for that person over the signer RPC as a bridge
+identity (`authorize` grants it approval_on_behalf), and the signer decides who may answer, verifies the passkey of a
+`passkey: required` rule and records both the person and the viewer.
 
 Dev assurance: the pinned log key is read from the directory being checked, so a run that verifies matches the key of
 whoever can write that directory, the same user as the dev signer and this viewer.
@@ -43,8 +47,9 @@ from . import observe
 from .bundle_v2 import export
 from .format import checkpoint
 from .format.records import RecordSigner
-from .identity import oidc
+from .identity import oidc, webauthn
 from .identity.k8s_sa import _https
+from .sdk.client import Client, Incompatible, SignerUnavailable
 from .signer.rpc_schema import RPCError
 from .signer.service import dev_data_dir, load_config, lookup, read_vkeys, reader
 from .storage.base import StorageCorrupt, StorageUnavailable
@@ -68,7 +73,7 @@ class OidcLogin:
     """Authorization code + PKCE (S256) login with the issuer `section["issuer"]` names in `issuers` (the signer's
     http.oidc section), its ID token's audience the client_id. A person whose identity keys (oidc.keys) are in
     roles.auditor or roles.approver and whose token carries the issuer's tenant claim gets a session of that tenant;
-    both roles are read-only here (approvals are answered over the signer RPC)."""
+    an approver's session also answers approvals (ApprovalDesk), with the session's CSRF token."""
 
     def __init__(self, section, issuers, clock=time.time):
         if not isinstance(section, dict) or set(section) - LOGIN_KEYS or not {"issuer", "client_id", "redirect_uri",
@@ -133,27 +138,82 @@ class OidcLogin:
             log.warning("viewer login refused: %s", e)
             return None
         keys = oidc.keys(identity)
-        role = next((r for r in ROLES if any(lookup(self.roles.get(r, {}), k, False) for k in keys)), None)
+        role = next((r for r in ("approver", "auditor") if any(lookup(self.roles.get(r, {}), k, False) for k in keys)),
+                    None)
         tenant = identity.claims.get("tenant")
         if role is None or tenant is None:
             log.warning("viewer login refused: %s has %s", identity.subject[:256],
                         "no tenant claim" if role else "no viewer role")
             return None
         sid = secrets.token_urlsafe(32)
+        person = {"subject": identity.subject[:256], "person": identity.claims["person"],
+                  "groups": identity.claims["groups"], "tenant": tenant}
         with self._lock:
-            self._sessions[sid] = (tenant, self.clock() + SESSION_S)
+            self._sessions[sid] = {"tenant": tenant, "role": role, "person": person, "csrf": secrets.token_urlsafe(32),
+                                   "until": self.clock() + SESSION_S}
             while len(self._sessions) > SESSIONS_MAX:
                 self._sessions.popitem(last=False)
         return sid
 
-    def tenant(self, sid):
-        """The tenant of session `sid`, else None."""
+    def session(self, sid):
+        """Session `sid` ({tenant, role, person, csrf, until}), else None."""
         with self._lock:
-            tenant, until = self._sessions.get(sid, (None, 0))
-            if self.clock() < until:
-                return tenant
+            s = self._sessions.get(sid)
+            if s and self.clock() < s["until"]:
+                return s
             self._sessions.pop(sid, None)
             return None
+
+    def tenant(self, sid):
+        """The tenant of session `sid`, else None."""
+        s = self.session(sid)
+        return s and s["tenant"]
+
+
+class ApprovalDesk:
+    """The approval pages' API, for an approver's session: the signer's approvals for that person (`on_behalf`), shown
+    from the signer's copy, and their answers. `signer` has `call(method, req)` (sdk.client.Client); `webauthn` is the
+    signer's approvals.webauthn section ({rp_id, origin}), or None."""
+    ERRORS = {"invalid_request": 400, "forbidden": 403, "unknown_approval": 404, "approval_not_pending": 409}
+
+    def __init__(self, signer, webauthn=None):
+        self.signer, self.webauthn = signer, webauthn
+
+    def _call(self, method, req):
+        try:
+            return 200, self.signer.call(method, req)
+        except RPCError as e:
+            return self.ERRORS.get(e.code, 502), {"error": e.message}
+        except (OSError, SignerUnavailable, Incompatible):
+            return 502, {"error": "signer unavailable"}
+
+    def get(self, session, path):
+        """(status, body) of GET `path`."""
+        who = {"on_behalf": session["person"]}
+        if path == "/api/session":
+            return 200, {"csrf": session["csrf"], "person": session["person"]["person"],
+                         "rp_id": self.webauthn and self.webauthn["rp_id"]}
+        if path == "/api/approvals":
+            return self._call("approval_list", who)
+        if not path.startswith("/api/approvals/"):
+            return 404, {"error": "not found"}
+        aid = path[len("/api/approvals/"):]
+        code, out = self._call("approval_get", {"approval_id": aid, **who})
+        if code == 200 and out.get("passkey"):
+            out["challenge"] = webauthn.b64url(webauthn.challenge(aid, out["binding_digest"], "approve"))
+        return code, out
+
+    def post(self, session, path, body):
+        """(status, body) of POST `path` with JSON `body`: a passkey registration, or an answer to an approval."""
+        who = {"on_behalf": session["person"]}
+        if path == "/api/passkey":
+            return self._call("passkey_register", {**who, **{k: body[k] for k in ("credential_id", "public_key")
+                                                            if k in body}})
+        if not path.startswith("/api/approvals/"):
+            return 404, {"error": "not found"}
+        return self._call("approval_decide", {"request_id": secrets.token_hex(16),
+                                              "approval_id": path[len("/api/approvals/"):], **who,
+                                              **{k: body[k] for k in ("decision", "reason", "passkey") if k in body}})
 
 
 class Translator(observe.Translator):
@@ -295,14 +355,15 @@ class _TLSServer(ThreadingHTTPServer):
             super().finish_request(s, client_address)
 
 
-def server(feed, host, port, token, tls=None, login=None):
+def server(feed, host, port, token, tls=None, login=None, desk=None):
     """The viewer's HTTP server (HTTPS with `tls`, an ssl.SSLContext), open to requests that present `token` (or the
-    session cookie it is exchanged for), or with `login` (an OidcLogin) a session of its own; call serve_forever()."""
+    session cookie it is exchanged for), or with `login` (an OidcLogin) a session of its own, whose approver sessions
+    get the approval pages of `desk` (an ApprovalDesk); call serve_forever()."""
     if not token:
         raise ValueError("the viewer needs a token")
     hosts = [host] + ([urlsplit(login.redirect_uri).hostname] if login else [])
     srv = (_TLSServer if tls else ThreadingHTTPServer)((host, port), observe.make_handler(
-        feed, token, hosts, secure=bool(tls), login=login))
+        feed, token, hosts, secure=bool(tls), login=login, approvals=desk))
     srv.tls, srv.daemon_threads = tls, True
     return srv
 
@@ -338,10 +399,12 @@ def main(argv=None):
             tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
             tls.load_cert_chain(a.tls_cert, a.tls_key)
         cfg = load_config(a.config) if a.config else {"data_dir": a.data_dir or dev_data_dir()}
-        section = (cfg.get("view") or {}).get("oidc")
-        login = section and OidcLogin(section, (cfg.get("http") or {}).get("oidc"))
+        view = cfg.get("view") or {}
+        login = view.get("oidc") and OidcLogin(view["oidc"], (cfg.get("http") or {}).get("oidc"))
+        desk = login and view.get("signer") and ApprovalDesk(Client(view["signer"]),
+                                                             (cfg.get("approvals") or {}).get("webauthn"))
         feed = StoreFeed(cfg, a.log_vkey)
-        srv = server(feed, a.host, a.port, token, tls, login)
+        srv = server(feed, a.host, a.port, token, tls, login, desk)
     except (OSError, ValueError, StorageUnavailable) as e:
         print(f"tracekit view: {e}", file=sys.stderr)
         return 1

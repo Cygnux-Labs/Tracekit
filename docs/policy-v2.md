@@ -64,7 +64,7 @@ error.
 | `field` | no | which subject to match (below) |
 | `unless` | no | regex; a subject that matches it is exempt |
 | `reason`, `rationale`, `label` | no | text; `reason` is shown with the decision, `label` names a flag's category |
-| `approval` | no | on an `ask` rule only: `{executor: t1}` (default) or `{executor: t2}` ([approvals](approvals.md#tiers-t1-and-t2-executors)) |
+| `approval` | no | on an `ask` rule only: `executor: t1` (default) or `t2` ([approvals](approvals.md#tiers-t1-and-t2-executors)), and/or `passkey: required` ([approvals](approvals.md#web-approvals-and-passkeys)) |
 
 Lint also rejects unknown keys, a `field` the rule's class doesn't have, and a class rule no tool maps to ("can never
 fire").

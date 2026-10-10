@@ -32,6 +32,8 @@ from .replay import CSP_META
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 UI = os.path.join(HERE, "ui", "terminal.html")
+APPROVALS_UI = os.path.join(HERE, "ui", "approvals.html")
+MAX_POST = 64 * 1024
 
 
 def _epoch(ts):
@@ -345,10 +347,12 @@ def _session(token):
     return hmac.new(token.encode(), b"tracekit-observe-session", hashlib.sha256).hexdigest()
 
 
-def make_handler(feed, token, allowed_hosts=None, secure=False, login=None):
+def make_handler(feed, token, allowed_hosts=None, secure=False, login=None, approvals=None):
     """`feed`: records, base, lock and verify() -> (records, problems, head), as Feed has. `secure`: served over HTTPS,
     so the session cookie is Secure. `login`: a view.OidcLogin; its sessions see the records of their tenant only
-    (`feed.verify(tenant)` and each record's `tenant`)."""
+    (`feed.verify(tenant)` and each record's `tenant`). `approvals`: a view.ApprovalDesk; an approver's session gets
+    /approvals, its GET API and, with the session's CSRF token in X-CSRF-Token, its JSON POSTs (the only requests that
+    change state, and only on this handler)."""
     allowed = set(LOOPBACK_HOSTS) | {h.lower() for h in (allowed_hosts or ()) if h.lower() not in WILDCARD_HOSTS}
 
     class Handler(BaseHTTPRequestHandler):
@@ -433,6 +437,8 @@ def make_handler(feed, token, allowed_hosts=None, secure=False, login=None):
                 return self._send(403, '{"error":"unexpected Host header"}')
             if login and u.path in ("/login", "/callback"):
                 return self._login(u)
+            if approvals and (u.path == "/approvals" or u.path.startswith(("/api/approvals", "/api/session"))):
+                return self._desk(u.path)
             if not authorized:
                 return self._send(401, '{"error":"missing or wrong token"}')
             if exchange:
@@ -458,6 +464,47 @@ def make_handler(feed, token, allowed_hosts=None, secure=False, login=None):
                     return self._send(400, '{"error":"from must be an integer"}')
                 return self.stream(start, scope)
             self._send(404, '{"error":"not found"}')
+
+        def _desk(self, path, post=False):
+            """The approval pages, for an approver's OIDC session only."""
+            s = login.session(self._cookie())
+            if not s or s["role"] != "approver":
+                return self._send(403, '{"error":"needs an approver session"}')
+            if not post and path == "/approvals":
+                nonce = secrets.token_urlsafe(18)
+                return self._send(200, read_text(APPROVALS_UI).replace("<script>", f'<script nonce="{nonce}">'),
+                                  "text/html", nonce=nonce)
+            if not post:
+                code, out = approvals.get(s, path)
+                return self._send(code, json.dumps(out, ensure_ascii=False))
+            # CSRF: the session's token in a header, which a cross-site request cannot set without a preflight we
+            # never answer, on top of the SameSite=Strict cookie
+            if not (hmac.compare_digest(self.headers.get("X-CSRF-Token", "").encode(), s["csrf"].encode())
+                    and self.headers.get("Content-Type", "").split(";")[0].strip() == "application/json"):
+                return self._send(403, '{"error":"missing or wrong CSRF token"}')
+            try:
+                n = int(self.headers.get("Content-Length", ""))
+            except ValueError:
+                return self._send(411, '{"error":"needs a Content-Length"}')
+            if not 0 <= n <= MAX_POST:
+                return self._send(413, '{"error":"body too large"}')
+            try:
+                body = json.loads(self.rfile.read(n))
+            except (UnicodeDecodeError, ValueError):
+                body = None
+            if not isinstance(body, dict):
+                return self._send(400, '{"error":"the body is not a JSON object"}')
+            code, out = approvals.post(s, path, body)
+            return self._send(code, json.dumps(out, ensure_ascii=False))
+
+        if approvals:
+            def do_POST(self):
+                if _host_only(self.headers.get("Host")) not in allowed:
+                    return self._send(403, '{"error":"unexpected Host header"}')
+                u = urlparse(self.path)
+                if u.path.startswith(("/api/approvals/", "/api/passkey")):
+                    return self._desk(u.path, post=True)
+                self._send(404, '{"error":"not found"}')
 
         def stream(self, i, scope=ALL):
             self.send_response(200)
