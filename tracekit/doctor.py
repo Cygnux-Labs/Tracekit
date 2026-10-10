@@ -63,7 +63,10 @@ def collect(config=None):
         h = (sc or {}).get("hooks") or {}
         unit = (os.path.join(install.LAUNCHD_DIR, install.V2_LABEL + ".plist") if sys.platform == "darwin"
                 else os.path.join(install.SYSTEMD_DIR, install.V2_UNIT + ".service"))
-        return out + v2_checks(config or install.V2_CONFIG, agent=_user(h.get("user")), settings=h.get("settings"),
+        # lean: the hook checks read Claude Code's settings only; a Codex, Cursor or Gemini config goes unchecked
+        # (reported as no hooks recorded) until doctor learns their formats
+        settings = h.get("settings") if h.get("agent", "claude") == "claude" else None
+        return out + v2_checks(config or install.V2_CONFIG, agent=_user(h.get("user")), settings=settings,
                                signer=(sc or {}).get("signer"), opt=install.OPT, unit=unit,
                                client_json=client.SYSTEM_CONFIG if sc else None)
     if sc:
