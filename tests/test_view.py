@@ -16,6 +16,7 @@ import test_signer_service as ts
 from factories import wait_for
 from test_observe_render import XSS, script_of, unescaped
 from tracekit import view
+from tracekit.policy2 import compile as policy_compile
 from tracekit.policy2.engine import Engine
 from tracekit.sdk.client import Client
 from tracekit.signer import service as svc
@@ -23,6 +24,131 @@ from tracekit.storage.file import FileStorage
 
 POLICY = Engine({"deny": [{"id": "T-DENY", "tool": "rm", "pattern": "^"}],
                  "ask": [{"id": "T-PAY", "tool": "pay", "pattern": "^"}]})
+SERVER = view.policy_reasons()   # the shipped packs' rule reasons, by policy hash
+SERVER_HASH = next(h for h, rules in SERVER.items() if "TK-S001" in rules and "TK-M001" in rules)
+
+
+def v2rec(seq, typ, data, run="r1", **top):
+    return {"event": {"seq": seq, "run_seq": seq, "run_id": run, "agent_id": "main", "type": typ, "data": data,
+                      "ts": f"2026-10-10T17:00:{seq:02d}.000000Z", "prev_hash": "sha256:p", **top},
+            "hash": f"sha256:{seq}"}
+
+
+class Translate(unittest.TestCase):
+    """v2 records -> the page's rows: the agent's name, rule reasons for a call whose arguments are only a commitment,
+    holds and approvals as their own tape rows in words, and the signer's run as the signer, not an agent."""
+
+    def feed(self, *recs):
+        tr = view.Translator(SERVER)
+        return [x for r in recs for x in tr.feed(r)]
+
+    def test_a_denied_call_shows_its_rules_reasons_and_its_commitment(self):
+        start, call = self.feed(
+            v2rec(1, "run.registered", {"agent": {"name": "support-agent"}, "signer_isolation": "separate-user",
+                                        "identity": {"scheme": "uid", "subject": "501", "attested": True}}),
+            v2rec(2, "policy.decision", {"tool_use_id": "c3", "tool": "http_get", "decision": "deny",
+                                         "rule_ids": ["TK-N001", "TK-S001", "TK-NEW"], "policy_hash": SERVER_HASH,
+                                         "args_commitment": "hmac-sha256:ab", "decision_id": "dec-1"}))
+        self.assertEqual((start["agent"], start["source"]),
+                         ("support-agent", "separate-user signer · uid:501 (attested)"))
+        self.assertEqual((call["event"], call["agent"], call["tool_name"], call["tool_input"]),
+                         ("PreToolUse", "support-agent", "http_get", {}))
+        self.assertEqual(call["target"],
+                         "TK-N001 request to an internal address; TK-S001 cloud metadata service; TK-NEW")
+        self.assertEqual(call["policy"], {"decision": "deny", "reasons": ["TK-N001", "TK-S001", "TK-NEW"], "flags": []})
+        self.assertEqual(call["v2"], {"type": "policy.decision", "run_seq": 2, "tool_use_id": "c3", "decision": "deny",
+                                      "args_commitment": "hmac-sha256:ab", "policy_hash": SERVER_HASH,
+                                      "decision_id": "dec-1", "rules": [
+                                          {"id": "TK-N001", "reason": "request to an internal address"},
+                                          {"id": "TK-S001", "reason": "cloud metadata service"},
+                                          {"id": "TK-NEW", "reason": ""}]})
+        [other] = self.feed(v2rec(2, "policy.decision", {"tool_use_id": "c3", "tool": "x", "decision": "ask",
+                                                         "rule_ids": ["TK-S001"], "policy_hash": "sha256:unknown"}))
+        # a decision of a policy the viewer does not have: its rule ids only
+        self.assertEqual((other["target"], other["policy"]["flags"]), ("TK-S001", ["held_for_approval"]))
+
+    def test_holds_and_approvals_are_their_own_rows_in_words(self):
+        rows = self.feed(
+            v2rec(1, "policy.decision", {"tool_use_id": "c6", "tool": "create_refund", "decision": "ask",
+                                         "rule_ids": ["TK-M001"], "policy_hash": SERVER_HASH}),
+            v2rec(2, "approval.request", {"approval_id": "apr-1", "rule_ids": ["TK-M001"], "policy_hash": SERVER_HASH,
+                                          "requester": "uid:501", "expires_at": "2026-10-10T18:00:34.000000Z",
+                                          "binding": {"tool": "create_refund", "tool_call_id": "c6"},
+                                          "binding_digest": "sha256:bd"}),
+            v2rec(3, "approval", {"tool_use_id": "c6", "approval_id": "apr-1", "decision": "approve",
+                                  "approver": "oidc:alice", "approver_identity": {"scheme": "oidc", "subject": "alice",
+                                                                                   "attested": False},
+                                  "via": {"scheme": "mtls", "subject": "spiffe://acme/viewer", "attested": True},
+                                  "channel": "web", "self_approved": False, "break_glass": True, "reason": "on call"}),
+            v2rec(4, "approval.consumed", {"approval_id": "apr-1"}, tool_call_id="c6"))
+        req, ans, used = rows[1:]
+        self.assertEqual((req["tape"], req["title"]), ("HOLD", "APPROVAL REQUESTED · create_refund"))
+        self.assertEqual(req["text"], "requested by uid:501 · rules TK-M001 sending money · expires 18:00:34 UTC")
+        self.assertEqual((req["v2"]["approval"], req["v2"]["tool_use_id"]), ("requested", "c6"))
+        self.assertEqual((ans["tape"], ans["severity"], ans["title"]), ("APPROVE", "high", "APPROVED · create_refund"))
+        self.assertEqual(ans["text"], "by oidc:alice (not attested) · vouched for by mtls:spiffe://acme/viewer "
+                                      "(attested) via web · “on call” · not self-approved · BREAK-GLASS")
+        self.assertEqual({k: ans["v2"][k] for k in ("approval", "approver", "via", "self_approved", "break_glass")},
+                         {"approval": "approve", "approver": "oidc:alice (not attested)",
+                          "via": "mtls:spiffe://acme/viewer (attested)", "self_approved": False, "break_glass": True})
+        self.assertEqual((used["tape"], used["title"], used["v2"]["tool_use_id"]),
+                         ("APPROVE", "APPROVAL CONSUMED · create_refund", "c6"))
+        self.assertNotIn("{", "".join(r.get("text", "") for r in rows))   # no record JSON in place of words
+
+    def test_gaps_and_signer_records_in_words_and_the_signer_is_no_agent(self):
+        gap, final = self.feed(
+            v2rec(1, "capture.gap", {"kind": "client_counter_gap", "missed_events": 3, "reason": "stream s skipped"}),
+            v2rec(2, "run.final", {"head_run_seq": 1, "coverage": {"layers": ["L2"], "reconciled": 0,
+                                                                   "unreconciled": {"hook_missing": 1}}}))
+        self.assertEqual((gap["tape"], gap["title"], gap["text"], gap["v2"]["kind"]),
+                         ("GAP", "GAP · client_counter_gap", "stream s skipped · 3 events missed",
+                          "client_counter_gap"))
+        self.assertEqual(final["reason"], "final · head run_seq 1 · coverage L2 · reconciled 0 · unreconciled "
+                                          "hook_missing 1")
+        signer = view.SIGNER_RUN[1]
+        epoch, refused = self.feed(
+            v2rec(0, "signer.epoch", {"keys": [{"kid": "sha256:6cb1e807d62770b7", "alg": "ed25519"}]}, run=signer),
+            v2rec(1, "refusal.summary", {"code": "forbidden", "count": 2, "identity": "uid:501",
+                                         "from_ts": "2026-10-10T17:00:34.1Z", "to_ts": "2026-10-10T17:00:35.1Z"},
+                  run=signer))
+        for r in (epoch, refused):
+            self.assertEqual((r["signer"], r["agent"], r["tape"]), (True, "signer", "SIGNER"))
+        self.assertEqual(epoch["text"], "1 signing key(s): ed25519 6cb1e807d627")
+        self.assertEqual((refused["title"], refused["text"]),
+                         ("SIGNER REFUSED 2 · forbidden", "from uid:501 · 17:00:34 UTC–17:00:35 UTC"))
+
+    def test_review_counts_a_run_and_points_at_its_first_records(self):
+        recs = [v2rec(1, "run.registered", {"agent": {"name": "a"}}),
+                v2rec(2, "policy.decision", {"decision": "allow"}), v2rec(3, "policy.decision", {"decision": "deny"}),
+                v2rec(4, "policy.decision", {"decision": "deny"}), v2rec(5, "policy.decision", {"decision": "ask"}),
+                v2rec(6, "approval", {"decision": "approve", "tool_use_id": "c4", "self_approved": True,
+                                      "approver_identity": {"scheme": "uid", "subject": "501", "attested": True}}),
+                v2rec(7, "capture.gap", {"kind": "signer_unavailable"}), v2rec(8, "reconcile.hook_missing", {}),
+                v2rec(9, "run.closing", {"reason": "close_run"}),
+                v2rec(10, "run.final", {"coverage": {"layers": ["L2", "L3"], "reconciled": 4}})]
+        rep = mock.Mock(integrity="VERIFIED", assurance="dev; same user")
+        rv = view.review(recs, rep, "verified")
+        self.assertEqual({k: rv[k] for k in ("verdict", "integrity", "assurance", "label", "agent", "records", "state")},
+                         {"verdict": "verified", "integrity": "VERIFIED", "assurance": "dev", "label": view.OPERATOR_SIDE,
+                          "agent": "a", "records": 10, "state": "final"})
+        self.assertEqual(rv["decisions"], {"allow": 1, "deny": 2, "ask": 1})
+        self.assertEqual(rv["approvals"], [{"decision": "approve", "tool_use_id": "c4", "approver": "uid:501 (attested)",
+                                            "via": None, "self_approved": True, "break_glass": False, "seq": 6}])
+        self.assertEqual(rv["gaps"], {"signer_unavailable": 1, "reconcile.hook_missing": 1})
+        self.assertEqual(rv["coverage"], {"layers": ["L2", "L3"], "reconciled": 4, "unreconciled": {}})
+        self.assertEqual(rv["first"], {"allow": 2, "deny": 3, "ask": 5, "approval": 6, "gap:signer_unavailable": 7,
+                                       "gap:reconcile.hook_missing": 8})
+        self.assertEqual((rv["first_ts"], rv["last_ts"]), ("2026-10-10T17:00:01.000000Z", "2026-10-10T17:00:10.000000Z"))
+        json.dumps(rv)   # served to the page as is
+
+    def test_policy_reasons_of_a_configured_policy_by_its_hash(self):
+        path = os.path.join(ts.tmpdir(self), "p.yaml")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("deny:\n  - id: X-1\n    pattern: 'rm'\n    reason: removing files\n"
+                    "flag:\n  - id: X-2\n    pattern: 'ls'\n    label: listing\n")
+        h = policy_compile.policy_hash(policy_compile.build(path)[0])
+        self.assertEqual(view.policy_reasons([path])[h], {"X-1": "removing files", "X-2": "listing"})
+        self.assertEqual(SERVER[SERVER_HASH]["TK-DB001"], "dropping a database object")
 
 
 @unittest.skipUnless(hasattr(socket, "AF_UNIX"), "no Unix sockets")
@@ -80,6 +206,31 @@ class View(unittest.TestCase):
         self.assertEqual([r["tool_name"] for r in rows if r["event"] == "PreToolUse"], ["Bash", "rm", "pay"])
         self.assertEqual((rows[0]["event"], rows[-1]["title"]), ("SessionStart", rep["title"]))
         self.assertEqual(feed.verify()[1], [])
+        # the page's run list and review, the denied call's rule, the hold's rows, and the signer's records as its own
+        self.assertEqual({k: rep["review"][k] for k in ("verdict", "agent", "state", "decisions")},
+                         {"verdict": "verified", "agent": "e2e", "state": "final",
+                          "decisions": {"allow": 1, "deny": 1, "ask": 1}})
+        self.assertEqual([(a["decision"], a["self_approved"]) for a in rep["review"]["approvals"]], [("approve", True)])
+        self.assertEqual({r["agent"] for r in rows}, {"e2e"})
+        self.assertEqual(next(r["target"] for r in rows if r.get("tool_name") == "rm"), "T-DENY")
+        self.assertEqual([(r["tape"], r["v2"]["approval"]) for r in rows if r.get("v2", {}).get("approval")],
+                         [("HOLD", "requested"), ("APPROVE", "approve"), ("APPROVE", "consumed")])
+        self.assertTrue(wait_for(lambda: any(r.get("signer") for r in feed.records), 15))
+        with feed.lock:
+            self.assertEqual({(r["agent"], r["session_id"]) for r in feed.records if r.get("signer")},
+                             {("signer", view.SIGNER_RUN[1])})
+
+    def test_a_run_no_checkpoint_covers_yet_is_listed_as_pending(self):
+        fake = mock.Mock(runs={("default", "r9"): {"seqs": [0]}})
+        fake.checkpoint_latest.return_value = None
+        fake.iter_run.side_effect = lambda *key: iter([v2rec(0, "run.registered", {"agent": {"name": "late"}}, "r9")])
+        with mock.patch.object(view, "reader", return_value=fake):
+            feed = view.StoreFeed({"data_dir": self.d})
+            self.assertTrue(wait_for(lambda: feed.records, 5))
+            r = feed.records[0]
+        self.assertEqual((r["event"], r["session_id"], r["tenant"], r["review"]),
+                         ("tk_run", "r9", "default",
+                          {"verdict": "pending", "agent": "late", "label": view.OPERATOR_SIDE}))
 
     def test_tampered_record_shows_only_the_failure(self):
         run_id = self.finished_run()

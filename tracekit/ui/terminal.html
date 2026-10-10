@@ -582,6 +582,150 @@
       font-weight: 600
     }
 
+    /* v2 runs (tracekit view) */
+    .ev-HOLD {
+      color: var(--amber);
+      font-weight: 600
+    }
+
+    .ev-REJECT {
+      color: var(--red)
+    }
+
+    .ev-SIGNER,
+    .ev-VERIFY {
+      color: var(--blue)
+    }
+
+    .ev-STATE {
+      color: var(--muted)
+    }
+
+    .v2 .c-tool {
+      width: 118px
+    }
+
+    .v2 .c-agent {
+      width: 160px
+    }
+
+    /* v2 records hold no paths: the files panel gives its room to the detail card and run review */
+    .v2 main {
+      grid-template-rows: minmax(0, 1.1fr) minmax(0, .7fr) 140px minmax(0, 1.2fr);
+      grid-template-areas: "agents tape alerts" "agents tape mix" "lanes lanes lanes" "reason detail detail"
+    }
+
+    .v2 .files {
+      display: none
+    }
+
+    .v2 .kv {
+      grid-template-columns: 110px 1fr
+    }
+
+    .v2 .kv dd {
+      word-break: normal;
+      overflow-wrap: anywhere
+    }
+
+    .v2 #detail {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
+      align-content: start
+    }
+
+    .v2 #detail>div+div {
+      border-left: 1px solid var(--line)
+    }
+
+    .v2 .bar {
+      grid-template-columns: 116px 1fr 38px
+    }
+
+    .v2 .c-ev {
+      width: 64px
+    }
+
+    .run {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 2px 8px;
+      padding: 6px 8px;
+      cursor: pointer;
+      border-left: 2px solid transparent;
+      border-bottom: 1px solid var(--line)
+    }
+
+    .run:hover {
+      background: var(--panel2)
+    }
+
+    .run.sel {
+      border-left-color: var(--amber);
+      background: var(--amber-bg)
+    }
+
+    .run .nm {
+      font-weight: 600;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap
+    }
+
+    .run .meta {
+      grid-column: 1/3;
+      color: var(--muted);
+      font-size: 11px;
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap
+    }
+
+    .vchip {
+      font-size: 10px;
+      font-weight: 600;
+      padding: 0 5px;
+      height: fit-content;
+      border: 1px solid
+    }
+
+    .vchip.verified {
+      color: var(--green)
+    }
+
+    .vchip.failed {
+      color: #000;
+      background: var(--red);
+      border-color: var(--red)
+    }
+
+    .vchip.pending {
+      color: var(--yellow)
+    }
+
+    .fchip {
+      background: transparent;
+      border: 1px solid var(--line2);
+      color: var(--muted);
+      padding: 0 5px;
+      cursor: pointer;
+      font-size: 10px;
+      letter-spacing: .04em
+    }
+
+    .fchip.on {
+      border-color: var(--amber);
+      color: var(--amber)
+    }
+
+    .kv dd.go {
+      cursor: pointer
+    }
+
+    .kv dd.go:hover {
+      color: var(--yellow)
+    }
+
     .s-ok {
       color: var(--green)
     }
@@ -945,11 +1089,11 @@
     <div class="ticker" id="ticker"></div>
     <main>
       <section class="p agents">
-        <h2><b>1</b>AGENTS<small id="agsum"></small></h2>
+        <h2><b>1</b><span id="agtitle">AGENTS</span><small id="agsum"></small></h2>
         <div class="body" id="agents"></div>
       </section>
       <section class="p tape">
-        <h2><b>2</b>TAPE<small id="tapesum"></small></h2>
+        <h2><b>2</b>TAPE<span id="fchips"></span><small id="tapesum"></small></h2>
         <div class="body">
           <table>
             <thead>
@@ -1022,6 +1166,10 @@
         </select>
         <input id="scrub" type="range" min="0" max="0" value="0" aria-label="Replay position">
         <span id="pos"></span>
+        <span id="rp2" style="display:flex;gap:6px" hidden><button id="rback" type="button">◀ STEP</button><button id="rfwd"
+            type="button">STEP ▶</button><button data-jump="deny" type="button">NEXT DENY</button><button
+            data-jump="hold" type="button">NEXT HOLD</button><button data-jump="gap" type="button">NEXT GAP</button><button
+            id="rlive" type="button">LIVE</button></span>
       </div>
       <span><kbd>/</kbd>command</span><span><kbd>ESC</kbd>clear</span><span><kbd>F</kbd>flagged</span><span><kbd>?</kbd>help</span>
     </footer>
@@ -1063,6 +1211,11 @@
           <tr>
             <td>PAUSE · PLAY · SPEED &lt;n&gt;</td>
             <td>Replay controls</td>
+          </tr>
+          <tr>
+            <td>SPACE · ← → · D H G · L</td>
+            <td>v2 runs (tracekit view), with a run selected: replay play/pause, step one record, next deny / hold /
+              gap, back to live (also ESC)</td>
           </tr>
         </tbody>
       </table>
@@ -1114,10 +1267,11 @@
       S = {
         recs: [], sessions: new Map(), agents: new Map(), actions: new Map(), actList: [], tape: [], files: new Map(),
         tools: new Map(), alerts: [], reasoning: [], tokIn: 0, tokOut: 0, cost: 0, costSeen: false, currency: "", spawnQ: [], withheldSeen: new Set(),
-        firstTs: null, lastTs: null
+        firstTs: null, lastTs: null, gaps: 0, approved: 0,
+        signer: { key: "signer", session: "", id: "signer", type: "signer", sub: false, signer: true, desc: "", status: "idle", actions: 0, tokIn: 0, tokOut: 0, cost: 0, first: 0, last: 0, current: null, errors: 0, blocked: 0, flags: 0, model: "" }
       };
     }
-    const F = { agent: null, tool: null, file: null, flag: false, find: null };
+    const F = { agent: null, tool: null, file: null, flag: false, find: null, kind: null };
     let selected = null, mode = BOOT ? "replay" : "live", chainState = { ok: null, n: 0 };
 
     function sessionOf(r) {
@@ -1126,6 +1280,7 @@
       const s = S.sessions.get(id); if (!s.cwd && r.cwd) s.cwd = r.cwd; return s;
     }
     function agentOf(r, create = true) {
+      if (r.signer) return S.signer;  // the signer's own records: shown as the signer's, never an agent or session
       const key = (r.session_id || "unknown") + "|" + (r.agent_id || "main");
       if (!S.agents.has(key) && create) {
         sessionOf(r);
@@ -1133,19 +1288,22 @@
           key, session: r.session_id || "unknown", id: r.agent_id || "main",
           type: r.agent_type || (r.agent_id ? "subagent" : (r.agent || "main")), sub: !!r.agent_id, parent: r.parent_id || null,
           desc: "", status: "idle", actions: 0, tokIn: 0, tokOut: 0, cost: 0, first: r.ts, last: r.ts,
-          current: null, errors: 0, blocked: 0, flags: 0, model: ""
+          current: null, errors: 0, blocked: 0, flags: 0, model: "", name: r.agent || ""
         });
       }
       const a = S.agents.get(key); if (a) { a.last = Math.max(a.last, r.ts); if (r.agent_type && a.type === "subagent") a.type = r.agent_type; }
       return a;
     }
     function label(a) {
-      if (!a.sub) return "main·" + (a.session.length <= 16 ? a.session : a.session.slice(-4));
+      if (a.signer) return "signer";
+      if (!a.sub) return (V2 && a.name ? a.name + "·" : "main·") + (a.session.length <= 16 ? a.session : a.session.slice(-4));
       const w = a.desc ? a.desc.split(/\s+/)[0] : a.type.split(/[-_ ]/)[0];
       return w.toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 8) + "·" + a.id.slice(0, 4);
     }
-    function pushTape(row) { S.tape.push(row); }
-    function alert(sev, text, sub, ref, ts, agent) { S.alerts.push({ sev, text, sub, ref, ts, agent }); }
+    function pushTape(row) { row.i = S.tape.length; S.tape.push(row); }
+    function alert(sev, text, sub, ref, ts, agent) { S.alerts.push({ sev, text, sub, ref, ts, agent, i: S.alerts.length }); }
+    // a v2 tool_call_id is the client's ("c1"), unique only within its run
+    const tuid = r => (r.v2 ? r.session_id + "|" : "") + (r.tool_use_id ?? r.v2?.tool_use_id);
 
     function ingest(r) {
       S.recs.push(r);
@@ -1178,9 +1336,9 @@
       if (ev === "PreToolUse") {
         const a = agentOf(r), pol = r.policy || {};
         const act = {
-          id: r.tool_use_id || ("s" + r.seq), pre: r, post: null, agent: a, tool: r.tool_name || "?", input: r.tool_input || {},
-          target: rel(subject(r.tool_name, r.tool_input), r.cwd), flags: [...(pol.flags || [])], denied: pol.decision === "deny",
-          reasons: pol.reasons || [], start: r.ts, end: null, ms: null, error: false, child: null
+          id: r.v2 ? tuid(r) : r.tool_use_id || ("s" + r.seq), pre: r, post: null, agent: a, tool: r.tool_name || "?", input: r.tool_input || {},
+          target: r.target ?? rel(subject(r.tool_name, r.tool_input), r.cwd), flags: [...(pol.flags || [])], denied: pol.decision === "deny",
+          reasons: pol.reasons || [], start: r.ts, end: null, ms: null, error: false, child: null, v2: r.v2, approvals: []
         };
         if (act.denied) act.flags.unshift("denied");
         S.actions.set(act.id, act); S.actList.push(act);
@@ -1197,15 +1355,15 @@
         if (act.tool === "Agent" || act.tool === "Task") S.spawnQ.push(act);
         if (act.denied) { a.blocked++; alert("high", `BLOCKED ${act.tool}: ${act.target}`, act.reasons.join("; "), act, r.ts, a); }
         for (const f of act.flags) {
-          if (f === "denied") continue;
+          if (f === "denied" || (act.v2 && f === "held_for_approval")) continue;  // v2: its approval.request is the alert
           a.flags++;
           alert(SEVERE.has(f) ? "high" : "med", `${f.replace(/_/g, " ").toUpperCase()} · ${act.tool}`, act.target, act, r.ts, a);
         }
-        pushTape({ ts: r.ts, agent: a, ev: act.denied ? "BLOCK" : "TOOL", act, rec: r });
+        pushTape({ ts: r.ts, agent: a, ev: act.denied ? "BLOCK" : act.v2?.decision === "ask" ? "HOLD" : "TOOL", act, rec: r });
         return;
       }
       if (ev === "PostToolUse") {
-        const act = S.actions.get(r.tool_use_id) || S.actList.slice().reverse().find(x => !x.post && x.tool === r.tool_name && JSON.stringify(x.input) === JSON.stringify(r.tool_input || {}));
+        const act = S.actions.get(r.v2 ? tuid(r) : r.tool_use_id) || S.actList.slice().reverse().find(x => !x.post && x.tool === r.tool_name && JSON.stringify(x.input) === JSON.stringify(r.tool_input || {}));
         if (!act) return;
         act.post = r; act.end = r.ts; act.ms = r.duration_ms ?? Math.round((r.ts - act.start) * 1000);
         const resp = r.tool_response;
@@ -1244,8 +1402,14 @@
       }
       if (ev === "log") { sessionOf(r); pushTape({ ts: r.ts, agent: agentOf(r), ev: "SAYS", text: r.text || r.message || "log", rec: r }); return; }
       // v0.2 events, translated by `tracekit observe`
+      if (ev === "tk_run") return;  // a run's verdict before a checkpoint covers it: the run list only
       if (ev === "tk_alert") {
-        const a = agentOf(r); alert(r.severity || "med", r.title || "ALERT", r.text || "", { rec: r }, r.ts, a);
+        // a verifier report of a run with no record shown (it failed) is no agent: no lane, not counted
+        const a = agentOf(r, !r.review) || { ...S.signer, signer: false, session: r.session_id || "", name: "run" }, act = r.v2?.approval && S.actions.get(tuid(r));
+        if (act) act.approvals.push(r);
+        if (r.tape === "GAP") S.gaps++;
+        if (r.v2?.approval === "approve") S.approved++;
+        alert(r.severity || "med", r.title || "ALERT", r.text || "", { rec: r }, r.ts, a);
         pushTape({ ts: r.ts, agent: a, ev: r.tape || "ALERT", text: (r.title || "") + " · " + (r.text || ""), rec: r }); return;
       }
       if (ev === "tk_model") {
@@ -1273,14 +1437,17 @@
       if (F.find) { const q = F.find.toLowerCase(); if (!(JSON.stringify(act.input) + JSON.stringify(act.post?.tool_response || "")).toLowerCase().includes(q)) return false; }
       return true;
     }
+    const KINDS = { dec: ["Decisions", row => !!row.act], apr: ["Approvals", row => ["HOLD", "APPROVE", "REJECT"].includes(row.ev)],
+                    gap: ["Gaps & alerts", row => ["GAP", "ALERT", "BLOCK"].includes(row.ev) || (row.ev === "VERIFY" && row.rec.severity === "high")] };
     function rowMatch(row) {
+      if (F.kind && !KINDS[F.kind][1](row)) return false;
       if (row.act) return actMatch(row.act);
       if (!agentMatch(row.agent)) return false;
       if (F.tool || F.file || F.flag) return false;
       if (F.find) return String(row.text || "").toLowerCase().includes(F.find.toLowerCase());
       return true;
     }
-    function anyFilter() { return F.agent || F.tool || F.file || F.flag || F.find; }
+    function anyFilter() { return F.agent || F.tool || F.file || F.flag || F.find || F.kind; }
 
     /* ---------------- render ---------------- */
     let rq = false, lastCounts = {};
@@ -1289,7 +1456,7 @@
 
     function render() {
       renderTop(); renderTicker(); renderAgents(); renderTape(); renderAlerts(); renderMix(); renderLanes(); renderReason(); renderFiles();
-      if (selected) renderDetail(selected);
+      if (selected) renderDetail(selected); else if (V2) renderReview();
     }
     function renderTop() {
       const m = $("mode");
@@ -1297,9 +1464,19 @@
       m.textContent = mode === "live" ? (liveOk ? "LIVE" : "DISCONNECTED") : "REPLAY";
       m.title = mode === "live" && !liveOk ? liveErr : "";
       const c = $("chain");
-      c.className = "chain" + (chainState.ok === true ? " ok" : chainState.ok === false ? " bad" : "");
-      c.textContent = chainState.ok === true ? `CHAIN ✓ ${chainState.n} SIGNED RECORDS` : chainState.ok === false ? `CHAIN ✗ BROKEN` : chainState.detail ? "CHAIN n/a" : "CHAIN …";
-      c.title = chainState.detail || "";
+      const run = V2 && scope ? RUNS.get(scope) : null;   // a selected run: its own verdict, not the page's
+      const failed = V2 && !run ? [...RUNS.values()].filter(r => r.verdict === "failed").length : 0;
+      if (run) {
+        c.className = "chain" + (run.verdict === "verified" ? " ok" : run.verdict === "failed" ? " bad" : "");
+        c.textContent = run.verdict === "verified" ? "RUN ✓ VERIFIED" : run.verdict === "failed" ? "RUN ✗ FAILED" : "RUN … PENDING";
+        c.title = (run.integrity || "") + " · " + (run.label || "");
+      } else {
+        c.className = "chain" + (chainState.ok === true ? " ok" : chainState.ok === false ? " bad" : "");
+        c.textContent = chainState.ok === true ? `CHAIN ✓ ${chainState.n} SIGNED RECORDS`
+          : chainState.ok === false ? (failed ? `✗ ${failed} OF ${RUNS.size} RUNS FAILED` : `CHAIN ✗ BROKEN`)
+          : chainState.detail ? "CHAIN n/a" : "CHAIN …";
+        c.title = chainState.detail || "";
+      }
       $("clock").textContent = new Date(nowTs() * 1000).toTimeString().slice(0, 8) + (mode === "replay" ? " (REPLAY)" : "");
       const chips = [];
       if (F.agent) chips.push(["agent", "AGT " + F.agent]); if (F.tool) chips.push(["tool", "TOOL " + F.tool]);
@@ -1311,8 +1488,13 @@
       const t = nowTs(), recent = S.actList.filter(a => a.start > t - 60).length;
       const blocked = S.actList.filter(a => a.denied).length, errors = S.actList.filter(a => a.error).length;
       const flagged = S.actList.filter(a => a.flags.length).length;
-      const elapsed = S.firstTs ? t - S.firstTs : 0;
-      const items = [
+      const elapsed = S.firstTs ? (V2 ? S.lastTs : t) - S.firstTs : 0;
+      const held = S.actList.filter(a => a.v2?.decision === "ask").length, v2flag = S.actList.filter(a => a.v2?.decision === "flag").length, high = S.alerts.filter(a => a.sev === "high").length;
+      const items = V2 ? [
+        ["RUNS", scope ? 1 : [...RUNS.values()].length, ""], ["AGENTS", agents.length, ""], ["CALLS", S.actList.length, "am"],
+        ["FLAGGED", v2flag, v2flag ? "am" : ""], ["BLOCKED", blocked, blocked ? "dn" : ""], ["HELD", held, held ? "am" : ""],
+        ["APPROVED", S.approved, S.approved ? "up" : ""], ["GAPS", S.gaps, S.gaps ? "dn" : ""], ["HIGH ALERTS", high, high ? "dn" : ""],
+        ["ERRORS", errors, errors ? "dn" : ""], ["SPAN", fmtDur(elapsed), ""], ["RECORDS", S.recs.length, ""]] : [
         ["SESSIONS", S.sessions.size, ""], ["AGENTS", agents.length, ""], ["RUNNING", running, running ? "up" : ""],
         ["ACTIONS", S.actList.length, "am"], ["ACT/MIN", recent, recent ? "up" : ""],
         ["TOKENS IN", fmtN(S.tokIn), ""], ["TOKENS OUT", fmtN(S.tokOut), ""],
@@ -1324,7 +1506,23 @@
         return `<div class="tk${esc(fl)}"><b>${esc(k)}</b><i class="${esc(c)}">${esc(v)}</i></div>`;
       }).join("");
     }
+    function renderRuns() {
+      const list = [...RUNS.values()].sort((x, y) => String(y.first_ts || "").localeCompare(String(x.first_ts || "")));
+      const n = v => list.filter(r => r.verdict === v).length;
+      let html = `<div class="run${scope ? "" : " sel"}" data-run=""><span class="nm">ALL RUNS</span><span></span><span class="meta"><span>${esc(list.length)} runs</span><span class="s-ok">${esc(n("verified"))} verified</span>${n("failed") ? `<span class="s-err">${esc(n("failed"))} failed</span>` : ""}${n("pending") ? `<span class="s-run">${esc(n("pending"))} pending</span>` : ""}</span></div>`;
+      for (const r of list) {
+        const d = r.decisions || {}, t0 = Date.parse(r.first_ts) / 1000, t1 = Date.parse(r.last_ts) / 1000;
+        const gaps = Object.values(r.gaps || {}).reduce((x, y) => x + y, 0), calls = Object.values(d).reduce((x, y) => x + y, 0);
+        html += `<div class="run${scope === r.id ? " sel" : ""}" data-run="${esc(r.id)}"><span class="nm">${esc(r.agent || "run")}</span><span class="vchip ${esc(r.verdict)}" title="${esc(r.integrity || "")} · ${esc(r.label)}">${esc(String(r.verdict).toUpperCase())}</span>
+          <span class="meta"><span>${esc(r.id.slice(0, 8))}</span>${t0 ? `<span>${esc(new Date(t0 * 1000).toISOString().slice(0, 10))} ${esc(fmtT(t0))}</span><span>${esc(fmtDur(t1 - t0))}</span>` : ""}${r.state ? `<span>${esc(r.state)}</span>` : ""}${r.tenant && r.tenant !== "default" ? `<span>tenant ${esc(r.tenant)}</span>` : ""}</span>
+          ${r.decisions ? `<span class="meta"><span>${esc(calls)} calls</span><span class="${d.deny ? "s-deny" : ""}">${esc(d.deny || 0)} blocked</span><span class="${d.ask ? "s-flag" : ""}">${esc(d.ask || 0)} held</span><span class="${gaps ? "s-err" : ""}">${esc(gaps)} gaps</span></span>` : ""}</div>`;
+      }
+      $("agents").innerHTML = html;
+      $("agtitle").textContent = "RUNS";
+      $("agsum").textContent = "verdicts: operator-side";
+    }
     function renderAgents() {
+      if (V2) return renderRuns();
       const by = new Map();
       for (const a of S.agents.values()) { if (!by.has(a.session)) by.set(a.session, []); by.get(a.session).push(a); }
       let html = "";
@@ -1359,16 +1557,18 @@
         if (a) {
           tool = a.tool; text = a.target;
           if (a.child) text += `  → ${label(a.child)}`;
-          st = a.denied ? ["s-deny", "BLOCKED"] : a.error ? ["s-err", "FAILED"] : a.post ? (a.flags.length ? ["s-flag", "⚑ OK"] : ["s-ok", "OK"]) : ["s-run", "RUNNING"];
+          const ap = a.approvals?.filter(x => x.v2.type === "approval").pop()?.v2.approval;
+          st = a.denied ? ["s-deny", "BLOCKED"] : a.error ? ["s-err", "FAILED"] : a.v2?.decision === "ask" ? (ap === "approve" ? ["s-ok", "APPROVED"] : ap ? ["s-deny", ap.toUpperCase()] : ["s-flag", "HELD"]) : a.post ? (a.flags.length ? ["s-flag", "⚑ OK"] : ["s-ok", "OK"]) : ["s-run", "RUNNING"];
           ms = a.ms != null ? a.ms : "";
         } else { text = rel(String(row.text || ""), row.rec?.cwd).replace(/\s+/g, " "); }
-        return `<tr class="row${esc(isNew)}${esc(sel)}" data-i="${esc(S.tape.indexOf(row))}"><td class="c-time">${esc(fmtT(row.ts))}</td><td class="c-agent">${esc(label(row.agent))}</td><td class="c-ev ev-${esc(row.ev)}">${esc(row.ev)}</td><td class="c-tool">${esc(tool)}</td><td class="tgt${a ? "" : " dim"}" title="${esc(text.slice(0, 400))}">${esc(text.slice(0, 300))}</td><td class="c-st">${st ? `<span class="${esc(st[0])}">${esc(st[1])}</span>` : ""}</td><td class="c-ms">${esc(ms)}</td></tr>`;
+        return `<tr class="row${esc(isNew)}${esc(sel)}" data-i="${esc(row.i)}"><td class="c-time">${esc(fmtT(row.ts))}</td><td class="c-agent">${esc(label(row.agent))}</td><td class="c-ev ev-${esc(row.ev)}">${esc(row.ev)}</td><td class="c-tool">${esc(tool)}</td><td class="tgt${a ? "" : " dim"}" title="${esc(text.slice(0, 400))}">${esc(text.slice(0, 300))}</td><td class="c-st">${st ? `<span class="${esc(st[0])}">${esc(st[1])}</span>` : ""}</td><td class="c-ms">${esc(ms)}</td></tr>`;
       }).join("") || `<tr><td colspan="7" class="empty">${anyFilter() ? "Nothing matches the filter." : "Waiting for events…"}</td></tr>`;
+      if (V2) $("fchips").innerHTML = [["", "All"], ...Object.entries(KINDS).map(([k, v]) => [k, v[0]])].map(([k, t]) => `<button class="fchip${(F.kind || "") === k ? " on" : ""}" data-kind="${esc(k)}" type="button">${esc(t)}</button>`).join(" ");
       $("tapesum").textContent = anyFilter() ? `${rows.length} of ${S.tape.length} events` : `${S.tape.length} events · newest first`;
     }
     function renderAlerts() {
       const list = S.alerts.filter(al => !al.agent || agentMatch(al.agent)).slice(-200).reverse();
-      $("alerts").innerHTML = list.map((al, i) => `<div class="al" data-al="${esc(S.alerts.indexOf(al))}"><span class="sev ${esc(al.sev)}">${esc(String(al.sev).toUpperCase())}</span><span class="tx">${esc(al.text)}</span><span class="sub">${esc(fmtT(al.ts))} · ${esc(al.agent ? label(al.agent) : "")} · ${esc(String(al.sub || "").slice(0, 200))}</span></div>`).join("") || `<div class="empty">No alerts. Blocked, flagged and failed actions appear here.</div>`;
+      $("alerts").innerHTML = list.map((al, i) => `<div class="al" data-al="${esc(al.i)}"><span class="sev ${esc(al.sev)}">${esc(String(al.sev).toUpperCase())}</span><span class="tx">${esc(al.text)}</span><span class="sub">${esc(fmtT(al.ts))} · ${esc(al.agent ? label(al.agent) : "")} · ${esc(String(al.sub || "").slice(0, 200))}</span></div>`).join("") || `<div class="empty">No alerts. Blocked, flagged and failed actions appear here.</div>`;
       const hi = S.alerts.filter(a => a.sev === "high").length;
       $("alsum").textContent = `${S.alerts.length} total · ${hi} high`;
     }
@@ -1378,7 +1578,7 @@
       const rows = [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 10), max = rows[0]?.[1] || 1;
       $("mix").innerHTML = rows.map(([t, n]) => {
         const cat = category({ tool: t, flags: [], denied: false, error: false });
-        return `<div class="bar" data-tool="${esc(t)}"><span>${esc(t.slice(0, 12))}</span><span class="tr"><span class="fl" style="display:block;width:${esc((n / max * 100).toFixed(1))}%;background:var(${esc(CAT_COLOR[cat])})"></span></span><span class="n">${esc(n)}</span></div>`;
+        return `<div class="bar" data-tool="${esc(t)}"><span>${esc(t.slice(0, V2 ? 16 : 12))}</span><span class="tr"><span class="fl" style="display:block;width:${esc((n / max * 100).toFixed(1))}%;background:var(${esc(CAT_COLOR[cat])})"></span></span><span class="n">${esc(n)}</span></div>`;
       }).join("") || `<div class="empty">No actions yet.</div>`;
       $("mixsum").textContent = `${counts.size} tools`;
     }
@@ -1390,18 +1590,27 @@
       const g = cv.getContext("2d"); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, W, H);
       const agents = [...S.agents.values()].filter(agentMatch).sort((x, y) => x.session.localeCompare(y.session) || (x.sub - y.sub) || (x.first - y.first));
       laneHits = [];
-      const labelW = 120, top = 16, t0 = S.firstTs, t1 = Math.max(nowTs(), (S.lastTs || 0) + 1);
+      const labelW = V2 ? 150 : 120, top = 16;
+      let t0 = S.firstTs, t1 = Math.max(nowTs(), (S.lastTs || 0) + 1);
+      if (V2 && t0 != null) {  // v2 runs are evidence, not a live feed: scale to the calls shown (a replay: its whole run)
+        let lo = Infinity, hi = -Infinity;
+        for (const r of R || []) if (r.event === "PreToolUse" || r.event === "PostToolUse") { lo = Math.min(lo, r.ts); hi = Math.max(hi, r.ts); }
+        if (!R) for (const a of S.actList) { lo = Math.min(lo, a.start); hi = Math.max(hi, a.end ?? a.start); }
+        if (lo > hi) { lo = S.firstTs; hi = S.lastTs; }
+        const span = Math.max(hi - lo, 0.01);
+        t0 = lo - span * .03; t1 = lo + span * 1.03;
+      }
       g.font = `11px ${css("--mono")}`; g.textBaseline = "middle";
       if (!agents.length || t0 == null) { g.fillStyle = css("--faint"); g.fillText("Waiting for agents…", 8, H / 2); return; }
       const laneH = Math.max(12, Math.min(26, (H - top - 4) / agents.length));
       const x = ts => labelW + (ts - t0) / (t1 - t0) * (W - labelW - 8);
       // time axis
       g.strokeStyle = css("--line"); g.fillStyle = css("--muted"); g.lineWidth = 1;
-      const span = t1 - t0, steps = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600];
+      const span = t1 - t0, steps = [...(V2 ? [.001, .002, .005, .01, .02, .05, .1, .2, .5] : []), 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600];
       const step = steps.find(s => span / s <= 10) || 3600;
       for (let t = Math.ceil(t0 / step) * step; t <= t1; t += step) {
         const xx = Math.round(x(t)) + .5; g.beginPath(); g.moveTo(xx, top - 4); g.lineTo(xx, H); g.stroke();
-        g.fillText(fmtT(t), xx + 3, 7);
+        g.fillText(step < 1 ? fmtT(t) + "." + String(Math.round(t * 1000) % 1000).padStart(3, "0") : fmtT(t), xx + 3, 7);
       }
       agents.forEach((a, i) => {
         const y = top + i * laneH;
@@ -1409,7 +1618,8 @@
         g.fillStyle = i % 2 ? "#0b0b0a" : "#080807"; g.fillRect(labelW, y, W - labelW, laneH);
         g.fillStyle = a.status === "running" ? css("--green") : css("--amber"); g.fillText((a.sub ? "  " : "") + label(a), 6, y + laneH / 2);
         // life span
-        g.fillStyle = "#1a1a17"; g.fillRect(x(a.first), y + laneH / 2 - 1, Math.max(1, x(a.status === "done" ? a.last : t1) - x(a.first)), 2);
+        const xf = Math.max(labelW, x(a.first));  // v2: the run may start before the calls the scale fits
+        g.fillStyle = "#1a1a17"; g.fillRect(xf, y + laneH / 2 - 1, Math.max(1, Math.min(W, x(a.status === "done" ? a.last : t1)) - xf), 2);
         for (const act of S.actList) {
           if (act.agent !== a || !actMatch(act)) continue;
           const x0 = x(act.start), x1 = Math.max(x0 + 3, x(act.end ?? (act.denied ? act.start : t1)));
@@ -1422,7 +1632,8 @@
           laneHits.push({ x0, x1, y0: y, y1: y + laneH, act });
         }
       });
-      if (mode === "live") { const nx = x(Date.now() / 1000); g.strokeStyle = css("--red"); g.beginPath(); g.moveTo(nx + .5, top - 4); g.lineTo(nx + .5, H); g.stroke(); }
+      if (R && rpos) { const px = Math.round(Math.min(W - 2, Math.max(labelW, x(R[rpos - 1].ts)))) + .5; g.strokeStyle = css("--cyan"); g.lineWidth = 2; g.beginPath(); g.moveTo(px, top - 4); g.lineTo(px, H); g.stroke(); g.lineWidth = 1; }
+      if (mode === "live" && !V2) { const nx = x(Date.now() / 1000); g.strokeStyle = css("--red"); g.beginPath(); g.moveTo(nx + .5, top - 4); g.lineTo(nx + .5, H); g.stroke(); }
     }
     function renderReason() {
       const list = S.reasoning.filter(r => agentMatch(r.agent) && (!F.find || r.text.toLowerCase().includes(F.find.toLowerCase()))).slice(-80).reverse();
@@ -1430,12 +1641,13 @@
     }
     function renderFiles() {
       const list = [...S.files.values()].filter(f => !F.file || f.path.toLowerCase().includes(F.file.toLowerCase())).sort((a, b) => (b.w - a.w) || (b.r - a.r));
-      $("files").innerHTML = list.map(f => `<tr class="row" data-file="${esc(f.path)}"><td title="${esc(f.path)}">${esc(f.path.length > 48 ? "…" + f.path.slice(-47) : f.path)}</td><td class="dim">${esc(f.r || "")}</td><td style="color:var(--amber)">${esc(f.w || "")}</td><td style="color:var(--red)">${esc(f.blk || "")}</td><td class="c-agent">${esc(f.last ? label(f.last) : "")}</td></tr>`).join("") || `<tr><td colspan="5" class="empty">No files touched yet.</td></tr>`;
+      $("files").innerHTML = list.map(f => `<tr class="row" data-file="${esc(f.path)}"><td title="${esc(f.path)}">${esc(f.path.length > 48 ? "…" + f.path.slice(-47) : f.path)}</td><td class="dim">${esc(f.r || "")}</td><td style="color:var(--amber)">${esc(f.w || "")}</td><td style="color:var(--red)">${esc(f.blk || "")}</td><td class="c-agent">${esc(f.last ? label(f.last) : "")}</td></tr>`).join("") || `<tr><td colspan="5" class="empty">${V2 ? "v2 records hold no paths in clear: a call's arguments are a salted commitment." : "No files touched yet."}</td></tr>`;
       $("filesum").textContent = `${S.files.size} files · ${[...S.files.values()].filter(f => f.w).length} written`;
     }
     function j(v) { try { return typeof v === "string" ? v : JSON.stringify(v, null, 2); } catch { return String(v); } }
     function renderDetail(sel) {
       let html = "";
+      if (V2 && (sel.pre || sel).v2 || sel.review) { $("detail").innerHTML = detailV2(sel); return; }
       if (sel.pre) { // action
         const a = sel, st = a.denied ? "BLOCKED" : a.error ? "FAILED" : a.post ? "OK" : "RUNNING";
         const before = S.reasoning.filter(r => r.agent === a.agent && r.ts <= a.start + 0.5 && r.kind !== "withheld").slice(-1)[0];
@@ -1461,15 +1673,78 @@
       }
       $("detail").innerHTML = html;
     }
+    /* ---------------- v2 runs: detail card and run review ---------------- */
+    const short = h => h ? String(h).slice(0, String(h).indexOf(":") + 13) + "…" : "";
+    function verdictLine(id) {
+      const v = RUNS.get(id);
+      return v ? `<dt>VERDICT</dt><dd><span class="vchip ${esc(v.verdict)}">${esc(String(v.verdict).toUpperCase())}</span> ${esc(v.integrity ? "Integrity " + v.integrity + " · Assurance " + v.assurance : "")}<div class="dim">${esc(v.label)}</div></dd>` : "";
+    }
+    function rulesHtml(rules) {
+      return (rules || []).map(x => `<div><span class="s-flag">${esc(x.id)}</span> ${esc(x.reason || "(not in a policy this viewer has)")}</div>`).join("") || "none matched";
+    }
+    const cols = (l, r) => `<div>` + l + `</div><div>` + r + `</div>`;  // the detail card's two columns
+    function detailV2(sel) {
+      if (sel.pre) {
+        const a = sel, v = a.v2 || {}, ap = a.approvals.filter(x => x.v2.type === "approval").pop()?.v2.approval;
+        const out = a.denied ? ["s-deny", "BLOCKED"] : a.error ? ["s-err", "FAILED"] : v.decision === "ask" && ap !== "approve" ? ["s-flag", ap ? ap.toUpperCase() : "HELD"] : a.post ? ["s-ok", v.decision === "ask" ? "APPROVED · RAN" : "RAN"] : ["s-run", "NO RESULT YET"];
+        const left = `<dl class="kv"><dt>CALL</dt><dd style="color:var(--cyan)">${esc(a.tool)}</dd><dt>RUN</dt><dd>${esc(label(a.agent))}</dd><dt>TIME</dt><dd>${esc(fmtT(a.start))}${a.ms != null ? ` · ${esc(a.ms)} ms` : ""}</dd>
+      <dt>DECISION</dt><dd>${esc(String(v.decision).toUpperCase())} → <span class="${esc(out[0])}">${esc(out[1])}</span></dd><dt>RULES</dt><dd>` + rulesHtml(v.rules) + `</dd>` + verdictLine(a.pre.session_id) + `</dl>
+      <div class="sec">ARGUMENTS</div><dl class="kv"><dt>commitment</dt><dd class="hash" title="${esc(v.args_commitment)}">${esc(short(v.args_commitment))}</dd><dt></dt><dd class="dim">arguments are a salted commitment; <code>tracekit signer reveal --record ${esc(lseq(a.pre))}</code> gives an auditor the salt</dd><dt>policy</dt><dd class="dim" title="${esc(v.policy_hash)}">${esc(short(v.policy_hash))}</dd></dl>`;
+        let right = a.approvals.length ? `<div class="sec">APPROVAL</div><dl class="kv">` + a.approvals.map(r => `<dt>${esc(fmtT(r.ts))}</dt><dd class="go" data-tkseq="${esc(r.tk_seq)}">${esc(r.title)}<div class="dim">${esc(r.text)}</div></dd>`).join("") + `</dl>` : "";
+        if (a.post) right += `<div class="sec">RESULT</div><dl class="kv"><dt>status</dt><dd>${esc(a.error ? "failed" : "ok")}</dd><dt>output</dt><dd>${esc(j(a.post.tool_response?.output))}</dd></dl>`;
+        $("detsum").textContent = `${a.tool} · seq ${lseq(a.pre)}`;
+        return cols(left, right + evidence(a.pre) + (a.post ? evidence(a.post) : ""));
+      }
+      const v = sel.v2 || {};
+      let left = `<dl class="kv"><dt>TYPE</dt><dd>${esc(v.type || sel.event)}</dd><dt>TIME</dt><dd>${esc(fmtT(sel.ts))}</dd><dt>SOURCE</dt><dd>${esc(sel.signer ? "signer" : sel.agent)}</dd>${sel.title ? `<dt>EVENT</dt><dd>${esc(sel.title)}</dd>` : ""}`;
+      if (!sel.review) left += `<dt>DETAIL</dt><dd>${esc(sel.text || sel.reason || sel.source || sel.prompt || "")}</dd>`;
+      if (v.rules) left += `<dt>RULES</dt><dd>` + rulesHtml(v.rules) + `</dd>`;
+      if (v.approver) left += `<dt>APPROVER</dt><dd>${esc(v.approver)}</dd><dt>VIA</dt><dd>${esc(v.via ? v.via + " (a bridge vouches for the person)" : "the approver's own connection")}</dd><dt>SELF</dt><dd class="${v.self_approved ? "s-deny" : ""}">${esc(v.self_approved ? "self-approved" : "not self-approved")}</dd>${v.break_glass ? `<dt>BREAK-GLASS</dt><dd class="s-deny">yes: outside the approver list, with a reason</dd>` : ""}`;
+      if (v.binding_digest) left += `<dt>BINDING</dt><dd class="hash" title="${esc(v.binding_digest)}">${esc(short(v.binding_digest))}</dd>`;
+      if (v.kind) left += `<dt>GAP KIND</dt><dd>${esc(v.kind)}</dd>`;
+      if (!sel.signer) left += verdictLine(sel.session_id);
+      const right = sel.review ? `<div class="sec">VERIFIER REPORT</div><pre>${esc(sel.text)}</pre>`
+        : `<div class="sec">RECORD</div><pre>${esc(j(Object.fromEntries(Object.entries(sel).filter(([k]) => !["hash", "prev"].includes(k) && !(k === "seq" && sel.tk_seq !== undefined)))).slice(0, 8000))}</pre>`;
+      $("detsum").textContent = `${v.type || sel.event} · seq ${lseq(sel)}`;
+      return cols(left + `</dl>` + evidence(sel), right);
+    }
+    function renderReview() {
+      const r = scope && RUNS.get(scope);
+      if (!r) {
+        $("detail").innerHTML = `<div class="empty">Select a run for its review, or any row for its record.</div>`;
+        $("detsum").textContent = "click any row"; return;
+      }
+      const d = r.decisions || {}, f = r.first || {};
+      const line = (seq, k, text, cls) => `<dt>${esc(k)}</dt><dd class="${esc(cls || "")}${seq != null ? " go" : ""}" data-tkseq="${esc(seq ?? "")}">${esc(text)}</dd>`;
+      let left = `<div class="sec">RUN REVIEW</div><dl class="kv"><dt>RUN</dt><dd>${esc(r.agent || "run")} · ${esc(r.id)}</dd><dt>INTEGRITY</dt><dd><span class="vchip ${esc(r.verdict)}">${esc(String(r.verdict).toUpperCase())}</span> ${esc(r.integrity || "")}</dd>${r.assurance ? `<dt>ASSURANCE</dt><dd>${esc(r.assurance)}</dd>` : ""}<dt></dt><dd class="dim">${esc(r.label)}</dd>`, right = "";
+      if (r.decisions) {
+        const t0 = Date.parse(r.first_ts) / 1000, t1 = Date.parse(r.last_ts) / 1000, c = r.coverage, gaps = Object.entries(r.gaps || {});
+        left += line(null, "RECORDS", `${r.records} · ${fmtT(t0)} → ${fmtT(t1)} (${fmtDur(t1 - t0)}) · ${r.state}`)
+          + line(null, "COVERAGE", c ? `${c.layers.join("+") || "no layers"} · reconciled ${c.reconciled}` + Object.entries(c.unreconciled).map(([k, n]) => ` · unreconciled ${k} ${n}`).join("") : "not final yet: run.final records it");
+        right = `<div class="sec">POLICY · CLICK A LINE FOR ITS FIRST RECORD</div><dl class="kv">` + line(f.allow, "ALLOWED", d.allow || 0) + line(f.flag, "FLAGGED", d.flag || 0, d.flag ? "s-flag" : "") + line(f.deny, "DENIED", d.deny || 0, d.deny ? "s-deny" : "") + line(f.ask, "HELD", d.ask || 0, d.ask ? "s-flag" : "");
+        for (const a of r.approvals) right += line(a.seq, a.decision === "approve" ? "→ APPROVED" : "→ " + String(a.decision).toUpperCase(), `${a.tool_use_id} by ${a.approver}` + (a.via ? ` vouched for by ${a.via}` : "") + (a.self_approved ? " · SELF-APPROVED" : " · not self-approved") + (a.break_glass ? " · BREAK-GLASS" : ""), a.self_approved || a.break_glass || a.decision !== "approve" ? "s-deny" : "s-ok");
+        right += (gaps.length ? gaps.map(([k, n]) => line(f["gap:" + k], "GAP", `${k} ×${n}`, "s-err")).join("") : line(null, "GAPS", "none signed")) + `</dl>`;
+      } else {
+        left += line(null, "RECORDS", r.verdict === "failed" ? "none shown: a run that fails verification shows only its report" : "shown once a checkpoint covers the run");
+        if (r.report) right = `<div class="sec">VERIFIER REPORT</div><pre>${esc(r.report)}</pre>`;
+      }
+      $("detail").innerHTML = cols(left + `</dl>`, right);
+      $("detsum").textContent = "run review";
+    }
     function lseq(r) { return r.tk_seq ?? r.seq; }  // the ledger's seq (v0.2 records carry it as tk_seq)
     function evidence(r) {
+      if (r.v2) return `<div class="sec">LEDGER EVIDENCE · SEQ ${esc(lseq(r))}</div><dl class="kv"><dt>type</dt><dd>${esc(r.v2.type)}</dd><dt>run_seq</dt><dd>${esc(r.v2.run_seq ?? "")}</dd><dt>hash</dt><dd class="hash" title="${esc(r.hash || "")}">${esc(short(r.hash))}</dd><dt>prev</dt><dd class="dim" title="${esc(r.prev || "")}">${esc(short(r.prev))}</dd></dl>`;
       return `<div class="sec">LEDGER EVIDENCE · SEQ ${esc(lseq(r))}</div><dl class="kv"><dt>hash</dt><dd class="hash">${esc(r.hash || "")}</dd><dt>prev</dt><dd class="dim">${esc(r.prev || "")}</dd></dl>`;
     }
     function select(x) { selected = x; schedule(); }
 
     /* ---------------- interaction ---------------- */
     document.addEventListener("click", e => {
-      const t = e.target.closest("[data-i],[data-al],[data-agent],[data-tool],[data-file],[data-seq],[data-tkseq],[data-clear]"); if (!t) return;
+      const t = e.target.closest("[data-i],[data-al],[data-agent],[data-tool],[data-file],[data-seq],[data-tkseq],[data-clear],[data-run],[data-kind],[data-jump]"); if (!t) return;
+      if (t.dataset.run !== undefined) return setScope(t.dataset.run || null);
+      if (t.dataset.kind !== undefined) { F.kind = t.dataset.kind || null; return schedule(); }
+      if (t.dataset.jump) return jump(t.dataset.jump);
+      if (t.dataset.tkseq && R) { const i = R.findIndex(r => r.tk_seq === +t.dataset.tkseq); if (i >= 0) seekRun(i + 1, R[i]); return; }
       if (t.dataset.tkseq) { e.preventDefault(); const r = S.recs.find(r => r.tk_seq === +t.dataset.tkseq); if (r) { const act = S.actList.find(a => a.pre === r || a.post === r); select(act || r); } return; }
       if (t.dataset.clear) { F[t.dataset.clear] = t.dataset.clear === "flag" ? false : null; return schedule(); }
       if (t.dataset.i) { const row = S.tape[+t.dataset.i]; return select(row.act || row.rec); }
@@ -1494,7 +1769,7 @@
         case "FILE": F.file = arg || null; break;
         case "FIND": case "/": F.find = arg || null; break;
         case "FLAG": case "F": F.flag = !F.flag; break;
-        case "CLR": case "CLEAR": F.agent = F.tool = F.file = F.find = null; F.flag = false; selected = null; break;
+        case "CLR": case "CLEAR": F.agent = F.tool = F.file = F.find = F.kind = null; F.flag = false; selected = null; break;
         case "SEQ": { const r = S.recs.find(r => lseq(r) === +arg); if (r) { const act = S.actList.find(a => a.pre === r || a.post === r); select(act || r); } break; }
         case "HELP": case "?": $("help").hidden = false; break;
         case "PAUSE": playing = false; updatePlay(); break;
@@ -1508,7 +1783,8 @@
     document.addEventListener("keydown", e => {
       if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT") return;
       if (e.key === "/") { e.preventDefault(); $("cmd").focus(); }
-      else if (e.key === "Escape") { $("help").hidden = true; selected = null; $("detail").innerHTML = `<div class="empty">Select an action, alert or reasoning entry.</div>`; $("detsum").textContent = "click any row"; schedule(); }
+      else if (V2 && !BOOT && scope && rpKeys(e)) return;
+      else if (e.key === "Escape") { $("help").hidden = true; if (R) stopRun(); selected = null; $("detail").innerHTML = `<div class="empty">Select an action, alert or reasoning entry.</div>`; $("detsum").textContent = "click any row"; schedule(); }
       else if (e.key === "f" || e.key === "F") { F.flag = !F.flag; schedule(); }
       else if (e.key === "?") { $("help").hidden = !$("help").hidden; }
     });
@@ -1557,9 +1833,9 @@
     async function startLive() {
       try {
         const snap = await getJSON("api/snapshot");
-        snap.records.forEach(ingest); liveOk = true; liveErr = ""; schedule();
+        snap.records.forEach(accept); liveOk = true; liveErr = ""; schedule();
         const es = new EventSource("api/stream?from=" + encodeURIComponent(snap.next));
-        es.onmessage = e => { try { ingest(JSON.parse(e.data)); schedule(); } catch (err) { console.error("bad stream record", err); } };
+        es.onmessage = e => { try { accept(JSON.parse(e.data)); schedule(); } catch (err) { console.error("bad stream record", err); } };
         es.onopen = () => { liveOk = true; liveErr = ""; schedule(); };
         es.onerror = () => { liveOk = false; liveErr = "Connection lost; reconnecting…"; schedule(); };
         const check = async () => { try { const v = await getJSON("api/verify"); chainState = { ok: v.ok, n: v.records, detail: (v.problems || []).join("\n") || "Verified by the observer (hash chain and Ed25519 signatures): operator-side view — re-verify with the signed release for evidence. Head " + (v.head || "").slice(0, 16) }; schedule(); } catch { } };
@@ -1593,6 +1869,73 @@
       $("scrub").addEventListener("input", e => { playing = false; updatePlay(); clearTimeout(timer); seek(+e.target.value); });
       verifyChain(RAW);
       seek(0); tick();
+    }
+
+    /* ---------------- v2 runs (tracekit view): run scope and evidence replay ---------------- */
+    // ALL holds every record received; S is built from the selected run's (R: up to the playhead while replaying)
+    let V2 = false, scope = null, R = null, rpos = 0, rplay = false, rtimer = null;
+    const ALL = [], RUNS = new Map();
+    const inScope = r => !scope || r.session_id === scope;
+    function accept(r) {
+      ALL.push(r);
+      if ((r.v2 || r.review) && !V2) { V2 = true; document.body.classList.add("v2"); }
+      if (r.review && !r.signer) RUNS.set(r.session_id, { ...r.review, id: r.session_id, tenant: r.tenant, report: r.text });
+      if (!R && inScope(r)) ingest(r);
+    }
+    function rebuild() {
+      reset();
+      if (R) for (let i = 0; i < rpos; i++) ingest(R[i]); else for (const r of ALL) if (inScope(r)) ingest(r);
+      tapeShown = S.tape.length;
+    }
+    function setScope(id) {
+      if (R) stopRun(true);
+      scope = id; selected = null; rebuild(); updRp(); schedule();
+    }
+    function updRp() {
+      $("rp").hidden = $("rp2").hidden = !(V2 && scope);
+      $("play").textContent = rplay ? "❚❚ PAUSE" : R ? "▶ PLAY" : "▶ REPLAY";
+      $("scrub").max = R ? R.length : 0; $("scrub").value = R ? rpos : 0;
+      $("pos").textContent = R ? `${rpos}/${R.length}` : "live";
+      mode = R ? "replay" : "live";
+    }
+    function startRun() { R = ALL.filter(inScope); rpos = 0; rebuild(); updRp(); }
+    function stopRun(quiet) { clearTimeout(rtimer); R = null; rplay = false; if (!quiet) { rebuild(); updRp(); schedule(); } }
+    function seekRun(n, pick) {
+      if (!R) startRun();
+      n = Math.max(0, Math.min(n, R.length));
+      if (n >= rpos) while (rpos < n) ingest(R[rpos++]); else { rpos = n; rebuild(); }
+      const r = pick || R[rpos - 1];
+      selected = r ? S.actList.find(a => a.pre === r || a.post === r) || r : null;
+      updRp(); schedule();
+    }
+    const JUMP = { deny: r => r.v2?.decision === "deny", hold: r => r.v2?.decision === "ask" || r.v2?.type === "approval.request", gap: r => r.tape === "GAP" };
+    function jump(k) {
+      if (!R) startRun();
+      const i = R.findIndex((r, i) => i >= rpos && JUMP[k](r));
+      if (i >= 0) seekRun(i + 1);
+    }
+    function rtick() {
+      clearTimeout(rtimer);
+      if (!rplay || !R) return;
+      if (rpos >= R.length) { rplay = false; return updRp(); }
+      seekRun(rpos + 1);
+      // lean: at least a second a record at 1x, so a burst of calls can be followed; a speed control covers long runs
+      const gap = rpos < R.length ? Math.min(Math.max(R[rpos].ts - R[rpos - 1].ts, 1), 3) : 0;
+      rtimer = setTimeout(rtick, gap * 1000 / +$("speed").value);
+    }
+    function togglePlay() { if (!R) startRun(); else if (rpos >= R.length) seekRun(0); rplay = !rplay; updRp(); rtick(); }
+    function rpKeys(e) {
+      const k = e.key, act = { " ": togglePlay, ArrowLeft: () => seekRun(rpos - 1), ArrowRight: () => seekRun(rpos + 1),
+        d: () => jump("deny"), h: () => jump("hold"), g: () => jump("gap"), l: () => R && stopRun() }[k];
+      if (!act) return false;
+      e.preventDefault(); act(); return true;
+    }
+    if (!BOOT) {
+      $("play").addEventListener("click", togglePlay);
+      $("rback").addEventListener("click", () => seekRun(rpos - 1));
+      $("rfwd").addEventListener("click", () => seekRun(rpos + 1));
+      $("rlive").addEventListener("click", () => stopRun());
+      $("scrub").addEventListener("input", e => { rplay = false; seekRun(+e.target.value); });
     }
 
     reset();
