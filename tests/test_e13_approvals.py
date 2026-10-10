@@ -10,18 +10,21 @@ import time
 import types
 import unittest
 import uuid
+from unittest import mock
 
 import test_bundle_v2 as tb
 import test_signer_service as ts
 from test_webauthn import ORIGIN, RP_ID, Authenticator
 from tracekit import observe, view
 from tracekit.bundle_v2 import export
+from tracekit.format.canon import event_hash
 from tracekit.identity.base import CallerIdentity
 from tracekit.identity.webauthn import b64url, unb64url
 from tracekit.policy2 import compile as policy_compile
 from tracekit.policy2.engine import Engine
 from tracekit.signer import service as svc
 from tracekit.signer.rpc_schema import RPCError
+from tracekit.storage.base import StorageUnavailable
 from test_signer_approvals import tracekit
 
 PAY = {"to": "acct-42", "cents": 1500}
@@ -101,6 +104,30 @@ class TestBinding(Signer):
         self.assertEqual(self.decide(aid)["state"], "approved")
         self.assertTrue(self.consume()["ok"])
 
+    def test_a_consumed_approval_covers_only_the_approved_arguments(self):
+        self.decide(self.pending("mail"))
+        self.assertTrue(self.consume(tool="mail")["ok"])
+        for seq, args in ((1, PAY), (3, dict(PAY, to="acct-other"))):   # the same call, run again
+            d = self.s.decide({"request_id": f"d{seq}", **self.run, "stream": "s", "client_seq": seq,
+                               "tool_call_id": "tc-1", "tool": "mail", "args_source": "parsed", "args": args})
+            self.s.complete({"request_id": f"c{seq}", **self.run, "stream": "s", "client_seq": seq + 1,
+                             "tool_call_id": "tc-1", "decision_id": d["decision_id"], "status": "ok", "result": "sent",
+                             "args_digest": event_hash({"tool": "mail", "args": args})})
+        gaps = [g for g in self.records("capture.gap") if g["kind"] == "executed_against_policy"]
+        self.assertEqual(len(gaps), 1, gaps)   # the approved arguments ran under the approval; the others did not
+
+    def test_an_answer_racing_the_end_of_its_run_is_refused_cleanly(self):
+        aid = self.pending()
+        visible = self.s._visible
+
+        def then_final(identity, approval_id):   # the run goes final right after the approval was looked up
+            a = visible(identity, approval_id)
+            self.s.close_run({"request_id": "close", **self.run})
+            self.s.sweep(now=time.monotonic() + svc.GRACE_S + 1)
+            return a
+        self.s._visible = then_final
+        self.refused("run_closed", self.decide, aid)
+
 
 class TestWhoAnswers(Signer):
     def test_approver_is_recorded_as_the_transport_established_it(self):
@@ -154,6 +181,26 @@ class TestExecutorAndListing(Signer):
         self.decide(aid)
         out = self.consume(secret)
         self.assertEqual((out["ok"], out["args"]), (True, secret))
+
+    def test_t2_args_stay_out_of_the_retry_cache_and_a_retry_still_gets_them(self):
+        self.decide(self.pending())
+        req = {"request_id": "c-1", **self.run, "tool_call_id": "tc-1", "tool": "pay", "args_source": "parsed",
+               "args": PAY}
+        first = self.s.approval_consume(req)
+        self.assertEqual((first["ok"], first["args"]), (True, PAY))
+        self.assertEqual([v[1].get("args") for v in self.s.log.done.values() if "ok" in v[1]], [None])
+        self.assertEqual(self.s.approval_consume(dict(req)), first)
+
+    def test_a_rolled_back_request_leaves_no_copy_of_the_arguments(self):
+        append = self.s.log.storage.append_batch
+
+        def full(records):   # the disk fills up as the request is written
+            if any(r["event"]["type"] == "approval.request" for r in records):
+                raise StorageUnavailable("No space left on device")
+            append(records)
+        with mock.patch.object(self.s.log.storage, "append_batch", full):
+            self.refused("unavailable", self.pending)
+        self.assertEqual(os.listdir(os.path.join(self.dir, "approvals")), [])
 
     def test_t1_consume_returns_no_args(self):
         self.decide(self.pending("mail"))
@@ -238,7 +285,8 @@ class Sessions:
 
     def add(self, person, role):
         sid = uuid.uuid4().hex
-        self.by_id[sid] = {"tenant": person["tenant"], "role": role, "person": person, "csrf": uuid.uuid4().hex}
+        self.by_id[sid] = {"tenant": person["tenant"], "role": role, "person": person, "csrf": uuid.uuid4().hex,
+                           "at": time.time()}
         return sid
 
     def session(self, sid):
@@ -268,6 +316,7 @@ class TestWeb(Signer):
             "person:corp/bob": ["register_run", "decide", "approval_request"],
             f"mtls:{BRIDGE.subject}": ["approval_list", "approval_get", "approval_decide", "passkey_register",
                                        svc.ON_BEHALF]}
+        self.cfg["multi_tenant_apps"] = [f"mtls:{BRIDGE.subject}"]   # it serves the approvers of every tenant
         s = svc.open_service(self.cfg, policy=WIRE)
         self.addCleanup(s.close)
         return s
@@ -400,6 +449,55 @@ class TestWeb(Signer):
         aid = self.pending("wire")
         self.assertEqual(self.approve(aid, passkey=self.assertion(aid, auth))[0], 403)
         self.assertEqual(self.approve(aid, passkey=self.assertion(aid, first))[0], 200)
+
+    def test_a_passkey_is_registered_only_soon_after_a_sign_in(self):
+        now, auth = time.time(), Authenticator()
+        desk = view.ApprovalDesk(types.SimpleNamespace(call=lambda m, req: self.s.call(BRIDGE, m, req)),
+                                 WEB["webauthn"], clock=lambda: now)
+        body = {"credential_id": b64url(auth.id), "public_key": b64url(auth.spki)}
+        stale = {"person": ALICE, "at": now - view.PASSKEY_LOGIN_S - 1}
+        self.assertEqual(desk.post(stale, "/api/passkey", body)[0], 403)
+        self.assertEqual(self.s._passkeys, {})
+        self.assertEqual(desk.post(dict(stale, at=now - 60), "/api/passkey", body)[0], 200)
+
+    def test_self_approval_by_a_person_the_run_owner_maps_to(self):
+        aid = self.pending("mail")   # registered by this process's uid
+        self.s._persons[f"uid:{self.s.identity.subject}"] = "corp/alice"
+        self.assertEqual(self.approve(aid)[0], 403)
+        self.assertEqual(self.approve(aid, BOB)[0], 200)
+
+    def test_a_retried_passkey_answer_gets_its_first_answer(self):
+        auth = self.register()
+        aid = self.pending("wire")
+        req = {"request_id": "web-1", "approval_id": aid, "on_behalf": ALICE, "decision": "approve",
+               "passkey": self.assertion(aid, auth)}
+        first = self.s.call(BRIDGE, "approval_decide", req)
+        self.assertEqual(self.s.call(BRIDGE, "approval_decide", dict(req)), first)
+
+    def test_a_blank_break_glass_reason_is_refused(self):
+        aid = self.pending("mail")
+        self.assertEqual(self.approve(aid, OLIVE, reason=" \n")[0], 403)
+        self.assertEqual(self.s.log.approvals[aid]["state"], "requested")
+
+    def test_a_bridge_acts_for_its_own_tenant_unless_multi_tenant(self):
+        aid = self.pending("mail")   # tenant default
+        self.s.multi_tenant_apps.clear()
+        self.s.tenants[f"mtls:{BRIDGE.subject}"] = "acme"
+        self.assertEqual(self.web("GET", "/api/approvals", ALICE)[0], 403)   # a person of another tenant than its own
+        self.assertEqual(self.web("GET", f"/api/approvals/{aid}", ALICE)[0], 403)
+        self.assertEqual(self.approve(aid, ALICE)[0], 403)
+        self.assertEqual(self.web("GET", "/api/approvals", CAROL), (200, {"approvals": [], "next_cursor": None}))
+        del self.s.tenants[f"mtls:{BRIDGE.subject}"]   # a bridge of the run's tenant
+        alice = {k: v for k, v in ALICE.items() if k != "tenant"}   # no tenant named: the bridge's
+        self.assertEqual(self.s.call(BRIDGE, "approval_decide", {"request_id": "web-1", "approval_id": aid,
+                                                                 "on_behalf": alice, "decision": "approve"})["state"],
+                         "approved")
+
+    def test_a_bridge_granted_through_a_group_sees_its_tenants_approvals(self):
+        aid = self.pending("mail")
+        bot = CallerIdentity("oidc", "corp/svc-bridge", True, {"person": "corp/bridge", "groups": ["corp/bridges"]})
+        self.s.authorize["group:corp/bridges"] = ["approval_list", svc.ON_BEHALF]
+        self.assertEqual([a["approval_id"] for a in self.s.call(bot, "approval_list", {})["approvals"]], [aid])
 
 
 class TestVerifierListsBreakGlass(tb.Case):

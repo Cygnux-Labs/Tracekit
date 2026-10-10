@@ -15,6 +15,7 @@ from tracekit.bundle_v2 import export, run_name
 from tracekit.format import checkpoint, registry
 from tracekit.merkle import verify_consistency
 from tracekit.signer import service as svc
+from tracekit.signer.pipeline import SIGNER_RUN
 from tracekit.signer.rpc_schema import RPCError
 from tracekit.storage.base import registry_tree
 from tracekit.verify import v2
@@ -163,7 +164,7 @@ class TestRunSet(RunSet):
 
     def test_withheld_key_retire_is_detected(self):
         a = self.register()
-        signer = self.s.log.runs[svc.SIGNER_RUN]
+        signer = self.s.log.runs[SIGNER_RUN]
         self.s.log.write(lambda tx: tx.emit(signer, "key.retire", {"kid": self.s.log.sign.kid, "last_seq": 10 ** 6},
                                             source="signer"))
         self.finish(a)

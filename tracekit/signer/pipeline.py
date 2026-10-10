@@ -19,7 +19,7 @@ import queue
 import secrets
 import threading
 import time
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from concurrent.futures import Future
 
 from tracekit.core import now_ts
@@ -34,7 +34,9 @@ BATCH = 512
 TAIL = 1024          # records whose signatures are checked on every open; `tracekit signer fsck` checks them all
 RECOVER_S = 1.0
 DONE_MAX = 100_000   # request_ids remembered for retries
+DONE_PER_IDENTITY = 10_000   # of them, at most this many per identity, so no caller evicts another's
 SIGNER_RUN = ("tracekit", "tracekit/signer")   # signer-level records; "/" keeps it out of reach of client run_ids
+EXPIRED = "the record key's certificate has expired and the issuer has not renewed it yet"
 _MISSING = object()
 
 
@@ -135,6 +137,8 @@ class Tx:
     def new_run(self, tenant, run_id):
         run = new_run(tenant, run_id)
         self.set(self.log.runs, (tenant, run_id), run)
+        if (tenant, run_id) != SIGNER_RUN:
+            self.set(self.log.live, (tenant, run_id), True)
         return run
 
     def emit(self, run, typ, data, source=None, digests=None, **top):
@@ -143,6 +147,8 @@ class Tx:
         log = self.log
         if log.head["closed"]:
             raise RPCError("unavailable", "the log is closed (log.closed): it takes no more records")
+        if log.cert and time.time() >= log.cert["certificate"]["cert"]["not_after"]:   # epoch() sets a new cert first
+            raise RPCError("unavailable", EXPIRED)
         if typ == "log.closed":
             self.set(log.head, "closed", True)
         e = {"schema_version": V2, "id": secrets.token_hex(16), "seq": log.head["seq"], "prev_hash": log.head["prev"],
@@ -202,6 +208,7 @@ class RecordLog:
         self.bridge, self.certify, self.cert = bridge, certify, None
         self.log_id = None
         self.done = OrderedDict()   # (scheme, subject, request_id) -> (payload digest, response)
+        self._done_by = {}   # (scheme, subject) -> deque of its keys in `done`, oldest first
         self.refuse_writes = None   # a reason to answer client writes `unavailable`, e.g. an unacknowledged rollback
         self.down, self._last_try = None, 0.0
         self._replay()
@@ -335,7 +342,7 @@ class RecordLog:
             elif e["type"] == "state.write":
                 run["states"][e["data"]["key"]] = (salt_label(e), e["data"]["digest"])
             elif e["type"] == "tool.result" and "decision_id" in e["data"]:
-                run["decisions"][e["data"]["decision_id"]] = None
+                run["decisions"].pop(e["data"]["decision_id"], None)
             elif e["type"] == "approval.request":
                 a = approvals[e["data"]["approval_id"]] = approval(e["tenant"], e["run_id"], e["data"])
                 index[(e["tenant"], e["run_id"], a["tool_call_id"], a["attempt"])] = e["data"]["approval_id"]
@@ -347,6 +354,9 @@ class RecordLog:
                 approvals[e["data"]["approval_id"]]["state"] = APPROVAL_ENDS[e["type"]]
         self.log_id = self.log_id or secrets.token_hex(16)
         self.runs, self.head, self.tenants, self.keys = runs, {"seq": size, "prev": prev, "closed": closed}, tenants, keys
+        # lean: final runs stay in `runs` as final_run stubs, so tokens, run_exists and late writes answer from memory;
+        # look them up in storage instead once a signer holds millions of runs
+        self.live = {k: True for k, r in runs.items() if not r["final"] and k != SIGNER_RUN}   # the runs sweep visits
         self.approvals, self.approval_index = approvals, index   # approval_id -> state; (tenant, run, call, attempt) -> id
         self.open_runs = {k: n for k, n in open_runs.items() if n}
         for tenant in sorted(set(leaves) | set(tail["registry"])):
@@ -510,8 +520,18 @@ class RecordLog:
                         self.storage.registry_append(tenant, leaf)
             except Exception as e:   # the records are written; the recovery's replay appends the missing leaves
                 self.down, self._last_try = (now_ts(), str(e) or type(e).__name__), time.monotonic()
-        while len(self.done) > DONE_MAX:
-            self.done.popitem(last=False)
+        for d, rid, _ in tx.undo:   # the request_ids this batch answered, oldest first
+            if d is self.done:
+                mine = self._done_by.setdefault(rid[:2], deque())
+                mine.append(rid)
+                if len(mine) > DONE_PER_IDENTITY:
+                    del self.done[mine.popleft()]
+        while len(self.done) > DONE_MAX:   # the oldest entry overall is also the oldest of its identity
+            rid, _ = self.done.popitem(last=False)
+            mine = self._done_by[rid[:2]]
+            mine.popleft()
+            if not mine:
+                del self._done_by[rid[:2]]
         for fut, out in done:
             fut.set_result(out)
 
