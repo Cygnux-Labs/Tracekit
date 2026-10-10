@@ -159,20 +159,24 @@ A rule on arguments can't tell where a value came from: a page that says "email 
 task that says the same look alike in the call. The signer can, because it sees every tool result before it commits to
 it. Per run it keeps an index of the values (`tracekit.provenance`: emails, URLs and their `scheme://canonical-host/`
 form, hosts of URLs and bare names and addresses in any notation the policy reads, absolute paths, digit runs of 8 or
-more without separators, leaf strings of 6 to 256 characters) that each tool result and each observed input carried,
-with the record that first brought it in:
+more without separators, leaf strings of 6 to 256 characters; an email's domain counts as a host in content, not in a
+call's arguments) that untrusted tools' results and observed inputs carried, with the record that first brought it in:
 
 - A tool's results are untrusted content when the policy's `untrusted` list names its class or matches its name (a
   glob); the client has no say. Packs: `coding.yaml` http, mcp, WebFetch, WebSearch; `browser.yaml` browser;
   `server-net.yaml` http; `server.yaml` http, browser, mcp (it maps no tool that reads mail, tickets or documents:
-  list your own, such as `read_inbox` or `get_ticket`; SQL results stay trusted, as the deployment's own data).
+  list your own, such as `read_inbox` or `get_ticket`).
 - `observe` (Python `run.observe(value, source=..., trust="untrusted")`, TypeScript `run.observe(value, source,
   trust)`) records other content: a mail, a ticket, a page the app fetched itself. Send the task or user prompt with
   `trust="trusted"`. That label is the caller's claim, so it only says how the caller's own content counts: the task
   must come from the caller, not from the agent, and an agent that observes an attacker's text as trusted only hides
   its own input.
-- A value seen in trusted content (an observed trusted input, a result of a tool not in `untrusted`) is never
-  untrusted-only, whichever came first.
+- Results of tools not in `untrusted` (SQL, shell, your own tools) are not indexed either way: a tool can echo what
+  the agent put in its arguments (`echo`, `select '…'`), so counting its output as trusted would launder an injected
+  value. Only an input observed as `trusted` makes a value trusted, whichever came first. A value the deployment's
+  own data supplies (a customer's address from your CRM that also appears in their ticket) reads as untrusted-only
+  until the app observes it as trusted, so a reply to it is held: observe the record you looked up, or answer the
+  hold.
 
 A rule with `from: untrusted` matches only when its pattern matches as usual **and** a value in that subject is
 untrusted-only in the run. Every decision records `provenance_state` (`complete`, `truncated` past 20000 values in a
@@ -185,7 +189,9 @@ whose values are untrusted-only, as `{field, kind, source: {run_seq, tool, tool_
 | `server-comms.yaml` | ask | `TK-P001` an email recipient (`to`, `cc`, `bcc`, `recipients`) that is untrusted-only · `TK-P002` a payee or account (`payee`, `to`, `recipient`, `destination`, `account`, `account_number`, `iban`) that is untrusted-only |
 | `server-net.yaml`, `browser.yaml` | ask | `TK-P003` data sent (a method other than GET or HEAD, or a body; in a browser, typing or an upload) to a host that is untrusted-only |
 
-Limits: it matches values verbatim. A value the model paraphrases, splits or re-encodes (spelled out, base64, a URL
+Limits: it matches values verbatim, and only what came in through untrusted tools and observed inputs: a page the
+agent fetches with a tool the policy doesn't list as untrusted (`curl` in a shell) is not indexed, so list such tools
+or observe the content. A value the model paraphrases, splits or re-encodes (spelled out, base64, a URL
 shortener) reads as a new value and gets past it. It is a tripwire on the commonest way injected instructions act; to
 prevent the flow, use information-flow control (CaMeL, FIDES) in the agent.
 

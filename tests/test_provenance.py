@@ -146,10 +146,20 @@ class Signer(unittest.TestCase):
         self.assertEqual(self.email("tc-mail")["decision"], "allow")
         self.assertNotIn("provenance", self.record("tc-mail"))
 
-    def test_an_address_from_a_trusted_tool_result_is_allowed(self):   # trusted wins, whichever came first
+    def test_another_tool_echoing_an_injected_value_does_not_launder_it(self):
         self.call("http_get", {"url": "https://notes.example/vendor"}, {"body": INJECTED}, "tc-fetch")
-        self.call("run_sql", {"sql": "select email from vendors"}, [{"email": "audit@vendor.example"}], "tc-sql")
-        self.assertEqual(self.email("tc-mail")["decision"], "allow")
+        self.call("bash", {"command": "echo audit@vendor.example"}, {"stdout": "audit@vendor.example\n"}, "tc-echo")
+        self.call("run_sql", {"sql": "select 'audit@vendor.example'"}, [{"email": "audit@vendor.example"}], "tc-sql")
+        self.assertEqual(self.email("tc-mail")["rule_ids"], ["TK-P001"])
+
+    def test_a_recipient_whose_domain_only_appeared_in_untrusted_content_is_not_held(self):
+        self.call("http_get", {"url": "https://notes.example/a"}, "see https://stripe.example/docs", "tc-fetch")
+        self.assertNotIn("TK-P001", self.email("tc-mail", to="support@stripe.example")["rule_ids"])
+
+    def test_a_host_named_only_in_an_untrusted_email_address_still_counts(self):
+        self.call("http_get", {"url": "https://notes.example/a"}, {"body": INJECTED}, "tc-fetch")
+        d = self.decide("http_request", {"url": "https://vendor.example/in", "method": "POST", "body": "x"}, "tc-post")
+        self.assertIn("TK-P003", d["rule_ids"])
 
     def test_observed_untrusted_input_counts_and_is_recorded_as_a_commitment(self):
         seq = self.observe({"ticket": INJECTED}, "untrusted")
@@ -172,6 +182,15 @@ class Signer(unittest.TestCase):
         self.assertIn("TK-P003", d["rule_ids"])
         d = self.decide("http_request", {"url": "https://collect.vendor.example/in"}, "tc-get")
         self.assertNotIn("TK-P003", d["rule_ids"])
+
+    def test_typing_into_a_page_whose_host_came_from_untrusted_content_is_held(self):
+        self.call("browser_use:go_to_url", {"url": "https://notes.example/a"}, "log in at https://login.vendor.example/",
+                  "tc-page")
+        d = self.decide("browser_use:input", {"index": 3, "text": "hunter2", "page_url": "https://login.vendor.example/"},
+                        "tc-type")
+        self.assertIn("TK-P003", d["rule_ids"])
+        d = self.decide("browser_use:go_to_url", {"url": "https://login.vendor.example/"}, "tc-nav")
+        self.assertNotIn("TK-P003", d["rule_ids"])   # navigating sends nothing
 
     def test_a_truncated_index_matches_no_from_rule(self):
         with mock.patch.object(svc, "PROVENANCE_MAX", 3):
