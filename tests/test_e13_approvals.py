@@ -222,7 +222,8 @@ ALICE = {"subject": "corp/u-alice", "person": "corp/alice", "groups": ["corp/app
 BOB = {"subject": "corp/u-bob", "person": "corp/bob", "groups": ["corp/approvers"], "tenant": "default"}
 CAROL = {"subject": "corp/u-carol", "person": "corp/carol", "groups": ["corp/approvers"], "tenant": "acme"}
 OLIVE = {"subject": "corp/u-olive", "person": "corp/olive", "groups": ["corp/oncall"], "tenant": "acme"}
-WEB = {"approvers": ["group:corp/approvers", f"uid:{APPROVER.subject}"], "break_glass": ["group:corp/oncall"],
+WEB = {"approvers": ["group:corp/approvers", f"uid:{APPROVER.subject}", "slack:T01/U02"],
+       "break_glass": ["group:corp/oncall"],
        "webauthn": {"rp_id": RP_ID, "origin": ORIGIN}}
 WIRE = Engine({"ask": [{"id": "WIRE", "tool": "^wire$", "pattern": "^", "approval": {"passkey": "required"}},
                        {"id": "MAIL", "tool": "^mail$", "pattern": "^"}]})
@@ -313,10 +314,10 @@ class TestWeb(Signer):
         code, out = self.approve(aid, reason="checked")
         self.assertEqual((code, out["state"]), (200, "approved"))
         [rec] = self.records("approval")
-        self.assertEqual((rec["approver"], rec["channel"], rec["reason"]), ("oidc:corp/u-alice", "bridge", "checked"))
+        self.assertEqual((rec["approver"], rec["channel"], rec["reason"]), ("oidc:corp/u-alice", "web", "checked"))
         self.assertEqual(rec["approver_identity"], {"scheme": "oidc", "subject": "corp/u-alice", "attested": False,
                                                     "person": "corp/alice"})
-        self.assertEqual(rec["bridge"], {"scheme": "mtls", "subject": BRIDGE.subject, "attested": True})
+        self.assertEqual(rec["via"], {"scheme": "mtls", "subject": BRIDGE.subject, "attested": True})
         self.assertNotIn("passkey", rec)
 
     def test_bait_and_switch_after_a_passkey_approval(self):
@@ -368,6 +369,8 @@ class TestWeb(Signer):
         aid = self.pending("wire")
         self.assertEqual(self.approve(aid)[0], 403)
         self.refused("forbidden", self.decide, aid)   # nor over the CLI's RPC
+        self.refused("forbidden", self.s.call, BRIDGE, svc.ON_BEHALF, {   # nor through a chat bridge
+            "request_id": "slack-1", "approval_id": aid, "decision": "approve", "approver": "slack:T01/U02"})
         self.assertEqual(self.web("POST", f"/api/approvals/{aid}", body={"decision": "reject"})[0], 200)
 
     def test_break_glass_without_a_reason_is_refused(self):

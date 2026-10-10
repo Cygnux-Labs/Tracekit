@@ -1,0 +1,33 @@
+# Server cloud pack (policy v2): cloud CLIs (aws, gcloud, gsutil, az, kubectl, terraform, pulumi, helm, doctl) and
+# cloud tools reached over MCP. Composed by server.yaml.
+#
+# The rules have no class. On a shell tool they match each command the line runs (argv, with wrappers and paths
+# resolved); on any other tool, the call as sorted-key JSON, where a CLI line counts only as the value of a
+# `cli_command`, `command` or `cmd` argument (the AWS API MCP server's call_aws takes `cli_command`). A web search for
+# the same words is not a command.
+
+version: '2026.10-server-cloud-1'
+description: server-hosted agents, cloud CLIs and cloud MCP tools
+unknown_tools: ask
+
+deny:
+  - id: TK-C001
+    pattern: '(^|"(cli_command|command|cmd)":")(aws (.* )?(iam (attach-(user|role|group)-policy|put-(user|role|group)-policy|create-(user|role|access-key|login-profile|policy-version)|add-user-to-group|update-assume-role-policy|update-login-profile|set-default-policy-version|put-(user|role)-permissions-boundary)|s3api put-bucket-(policy|acl)|s3api put-public-access-block|organizations (attach-policy|create-account|invite-account-to-organization)|sso-admin (create-account-assignment|attach-[a-z-]+)|kms (put-key-policy|create-grant)|lambda add-permission|ec2 modify-image-attribute|ecr set-repository-policy)|gcloud (.* )?((projects|organizations|folders|iam service-accounts|storage buckets) (add-iam-policy-binding|set-iam-policy)|iam service-accounts keys create|iam roles (create|update))|gsutil (.* )?(iam (ch|set)|acl (ch|set))|az (.* )?(role (assignment|definition) create|ad (sp create-for-rbac|sp credential reset|app credential reset|user create|group member add))|kubectl (.* )?create (clusterrolebinding|rolebinding|clusterrole|token))\b'
+    reason: changing cloud identity or access
+    rationale: IAM policies, role bindings, access keys and public bucket policies decide who can reach every other resource; an agent must not grant access, least of all to itself.
+  - id: TK-C002
+    tool: 'mcp(:[^/]+/|__.*__).*(attach_[a-z_]*policy|put_[a-z_]*policy|iam_policy_binding|set_iam_policy|create_access_key|create_service_account_key|role_assignment|create_role_binding|grant_[a-z_]*)'
+    pattern: '^'
+    reason: changing cloud identity or access through an MCP tool
+    rationale: The MCP twin of TK-C001.
+
+ask:
+  - id: TK-C010
+    pattern: '(^|"(cli_command|command|cmd)":")(aws (.* )?(ec2 (terminate-instances|delete-[a-z-]+)|rds delete-db-[a-z-]+|s3 rb|s3 rm (.* )?--recursive|s3api delete-(bucket|objects)|dynamodb delete-table|lambda delete-function|cloudformation delete-stack|(eks|ecs|elasticache|backup) delete-[a-z-]+|iam delete-[a-z-]+|kms (schedule-key-deletion|disable-key)|route53 delete-hosted-zone|logs delete-log-group|ecr delete-repository|secretsmanager delete-secret|sqs delete-queue|sns delete-topic|efs delete-file-system)|gcloud (.* )?(delete|storage rm)|gsutil (.* )?(rb|rm -[A-Za-z]*r)|az (.* )?delete|kubectl (.* )?delete ((ns|namespace|pv|pvc|persistentvolume|persistentvolumeclaim|statefulset|deployment|crd|node|customresourcedefinition)s?( |$)|(.* )?--all\b)|(terraform|tofu) (.* )?(destroy|apply (.* )?-destroy)|pulumi (.* )?destroy|helm (uninstall|delete)|doctl (.* )?delete)\b'
+    reason: deleting cloud resources
+    rationale: Deleting instances, databases, buckets, clusters or whole stacks is the kind of step a person confirms; reading and creating are allowed.
+  - id: TK-C011
+    tool: 'mcp(:[^/]+/|__.*__)(.*_)?(delete|destroy|terminate|drop|purge|remove)(_.*)?'
+    pattern: '^'
+    reason: deleting through an MCP tool
+    rationale: The MCP twin of TK-C010, for any tool whose name says it deletes.

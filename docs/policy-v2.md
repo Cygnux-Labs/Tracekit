@@ -38,7 +38,7 @@ same arguments in a run is a signed `capture.gap{decision_flip}`; a class hint t
 ```yaml
 version: '2026.10-v2-1'
 description: what this policy is for
-extends: coding.yaml            # optional: a relative path; the compiled policy names the parent by hash
+extends: coding.yaml            # optional: a relative path, or a list of them; the compiled policy names parents by hash
 unknown_tools: ask              # allow (default), flag, ask or deny
 tools:                          # tool name or glob (fnmatch) -> class
   Bash: shell
@@ -50,8 +50,9 @@ flag:  [<rule>, ...]
 ```
 
 `extends` merges the parent's `tools` under the child's, keeps the parent's other top-level keys unless the child sets
-them, and keeps the parent's rules except those whose id the child redefines. An absolute path, `~` or a loop is an
-error.
+them, and keeps the parent's rules except those whose id the child redefines. A list of parents is merged in order (a
+later parent's top-level keys and tools win; the same rule id in two parents is a duplicate-id error), and the compiled
+`extends` is the list of their hashes. An absolute path, `~` or a loop is an error.
 
 **Rule fields:**
 
@@ -135,7 +136,12 @@ and marks the decision `nondeterministic: true`; RE2 never times out.
 |---|---|---|
 | `coding.yaml` | coding agents on a laptop | shell, file and harness self-protection rules; `unknown_tools: flag`; maps the shell, file, web and MCP tools of Claude Code, Codex, Cursor, Gemini CLI, OpenAI Agents and LangChain |
 | `dev.yaml` | the signer's default | `coding.yaml` plus `TK-DEMO-DENY` (denies the tool `tracekit_demo_denied`, so a deny is easy to see) |
-| `server.yaml` | server-hosted agents | `coding.yaml` with `unknown_tools: ask`: an unmapped tool waits for a person |
+| `browser.yaml` | browser agents (Browser Use) | local file and internal-network navigation denied; uploads and typing outside an allowlist ask |
+| `server.yaml` | server-hosted agents | `extends: [coding, browser, server-data, server-net, server-cloud, server-comms]` plus rules for every tool; `unknown_tools: ask`: an unmapped tool waits for a person |
+| `server-data.yaml` | SQL tools | destructive and privilege-changing SQL, SQL that reaches the server's shell or files |
+| `server-net.yaml` | HTTP tools | internal addresses; a body sent outside the egress allowlist |
+| `server-cloud.yaml` | cloud CLIs and cloud MCP tools | IAM and access changes denied; resource deletion asks |
+| `server-comms.yaml` | payments, email, chat | moving money, mass email and whole-channel notifications ask |
 
 `coding.yaml` rules (see the file for patterns and rationales):
 
@@ -143,6 +149,27 @@ and marks the decision `nondeterministic: true`; RE2 never times out.
 |---|---|
 | deny | `TK-D001` privilege escalation · `TK-D002` running a downloaded script · `TK-D003` force push · `TK-D004` recursive delete of root or home · `TK-D010` writing a credentials file from the shell · `TK-D011` sending credential files off the machine · `TK-D006` uploading a secrets file · `TK-D008` modifying the harness's transcripts · `TK-D005` writing a credentials file · `TK-D009` writing the harness's transcripts · `TK-D007` touching Tracekit's own files or signer · `TK-D013` writing Tracekit's files, signer state or policy |
 | flag | `TK-F001` network commands · `TK-F002` web requests · `TK-F003` destructive commands · `TK-F004` side effects (push, publish, install, apply) · `TK-F005` secrets access · `TK-F006` MCP tools · `TK-F007` / `TK-F008` background processes · `TK-F009` harness config · `TK-F010` shell function or alias shadowing · `TK-F011` environment tampering |
+
+A deployment extends `server.yaml` (or composes only the packs it needs), maps its own tool names under `tools`, and
+redefines a rule by id to change it: TK-N002's egress allowlist and TK-B011's typing allowlist name `example.com` until
+it does. Cloud APIs are covered as CLI commands on a shell tool and as MCP tools; other cloud-SDK-shaped tools need a
+mapping and rules of their own.
+
+Server rules (ask rules hold the call for a person):
+
+| Pack | Section | Rules |
+|---|---|---|
+| `server.yaml` | deny | `TK-S001` cloud metadata service (169.254.169.254 in any notation, fd00:ec2::254, metadata.google.internal, ECS and Alibaba) on every tool · `TK-S002` / `TK-S003` a secret (private key, cloud, VCS, chat, payment or model API token, JWT, URL with a password) in any tool's arguments or a shell line · `TK-S004` / `TK-S005` credential files (cloud, kube, docker, gcloud, azure, service account token, .pgpass, .netrc, .git-credentials, SSH private keys, /proc/*/environ) · `TK-S006` a command run through another command's options (tar, git, ssh, scp, zip, rsync, vim) |
+| `server.yaml` | ask | `TK-S010` an MCP tool that takes a command |
+| `server-data.yaml` | deny | `TK-DB001` DROP · `TK-DB002` TRUNCATE · `TK-DB003` DELETE without a WHERE (or with an always-true one) · `TK-DB004` GRANT, REVOKE, ALTER/CREATE USER or ROLE · `TK-DB005` COPY … PROGRAM, xp_cmdshell, server file functions, INTO OUTFILE, LOAD DATA INFILE, ATTACH |
+| `server-net.yaml` | deny | `TK-N001` request to an internal address · `TK-N002` a body or POST/PUT/PATCH to a host outside the allowlist |
+| `server-cloud.yaml` | deny | `TK-C001` IAM, role binding, access key and public-bucket changes (aws, gcloud, gsutil, az, kubectl) · `TK-C002` the same through an MCP tool |
+| `server-cloud.yaml` | ask | `TK-C010` deleting cloud resources (instances, databases, buckets, clusters, namespaces, stacks; terraform/pulumi destroy, helm uninstall) · `TK-C011` an MCP tool whose name says it deletes |
+| `server-comms.yaml` | ask | `TK-M001` a payment with an amount · `TK-M002` payouts, transfers, charges and refunds by tool name · `TK-M003` ten or more recipients, or a whole-company address · `TK-M004` @channel, @here or @everyone in Slack |
+
+SQL keywords match outside `'…'` string literals only, so `SELECT 'DROP TABLE x'` is allowed. `eval/e17_policy_corpus.py`
+runs `server.yaml` over the deny and benign corpora in `tests/data/policy/` with both engines and reports per-class deny
+recall and the benign false-positive rate.
 
 Rules match raw strings: they are tripwires that make attempts visible, not the protection itself. The protection is
 the signer's isolation, its storage and the witnesses ([server threat model](threat-model-server.md)).

@@ -1,0 +1,99 @@
+{
+  "policy_hash": "sha256:4180d883f54ac3ce50cf56e747a65700e23aad89c20b6491099b6c4e7a10c2ed",
+  "engines": [
+    "re2@1.1.20251105",
+    "regex@2026.9.29"
+  ],
+  "classes": {
+    "browser": {
+      "deny": 12,
+      "caught": 12,
+      "benign": 25,
+      "fp": 0
+    },
+    "cloud": {
+      "deny": 74,
+      "caught": 74,
+      "benign": 71,
+      "fp": 0
+    },
+    "email": {
+      "deny": 24,
+      "caught": 24,
+      "benign": 38,
+      "fp": 1
+    },
+    "fs": {
+      "deny": 22,
+      "caught": 22,
+      "benign": 42,
+      "fp": 0
+    },
+    "http": {
+      "deny": 43,
+      "caught": 43,
+      "benign": 91,
+      "fp": 0
+    },
+    "mcp": {
+      "deny": 20,
+      "caught": 20,
+      "benign": 63,
+      "fp": 0
+    },
+    "messaging": {
+      "deny": 10,
+      "caught": 10,
+      "benign": 20,
+      "fp": 0
+    },
+    "payment": {
+      "deny": 29,
+      "caught": 29,
+      "benign": 40,
+      "fp": 0
+    },
+    "secrets": {
+      "deny": 38,
+      "caught": 38,
+      "benign": 0,
+      "fp": 0
+    },
+    "shell": {
+      "deny": 39,
+      "caught": 39,
+      "benign": 121,
+      "fp": 0
+    },
+    "sql": {
+      "deny": 54,
+      "caught": 54,
+      "benign": 112,
+      "fp": 0
+    }
+  },
+  "missed": [],
+  "false_positives": [
+    {
+      "tool": "mcp:gmail/draft_email",
+      "args": {
+        "to": [
+          "all@acme.example"
+        ],
+        "subject": "draft only"
+      },
+      "expect": "allow",
+      "note": "few recipients, read or draft",
+      "verdict": "ask",
+      "rule_ids": [
+        "TK-M003",
+        "TK-F006"
+      ]
+    }
+  ],
+  "engine_mismatches": [],
+  "unmapped": [],
+  "deny_recall": 1.0,
+  "benign_fp_rate": 0.0016051364365971107,
+  "ok": true
+}

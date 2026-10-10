@@ -72,11 +72,15 @@ approvals:
   self_approval: deny                      # or allow
   approvers: ["uid:1001", "mtls:spiffe://acme/ops/*"]   # identities, or prefixes ending in :* or /*
   break_glass: ["uid:0"]                   # may answer any approval, with a reason
+  persons:                                 # optional: identities of one person, across channels
+    "slack:T0123/U0456": alice
+    "mtls:spiffe://acme/ops/alice": alice
 ```
 
 - With an `approvals` section, only an approver whose identity maps to the run's tenant (`tenants`) may answer. The
-  requester and the run's owner may not, unless
-  `self_approval: allow`.
+  requester, the run's owner and its principal (`register_run`'s `principal`) may not, unless
+  `self_approval: allow`. Identities `persons` maps to the same person id count as that one person, so Alice can't
+  approve from Slack what her own agent asked for. The `approval` record carries the approver's `person`.
 - **Break-glass** identities may answer any approval, of any tenant, and must give a reason. The `approval` record
   carries `break_glass: true`; the verify report lists every such answer as a warning.
 - **Without** an `approvals` section (the dev signer), any identity of the run's tenant may answer, including the
@@ -95,16 +99,16 @@ one.
 `tracekit view` with a `view.signer` ([identity.md](identity.md#viewer-login)) serves approval pages to approvers
 who signed in with OIDC: `/approvals` lists their tenant's pending approvals and shows one from the signer's copy (tool,
 rule, run, requester, expiry, arguments with redaction markers), with approve and reject and a reason. The pages call
-the signer as a **bridge**: the viewer's own identity, granted `approval_on_behalf` in `authorize` (never a default),
+the signer as a **bridge**: the viewer's own identity, granted `approval_decide_on_behalf` in `authorize` (never a default),
 passes `on_behalf` (the person's subject, person id, groups and tenant from the login) on `approval_list`,
 `approval_get` and `approval_decide`. The signer applies the rules above to that person, so the requester, the run's
 principal (by person id) and other tenants are refused as they are on the CLI. The `approval` record carries the person
-as `approver_identity` (`attested: false`: the bridge vouches for them), the bridge as `bridge`, and channel `bridge`.
+as `approver_identity` (`attested: false`: the bridge vouches for them), the bridge as `via`, and channel `web`.
 Every `POST` needs the session's CSRF token ([security-checklist.md](security-checklist.md)).
 
 ```yaml
 authorize: {"mtls:spiffe://corp/viewer": [approval_list, approval_get, approval_decide, passkey_register,
-                                          approval_on_behalf]}
+                                          approval_decide_on_behalf]}
 approvals:
   approvers: ["group:corp/approvers"]
   break_glass: ["group:corp/oncall"]
@@ -125,6 +129,51 @@ An approver registers a passkey once from the page ("Register a passkey"), store
 `data_dir/passkeys.json`. A person keeps the first passkey they register: to replace it, an operator removes their
 entry from that file.
 
+## Slack
+
+`tracekit approvals slack serve --config slack.yaml` runs a bridge that posts each pending approval it may see to a
+Slack channel and answers the Approve and Reject buttons:
+
+```yaml
+# slack.yaml (relative paths are from this file)
+signer: https://signer.internal:8443       # credentials as for any client: TRACEKIT_SIGNER_TOKEN_FILE, _CERT/_KEY, _CA
+channel: C0123456789
+bot_token_file: slack-bot-token            # the app's bot token (scopes chat:write, usergroups:read)
+signing_secret_file: slack-signing-secret  # the app's signing secret
+listen: 127.0.0.1:3000                     # POST /slack/interactivity: the app's interactivity Request URL
+tls: {cert: tls.crt, key: tls.key}         # beyond loopback; or insecure_http: true when TLS ends in front of it
+groups: [S0123456789]                      # user groups signer.yaml names as approvers
+poll_s: 5
+```
+
+Each message shows the tool, the run, the call, the rule ids, the requester, the expiry and the signer's redacted copy
+of the arguments, as plain text (an agent's `<!channel>` or link stays text). When the approval is answered, consumed or
+expires, the bridge replaces the buttons with its state.
+
+In `signer.yaml`, the bridge's identity gets three methods and nothing else, and the Slack users who may answer are
+approvers like any other, as `slack:<team id>/<user id>`, `slack:<team id>/<user group id>` or `slack:<team id>/*`:
+
+```yaml
+authorize:
+  "k8s_sa:system:serviceaccount:ops:slack-bridge": [approval_list, approval_get, approval_decide_on_behalf]
+tenants: {"k8s_sa:system:serviceaccount:ops:slack-bridge": acme}   # the tenant whose approvals it posts
+approvals:
+  approvers: ["slack:T0123/U0456", "slack:T0123/S0789"]
+  persons: {"slack:T0123/U0456": alice}
+```
+
+- A click is answered only when Slack's v0 signature over the body checks out under the signing secret, its timestamp
+  is within 5 minutes, and the same signature was not seen before (a replayed callback is refused).
+- The bridge calls `approval_decide_on_behalf` with the clicking user (`slack:<team>/<user>`) and the configured user
+  groups Slack lists them in. `approval_decide_on_behalf` is an `authorize` grant only, never a default: a uid caller
+  keeps every other method but not this one. The signer checks the Slack user (or one of those groups) against its
+  approvers and its self-approval rule exactly as for an RPC answer; break-glass is not available through Slack.
+- The `approval` record names both: `approver` and `approver_identity` are the Slack user (`attested: false`, since
+  the bridge vouches for it), `via` is the bridge as the signer's transport authenticated it, `channel` is `slack`, and
+  `groups` lists the groups the bridge reported.
+- A refusal (not an approver, self-approval, already answered) is shown to the clicker only, as an ephemeral message.
+- The bridge keeps which messages it posted in memory: after a restart it posts the approvals still pending again.
+
 ## Expiry and abandon
 
 An approval expires, with a signed `approval.expired`:
@@ -144,4 +193,6 @@ abandoned.
 abandon, expiry, restart, encryption at rest, self-approval, tenant visibility), `tests/test_e13_approvals.py`
 (a signer with an approver config, answered from the CLI and from the viewer's approval pages: arguments changed after
 approval, a replayed assertion, expiry, self-approval by person id, another tenant, a passkey rule without a passkey,
-break-glass without a reason), `tests/test_webauthn.py` (the assertion checks, with a software authenticator), and `eval/e8_insider_v2.py` case E8v2.5 (the agent approving its own call in system mode).
+break-glass without a reason), `tests/test_webauthn.py` (the assertion checks, with a software authenticator),
+`tests/test_slack_approvals.py` (the Slack bridge against a real signer: signatures, replays, approve and reject, groups,
+self-approval, message updates), and `eval/e8_insider_v2.py` case E8v2.5 (the agent approving its own call in system mode).
