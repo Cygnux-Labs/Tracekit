@@ -108,7 +108,7 @@ class InitRefusals(unittest.TestCase):
             self.assertIn("--approver USER", self.init())
 
     def test_agent_writable_policy(self):
-        with mock.patch("tracekit.daemon.trusted_file", return_value="/home/agent/p.yaml is not owned by root"):
+        with mock.patch("tracekit.harness_helper.trusted_file", return_value="/home/agent/p.yaml is not owned by root"):
             self.assertIn("--policy: /home/agent/p.yaml is not owned by root",
                           self.init(approver="admin", policy="/home/agent/p.yaml"))
 
@@ -150,7 +150,25 @@ class InstallAndUninstall(unittest.TestCase):
     def test_init_wires_signer_service_and_hook(self):
         self.init_v2()
 
-    def init_v2(self, sudo_why=None):
+    def test_init_with_a_harness_requires_it_and_starts_the_helper(self):
+        h = {"name": "claude", "exe": "/usr/local/bin/claude"}
+        with mock.patch.object(install, "resolve_harness", return_value=h) as res:
+            self.init_v2(harnesses=["claude=/usr/local/bin/claude"])
+        res.assert_called_once_with("claude=/usr/local/bin/claude", "claude")
+        path = os.path.join(self.d, "check.yaml")
+        with open(path, "wb") as f:
+            f.write(self.written[install.V2_CONFIG])
+        cfg = service.load_config(path)["harness_binding"]
+        self.assertEqual(cfg, {"helper": install.V2_HELPER_SOCKET, "required": [f"uid:{AGENT.pw_uid}"],
+                               "harnesses": {"claude": "/usr/local/bin/claude"}})
+        unit = self.written[os.path.join(self.d, install.V2_HELPER + ".service")].decode()
+        self.assertIn("CapabilityBoundingSet=CAP_SYS_PTRACE CAP_DAC_READ_SEARCH\n", unit)
+        self.assertNotIn("CAP_", self.written[os.path.join(self.d, "tracekit-signer.service")].decode())
+        cmds = [c.args[0] for c in self.run.call_args_list]
+        self.assertLess(cmds.index(["systemctl", "enable", "--now", install.V2_HELPER + ".socket"]),
+                        cmds.index(["systemctl", "restart", "tracekit-signer"]))
+
+    def init_v2(self, sudo_why=None, harnesses=()):
         run = mock.Mock(return_value=mock.Mock(returncode=0, stdout=POLICY + "\n", stderr=""))
         v1 = {"socket": "/var/lib/tracekit/tracekitd.sock", "mode": "system", "fail_mode": "closed",
               "tailer": {"user": "stale"}}
@@ -167,7 +185,8 @@ class InstallAndUninstall(unittest.TestCase):
                 mock.patch.object(install, "_tailer_acl", return_value=None) as acl, \
                 mock.patch.object(install, "_tailer_sudo", return_value=sudo_why) as sudo, \
                 mock.patch.object(install, "install_hooks") as hooks:
-            sock, settings = install.init_system_v2("agent")
+            sock, settings = install.init_system_v2("agent", harnesses=harnesses)
+        self.run = run
         self.assertEqual(sock, "/run/tracekit-signer/signer.sock")
         self.assertEqual(settings, "/home/agent/.claude/settings.json")
         venv.assert_called_once_with(None, "[signer]")
