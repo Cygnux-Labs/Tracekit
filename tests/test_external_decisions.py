@@ -1,6 +1,6 @@
 """Other systems' policy decisions imported as signed inputs: decision_import in the v2 signer, the mappers of
-tracekit/integrations/external_decisions.py over the fixtures in tests/data/external/ (shapes not yet checked against
-the published docs: see that module's docstring), the decision_mismatch gap and the verifier's `external decisions` line."""
+tracekit/integrations/external_decisions.py over the fixtures in tests/data/external/ (the documented shapes that
+module's docstring cites), the decision_mismatch gap and the verifier's `external decisions` line."""
 import base64
 import hashlib
 import os
@@ -31,18 +31,22 @@ class TestDecisionImport(Reconcile):
         self.s.close()
         self.s = svc.SignerService(self.dir, policy=PAY_ASKS, tenants={"uid:999003": "beta"}, grace_s=60, idle_s=60,
                                    authorize={"mtls:spiffe://acme/pdp": ["decision_import"]},
-                                   decision_keys={"ms-agent-hooks": base64.b64encode(PUBLIC).decode()})
+                                   decision_keys={"vscode-agent-hooks": base64.b64encode(PUBLIC).decode()})
 
     def test_every_fixture_round_trips(self):
         run = self.register()
-        aws, ms = fixture("aws-agentcore-policy.json"), fixture("ms-agent-hooks.json")
-        reqs = [external_decisions.agentcore(aws, run["run_id"], "tc-1", "imp-1"),
-                external_decisions.ms_agent_hooks(ms, run["run_id"], "imp-2",
-                                                  base64.b64encode(crypto.sign(SECRET, ms.encode())).decode())]
+        aws, vsc = fixture("aws-agentcore-policy.json"), fixture("vscode-agent-hooks.json")
+        avp, gh = fixture("aws-verified-permissions.json"), fixture("github-copilot-hooks.json")
+        reqs = [external_decisions.agentcore(aws, run["run_id"], "tc-1", "RefundTarget___process_refund", "imp-1"),
+                external_decisions.vscode_hooks(vsc, run["run_id"], "imp-2",
+                                                base64.b64encode(crypto.sign(SECRET, vsc.encode())).decode()),
+                external_decisions.verified_permissions(avp, run["run_id"], "tc-3", "photos_view", "imp-3"),
+                external_decisions.copilot_hooks(gh, run["run_id"], "tc-4", "imp-4")]
         self.assertEqual(self.call("decision_import", reqs[0], PDP)["signature"], "unverified")   # before the decide
-        self.run_call(run, "tc-1", reqs[0]["tool"])
-        self.run_call(run, "call-ms-1", reqs[1]["tool"])
-        self.assertEqual(self.call("decision_import", reqs[1], PDP)["signature"], "verified")     # after it
+        for tcid, req in zip(("tc-1", "call-ms-1", "tc-3", "tc-4"), reqs):
+            self.run_call(run, tcid, req["tool"])
+        for req in reqs[1:]:
+            self.call("decision_import", req, PDP)   # after the decide
         [(_, final)] = self.final(run)
         es = [r["event"] for r in records(self.dir) if r["event"]["run_id"] == run["run_id"]]
         imported = [e for e in es if e["type"] == "policy.external"]
@@ -50,21 +54,27 @@ class TestDecisionImport(Reconcile):
                            e["data"]["tool"], e["data"]["rule_ids"], e["data"]["signature"]) for e in imported],
                          [("import", "T3", "aws-agentcore-policy", "deny", "tc-1", "RefundTarget___process_refund",
                            ["refund-limit-1000"], "unverified"),
-                          ("import", "T3", "ms-agent-hooks", "ask", "call-ms-1", "runInTerminal", [], "verified")])
-        for e, raw in zip(imported, (aws, ms)):   # the record only as a commitment the signer's salt opens
+                          ("import", "T3", "vscode-agent-hooks", "ask", "call-ms-1", "runInTerminal", [], "verified"),
+                          ("import", "T3", "aws-verified-permissions", "allow", "tc-3", "photos_view",
+                           ["SPEXAMPLEabcdefg111111"], "unverified"),
+                          ("import", "T3", "github-copilot-hooks", "deny", "tc-4", "bash", [], "unverified")])
+        for e, raw in zip(imported, (aws, vsc, avp, gh)):   # the record only as a commitment the signer's salt opens
             self.assertNotIn("refund", str(e["data"]["record"]))
             self.assertEqual(e["data"]["record"], {"hash": self.s._commit(
                 f"policy.external:{e['data']['salt_id']}", "sha256:" + hashlib.sha256(raw.encode()).hexdigest()),
                 "size": len(raw.encode())})
-        self.assertEqual(imported[1]["data"]["reason"], "piping a download into a shell needs a person")
+        self.assertEqual([e["data"].get("reason") for e in imported],
+                         ["a forbid policy matched", "piping a download into a shell needs a person", None,
+                          "deletes outside the workspace's build rules"])
         gaps = [(e["data"]["kind"], e["tool_call_id"], e["data"]["reason"]) for e in es if e["type"] == "capture.gap"]
         self.assertEqual(gaps, [("decision_mismatch", "tc-1", "aws-agentcore-policy decided deny; the signer decided allow"),
-                                ("decision_mismatch", "call-ms-1", "ms-agent-hooks decided ask; the signer decided allow")])
+                                ("decision_mismatch", "call-ms-1", "vscode-agent-hooks decided ask; the signer decided allow"),
+                                ("decision_mismatch", "tc-4", "github-copilot-hooks decided deny; the signer decided allow")])
         self.assertEqual(final["type"], "run.final")
         rep, code, text = self.verify(run)
         self.assertEqual((code, "external decisions" in rep.warnings), (0, True))   # --strict exits 3 on it
-        self.assertIn("[WARN] external decisions — 2 imported: aws-agentcore-policy 1, ms-agent-hooks 1; signatures "
-                      "verified 1, unverified 1; 2 disagree with the signer", text)
+        self.assertIn("external decisions — 4 imported:", text)
+        self.assertIn("signatures verified 1, unverified 3; 3 disagree with the signer", text)
 
     def test_agreement_is_no_gap(self):
         run = self.register()
@@ -101,7 +111,7 @@ class TestDecisionImport(Reconcile):
 
     def test_a_pinned_system_must_send_a_signature_that_verifies(self):
         run = self.register()
-        req = {"run_id": run["run_id"], "system": "ms-agent-hooks", "decision": "deny", "tool_call_id": "tc-1",
+        req = {"run_id": run["run_id"], "system": "vscode-agent-hooks", "decision": "deny", "tool_call_id": "tc-1",
                "tool": "t", "record": "{}", "signature": base64.b64encode(crypto.sign(SECRET, b"{ }")).decode()}
         self.refused("invalid_request", "decision_import", req, PDP)
         self.refused("invalid_request", "decision_import", dict(req, signature="not base64!"), PDP)

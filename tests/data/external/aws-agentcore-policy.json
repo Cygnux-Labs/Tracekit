@@ -1,12 +1,12 @@
 {
-  "timestamp": "2026-03-02T10:15:04.512Z",
-  "policyEngineArn": "arn:aws:bedrock-agentcore:us-east-1:111122223333:policy-engine/pe-0example",
-  "gatewayArn": "arn:aws:bedrock-agentcore:us-east-1:111122223333:gateway/gw-0example",
-  "principal": {"entityType": "AgentCore::OAuthUser", "entityId": "user-42"},
-  "action": {"actionType": "AgentCore::Action", "actionId": "RefundTarget___process_refund"},
-  "resource": {"entityType": "AgentCore::Gateway", "entityId": "arn:aws:bedrock-agentcore:us-east-1:111122223333:gateway/gw-0example"},
-  "context": {"input": {"amount": 1200, "currency": "USD"}},
-  "decision": "DENY",
-  "determiningPolicies": [{"policyId": "refund-limit-1000"}],
-  "errors": []
+  "name": "AuthorizeAction",
+  "attributes": {
+    "aws.agentcore.policy.authorization_decision": "DENY",
+    "aws.agentcore.policy.authorization_reason": "a forbid policy matched",
+    "aws.agentcore.policy.determining_policies": ["refund-limit-1000"],
+    "aws.agentcore.policy.effects": ["FORBID"],
+    "aws.agentcore.policy.types": ["Cedar"],
+    "aws.agentcore.gateway.policy.mode": "ENFORCE",
+    "aws.agentcore.policy.target_resource.id": "arn:aws:bedrock-agentcore:us-east-1:111122223333:gateway/gw-0example"
+  }
 }
