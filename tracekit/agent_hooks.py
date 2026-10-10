@@ -12,7 +12,8 @@ prefix hashing where the harness passes a transcript path. Only the reply to the
 Tool names are mapped onto Tracekit's policy vocabulary so the default rules apply unchanged:
 
     harness            -> Tracekit
-    Codex   Bash, apply_patch, mcp__s__t          Bash, Edit (file_path from the patch headers), mcp__s__t
+    Codex   Bash, write_stdin, apply_patch, mcp__s__t     Bash, Bash (command = chars), Edit (paths: every file the
+                                                          patch adds, updates, deletes or moves to), mcp__s__t
     Cursor  Shell, Read, Write, Grep, Delete, MCP:t   Bash, Read, Write, Grep, Delete, mcp__cursor__t
     Gemini  run_shell_command, read_file, write_file, replace, glob, search_file_content, web_fetch, google_web_search
             -> Bash, Read, Write, Edit, Glob, Grep, WebFetch, WebSearch
@@ -21,6 +22,7 @@ What each harness exposes decides what Tracekit can see: Gemini CLI does not giv
 events are paired by (tool, arguments) in order; Cursor reports failures through postToolUseFailure. Reasoning
 capture reads Claude Code's transcript format only and is off for these harnesses."""
 import hashlib
+import io
 import json
 import os
 import re
@@ -31,12 +33,14 @@ from .core import canon
 from .locking import lock_file, unlock_file
 
 HARNESSES = ("codex", "cursor", "gemini")
+AGENT_NAMES = {"codex": "codex", "cursor": "cursor", "gemini": "gemini-cli"}
+V2_MODULE = "tracekit.integrations.harness_hooks"
 
 GEMINI_TOOLS = {"run_shell_command": "Bash", "read_file": "Read", "read_many_files": "Read", "write_file": "Write", "replace": "Edit",
                 "glob": "Glob", "search_file_content": "Grep", "list_directory": "LS", "web_fetch": "WebFetch",
                 "google_web_search": "WebSearch", "save_memory": "Memory"}
 CURSOR_TOOLS = {"Shell": "Bash", "Read": "Read", "Write": "Write", "Grep": "Grep", "Delete": "Delete", "Task": "Task", "Edit": "Edit"}
-PATCH_FILE = re.compile(r"^\*\*\* (?:Add|Update|Delete) File: (.+)$", re.M)
+PATCH_FILE = re.compile(r"^\*\*\* (?:(?:Add|Update|Delete) File|Move to): (.+)$", re.M)
 
 
 def _input(v):
@@ -56,12 +60,15 @@ def tool(harness, name, ti):
             patch = ti.get("patch") or ti.get("input") or ti.get("command") or ""
             if isinstance(patch, list):
                 patch = "\n".join(map(str, patch))
-            files = PATCH_FILE.findall(str(patch))
-            if files and "file_path" not in ti:
-                ti["file_path"] = files[0].strip()
-                if len(files) > 1:
-                    ti["other_files"] = [f.strip() for f in files[1:]]
+            files = [f.strip() for f in PATCH_FILE.findall(str(patch))]
+            if files:
+                ti.setdefault("file_path", files[0])
+                ti["paths"] = files
             return "Edit", ti
+        if name == "write_stdin":   # keystrokes into a running exec_command session: shell input
+            if isinstance(ti.get("chars"), str):
+                ti["command"] = ti["chars"]
+            return "Bash", ti
         if name in ("shell", "local_shell", "exec_command"):
             cmd = ti.get("command")
             if isinstance(cmd, list):
@@ -163,7 +170,8 @@ def normalise(harness, p):
         if ev in ("BeforeTool", "AfterTool"):
             name, ti = tool(harness, p.get("tool_name") or "?", p.get("tool_input"))
             out.update(hook_event_name="PreToolUse" if ev == "BeforeTool" else "PostToolUse", tool_name=name, tool_input=ti,
-                       tool_use_id=_gemini_ids(out["session_id"] or "unknown", name, ti, "pre" if ev == "BeforeTool" else "post"))
+                       tool_use_id=out["session_id"] and _gemini_ids(out["session_id"], name, ti,
+                                                                     "pre" if ev == "BeforeTool" else "post"))
             if ev == "AfterTool":
                 r = p.get("tool_response")
                 out["tool_response"] = r
@@ -180,6 +188,18 @@ def normalise(harness, p):
     raise ValueError(f"unknown harness {harness!r}")
 
 
+class Tee(io.StringIO):
+    """The user must see "waiting for approval <id>" live; the harness gets the final message too."""
+    def __init__(self, out):
+        super().__init__()
+        self.out = out
+
+    def write(self, s):
+        self.out.write(s)
+        self.out.flush()
+        return super().write(s)
+
+
 def run(harness, raw, stdout=None, stderr=None):
     """Handle one hook invocation. -> exit code. Writes the harness's expected stdout."""
     stdout, stderr = stdout or sys.stdout, stderr or sys.stderr
@@ -192,15 +212,8 @@ def run(harness, raw, stdout=None, stderr=None):
     if q is None:
         _reply(harness, stdout, True, "", is_pre)
         return 0
-    H.AGENT_NAME = {"codex": "codex", "cursor": "cursor", "gemini": "gemini-cli"}[harness]
-    import io
-
-    class Tee(io.StringIO):  # the user must see "waiting for approval <id>" live; the harness gets the final message too
-        def write(self, s):
-            stderr.write(s)
-            stderr.flush()
-            return super().write(s)
-    err = Tee()
+    H.AGENT_NAME = AGENT_NAMES[harness]
+    err = Tee(stderr)
     real_stdin, real_stderr = sys.stdin, sys.stderr
     sys.stdin, sys.stderr = io.StringIO(json.dumps(q)), err
     try:
@@ -235,18 +248,17 @@ def config_path(harness, project=None):
             "gemini": os.path.join(base, ".gemini", "settings.json")}[harness]
 
 
-def _command(harness):
-    from .install import _hook_command
-    return _hook_command("tracekit.agent_hooks", "entry", (harness,))
+def _version(cmd):
+    """"v2" for the v2 hook's command, "v1" for the v1 hook's, else None."""
+    cmd = cmd if isinstance(cmd, str) else ""
+    return "v2" if V2_MODULE in cmd else "v1" if "tracekit.agent_hooks" in cmd else None
 
 
-def _ours(cmd):
-    return "tracekit.agent_hooks" in (cmd or "")
-
-
-def install(harness, project=None, uninstall=False):
-    from .install import SettingsError, _atomic_write_json, _backup
-    path = config_path(harness, project)
+def install(harness, project=None, uninstall=False, v2=False, python=None, path=None):
+    """Add (or remove) Tracekit's hooks, v1 or the v2 hook (python: see install._hook_command), in the harness's
+    config file (path, or config_path), replacing those of the other version. -> the file's path."""
+    from .install import SettingsError, _atomic_write_json, _backup, _hook_command
+    path = path or config_path(harness, project)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     s = {}
     if os.path.exists(path):
@@ -262,14 +274,20 @@ def install(harness, project=None, uninstall=False):
     hooks = s.setdefault("hooks", {})
     if not isinstance(hooks, dict):
         raise SettingsError(f"'hooks' in {path} must be an object; Tracekit did not change it.")
-    cmd = _command(harness)
+    new, removed = "v2" if v2 else "v1", set()
+    cmd = _hook_command(V2_MODULE if v2 else "tracekit.agent_hooks", "entry", (harness,), python)
+
+    def ours(cmds):
+        vs = {_version(c) for c in cmds} - {None}
+        removed.update(vs)
+        return bool(vs)
     if harness == "cursor":
         s.setdefault("version", 1)
-        closed = H.fail_closed()
+        closed = v2 or H.fail_closed()   # v2: a hook that cannot run blocks, as the v2 hook does
         events = {"preToolUse": 600, "postToolUse": 30, "postToolUseFailure": 30, "beforeSubmitPrompt": 30, "sessionStart": 30,
                   "sessionEnd": 30}
         for ev, timeout in events.items():
-            lst = [h for h in hooks.get(ev, []) if not (isinstance(h, dict) and _ours(h.get("command")))]
+            lst = [h for h in hooks.get(ev, []) if not (isinstance(h, dict) and ours([h.get("command")]))]
             if not uninstall:
                 lst.append({"command": cmd, "type": "command", "timeout": timeout, "failClosed": closed})
             if lst:
@@ -281,7 +299,8 @@ def install(harness, project=None, uninstall=False):
                   else ["BeforeTool", "AfterTool", "BeforeAgent", "SessionStart", "SessionEnd"])
         tools = {"PreToolUse", "PostToolUse", "BeforeTool", "AfterTool"}
         for ev in events:
-            groups = [g for g in hooks.get(ev, []) if not (isinstance(g, dict) and any(_ours(h.get("command")) for h in g.get("hooks", [])))]
+            groups = [g for g in hooks.get(ev, []) if not (isinstance(g, dict) and ours(
+                [h.get("command") for h in g.get("hooks", []) if isinstance(h, dict)]))]
             if not uninstall:
                 h = {"type": "command", "command": cmd}
                 if harness == "gemini":
@@ -296,6 +315,9 @@ def install(harness, project=None, uninstall=False):
     if not hooks:
         s.pop("hooks", None)
     _atomic_write_json(path, s)
+    old = " and ".join(sorted(removed if uninstall else removed - {new}))
+    if old:
+        print(f"Tracekit {old} hooks removed from {path}" if uninstall else f"Tracekit {old} hooks replaced by {new} hooks in {path}")
     return path
 
 
