@@ -26,7 +26,8 @@ def _signer_home(a):
 
 _DELEGATED = {"observe": "observe", "analyze": "findings", "otel": "otlp", "cost": "cost", "witness": "witness_server",
              "deploy": "deploy.compose",
-              "signer": "signer.service", "view": "view", "monitor": "monitor", "gateway": "gateway"}  # subcommands with their own parsers
+              "signer": "signer.service", "view": "view", "monitor": "monitor", "gateway": "gateway",
+              "issuer": "issuer"}  # subcommands with their own parsers
 _MOVED = {"sql": "query", "proofpack": "proofpack", "report": "proofpack", "causeway": "causeway"}  # now separate packages under contrib/
 
 
@@ -130,6 +131,9 @@ def main(argv=None):
     p.add_argument("rest", nargs=argparse.REMAINDER)
     p = sub.add_parser("gateway", help="LLM gateway for the v2 signer: `gateway serve --config gateway.yaml`", add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
+    p = sub.add_parser("issuer", help="record-key issuer for v2 signers: `issuer serve|revoke|vkey --config issuer.yaml`",
+                       add_help=False)
+    p.add_argument("rest", nargs=argparse.REMAINDER)
     p = sub.add_parser("otel", help="OpenTelemetry receiver: `otel serve` records agent spans sent over OTLP/HTTP", add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
     p = sub.add_parser("daemon", help="run tracekitd in the foreground")
@@ -189,6 +193,8 @@ def main(argv=None):
     p.add_argument("--v1-key", help="with --v1-ledger: the v1 signer.pub")
     p.add_argument("--monitor-report", action="append", default=[],
                    help="format v2: a report of a monitor the trust config pins (tracekit monitor)")
+    p.add_argument("--revocations", action="append", default=[],
+                   help="format v2: record-key revocations, JSON lines (an issuer's issuance.jsonl)")
     p.add_argument("--json", action="store_true")
 
     p = sub.add_parser("policy", help="policy v2: `policy compile FILE` prints canonical JSON and its hash; `policy lint FILE`")
@@ -515,16 +521,15 @@ def _run(a):
             if bool(a.v1_ledger) != bool(a.v1_key):
                 print("tracekit verify: --v1-ledger and --v1-key go together", file=sys.stderr)
                 return 2
-            rep, code = mod.verify(a.bundle, a.trust, a.v1_ledger, a.v1_key, a.monitor_report)
+            rep, code = mod.verify(a.bundle, a.trust, a.v1_ledger, a.v1_key, a.monitor_report, a.revocations)
             if code == 0 and a.strict and rep.warnings:
                 code = 3
             integrity, assurance = rep.integrity, rep.assurance
         else:
             from .verify import v1 as mod
-            if a.trust or a.v1_ledger or a.v1_key or a.monitor_report:
-                print("tracekit verify: --trust, --v1-ledger, --v1-key and --monitor-report are for v2 bundles; this is "
-                      "not a v2 bundle",
-                      file=sys.stderr)
+            if a.trust or a.v1_ledger or a.v1_key or a.monitor_report or a.revocations:
+                print("tracekit verify: --trust, --v1-ledger, --v1-key, --monitor-report and --revocations are for v2 "
+                      "bundles; this is not a v2 bundle", file=sys.stderr)
                 return 2
             rep, code = mod.verify(a.bundle, a.witness, a.strict, a.key)
             integrity, assurance = mod.integrity(rep, code), mod.assurance(rep)

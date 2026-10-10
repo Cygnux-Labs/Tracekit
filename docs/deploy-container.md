@@ -26,7 +26,8 @@ check to fail or warn there: they are about laptop system mode. The image is you
 ## Sidecar
 
 The signer runs next to the agent in the same pod, as a different user. The agent reaches it only through the socket
-and is identified by its peer uid (`tenants: {"uid:1000": ...}` in signer.yaml).
+and is identified by its peer uid (`tenants: {"uid:1000": ...}` in signer.yaml). The Helm chart renders this for you:
+[deploy-kubernetes.md](deploy-kubernetes.md).
 
 ```yaml
 spec:
