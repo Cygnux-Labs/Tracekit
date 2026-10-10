@@ -523,7 +523,7 @@ def _export_v2(a):
     from .format import registry
     from .sdk.client import Client, Incompatible, SignerUnavailable
     from .signer.rpc_schema import RPCError
-    from .signer.service import signer_config
+    from .signer.service import file_store, signer_config
     from .storage.base import StorageCorrupt, registry_tree
     from .storage.file import FileReader
     if not (a.run or a.run_set) or a.dev and a.config:
@@ -531,7 +531,7 @@ def _export_v2(a):
         return 2
     try:
         cfg = signer_config(a.config)
-        store, tenant = os.path.join(cfg["data_dir"], "store"), a.tenant or cfg.get("tenant", "default")
+        store, tenant = file_store(cfg, "export --v2"), a.tenant or cfg.get("tenant", "default")
         reader = FileReader(store)
         if a.run_set:
             with open(os.path.join(cfg["data_dir"], "keys", "registry_salt.key"), "rb") as f:

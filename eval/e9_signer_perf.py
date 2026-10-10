@@ -65,9 +65,9 @@ def summary(lat):
             "max_ms": round(max(lat), 3)}
 
 
-def measure(d, durability, fn, schemas):
-    """`schemas`: durability -> its data dir's Postgres schema ({} for the file store)."""
-    config = f"storage: {{postgres: {{dsn_file: {durability}.dsn}}}}\n" if schemas else ""
+def measure(d, durability, fn, pg):
+    """`pg`: the signer stores in Postgres (the DSN file postgres_schemas wrote), else in its file store."""
+    config = f"storage: {{postgres: {{dsn_file: {durability}.dsn}}}}\n" if pg else ""
     p, sock = v2_signer(os.path.join(d, durability), durability, config)
     try:
         return fn(sock)
@@ -87,9 +87,10 @@ def postgres_schemas(d, dsn):
         with psycopg.connect(dsn, autocommit=True) as c:
             c.execute(f"CREATE SCHEMA {schema}")
         os.makedirs(os.path.join(d, durability))
+        scoped = make_conninfo(dsn, options=f"-c search_path={schema}")
         with open(os.path.join(d, durability, durability + ".dsn"), "w") as f:
-            f.write(make_conninfo(dsn, options=f"-c search_path={schema}"))
-        postgres.migrate(make_conninfo(dsn, options=f"-c search_path={schema}"))
+            f.write(scoped)
+        postgres.migrate(scoped)
     return schemas
 
 
@@ -116,7 +117,7 @@ def main(argv=None):
     schemas = {}
     try:
         schemas = postgres_schemas(d, dsn) if dsn else {}
-        latency = summary(measure(d, "ack-on-write", lambda s: tool_calls(s, calls), schemas))
+        latency = summary(measure(d, "ack-on-write", lambda s: tool_calls(s, calls), bool(schemas)))
         print(f"ack-on-write: decide + complete p50 {latency['p50_ms']} ms, p99 {latency['p99_ms']} ms "
               f"over {calls} calls", flush=True)
 
@@ -124,10 +125,10 @@ def main(argv=None):
             start = time.time() + 2   # every worker has connected and registered its run by then
             with concurrent.futures.ProcessPoolExecutor(a.workers) as pool:
                 return sum(pool.map(worker, [sock] * a.workers, [start] * a.workers, [seconds] * a.workers))
-        events = measure(d, "ack-on-write", load, schemas)
+        events = measure(d, "ack-on-write", load, bool(schemas))
         rate = round(events / seconds)
         print(f"ack-on-write: {rate} events/s over {seconds} s ({a.workers} client processes)", flush=True)
-        fsync = summary(measure(d, "ack-on-fsync", lambda s: tool_calls(s, fsync_calls), schemas))
+        fsync = summary(measure(d, "ack-on-fsync", lambda s: tool_calls(s, fsync_calls), bool(schemas)))
         print(f"ack-on-fsync: decide + complete p50 {fsync['p50_ms']} ms, p99 {fsync['p99_ms']} ms "
               f"over {fsync_calls} calls", flush=True)
     finally:
