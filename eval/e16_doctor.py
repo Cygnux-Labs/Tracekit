@@ -4,12 +4,17 @@ signer.yaml, policy, client.json, data dir with keys and a cosigned checkpoint, 
 temp root, breaks one thing, and expects the named check to fail or warn; the clean layout must pass every check.
 Nothing outside the temp root changes. Without root, "root-owned" means owned by this user inside the temp root, the
 agent's access is modelled by the other-permission bits, and root-only cases are skipped.
-Writes eval/results/e16_doctor.json; exit 0 only when every case is flagged and the clean case passes."""
+K8S_CASES do the same for `doctor --k8s --manifests`: a clean sidecar deployment written to a temp dir, one thing broken
+per case. PG_CASES check the signer's Postgres role on a throwaway cluster (TRACEKIT_TEST_PG_DSN, a superuser DSN, or
+initdb and pg_ctl on PATH; skipped with the reason otherwise).
+Writes eval/results/e16_doctor.json; exit 0 only when every case is flagged and the clean cases pass."""
 import json
 import os
+import secrets
 import shutil
 import stat
 import struct
+import subprocess
 import sys
 import tempfile
 import time
@@ -239,29 +244,218 @@ def run_case(mutate):
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-def main():
-    out = os.path.join(ROOT, "eval", "results", "e16_doctor.json")
-    clean = run_case(None)
+HARDENED = {"runAsNonRoot": True, "readOnlyRootFilesystem": True, "allowPrivilegeEscalation": False,
+            "capabilities": {"drop": ["ALL"]}}
+
+
+def k8s_clean():
+    """A sidecar deployment: the agent shares only the socket dir with a native-sidecar signer, as another uid."""
+    agent = {"name": "agent", "image": "example.org/agent:1", "securityContext": dict(HARDENED, runAsUser=1000),
+             "env": [{"name": "TRACEKIT_SIGNER", "value": "/run/tracekit-signer/signer.sock"}],
+             "volumeMounts": [{"name": "socket", "mountPath": "/run/tracekit-signer"},
+                              {"name": "work", "mountPath": "/work"}]}
+    signer = {"name": "signer", "image": "ghcr.io/cygnux-labs/tracekit-signer:0.4", "restartPolicy": "Always",
+              "securityContext": dict(HARDENED, runAsUser=10001),
+              "volumeMounts": [{"name": "socket", "mountPath": "/run/tracekit-signer"},
+                               {"name": "data", "mountPath": "/var/lib/tracekit-signer"},
+                               {"name": "scratch", "mountPath": "/tmp"}]}
+    pod = {"serviceAccountName": "agent", "automountServiceAccountToken": False, "initContainers": [signer],
+           "containers": [agent], "volumes": [{"name": "socket", "emptyDir": {}}, {"name": "work", "emptyDir": {}},
+                                              {"name": "scratch", "emptyDir": {}},
+                                              {"name": "data", "persistentVolumeClaim": {"claimName": "signer-data"}}]}
+    return [{"apiVersion": "v1", "kind": "ServiceAccount", "metadata": {"name": "agent", "namespace": "acme"}},
+            {"apiVersion": "apps/v1", "kind": "Deployment", "metadata": {"name": "agent", "namespace": "acme"},
+             "spec": {"template": {"spec": pod}}}]
+
+
+def _pod(docs):
+    return docs[1]["spec"]["template"]["spec"]
+
+
+def _agent(docs):
+    return _pod(docs)["containers"][0]
+
+
+def _signer(docs):
+    return _pod(docs)["initContainers"][0]
+
+
+def _sa_note(key, value):
+    return lambda docs: docs[0]["metadata"].setdefault("annotations", {}).update({key: value})
+
+
+def _set(part, **kv):
+    return lambda docs: part(docs).update(kv)
+
+
+def _ctx(part, **kv):
+    return lambda docs: part(docs)["securityContext"].update(kv)
+
+
+def _mount(part, name, path):
+    return lambda docs: part(docs)["volumeMounts"].append({"name": name, "mountPath": path})
+
+
+def _other_pod(docs):
+    """A central-mode agent in its own pod that mounts the signer's claim."""
+    pod = {"containers": [{"name": "agent", "image": "example.org/agent:1", "securityContext":
+                           dict(HARDENED, runAsUser=1000), "env": [{"name": "TRACEKIT_SIGNER_URL", "value":
+                                                                    "https://signer.acme.svc:8443"}],
+                           "volumeMounts": [{"name": "d", "mountPath": "/mnt"}]}],
+           "automountServiceAccountToken": False,
+           "volumes": [{"name": "d", "persistentVolumeClaim": {"claimName": "signer-data"}}]}
+    docs.append({"apiVersion": "v1", "kind": "Pod", "metadata": {"name": "debug", "namespace": "acme"}, "spec": pod})
+
+
+K8S_CASES = [
+    ("agent mounts the signer's data volume", "D-K8S-SIGNER-DATA", _mount(_agent, "data", "/data")),
+    ("another pod mounts the signer's claim", "D-K8S-SIGNER-DATA", _other_pod),
+    ("agent shares a scratch volume with the signer", "D-K8S-SHARED-VOLUME", _mount(_agent, "scratch", "/scratch")),
+    ("agent runs as the signer's uid", "D-K8S-RUN-AS-USER", _ctx(_agent, runAsUser=10001)),
+    ("agent's runAsUser not set", "D-K8S-RUN-AS-USER", lambda docs: _agent(docs)["securityContext"].pop("runAsUser")),
+    ("service account token automounted", "D-K8S-SA-TOKEN", _set(_pod, automountServiceAccountToken=True)),
+    ("GKE Workload Identity on the agent's service account", "D-K8S-WORKLOAD-IDENTITY",
+     _sa_note("iam.gke.io/gcp-service-account", "signer@acme.iam.gserviceaccount.com")),
+    ("IRSA role on the agent's service account", "D-K8S-WORKLOAD-IDENTITY",
+     _sa_note("eks.amazonaws.com/role-arn", "arn:aws:iam::111122223333:role/tracekit-kms")),
+    ("EKS Pod Identity association for the agent's service account", "D-K8S-WORKLOAD-IDENTITY", lambda docs: docs.append(
+        {"apiVersion": "eks.services.k8s.aws/v1alpha1", "kind": "PodIdentityAssociation", "metadata": {"name": "a"},
+         "spec": {"clusterName": "c", "namespace": "acme", "serviceAccount": "agent",
+                  "roleARN": "arn:aws:iam::111122223333:role/tracekit-kms"}})),
+    ("EKS credentials injected into the pod", "D-K8S-WORKLOAD-IDENTITY", _set(_signer, env=[
+        {"name": "AWS_CONTAINER_CREDENTIALS_FULL_URI", "value": "http://169.254.170.23/v1/credentials"}])),
+    ("agent privileged", "D-K8S-SECURITY-CONTEXT", _ctx(_agent, privileged=True)),
+    ("agent may escalate privileges", "D-K8S-SECURITY-CONTEXT", _ctx(_agent, allowPrivilegeEscalation=True)),
+    ("agent root fs writable", "D-K8S-SECURITY-CONTEXT", _ctx(_agent, readOnlyRootFilesystem=False)),
+    ("signer keeps its capabilities", "D-K8S-SECURITY-CONTEXT", _ctx(_signer, capabilities={})),
+    ("agent runs as root", "D-K8S-SECURITY-CONTEXT", _ctx(_agent, runAsUser=0, runAsNonRoot=False)),
+    ("hostPath volume", "D-K8S-HOST-ACCESS", lambda docs: _pod(docs)["volumes"].append(
+        {"name": "host", "hostPath": {"path": "/var/run"}})),
+    ("hostPID", "D-K8S-HOST-ACCESS", _set(_pod, hostPID=True)),
+    ("hostNetwork", "D-K8S-HOST-ACCESS", _set(_pod, hostNetwork=True)),
+    ("a manifest that does not parse", "D-K8S-WORKLOADS", lambda docs: docs.append("[unclosed")),
+]
+
+
+def run_k8s_case(mutate):
+    docs = k8s_clean()
+    if mutate:
+        mutate(docs)
+    top = tempfile.mkdtemp(prefix="e16-k8s-")
+    try:
+        with open(os.path.join(top, "agent.yaml"), "w") as f:   # multi-document, like helm template's output
+            f.write("".join(f"---\n{d if isinstance(d, str) else json.dumps(d)}\n" for d in docs))
+        return doctor.k8s_checks(*doctor.load_manifests(top))
+    finally:
+        shutil.rmtree(top, ignore_errors=True)
+
+
+PG_CASES = [
+    ("signer role may UPDATE records", "D-PG-SIGNER-ROLE", "GRANT UPDATE ON tracekit_records TO {signer}"),
+    ("signer role may DELETE notes", "D-PG-SIGNER-ROLE", "GRANT DELETE ON tracekit_notes TO {signer}"),
+    ("signer role may TRUNCATE the registry", "D-PG-SIGNER-ROLE", "GRANT TRUNCATE ON tracekit_registry TO {signer}"),
+    ("signer role is superuser", "D-PG-SIGNER-ROLE", "ALTER ROLE {signer} SUPERUSER"),
+    ("reader role may INSERT records", "D-PG-READER-ROLES", "GRANT INSERT ON tracekit_records TO {reader}"),
+]
+
+
+def pg_admin():
+    """(superuser DSN, cluster dir to stop or None), or (None, why) when there is no Postgres to run on."""
+    try:
+        from psycopg.conninfo import make_conninfo
+    except ImportError:
+        return None, "needs psycopg: pip install 'tracekit-ai[postgres]'"
+    if os.environ.get("TRACEKIT_TEST_PG_DSN"):
+        return os.environ["TRACEKIT_TEST_PG_DSN"], None
+    if not (shutil.which("initdb") and shutil.which("pg_ctl")):
+        return None, "needs TRACEKIT_TEST_PG_DSN, or initdb and pg_ctl on PATH"
+    cluster = tempfile.mkdtemp(dir="/tmp" if os.path.isdir("/tmp") else None)   # short: the socket path
+    data = os.path.join(cluster, "data")
+    try:
+        subprocess.run(["initdb", "-D", data, "-A", "trust", "-U", "postgres", "--no-sync"], check=True,
+                       capture_output=True)
+        subprocess.run(["pg_ctl", "-D", data, "-l", os.path.join(cluster, "log"), "-w", "-o",
+                        f"-k {cluster} -c listen_addresses='' -c fsync=off", "start"], check=True, capture_output=True)
+    except subprocess.CalledProcessError as e:
+        shutil.rmtree(cluster, ignore_errors=True)
+        return None, f"{e.cmd[0]} failed: {e.stderr.decode(errors='replace').strip()[-256:]}"
+    return make_conninfo(host=cluster, dbname="postgres", user="postgres"), cluster
+
+
+def pg_stop(cluster):
+    if cluster:
+        subprocess.run(["pg_ctl", "-D", os.path.join(cluster, "data"), "-m", "immediate", "stop"], capture_output=True)
+        shutil.rmtree(cluster, ignore_errors=True)
+
+
+def run_pg_case(admin, sql):
+    """Doctor's Postgres checks as a signer role holding postgres.GRANTS, beside a SELECT-only reader role, after `sql`,
+    in a schema and roles of their own (dropped after)."""
+    import psycopg
+    from psycopg.conninfo import make_conninfo
+    from tracekit.storage import postgres
+    tag = secrets.token_hex(4)
+    schema, signer, reader, pw = f"e16_{tag}", f"e16_signer_{tag}", f"e16_reader_{tag}", secrets.token_hex(16)
+    tables = ", ".join(doctor.LOG_TABLES)
+    top = tempfile.mkdtemp(prefix="e16-pg-")
+    with psycopg.connect(admin, autocommit=True) as c:
+        c.execute(f"CREATE SCHEMA {schema}")
+        try:
+            postgres.migrate(make_conninfo(admin, options=f"-csearch_path={schema}"))
+            c.execute(f"SET search_path = {schema}")
+            c.execute(f"CREATE ROLE {signer} LOGIN PASSWORD '{pw}'; CREATE ROLE {reader};"
+                      f"GRANT USAGE ON SCHEMA {schema} TO {reader}; GRANT SELECT ON {tables} TO {reader};"
+                      + postgres.GRANTS.format(schema=schema, role=signer) + (sql or "").format(signer=signer, reader=reader))
+            with open(os.path.join(top, "pg.dsn"), "w") as f:
+                f.write(make_conninfo(admin, user=signer, password=pw, options=f"-csearch_path={schema}"))
+            return doctor.pg_checks({"dsn_file": os.path.join(top, "pg.dsn")})
+        finally:
+            c.execute(f"DROP SCHEMA {schema} CASCADE")
+            for role in (signer, reader):
+                c.execute(f"DROP OWNED BY {role}; DROP ROLE {role}")
+            shutil.rmtree(top, ignore_errors=True)
+
+
+def _score(clean, cases, run):
+    """{"clean", "cases"} of one corpus: the clean run's not-ok results, and each case's flag."""
     res = {"clean": {"passed": all(r["status"] == "ok" for r in clean),
                      "not_ok": [r for r in clean if r["status"] != "ok"]}, "cases": {}}
-    for name, want, mutate in CASES:
-        if name in ROOT_ONLY and not IS_ROOT:
-            res["cases"][name] = {"expect": want, "skipped": "needs root"}
-            continue
-        got = {r["id"]: r for r in run_case(mutate)}
-        flagged = want in got and got[want]["status"] != "ok"
-        res["cases"][name] = {"expect": want, "flagged": flagged, "result": got.get(want)}
-    ran = [c for c in res["cases"].values() if "skipped" not in c]
-    res["passed"] = res["clean"]["passed"] and all(c["flagged"] for c in ran)
+    for name, want, mutate in cases:
+        got = {r["id"]: r for r in run(mutate)}
+        res["cases"][name] = {"expect": want, "flagged": want in got and got[want]["status"] != "ok",
+                              "result": got.get(want)}
+    return res
+
+
+def main():
+    out = os.path.join(ROOT, "eval", "results", "e16_doctor.json")
+    res = _score(run_case(None), [c for c in CASES if c[0] not in ROOT_ONLY or IS_ROOT], run_case)
+    res["cases"].update({n: {"expect": w, "skipped": "needs root"} for n, w, _ in CASES if n in ROOT_ONLY and not IS_ROOT})
+    res["k8s"] = _score(run_k8s_case(None), K8S_CASES, run_k8s_case)
+    admin, cluster = pg_admin()
+    if admin:
+        try:
+            res["postgres"] = _score(run_pg_case(admin, None), PG_CASES, lambda sql: run_pg_case(admin, sql))
+        finally:
+            pg_stop(cluster)
+    else:
+        res["postgres"] = {"skipped": cluster}
+    corpora = [res, res["k8s"]] + ([res["postgres"]] if admin else [])
+    ran = [c for r in corpora for c in r["cases"].values() if "skipped" not in c]
+    res["passed"] = all(r["clean"]["passed"] for r in corpora) and all(c["flagged"] for c in ran)
     os.makedirs(os.path.dirname(out), exist_ok=True)
     with open(out, "w") as f:
         json.dump(res, f, indent=2)
-    print(f"{'PASS' if res['clean']['passed'] else 'FAIL'}  clean configuration"
-          + "".join(f"\n      {r['id']}: {r['detail']}" for r in res["clean"]["not_ok"]))
-    for name, c in res["cases"].items():
-        print(f"{'SKIP' if 'skipped' in c else 'FLAG' if c['flagged'] else 'MISS'}  {c['expect']}: {name}")
-    print(f"E16: {sum(c.get('flagged', False) for c in ran)}/{len(ran)} flagged ({len(CASES) - len(ran)} skipped "
-          f"without root); gate {'PASS' if res['passed'] else 'FAIL'}")
+    for label, r in zip(("signer", "k8s", "postgres"), corpora):
+        print(f"{'PASS' if r['clean']['passed'] else 'FAIL'}  clean {label} configuration"
+              + "".join(f"\n      {x['id']}: {x['detail']}" for x in r["clean"]["not_ok"]))
+        for name, c in r["cases"].items():
+            print(f"{'SKIP' if 'skipped' in c else 'FLAG' if c['flagged'] else 'MISS'}  {c['expect']}: {name}")
+    if not admin:
+        print(f"SKIP  postgres cases: {cluster}")
+    skipped = len(CASES) + len(K8S_CASES) + len(PG_CASES) - len(ran)
+    print(f"E16: {sum(c['flagged'] for c in ran)}/{len(ran)} flagged ({skipped} skipped without root or Postgres); "
+          f"gate {'PASS' if res['passed'] else 'FAIL'}")
     return 0 if res["passed"] else 1
 
 
