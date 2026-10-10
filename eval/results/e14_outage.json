@@ -1,0 +1,120 @@
+{
+  "gates": {
+    "a_fail_closed": true,
+    "b_fail_open": true,
+    "c_restart": true,
+    "d_partition": true,
+    "e_witness_unreachable": true,
+    "f_storage_unavailable": true,
+    "g_typescript": true
+  },
+  "platform": "darwin",
+  "python": "3.11.15",
+  "quick": false,
+  "scenarios": {
+    "a_fail_closed": {
+      "blocked": 20,
+      "calls_while_down": 20,
+      "ok": true
+    },
+    "b_fail_open": {
+      "calls_while_down": 20,
+      "client_counter_gaps": [
+        20
+      ],
+      "client_seqs_recorded": [
+        0,
+        21
+      ],
+      "fsck_problems": [],
+      "ok": true,
+      "ran": 20
+    },
+    "c_restart": {
+      "approval_after_restart": "approved",
+      "asked": "ask",
+      "completed": true,
+      "consumed": true,
+      "decide_after": "allow",
+      "decide_before": "allow",
+      "fsck_problems": [],
+      "ok": true
+    },
+    "d_partition": {
+      "after": {
+        "added_p50": -0.06,
+        "added_p99": 0.57,
+        "max": 3.78,
+        "n": 200,
+        "p50": 1.8,
+        "p95": 2.04
+      },
+      "baseline": {
+        "max": 2.98,
+        "n": 200,
+        "p50": 1.85,
+        "p95": 2.23
+      },
+      "client_counter_gaps": [
+        [
+          20
+        ],
+        [
+          20
+        ]
+      ],
+      "client_timeout_ms": 1000.0,
+      "during": {
+        "added_p50": 1001.32,
+        "added_p99": 1001.58,
+        "max": 1003.43,
+        "n": 40,
+        "p50": 1003.18,
+        "p95": 1003.32
+      },
+      "fs_ran_unrecorded": 20,
+      "fsck_problems": [],
+      "ok": true,
+      "shell_blocked": 20
+    },
+    "e_witness_unreachable": {
+      "answered": 40,
+      "calls_while_down": 40,
+      "cosigned_after_recovery": true,
+      "degraded_unanchored_gaps": 1,
+      "fsck_problems": [],
+      "ok": true,
+      "witness_failed_gaps": 2
+    },
+    "f_storage_unavailable": {
+      "acknowledged": 41,
+      "acknowledged_lost": 0,
+      "client_counter_gaps": [
+        22
+      ],
+      "fsck_problems": [],
+      "ok": true,
+      "refused": {
+        "unavailable": 22
+      },
+      "signer_unavailable_gaps": 1
+    },
+    "g_typescript": {
+      "back": "allow",
+      "blocked": 20,
+      "calls_while_down": 40,
+      "client_counter_gaps": [
+        40
+      ],
+      "client_seqs_recorded": [
+        0,
+        41
+      ],
+      "fsck_problems": [],
+      "ok": true,
+      "ran": 20,
+      "up": "allow"
+    }
+  },
+  "skipped": {}
+}
