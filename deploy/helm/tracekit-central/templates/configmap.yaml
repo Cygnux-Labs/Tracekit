@@ -1,0 +1,30 @@
+{{- $n := int (include "tc.logs" .) }}
+{{- $kms := .Values.awsKms }}
+{{- if and $kms.keyIds (lt (len $kms.keyIds) $n) }}
+{{- fail (printf "awsKms.keyIds needs a key for each of the %d replicas" $n) }}
+{{- end }}
+{{- $origin := .Values.origin | default (printf "%s.%s/log" .Release.Name .Release.Namespace) }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-signer
+  labels: {{- include "tc.labels" (dict "root" . "component" "signer") | nindent 4 }}
+data:
+  {{- range $i := until $n }}
+  {{- $cfg := dict "data_dir" "/var/lib/tracekit-signer/data" "durability" $.Values.signer.durability
+        "route" (printf "%s-%d" $.Release.Name $i) "origin" (printf "%s/%d" $origin $i)
+        "http" (dict "listen" "0.0.0.0:8443" "cert" "/etc/tracekit/tls/tls.crt" "key" "/etc/tracekit/tls/tls.key"
+                     "authenticators" (list "k8s_sa")
+                     "k8s_sa" (dict "audience" $.Values.audience "tokenreview" "https://kubernetes.default.svc"
+                                    "token_file" "/var/run/secrets/kubernetes.io/serviceaccount/token"
+                                    "ca" "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"))
+        "storage" (dict "postgres" (dict "dsn_file" (printf "/etc/tracekit/dsn/dsn-%d" $i)))
+        "metrics" (dict "listen" "0.0.0.0:9464" "allow_remote" true "serve_records" $.Values.monitor.enabled) }}
+  {{- if $kms.keyIds }}
+  {{- $_ := set $cfg "log_key" (dict "aws_kms" (dict "key_id" (index $kms.keyIds $i) "region" (required "awsKms.region is required" $kms.region))) }}
+  {{- end }}
+  signer-{{ $i }}.yaml: |
+    {{- range $k, $v := merge $cfg (deepCopy $.Values.signer.config) }}
+    {{ $k }}: {{ toJson $v }}
+    {{- end }}
+  {{- end }}
