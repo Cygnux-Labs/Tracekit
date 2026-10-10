@@ -82,6 +82,7 @@ class Probe(unittest.TestCase):
         self.assertEqual(doctor._access([[d, "read"], [missing, "write"]]), [[d, "read"]])
 
 
+@unittest.skipIf(os.name == "nt", "mount table parsing is POSIX-only")
 class FileSystem(unittest.TestCase):
     def test_longest_mount_wins(self):
         with mock.patch.object(doctor, "_mounts", return_value=[("/", "ext4"), ("/srv", "nfs4"), ("/srv/a", "xfs")]):
