@@ -20,3 +20,9 @@
 {"tool": "Write", "args": {"file_path": "/home/app/.netrc", "content": "x"}, "expect": "deny", "note": "writing a credentials file"}
 {"tool": "mcp:filesystem/read_file", "args": {"path": "/home/app/.aws/credentials"}, "expect": "deny", "note": "credentials file through MCP"}
 {"tool": "mcp:filesystem/read_file", "args": {"path": "/var/run/secrets/kubernetes.io/serviceaccount/token"}, "expect": "deny", "note": "service account token through MCP"}
+{"tool": "Write", "args": {"file_path": "C:\\Users\\u\\.ssh\\id_rsa", "content": "k"}, "expect": "deny", "note": "Windows path"}
+{"tool": "Write", "args": {"file_path": "C:\\proj\\.env", "content": "k"}, "expect": "deny", "note": "Windows path"}
+{"tool": "Write", "args": {"file_path": "/Users/u/.SSH/authorized_keys", "content": "k"}, "expect": "deny", "note": "case-insensitive file system"}
+{"tool": "Write", "args": {"file_path": "/Users/u/proj/.ENV", "content": "k"}, "expect": "deny", "note": "case-insensitive file system"}
+{"tool": "Edit", "args": {"file_path": "/ETC/tracekit/policy.yaml", "old_string": "a", "new_string": "b"}, "expect": "deny", "note": "case-insensitive file system"}
+{"tool": "Write", "args": {"file_path": "/Users/u/.Claude/projects/x.jsonl", "content": "k"}, "expect": "deny", "note": "case-insensitive file system"}
