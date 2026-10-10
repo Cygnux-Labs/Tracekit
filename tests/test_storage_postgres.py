@@ -17,12 +17,15 @@ import unittest
 from unittest import mock
 
 import test_format_bridge
+import test_monitor
 import test_signer_lifecycle
 import test_witness_publish
+from factories import wait_for
 from storage_contract import Chain, StorageContract
 from test_signer_checkpoints import run_cli
 from test_signer_service import ME, tmpdir
 from tracekit import view
+from tracekit.bundle_v2 import export
 from tracekit.format.canon import event_hash
 from tracekit.format.records import RecordSigner
 from tracekit.sdk.client import Client
@@ -411,6 +414,37 @@ class TestSignerOnPostgres(OnPostgres, unittest.TestCase):
             f.write(f"data_dir: data\nstorage: {{postgres: {{dsn: {json.dumps(admin)}}}}}\n")
         with self.assertRaisesRegex(ValueError, "never inline"):
             svc.load_config(cfg)
+
+
+class TestCentralOnPostgres(test_monitor.Signer):
+    """test_monitor's signer suite as one replica of the central chart (deploy/helm/tracekit-central): its log on
+    Postgres, which holds the log's lock for its one writer, and its route prefix; and a run exported through
+    PostgresReader verifies at witnessed+monitored."""
+    ROUTE = "tk-central-0"
+
+    def setUp(self):
+        self.admin, dsn = new_log(self)
+        path = os.path.join(tmpdir(self), "dsn-0")
+        with open(path, "w") as f:
+            f.write(dsn)
+        init = svc.SignerService.__init__
+
+        def central(s, data_dir, *a, **kw):
+            init(s, data_dir, *a, storage_config={"postgres": {"dsn_file": path}}, route=self.ROUTE, **kw)
+        with mock.patch.object(svc.SignerService, "__init__", central):
+            super().setUp()
+
+    def test_run_exported_through_the_reader_is_witnessed_and_monitored(self):
+        run = self.finished_run()
+        self.assertTrue(run.startswith(self.ROUTE + "."))
+        anchor = wait_for(lambda: self.s.log.storage.anchors(), 10)[0]
+        self.poll()
+        reader = postgres.PostgresReader(reader_dsn(self.admin))
+        self.addCleanup(reader.close)
+        bundle = os.path.join(self.dir, "run.tkb")
+        export(reader, "default", run, anchor["note"], bundle)
+        self.assertEqual(self.assurance(bundle, test_monitor.PIN, os.path.join(self.state, "report.json")),
+                         ("witnessed+monitored", 0))
 
 
 class TestBridgeOnPostgres(unittest.TestCase):

@@ -50,8 +50,9 @@ to the central signer, where the agent's pod holds no credentials for it.
 The deployment runs one replica with the `Recreate` strategy: the signer holds its data volume's storage lock.
 
 `deploy/helm/e2e.sh` installs the chart on a throwaway kind cluster, registers a run and decides a call from the agent
-container, checks the agent cannot list the signer's keys, and runs doctor in the sidecar. It needs docker, kind,
-kubectl and helm. `tests/test_helm.py` checks the rendered manifests where `helm` is installed.
+container, checks the agent cannot list the signer's keys, and runs doctor in the sidecar. Then it stops the signer
+mid-run and checks that a fail-open call made while it was down shows as a signed `client_counter_gap` once it is back.
+It needs docker, kind, kubectl and helm. `tests/test_helm.py` checks the rendered manifests where `helm` is installed.
 
 ## Central
 
