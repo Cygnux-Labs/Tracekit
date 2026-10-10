@@ -80,6 +80,7 @@ def tracekit_hooks(signer, run):
     rpc, calls = _Run(signer, run), {}   # calls: tool_use_id -> (decision_id, args_digest), from Pre to PostToolUse
 
     async def pre(inp, tool_use_id, ctx):
+        deadline = time.monotonic() + APPROVAL_WAIT_S   # from the hook's start: deciding and requesting count too
         tid, tool, args = inp.get("tool_use_id") or tool_use_id, inp.get("tool_name") or "?", inp.get("tool_input")
         if not tid:   # never defaulted: a result could not be bound to its decision
             return _deny("the hook got no tool_use_id")
@@ -95,7 +96,7 @@ def tracekit_hooks(signer, run):
             aid = None
             if d["decision"] == "ask":
                 aid = (await rpc("approval_request", tool_call_id=tid))["approval_id"]
-                state, deadline = "requested", time.monotonic() + APPROVAL_WAIT_S
+                state = "requested"
                 while state == "requested" and deadline > time.monotonic():
                     left_ms = int(min(deadline - time.monotonic(), 300) * 1000)
                     state = (await rpc("approval_wait", approval_id=aid, timeout_ms=left_ms))["state"]

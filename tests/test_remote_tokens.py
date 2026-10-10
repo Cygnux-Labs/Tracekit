@@ -91,9 +91,11 @@ class TestFailedAuth(unittest.TestCase):
             with self.assertRaises(RPCError) as cm:
                 srv.authenticate(conn("tk2_a.wrong"), {})
             self.assertEqual(cm.exception.code, "unauthenticated")
-        with self.assertRaises(RPCError) as cm:   # past the limit even a valid token is not looked at
-            srv.authenticate(conn(token), {})
+        with self.assertRaises(RPCError) as cm:   # past the limit a failure is refused as over it
+            srv.authenticate(conn("tk2_a.wrong"), {})
         self.assertEqual(cm.exception.code, "quota_exceeded")
+        # another client behind the same address still gets in with a valid token
+        self.assertEqual(srv.authenticate(conn(token), {}).subject, "a")
         self.assertEqual(srv.authenticate(conn(token, "10.0.0.2"), {}).subject, "a")
         self.assertEqual(len(failures), 3)
         for i in range(50):
@@ -108,6 +110,21 @@ class TestFailedAuth(unittest.TestCase):
                 codes.append(e.code)
         self.assertEqual(codes, ["unauthenticated"] * 47 + ["quota_exceeded"] * 13)
         self.assertEqual(srv.authenticate(conn(token, "10.3.0.1"), {}).subject, "a")   # yet a valid token gets in
+
+    def test_past_an_address_limit_no_other_service_is_asked(self):
+        k8s = K8sSaAuthenticator(audience="a", tokenreview="https://127.0.0.1:1", token_file="unused")
+        srv = tk_http.HttpServer(("127.0.0.1", 0), [k8s, TokenStore(os.path.join(tmpdir(self), "t.json"))], None, None,
+                                 failed=(Limits(events_per_s=0.001, burst=1, buckets=4), tk_http.FAILED_TOTAL))
+        self.addCleanup(srv.server_close)
+        token = srv.authenticators[1].add("a", 60)
+        with mock.patch.object(k8s, "authenticate", return_value=None) as review:
+            with self.assertRaises(RPCError):
+                srv.authenticate(conn("nope"), {})
+            self.assertEqual(srv.authenticate(conn(token), {}).subject, "a")
+            with self.assertRaises(RPCError) as cm:
+                srv.authenticate(conn("nope"), {})
+        self.assertEqual(cm.exception.code, "quota_exceeded")
+        self.assertEqual(review.call_count, 1)
 
 
 class TestRemoteSigner(unittest.TestCase):

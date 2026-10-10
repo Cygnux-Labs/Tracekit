@@ -19,7 +19,8 @@ data:
                                     "token_file" "/var/run/secrets/kubernetes.io/serviceaccount/token"
                                     "ca" "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"))
         "storage" (dict "postgres" (dict "dsn_file" (printf "/etc/tracekit/dsn/dsn-%d" $i)))
-        "metrics" (dict "listen" "0.0.0.0:9464" "allow_remote" true "serve_records" $.Values.monitor.enabled) }}
+        "metrics" (dict "listen" "0.0.0.0:9464" "allow_remote" true "serve_records" $.Values.monitor.enabled)
+        "policy" "/etc/tracekit/policy.yaml" }}
   {{- if $kms.keyIds }}
   {{- $_ := set $cfg "log_key" (dict "aws_kms" (dict "key_id" (index $kms.keyIds $i) "region" (required "awsKms.region is required" $kms.region))) }}
   {{- end }}
@@ -28,3 +29,5 @@ data:
     {{ $k }}: {{ toJson $v }}
     {{- end }}
   {{- end }}
+  policy.yaml: |
+    {{- required "signer.policy is required" .Values.signer.policy | trim | nindent 4 }}

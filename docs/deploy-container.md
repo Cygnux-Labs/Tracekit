@@ -1,7 +1,8 @@
 # The signer as a container
 
 `deploy/docker/Dockerfile` builds the v2 signer (`tracekit-ai[signer,postgres]`, with google-re2 where it has a wheel) on a
-digest-pinned `python:3.12-slim` base. It runs `tracekit signer serve --config /etc/tracekit/signer.yaml` as uid/gid
+digest-pinned `python:3.12-slim` base, every dependency at the version `scripts/release/runtime-constraints.txt` pins
+(and the build backend at `scripts/release/constraints.txt`'s). It runs `tracekit signer serve --config /etc/tracekit/signer.yaml` as uid/gid
 10001 and works with a read-only root filesystem.
 
 ```sh
@@ -13,8 +14,15 @@ sh deploy/docker/smoke.sh     # build, run, decide a call over the socket, check
 | Path | What | Mount |
 |---|---|---|
 | `/etc/tracekit/signer.yaml` | config; the image ships `deploy/docker/signer.yaml.example` (sidecar) | read-only, root-owned (ConfigMap) |
+| `/etc/tracekit/packs` | the installed policy packs (`tracekit/policy2/packs`), in the image | none: mount files beside it, not over `/etc/tracekit` |
+| `/etc/tracekit/policy.yaml` | your policy, if you replace the server pack | read-only, root-owned (ConfigMap) |
 | `/var/lib/tracekit-signer` | keys and log (`data_dir`), 0700 uid 10001 | a volume only the signer mounts (PVC) |
-| `/run/tracekit-signer` | the Unix socket (sidecar) | shared with the agent's container |
+| `/run/tracekit-signer` | the Unix socket (sidecar) | shared with the agent's container, read-only there |
+
+The example config runs the server policy pack, `policy: /etc/tracekit/packs/server.yaml` (unmapped tools wait for
+an approval; [policy-v2.md](policy-v2.md#packs-shipped)). To run your own, mount it as `/etc/tracekit/policy.yaml`,
+start it with `extends: packs/server.yaml` to keep the server rules, and set `policy: /etc/tracekit/policy.yaml`.
+Without `policy:` the signer falls back to the laptop `dev.yaml` pack: never leave it out on a server.
 
 Ports: 8443 (the `http` listener, central) and 9464 (metrics; the `HEALTHCHECK` reads `/metrics` there, so keep a
 `metrics` section in signer.yaml). Run it with `--read-only --cap-drop ALL --security-opt no-new-privileges`.
@@ -41,13 +49,14 @@ spec:
       volumeMounts:
         - {name: signer-data, mountPath: /var/lib/tracekit-signer}
         - {name: signer-socket, mountPath: /run/tracekit-signer}
-        - {name: signer-config, mountPath: /etc/tracekit, readOnly: true}
+        - {name: signer-config, mountPath: /etc/tracekit/signer.yaml, subPath: signer.yaml, readOnly: true}
+        - {name: signer-config, mountPath: /etc/tracekit/policy.yaml, subPath: policy.yaml, readOnly: true}
   containers:
     - name: agent
       securityContext: {runAsUser: 1000, runAsNonRoot: true, allowPrivilegeEscalation: false}
       env: [{name: TRACEKIT_SIGNER, value: /run/tracekit-signer/signer.sock}]
-      volumeMounts:
-        - {name: signer-socket, mountPath: /run/tracekit-signer}
+      volumeMounts:   # read-only: it connects to the socket, and can't unlink or replace it
+        - {name: signer-socket, mountPath: /run/tracekit-signer, readOnly: true}
   volumes:
     - {name: signer-data, persistentVolumeClaim: {claimName: tracekit-signer-data}}
     - {name: signer-socket, emptyDir: {}}
@@ -71,4 +80,4 @@ with a TLS certificate and `k8s_sa` (service-account tokens checked by TokenRevi
 - `signer.yaml`, the policy and the TLS key, or anything that lets the agent change them;
 - the signer's service-account token, or cloud credentials (KMS, storage) the signer uses.
 
-The agent shares only the socket directory, and its user must not be uid 10001 or root.
+The agent shares only the socket directory, mounted read-only, and its user must not be uid 10001 or root.

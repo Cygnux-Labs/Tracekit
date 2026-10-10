@@ -7,8 +7,15 @@ signer:
   uid: 10001
   durability: ack-on-fsync
   # More signer.yaml keys (tenants, authorize, approvals, witnesses, record_key, ...: tracekit/signer/service.py).
-  # The chart sets data_dir, durability, route, origin, http, storage, log_key and metrics, and they win.
+  # The chart sets data_dir, durability, route, origin, http, storage, log_key, metrics and policy, and they win.
   config: {}
+  # The signers' policy file (docs/policy-v2.md), mounted at /etc/tracekit/policy.yaml. The default runs the image's
+  # server pack (/etc/tracekit/packs/server.yaml); replace it with your own, which may extend packs/server.yaml.
+  policy: |
+    extends: packs/server.yaml
+  resources:
+    requests: {cpu: 250m, memory: 256Mi}
+    limits: {cpu: "2", memory: 1Gi}
   # Seconds a stopping pod has: a scaled-down replica closes its log and waits up to 60 s for the witnesses.
   terminationGracePeriodSeconds: 120
   # Each replica's keys (record key, salts): a ReadWriteOnce volume per replica, kept when it scales down.
@@ -65,6 +72,9 @@ issuer:
   storage:
     storageClass: ""
     size: 1Gi
+  resources:
+    requests: {cpu: 50m, memory: 128Mi}
+    limits: {cpu: 500m, memory: 256Mi}
 
 # A read-only viewer of every log (tracekit view, docs/viewer.md) on port 7778. Its DSNs come from Secrets
 # `<dsnSecretPrefix>-<n>` (key `dsn`) of a role holding tracekit.storage.postgres.READ_GRANTS only.
@@ -74,6 +84,9 @@ viewer:
   dsnSecretPrefix: tracekit-log-read
   tokenSecretName: ""      # Secret with key `token`: the viewer's login token
   tlsSecretName: ""
+  resources:
+    requests: {cpu: 50m, memory: 128Mi}
+    limits: {cpu: 500m, memory: 512Mi}
 
 # tracekit monitor of each log; logKeys[n] is replica n's log vkey (`tracekit signer vkey`). Turns on the metrics
 # port's record entries (serve_records), which only the monitor and networkPolicy.monitoringNamespace reach.
@@ -84,3 +97,6 @@ monitor:
   storage:
     storageClass: ""
     size: 1Gi
+  resources:               # each log's monitor container
+    requests: {cpu: 25m, memory: 64Mi}
+    limits: {cpu: 250m, memory: 256Mi}

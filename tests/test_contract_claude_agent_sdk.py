@@ -256,5 +256,25 @@ class TestOnRealSigner(ac.Contract, ac.OnReal, unittest.TestCase):
             asyncio.run(cas.TracekitSessionStore(store, self.client, self.d.run()).load(key))
         self.assertEqual(len(self.recorded("state.write")), 1)
 
+
+@unittest.skipUnless(HAVE_SDK, "claude-agent-sdk not installed")
+class ApprovalBudget(unittest.TestCase):
+    def test_the_approval_wait_counts_from_the_hooks_start(self):
+        now = [0.0]
+
+        def took(s, out):
+            now[0] += s
+            return out
+        signer = mock.Mock()
+        signer.decide.side_effect = lambda req: took(30, {"decision": "ask", "rule_ids": ["R1"], "decision_id": "d1"})
+        signer.approval_request.side_effect = lambda req: took(30, {"approval_id": "a1"})
+        signer.approval_wait.side_effect = lambda req: took(req["timeout_ms"] / 1000, {"state": "requested"})
+        [pre] = cas.tracekit_hooks(signer, {"run_id": "r1", "run_token": "t"})["PreToolUse"][0].hooks
+        with mock.patch.object(cas, "time", mock.Mock(monotonic=lambda: now[0])):
+            out = asyncio.run(pre({"tool_use_id": "t1", "tool_name": "pay", "tool_input": {}}, "t1", None))
+        self.assertEqual(out["hookSpecificOutput"]["permissionDecision"], "deny")
+        self.assertLessEqual(now[0], cas.APPROVAL_WAIT_S)
+
+
 if __name__ == "__main__":
     unittest.main()

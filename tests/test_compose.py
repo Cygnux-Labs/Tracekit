@@ -12,7 +12,7 @@ import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
-from test_container import NO_DOCKER  # noqa: E402
+from test_container import NO_DOCKER, parent_is_server_pack  # noqa: E402
 
 from tracekit import crypto  # noqa: E402
 from tracekit.core import b64e, canon  # noqa: E402
@@ -65,6 +65,8 @@ class DeployCompose(unittest.TestCase):
         self.assertEqual(cfg["witnesses"], [{"url": "http://witness:8080", "vkey": vkey, "class": "customer"}])
         self.assertEqual(self.read("witness.vkey").strip(), vkey)
         self.assertEqual(cfg["storage"], {"postgres": {"dsn_file": "/run/secrets/signer.dsn"}})
+        self.assertEqual(cfg["policy"], "/etc/tracekit/policy.yaml")
+        self.assertTrue(parent_is_server_pack(self.read("policy.yaml")))
         from cryptography.hazmat.primitives import serialization
         ssh = serialization.load_ssh_private_key(self.read("secrets/witness.ssh").encode(), None)
         self.assertEqual(ssh.private_bytes_raw(), seed)   # litewitness gets the same key
@@ -75,6 +77,11 @@ class DeployCompose(unittest.TestCase):
         before = {rel: self.read(rel) for rel in compose.plan(self.out, "x", "customer")}
         self.assertEqual(deploy(self.out, "--witness-class", "customer"), 0)
         self.assertEqual({rel: self.read(rel) for rel in before}, before)   # keys and passwords kept
+        own = "extends: packs/server.yaml\ntools: {my_search: web}\n"
+        with open(os.path.join(self.out, "policy.yaml"), "w", encoding="utf-8") as f:
+            f.write(own)
+        self.assertEqual(deploy(self.out, "--witness-class", "customer"), 0)
+        self.assertEqual(self.read("policy.yaml"), own)   # the operator's policy is kept
         os.unlink(os.path.join(self.out, "viewer.yaml"))
         with open(os.path.join(self.out, "signer.yaml"), "a", encoding="utf-8") as f:
             f.write("# edited\n")
@@ -112,7 +119,8 @@ class ComposeFile(unittest.TestCase):
                 self.assertTrue(svc["read_only"] and svc["cap_drop"] == ["ALL"], name)
         self.assertTrue(s["postgres"]["image"].split("@")[1].startswith("sha256:"))
         self.assertEqual(s["postgres"]["networks"], ["db"])
-        self.assertEqual(s["agent"]["volumes"], ["signer-run:/run/tracekit-signer"])
+        self.assertEqual(s["agent"]["volumes"], ["signer-run:/run/tracekit-signer:ro"])
+        self.assertIn("./policy.yaml:/etc/tracekit/policy.yaml:ro", s["signer"]["volumes"])
         self.assertEqual(s["agent"]["networks"], ["agent"])
         self.assertNotIn("secrets", s["agent"])
         self.assertEqual(s["agent"]["user"], "1000:1000")

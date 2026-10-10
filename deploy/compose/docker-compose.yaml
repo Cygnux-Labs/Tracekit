@@ -30,6 +30,7 @@ services:
     tmpfs: [/tmp]
     volumes:
       - ./signer.yaml:/etc/tracekit/signer.yaml:ro
+      - ./policy.yaml:/etc/tracekit/policy.yaml:ro   # extends the image's /etc/tracekit/packs/server.yaml
       - signer-data:/var/lib/tracekit-signer      # keys: only the signer mounts it
       - signer-run:/run/tracekit-signer           # the socket: shared with the agent only
     secrets: [signer.dsn]
@@ -82,7 +83,7 @@ services:
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
     healthcheck: {disable: true}
-    volumes: [signer-run:/run/tracekit-signer]
+    volumes: [signer-run:/run/tracekit-signer:ro]   # connects to the socket; can't unlink or replace it
     networks: [agent]
     depends_on:
       signer: {condition: service_healthy}
