@@ -30,7 +30,7 @@ The CI `test` job installs `.[dev]` only: no `psycopg`, and no `initdb` on `PATH
 | `verify-release.sh` | `scripts/release/verify-release.sh`; `tests/test_release.py` (offline `--dry-run` checks: sums, SBOM, unlisted files) | `python -m pytest tests/test_release.py`; `TRACEKIT_RELEASE=1` adds the reproducible build and a full dry run | `--dry-run`: done. Attestation checks: owner action (need a release from the target workflow) |
 | Security checklist | [security-checklist.md](security-checklist.md); `tests/test_security_checklist.py` (every HTTP handler listed and probed) | `python -m pytest tests/test_security_checklist.py` | done |
 | Threat models | [threat-model-laptop.md](threat-model-laptop.md), [threat-model-server.md](threat-model-server.md); links checked by `tests/test_docs.py` | `python -m pytest tests/test_docs.py` | done |
-| `SECURITY.md` | `SECURITY.md` (private reporting, disclosure timeline) | | owner action (its supported-versions table names 0.x: add the 1.0 line at release) |
+| `SECURITY.md` | `SECURITY.md` (private reporting, disclosure timeline) | | done (1.x is the supported line) |
 | Docs index in the README | README's Docs list; `tests/test_readme.py` (every repository link names a file) | `python -m pytest tests/test_readme.py` | done |
 | Quickstart on a clean machine (macOS, Linux, Windows) | `tests/test_quickstart.py` (builds the wheel into a fresh venv and runs [quickstart-v2.md](quickstart-v2.md)); the CI `package` job installs the wheel into a clean venv on Linux and runs `tracekit demo` (v1) | `make quickstart` (needs the package index) | Linux v1 demo: done. v2 quickstart on clean macOS, Linux and Windows machines: owner action (no CI job runs `make quickstart`) |
 | Sample bundles verify | `docs/sample/`; `tests/test_hardening.py` `ShippedSample` (the bundle verifies, the tampered copy fails) | `python -m pytest tests/test_hardening.py -k ShippedSample` | done |
@@ -40,6 +40,6 @@ The CI `test` job installs `.[dev]` only: no `psycopg`, and no `initdb` on `PATH
 | E8 v2 on Linux as root | `eval/e8_insider_v2.py`. The CI `insider` job runs the v1 `eval/e8_insider.py` only; no E8 v2 result is recorded | as root on Linux, after `tracekit init --v2` (see the script's docstring) | owner action (a Linux host as root, or an `insider` job for v2) |
 | E9 full on Linux | `eval/e9_signer_perf.py` (gates only on Linux without `--quick`); the recorded results are `--quick` runs on macOS | `python eval/e9_signer_perf.py` on Linux; `--storage postgres --dsn DSN` for Postgres | owner action (a full run on a Linux host) |
 | Nightly real-AWS KMS | as in the exit gate | | owner action |
-| CHANGELOG entry for 1.0 | `CHANGELOG.md` | | owner action (release notes are written once per release) |
-| Version set | `tracekit/__init__.py` and `sdk/typescript/package.json` are at 0.4.0; `release.yml` refuses a tag that does not match | | owner action |
+| CHANGELOG entry for 1.0 | `CHANGELOG.md` (1.0.0) | | done |
+| Version set | `tracekit/__init__.py` and `sdk/typescript/package.json` are at 1.0.0; `tests/test_version.py` keeps them equal; the release workflow refuses a tag that does not match | `python -m pytest tests/test_version.py` | done |
 | 1.0 public launch | | | owner action: the owner's call, after real use |

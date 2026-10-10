@@ -56,8 +56,8 @@ and `eval/e8_insider_v2.py` (E8v2.1 decoy signer, E8v2.3 signer down, E8v2.4 pol
 | Caught by | reconciliation across capture layers: a model call that requested a tool with no matching `decide` is `reconcile.hook_missing`, a decide no model call requested is `reconcile.fabricated`, other arguments are `reconcile.args_mismatch` (the `coverage` warning). An approval with `executor: t2` makes the executor outside the agent run the approved arguments, not the agent's |
 
 Limits: in-process autotrace (L3) runs in the same process as S2, so S2 can suppress it too; the report shows
-`(L3 absent)`. Gateways that capture outside the agent (L3 gateway, L4–L6) are not shipped yet; until then, coverage
-is what the agent's process reported. Invariants: I1, I2, I6. Covered by `tests/test_reconcile.py`, `eval/e10_reconcile.py`,
+`(L3 absent)`. The [LLM gateway](gateway.md) captures L3 outside the agent; layers L4–L6 are not shipped yet, so
+without the gateway, coverage is what the agent's process reported. All limits: [limits.md](limits.md). Invariants: I1, I2, I6. Covered by `tests/test_reconcile.py`, `eval/e10_reconcile.py`,
 `tests/test_signer_lifecycle.py` (`test_client_forged_gap_or_tamper_is_refused_and_summarised`,
 `test_client_isolation_and_fail_mode_claims_have_no_effect`) and `tests/test_known_gaps_v2.py::test_kg11_signer_isolation_not_taken_from_client`.
 
@@ -128,12 +128,16 @@ How they are met in the format: [format v2](format-v2.md).
 
 ## Known limits
 
-- **No harness binding yet:** a process outside the agent's harness, running as the agent's user, can register a run
-  of its own (E8v2.6). The run is labelled with the identity that registered it.
+All limits, across every doc: [limits.md](limits.md).
+
+- **Harness binding is opt-in and Linux-only:** without it (`tracekit init --v2 --harness NAME=PATH`), a process
+  outside the agent's harness, running as the agent's user, can register a run of its own (E8v2.6). The run is
+  labelled with the identity that registered it. With it, see [what binding does not stop](faq.md#what-does-harness-binding-not-stop).
 - **Monitor reports cover one view:** `tracekit monitor` sees the log the signer serves it; a bundle's checkpoint
   smaller than the report's tree is not proven consistent with it, so a split view shows only at equal sizes or to
   witnesses.
-- **Key assurance is `asserted`:** the log declares its own record keys; nothing certifies them.
+- **Key assurance is `asserted`** unless a [record-key issuer](issuer.md) certifies the keys: the log declares its own
+  record keys.
 - **Fail-open classes:** tool classes configured `fail_modes: {<class>: open}` run when the signer is down, unrecorded;
   the report lists them.
 - **Windows:** dev mode only.
