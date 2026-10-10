@@ -1,0 +1,85 @@
+# Values of the tracekit-central chart: a StatefulSet of signers, each replica the single writer of its own log.
+# docs/deploy-kubernetes.md.
+
+signer:
+  # The signer image (deploy/docker/Dockerfile). Pin it by digest: the image is the signer's code trust.
+  image: ghcr.io/cygnux-labs/tracekit-signer:0.4.0
+  uid: 10001
+  durability: ack-on-fsync
+  # More signer.yaml keys (tenants, authorize, approvals, witnesses, record_key, ...: tracekit/signer/service.py).
+  # The chart sets data_dir, durability, route, origin, http, storage, log_key and metrics, and they win.
+  config: {}
+  # Seconds a stopping pod has: a scaled-down replica closes its log and waits up to 60 s for the witnesses.
+  terminationGracePeriodSeconds: 120
+  # Each replica's keys (record key, salts): a ReadWriteOnce volume per replica, kept when it scales down.
+  storage:
+    storageClass: ""
+    size: 1Gi
+
+# Replicas, each with its own log; with autoscaling, the HPA moves between replicas and autoscaling.maxReplicas.
+replicas: 2
+autoscaling:
+  enabled: false
+  maxReplicas: 4
+  # Let the HPA scale down too. Each scale-down closes the last replica's log for good: that ordinal starts again only
+  # with a new log of its own (docs/deploy-kubernetes.md).
+  scaleDown: false
+  # tracekit_signer_queue_depth, averaged over the replicas, through prometheus-adapter (docs/deploy-kubernetes.md)
+  targetQueueDepth: 50
+
+# Each replica's log. Replica n (0, 1, ...) writes the log whose:
+# - origin is `<origin>/<n>`; empty: <release>.<namespace>/log/<n>
+# - Postgres DSN is the `dsn` key of Secret `<postgres.dsnSecretPrefix>-<n>`, its search_path the log's schema
+#   (migrated beforehand; the role holds tracekit.storage.postgres.GRANTS)
+# - log key is awsKms.keyIds[n] (empty: the file key in the replica's volume)
+origin: ""
+postgres:
+  dsnSecretPrefix: tracekit-log
+awsKms:
+  region: ""
+  keyIds: []
+
+# The HTTPS listener: a kubernetes.io/tls Secret whose certificate names <release>.<namespace>.svc and
+# <release>-<n>.<namespace>.svc for every replica (clients route a run's calls to its replica by its run id).
+tls:
+  secretName: ""
+# The audience agents' projected service-account tokens are minted for; the signer checks them by TokenReview.
+audience: tracekit-signer
+
+# The signers' service account. Workload identity for the KMS log keys goes here only (e.g.
+# eks.amazonaws.com/role-arn): the agent pods, the viewer and the monitor never get it.
+serviceAccount:
+  annotations: {}
+
+# Who reaches the metrics port (9464: Prometheus, and the record entries the monitor reads).
+networkPolicy:
+  monitoringNamespace: monitoring
+
+# The record-key issuer (tracekit issuer serve, docs/issuer.md); point the signers' record_key at it in signer.config.
+issuer:
+  enabled: false
+  config: {}               # issuer.yaml without data_dir and http (name, origin, witnesses, identities, ca_key, ...)
+  tlsSecretName: ""
+  serviceAccount:
+    annotations: {}        # workload identity for a KMS ca_key / log_key of the issuer
+  storage:
+    storageClass: ""
+    size: 1Gi
+
+# A read-only viewer of each log (tracekit view), one container per replica on port 7778 + n. Its DSNs come from
+# Secrets `<dsnSecretPrefix>-<n>` (key `dsn`) of a role holding tracekit.storage.postgres.READ_GRANTS only.
+viewer:
+  enabled: false
+  dsnSecretPrefix: tracekit-log-read
+  tokenSecretName: ""      # Secret with key `token`: the viewer's login token
+  tlsSecretName: ""
+
+# tracekit monitor of each log; logKeys[n] is replica n's log vkey (`tracekit signer vkey`). Turns on the metrics
+# port's record entries (serve_records), which only the monitor and networkPolicy.monitoringNamespace reach.
+monitor:
+  enabled: false
+  logKeys: []
+  everySeconds: 60
+  storage:
+    storageClass: ""
+    size: 1Gi

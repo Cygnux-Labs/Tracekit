@@ -1,0 +1,96 @@
+{{- $n := int (include "tc.logs" .) }}
+{{- if lt (int .Values.replicas) 1 }}{{ fail "replicas must be at least 1: a replica scaled away closes its log for good" }}{{ end }}
+{{- $uid := int .Values.signer.uid }}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ .Release.Name }}
+  labels: {{- include "tc.labels" (dict "root" . "component" "signer") | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicas }}
+  {{- end }}
+  serviceName: {{ .Release.Name }}
+  # pod n is the only writer of log n: its config, DSN, log key and volume are n's, and Postgres holds the log's
+  # advisory lock for it
+  selector:
+    matchLabels: {{- include "tc.labels" (dict "root" . "component" "signer") | nindent 6 }}
+  persistentVolumeClaimRetentionPolicy: {whenScaled: Retain, whenDeleted: Retain}
+  volumeClaimTemplates:
+    - metadata: {name: data}
+      spec:
+        accessModes: [ReadWriteOnce]
+        {{- with .Values.signer.storage.storageClass }}
+        storageClassName: {{ . }}
+        {{- end }}
+        resources: {requests: {storage: {{ .Values.signer.storage.size }}}}
+  template:
+    metadata:
+      labels: {{- include "tc.labels" (dict "root" . "component" "signer") | nindent 8 }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+    spec:
+      serviceAccountName: {{ .Release.Name }}-signer
+      automountServiceAccountToken: true   # TokenReview of agents' tokens, and the scale-down check below
+      terminationGracePeriodSeconds: {{ .Values.signer.terminationGracePeriodSeconds }}
+      securityContext:
+        fsGroup: {{ $uid }}
+        fsGroupChangePolicy: OnRootMismatch
+      containers:
+        - name: signer
+          image: {{ .Values.signer.image }}
+          command:
+            - sh
+            - -c
+            - |
+              set -eu
+              umask 077
+              mkdir -p /var/lib/tracekit-signer/data
+              exec tracekit signer serve --config "/etc/tracekit/central/signer-${HOSTNAME##*-}.yaml" \
+                  --close-on-stop /run/tracekit-signer/close-log
+          lifecycle:
+            preStop:   # scaled down (this ordinal is past the StatefulSet's replicas): the signer closes its log on stop
+              exec:
+                command:
+                  - python
+                  - -c
+                  - |
+                    import json, os, ssl, urllib.error, urllib.request
+                    sa = "/var/run/secrets/kubernetes.io/serviceaccount/"
+                    name, _, n = os.environ["HOSTNAME"].rpartition("-")
+                    ns = open(sa + "namespace").read()
+                    req = urllib.request.Request(f"https://kubernetes.default.svc/apis/apps/v1/namespaces/{ns}/statefulsets/{name}",
+                                                 headers={"Authorization": "Bearer " + open(sa + "token").read()})
+                    try:
+                        sts = json.load(urllib.request.urlopen(req, timeout=10, context=ssl.create_default_context(cafile=sa + "ca.crt")))
+                    except urllib.error.HTTPError as e:
+                        raise SystemExit(0 if e.code == 404 else f"scale-down check: {e}")   # 404: uninstalled, logs stay open
+                    if int(n) >= sts["spec"]["replicas"]:
+                        open("/run/tracekit-signer/close-log", "w").close()
+          securityContext:
+            runAsUser: {{ $uid }}
+            runAsGroup: {{ $uid }}
+            {{- include "tc.hardened" . | nindent 12 }}
+          ports:
+            - {name: https, containerPort: 8443}
+            - {name: metrics, containerPort: 9464}
+          readinessProbe:
+            tcpSocket: {port: https}
+            periodSeconds: 5
+          volumeMounts:
+            - {name: data, mountPath: /var/lib/tracekit-signer}
+            - {name: run, mountPath: /run/tracekit-signer}
+            - {name: config, mountPath: /etc/tracekit/central, readOnly: true}
+            - {name: dsn, mountPath: /etc/tracekit/dsn, readOnly: true}
+            - {name: tls, mountPath: /etc/tracekit/tls, readOnly: true}
+      volumes:
+        - {name: run, emptyDir: {sizeLimit: 1Mi}}
+        - {name: config, configMap: {name: {{ .Release.Name }}-signer}}
+        - name: dsn
+          projected:
+            defaultMode: 0440
+            sources:
+              {{- range $i := until $n }}
+              - secret: {name: {{ printf "%s-%d" $.Values.postgres.dsnSecretPrefix $i }}, items: [{key: dsn, path: dsn-{{ $i }}}]}
+              {{- end }}
+        - {name: tls, secret: {secretName: {{ required "tls.secretName is required" .Values.tls.secretName }}, defaultMode: 0440}}
