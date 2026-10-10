@@ -11,11 +11,14 @@ number includes the client, the socket and the signer's writer:
   fsync        the latency measurement at ack-on-fsync over FSYNC_CALLS calls (reported, no gate)
 
 The gates hold on Linux only; elsewhere, and with --quick (a short local run), the numbers are informational.
-Writes eval/results/e9_signer_perf.json; exit 1 when a gate fails.
+`--storage postgres --dsn DSN` runs the signer on a Postgres store: each signer data dir gets a fresh schema of that
+database (created, migrated and dropped; the DSN's role needs CREATE on it). Writes eval/results/e9_signer_perf.json
+(e9_signer_perf_postgres.json with Postgres); exit 1 when a gate fails.
 """
 import argparse
 import concurrent.futures
 import os
+import secrets
 import shutil
 import sys
 import tempfile
@@ -62,8 +65,10 @@ def summary(lat):
             "max_ms": round(max(lat), 3)}
 
 
-def measure(d, durability, fn):
-    p, sock = v2_signer(os.path.join(d, durability), durability)
+def measure(d, durability, fn, schemas):
+    """`schemas`: durability -> its data dir's Postgres schema ({} for the file store)."""
+    config = f"storage: {{postgres: {{dsn_file: {durability}.dsn}}}}\n" if schemas else ""
+    p, sock = v2_signer(os.path.join(d, durability), durability, config)
     try:
         return fn(sock)
     finally:
@@ -71,16 +76,47 @@ def measure(d, durability, fn):
         p.wait(30)
 
 
+def postgres_schemas(d, dsn):
+    """A fresh, migrated schema per signer data dir (the latency and load runs share one), its DSN in the dir."""
+    import psycopg
+    from psycopg.conninfo import make_conninfo
+    from tracekit.storage import postgres
+    schemas = {}
+    for durability in ("ack-on-write", "ack-on-fsync"):
+        schema = schemas[durability] = "e9_" + secrets.token_hex(8)
+        with psycopg.connect(dsn, autocommit=True) as c:
+            c.execute(f"CREATE SCHEMA {schema}")
+        os.makedirs(os.path.join(d, durability))
+        with open(os.path.join(d, durability, durability + ".dsn"), "w") as f:
+            f.write(make_conninfo(dsn, options=f"-c search_path={schema}"))
+        postgres.migrate(make_conninfo(dsn, options=f"-c search_path={schema}"))
+    return schemas
+
+
+def drop_schemas(dsn, schemas):
+    import psycopg
+    with psycopg.connect(dsn, autocommit=True) as c:
+        for schema in schemas.values():
+            c.execute(f"DROP SCHEMA {schema} CASCADE")
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--quick", action="store_true", help="1,000 calls, 5 s of load, 200 ack-on-fsync calls; no gates")
     ap.add_argument("--workers", type=int, default=4)
+    ap.add_argument("--storage", choices=("file", "postgres"), default="file")
+    ap.add_argument("--dsn", help="with --storage postgres: a database the run makes its schemas in")
     a = ap.parse_args(argv)
+    if (a.storage == "postgres") != bool(a.dsn):
+        ap.error("--storage postgres and --dsn go together")
+    dsn = a.dsn if a.storage == "postgres" else None
     calls, seconds, fsync_calls = (1000, 5, 200) if a.quick else (10_000, 60, 2000)
     gated = sys.platform.startswith("linux") and not a.quick
     d = tempfile.mkdtemp(prefix="e9-", dir="/tmp" if os.path.isdir("/tmp") else None)   # short socket paths
+    schemas = {}
     try:
-        latency = summary(measure(d, "ack-on-write", lambda s: tool_calls(s, calls)))
+        schemas = postgres_schemas(d, dsn) if dsn else {}
+        latency = summary(measure(d, "ack-on-write", lambda s: tool_calls(s, calls), schemas))
         print(f"ack-on-write: decide + complete p50 {latency['p50_ms']} ms, p99 {latency['p99_ms']} ms "
               f"over {calls} calls", flush=True)
 
@@ -88,20 +124,23 @@ def main(argv=None):
             start = time.time() + 2   # every worker has connected and registered its run by then
             with concurrent.futures.ProcessPoolExecutor(a.workers) as pool:
                 return sum(pool.map(worker, [sock] * a.workers, [start] * a.workers, [seconds] * a.workers))
-        events = measure(d, "ack-on-write", load)
+        events = measure(d, "ack-on-write", load, schemas)
         rate = round(events / seconds)
         print(f"ack-on-write: {rate} events/s over {seconds} s ({a.workers} client processes)", flush=True)
-        fsync = summary(measure(d, "ack-on-fsync", lambda s: tool_calls(s, fsync_calls)))
+        fsync = summary(measure(d, "ack-on-fsync", lambda s: tool_calls(s, fsync_calls), schemas))
         print(f"ack-on-fsync: decide + complete p50 {fsync['p50_ms']} ms, p99 {fsync['p99_ms']} ms "
               f"over {fsync_calls} calls", flush=True)
     finally:
+        if schemas:
+            drop_schemas(dsn, schemas)
         shutil.rmtree(d, ignore_errors=True)
     gates = {"p99_ms_at_ack_on_write_le_5": latency["p99_ms"] <= 5.0, "events_per_s_ge_1000": rate >= 1000}
     out = {"platform": sys.platform, "python": sys.version.split()[0], "cpus": os.cpu_count(), "quick": a.quick,
+           "storage": a.storage,
            "gated": gated, "ack_on_write": latency, "throughput": {"events_per_s": rate, "seconds": seconds,
                                                                     "workers": a.workers, "events": events},
            "ack_on_fsync": fsync, "gates": gates}
-    print("wrote", write_results("e9_signer_perf", out))
+    print("wrote", write_results("e9_signer_perf" + ("_postgres" if dsn else ""), out))
     if not gated:
         print("informational: the gates apply to a full run on Linux")
     return 1 if gated and not all(gates.values()) else 0
