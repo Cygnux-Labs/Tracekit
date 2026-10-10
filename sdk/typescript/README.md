@@ -61,7 +61,9 @@ await client.close();                                     // waits for what is i
   prove they hold it, it never goes on the wire) or `https://host:port` (`$TRACEKIT_SIGNER_TOKEN_FILE`: a bearer token
   re-read per call; `$TRACEKIT_SIGNER_CERT`/`_KEY`: mTLS; `$TRACEKIT_SIGNER_CA`: the signer's CA). In system mode the
   signer named by the root-owned `/etc/tracekit/client.json` is used and a different `$TRACEKIT_SIGNER` is refused.
-  Otherwise the same-user dev signer is found, or started with `python -m tracekit up --json` (`$TRACEKIT_PYTHON`).
+  Otherwise the same-user dev signer is found, or started with `tracekit up --json`: `$TRACEKIT_PYTHON -m tracekit` if
+  set, else a pip-installed `tracekit` on PATH, else the Python bundled in the `@cygnux/tracekit-signer-<platform>`
+  package npm installs with this one. `npx @cygnux/tracekit up|down|status|view|verify|signer` runs the same command.
 - **Protocol:** `hello` first; a signer that does not speak this client's RPC version is refused with `Incompatible`.
   Requests are validated against the RPC schemas before they are sent, pipelined on one connection and answered in
   order; a call whose connection drops is resent with the same `request_id`. Each handle's events carry the client's

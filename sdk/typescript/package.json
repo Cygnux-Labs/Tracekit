@@ -11,11 +11,19 @@
     ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" },
     "./v2": { "types": "./dist/v2/client.d.ts", "import": "./dist/v2/client.js" }
   },
-  "files": ["dist", "README.md"],
+  "bin": { "tracekit": "bin/tracekit.mjs" },
+  "files": ["dist", "bin", "README.md"],
   "engines": { "node": ">=18" },
   "scripts": {
     "build": "tsc -p .",
     "test": "npm run build && node --test test/*.test.mjs"
+  },
+  "optionalDependencies": {
+    "@cygnux/tracekit-signer-darwin-arm64": "0.4.0",
+    "@cygnux/tracekit-signer-darwin-x64": "0.4.0",
+    "@cygnux/tracekit-signer-linux-x64-gnu": "0.4.0",
+    "@cygnux/tracekit-signer-linux-arm64-gnu": "0.4.0",
+    "@cygnux/tracekit-signer-win32-x64": "0.4.0"
   },
   "devDependencies": {
     "typescript": "^5.6.0",
