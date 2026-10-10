@@ -16,6 +16,8 @@ signer.yaml:
     tcp_endpoint: /run/tracekit/endpoint.json   # loopback TCP dev transport (token, mutual HMAC)
     http: {listen: 0.0.0.0:8443, ...}        # HTTPS with k8s_sa, mtls or token identity (tracekit/transport/http.py)
     durability: ack-on-write                 # or ack-on-fsync
+    log_key: {aws_kms: {key_id: alias/tracekit-log, region: eu-west-1}}   # the log key in AWS KMS
+                                             # (tracekit.signer.logkey); default keys/log.key
     storage: {postgres: {dsn_file: pg.dsn}}  # a Postgres store (tracekit.storage.postgres): the DSN is read from the
                                              # file, never inline (no dsn_file: the libpq PG* variables); default the
                                              # file store in data_dir/store
@@ -75,11 +77,13 @@ run.final also get a leaf in the tenant's registry log (tracekit.format.registry
 every tenant's. Gap and tamper records are written by the signer only: no request can carry an event type, source,
 isolation or fail mode.
 
-Checkpoints (04-design §1.6, §2.9): a C2SP note of the record tree, signed by the log key (keys/log.key, Ed25519, named
-after the origin, signs notes only) and stored through the storage, after a run.final, on `checkpoint_nudge` (at most
-one note per CHECKPOINT_MIN_S), every CHECKPOINT_S while the tree grows, and on close; then, signed by the same key, a
-note of each tenant registry that grew, under origin `<origin>/registry/<id of the tenant's salt>`. The log key's vkey
-is written to <data_dir>/log.vkey on start. Notes are signed off the writer thread; the writer only reads the heads.
+Checkpoints (04-design §1.6, §2.9): a C2SP note of the record tree, signed by the log key (keys/log.key or AWS KMS,
+Ed25519, named after the origin, signs notes only) and stored through the storage, after a run.final, on
+`checkpoint_nudge` (at most one note per CHECKPOINT_MIN_S), every CHECKPOINT_S while the tree grows, and on close; then,
+signed by the same key, a note of each tenant registry that grew, under origin `<origin>/registry/<id of the tenant's
+salt>`. The log key's vkey is written to <data_dir>/log.vkey on start, which is refused when the stored notes were
+signed by another key. Notes are signed off the writer thread; the writer only reads the heads. A note the log key
+fails to sign waits for the next round; an outage of LOG_KEY_GAP_S gets one signed `capture.gap{degraded_unanchored}`.
 
 Publishing (04-design §2.9, §8): one worker per configured witness sends each tree's latest note to it (add-checkpoint,
 off the writer: the writer only computes consistency proofs) and merges the verified cosignature lines into the stored
@@ -156,7 +160,7 @@ from tracekit.identity.base import CallerIdentity
 from tracekit.locking import lock_file
 from tracekit.policy2 import compile as policy_compile
 from tracekit.policy2.engine import Engine
-from tracekit.signer import metrics, reconcile, rpc_schema
+from tracekit.signer import logkey, metrics, reconcile, rpc_schema
 from tracekit.signer import otel as signer_otel
 from tracekit.signer.pipeline import SIGNER_RUN, RecordLog, approval, final_run, owner, salt_label, subject
 from tracekit.signer.quotas import Limits, Quotas
@@ -177,7 +181,7 @@ LIVE = ("requested", "approved")   # approval states that may still lead to a co
 LIST_PAGE = 100
 TICK_S = 1.0
 CHECKPOINT_S, CHECKPOINT_MIN_S = 10.0, 1.0
-WITNESS_GAP_S, BACKOFF_S = 300.0, (1.0, 300.0)
+WITNESS_GAP_S, LOG_KEY_GAP_S, BACKOFF_S = 300.0, 300.0, (1.0, 300.0)
 FSCK_S, CLOCK_SKEW_S, LOCK_TIMEOUT_S = 86400.0, 300.0, 10.0
 SNAPSHOT_RECORDS = 100_000
 CLASSES = ("public", "customer", "tracekit", "operator")
@@ -189,7 +193,7 @@ CONFIG_KEYS = {"data_dir", "socket", "socket_mode", "tcp_endpoint", "http", "dur
                "authorize", "limits", "acknowledge_rollback", "policy", "multi_tenant_apps", "migrators", "analyzers",
                "fail_modes", "grace_s", "idle_s", "origin", "metrics", "witnesses", "contact", "approvals",
                "lock_timeout_s", "fsck_every_s", "clock_skew_s", "anchors", "otlp", "otel_out", "storage", "gateways",
-               "gateway_mandatory"}
+               "gateway_mandatory", "log_key"}
 APPROVAL_KEYS = {"self_approval", "approvers", "break_glass"}
 OTLP_IMPORT = "otlp_import"   # an `authorize` grant, never a default: OTLP/HTTP import (otlp config section)
 OTLP_MAX_SPANS = 512
@@ -284,6 +288,7 @@ def _secret(path, make, size=32):
         _write_new(path, data)
     if len(data) != size:
         raise ValueError(f"{path} holds {len(data)} bytes, not a {size}-byte key: restore it from a backup")
+    logkey.mlock(data)
     return data
 
 
@@ -310,7 +315,7 @@ class SignerService:
                  multi_tenant_apps=(), migrators=(), analyzers=(), fail_modes=None, grace_s=GRACE_S, idle_s=IDLE_S,
                  bridge=None, origin=None, authorize=None, contact=None, approvals=None, lock_timeout_s=0,
                  fsck_every_s=FSCK_S, clock_skew_s=CLOCK_SKEW_S, rekor=None, otlp=None, otel_out=None,
-                 storage_config=None, gateways=(), gateway_mandatory=False):
+                 storage_config=None, gateways=(), gateway_mandatory=False, log_key=None):
         """`identity` answers the in-process SignerAPI calls (default: this process's uid); transports call
         handle_frame with the identity they established. `policy` is a policy2 Engine (default: load_policy()).
         `open_storage()` defaults to the store `storage_config` (the `storage` config section) names, else file storage
@@ -323,7 +328,8 @@ class SignerService:
         `lock_timeout_s`, `fsck_every_s` (0: no background check) and `clock_skew_s`: see the config keys.
         `rekor`: the `anchors.rekor` config section ({signing_config, trusted_root, every_s}), or None.
         `otlp` ({max_spans}) and `otel_out` ({endpoint, headers}): the config sections, or None.
-        `gateways` (identities or prefixes) and `gateway_mandatory`: see the config keys."""
+        `gateways` (identities or prefixes) and `gateway_mandatory`: see the config keys.
+        `log_key`: a signer.logkey key (default: the file key in keys/log.key); it must be the key of the log's notes."""
         fail_modes = dict(fail_modes or FAIL_MODES)
         if not all(isinstance(k, str) and v in ("open", "closed") for k, v in fail_modes.items()):
             raise ValueError("fail_modes maps tool classes to open or closed")
@@ -366,7 +372,8 @@ class SignerService:
             self._args_key = AESGCM(_secret(os.path.join(keys, "approval_args.key"), lambda: os.urandom(32)))
             self.quotas = Quotas(limits)
             salt = _secret(os.path.join(keys, "registry_salt.key"), lambda: os.urandom(32))
-            self._log_key = _secret(os.path.join(keys, "log.key"), lambda: crypto.generate()[0])
+            self._log_key = log_key or logkey.FileKey(_secret(os.path.join(keys, "log.key"),
+                                                              lambda: crypto.generate()[0]))
             self.anchors = [] if rekor is None else [RekorAnchor(
                 rekor["signing_config"], rekor["trusted_root"],
                 _secret(os.path.join(keys, "rekor.key"), rekor2.new_key), rekor.get("every_s", rekor2.MIN_EVERY_S))]
@@ -396,11 +403,21 @@ class SignerService:
         self._queue, self._queue_lock = storage.witness_queue(), threading.Lock()
         self._anchor = next(((a.pop("size"), a) for a in storage.anchors()[-1:]), None)   # (size, the latest anchor)
         self._wake = {w.name: threading.Event() for w in self.witnesses + self.anchors}
+        self._key_down = None   # (since, gapped) while the log key fails to sign
         try:
-            self.vkey = checkpoint.vkey(self.origin, checkpoint.ED25519, crypto.public_from_secret(self._log_key))
+            self.vkey = checkpoint.vkey(self.origin, checkpoint.ED25519, self._log_key.public)
+            latest = storage.checkpoint_latest()
+            if latest:   # the log key is stable: another key (a backend switch, a replaced log.key) never takes over
+                origin = latest[1].split("\n", 1)[0]   # signature checks of the note are the rollback check's job
+                if (origin, checkpoint.key_id(origin, checkpoint.ED25519, self._log_key.public)) \
+                        not in checkpoint.signers(latest[1]):
+                    raise ValueError("the configured log key did not sign this log's notes: a log keeps its log key, "
+                                     "so switch backends only to a key with the same public key")
             d = files.open_dir(data_dir)
             try:
                 files.write(d, "log.vkey", (self.vkey + "\n").encode("ascii"), 0o644)
+                if logkey.HYGIENE.get("core_limit") is not None:   # a serving signer (harden() ran), not a CLI command
+                    files.write(d, "hygiene.json", json.dumps(logkey.HYGIENE).encode("ascii"), 0o644)
                 for a in self.anchors:
                     files.write(d, "rekor.pub", (base64.b64encode(a.spki).decode("ascii") + "\n").encode("ascii"), 0o644)
             finally:
@@ -480,8 +497,11 @@ class SignerService:
     def _check_witnesses(self, witnesses, acknowledged):
         if not witnesses:
             return
-        text = checkpoint.body(self.origin, 0, merkle.root([]))
-        empty, heads = text + "\n" + checkpoint.sign(text, self.origin, self._log_key), []
+        text, heads = checkpoint.body(self.origin, 0, merkle.root([])), []
+        try:
+            empty = self._note(text, self.origin)
+        except Exception:   # the log key can't sign now (KMS down): no witness can be asked, as when none answers
+            witnesses = ()
         for w in witnesses:
             try:
                 heads.append(w.latest(empty, self.vkey))
@@ -602,7 +622,8 @@ class SignerService:
 
     def checkpoint(self):
         """Sign and store a note of the record tree when it grew since the latest stored one, then one of each
-        tenant's registry tree that grew (its leaves point to records the record note covers)."""
+        tenant's registry tree that grew (its leaves point to records the record note covers). A log key that fails to
+        sign leaves the rest unsigned until the next call. Returns whether every tree that grew got its note."""
         def heads(tx):
             s = self.log.storage
             return [(RECORDS, self.origin, s.tree.size, s.tree.root())] + [
@@ -613,13 +634,34 @@ class SignerService:
                 latest = self.log.storage.checkpoint_latest(tree)
                 if size and (latest is None or size > latest[0]):
                     text = checkpoint.body(origin, size, root)
-                    self.log.storage.checkpoint_put(size, text + "\n" + checkpoint.sign(text, origin, self._log_key),
-                                                    tree)
+                    try:
+                        note = self._note(text, origin)
+                    except logkey.KeyUnavailable as e:
+                        self._key_failed(e)
+                        return False
+                    self.log.storage.checkpoint_put(size, note, tree)
                     if tree == RECORDS:
                         self.metrics.checkpoints.inc()
                         self._noted = time.monotonic()
+            self._key_down = None
         for wake in self._wake.values():
             wake.set()
+        return True
+
+    def _note(self, text, origin):
+        return text + "\n" + checkpoint.log_line(origin, self._log_key.public, self._log_key.sign(text.encode("utf-8")))
+
+    def _key_failed(self, e):
+        """Count a failed signature of the log key; an outage of LOG_KEY_GAP_S gets one signed degraded_unanchored gap
+        (the records since the latest note are in no note)."""
+        self.metrics.log_key_failures.inc()
+        now = time.time()
+        since, gapped = self._key_down or (now, False)
+        if not gapped and now - since >= LOG_KEY_GAP_S:
+            self.log.write(lambda tx: tx.gap("degraded_unanchored", f"the log key has signed no note since "
+                                                                    f"{_iso(since)}: {e}"))
+            gapped = True
+        self._key_down = since, gapped
 
     # --- witness publishing ---
 
@@ -659,7 +701,7 @@ class SignerService:
             old = st["size"]
         size, note = latest
         origin = note.split("\n", 1)[0]
-        log_vkey = checkpoint.vkey(origin, checkpoint.ED25519, crypto.public_from_secret(self._log_key))
+        log_vkey = checkpoint.vkey(origin, checkpoint.ED25519, self._log_key.public)
         try:
             lines = w.add_checkpoint(note, log_vkey, old,
                                      lambda n: self.log.write(lambda tx: merkle_tree.consistency_proof(n, size)))
@@ -713,7 +755,7 @@ class SignerService:
         """This signer's logs (the record log and each tenant's registry log) in the witness network's `logs/v0`
         format, for a witness to register them from."""
         tenants = sorted(self.log.tenants)   # a set of str: copied under the GIL, no writer needed
-        public = crypto.public_from_secret(self._log_key)
+        public = self._log_key.public
         out = ["logs/v0", ""]
         for origin in [self.origin] + [registry.origin(self.origin, self.log.tenant_salt(t)) for t in tenants]:
             out += [f"vkey {checkpoint.vkey(origin, checkpoint.ED25519, public)}",
@@ -764,7 +806,9 @@ class SignerService:
         then the final notes. Every later write is refused, after a restart too."""
         self.log.write(lambda tx: tx.emit(self.log.signer_run(tx), "log.closed", {"final_seq": self.log.head["seq"]},
                                           source="signer"))
-        self.checkpoint()
+        if not self.checkpoint():
+            raise RPCError("unavailable", "the log is closed but the log key signed no final note: start the signer once "
+                                          "the log key is reachable, and it writes the note")
 
     def sweep(self, now=None, wall=None):
         """Close idle runs, write run.final for runs whose grace window has passed and expire approvals.
@@ -1510,6 +1554,14 @@ def load_config(path):
             raise ValueError(f"{path}: storage is {{postgres: {{dsn_file}}}} (the DSN in a file, never inline)")
         if pg.get("dsn_file"):
             pg["dsn_file"] = os.path.join(base, pg["dsn_file"])
+    if "log_key" in cfg:
+        # lean: AWS KMS only; GCP Cloud KMS (EC_SIGN_ED25519, software-protected) through its REST API once a
+        # deployment asks for it
+        lk = cfg["log_key"]
+        kms = lk.get("aws_kms") if isinstance(lk, dict) and set(lk) == {"aws_kms"} else None
+        if not (isinstance(kms, dict) and set(kms) == {"key_id", "region"}
+                and all(isinstance(v, str) and v for v in kms.values())):
+            raise ValueError(f"{path}: log_key is {{aws_kms: {{key_id, region}}}} (default: keys/log.key)")
     approvals = cfg.get("approvals") if isinstance(cfg.get("approvals"), dict) else {}
     for table in (cfg.get("tenants"), cfg.get("authorize"), approvals.get("approvers"), approvals.get("break_glass"),
                   cfg.get("gateways")):
@@ -1584,6 +1636,8 @@ def open_service(cfg, **kw):
     if cfg.get("policy"):
         kw.setdefault("policy", load_policy(cfg["policy"]))
     kw.setdefault("witnesses", [TlogWitness(w["url"], w["vkey"]) for w in cfg.get("witnesses", ())])
+    if cfg.get("log_key") and "log_key" not in kw:
+        kw["log_key"] = logkey.from_config(cfg["log_key"])
     return SignerService(cfg["data_dir"], durability=cfg.get("durability", ACK_ON_WRITE),
                          tenant=cfg.get("tenant", "default"), tenants=cfg.get("tenants"),
                          limits=Limits(**cfg.get("limits", {})),
@@ -1717,6 +1771,8 @@ def serve_dev(runtime_dir, open_handler, proto=(rpc_schema.RPC_VERSION, rpc_sche
 
 def _serve_dev():
     from tracekit.sdk.autospawn import runtime_dir
+
+    logkey.harden()
 
     def open_handler():
         service = SignerService(dev_data_dir(), isolation="same-user", fsck_every_s=0)
@@ -1857,6 +1913,8 @@ def main(argv=None):
             print(p)
         print("ok" if not problems else f"{len(problems)} problem(s)")
         return 1 if problems else 0
+    if a.cmd == "serve":
+        logkey.harden()   # before any key is read
     try:
         service = open_service(cfg)
     except BlockingIOError as e:

@@ -201,15 +201,29 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
         add("D-KEYS-MODE", False, f"cannot inspect {keys}: {e.strerror}", "run doctor as root (sudo tracekit doctor)",
             bad=WARN)
 
-    if names is not None:
+    if names is not None and cfg.get("log_key"):
+        add("D-KEYS-DISTINCT", True, "the log key is held in AWS KMS", "")
+    elif names is not None:
         try:
             with open(os.path.join(keys, "log.key"), "rb") as f, open(os.path.join(keys, "record.key"), "rb") as g:
                 same = f.read() == g.read()
             add("D-KEYS-DISTINCT", not same, "the log key and the record key are the same key" if same else
-                "the log key and the record key differ", "move both keys away and restart the signer to make new ones "
-                "(new keys start a new log: export what you need first)")
+                "the log key and the record key differ", "a log keeps its log key, so start a new signer on a new "
+                "data_dir (its keys are made distinct); export what you need from this one first")
         except OSError as e:
             add("D-KEYS-DISTINCT", False, f"no keys yet ({e.strerror})", "start the signer once", bad=WARN)
+
+    try:
+        with open(os.path.join(data, "hygiene.json"), encoding="utf-8") as f:
+            h = json.load(f)
+        bad = [why for why, ok in ((f"core dumps allowed (RLIMIT_CORE {h.get('core_limit')})", h.get("core_limit") == 0),
+                                   ("the process is dumpable (Linux PR_SET_DUMPABLE)", h.get("dumpable") is not True),
+                                   ("key buffers not mlocked (raise RLIMIT_MEMLOCK)", h.get("mlock") is not False))
+               if not ok]
+        add("D-KEY-HYGIENE", not bad, "; ".join(bad) or "no core dumps, not dumpable, keys mlocked where the OS allows",
+            "start the signer with `tracekit signer serve` and a LimitMEMLOCK of at least 64K", bad=WARN)
+    except (OSError, ValueError, AttributeError) as e:
+        add("D-KEY-HYGIENE", False, f"no key hygiene report: {e}", "start the signer once", bad=WARN)
 
     if prod and agent:
         targets = [[data, "read"], [data, "write"], [keys, "read"], [keys, "write"]]
