@@ -153,7 +153,8 @@ def main(argv=None):
     g.add_argument("--last", action="store_true", help="the most recent run (default)")
     g.add_argument("--run")
     g.add_argument("--since", help="RFC3339 time, e.g. 2026-09-30T00:00:00.000000Z")
-    p.add_argument("--otel", action="store_true", help="also include otel.json (OTLP/JSON)")
+    p.add_argument("--otel", action="store_true", help="also include otel.json (OTLP/JSON); with --v2, write it next "
+                   "to the bundle as <name>.otel.json")
     p.add_argument("--otel-endpoint", help="also POST the spans to an OTLP/HTTP collector, e.g. http://localhost:4318")
     p.add_argument("--otel-header", action="append", default=[], metavar="KEY=VALUE",
                    help="header for --otel-endpoint (repeatable; also read from OTEL_EXPORTER_OTLP_HEADERS)")
@@ -579,11 +580,33 @@ def _export_v2(a):
             if note is None:
                 raise ValueError(f"the signer wrote no checkpoint covering run {a.run!r} within {NUDGE_WAIT_S:g}s")
         info = export(FileReader(store), tenant, a.run, note[1], a.out)   # opened after the note: holds its records
+        if a.otel or a.otel_endpoint:
+            info["otel"] = _otel_v2(a, info["bundle"])
     except (OSError, ValueError, SignerUnavailable, StorageCorrupt) as e:
         print(f"tracekit export: {e}", file=sys.stderr)
         return 1
     print(json.dumps(info, indent=2))
     return 0
+
+
+def _otel_v2(a, bundle):
+    """The OTLP/JSON spans of the runs in v2 bundle `bundle`, written to <bundle name>.otel.json and with
+    --otel-endpoint sent there; returns the file's path."""
+    import zipfile
+
+    from .otel import parse_headers, push
+    from .signer.otel import payload
+    with zipfile.ZipFile(bundle) as z:
+        doc = {"resourceSpans": [rs for n in sorted(z.namelist()) if n.startswith("runs/") for rs in payload(
+            [json.loads(line) for line in z.read(n).splitlines()])["resourceSpans"]]}
+    path = os.path.splitext(bundle)[0] + ".otel.json"
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(doc, f)
+    if a.otel_endpoint:
+        status, body = push(a.otel_endpoint, doc, headers=parse_headers(a.otel_header))
+        if status >= 300:
+            raise ValueError(f"{a.otel_endpoint} answered HTTP {status}: {body[:200]}")
+    return path
 
 
 def _approvals(a):

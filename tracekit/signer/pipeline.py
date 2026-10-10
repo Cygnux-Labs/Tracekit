@@ -288,9 +288,13 @@ class RecordLog:
             if not run["final"]:
                 run["active"] = since(e["ts"])
                 reconcile.observe(dict.__setitem__, run, e)
+            if "span_id" in e:   # an imported record: its span and type are written once per run
+                run["spans"][f"{e['span_id']}:{e['type']}"] = True
             if e["type"] == "run.registered":
                 run["owner"], run["source"] = "{scheme}:{subject}".format(**e["data"]["identity"]), e["source"]
                 open_runs[run["owner"]] = open_runs.get(run["owner"], 0) + 1
+                if e["source"] == "import":   # not reconciled: no layer gates or reports its calls
+                    run["rec"], run["spans"] = None, {}
             elif e["type"] == "run.closing":
                 run["closed"], run["closing_at"] = True, run["active"]
                 open_runs[run["owner"]] -= 1

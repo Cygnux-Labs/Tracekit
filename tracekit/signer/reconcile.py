@@ -77,8 +77,8 @@ def _found(run):
 
 def finish(tx, run):
     """Write the run's reconcile.* records; returns the coverage for its run.final (None for a run restored from a
-    snapshot written before reconciliation, which has no index)."""
-    if "rec" not in run:
+    snapshot written before reconciliation, which has no index, or for an imported run)."""
+    if run.get("rec") is None:
         return None
     found, unreconciled = _found(run), {}
     for kind, tcid, layers, detail in found:
