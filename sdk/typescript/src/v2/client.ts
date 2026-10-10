@@ -12,7 +12,7 @@
  * $TRACEKIT_SIGNER_TOKEN_FILE names a bearer token file re-read per call, $TRACEKIT_SIGNER_CERT/_KEY a client
  * certificate for mTLS, $TRACEKIT_SIGNER_CA the signer's CA). In system mode the signer is the one the root-owned
  * /etc/tracekit/client.json names, and a $TRACEKIT_SIGNER naming another is refused. Without either, the same-user dev
- * signer of the runtime dir is used, started with `python -m tracekit up --json` ($TRACEKIT_PYTHON) when none answers.
+ * signer of the runtime dir is used, started with `tracekit up --json` (found as src/v2/launcher.ts says) when none answers.
  * Requests go out in order on one connection and are answered in order; `approval_wait` gets a connection of its own.
  * Every request is validated against the RPC contract before it is sent. Calls that change state carry a `request_id`
  * and are resent with it when the connection drops. Event calls carry this client's `stream` and a `client_seq` per run.
@@ -27,6 +27,7 @@ import { createConnection, type Socket } from "node:net";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { argsDigest } from "./jcs.js";
+import { INSTALL_HINT, signerCommand } from "./launcher.js";
 import { REQUESTS, RPC_VERSION } from "./rpc_schema.js";
 import { validate } from "./validate.js";
 
@@ -451,10 +452,11 @@ export class Client {
 
 /** `tracekit up --json`: find or start the same-user dev signer (it takes the locks, not this client). */
 function startDevSigner(): Promise<void> {
-  const python = process.env.TRACEKIT_PYTHON ?? "python3";
+  const cmd = signerCommand();
+  if (!cmd) return Promise.reject(new SignerUnavailable(`no dev signer, and ${INSTALL_HINT}`));
   return new Promise((resolve, reject) => {
-    execFile(python, ["-m", "tracekit", "up", "--json"], { timeout: 30_000 }, (err, _out, stderr) =>
-      err ? reject(new SignerUnavailable(`no dev signer, and \`${python} -m tracekit up\` failed: ${stderr.trim() || err.message}`)) : resolve());
+    execFile(cmd[0], [...cmd.slice(1), "up", "--json"], { timeout: 30_000 }, (err, _out, stderr) =>
+      err ? reject(new SignerUnavailable(`no dev signer, and \`${cmd.join(" ")} up\` failed: ${stderr.trim() || err.message}`)) : resolve());
   });
 }
 
