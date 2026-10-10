@@ -41,6 +41,9 @@ signer.yaml:
     lock_timeout_s: 10                       # wait this long for the storage lock, then exit naming its holder's pid
     fsck_every_s: 86400                      # full-chain check in the background (0: off; the dev signer's is off)
     clock_skew_s: 300                        # a witness cosignature this far from the signer's clock: clock_skew gap
+    otlp: {max_spans: 512}                   # OTLP/HTTP POST /v1/traces on the `http` listener, for identities
+                                             # `authorize` grants otlp_import (tracekit.signer.otel; docs/otel.md)
+    otel_out: {endpoint: https://otel.example.org/v1/traces, headers: {x-api-key: "..."}}   # each final run's spans
 
 Startup (04-design §2.6): the storage lock is taken before any socket is touched; the log is replayed, its chain
 checked and its tail signatures verified; then the configured witnesses are asked for their latest cosigned checkpoint.
@@ -119,12 +122,14 @@ import socket
 import sys
 import threading
 import time
+import types
 
 import rfc8785
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-from tracekit import __version__, crypto, merkle, privacy, yamlmini
+from tracekit import __version__, crypto, merkle, otlp, privacy, yamlmini
+from tracekit.client import remote_url_error
 from tracekit.anchor import rekor2
 from tracekit.anchor.rekor2 import RekorAnchor
 from tracekit.deploy import files
@@ -136,6 +141,7 @@ from tracekit.locking import lock_file
 from tracekit.policy2 import compile as policy_compile
 from tracekit.policy2.engine import Engine
 from tracekit.signer import metrics, reconcile, rpc_schema
+from tracekit.signer import otel as signer_otel
 from tracekit.signer.pipeline import SIGNER_RUN, RecordLog, approval, final_run, owner, salt_label, subject
 from tracekit.signer.quotas import Limits, Quotas
 from tracekit.signer.rpc_schema import REQUESTS, RPCError
@@ -164,8 +170,10 @@ FAIL_MODES = {"default": "closed"}
 CONFIG_KEYS = {"data_dir", "socket", "socket_mode", "tcp_endpoint", "http", "durability", "tenant", "tenants",
                "authorize", "limits", "acknowledge_rollback", "policy", "multi_tenant_apps", "migrators", "analyzers",
                "fail_modes", "grace_s", "idle_s", "origin", "metrics", "witnesses", "contact", "approvals",
-               "lock_timeout_s", "fsck_every_s", "clock_skew_s", "anchors"}
+               "lock_timeout_s", "fsck_every_s", "clock_skew_s", "anchors", "otlp", "otel_out"}
 APPROVAL_KEYS = {"self_approval", "approvers", "break_glass"}
+OTLP_IMPORT = "otlp_import"   # an `authorize` grant, never a default: OTLP/HTTP import (otlp config section)
+OTLP_MAX_SPANS = 512
 
 
 def load_policy(path=DEFAULT_POLICY, backend=None):
@@ -268,7 +276,7 @@ class SignerService:
                  durability=ACK_ON_WRITE, witnesses=(), acknowledge_rollback=False, open_storage=None, isolation=None,
                  multi_tenant_apps=(), migrators=(), analyzers=(), fail_modes=None, grace_s=GRACE_S, idle_s=IDLE_S,
                  bridge=None, origin=None, authorize=None, contact=None, approvals=None, lock_timeout_s=0,
-                 fsck_every_s=FSCK_S, clock_skew_s=CLOCK_SKEW_S, rekor=None):
+                 fsck_every_s=FSCK_S, clock_skew_s=CLOCK_SKEW_S, rekor=None, otlp=None, otel_out=None):
         """`identity` answers the in-process SignerAPI calls (default: this process's uid); transports call
         handle_frame with the identity they established. `policy` is a policy2 Engine (default: load_policy()).
         `open_storage()` defaults to file storage in data_dir/store. `origin` names the log in its checkpoints, `contact`
@@ -278,7 +286,8 @@ class SignerService:
         `isolation` fixes the signer_isolation label of every run (a dev signer: same-user). `bridge`: see RecordLog.
         `approvals`: who answers approvals (the `approvals` config section); None for the dev signer's rules.
         `lock_timeout_s`, `fsck_every_s` (0: no background check) and `clock_skew_s`: see the config keys.
-        `rekor`: the `anchors.rekor` config section ({signing_config, trusted_root, every_s}), or None."""
+        `rekor`: the `anchors.rekor` config section ({signing_config, trusted_root, every_s}), or None.
+        `otlp` ({max_spans}) and `otel_out` ({endpoint, headers}): the config sections, or None."""
         fail_modes = dict(fail_modes or FAIL_MODES)
         if not all(isinstance(k, str) and v in ("open", "closed") for k, v in fail_modes.items()):
             raise ValueError("fail_modes maps tool classes to open or closed")
@@ -287,10 +296,20 @@ class SignerService:
                 and approvals.get("self_approval", "deny") in ("allow", "deny")
                 and all(isinstance(approvals.get(k, []), list) for k in ("approvers", "break_glass"))):
             raise ValueError("approvals takes self_approval (allow|deny), approvers and break_glass (identity lists)")
+        otlp = {} if otlp is None else otlp
+        if not (isinstance(otlp, dict) and set(otlp) <= {"max_spans"} and isinstance(
+                otlp.get("max_spans", 1), int) and otlp.get("max_spans", 1) > 0):
+            raise ValueError("otlp takes max_spans (a positive integer)")
+        if otel_out is not None and not (
+                isinstance(otel_out, dict) and set(otel_out) <= {"endpoint", "headers"}
+                and isinstance(otel_out.get("endpoint"), str) and not remote_url_error(otel_out["endpoint"])
+                and isinstance(otel_out.get("headers", {}), dict)
+                and all(isinstance(v, str) for v in otel_out.get("headers", {}).values())):
+            raise ValueError("otel_out takes endpoint (https, or http to loopback) and headers (a string mapping)")
         self.metrics = metrics.SignerMetrics()
         authorize = dict(authorize or {})
-        if not all(isinstance(m, list) and set(m) <= set(REQUESTS) for m in authorize.values()):
-            raise ValueError(f"authorize maps identities to lists of methods out of {sorted(REQUESTS)}")
+        if not all(isinstance(m, list) and set(m) <= {*REQUESTS, OTLP_IMPORT} for m in authorize.values()):
+            raise ValueError(f"authorize maps identities to lists of methods out of {sorted({*REQUESTS, OTLP_IMPORT})}")
         keys = os.path.join(data_dir, "keys")
         open_storage = open_storage or (lambda: FileStorage(os.path.join(data_dir, "store"), durability,
                                                             self.metrics.fsync_seconds.observe, lock_timeout_s,
@@ -319,6 +338,7 @@ class SignerService:
         self.tenant, self.tenants, self.authorize = tenant, dict(tenants or {}), authorize
         self.multi_tenant_apps, self.migrators, self.analyzers = set(multi_tenant_apps), set(migrators), set(analyzers)
         self.fail_modes, self.grace_s, self.idle_s = fail_modes, grace_s, idle_s
+        self.otlp_max_spans = otlp.get("max_spans", OTLP_MAX_SPANS)
         self.approvals, self.data_dir = approvals, data_dir
         self.fsck_every_s, self.clock_skew_s, self._skewed, self._fsck_seen = fsck_every_s, clock_skew_s, set(), set()
         self._snapped = storage.tail_state()["tree_size"]
@@ -370,6 +390,9 @@ class SignerService:
         self.metrics.add(metrics.Gauge(
             "tracekit_signer_anchor_lag_records", "Records in the latest record tree note not anchored yet.",
             lambda: self._lag(self.anchors), "anchor"))
+        self._exporter = otel_out and signer_otel.Exporter(
+            otel_out["endpoint"], otel_out.get("headers", {}), lambda key: list(self.log.storage.iter_run(*key)),
+            self.metrics.otel_dropped)
         self._ticker = threading.Thread(target=self._tick_loop, name="tracekit-signer-ticker", daemon=True)
         self._ticker.start()
         self._checkpointer = threading.Thread(target=self._checkpoint_loop, name="tracekit-signer-checkpointer",
@@ -444,23 +467,30 @@ class SignerService:
         try:
             if not isinstance(method, str) or method not in REQUESTS:
                 raise RPCError("invalid_request", f"unknown method {str(method)[:64]}")
-            granted = lookup(self.authorize, subject(identity))
-            if granted is None:   # unconfigured: a uid or the dev token (scoped by DevToken) keeps every method
-                granted = REQUESTS if identity.scheme == "uid" or subject(identity) == "token:dev" else ()
-            if method not in granted:
-                raise RPCError("forbidden", f"{subject(identity)[:256]} is not authorized for {method}")
+            self._grant(identity, method)
             errs = rpc_schema.validate(REQUESTS[method], req)
             if errs:
                 raise RPCError("invalid_request", "; ".join(errs))
             self.quotas.check_strings(req)
             return getattr(self, "_" + method)(identity, req)
         except RPCError as e:
-            self.metrics.refusals.inc(e.code)
-            now, k = time.time(), (identity.scheme, identity.subject, e.code)
-            with self._refusals_lock:
-                first, _, n = self._refusals.get(k, (now, now, 0))
-                self._refusals[k] = (first, now, n + 1)
+            self._refused(identity, e)
             raise
+
+    def _grant(self, identity, method):
+        granted = lookup(self.authorize, subject(identity))
+        if granted is None:   # unconfigured: a uid or the dev token (scoped by DevToken) keeps every RPC method
+            granted = REQUESTS if identity.scheme == "uid" or subject(identity) == "token:dev" else ()
+        if method not in granted:
+            raise RPCError("forbidden", f"{subject(identity)[:256]} is not authorized for {method}")
+
+    def _refused(self, identity, e):
+        """Count refusal `e` for the metrics and the next refusal.summary."""
+        self.metrics.refusals.inc(e.code)
+        now, k = time.time(), (identity.scheme, identity.subject, e.code)
+        with self._refusals_lock:
+            first, _, n = self._refusals.get(k, (now, now, 0))
+            self._refusals[k] = (first, now, n + 1)
 
     def _loop_error(self, loop):
         """Count and log an unexpected error of a background loop, which carries on with its next round."""
@@ -703,6 +733,8 @@ class SignerService:
         expired = self.log.write(fn)
         if finals:
             self._nudged.set()
+        for key in finals if self._exporter else ():
+            self._exporter.put(key)
         for aid in expired:
             self._drop_args(aid)
         if expired:
@@ -737,6 +769,8 @@ class SignerService:
         for wake in self._wake.values():
             wake.set()
         self._ticker.join()
+        if self._exporter:
+            self._exporter.close()
         self._checkpointer.join()
         if self.fsck_every_s:
             self._fsck.join()
@@ -1255,6 +1289,87 @@ class SignerService:
         self._nudged.set()
         return {"scheduled": True}
 
+    # --- OTLP import (tracekit.signer.otel) ---
+
+    def otlp(self, identity, body, content_type, content_encoding):
+        """(status, headers, body) of an OTLP/HTTP `POST /v1/traces` from `identity`, which the transport established;
+        RPCError forbidden unless `authorize` grants it otlp_import."""
+        try:
+            self._grant(identity, OTLP_IMPORT)
+        except RPCError as e:
+            self._refused(identity, e)
+            raise
+        return otlp.handle_traces(types.SimpleNamespace(export=lambda spans: self._import(identity, spans)), body,
+                                  content_type, content_encoding)
+
+    def _content(self, value, label, dotenv):
+        value, manifest = _redact(value, dotenv)
+        c = canonical(value)
+        return {"hash": self._commit(label, "sha256:" + hashlib.sha256(c).hexdigest()), "size": len(c),
+                "redacted": manifest["count"] > 0}, manifest
+
+    def _import(self, identity, spans):
+        """Write decoded spans as the records of their imported runs, all in one writer item (nothing on a refusal):
+        a dict of counts for otlp.handle_traces."""
+        res = {"accepted": 0, "duplicate": 0, "skipped": 0, "rejected": 0, "errors": [], "retryable": False}
+        if len(spans) > self.otlp_max_spans:
+            return dict(res, rejected=len(spans), errors=[f"more than {self.otlp_max_spans} spans in one request"])
+        traces, agents = {}, {}   # trace id -> [[(type, data, span id)] per span]; trace id -> agent name
+        for sp in sorted(spans, key=lambda x: (x["start_ns"], x["end_ns"])):
+            kind = otlp.classify(sp)
+            if kind not in ("tool", "llm"):
+                res["skipped"] += 1
+                continue
+            try:
+                recs = [(typ, data, sp["span_id"]) for typ, data in signer_otel.records(kind, sp, self._content)]
+            except Exception as e:   # values no record can hold (nesting past the recursion limit, say)
+                res["rejected"] += 1
+                res["errors"].append(f"span {sp['span_id']}: {type(e).__name__}")
+                continue
+            traces.setdefault(sp["trace_id"], []).append(recs)
+            agents.setdefault(sp["trace_id"], str(sp["attrs"].get("gen_ai.agent.name") or
+                                                  sp["resource"].get("service.name") or "otel")[:128] or "otel")
+        sub, own = subject(identity), owner(identity)
+        tenant = lookup(self.tenants, sub, self.tenant)
+
+        def fn(tx, _):
+            out = dict(res, errors=list(res["errors"]))
+            for tid, per_span in traces.items():
+                key = (tenant, signer_otel.run_id(tid))
+                run = self.log.runs.get(key)
+                if run is None:
+                    n = self.log.open_runs.get(own, 0)
+                    self.quotas.check_count("open_runs", n)
+                    run = tx.new_run(*key)
+                    for k, v in (("owner", own), ("source", "import"), ("rec", None), ("spans", {})):
+                        tx.set(run, k, v)
+                    tx.set(self.log.open_runs, own, n + 1)
+                    tx.emit(run, "run.registered", {
+                        "agent": {"name": agents[tid]}, "signer_isolation": "unknown", "fidelity": "none",
+                        "identity": {"scheme": identity.scheme, "subject": identity.subject[:256],
+                                     "attested": identity.attested}}, tier=signer_otel.TIER)
+                elif run["source"] != "import" or run["final"]:
+                    out["rejected"] += len(per_span)
+                    out["errors"].append(f"trace {tid}: " + ("its run is final" if run["final"] else
+                                                             "a run of that id was registered over RPC"))
+                    continue
+                tx.set(run, "active", time.monotonic())
+                for recs in per_span:
+                    new = [(typ, data, sid) for typ, data, sid in recs if f"{sid}:{typ}" not in run["spans"]]
+                    out["accepted" if new else "duplicate"] += 1
+                    for typ, data, sid in new:
+                        tx.emit(run, typ, data, tier=signer_otel.TIER, span_id=sid)
+                        tx.set(run["spans"], f"{sid}:{typ}", True)
+            return out
+        try:
+            # lean: one event-rate token per request (at most max_spans spans); a token per span if imports need a
+            # finer rate limit than events_per_s * max_spans
+            self.quotas.take_event(identity)
+            return self.log.submit(identity, OTLP_IMPORT, {}, fn)
+        except RPCError as e:   # a quota or the storage: the exporter keeps the batch and retries
+            self._refused(identity, e)
+            return dict(res, retryable=True, errors=[e.message])
+
 
 # the SignerAPI methods, answered for the in-process identity
 for _m in REQUESTS:
@@ -1360,7 +1475,8 @@ def open_service(cfg, **kw):
                          authorize=cfg.get("authorize"), lock_timeout_s=float(cfg.get("lock_timeout_s", LOCK_TIMEOUT_S)),
                          fsck_every_s=float(cfg.get("fsck_every_s", FSCK_S)),
                          clock_skew_s=float(cfg.get("clock_skew_s", CLOCK_SKEW_S)),
-                         rekor=(cfg.get("anchors") or {}).get("rekor"), **kw)
+                         rekor=(cfg.get("anchors") or {}).get("rekor"), otlp=cfg.get("otlp"),
+                         otel_out=cfg.get("otel_out"), **kw)
 
 
 def serve(cfg, service):
@@ -1368,6 +1484,8 @@ def serve(cfg, service):
     Returns the servers; stop each with shutdown() and server_close()."""
     if not (cfg.get("socket") or cfg.get("tcp_endpoint") or cfg.get("http")):
         raise ValueError("configure socket, tcp_endpoint and/or http")
+    if "otlp" in cfg and not cfg.get("http"):
+        raise ValueError("otlp is served on the http listener: configure http")
     servers = [metrics.server(cfg["metrics"], service.metrics, service.logs_list)] if "metrics" in cfg else []
     handle = answering_hello(service.handle_frame, hello())
     if cfg.get("socket"):
@@ -1384,7 +1502,8 @@ def serve(cfg, service):
         servers.append(TcpDevServer(cfg["tcp_endpoint"], _dev_token(), handle))
     if cfg.get("http"):
         from tracekit.transport import http
-        servers.append(http.HttpServer(*http.configure(cfg["http"]), handle))
+        servers.append(http.HttpServer(*http.configure(cfg["http"]), handle,
+                                       otlp=service.otlp if "otlp" in cfg else None))
     for s in servers:
         threading.Thread(target=s.serve_forever, args=(0.2,), daemon=True).start()
     return servers

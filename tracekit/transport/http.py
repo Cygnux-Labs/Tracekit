@@ -15,6 +15,10 @@ signer.yaml:
 Every request is authenticated again (no session state): the authenticators are asked in order and the first that
 recognises its credential decides. Bodies over MAX_LINE are refused; reads time out like the other transports; the
 connection is kept alive between requests. RPC refusals are answered with status 200 and the error frame.
+
+With `otlp` (the signer's `otlp` config section), `POST /v1/traces` takes OTLP/HTTP (protobuf or JSON, bodies up to
+otlp_wire.MAX_BODY) from the same authenticators: the caller is authenticated before its body is read, and answered
+401 without a credential this signer accepts and 403 without the otlp_import grant.
 """
 import ipaddress
 import json
@@ -25,11 +29,13 @@ from http.server import BaseHTTPRequestHandler
 from tracekit.identity.k8s_sa import K8sSaAuthenticator
 from tracekit.identity.mtls import MtlsAuthenticator
 from tracekit.identity.token import BearerToken
+from tracekit.otlp_wire import MAX_BODY as OTLP_MAX_BODY
 from tracekit.signer.quotas import MAX_LINE
 from tracekit.signer.rpc_schema import RPCError
 from tracekit.transport import READ_TIMEOUT_S, parse_frame
 
 PATH = "/v2/rpc"
+OTLP_PATH = "/v1/traces"
 KEYS = {"listen", "cert", "key", "client_ca", "authenticators", "k8s_sa", "token_file", "insecure_loopback"}
 
 
@@ -93,16 +99,22 @@ class _Handler(BaseHTTPRequestHandler):
         super().setup()
 
     def do_POST(self):
-        if self.path != PATH:
+        otlp = self.path == OTLP_PATH and self.server.otlp
+        if self.path != PATH and not otlp:
             return self._reply(404, RPCError("invalid_request", f"POST {PATH}").wire(), close=True)
-        n = self.headers.get("Content-Length", "")
+        n, limit = self.headers.get("Content-Length", ""), OTLP_MAX_BODY if otlp else MAX_LINE
         if not n:
             return self._reply(411, RPCError("invalid_request", "Content-Length required").wire(), close=True)
         if not (n.isascii() and n.isdigit() and len(n) <= 8):
             return self._reply(400, RPCError("invalid_request", "Content-Length: at most 8 ASCII digits").wire(),
                                close=True)
-        if int(n) > MAX_LINE:
-            return self._reply(413, RPCError("quota_exceeded", f"body longer than {MAX_LINE} bytes").wire(), close=True)
+        if int(n) > limit:
+            return self._reply(413, RPCError("quota_exceeded", f"body longer than {limit} bytes").wire(), close=True)
+        if otlp:
+            try:   # who asks, before reading what they send
+                identity = self.server.authenticate(self, {"method": "otlp_import"})
+            except RPCError as e:
+                return self._reply(401 if e.code == "unauthenticated" else 403, e.wire(), close=True)
         try:
             body = self.rfile.read(int(n))
         except OSError:   # the read timeout, or the peer went away
@@ -110,6 +122,12 @@ class _Handler(BaseHTTPRequestHandler):
         if len(body) < int(n):
             self.close_connection = True
             return
+        if otlp:
+            try:
+                return self._send(*otlp(identity, body, self.headers.get("Content-Type"),
+                                        self.headers.get("Content-Encoding")))
+            except RPCError as e:
+                return self._reply(403, e.wire(), close=True)
         try:
             frame = parse_frame(body)
             out = self.server.handle_frame(self.server.authenticate(self, frame), frame)
@@ -118,9 +136,13 @@ class _Handler(BaseHTTPRequestHandler):
         self._reply(200, out)
 
     def _reply(self, status, obj, close=False):
-        data = json.dumps(obj, separators=(",", ":"), ensure_ascii=False).encode()
+        self._send(status, {"Content-Type": "application/json"},
+                   json.dumps(obj, separators=(",", ":"), ensure_ascii=False).encode(), close)
+
+    def _send(self, status, headers, data, close=False):
         self.send_response(status)
-        self.send_header("Content-Type", "application/json")
+        for k, v in headers.items():
+            self.send_header(k, v)
         self.send_header("Content-Length", str(len(data)))
         if close:
             self.send_header("Connection", "close")
@@ -138,8 +160,11 @@ class HttpServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
     daemon_threads = True
     allow_reuse_address = True
 
-    def __init__(self, address, authenticators, tls, handle_frame, read_timeout=READ_TIMEOUT_S):
+    def __init__(self, address, authenticators, tls, handle_frame, read_timeout=READ_TIMEOUT_S, otlp=None):
+        """`otlp(identity, body, content type, content encoding)` -> (status, headers, body) answers POST /v1/traces;
+        None: not served."""
         self.authenticators, self.tls, self.handle_frame, self.read_timeout = authenticators, tls, handle_frame, read_timeout
+        self.otlp = otlp
         super().__init__(address, _Handler)
 
     def finish_request(self, request, client_address):

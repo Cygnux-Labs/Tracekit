@@ -35,6 +35,7 @@ types, gap kinds, RPC error codes, verdicts); past 64 distinct values a label is
 | `tracekit_signer_witness_lag_records` | gauge | `witness` | Records in the latest record tree note that the witness has not cosigned yet; it should return to 0 within seconds. |
 | `tracekit_signer_anchor_lag_records` | gauge | `anchor` | Records in the latest record tree note not anchored in Rekor yet; it grows between anchors (at most hourly) and should drop after each. |
 | `tracekit_signer_loop_errors_total` | counter | `loop` | Unexpected errors of a background loop (`ticker`, `checkpointer`, `publisher`), which logs it and carries on. Any increase is a bug to report. |
+| `tracekit_signer_otel_export_dropped_total` | counter | `reason` | Runs the OTLP exporter (`otel_out`) did not deliver: `queue_full` (more than 1000 runs waiting), `failed` (the endpoint was unreachable or refused), `shutdown` (still queued when the signer stopped). |
 
 `witness` values are the names of the witnesses in signer.yaml. The metrics port also serves `GET /logs/v0`, the
 signer's logs list for witnesses (docs/witnesses.md).
