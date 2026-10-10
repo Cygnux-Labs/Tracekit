@@ -106,7 +106,7 @@ class Bridge:
         if not re.fullmatch(r"[0-9]{1,12}", ts or "") or abs(now - int(ts)) > WINDOW_S:
             return False
         want = "v0=" + hmac.new(self.cfg["signing_secret"], f"v0:{ts}:".encode() + body, hashlib.sha256).hexdigest()
-        if not hmac.compare_digest(want, sig or ""):
+        if not (sig or "").isascii() or not hmac.compare_digest(want, sig):
             return False
         with self.lock:
             # lean: prunes the whole cache per callback; a time-ordered deque if callbacks pass a few per second

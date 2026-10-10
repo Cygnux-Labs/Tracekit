@@ -140,6 +140,7 @@ class TestSignature(Bridge):
         self.assertFalse(self.bridge.verify(ts_, sig, body, now=1001))   # replayed within the window
         self.assertFalse(self.bridge.verify("999", sig, body, now=999))  # another timestamp: another signature
         self.assertFalse(self.bridge.verify(ts_, sig, body, now=1001 + slack.WINDOW_S))   # too old
+        self.assertFalse(self.bridge.verify("2000", "v0=\u00e9" + "0" * 63, body, now=2000))   # non-ASCII: refused, no raise
 
 
 class TestDecisions(Bridge):

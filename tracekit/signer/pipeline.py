@@ -14,6 +14,7 @@ import copy
 import datetime
 import hashlib
 import json
+import logging
 import queue
 import secrets
 import threading
@@ -495,8 +496,11 @@ class RecordLog:
                     fut.set_exception(self._unavailable())
                 return
             self.metrics.written(tx.records)
-            for f in self.observers:
-                f(tx.records)
+            for f in self.observers:   # the records are written: an observer's failure must not touch them or the writer
+                try:
+                    f(tx.records)
+                except Exception:
+                    logging.getLogger(__name__).exception("tracekit signer: an observer of written records failed")
             try:
                 for r in tx.records:
                     for tenant, leaf in self.leaves(r, self.tenants):
