@@ -206,9 +206,9 @@ class TestVerifyV2(Case):
         _, out = self.honest()
         rep, code = self.verify(out)
         self.assertEqual((code, rep.failures, rep.integrity), (0, [], "VERIFIED"), rep.checks)
-        self.assertEqual(rep.assurance, f"witnessed; records ed25519; checkpoint ed25519 ({ORIGIN}); cosigned ed25519 "
-                                        f"by {WITNESS} (customer) at 2025-10-09T08:53:20Z; key retirements not proven "
-                                        "complete")
+        self.assertEqual(rep.assurance, f"witnessed; records ed25519; checkpoint Ed25519 only ({ORIGIN}); cosigned "
+                                        f"ed25519 by {WITNESS} (customer) at 2025-10-09T08:53:20Z; earliest independent "
+                                        "anchor 2025-10-09T08:53:20Z; key retirements not proven complete")
         self.assertEqual(rep.warnings, ["keys"])   # one run, no run-set: a withheld key.retire would not show
         with zipfile.ZipFile(out) as z:
             names = set(z.namelist())

@@ -342,7 +342,7 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
         add("D-WITNESS-FRESH", not stale, "; ".join(stale) or "every witness has cosigned the latest checkpoint",
             "check the witness is reachable and accepts this log (docs/witnesses.md)", bad=WARN)
         try:
-            cosigs = checkpoint.open_note(note, [service.read_vkey(data)], [w["vkey"] for w in ws])[3]
+            cosigs = checkpoint.open_note(note, service.read_vkeys(data), [w["vkey"] for w in ws])[3]
         except (OSError, ValueError) as e:
             add("D-CLOCK-SKEW", False, f"cannot read the latest cosignatures: {e}", "start the signer once", bad=WARN)
         else:
