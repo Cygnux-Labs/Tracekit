@@ -7,8 +7,10 @@ conflict-free report to raise `witnessed` to `witnessed+monitored`.
 
 ## Run it
 
-The signer serves its logs read-only on the metrics port (`metrics: {listen: ...}` in signer.yaml; set
-`allow_remote: true` to serve a monitor on another host):
+The signer serves its logs read-only on the metrics port. The record log's entries are every tenant's records (run
+ids, tool names, commitments), so the signer serves them only with `serve_records: true`; checkpoints, hash tiles and
+the salted registry logs are always served. Keep that port private to the monitor (`metrics: {listen: ...,
+serve_records: true}` in signer.yaml; `allow_remote: true` to serve a monitor on another host):
 
 ```bash
 tracekit signer vkey --config signer.yaml > log.vkey
