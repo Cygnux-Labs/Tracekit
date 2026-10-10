@@ -2,6 +2,25 @@
 
 All notable changes to Tracekit. Versions follow [PEP 440](https://peps.python.org/pep-0440/).
 
+## 1.0.0rc2 (2026-10-11) — the run viewer
+
+The second 1.0 release candidate. Nothing changes in the signer, the evidence formats, the verifier or the policy
+packs: rc1's bundles, configs and clients work unchanged (signer RPC version 12).
+
+### Viewer (`tracekit view`)
+- **Runs panel**: each v2 run with its agent's registered name, its verifier verdict (`VERIFIED`, `FAILED`, `PENDING`),
+  start, duration, and its calls, blocked, held and gaps. Selecting a run scopes the tape, timeline, tool mix and header
+  to it; the header shows the selected run's own verdict, or how many runs failed.
+- **Run review**: integrity and assurance, what the policy allowed, flagged, denied and held, who approved (attested or
+  bridged, and whether it was self-approved), gaps by kind and coverage; each line opens its first record.
+- **Replay**: step through a run, or jump to the next deny, hold or gap, with the header and tape as of that moment.
+- **In words**: blocked calls show their rules' reasons; holds and approvals are their own `HOLD`, `APPROVE` and
+  `REJECT` rows; the signer's own records no longer count as an agent; tape filters for decisions, approvals, and gaps
+  and alerts; the timeline is scaled to the calls shown.
+
+### Docs
+- [docs/viewer.md](docs/viewer.md): a screenshot of a run under review; the README quickstart ends with `tracekit view --dev`.
+
 ## 1.0.0rc1 (2026-10-10) — server deployments and teams
 
 The first 1.0 release candidate: the v2 signer becomes the way to run Tracekit, on a laptop, in a container, as a
