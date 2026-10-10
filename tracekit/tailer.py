@@ -10,8 +10,9 @@ delegated (`delegate_run`), and signer.yaml lets that uid call only model_event,
 
 The transcript is opened once, with O_NOFOLLOW, and must be a regular file of the agent's uid (the root-owned system
 config names the agent; dev mode: our own uid); the fd is kept. On every wake (inotify on the transcript's directory on
-Linux, else a poll) its size may not go backwards, the path must still be that same file, of that uid, and each new
-complete line must be a JSON object. Otherwise the tailer sends `tailer_lost` (the signer writes the signed gap, the
+Linux, else a poll) its size may not go backwards, the path must still be that same file, of that uid, the bytes
+already read may not have changed (rehashed whenever the file's ctime moves), and each new complete line must be a JSON
+object. Otherwise the tailer sends `tailer_lost` (the signer writes the signed gap, the
 tailer never writes one) and exits. An assistant line with tool_use blocks becomes a model_event response (exchange id:
 the message id; each tool use with the digest of its arguments; the tool results sent since the last one); a user
 prompt becomes a model_event request carrying only the prompt's digest, which the signer publishes as a salted
@@ -19,6 +20,8 @@ commitment. It exits once the signer says the run is over, or (dev mode) once `u
 appears or cannot be reached, and a tailer that stops after IDLE_TAILER_S without a new line, are a tailer_lost too.
 """
 import ctypes
+import hashlib
+import io
 import json
 import os
 import select
@@ -76,6 +79,16 @@ def _check(f, path, uid, off):
         raise Lost("another file replaced the transcript")
 
 
+def _sha256(f, n):
+    """The digest of the transcript's first n bytes."""
+    h = hashlib.sha256()
+    f.seek(0)
+    while n > 0 and (b := f.read(min(n, 1 << 20))):
+        h.update(b)
+        n -= len(b)
+    return h.digest()
+
+
 def _waiter(path):
     """wait(): returns on a change in the transcript's directory (inotify, Linux) or after POLL_S."""
     try:
@@ -120,6 +133,7 @@ def _report(run, e, sent):
 def tail(run, path, uid, until=None, wait=None):
     """Follow `path` for `run` until the run ends, `until` is gone, or the transcript is lost (reported)."""
     wait, f, off, sent, grew = wait or _waiter(path), None, 0, [], time.monotonic()
+    read, checked = hashlib.sha256(), None   # the bytes before `off`; the ctime they were last checked at
     try:
         while True:
             gone, idle = until is not None and not os.path.exists(until), time.monotonic() - grew > IDLE_TAILER_S
@@ -127,9 +141,18 @@ def tail(run, path, uid, until=None, wait=None):
                 f = _open(path, uid)
             if f is not None:
                 _check(f, path, uid, off)
+                ctime = os.fstat(f.fileno()).st_ctime_ns   # any write moves it, and no user can set it back
+                if ctime != checked:
+                    # lean: rehashes all it has read on every change to the file; keep per-block hashes and re-read
+                    # only the blocks whose bytes changed if transcripts reach hundreds of MB
+                    if _sha256(f, off) != read.digest():
+                        raise Lost("a line already read changed in place")
+                    # a ctime this recent may not move for a change in the same clock tick: check it again next wake
+                    checked = ctime if time.time_ns() - ctime > 1_000_000_000 else None
                 f.seek(off)
+                data, start = f.read(), off
                 try:
-                    for n, e in transcript_entries(f):
+                    for n, e in transcript_entries(io.BytesIO(data)):
                         if e is None:
                             raise Lost(f"the line at offset {off} is not a JSON object")
                         try:
@@ -146,6 +169,7 @@ def tail(run, path, uid, until=None, wait=None):
                         grew = time.monotonic()
                 except SignerUnavailable:   # read again from `off` on the next wake
                     pass
+                read.update(data[:off - start])
             if f is None and (gone or idle):
                 raise Lost("the transcript never appeared")
             if idle:

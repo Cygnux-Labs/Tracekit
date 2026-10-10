@@ -1,0 +1,152 @@
+{
+  "all_detected_and_controls_clean": true,
+  "platform": "darwin",
+  "python": "3.11.15",
+  "skipped": {},
+  "sources": {
+    "claude_agent_sdk": {
+      "cases": {
+        "delete": {
+          "detected": true,
+          "gaps": [
+            "state_tamper"
+          ]
+        },
+        "edit": {
+          "detected": true,
+          "gaps": [
+            "state_tamper"
+          ]
+        },
+        "pending_tool_call": {
+          "detected": true,
+          "gaps": [
+            "state_tamper"
+          ]
+        },
+        "reorder": {
+          "detected": true,
+          "gaps": [
+            "state_tamper"
+          ]
+        },
+        "replace": {
+          "detected": true,
+          "gaps": [
+            "state_tamper"
+          ]
+        },
+        "symlink": {
+          "detected": true,
+          "gaps": [
+            "state_tamper"
+          ]
+        },
+        "truncate": {
+          "detected": true,
+          "gaps": [
+            "state_tamper"
+          ]
+        }
+      },
+      "control_gaps": [],
+      "expected": "state_tamper"
+    },
+    "langgraph": {
+      "cases": {
+        "delete": {
+          "detected": true,
+          "gaps": [
+            "state_tamper"
+          ]
+        },
+        "edit": {
+          "detected": true,
+          "gaps": [
+            "state_tamper"
+          ]
+        },
+        "pending_tool_call": {
+          "detected": true,
+          "gaps": [
+            "state_tamper"
+          ]
+        },
+        "reorder": {
+          "detected": true,
+          "gaps": [
+            "state_tamper"
+          ]
+        },
+        "replace": {
+          "detected": true,
+          "gaps": [
+            "state_tamper"
+          ]
+        },
+        "symlink": {
+          "detected": true,
+          "gaps": [
+            "state_tamper"
+          ]
+        },
+        "truncate": {
+          "detected": true,
+          "gaps": [
+            "state_tamper"
+          ]
+        }
+      },
+      "control_gaps": [],
+      "expected": "state_tamper"
+    },
+    "tailer": {
+      "cases": {
+        "delete": {
+          "detected": true,
+          "gaps": [
+            "tailer_lost"
+          ]
+        },
+        "edit": {
+          "detected": true,
+          "gaps": [
+            "tailer_lost"
+          ]
+        },
+        "pending_tool_call": {
+          "detected": true,
+          "gaps": [
+            "tailer_lost"
+          ]
+        },
+        "reorder": {
+          "detected": true,
+          "gaps": [
+            "tailer_lost"
+          ]
+        },
+        "replace": {
+          "detected": true,
+          "gaps": [
+            "tailer_lost"
+          ]
+        },
+        "symlink": {
+          "detected": true,
+          "gaps": [
+            "tailer_lost"
+          ]
+        },
+        "truncate": {
+          "detected": true,
+          "gaps": [
+            "tailer_lost"
+          ]
+        }
+      },
+      "control_gaps": [],
+      "expected": "tailer_lost"
+    }
+  }
+}
