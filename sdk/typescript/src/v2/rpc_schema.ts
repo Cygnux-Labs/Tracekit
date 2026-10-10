@@ -1,7 +1,7 @@
 // Generated from tracekit/signer/rpc_schema.py, one request schema per line; test/v2.test.mjs checks it still matches.
 import type { Schema } from "./validate.js";
 
-export const RPC_VERSION = 9;
+export const RPC_VERSION = 10;
 
 export const REQUESTS: Record<string, Schema> = {
   "register_run": {"type": "object", "additionalProperties": false, "required": ["request_id", "agent"], "properties": {"request_id": {"type": "string", "maxLength": 128, "minLength": 1, "pattern": "^[A-Za-z0-9._:-]+(?![\\s\\S])"}, "run_id": {"type": "string", "maxLength": 128, "minLength": 1, "pattern": "^[A-Za-z0-9._:-]+(?![\\s\\S])"}, "tenant": {"type": "string", "maxLength": 128, "minLength": 1, "pattern": "^[A-Za-z0-9._:-]+(?![\\s\\S])"}, "principal": {"type": "string", "maxLength": 256}, "principal_token": {"type": "string", "maxLength": 16384}, "source": {"const": "migrated"}, "analyzes": {"type": "string", "maxLength": 128, "minLength": 1, "pattern": "^[A-Za-z0-9._:-]+(?![\\s\\S])"}, "agent": {"type": "object", "additionalProperties": false, "required": ["name"], "properties": {"name": {"type": "string", "maxLength": 128, "minLength": 1}, "version": {"type": "string", "maxLength": 64}}}}},
@@ -22,4 +22,5 @@ export const REQUESTS: Record<string, Schema> = {
   "status": {"type": "object", "additionalProperties": false, "required": [], "properties": {}},
   "read": {"type": "object", "additionalProperties": false, "required": ["run_id", "run_token"], "properties": {"run_id": {"type": "string", "maxLength": 128, "minLength": 1, "pattern": "^[A-Za-z0-9._:-]+(?![\\s\\S])"}, "run_token": {"type": "string", "maxLength": 1024, "minLength": 1}, "from_seq": {"type": "integer", "minimum": 0, "maximum": 9007199254740991}, "limit": {"type": "integer", "minimum": 1, "maximum": 1000}}},
   "checkpoint_nudge": {"type": "object", "additionalProperties": false, "required": [], "properties": {}},
+  "decision_import": {"type": "object", "additionalProperties": false, "required": ["request_id", "run_id", "system", "decision", "tool_call_id", "tool", "record"], "properties": {"request_id": {"type": "string", "maxLength": 128, "minLength": 1, "pattern": "^[A-Za-z0-9._:-]+(?![\\s\\S])"}, "run_id": {"type": "string", "maxLength": 128, "minLength": 1, "pattern": "^[A-Za-z0-9._:-]+(?![\\s\\S])"}, "system": {"type": "string", "maxLength": 64, "minLength": 1}, "decision": {"enum": ["allow", "deny", "ask"]}, "tool_call_id": {"type": "string", "maxLength": 128, "minLength": 1, "pattern": "^[A-Za-z0-9._:-]+(?![\\s\\S])"}, "tool": {"type": "string", "maxLength": 256, "minLength": 1}, "rule_ids": {"type": "array", "maxItems": 32, "items": {"type": "string", "maxLength": 64}}, "reason": {"type": "string", "maxLength": 1024}, "record": {"type": "string", "maxLength": 65536, "minLength": 1}, "signature": {"type": "string", "maxLength": 128}}},
 };
