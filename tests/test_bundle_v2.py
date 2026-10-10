@@ -219,6 +219,23 @@ class TestVerifyV2(Case):
         rep, code = self.verify(out)
         self.assertEqual((code, rep.integrity), (0, "VERIFIED TO HEAD 3 (open)"), rep.checks)
 
+    def test_a_failed_export_leaves_no_file(self):
+        log, _ = self.honest()
+        out = os.path.join(self.d, "failed.tkb")
+        with mock.patch.object(zipfile.ZipFile, "writestr", side_effect=OSError(28, "No space left on device")), \
+                self.assertRaises(OSError):
+            export(log.store, "acme", "run-a", log.note(), out)
+        self.assertEqual([n for n in os.listdir(self.d) if n.startswith("failed")], [])
+
+    def test_run_written_after_the_checkpoint_exports_to_it(self):
+        log, _ = self.honest(close=False)
+        note = log.note()
+        log.call()   # the run goes on after the checkpoint the export uses
+        out = os.path.join(self.d, "active.tkb")
+        export(log.store, "acme", "run-a", note, out)
+        rep, code = self.verify(out)
+        self.assertEqual((code, rep.integrity), (0, "VERIFIED TO HEAD 3 (open)"), rep.checks)
+
     def test_report_lines(self):
         log = self.log()
         log.epoch(KEY1)

@@ -9,6 +9,8 @@ import unittest
 import zipfile
 
 from factories import rewrite_bundle
+from test_bundle_v2 import KEY1, LOG_SECRET, OP_SECRET, OPERATOR, ORIGIN, WIT_SECRET, WITNESS, Case
+from test_bundle_v2 import cosign as cosign_note
 from test_signer_checkpoints import run_cli
 from test_signer_service import ME, tmpdir
 from tracekit.bundle_v2 import export, run_name
@@ -91,7 +93,7 @@ class TestRunSet(RunSet):
         out, runs = self.honest()
         code, rep, line = self.check(out, "run-set")
         self.assertEqual((code, rep.integrity), (0, "VERIFIED"), rep.checks)
-        self.assertEqual(line["detail"], "COMPLETE, registry 0..5 (3 runs registered, 2 final, 1 open)")
+        self.assertEqual(line["detail"], "COMPLETE, registry 0..5 of tenant 'acme' (3 runs registered, 2 final, 1 open)")
         self.assertEqual(rep.warnings, ["log tail"])   # the log is still open: its tail is unproven
         with zipfile.ZipFile(out) as z:
             blob = b"".join(z.read(n) for n in z.namelist())
@@ -114,7 +116,7 @@ class TestRunSet(RunSet):
             self.assertEqual([registry.parse(x)[0] for x in self.s.log.storage.registry_iter(tenant)][1], "capture.gap")
         code, rep, line = self.check(self.export(), "run-set")
         self.assertEqual((code, rep.integrity), (0, "VERIFIED"), rep.checks)
-        self.assertEqual(line["detail"], "COMPLETE, registry 0..3 (1 runs registered, 1 final, 0 open; tenant-level "
+        self.assertEqual(line["detail"], "COMPLETE, registry 0..3 of tenant 'acme' (1 runs registered, 1 final, 0 open; tenant-level "
                                          "gaps: witness_failed 1)")
         self.assertIn("tenant-level gaps", rep.warnings)   # so --strict exits 3
 
@@ -245,7 +247,8 @@ class TestRunSet(RunSet):
 
         out = self.export(run_set=(n1, n2))
         code, rep, line = self.check(out, "run-set")
-        self.assertEqual((code, line["detail"]), (0, "COMPLETE, registry 2..6 (2 runs registered, 2 final, 0 open)"), rep.checks)
+        self.assertEqual((code, line["detail"]), (0, "COMPLETE, registry 2..6 of tenant 'acme' (2 runs registered, 2 final, 0 open)"),
+                         rep.checks)
         self.assertIn("keys", rep.warnings)   # the range starts after registry size 0: retirements before it unseen
 
         def bad_proof(files, manifest):
@@ -253,6 +256,77 @@ class TestRunSet(RunSet):
             rs["consistency"][0] = base64.b64encode(bytes(32)).decode()
             files["registry/run-set.json"] = json.dumps(rs).encode()
         self.assert_incomplete(self.mutate(out, bad_proof), "is not a prefix of")
+
+
+class TestRegistryNoteTrust(Case):
+    """A run-set rests on its registry notes as much as on the record checkpoint: they need the witness quorum, cap the
+    assurance by the same rule, and the runs bundled with them must be of the registry's tenant."""
+    SALT = registry.tenant_salt(b"\x01" * 32, "acme")
+
+    def run_set(self, cosigners=(), selected=None):
+        """acme's run-a registered and final, with a registry note cosigned by `cosigners` ((name, secret), ...);
+        `selected`: a beta run exported with it."""
+        log = self.log(f"store-{len(cosigners)}")
+        log.epoch(KEY1)
+        leaves = [log.register(), log.final()]
+        if selected:
+            log.add("run.registered", {"agent": {"name": "x"}, "identity": {"scheme": "token", "subject": "s",
+                                                                              "attested": True}}, selected, tenant="beta")
+        for r in leaves:
+            log.store.registry_append("acme", registry.leaf(r, self.SALT))
+        reg, origin = log.store.registry_merkle("acme"), registry.origin(ORIGIN, self.SALT)
+        text = checkpoint.body(origin, reg.size, reg.root_at(reg.size))
+        log.store.checkpoint_put(reg.size, text + "\n" + checkpoint.sign(text, origin, LOG_SECRET)
+                                 + "".join(cosign_note(text, n, k, 1760000000) for n, k in cosigners),
+                                 registry_tree("acme"))
+        out = os.path.join(self.d, "rs.tkb")
+        export(log.store, "acme", None, log.note(), out, run_set=(0, reg.size), tenant_salt=self.SALT)
+        if selected:   # a run of another tenant presented as the selected run
+            beta = os.path.join(self.d, "beta.tkb")
+            export(log.store, "beta", selected, log.note(), beta)
+            with zipfile.ZipFile(beta) as z:
+                extra = {n: z.read(n) for n in z.namelist() if n.startswith("runs/")}
+                inclusion = json.loads(z.read("proofs/records.json"))["inclusion"]
+
+            def add(files, manifest):
+                proofs = json.loads(files["proofs/records.json"])
+                proofs["inclusion"].update(inclusion)
+                files["proofs/records.json"] = json.dumps(proofs).encode()
+                files.update(extra)
+                manifest["files"].update(dict.fromkeys(extra, ""))
+            rewrite_bundle(out, out + ".x", add)
+            out += ".x"
+        return out
+
+    def run_set_line(self, out, trust=None):
+        rep, code = self.verify(out, trust)
+        return rep, code, next(c for c in rep.checks if c["check"] == "run-set")
+
+    def test_registry_note_needs_the_witness_quorum(self):
+        rep, code, line = self.run_set_line(self.run_set())
+        self.assertEqual((code, line["detail"]), (1, "INCOMPLETE, registry 0..2"), rep.checks)
+        self.assertEqual(line["problems"], ["registry checkpoint at size 2: 0 pinned cosignature(s), 1 required"])
+        self.assertTrue(rep.assurance.startswith("dev;"), rep.assurance)
+
+    def test_cosigned_registry_note_is_complete_and_names_the_tenant(self):
+        rep, code, line = self.run_set_line(self.run_set(cosigners=[(WITNESS, WIT_SECRET)]))
+        self.assertEqual((code, line["detail"]), (0, "COMPLETE, registry 0..2 of tenant 'acme' (1 runs registered, "
+                                                     "1 final, 0 open)"), rep.checks)
+        self.assertTrue(rep.assurance.startswith("witnessed;"), rep.assurance)
+        self.assertNotIn("capped", rep.assurance)
+
+    def test_registry_note_caps_the_assurance(self):
+        trust = self.write_trust(witnesses_required=0, name="trust0.json")
+        for cosigners, level in (((), "dev"), ([(OPERATOR, OP_SECRET)], "local")):
+            rep, code, line = self.run_set_line(self.run_set(cosigners), trust)
+            self.assertEqual((code, line["status"]), (0, "pass"), rep.checks)
+            self.assertTrue(rep.assurance.startswith(f"{level};"), rep.assurance)
+            self.assertIn(f"; capped by the run-set's registry notes ({level})", rep.assurance)
+
+    def test_bundled_runs_must_be_of_the_registry_tenant(self):
+        rep, code, line = self.run_set_line(self.run_set([(WITNESS, WIT_SECRET)], selected="run-b"))
+        self.assertEqual((code, line["detail"]), (1, "INCOMPLETE, registry 0..2"), rep.checks)
+        self.assertIn("a run in the bundle is not of the run-set's tenant", line["problems"])
 
 
 class TestLogClosed(RunSet):
