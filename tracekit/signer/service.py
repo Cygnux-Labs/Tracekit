@@ -67,7 +67,7 @@ signer.yaml:
     clock_skew_s: 300                        # a witness cosignature this far from the signer's clock: clock_skew gap
     otlp: {max_spans: 512}                   # OTLP/HTTP POST /v1/traces on the `http` listener, for identities
                                              # `authorize` grants otlp_import (tracekit.signer.otel; docs/otel.md)
-    decision_keys: {ms-agent-hooks: "<base64 Ed25519 public key>"}   # external policy systems whose record signatures
+    decision_keys: {vscode-agent-hooks: "<base64 Ed25519 public key>"}   # external policy systems whose record signatures
                                              # decision_import requires and verifies (others: unverified)
     otel_out: {endpoint: https://otel.example.org/v1/traces, headers: {x-api-key: "..."}}   # each final run's spans
     harness_binding:                         # runs of these identities must come from a registered harness process
