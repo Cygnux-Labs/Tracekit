@@ -22,6 +22,7 @@ from tracekit.bundle_v2 import export
 from tracekit.format import checkpoint, registry
 from tracekit.signer import service as svc
 from tracekit.storage.base import RECORDS, registry_tree
+from tracekit.storage.file import FileStorage
 from tracekit.tlog_witness import MAX_BODY, TlogWitness, WitnessError
 from tracekit.verify import v2
 
@@ -247,7 +248,9 @@ class Publisher(unittest.TestCase):
         attempts = lambda: self.s.log.storage.witness_queue().get(NAME, {}).get(RECORDS, {}).get("attempts", 0)  # noqa: E731
         self.assertTrue(wait_for(lambda: attempts() >= 1, 10))   # the failure recorded, not only the request sent
         self.s.close()
-        state = self.s.log.storage.witness_queue()[NAME][RECORDS]
+        store = FileStorage(os.path.join(self.dir, "store"))
+        state = store.witness_queue()[NAME][RECORDS]
+        store.close()
         self.assertGreaterEqual(state["attempts"], 1)
         self.assertEqual(state["size"], cosigned)
         self.w.status = None

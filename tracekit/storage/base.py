@@ -8,6 +8,8 @@ import functools
 import hashlib
 import types
 
+from tracekit.format.canon import event_hash, loads_strict
+
 ACK_ON_WRITE, ACK_ON_FSYNC = "ack-on-write", "ack-on-fsync"
 ZERO_HASH = "sha256:" + "0" * 64  # prev_hash of seq 0, run_prev_hash of run_seq 0
 RECORDS = "records"
@@ -15,6 +17,37 @@ RECORDS = "records"
 
 def registry_tree(tenant):
     return "registry-" + hashlib.sha256(tenant.encode("utf-8")).hexdigest()[:32]
+
+
+def check_records(lines, name, verify=None):
+    """The problems of a record log given as its records' JSON texts in seq order (line n holds seq n - 1): strict JSON,
+    record hash, the seq/prev_hash chain, each run's chain and, with `verify(record)` (raises ValueError), the
+    signatures."""
+    problems, prev, runs = [], ZERO_HASH, {}
+    for n, line in enumerate(lines, 1):
+        where = f"{name} line {n}"
+        try:
+            r = loads_strict(line)
+            e = r["event"]
+            intact = r["hash"] == event_hash(e)
+            key = (e.get("tenant"), e.get("run_id"))
+        except (ValueError, KeyError, TypeError, AttributeError) as x:
+            problems.append(f"{where}: unreadable ({x})")
+            continue
+        if not intact:
+            problems.append(f"{where}: hash does not match the event")
+        if e.get("seq") != n - 1 or e.get("prev_hash") != prev:
+            problems.append(f"{where}: breaks the log chain")
+        count, head = runs.get(key, (0, ZERO_HASH))
+        if e.get("run_seq") != count or e.get("run_prev_hash") != head:
+            problems.append(f"{where}: breaks the chain of run {key[1]!r}")
+        if verify:
+            try:
+                verify(r)
+            except ValueError as x:
+                problems.append(f"{where}: {x}")
+        prev, runs[key] = r["hash"], (count + 1, r["hash"])
+    return problems
 
 
 class StorageUnavailable(Exception):
