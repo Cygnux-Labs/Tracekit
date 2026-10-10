@@ -184,7 +184,8 @@ The v2 signer (preview) serves agents over RPC, decides policy itself and writes
 [reading a verify report](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/verdicts.md) ·
 [auditor guide](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/auditor-guide.md) ·
 [approvals](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/approvals.md) ·
-[policy reference](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/policy-v2.md)
+[policy reference](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/policy-v2.md) ·
+[technical report](https://github.com/Cygnux-Labs/Tracekit/blob/main/report/tracekit-v2.md)
 
 ## Roadmap
 
