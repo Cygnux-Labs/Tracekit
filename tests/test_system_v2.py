@@ -29,7 +29,7 @@ class SignerConfig(unittest.TestCase):
         self.addCleanup(shutil.rmtree, d, True)
         path = os.path.join(d, "signer.yaml")
         with open(path, "w") as f:
-            f.write(install.v2_signer_yaml(AGENT, 501, POLICY, "/run/tracekit-signer/signer.sock"))
+            f.write(install.v2_signer_yaml(AGENT, 501, POLICY, "/run/tracekit-signer/signer.sock", 64102))
         cfg = service.load_config(path)
         self.assertEqual(cfg["data_dir"], install.V2_DATA)
         self.assertEqual((cfg["socket"], cfg["socket_mode"]), ("/run/tracekit-signer/signer.sock", "0666"))
@@ -37,6 +37,7 @@ class SignerConfig(unittest.TestCase):
         self.assertEqual(cfg["tenant"], "local")
         self.assertEqual(cfg["approvals"], {"self_approval": "deny", "approvers": ["uid:501"]})
         self.assertEqual(cfg["policy"], POLICY)
+        self.assertEqual(cfg["authorize"], {"uid:64102": ["model_event", "state_write", "tailer_lost", "status"]})
 
     def test_unit_is_hardened_with_no_capabilities(self):
         unit = install.V2_UNIT_TEXT.format(user="tracekit-signer", python=install.OPT_PYTHON,
@@ -129,7 +130,8 @@ class InstallAndUninstall(unittest.TestCase):
         os.makedirs(self.opt)
         self.written = {}
         for k, v in {"V2_DATA": os.path.join(self.d, "data"), "V2_CONFIG": os.path.join(self.d, "signer.yaml"),
-                     "SYSTEMD_DIR": self.d, "OPT": self.opt}.items():
+                     "SYSTEMD_DIR": self.d, "OPT": self.opt,
+                     "TAILER_SUDOERS": os.path.join(self.d, "sudoers")}.items():
             p = mock.patch.object(install, k, v)
             p.start()
             self.addCleanup(p.stop)
@@ -138,9 +140,20 @@ class InstallAndUninstall(unittest.TestCase):
             p.__enter__()
             self.addCleanup(p.__exit__, None, None, None)
 
+    def test_without_tailer_access_init_writes_no_tailer_key(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            sys_cfg = self.init_v2(sudo_why="no sudo rule: visudo refused it")
+        self.assertNotIn("tailer", sys_cfg.call_args.args[0])
+        self.assertIn("each run of agent's sessions records a tailer_lost gap", out.getvalue())
+
     def test_init_wires_signer_service_and_hook(self):
+        self.init_v2()
+
+    def init_v2(self, sudo_why=None):
         run = mock.Mock(return_value=mock.Mock(returncode=0, stdout=POLICY + "\n", stderr=""))
-        v1 = {"socket": "/var/lib/tracekit/tracekitd.sock", "mode": "system", "fail_mode": "closed"}
+        v1 = {"socket": "/var/lib/tracekit/tracekitd.sock", "mode": "system", "fail_mode": "closed",
+              "tailer": {"user": "stale"}}
         with mock.patch.object(install.pwd, "getpwnam", return_value=AGENT), \
                 mock.patch.object(install.pwd, "getpwuid", return_value=self.me), \
                 mock.patch.dict(os.environ, {"SUDO_UID": str(self.me.pw_uid)}), \
@@ -151,6 +164,8 @@ class InstallAndUninstall(unittest.TestCase):
                 mock.patch.object(install.subprocess, "run", run), \
                 mock.patch.object(install.client, "system_config", return_value=v1), \
                 mock.patch.object(install, "_write_system_client_config") as sys_cfg, \
+                mock.patch.object(install, "_tailer_acl", return_value=None) as acl, \
+                mock.patch.object(install, "_tailer_sudo", return_value=sudo_why) as sudo, \
                 mock.patch.object(install, "install_hooks") as hooks:
             sock, settings = install.init_system_v2("agent")
         self.assertEqual(sock, "/run/tracekit-signer/signer.sock")
@@ -161,7 +176,15 @@ class InstallAndUninstall(unittest.TestCase):
         self.assertIn(f'approvers:\n    - "uid:{self.me.pw_uid}"', yaml)
         self.assertIn(f'policy: "{POLICY}"', yaml)
         self.assertIn("ExecStart=", self.written[os.path.join(self.d, "tracekit-signer.service")].decode())
-        self.assertEqual(sys_cfg.call_args.args[0], dict(v1, signer=sock, hooks={"user": "agent", "settings": settings}))
+        acl.assert_called_once_with(AGENT, self.me.pw_name, False)
+        sudo.assert_called_once_with(AGENT, self.me)
+        if sudo_why:
+            return sys_cfg
+        del v1["tailer"]
+        self.assertEqual(sys_cfg.call_args.args[0], dict(v1, signer=sock, hooks={"user": "agent", "settings": settings},
+                                                         tailer={"user": self.me.pw_name, "uid": self.me.pw_uid,
+                                                                 "python": install.OPT_PYTHON}))
+        self.assertIn(f'authorize:\n  "uid:{self.me.pw_uid}": [model_event, state_write, tailer_lost, status]', yaml)
         self.assertEqual(hooks.call_args.kwargs, {"owner": AGENT, "python": install.OPT_PYTHON,
                                                   "module": install.V2_HOOK, "signer": sock})
         self.assertIn(["systemctl", "restart", "tracekit-signer"], [c.args[0] for c in run.call_args_list])
@@ -184,7 +207,7 @@ class InstallAndUninstall(unittest.TestCase):
         sc = {"mode": "system", "fail_mode": "closed", "signer": "/run/tracekit-signer/signer.sock",
               "hooks": {"user": self.me.pw_name, "settings": settings}}
         kept, sys_cfg, hooks, cmds = self.uninstall(sc)
-        self.assertEqual(kept, [install.V2_DATA, install.V2_USER])
+        self.assertEqual(kept, [install.V2_DATA, install.V2_USER, install.V2_TAILER])
         hooks.assert_called_once_with(settings, uninstall=True, owner=self.me, signer=sc["signer"])
         sys_cfg.assert_not_called()
         for gone in (install.V2_CONFIG, os.path.join(self.d, "tracekit-signer.service"), self.opt):
@@ -203,6 +226,51 @@ class InstallAndUninstall(unittest.TestCase):
         self.assertTrue(os.path.isdir(self.opt))
         self.assertFalse(os.path.exists(install.V2_DATA))
         self.assertIn(["userdel", install.V2_USER], cmds)
+        self.assertIn(["userdel", install.V2_TAILER], cmds)
+
+    def test_uninstall_revokes_the_tailers_acl_and_sudo_rule_and_purges_its_user(self):
+        open(install.TAILER_SUDOERS, "w").close()   # no `tailer` key: an ACL set before the sudo rule failed goes too
+        sc = {"mode": "system", "signer": "/run/x.sock", "hooks": {"user": self.me.pw_name, "settings": None}}
+        kept, _, _, cmds = self.uninstall(sc, purge=True)
+        self.assertEqual(kept, [])
+        projects = os.path.join(self.me.pw_dir, ".claude", "projects")
+        self.assertIn(["setfacl", "-R", "-x", "u:tracekit-tailer,d:u:tracekit-tailer", projects], cmds)
+        self.assertFalse(os.path.exists(install.TAILER_SUDOERS))
+        self.assertIn(["userdel", install.V2_TAILER], cmds)
+
+
+@unittest.skipIf(os.name == "nt", "system mode is POSIX-only")
+class TailerAccess(unittest.TestCase):
+    """The tailer's read access to the agent's transcripts, as commands (mocked): setfacl on Linux, chmod +a on macOS."""
+
+    def acl(self, darwin, returncode=0):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        owner = types.SimpleNamespace(pw_uid=os.getuid(), pw_dir=d)
+        run = mock.Mock(return_value=mock.Mock(returncode=returncode, stderr="Operation not supported"))
+        with mock.patch.object(install.subprocess, "run", run):
+            why = install._tailer_acl(owner, "tk-tailer", darwin)
+        self.assertTrue(os.path.isdir(os.path.join(d, ".claude", "projects")))
+        return why, [c.args[0] for c in run.call_args_list], d
+
+    def test_linux_grants_read_on_the_transcripts_and_search_above_them(self):
+        why, cmds, home = self.acl(False)
+        self.assertIsNone(why)
+        self.assertEqual(cmds, [["setfacl", "-m", "u:tk-tailer:x", home],
+                                ["setfacl", "-m", "u:tk-tailer:x", os.path.join(home, ".claude")],
+                                ["setfacl", "-R", "-m", "u:tk-tailer:rX,d:u:tk-tailer:rX",
+                                 os.path.join(home, ".claude", "projects")]])
+
+    def test_macos_uses_inherited_acl_entries(self):
+        why, cmds, home = self.acl(True)
+        self.assertIsNone(why)
+        self.assertEqual(cmds[-1], ["chmod", "-R", "+a", "user:tk-tailer allow list,search,read,readattr,readextattr,"
+                                    "file_inherit,directory_inherit", os.path.join(home, ".claude", "projects")])
+
+    def test_no_acl_support_is_reported(self):
+        why, cmds, _ = self.acl(False, returncode=1)
+        self.assertIn("Operation not supported", why)
+        self.assertEqual(len(cmds), 1)
 
 
 class HookEnv(unittest.TestCase):

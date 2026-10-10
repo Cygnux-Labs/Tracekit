@@ -1,4 +1,4 @@
-"""The signer RPC contract, version 7: one JSON Schema per request and response, the error shape, and `SignerAPI`.
+"""The signer RPC contract, version 8: one JSON Schema per request and response, the error shape, and `SignerAPI`.
 
 Frozen: a change to any schema here is a new RPC_VERSION. The caller's identity comes from the transport (peer
 credentials, token, mTLS), never from a request field. Calls that change state carry `request_id`, scoped to that
@@ -12,7 +12,7 @@ from typing import Protocol
 from tracekit.format.canon import MAX_SAFE_INT
 from tracekit.schema import _check
 
-RPC_VERSION = 7
+RPC_VERSION = 8
 MAX_RAW_ARGS = 1 << 20   # characters of a raw arguments string
 MAX_RESULTS_SENT = 1024
 
@@ -126,6 +126,12 @@ REQUESTS = {
     # the adapter will never resume this paused call: the approval ends at once and a later consume is refused
     "approval_abandon": _obj(_RUN_REQ + ["approval_id"], **_RUN, approval_id=ID, reason=REASON),
     "close_run": _obj(_RUN_REQ, **_RUN, reason=_str(256)),
+    # a token for this run that `identity` (scheme:subject, e.g. a transcript tailer's uid) presents instead of the
+    # owner; what it may call is that identity's `authorize` entry
+    "delegate_run": _obj(["run_id", "run_token", "identity"], run_id=ID, run_token=TOKEN,
+                         identity=_str(256, pattern=r"^[a-z0-9_]+:.+" + _END)),
+    # the transcript tailer lost the transcript at `offset` (bytes read): the signer writes the tailer_lost gap
+    "tailer_lost": _obj(_RUN_REQ + ["reason", "offset"], **_RUN, reason=REASON, offset=SEQ),
     "status": _obj([]),
     "read": _obj(["run_id", "run_token"], run_id=ID, run_token=TOKEN, from_seq=SEQ,
                  limit={"type": "integer", "minimum": 1, "maximum": 1000}),
@@ -161,6 +167,8 @@ RESPONSES = {
                           next_cursor={"oneOf": [ID, {"type": "null"}]}),
     "approval_abandon": _obj(["approval_id", "state"], approval_id=ID, state=APPROVAL_STATE),
     "close_run": _obj(["run_id", "state", "run_seq"], run_id=ID, state={"const": "closing"}, run_seq=SEQ),
+    "delegate_run": _obj(["run_token"], run_token=TOKEN),
+    "tailer_lost": _SEQ_ONLY,
     "status": _obj(["rpc_version", "signer", "identity"], rpc_version={"const": RPC_VERSION},
                    signer=_obj(["name", "version"], name=_str(128), version=_str(64)),
                    identity=_obj(["scheme", "subject", "attested"], scheme=_str(32), subject=_str(256),
@@ -213,6 +221,8 @@ class SignerAPI(Protocol):
     def approval_list(self, req: dict) -> dict: ...
     def approval_abandon(self, req: dict) -> dict: ...
     def close_run(self, req: dict) -> dict: ...
+    def delegate_run(self, req: dict) -> dict: ...
+    def tailer_lost(self, req: dict) -> dict: ...
     def status(self, req: dict) -> dict: ...
     def read(self, req: dict) -> dict: ...
     def checkpoint_nudge(self, req: dict) -> dict: ...
