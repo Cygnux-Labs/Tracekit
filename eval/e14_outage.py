@@ -90,7 +90,7 @@ def hooks(d, n):
     """a and b: two Claude Code sessions, registered while the signer is up, call through an outage."""
     data, rt = os.path.join(d, "hooks"), os.path.join(d, "rt")
     os.makedirs(rt, 0o700)
-    p, sock = v2_signer(data, extra=FAIL_CFG)
+    p, sock = v2_signer(data, config=FAIL_CFG)
 
     def pre(sid, call, i):
         payload = {"hook_event_name": "PreToolUse", "session_id": sid, "tool_use_id": f"{sid}-{i}",
@@ -104,7 +104,7 @@ def hooks(d, n):
             p.wait()
             closed = [pre("a", BASH, i) for i in range(1, n + 1)]
             opened = [pre("b", READ, i) for i in range(1, n + 1)]
-            p, _ = v2_signer(data, extra=FAIL_CFG)
+            p, _ = v2_signer(data, config=FAIL_CFG)
             back = pre("b", READ, n + 1)
             run_b = claude_code._load(claude_code._state("b"))["run_id"]
     finally:
@@ -122,7 +122,7 @@ def hooks(d, n):
 def restart(d):
     """c: an approval requested before a kill -9 and restart is answered, consumed and completed after it."""
     data, cfg = os.path.join(d, "restart"), "approvals: {self_approval: allow}\n"
-    p, sock = v2_signer(data, extra=cfg)
+    p, sock = v2_signer(data, config=cfg)
     c = Client(sock, timeout=10)
     try:
         run = c.run("e14")
@@ -131,7 +131,7 @@ def restart(d):
         aid = run.call("approval_request", tool_call_id="pay")["approval_id"]
         p.kill()
         p.wait()
-        p, _ = v2_signer(data, extra=cfg)
+        p, _ = v2_signer(data, config=cfg)
         after = run.decide("c1", *READ)["decision"]
         c.approval_decide({"approval_id": aid, "decision": "approve"})
         state = run.call("approval_wait", approval_id=aid, timeout_ms=5000)["state"]
@@ -384,7 +384,7 @@ def ts(d, n):
     if not client.exists():
         return None, f"{client} is not built (make test-ts)"
     data = os.path.join(d, "ts")
-    p, sock = v2_signer(data, extra=FAIL_CFG)
+    p, sock = v2_signer(data, config=FAIL_CFG)
     env = dict(os.environ, E14_CLIENT=client.as_uri(), E14_SOCK=sock, E14_N=str(n))
     node = subprocess.Popen(["node", "--input-type=module", "-e", TS], env=env, stdin=subprocess.PIPE,
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
@@ -396,7 +396,7 @@ def ts(d, n):
                 p.kill()
                 p.wait()
             else:
-                p, _ = v2_signer(data, extra=FAIL_CFG)
+                p, _ = v2_signer(data, config=FAIL_CFG)
             node.stdin.write("go\n")
             node.stdin.flush()
         out, err = node.communicate(timeout=60)

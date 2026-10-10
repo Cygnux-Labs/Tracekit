@@ -42,7 +42,7 @@ from tracekit.merkle import leaf_hash
 from tracekit.merkle.tiles import MemoryTileStore, Tree
 
 from .base import (ACK_ON_FSYNC, ACK_ON_WRITE, RECORDS, ZERO_HASH, Storage, StorageCorrupt, StorageUnavailable,
-                   registry_tree)
+                   check_records, registry_tree)
 
 SYNC_INTERVAL = 0.005  # ack-on-write: the longest a written record waits for the background sync
 _UNAVAILABLE = {errno.EIO, errno.ENOSPC}
@@ -609,10 +609,11 @@ class FileReader(_Records):
                 time.sleep(0.05)
 
 
-def fsck(root, upto=None, snapshot_key=None):
-    """Check every line of a file store: strict JSON, record hash, the seq/prev_hash chain and each run's chain, and
-    every snapshot (one that no longer matches the logs, or whose MAC under `snapshot_key` fails, is ignored on open). `upto` ({log name: lines}) checks only
-    the lines a running writer had written. Returns the problems found, empty when the store is intact."""
+def fsck(root, upto=None, snapshot_key=None, verify=None):
+    """Check every line of a file store: strict JSON, record hash, the seq/prev_hash chain and each run's chain (and
+    each record with `verify`: see base.check_records), and every snapshot (one that no longer matches the logs, or
+    whose MAC under `snapshot_key` fails, is ignored on open). `upto` ({log name: lines}) checks only the lines a
+    running writer had written. Returns the problems found, empty when the store is intact."""
     problems = []
 
     def lines(name):
@@ -630,25 +631,7 @@ def fsck(root, upto=None, snapshot_key=None):
             problems.append(f"{name}: {len(parts) - 1} lines where {limit} were written")
         return parts[:min(limit, len(parts) - 1)]
 
-    prev, runs = ZERO_HASH, {}
-    for n, line in enumerate(lines("records.jsonl"), 1):
-        where = f"records.jsonl line {n}"
-        try:
-            r = loads_strict(line)
-            e = r["event"]
-            intact = r["hash"] == event_hash(e)
-            key = (e.get("tenant"), e.get("run_id"))
-        except (ValueError, KeyError, TypeError, AttributeError) as x:
-            problems.append(f"{where}: unreadable ({x})")
-            continue
-        if not intact:
-            problems.append(f"{where}: hash does not match the event")
-        if e.get("seq") != n - 1 or e.get("prev_hash") != prev:
-            problems.append(f"{where}: breaks the log chain")
-        count, head = runs.get(key, (0, ZERO_HASH))
-        if e.get("run_seq") != count or e.get("run_prev_hash") != head:
-            problems.append(f"{where}: breaks the chain of run {key[1]!r}")
-        prev, runs[key] = r["hash"], (count + 1, r["hash"])
+    problems.extend(check_records(lines("records.jsonl"), "records.jsonl", verify))
     for n, line in enumerate(lines("registry.jsonl"), 1):
         try:
             r = loads_strict(line)
