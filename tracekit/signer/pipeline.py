@@ -42,7 +42,7 @@ def new_run(tenant, run_id):
     `closing_at` are monotonic times for the idle and grace clocks."""
     return {"tenant": tenant, "run_id": run_id, "run_seq": 0, "head": ZERO_HASH, "streams": {}, "closed": False,
             "final": False, "calls": {}, "decisions": {}, "denied": {}, "states": {}, "owner": None, "source": "sdk",
-            "harness": None, "active": time.monotonic(), "closing_at": None, "rec": reconcile.new(), "digests": {}}
+            "principal": None, "harness": None, "active": time.monotonic(), "closing_at": None, "rec": reconcile.new(), "digests": {}}
 
 
 FINAL_KEYS = ("tenant", "run_id", "run_seq", "head", "closed", "final", "owner", "source")
@@ -195,6 +195,7 @@ class RecordLog:
         signer.epoch retires the key before it."""
         self.storage, self.open_storage, self.sign, self.quotas, self.salt = storage, open_storage, sign, quotas, salt
         self.metrics = metrics
+        self.observers = []   # f(records), called on the writer once storage has taken a batch: must not block
         self.bridge, self.certify, self.cert = bridge, certify, None
         self.log_id = None
         self.done = OrderedDict()   # (scheme, subject, request_id) -> (payload digest, response)
@@ -303,6 +304,7 @@ class RecordLog:
                 run["spans"][f"{e['span_id']}:{e['type']}"] = True
             if e["type"] == "run.registered":
                 run["owner"], run["source"] = "{scheme}:{subject}".format(**e["data"]["identity"]), e["source"]
+                run["principal"] = e.get("principal")
                 h = e["data"].get("harness")
                 run["harness"] = (h["pid"], h["start_time"]) if h else None   # the process its owner's calls come from
                 open_runs[run["owner"]] = open_runs.get(run["owner"], 0) + 1
@@ -493,6 +495,8 @@ class RecordLog:
                     fut.set_exception(self._unavailable())
                 return
             self.metrics.written(tx.records)
+            for f in self.observers:
+                f(tx.records)
             try:
                 for r in tx.records:
                     for tenant, leaf in self.leaves(r, self.tenants):

@@ -154,7 +154,8 @@ def main(argv=None):
         p = sub.add_parser(name, help=f"{name} a held tool call (run from a terminal outside the agent's session)")
         p.add_argument("approval_id", nargs="?", help="id from `tracekit pending` (default: the only pending one)")
 
-    p = sub.add_parser("approvals", help="approvals on the v2 signer: `approvals list|show ID|approve ID|reject ID`")
+    p = sub.add_parser("approvals", help="approvals on the v2 signer: `approvals list|show ID|approve ID|reject ID`, "
+                       "`approvals slack serve --config slack.yaml`")
     p.add_argument("--signer", help="the signer's Unix socket or tcp://host:port (default: the same-user dev signer)")
     acts = p.add_subparsers(dest="action", required=True)
     acts.add_parser("list", help="pending and recent approvals")
@@ -163,6 +164,9 @@ def main(argv=None):
         q = acts.add_parser(name, help=f"{name} a pending approval")
         q.add_argument("approval_id")
         q.add_argument("--reason")
+    q = acts.add_parser("slack", help="the Slack approvals bridge (docs/approvals.md#slack)")
+    q.add_argument("slack_action", choices=["serve"])
+    q.add_argument("--config", required=True, help="slack.yaml")
 
     p = sub.add_parser("export", help="write a .tkb evidence bundle")
     p.add_argument("-o", "--out", default="tracekit.tkb")
@@ -690,6 +694,9 @@ def _approvals(a):
     from .format.canon import loads_strict
     from .sdk.client import Client, Incompatible, SignerUnavailable
     from .signer.rpc_schema import RPCError
+    if a.action == "slack":
+        from . import slack_approvals
+        return slack_approvals.main(a.config)
     c = Client(a.signer)
     try:
         if a.action == "list":

@@ -109,6 +109,8 @@ class SignerMetrics:
                                             "Unexpected errors of a background loop, which carried on, by loop.", "loop"))
         self.otel_dropped = self.add(Counter("tracekit_signer_otel_export_dropped_total",
                                              "Runs the OTLP exporter (otel_out) did not deliver, by reason.", "reason"))
+        self.webhook_dropped = self.add(Counter("tracekit_signer_webhook_dropped_total",
+                                                "Events a webhook did not deliver, by reason.", "reason"))
 
     def add(self, m):
         self.metrics.append(m)

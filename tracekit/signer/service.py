@@ -60,7 +60,11 @@ signer.yaml:
     anchors: {rekor: {signing_config: sigstage-signing_config.json, trusted_root: sigstage-trusted_root.json,
                       every_s: 3600}}        # Rekor v2 + RFC 3161 anchors of the record note (tracekit.anchor.rekor2)
     approvals: {self_approval: deny, approvers: ["uid:1001", "mtls:spiffe://acme/ops/*"],   # identity or prefix/*
-                break_glass: ["uid:0"]}      # may answer any approval, with a reason; recorded break_glass
+                break_glass: ["uid:0"],      # may answer any approval, with a reason; recorded break_glass
+                persons: {"slack:T01/U02": alice, "mtls:spiffe://acme/ops/alice": alice}}   # identity -> person id,
+                                             # so self-approval holds across channels (docs/approvals.md)
+    webhook: [{url: https://siem.example.org/tracekit, format: ocsf, events: [deny, approval, gap, tamper],
+               secret_file: webhook.secret}]  # OCSF events, HMAC-signed, off the writer (tracekit.signer.webhook)
     acknowledge_rollback: false
     lock_timeout_s: 10                       # wait this long for the storage lock, then exit naming its holder's pid
     fsck_every_s: 86400                      # full-chain check in the background (0: off; the dev signer's is off)
@@ -133,7 +137,10 @@ Who answers (design §5): with a config (`approvals`), only an approver of the r
 (any tenant, a reason required, recorded `break_glass`), never the requester or the run's owner unless
 `self_approval: allow`. Without one (the dev signer), any identity of the run's tenant, a self-approval labelled
 (`self_approved`). The `approval` record carries the approver's identity as the transport established it. Approvals
-are listed and shown only to the run's owner and to those who may answer them.
+are listed and shown only to the run's owner and to those who may answer them. The requester, the run's owner and its
+principal count as one person with every identity `persons` maps to the same person id. A chat bridge granted
+`approval_decide_on_behalf` (never a default) sees its tenant's approvals and answers for the Slack user who clicked:
+that user (or a user group the bridge found them in) must be an approver; the record names both (`via`: the bridge).
 
 Privacy (04-design §1.2, §2.4; docs/privacy.md): a result and the approver's copy of the arguments go through
 privacy.redact before they are committed or stored; a result's record carries a `redaction` manifest (the rules that
@@ -178,7 +185,7 @@ from tracekit.identity.base import CallerIdentity
 from tracekit.locking import lock_file
 from tracekit.policy2 import compile as policy_compile
 from tracekit.policy2.engine import Engine
-from tracekit.signer import logkey, metrics, reconcile, rpc_schema
+from tracekit.signer import logkey, metrics, reconcile, rpc_schema, webhook
 from tracekit.signer import otel as signer_otel
 from tracekit.signer.pipeline import SIGNER_RUN, RecordLog, approval, final_run, owner, salt_label, subject
 from tracekit.signer.quotas import Limits, Quotas
@@ -212,9 +219,10 @@ CONFIG_KEYS = {"data_dir", "socket", "socket_mode", "tcp_endpoint", "http", "dur
                "authorize", "limits", "acknowledge_rollback", "policy", "multi_tenant_apps", "migrators", "analyzers",
                "fail_modes", "grace_s", "idle_s", "origin", "metrics", "witnesses", "contact", "approvals",
                "lock_timeout_s", "fsck_every_s", "clock_skew_s", "anchors", "otlp", "otel_out", "storage", "gateways",
-               "gateway_mandatory", "log_key", "harness_binding", "record_key", "route"}
-APPROVAL_KEYS = {"self_approval", "approvers", "break_glass"}
+               "gateway_mandatory", "log_key", "harness_binding", "record_key", "route", "webhook"}
+APPROVAL_KEYS = {"self_approval", "approvers", "break_glass", "persons"}
 OTLP_IMPORT = "otlp_import"   # an `authorize` grant, never a default: OTLP/HTTP import (otlp config section)
+ON_BEHALF = "approval_decide_on_behalf"   # an `authorize` grant, never a default: a chat bridge answers for its user
 OTLP_MAX_SPANS = 512
 
 
@@ -338,7 +346,7 @@ class SignerService:
                  bridge=None, origin=None, authorize=None, contact=None, approvals=None, lock_timeout_s=0,
                  fsck_every_s=FSCK_S, clock_skew_s=CLOCK_SKEW_S, rekor=None, otlp=None, otel_out=None,
                  storage_config=None, gateways=(), gateway_mandatory=False, log_key=None, slh_dsa_file=None,
-                 harness_binding=None, record_key=None, route=None):
+                 harness_binding=None, record_key=None, route=None, webhooks=()):
         """`identity` answers the in-process SignerAPI calls (default: this process's uid); transports call
         handle_frame with the identity they established. `policy` is a policy2 Engine (default: load_policy()).
         `open_storage()` defaults to the store `storage_config` (the `storage` config section) names, else file storage
@@ -357,15 +365,19 @@ class SignerService:
         `harness_binding` ({helper, required, harnesses}): the config section, or None.
         `record_key`: the `record_key` config section: a fresh record key, certified by its issuer, at every start and
         once two thirds of its certificate's validity have passed (else the file key in keys/record.key).
-        `route`: the prefix (before a dot) of this signer's run and approval ids, or None."""
+        `route`: the prefix (before a dot) of this signer's run and approval ids, or None.
+        `webhooks`: webhook.Sender arguments ({url, events, secret}) of the `webhook` config section."""
         fail_modes = dict(fail_modes or FAIL_MODES)
         if not all(isinstance(k, str) and v in ("open", "closed") for k, v in fail_modes.items()):
             raise ValueError("fail_modes maps tool classes to open or closed")
         if approvals is not None and not (
                 isinstance(approvals, dict) and set(approvals) <= APPROVAL_KEYS
                 and approvals.get("self_approval", "deny") in ("allow", "deny")
-                and all(isinstance(approvals.get(k, []), list) for k in ("approvers", "break_glass"))):
-            raise ValueError("approvals takes self_approval (allow|deny), approvers and break_glass (identity lists)")
+                and all(isinstance(approvals.get(k, []), list) for k in ("approvers", "break_glass"))
+                and isinstance(approvals.get("persons", {}), dict)
+                and all(isinstance(v, str) for v in approvals.get("persons", {}).values())):
+            raise ValueError("approvals takes self_approval (allow|deny), approvers and break_glass (identity lists) "
+                             "and persons (identity -> person id)")
         otlp = {} if otlp is None else otlp
         if not (isinstance(otlp, dict) and set(otlp) <= {"max_spans"} and isinstance(
                 otlp.get("max_spans", 1), int) and otlp.get("max_spans", 1) > 0):
@@ -424,6 +436,8 @@ class SignerService:
         except BaseException:
             storage.close()
             raise
+        self._webhooks = [webhook.Sender(**w, dropped=self.metrics.webhook_dropped) for w in webhooks]
+        self.log.observers += [w.put for w in self._webhooks]   # before the startup checks, so their records go out too
         self.policy, self.isolation = policy or load_policy(), isolation
         self.identity = identity or _process_identity()
         self.tenant, self.tenants, self.authorize = tenant, dict(tenants or {}), authorize
@@ -441,6 +455,7 @@ class SignerService:
         self._snapped = storage.tail_state()["tree_size"]
         self._approvers, self._break_glass = ({k: True for k in (approvals or {}).get(name, ())}
                                               for name in ("approvers", "break_glass"))
+        self._persons = dict((approvals or {}).get("persons", {}))
         self._swept = self._noted = time.monotonic()
         self._args_dir = os.path.join(data_dir, "approvals")   # approval_id -> the encrypted args of a live approval
         self._cond = threading.Condition()
@@ -488,6 +503,8 @@ class SignerService:
             self._check_witnesses(witnesses, acknowledge_rollback)
         except BaseException:
             self.log.close()
+            for w in self._webhooks:
+                w.close()
             raise
         for name, help, fn in (
                 ("tracekit_signer_queue_depth", "Items waiting for the writer.", self.log.queue_depth),
@@ -599,7 +616,7 @@ class SignerService:
     def _grant(self, identity, method):
         granted = lookup(self.authorize, subject(identity))
         if granted is None:   # unconfigured: a uid or the dev token (scoped by DevToken) keeps every RPC method
-            granted = REQUESTS if identity.scheme == "uid" or subject(identity) == "token:dev" else ()
+            granted = REQUESTS.keys() - {ON_BEHALF} if identity.scheme == "uid" or subject(identity) == "token:dev" else ()
         if method not in granted:
             raise RPCError("forbidden", f"{subject(identity)[:256]} is not authorized for {method}")
 
@@ -1016,6 +1033,8 @@ class SignerService:
         except (RPCError, StorageUnavailable, OSError):   # storage down: the next start's notes cover these records
             pass
         self.log.close()
+        for w in self._webhooks:
+            w.close()
 
     # --- helpers ---
 
@@ -1037,12 +1056,20 @@ class SignerService:
 
     def _may_see(self, identity, a):
         """Whether `identity` may see approval `a`: the run's owner, a break-glass identity, or an identity of the
-        run's tenant (with a config, only an approver of it)."""
+        run's tenant (with a config, only an approver of it or a bridge granted ON_BEHALF)."""
         sub = subject(identity)
         if owner(identity) == self.log.runs[a["run_key"]]["owner"] or lookup(self._break_glass, sub, False):
             return True
-        return (self.approvals is None or lookup(self._approvers, sub, False)) and \
-            a["run_key"][0] == self._tenant_of(identity)
+        return (self.approvals is None or lookup(self._approvers, sub, False)
+                or ON_BEHALF in (lookup(self.authorize, sub) or ())) and a["run_key"][0] == self._tenant_of(identity)
+
+    def _self_approval(self, a, *approver):
+        """Whether one of the `approver` identities is approval `a`'s requester, its run's owner or principal, directly
+        or as the same person (`persons`)."""
+        run = self.log.runs[a["run_key"]]
+        theirs = {a["requester"], run["owner"], run.get("principal")}
+        theirs |= {self._persons.get(x) for x in theirs}
+        return bool(({*approver} | {self._persons.get(x) for x in approver}) & theirs - {None})
 
     def _visible(self, identity, approval_id):
         a = self.log.approvals.get(approval_id)
@@ -1192,6 +1219,7 @@ class SignerService:
             top = {"tenant_attested": out["tenant_attested"], "principal_attested": False}
             if "principal" in req:
                 out["principal"] = top["principal"] = req["principal"]
+                tx.set(run, "principal", req["principal"])
             data = {"agent": req["agent"], "signer_isolation": self.isolation or self._isolation(identity), "fail_modes": self.fail_modes,
                     "identity": {"scheme": identity.scheme, "subject": identity.subject[:256],
                                  "attested": identity.attested}}
@@ -1401,17 +1429,28 @@ class SignerService:
         return self.log.submit(identity, "approval_request", req, fn, key)
 
     def _approval_decide(self, identity, req):
-        aid, sub = req["approval_id"], subject(identity)
+        return self._answer(identity, req, subject(identity), owner(identity))
+
+    def _approval_decide_on_behalf(self, identity, req):
+        sub, groups = req["approver"], req.get("groups", [])
+        if any(g.split("/")[0] != sub.split("/")[0] for g in groups):
+            raise RPCError("invalid_request", "groups are user groups of the approver's own team")
+        return self._answer(identity, req, sub, sub, groups)
+
+    def _answer(self, identity, req, sub, own, groups=None):
+        """`identity` answers an approval as `sub` (`own`: as a run's owner would record it). `groups`: None when it
+        answers for itself, else it is a bridge answering for `sub`, a member of `groups`."""
+        aid = req["approval_id"]
         a = self._visible(identity, aid)
         run_key = a["run_key"]
-        same = sub == a["requester"] or owner(identity) == self.log.runs[run_key]["owner"]
+        same = self._self_approval(a, sub, own)
         glass = False
         if self.approvals is not None:
             if same:
                 if self.approvals.get("self_approval") != "allow":
                     raise RPCError("forbidden", f"{sub[:256]} may not answer its own run's approval")
-            elif not lookup(self._approvers, sub, False):
-                glass = bool(lookup(self._break_glass, sub, False))
+            elif not any(lookup(self._approvers, x, False) for x in (sub, *(groups or ()))):
+                glass = groups is None and bool(lookup(self._break_glass, sub, False))
                 if not glass:
                     raise RPCError("forbidden", f"{sub[:256]} is not an approver")
                 if "reason" not in req:
@@ -1429,13 +1468,19 @@ class SignerService:
                     "approver_identity": {"scheme": identity.scheme, "subject": identity.subject[:256],
                                           "attested": identity.attested},
                     "channel": "rpc", "self_approved": same}
+            if groups is not None:   # the bridge vouches for the person; the record names both
+                scheme, _, subj = sub.partition(":")
+                data.update(approver_identity={"scheme": scheme, "subject": subj, "attested": False}, channel=scheme,
+                            via=data["approver_identity"], **({"groups": groups} if groups else {}))
+            if sub in self._persons:
+                data["person"] = self._persons[sub]
             if glass:
                 data["break_glass"] = True
             if "reason" in req:
                 data["reason"] = req["reason"]
             tx.emit(run, "approval", data, request_id=req["request_id"], tool_call_id=a["tool_call_id"])
             return {"approval_id": aid, "state": a["state"], "self_approved": same}
-        out = self.log.submit(identity, "approval_decide", req, fn, run_key)
+        out = self.log.submit(identity, "approval_decide" if groups is None else ON_BEHALF, req, fn, run_key)
         if out["state"] == "rejected":
             self._drop_args(aid)
         with self._cond:
@@ -1735,6 +1780,8 @@ def load_config(path):
     if "record_key" in cfg:
         from tracekit import issuer
         issuer.check_signer_section(cfg["record_key"], path)
+    if "webhook" in cfg:
+        cfg["webhook"] = webhook.load(cfg["webhook"], base, path)
     approvals = cfg.get("approvals") if isinstance(cfg.get("approvals"), dict) else {}
     for table in (cfg.get("tenants"), cfg.get("authorize"), approvals.get("approvers"), approvals.get("break_glass"),
                   cfg.get("gateways")):
@@ -1831,7 +1878,7 @@ def open_service(cfg, **kw):
                          otel_out=cfg.get("otel_out"), storage_config=cfg.get("storage"), gateways=cfg.get("gateways", ()),
                          gateway_mandatory=cfg.get("gateway_mandatory") is True,
                          harness_binding=cfg.get("harness_binding"), record_key=cfg.get("record_key"),
-                         route=cfg.get("route"), **kw)
+                         route=cfg.get("route"), webhooks=cfg.get("webhook", ()), **kw)
 
 
 def serve(cfg, service):
