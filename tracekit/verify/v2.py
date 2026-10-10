@@ -6,8 +6,9 @@ Trust comes only from the verifier's own pinned config (JSON):
      "witnesses": [{"vkey": "<cosigner vkey>", "class": "public|customer|tracekit|operator"}, ...],
      "algs": ["ed25519"],                                 record signature algorithms accepted
      "witnesses_required": 0,                             pinned cosignatures a checkpoint must carry
-     "rekor": {"trusted_root": {...}, "publishing_key": "<base64 SPKI>", "class": "public"}}   optional: a Sigstore
+     "rekor": {"trusted_root": {...}, "publishing_key": "<base64 SPKI>", "class": "public"},   optional: a Sigstore
                                                           trusted_root and the signer's P-256 Rekor publishing key
+     "monitors": [{"vkey": "<monitor vkey>", "class": "...", "max_age_s": 3600}]}   optional: `tracekit monitor` keys
 
 Integrity VERIFIED needs: a checkpoint note signed by the pinned log key of its origin (and cosigned by the required
 number of pinned witnesses); with `rekor` pinned, the checkpoint's Rekor anchor (rekor/, tsa/) when the bundle has one
@@ -20,7 +21,11 @@ A record signed by a key after that key's key.retire fails `signatures`, naming 
 position only). A record after a run's run.final breaks the run chain.
 Report lines (also in --json): tool calls by evidence tier (T1/T2/T3), records by args_source, the signer_isolation the
 signer recorded per run, the tool classes run.registered says fail open, and key assurance (asserted: the log declares
-its keys; this format has no key attestation). `witnessed+monitored` needs a monitor (M3) and is not reported yet.
+its keys; this format has no key attestation).
+Monitor reports (`tracekit monitor`) come from the verifier's side, never the bundle: verify(..., monitor_reports=[path]).
+A report signed by a pinned monitor, no older than its max_age_s, for the checkpoint's origin, checked to at least the
+checkpoint's size (and to its root at that size) and with no conflicts makes a witnessed assurance witnessed+monitored.
+A pinned monitor's report of conflicts for the origin, or of another root at the checkpoint's size, fails `monitor`.
 A run with any self-approval (dev mode: the approver was the requester) is reported `approvals: self`, assurance dev.
 Approvals answered under the break-glass role are listed, as a warning.
 A tool call that ran against a deny, or an ask with no consumed approval, is signed by the signer as a capture.gap
@@ -109,7 +114,7 @@ def load_trust(path):
     with open(path, "rb") as f:
         t = loads_strict(f.read(MAX_LINE))
     r = t.get("rekor", {}) if isinstance(t, dict) else None
-    ok = (isinstance(t, dict) and set(t) <= {"logs", "witnesses", "algs", "witnesses_required", "rekor"}
+    ok = (isinstance(t, dict) and set(t) <= {"logs", "witnesses", "algs", "witnesses_required", "rekor", "monitors"}
           and isinstance(r, dict) and (not r or set(r) == {"trusted_root", "publishing_key", "class"}
                                        and isinstance(r["trusted_root"], dict) and isinstance(r["publishing_key"], str)
                                        and r["class"] in CLASSES)
@@ -118,12 +123,16 @@ def load_trust(path):
           and all(isinstance(w, dict) and set(w) == {"vkey", "class"} and isinstance(w["vkey"], str)
                   and w["class"] in CLASSES for w in t.get("witnesses", []))
           and isinstance(t.get("algs"), list) and t["algs"] and all(isinstance(a, str) for a in t["algs"])
-          and type(t.get("witnesses_required", 0)) is int and t.get("witnesses_required", 0) >= 0)
+          and type(t.get("witnesses_required", 0)) is int and t.get("witnesses_required", 0) >= 0
+          and isinstance(t.get("monitors", []), list)
+          and all(isinstance(m, dict) and set(m) == {"vkey", "class", "max_age_s"} and isinstance(m["vkey"], str)
+                  and m["class"] in CLASSES and type(m["max_age_s"]) is int and m["max_age_s"] > 0
+                  for m in t.get("monitors", [])))
     if not ok:
-        raise ValueError(f"{path}: not a v2 trust config (logs, witnesses, algs, witnesses_required, rekor)")
-    for k in t["logs"] + [w["vkey"] for w in t.get("witnesses", [])]:
+        raise ValueError(f"{path}: not a v2 trust config (logs, witnesses, algs, witnesses_required, rekor, monitors)")
+    for k in t["logs"] + [w["vkey"] for w in t.get("witnesses", [])] + [m["vkey"] for m in t.get("monitors", [])]:
         checkpoint.parse_vkey(k)
-    return {"witnesses": [], "witnesses_required": 0, **t}
+    return {"witnesses": [], "witnesses_required": 0, "monitors": [], **t}
 
 
 def _jsonl(data):
@@ -139,9 +148,10 @@ def _version(v):
     return tuple(int(x) for x in re.findall(r"\d+", v)[:3])
 
 
-def verify(path, trust_path, v1_ledger=None, v1_key=None):
-    """Verify a v2 bundle against the pinned trust config at `trust_path`, and with `v1_ledger` (a v1 ledger.jsonl) and
-    `v1_key` (its signer.pub) the format bridge into it. Never raises on a malformed bundle."""
+def verify(path, trust_path, v1_ledger=None, v1_key=None, monitor_reports=()):
+    """Verify a v2 bundle against the pinned trust config at `trust_path`, with `v1_ledger` (a v1 ledger.jsonl) and
+    `v1_key` (its signer.pub) the format bridge into it, and with `monitor_reports` (paths) the log's monitoring.
+    Never raises on a malformed bundle."""
     rep = Report()
     rep.integrity, rep.assurance = "UNUSABLE BUNDLE", "none"
     try:
@@ -165,7 +175,7 @@ def verify(path, trust_path, v1_ledger=None, v1_key=None):
         rep.check("bundle readable", False, f"cannot read bundle: {type(e).__name__}: {e}")
         return rep, EXIT_BAD
     try:
-        _verify(rep, manifest, files, trust, v1_ledger, v1_key)
+        _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports)
     except Exception as e:
         rep.check("bundle structure", False, "", [f"malformed and could not be fully checked: {type(e).__name__}: {e}"])
     if rep.failures:
@@ -173,7 +183,7 @@ def verify(path, trust_path, v1_ledger=None, v1_key=None):
     return rep, EXIT_FAIL if rep.failures else EXIT_OK
 
 
-def _verify(rep, manifest, files, trust, v1_ledger, v1_key):
+def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports):
     listed = manifest.get("files")
     rep.check("manifest", isinstance(listed, dict) and listed == {n: hashlib.sha256(b).hexdigest()
                                                                   for n, b in files.items()},
@@ -194,6 +204,7 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key):
     rep.check("witness quorum", len(cosigs) >= trust["witnesses_required"],
               f"{len(cosigs)} pinned cosignature(s), {trust['witnesses_required']} required")
     anchors = _anchor(rep, files, trust, files[name], origin, size)
+    monitored = _monitor(rep, trust, monitor_reports, origin, size, root)
 
     def included(record):
         seq = record["event"]["seq"]
@@ -350,7 +361,7 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key):
     rep.check("fail-open classes", True, ", ".join(fail_open) or "none")
     rep.check("key assurance", True, "asserted: the log declares its record keys; none is attested")
     rep.assurance = (_assurance(origin, cosigs, witnesses, trust, {r["alg"] for r in every + key_records}, self_approved,
-                                anchors)
+                                anchors, monitored)
                      + ("; key retirements not proven complete" if proven_to < relied else ""))
     glass = [r["event"] for r in every if r["event"].get("type") == "approval"
              and r["event"]["data"].get("break_glass") is True]
@@ -505,18 +516,70 @@ def _anchor(rep, files, trust, note, origin, size):
     return [(log, pinned["class"], at)]
 
 
-def _assurance(origin, cosigs, witnesses, trust, algs, self_approved=False, anchors=()):
+def _monitor(rep, trust, paths, origin, size, root):
+    """[(monitor name, class, report time)] of the reports in `paths` by pinned monitors that make the checkpoint
+    monitored: fresh, of its origin, checked to its size, without conflicts."""
+    from tracekit.monitor import open_report
+    pinned, out, now = {m["vkey"]: m for m in trust["monitors"]}, [], datetime.datetime.now(datetime.timezone.utc)
+    for path in paths:
+        try:
+            with open(path, "rb") as f:
+                data = f.read(MAX_ENTRY)
+        except OSError as e:
+            rep.check("monitor", False, f"{type(e).__name__}: {e}", warn=True)
+            continue
+        found = None
+        for k in pinned:
+            try:
+                found = k, open_report(data, k)
+                break
+            except ValueError:
+                pass
+        if found is None:
+            rep.check("monitor", False, f"{path}: not a report of a pinned monitor (ignored)", warn=True)
+            continue
+        (k, r), name = found, found[0].split("+")[0]
+        if r["origin"] != origin:
+            rep.check("monitor", False, f"{name}: a report for {r['origin'][:200]!r}, not {origin} (ignored)", warn=True)
+        elif r["conflicts"] or (r["checked_size"] == size and r["checked_root"] != base64.b64encode(root).decode()):
+            rep.check("monitor", False, f"{name} ({pinned[k]['class']}) reports conflicts for {origin}",
+                      [f"{str(c.get('rule'))[:100]}: {c['detail'][:300]}" for c in r["conflicts"]][:20]
+                      or [f"another root at tree size {size}"])
+        else:
+            try:
+                at = datetime.datetime.strptime(r["time"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=datetime.timezone.utc)
+            except ValueError:
+                at = None
+            if at is None or abs((now - at).total_seconds()) > pinned[k]["max_age_s"]:
+                rep.check("monitor", False, f"{name}: the report of {r['time'][:40]!r} is not fresh (ignored)", warn=True)
+            # lean: a report past the checkpoint's size is taken without a consistency proof between the two roots (only
+            # equal sizes are compared); carry one in the report if a monitored split view must show at any size
+            elif r["checked_size"] < size:
+                rep.check("monitor", False, f"{name}: checked to size {r['checked_size']}, the checkpoint is of size "
+                                            f"{size} (ignored)", warn=True)
+            else:
+                rep.check("monitor", True, f"{name} ({pinned[k]['class']}) checked {origin} to size {r['checked_size']}"
+                                           f" at {r['time']}: no conflicts")
+                out.append((name, pinned[k]["class"], r["time"]))
+    return out
+
+
+def _assurance(origin, cosigs, witnesses, trust, algs, self_approved=False, anchors=(), monitored=()):
     """dev: no pinned witness cosigned or anchor verified, or a self-approval in the run; local: only operator-run
-    ones; witnessed: enough independent ones (a pinned Rekor anchor counts as one, unless classed operator)."""
+    ones; witnessed: enough independent ones (a pinned Rekor anchor counts as one, unless classed operator);
+    witnessed+monitored: witnessed, and a pinned monitor's fresh report covers the checkpoint."""
     independent = [k for k, _ in cosigs if witnesses[k] != "operator"] + [a for a in anchors if a[1] != "operator"]
     level = ("dev" if self_approved else "witnessed" if len(independent) >= max(1, trust["witnesses_required"])
              else "local" if cosigs or anchors else "dev")
+    if level == "witnessed" and monitored:
+        level = "witnessed+monitored"
     cosigned = ", ".join(f"{k.split('+')[0]} ({witnesses[k]}) at "
                         f"{datetime.datetime.fromtimestamp(ts, datetime.timezone.utc):%Y-%m-%dT%H:%M:%SZ}"
                         for k, ts in sorted(cosigs, key=lambda c: c[1]))
     return (f"{level}; records {'+'.join(sorted(algs))}; checkpoint ed25519 ({origin})"
             + (f"; cosigned ed25519 by {cosigned}" if cosigned else "; no witness cosignature")
             + "".join(f"; anchored in Rekor {log} ({cls}) at {at:%Y-%m-%dT%H:%M:%SZ}" for log, cls, at in anchors)
+            + "".join(f"; monitored by {name} ({cls}) at {at}" for name, cls, at in monitored)
             + ("; approvals: self" if self_approved else ""))
 
 

@@ -137,9 +137,9 @@ def _loopback(host):
         return False
 
 
-def server(cfg, registry, logs=None):
-    """A bound, not yet started, HTTP server answering only `GET /metrics` with `registry`, and `GET /logs/v0` with
-    `logs()` (the signer's logs list) when given. `cfg` is the `metrics` section of signer.yaml. Start it with serve_forever(); stop it with shutdown() and server_close()."""
+def server(cfg, registry, logs=None, tlog=None):
+    """A bound, not yet started, HTTP server answering only `GET /metrics` with `registry`, `GET /logs/v0` with
+    `logs()` (the signer's logs list) when given, and any other GET with `tlog(path)` (bytes, or None for 404). `cfg` is the `metrics` section of signer.yaml. Start it with serve_forever(); stop it with shutdown() and server_close()."""
     if not isinstance(cfg, dict) or set(cfg) - {"listen", "allow_remote"}:
         raise ValueError("metrics: takes listen and allow_remote")
     host, _, port = str(cfg.get("listen", DEFAULT_LISTEN)).rpartition(":")
@@ -153,6 +153,8 @@ def server(cfg, registry, logs=None):
                 body, typ = registry.render().encode("utf-8"), CONTENT_TYPE
             elif path == "/logs/v0" and logs:
                 body, typ = logs().encode("utf-8"), "text/plain; charset=utf-8"
+            elif tlog and (body := tlog(path)) is not None:
+                typ = "application/octet-stream"
             else:
                 self.send_error(404)
                 return
