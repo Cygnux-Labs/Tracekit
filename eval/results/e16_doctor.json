@@ -10,7 +10,7 @@
       "result": {
         "id": "D-CONFIG",
         "status": "fail",
-        "detail": "signer.yaml does not load: /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-gtsjz0f_/etc/signer.yaml: needs data_dir; unknown keys ['bogus']",
+        "detail": "signer.yaml does not load: /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-pplx3ylx/etc/signer.yaml: needs data_dir; unknown keys ['bogus']",
         "fix": "fix signer.yaml, or sudo /usr/bin/python3 -m tracekit init --v2 --user <agent-user>"
       }
     },
@@ -20,7 +20,7 @@
       "result": {
         "id": "D-CONFIG",
         "status": "fail",
-        "detail": "/private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-31ecvvyh/etc/signer.yaml is group- or world-writable",
+        "detail": "/private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-fkquytkg/etc/signer.yaml is group- or world-writable",
         "fix": "make it and its directories root-owned and not group/world-writable (sudo chown root:root; chmod go-w)"
       }
     },
@@ -40,7 +40,7 @@
       "result": {
         "id": "D-AGENT-PROBE",
         "status": "fail",
-        "detail": "e16-agent can read /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-fa7ux3el/data/keys, read /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-fa7ux3el/data/keys/record.key",
+        "detail": "e16-agent can read /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-kia30q6z/data/keys, read /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-kia30q6z/data/keys/record.key",
         "fix": "make these owned by root or the signer's user and not accessible to others (chmod o-rwx, go-w)"
       }
     },
@@ -50,7 +50,7 @@
       "result": {
         "id": "D-AGENT-PROBE",
         "status": "fail",
-        "detail": "e16-agent can write /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-raol0fd8/etc/client.json",
+        "detail": "e16-agent can write /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-v6uh50wg/etc/client.json",
         "fix": "make these owned by root or the signer's user and not accessible to others (chmod o-rwx, go-w)"
       }
     },
@@ -60,7 +60,7 @@
       "result": {
         "id": "D-POLICY-TRUST",
         "status": "fail",
-        "detail": "/private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-8nh8gijw/etc/policy.json is group- or world-writable",
+        "detail": "/private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-e1ng8cxb/etc/policy.json is group- or world-writable",
         "fix": "make the policy and its directories root-owned and not group/world-writable, or set policy: in signer.yaml to such a file"
       }
     },
@@ -70,7 +70,7 @@
       "result": {
         "id": "D-CODE-TRUST",
         "status": "fail",
-        "detail": "/private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-7hoiiuvu/opt/pyvenv.cfg is group- or world-writable",
+        "detail": "/private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-egphyzsg/opt/pyvenv.cfg is group- or world-writable",
         "fix": "re-run init to reinstall the venv: sudo /usr/bin/python3 -m tracekit init --v2 --user <agent-user>"
       }
     },
@@ -80,7 +80,7 @@
       "result": {
         "id": "D-CODE-TRUST",
         "status": "fail",
-        "detail": "/private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-79cp9kek/opt is missing",
+        "detail": "/private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-xcr9iyz5/opt is missing",
         "fix": "re-run init to reinstall the venv: sudo /usr/bin/python3 -m tracekit init --v2 --user <agent-user>"
       }
     },
@@ -91,7 +91,7 @@
         "id": "D-KEYS-MODE",
         "status": "fail",
         "detail": "record.key is not a 0600 file of the signer's user",
-        "fix": "chmod 700 /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-l36dao67/data /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-l36dao67/data/keys; chmod 600 /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-l36dao67/data/keys/*.key; chown them to the signer's user"
+        "fix": "chmod 700 /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-xp4ogpc0/data /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-xp4ogpc0/data/keys; chmod 600 /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-xp4ogpc0/data/keys/*.key; chown them to the signer's user"
       }
     },
     "data dir 0750": {
@@ -100,8 +100,8 @@
       "result": {
         "id": "D-KEYS-MODE",
         "status": "fail",
-        "detail": "/private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-qx9lll3l/data is not 0700",
-        "fix": "chmod 700 /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-qx9lll3l/data /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-qx9lll3l/data/keys; chmod 600 /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-qx9lll3l/data/keys/*.key; chown them to the signer's user"
+        "detail": "/private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-mvnnkufk/data is not 0700",
+        "fix": "chmod 700 /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-mvnnkufk/data /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-mvnnkufk/data/keys; chmod 600 /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-mvnnkufk/data/keys/*.key; chown them to the signer's user"
       }
     },
     "log key is the record key": {
@@ -111,7 +111,7 @@
         "id": "D-KEYS-DISTINCT",
         "status": "fail",
         "detail": "the log key and the record key are the same key",
-        "fix": "move both keys away and restart the signer to make new ones (new keys start a new log: export what you need first)"
+        "fix": "a log keeps its log key, so start a new signer on a new data_dir (its keys are made distinct); export what you need from this one first"
       }
     },
     "signer may dump core": {
@@ -140,7 +140,7 @@
       "result": {
         "id": "D-UNIT-HARDENING",
         "status": "warn",
-        "detail": "no service file: /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-hxiej_d4/unit/tracekit-signer.service: No such file or directory",
+        "detail": "no service file: /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-e_lf61af/unit/tracekit-signer.service: No such file or directory",
         "fix": "sudo /usr/bin/python3 -m tracekit init --v2 --user <agent-user>"
       }
     },
@@ -150,7 +150,7 @@
       "result": {
         "id": "D-HOOKS-PRESENT",
         "status": "fail",
-        "detail": "no v2 hook for PreToolUse, PostToolUse, PostToolUseFailure in /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-bjapzxbz/home/.claude/settings.json",
+        "detail": "no v2 hook for PreToolUse, PostToolUse, PostToolUseFailure in /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-cubaq8dr/home/.claude/settings.json",
         "fix": "sudo /usr/bin/python3 -m tracekit init --v2 --user <agent-user>"
       }
     },
@@ -160,7 +160,7 @@
       "result": {
         "id": "D-HOOKS-VENV",
         "status": "fail",
-        "detail": "3 hooks run another Python than /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-2ayjiapm/opt/bin/python",
+        "detail": "3 hooks run another Python than /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-mtkshk48/opt/bin/python",
         "fix": "sudo /usr/bin/python3 -m tracekit init --v2 --user <agent-user>"
       }
     },
@@ -180,8 +180,8 @@
       "result": {
         "id": "D-SIGNER-ENV",
         "status": "fail",
-        "detail": "TRACEKIT_SIGNER is '/private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-ih34jp47/decoy.sock', not /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-ih34jp47/run/signer.sock",
-        "fix": "remove env.TRACEKIT_SIGNER from /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-ih34jp47/home/.claude/settings.json (the hook refuses it and blocks every call)"
+        "detail": "TRACEKIT_SIGNER is '/private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-ndm3xfyv/decoy.sock', not /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-ndm3xfyv/run/signer.sock",
+        "fix": "remove env.TRACEKIT_SIGNER from /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-ndm3xfyv/home/.claude/settings.json (the hook refuses it and blocks every call)"
       }
     },
     "policy does not compile": {
@@ -190,8 +190,8 @@
       "result": {
         "id": "D-POLICY-ENGINE",
         "status": "fail",
-        "detail": "/private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-wem2r922/etc/policy.json does not load: /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-wem2r922/etc/policy.json: unknown key 'bogus'",
-        "fix": "fix the policy: tracekit policy lint /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-wem2r922/etc/policy.json"
+        "detail": "/private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-6tnz1kex/etc/policy.json does not load: /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-6tnz1kex/etc/policy.json: unknown key 'bogus'",
+        "fix": "fix the policy: tracekit policy lint /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-6tnz1kex/etc/policy.json"
       }
     },
     "ack-on-write": {
@@ -220,7 +220,7 @@
       "result": {
         "id": "D-FAIL-MODES",
         "status": "warn",
-        "detail": "fail-open: /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-uovaklix/etc/client.json fail_mode",
+        "detail": "fail-open: /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-sqekhmds/etc/client.json fail_mode",
         "fix": "set fail_modes to closed in signer.yaml (and fail_mode in client.json) unless an outage must not stop the agent"
       }
     },
@@ -280,7 +280,7 @@
       "result": {
         "id": "D-DATA-FS",
         "status": "fail",
-        "detail": "/private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-bd1n_ylu/data is on nfs4: file locking and fsync can't be trusted there",
+        "detail": "/private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-f5gbwnoe/data is on nfs4: file locking and fsync can't be trusted there",
         "fix": "put data_dir on a local disk"
       }
     },
@@ -290,13 +290,269 @@
       "result": {
         "id": "D-DATA-FS",
         "status": "fail",
-        "detail": "/private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-p5oq4943/data is on fuse.sshfs: file locking and fsync can't be trusted there",
+        "detail": "/private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-bejjw2n8/data is on fuse.sshfs: file locking and fsync can't be trusted there",
         "fix": "put data_dir on a local disk"
       }
     },
     "data dir owned by the agent": {
       "expect": "D-PROCESS-BOUNDARY",
       "skipped": "needs root"
+    }
+  },
+  "k8s": {
+    "clean": {
+      "passed": true,
+      "not_ok": []
+    },
+    "cases": {
+      "agent mounts the signer's data volume": {
+        "expect": "D-K8S-SIGNER-DATA",
+        "flagged": true,
+        "result": {
+          "id": "D-K8S-SIGNER-DATA",
+          "status": "fail",
+          "detail": "Deployment/agent agent mounts signer-data",
+          "fix": "mount the signer's data volume (/var/lib/tracekit-signer) in the signer's container only"
+        }
+      },
+      "another pod mounts the signer's claim": {
+        "expect": "D-K8S-SIGNER-DATA",
+        "flagged": true,
+        "result": {
+          "id": "D-K8S-SIGNER-DATA",
+          "status": "fail",
+          "detail": "Pod/debug agent mounts signer-data",
+          "fix": "mount the signer's data volume (/var/lib/tracekit-signer) in the signer's container only"
+        }
+      },
+      "agent shares a scratch volume with the signer": {
+        "expect": "D-K8S-SHARED-VOLUME",
+        "flagged": true,
+        "result": {
+          "id": "D-K8S-SHARED-VOLUME",
+          "status": "fail",
+          "detail": "Deployment/agent: scratch",
+          "fix": "share only the socket directory (/run/tracekit-signer) between the agent and the signer"
+        }
+      },
+      "agent runs as the signer's uid": {
+        "expect": "D-K8S-RUN-AS-USER",
+        "flagged": true,
+        "result": {
+          "id": "D-K8S-RUN-AS-USER",
+          "status": "fail",
+          "detail": "Deployment/agent agent: runAsUser 10001, the signer's",
+          "fix": "run the agent container with its own runAsUser (not the signer's, 10001)"
+        }
+      },
+      "agent's runAsUser not set": {
+        "expect": "D-K8S-RUN-AS-USER",
+        "flagged": true,
+        "result": {
+          "id": "D-K8S-RUN-AS-USER",
+          "status": "fail",
+          "detail": "Deployment/agent agent: runAsUser not set",
+          "fix": "run the agent container with its own runAsUser (not the signer's, 10001)"
+        }
+      },
+      "service account token automounted": {
+        "expect": "D-K8S-SA-TOKEN",
+        "flagged": true,
+        "result": {
+          "id": "D-K8S-SA-TOKEN",
+          "status": "warn",
+          "detail": "Deployment/agent: the agent gets agent's token",
+          "fix": "set automountServiceAccountToken: false on the agent's pod"
+        }
+      },
+      "GKE Workload Identity on the agent's service account": {
+        "expect": "D-K8S-WORKLOAD-IDENTITY",
+        "flagged": true,
+        "result": {
+          "id": "D-K8S-WORKLOAD-IDENTITY",
+          "status": "fail",
+          "detail": "Deployment/agent: iam.gke.io/gcp-service-account on agent",
+          "fix": "give the agent's pod a service account without cloud identity; keep KMS credentials with a central signer, outside the agent's pod"
+        }
+      },
+      "IRSA role on the agent's service account": {
+        "expect": "D-K8S-WORKLOAD-IDENTITY",
+        "flagged": true,
+        "result": {
+          "id": "D-K8S-WORKLOAD-IDENTITY",
+          "status": "fail",
+          "detail": "Deployment/agent: eks.amazonaws.com/role-arn on agent",
+          "fix": "give the agent's pod a service account without cloud identity; keep KMS credentials with a central signer, outside the agent's pod"
+        }
+      },
+      "EKS Pod Identity association for the agent's service account": {
+        "expect": "D-K8S-WORKLOAD-IDENTITY",
+        "flagged": true,
+        "result": {
+          "id": "D-K8S-WORKLOAD-IDENTITY",
+          "status": "fail",
+          "detail": "Deployment/agent: an EKS Pod Identity association for agent",
+          "fix": "give the agent's pod a service account without cloud identity; keep KMS credentials with a central signer, outside the agent's pod"
+        }
+      },
+      "EKS credentials injected into the pod": {
+        "expect": "D-K8S-WORKLOAD-IDENTITY",
+        "flagged": true,
+        "result": {
+          "id": "D-K8S-WORKLOAD-IDENTITY",
+          "status": "fail",
+          "detail": "Deployment/agent: AWS_CONTAINER_CREDENTIALS_FULL_URI",
+          "fix": "give the agent's pod a service account without cloud identity; keep KMS credentials with a central signer, outside the agent's pod"
+        }
+      },
+      "agent privileged": {
+        "expect": "D-K8S-SECURITY-CONTEXT",
+        "flagged": true,
+        "result": {
+          "id": "D-K8S-SECURITY-CONTEXT",
+          "status": "fail",
+          "detail": "Deployment/agent agent: privileged",
+          "fix": "set runAsNonRoot: true, readOnlyRootFilesystem: true, allowPrivilegeEscalation: false, capabilities: {drop: [ALL]} and no privileged on each container"
+        }
+      },
+      "agent may escalate privileges": {
+        "expect": "D-K8S-SECURITY-CONTEXT",
+        "flagged": true,
+        "result": {
+          "id": "D-K8S-SECURITY-CONTEXT",
+          "status": "fail",
+          "detail": "Deployment/agent agent: privilege escalation allowed",
+          "fix": "set runAsNonRoot: true, readOnlyRootFilesystem: true, allowPrivilegeEscalation: false, capabilities: {drop: [ALL]} and no privileged on each container"
+        }
+      },
+      "agent root fs writable": {
+        "expect": "D-K8S-SECURITY-CONTEXT",
+        "flagged": true,
+        "result": {
+          "id": "D-K8S-SECURITY-CONTEXT",
+          "status": "fail",
+          "detail": "Deployment/agent agent: root fs writable",
+          "fix": "set runAsNonRoot: true, readOnlyRootFilesystem: true, allowPrivilegeEscalation: false, capabilities: {drop: [ALL]} and no privileged on each container"
+        }
+      },
+      "signer keeps its capabilities": {
+        "expect": "D-K8S-SECURITY-CONTEXT",
+        "flagged": true,
+        "result": {
+          "id": "D-K8S-SECURITY-CONTEXT",
+          "status": "fail",
+          "detail": "Deployment/agent signer: capabilities not dropped",
+          "fix": "set runAsNonRoot: true, readOnlyRootFilesystem: true, allowPrivilegeEscalation: false, capabilities: {drop: [ALL]} and no privileged on each container"
+        }
+      },
+      "agent runs as root": {
+        "expect": "D-K8S-SECURITY-CONTEXT",
+        "flagged": true,
+        "result": {
+          "id": "D-K8S-SECURITY-CONTEXT",
+          "status": "fail",
+          "detail": "Deployment/agent agent: may run as root",
+          "fix": "set runAsNonRoot: true, readOnlyRootFilesystem: true, allowPrivilegeEscalation: false, capabilities: {drop: [ALL]} and no privileged on each container"
+        }
+      },
+      "hostPath volume": {
+        "expect": "D-K8S-HOST-ACCESS",
+        "flagged": true,
+        "result": {
+          "id": "D-K8S-HOST-ACCESS",
+          "status": "fail",
+          "detail": "Deployment/agent: hostPath /var/run",
+          "fix": "remove hostPath volumes and hostPID, hostIPC and hostNetwork from the pod"
+        }
+      },
+      "hostPID": {
+        "expect": "D-K8S-HOST-ACCESS",
+        "flagged": true,
+        "result": {
+          "id": "D-K8S-HOST-ACCESS",
+          "status": "fail",
+          "detail": "Deployment/agent: hostPID",
+          "fix": "remove hostPath volumes and hostPID, hostIPC and hostNetwork from the pod"
+        }
+      },
+      "hostNetwork": {
+        "expect": "D-K8S-HOST-ACCESS",
+        "flagged": true,
+        "result": {
+          "id": "D-K8S-HOST-ACCESS",
+          "status": "fail",
+          "detail": "Deployment/agent: hostNetwork",
+          "fix": "remove hostPath volumes and hostPID, hostIPC and hostNetwork from the pod"
+        }
+      },
+      "a manifest that does not parse": {
+        "expect": "D-K8S-WORKLOADS",
+        "flagged": true,
+        "result": {
+          "id": "D-K8S-WORKLOADS",
+          "status": "warn",
+          "detail": "/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-k8s-paj5q2vr/agent.yaml: while parsing a flow sequence\n  in \"<unicode string>\", line 2, column 1:\n    [unclosed\n    ^\nexpected ',' or ']', but got '<stream end>'\n  in \"<unicode string>\", line 3, column 1:\n    \n    ^",
+          "fix": "point --manifests at the rendered manifests (helm template, kustomize build)"
+        }
+      }
+    }
+  },
+  "postgres": {
+    "clean": {
+      "passed": true,
+      "not_ok": []
+    },
+    "cases": {
+      "signer role may UPDATE records": {
+        "expect": "D-PG-SIGNER-ROLE",
+        "flagged": true,
+        "result": {
+          "id": "D-PG-SIGNER-ROLE",
+          "status": "fail",
+          "detail": "e16_signer_da134ef3 has tracekit_records: UPDATE",
+          "fix": "grant e16_signer_da134ef3 only postgres.GRANTS: REVOKE UPDATE, DELETE, TRUNCATE ON tracekit_records, tracekit_registry, tracekit_notes, tracekit_anchors FROM e16_signer_da134ef3; ALTER ROLE e16_signer_da134ef3 NOSUPERUSER"
+        }
+      },
+      "signer role may DELETE notes": {
+        "expect": "D-PG-SIGNER-ROLE",
+        "flagged": true,
+        "result": {
+          "id": "D-PG-SIGNER-ROLE",
+          "status": "fail",
+          "detail": "e16_signer_b601d782 has tracekit_notes: DELETE",
+          "fix": "grant e16_signer_b601d782 only postgres.GRANTS: REVOKE UPDATE, DELETE, TRUNCATE ON tracekit_records, tracekit_registry, tracekit_notes, tracekit_anchors FROM e16_signer_b601d782; ALTER ROLE e16_signer_b601d782 NOSUPERUSER"
+        }
+      },
+      "signer role may TRUNCATE the registry": {
+        "expect": "D-PG-SIGNER-ROLE",
+        "flagged": true,
+        "result": {
+          "id": "D-PG-SIGNER-ROLE",
+          "status": "fail",
+          "detail": "e16_signer_99466b39 has tracekit_registry: TRUNCATE",
+          "fix": "grant e16_signer_99466b39 only postgres.GRANTS: REVOKE UPDATE, DELETE, TRUNCATE ON tracekit_records, tracekit_registry, tracekit_notes, tracekit_anchors FROM e16_signer_99466b39; ALTER ROLE e16_signer_99466b39 NOSUPERUSER"
+        }
+      },
+      "signer role is superuser": {
+        "expect": "D-PG-SIGNER-ROLE",
+        "flagged": true,
+        "result": {
+          "id": "D-PG-SIGNER-ROLE",
+          "status": "fail",
+          "detail": "e16_signer_6efbd8f9 has superuser, tracekit_anchors: DELETE, tracekit_anchors: TRUNCATE, tracekit_anchors: UPDATE, tracekit_notes: DELETE, tracekit_notes: TRUNCATE, tracekit_notes: UPDATE, tracekit_records: DELETE, tracekit_records: TRUNCATE, tracekit_records: UPDATE, tracekit_registry: DELETE, tracekit_registry: TRUNCATE, tracekit_registry: UPDATE",
+          "fix": "grant e16_signer_6efbd8f9 only postgres.GRANTS: REVOKE UPDATE, DELETE, TRUNCATE ON tracekit_records, tracekit_registry, tracekit_notes, tracekit_anchors FROM e16_signer_6efbd8f9; ALTER ROLE e16_signer_6efbd8f9 NOSUPERUSER"
+        }
+      },
+      "reader role may INSERT records": {
+        "expect": "D-PG-READER-ROLES",
+        "flagged": true,
+        "result": {
+          "id": "D-PG-READER-ROLES",
+          "status": "fail",
+          "detail": "e16_reader_5c0cd502 can write tracekit_records",
+          "fix": "readers get SELECT only: REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON the log tables FROM them"
+        }
+      }
     }
   },
   "passed": true
