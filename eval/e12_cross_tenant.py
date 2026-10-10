@@ -57,12 +57,16 @@ CALLS, WORKERS = 20, 8
 rng = random.Random(12)
 
 
+REFUSALS = {"forbidden", "run_token_invalid", "unknown_run", "unknown_approval"}   # what an authorization check answers
+
+
 def code(fn):
-    """The RPC refusal code of fn(), None when it was not refused."""
+    """The refusal code of fn(), None when it went through or failed for another reason (a malformed request, a quota)
+    that would make the case pass without testing isolation."""
     try:
         fn()
     except RPCError as e:
-        return e.code
+        return e.code if e.code in REFUSALS else None
     return None
 
 
@@ -129,6 +133,15 @@ def cross_tenant(d):
                    "approval_request": dict(tool_call_id="tc-1", attempt=1), "tailer_lost": dict(reason="x", offset=0),
                    "delegate_run": dict(identity="uid:1002"), "approval_abandon": dict(approval_id=aid)}
         case("run_token", [(m, code(lambda: call(B, m, **a, **req))) for m, req in per_run.items()])
+        own = register(A)   # positive control: the same requests from the run's own identity go through
+        control = {m: per_run[m] for m in ("read", "decide", "state_write", "model_event", "tailer_lost")}
+        failed = []
+        for n, (m, req) in enumerate(control.items()):
+            try:
+                call(A, m, **own, **{**req, **({"client_seq": n} if "client_seq" in req else {})})
+            except RPCError as e:
+                failed.append(f"{m}: {e.code}")
+        cases["control"] = {"refused": not failed, "attempts": {"own identity, own run": failed or "all went through"}}
         claims = json.loads(base64.urlsafe_b64decode(b["run_token"].split(".")[0] + "=="))
         edited = base64.urlsafe_b64encode(json.dumps({**claims, "run_id": a["run_id"], "tenant": "tenant-a"},
                                                      separators=(",", ":"), sort_keys=True).encode()).rstrip(b"=")

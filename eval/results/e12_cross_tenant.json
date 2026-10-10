@@ -12,6 +12,12 @@
       },
       "refused": true
     },
+    "control": {
+      "attempts": {
+        "own identity, own run": "all went through"
+      },
+      "refused": true
+    },
     "delegate_run": {
       "attempts": {
         "a's run, with a's token, to b": "run_token_invalid",
@@ -67,10 +73,6 @@
     }
   },
   "in_process": {
-    "node_async_local_storage": {
-      "in_another_run": [],
-      "runs_missing_calls": []
-    },
     "python_asyncio_tasks": {
       "in_another_run": [],
       "runs_missing_calls": []
@@ -82,6 +84,8 @@
   },
   "platform": "darwin",
   "python": "3.11.15",
-  "skipped": {},
+  "skipped": {
+    "node_async_local_storage": "/Users/bravishghosh/Tracekit/.worktrees/pr133/sdk/typescript/dist/v2/client.js is not built (make test-ts)"
+  },
   "workers": 8
 }
