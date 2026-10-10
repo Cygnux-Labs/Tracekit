@@ -56,8 +56,11 @@ def main(argv=None):
     sub = ap.add_subparsers(dest="cmd", required=True, metavar="command")
 
     p = sub.add_parser("init", help="install the signer and Claude Code hooks")
-    p.add_argument("--remote", metavar="URL", help="SDK agent on another machine: send events to this ingest gateway (docs/remote-ingest.md)")
-    p.add_argument("--token-file", help="with --remote: file holding the client token (or set TRACEKIT_REMOTE_TOKEN)")
+    p.add_argument("--remote", metavar="URL", help="agent on another machine: with --v2, send to this signer's HTTPS "
+                                                   "transport; without, to the deprecated ingest gateway (docs/remote-ingest.md)")
+    p.add_argument("--token-file", help="with --remote: file holding the client token (or set TRACEKIT_REMOTE_TOKEN without "
+                                        "--v2); with --v2 it is read on every call, so a rotated token needs no restart")
+    p.add_argument("--ca", help="with --remote --v2: the CA bundle the signer's certificate must chain to (pinned)")
     p.add_argument("--dev", action="store_true", help="same-user signer (no root; weaker: the agent could rewrite the ledger)")
     p.add_argument("--home", help="signer home (dev mode)")
     p.add_argument("--v2", action="store_true", help="the v2 signer: with --dev, wire its hook for --agent (the signer "
@@ -224,6 +227,8 @@ def _init_remote(a):
     if err:
         print(f"tracekit: --remote: {err}", file=sys.stderr)
         return 2
+    if a.v2:
+        return _init_remote_v2(a, url)
     token = os.environ.get("TRACEKIT_REMOTE_TOKEN", "")
     if a.token_file:
         with open(a.token_file, encoding="utf-8") as f:
@@ -234,6 +239,32 @@ def _init_remote(a):
     path = os.path.join(client.client_dir(), "config.json")
     files.write_json(path, {"socket": url, "socket_token": token, "mode": "remote", "signer_isolation": "remote"}, 0o600)
     print(f"remote signer configured: {url} (SDK only: Claude Code hooks are not installed; held calls are refused)")
+    return 0
+
+
+def _init_remote_v2(a, url):
+    """Point v2 hooks and SDK clients at a remote signer's HTTPS transport (tracekit.sdk.client reads the env)."""
+    from . import install
+    if not url.startswith("https://") or not a.token_file:
+        print("tracekit: --remote --v2 takes an https:// URL and --token-file", file=sys.stderr)
+        return 2
+    env = {"TRACEKIT_SIGNER": url, "TRACEKIT_SIGNER_TOKEN_FILE": os.path.abspath(a.token_file)}
+    if a.ca:
+        env["TRACEKIT_SIGNER_CA"] = os.path.abspath(a.ca)
+    for k in ("TRACEKIT_SIGNER_TOKEN_FILE", "TRACEKIT_SIGNER_CA"):
+        if k in env and not os.access(env[k], os.R_OK):
+            print(f"tracekit: cannot read {env[k]}", file=sys.stderr)
+            return 2
+    hooks = None if a.no_hooks or a.agent != "claude" else (
+        os.path.join(os.getcwd(), ".claude", "settings.json") if a.project else os.path.expanduser("~/.claude/settings.json"))
+    try:
+        if hooks:
+            install.install_hooks(hooks, module=install.V2_HOOK, signer=env)
+    except install.SettingsError as e:
+        print(f"tracekit: {e}", file=sys.stderr)
+        return 1
+    print(f"remote v2 signer configured: {url}; v2 hooks: {hooks or 'not installed'}")
+    print("for SDK clients, set:\n" + "\n".join(f"  export {k}={v}" for k, v in env.items()))
     return 0
 
 

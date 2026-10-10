@@ -271,7 +271,8 @@ def install_hooks(settings_path, uninstall=False, owner=None, proxy_url=None, ex
                   module="tracekit.hook", signer=None):
     """Add (or remove) Tracekit's hooks in a Claude Code settings file. Idempotent; backs up the
     file before changing it; leaves other hooks and settings alone. proxy_url sets
-    env.ANTHROPIC_BASE_URL (C3), signer env.TRACEKIT_SIGNER (removed on uninstall while it is still that value).
+    env.ANTHROPIC_BASE_URL (C3), signer env.TRACEKIT_SIGNER or a dict of env variables (each removed on uninstall
+    while it still has that value).
     Raises SettingsError instead of overwriting a file it cannot parse,
     or one that is a symlink. With owner (as root) the whole edit runs as that user. python, module: see _hook_command."""
     if owner is not None:
@@ -338,11 +339,11 @@ def _install_hooks_at(d, settings_path, uninstall, proxy_url, extra, mode, pytho
     if proxy_url and not uninstall:
         env["ANTHROPIC_BASE_URL"] = proxy_url
         s[marker] = proxy_url
-    if signer and uninstall:
-        if env.get("TRACEKIT_SIGNER") == signer:
-            env.pop("TRACEKIT_SIGNER")
-    elif signer:
-        env["TRACEKIT_SIGNER"] = signer
+    for k, v in ({"TRACEKIT_SIGNER": signer} if isinstance(signer, str) else signer or {}).items():
+        if not uninstall:
+            env[k] = v
+        elif env.get(k) == v:
+            env.pop(k)
     if env:
         s["env"] = env
     else:

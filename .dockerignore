@@ -1,0 +1,10 @@
+# the signer image (deploy/docker/Dockerfile) builds the wheel from these only
+*
+!pyproject.toml
+!README.md
+!LICENSE
+!MANIFEST.in
+!tracekit_sdk.py
+!tracekit/
+!deploy/docker/signer.yaml.example
+**/__pycache__

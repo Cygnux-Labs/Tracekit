@@ -3,7 +3,7 @@ tests check both give the same result for the shipped policies).
 
 Supported: block mappings and lists (indentation), `- key: value` list items, comments,
 single-quoted (backslashes literal, '' for a quote) and double-quoted (JSON escapes) strings,
-plain scalars (true/false/null/~, ints, floats, strings), flow lists `[a, 'b']` and `{}`.
+plain scalars (true/false/null/~, ints, floats, strings), flow lists `[a, 'b']` and flow mappings `{a: 1, b: [c]}`.
 Not supported (rejected, not guessed): anchors, tags, block scalars (| >), multi-doc.
 """
 import json
@@ -65,8 +65,16 @@ def _scalar(tok, lineno):
             raise YAMLError(f"line {lineno}: unterminated flow list")
         inner = t[1:-1].strip()
         return [] if not inner else [_scalar(x, lineno) for x in _split_flow(inner, lineno)]
-    if t == "{}":
-        return {}
+    if t[0] == "{":
+        if t[-1] != "}":
+            raise YAMLError(f"line {lineno}: unterminated flow mapping")
+        out = {}
+        for item in _split_flow(t[1:-1].strip(), lineno) if t[1:-1].strip() else ():
+            kv = _split_key(item.strip(), lineno)
+            if kv is None:
+                raise YAMLError(f"line {lineno}: a flow mapping item is not `key: value`: {item.strip()[:80]!r}")
+            out[kv[0]] = _scalar(kv[1], lineno)
+        return out
     if t in ("true", "True", "TRUE"):
         return True
     if t in ("false", "False", "FALSE"):
@@ -81,7 +89,8 @@ def _scalar(tok, lineno):
 
 
 def _split_flow(s, lineno):
-    parts, cur, q = [], [], None
+    """The comma-separated items of a flow list or mapping body, nested [] and {} kept whole."""
+    parts, cur, q, depth = [], [], None, 0
     for c in s:
         if q:
             cur.append(c)
@@ -89,9 +98,10 @@ def _split_flow(s, lineno):
                 q = None
         elif c in "'\"":
             q = c; cur.append(c)
-        elif c == ",":
+        elif c == "," and not depth:
             parts.append("".join(cur)); cur = []
         else:
+            depth += (c in "[{") - (c in "]}")
             cur.append(c)
     if q:
         raise YAMLError(f"line {lineno}: unterminated string in flow list")
