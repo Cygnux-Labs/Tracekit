@@ -50,7 +50,7 @@ ask:
     field: recipients
     pattern: '.'
     from: untrusted
-    reason: an email recipient that came from untrusted content
+    reason: an email recipient that came only from untrusted content (if your app supplied it, observe it as trusted: docs/limits.md)
     rationale: An address the agent read only in a page, a mail or a ticket is where injected instructions send mail; a person checks the recipient.
   - id: TK-P002
     class: payment
@@ -58,5 +58,5 @@ ask:
     field: payees
     pattern: '.'
     from: untrusted
-    reason: a payee or account that came from untrusted content
+    reason: a payee or account that came only from untrusted content (if your app supplied it, observe it as trusted: docs/limits.md)
     rationale: An account number or payee the agent read only in untrusted content is how an injected invoice redirects money; a person checks the payee.
