@@ -83,14 +83,14 @@ def tsa_response(req, leaf_key, chain):
 
 
 class FakeSigstore:
-    """A Rekor v2 log (POST /api/v2/log/entries) and a TSA (POST /api/v1/timestamp) on one port; `status` forces an
-    answer (e.g. 503)."""
+    """A Rekor v2 log (POST /api/v2/log/entries; GET /api/v2/checkpoint and /api/v2/tile/entries/<N>[.p/<W>]) and a TSA
+    (POST /api/v1/timestamp) on one port; `status` forces an answer (e.g. 503)."""
 
     def __init__(self, port=0):
         self.log_key = ed25519.Ed25519PrivateKey.generate()
         self.log_id = hashlib.sha256(spki(self.log_key)).digest()
         self.tsa_key, self.chain = make_ca("fake")
-        self.leaves, self.entries, self.status = [], [], None
+        self.leaves, self.entries, self.bodies, self.status = [], [], [], None
         fake = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -100,6 +100,18 @@ class FakeSigstore:
                     (200, fake.add(json.loads(body))) if self.path == "/api/v2/log/entries"
                     else (200, tsa_response(body, fake.tsa_key, fake.chain)))
                 self.send_response(code)
+                self.send_header("Content-Length", str(len(out)))
+                self.end_headers()
+                self.wfile.write(out)
+
+            def do_GET(self):
+                if self.path == "/api/v2/checkpoint":
+                    out = fake.envelope(len(fake.leaves)).encode()
+                else:
+                    n, _, w = self.path[len("/api/v2/tile/entries/"):].replace("x", "").replace("/", "").partition(".p")
+                    out = b"".join(len(b).to_bytes(2, "big") + b
+                                   for b in fake.bodies[int(n) * 256:int(n) * 256 + int(w or 256)])
+                self.send_response(200)
                 self.send_header("Content-Length", str(len(out)))
                 self.end_headers()
                 self.wfile.write(out)
@@ -122,9 +134,9 @@ class FakeSigstore:
             separators=(",", ":")).encode()
         self.leaves.append(merkle.leaf_hash(body))
         self.entries.append(req)
+        self.bodies.append(body)
         i, size, root = len(self.leaves) - 1, len(self.leaves), merkle.root(self.leaves)
-        text = f"{self.origin}\n{size}\n{b64(root)}\n"
-        envelope = f"{text}\n— {self.origin} {b64(self.log_id[:4] + self.log_key.sign(text.encode()))}\n"
+        envelope = self.envelope(size)
         return json.dumps({
             "logIndex": str(i), "logId": {"keyId": b64(self.log_id)},
             "kindVersion": {"kind": "hashedrekord", "version": "0.0.2"}, "integratedTime": "0",
@@ -132,6 +144,10 @@ class FakeSigstore:
                                "hashes": [b64(h) for h in merkle.inclusion_proof(i, self.leaves)],
                                "checkpoint": {"envelope": envelope}},
             "canonicalizedBody": b64(body)}).encode()
+
+    def envelope(self, size):
+        text = f"{self.origin}\n{size}\n{b64(merkle.root(self.leaves[:size]))}\n"
+        return f"{text}\n— {self.origin} {b64(self.log_id[:4] + self.log_key.sign(text.encode()))}\n"
 
     def trusted_root(self, chain=None):
         return {"tlogs": [{"baseUrl": self.url, "logId": {"keyId": b64(self.log_id)},

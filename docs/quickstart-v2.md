@@ -79,7 +79,7 @@ record.
 The report (and `--json`) also lists tool calls by evidence tier (`tiers`), records by `args_source` (raw, parsed,
 coerced), the `signer_isolation` the signer recorded for each run (`isolation`), the tool classes that fail open
 (`fail-open classes`), and `key assurance`: `asserted`, because the log declares its own keys and nothing attests them
-yet. A `witnessed+monitored` assurance level, which needs a log monitor, is not reported yet.
+yet. `witnessed+monitored` needs a log monitor's report ([monitor.md](monitor.md)).
 
 ## What `dev` assurance means
 
