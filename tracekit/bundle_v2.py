@@ -82,10 +82,10 @@ def _run_set(storage, tenant, tsalt, origin, size, lo, hi):
 
 
 def export(storage, tenant, run_id, note, out_path, policies=(), run_set=None, tenant_salt=None):
-    """Write the bundle of run (tenant, run_id) from a FileStorage or FileReader. `note` is a checkpoint of the store's
-    record tree that covers the run's last record; `policies` are policy snapshots (bytes). `run_set`: (a, b), two
-    checkpointed sizes of the tenant's registry tree (a may be 0), with `tenant_salt` (format.registry.tenant_salt)
-    adds the run-set a..b; `run_id` may then be None."""
+    """Write the bundle of run (tenant, run_id) from a store or its reader (FileReader, PostgresReader). `note` is a
+    checkpoint of the store's record tree that covers the run's last record; `policies` are policy snapshots (bytes).
+    `run_set`: (a, b), two checkpointed sizes of the tenant's registry tree (a may be 0), with `tenant_salt`
+    (format.registry.tenant_salt) adds the run-set a..b; `run_id` may then be None."""
     origin, size = note.split("\n", 2)[:2]
     size = int(size)
     if not 0 < size <= storage.tree.size or not note.startswith(

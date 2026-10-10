@@ -90,9 +90,10 @@ Checkpoints (04-design §1.6, §2.9): a C2SP note of the record tree, signed by 
 Ed25519, named after the origin, signs notes only) and stored through the storage, after a run.final, on
 `checkpoint_nudge` (at most one note per CHECKPOINT_MIN_S), every CHECKPOINT_S while the tree grows, and on close; then,
 signed by the same key, a note of each tenant registry that grew, under origin `<origin>/registry/<id of the tenant's
-salt>`. The log key's vkey (then the hybrid key's, when configured) is written to <data_dir>/log.vkey on start, which
-is refused when the stored notes were signed by another key. Notes are signed off the writer thread; the writer only
-reads the heads. A note the log key fails to sign waits for the next round; an outage of LOG_KEY_GAP_S gets one signed
+salt>`. The log key's vkey (then the hybrid key's, when configured) is written to <data_dir>/log.vkey on start, and
+the log key's through the storage for readers without that dir (Postgres: tracekit_meta); start is refused when the
+stored notes were signed by another key. Notes are signed off the writer thread; the writer only reads the heads. A
+note the log key fails to sign waits for the next round; an outage of LOG_KEY_GAP_S gets one signed
 `capture.gap{degraded_unanchored}`.
 
 Publishing (04-design §2.9, §8): one worker per configured witness sends each tree's latest note to it (add-checkpoint,
@@ -450,6 +451,7 @@ class SignerService:
             d = files.open_dir(data_dir)
             try:
                 files.write(d, "log.vkey", "".join(k + "\n" for k in vkeys).encode("ascii"), 0o644)
+                storage.meta_put("log_vkey", self.vkey)
                 if logkey.HYGIENE.get("core_limit") is not None:   # a serving signer (harden() ran), not a CLI command
                     files.write(d, "hygiene.json", json.dumps(logkey.HYGIENE).encode("ascii"), 0o644)
                 for a in self.anchors:
@@ -1696,13 +1698,14 @@ def signer_config(path=None):
     return {"data_dir": dev_data_dir(), "socket": os.path.join(runtime_dir(), SOCK)}
 
 
-def file_store(cfg, cmd):
-    """data_dir/store, for `cmd`, which reads the file store without the signer; refuses a config with a storage section."""
-    # lean: reveal, export --v2 and view read the file store only; read through PostgresStorage once central signers
-    # need them
+def reader(cfg):
+    """A read-only view of the store of config `cfg`, safe while the signer writes it: a FileReader of data_dir/store,
+    or a PostgresReader on the DSN of its storage section. Close it when done."""
     if cfg.get("storage"):
-        raise ValueError(f"{cmd} reads the file store only, and this config names a postgres store")
-    return os.path.join(cfg["data_dir"], "store")
+        from tracekit.storage import postgres
+        return postgres.PostgresReader(postgres.read_dsn(cfg["storage"]["postgres"]))
+    from tracekit.storage import file
+    return file.FileReader(os.path.join(cfg["data_dir"], "store"))
 
 
 def read_vkeys(data_dir):
@@ -1905,15 +1908,17 @@ def fsck(data_dir, upto=None, storage=None):
     return fsck_store(os.path.join(data_dir, "store"), upto, _snapshot_key(keys), verify)
 
 
-def reveal(data_dir, seq):
+def reveal(data_dir, seq, storage=None):
     """{"seq", "type", "salt"}: the salt of record `seq`'s commitments, for an auditor who holds that record's content.
-    Only the owner of the signer's keys may ask."""
+    Only the owner of the signer's keys may ask. `storage`: the config's storage section, else the file store."""
     keys = os.path.join(data_dir, "keys")
     if hasattr(os, "getuid") and os.stat(keys).st_uid != os.getuid():
         raise PermissionError(f"{keys} belongs to another user: only the signer's owner reveals salts")
-    with open(os.path.join(data_dir, "store", "records.jsonl"), "rb") as f:
-        # lean: scans the store from the start; seek by an offset index once stores reach gigabytes
-        e = next((e for e in (loads_strict(line)["event"] for line in f) if e["seq"] == seq), None)
+    r = reader({"data_dir": data_dir, "storage": storage})
+    try:
+        e = next((x["event"] for x in r.iter_range(seq, seq + 1)), None)
+    finally:
+        r.close()
     label = e and salt_label(e)
     if label is None:
         raise ValueError(f"record {seq} " + ("does not exist" if e is None else f"({e['type']}) has no commitments"))
@@ -1983,9 +1988,8 @@ def main(argv=None):
     if a.cmd == "reveal":
         try:
             cfg = signer_config(a.config)
-            file_store(cfg, "reveal")
-            print(json.dumps(reveal(cfg["data_dir"], a.record)))
-        except (OSError, ValueError) as e:
+            print(json.dumps(reveal(cfg["data_dir"], a.record, cfg.get("storage"))))
+        except (OSError, ValueError, StorageUnavailable) as e:
             print(f"tracekit signer: {e}", file=sys.stderr)
             return 2
         return 0

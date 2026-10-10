@@ -593,6 +593,9 @@ class FileReader(_Records):
             self._check(path, os.fstat(fd), stat.S_ISREG)
             return f.read()
 
+    def close(self):
+        """Nothing to release: it holds no file open."""
+
     def checkpoint_latest(self, tree=RECORDS):
         """The record tree's note is read again on every call: the writer replaces it whole, so each call sees the
         newest one. It may be of a larger tree than the records this reader holds; open a new reader to cover it."""
