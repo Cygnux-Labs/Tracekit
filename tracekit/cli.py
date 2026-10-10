@@ -226,7 +226,7 @@ def _init_remote(a):
     if err:
         print(f"tracekit: --remote: {err}", file=sys.stderr)
         return 2
-    if getattr(a, "v2", False):
+    if a.v2:
         return _init_remote_v2(a, url)
     token = os.environ.get("TRACEKIT_REMOTE_TOKEN", "")
     if a.token_file:

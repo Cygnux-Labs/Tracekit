@@ -34,8 +34,9 @@ tracekit signer serve --config signer.yaml
   expires (`--ttl`, default 30 days); an expired or revoked token is refused from its next request. The signer reads the
   file on every request: adding, revoking or rotating a token needs no restart.
 - What a token may call comes from `authorize`; its tenant from `tenants`, else the token's `--tenant`, else `tenant`.
-- Failed authentications are limited per source address and in total; past the limit a request is refused before its
-  credential is looked at. `tracekit_signer_auth_failures_total` on the metrics port counts them. A refusal carries the
+- Failed authentications are limited per source address and in total. Past an address's limit its requests are refused
+  before their credential is looked at; past the total limit failures are refused as over it, but a valid credential
+  still gets in. `tracekit_signer_auth_failures_total` on the metrics port counts them. A refusal carries the
   error only: no sequence number, hash or run id.
 
 ## On the agent's machine
