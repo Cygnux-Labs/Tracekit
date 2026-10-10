@@ -21,6 +21,7 @@ const pyCan = (imports) => spawnSync(PY, ["-c", imports], { env: PY_ENV }).statu
   ? false : `needs ${PY} with ${imports.replace("import ", "")} (set TRACEKIT_PYTHON)`;
 const NO_PY = pyCan("import tracekit.sdk.client");
 const NO_PKI = NO_PY || pyCan("import cryptography");
+const NO_SIGNER = NO_PKI || pyCan("from tracekit.policy2 import engine; engine._backend(None)");   // the [signer] extra
 const py = (code, input) => spawnSync(PY, ["-c", code], { env: PY_ENV, input, encoding: "utf8" }).stdout;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const tmp = (t) => {
@@ -85,7 +86,7 @@ test("the request schemas are rpc_schema.py's", { skip: NO_PY }, () => {
   assert.deepEqual([RPC_VERSION, REQUESTS], theirs);
 });
 
-test("a real dev signer, started on demand: decide/complete, deny and continue, pipelined calls", { skip: NO_PY }, async (t) => {
+test("a real dev signer, started on demand: decide/complete, deny and continue, pipelined calls", { skip: NO_SIGNER }, async (t) => {
   const d = mkdtempSync("/tmp/tkv2-"), saved = { ...process.env };
   Object.assign(process.env, { TRACEKIT_RUNTIME_DIR: join(d, "run"), HOME: join(d, "home"), XDG_DATA_HOME: join(d, "data"), PYTHONPATH: ROOT, TRACEKIT_PYTHON: PY });
   delete process.env.TRACEKIT_SIGNER;
