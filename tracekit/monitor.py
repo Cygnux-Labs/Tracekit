@@ -5,7 +5,7 @@ signed report that the verifier uses for `witnessed+monitored` (docs/monitor.md)
                      [--key monitor.key] [--allow KID ...] [--every S | --once]
 
 Each poll reads the record log at URL (the signer's metrics port, `SignerService.tlog`): its checkpoint, verified under
-VKEY and against the last one seen (a smaller tree is a rollback, another root at a size seen before a fork: both are
+VKEY and against the last one seen (a smaller tree is a rollback, a tree that does not extend it a fork: both are
 conflicts that keep both notes), then every new record from the entry bundles, bound to the checkpoint by rebuilding
 its tree. Then the same for each registry log the logs list (/logs/v0) names, signed by the same key. Rules, over every
 record seen so far:
@@ -100,6 +100,21 @@ def _conflict(state, rule, detail, notes=None):
         state["conflicts"].append(c)
 
 
+def _fetch(name, url, entries, start, size):
+    """[(entry, leaf data)] of the entries start..size of the log at `url`, read from its entry bundles."""
+    out = []
+    for n in range(start // 256, (size + 255) // 256):
+        w = min(256, size - n * 256)
+        try:
+            got = entries(_get(f"{url}/tile/entries/{_index(n)}" + (f".p/{w}" if w < 256 else "")))
+        except (ValueError, KeyError, TypeError) as e:
+            raise MonitorError(f"{name}: entry bundle {n}: {type(e).__name__}: {e}") from None
+        if len(got) != w:
+            raise MonitorError(f"{name}: entry bundle {n} holds {len(got)} entries, not {w}")
+        out += got[max(0, start - n * 256):]
+    return out
+
+
 def _follow(state, d, name, url, open_note, entries):
     """(tree, new entries) of the log `name` at `url` since the last poll: its checkpoint opens (`open_note(note)` ->
     (size, root)), extends the last one seen and is the tree of the entries. `entries(bundle)` -> [(entry, leaf data)]."""
@@ -109,8 +124,8 @@ def _follow(state, d, name, url, open_note, entries):
     except ValueError as e:   # NoteError, AnchorError
         raise MonitorError(f"{name}: {e}") from None
     last = state["logs"].get(name, {"size": 0, "root": _b64(merkle.root([])), "note": None})
-    tree = tiles.Tree(tiles.DirTileStore(os.path.join(d, "tiles", hashlib.sha256(name.encode()).hexdigest()[:32])),
-                      last["size"])
+    store = tiles.DirTileStore(os.path.join(d, "tiles", hashlib.sha256(name.encode()).hexdigest()[:32]))
+    tree = tiles.Tree(store, last["size"])
     if size < last["size"]:
         _conflict(state, "checkpoint consistency", f"{name}: a checkpoint of size {size} after one of size "
                                                    f"{last['size']} (rollback)", [last["note"], note])
@@ -120,20 +135,19 @@ def _follow(state, d, name, url, open_note, entries):
             _conflict(state, "checkpoint consistency", f"{name}: two checkpoints of size {size} with different roots "
                                                        "(fork)", [last["note"], note])
         return tree, []
-    new = []
-    for n in range(last["size"] // 256, (size + 255) // 256):
-        w = min(256, size - n * 256)
-        try:
-            got = entries(_get(f"{url}/tile/entries/{_index(n)}" + (f".p/{w}" if w < 256 else "")))
-        except (ValueError, KeyError, TypeError) as e:
-            raise MonitorError(f"{name}: entry bundle {n}: {type(e).__name__}: {e}") from None
-        if len(got) != w:
-            raise MonitorError(f"{name}: entry bundle {n} holds {len(got)} entries, not {w}")
-        new += got[max(0, last["size"] - n * 256):]
+    new = _fetch(name, url, entries, last["size"], size)
     for _, data in new:
         tree.append(merkle.leaf_hash(data))
     if tree.root() != root:
-        raise MonitorError(f"{name}: the entries are not the tree of the checkpoint of size {size}")
+        # lean: re-reads the whole log to tell a fork from bad entries; read the served hash tiles past ~1M entries
+        served = tiles.Tree(tiles.MemoryTileStore())
+        for _, data in _fetch(name, url, entries, 0, size):
+            served.append(merkle.leaf_hash(data))
+        if served.root() != root or _b64(served.root_at(last["size"])) == last["root"]:
+            raise MonitorError(f"{name}: the entries are not the tree of the checkpoint of size {size}")
+        _conflict(state, "checkpoint consistency", f"{name}: a checkpoint of size {size} that does not extend the one "
+                                                   f"of size {last['size']} (fork)", [last["note"], note])
+        return tiles.Tree(store, last["size"]), []
     tree.flush()
     state["logs"][name] = {"size": size, "root": _b64(root), "note": note}
     return tree, [e for e, _ in new]
@@ -226,7 +240,7 @@ def _check_rekor(state, d, url, vkey, tree, trusted_root, spki):
             continue
         name = "rekor " + t["baseUrl"]
         _, bodies = _follow(state, d, name, t["baseUrl"].rstrip("/") + "/api/v2",
-                            lambda note: rekor2._rekor_checkpoint(note, t), _c2sp)
+                            lambda note: rekor2.rekor_checkpoint(note, t), _c2sp)
         base = state["logs"][name]["size"] - len(bodies)
         for i, body in enumerate(bodies, base):
             try:

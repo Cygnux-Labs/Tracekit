@@ -567,11 +567,11 @@ def _monitor(rep, trust, paths, origin, size, root):
 def _assurance(origin, cosigs, witnesses, trust, algs, self_approved=False, anchors=(), monitored=()):
     """dev: no pinned witness cosigned or anchor verified, or a self-approval in the run; local: only operator-run
     ones; witnessed: enough independent ones (a pinned Rekor anchor counts as one, unless classed operator);
-    witnessed+monitored: witnessed, and a pinned monitor's fresh report covers the checkpoint."""
+    witnessed+monitored: witnessed, and a pinned monitor's (not classed operator) fresh report covers the checkpoint."""
     independent = [k for k, _ in cosigs if witnesses[k] != "operator"] + [a for a in anchors if a[1] != "operator"]
     level = ("dev" if self_approved else "witnessed" if len(independent) >= max(1, trust["witnesses_required"])
              else "local" if cosigs or anchors else "dev")
-    if level == "witnessed" and monitored:
+    if level == "witnessed" and any(cls != "operator" for _, cls, _ in monitored):
         level = "witnessed+monitored"
     cosigned = ", ".join(f"{k.split('+')[0]} ({witnesses[k]}) at "
                         f"{datetime.datetime.fromtimestamp(ts, datetime.timezone.utc):%Y-%m-%dT%H:%M:%SZ}"
