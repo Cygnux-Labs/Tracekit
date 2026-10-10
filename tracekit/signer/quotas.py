@@ -42,15 +42,15 @@ class Quotas:
         §2.2), so a per-tenant bucket would hand a fresh burst to every tenant it names."""
         self.take((identity.scheme, identity.subject), "event rate limit")
 
-    def take(self, key, what):
-        """Spend one token from `key`'s bucket; quota_exceeded naming `what` when it is empty."""
+    def take(self, key, what, spend=1):
+        """Spend `spend` tokens (0: only check) from `key`'s bucket; quota_exceeded naming `what` when it is empty."""
         lim = self.limits
         with self._lock:
             now = self.clock()
             tokens, last = self._buckets.pop(key, (lim.burst, now))
             tokens = min(lim.burst, tokens + (now - last) * lim.events_per_s)
             ok = tokens >= 1
-            self._buckets[key] = (tokens - 1 if ok else tokens, now)
+            self._buckets[key] = (tokens - spend if ok else tokens, now)
             while len(self._buckets) > lim.buckets:
                 self._buckets.popitem(last=False)
         if not ok:
