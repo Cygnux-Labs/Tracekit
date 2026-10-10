@@ -53,7 +53,10 @@ from tracekit.merkle.tiles import W, Tree, _reduce
 from .base import (ACK_ON_FSYNC, ACK_ON_WRITE, RECORDS, ZERO_HASH, Storage, StorageCorrupt, StorageUnavailable,
                    check_records, registry_tree)
 from .file import _edge, _mac, _raw, _unedge
-from .pg_schema import GRANTS, READ_GRANTS, SCHEMA, VERSION  # noqa: F401
+from . import pg_schema
+
+SCHEMA, VERSION = pg_schema.SCHEMA, pg_schema.VERSION
+GRANTS, READ_GRANTS = pg_schema.GRANTS, pg_schema.READ_GRANTS   # the roles' grants (docs, deploy compose)
 
 PAGE = 1000
 LOCK_CLASS = 0x746b   # the advisory lock's first key: "tk"
