@@ -18,7 +18,7 @@ export function platformKey(): string | null {
     if (!header?.glibcVersionRuntime) return null;   // musl: no bundle
     key += "-gnu";
   }
-  return ["darwin-arm64", "darwin-x64", "linux-x64-gnu", "linux-arm64-gnu", "win32-x64"].includes(key) ? key : null;
+  return ["darwin-arm64", "linux-x64-gnu", "linux-arm64-gnu", "win32-x64"].includes(key) ? key : null;
 }
 
 /** The command line that runs `tracekit`, or null when there is none. */

@@ -28,6 +28,7 @@ from urllib.parse import parse_qs, urlparse
 
 from .core import event_hash, read_text
 from .ledger import read_records, verify_record_sig
+from .netserver import drain
 from .replay import CSP_META
 from .storage.base import StorageCorrupt, StorageUnavailable
 
@@ -525,6 +526,10 @@ def make_handler(feed, token, allowed_hosts=None, secure=False, login=None, appr
                 return self._send(400, '{"error":"the body is not a JSON object"}')
             code, out = approvals.post(s, path, body)
             return self._send(code, json.dumps(out, ensure_ascii=False))
+
+        def finish(self):
+            super().finish()
+            drain(self.connection)
 
         if approvals:
             def do_POST(self):
