@@ -5,7 +5,7 @@ Eight experiments. E1 to E4 and E6 are offline and run with `make eval`; E5 uses
 system-mode signer and runs in CI as a merge gate. Results are written to
 `eval/results/`. For the v2 signer: E4 v2 (`eval/e4_seeded_faults_v2.py`, seeded faults against a v2 bundle, in
 `make eval`), E9 (`eval/e9_signer_perf.py`, latency and throughput over the Unix socket, gated on Linux; `make eval`
-runs its `--quick` form on Linux), E11 and E12 (below, in `make eval`, POSIX) and E15 (`eval/e15_durability.py`,
+runs its `--quick` form on Linux), E11, E12 and E14 (below, in `make eval`, E14 as `--quick`; POSIX) and E15 (`eval/e15_durability.py`,
 `kill -9` of the signer under concurrent clients, POSIX). `tests/INVARIANTS.md` maps each invariant to its tests. The experiments are small, synthetic and written by the authors. They show how the mechanisms
 behave, not how Tracekit performs across real agents and projects. The v0.1 paper's experiments (14 Claude Code
 runs, seeded faults, hook latency) were ported to v0.2 as E2, E4 and E5, with different scenarios and numbers.
@@ -243,6 +243,26 @@ Then, against `tracekit signer serve`, eight concurrent asyncio tasks and eight 
 the same with `withRun`/`currentRun` (AsyncLocalStorage; skipped with the reason when node or the built TS SDK is
 missing: `make test-ts` builds it). Every call must be in its own run's records and nowhere else. Results:
 `eval/results/e12_cross_tenant.json`.
+
+## E14: outage behaviour
+
+`eval/e14_outage.py` breaks one part of the system at a time and checks what the signer and its clients do. The signer's
+fail modes are `{default: closed, fs: open}`, so Read runs and Bash is blocked while the signer cannot be reached.
+
+| Scenario | Fault | Expected |
+|---|---|---|
+| a | signer down, fail-closed class (Claude Code v2 hook, Bash) | every call blocked |
+| b | signer down, fail-open class (the hook, Read) | calls run; the run's next call after the restart makes the signer write a `client_counter_gap` covering exactly the missed calls |
+| c | signer `kill -9`'d and restarted mid-run (Python client) | the run goes on; an approval requested before the restart is approved, consumed and completed after it |
+| d | HTTPS signer behind a proxy that silently drops all traffic (the held-call adapter of MCP and Browser Use, 1 s client timeout) | each call returns within the timeout with its class's fail mode; a `client_counter_gap` covers the missed calls afterwards |
+| e | the only witness unreachable past the gap threshold, then back | the signer keeps answering; a `witness_failed` gap; the witness cosigns the latest checkpoint once back |
+| f | storage refuses writes (ENOSPC) | clients get `unavailable`; no acknowledged call lost; one `signer_unavailable` gap after recovery |
+| g | a and b through the TS client | as a and b (skipped with the reason without node or the built SDK) |
+
+a to c and g drive `tracekit signer serve`; d to f run the signer in process to inject the fault and shorten its timers.
+Every store must pass `tracekit signer fsck`. Under the partition (measured on macOS) each call took the client timeout (about 1000 ms added
+at p50 and p99 over a 2 ms baseline); after it, the added latency was under 5 ms at p99. `make eval` runs the `--quick`
+form (5 calls per phase instead of 20). Results: `eval/results/e14_outage.json`.
 
 ## What is not measured
 

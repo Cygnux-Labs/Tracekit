@@ -394,6 +394,7 @@ export class Client {
         }
       } catch (e) {
         if (e instanceof ConnectionLost) continue;
+        if (e instanceof SignerUnavailable) frame();   // used up: the signer's client_counter_gap covers a call it never saw
         throw e;
       }
       if (reply.error) {
