@@ -16,6 +16,8 @@ your policy, and it records every call as a signed, hash-chained event the agent
 to witnesses you choose, so even the signer's operator can't quietly rewrite it. A run exports as a `.tkb` bundle that
 anyone can verify offline, with a report that says what it proves and what it can't.
 
+<img src="https://raw.githubusercontent.com/Cygnux-Labs/Tracekit/main/docs/demo/observer.gif" alt="tracekit observe: four coding agents traced live; each dangerous action is blocked by policy and recorded" width="100%">
+
 ## The promise, and its limits
 
 - The agent never holds a signing key or assigns a sequence number; nothing it reports about itself (isolation, fail
@@ -74,8 +76,6 @@ Or check the shipped sample bundles (v1) with the verifier alone:
 tracekit verify docs/sample/demo-run.tkb --key docs/sample/signer.pub            # exit 0
 tracekit verify docs/sample/demo-run-tampered.tkb --key docs/sample/signer.pub   # exit 1
 ```
-
-<img src="https://raw.githubusercontent.com/Cygnux-Labs/Tracekit/main/docs/demo/observer.gif" alt="tracekit observe: four coding agents traced live; each dangerous action is blocked by policy and recorded" width="100%">
 
 ## Deployment modes
 
