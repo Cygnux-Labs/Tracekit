@@ -32,7 +32,7 @@ from http.server import ThreadingHTTPServer
 from . import observe
 from .bundle_v2 import export
 from .format.records import RecordSigner
-from .signer.service import dev_data_dir, load_config, read_vkey
+from .signer.service import dev_data_dir, file_store, load_config, read_vkey
 from .storage.base import StorageCorrupt
 from .storage.file import NOTE, FileReader
 from .verify import v2
@@ -202,7 +202,9 @@ def main(argv=None):
         if a.tls_cert:
             tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
             tls.load_cert_chain(a.tls_cert, a.tls_key)
-        data_dir = a.data_dir or (load_config(a.config)["data_dir"] if a.config else dev_data_dir())
+        cfg = load_config(a.config) if a.config else {"data_dir": a.data_dir or dev_data_dir()}
+        file_store(cfg, "tracekit view")
+        data_dir = cfg["data_dir"]
         feed = StoreFeed(data_dir)
         srv = server(feed, a.host, a.port, token, tls)
     except (OSError, ValueError) as e:

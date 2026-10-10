@@ -53,6 +53,7 @@ DIGEST = _str(71, pattern=r"^sha256:[0-9a-f]{64}" + _END)
 TOKEN = _str(1024, minLength=1)
 RULE_IDS = {"type": "array", "maxItems": 32, "items": _str(64)}
 REASON = _str(1024)
+IDENTITY = _str(256, pattern=r"^[a-z0-9_]+:.+" + _END)   # scheme:subject
 ANY = {}   # any JSON value; bounded by the transport's line limit
 APPROVAL_STATE = {"enum": ["requested", "approved", "rejected", "expired", "consumed"]}
 
@@ -112,7 +113,8 @@ REQUESTS = {
                         usage=_obj([], input_tokens=SEQ, output_tokens=SEQ, cache_read_tokens=SEQ,
                                    cache_write_tokens=SEQ, reasoning_tokens=SEQ),
                         tool_uses={"type": "array", "maxItems": 128, "items": _TOOL_USE},
-                        tool_results_sent={"type": "array", "maxItems": MAX_RESULTS_SENT, "items": ID}),
+                        tool_results_sent={"type": "array", "maxItems": MAX_RESULTS_SENT, "items": ID},
+                        caller=IDENTITY),   # from a `gateways` identity only: the client it authenticated (source gateway)
     "approval_request": _obj(_RUN_REQ + ["tool_call_id"], **_RUN, tool_call_id=ID, attempt=SEQ,
                              reason=REASON),   # the agent's words: shown to the approver as such, never as the args
     "approval_decide": _obj(["request_id", "approval_id", "decision"], request_id=ID, approval_id=ID,
@@ -129,7 +131,7 @@ REQUESTS = {
     # a token for this run that `identity` (scheme:subject, e.g. a transcript tailer's uid) presents instead of the
     # owner; what it may call is that identity's `authorize` entry
     "delegate_run": _obj(["run_id", "run_token", "identity"], run_id=ID, run_token=TOKEN,
-                         identity=_str(256, pattern=r"^[a-z0-9_]+:.+" + _END)),
+                         identity=IDENTITY),
     # the transcript tailer lost the transcript at `offset` (bytes read): the signer writes the tailer_lost gap
     "tailer_lost": _obj(_RUN_REQ + ["reason", "offset"], **_RUN, reason=REASON, offset=SEQ),
     "status": _obj([]),
@@ -138,17 +140,18 @@ REQUESTS = {
     "checkpoint_nudge": _obj([]),
 }
 
+_FAIL_MODES = {"type": "object", "additionalProperties": {"enum": ["open", "closed"]}}
 RESPONSES = {
     "register_run": _obj(["run_id", "run_token", "tenant", "tenant_attested", "principal_attested"],
                          run_id=ID, run_token=TOKEN, tenant=ID, tenant_attested={"type": "boolean"},
                          principal=_str(256), principal_attested={"type": "boolean"},
-                         fail_modes={"type": "object", "additionalProperties": {"enum": ["open", "closed"]}}),
+                         fail_modes=_FAIL_MODES),
     "decide": _obj(["decision", "decision_id", "rule_ids", "run_seq"], decision={"enum": ["allow", "deny", "ask"]},
                    decision_id=ID,   # fresh for every decide; `complete` consumes it once
                    rule_ids=RULE_IDS, reason=REASON, run_seq=SEQ, expires_at=_str(40)),
     "complete": _SEQ_ONLY,
     "state_write": _SEQ_ONLY,
-    "model_event": _SEQ_ONLY,
+    "model_event": _obj(["run_seq"], run_seq=SEQ, fail_modes=_FAIL_MODES),   # fail_modes: to a gateway
     "approval_request": _obj(["approval_id", "state"], approval_id=ID, state=APPROVAL_STATE,
                              expires_at=_str(40)),
     "approval_decide": _obj(["approval_id", "state", "self_approved"], approval_id=ID, state=APPROVAL_STATE,

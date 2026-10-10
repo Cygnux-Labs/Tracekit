@@ -25,7 +25,7 @@ def _signer_home(a):
 
 
 _DELEGATED = {"observe": "observe", "analyze": "findings", "otel": "otlp", "cost": "cost", "witness": "witness_server",
-              "signer": "signer.service", "view": "view", "monitor": "monitor"}  # subcommands with their own parsers
+              "signer": "signer.service", "view": "view", "monitor": "monitor", "gateway": "gateway"}  # subcommands with their own parsers
 _MOVED = {"sql": "query", "proofpack": "proofpack", "report": "proofpack", "causeway": "causeway"}  # now separate packages under contrib/
 
 
@@ -120,6 +120,8 @@ def main(argv=None):
     p.add_argument("rest", nargs=argparse.REMAINDER)
     p = sub.add_parser("monitor", help="follow a v2 signer's logs, check their rules, publish a signed monitor report",
                        add_help=False)
+    p.add_argument("rest", nargs=argparse.REMAINDER)
+    p = sub.add_parser("gateway", help="LLM gateway for the v2 signer: `gateway serve --config gateway.yaml`", add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
     p = sub.add_parser("otel", help="OpenTelemetry receiver: `otel serve` records agent spans sent over OTLP/HTTP", add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
@@ -543,7 +545,7 @@ def _export_v2(a):
     from .format import registry
     from .sdk.client import Client, Incompatible, SignerUnavailable
     from .signer.rpc_schema import RPCError
-    from .signer.service import signer_config
+    from .signer.service import file_store, signer_config
     from .storage.base import StorageCorrupt, registry_tree
     from .storage.file import FileReader
     if not (a.run or a.run_set) or a.dev and a.config:
@@ -551,7 +553,7 @@ def _export_v2(a):
         return 2
     try:
         cfg = signer_config(a.config)
-        store, tenant = os.path.join(cfg["data_dir"], "store"), a.tenant or cfg.get("tenant", "default")
+        store, tenant = file_store(cfg, "export --v2"), a.tenant or cfg.get("tenant", "default")
         reader = FileReader(store)
         if a.run_set:
             with open(os.path.join(cfg["data_dir"], "keys", "registry_salt.key"), "rb") as f:

@@ -236,7 +236,8 @@ class Client:
             conn.drop()
 
     def _prepare(self, method, req, connect=lambda: None):
-        """Fills in `stream` and `client_seq` and validates `req`; counts the event once `connect()` has not raised.
+        """Fills in `stream` and `client_seq` and validates `req`; counts the event even when `connect()` raises, so the
+        signer's client_counter_gap covers a call it never saw (one a caller then ran with its fail mode open).
         Call under self._lock."""
         if self._pid != os.getpid():   # new client, or a forked child: its own stream and connection
             # lean: one counter per run until it is closed or refused as closed; a run abandoned without either keeps
@@ -247,10 +248,10 @@ class Client:
         if fresh:
             req.update(stream=self.stream, client_seq=self._seqs.get(run_id, 0))
         _validate(method, req)
-        connect()
         if fresh:
             self._seqs[run_id] = req["client_seq"] + 1
-        elif method == "close_run":   # no events after close: drop the counter
+        connect()
+        if method == "close_run":   # no events after close: drop the counter
             self._seqs.pop(run_id, None)
         return req
 
