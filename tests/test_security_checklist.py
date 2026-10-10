@@ -30,8 +30,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DOC = os.path.join(ROOT, "docs", "security-checklist.md")
 UI = os.path.join(ROOT, "tracekit", "ui", "terminal.html")
 SECRET = "tk-checklist-" + "s" * 40
-HOSTILE = [XSS, "javascript:alert(1)", "rm‮/hs.exe", "a​b", "tenant⁦x⁩", "﻿Bash", "؜x"]
-FORMAT_CHARS = "[؜​-‏‪-‮⁠-⁩﻿]"
+HOSTILE = [XSS, "javascript:alert(1)", "rm\u202e/hs.exe", "a\u200bb", "tenant\u2066x\u2069", "\ufeffBash", "\u061cx"]
+FORMAT_CHARS = "[\u061c\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]"
 BIG = "9" * 8   # over every surface's limit, and within the 8 digits the signer parses
 
 # every BaseHTTPRequestHandler in tracekit/ -> what serves it (the checklist's Surfaces table has the same keys)
