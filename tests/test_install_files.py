@@ -294,12 +294,14 @@ class SystemV2Install(unittest.TestCase):
         patches = [mock.patch.object(install, k, v) for k, v in {
             "V2_DATA": os.path.join(base, "data"), "V2_CONFIG": os.path.join(etc, "signer.yaml"), "SYSTEMD_DIR": base,
             "OPT": os.path.join(base, "opt"), "V2_USER": "tk-test-signer", "V2_UNIT": "tk-test-signer",
+            "V2_TAILER": "tk-test-tailer", "TAILER_SUDOERS": os.path.join(base, "sudoers"),
             "_install_source": mock.Mock(return_value=None), "_install_venv": mock.Mock()}.items()]
         patches.append(mock.patch.object(client, "SYSTEM_CONFIG", os.path.join(etc, "client.json")))
         for p in patches:
             p.start()
             self.addCleanup(p.stop)
         self.addCleanup(subprocess.run, ["userdel", "tk-test-signer"], capture_output=True)
+        self.addCleanup(subprocess.run, ["userdel", "tk-test-tailer"], capture_output=True)
         sock, settings = install.init_system_v2("nobody", approver="root", policy=policy, project=project,
                                                 no_service=True)
         sig = pwd.getpwnam("tk-test-signer")
@@ -322,8 +324,9 @@ class SystemV2Install(unittest.TestCase):
             self.assertFalse(os.path.exists(p), p)
         with open(settings) as f:
             self.assertEqual(json.load(f), {})
-        with self.assertRaises(KeyError):
-            pwd.getpwnam("tk-test-signer")
+        for user in ("tk-test-signer", "tk-test-tailer"):
+            with self.assertRaises(KeyError):
+                pwd.getpwnam(user)
 
 
 if __name__ == "__main__":
