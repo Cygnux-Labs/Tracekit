@@ -1,7 +1,7 @@
 """Backend-independent storage contract (tracekit.storage.base). A backend's test case mixes in StorageContract with
 unittest.TestCase and supplies open() (a store over the same location every call), tear() (cut the last record's
 line short, as a crash mid-write does) and damage(seq) (change a stored record's event in place)."""
-from tracekit.format import checkpoint
+from tracekit.format import checkpoint, registry
 from tracekit.format.records import make_record
 from tracekit.merkle import leaf_hash, root
 from tracekit.merkle.tiles import MemoryTileStore, Tree
@@ -16,11 +16,11 @@ class Chain:
     def __init__(self):
         self.seq, self.prev, self.runs = 0, ZERO_HASH, {}
 
-    def next(self, run_id="run-1", tenant="acme"):
+    def next(self, run_id="run-1", tenant="acme", type_="tool.call"):
         run_seq, run_prev = self.runs.get((tenant, run_id), (0, ZERO_HASH))
         e = {"schema_version": "tracekit.event.v2", "id": f"{self.seq:032x}", "seq": self.seq, "prev_hash": self.prev,
              "ts": "2026-10-09T12:00:00.000000Z", "run_id": run_id, "agent_id": "main", "parent_id": None,
-             "source": "signer", "type": "tool.call", "data": {"tool_use_id": f"t{self.seq}", "name": "Bash", "input": {}},
+             "source": "signer", "type": type_, "data": {"tool_use_id": f"t{self.seq}", "name": "Bash", "input": {}},
              "tenant": tenant, "log_id": "0" * 32, "run_seq": run_seq, "run_prev_hash": run_prev}
         r = make_record(e, SECRET)
         self.seq, self.prev, self.runs[(tenant, run_id)] = self.seq + 1, r["hash"], (run_seq + 1, r["hash"])
@@ -146,6 +146,25 @@ class StorageContract:
                          ((5, note(5) + "— w.example/w c2ln\n"), (1, note(1))))
         self.assertEqual((s.checkpoint_at(acme, 2), s.checkpoint_at(acme, 3)), (note(2), None))
         self.assertIsNone(s.checkpoint_latest())   # the record tree's notes are apart
+
+    def test_fsck_checks_the_trees_against_the_logs(self):
+        s, c = self.store(), Chain()
+        records = c.batch(300) + [c.next(type_="run.registered")]
+        s.append_batch(records)
+        s.registry_append("acme", registry.leaf(records[-1], b"\x01" * 32))
+
+        def note(origin, size, h):
+            return checkpoint.body(origin, size, h) + "\n— example.org/log c2ln\n"
+        s.checkpoint_put(301, note("example.org/log", 301, root(leaves(records))))
+        s.checkpoint_put(1, note("example.org/log/registry/x", 1, s.registry_merkle("acme").root()), registry_tree("acme"))
+        self.assertEqual(s.fsck(), [])
+        leaf = registry.leaf({**records[0], "event": {**records[0]["event"], "type": "run.final"}}, b"\x01" * 32)
+        s.registry_append("acme", leaf)   # a leaf of a record with another type
+        s.checkpoint_put(301, note("example.org/log", 301, bytes(32)))
+        s.tiles_put(RECORDS, 0, 0, 256, bytes(32 * 256))
+        self.assertEqual(s.fsck(), ["registry: leaf 1 of tenant 'acme' points to no record of the log with its type and "
+                                    "hash", "notes: the note of records at size 301 is not of the log's tree",
+                                    "tiles: records tile 0/0 does not match the log"])
 
     def test_witness_queue_round_trip(self):
         s = self.store()

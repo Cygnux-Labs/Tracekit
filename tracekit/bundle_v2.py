@@ -83,9 +83,10 @@ def _run_set(storage, tenant, tsalt, origin, size, lo, hi):
 
 def export(storage, tenant, run_id, note, out_path, policies=(), run_set=None, tenant_salt=None):
     """Write the bundle of run (tenant, run_id) from a store or its reader (FileReader, PostgresReader). `note` is a
-    checkpoint of the store's record tree that covers the run's last record; `policies` are policy snapshots (bytes).
-    `run_set`: (a, b), two checkpointed sizes of the tenant's registry tree (a may be 0), with `tenant_salt`
-    (format.registry.tenant_salt) adds the run-set a..b; `run_id` may then be None."""
+    checkpoint of the store's record tree: a run's records after it are left out (a run still being written verifies to
+    its head). `policies` are policy snapshots (bytes). `run_set`: (a, b), two checkpointed sizes of the tenant's
+    registry tree (a may be 0), with `tenant_salt` (format.registry.tenant_salt) adds the run-set a..b; `run_id` may
+    then be None."""
     origin, size = note.split("\n", 2)[:2]
     size = int(size)
     if not 0 < size <= storage.tree.size or not note.startswith(
@@ -100,11 +101,13 @@ def export(storage, tenant, run_id, note, out_path, policies=(), run_set=None, t
         raise ValueError("export needs a run or a run-set")
     runs = {}
     for rid in run_ids:
-        records = runs[run_name(tenant, rid)] = list(storage.iter_run(tenant, rid))
+        records = list(storage.iter_run(tenant, rid))
         if not records:
             raise ValueError(f"no run {rid!r} for tenant {tenant!r}")
-        if records[-1]["event"]["seq"] >= size:
-            raise ValueError("the checkpoint does not cover the run's last record yet; export after the next checkpoint")
+        # a run still being written: its records up to the checkpoint
+        records = runs[run_name(tenant, rid)] = [r for r in records if r["event"]["seq"] < size]
+        if not records:
+            raise ValueError("the checkpoint does not cover the run yet; export after the next checkpoint")
     # lean: scans the whole log for key records; index them in storage once logs reach millions of records
     keys = [r for r in storage.iter_range(0, size) if r["event"]["type"] in KEY_TYPES]
     seqs = {r["event"]["seq"] for rs in runs.values() for r in (rs[0], rs[-1])} | {
@@ -125,10 +128,18 @@ def export(storage, tenant, run_id, note, out_path, policies=(), run_set=None, t
     manifest = {"format": FORMAT, "verifier_min_version": VERIFIER_MIN_VERSION,
                 "files": {n: hashlib.sha256(b).hexdigest() for n, b in files.items()}}
     tmp = out_path + ".tmp"
-    with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as z:
-        z.writestr("manifest.json", json.dumps(manifest, indent=1))
-        for n, b in files.items():
-            z.writestr(n, b)
-    os.replace(tmp, out_path)
+    try:
+        with open(tmp, "wb") as f:
+            with zipfile.ZipFile(f, "w", zipfile.ZIP_DEFLATED) as z:
+                z.writestr("manifest.json", json.dumps(manifest, indent=1))
+                for n, b in files.items():
+                    z.writestr(n, b)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, out_path)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
     return {"bundle": out_path, "records": sum(map(len, runs.values())), "tree_size": size,
             **({"runs": len(runs), "registry_leaves": run_set[1] - run_set[0]} if run_set else {})}

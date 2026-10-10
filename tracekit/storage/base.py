@@ -4,6 +4,7 @@ A record log holds format v2 records in `seq` order (0, 1, 2, ...). Its Merkle t
 `0x00 ‖ record_hash` (RFC 6962), and its hashes live in tiles (`tracekit.merkle.tiles`) under the tree name
 `RECORDS`. Each tenant also has a registry log of fixed-width binary leaves (§1.5), with a tree named
 `registry_tree(tenant)`."""
+import base64
 import functools
 import hashlib
 import types
@@ -46,6 +47,50 @@ def check_records(lines, name, verify=None):
             except ValueError as x:
                 problems.append(f"{where}: {x}")
         prev, runs[key] = r["hash"], (count + 1, r["hash"])
+    return problems
+
+
+def check_trees(records, registry, notes, tiles_get, partial=False):
+    """The problems of the trees a store keeps, rebuilt from its logs: `records` [(seq, type, hash, log_id)] in seq
+    order, `registry` {tenant: [leaf bytes]} in index order, `notes` [(tree, note)] the stored checkpoint notes and
+    `tiles_get(tree, level, index, width)` the stored tiles. Each registry leaf points to a record with its seq, type,
+    hash and log_id; each note is of its tree's root at its size; each stored full tile is its tree's. `partial`: the
+    logs are what a running writer had written, so a note of a larger tree is not a problem."""
+    from tracekit.format import registry as reg   # not at import: v1 verification needs the stdlib only
+    from tracekit.merkle import leaf_hash
+    from tracekit.merkle.tiles import MemoryTileStore, Tree
+    # lean: the rebuilt trees and the record index are in memory, O(records); stream them per tile past ~100M records
+    problems, trees = [], {RECORDS: Tree(MemoryTileStore())}
+    for _, _, h, _ in records:
+        trees[RECORDS].append(leaf_hash(bytes.fromhex(h[len("sha256:"):])))
+    for tenant, leaves in registry.items():
+        trees[registry_tree(tenant)] = tree = Tree(MemoryTileStore())
+        for i, leaf in enumerate(leaves):
+            tree.append(leaf_hash(leaf))
+            try:
+                typ, _, log_id, seq, h = reg.parse(leaf)
+            except ValueError:
+                typ = seq = None
+            if not (type(seq) is int and seq < len(records) and records[seq][1:] == (typ, h, log_id)):
+                problems.append(f"registry: leaf {i} of tenant {tenant[:64]!r} points to no record of the log with its "
+                                "type and hash")
+    for name, note in notes:
+        tree = trees.get(name)
+        try:
+            size, root = note.split("\n")[1:3]
+            size, root = int(size), base64.b64decode(root, validate=True)
+        except ValueError:
+            problems.append(f"notes: a note of {name} is unreadable")
+            continue
+        if tree is None or size > tree.size:
+            if not partial:
+                problems.append(f"notes: a note of {name} at size {size}, the log holds {tree.size if tree else 0}")
+        elif tree.root_at(size) != root:
+            problems.append(f"notes: the note of {name} at size {size} is not of the log's tree")
+    for name, tree in trees.items():
+        bad = [f"{level}/{i}" for (level, i, width), data in tree.store.tiles.items()
+               if tiles_get(name, level, i, width) not in (None, data)]
+        problems.extend(f"tiles: {name} tile {i} does not match the log" for i in bad)
     return problems
 
 
@@ -95,6 +140,12 @@ class Storage:
     def registry_append(self, tenant, leaf):
         """Append one registry leaf (bytes) to the tenant's registry log."""
         raise NotImplementedError
+
+    def registry_set_aside(self, keep):
+        """Set aside, as a torn last line is, each tenant's registry leaves after its first keep[tenant]: leaves a
+        power loss kept while it lost their records (the file store's ack-on-write). StorageCorrupt when they are not
+        the last leaves written."""
+        raise StorageCorrupt("registry leaves without their records")
 
     def registry_iter(self, tenant, start=0):
         """The tenant's registry leaves from index `start`, in order."""
