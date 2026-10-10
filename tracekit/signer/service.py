@@ -22,6 +22,9 @@ signer.yaml:
     multi_tenant_apps: ["uid:1002"]          # may assert a tenant per run (recorded as not attested)
     migrators: ["uid:1003"]                  # may register `migrated` runs
     analyzers: ["uid:1004"]                  # may register findings runs, each bound to the run it analyses
+    gateways: ["mtls:spiffe://acme/gateway"]  # LLM gateways (tracekit.gateway): their model_event names the client it
+                                             # authenticated (`caller`) and is recorded source gateway (tier T2)
+    gateway_mandatory: false                 # true: reconcile decides against gateway L3 only (tracekit.signer.reconcile)
     fail_modes: {default: closed, read: open}   # tool class -> fail mode, recorded and returned by register_run
     grace_s: 5                               # reconciliation window between run.closing and run.final
     idle_s: 3600                             # a run without calls for this long is closed
@@ -171,7 +174,8 @@ FAIL_MODES = {"default": "closed"}
 CONFIG_KEYS = {"data_dir", "socket", "socket_mode", "tcp_endpoint", "http", "durability", "tenant", "tenants",
                "authorize", "limits", "acknowledge_rollback", "policy", "multi_tenant_apps", "migrators", "analyzers",
                "fail_modes", "grace_s", "idle_s", "origin", "metrics", "witnesses", "contact", "approvals",
-               "lock_timeout_s", "fsck_every_s", "clock_skew_s", "anchors", "otlp", "otel_out"}
+               "lock_timeout_s", "fsck_every_s", "clock_skew_s", "anchors", "otlp", "otel_out", "gateways",
+               "gateway_mandatory"}
 APPROVAL_KEYS = {"self_approval", "approvers", "break_glass"}
 OTLP_IMPORT = "otlp_import"   # an `authorize` grant, never a default: OTLP/HTTP import (otlp config section)
 OTLP_MAX_SPANS = 512
@@ -291,7 +295,8 @@ class SignerService:
                  durability=ACK_ON_WRITE, witnesses=(), acknowledge_rollback=False, open_storage=None, isolation=None,
                  multi_tenant_apps=(), migrators=(), analyzers=(), fail_modes=None, grace_s=GRACE_S, idle_s=IDLE_S,
                  bridge=None, origin=None, authorize=None, contact=None, approvals=None, lock_timeout_s=0,
-                 fsck_every_s=FSCK_S, clock_skew_s=CLOCK_SKEW_S, rekor=None, otlp=None, otel_out=None):
+                 fsck_every_s=FSCK_S, clock_skew_s=CLOCK_SKEW_S, rekor=None, otlp=None, otel_out=None, gateways=(),
+                 gateway_mandatory=False):
         """`identity` answers the in-process SignerAPI calls (default: this process's uid); transports call
         handle_frame with the identity they established. `policy` is a policy2 Engine (default: load_policy()).
         `open_storage()` defaults to file storage in data_dir/store. `origin` names the log in its checkpoints, `contact`
@@ -302,7 +307,8 @@ class SignerService:
         `approvals`: who answers approvals (the `approvals` config section); None for the dev signer's rules.
         `lock_timeout_s`, `fsck_every_s` (0: no background check) and `clock_skew_s`: see the config keys.
         `rekor`: the `anchors.rekor` config section ({signing_config, trusted_root, every_s}), or None.
-        `otlp` ({max_spans}) and `otel_out` ({endpoint, headers}): the config sections, or None."""
+        `otlp` ({max_spans}) and `otel_out` ({endpoint, headers}): the config sections, or None.
+        `gateways` (identities or prefixes) and `gateway_mandatory`: see the config keys."""
         fail_modes = dict(fail_modes or FAIL_MODES)
         if not all(isinstance(k, str) and v in ("open", "closed") for k, v in fail_modes.items()):
             raise ValueError("fail_modes maps tool classes to open or closed")
@@ -352,6 +358,7 @@ class SignerService:
         self.identity = identity or _process_identity()
         self.tenant, self.tenants, self.authorize = tenant, dict(tenants or {}), authorize
         self.multi_tenant_apps, self.migrators, self.analyzers = set(multi_tenant_apps), set(migrators), set(analyzers)
+        self._gateways, self.gateway_mandatory = {k: True for k in gateways}, bool(gateway_mandatory)
         self.fail_modes, self.grace_s, self.idle_s = fail_modes, grace_s, idle_s
         self.otlp_max_spans = otlp.get("max_spans", OTLP_MAX_SPANS)
         self.approvals, self.data_dir = approvals, data_dir
@@ -726,7 +733,7 @@ class SignerService:
                     continue
                 if run["closed"] and t - run["closing_at"] >= self.grace_s:
                     expire(run, live.get(key, ()))   # nothing can consume them once the run is final
-                    coverage = reconcile.finish(tx, run)
+                    coverage = reconcile.finish(tx, run, self.gateway_mandatory)
                     tx.set(run, "final", True)
                     tx.emit(run, "run.final", {"head_run_seq": run["run_seq"] - 1, "head_hash": run["head"],
                                                **({"coverage": coverage} if coverage else {})}, source="signer")
@@ -983,8 +990,9 @@ class SignerService:
                     "run_seq": seq, "expires_at": expires_at}
         return self.log.submit(identity, "decide", req, fn, key)
 
-    def _event(self, identity, method, req, typ, data, need_call=False, digests=None, **top):
-        """`data(commit)`: the event's data, given `commit(digest)`, the commitment under this record's salt."""
+    def _event(self, identity, method, req, typ, data, need_call=False, digests=None, out=None, **top):
+        """`data(commit)`: the event's data, given `commit(digest)`, the commitment under this record's salt. `out`:
+        more fields of the response."""
         key = self._authorize(identity, req)
         self.quotas.take_event(identity)
         sid = secrets.token_hex(16)
@@ -994,7 +1002,7 @@ class SignerService:
         def fn(tx, run):
             if need_call and req["tool_call_id"] not in run["calls"]:
                 raise RPCError("unknown_tool_call", req["tool_call_id"])
-            return {"run_seq": tx.event(run, req, typ, data, digests, **top)}
+            return {"run_seq": tx.event(run, req, typ, data, digests, **top), **(out or {})}
         return self.log.submit(identity, method, req, fn, key, late=True)
 
     def _complete(self, identity, req):
@@ -1055,6 +1063,13 @@ class SignerService:
         return self.log.submit(identity, "state_write", req, fn, key, late=True)
 
     def _model_event(self, identity, req):
+        top, out = {}, None
+        if "caller" in req:   # an LLM gateway reports the exchange of the client it authenticated, under its run token
+            if not lookup(self._gateways, subject(identity), False):
+                raise RPCError("forbidden", f"{subject(identity)[:256]} is not a configured gateway")
+            identity = CallerIdentity(*req["caller"].split(":", 1), True)
+            top, out = {"source": "gateway"}, {"fail_modes": self.fail_modes}
+
         def data(commit):
             d = {"exchange_id": req.get("exchange_id", req["request_id"]), "phase": req["phase"],
                  "streamed": req.get("streamed", False), "model": req["model"], "upstream": req["provider"]}
@@ -1074,7 +1089,7 @@ class SignerService:
                         u["args_commitment"] = commit(t["args_digest"])
             return d
         return self._event(identity, "model_event", req, "model.exchange", data,
-                           digests={t["id"]: t.get("args_digest") for t in req.get("tool_uses", ())})
+                           digests={t["id"]: t.get("args_digest") for t in req.get("tool_uses", ())}, out=out, **top)
 
     def _approval_request(self, identity, req):
         key, tcid, sub = self._authorize(identity, req), req["tool_call_id"], subject(identity)
@@ -1427,15 +1442,11 @@ def load_config(path):
     h = cfg.get("http")
     if h is not None:
         from tracekit.transport import http
-        for section in (h, h.get("k8s_sa")) if isinstance(h, dict) else ():
-            for k in ("cert", "key", "token_file", "ca"):
-                if isinstance(section, dict) and isinstance(section.get(k), str) and section[k]:
-                    section[k] = os.path.join(base, section[k])
-        if isinstance(h, dict) and isinstance(h.get("client_ca"), dict):
-            h["client_ca"] = {td: os.path.join(base, p) if isinstance(p, str) else p for td, p in h["client_ca"].items()}
+        http.resolve(h, base)
         http.configure(h)   # validates the section now; serve() builds it again
     approvals = cfg.get("approvals") if isinstance(cfg.get("approvals"), dict) else {}
-    for table in (cfg.get("tenants"), cfg.get("authorize"), approvals.get("approvers"), approvals.get("break_glass")):
+    for table in (cfg.get("tenants"), cfg.get("authorize"), approvals.get("approvers"), approvals.get("break_glass"),
+                  cfg.get("gateways")):
         for k in table or ():
             if "*" in str(k) and not (str(k).endswith(PREFIX_ENDS) and str(k).count("*") == 1):
                 raise ValueError(f"{path}: {k!r}: a prefix key must end in :* or /*")
@@ -1510,7 +1521,8 @@ def open_service(cfg, **kw):
                          fsck_every_s=float(cfg.get("fsck_every_s", FSCK_S)),
                          clock_skew_s=float(cfg.get("clock_skew_s", CLOCK_SKEW_S)),
                          rekor=(cfg.get("anchors") or {}).get("rekor"), otlp=cfg.get("otlp"),
-                         otel_out=cfg.get("otel_out"), **kw)
+                         otel_out=cfg.get("otel_out"), gateways=cfg.get("gateways", ()),
+                         gateway_mandatory=cfg.get("gateway_mandatory") is True, **kw)
 
 
 def serve(cfg, service):

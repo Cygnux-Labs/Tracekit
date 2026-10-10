@@ -81,9 +81,10 @@
         "signer",
         "sdk",
         "migrated",
-        "import"
+        "import",
+        "gateway"
       ],
-      "description": "Capture path. transcript = harness-reported, lower trust; import = received over OTLP (tier T3): receipt only."
+      "description": "Capture path. transcript = harness-reported, lower trust; import = received over OTLP (tier T3): receipt only; gateway = model.exchange recorded by the LLM gateway (tier T2)."
     },
     "type": {
       "enum": [
