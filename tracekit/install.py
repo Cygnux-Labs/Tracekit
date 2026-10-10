@@ -82,6 +82,11 @@ V2_USER, V2_USER_DARWIN = "tracekit-signer", "_tracekit_signer"
 V2_DATA = "/var/lib/tracekit-signer"   # keys and log: 0700, owned by the signer's user
 V2_CONFIG = "/etc/tracekit/signer.yaml"
 V2_UNIT, V2_LABEL = "tracekit-signer", "dev.tracekit.signer"
+# the transcript tailer (tracekit.tailer): its own user, which reads the agent's transcripts through an ACL; the agent
+# starts it through sudo, and the signer lets its uid make only the calls of TAILER_METHODS
+V2_TAILER, V2_TAILER_DARWIN = "tracekit-tailer", "_tracekit_tailer"
+TAILER_SUDOERS = "/etc/sudoers.d/tracekit-tailer"
+TAILER_METHODS = ["model_event", "state_write", "tailer_lost", "status"]
 V2_RUN = {"linux": "/run/tracekit-signer", "darwin": "/Library/Application Support/tracekit-signer"}   # the socket's dir
 V2_UNIT_TEXT = """[Unit]
 Description=Tracekit v2 signer
@@ -704,7 +709,7 @@ def _v2_client_keys():
         sc = client.system_config() or {}
     except client.SystemConfigError:
         sc = {}
-    return {k: sc[k] for k in ("signer", "hooks") if k in sc}
+    return {k: sc[k] for k in ("signer", "hooks", "tailer") if k in sc}
 
 
 def _write_root_file(path, data):
@@ -971,17 +976,70 @@ def _system_user(name, home, darwin):
     return pwd.getpwnam(name)
 
 
-def v2_signer_yaml(agent, approver_uid, policy, sock):
+def v2_signer_yaml(agent, approver_uid, policy, sock, tailer_uid):
     """signer.yaml of v2 system mode. The agent's uid gets its own tenant (named after it), and so does the approver's,
-    who alone may answer its approvals; every other local user lands in tenant `local`. Scalars are JSON-quoted, which
-    the built-in YAML subset reads back exactly."""
+    who alone may answer its approvals; every other local user lands in tenant `local`. The tailer's uid may make only
+    the TAILER_METHODS calls. Scalars are JSON-quoted, which the built-in YAML subset reads back exactly."""
     q = json.dumps
     tenant, me, approver = q(agent.pw_name), q(f"uid:{agent.pw_uid}"), q(f"uid:{approver_uid}")
     return "\n".join([
         "# written by `tracekit init --v2`; re-run it to change this file", f"data_dir: {q(V2_DATA)}",
         f"socket: {q(sock)}", 'socket_mode: "0666"', 'tenant: "local"', "tenants:", f"  {me}: {tenant}",
         f"  {approver}: {tenant}", "approvals:", '  self_approval: "deny"', "  approvers:", f"    - {approver}",
-        f"policy: {q(policy)}", ""])
+        "authorize:", f"  {q(f'uid:{tailer_uid}')}: [{', '.join(TAILER_METHODS)}]", f"policy: {q(policy)}", ""])
+
+
+def _tailer_acl(owner, u, darwin, grant=True):
+    """Grant (or revoke) the tailer's user `u` read access to `owner`'s Claude Code transcripts: an ACL on ~/.claude/projects that
+    what is created under it inherits, and search on the directories above (setfacl; macOS chmod +a). Returns None, or
+    why it could not."""
+    dot = os.path.join(owner.pw_dir, ".claude")
+    projects = os.path.join(dot, "projects")
+    if grant:
+        try:
+            files.as_user(owner, os.makedirs, projects, 0o700, True)
+        except (OSError, RuntimeError, files.UnsafePath) as e:
+            return f"cannot create {projects}: {e}"
+    if darwin:
+        # lean: -a removes the entries +a wrote; entries the files below inherited may stay after a revoke
+        op = "+a" if grant else "-a"
+        read = f"user:{u} allow list,search,read,readattr,readextattr,file_inherit,directory_inherit"
+        cmds = [["chmod", op, f"user:{u} allow search", owner.pw_dir], ["chmod", op, f"user:{u} allow search", dot],
+                ["chmod", "-R", op, read, projects]]
+    elif grant:
+        cmds = [["setfacl", "-m", f"u:{u}:x", owner.pw_dir], ["setfacl", "-m", f"u:{u}:x", dot],
+                ["setfacl", "-R", "-m", f"u:{u}:rX,d:u:{u}:rX", projects]]
+    else:
+        cmds = [["setfacl", "-x", f"u:{u}", owner.pw_dir], ["setfacl", "-x", f"u:{u}", dot],
+                ["setfacl", "-R", "-x", f"u:{u},d:u:{u}", projects]]
+    for cmd in cmds:
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True)
+        except OSError as e:   # no setfacl: a file system or system without ACL tools
+            return f"{cmd[0]}: {e.strerror}"
+        if r.returncode:
+            return f"{' '.join(cmd)}: {(r.stderr or '').strip()}"
+    return None
+
+
+def _tailer_sudo(owner, tailer):
+    """The sudoers rule that lets `owner` start the tailer as `tailer`, that exact command only; None, or why not."""
+    rule = f"{owner.pw_name} ALL=({tailer.pw_name}) NOPASSWD: {OPT_PYTHON} -I -m tracekit.tailer\n"
+    try:
+        d = files.open_dir(os.path.dirname(TAILER_SUDOERS), {0})
+        try:
+            files.write(d, os.path.basename(TAILER_SUDOERS), rule.encode(), 0o440, 0, 0)
+        finally:
+            files.close(d)
+    except (OSError, files.UnsafePath) as e:
+        return f"no sudo rule: {e}"
+    try:
+        if subprocess.run(["visudo", "-cf", TAILER_SUDOERS], capture_output=True).returncode == 0:
+            return None
+    except OSError:   # no visudo, so no sudo to start the tailer with
+        pass
+    os.remove(TAILER_SUDOERS)   # a rule sudo cannot parse would stop sudo for everyone
+    return "no sudo rule: visudo refused it, or there is no sudo"
 
 
 def v2_plist(user):
@@ -1031,12 +1089,20 @@ def init_system_v2(target_user, approver=None, policy=None, project=None, no_ser
     policy = policy or subprocess.run(
         [OPT_PYTHON, "-I", "-c", "from tracekit.signer.service import DEFAULT_POLICY; print(DEFAULT_POLICY)"],
         check=True, capture_output=True, text=True).stdout.strip()
+    tailer = _system_user(V2_TAILER_DARWIN if darwin else V2_TAILER, "/var/empty", darwin)
+    why = _tailer_acl(owner, tailer.pw_name, darwin) or _tailer_sudo(owner, tailer)
+    if why:
+        print(f"transcript tailer: {why}. No tailer is set up, so each run of {target_user}'s sessions records a "
+              "tailer_lost gap instead of their tool uses and prompts")
     sock = os.path.join(run_dir, "signer.sock")
-    _write_root_file(V2_CONFIG, v2_signer_yaml(owner, approver.pw_uid, policy, sock).encode())
+    _write_root_file(V2_CONFIG, v2_signer_yaml(owner, approver.pw_uid, policy, sock, tailer.pw_uid).encode())
     settings = os.path.join(project or owner.pw_dir, ".claude", "settings.json") if hooks else None
-    sc = client.system_config() or {}   # a v1 system mode install keeps its own keys
+    sc = {k: v for k, v in (client.system_config() or {}).items() if k != "tailer"}   # v1 system mode keeps its keys
+    # no `tailer` key: the hook has the signer record a tailer_lost gap for each run instead of starting one
     _write_system_client_config(dict(sc, mode="system", signer=sock, fail_mode=sc.get("fail_mode", "closed"),
-                                     hooks={"user": target_user, "settings": settings}))
+                                     hooks={"user": target_user, "settings": settings},
+                                     **({} if why else {"tailer": {"user": tailer.pw_name, "uid": tailer.pw_uid,
+                                                                   "python": OPT_PYTHON}})))
     if not no_service:
         if darwin:
             plist = os.path.join(LAUNCHD_DIR, V2_LABEL + ".plist")
@@ -1059,16 +1125,21 @@ def init_system_v2(target_user, approver=None, policy=None, project=None, no_ser
 def uninstall_system_v2(purge=False):
     """`sudo tracekit uninstall --v2`: remove the service, signer.yaml, the system config's v2 keys (the file, and the
     venv, unless v1 system mode still uses them) and the agent's hooks. purge: also the signer's data dir (its keys and
-    log) and its user. Returns what was kept."""
+    log) and its user, and the tailer's user. Returns what was kept."""
     darwin = _require_system(True)
     sc = client.system_config() or {}
     h = sc.get("hooks") or {}
+    try:
+        owner = pwd.getpwnam(h["user"])
+    except KeyError:
+        owner = None
     if h.get("settings") and os.path.exists(h["settings"]):
-        try:
-            owner = pwd.getpwnam(h["user"])
-        except KeyError:
-            owner = None
         install_hooks(h["settings"], uninstall=True, owner=owner, signer=sc.get("signer"))
+    users = [V2_USER_DARWIN, V2_TAILER_DARWIN] if darwin else [V2_USER, V2_TAILER]
+    if owner:   # also when init kept no `tailer` key: its ACL may have been set before the sudo rule failed
+        why = _tailer_acl(owner, users[1], darwin, grant=False)
+        if why:
+            print(f"transcript tailer: could not remove its ACL ({why})")
     if darwin:
         plist = os.path.join(LAUNCHD_DIR, V2_LABEL + ".plist")
         subprocess.run(["launchctl", "bootout", "system", plist], check=False)
@@ -1078,13 +1149,12 @@ def uninstall_system_v2(purge=False):
     unit = not darwin and os.path.exists(removed[0])   # none after --no-service: nothing to stop
     if unit:
         subprocess.run(["systemctl", "disable", "--now", V2_UNIT], check=False)
-    rest = {k: v for k, v in sc.items() if k not in ("signer", "hooks")}
+    rest = {k: v for k, v in sc.items() if k not in ("signer", "hooks", "tailer")}
     if "socket" in rest:   # v1 system mode
         _write_system_client_config(rest)
     else:
         removed += [client.SYSTEM_CONFIG, OPT]
-    removed.append(V2_CONFIG)
-    user = V2_USER_DARWIN if darwin else V2_USER
+    removed += [V2_CONFIG, TAILER_SUDOERS]
     if purge:
         removed.append(V2_DATA)
     for p in removed:
@@ -1099,12 +1169,13 @@ def uninstall_system_v2(purge=False):
     except OSError:
         pass   # not empty: v1 system mode or a policy lives there
     if purge:
-        cmds = ([["dscl", ".", "-delete", f"/Users/{user}"], ["dscl", ".", "-delete", f"/Groups/{user}"]] if darwin
-                else [["userdel", user]])
-        for cmd in cmds:
-            subprocess.run(cmd, check=False)
+        for user in users:
+            cmds = ([["dscl", ".", "-delete", f"/Users/{user}"], ["dscl", ".", "-delete", f"/Groups/{user}"]] if darwin
+                    else [["userdel", user]])
+            for cmd in cmds:
+                subprocess.run(cmd, check=False)
         return []
-    return [V2_DATA, user]
+    return [V2_DATA, *users]
 
 
 def init_system(target_user, witnesses, checkpoint_every=50, project=None, no_service=False, proxy=False, proxy_port=8787,
