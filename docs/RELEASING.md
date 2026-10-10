@@ -1,5 +1,9 @@
 # Releasing
 
+> **Status:** this is the target release process. It applies once the owner has added `release.yml` and
+> `supply-chain.yml` (below) to `.github/workflows/`; until then releases are built and published by the current
+> release workflow without attestations or SBOMs, and `verify-release.sh` can check only `SHA256SUMS`.
+
 A release is one tag. From it the release workflow builds the PyPI files, the npm packages and the multi-arch signer
 image, attests each one (SLSA build provenance through GitHub artifact attestations), publishes them after approval,
 and attaches every file with its SBOMs and `SHA256SUMS` to the GitHub release. Users check a download with
