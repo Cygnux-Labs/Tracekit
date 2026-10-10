@@ -68,7 +68,7 @@ class View(unittest.TestCase):
         run_id = self.finished_run()
         with self.assertRaises(OSError):
             FileStorage(os.path.join(self.d, "store"))   # the signer still holds the store
-        feed = view.StoreFeed(self.d)
+        feed = view.StoreFeed({"data_dir": self.d})
         [rep] = self.report(feed, run_id)
         self.assertEqual(rep["title"], f"RUN {run_id} · Integrity VERIFIED · Assurance dev")
         self.assertIn("tenant default · agent e2e · final · decisions allow 1, ask 1, deny 1 · approvals 1 · gaps 0",
@@ -89,7 +89,7 @@ class View(unittest.TestCase):
         self.assertEqual(data.count('"tool":"Bash"'), 1)
         with open(path, "w", encoding="utf-8") as f:
             f.write(data.replace('"tool":"Bash"', '"tool":"Bosh"'))
-        feed = view.StoreFeed(self.d)
+        feed = view.StoreFeed({"data_dir": self.d})
         [rep] = self.report(feed, run_id)
         self.assertEqual(rep["title"], f"RUN {run_id} · Integrity FAILED")
         self.assertEqual(self.rows(feed, run_id), [rep])   # none of its events
@@ -132,7 +132,7 @@ class View(unittest.TestCase):
         run = self.client.run(agent="a")
         run.decide("c1", XSS, {"q": XSS})
         self.client.call("checkpoint_nudge", {})
-        feed = view.StoreFeed(self.d)
+        feed = view.StoreFeed({"data_dir": self.d})
         self.report(feed, run.run_id)
         c, cookie = self.session(self.serve(feed))
         c.request("GET", "/", headers=cookie)
@@ -146,7 +146,7 @@ class View(unittest.TestCase):
         self.assertIn(XSS, [x.get("tool_name") for x in snap["records"]])
 
     def test_sse_shows_a_new_record(self):
-        feed = view.StoreFeed(self.d)
+        feed = view.StoreFeed({"data_dir": self.d})
         c, cookie = self.session(self.serve(feed), 15)
         c.request("GET", "/api/snapshot", headers=cookie)
         start = json.loads(c.getresponse().read())["next"]
@@ -170,7 +170,7 @@ class View(unittest.TestCase):
                         "1", "-keyout", key, "-out", cert], check=True, capture_output=True)
         tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         tls.load_cert_chain(cert, key)
-        port = self.serve(view.StoreFeed(self.d), "s3cret", tls)
+        port = self.serve(view.StoreFeed({"data_dir": self.d}), "s3cret", tls)
         c = http.client.HTTPSConnection("127.0.0.1", port, timeout=5, context=ssl._create_unverified_context())
         c.request("GET", "/?token=s3cret")
         r = c.getresponse()
