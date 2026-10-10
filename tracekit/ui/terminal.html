@@ -1464,9 +1464,19 @@
       m.textContent = mode === "live" ? (liveOk ? "LIVE" : "DISCONNECTED") : "REPLAY";
       m.title = mode === "live" && !liveOk ? liveErr : "";
       const c = $("chain");
-      c.className = "chain" + (chainState.ok === true ? " ok" : chainState.ok === false ? " bad" : "");
-      c.textContent = chainState.ok === true ? `CHAIN ✓ ${chainState.n} SIGNED RECORDS` : chainState.ok === false ? `CHAIN ✗ BROKEN` : chainState.detail ? "CHAIN n/a" : "CHAIN …";
-      c.title = chainState.detail || "";
+      const run = V2 && scope ? RUNS.get(scope) : null;   // a selected run: its own verdict, not the page's
+      const failed = V2 && !run ? [...RUNS.values()].filter(r => r.verdict === "failed").length : 0;
+      if (run) {
+        c.className = "chain" + (run.verdict === "verified" ? " ok" : run.verdict === "failed" ? " bad" : "");
+        c.textContent = run.verdict === "verified" ? "RUN ✓ VERIFIED" : run.verdict === "failed" ? "RUN ✗ FAILED" : "RUN … PENDING";
+        c.title = (run.integrity || "") + " · " + (run.label || "");
+      } else {
+        c.className = "chain" + (chainState.ok === true ? " ok" : chainState.ok === false ? " bad" : "");
+        c.textContent = chainState.ok === true ? `CHAIN ✓ ${chainState.n} SIGNED RECORDS`
+          : chainState.ok === false ? (failed ? `✗ ${failed} OF ${RUNS.size} RUNS FAILED` : `CHAIN ✗ BROKEN`)
+          : chainState.detail ? "CHAIN n/a" : "CHAIN …";
+        c.title = chainState.detail || "";
+      }
       $("clock").textContent = new Date(nowTs() * 1000).toTimeString().slice(0, 8) + (mode === "replay" ? " (REPLAY)" : "");
       const chips = [];
       if (F.agent) chips.push(["agent", "AGT " + F.agent]); if (F.tool) chips.push(["tool", "TOOL " + F.tool]);
