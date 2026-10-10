@@ -396,7 +396,7 @@ tell a later v1 record from a genuine one; only this check reports it.
 | Implementation | Where | Notes |
 |---|---|---|
 | Python, the reference | `tracekit/verify/v2.py` (`tracekit verify`) | everything on this page |
-| TypeScript, independent | `sdk/typescript/src/verify` (`@cygnux/tracekit/verify`, `npx @cygnux/tracekit verify`) | written from this page; Node ≥ 20 and browsers, Web Crypto only |
+| TypeScript, independent | `sdk/typescript/src/verify` (`@cygnux/tracekit/verify`, `npx @cygnux/tracekit verify`) | written from this page; Node ≥ 20.12 and browsers, Web Crypto only |
 
 The TypeScript verifier does not implement SLH-DSA (§6, Web Crypto has none), Rekor anchors (§8) or record-key
 certificates ([issuer.md](issuer.md)): a bundle that relies on one is `UNVERIFIABLE (not checked by this verifier: ...)`,
@@ -410,7 +410,7 @@ runs both verifiers on each and requires the same integrity, assurance, exit cod
 
 ```sh
 make test-ts                                     # builds the TypeScript verifier; its suite runs the agreement tests too
-python -m pytest tests/test_ts_verifier.py       # skipped without Node >= 20
+python -m pytest tests/test_ts_verifier.py       # skipped without Node >= 20.12
 ```
 
 **A third implementation** shows conformance the same way: reproduce every vector in `tests/vectors` (canonical JSON,
