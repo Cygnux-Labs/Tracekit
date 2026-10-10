@@ -101,6 +101,8 @@ class SignerMetrics:
                                             "Signed checkpoint notes of the record tree written."))
         self.witness_failures = self.add(Counter("tracekit_signer_witness_publish_failures_total",
                                                  "Checkpoint notes a witness did not cosign, by witness.", "witness"))
+        self.log_key_failures = self.add(Counter("tracekit_signer_log_key_failures_total",
+                                                 "Checkpoint notes the log key failed to sign (retried next round)."))
         self.loop_errors = self.add(Counter("tracekit_signer_loop_errors_total",
                                             "Unexpected errors of a background loop, which carried on, by loop.", "loop"))
         self.otel_dropped = self.add(Counter("tracekit_signer_otel_export_dropped_total",

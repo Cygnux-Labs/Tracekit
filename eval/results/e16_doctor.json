@@ -10,7 +10,7 @@
       "result": {
         "id": "D-CONFIG",
         "status": "fail",
-        "detail": "signer.yaml does not load: /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-pa1kdrg7/etc/signer.yaml: needs data_dir; unknown keys ['bogus']",
+        "detail": "signer.yaml does not load: /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-gtsjz0f_/etc/signer.yaml: needs data_dir; unknown keys ['bogus']",
         "fix": "fix signer.yaml, or sudo /usr/bin/python3 -m tracekit init --v2 --user <agent-user>"
       }
     },
@@ -20,7 +20,7 @@
       "result": {
         "id": "D-CONFIG",
         "status": "fail",
-        "detail": "/private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-zrysnp10/etc/signer.yaml is group- or world-writable",
+        "detail": "/private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-31ecvvyh/etc/signer.yaml is group- or world-writable",
         "fix": "make it and its directories root-owned and not group/world-writable (sudo chown root:root; chmod go-w)"
       }
     },
@@ -40,7 +40,7 @@
       "result": {
         "id": "D-AGENT-PROBE",
         "status": "fail",
-        "detail": "e16-agent can read /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-uli_11x0/data/keys, read /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-uli_11x0/data/keys/record.key",
+        "detail": "e16-agent can read /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-fa7ux3el/data/keys, read /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-fa7ux3el/data/keys/record.key",
         "fix": "make these owned by root or the signer's user and not accessible to others (chmod o-rwx, go-w)"
       }
     },
@@ -50,7 +50,7 @@
       "result": {
         "id": "D-AGENT-PROBE",
         "status": "fail",
-        "detail": "e16-agent can write /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-o7mms4uu/etc/client.json",
+        "detail": "e16-agent can write /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-raol0fd8/etc/client.json",
         "fix": "make these owned by root or the signer's user and not accessible to others (chmod o-rwx, go-w)"
       }
     },
@@ -60,7 +60,7 @@
       "result": {
         "id": "D-POLICY-TRUST",
         "status": "fail",
-        "detail": "/private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-988wklrs/etc/policy.json is group- or world-writable",
+        "detail": "/private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-8nh8gijw/etc/policy.json is group- or world-writable",
         "fix": "make the policy and its directories root-owned and not group/world-writable, or set policy: in signer.yaml to such a file"
       }
     },
@@ -70,7 +70,7 @@
       "result": {
         "id": "D-CODE-TRUST",
         "status": "fail",
-        "detail": "/private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-bsrtcptx/opt/pyvenv.cfg is group- or world-writable",
+        "detail": "/private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-7hoiiuvu/opt/pyvenv.cfg is group- or world-writable",
         "fix": "re-run init to reinstall the venv: sudo /usr/bin/python3 -m tracekit init --v2 --user <agent-user>"
       }
     },
@@ -80,7 +80,7 @@
       "result": {
         "id": "D-CODE-TRUST",
         "status": "fail",
-        "detail": "/private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-8iy2yapb/opt is missing",
+        "detail": "/private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-79cp9kek/opt is missing",
         "fix": "re-run init to reinstall the venv: sudo /usr/bin/python3 -m tracekit init --v2 --user <agent-user>"
       }
     },
@@ -91,7 +91,7 @@
         "id": "D-KEYS-MODE",
         "status": "fail",
         "detail": "record.key is not a 0600 file of the signer's user",
-        "fix": "chmod 700 /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-au2dza80/data /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-au2dza80/data/keys; chmod 600 /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-au2dza80/data/keys/*.key; chown them to the signer's user"
+        "fix": "chmod 700 /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-l36dao67/data /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-l36dao67/data/keys; chmod 600 /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-l36dao67/data/keys/*.key; chown them to the signer's user"
       }
     },
     "data dir 0750": {
@@ -100,8 +100,8 @@
       "result": {
         "id": "D-KEYS-MODE",
         "status": "fail",
-        "detail": "/private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-sch91ovd/data is not 0700",
-        "fix": "chmod 700 /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-sch91ovd/data /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-sch91ovd/data/keys; chmod 600 /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-sch91ovd/data/keys/*.key; chown them to the signer's user"
+        "detail": "/private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-qx9lll3l/data is not 0700",
+        "fix": "chmod 700 /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-qx9lll3l/data /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-qx9lll3l/data/keys; chmod 600 /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-qx9lll3l/data/keys/*.key; chown them to the signer's user"
       }
     },
     "log key is the record key": {
@@ -112,6 +112,16 @@
         "status": "fail",
         "detail": "the log key and the record key are the same key",
         "fix": "move both keys away and restart the signer to make new ones (new keys start a new log: export what you need first)"
+      }
+    },
+    "signer may dump core": {
+      "expect": "D-KEY-HYGIENE",
+      "flagged": true,
+      "result": {
+        "id": "D-KEY-HYGIENE",
+        "status": "warn",
+        "detail": "core dumps allowed (RLIMIT_CORE None); the process is dumpable (Linux PR_SET_DUMPABLE); key buffers not mlocked (raise RLIMIT_MEMLOCK)",
+        "fix": "start the signer with `tracekit signer serve` and a LimitMEMLOCK of at least 64K"
       }
     },
     "unit without NoNewPrivileges and the syscall filter": {
@@ -130,7 +140,7 @@
       "result": {
         "id": "D-UNIT-HARDENING",
         "status": "warn",
-        "detail": "no service file: /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-0t9gayff/unit/tracekit-signer.service: No such file or directory",
+        "detail": "no service file: /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-hxiej_d4/unit/tracekit-signer.service: No such file or directory",
         "fix": "sudo /usr/bin/python3 -m tracekit init --v2 --user <agent-user>"
       }
     },
@@ -140,7 +150,7 @@
       "result": {
         "id": "D-HOOKS-PRESENT",
         "status": "fail",
-        "detail": "no v2 hook for PreToolUse, PostToolUse, PostToolUseFailure in /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-0k6c51pb/home/.claude/settings.json",
+        "detail": "no v2 hook for PreToolUse, PostToolUse, PostToolUseFailure in /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-bjapzxbz/home/.claude/settings.json",
         "fix": "sudo /usr/bin/python3 -m tracekit init --v2 --user <agent-user>"
       }
     },
@@ -150,7 +160,7 @@
       "result": {
         "id": "D-HOOKS-VENV",
         "status": "fail",
-        "detail": "3 hooks run another Python than /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-rqdi34zm/opt/bin/python",
+        "detail": "3 hooks run another Python than /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-2ayjiapm/opt/bin/python",
         "fix": "sudo /usr/bin/python3 -m tracekit init --v2 --user <agent-user>"
       }
     },
@@ -170,8 +180,8 @@
       "result": {
         "id": "D-SIGNER-ENV",
         "status": "fail",
-        "detail": "TRACEKIT_SIGNER is /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-uditm1cq/decoy.sock, not /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-uditm1cq/run/signer.sock",
-        "fix": "remove env.TRACEKIT_SIGNER from /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-uditm1cq/home/.claude/settings.json (the hook refuses it and blocks every call)"
+        "detail": "TRACEKIT_SIGNER is '/private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-ih34jp47/decoy.sock', not /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-ih34jp47/run/signer.sock",
+        "fix": "remove env.TRACEKIT_SIGNER from /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-ih34jp47/home/.claude/settings.json (the hook refuses it and blocks every call)"
       }
     },
     "policy does not compile": {
@@ -180,8 +190,8 @@
       "result": {
         "id": "D-POLICY-ENGINE",
         "status": "fail",
-        "detail": "/private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-xtehrdlp/etc/policy.json does not load: /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-xtehrdlp/etc/policy.json: unknown key 'bogus'",
-        "fix": "fix the policy: tracekit policy lint /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-xtehrdlp/etc/policy.json"
+        "detail": "/private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-wem2r922/etc/policy.json does not load: /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-wem2r922/etc/policy.json: unknown key 'bogus'",
+        "fix": "fix the policy: tracekit policy lint /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-wem2r922/etc/policy.json"
       }
     },
     "ack-on-write": {
@@ -210,7 +220,7 @@
       "result": {
         "id": "D-FAIL-MODES",
         "status": "warn",
-        "detail": "fail-open: /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-0ziaezo5/etc/client.json fail_mode",
+        "detail": "fail-open: /private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-uovaklix/etc/client.json fail_mode",
         "fix": "set fail_modes to closed in signer.yaml (and fail_mode in client.json) unless an outage must not stop the agent"
       }
     },
@@ -270,7 +280,7 @@
       "result": {
         "id": "D-DATA-FS",
         "status": "fail",
-        "detail": "/private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-tulsps9g/data is on nfs4: file locking and fsync can't be trusted there",
+        "detail": "/private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-bd1n_ylu/data is on nfs4: file locking and fsync can't be trusted there",
         "fix": "put data_dir on a local disk"
       }
     },
@@ -280,7 +290,7 @@
       "result": {
         "id": "D-DATA-FS",
         "status": "fail",
-        "detail": "/private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-ybmclc4s/data is on fuse.sshfs: file locking and fsync can't be trusted there",
+        "detail": "/private/var/folders/s9/g815rzd5779dlvsx6pzq9pl00000gn/T/e16-p5oq4943/data is on fuse.sshfs: file locking and fsync can't be trusted there",
         "fix": "put data_dir on a local disk"
       }
     },
