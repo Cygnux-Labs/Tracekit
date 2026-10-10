@@ -96,6 +96,7 @@ is `witnessed` plus a fresh, conflict-free report of a monitor your trust config
 | `policy` | a tool call ran against a deny, or an `ask` with no consumed approval, and the signer recorded it as `capture.gap{executed_against_policy}` | that the call did harm |
 | `coverage` | the signer's reconciliation found calls it could not match across capture layers (`unreconciled: hook_missing 1, ...`) | that the agent hid a call; a layer may simply not have reported |
 | `break-glass approvals` | an approval was answered under the break-glass role, with its approver and reason | that the approval was wrong |
+| `external decisions` | another policy system's imported decision (`policy.external`) disagreed with the signer's for the same call, recorded as `capture.gap{decision_mismatch}`; the line also counts imports by system and by verified signature | that either decision was wrong: the signer's decision is the one that applied |
 
 ### Informational lines (always `PASS`)
 
@@ -117,5 +118,5 @@ see [approvals](approvals.md).
 ## Signed gaps
 
 Gaps inside a run (`capture.gap` with kinds such as `client_counter_gap`, `signer_unavailable`, `decision_flip`,
-`class_mismatch`) are signed records of the run, visible in the bundle; only `executed_against_policy` and the
+`class_mismatch`) are signed records of the run, visible in the bundle; only `executed_against_policy`, `decision_mismatch` and the
 reconciliation kinds have report lines of their own. Tenant-level gaps show on the run-set line.
