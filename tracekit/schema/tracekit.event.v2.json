@@ -80,9 +80,10 @@
         "transcript",
         "signer",
         "sdk",
-        "migrated"
+        "migrated",
+        "import"
       ],
-      "description": "Capture path. transcript = harness-reported, lower trust."
+      "description": "Capture path. transcript = harness-reported, lower trust; import = received over OTLP (tier T3): receipt only."
     },
     "type": {
       "enum": [
@@ -237,6 +238,12 @@
         "T2",
         "T3"
       ]
+    },
+    "span_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{16}$",
+      "maxLength": 16,
+      "description": "source import: the OpenTelemetry span the record was imported from"
     },
     "args_commitment": {
       "type": "string",
@@ -1108,6 +1115,10 @@
           "additionalProperties": {
             "$ref": "#/$defs/content"
           }
+        },
+        "salt_id": {
+          "$ref": "#/$defs/id",
+          "description": "the signer's salt id for this record's commitments (salt label <type>:<salt_id>)"
         }
       }
     },
@@ -1312,6 +1323,10 @@
         },
         "redaction": {
           "$ref": "#/$defs/redaction"
+        },
+        "salt_id": {
+          "$ref": "#/$defs/id",
+          "description": "the signer's salt id for this record's commitments (salt label <type>:<salt_id>)"
         }
       }
     },
@@ -1819,6 +1834,12 @@
         "analyzes": {
           "$ref": "#/$defs/id",
           "description": "a findings run: the run_id of the run of the same tenant it analyses"
+        },
+        "fidelity": {
+          "enum": [
+            "none"
+          ],
+          "description": "an imported run (source import): what its records say about the calls beyond their receipt"
         }
       }
     },

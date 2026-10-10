@@ -1,0 +1,15 @@
+{
+ "logs": [
+  "tracekit.example.org/log/test+dd5817f1+AZsfhHkc/HZjBFhU04netcqVRJ2HXydqg4QLBgqznPxx"
+ ],
+ "witnesses": [
+  {
+   "vkey": "witness.example.org/w1+257cc7f1+BGG3op9v3HIXXDPBmFc/0CioJHhGCXc+pyvvFPlBZdYO",
+   "class": "customer"
+  }
+ ],
+ "algs": [
+  "ed25519"
+ ],
+ "witnesses_required": 1
+}

@@ -8,7 +8,9 @@ Both encodings normalise to the same shape, one dict per span:
 
 Attribute values become plain Python values (str, bool, int, float, bytes-as-hex, list, dict).
 Every decoder is bounded: body size, span count, nesting depth and string length are capped so a
-hostile or buggy exporter cannot exhaust memory. Malformed input raises WireError, never anything else.
+hostile or buggy exporter cannot exhaust memory. Protobuf is read through memoryviews (no copies), and a repeated field
+past its cap (MAX_SPANS spans and scopes, MAX_ATTRS attributes or array values) is refused as it is read, never
+collected first. Malformed input raises WireError, never anything else (a RecursionError included).
 
 Field numbers follow opentelemetry/proto/collector/trace/v1/trace_service.proto and
 opentelemetry/proto/trace/v1/trace.proto (stable since OTLP 1.0)."""
@@ -111,10 +113,19 @@ def _fields(buf):
         yield fn, wt, v
 
 
+def _repeated(buf, fn, cap, what):
+    """The length-delimited values of field `fn` in `buf`; WireError once there are more than `cap`."""
+    out = []
+    for f, wt, v in _fields(buf):
+        if f == fn and wt == 2:
+            if len(out) == cap:
+                raise WireError(f"more than {cap} {what} in one request")
+            out.append(v)
+    return out
+
+
 def _s(b):
-    if len(b) > MAX_STR:
-        b = b[:MAX_STR]
-    return bytes(b).decode("utf-8", "replace")
+    return bytes(b[:MAX_STR]).decode("utf-8", "replace")
 
 
 def _i64(v):
@@ -135,9 +146,9 @@ def _any_pb(buf, depth):
         elif fn == 4 and wt == 1:
             out = struct.unpack("<d", struct.pack("<Q", v))[0]
         elif fn == 5 and wt == 2:
-            out = [_any_pb(x, depth + 1) for f2, w2, x in _fields(v) if f2 == 1 and w2 == 2][:MAX_ATTRS]
+            out = [_any_pb(x, depth + 1) for x in _repeated(v, 1, MAX_ATTRS, "array values")]
         elif fn == 6 and wt == 2:
-            out = _kvs_pb([x for f2, w2, x in _fields(v) if f2 == 1 and w2 == 2], depth + 1)
+            out = _kvs_pb(_repeated(v, 1, MAX_ATTRS, "kvlist values"), depth + 1)
         elif fn == 7 and wt == 2:
             out = bytes(v).hex()
     return out
@@ -145,7 +156,7 @@ def _any_pb(buf, depth):
 
 def _kvs_pb(items, depth=0):
     out = {}
-    for raw in items[:MAX_ATTRS]:
+    for raw in items:
         k, val = None, None
         for fn, wt, v in _fields(raw):
             if fn == 1 and wt == 2:
@@ -177,18 +188,16 @@ def _span_pb(buf, resource, scope):
         elif fn == 8 and wt == 1:
             sp["end_ns"] = v
         elif fn == 9 and wt == 2:
+            if len(attrs) == MAX_ATTRS:
+                raise WireError(f"more than {MAX_ATTRS} span attributes in one request")
             attrs.append(v)
         elif fn == 11 and wt == 2 and len(events) < MAX_EVENTS:
-            ev = {"name": "", "time_ns": 0, "attrs": {}}
-            eattrs = []
+            ev = {"name": "", "time_ns": 0, "attrs": _kvs_pb(_repeated(v, 3, MAX_ATTRS, "event attributes"))}
             for f2, w2, x in _fields(v):
                 if f2 == 1 and w2 == 1:
                     ev["time_ns"] = x
                 elif f2 == 2 and w2 == 2:
                     ev["name"] = _s(x)
-                elif f2 == 3 and w2 == 2:
-                    eattrs.append(x)
-            ev["attrs"] = _kvs_pb(eattrs)
             events.append(ev)
         elif fn == 15 and wt == 2:
             for f2, w2, x in _fields(v):
@@ -201,32 +210,38 @@ def _span_pb(buf, resource, scope):
     return sp
 
 
-def decode_protobuf(body):
-    spans = []
+def _guarded(decoder, body, what):
+    """decoder(body) checked; any error but WireError (a RecursionError, a shape the decoder did not expect) is
+    malformed input too."""
     try:
-        for fn, wt, rs in _fields(body):
-            if fn != 1 or wt != 2:
-                continue
-            resource, scope_blobs = {}, []
-            for f2, w2, v in _fields(rs):
-                if f2 == 1 and w2 == 2:
-                    resource = _kvs_pb([x for f3, w3, x in _fields(v) if f3 == 1 and w3 == 2])
-                elif f2 == 2 and w2 == 2:
-                    scope_blobs.append(v)
-            for ss in scope_blobs:
-                scope, span_blobs = "", []
-                for f3, w3, v in _fields(ss):
-                    if f3 == 1 and w3 == 2:
-                        scope = next((_s(x) for f4, w4, x in _fields(v) if f4 == 1 and w4 == 2), "")
-                    elif f3 == 2 and w3 == 2:
-                        span_blobs.append(v)
-                for sb in span_blobs:
-                    if len(spans) >= MAX_SPANS:
-                        raise WireError(f"more than {MAX_SPANS} spans in one request")
-                    spans.append(_span_pb(sb, resource, scope))
-    except (struct.error, IndexError) as e:
-        raise WireError(f"malformed protobuf: {e}") from e
-    return _checked(spans)
+        return _checked(decoder(body))
+    except WireError:
+        raise
+    except Exception as e:
+        raise WireError(f"malformed {what}: {type(e).__name__}: {e}"[:500]) from None
+
+
+def _protobuf(body):
+    spans = []
+    for fn, wt, rs in _fields(memoryview(body)):
+        if fn != 1 or wt != 2:
+            continue
+        resource, scope_blobs = {}, _repeated(rs, 2, MAX_SPANS, "scope spans")
+        for f2, w2, v in _fields(rs):
+            if f2 == 1 and w2 == 2:
+                resource = _kvs_pb(_repeated(v, 1, MAX_ATTRS, "resource attributes"))
+        for ss in scope_blobs:
+            scope = ""
+            for f3, w3, v in _fields(ss):
+                if f3 == 1 and w3 == 2:
+                    scope = next((_s(x) for f4, w4, x in _fields(v) if f4 == 1 and w4 == 2), "")
+            for sb in _repeated(ss, 2, MAX_SPANS - len(spans), "spans"):
+                spans.append(_span_pb(sb, resource, scope))
+    return spans
+
+
+def decode_protobuf(body):
+    return _guarded(_protobuf, body, "protobuf")
 
 
 def encode_response_protobuf(rejected=0, message=""):
@@ -327,10 +342,14 @@ def _kvs_json(items, depth=0):
 
 
 def decode_json(body):
+    return _guarded(_json, body, "JSON")
+
+
+def _json(body):
     try:
         doc = json.loads(body)
-    except (ValueError, UnicodeDecodeError) as e:
-        raise WireError(f"invalid JSON: {e}") from e
+    except (ValueError, UnicodeDecodeError, RecursionError) as e:
+        raise WireError(f"invalid JSON: {type(e).__name__}: {e}"[:500]) from None
     if not isinstance(doc, dict):
         raise WireError("body must be a JSON object")
     spans = []
@@ -369,7 +388,7 @@ def decode_json(body):
                     "attrs": _kvs_json(s.get("attributes") or []), "events": events,
                     "status_code": _num(code), "status_message": str(st.get("message") or "")[:4096],
                     "resource": resource, "scope": str(scope)[:256]})
-    return _checked(spans)
+    return spans
 
 
 def _checked(spans):

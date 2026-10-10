@@ -68,7 +68,13 @@ Assurance: dev; records ed25519; checkpoint ed25519 (...); no witness cosignatur
 ```
 
 The signer finalises a run a few seconds after it closes. A bundle exported before that verifies as
-`VERIFIED TO HEAD n (open)`.
+`VERIFIED TO HEAD n (open)`. A record signed by a key after the log retired that key fails the bundle and names the
+record.
+
+The report (and `--json`) also lists tool calls by evidence tier (`tiers`), records by `args_source` (raw, parsed,
+coerced), the `signer_isolation` the signer recorded for each run (`isolation`), the tool classes that fail open
+(`fail-open classes`), and `key assurance`: `asserted`, because the log declares its own keys and nothing attests them
+yet. A `witnessed+monitored` assurance level, which needs a log monitor, is not reported yet.
 
 ## What `dev` assurance means
 
