@@ -195,10 +195,10 @@ class FakeSigner:
             expires_at = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=1)
                           ).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
             # the approver's copy is redacted as the real signer does it (a raw copy stays valid JSON)
-            from tracekit.signer.service import _dotenv
+            from tracekit.signer.service import _dotenv, _shown
             args = _digest(call)[0]
             dotenv = _dotenv(args)
-            shown = privacy.redact(args, dotenv)[0]
+            shown = _shown(args, dotenv)
             if call["args_source"] == "raw":
                 shown = call["args"] if shown == args else rfc8785.dumps(shown).decode()
             a = self._approvals[approval_id] = {
