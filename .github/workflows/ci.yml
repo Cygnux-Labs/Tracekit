@@ -25,8 +25,8 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
         python: ["3.9", "3.12", "3.13"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: ${{ matrix.python }}
       - name: Install
@@ -43,8 +43,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
       - name: Install system mode from a root-owned Python
@@ -57,14 +57,40 @@ jobs:
           sudo install -D -m755 "$(readlink -f /bin/dash)" /usr/local/lib/tracekit-e8/agent
           cd /usr/local/src/tracekit && sudo /usr/bin/python3 -m tracekit init --user agent --no-service --no-hooks --harness agent=/usr/local/lib/tracekit-e8/agent
       - name: Run E8
-        run: cd /usr/local/src/tracekit && sudo /opt/tracekit/bin/python eval/e8_insider.py --out /tmp/e8_insider.json
+        run: cd /usr/local/src/tracekit && sudo /opt/tracekit/bin/python eval/e8_insider.py --require-harness --out /tmp/e8_insider.json
       - name: Root-only installer tests
         run: cd /usr/local/src/tracekit && sudo /opt/tracekit/bin/python -m pip install pytest==8.3.5 && sudo /opt/tracekit/bin/python -m pytest -q -m root tests/test_install_files.py
       - if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: e8-insider
           path: /tmp/e8_insider.json
+
+  insider-v2:
+    # E8 on the v2 signer in system mode, as real separate OS users: decoy signer, cross-user injection, signer down,
+    # policy through the environment, self-approval, a run fabricated outside the registered harness. Merges are
+    # blocked unless every gated case (E8v2.1-E8v2.6) is caught.
+    name: E8 insider attacks (v2 system mode)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install v2 system mode from a root-owned Python
+        run: |
+          sudo apt-get install -y -q python3-cryptography python3-venv
+          sudo cp -r "$GITHUB_WORKSPACE" /usr/local/src/tracekit
+          sudo chmod -R a+rX /usr/local/src/tracekit
+          sudo useradd -m agent
+          sudo useradd -m mallory
+          sudo install -D -m755 "$(readlink -f /bin/dash)" /usr/local/lib/tracekit-e8/agent
+          cd /usr/local/src/tracekit && sudo /usr/bin/python3 -m tracekit init --v2 --user agent --approver root --policy eval/e8_v2_policy.yaml --harness agent=/usr/local/lib/tracekit-e8/agent
+      - name: Run E8 v2
+        run: cd /usr/local/src/tracekit && sudo /opt/tracekit/bin/python eval/e8_insider_v2.py --require-harness --out /tmp/e8_insider_v2.json
+      - if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: e8-insider-v2
+          path: /tmp/e8_insider_v2.json
 
   root:
     # the tests marked root (OS-user isolation, root-owned config and binaries, installer) skip in the test job;
@@ -73,8 +99,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
       - name: Install into a root-owned location
@@ -86,35 +112,37 @@ jobs:
       - name: Run the root tests as root
         run: |
           set -o pipefail
-          cd /opt/tracekit && sudo "$(which python)" -m pytest -v -rs -m root -p no:cacheprovider tests/test_v02.py tests/test_hotfix_021.py tests/test_harness_03.py tests/test_install_files.py | tee /tmp/root-tests.log
+          cd /opt/tracekit && sudo "$(which python)" -m pytest -v -rs -m root -p no:cacheprovider tests/ | tee /tmp/root-tests.log
           if grep -q SKIPPED /tmp/root-tests.log; then echo "::error::root tests were skipped"; exit 1; fi
 
   typescript:
     name: TypeScript SDK and examples
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: "22"
-      - run: python -m pip install -e .
+      - run: python -m pip install -e ".[signer]"
       - name: Test the SDK (real signer, mocked model APIs)
         run: make test-ts
-      - name: Run the Vercel AI SDK example
+      - name: Run the Vercel AI SDK example (v1 client; drop when bridge.py is removed)
         run: |
           export TRACEKIT_CLIENT_HOME="$RUNNER_TEMP/client"
           python -c "from tracekit import install; install.init_dev('$RUNNER_TEMP/signer', [], start=True)"
           cd sdk/typescript && node examples/vercel_ai.mjs
+      - name: Run the v2 Vercel AI SDK example (starts a v2 dev signer on demand)
+        run: cd sdk/typescript && node examples/v2_vercel_ai.mjs
 
   package:
     name: build and smoke-test the wheel
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
       - run: python -m pip install build twine
@@ -126,7 +154,7 @@ jobs:
           /tmp/clean/bin/pip install dist/*.whl
           /tmp/clean/bin/tracekit --version
           /tmp/clean/bin/tracekit demo
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: dist
           path: dist/
@@ -136,13 +164,134 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
-      - name: Install core and every contrib package
-        run: python -m pip install -e ".[dev]" ./contrib/causeway ./contrib/onchain ./contrib/proofpack ./contrib/query ./contrib/stagehand
+      - name: Install core and every contrib package (not editable, so their metadata and entry points are tested)
+        run: |
+          python -m pip install ".[dev]" ./contrib/*/
+          python -m pip check
+      - name: Entry points run from outside the checkout
+        run: |
+          cd /tmp
+          tracekit-sql --help
+          tracekit-proofpack --help
+          tracekit-causeway --help
       - name: Lint
         run: python -m pyflakes contrib
       - name: Test
         run: make test-contrib PY=python
+
+  quickstart:
+    # M1a exit gate: docs/quickstart-v2.md from a wheel in a fresh venv. Not a required check at first.
+    name: v2 quickstart (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -e ".[dev]" build
+      - run: python -m pytest -q -s -m quickstart tests/test_quickstart.py
+        env:
+          TRACEKIT_QUICKSTART: "1"
+
+  signer-evals:
+    # E9: p99 added latency <= 5 ms over 10k calls (ack-on-write) and >= 1,000 events/s for 60 s (the S1 gates);
+    # E15: kill -9 the signer 30 times under 8 clients, zero silent drops and zero acknowledged records lost at
+    # ack-on-fsync. Not a required check at first; make it required once it is stable on the runners.
+    name: Signer evals E9 and E15 (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -e ".[signer]"
+      - run: python eval/e9_signer_perf.py
+      - run: python eval/e15_durability.py
+      - if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: signer-evals
+          path: |
+            eval/results/e9_signer_perf.json
+            eval/results/e15_durability.json
+
+  clean-machine-v2:
+    # M2-10: one v2 example from a fresh venv on each OS, timed (examples/v2/clean-machine.sh / .ps1)
+    name: v2 example on a clean machine (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - if: runner.os != 'Windows'
+        run: bash examples/v2/clean-machine.sh custom
+      - if: runner.os == 'Windows'
+        shell: pwsh
+        run: examples\v2\clean-machine.ps1 custom
+
+  container:
+    name: Signer container image
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Build
+        run: docker build -f deploy/docker/Dockerfile -t tracekit-signer:ci --build-arg REVISION=${{ github.sha }} .
+      - name: Smoke (runs as uid 10001, decides a call through the socket, doctor)
+        run: IMAGE=tracekit-signer:ci sh deploy/docker/smoke.sh
+      - name: Scan (fail on HIGH/CRITICAL)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: tracekit-signer:ci
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+          ignore-unfixed: true
+      - uses: helm/kind-action@1544676c07bb3570fcb70166beaa07c4528fd4aa # v1.15.1
+      - name: Runs in kind
+        run: |
+          kind load docker-image tracekit-signer:ci --name chart-testing
+          kubectl run signer --image=tracekit-signer:ci --image-pull-policy=Never --restart=Never
+          kubectl wait --for=condition=Ready pod/signer --timeout=120s
+          kubectl exec signer -- id -u | grep -x 10001
+          kind delete cluster --name chart-testing
+      - name: Helm chart end to end in kind (agent isolation, doctor, fail-open gap on signer kill)
+        run: sh deploy/helm/e2e.sh
+
+  postgres:
+    name: Postgres storage contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: tk
+          POSTGRES_DB: tracekit
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -e ".[signer,postgres]" pytest
+      - run: python -m pytest -q tests/test_storage_postgres.py
+        env:
+          TRACEKIT_TEST_PG_DSN: postgresql://postgres:tk@localhost:5432/tracekit
