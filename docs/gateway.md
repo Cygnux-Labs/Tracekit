@@ -68,11 +68,14 @@ reach the provider, an agent can't call the model around it.
 Before forwarding a request: `model.exchange` phase `request`, with a digest of the body and the tool results the
 request sends back. After the response completes: phase `response`, with the tool uses the model asked for (name,
 args commitment, `executed_by`), usage, the stop reason and any error. A non-streamed response reaches the client only
-after it is recorded; a streamed one passes through as it arrives and its last chunk is held until it is recorded.
+after it is recorded; a streamed one passes through as it arrives, except the chunk with its terminal event, held
+until the response is recorded. If the signer refuses the record (the run closed, its quota is used up), the client
+gets an error whatever the fail mode.
 
 Errors are never a clean end:
 
 - An upstream error status is passed through and recorded as an error.
+- An upstream redirect is never followed (it would carry the provider credential): 502, recorded as an error.
 - A stream that breaks, sends an error event or ends before its terminal event (`[DONE]`, `response.completed`,
   `message_stop`) is recorded as an error, and the client gets an SSE `error` event followed by a cut connection.
 - A request body over `max_body` is answered 413 and never forwarded; a non-streamed response over it is answered 502
@@ -81,6 +84,8 @@ Errors are never a clean end:
 If the signer can't be reached, the run's fail mode for class `model` applies (the `fail_modes` in `signer.yaml`;
 closed by default): closed answers 503 and forwards nothing. Open forwards only for a run, token and identity the
 signer has already accepted through this gateway.
+Each run's records from one gateway share a stream and counter, so exchanges forwarded while the signer was
+down show as a signed `client_counter_gap` once a later exchange of that run is recorded.
 
 ## Reconciliation
 
