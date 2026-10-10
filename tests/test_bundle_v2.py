@@ -244,6 +244,21 @@ class TestVerifyV2(Case):
         details = {c["check"]: c["detail"] for c in rep.checks if c["status"] == "pass"}
         self.assertEqual({k: details.get(k) for k in want}, want)
 
+    def test_principals_are_reported_attested_or_app_asserted(self):
+        for attested, word in ((True, "attested"), (False, "app-asserted")):
+            log = self.log(f"store-{word}")
+            log.epoch(KEY1)
+            log.add("run.registered", {"agent": {"name": "agent"}, "identity": {
+                "scheme": "oidc", "subject": "corp/u-1", "attested": True, "person": "corp/bob"}},
+                principal="corp/bob", principal_attested=attested)
+            log.final()
+            out = os.path.join(self.d, f"{word}.tkb")
+            export(log.store, "acme", "run-a", log.note(), out)
+            rep, code = self.verify(out)
+            self.assertEqual(code, 0, rep.checks)
+            self.assertIn({"check": "principals", "status": "pass", "detail": f"corp/bob ({word})", "problems": []},
+                          rep.checks)
+
     def test_assurance_levels(self):
         log = self.log()
         log.epoch(KEY1)

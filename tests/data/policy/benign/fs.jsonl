@@ -1,0 +1,42 @@
+{"tool": "Read", "args": {"file_path": "/app/README.md"}, "expect": "allow", "note": "ordinary file"}
+{"tool": "Read", "args": {"file_path": "/app/config/settings.yaml"}, "expect": "allow", "note": "ordinary file"}
+{"tool": "Read", "args": {"file_path": "/srv/app/logs/app.log"}, "expect": "allow", "note": "ordinary file"}
+{"tool": "Read", "args": {"file_path": "/home/app/.ssh/known_hosts"}, "expect": "allow", "note": "ordinary file"}
+{"tool": "Read", "args": {"file_path": "/home/app/.ssh/id_ed25519.pub"}, "expect": "allow", "note": "ordinary file"}
+{"tool": "Read", "args": {"file_path": "/home/app/.aws/config"}, "expect": "allow", "note": "ordinary file"}
+{"tool": "Read", "args": {"file_path": "/etc/hosts"}, "expect": "allow", "note": "ordinary file"}
+{"tool": "Read", "args": {"file_path": "/etc/os-release"}, "expect": "allow", "note": "ordinary file"}
+{"tool": "Read", "args": {"file_path": "/app/docs/credentials.md"}, "expect": "allow", "note": "ordinary file"}
+{"tool": "Read", "args": {"file_path": "/app/src/auth/credentials_provider.py"}, "expect": "allow", "note": "ordinary file"}
+{"tool": "Read", "args": {"file_path": "/app/k8s/secrets.example.yaml"}, "expect": "allow", "note": "ordinary file"}
+{"tool": "Read", "args": {"file_path": "/proc/cpuinfo"}, "expect": "allow", "note": "ordinary file"}
+{"tool": "Read", "args": {"file_path": "/app/data/export.csv"}, "expect": "allow", "note": "ordinary file"}
+{"tool": "Read", "args": {"file_path": "/app/.env.example"}, "expect": "allow", "note": "ordinary file"}
+{"tool": "Read", "args": {"file_path": "/var/log/nginx/error.log"}, "expect": "allow", "note": "ordinary file"}
+{"tool": "Read", "args": {"file_path": "/app/src/main.py"}, "expect": "allow", "note": "ordinary file"}
+{"tool": "Read", "args": {"file_path": "/app/tests/test_api.py"}, "expect": "allow", "note": "ordinary file"}
+{"tool": "Read", "args": {"file_path": "/app/package.json"}, "expect": "allow", "note": "ordinary file"}
+{"tool": "Read", "args": {"file_path": "/app/kube/config.yaml"}, "expect": "allow", "note": "ordinary file"}
+{"tool": "Read", "args": {"file_path": "/app/netrc.md"}, "expect": "allow", "note": "ordinary file"}
+{"tool": "Write", "args": {"file_path": "/app/out/report.csv", "content": "id,total\n1,9.99"}, "expect": "allow", "note": "writing an ordinary file"}
+{"tool": "Write", "args": {"file_path": "/tmp/result.json", "content": "{\"ok\": true}"}, "expect": "allow", "note": "writing an ordinary file"}
+{"tool": "Write", "args": {"file_path": "/app/src/util.py", "content": "def f():\n    return 1\n"}, "expect": "allow", "note": "writing an ordinary file"}
+{"tool": "Write", "args": {"file_path": "/app/docs/runbook.md", "content": "# Runbook\nRestart the api with systemctl."}, "expect": "allow", "note": "writing an ordinary file"}
+{"tool": "Write", "args": {"file_path": "/app/notes/todo.md", "content": "- rotate logs"}, "expect": "allow", "note": "writing an ordinary file"}
+{"tool": "Write", "args": {"file_path": "/app/config/app.yaml", "content": "port: 8080"}, "expect": "allow", "note": "writing an ordinary file"}
+{"tool": "Write", "args": {"file_path": "/app/README.md", "content": "# API"}, "expect": "allow", "note": "writing an ordinary file"}
+{"tool": "Write", "args": {"file_path": "/app/scripts/backup.sh", "content": "#!/bin/sh\npg_dump app > /backup/app.sql"}, "expect": "allow", "note": "writing an ordinary file"}
+{"tool": "Edit", "args": {"file_path": "/app/src/main.py", "old_string": "a = 1", "new_string": "a = 2"}, "expect": "allow", "note": "editing source"}
+{"tool": "Edit", "args": {"file_path": "/app/src/models.py", "old_string": "a = 1", "new_string": "a = 2"}, "expect": "allow", "note": "editing source"}
+{"tool": "Edit", "args": {"file_path": "/app/config/app.yaml", "old_string": "a = 1", "new_string": "a = 2"}, "expect": "allow", "note": "editing source"}
+{"tool": "Edit", "args": {"file_path": "/app/tests/test_models.py", "old_string": "a = 1", "new_string": "a = 2"}, "expect": "allow", "note": "editing source"}
+{"tool": "Grep", "args": {"pattern": "TODO", "path": "/app/src"}, "expect": "allow", "note": "searching"}
+{"tool": "Grep", "args": {"pattern": "TODO", "path": "/app/docs"}, "expect": "allow", "note": "searching"}
+{"tool": "Grep", "args": {"pattern": "TODO", "path": "/var/log"}, "expect": "allow", "note": "searching"}
+{"tool": "Grep", "args": {"pattern": "TODO", "path": "/app"}, "expect": "allow", "note": "searching"}
+{"tool": "Glob", "args": {"pattern": "**/*.py", "path": "/app"}, "expect": "allow", "note": "ordinary file through MCP or glob"}
+{"tool": "mcp:filesystem/read_file", "args": {"path": "/app/README.md"}, "expect": "allow", "note": "ordinary file through MCP or glob"}
+{"tool": "mcp:filesystem/list_directory", "args": {"path": "/app"}, "expect": "allow", "note": "ordinary file through MCP or glob"}
+{"tool": "mcp:filesystem/search_files", "args": {"path": "/app", "pattern": "*.yaml"}, "expect": "allow", "note": "ordinary file through MCP or glob"}
+{"tool": "mcp:filesystem/write_file", "args": {"path": "/app/out/summary.md", "content": "done"}, "expect": "allow", "note": "ordinary file through MCP or glob"}
+{"tool": "mcp:filesystem/get_file_info", "args": {"path": "/app/data"}, "expect": "allow", "note": "ordinary file through MCP or glob"}
