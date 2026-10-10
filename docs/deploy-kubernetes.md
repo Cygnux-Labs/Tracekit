@@ -124,8 +124,9 @@ Optional parts:
 - `issuer.enabled`: the record-key issuer ([issuer.md](issuer.md)) with `issuer.config` (its issuer.yaml without
   `data_dir` and `http`), on `:8444` with `k8s_sa`. Point the signers' `record_key` at `https://tk-issuer.tracekit.svc:8444`
   in `signer.config`. Its own ServiceAccount takes the workload identity of a KMS `ca_key`.
-- `viewer.enabled`: `tracekit view` of each log on port 7778 + n, read through `PostgresReader` with the DSNs of
-  Secrets `tracekit-log-read-<n>`: a role holding `READ_GRANTS` only (SELECT).
+- `viewer.enabled`: one `tracekit view` of every log on port 7778 ([viewer.md](viewer.md)), read with the DSNs of
+  Secrets `tracekit-log-read-<n>`: a role holding `READ_GRANTS` only (SELECT). `viewer.config` adds to its
+  viewer.yaml, such as `view.oidc` and the `http` section whose `oidc` issuers it names, for OIDC logins.
 - `monitor.enabled`: `tracekit monitor` of each log, `monitor.logKeys[n]` being replica n's vkey
   (`kubectl exec tk-<n> -- tracekit signer vkey --config /etc/tracekit/central/signer-<n>.yaml`).
 

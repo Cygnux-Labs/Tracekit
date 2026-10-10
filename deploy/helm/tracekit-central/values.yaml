@@ -66,10 +66,11 @@ issuer:
     storageClass: ""
     size: 1Gi
 
-# A read-only viewer of each log (tracekit view), one container per replica on port 7778 + n. Its DSNs come from
-# Secrets `<dsnSecretPrefix>-<n>` (key `dsn`) of a role holding tracekit.storage.postgres.READ_GRANTS only.
+# A read-only viewer of every log (tracekit view, docs/viewer.md) on port 7778. Its DSNs come from Secrets
+# `<dsnSecretPrefix>-<n>` (key `dsn`) of a role holding tracekit.storage.postgres.READ_GRANTS only.
 viewer:
   enabled: false
+  config: {}               # more of viewer.yaml: view.oidc and the http section of its issuers (docs/identity.md)
   dsnSecretPrefix: tracekit-log-read
   tokenSecretName: ""      # Secret with key `token`: the viewer's login token
   tlsSecretName: ""

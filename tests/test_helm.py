@@ -189,11 +189,11 @@ class Central(unittest.TestCase):
         self.assertEqual(net[0], {"ports": [{"port": 8443, "protocol": "TCP"}]})
         self.assertEqual(net[1]["ports"], [{"port": 9464, "protocol": "TCP"}])
 
-    def test_viewer_reads_each_log_with_its_own_dsn(self):
-        m = self.objects(*FULL)
-        data = m["ConfigMap", "t-viewer"]["data"]
-        self.assertEqual(yamlmini.load_any(data["viewer-2.yaml"])["storage"],
-                         {"postgres": {"dsn_file": "/etc/tracekit/dsn/dsn-2"}})
+    def test_viewer_reads_every_log_with_its_own_dsn(self):
+        m = self.objects(*FULL, "viewer.config.view.oidc.issuer=corp", "viewer.config.data_dir=/nope")
+        cfg = yamlmini.load_any(m["ConfigMap", "t-viewer"]["data"]["viewer.yaml"])
+        self.assertEqual(cfg, {"data_dir": "/tmp", "view": {"oidc": {"issuer": "corp"}, "logs": [
+            "/etc/tracekit/dsn/dsn-0", "/etc/tracekit/dsn/dsn-1", "/etc/tracekit/dsn/dsn-2"]}})
         [dsn] = [v for v in m["Deployment", "t-viewer"]["spec"]["template"]["spec"]["volumes"] if v["name"] == "dsn"]
         self.assertEqual([s["secret"]["name"] for s in dsn["projected"]["sources"]],
                          ["tracekit-log-read-0", "tracekit-log-read-1", "tracekit-log-read-2"])
