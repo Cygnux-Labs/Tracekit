@@ -1283,6 +1283,11 @@
             },
             "attested": {
               "type": "boolean"
+            },
+            "person": {
+              "type": "string",
+              "maxLength": 256,
+              "description": "an OIDC identity's stable person id"
             }
           },
           "description": "the approver as the signer's transport established it"
@@ -1811,6 +1816,11 @@
             },
             "attested": {
               "type": "boolean"
+            },
+            "person": {
+              "type": "string",
+              "maxLength": 256,
+              "description": "an OIDC identity's stable person id"
             }
           }
         },
@@ -2016,6 +2026,11 @@
         "requester": {
           "type": "string",
           "maxLength": 256
+        },
+        "requester_person": {
+          "type": "string",
+          "maxLength": 256,
+          "description": "the requester's stable person id, when an OIDC identity"
         },
         "decision_id": {
           "$ref": "#/$defs/id"

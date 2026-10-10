@@ -42,7 +42,7 @@ def new_run(tenant, run_id):
     `closing_at` are monotonic times for the idle and grace clocks."""
     return {"tenant": tenant, "run_id": run_id, "run_seq": 0, "head": ZERO_HASH, "streams": {}, "closed": False,
             "final": False, "calls": {}, "decisions": {}, "denied": {}, "states": {}, "owner": None, "source": "sdk",
-            "harness": None, "active": time.monotonic(), "closing_at": None, "rec": reconcile.new(), "digests": {}}
+            "people": (None, None), "harness": None, "active": time.monotonic(), "closing_at": None, "rec": reconcile.new(), "digests": {}}
 
 
 FINAL_KEYS = ("tenant", "run_id", "run_seq", "head", "closed", "final", "owner", "source")
@@ -72,7 +72,8 @@ def approval(tenant, run_id, data):
             "args_source": b["args_source"], "decision_id": data["decision_id"], "commitment": b["args_commitment"],
             "rule_ids": data["rule_ids"], "policy_hash": data["policy_hash"], "requester": data["requester"],
             "expires_at": data["expires_at"], "binding_digest": data["binding_digest"], "state": "requested",
-            "executor": data.get("executor", "t1"), "label": salt_label({"type": "approval.request", "data": data})}
+            "executor": data.get("executor", "t1"),
+            "requester_person": data.get("requester_person"), "label": salt_label({"type": "approval.request", "data": data})}
 
 
 APPROVAL_ENDS = {"approval.consumed": "consumed", "approval.expired": "expired", "approval.abandoned": "expired"}
@@ -303,6 +304,7 @@ class RecordLog:
                 run["spans"][f"{e['span_id']}:{e['type']}"] = True
             if e["type"] == "run.registered":
                 run["owner"], run["source"] = "{scheme}:{subject}".format(**e["data"]["identity"]), e["source"]
+                run["people"] = (e["data"]["identity"].get("person"), e.get("principal") if e.get("principal_attested") else None)
                 h = e["data"].get("harness")
                 run["harness"] = (h["pid"], h["start_time"]) if h else None   # the process its owner's calls come from
                 open_runs[run["owner"]] = open_runs.get(run["owner"], 0) + 1
