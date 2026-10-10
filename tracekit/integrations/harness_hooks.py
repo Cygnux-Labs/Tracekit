@@ -25,7 +25,7 @@ def run(harness, raw, stdout=None, stderr=None):
         p = {}
     p = p if isinstance(p, dict) else {}
     is_pre = p.get("hook_event_name") in agent_hooks.PRE
-    err = agent_hooks.Tee(stderr)
+    err, q = agent_hooks.Tee(stderr), None
     try:
         q = agent_hooks.normalise(harness, p)
         if q is None:   # an event Tracekit does not record
@@ -34,11 +34,11 @@ def run(harness, raw, stdout=None, stderr=None):
             claude_code.AGENT = agent_hooks.AGENT_NAMES[harness]
             with contextlib.redirect_stderr(err):
                 code = claude_code.handle(q)
-            if code and harness == "gemini" and is_pre and q.get("tool_use_id"):
-                agent_hooks._gemini_ids(q["session_id"], None, None, "pre", drop=q["tool_use_id"])
     except Exception as e:   # never a reason to let the call run
         print(f"[tracekit] {harness} hook error ({type(e).__name__}: {e}); blocking", file=err)
         code = 2
+    if code and harness == "gemini" and is_pre and q and q.get("tool_use_id"):   # a blocked call gets no AfterTool
+        agent_hooks._gemini_ids(q["session_id"], None, None, "pre", drop=q["tool_use_id"])
     agent_hooks._reply(harness, stdout, code == 0, err.getvalue().strip(), is_pre)
     return code
 
