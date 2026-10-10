@@ -165,7 +165,8 @@ class Rules(unittest.TestCase):
     def test_state_is_written_durably_and_a_torn_one_is_an_error(self):
         with mock.patch("os.fsync", wraps=os.fsync) as fsync:
             self.poll(START)
-        self.assertGreaterEqual(fsync.call_count, 4)   # state.json and report.json: each file, then its directory
+        # state.json and report.json: each file, then its directory (not on Windows, which can't sync one)
+        self.assertGreaterEqual(fsync.call_count, 4 if os.name != "nt" else 2)
         path = os.path.join(self.dir, "state.json")
         with open(path, "r+b") as f:
             f.truncate(os.path.getsize(path) // 2)
