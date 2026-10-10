@@ -20,6 +20,8 @@ A run with any self-approval (dev mode: the approver was the requester) is repor
 Approvals answered under the break-glass role are listed, as a warning.
 A tool call that ran against a deny, or an ask with no consumed approval, is signed by the signer as a capture.gap
 `executed_against_policy`; each is a `policy` warning.
+Coverage: a run.final that carries `coverage` (the capture layers that reported, calls reconciled, reconcile.* records
+by kind) gives a `coverage` line; unreconciled calls make it a warning, so `--strict` exits 3 on them.
 
 Run-set (a bundle with registry/run-set.json): the tenant's registry notes, signed by the pinned log key under the
 origin `<origin>/registry/<id of the bundle's tenant salt>`, and consistent with each other; every leaf of the range
@@ -296,6 +298,22 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key):
     if against:
         rep.check("policy", False, f"{len(against)} tool call(s) ran against a deny or an unapproved ask", against[:20],
                   warn=True)
+    finals = [rs[-1]["event"]["data"]["coverage"] for rs in runs.values()
+              if rs[-1]["event"].get("type") == "run.final" and "coverage" in rs[-1]["event"]["data"]]
+    unreconciled = {}   # from the signed reconcile.* records themselves, not run.final's summary of them
+    for r in every:
+        if str(r["event"].get("type")).startswith("reconcile."):
+            k = r["event"]["type"][len("reconcile."):]
+            unreconciled[k] = unreconciled.get(k, 0) + 1
+    if finals or unreconciled:
+        layers = sorted({x for c in finals for x in c["layers"]})
+        rep.check("coverage", not unreconciled,
+                  f"layers {'+'.join(layers) or 'none'}" + ("" if "L3" in layers else " (L3 absent)")
+                  + f"; {sum(c['reconciled'] for c in finals)} call(s) reconciled; unreconciled: "
+                  + (", ".join(f"{k} {n}" for k, n in sorted(unreconciled.items())) or "none"),
+                  [f"seq {r['event']['seq']}: {r['event']['type']} {str(r['event'].get('tool_call_id'))[:200]}: "
+                   f"{str(r['event']['data'].get('detail'))[:200]}" for r in every
+                   if str(r["event"].get("type")).startswith("reconcile.")][:20], warn=True)
     rep.assurance = (_assurance(origin, cosigs, witnesses, trust, {r["alg"] for r in every + key_records}, self_approved,
                                 anchors)
                      + ("; key retirements not proven complete" if proven_to < relied else ""))

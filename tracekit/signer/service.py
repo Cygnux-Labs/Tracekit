@@ -57,7 +57,7 @@ tamper records are signer-level records with a leaf in every tenant's registry, 
 
 Run lifecycle (04-design §2.7): run.registered → events → close_run or the idle timeout (paused while an approval is
 pending) → run.closing → grace window, where only late records (complete, state_write, model_event) are accepted →
-run.final{head}. run.registered and run.final also get a leaf in the tenant's registry log (tracekit.format.registry),
+the run's reconcile.* records (tracekit.signer.reconcile) → run.final{head, coverage}. run.registered and run.final also get a leaf in the tenant's registry log (tracekit.format.registry),
 log.closed and key.retire one in every tenant's. Gap and tamper records are written by the signer only: no request can
 carry an event type, source, isolation or fail mode.
 
@@ -135,7 +135,7 @@ from tracekit.identity.base import CallerIdentity
 from tracekit.locking import lock_file
 from tracekit.policy2 import compile as policy_compile
 from tracekit.policy2.engine import Engine
-from tracekit.signer import metrics, rpc_schema
+from tracekit.signer import metrics, reconcile, rpc_schema
 from tracekit.signer.pipeline import SIGNER_RUN, RecordLog, approval, final_run, owner, salt_label, subject
 from tracekit.signer.quotas import Limits, Quotas
 from tracekit.signer.rpc_schema import REQUESTS, RPCError
@@ -681,9 +681,10 @@ class SignerService:
                     continue
                 if run["closed"] and t - run["closing_at"] >= self.grace_s:
                     expire(run, live.get(key, ()))   # nothing can consume them once the run is final
+                    coverage = reconcile.finish(tx, run)
                     tx.set(run, "final", True)
-                    tx.emit(run, "run.final", {"head_run_seq": run["run_seq"] - 1, "head_hash": run["head"]},
-                            source="signer")
+                    tx.emit(run, "run.final", {"head_run_seq": run["run_seq"] - 1, "head_hash": run["head"],
+                                               **({"coverage": coverage} if coverage else {})}, source="signer")
                     tx.set(self.log.runs, key, final_run(run))   # its calls, decisions and arguments go
                     for aid in mine.get(key, ()):   # all ended now: nothing can use them
                         a = self.log.approvals[aid]
@@ -925,7 +926,7 @@ class SignerService:
             tx.set(run["calls"], tcid, call)
             tx.set(run["decisions"], did, call)
             seq = tx.event(run, req, "policy.decision", dict(data, decision=verdict, rule_ids=rule_ids),
-                           tool_call_id=tcid, attempt=attempt, args_source=req["args_source"])
+                           digests={tcid: digest}, tool_call_id=tcid, attempt=attempt, args_source=req["args_source"])
             for kind, reason in gaps:
                 tx.emit(run, "capture.gap", {"kind": kind, "reason": reason, "tool_use_id": tcid}, source="signer",
                         tool_call_id=tcid)
@@ -933,7 +934,7 @@ class SignerService:
                     "run_seq": seq, "expires_at": expires_at}
         return self.log.submit(identity, "decide", req, fn, key)
 
-    def _event(self, identity, method, req, typ, data, need_call=False, **top):
+    def _event(self, identity, method, req, typ, data, need_call=False, digests=None, **top):
         """`data(commit)`: the event's data, given `commit(digest)`, the commitment under this record's salt."""
         key = self._authorize(identity, req)
         self.quotas.take_event(identity)
@@ -944,7 +945,7 @@ class SignerService:
         def fn(tx, run):
             if need_call and req["tool_call_id"] not in run["calls"]:
                 raise RPCError("unknown_tool_call", req["tool_call_id"])
-            return {"run_seq": tx.event(run, req, typ, data, **top)}
+            return {"run_seq": tx.event(run, req, typ, data, digests, **top)}
         return self.log.submit(identity, method, req, fn, key, late=True)
 
     def _complete(self, identity, req):
@@ -1023,7 +1024,8 @@ class SignerService:
                     if "args_digest" in t:
                         u["args_commitment"] = commit(t["args_digest"])
             return d
-        return self._event(identity, "model_event", req, "model.exchange", data)
+        return self._event(identity, "model_event", req, "model.exchange", data,
+                           digests={t["id"]: t.get("args_digest") for t in req.get("tool_uses", ())})
 
     def _approval_request(self, identity, req):
         key, tcid, sub = self._authorize(identity, req), req["tool_call_id"], subject(identity)

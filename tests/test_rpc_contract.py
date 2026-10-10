@@ -213,7 +213,9 @@ class SignerContract(Harness):
         self.register()
         good = self.ev(tool_call_id="tc-1", tool="t", args_source="parsed", args={})
         for bad in ({k: v for k, v in good.items() if k != "tool_call_id"},
-                    dict(good, decision="allow"),                 # a field the client may not supply
+                    dict(good, decision="allow"),                 # fields the client may not supply
+                    dict(good, seq=7),
+                    dict(good, prev_hash="sha256:" + "0" * 64),
                     dict(good, tool="x" * 257),
                     dict(good, client_seq=-1),
                     dict(good, client_seq=True),
@@ -231,11 +233,12 @@ class SignerContract(Harness):
         self.register()
         _, d = self.decide(args_source="raw", args='{"path": "a.txt"}')
         self.assertEqual(d["decision"], "allow")
-        for i, raw in enumerate(('{"a":1,"a":2}', '{"n": NaN}', '{"id": 9007199254740993}', '{"a": ',
-                                 "[" * 990 + "]" * 990)):
+        for i, raw in enumerate(('{"a":1,"a":2}', '{"n": NaN}', '{"n": 1e400}', '{"id": 9007199254740993}',
+                                 '{"id": -9007199254740993}', '{"s": "\\ud800"}', '{"a": ', "[" * 990 + "]" * 990)):
             _, d = self.decide(tcid=f"bad-{i}", args_source="raw", args=raw)
             self.assertEqual((d["decision"], d["rule_ids"]), ("deny", ["TK-ARGS-INVALID"]), raw)
-        for i, args in enumerate(({"id": 2 ** 60}, {"\ud800": 1})):
+        for i, args in enumerate(({"id": 2 ** 60}, {"id": -2 ** 53}, {"n": float("inf")}, {"\ud800": 1},
+                                  {"s": "\udc00"})):
             try:
                 _, d = self.decide(tcid=f"parsed-{i}", args=args)
             except RPCError as e:   # over a transport, the strict frame parser refuses the whole request first

@@ -10,10 +10,11 @@ help:
 	@echo "make build     build the sdist and wheel into dist/"
 	@echo "make check     lint + test + build + twine check"
 	@echo "make demo      run the scripted end-to-end demo"
-	@echo "make eval      offline evaluations E1 (integrity), E2 (overhead), E3 (policy gate), E4 (seeded faults), E6 (findings); rewrites eval/results/"
+	@echo "make eval      offline evaluations E1 (integrity), E2 (overhead), E3 (policy gate), E4 (seeded faults, v1 and v2), E6 (findings), on Linux E9 --quick (signer perf); rewrites eval/results/"
 	@echo "make eval-agents  E5: real Claude Code runs (needs the claude CLI; spends model usage)"
 	@echo "make eval-scale   E7: SQL index over a million-event ledger (contrib/query)"
 	@echo "E8 (insider attacks) needs root and a Linux system-mode signer; CI runs it, see eval/e8_insider.py"
+	@echo "E9 (signer perf, gates on Linux) and E15 (kill -9 durability, POSIX): eval/e9_signer_perf.py, eval/e15_durability.py"
 	@echo "make clean     remove build artefacts"
 
 install:
@@ -52,8 +53,11 @@ eval:
 	$(PY) eval/e2_perf.py
 	$(PY) eval/e3_policy.py
 	$(PY) eval/e4_seeded_faults.py
+	$(PY) eval/e4_seeded_faults_v2.py
 	$(PY) eval/e6_findings.py
+	$(PY) eval/e10_reconcile.py
 	$(PY) eval/e16_doctor.py
+	if [ "$$(uname)" = Linux ]; then $(PY) eval/e9_signer_perf.py --quick; fi
 
 eval-agents:
 	E5=1 $(PY) eval/e5_agents.py
