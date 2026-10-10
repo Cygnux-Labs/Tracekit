@@ -109,7 +109,8 @@ def _read(path):
 
 
 def build(path, seen=()):
-    """Return (effective_policy, errors). `extends` names a relative file; the result records its policy_hash."""
+    """Return (effective_policy, errors). `extends` names a relative file, or a list of them merged in order; the
+    result records each parent's policy_hash."""
     try:
         pol = _read(path)
     except Exception as e:   # OSError, JSON or YAML syntax: all reported as lint errors
@@ -125,22 +126,25 @@ def build(path, seen=()):
         errors.append(f"{path}: tools must map tool names to classes")
         pol["tools"] = {}
     base = pol.pop("extends", None)
-    if base is not None:
-        if not isinstance(base, str) or posixpath.isabs(base) or ntpath.isabs(base) or base.startswith("~"):
+    parents = []
+    for b in base if isinstance(base, list) else [] if base is None else [base]:
+        if not isinstance(b, str) or posixpath.isabs(b) or ntpath.isabs(b) or b.startswith("~"):
             errors.append(f"{path}: extends must be a relative path; the compiled policy names the parent by hash")
-        elif os.path.realpath(os.path.join(os.path.dirname(path), base)) in seen + (os.path.realpath(path),):
-            errors.append(f"{path}: extends loop at {base}")
+        elif os.path.realpath(os.path.join(os.path.dirname(path), b)) in seen + (os.path.realpath(path),):
+            errors.append(f"{path}: extends loop at {b}")
         else:
-            parent, perr = build(os.path.join(os.path.dirname(path), base), seen + (os.path.realpath(path),))
+            parent, perr = build(os.path.join(os.path.dirname(path), b), seen + (os.path.realpath(path),))
             errors += perr
-            own = {r.get("id") for sec in SECTIONS for r in pol.get(sec, []) if isinstance(r, dict)}
-            merged = {k: v for k, v in parent.items() if k not in SECTIONS + ("extends",)}
-            merged.update({k: v for k, v in pol.items() if k not in SECTIONS})
-            merged["tools"] = {**parent.get("tools", {}), **pol.get("tools", {})}
-            for sec in SECTIONS:
-                merged[sec] = [r for r in parent.get(sec, []) if isinstance(r, dict) and r.get("id") not in own] + pol.get(sec, [])
-            merged["extends"] = policy_hash(parent)
-            pol = merged
+            parents.append(parent)
+    if parents:
+        own = {r.get("id") for sec in SECTIONS for r in pol.get(sec, []) if isinstance(r, dict)}
+        merged = {k: v for p in parents for k, v in p.items() if k not in SECTIONS + ("extends",)}
+        merged.update({k: v for k, v in pol.items() if k not in SECTIONS})
+        merged["tools"] = {k: v for p in parents + [pol] for k, v in p.get("tools", {}).items()}
+        for sec in SECTIONS:
+            merged[sec] = [r for p in parents for r in p.get(sec, []) if isinstance(r, dict) and r.get("id") not in own] + pol.get(sec, [])
+        merged["extends"] = [policy_hash(p) for p in parents] if isinstance(base, list) else policy_hash(parents[0])
+        pol = merged
     return pol, errors + _lint(pol, path)
 
 

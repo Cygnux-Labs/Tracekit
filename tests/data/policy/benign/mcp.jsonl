@@ -1,0 +1,63 @@
+{"tool": "mcp:github/create_issue", "args": {"owner": "acme", "repo": "api", "title": "Flaky test", "body": "test_login fails 1 in 20"}, "expect": "allow", "note": "routine MCP call"}
+{"tool": "mcp:github/get_file_contents", "args": {"owner": "acme", "repo": "api", "path": "README.md"}, "expect": "allow", "note": "routine MCP call"}
+{"tool": "mcp:github/list_pull_requests", "args": {"owner": "acme", "repo": "api"}, "expect": "allow", "note": "routine MCP call"}
+{"tool": "mcp:github/search_code", "args": {"q": "delete_user repo:acme/api"}, "expect": "allow", "note": "routine MCP call"}
+{"tool": "mcp:github/create_pull_request", "args": {"title": "Fix", "head": "fix", "base": "main"}, "expect": "allow", "note": "routine MCP call"}
+{"tool": "mcp:github/add_issue_comment", "args": {"issue_number": 3, "body": "Looks good"}, "expect": "allow", "note": "routine MCP call"}
+{"tool": "mcp:github/list_commits", "args": {"sha": "main"}, "expect": "allow", "note": "routine MCP call"}
+{"tool": "mcp:linear/create_issue", "args": {"title": "Investigate latency", "team": "ENG"}, "expect": "allow", "note": "routine MCP call"}
+{"tool": "mcp:linear/list_issues", "args": {"assignee": "me"}, "expect": "allow", "note": "routine MCP call"}
+{"tool": "mcp:jira/get_issue", "args": {"key": "OPS-12"}, "expect": "allow", "note": "routine MCP call"}
+{"tool": "mcp:jira/search", "args": {"jql": "project = OPS AND status = Open"}, "expect": "allow", "note": "routine MCP call"}
+{"tool": "mcp:sentry/get_issue", "args": {"id": "123"}, "expect": "allow", "note": "routine MCP call"}
+{"tool": "mcp:sentry/list_events", "args": {"project": "api"}, "expect": "allow", "note": "routine MCP call"}
+{"tool": "mcp:notion/search", "args": {"query": "onboarding"}, "expect": "allow", "note": "routine MCP call"}
+{"tool": "mcp:notion/create_page", "args": {"title": "Weekly notes", "content": "Shipped refunds."}, "expect": "allow", "note": "routine MCP call"}
+{"tool": "mcp:brave-search/brave_web_search", "args": {"query": "kubectl delete namespace stuck terminating"}, "expect": "allow", "note": "routine MCP call"}
+{"tool": "mcp:memory/create_entities", "args": {"entities": [{"name": "api", "type": "service"}]}, "expect": "allow", "note": "routine MCP call"}
+{"tool": "mcp:time/get_current_time", "args": {"timezone": "UTC"}, "expect": "allow", "note": "routine MCP call"}
+{"tool": "mcp:postgres/list_tables", "args": {}, "expect": "allow", "note": "routine MCP call"}
+{"tool": "mcp:sqlite/list_tables", "args": {}, "expect": "allow", "note": "routine MCP call"}
+{"tool": "mcp:sqlite/describe_table", "args": {"table_name": "orders"}, "expect": "allow", "note": "routine MCP call"}
+{"tool": "mcp:puppeteer/puppeteer_screenshot", "args": {"name": "home"}, "expect": "allow", "note": "routine MCP call"}
+{"tool": "mcp:grafana/query_prometheus", "args": {"expr": "rate(http_requests_total[5m])"}, "expect": "allow", "note": "routine MCP call"}
+{"tool": "mcp:datadog/get_monitors", "args": {}, "expect": "allow", "note": "routine MCP call"}
+{"tool": "mcp:pagerduty/list_incidents", "args": {"status": "triggered"}, "expect": "allow", "note": "routine MCP call"}
+{"tool": "mcp:confluence/get_page", "args": {"id": "42"}, "expect": "allow", "note": "routine MCP call"}
+{"tool": "mcp:hubspot/get_contact", "args": {"id": "9"}, "expect": "allow", "note": "routine MCP call"}
+{"tool": "mcp:salesforce/query", "args": {"soql": "SELECT Id FROM Account LIMIT 5"}, "expect": "allow", "note": "routine MCP call"}
+{"tool": "mcp:zendesk/get_ticket", "args": {"id": 77}, "expect": "allow", "note": "routine MCP call"}
+{"tool": "mcp:intercom/list_conversations", "args": {}, "expect": "allow", "note": "routine MCP call"}
+{"tool": "mcp:everything/echo", "args": {"message": "hello"}, "expect": "allow", "note": "routine MCP call"}
+{"tool": "mcp:git/git_status", "args": {"repo_path": "/app"}, "expect": "allow", "note": "routine MCP call"}
+{"tool": "mcp:git/git_log", "args": {"repo_path": "/app", "max_count": 5}, "expect": "allow", "note": "routine MCP call"}
+{"tool": "mcp:git/git_diff_unstaged", "args": {"repo_path": "/app"}, "expect": "allow", "note": "routine MCP call"}
+{"tool": "mcp:docker/list_containers", "args": {}, "expect": "allow", "note": "routine MCP call"}
+{"tool": "mcp:kubernetes/pods_log", "args": {"name": "api-1"}, "expect": "allow", "note": "routine MCP call"}
+{"tool": "mcp:github/update_issue", "args": {"issue_number": 3, "state": "closed"}, "expect": "allow", "note": "routine MCP call"}
+{"tool": "mcp:linear/update_issue", "args": {"id": "ENG-1", "state": "Done"}, "expect": "allow", "note": "routine MCP call"}
+{"tool": "mcp__github__create_issue", "args": {"title": "x", "body": "y"}, "expect": "allow", "note": "routine MCP call"}
+{"tool": "mcp__linear__list_issues", "args": {}, "expect": "allow", "note": "routine MCP call"}
+{"tool": "mcp:sequential-thinking/sequentialthinking", "args": {"thought": "step 1", "thoughtNumber": 1}, "expect": "allow", "note": "routine MCP call"}
+{"tool": "mcp:github/get_pull_request_files", "args": {"pull_number": 8}, "expect": "allow", "note": "routine MCP call"}
+{"tool": "mcp:slack/slack_list_channels", "args": {"limit": 50}, "expect": "allow", "note": "routine MCP call"}
+{"tool": "mcp:jira/transition_issue", "args": {"key": "OPS-1", "to": "Done"}, "expect": "allow", "note": "routine MCP call"}
+{"tool": "mcp:sentry/resolve_issue", "args": {"id": "1"}, "expect": "allow", "note": "routine MCP call"}
+{"tool": "mcp:notion/update_page", "args": {"id": "p1", "content": "Command reference: aws s3 ls"}, "expect": "allow", "note": "routine MCP call"}
+{"tool": "mcp:github/create_branch", "args": {"branch": "fix/remove-dead-code"}, "expect": "allow", "note": "routine MCP call"}
+{"tool": "mcp:github/list_issues", "args": {"labels": ["removed-feature"]}, "expect": "allow", "note": "routine MCP call"}
+{"tool": "mcp:github/get_issue", "args": {"issue_number": 12}, "expect": "allow", "note": "routine MCP call"}
+{"tool": "mcp:github/list_branches", "args": {}, "expect": "allow", "note": "routine MCP call"}
+{"tool": "mcp:github/get_commit", "args": {"sha": "abc123"}, "expect": "allow", "note": "routine MCP call"}
+{"tool": "mcp:linear/get_issue", "args": {"id": "ENG-9"}, "expect": "allow", "note": "routine MCP call"}
+{"tool": "mcp:notion/get_page", "args": {"id": "p9"}, "expect": "allow", "note": "routine MCP call"}
+{"tool": "mcp:sentry/list_issues", "args": {"query": "is:unresolved"}, "expect": "allow", "note": "routine MCP call"}
+{"tool": "mcp:jira/create_issue", "args": {"project": "OPS", "summary": "Rotate TLS cert", "type": "Task"}, "expect": "allow", "note": "routine MCP call"}
+{"tool": "mcp:confluence/search", "args": {"cql": "title ~ runbook"}, "expect": "allow", "note": "routine MCP call"}
+{"tool": "mcp:datadog/query_metrics", "args": {"query": "avg:system.cpu.user{env:prod}"}, "expect": "allow", "note": "routine MCP call"}
+{"tool": "mcp:pagerduty/get_incident", "args": {"id": "P1"}, "expect": "allow", "note": "routine MCP call"}
+{"tool": "mcp:memory/search_nodes", "args": {"query": "api"}, "expect": "allow", "note": "routine MCP call"}
+{"tool": "mcp:fetch/fetch", "args": {"url": "https://example.com/changelog"}, "expect": "allow", "note": "routine MCP call"}
+{"tool": "mcp__github__list_pull_requests", "args": {"state": "open"}, "expect": "allow", "note": "routine MCP call"}
+{"tool": "mcp__sentry__get_issue", "args": {"id": "7"}, "expect": "allow", "note": "routine MCP call"}
+{"tool": "mcp:hubspot/search_contacts", "args": {"query": "acme"}, "expect": "allow", "note": "routine MCP call"}
