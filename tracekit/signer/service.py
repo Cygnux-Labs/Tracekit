@@ -1,6 +1,6 @@
 """The v2 signer service: `SignerService` implements `SignerAPI` over the record log's single writer (pipeline.py).
 
-    tracekit signer serve --config signer.yaml
+    tracekit signer serve --config signer.yaml [--close-on-stop FILE]   # FILE there at SIGTERM: close the log first
     tracekit signer serve --dev               # the same-user dev signer clients auto-spawn (decision S3)
     tracekit signer fsck  --config signer.yaml
     tracekit signer migrate --config signer.yaml     # create the Postgres store's tables (as the migration role)
@@ -46,6 +46,9 @@ signer.yaml:
     limits: {events_per_s: 200, burst: 400}  # tracekit.signer.quotas.Limits
     policy: /etc/tracekit/policy.yaml        # policy v2 (YAML or JSON); default tracekit/policy2/packs/dev.yaml
     origin: tracekit.example.org/log/1       # checkpoint origin, the log key's name; default tracekit.local/<log_id>
+    route: tracekit-central-0                # one replica of a central signer (docs/deploy-kubernetes.md): its run and
+                                             # approval ids start with `<route>.`, which clients route by; a client's
+                                             # own run_id must start with it too
     metrics: {listen: 127.0.0.1:9464}        # Prometheus GET /metrics on its own port (tracekit.signer.metrics),
                                              # and GET /logs/v0: this signer's logs, for witnesses to poll, and
                                              # the logs' tiles and anchors, for monitors (SignerService.tlog);
@@ -195,6 +198,7 @@ STRICTNESS = ("allow", "flag", "ask", "deny")
 LIVE = ("requested", "approved")   # approval states that may still lead to a consume
 LIST_PAGE = 100
 TICK_S = 1.0
+CLOSE_WAIT_S = 60.0   # serve --close-on-stop: how long the final notes wait for witnesses (within the pod's grace)
 CHECKPOINT_S, CHECKPOINT_MIN_S = 10.0, 1.0
 WITNESS_GAP_S, LOG_KEY_GAP_S, BACKOFF_S = 300.0, 300.0, (1.0, 300.0)
 FSCK_S, CLOCK_SKEW_S, LOCK_TIMEOUT_S, RENEW_RETRY_S = 86400.0, 300.0, 10.0, 60.0
@@ -208,7 +212,7 @@ CONFIG_KEYS = {"data_dir", "socket", "socket_mode", "tcp_endpoint", "http", "dur
                "authorize", "limits", "acknowledge_rollback", "policy", "multi_tenant_apps", "migrators", "analyzers",
                "fail_modes", "grace_s", "idle_s", "origin", "metrics", "witnesses", "contact", "approvals",
                "lock_timeout_s", "fsck_every_s", "clock_skew_s", "anchors", "otlp", "otel_out", "storage", "gateways",
-               "gateway_mandatory", "log_key", "harness_binding", "record_key"}
+               "gateway_mandatory", "log_key", "harness_binding", "record_key", "route"}
 APPROVAL_KEYS = {"self_approval", "approvers", "break_glass"}
 OTLP_IMPORT = "otlp_import"   # an `authorize` grant, never a default: OTLP/HTTP import (otlp config section)
 OTLP_MAX_SPANS = 512
@@ -334,7 +338,7 @@ class SignerService:
                  bridge=None, origin=None, authorize=None, contact=None, approvals=None, lock_timeout_s=0,
                  fsck_every_s=FSCK_S, clock_skew_s=CLOCK_SKEW_S, rekor=None, otlp=None, otel_out=None,
                  storage_config=None, gateways=(), gateway_mandatory=False, log_key=None, slh_dsa_file=None,
-                 harness_binding=None, record_key=None):
+                 harness_binding=None, record_key=None, route=None):
         """`identity` answers the in-process SignerAPI calls (default: this process's uid); transports call
         handle_frame with the identity they established. `policy` is a policy2 Engine (default: load_policy()).
         `open_storage()` defaults to the store `storage_config` (the `storage` config section) names, else file storage
@@ -352,7 +356,8 @@ class SignerService:
         `slh_dsa_file`: the SLH-DSA secret key file (created on first use) that adds a hybrid line to every note.
         `harness_binding` ({helper, required, harnesses}): the config section, or None.
         `record_key`: the `record_key` config section: a fresh record key, certified by its issuer, at every start and
-        once two thirds of its certificate's validity have passed (else the file key in keys/record.key)."""
+        once two thirds of its certificate's validity have passed (else the file key in keys/record.key).
+        `route`: the prefix (before a dot) of this signer's run and approval ids, or None."""
         fail_modes = dict(fail_modes or FAIL_MODES)
         if not all(isinstance(k, str) and v in ("open", "closed") for k, v in fail_modes.items()):
             raise ValueError("fail_modes maps tool classes to open or closed")
@@ -427,6 +432,7 @@ class SignerService:
         self.fail_modes, self.grace_s, self.idle_s = fail_modes, grace_s, idle_s
         self.otlp_max_spans = otlp.get("max_spans", OTLP_MAX_SPANS)
         self.approvals, self.data_dir, self.storage_config = approvals, data_dir, storage_config
+        self.id_prefix = f"{route}." if route else ""
         self._harnesses, self._helper = harnesses, hb.get("helper")
         self._harness_required = {k: True for k in hb.get("required", ())}
         self._chains, self._chains_lock = {}, threading.Lock()   # pid -> (start time, its chain)
@@ -888,14 +894,29 @@ class SignerService:
             return (b"".join(tree.edge[level]) if n == count // 256 else tree.store.get(level, n, 256))[:32 * w]
         return self.log.write(read)
 
-    def close_log(self):
+    def close_log(self, wait_s=0):
         """Close the log for good: a signed log.closed{final_seq: its own seq} (a leaf in every tenant's registry),
-        then the final notes. Every later write is refused, after a restart too."""
+        then the final notes. Every later write is refused, after a restart too. Waits up to `wait_s` for every witness
+        to cosign the final notes; returns whether they all did."""
         self.log.write(lambda tx: tx.emit(self.log.signer_run(tx), "log.closed", {"final_seq": self.log.head["seq"]},
                                           source="signer"))
         if not self.checkpoint():
             raise RPCError("unavailable", "the log is closed but the log key signed no final note: start the signer once "
                                           "the log key is reachable, and it writes the note")
+        deadline = time.monotonic() + wait_s
+        while not self._cosigned():
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(TICK_S / 10)
+        return True
+
+    def _cosigned(self):
+        """Whether every witness has cosigned the latest note of every tree."""
+        trees = [RECORDS] + [registry_tree(t) for t in sorted(self.log.tenants)]
+        sizes = {tree: (self.log.storage.checkpoint_latest(tree) or (0,))[0] for tree in trees}
+        with self._queue_lock:
+            return all(self._queue.get(w.name, {}).get(tree, {}).get("size", 0) >= size
+                       for w in self.witnesses for tree, size in sizes.items())
 
     def sweep(self, now=None, wall=None):
         """Close idle runs, write run.final for runs whose grace window has passed and expire approvals.
@@ -1147,7 +1168,9 @@ class SignerService:
             if harness is None and lookup(self._harness_required, sub, False):
                 raise RPCError("forbidden", f"not from a registered harness ({why})")
         tenant = req.get("tenant") or self._tenant_of(identity)
-        run_id = req.get("run_id") or secrets.token_hex(16)
+        run_id = req.get("run_id") or self.id_prefix + secrets.token_hex(16)
+        if not run_id.startswith(self.id_prefix):
+            raise RPCError("invalid_request", f"this signer's run ids start with {self.id_prefix!r}")
         own = owner(identity)
         self.quotas.take_event(identity)
 
@@ -1348,7 +1371,8 @@ class SignerService:
             self.quotas.check_count("pending_approvals", sum(a["requester"] == sub and a["state"] == "requested"
                                                              for a in self.log.approvals.values()))
             p = call["pending"]
-            aid, expires_at, sid = "apr-" + secrets.token_hex(16), _iso(time.time() + APPROVAL_TTL_S), secrets.token_hex(16)
+            aid, sid = f"{self.id_prefix}apr-{secrets.token_hex(16)}", secrets.token_hex(16)
+            expires_at = _iso(time.time() + APPROVAL_TTL_S)
             args, digest = self._args(p)
             binding = {"v": 1, "approval_id": aid, "tenant": key[0], "run_id": key[1], "tool_call_id": tcid,
                        "attempt": attempt, "tool": p["tool"], "args_commitment": self._commit("approval.request:" + sid, digest),
@@ -1705,6 +1729,9 @@ def load_config(path):
                              "(default: keys/log.key, no hybrid line)")
         if slh:
             slh["file"] = os.path.join(base, slh["file"])
+    if "route" in cfg and not (isinstance(cfg["route"], str) and re.fullmatch(r"[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?",
+                                                                              cfg["route"])):
+        raise ValueError(f"{path}: route is a DNS label (the replica's host name)")
     if "record_key" in cfg:
         from tracekit import issuer
         issuer.check_signer_section(cfg["record_key"], path)
@@ -1803,7 +1830,8 @@ def open_service(cfg, **kw):
                          rekor=(cfg.get("anchors") or {}).get("rekor"), otlp=cfg.get("otlp"),
                          otel_out=cfg.get("otel_out"), storage_config=cfg.get("storage"), gateways=cfg.get("gateways", ()),
                          gateway_mandatory=cfg.get("gateway_mandatory") is True,
-                         harness_binding=cfg.get("harness_binding"), record_key=cfg.get("record_key"), **kw)
+                         harness_binding=cfg.get("harness_binding"), record_key=cfg.get("record_key"),
+                         route=cfg.get("route"), **kw)
 
 
 def serve(cfg, service):
@@ -1996,7 +2024,10 @@ def _token_cmd(a, cfg):
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="tracekit signer", description="the v2 signer service")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    mode = sub.add_parser("serve", help="run the signer in the foreground").add_mutually_exclusive_group(required=True)
+    q = sub.add_parser("serve", help="run the signer in the foreground")
+    q.add_argument("--close-on-stop", metavar="FILE",
+                   help="on SIGTERM, when FILE exists, close the log for good first (a scaled-down central replica)")
+    mode = q.add_mutually_exclusive_group(required=True)
     mode.add_argument("--config")
     mode.add_argument("--dev", action="store_true",
                       help="the same-user dev signer of the runtime dir ($TRACEKIT_RUNTIME_DIR); clients start it")
@@ -2121,6 +2152,11 @@ def main(argv=None):
             service.close()
         print(f"log closed at seq {service.log.head['seq'] - 1}")
         return 0
+    if service.log.head["closed"]:
+        service.close()
+        print("tracekit signer: the log is closed (log.closed) and takes no more records: give this signer a new log",
+              file=sys.stderr)
+        return 1
     stop = threading.Event()
     signal.signal(signal.SIGTERM, lambda *_: stop.set())
     try:
@@ -2143,5 +2179,12 @@ def main(argv=None):
             os.unlink(cfg["socket"])
         except FileNotFoundError:
             pass
+    if a.close_on_stop and os.path.exists(a.close_on_stop):
+        try:
+            if not service.close_log(CLOSE_WAIT_S):
+                print(f"tracekit signer: the log is closed; a witness did not cosign its final notes within "
+                      f"{CLOSE_WAIT_S:g}s", file=sys.stderr)
+        except (RPCError, StorageUnavailable, OSError) as e:
+            print(f"tracekit signer close-log: {e}", file=sys.stderr)
     service.close()
     return 0
