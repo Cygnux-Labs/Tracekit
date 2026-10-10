@@ -70,6 +70,19 @@ def run_start_event(p, pol, cwd, reasoning=True):
         "signer_isolation": cfg.get("signer_isolation", "same-user")}}
 
 
+def transcript_entries(f):
+    """(bytes, entry) for each complete line of a Claude Code transcript (JSONL) from f's position: entry is the line's
+    JSON object, None when the line is not one. Stops before a line still being written."""
+    for line in f:
+        if not line.endswith(b"\n"):
+            return
+        try:
+            e = json.loads(line)
+        except ValueError:
+            e = None
+        yield len(line), e if isinstance(e, dict) else None
+
+
 def _transcript_events(p, pol):
     """Opt-in (reasoning_capture): model text read from the harness transcript. Lower trust."""
     path = p.get("transcript_path")
@@ -83,15 +96,9 @@ def _transcript_events(p, pol):
     out = []
     with open(path, "rb") as f:
         f.seek(off)
-        for line in f:
-            if not line.endswith(b"\n"):
-                break
-            off += len(line)
-            try:
-                e = json.loads(line)
-            except ValueError:
-                continue
-            if not isinstance(e, dict) or e.get("type") != "assistant":
+        for n, e in transcript_entries(f):
+            off += n
+            if not e or e.get("type") != "assistant":
                 continue
             msg = e.get("message")
             msg = msg if isinstance(msg, dict) else {}
