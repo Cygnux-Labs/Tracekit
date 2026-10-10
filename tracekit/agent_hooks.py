@@ -292,13 +292,19 @@ def install(harness, project=None, uninstall=False, v2=False, python=None, path=
         vs = {_version(c) for c in cmds} - {None}
         removed.update(vs)
         return bool(vs)
+
+    def entries(ev):
+        lst = hooks.get(ev, [])
+        if not isinstance(lst, list):
+            raise SettingsError(f"hooks.{ev} in {path} must be a list; Tracekit did not change it.")
+        return lst
     if harness == "cursor":
         s.setdefault("version", 1)
         closed = v2 or H.fail_closed()   # v2: a hook that cannot run blocks, as the v2 hook does
         events = {"preToolUse": 600, "postToolUse": 30, "postToolUseFailure": 30, "beforeSubmitPrompt": 30, "sessionStart": 30,
                   "sessionEnd": 30}
         for ev, timeout in events.items():
-            lst = [h for h in hooks.get(ev, []) if not (isinstance(h, dict) and ours([h.get("command")]))]
+            lst = [h for h in entries(ev) if not (isinstance(h, dict) and ours([h.get("command")]))]
             if not uninstall:
                 lst.append({"command": cmd, "type": "command", "timeout": timeout, "failClosed": closed})
             if lst:
@@ -310,7 +316,7 @@ def install(harness, project=None, uninstall=False, v2=False, python=None, path=
                   else ["BeforeTool", "AfterTool", "BeforeAgent", "SessionStart", "SessionEnd"])
         tools = {"PreToolUse", "PostToolUse", "BeforeTool", "AfterTool"}
         for ev in events:
-            groups = [g for g in hooks.get(ev, []) if not (isinstance(g, dict) and ours(
+            groups = [g for g in entries(ev) if not (isinstance(g, dict) and ours(
                 [h.get("command") for h in g.get("hooks", []) if isinstance(h, dict)]))]
             if not uninstall:
                 h = {"type": "command", "command": cmd}

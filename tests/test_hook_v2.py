@@ -242,6 +242,15 @@ class InitV2(unittest.TestCase):
         self.assertTrue(os.path.isabs(shlex.split(cmd)[0]), cmd)
         self.assertTrue(all(install._is_ours(g) for gs in hooks.values() for g in gs))
 
+    @unittest.skipUnless(os.name == "posix", "a POSIX shell wraps the hook")
+    def test_a_dev_v2_hook_that_cannot_run_blocks_the_call(self):
+        with mock.patch.object(install, "_dev_hook_command", return_value="false"):   # exits 1, as when tracekit is gone
+            for module in install.V2_HOOKS:
+                p = subprocess.run(install._hook_command(module), shell=True, capture_output=True, text=True, timeout=30)
+                self.assertEqual(p.returncode, 2, module)
+                self.assertIn("call blocked (fail-closed)", p.stderr)
+            self.assertEqual(install._hook_command(), "false")   # the v1 dev hook keeps its own fail mode
+
     def test_v2_without_the_signer_extra_is_refused(self):
         from tracekit.policy2 import engine
         with mock.patch.object(engine, "_backend", side_effect=ImportError("no regex")):
@@ -282,6 +291,31 @@ class InitV2(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PreBudget(unittest.TestCase):
+    def test_a_held_call_is_answered_within_the_hooks_budget(self):
+        """Every signer call takes all the time it may, and the approval comes on the last wait: the hook still
+        answers within APPROVAL_WAIT_S, below its timeout."""
+        now, calls = [0.0], []
+        client = mock.Mock(timeout=30.0)
+
+        def call(method, **fields):
+            calls.append(method)
+            now[0] += client.timeout + fields.get("timeout_ms", 0) / 1000
+            return {"approval_request": {"approval_id": "a1"}, "approval_consume": {"ok": True}}.get(method) or \
+                {"state": "requested" if fields.get("timeout_ms") == 300_000 else "approved"}
+        run = mock.Mock(run_id="r1", call=call, approval_consume=lambda *a, **kw: call("approval_consume"))
+
+        def decide(*a, **kw):
+            call("decide")
+            return run, {"decision": "ask", "rule_ids": ["R1"], "decision_id": "d1"}
+        with mock.patch.object(claude_code, "_run", decide), mock.patch.object(claude_code, "files"), \
+                mock.patch.object(claude_code, "time", mock.Mock(monotonic=lambda: now[0])), \
+                contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(claude_code._pre(client, {"tool_name": "pay", "tool_input": {}}, "s1", "t1"), 0)
+        self.assertEqual(calls[-1], "approval_consume")
+        self.assertLessEqual(now[0], claude_code.APPROVAL_WAIT_S)
 
 
 class StateReads(unittest.TestCase):

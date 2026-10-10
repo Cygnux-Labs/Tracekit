@@ -84,6 +84,14 @@ class SettingsFile(unittest.TestCase):
                 install.install_hooks(self.p)
             self.assertEqual(open(self.p).read(), bad)
 
+    def test_a_group_of_another_shape_is_kept_as_it_is(self):
+        theirs = [{"matcher": "x", "hooks": "echo mine"}, {"hooks": ["echo mine", {"command": 7}]}, "junk"]
+        with open(self.p, "w") as f:
+            json.dump({"hooks": {"PreToolUse": theirs}}, f)
+        install.install_hooks(self.p)
+        with open(self.p) as f:
+            self.assertEqual(json.load(f)["hooks"]["PreToolUse"][:3], theirs)
+
     def test_idempotent_install_makes_no_extra_backup_and_uninstall_restores(self):
         with open(self.p, "w") as f:
             json.dump({"theme": "dark", "hooks": {"PreToolUse": [{"matcher": "x", "hooks": [{"type": "command", "command": "mine"}]}]}}, f)

@@ -258,6 +258,50 @@ test("fake: pipelined calls share one connection and are answered in order", asy
   assert.equal(new Set(decides.map((f) => f.stream)).size, 1);
 });
 
+test("fake: a request that is not JSON takes no answer and no client_seq", async (t) => {
+  const { client, frames } = await fake(t);
+  const run = await client.registerRun("a");
+  await assert.rejects(run.decide("t1", "Bash", { n: 10n }), (e) => e instanceof RPCError && e.code === "invalid_request");
+  const [other, mine] = await Promise.all([run.decide("t2", "Bash", {}), run.decide("t3", "rm", {})]);
+  assert.deepEqual([other.decision_id, mine.decision_id, mine.decision], ["dec-t2", "dec-t3", "deny"]);
+  assert.deepEqual(frames.filter((f) => f.method === "decide").map((f) => f.client_seq), [0, 1]);
+});
+
+/** A Client of an HTTPS signer whose requests `answer(frame)` answers, in place of the network. */
+function https(answer, timeoutMs) {
+  const c = new Client({ signer: "https://signer.test:8443", timeoutMs });
+  c.https.post = async (f) => (f.method === "hello" ? { proto: [RPC_VERSION, RPC_VERSION], version: "test", pid: 1 } : answer(f));
+  return c;
+}
+const event = (run_id, tool_call_id) => ({ run_id, run_token: "t", tool_call_id, tool: "Bash", args: {}, args_source: "parsed" });
+
+test("HTTPS: a run's events reach the signer in client_seq order", async () => {
+  const arrived = { r0: [], r1: [] };
+  const c = https(async (f) => {
+    await sleep(Math.random() * 5);   // the network: requests sent in order may arrive out of it
+    arrived[f.run_id].push(f.client_seq);
+    return { ok: true };
+  });
+  await Promise.all(Array.from({ length: 40 }, (_, i) => c.call("decide", event(`r${i % 2}`, `c${i}`))));
+  assert.deepEqual(arrived, { r0: [...Array(20).keys()], r1: [...Array(20).keys()] });
+});
+
+test("HTTPS: an event waiting behind an unanswered one gives up in time and uses its client_seq", async () => {
+  const arrived = [];
+  const c = https(async (f) => {
+    arrived.push(f.client_seq);
+    if (f.tool_call_id === "slow") await sleep(600);
+    return { ok: true };
+  }, 200);
+  const slow = c.call("decide", event("r1", "slow"));
+  const t = Date.now();
+  await assert.rejects(c.call("decide", event("r1", "waits")), SignerUnavailable);
+  assert.ok(Date.now() - t < 500);
+  await slow;
+  await c.call("decide", event("r1", "next"));
+  assert.deepEqual(arrived, [0, 2]);   // 1, the call that gave up, is the signer's client_counter_gap
+});
+
 test("fake: a signer of another protocol version is refused", async (t) => {
   const { client } = await fake(t, { hello: { proto: [RPC_VERSION + 1, RPC_VERSION + 2], version: "9.9.9", pid: 7 } });
   await assert.rejects(client.registerRun("a"), (e) => e instanceof Incompatible && /9\.9\.9/.test(e.message));
