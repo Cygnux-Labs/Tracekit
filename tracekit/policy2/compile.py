@@ -14,15 +14,16 @@ from .. import yamlmini
 from ..policy import PolicyError, _sre_c, _sre_p, check_regex
 
 SECTIONS = ("deny", "ask", "flag")
-TOP_KEYS = {"version", "description", "extends", "tools", "unknown_tools", "deny", "ask", "flag"}
-RULE_KEYS = {"id", "class", "tool", "field", "pattern", "unless", "reason", "rationale", "label", "approval"}
+TOP_KEYS = {"version", "description", "extends", "tools", "untrusted", "unknown_tools", "deny", "ask", "flag"}
+RULE_KEYS = {"id", "class", "tool", "field", "pattern", "unless", "reason", "rationale", "label", "approval", "from"}
 # an ask rule's `approval`: executor t2 runs only the signer's copy; passkey required: approving needs a passkey
 APPROVAL = {"executor": ("t1", "t2"), "passkey": ("required",)}
 # every class also has `target`: what the call acts on (engine.Engine._targets), so one rule without a class can match it
 CLASSES = {"shell": {"command", "argv", "line"}, "fs": {"path", "op", "content_digest"},
-           "http": {"method", "url", "host", "internal"}, "sql": {"statement", "code", "verb", "db"},
-           "payment": {"amount", "currency", "payee", "new_payee"}, "email": {"to", "domains", "attachments"},
-           "mcp": {"server", "tool", "args"}, "browser": {"action", "url", "scheme", "host", "internal"}, "unknown": set()}
+           "http": {"method", "url", "host", "internal", "sends_to"}, "sql": {"statement", "code", "verb", "db"},
+           "payment": {"amount", "currency", "payee", "new_payee", "payees"},
+           "email": {"to", "domains", "attachments", "recipients"}, "mcp": {"server", "tool", "args"},
+           "browser": {"action", "url", "scheme", "host", "internal", "sends_to"}, "unknown": set()}
 for _fields in CLASSES.values():
     _fields.add("target")
 MAX_REPEAT = 1000   # RE2's limit for {n,m}
@@ -131,6 +132,9 @@ def build(path, seen=()):
     if not isinstance(pol.get("tools", {}), dict):
         errors.append(f"{path}: tools must map tool names to classes")
         pol["tools"] = {}
+    if not (isinstance(pol.get("untrusted", []), list) and all(isinstance(u, str) for u in pol.get("untrusted", []))):
+        errors.append(f"{path}: untrusted must list tool classes and tool name globs")
+        pol["untrusted"] = []
     base = pol.pop("extends", None)
     parents = []
     for b in base if isinstance(base, list) else [] if base is None else [base]:
@@ -147,8 +151,13 @@ def build(path, seen=()):
         merged = {k: v for p in parents for k, v in p.items() if k not in SECTIONS + ("extends",)}
         merged.update({k: v for k, v in pol.items() if k not in SECTIONS})
         merged["tools"] = {k: v for p in parents + [pol] for k, v in p.get("tools", {}).items()}
+        untrusted = list(dict.fromkeys(u for p in parents + [pol] for u in p.get("untrusted", [])))
+        if untrusted:
+            merged["untrusted"] = untrusted
         for sec in SECTIONS:
-            merged[sec] = [r for p in parents for r in p.get(sec, []) if isinstance(r, dict) and r.get("id") not in own] + pol.get(sec, [])
+            rules = [r for p in parents for r in p.get(sec, []) if isinstance(r, dict) and r.get("id") not in own]
+            # a rule two parents both carry (TK-P003 in server-net and browser) is kept once
+            merged[sec] = [r for i, r in enumerate(rules) if r not in rules[:i]] + pol.get(sec, [])
         merged["extends"] = [policy_hash(p) for p in parents] if isinstance(base, list) else policy_hash(parents[0])
         pol = merged
     return pol, errors + _lint(pol, path)
@@ -171,6 +180,8 @@ def _lint(pol, path):
             errors += [f"{where}: unknown key {k!r}" for k in sorted(set(r) - RULE_KEYS)]
             errors += [f"{where}: {k} must be a string" for k in sorted(set(r) & RULE_KEYS - {"approval"})
                        if not isinstance(r[k], str)]
+            if r.get("from", "untrusted") != "untrusted":
+                errors.append(f"{where}: from must be untrusted")
             if "approval" in r and (sec != "ask" or not isinstance(r["approval"], dict) or not r["approval"]
                                     or any(v not in APPROVAL.get(k, ()) for k, v in r["approval"].items())):
                 errors.append(f"{where}: approval must be {{executor?: t1|t2, passkey?: required}}, on an ask rule")

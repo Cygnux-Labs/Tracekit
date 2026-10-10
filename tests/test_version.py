@@ -10,14 +10,15 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def _semver(v):
-    """PEP 440 pre-release (0.2.0rc1) to semver (0.2.0-rc.1); finals pass through."""
-    m = re.fullmatch(r"(\d+\.\d+\.\d+)(?:(a|b|rc)(\d+))?", v)
+    """PEP 440 pre-release (0.2.0rc1, 1.1.0.dev0) to semver (0.2.0-rc.1, 1.1.0-dev.0); finals pass through."""
+    m = re.fullmatch(r"(\d+\.\d+\.\d+)(?:(a|b|rc|\.dev)(\d+))?", v)
     if not m:
         raise ValueError(f"unsupported version {v!r}")
     base, pre, n = m.groups()
     if not pre:
         return base
-    return f"{base}-{dict(a='alpha', b='beta').get(pre, pre)}.{n}"
+    pre = {"a": "alpha", "b": "beta", ".dev": "dev"}.get(pre, pre)
+    return f"{base}-{pre}.{n}"
 
 
 class VersionSourceTest(unittest.TestCase):
@@ -34,6 +35,7 @@ class VersionSourceTest(unittest.TestCase):
         self.assertEqual(_semver("0.2.0rc1"), "0.2.0-rc.1")
         self.assertEqual(_semver("1.0.0a2"), "1.0.0-alpha.2")
         self.assertEqual(_semver("1.0.0"), "1.0.0")
+        self.assertEqual(_semver("1.1.0.dev0"), "1.1.0-dev.0")
 
 
 if __name__ == "__main__":

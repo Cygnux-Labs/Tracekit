@@ -4,7 +4,7 @@
 # hosts (a rule in the extending file replaces the parent's). Cloud metadata addresses are denied for every tool by
 # TK-S001 in server.yaml.
 
-version: '2026.10-server-net-2'
+version: '2026.10-server-net-3'
 description: server-hosted agents, HTTP egress
 unknown_tools: ask
 
@@ -20,6 +20,9 @@ tools:
   fetch: http
   web_fetch: http
   'mcp:fetch/fetch': http     # MCP reference fetch server
+
+# web content is untrusted
+untrusted: [http]
 
 deny:
   - id: TK-N001
@@ -48,3 +51,13 @@ deny:
     unless: '"url":"https://([A-Za-z0-9.-]*\.)?example\.com\.?(:[0-9]+)?([/?#][^"\\]*)?"}$'
     reason: sending data to a host outside the allowlist
     rationale: A request with a body is how data leaves; a server agent sends data only to the hosts its deployment names.
+
+ask:
+  - id: TK-P003
+    # data sent (a method other than GET or HEAD, a body, or typing and uploads in a browser) to a host that only
+    # untrusted content (`untrusted` tools' results, observed untrusted input) brought into the run
+    field: sends_to
+    pattern: '.'
+    from: untrusted
+    reason: sending data to a host that came from untrusted content
+    rationale: A host the agent read in a page, a mail or a ticket, and in nothing the task or a trusted tool gave it, is where injected instructions send data; a person checks it.

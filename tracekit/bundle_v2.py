@@ -39,6 +39,7 @@ from tracekit.storage.base import registry_tree
 
 FORMAT = "tracekit.bundle.v2"
 VERIFIER_MIN_VERSION = "1.0.0"
+PROVENANCE_VERSION = "1.1.0"   # a bundle with input.observed records or decision provenance (format 1.1)
 KEY_TYPES = ("signer.epoch", "key.retire")
 
 
@@ -125,7 +126,9 @@ def export(storage, tenant, run_id, note, out_path, policies=(), run_set=None, t
     if anchor:
         files[f"rekor/{size}.json"] = json.dumps(anchor["rekor"]).encode("utf-8")
         files[f"tsa/{size}.tsr"] = base64.b64decode(anchor["tsa"])
-    manifest = {"format": FORMAT, "verifier_min_version": VERIFIER_MIN_VERSION,
+    v11 = any(r["event"]["type"] == "input.observed" or {"provenance", "provenance_state"} & r["event"]["data"].keys()
+              for r in [*pointed, *(r for rs in runs.values() for r in rs)])
+    manifest = {"format": FORMAT, "verifier_min_version": PROVENANCE_VERSION if v11 else VERIFIER_MIN_VERSION,
                 "files": {n: hashlib.sha256(b).hexdigest() for n, b in files.items()}}
     tmp = out_path + ".tmp"
     try:
