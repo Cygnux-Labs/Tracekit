@@ -15,7 +15,8 @@ the app over /api/stream and, with a webhook, POSTed out.
 Security: the conventions of `tracekit view` (observe.py). Every request needs the token: the page's `?token=` is
 exchanged once for an HttpOnly, SameSite=Strict cookie derived from it, the API also takes it as a bearer token, and
 ingest takes the bearer token only. Requests to a Host name other than loopback or the bound address are refused
-unless they carry the token (DNS rebinding); POSTs need an expected Host whatever they carry. The replay POSTs need a
+unless they carry the token (DNS rebinding); a POST under another Host needs the bearer token (a remote agent's ingest),
+never the cookie. The replay POSTs need a
 JSON body, which a cross-site form cannot send. Ingest validates every event's hash, its link to the previous event
 and every blob's content hash before anything is written. Replay imports the program a run names, so only programs
 passed with --allow-program can be replayed. Served by netserver.Server: bounded threads, per-IP limits, deadlines.
