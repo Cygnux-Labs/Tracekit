@@ -366,7 +366,6 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
     return out
 
 
-
 def kms_checks(kms, issuer_key=None):
     """The KMS log key's spec and usage, and whether this host's AWS principal can also sign with `issuer_key`."""
     from .signer import logkey
@@ -542,7 +541,7 @@ def _volume_mounts(cs):
 
 def k8s_checks(docs, problems=()):
     """Checks of the pods in `docs` (manifests or API objects) that run a Tracekit signer or agent: an agent container
-    is any other container of a signer's pod, or one with a TRACEKIT_* env var (central mode)."""
+    is one with a TRACEKIT_* env var, or one that mounts the volume the signer mounts at its socket dir."""
     docs = [d for d in docs if isinstance(d, dict)]
     found = {k: [] for k in K8S_FIX}
     sas = {(_ns(d), (d.get("metadata") or {}).get("name")): d for d in docs if d.get("kind") == "ServiceAccount"}
@@ -554,7 +553,9 @@ def k8s_checks(docs, problems=()):
         cs = (spec.get("containers") or []) + [c for c in spec.get("initContainers") or []
                                                if c.get("restartPolicy") == "Always"]
         signers = [c for c in cs if _is_signer(c)]
-        agents = [c for c in cs if not _is_signer(c) and (signers or any(
+        sig = _volume_mounts(signers)
+        sock = {v for v, p in sig.items() if p.rstrip("/") == SOCKET_DIR}
+        agents = [c for c in cs if not _is_signer(c) and (sock & set(_volume_mounts([c])) or any(
             str(e.get("name", "")).startswith("TRACEKIT_") for e in c.get("env") or []))]
         if not (signers or agents):
             continue
@@ -577,13 +578,10 @@ def k8s_checks(docs, problems=()):
                 ("capabilities not dropped", "ALL" in ((sc.get("capabilities") or {}).get("drop") or []))) if not ok]
             if weak:
                 found["D-K8S-SECURITY-CONTEXT"].append(f"{name} {c.get('name')}: {', '.join(weak)}")
-        sig = _volume_mounts(signers)
         data |= {vols.get(v) for v, p in sig.items() if p.rstrip("/") == SIGNER_DATA or p.startswith(SIGNER_DATA + "/")}
         agent_mounts += [(name, c.get("name"), vols.get(v)) for c in agents for v in _volume_mounts([c])]
         if signers and agents:
-            sock_dirs = {SOCKET_DIR} | {os.path.dirname(str(e.get("value"))) for c in agents
-                                        for e in c.get("env") or [] if e.get("name") == "TRACEKIT_SIGNER"}
-            shared = sorted(v for v in set(sig) & set(_volume_mounts(agents)) if sig[v] not in sock_dirs)
+            shared = sorted(set(sig) & set(_volume_mounts(agents)) - sock)
             if shared:
                 found["D-K8S-SHARED-VOLUME"].append(f"{name}: {', '.join(shared)}")
             theirs = {uid[id(c)] for c in signers}

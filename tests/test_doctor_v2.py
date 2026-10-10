@@ -80,6 +80,13 @@ class K8s(unittest.TestCase):
             got = {r["id"]: r["status"] for r in e16.run_k8s_case(mutate)}
             self.assertEqual(got["D-K8S-SA-TOKEN"], want)
 
+    def test_central_signer_with_cloud_identity_and_a_sidecar_passes(self):
+        def central(docs):
+            e16._sa_note("eks.amazonaws.com/role-arn", "arn:aws:iam::111122223333:role/tracekit-kms")(docs)
+            e16._pod(docs)["containers"] = [{"name": "istio-proxy", "image": "istio/proxyv2:1.22",
+                                             "securityContext": dict(e16.HARDENED, runAsUser=1337)}]
+        self.assertEqual([r for r in e16.run_k8s_case(central) if r["status"] != "ok"], [])
+
     def test_block_yaml_lists_cronjobs_and_json_files(self):
         d = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, d, True)

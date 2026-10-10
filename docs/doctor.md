@@ -68,7 +68,8 @@ venv or unit checks. If there's no service file, `D-UNIT-HARDENING` warns.
 ## Kubernetes checks (`--k8s`)
 
 A pod is checked when it runs a signer (its image is `tracekit-signer`, or its command is `signer serve`) or an agent:
-any other container of a signer's pod, or a container with a `TRACEKIT_*` environment variable (central mode). Native
+a container with a `TRACEKIT_*` environment variable, or one that mounts the volume the signer mounts at its socket dir.
+Other containers of a signer's pod (a mesh proxy, a vault agent) are not agents. Native
 sidecars (init containers with `restartPolicy: Always`) count; other init containers don't. The signer's socket dir
 and data dir are the image's, `/run/tracekit-signer` and `/var/lib/tracekit-signer`, and its user 10001.
 
