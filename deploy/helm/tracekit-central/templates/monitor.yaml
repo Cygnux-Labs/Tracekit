@@ -39,6 +39,7 @@ spec:
             runAsUser: {{ int $.Values.signer.uid }}
             runAsGroup: {{ int $.Values.signer.uid }}
             {{- include "tc.hardened" $ | nindent 12 }}
+          resources: {{- toYaml $.Values.monitor.resources | nindent 12 }}
           volumeMounts:
             - {name: state, mountPath: /var/lib/tracekit-monitor}
         {{- end }}

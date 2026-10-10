@@ -1,12 +1,12 @@
 """`tracekit deploy compose [--dir DIR]`: write the compose stack of deploy/compose/ (docs/deploy-compose.md).
 
 Copies the templates, then writes signer.yaml (Postgres storage, the stack's witness pinned with --witness-class),
-viewer.yaml, the witness's key (secrets/witness.key for omniwitness, secrets/witness.ssh for litewitness: one key),
+policy.yaml (the server pack, yours to edit), viewer.yaml, the witness's key (secrets/witness.key for omniwitness, secrets/witness.ssh for litewitness: one key),
 the Postgres passwords and the signer's and viewer's DSNs (secrets/, 0600) and postgres/20-schema.sql (the tables of
 tracekit.storage.postgres and each role's grants). Run as root, each secret is owned by the uid of the one container
 that reads it (compose bind-mounts secret files as they are on the host).
 
-Idempotent: keys and passwords already there are kept, every other file must equal what this run would write, and a
+Idempotent: keys, passwords and policy.yaml already there are kept, every other file must equal what this run would write, and a
 file that differs stops the run before anything is written. Needs a source checkout: the stack builds its images
 from it.
 """
@@ -37,10 +37,17 @@ durability: ack-on-fsync
 storage: {{postgres: {{dsn_file: /run/secrets/signer.dsn}}}}
 tenants: {{"uid:1000": default}}               # the agent service's uid
 metrics: {{listen: 0.0.0.0:9464, allow_remote: true}}   # /metrics and the /logs/v0 list the witness polls
+policy: /etc/tracekit/policy.yaml            # ./policy.yaml
 witnesses:                                   # class {witness_class}: docs/deploy-compose.md says which to use
   - {{url: "http://witness:8080", vkey: "{witness_vkey}", class: {witness_class}}}
 """
 
+
+POLICY_YAML = """# Written once by `tracekit deploy compose`, then yours: a rerun keeps it (docs/policy-v2.md).
+# The signer's policy: the image's server pack (packs/ is tracekit/policy2/packs). Map your tools under `tools` and
+# redefine a rule by id to change it.
+extends: packs/server.yaml
+"""
 
 VIEWER_YAML = """# Written by `tracekit deploy compose`: the viewer reads the store as the SELECT-only role.
 data_dir: /tmp/tracekit-view
@@ -101,6 +108,7 @@ def plan(out, witness_name, witness_class):
     pw = {r: secret(f"pg-{r}.password") or secrets.token_urlsafe(24) + "\n" for r in ("admin", "signer", "viewer")}
     want.update({
         "signer.yaml": (_signer_yaml(vkey, witness_class), 0o644),
+        "policy.yaml": (_read(os.path.join(out, "policy.yaml")) or POLICY_YAML, 0o644),
         "viewer.yaml": (VIEWER_YAML, 0o644),
         "witness.vkey": (vkey + "\n", 0o644),
         "postgres/20-schema.sql": (_schema_sql(), 0o644),
