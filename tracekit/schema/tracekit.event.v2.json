@@ -84,7 +84,7 @@
         "import",
         "gateway"
       ],
-      "description": "Capture path. transcript = harness-reported, lower trust; import = received over OTLP (tier T3): receipt only; gateway = model.exchange recorded by the LLM gateway (tier T2)."
+      "description": "Capture path. transcript = harness-reported, lower trust; import = received over OTLP, or another system's decision (decision_import) (tier T3): receipt only; gateway = model.exchange recorded by the LLM gateway (tier T2)."
     },
     "type": {
       "enum": [
@@ -121,7 +121,8 @@
         "reconcile.result_without_call",
         "reconcile.unexplained_effect",
         "reconcile.args_unparseable",
-        "refusal.summary"
+        "refusal.summary",
+        "policy.external"
       ]
     },
     "data": {
@@ -809,6 +810,22 @@
           }
         }
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "policy.external"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/policy_external"
+          }
+        }
+      }
     }
   ],
   "$defs": {
@@ -1478,7 +1495,8 @@
             "quota_refused",
             "identity_refused",
             "approval_expired",
-            "executed_against_policy"
+            "executed_against_policy",
+            "decision_mismatch"
           ],
           "description": "Gap and tamper kinds (signer-written only)."
         },
@@ -2496,6 +2514,117 @@
         "identity": {
           "type": "string",
           "maxLength": 256
+        }
+      }
+    },
+    "policy_external": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "system",
+        "decision",
+        "tool_use_id",
+        "tool",
+        "rule_ids",
+        "signature",
+        "record",
+        "identity",
+        "salt_id"
+      ],
+      "description": "Another system's decision about a tool call, imported by an identity authorized for decision_import (tier T3). The signer's own policy.decision stays authoritative.",
+      "properties": {
+        "system": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "decision": {
+          "enum": [
+            "allow",
+            "deny",
+            "ask"
+          ]
+        },
+        "tool_use_id": {
+          "$ref": "#/$defs/id"
+        },
+        "tool": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "rule_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 64
+          },
+          "maxItems": 32
+        },
+        "reason": {
+          "type": "string",
+          "maxLength": 4096,
+          "description": "the system's reason, redacted"
+        },
+        "signature": {
+          "enum": [
+            "verified",
+            "unverified"
+          ],
+          "description": "verified: the system's Ed25519 signature over its record holds under the key the signer's config pins for it"
+        },
+        "record": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "hash",
+            "size"
+          ],
+          "description": "the system's own record: an HMAC of its sha256 under this record's salt (salt_id), and its size in bytes",
+          "properties": {
+            "hash": {
+              "type": "string",
+              "pattern": "^hmac-sha256:[0-9a-f]{64}$",
+              "maxLength": 76
+            },
+            "size": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            }
+          }
+        },
+        "identity": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "scheme",
+            "subject",
+            "attested"
+          ],
+          "properties": {
+            "scheme": {
+              "enum": [
+                "uid",
+                "harness",
+                "token",
+                "k8s_sa",
+                "mtls",
+                "oidc"
+              ]
+            },
+            "subject": {
+              "type": "string",
+              "maxLength": 256
+            },
+            "attested": {
+              "type": "boolean"
+            }
+          }
+        },
+        "salt_id": {
+          "$ref": "#/$defs/id",
+          "description": "the signer's salt id for this record's commitments (salt label <type>:<salt_id>)"
         }
       }
     }

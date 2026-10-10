@@ -67,6 +67,8 @@ signer.yaml:
     clock_skew_s: 300                        # a witness cosignature this far from the signer's clock: clock_skew gap
     otlp: {max_spans: 512}                   # OTLP/HTTP POST /v1/traces on the `http` listener, for identities
                                              # `authorize` grants otlp_import (tracekit.signer.otel; docs/otel.md)
+    decision_keys: {vscode-agent-hooks: "<base64 Ed25519 public key>"}   # external policy systems whose record signatures
+                                             # decision_import requires and verifies (others: unverified)
     otel_out: {endpoint: https://otel.example.org/v1/traces, headers: {x-api-key: "..."}}   # each final run's spans
     harness_binding:                         # runs of these identities must come from a registered harness process
       helper: /var/lib/tracekit-signer/harness-helper.sock   # tracekit.harness_helper (default: read /proc here)
@@ -212,10 +214,11 @@ CONFIG_KEYS = {"data_dir", "socket", "socket_mode", "tcp_endpoint", "http", "dur
                "authorize", "limits", "acknowledge_rollback", "policy", "multi_tenant_apps", "migrators", "analyzers",
                "fail_modes", "grace_s", "idle_s", "origin", "metrics", "witnesses", "contact", "approvals",
                "lock_timeout_s", "fsck_every_s", "clock_skew_s", "anchors", "otlp", "otel_out", "storage", "gateways",
-               "gateway_mandatory", "log_key", "harness_binding", "record_key", "route"}
+               "gateway_mandatory", "log_key", "harness_binding", "record_key", "route", "decision_keys"}
 APPROVAL_KEYS = {"self_approval", "approvers", "break_glass"}
 OTLP_IMPORT = "otlp_import"   # an `authorize` grant, never a default: OTLP/HTTP import (otlp config section)
 OTLP_MAX_SPANS = 512
+DECISION_IMPORT = "decision_import"   # an `authorize` grant, never a default: an external policy system's decisions
 
 
 def load_policy(path=DEFAULT_POLICY, backend=None):
@@ -338,7 +341,7 @@ class SignerService:
                  bridge=None, origin=None, authorize=None, contact=None, approvals=None, lock_timeout_s=0,
                  fsck_every_s=FSCK_S, clock_skew_s=CLOCK_SKEW_S, rekor=None, otlp=None, otel_out=None,
                  storage_config=None, gateways=(), gateway_mandatory=False, log_key=None, slh_dsa_file=None,
-                 harness_binding=None, record_key=None, route=None):
+                 harness_binding=None, record_key=None, route=None, decision_keys=None):
         """`identity` answers the in-process SignerAPI calls (default: this process's uid); transports call
         handle_frame with the identity they established. `policy` is a policy2 Engine (default: load_policy()).
         `open_storage()` defaults to the store `storage_config` (the `storage` config section) names, else file storage
@@ -357,7 +360,8 @@ class SignerService:
         `harness_binding` ({helper, required, harnesses}): the config section, or None.
         `record_key`: the `record_key` config section: a fresh record key, certified by its issuer, at every start and
         once two thirds of its certificate's validity have passed (else the file key in keys/record.key).
-        `route`: the prefix (before a dot) of this signer's run and approval ids, or None."""
+        `route`: the prefix (before a dot) of this signer's run and approval ids, or None.
+        `decision_keys`: external system -> its base64 Ed25519 public key (the `decision_keys` config section)."""
         fail_modes = dict(fail_modes or FAIL_MODES)
         if not all(isinstance(k, str) and v in ("open", "closed") for k, v in fail_modes.items()):
             raise ValueError("fail_modes maps tool classes to open or closed")
@@ -385,6 +389,13 @@ class SignerService:
                 and isinstance(hb.get("helper", ""), str) and isinstance(hb.get("required", []), list)):
             raise ValueError("harness_binding takes helper (a socket path), required (identities) and harnesses "
                              "(name -> an absolute executable path, or {exe, script})")
+        try:
+            self._decision_keys = {k: crypto.spki(base64.b64decode(v, validate=True))
+                                   for k, v in (decision_keys or {}).items()}
+        except (AttributeError, TypeError, ValueError):
+            self._decision_keys = None
+        if self._decision_keys is None or any(crypto.key_alg(v) != "ed25519" for v in self._decision_keys.values()):
+            raise ValueError("decision_keys maps system names to base64 Ed25519 public keys")
         self.metrics = metrics.SignerMetrics()
         authorize = dict(authorize or {})
         if not all(isinstance(m, list) and set(m) <= {*REQUESTS, OTLP_IMPORT} for m in authorize.values()):
@@ -599,7 +610,8 @@ class SignerService:
     def _grant(self, identity, method):
         granted = lookup(self.authorize, subject(identity))
         if granted is None:   # unconfigured: a uid or the dev token (scoped by DevToken) keeps every RPC method
-            granted = REQUESTS if identity.scheme == "uid" or subject(identity) == "token:dev" else ()
+            granted = [m for m in REQUESTS if m != DECISION_IMPORT] if (
+                identity.scheme == "uid" or subject(identity) == "token:dev") else ()
         if method not in granted:
             raise RPCError("forbidden", f"{subject(identity)[:256]} is not authorized for {method}")
 
@@ -1603,6 +1615,39 @@ class SignerService:
         self._nudged.set()
         return {"scheduled": True}
 
+    def _decision_import(self, identity, req):
+        """Record another system's decision about a tool call of a run of the caller's tenant as `policy.external`
+        (source import, tier T3): its own record only as a salted commitment, its signature verified when
+        `decision_keys` pins the system's key. reconcile compares it with the signer's decision, which stays
+        authoritative."""
+        key = (self._tenant_of(identity), req["run_id"])
+        raw, sig = req["record"].encode("utf-8"), req.get("signature")
+        signature = "unverified"
+        if req["system"] in self._decision_keys:
+            if sig is None:
+                raise RPCError("invalid_request", f"{req['system'][:64]} has a pinned key: its records must be signed")
+            try:
+                ok = crypto.verify_v2("ed25519", self._decision_keys[req["system"]], raw, base64.b64decode(sig, validate=True))
+            except ValueError:
+                ok = False
+            if not ok:
+                raise RPCError("invalid_request", f"the signature does not verify under the pinned key of {req['system']}")
+            signature = "verified"
+        sid = secrets.token_hex(16)
+        data = {"system": req["system"], "decision": req["decision"], "tool_use_id": req["tool_call_id"],
+                "tool": req["tool"], "rule_ids": req.get("rule_ids", []), "signature": signature, "salt_id": sid,
+                "record": {"hash": self._commit(f"policy.external:{sid}", "sha256:" + hashlib.sha256(raw).hexdigest()),
+                           "size": len(raw)},
+                "identity": {"scheme": identity.scheme, "subject": identity.subject[:256], "attested": identity.attested}}
+        if "reason" in req:
+            data["reason"] = privacy.redact_text(req["reason"])[0]
+        self.quotas.take_event(identity)
+
+        def fn(tx, run):
+            return {"run_seq": tx.emit(run, "policy.external", data, source="import", tier="T3",
+                                       request_id=req["request_id"]), "signature": signature}
+        return self.log.submit(identity, DECISION_IMPORT, req, fn, key, late=True)
+
     # --- OTLP import (tracekit.signer.otel) ---
 
     def otlp(self, identity, body, content_type, content_encoding):
@@ -1831,7 +1876,7 @@ def open_service(cfg, **kw):
                          otel_out=cfg.get("otel_out"), storage_config=cfg.get("storage"), gateways=cfg.get("gateways", ()),
                          gateway_mandatory=cfg.get("gateway_mandatory") is True,
                          harness_binding=cfg.get("harness_binding"), record_key=cfg.get("record_key"),
-                         route=cfg.get("route"), **kw)
+                         route=cfg.get("route"), decision_keys=cfg.get("decision_keys"), **kw)
 
 
 def serve(cfg, service):
