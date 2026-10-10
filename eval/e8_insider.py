@@ -27,6 +27,7 @@ import argparse
 import json
 import os
 import pwd
+import socket
 import subprocess
 import sys
 import tempfile
@@ -37,12 +38,16 @@ HOME = "/var/lib/tracekit"
 HARNESS = "/usr/local/lib/tracekit-e8/agent"
 
 
-def binding_on():
+def signer_config():
     try:
         with open(os.path.join(HOME, "config.json")) as f:
-            cfg = json.load(f)
+            return json.load(f)
     except (OSError, ValueError):
-        return False
+        return {}
+
+
+def binding_on():
+    cfg = signer_config()
     return bool(cfg.get("harnesses")) and cfg.get("harness_binding", "enforce") != "off"
 
 
@@ -123,10 +128,33 @@ def signer_pids():
     return pids
 
 
+def start_helper():
+    """The harness helper as its unit runs it: root with only CAP_SYS_PTRACE and CAP_DAC_READ_SEARCH. tracekitd asks
+    it which program each sender runs; it has no capabilities itself."""
+    sock = signer_config().get("harness_helper")
+    if not sock:
+        return
+    with socket.socket(socket.AF_UNIX) as s:
+        try:
+            s.connect(sock)
+            return
+        except OSError:
+            pass
+    subprocess.Popen(["setpriv", "--bounding-set=-all,+sys_ptrace,+dac_read_search", "--no-new-privs", sys.executable,
+                      "-m", "tracekit.harness_helper", "--allow-uid", str(pwd.getpwnam("tracekit").pw_uid),
+                      "--socket", sock], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
+                     env=dict(os.environ, PYTHONPATH=ROOT))
+    for _ in range(50):
+        if os.path.exists(sock):
+            return
+        time.sleep(0.1)
+
+
 def start_signer():
-    # as the systemd unit does: the tracekit user, plus CAP_SYS_PTRACE to read the agent's /proc/<pid>/exe (0.3)
-    subprocess.Popen(["setpriv", "--reuid=tracekit", "--regid=tracekit", "--init-groups", "--inh-caps=+sys_ptrace",
-                      "--ambient-caps=+sys_ptrace", sys.executable, "-m", "tracekit.daemon", "--home", HOME],
+    # as the systemd unit does: the tracekit user, no capabilities
+    start_helper()
+    subprocess.Popen(["setpriv", "--reuid=tracekit", "--regid=tracekit", "--init-groups", "--no-new-privs",
+                      sys.executable, "-m", "tracekit.daemon", "--home", HOME],
                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
                      env=dict(os.environ, PYTHONPATH=ROOT))
     for _ in range(50):

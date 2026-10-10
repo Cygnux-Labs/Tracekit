@@ -61,6 +61,10 @@ signer.yaml:
     otlp: {max_spans: 512}                   # OTLP/HTTP POST /v1/traces on the `http` listener, for identities
                                              # `authorize` grants otlp_import (tracekit.signer.otel; docs/otel.md)
     otel_out: {endpoint: https://otel.example.org/v1/traces, headers: {x-api-key: "..."}}   # each final run's spans
+    harness_binding:                         # runs of these identities must come from a registered harness process
+      helper: /var/lib/tracekit-signer/harness-helper.sock   # tracekit.harness_helper (default: read /proc here)
+      required: ["uid:1001"]                 # identity or prefix:*; other uid callers are attributed when they can be
+      harnesses: {claude: /usr/local/bin/claude}   # name -> root-owned executable, or {exe, script} for an interpreter
 
 Startup (04-design §2.6): the storage lock is taken before any socket is touched; the log is replayed, its chain
 checked and its tail signatures verified; then the configured witnesses are asked for their latest cosigned checkpoint.
@@ -154,7 +158,7 @@ import rfc8785
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-from tracekit import __version__, crypto, merkle, otlp, privacy, yamlmini
+from tracekit import __version__, crypto, harness_helper, merkle, otlp, privacy, yamlmini
 from tracekit.client import remote_url_error
 from tracekit.anchor import rekor2
 from tracekit.anchor.rekor2 import RekorAnchor
@@ -199,7 +203,7 @@ CONFIG_KEYS = {"data_dir", "socket", "socket_mode", "tcp_endpoint", "http", "dur
                "authorize", "limits", "acknowledge_rollback", "policy", "multi_tenant_apps", "migrators", "analyzers",
                "fail_modes", "grace_s", "idle_s", "origin", "metrics", "witnesses", "contact", "approvals",
                "lock_timeout_s", "fsck_every_s", "clock_skew_s", "anchors", "otlp", "otel_out", "storage", "gateways",
-               "gateway_mandatory", "log_key"}
+               "gateway_mandatory", "log_key", "harness_binding"}
 APPROVAL_KEYS = {"self_approval", "approvers", "break_glass"}
 OTLP_IMPORT = "otlp_import"   # an `authorize` grant, never a default: OTLP/HTTP import (otlp config section)
 OTLP_MAX_SPANS = 512
@@ -321,7 +325,8 @@ class SignerService:
                  multi_tenant_apps=(), migrators=(), analyzers=(), fail_modes=None, grace_s=GRACE_S, idle_s=IDLE_S,
                  bridge=None, origin=None, authorize=None, contact=None, approvals=None, lock_timeout_s=0,
                  fsck_every_s=FSCK_S, clock_skew_s=CLOCK_SKEW_S, rekor=None, otlp=None, otel_out=None,
-                 storage_config=None, gateways=(), gateway_mandatory=False, log_key=None, slh_dsa_file=None):
+                 storage_config=None, gateways=(), gateway_mandatory=False, log_key=None, slh_dsa_file=None,
+                 harness_binding=None):
         """`identity` answers the in-process SignerAPI calls (default: this process's uid); transports call
         handle_frame with the identity they established. `policy` is a policy2 Engine (default: load_policy()).
         `open_storage()` defaults to the store `storage_config` (the `storage` config section) names, else file storage
@@ -336,7 +341,8 @@ class SignerService:
         `otlp` ({max_spans}) and `otel_out` ({endpoint, headers}): the config sections, or None.
         `gateways` (identities or prefixes) and `gateway_mandatory`: see the config keys.
         `log_key`: a signer.logkey key (default: the file key in keys/log.key); it must be the key of the log's notes.
-        `slh_dsa_file`: the SLH-DSA secret key file (created on first use) that adds a hybrid line to every note."""
+        `slh_dsa_file`: the SLH-DSA secret key file (created on first use) that adds a hybrid line to every note.
+        `harness_binding` ({helper, required, harnesses}): the config section, or None."""
         fail_modes = dict(fail_modes or FAIL_MODES)
         if not all(isinstance(k, str) and v in ("open", "closed") for k, v in fail_modes.items()):
             raise ValueError("fail_modes maps tool classes to open or closed")
@@ -355,6 +361,15 @@ class SignerService:
                 and isinstance(otel_out.get("headers", {}), dict)
                 and all(isinstance(v, str) for v in otel_out.get("headers", {}).values())):
             raise ValueError("otel_out takes endpoint (https, or http to loopback) and headers (a string mapping)")
+        hb = {} if harness_binding is None else harness_binding
+        hs = hb.get("harnesses", {}) if isinstance(hb, dict) else None
+        harnesses = harness_helper.normalize_harnesses(
+            [{"name": n, **(h if isinstance(h, dict) else {"exe": h})} for n, h in hs.items()]
+            if isinstance(hs, dict) else ())
+        if not (isinstance(hs, dict) and set(hb) <= {"helper", "required", "harnesses"} and len(harnesses) == len(hs)
+                and isinstance(hb.get("helper", ""), str) and isinstance(hb.get("required", []), list)):
+            raise ValueError("harness_binding takes helper (a socket path), required (identities) and harnesses "
+                             "(name -> an absolute executable path, or {exe, script})")
         self.metrics = metrics.SignerMetrics()
         authorize = dict(authorize or {})
         if not all(isinstance(m, list) and set(m) <= {*REQUESTS, OTLP_IMPORT} for m in authorize.values()):
@@ -397,6 +412,9 @@ class SignerService:
         self.fail_modes, self.grace_s, self.idle_s = fail_modes, grace_s, idle_s
         self.otlp_max_spans = otlp.get("max_spans", OTLP_MAX_SPANS)
         self.approvals, self.data_dir, self.storage_config = approvals, data_dir, storage_config
+        self._harnesses, self._helper = harnesses, hb.get("helper")
+        self._harness_required = {k: True for k in hb.get("required", ())}
+        self._chains, self._chains_lock = {}, threading.Lock()   # pid -> (start time, its chain)
         self.fsck_every_s, self.clock_skew_s, self._skewed, self._fsck_seen = fsck_every_s, clock_skew_s, set(), set()
         self._snapped = storage.tail_state()["tree_size"]
         self._approvers, self._break_glass = ({k: True for k in (approvals or {}).get(name, ())}
@@ -943,6 +961,7 @@ class SignerService:
         if key not in self.log.runs:
             raise RPCError("unknown_run", req["run_id"])
         self.tokens.verify(req["run_token"], tenant, req["run_id"], identity)
+        self._check_harness(identity, key)
         return key
 
     def _approval(self, key, approval_id):
@@ -1024,6 +1043,36 @@ class SignerService:
         h = self.policy.decide(tool, args, hint if hint in policy_compile.CLASSES else "unknown")
         return max(d, h, key=lambda x: STRICTNESS.index(x["verdict"])), True
 
+    def _chain(self, identity):
+        """The caller's process chain (harness_helper.chain), [] when it can't be had. Cached per process instance:
+        a pid with another start time is another process."""
+        pid = identity.claims.get("pid") if identity.scheme == "uid" else None
+        if not pid:
+            return []
+        st = harness_helper.start_time(pid)
+        with self._chains_lock:
+            hit = self._chains.get(pid)
+        if hit and st is not None and hit[0] == st:
+            return hit[1]
+        try:
+            procs = harness_helper.ask(self._helper, pid) if self._helper else harness_helper.chain(pid)
+        except (OSError, ValueError):
+            return []
+        if procs and procs[0].get("start_time") == st:
+            with self._chains_lock:
+                if len(self._chains) >= 4096:   # lean: drops the whole cache when full; an LRU if hosts churn pids
+                    self._chains.clear()
+                self._chains[pid] = (st, procs)
+        return procs
+
+    def _check_harness(self, identity, key):
+        """A call on a run bound to a harness process, from the run's owner, must come from below that process."""
+        run = self.log.runs[key]
+        bound = run.get("harness")
+        if bound and owner(identity) == run["owner"] and tuple(bound) not in {
+                (p["pid"], p.get("start_time")) for p in self._chain(identity)[1:]}:
+            raise RPCError("forbidden", "not from the run's harness process")
+
     def _tenant_of(self, identity):
         """The identity's tenant: `tenants`, else the tenant its named token was issued for, else the default."""
         token = identity.claims.get("tenant") if identity.scheme == "token" else None
@@ -1046,6 +1095,13 @@ class SignerService:
                                ("analyzes", self.analyzers)):
             if field in req and sub not in allowed:
                 raise RPCError("forbidden", f"{sub[:256]} is not configured to register runs with `{field}`")
+        harness = None
+        if self._harnesses:
+            procs = self._chain(identity)
+            harness, why = harness_helper.match(procs, self._harnesses) if procs else (
+                None, "no process chain: no peer pid, or the harness helper did not answer")
+            if harness is None and lookup(self._harness_required, sub, False):
+                raise RPCError("forbidden", f"not from a registered harness ({why})")
         tenant = req.get("tenant") or self._tenant_of(identity)
         run_id = req.get("run_id") or secrets.token_hex(16)
         own = owner(identity)
@@ -1062,6 +1118,8 @@ class SignerService:
             tx.set(run, "owner", own)
             tx.set(self.log.open_runs, own, n + 1)
             tx.set(run, "source", req.get("source", "sdk"))
+            if harness:
+                tx.set(run, "harness", (harness["pid"], harness["start_time"]))
             out = {"run_id": run_id, "run_token": self.tokens.issue(tenant, run_id, identity), "tenant": tenant,
                    "tenant_attested": "tenant" not in req, "principal_attested": False, "fail_modes": self.fail_modes}
             top = {"tenant_attested": out["tenant_attested"], "principal_attested": False}
@@ -1072,6 +1130,8 @@ class SignerService:
                                  "attested": identity.attested}}
             if "analyzes" in req:
                 data["analyzes"] = req["analyzes"]
+            if harness:
+                data["harness"] = dict(harness, attested=True)
             tx.emit(run, "run.registered", data, request_id=req["request_id"], **top)
             return out
         return self.log.submit(identity, "register_run", req, fn)
@@ -1694,7 +1754,8 @@ def open_service(cfg, **kw):
                          clock_skew_s=float(cfg.get("clock_skew_s", CLOCK_SKEW_S)),
                          rekor=(cfg.get("anchors") or {}).get("rekor"), otlp=cfg.get("otlp"),
                          otel_out=cfg.get("otel_out"), storage_config=cfg.get("storage"), gateways=cfg.get("gateways", ()),
-                         gateway_mandatory=cfg.get("gateway_mandatory") is True, **kw)
+                         gateway_mandatory=cfg.get("gateway_mandatory") is True,
+                         harness_binding=cfg.get("harness_binding"), **kw)
 
 
 def serve(cfg, service):
