@@ -12,6 +12,8 @@ from unittest import mock
 
 from factories import wait_for
 from test_signer_service import ME, PAY_ASKS, records, tmpdir
+from tracekit import schema
+from tracekit.format.canon import event_hash
 from tracekit.identity.base import CallerIdentity
 from tracekit.signer import pipeline
 from tracekit.signer import service as svc
@@ -153,6 +155,63 @@ class TestMemory(Case):
             s.close()
 
 
+    def test_completed_decisions_and_final_runs_leave_the_live_state(self):
+        s = self.open(grace_s=0)
+        run = self.register(s)
+        key = ("default", run["run_id"])
+        d = self.call(s, "decide", {**run, "stream": "s", "client_seq": 0, "tool_call_id": "t", "tool": "t",
+                                    "args_source": "parsed", "args": {}})
+        self.call(s, "complete", {**run, "stream": "s", "client_seq": 1, "tool_call_id": "t", "status": "ok",
+                                  "decision_id": d["decision_id"], "result": "x",
+                                  "args_digest": event_hash({"tool": "t", "args": {}})})
+        self.assertEqual((s.log.runs[key]["decisions"], list(s.log.live)), ({}, [key]))
+        s.close()
+        s = self.open(grace_s=0)   # the same after a replay
+        self.assertEqual((s.log.runs[key]["decisions"], list(s.log.live)), ({}, [key]))
+        self.call(s, "close_run", run)
+        s.sweep()
+        self.assertEqual(s.log.live, {})   # the sweep visits it no more
+        s.close()
+        self.assertEqual(self.open().log.live, {})
+
+    def test_request_ids_are_remembered_per_identity(self):
+        s, other = self.open(), CallerIdentity("uid", "999999", True)
+        with mock.patch.object(pipeline, "DONE_MAX", 6), mock.patch.object(pipeline, "DONE_PER_IDENTITY", 3):
+            mine = s.call(ME, "register_run", {"request_id": "mine", "agent": {"name": "a"}})
+            for i in range(10):
+                s.call(other, "register_run", {"request_id": f"other-{i}", "agent": {"name": "a"}})
+            self.assertEqual(sum(k[:2] == ("uid", "999999") for k in s.log.done), 3)
+            self.assertEqual(s.call(ME, "register_run", {"request_id": "mine", "agent": {"name": "a"}}), mine)
+
+    def test_a_deeply_nested_request_is_invalid_not_a_crash(self):
+        s = self.open()
+        run = self.register(s)
+        # how deep a request must nest to exceed the limit while it is checked, hashed or copied depends on the
+        # Python version (3.12+ checks the C stack separately): the handler's RecursionError stands for any of them
+        with mock.patch.object(svc.SignerService, "_decide", side_effect=RecursionError):
+            self.refused("invalid_request", self.call, s, "decide", {**run, "stream": "s", "client_seq": 0,
+                                                                     "tool_call_id": "t", "tool": "t",
+                                                                     "args_source": "parsed", "args": {}})
+
+
+class TestCloseLog(Case):
+    def test_open_runs_end_before_the_log_closes(self):
+        s = self.open()
+        run = self.register(s)
+        aid = self.ask(s, run)
+        s.close_log()
+        self.assertEqual(os.listdir(os.path.join(self.dir, "approvals")), [])
+        s.close()
+        es = [r["event"] for r in records(self.dir)]
+        types = [(e["type"], e["data"].get("kind")) for e in es if e["run_id"] == run["run_id"]]
+        self.assertLess(types.index(("capture.gap", "log_closed")), types.index(("run.closing", None)))
+        self.assertLess(types.index(("approval.expired", None)), types.index(("run.final", None)))
+        self.assertEqual(es[-1]["type"], "log.closed")
+        self.assertEqual([e["data"]["approval_id"] for e in es if e["type"] == "approval.expired"], [aid])
+        for e in es:
+            self.assertEqual(schema.validate(e), [], e["type"])
+
+
 class TestRateLimits(Case):
     def test_register_close_and_approvals_take_events_and_open_runs_are_counted(self):
         s = self.open(limits=Limits(events_per_s=0.001, burst=2))
@@ -212,6 +271,12 @@ class TestLoops(Case):
         out = s.metrics.render()
         for loop in ("ticker", "checkpointer"):
             self.assertIn(f'tracekit_signer_loop_errors_total{{loop="{loop}"}} 1', out)
+
+    def test_a_finding_refuses_writes_even_when_its_record_cannot_be_written(self):
+        s = self.open()
+        with mock.patch.object(s.log, "write", side_effect=RPCError("unavailable", pipeline.EXPIRED)):
+            self.refused("unavailable", s._tamper, "edited", "records.jsonl", {}, {}, False, "a finding")
+        self.refused("unavailable", self.register, s)
 
     def test_dropping_approval_args_never_fails(self):
         s = self.open()
