@@ -74,7 +74,9 @@ one record's commitments and nothing else.
 ## 3. Events
 
 An event is a `tracekit.event.v2` object, validated by `tracekit/schema/tracekit.event.v2.json` (JSON Schema 2020-12;
-patterns are full-match ASCII; every string and array is bounded). It adds to v1:
+patterns are full-match ASCII; `maxLength` counts code points; every string and array is bounded). Unlike plain JSON
+Schema, `integer` means a number token written without a fraction or exponent: `"seq": 1.0` is schema-invalid, though
+its record hash is that of `"seq": 1`. It adds to v1:
 
 | Field | Set by | Meaning |
 |---|---|---|
@@ -306,9 +308,11 @@ checkpoints/registry-<n>.note   the registry notes at a (none when a = 0) and b
 runs/                     every run whose run.final is in the range, and the selected run, if any
 ```
 
-JSON lines files end in a newline, one strict JSON text (§1) per line, each line at most 1 MiB. Zip limits: at most
-10,000 entries, 64 MiB per entry, 512 MiB in total; entry names match `[A-Za-z0-9_-][A-Za-z0-9._-]*(/[A-Za-z0-9._-]+)*`
-with no `.` or `..` segment; no symlinks; no duplicate names. A bundle carries no code and no trust configuration.
+JSON lines files end in a newline, one strict JSON text (§1) per line, each line at most 1 MiB. Hashes and keys in
+bundle files are standard base64 with padding (checkpoint notes and vkeys: canonical base64, §6). Zip limits: at most
+10,000 entries, 64 MiB per entry, 512 MiB in total; entries stored or deflated, not encrypted, each matching its CRC-32,
+no zip64; entry names match `[A-Za-z0-9_-][A-Za-z0-9._-]*(/[A-Za-z0-9._-]+)*` with no `.` or `..` segment; no
+symlinks; no duplicate names. A bundle carries no code and no trust configuration.
 
 ## 10. The trust config
 
@@ -319,11 +323,14 @@ The verifier pins its own trust, never the bundle's (`verify.v2.load_trust`):
  "witnesses": [{"vkey": "<cosignature vkey>", "class": "public|customer|tracekit|operator"}],
  "algs": ["ed25519"],
  "witnesses_required": 0,
- "rekor": {"trusted_root": {}, "publishing_key": "<base64 SPKI>", "class": "public"}}
+ "rekor": {"trusted_root": {}, "publishing_key": "<base64 SPKI>", "class": "public"},
+ "monitors": [{"vkey": "<monitor vkey>", "class": "public|customer|tracekit|operator", "max_age_s": 3600}],
+ "issuers": [{"vkey": "<issuer vkey>", "issuance_log_vkey": "<issuance log vkey>"}]}
 ```
 
-`logs` and `algs` are required and non-empty; `witnesses`, `witnesses_required` (default 0) and `rekor` are optional.
-No other key is allowed. `tracekit signer trust -o trust.json` writes one for a signer; an auditor should build theirs
+`logs` and `algs` are required and non-empty; `witnesses`, `witnesses_required` (default 0, an integer token),
+`rekor`, `monitors` ([monitor](monitor.md) reports the verifier is given) and `issuers` (record-key issuers,
+[issuer.md](issuer.md)) are optional. No other key is allowed. `tracekit signer trust -o trust.json` writes one for a signer; an auditor should build theirs
 from independent sources ([auditor guide](auditor-guide.md)).
 
 ## 11. Verification algorithm
@@ -333,7 +340,8 @@ line and verdict is in [verdicts](verdicts.md).
 
 1. **Trust config.** Parse strictly; check the keys and types of §10; parse every vkey. Failure: exit 2.
 2. **Read the zip** under the limits of §9. Parse `manifest.json`; `format` must be `tracekit.bundle.v2` and
-   `verifier_min_version` a version number not above the verifier's own, else `UNVERIFIABLE (needs tracekit >= x)`.
+   `verifier_min_version` a version number (one to three dot-separated runs of ASCII digits) not above the version of
+   the format the verifier implements, else `UNVERIFIABLE (needs tracekit >= x)`.
    Failure: `UNUSABLE BUNDLE`, exit 2.
 3. **Manifest.** The listed files and hashes must equal the files present, exactly (`manifest`).
 4. **Checkpoint.** Open the note named by `proofs/records.json` (§6) with the pinned log keys (both lines when a hybrid
@@ -382,3 +390,30 @@ A malformed bundle never crashes the verifier: anything unexpected is a failed `
 chain verifies by v1 rules up to `v1_last_seq`, that its last record is the retirement of `v1_kid` with hash `v1_head`,
 and that no v1 record follows it. The frozen v1 verifier sees the two bridge records as ordinary signer gaps and can't
 tell a later v1 record from a genuine one; only this check reports it.
+
+## 13. Implementations
+
+| Implementation | Where | Notes |
+|---|---|---|
+| Python, the reference | `tracekit/verify/v2.py` (`tracekit verify`) | everything on this page |
+| TypeScript, independent | `sdk/typescript/src/verify` (`@cygnux/tracekit/verify`, `npx @cygnux/tracekit verify`) | written from this page; Node ≥ 20.12 and browsers, Web Crypto only |
+
+The TypeScript verifier does not implement SLH-DSA (§6, Web Crypto has none), Rekor anchors (§8) or record-key
+certificates ([issuer.md](issuer.md)): a bundle that relies on one is `UNVERIFIABLE (not checked by this verifier: ...)`,
+exit 2, never `VERIFIED`. It takes no monitor reports, revocations or v1 ledger.
+
+**Agreement.** `tests/test_ts_verifier.py` builds bundles with the real signer (honest runs: dev, witnessed, with a
+gap, with an approval, a run-set; and mutated copies: edited, dropped and reordered records, swapped signatures, a
+foreign key, a missing cosignature, a quorum not met, a forged inclusion proof, a bad manifest hash, a newer
+`verifier_min_version`, a schema-invalid field) and takes the golden corpus (`tests/golden/v2`, `tests/golden/negative`),
+runs both verifiers on each and requires the same integrity, assurance, exit code and check lines:
+
+```sh
+make test-ts                                     # builds the TypeScript verifier; its suite runs the agreement tests too
+python -m pytest tests/test_ts_verifier.py       # skipped without Node >= 20.12
+```
+
+**A third implementation** shows conformance the same way: reproduce every vector in `tests/vectors` (canonical JSON,
+record hashes and signature messages, the Ed25519 acceptance rules, checkpoint notes and key ids) and the worked examples
+on this page, then reach the reference's integrity, assurance and exit code on the differential corpus: the golden
+bundles with their `trust.json`, and the bundles `tests/test_ts_verifier.py` builds.

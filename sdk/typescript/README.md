@@ -45,6 +45,32 @@ await client.close();                                     // waits for what is i
 - `argsDigest(tool, args)`, `canonicalize`, `strictParse`: JCS (RFC 8785) and the strict parser, byte-identical to
   the Python client on the shared vectors in `tests/vectors/jcs.jsonl`.
 
+## Verify a bundle (`@cygnux/tracekit/verify`)
+
+An independent verifier of v2 bundles (`.tkb`), written from [docs/format-v2.md](../../docs/format-v2.md) and tested to
+agree with the Python verifier. No dependencies: Web Crypto and `DecompressionStream`, so Node ≥ 20.12 and current
+browsers.
+
+```sh
+npx @cygnux/tracekit verify run.tkb --trust trust.json [--json] [--strict]
+```
+
+Exit 0 verified, 1 failed, 2 unusable or unverifiable, 3 a warning under `--strict`; the report and `--json` are those
+of `tracekit verify`. In code, Node or a browser:
+
+```ts
+import { verify, formatReport } from "@cygnux/tracekit/verify";
+
+const bundle = new Uint8Array(await (await fetch("run.tkb")).arrayBuffer());
+const trust = new Uint8Array(await (await fetch("trust.json")).arrayBuffer());   // your own pinned trust config
+const { report, code } = await verify(bundle, trust);
+console.log(report.integrity, report.assurance);   // e.g. "VERIFIED", "witnessed; records ed25519; ..."
+```
+
+It does not check SLH-DSA checkpoint lines, Rekor anchors or certified record keys: a bundle that relies on one is
+`UNVERIFIABLE (not checked by this verifier: ...)`, never `VERIFIED`. Monitor reports, revocations and the v1 format
+bridge need the Python verifier.
+
 ## v2 framework adapters
 
 Each adapter gates every tool call through the signer: it passes the call id, its attempt and the model's raw

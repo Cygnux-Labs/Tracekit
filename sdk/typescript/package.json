@@ -13,7 +13,8 @@
     "./v2": { "types": "./dist/v2/client.d.ts", "import": "./dist/v2/client.js" },
     "./v2/openai-agents": { "types": "./dist/v2/adapters/openai-agents.d.ts", "import": "./dist/v2/adapters/openai-agents.js" },
     "./v2/vercel-ai": { "types": "./dist/v2/adapters/vercel-ai.d.ts", "import": "./dist/v2/adapters/vercel-ai.js" },
-    "./v2/claude-agent-sdk": { "types": "./dist/v2/adapters/claude-agent-sdk.d.ts", "import": "./dist/v2/adapters/claude-agent-sdk.js" }
+    "./v2/claude-agent-sdk": { "types": "./dist/v2/adapters/claude-agent-sdk.d.ts", "import": "./dist/v2/adapters/claude-agent-sdk.js" },
+    "./verify": { "types": "./dist/verify/index.d.ts", "import": "./dist/verify/index.js" }
   },
   "bin": { "tracekit": "bin/tracekit.mjs" },
   "files": ["dist", "bin", "README.md"],
