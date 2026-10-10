@@ -5,6 +5,9 @@ sudo tracekit doctor                 # system mode: run it as root, so it can pr
 tracekit doctor                      # the v2 dev signer
 tracekit doctor --config signer.yaml # one v2 signer, by its config
 tracekit doctor --json               # [{"id", "status": "ok" | "warn" | "fail", "detail", "fix"}]
+tracekit doctor --k8s                # inside a pod: the pod and its service account, read from the API server
+tracekit doctor --k8s --manifests DIR   # rendered manifests (helm template, kustomize build) instead
+tracekit doctor --config signer.yaml --issuer-key alias/tracekit-ca   # also: may this principal sign with the CA key?
 ```
 
 Doctor works out which setup it's looking at and runs the checks that apply:
@@ -14,6 +17,8 @@ Doctor works out which setup it's looking at and runs the checks that apply:
 - **v2 dev:** there's no `client.json`. Doctor checks the same-user dev signer under the `dev` profile, where things a
   dev setup can't have, like a separate user or witnesses, are warnings.
 - **`--config`:** checks that signer.yaml.
+- **`--k8s`:** the Kubernetes checks below, of the pod doctor runs in (it needs `get` on its pod and service account) or
+  of the manifests under `--manifests DIR`. With `--config` it runs that signer's checks too.
 
 Exit codes: 0 when every check is ok, 1 when any check fails, 2 when there are only warnings.
 
@@ -21,8 +26,10 @@ Exit codes: 0 when every check is ok, 1 when any check fails, 2 when there are o
 and a verifier never reads it. What a bundle proves comes from its signatures, its checkpoints and the verifier's own
 trust config (`docs/signing.md`, `docs/witnesses.md`).
 
-`eval/e16_doctor.py` builds over 20 broken setups in temp dirs and checks that doctor flags each one. It also checks
-that a clean setup passes (`make eval`).
+`eval/e16_doctor.py` builds over 20 broken setups, 19 broken Kubernetes deployments and 5 broken Postgres grant sets
+in temp dirs (the Postgres ones on a throwaway cluster: `TRACEKIT_TEST_PG_DSN`, or `initdb` and `pg_ctl` on PATH; else
+skipped with the reason) and checks that doctor flags each one. It also checks that each clean setup passes
+(`make eval`).
 
 ## v2 checks
 
@@ -35,6 +42,10 @@ that a clean setup passes (`make eval`).
 | `D-CODE-TRUST` | the root-owned venv `/opt/tracekit` | a file in it, or a directory above it, isn't root-owned or is group- or world-writable, or the venv is missing | re-run init to reinstall it |
 | `D-KEYS-MODE` | `data_dir` and `data_dir/keys` | either one isn't 0700, or a key isn't a 0600 file owned by the keys dir's owner (warn: doctor can't read them, so run it as root) | `chmod 700` the dirs, `chmod 600` the keys |
 | `D-KEYS-DISTINCT` | `keys/log.key` and `keys/record.key` | they're the same key (warn: none yet); ok when `log_key` names a KMS key | move both away and restart the signer: new keys start a new log |
+| `D-KMS-LOG-KEY` | `log_key: {aws_kms}`, with this host's AWS credentials | the key isn't an `ECC_NIST_EDWARDS25519` `SIGN_VERIFY` key (warn: not checked, without boto3, credentials or access) | create the log key with that spec |
+| `D-KMS-ISSUER-SIGN` | `--issuer-key KEY_ID`, the record key issuer's CA key | this principal may call `kms:Sign` on it (a `DryRun` Sign succeeds); only the issuer may (warn: the answer was neither allowed nor denied) | remove `kms:Sign` on it from the signer's IAM role |
+| `D-PG-SIGNER-ROLE` | `storage: {postgres}`: the role of `dsn_file`'s DSN | it is superuser or has UPDATE, DELETE or TRUNCATE on `tracekit_records`, `_registry`, `_notes` or `_anchors` (warn: not checked, without psycopg or a connection) | grant it only `tracekit.storage.postgres.GRANTS` |
+| `D-PG-READER-ROLES` | every other role | one that is neither superuser nor the tables' owner can INSERT, UPDATE, DELETE or TRUNCATE a log table | give readers SELECT only |
 | `D-KEY-HYGIENE` | `data_dir/hygiene.json`, written by the signer on start | the signer process may dump core (RLIMIT_CORE not 0), is dumpable (Linux `PR_SET_DUMPABLE`), or could not mlock its key files (warn; also when the signer never started) | run it with `tracekit signer serve`; raise `LimitMEMLOCK` |
 | `D-UNIT-HARDENING` | `tracekit-signer.service` (or the launchd plist) | a hardening directive that init writes is missing: the detail gives the score and lists the missing directives (warn) | re-run init to rewrite the service file |
 | `D-HOOKS-PRESENT` | the agent's Claude Code settings | a tool event (PreToolUse, PostToolUse, PostToolUseFailure) has no v2 hook | re-run init |
@@ -53,6 +64,26 @@ that a clean setup passes (`make eval`).
 
 Ids are stable. A check that doesn't apply to the setup isn't listed. For example, the dev profile has no agent-user,
 venv or unit checks. If there's no service file, `D-UNIT-HARDENING` warns.
+
+## Kubernetes checks (`--k8s`)
+
+A pod is checked when it runs a signer (its image is `tracekit-signer`, or its command is `signer serve`) or an agent:
+any other container of a signer's pod, or a container with a `TRACEKIT_*` environment variable (central mode). Native
+sidecars (init containers with `restartPolicy: Always`) count; other init containers don't. The signer's socket dir
+and data dir are the image's, `/run/tracekit-signer` and `/var/lib/tracekit-signer`, and its user 10001.
+
+| Id | Fails when |
+|---|---|
+| `D-K8S-WORKLOADS` | never; warns when a manifest doesn't parse, no pod runs a signer or agent, or doctor can't read its pod from the API server |
+| `D-K8S-HOST-ACCESS` | the pod has a `hostPath` volume, `hostPID`, `hostIPC` or `hostNetwork` |
+| `D-K8S-SECURITY-CONTEXT` | a signer or agent container may run as root, is privileged, has a writable root file system, allows privilege escalation, or doesn't drop `ALL` capabilities |
+| `D-K8S-RUN-AS-USER` | the agent container's `runAsUser` isn't set, or is the signer's |
+| `D-K8S-SHARED-VOLUME` | the agent and signer containers share a volume other than the socket dir |
+| `D-K8S-SIGNER-DATA` | an agent container, in any pod, mounts what the signer mounts at its data dir (the same claim, secret, config map or host path) |
+| `D-K8S-WORKLOAD-IDENTITY` | the agent's pod gets cloud credentials, which reach every container: its service account has `iam.gke.io/gcp-service-account` (GKE Workload Identity) or `eks.amazonaws.com/role-arn` (IRSA), an EKS `PodIdentityAssociation` names it, or a container has the AWS variables they inject |
+| `D-K8S-SA-TOKEN` | the agent gets a service account token (automounted or projected) that has cloud identity; warns when the token has none, since only its RBAC limits it |
+
+KMS keys in the agent's pod are the case to avoid: keep the signer that holds them central, outside the pod.
 
 ## v1 checks
 
