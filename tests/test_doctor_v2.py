@@ -190,6 +190,7 @@ class Kms(unittest.TestCase):
         self.kms.get_public_key = mock.Mock(side_effect=type("NoCredentialsError", (Exception,), {})("no creds"))
         self.assertEqual(self.check()["D-KMS-LOG-KEY"]["status"], "warn")
 
+    @unittest.skipIf(os.name == "nt", "the E16 layout is a POSIX system mode install")
     def test_signer_yaml_with_kms_and_postgres_runs_both(self):
         def mutate(L):
             L.signer_yaml(log_key={"aws_kms": {"key_id": "alias/log", "region": "eu-west-1"}},

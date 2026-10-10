@@ -10,6 +10,9 @@ runs its `--quick` form on Linux), E11, E12 and E14 (below, in `make eval`, E14 
 behave, not how Tracekit performs across real agents and projects. The v0.1 paper's experiments (14 Claude Code
 runs, seeded faults, hook latency) were ported to v0.2 as E2, E4 and E5, with different scenarios and numbers.
 
+The [technical report](../report/tracekit-v2.md) presents E1, E4, E8, E9, E10, E11, E12, E14, E15 and E16 in tables generated
+from `eval/results/` by `report/tables.py`.
+
 Machine for the numbers below: Linux x86_64, Python 3.13, dev-mode signer on the same host. Other machines will
 differ, so each results file records the platform.
 

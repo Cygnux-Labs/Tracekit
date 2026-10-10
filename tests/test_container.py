@@ -20,6 +20,7 @@ def _docker():
 NO_DOCKER = _docker()
 
 
+@unittest.skipIf(os.name == "nt", "smoke.sh is POSIX shell and builds a Linux image")
 @unittest.skipIf(NO_DOCKER, NO_DOCKER)
 class SignerImage(unittest.TestCase):
     def test_smoke(self):
