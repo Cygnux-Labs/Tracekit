@@ -17,6 +17,42 @@ release still waits on; 1.0 itself is the owner's call after real use.
   reports them `UNVERIFIABLE`, never as failed. 0.4.0 bundles still verify. v1 bundles and the v1 verifier are unchanged.
 - **TypeScript**: `@cygnux/tracekit`'s default import is now the native v2 client; the v1 API is at
   `@cygnux/tracekit/v1`, and the Python bridge it used is deprecated.
+- **Server deployments run the server policy pack.** The image, the compose stack and both Helm charts now set
+  `policy:` (before, they fell back to the laptop pack). Replace `/etc/tracekit/policy.yaml` to run your own.
+- **Run-sets need their registry notes cosigned**: with `witnesses_required` set, a run-set exported before the
+  witnesses cosigned its registry note verifies `INCOMPLETE`; the run-set line now names its tenant.
+- **Policy packs**: rules now match what a call acts on (`target`) rather than everything it carries, so writing a file
+  that merely mentions a credentials path is no longer denied; `TK-S005` is folded into `TK-S004`; new rules
+  `TK-N003`, `TK-B003` and `TK-SQL-PARSE`. Policy files are always read by the built-in YAML subset (duplicate keys and
+  anchors are errors even where PyYAML is installed). A command or SQL statement the parser can't read is held (ask).
+- **Clients**: one run's events are sent one at a time (other runs still in parallel); a v2 hook that can't start now
+  blocks the call in dev mode too.
+
+### Fixes from the pre-1.0 review
+A five-part review of the signer, storage and verifier, network services, clients and policy before this release; each
+fix has a regression test.
+- **Approvals**: self-approval is detected across every identity mapped to the same person, including OIDC person ids;
+  a consumed approval covers only the arguments it approved; a passkey-required approval is refused without a verified
+  assertion on every path; a blank break-glass reason is refused; a bridge acts for people of its own tenant only
+  (unless it is a multi-tenant app); passkeys are registered only soon after a sign-in.
+- **Signer**: nothing is signed with a record key whose certificate has expired; runs are refused in tenants the key
+  isn't certified for; closing a log ends its open runs first; finished runs leave the writer's working set; retry
+  caches are bounded per identity and keep no executor arguments; OTLP import adds spans only to the importer's own runs.
+- **Verifier and storage**: run-set completeness requires the registry notes' witness quorum and that every bundled run
+  is of the run-set's tenant; a power loss can no longer leave the file store unable to start; Postgres calls time out
+  instead of hanging; registry notes are read on demand; fsck checks the trees against the logs; exporting an active
+  run works; the monitor and export write durably.
+- **Network services**: the signer's HTTPS listener, the viewer, metrics and the Slack bridge bound their connections
+  and enforce request deadlines; a pending viewer login can't be evicted; valid credentials work behind an address
+  that others failed from; loopback receivers answer only loopback host names; witness proofs no longer rehash the log.
+- **Clients**: an answer can't reach the wrong caller; a stalled signer fails every waiting call within its timeout;
+  installers refuse agent settings of an unexpected shape rather than rewriting them; hook approval waits fit the
+  harness's hook timeout.
+- **Policy**: SQL rules match outside comments and every literal form; hosts are normalised (numeric, mapped and
+  encoded forms) before matching; command names built from expansions, more wrappers, interpreter programs in every
+  form, option-borne commands and bundled force-push flags are covered; paths match whatever the separator or case.
+- **Deploy**: the agent's mount of the signer socket is read-only; every chart container has resource requests and
+  limits; image and npm bundle dependencies are pinned, and the npm bundles are built from the release's checked wheel.
 
 ### Deploy anywhere
 - **Container image** of the signer (non-root uid 10001, digest-pinned base) and a **Docker Compose stack**: signer,
