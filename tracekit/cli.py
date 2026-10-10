@@ -25,7 +25,7 @@ def _signer_home(a):
 
 
 _DELEGATED = {"observe": "observe", "analyze": "findings", "otel": "otlp", "cost": "cost", "witness": "witness_server",
-              "signer": "signer.service", "view": "view"}  # subcommands with their own parsers
+              "signer": "signer.service", "view": "view", "monitor": "monitor", "gateway": "gateway"}  # subcommands with their own parsers
 _MOVED = {"sql": "query", "proofpack": "proofpack", "report": "proofpack", "causeway": "causeway"}  # now separate packages under contrib/
 
 
@@ -60,7 +60,7 @@ def main(argv=None):
     p.add_argument("--token-file", help="with --remote: file holding the client token (or set TRACEKIT_REMOTE_TOKEN)")
     p.add_argument("--dev", action="store_true", help="same-user signer (no root; weaker: the agent could rewrite the ledger)")
     p.add_argument("--home", help="signer home (dev mode)")
-    p.add_argument("--v2", action="store_true", help="the v2 signer: with --dev, wire its Claude Code hook (the signer "
+    p.add_argument("--v2", action="store_true", help="the v2 signer: with --dev, wire its hook for --agent (the signer "
                                                      "starts on first use); as root, install it in system mode")
     p.add_argument("--approver", help="with --v2, system mode: the user who answers the agent's approvals (default: "
                                       "$SUDO_USER, the admin running init)")
@@ -116,6 +116,11 @@ def main(argv=None):
     p = sub.add_parser("witness", help="run a witness log: `witness init|token|serve` (append-only, Merkle tree, signed heads)", add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
     p = sub.add_parser("signer", help="the v2 signer service: `signer serve --dev`, `signer serve|fsck --config signer.yaml`", add_help=False)
+    p.add_argument("rest", nargs=argparse.REMAINDER)
+    p = sub.add_parser("monitor", help="follow a v2 signer's logs, check their rules, publish a signed monitor report",
+                       add_help=False)
+    p.add_argument("rest", nargs=argparse.REMAINDER)
+    p = sub.add_parser("gateway", help="LLM gateway for the v2 signer: `gateway serve --config gateway.yaml`", add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
     p = sub.add_parser("otel", help="OpenTelemetry receiver: `otel serve` records agent spans sent over OTLP/HTTP", add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
@@ -174,6 +179,8 @@ def main(argv=None):
     p.add_argument("--trust", help="format v2: pinned trust config (log keys, witness keys, algorithms)")
     p.add_argument("--v1-ledger", help="format v2: the v1 ledger.jsonl the log's format bridge continues")
     p.add_argument("--v1-key", help="with --v1-ledger: the v1 signer.pub")
+    p.add_argument("--monitor-report", action="append", default=[],
+                   help="format v2: a report of a monitor the trust config pins (tracekit monitor)")
     p.add_argument("--json", action="store_true")
 
     p = sub.add_parser("policy", help="policy v2: `policy compile FILE` prints canonical JSON and its hash; `policy lint FILE`")
@@ -186,6 +193,8 @@ def main(argv=None):
     p = sub.add_parser("demo", help="end-to-end demo in a temp folder")
     p.add_argument("--real", action="store_true", help="drive a real `claude -p` session instead of the scripted agent")
     p.add_argument("--keep", action="store_true")
+    p.add_argument("--server", action="store_true",
+                   help="the v2 signer: a dev signer, a test witness, allow/deny/approve, export and verify")
     p.add_argument("--agent", default="claude", choices=["claude", "codex", "cursor", "gemini"],
                    help="send the scripted run as this coding agent's own hook payloads (default: claude)")
 
@@ -271,9 +280,6 @@ def _run(a):
                       "assurance": a.key_assurance}
             if a.key_attestation:
                 signer["attestation"] = os.path.abspath(a.key_attestation)
-        if a.v2 and a.agent != "claude":
-            print("tracekit: --v2 wires the Claude Code hook only", file=sys.stderr)
-            return 2
         if a.v2 and (a.home or a.witness or a.proxy or a.fail_closed or signer or a.harness or a.managed):
             print("tracekit: --home, --witness, --proxy, --fail-closed, --signer-cmd, --harness and --managed are v1 "
                   "signer options; they don't apply with --v2", file=sys.stderr)
@@ -288,12 +294,23 @@ def _run(a):
             try:
                 sock, settings = install.init_system_v2(a.user, a.approver, a.policy, os.getcwd() if a.project else None,
                                                         a.no_service, not a.no_hooks, a.experimental_macos,
-                                                        a.allow_privileged)
+                                                        a.allow_privileged, a.agent)
             except install.SettingsError as e:
                 print(f"tracekit: {e}", file=sys.stderr)
                 return 1
             print(f"v2 signer installed as a separate user; socket {sock}; config {install.V2_CONFIG}; "
                   f"hooks: {settings or 'not installed'}")
+            return 0
+        if a.dev and a.v2 and a.agent != "claude":
+            from . import agent_hooks
+            if not _signer_extra():
+                return 2
+            try:
+                path = None if a.no_hooks else agent_hooks.install(a.agent, os.getcwd() if a.project else None, v2=True)
+            except install.SettingsError as e:
+                print(f"tracekit: {e}", file=sys.stderr)
+                return 1
+            print(f"v2 {a.agent} hooks:", path or "not installed")
             return 0
         if a.dev and a.agent != "claude":
             from . import agent_hooks
@@ -462,14 +479,15 @@ def _run(a):
             if bool(a.v1_ledger) != bool(a.v1_key):
                 print("tracekit verify: --v1-ledger and --v1-key go together", file=sys.stderr)
                 return 2
-            rep, code = mod.verify(a.bundle, a.trust, a.v1_ledger, a.v1_key)
+            rep, code = mod.verify(a.bundle, a.trust, a.v1_ledger, a.v1_key, a.monitor_report)
             if code == 0 and a.strict and rep.warnings:
                 code = 3
             integrity, assurance = rep.integrity, rep.assurance
         else:
             from .verify import v1 as mod
-            if a.trust or a.v1_ledger or a.v1_key:
-                print("tracekit verify: --trust, --v1-ledger and --v1-key are for v2 bundles; this is not a v2 bundle",
+            if a.trust or a.v1_ledger or a.v1_key or a.monitor_report:
+                print("tracekit verify: --trust, --v1-ledger, --v1-key and --monitor-report are for v2 bundles; this is "
+                      "not a v2 bundle",
                       file=sys.stderr)
                 return 2
             rep, code = mod.verify(a.bundle, a.witness, a.strict, a.key)
@@ -497,6 +515,9 @@ def _run(a):
     if a.cmd == "migrate":
         from . import migrate
         return migrate.main(a.rest)
+    if a.cmd == "demo" and a.server:
+        from . import demo_server
+        return demo_server.main(keep=a.keep)
     if a.cmd == "demo":
         from . import demo
         return demo.main(real=a.real, keep=a.keep, agent=a.agent)
@@ -523,7 +544,7 @@ def _export_v2(a):
     from .format import registry
     from .sdk.client import Client, Incompatible, SignerUnavailable
     from .signer.rpc_schema import RPCError
-    from .signer.service import signer_config
+    from .signer.service import file_store, signer_config
     from .storage.base import StorageCorrupt, registry_tree
     from .storage.file import FileReader
     if not (a.run or a.run_set) or a.dev and a.config:
@@ -531,7 +552,7 @@ def _export_v2(a):
         return 2
     try:
         cfg = signer_config(a.config)
-        store, tenant = os.path.join(cfg["data_dir"], "store"), a.tenant or cfg.get("tenant", "default")
+        store, tenant = file_store(cfg, "export --v2"), a.tenant or cfg.get("tenant", "default")
         reader = FileReader(store)
         if a.run_set:
             with open(os.path.join(cfg["data_dir"], "keys", "registry_salt.key"), "rb") as f:

@@ -1,14 +1,14 @@
-// End to end against a real dev signer: the TS SDK -> python bridge -> signer -> ledger, then `tracekit verify`.
+// End to end against a real dev signer: the v1 TS SDK -> python bridge -> signer -> ledger, then `tracekit verify`.
 // Model SDKs talk to a mocked fetch: no network, no keys.   npm test
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import OpenAI from "openai";
 import Anthropic from "@anthropic-ai/sdk";
-import { Tracekit, TracekitDenied, instrumentOpenAI, instrumentAnthropic, tracekitMiddleware, instrumentStagehand } from "../dist/index.js";
+import { Tracekit, TracekitDenied, instrumentOpenAI, instrumentAnthropic, tracekitMiddleware, instrumentStagehand } from "../dist/v1.js";
 
 const ROOT = resolve(import.meta.dirname, "../../..");
 const PY = process.env.TRACEKIT_PYTHON ?? "python3";
@@ -202,8 +202,26 @@ for (const mode of ["exit", "close"]) {
   });
 }
 
+test("the default import is the v2 client; the v1 SDK stays at @cygnux/tracekit/v1", async () => {
+  assert.equal((await import("@cygnux/tracekit")).Client, (await import("../dist/v2/client.js")).Client);
+  assert.equal((await import("@cygnux/tracekit/v1")).Tracekit, Tracekit);
+});
+
+test("v1 warns once per process (TRACEKIT_V1, and the bridge on stderr); TRACEKIT_NO_DEPRECATION silences both", () => {
+  const code = `import { Tracekit } from ${JSON.stringify(resolve(import.meta.dirname, "../dist/v1.js"))};
+    for (let i = 0; i < 2; i++) await (await Tracekit.start({ env: ${JSON.stringify(env)} })).end();`;
+  const stderr = (extra) => spawnSync(process.execPath, ["--input-type=module", "-e", code],
+    { env: { ...process.env, ...extra }, encoding: "utf8", timeout: 30_000 }).stderr;
+  const count = (s, word) => s.split(word).length - 1;
+  const warned = stderr({});
+  assert.equal(count(warned, "[TRACEKIT_V1] DeprecationWarning"), 1, warned);
+  assert.equal(count(warned, "tracekit.bridge is deprecated"), 2, warned);   // once per bridge process
+  const quiet = stderr({ TRACEKIT_NO_DEPRECATION: "1" });
+  assert.ok(!/deprecated/.test(quiet), quiet);
+});
+
 test("a failed start does not leave the bridge running", () => {
-  const code = `import { Tracekit } from ${JSON.stringify(resolve(import.meta.dirname, "../dist/index.js"))};
+  const code = `import { Tracekit } from ${JSON.stringify(resolve(import.meta.dirname, "../dist/v1.js"))};
     await Tracekit.start({ sessionId: "x".repeat(300), env: ${JSON.stringify(env)} }).then(() => process.exit(3), () => console.log("rejected"));`;
   const out = execFileSync(process.execPath, ["--input-type=module", "-e", code], { encoding: "utf8", timeout: 20_000 });
   assert.equal(out.trim(), "rejected");  // and the process exited on its own (no timeout)

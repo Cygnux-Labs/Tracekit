@@ -46,6 +46,11 @@ arguments: if they change after the approval, `approval_consume` refuses them.
 
 Claude Code: `tracekit init --dev --v2` wires its hooks to the same signer (`python -I -m tracekit.integrations.claude_code`).
 
+Per framework, each with a runnable offline example: [LangChain / LangGraph](quickstarts/langchain.md),
+[OpenAI Agents SDK](quickstarts/openai-agents.md), [Claude Agent SDK](quickstarts/claude-agent-sdk.md),
+[MCP client](quickstarts/mcp.md), [a custom agent](quickstarts/custom.md). `tracekit demo --server` runs the whole loop
+in a temp dir, with a test witness's cosignature and a tampered copy that fails.
+
 ## 3. Approve from another terminal
 
 ```sh
@@ -74,7 +79,7 @@ record.
 The report (and `--json`) also lists tool calls by evidence tier (`tiers`), records by `args_source` (raw, parsed,
 coerced), the `signer_isolation` the signer recorded for each run (`isolation`), the tool classes that fail open
 (`fail-open classes`), and `key assurance`: `asserted`, because the log declares its own keys and nothing attests them
-yet. A `witnessed+monitored` assurance level, which needs a log monitor, is not reported yet.
+yet. `witnessed+monitored` needs a log monitor's report ([monitor.md](monitor.md)).
 
 ## What `dev` assurance means
 

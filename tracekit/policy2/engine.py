@@ -98,13 +98,17 @@ class Engine:
     def _subjects(cls, field, args, fields, parsed):
         """A class field matches the signer's extraction; any other field names a raw argument; no field scans the
         whole call (Write/Edit content, WebFetch url and prompt, MCP args). A shell `line` is the raw command and
-        each line the parser normalised; an fs `path` with `..` also matches its lexically normalised form."""
+        each line the parser normalised; an fs `path` with `..` also matches its lexically normalised form, and each
+        entry of a `paths` list (every file of a Codex patch) is a path too."""
         if cls == "shell" and field in (None, "argv"):
             return [" ".join(c["argv"]) for c in parsed[0]]
         if cls == "shell" and field == "line":
             return Engine._subjects(cls, "command", args, fields, parsed) + parsed[1]
         if field is None:
             return [canonical(args)]
+        if cls == "fs" and field == "path" and isinstance(args.get("paths"), list):   # a call on several files
+            raws = [classes.first(args, *classes.PATH_KEYS)] + args["paths"]
+            return list(dict.fromkeys(f for r in raws for f in classes.fs_forms(r)))
         value = fields.get(field) if field in CLASSES.get(cls, ()) else args.get(field)
         if value is None:
             return []

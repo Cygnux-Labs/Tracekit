@@ -80,7 +80,7 @@ Covered by `tests/test_signer_startup.py`, `tests/test_signer_service.py` (`test
 |---|---|
 | Can | choose which runs and records to export; hand over an edited bundle; fork or rewrite its log with its own keys; withhold a key retirement |
 | Detected | an edited bundle (manifest, signatures, chain, inclusion); a missing, spliced or doubly-finalised run, or a withheld `key.retire`, against a run-set of the tenant's registry log; a fork or rewrite after an independent pinned witness cosigned or Rekor anchored the checkpoint (`Assurance: witnessed`) |
-| Not detected | a log never shown to an independent witness (`Assurance: dev` or `local` says so); two forks shown to two verifiers, until a monitor compares them (`witnessed+monitored` is not built yet); anything beyond detection: nothing prevents it |
+| Not detected | a log never shown to an independent witness (`Assurance: dev` or `local` says so); two forks shown to two verifiers, unless a pinned monitor's report of the same tree size shows the other root (`witnessed+monitored`, [monitor.md](monitor.md)); anything beyond detection: nothing prevents it |
 
 The verifier and its trust config must come from somewhere other than the operator (I9): bundles carry no code or
 trust ([auditor guide](auditor-guide.md)). Invariants: I4, I7, I9. Covered by `tests/test_registry_runset.py`,
@@ -130,7 +130,9 @@ How they are met in the format: [format v2](format-v2.md).
 
 - **No harness binding yet:** a process outside the agent's harness, running as the agent's user, can register a run
   of its own (E8v2.6). The run is labelled with the identity that registered it.
-- **No monitor yet:** split views of a log are not detected; `witnessed+monitored` is never reported.
+- **Monitor reports cover one view:** `tracekit monitor` sees the log the signer serves it; a bundle's checkpoint
+  smaller than the report's tree is not proven consistent with it, so a split view shows only at equal sizes or to
+  witnesses.
 - **Key assurance is `asserted`:** the log declares its own record keys; nothing certifies them.
 - **Fail-open classes:** tool classes configured `fail_modes: {<class>: open}` run when the signer is down, unrecorded;
   the report lists them.

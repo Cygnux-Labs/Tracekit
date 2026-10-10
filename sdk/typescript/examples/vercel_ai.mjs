@@ -1,7 +1,8 @@
 // Vercel AI SDK middleware, offline: a stub language model wrapped with tracekitMiddleware, plus a policy-checked tool.
 // With the real SDK: wrapLanguageModel({ model: openai("gpt-4o"), middleware: tracekitMiddleware(tk) }).
+// The deprecated v1 API (`@cygnux/tracekit/v1`); the v2 client: examples/v2_vercel_ai.mjs.
 // Needs a running signer (tracekit init) and `npm run build` first.   node examples/vercel_ai.mjs
-import { Tracekit, TracekitDenied, tracekitMiddleware } from "../dist/index.js";
+import { Tracekit, TracekitDenied, tracekitMiddleware } from "../dist/v1.js";
 
 const tk = await Tracekit.start({ agent: "vercel-example" });
 const mw = tracekitMiddleware(tk);
