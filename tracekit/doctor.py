@@ -208,8 +208,8 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
             with open(os.path.join(keys, "log.key"), "rb") as f, open(os.path.join(keys, "record.key"), "rb") as g:
                 same = f.read() == g.read()
             add("D-KEYS-DISTINCT", not same, "the log key and the record key are the same key" if same else
-                "the log key and the record key differ", "move both keys away and restart the signer to make new ones "
-                "(new keys start a new log: export what you need first)")
+                "the log key and the record key differ", "a log keeps its log key, so start a new signer on a new "
+                "data_dir (its keys are made distinct); export what you need from this one first")
         except OSError as e:
             add("D-KEYS-DISTINCT", False, f"no keys yet ({e.strerror})", "start the signer once", bad=WARN)
 

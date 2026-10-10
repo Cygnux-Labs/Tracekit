@@ -410,7 +410,8 @@ class SignerService:
             d = files.open_dir(data_dir)
             try:
                 files.write(d, "log.vkey", (self.vkey + "\n").encode("ascii"), 0o644)
-                files.write(d, "hygiene.json", json.dumps(logkey.HYGIENE).encode("ascii"), 0o644)
+                if logkey.HYGIENE.get("core_limit") is not None:   # a serving signer (harden() ran), not a CLI command
+                    files.write(d, "hygiene.json", json.dumps(logkey.HYGIENE).encode("ascii"), 0o644)
                 for a in self.anchors:
                     files.write(d, "rekor.pub", (base64.b64encode(a.spki).decode("ascii") + "\n").encode("ascii"), 0o644)
             finally:
@@ -490,8 +491,11 @@ class SignerService:
     def _check_witnesses(self, witnesses, acknowledged):
         if not witnesses:
             return
-        text = checkpoint.body(self.origin, 0, merkle.root([]))
-        empty, heads = self._note(text, self.origin), []
+        text, heads = checkpoint.body(self.origin, 0, merkle.root([])), []
+        try:
+            empty = self._note(text, self.origin)
+        except Exception:   # the log key can't sign now (KMS down): no witness can be asked, as when none answers
+            witnesses = ()
         for w in witnesses:
             try:
                 heads.append(w.latest(empty, self.vkey))
