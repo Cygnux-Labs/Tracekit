@@ -1,0 +1,10 @@
+{"tool": "mcp:slack/slack_post_message", "args": {"channel_id": "C01", "text": "<!channel> deploy in 5 minutes"}, "expect": "ask", "note": "whole-channel notification"}
+{"tool": "mcp__slack__slack_post_message", "args": {"channel_id": "C01", "text": "<!everyone> office closed"}, "expect": "ask", "note": "whole-channel notification"}
+{"tool": "mcp:slack/slack_reply_to_thread", "args": {"channel_id": "C01", "text": "<!here> incident: api down"}, "expect": "ask", "note": "whole-channel notification"}
+{"tool": "mcp:teams/post_message", "args": {"channel_id": "C01", "text": "Heads up <!channel|channel>"}, "expect": "ask", "note": "whole-channel notification"}
+{"tool": "mcp:slack/slack_post_message", "args": {"channel_id": "C01", "text": "<!here|here> please review"}, "expect": "ask", "note": "whole-channel notification"}
+{"tool": "mcp__slack__slack_post_message", "args": {"channel_id": "C01", "text": "Release notes <!everyone>"}, "expect": "ask", "note": "whole-channel notification"}
+{"tool": "mcp:slack/slack_reply_to_thread", "args": {"channel_id": "C01", "text": "<!channel> rollback done"}, "expect": "ask", "note": "whole-channel notification"}
+{"tool": "mcp:teams/post_message", "args": {"channel_id": "C01", "text": "ping <!here>"}, "expect": "ask", "note": "whole-channel notification"}
+{"tool": "mcp:slack/slack_post_message", "args": {"channel_id": "C01", "text": "<!everyone|everyone> all hands now"}, "expect": "ask", "note": "whole-channel notification"}
+{"tool": "mcp__slack__slack_post_message", "args": {"channel_id": "C01", "text": "<!channel> new pricing live"}, "expect": "ask", "note": "whole-channel notification"}

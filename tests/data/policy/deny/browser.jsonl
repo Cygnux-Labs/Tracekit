@@ -1,0 +1,12 @@
+{"tool": "browser_use:go_to_url", "args": {"url": "file:///etc/passwd", "page_url": ""}, "expect": "deny", "note": "browser rule"}
+{"tool": "browser_use:go_to_url", "args": {"url": "http://169.254.169.254/latest/meta-data/", "page_url": ""}, "expect": "deny", "note": "browser rule"}
+{"tool": "browser_use:go_to_url", "args": {"url": "http://localhost:8080/admin", "page_url": "https://www.example.com/"}, "expect": "deny", "note": "browser rule"}
+{"tool": "browser_use:go_to_url", "args": {"url": "http://10.0.0.7/", "page_url": ""}, "expect": "deny", "note": "browser rule"}
+{"tool": "browser_use:open_tab", "args": {"url": "http://grafana.internal/", "page_url": ""}, "expect": "deny", "note": "browser rule"}
+{"tool": "browser_use:go_to_url", "args": {"url": "FILE:///home/app/.aws/credentials", "page_url": ""}, "expect": "deny", "note": "browser rule"}
+{"tool": "browser_use:upload_file", "args": {"index": 3, "path": "/app/data/export.csv", "page_url": "https://www.example.com/upload"}, "expect": "ask", "note": "browser rule"}
+{"tool": "browser_use:input", "args": {"index": 2, "text": "ada@example.com", "page_url": "https://forms.unknown-site.io/signup"}, "expect": "ask", "note": "browser rule"}
+{"tool": "browser_use:input", "args": {"index": 5, "text": "hello", "page_url": "https://example.com.evil.net/login"}, "expect": "ask", "note": "browser rule"}
+{"tool": "browser_use:input", "args": {"index": 1, "text": "x", "page_url": ""}, "expect": "ask", "note": "browser rule"}
+{"tool": "browser_use:go_to_url", "args": {"url": "http://192.168.0.1/", "page_url": ""}, "expect": "deny", "note": "browser rule"}
+{"tool": "browser_use:go_to_url", "args": {"url": "http://[::1]:3000/", "page_url": ""}, "expect": "deny", "note": "browser rule"}
