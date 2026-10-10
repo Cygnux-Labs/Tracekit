@@ -60,6 +60,146 @@ class E16(unittest.TestCase):
         self.assertEqual(got["D-PROCESS-BOUNDARY"]["status"], "fail")
 
 
+class K8s(unittest.TestCase):
+    def test_clean_deployment_passes_every_check(self):
+        results = e16.run_k8s_case(None)
+        self.assertEqual([r for r in results if r["status"] != "ok"], [])
+        self.assertEqual({r["id"] for r in results}, {want for _, want, _ in e16.K8S_CASES})
+
+    def test_every_misconfiguration_is_flagged(self):
+        self.assertGreaterEqual(len(e16.K8S_CASES), 10)
+        for name, want, mutate in e16.K8S_CASES:
+            with self.subTest(name):
+                got = {r["id"]: r["status"] for r in e16.run_k8s_case(mutate)}
+                self.assertIn(got.get(want), ("warn", "fail"), name)
+
+    def test_a_token_with_cloud_identity_fails_without_it_warns(self):
+        token = e16._set(e16._pod, automountServiceAccountToken=True)
+        gke = e16._sa_note("iam.gke.io/gcp-service-account", "s@p.iam.gserviceaccount.com")
+        for mutate, want in ((token, "warn"), (lambda d: (token(d), gke(d)), "fail")):
+            got = {r["id"]: r["status"] for r in e16.run_k8s_case(mutate)}
+            self.assertEqual(got["D-K8S-SA-TOKEN"], want)
+
+    def test_central_signer_with_cloud_identity_and_a_sidecar_passes(self):
+        def central(docs):
+            e16._sa_note("eks.amazonaws.com/role-arn", "arn:aws:iam::111122223333:role/tracekit-kms")(docs)
+            e16._pod(docs)["containers"] = [{"name": "istio-proxy", "image": "istio/proxyv2:1.22",
+                                             "securityContext": dict(e16.HARDENED, runAsUser=1337)}]
+        self.assertEqual([r for r in e16.run_k8s_case(central) if r["status"] != "ok"], [])
+
+    def test_block_yaml_lists_cronjobs_and_json_files(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        with open(os.path.join(d, "a.yaml"), "w") as f:
+            f.write("# rendered\n---\napiVersion: v1\nkind: List\nitems:\n  - kind: Pod\n    metadata:\n      name: p\n"
+                    "    spec:\n      hostNetwork: true\n      containers:\n        - name: s\n"
+                    "          args: [signer, serve]\n---\n")
+        with open(os.path.join(d, "b.json"), "w") as f:
+            json.dump({"kind": "CronJob", "metadata": {"name": "c"}, "spec": {"jobTemplate": {"spec": {"template": {
+                "spec": {"hostPID": True, "containers": [{"name": "a", "env": [{"name": "TRACEKIT_SIGNER"}]}]}}}}}}, f)
+        docs, bad = doctor.load_manifests(d)
+        self.assertEqual(bad, [])
+        got = {r["id"]: r for r in doctor.k8s_checks(docs)}
+        self.assertEqual(got["D-K8S-HOST-ACCESS"]["detail"], "Pod/p: hostNetwork; CronJob/c: hostPID")
+
+    def test_in_pod_reads_its_pod_and_service_account(self):
+        docs = e16.k8s_clean()
+        pod = {"kind": "Pod", "metadata": {"name": "agent-1", "namespace": "acme"}, "spec": e16._pod(docs)}
+        sa = dict(docs[0], metadata=dict(docs[0]["metadata"], annotations={"eks.amazonaws.com/role-arn": "arn"}))
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        for n, text in (("namespace", "acme"), ("token", "t0k"), ("ca.crt", "")):
+            with open(os.path.join(d, n), "w") as f:
+                f.write(text)
+        urls = []
+
+        def urlopen(req, **kw):
+            urls.append((req.full_url, req.headers["Authorization"]))
+            return io.BytesIO(json.dumps(pod if "/pods/" in req.full_url else sa).encode())
+        with mock.patch.dict(os.environ, {"KUBERNETES_SERVICE_HOST": "10.0.0.1", "HOSTNAME": "agent-1"}), \
+                mock.patch.object(doctor, "SA_DIR", d), mock.patch("ssl.create_default_context"), \
+                mock.patch("urllib.request.urlopen", urlopen):
+            got = {r["id"]: r["status"] for r in doctor.in_pod()}
+        self.assertEqual(urls, [("https://10.0.0.1:443/api/v1/namespaces/acme/pods/agent-1", "Bearer t0k"),
+                                ("https://10.0.0.1:443/api/v1/namespaces/acme/serviceaccounts/agent", "Bearer t0k")])
+        self.assertEqual(got["D-K8S-WORKLOAD-IDENTITY"], "fail")
+
+    def test_outside_a_pod_it_warns(self):
+        with mock.patch.dict(os.environ, clear=True):
+            self.assertEqual([(r["id"], r["status"]) for r in doctor.in_pod()], [("D-K8S-WORKLOADS", "warn")])
+
+
+class Postgres(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.admin, cls.cluster = e16.pg_admin()
+        if not cls.admin:
+            raise unittest.SkipTest(cls.cluster)
+
+    @classmethod
+    def tearDownClass(cls):
+        e16.pg_stop(cls.cluster)
+
+    def test_signer_with_postgres_grants_passes(self):
+        self.assertEqual([r["status"] for r in e16.run_pg_case(self.admin, None)], ["ok", "ok"])
+
+    def test_extra_grants_are_flagged(self):
+        for name, want, sql in e16.PG_CASES:
+            with self.subTest(name):
+                got = {r["id"]: r["status"] for r in e16.run_pg_case(self.admin, sql)}
+                self.assertEqual(got[want], "fail", name)
+
+
+class Kms(unittest.TestCase):
+    def setUp(self):
+        from test_signer_kms import FakeKms
+        self.kms = FakeKms()
+        self.issuer = None   # the error code Sign with DryRun raises on the issuer key
+
+        def sign(**req):
+            if req.get("DryRun"):
+                e = Exception(self.issuer)
+                e.response = {"Error": {"Code": self.issuer}}
+                raise e
+            return FakeKms.sign(self.kms, **req)
+        self.kms.sign = sign
+        boto3 = types.SimpleNamespace(client=lambda name, region_name: self.kms)
+        patcher = mock.patch.dict("sys.modules", boto3=boto3)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def check(self, issuer_key=None):
+        return {r["id"]: r for r in doctor.kms_checks({"key_id": "alias/log", "region": "eu-west-1"}, issuer_key)}
+
+    def test_log_key_spec_and_usage(self):
+        self.assertEqual(self.check()["D-KMS-LOG-KEY"]["status"], "ok")
+        self.kms.spec = "ECC_NIST_P256"
+        self.assertEqual(self.check()["D-KMS-LOG-KEY"]["status"], "fail")
+
+    def test_issuer_key_must_not_be_signable(self):
+        for code, want in (("DryRunOperationException", "fail"), ("AccessDeniedException", "ok"),
+                           ("NotFoundException", "warn")):
+            self.issuer = code
+            with self.subTest(code):
+                self.assertEqual(self.check("alias/issuer-ca")["D-KMS-ISSUER-SIGN"]["status"], want)
+        self.assertNotIn("D-KMS-ISSUER-SIGN", self.check())
+
+    def test_skipped_with_the_reason_without_boto3_or_credentials(self):
+        with mock.patch.dict("sys.modules", boto3=None):
+            self.assertEqual(self.check()["D-KMS-LOG-KEY"]["detail"], "not checked: no boto3")
+        self.kms.get_public_key = mock.Mock(side_effect=type("NoCredentialsError", (Exception,), {})("no creds"))
+        self.assertEqual(self.check()["D-KMS-LOG-KEY"]["status"], "warn")
+
+    def test_signer_yaml_with_kms_and_postgres_runs_both(self):
+        def mutate(L):
+            L.signer_yaml(log_key={"aws_kms": {"key_id": "alias/log", "region": "eu-west-1"}},
+                          storage={"postgres": {"dsn_file": "pg.dsn"}})
+        with mock.patch.object(doctor, "pg_checks", return_value=[doctor.result("D-PG-SIGNER-ROLE", "ok", "")]) as pg:
+            got = {r["id"] for r in e16.run_case(mutate)}
+        self.assertTrue({"D-KMS-LOG-KEY", "D-PG-SIGNER-ROLE"} <= got)
+        self.assertTrue(pg.call_args.args[0]["dsn_file"].endswith("pg.dsn"))
+
+
 class Probe(unittest.TestCase):
     agent = types.SimpleNamespace(pw_name="agent", pw_uid=64101, pw_gid=64101)
 
@@ -112,7 +252,9 @@ class Report(unittest.TestCase):
     def test_cli_passes_config_and_json(self):
         with mock.patch.object(doctor, "main", return_value=2) as main:
             self.assertEqual(cli.main(["doctor", "--json", "--config", "/etc/x.yaml"]), 2)
-        main.assert_called_once_with("/etc/x.yaml", True)
+            cli.main(["doctor", "--k8s", "--manifests", "/m", "--issuer-key", "alias/ca"])
+        self.assertEqual(main.call_args_list, [mock.call("/etc/x.yaml", True, False, None, None),
+                                               mock.call(None, False, True, "/m", "alias/ca")])
 
 
 class Detect(unittest.TestCase):
