@@ -421,6 +421,12 @@ class SignerService:
                         not in checkpoint.signers(latest[1]):
                     raise ValueError("the configured log key did not sign this log's notes: a log keeps its log key, "
                                      "so switch backends only to a key with the same public key")
+                hybrid = [line for line in latest[1].partition("\n\n")[2].splitlines()
+                          if len(line) > 4096 and line.startswith(f"{checkpoint.DASH}{origin} ")]   # SLH-DSA lines only
+                mine = self._slh and checkpoint.key_id(origin, checkpoint.HYBRID, self._slh_public)
+                if hybrid and not any(base64.b64decode(line.rsplit(" ", 1)[1])[:4] == mine for line in hybrid):
+                    raise ValueError("this log's notes carry a hybrid line from another SLH-DSA key, or the hybrid key "
+                                     "is no longer configured: restore the log's log-slh.key (pinned by verifiers)")
             d = files.open_dir(data_dir)
             try:
                 files.write(d, "log.vkey", "".join(k + "\n" for k in vkeys).encode("ascii"), 0o644)
