@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "OCSF 1.3.0, the subset Tracekit's webhook uses",
+  "description": "Vendored by hand from schema.ocsf.io (1.3.0): Detection Finding (2004) and API Activity (6003), with the base event, metadata, product, finding_info, api, service, actor, user and endpoint attributes Tracekit sets. Required attributes and enums as OCSF defines them.",
+  "oneOf": [
+    {"$ref": "#/$defs/detection_finding"},
+    {"$ref": "#/$defs/api_activity"}
+  ],
+  "$defs": {
+    "detection_finding": {
+      "type": "object",
+      "required": ["activity_id", "category_uid", "class_uid", "finding_info", "metadata", "severity_id", "time", "type_uid"],
+      "properties": {
+        "class_uid": {"const": 2004},
+        "category_uid": {"const": 2},
+        "activity_id": {"enum": [0, 1, 2, 3, 99]},
+        "type_uid": {"enum": [200400, 200401, 200402, 200403, 200499]},
+        "severity_id": {"enum": [0, 1, 2, 3, 4, 5, 6, 99]},
+        "time": {"type": "integer", "minimum": 0},
+        "message": {"type": "string"},
+        "metadata": {"$ref": "#/$defs/metadata"},
+        "finding_info": {
+          "type": "object",
+          "required": ["uid", "title"],
+          "properties": {
+            "uid": {"type": "string"},
+            "title": {"type": "string"},
+            "types": {"type": "array", "items": {"type": "string"}}
+          }
+        },
+        "unmapped": {"type": "object"}
+      }
+    },
+    "api_activity": {
+      "type": "object",
+      "required": ["activity_id", "actor", "api", "category_uid", "class_uid", "metadata", "severity_id", "src_endpoint", "time", "type_uid"],
+      "properties": {
+        "class_uid": {"const": 6003},
+        "category_uid": {"const": 6},
+        "activity_id": {"enum": [0, 1, 2, 3, 4, 99]},
+        "type_uid": {"enum": [600300, 600301, 600302, 600303, 600304, 600399]},
+        "severity_id": {"enum": [0, 1, 2, 3, 4, 5, 6, 99]},
+        "time": {"type": "integer", "minimum": 0},
+        "message": {"type": "string"},
+        "metadata": {"$ref": "#/$defs/metadata"},
+        "api": {
+          "type": "object",
+          "required": ["operation"],
+          "properties": {
+            "operation": {"type": "string"},
+            "service": {"type": "object", "properties": {"name": {"type": "string"}}}
+          }
+        },
+        "actor": {
+          "type": "object",
+          "properties": {
+            "app_uid": {"type": "string"},
+            "user": {"type": "object", "properties": {"uid": {"type": "string"}}}
+          }
+        },
+        "src_endpoint": {"type": "object", "properties": {"uid": {"type": "string"}}},
+        "unmapped": {"type": "object"}
+      }
+    },
+    "metadata": {
+      "type": "object",
+      "required": ["product", "version"],
+      "properties": {
+        "version": {"type": "string", "pattern": "^1\\.[0-9]+\\.[0-9]+$"},
+        "uid": {"type": "string"},
+        "correlation_uid": {"type": "string"},
+        "log_name": {"type": "string"},
+        "product": {
+          "type": "object",
+          "required": ["vendor_name"],
+          "properties": {
+            "name": {"type": "string"},
+            "vendor_name": {"type": "string"},
+            "version": {"type": "string"}
+          }
+        }
+      }
+    }
+  }
+}

@@ -13,7 +13,7 @@ session cookie, also on loopback, where any local user or process could otherwis
 a session of the auditor or approver role sees, read-only, the runs of its tenant (the issuer's tenant claim) only.
 With `view.signer` (the signer's address, as `tracekit approvals --signer` takes it), an approver's session also gets
 the approval pages (/approvals; ApprovalDesk): the viewer answers for that person over the signer RPC as a bridge
-identity (`authorize` grants it approval_on_behalf), and the signer decides who may answer, verifies the passkey of a
+identity (`authorize` grants it approval_decide_on_behalf), and the signer decides who may answer, verifies the passkey of a
 `passkey: required` rule and records both the person and the viewer.
 
 Dev assurance: the pinned log key is read from the directory being checked, so a run that verifies matches the key of

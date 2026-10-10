@@ -77,6 +77,17 @@ class Compile(unittest.TestCase):
         self.assertEqual([r["id"] for r in pol["ask"]], ["B2"])
         self.assertNotIn(self.d, pc.canonical(pol))   # no paths in what is hashed
 
+    def test_extends_a_list_merges_each_parent_in_order(self):
+        a = self.write("a.yaml", "unknown_tools: flag\ntools:\n  Bash: shell\ndeny:\n  - {id: A1, class: shell, pattern: x}\n")
+        b = self.write("b.yaml", "unknown_tools: ask\ntools:\n  run_sql: sql\nask:\n  - {id: B1, class: sql, pattern: x}\n")
+        pol, errs = pc.build(self.write("p.yaml", "extends: [a.yaml, b.yaml]\n"))
+        self.assertEqual(errs, [])
+        self.assertEqual(pol["extends"], [pc.policy_hash(pc.build(p)[0]) for p in (a, b)])
+        self.assertEqual((pol["tools"], pol["unknown_tools"]), ({"Bash": "shell", "run_sql": "sql"}, "ask"))
+        self.assertEqual(([r["id"] for r in pol["deny"]], [r["id"] for r in pol["ask"]]), (["A1"], ["B1"]))
+        self.assertIn("rule A1: duplicate id", "\n".join(self.errors("extends: [a.yaml, a.yaml]\n")))
+        self.assertIn("extends must be a relative path", "\n".join(self.errors(f"extends: [b.yaml, {a}]\n")))
+
     def test_extends_loop_through_dot_path(self):
         self.assertIn("extends loop", "\n".join(self.errors("extends: ./p.yaml\n")))
 

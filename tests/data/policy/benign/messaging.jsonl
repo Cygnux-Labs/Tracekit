@@ -1,0 +1,20 @@
+{"tool": "mcp:slack/slack_post_message", "args": {"channel_id": "C00", "text": "Deploy of api v1.4.2 finished"}, "expect": "allow", "note": "ordinary message"}
+{"tool": "mcp__slack__slack_post_message", "args": {"channel_id": "C01", "text": "Nightly report: 3 failed jobs"}, "expect": "allow", "note": "ordinary message"}
+{"tool": "mcp:slack/slack_reply_to_thread", "args": {"channel_id": "C02", "text": "@channel-ops please look at ticket 42"}, "expect": "allow", "note": "ordinary message"}
+{"tool": "mcp:teams/post_message", "args": {"channel_id": "C03", "text": "PR #881 is ready for review"}, "expect": "allow", "note": "ordinary message"}
+{"tool": "mcp:slack/slack_post_message", "args": {"channel_id": "C04", "text": "Build green on main"}, "expect": "allow", "note": "ordinary message"}
+{"tool": "mcp__slack__slack_post_message", "args": {"channel_id": "C05", "text": "Customer asked about refunds, replied with policy link"}, "expect": "allow", "note": "ordinary message"}
+{"tool": "mcp:slack/slack_reply_to_thread", "args": {"channel_id": "C06", "text": "Reminder: standup at 10"}, "expect": "allow", "note": "ordinary message"}
+{"tool": "mcp:teams/post_message", "args": {"channel_id": "C07", "text": "<@U123> can you take this?"}, "expect": "allow", "note": "ordinary message"}
+{"tool": "mcp:slack/slack_post_message", "args": {"channel_id": "C08", "text": "Weekly metrics attached"}, "expect": "allow", "note": "ordinary message"}
+{"tool": "mcp__slack__slack_post_message", "args": {"channel_id": "C09", "text": "The @here mention etiquette doc is updated"}, "expect": "allow", "note": "ordinary message"}
+{"tool": "mcp:slack/slack_reply_to_thread", "args": {"channel_id": "C010", "text": "Error rate back to normal"}, "expect": "allow", "note": "ordinary message"}
+{"tool": "mcp:teams/post_message", "args": {"channel_id": "C011", "text": "Migration 0042 applied to staging"}, "expect": "allow", "note": "ordinary message"}
+{"tool": "mcp:slack/slack_post_message", "args": {"channel_id": "C012", "text": "Thanks <@U99>!"}, "expect": "allow", "note": "ordinary message"}
+{"tool": "mcp__slack__slack_post_message", "args": {"channel_id": "C013", "text": "Summary: 12 tickets closed"}, "expect": "allow", "note": "ordinary message"}
+{"tool": "mcp:slack/slack_reply_to_thread", "args": {"channel_id": "C014", "text": "Link: <https://example.com/report|report>"}, "expect": "allow", "note": "ordinary message"}
+{"tool": "mcp:slack/slack_list_channels", "args": {}, "expect": "allow", "note": "read or react"}
+{"tool": "mcp:slack/slack_get_channel_history", "args": {"channel_id": "C01"}, "expect": "allow", "note": "read or react"}
+{"tool": "mcp:slack/slack_get_users", "args": {}, "expect": "allow", "note": "read or react"}
+{"tool": "mcp:slack/slack_add_reaction", "args": {"channel_id": "C01", "timestamp": "1.2", "reaction": "eyes"}, "expect": "allow", "note": "read or react"}
+{"tool": "mcp:slack/slack_get_thread_replies", "args": {"channel_id": "C01", "thread_ts": "1.2"}, "expect": "allow", "note": "read or react"}

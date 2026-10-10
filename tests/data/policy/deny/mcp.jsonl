@@ -1,0 +1,20 @@
+{"tool": "mcp:kubernetes/exec_in_pod", "args": {"pod": "api-1", "command": ["sh", "-c", "env"]}, "expect": "ask", "note": "command, delete or access change through an MCP tool"}
+{"tool": "mcp:docker/run_command", "args": {"container": "api", "command": "ls /"}, "expect": "ask", "note": "command, delete or access change through an MCP tool"}
+{"tool": "mcp:ssh/execute", "args": {"host": "web1", "cmd": "uptime"}, "expect": "ask", "note": "command, delete or access change through an MCP tool"}
+{"tool": "mcp:sandbox/run", "args": {"script": "rm -rf /data"}, "expect": "ask", "note": "command, delete or access change through an MCP tool"}
+{"tool": "mcp:server-tools/exec", "args": {"shell_command": "cat /etc/hostname"}, "expect": "ask", "note": "command, delete or access change through an MCP tool"}
+{"tool": "mcp:kubernetes/pods_exec", "args": {"name": "db-0", "command": ["psql", "-c", "select 1"]}, "expect": "ask", "note": "command, delete or access change through an MCP tool"}
+{"tool": "mcp:github/delete_repository", "args": {"owner": "acme", "repo": "api"}, "expect": "ask", "note": "command, delete or access change through an MCP tool"}
+{"tool": "mcp:github/delete_file", "args": {"path": "README.md"}, "expect": "ask", "note": "command, delete or access change through an MCP tool"}
+{"tool": "mcp:linear/delete_issue", "args": {"id": "ENG-1"}, "expect": "ask", "note": "command, delete or access change through an MCP tool"}
+{"tool": "mcp:notion/delete_page", "args": {"id": "p1"}, "expect": "ask", "note": "command, delete or access change through an MCP tool"}
+{"tool": "mcp:jira/remove_user", "args": {"user": "x"}, "expect": "ask", "note": "command, delete or access change through an MCP tool"}
+{"tool": "mcp:redis/drop_database", "args": {"db": 0}, "expect": "ask", "note": "command, delete or access change through an MCP tool"}
+{"tool": "mcp:vercel/destroy_deployment", "args": {"id": "d1"}, "expect": "ask", "note": "command, delete or access change through an MCP tool"}
+{"tool": "mcp:mongo/purge_collection", "args": {"name": "orders"}, "expect": "ask", "note": "command, delete or access change through an MCP tool"}
+{"tool": "mcp__github__delete_repository", "args": {"owner": "acme", "repo": "api"}, "expect": "ask", "note": "command, delete or access change through an MCP tool"}
+{"tool": "mcp:sentry/delete_project", "args": {"slug": "api"}, "expect": "ask", "note": "command, delete or access change through an MCP tool"}
+{"tool": "mcp:docker/exec", "args": {"container": "db", "cmd": ["sh", "-c", "pg_dumpall"]}, "expect": "ask", "note": "command, delete or access change through an MCP tool"}
+{"tool": "mcp:ci/run_job", "args": {"script": "deploy.sh prod"}, "expect": "ask", "note": "command, delete or access change through an MCP tool"}
+{"tool": "mcp:aws-iam/put_user_policy", "args": {"user": "x"}, "expect": "deny", "note": "command, delete or access change through an MCP tool"}
+{"tool": "mcp:gcp/add_iam_policy_binding", "args": {"member": "user:x"}, "expect": "deny", "note": "command, delete or access change through an MCP tool"}
