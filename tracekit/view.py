@@ -72,6 +72,7 @@ RUNS_PAGE, RECORDS_PAGE, VERDICTS_MAX = 50, 500, 4096
 SEARCH_KEYS = {"tenant", "run", "agent", "since", "until", "verdict", "gaps", "denies", "approvals", "after", "limit"}
 VERDICTS = ("verified", "failed", "pending")
 LOGIN_S, SESSION_S, SESSIONS_MAX = 600, 8 * 3600, 4096
+PASSKEY_LOGIN_S = 300   # a passkey is registered only this soon after the sign-in
 log = logging.getLogger(__name__)
 
 
@@ -163,7 +164,8 @@ class OidcLogin:
                   "groups": identity.claims["groups"], "tenant": tenant}
         with self._lock:
             self._sessions[sid] = {"tenant": observe.ALL if role == "operator-admin" else tenant, "role": role,
-                                   "person": person, "csrf": secrets.token_urlsafe(32), "until": self.clock() + SESSION_S}
+                                   "person": person, "csrf": secrets.token_urlsafe(32), "at": self.clock(),
+                                   "until": self.clock() + SESSION_S}
             while len(self._sessions) > SESSIONS_MAX:
                 self._sessions.popitem(last=False)
         return sid
@@ -186,11 +188,12 @@ class OidcLogin:
 class ApprovalDesk:
     """The approval pages' API, for an approver's session: the signer's approvals for that person (`on_behalf`), shown
     from the signer's copy, and their answers. `signer` has `call(method, req)` (sdk.client.Client); `webauthn` is the
-    signer's approvals.webauthn section ({rp_id, origin}), or None."""
+    signer's approvals.webauthn section ({rp_id, origin}), or None. A passkey is registered only within
+    PASSKEY_LOGIN_S of the session's sign-in: the signer keeps a person's first passkey, on this viewer's word."""
     ERRORS = {"invalid_request": 400, "forbidden": 403, "unknown_approval": 404, "approval_not_pending": 409}
 
-    def __init__(self, signer, webauthn=None):
-        self.signer, self.webauthn = signer, webauthn
+    def __init__(self, signer, webauthn=None, clock=time.time):
+        self.signer, self.webauthn, self.clock = signer, webauthn, clock
 
     def _call(self, method, req):
         try:
@@ -220,6 +223,9 @@ class ApprovalDesk:
         """(status, body) of POST `path` with JSON `body`: a passkey registration, or an answer to an approval."""
         who = {"on_behalf": session["person"]}
         if path == "/api/passkey":
+            if self.clock() - session["at"] > PASSKEY_LOGIN_S:
+                return 403, {"error": f"sign in again (/login): a passkey is registered within "
+                                      f"{PASSKEY_LOGIN_S // 60} minutes of signing in"}
             return self._call("passkey_register", {**who, **{k: body[k] for k in ("credential_id", "public_key")
                                                             if k in body}})
         if not path.startswith("/api/approvals/"):
