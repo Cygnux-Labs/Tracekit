@@ -134,6 +134,20 @@ class FakeKmsTests(Cases, unittest.TestCase):
     def outage(self, down):
         self.fake.down = down
 
+    def test_a_kms_outage_at_start_does_not_stop_the_signer(self):
+        """With witnesses configured, the start asks them for their latest note, which needs a signed empty note: a
+        KMS outage then counts as no witness answering (a signed degraded_unanchored gap), not a failed start."""
+        key = self.kms_key()
+        self.fake.down = True
+        w = mock.Mock(name="witness", vkey="w+00000000+AA", latest=mock.Mock(side_effect=AssertionError("asked")))
+        w.name = "w"
+        s = svc.SignerService(self.dir, grace_s=0, log_key=key, witnesses=[w])
+        self.addCleanup(s.close)
+        w.latest.assert_not_called()
+        gaps = [r["event"]["data"]["kind"] for r in s.log.storage.iter_range(0, s.log.storage.tree.size)
+                if r["event"]["type"] == "capture.gap"]
+        self.assertIn("degraded_unanchored", gaps)
+
     def test_a_signature_by_another_key_is_never_stored(self):
         s = self.open(self.kms_key())
         self.fake.foreign = True
@@ -216,6 +230,13 @@ class Hygiene(unittest.TestCase):
         r = got()["D-KEY-HYGIENE"]
         self.assertEqual(r["status"], "warn")
         self.assertIn("core dumps allowed", r["detail"])
+
+    def test_a_signer_that_did_not_harden_writes_no_hygiene_report(self):
+        """CLI commands open the signer without harden(): they must not leave a report that says otherwise."""
+        d = tmpdir(self)
+        with mock.patch.dict(logkey.HYGIENE, {"core_limit": None, "dumpable": None, "mlock": None}):
+            svc.SignerService(d).close()
+        self.assertFalse(os.path.exists(os.path.join(d, "hygiene.json")))
 
 
 if __name__ == "__main__":
