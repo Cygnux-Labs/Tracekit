@@ -178,7 +178,7 @@ class TestSigner(unittest.TestCase):
         self.idp = Provider(self, self.pki)
         cfg = self.idp.config(self.pki)
         self.data = ts.tmpdir(self)
-        self.s = svc.SignerService(self.data, policy=ts.PAY_ASKS, authorize={"oidc:corp/*": sorted(REQUESTS)},
+        self.s = svc.SignerService(self.data, policy=ts.PAY_ASKS, authorize={"oidc:corp/*": sorted(REQUESTS.keys() - {svc.ON_BEHALF})},
                                    approvals={"self_approval": "deny", "approvers": ["group:corp/approvers"],
                                               "break_glass": ["group:corp/oncall"]},
                                    oidc=oidc.OidcAuthenticator(cfg))
@@ -242,7 +242,7 @@ class TestSigner(unittest.TestCase):
         run = self.client("u-app").run("agent", principal_token=self.idp.token(sub="u-bob"))
         aid = self.ask(run, "tc-1")
         self.s.close()
-        s = svc.SignerService(self.data, policy=ts.PAY_ASKS, authorize={"oidc:corp/*": sorted(REQUESTS)},
+        s = svc.SignerService(self.data, policy=ts.PAY_ASKS, authorize={"oidc:corp/*": sorted(REQUESTS.keys() - {svc.ON_BEHALF})},
                               approvals={"approvers": ["group:corp/approvers"]})
         self.addCleanup(s.close)
         bob = oidc.OidcAuthenticator(self.idp.config(self.pki)).validate(

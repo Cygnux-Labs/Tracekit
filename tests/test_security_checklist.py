@@ -15,12 +15,13 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import time
 import types
 import unittest
 from http.server import ThreadingHTTPServer
 
 from test_observe_render import XSS
-from tracekit import gateway, ingest, observe, otlp, proxy, witness_server
+from tracekit import gateway, ingest, observe, otlp, proxy, slack_approvals, witness_server
 from tracekit.identity.token import BearerToken
 from tracekit.ledger import Keys
 from tracekit.signer import metrics
@@ -45,6 +46,7 @@ SURFACES = {
     "tracekit/ingest.py:H": "remote ingest",
     "tracekit/witness_server.py:H": "checkpoint witness",
     "tracekit/proxy.py:Handler": "Anthropic proxy",
+    "tracekit/slack_approvals.py:Handler": "Slack approvals bridge (interactivity callbacks)",
 }
 
 
@@ -167,10 +169,18 @@ class Surfaces(unittest.TestCase):
         return srv, SECRET, [("POST", "/v1/messages", {**auth, "Content-Length": "abc"}, 400),
                              ("POST", "/v1/messages", {**auth, "Content-Length": BIG}, 413)]
 
+    def slack(self):
+        bridge = slack_approvals.Bridge({"signing_secret": b"slack-signing"}, None)
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), slack_approvals.make_handler(bridge))
+        signed = {"X-Slack-Signature": f"v0={SECRET}", "X-Slack-Request-Timestamp": str(int(time.time()))}
+        return srv, SECRET, [("POST", f"/nope?token={SECRET}", signed, 404), ("POST", slack_approvals.PATH, signed, 401),
+                             ("POST", slack_approvals.PATH, {**signed, "Content-Length": BIG}, 413),
+                             ("GET", slack_approvals.PATH, {}, 501)]
+
     PROBES = {"tracekit/observe.py:Handler": viewer, "tracekit/transport/http.py:_Handler": signer_http,
               "tracekit/gateway.py:_Handler": gateway, "tracekit/signer/metrics.py:Handler": metrics,
               "tracekit/otlp.py:H": otlp, "tracekit/ingest.py:H": ingest, "tracekit/witness_server.py:H": witness,
-              "tracekit/proxy.py:Handler": proxy}
+              "tracekit/proxy.py:Handler": proxy, "tracekit/slack_approvals.py:Handler": slack}
 
     def request(self, port, method, path, headers):
         c = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
