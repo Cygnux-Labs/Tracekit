@@ -1,0 +1,41 @@
+{
+  "ack_on_fsync": {
+    "acknowledged": 7938,
+    "acknowledged_lost": 0,
+    "client_errors": {
+      "signer_unavailable": 6986
+    },
+    "clients": 8,
+    "fsck_problems": [],
+    "not_acknowledged": 6986,
+    "not_acknowledged_but_in_store": 141,
+    "not_acknowledged_in_a_signed_gap": 6845,
+    "records": 8328,
+    "rounds": 30,
+    "silent_drops": 0,
+    "torn_tails_set_aside": 0
+  },
+  "ack_on_write": {
+    "acknowledged": 41040,
+    "acknowledged_lost": 0,
+    "client_errors": {
+      "signer_unavailable": 10876
+    },
+    "clients": 8,
+    "fsck_problems": [],
+    "not_acknowledged": 10876,
+    "not_acknowledged_but_in_store": 38,
+    "not_acknowledged_in_a_signed_gap": 10838,
+    "records": 41327,
+    "rounds": 30,
+    "silent_drops": 0,
+    "torn_tails_set_aside": 0
+  },
+  "gates": {
+    "ack_on_fsync_zero_acknowledged_lost": true,
+    "fsck_clean": true,
+    "zero_silent_drops": true
+  },
+  "platform": "darwin",
+  "python": "3.11.15"
+}

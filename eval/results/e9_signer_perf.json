@@ -1,0 +1,30 @@
+{
+  "ack_on_fsync": {
+    "calls": 200,
+    "max_ms": 12.257,
+    "p50_ms": 7.115,
+    "p99_ms": 9.99
+  },
+  "ack_on_write": {
+    "calls": 1000,
+    "max_ms": 2.441,
+    "p50_ms": 0.448,
+    "p99_ms": 0.91
+  },
+  "cpus": 12,
+  "gated": false,
+  "gates": {
+    "events_per_s_ge_1000": true,
+    "p99_ms_at_ack_on_write_le_5": true
+  },
+  "platform": "darwin",
+  "python": "3.11.15",
+  "quick": true,
+  "storage": "file",
+  "throughput": {
+    "events": 26778,
+    "events_per_s": 5356,
+    "seconds": 5,
+    "workers": 4
+  }
+}
