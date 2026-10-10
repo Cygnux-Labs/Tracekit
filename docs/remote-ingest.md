@@ -1,49 +1,81 @@
-# Remote ingestion
+# Remote clients
 
-Lets an SDK agent on another machine write to this signer's ledger over HTTPS. It exists for custom agents (CI
-runners, batch workers, a framework running elsewhere). It is not a way to collect Claude Code hooks from other
-machines: run a signer on each machine for that.
+An agent on another machine (a CI runner, a batch worker, a framework running elsewhere) talks to a v2 signer over its
+HTTPS transport: each call is one `POST /v2/rpc`, authenticated again on every request. The signer signs, chains and
+checkpoints as it does for a local caller; the client holds no key.
 
-> **Experimental.** The ingest gateway (`tracekit ingest serve`) is off by default and being rebuilt: it runs only with `--experimental` and prints a
-> warning when it starts. `tracekit init` never starts it.
+## On the signer host
+
+`signer.yaml`, the `http` section (see `tracekit/transport/http.py`):
+
+```yaml
+http:
+  listen: 0.0.0.0:8443
+  cert: tls/fullchain.pem
+  key: tls/privkey.pem
+  authenticators: [token]      # also k8s_sa, mtls
+  tokens: tokens.json          # named tokens, managed below
+authorize:
+  "token:*": [register_run, decide, complete, state_write, model_event, close_run, status, read]
+tenants:
+  "token:build-agent": acme    # or give the token a tenant with --tenant
+```
 
 ```bash
-# on the signer host
-tracekit ingest token build-agent --home /var/lib/tracekit          # prints the token once; only its hash is stored
-tracekit ingest serve --experimental --home /var/lib/tracekit --host 0.0.0.0 --port 8443 --cert fullchain.pem --key privkey.pem
-
-# on the agent's machine
-echo "$TOKEN" > token.txt
-tracekit init --remote https://tracekit.example:8443 --token-file token.txt
-python my_agent.py        # uses tracekit_sdk.Tracer as usual
+tracekit signer token add build-agent --ttl 30d --config signer.yaml   # prints the token once
+tracekit signer token list --config signer.yaml                         # names, tenants, created, expires, revoked
+tracekit signer token revoke build-agent --config signer.yaml
+tracekit signer serve --config signer.yaml
 ```
+
+- A token is the identity `token:<name>`. Names are 1-64 of `a-z 0-9 _ -` (never `:`, never `dev` or `http`); a name is
+  never reused, so a new token always gets a new name.
+- The tokens file keeps a salted hash of each token with its created and expiry times, never the token. Every token
+  expires (`--ttl`, default 30 days); an expired or revoked token is refused from its next request. The signer reads the
+  file on every request: adding, revoking or rotating a token needs no restart.
+- What a token may call comes from `authorize`; its tenant from `tenants`, else the token's `--tenant`, else `tenant`.
+- Failed authentications are limited per source address and in total. Past an address's limit its requests are refused
+  before their credential is looked at; past the total limit failures are refused as over it, but a valid credential
+  still gets in. `tracekit_signer_auth_failures_total` on the metrics port counts them. A refusal carries the
+  error only: no sequence number, hash or run id.
+
+## On the agent's machine
+
+```bash
+echo "$TOKEN" > /etc/tracekit/token
+tracekit init --remote https://tracekit.example:8443 --v2 --token-file /etc/tracekit/token --ca signer-ca.pem
+```
+
+This wires the v2 Claude Code hooks to the remote signer and prints the environment SDK clients need:
+`TRACEKIT_SIGNER` (the URL), `TRACEKIT_SIGNER_TOKEN_FILE` (read on every call: rotate by rewriting the file) and
+`TRACEKIT_SIGNER_CA` (the CA the signer's certificate must chain to).
 
 ## What changes in the evidence
 
-| Property | Local SDK | Remote SDK |
+| Property | Local caller | Remote caller |
 |---|---|---|
 | Signed, chained, checkpointed by the signer | yes | yes |
-| Event source | `sdk` | `sdk`, always |
-| Run id | as chosen | `remote:<client>:<run>`, so one client cannot write into another's run or a local one |
-| `host` in `run.start` | the client's own claim | `remote:<client>@<address>` (set by the gateway) |
-| `signer_isolation` | the signer's | the signer's real value, not the client's claim |
-| Event types accepted | all client sources | `run.start`, `user.prompt`, `tool.call`, `policy.decision`, `tool.result`, `model.message`, `run.end` |
-| Policy `ask` (human approval) | works | refused: the call is not run |
+| Identity in `run.registered` | `uid:<n>` | `token:<name>` (or `k8s_sa:`, `mtls:`) |
+| `signer_isolation` | `same-user` / `separate-user` | `remote`, set by the signer from the transport |
+| Run access | the run's capability token | the same: a run token is bound to the identity that registered the run, so one remote client cannot write another's runs |
 | Trust in the content | what the agent chose to send | the same |
 
-The gateway holds no key. It authenticates, validates, rewrites, and forwards to the signer. A compromised
-**remote agent** can lie in the events it sends (and nothing proves it sent everything); it cannot forge hook,
-proxy, transcript, checkpoint, gap or tamper evidence, and cannot read or change existing records. A compromised
-**gateway host** is a compromised signer host unless the gateway runs on a different machine from the signer and
-reaches it over the local socket only; the supported layout is gateway and signer on one host.
+A compromised remote agent can lie in the calls it sends and nothing proves it sent all of them; it cannot write
+another identity's runs, forge signer records (gaps, tamper, checkpoints, approvals) or read records outside its scope.
 
-## Operating it
+## Migrating from `tracekit ingest`
 
-- TLS is required unless the gateway binds loopback. `--insecure-http` exists for a reverse proxy that terminates
-  TLS in front of it.
-- Tokens live as SHA-256 hashes in `ingest-tokens.json` (mode 0600) in the signer home. Revoke by deleting the
-  client's entry; the next request is refused. There is no expiry.
-- Limits: 1 MiB per request, 100 events per second per client with a burst of 300, then HTTP 429 (the client
-  treats it as retryable).
-- The client keeps its counters as for local use, so lost or replayed events show up as `capture.gap` events.
-- A signer outage makes the gateway answer 503; the SDK's fail-open or fail-closed setting applies as usual.
+`tracekit ingest` (the v1 ingest gateway) is deprecated and is removed in tracekit 0.5; it prints a warning when run.
+
+| v1 | v2 |
+|---|---|
+| `tracekit ingest token NAME --home H` | `tracekit signer token add NAME --config signer.yaml` |
+| tokens never expire | `--ttl`, default 30 days; `token revoke` |
+| `tracekit ingest serve ...` | the signer's `http` section; no separate gateway |
+| `tracekit init --remote URL --token-file F` | the same with `--v2` (and `--ca`) |
+| runs `remote:<client>:<run>`, source `sdk` | runs registered by the identity `token:<name>`, isolation `remote` |
+| `POST /v1/rpc`, `/v1/traces` | `POST /v2/rpc`; OTLP on `/v1/traces` with `otlp` configured (docs/otel.md) |
+
+Steps: add the `http` section and one token per client to the signer, run `tracekit init --remote ... --v2` on each
+client machine, move SDK code to `tracekit.sdk.client` (the v2 client), then stop `tracekit ingest serve`. Bundles of
+runs already ingested by the v1 gateway keep verifying.

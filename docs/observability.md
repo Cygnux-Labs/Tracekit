@@ -23,6 +23,7 @@ types, gap kinds, RPC error codes, verdicts); past 64 distinct values a label is
 | `tracekit_signer_records_total` | counter | `type` | Records written, by event type. |
 | `tracekit_signer_gaps_total` | counter | `kind` | `capture.gap` records written, by gap kind (`client_counter_gap`, `signer_unavailable`, ...). |
 | `tracekit_signer_refusals_total` | counter | `code` | RPC calls refused, by error code (`quota_exceeded`, `unavailable`, ...). |
+| `tracekit_signer_auth_failures_total` | counter | | Failed authentications on the HTTP transport (bad, expired or revoked credentials). |
 | `tracekit_signer_policy_decisions_total` | counter | `verdict` | `policy.decision` records written, by verdict (`allow`, `flag`, `ask`, `deny`). |
 | `tracekit_signer_policy_nondeterministic_total` | counter | | Policy decisions where a regex ran out of time (the call is denied and the record marked `nondeterministic`). |
 | `tracekit_signer_queue_depth` | gauge | | Items waiting for the writer. |
