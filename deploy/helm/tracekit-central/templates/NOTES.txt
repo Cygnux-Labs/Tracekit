@@ -1,0 +1,9 @@
+Agents reach the signer at TRACEKIT_SIGNER=https://{{ .Release.Name }}.{{ .Release.Namespace }}.svc:8443 with
+TRACEKIT_SIGNER_TOKEN_FILE set to a projected service-account token of audience {{ .Values.audience }}.
+Each run stays on the replica that registered it: its id starts with that replica's name, {{ .Release.Name }}-<n>.
+
+Replica n writes log n alone. Scaling down closes the last replica's log for good (log.closed, final notes cosigned);
+that ordinal starts again only with a new log of its own.
+
+Each replica's log vkey (for trust configs and monitor.logKeys):
+  kubectl exec {{ .Release.Name }}-0 -- tracekit signer vkey --config /etc/tracekit/central/signer-0.yaml
