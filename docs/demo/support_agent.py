@@ -56,7 +56,7 @@ def edit_drop_table(src, dst):
 
 
 def main():
-    d = tempfile.mkdtemp(prefix="tk-", dir="/tmp")
+    d = tempfile.mkdtemp(prefix="tk-", dir="/tmp" if os.path.isdir("/tmp") else None)   # macOS caps socket paths
     service = srv = None
     try:
         step("Start a Tracekit signer: it holds the keys, the log and the policy; the agent holds none of them")
