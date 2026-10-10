@@ -13,6 +13,7 @@ import threading
 import time
 import types
 import unittest
+from http.server import BaseHTTPRequestHandler
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -42,6 +43,33 @@ def self_signed(d):
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     ctx.load_cert_chain(cp, kp)
     return ctx
+
+
+class RefusedBody(unittest.TestCase):
+    def test_a_refused_post_with_an_unread_body_still_gets_its_answer(self):
+        """A handler that answers without reading the body (an auth failure) must not reset the connection under the
+        client before it reads the answer (Windows resets it always; others when the body is still arriving)."""
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self):
+                self.send_response(403)
+                self.send_header("Content-Length", "2")
+                self.end_headers()
+                self.wfile.write(b"no")
+
+            def log_message(self, *a):
+                pass
+        srv = netserver.Server(("127.0.0.1", 0), Handler)
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        for _ in range(20):
+            c = http.client.HTTPConnection("127.0.0.1", srv.server_address[1], timeout=5)
+            try:
+                c.request("POST", "/", body=b"x" * (512 * 1024))
+                r = c.getresponse()
+                self.assertEqual((r.status, r.read()), (403, b"no"))
+            finally:
+                c.close()
 
 
 class SilentClient(unittest.TestCase):
