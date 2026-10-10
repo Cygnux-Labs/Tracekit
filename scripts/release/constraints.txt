@@ -1,0 +1,9 @@
+# Release and supply-chain tool pins: the build backend (applied inside build's isolated env), the build frontend,
+# twine, the SBOM generator, the audit and coverage tools. scripts/release/build.py and the release and supply-chain
+# workflows (docs/RELEASING.md) install from this file only.
+setuptools==84.0.0
+build==1.6.1
+twine==7.0.0
+cyclonedx-bom==7.5.0
+pip-audit==2.10.1
+pytest-cov==7.1.0
