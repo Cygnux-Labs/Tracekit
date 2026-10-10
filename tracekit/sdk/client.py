@@ -25,6 +25,7 @@ import contextvars
 import http.client
 import json
 import os
+import re
 import socket
 import ssl
 import threading
@@ -114,7 +115,8 @@ def _check(hello, where):
 
 
 class _Https:
-    """POST /v2/rpc to an HTTPS signer: one kept-alive connection per thread, the bearer token re-read per call."""
+    """POST /v2/rpc to an HTTPS signer: one kept-alive connection per thread and host, the bearer token re-read per
+    call."""
 
     def __init__(self, url):
         u = urllib.parse.urlsplit(url)
@@ -124,8 +126,18 @@ class _Https:
             self.ctx.load_cert_chain(os.environ["TRACEKIT_SIGNER_CERT"], os.environ.get("TRACEKIT_SIGNER_KEY"))
         self.token_file, self.pid, self.hello = os.environ.get("TRACEKIT_SIGNER_TOKEN_FILE"), None, None
 
-    def post(self, frame, timeout):
-        """The answer frame; _ConnectionLost when the request may not have arrived, SignerUnavailable on a timeout."""
+    def _host(self, req):
+        """The host of the run or approval `req` names. A central signer's replica (docs/deploy-kubernetes.md) prefixes
+        its ids with its route, `<service>-<n>.`: such an id goes to host `<service>-<n>` in the signer's domain."""
+        first, _, rest = self.host.partition(".")
+        route, dot, _ = (req.get("run_id") or req.get("approval_id") or req.get("analyzes") or "").partition(".")
+        if not (dot and re.fullmatch(re.escape(first) + r"-[0-9]+", route)):
+            return self.host
+        return f"{route}.{rest}" if rest else route
+
+    def post(self, frame, timeout, host=None):
+        """The answer frame from `host` (default the signer's); _ConnectionLost when the request may not have arrived,
+        SignerUnavailable on a timeout."""
         headers = {"Content-Type": "application/json"}
         if self.token_file:
             try:
@@ -135,9 +147,12 @@ class _Https:
                 raise SignerUnavailable(f"cannot read the signer token file: {e}") from None
         if self.pid != os.getpid():   # a forked child: its own connections
             self.pid, self.local = os.getpid(), threading.local()
-        conn = getattr(self.local, "conn", None)
+        host = host or self.host
+        if not hasattr(self.local, "conns"):
+            self.local.conns = {}
+        conn = self.local.conns.get(host)
         if conn is None:
-            conn = self.local.conn = http.client.HTTPSConnection(self.host, self.port, context=self.ctx)
+            conn = self.local.conns[host] = http.client.HTTPSConnection(host, self.port, context=self.ctx)
         conn.timeout = timeout
         if conn.sock:
             conn.sock.settimeout(timeout)
@@ -159,7 +174,7 @@ class _Https:
                 raise RPCError(e.get("code"), e.get("message", ""))
             _check(hello, f"https://{self.host}:{self.port}")
             self.hello = hello
-        return self.post({"method": method, **req}, timeout)
+        return self.post({"method": method, **req}, timeout, self._host(req))
 
 
 class _Conn:

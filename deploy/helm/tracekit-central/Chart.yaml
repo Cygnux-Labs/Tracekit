@@ -1,0 +1,7 @@
+apiVersion: v2
+name: tracekit-central
+description: The central Tracekit signer, one log per replica, for agents in other pods (docs/deploy-kubernetes.md)
+type: application
+version: 0.1.0
+appVersion: "0.4.0"
+kubeVersion: ">=1.29.0-0"
