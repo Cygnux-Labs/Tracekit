@@ -20,6 +20,9 @@ signer.yaml:
     durability: ack-on-write                 # or ack-on-fsync
     log_key: {aws_kms: {key_id: alias/tracekit-log, region: eu-west-1}}   # the log key in AWS KMS
                                              # (tracekit.signer.logkey); default keys/log.key
+             {slh_dsa: {file: keys/log-slh.key}}   # and/or a hybrid SLH-DSA-SHA2-128s line on every stored note
+                                             # (created on first start; tracekit.format.checkpoint), never sent to
+                                             # witnesses; about 1 s of signing per note
     storage: {postgres: {dsn_file: pg.dsn}}  # a Postgres store (tracekit.storage.postgres): the DSN is read from the
                                              # file, never inline (no dsn_file: the libpq PG* variables); default the
                                              # file store in data_dir/store
@@ -83,9 +86,10 @@ Checkpoints (04-design §1.6, §2.9): a C2SP note of the record tree, signed by 
 Ed25519, named after the origin, signs notes only) and stored through the storage, after a run.final, on
 `checkpoint_nudge` (at most one note per CHECKPOINT_MIN_S), every CHECKPOINT_S while the tree grows, and on close; then,
 signed by the same key, a note of each tenant registry that grew, under origin `<origin>/registry/<id of the tenant's
-salt>`. The log key's vkey is written to <data_dir>/log.vkey on start, which is refused when the stored notes were
-signed by another key. Notes are signed off the writer thread; the writer only reads the heads. A note the log key
-fails to sign waits for the next round; an outage of LOG_KEY_GAP_S gets one signed `capture.gap{degraded_unanchored}`.
+salt>`. The log key's vkey (then the hybrid key's, when configured) is written to <data_dir>/log.vkey on start, which
+is refused when the stored notes were signed by another key. Notes are signed off the writer thread; the writer only
+reads the heads. A note the log key fails to sign waits for the next round; an outage of LOG_KEY_GAP_S gets one signed
+`capture.gap{degraded_unanchored}`.
 
 Publishing (04-design §2.9, §8): one worker per configured witness sends each tree's latest note to it (add-checkpoint,
 off the writer: the writer only computes consistency proofs) and merges the verified cosignature lines into the stored
@@ -155,7 +159,7 @@ from tracekit.client import remote_url_error
 from tracekit.anchor import rekor2
 from tracekit.anchor.rekor2 import RekorAnchor
 from tracekit.deploy import files
-from tracekit.format import checkpoint, registry
+from tracekit.format import checkpoint, registry, slh_dsa
 from tracekit.format.canon import StrictJSONError, canonical, event_hash, loads_strict
 from tracekit.format.records import RecordSigner, verify_record
 from tracekit.identity.base import CallerIdentity
@@ -317,7 +321,7 @@ class SignerService:
                  multi_tenant_apps=(), migrators=(), analyzers=(), fail_modes=None, grace_s=GRACE_S, idle_s=IDLE_S,
                  bridge=None, origin=None, authorize=None, contact=None, approvals=None, lock_timeout_s=0,
                  fsck_every_s=FSCK_S, clock_skew_s=CLOCK_SKEW_S, rekor=None, otlp=None, otel_out=None,
-                 storage_config=None, gateways=(), gateway_mandatory=False, log_key=None):
+                 storage_config=None, gateways=(), gateway_mandatory=False, log_key=None, slh_dsa_file=None):
         """`identity` answers the in-process SignerAPI calls (default: this process's uid); transports call
         handle_frame with the identity they established. `policy` is a policy2 Engine (default: load_policy()).
         `open_storage()` defaults to the store `storage_config` (the `storage` config section) names, else file storage
@@ -331,7 +335,8 @@ class SignerService:
         `rekor`: the `anchors.rekor` config section ({signing_config, trusted_root, every_s}), or None.
         `otlp` ({max_spans}) and `otel_out` ({endpoint, headers}): the config sections, or None.
         `gateways` (identities or prefixes) and `gateway_mandatory`: see the config keys.
-        `log_key`: a signer.logkey key (default: the file key in keys/log.key); it must be the key of the log's notes."""
+        `log_key`: a signer.logkey key (default: the file key in keys/log.key); it must be the key of the log's notes.
+        `slh_dsa_file`: the SLH-DSA secret key file (created on first use) that adds a hybrid line to every note."""
         fail_modes = dict(fail_modes or FAIL_MODES)
         if not all(isinstance(k, str) and v in ("open", "closed") for k, v in fail_modes.items()):
             raise ValueError("fail_modes maps tool classes to open or closed")
@@ -376,6 +381,7 @@ class SignerService:
             salt = _secret(os.path.join(keys, "registry_salt.key"), lambda: os.urandom(32))
             self._log_key = log_key or logkey.FileKey(_secret(os.path.join(keys, "log.key"),
                                                               lambda: crypto.generate()[0]))
+            self._slh = slh_dsa_file and _secret(slh_dsa_file, lambda: slh_dsa.keygen()[0], 2 * slh_dsa.PK_SIZE)
             self.anchors = [] if rekor is None else [RekorAnchor(
                 rekor["signing_config"], rekor["trusted_root"],
                 _secret(os.path.join(keys, "rekor.key"), rekor2.new_key), rekor.get("every_s", rekor2.MIN_EVERY_S))]
@@ -408,6 +414,8 @@ class SignerService:
         self._key_down = None   # (since, gapped) while the log key fails to sign
         try:
             self.vkey = checkpoint.vkey(self.origin, checkpoint.ED25519, self._log_key.public)
+            vkeys = [self.vkey] + ([checkpoint.vkey(self.origin, checkpoint.HYBRID, self._slh_public)]
+                                   if self._slh else [])
             latest = storage.checkpoint_latest()
             if latest:   # the log key is stable: another key (a backend switch, a replaced log.key) never takes over
                 origin = latest[1].split("\n", 1)[0]   # signature checks of the note are the rollback check's job
@@ -415,9 +423,15 @@ class SignerService:
                         not in checkpoint.signers(latest[1]):
                     raise ValueError("the configured log key did not sign this log's notes: a log keeps its log key, "
                                      "so switch backends only to a key with the same public key")
+                hybrid = [line for line in latest[1].partition("\n\n")[2].splitlines()
+                          if len(line) > 4096 and line.startswith(f"{checkpoint.DASH}{origin} ")]   # SLH-DSA lines only
+                mine = self._slh and checkpoint.key_id(origin, checkpoint.HYBRID, self._slh_public)
+                if hybrid and not any(base64.b64decode(line.rsplit(" ", 1)[1])[:4] == mine for line in hybrid):
+                    raise ValueError("this log's notes carry a hybrid line from another SLH-DSA key, or the hybrid key "
+                                     "is no longer configured: restore the log's log-slh.key (pinned by verifiers)")
             d = files.open_dir(data_dir)
             try:
-                files.write(d, "log.vkey", (self.vkey + "\n").encode("ascii"), 0o644)
+                files.write(d, "log.vkey", "".join(k + "\n" for k in vkeys).encode("ascii"), 0o644)
                 if logkey.HYGIENE.get("core_limit") is not None:   # a serving signer (harden() ran), not a CLI command
                     files.write(d, "hygiene.json", json.dumps(logkey.HYGIENE).encode("ascii"), 0o644)
                 for a in self.anchors:
@@ -650,8 +664,17 @@ class SignerService:
             wake.set()
         return True
 
+    @property
+    def _slh_public(self):
+        return checkpoint.SLH_DSA + slh_dsa.public(self._slh)
+
     def _note(self, text, origin):
-        return text + "\n" + checkpoint.log_line(origin, self._log_key.public, self._log_key.sign(text.encode("utf-8")))
+        data = text.encode("utf-8")
+        note = text + "\n" + checkpoint.log_line(origin, self._log_key.public, self._log_key.sign(data))
+        if self._slh:   # lean: pure-Python SLH-DSA, about 1 s per note and tree, one at a time; sign the trees in a
+            # process pool (or a native FIPS 205 library) once many tenants' registries grow every round
+            note += checkpoint.log_line(origin, self._slh_public, slh_dsa.sign(self._slh, data), checkpoint.HYBRID)
+        return note
 
     def _key_failed(self, e):
         """Count a failed signature of the log key; an outage of LOG_KEY_GAP_S gets one signed degraded_unanchored gap
@@ -1568,10 +1591,16 @@ def load_config(path):
         # lean: AWS KMS only; GCP Cloud KMS (EC_SIGN_ED25519, software-protected) through its REST API once a
         # deployment asks for it
         lk = cfg["log_key"]
-        kms = lk.get("aws_kms") if isinstance(lk, dict) and set(lk) == {"aws_kms"} else None
-        if not (isinstance(kms, dict) and set(kms) == {"key_id", "region"}
-                and all(isinstance(v, str) and v for v in kms.values())):
-            raise ValueError(f"{path}: log_key is {{aws_kms: {{key_id, region}}}} (default: keys/log.key)")
+        ok = isinstance(lk, dict) and lk and set(lk) <= {"aws_kms", "slh_dsa"}
+        kms, slh = (lk.get("aws_kms"), lk.get("slh_dsa")) if ok else (None, None)
+        if not (ok and (kms is None or isinstance(kms, dict) and set(kms) == {"key_id", "region"}
+                        and all(isinstance(v, str) and v for v in kms.values()))
+                and (slh is None or isinstance(slh, dict) and set(slh) == {"file"} and isinstance(slh["file"], str)
+                     and slh["file"])):
+            raise ValueError(f"{path}: log_key is {{aws_kms: {{key_id, region}}}} and/or {{slh_dsa: {{file}}}} "
+                             "(default: keys/log.key, no hybrid line)")
+        if slh:
+            slh["file"] = os.path.join(base, slh["file"])
     approvals = cfg.get("approvals") if isinstance(cfg.get("approvals"), dict) else {}
     for table in (cfg.get("tenants"), cfg.get("authorize"), approvals.get("approvers"), approvals.get("break_glass"),
                   cfg.get("gateways")):
@@ -1616,8 +1645,8 @@ def file_store(cfg, cmd):
     return os.path.join(cfg["data_dir"], "store")
 
 
-def read_vkey(data_dir):
-    """The log key's vkey the signer of `data_dir` wrote on start."""
+def read_vkeys(data_dir):
+    """The vkeys of the log key, then of the hybrid key when configured, the signer of `data_dir` wrote on start."""
     d = files.open_dir(data_dir)
     try:
         data = files.read(d, "log.vkey")
@@ -1625,9 +1654,10 @@ def read_vkey(data_dir):
         files.close(d)
     if data is None:
         raise ValueError(f"{data_dir} has no log.vkey yet: start the signer once")
-    vkey = data.decode("ascii").strip()
-    checkpoint.parse_vkey(vkey)
-    return vkey
+    vkeys = data.decode("ascii").split()
+    for k in vkeys:
+        checkpoint.parse_vkey(k)
+    return vkeys
 
 
 def read_rekor_pub(data_dir):
@@ -1646,8 +1676,11 @@ def open_service(cfg, **kw):
     if cfg.get("policy"):
         kw.setdefault("policy", load_policy(cfg["policy"]))
     kw.setdefault("witnesses", [TlogWitness(w["url"], w["vkey"]) for w in cfg.get("witnesses", ())])
-    if cfg.get("log_key") and "log_key" not in kw:
-        kw["log_key"] = logkey.from_config(cfg["log_key"])
+    lk = cfg.get("log_key") or {}
+    if lk.get("aws_kms") and "log_key" not in kw:
+        kw["log_key"] = logkey.from_config(lk)
+    if lk.get("slh_dsa"):
+        kw.setdefault("slh_dsa_file", lk["slh_dsa"]["file"])
     return SignerService(cfg["data_dir"], durability=cfg.get("durability", ACK_ON_WRITE),
                          tenant=cfg.get("tenant", "default"), tenants=cfg.get("tenants"),
                          limits=Limits(**cfg.get("limits", {})),
@@ -1855,8 +1888,8 @@ def main(argv=None):
     sub.add_parser("migrate", help="create or check the Postgres store's tables").add_argument("--config", required=True)
     sub.add_parser("close-log", help="close the log for good: write log.closed and the final notes (signer stopped)"
                    ).add_argument("--config", required=True)
-    for name, text in (("vkey", "print the log key's verifier key (C2SP vkey)"),
-                       ("trust", "write a v2 trust config that pins the log key and the configured witnesses")):
+    for name, text in (("vkey", "print the log key's verifier key (C2SP vkey), then the hybrid key's"),
+                       ("trust", "write a v2 trust config that pins the log keys and the configured witnesses")):
         q = sub.add_parser(name, help=text)
         g = q.add_mutually_exclusive_group()
         g.add_argument("--config")
@@ -1899,7 +1932,7 @@ def main(argv=None):
         from tracekit.sdk.client import SignerUnavailable
         try:
             cfg = signer_config(a.config)
-            vkey = read_vkey(cfg["data_dir"])
+            vkeys = read_vkeys(cfg["data_dir"])
             if a.cmd == "trust":
                 witnesses = [{"vkey": w["vkey"], "class": w["class"]} for w in cfg.get("witnesses") or ()]
                 rekor = (cfg.get("anchors") or {}).get("rekor")
@@ -1907,13 +1940,13 @@ def main(argv=None):
                     with open(rekor["trusted_root"], "rb") as f:
                         rekor = {"trusted_root": json.loads(f.read()), "publishing_key": read_rekor_pub(cfg["data_dir"]),
                                  "class": "public"}
-                files.write_json(a.out, {"logs": [vkey], "witnesses": witnesses, "algs": [RecordSigner.alg],
+                files.write_json(a.out, {"logs": vkeys, "witnesses": witnesses, "algs": [RecordSigner.alg],
                                          "witnesses_required": 0, **({"rekor": rekor} if rekor else {})}, 0o644)
         except (OSError, ValueError, SignerUnavailable) as e:
             print(f"tracekit signer: {e}", file=sys.stderr)
             return 2
-        print(vkey if a.cmd == "vkey" else f"wrote {a.out}: pins log {vkey.split('+')[0]} and "
-              f"{len(witnesses) or 'no'} witness(es)")
+        print("\n".join(vkeys) if a.cmd == "vkey" else f"wrote {a.out}: pins log {vkeys[0].split('+')[0]}"
+              f"{' (Ed25519 + SLH-DSA)' if len(vkeys) > 1 else ''} and {len(witnesses) or 'no'} witness(es)")
         return 0
     from tracekit.signer import format_bridge
     try:
