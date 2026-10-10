@@ -27,8 +27,8 @@ The assurance line names the algorithms each conclusion rests on (records; the c
 "Ed25519 + SLH-DSA-SHA2-128s"; cosignatures; anchors) and the earliest independent anchor time (a cosignature or a
 TSA time of a witness or anchor not classed operator).
 Report lines (also in --json): tool calls by evidence tier (T1/T2/T3), records by args_source, the signer_isolation the
-signer recorded per run, the tool classes run.registered says fail open, and key assurance (asserted: the log declares
-its keys; this format has no key attestation).
+signer recorded per run, the harness it attested per run (when any run has one), the tool classes run.registered says
+fail open, and key assurance (asserted: the log declares its keys; this format has no key attestation).
 Monitor reports (`tracekit monitor`) come from the verifier's side, never the bundle: verify(..., monitor_reports=[path]).
 A report signed by a pinned monitor, no older than its max_age_s, for the checkpoint's origin, checked to at least the
 checkpoint's size (and to its root at that size) and with no conflicts makes a witnessed assurance witnessed+monitored.
@@ -437,6 +437,11 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
     registered = [rs[0]["event"]["data"] if rs[0]["event"].get("type") == "run.registered" else {} for rs in runs.values()]
     isolation = collections.Counter(str(d.get("signer_isolation", "unreported"))[:64] for d in registered)
     rep.check("isolation", True, "signer-reported: " + ", ".join(f"{k} {n} run(s)" for k, n in sorted(isolation.items())))
+    if any("harness" in d for d in registered):
+        bound = [f"{str(rs[0]['event'].get('run_id'))[:200]} " + (
+            str(d["harness"].get("name"))[:64] if isinstance(d.get("harness"), dict) else "none")
+            for rs, d in zip(runs.values(), registered)]
+        rep.check("harness", True, "signer-attested: " + ", ".join(bound[:20]) + (", ..." if len(bound) > 20 else ""))
     fail_open = sorted({str(c)[:64] for d in registered for c, m in (d.get("fail_modes") or {}).items() if m == "open"})
     rep.check("fail-open classes", True, ", ".join(fail_open) or "none")
     rep.check("key assurance", True, f"certified: {len(issued)} of {len(timeline)} record key(s) by pinned issuer(s) "

@@ -86,7 +86,8 @@ def main(argv=None):
                    help="which coding agent's hooks to install (default: Claude Code)")
     p.add_argument("--harness", action="append", default=[], metavar="[NAME=]PATH",
                    help="system mode (0.3): the agent program whose processes may send events, e.g. /usr/local/bin/claude "
-                        "(repeatable; must be root-owned). Default: the agent's CLI on PATH if installed root-owned")
+                        "(repeatable; must be root-owned). Default: the agent's CLI on PATH if installed root-owned; "
+                        "with --v2: none (no binding)")
     p.add_argument("--signer-cmd", help="external signer helper command (TPM/HSM/enclave; see tracekit/extsigner.py)")
     p.add_argument("--signer-pub", help="with --signer-cmd: the helper key's raw 32-byte Ed25519 public key file")
     p.add_argument("--key-assurance", default="external", help="with --signer-cmd: where the key lives (tpm, hsm, tee, kms, smartcard)")
@@ -317,12 +318,12 @@ def _run(a):
                       "assurance": a.key_assurance}
             if a.key_attestation:
                 signer["attestation"] = os.path.abspath(a.key_attestation)
-        if a.v2 and (a.home or a.witness or a.proxy or a.fail_closed or signer or a.harness or a.managed):
-            print("tracekit: --home, --witness, --proxy, --fail-closed, --signer-cmd, --harness and --managed are v1 "
+        if a.v2 and (a.home or a.witness or a.proxy or a.fail_closed or signer or a.managed):
+            print("tracekit: --home, --witness, --proxy, --fail-closed, --signer-cmd and --managed are v1 "
                   "signer options; they don't apply with --v2", file=sys.stderr)
             return 2
-        if (a.approver or a.policy) and (a.dev or not a.v2):
-            print("tracekit: --approver and --policy are for --v2 system mode", file=sys.stderr)
+        if (a.approver or a.policy or a.v2 and a.harness) and (a.dev or not a.v2):
+            print("tracekit: --approver, --policy and --harness with --v2 are for --v2 system mode", file=sys.stderr)
             return 2
         if a.v2 and not a.dev:
             if not a.user:
@@ -331,7 +332,7 @@ def _run(a):
             try:
                 sock, settings = install.init_system_v2(a.user, a.approver, a.policy, os.getcwd() if a.project else None,
                                                         a.no_service, not a.no_hooks, a.experimental_macos,
-                                                        a.allow_privileged, a.agent)
+                                                        a.allow_privileged, a.agent, a.harness)
             except install.SettingsError as e:
                 print(f"tracekit: {e}", file=sys.stderr)
                 return 1
