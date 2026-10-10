@@ -28,12 +28,13 @@ from tracekit.identity.token import BearerToken
 from tracekit.ledger import Keys
 from tracekit.signer import metrics
 from tracekit.transport import http as transport
-from tracekit.view import ApprovalDesk, OidcLogin
+from tracekit.view import ApprovalDesk, OidcLogin, Runs
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DOC = os.path.join(ROOT, "docs", "security-checklist.md")
 UI = os.path.join(ROOT, "tracekit", "ui", "terminal.html")
 APPROVALS_UI = os.path.join(ROOT, "tracekit", "ui", "approvals.html")
+RUNS_UI = os.path.join(ROOT, "tracekit", "ui", "runs.html")
 SECRET = "tk-checklist-" + "s" * 40
 HOSTILE = [XSS, "javascript:alert(1)", "rm\u202e/hs.exe", "a\u200bb", "tenant\u2066x\u2069", "\ufeffBash", "\u061cx"]
 FORMAT_CHARS = "[\u061c\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]"
@@ -51,6 +52,13 @@ SURFACES = {
     "tracekit/proxy.py:Handler": "Anthropic proxy",
     "tracekit/slack_approvals.py:Handler": "Slack approvals bridge (interactivity callbacks)",
 }
+
+
+def no_logs():
+    """A view.Runs of no log: its request checks without Postgres (tests/test_view_central.py reads real logs)."""
+    runs = Runs.__new__(Runs)
+    runs.logs = []
+    return runs
 
 
 def handler_classes():
@@ -120,9 +128,14 @@ class Surfaces(unittest.TestCase):
         login = OidcLogin({"issuer": "corp", "client_id": "viewer", "redirect_uri": "https://127.0.0.1/callback",
                            "roles": {"auditor": ["group:corp/auditors"]}},
                           {"corp": {"issuer": "https://idp.invalid", "audience": "viewer"}})
-        srv = ThreadingHTTPServer(("127.0.0.1", 0), observe.make_handler(feed, SECRET, ["127.0.0.1"], login=login))
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), observe.make_handler(feed, SECRET, ["127.0.0.1"], login=login,
+                                                                         runs=no_logs()))
         auth = {"Authorization": f"Bearer {SECRET}"}
         return srv, SECRET, [("GET", f"/nope?token={SECRET}", {}, 401), ("GET", "/nope", auth, 404),
+                             ("GET", "/runs", {}, 401), ("GET", f"/api/runs?run={SECRET}", {}, 401),
+                             ("GET", f"/api/runs?limit={BIG}", auth, 400), ("GET", f"/api/runs?{SECRET}=1", auth, 400),
+                             ("GET", f"/api/run?log=0&tenant=t&run={SECRET}", auth, 400),
+                             ("GET", f"/api/bundle?log=0&tenant=t&run={SECRET}", {}, 401),
                              ("GET", "/api/stream?from=x", auth, 400), ("POST", "/", auth, 501),
                              ("GET", f"/callback?state=x&code={SECRET}", {"Cookie": "tracekit_login=x"}, 403),
                              ("GET", "/api/snapshot", {"Cookie": f"tracekit_observe={SECRET}"}, 401)]
@@ -227,7 +240,7 @@ class Viewer(unittest.TestCase):
     def setUp(self):
         feed = types.SimpleNamespace(records=[{"tool_name": s, "input": {"q": s}} for s in HOSTILE], base=0,
                                      lock=threading.Condition(), verify=lambda: (0, [], None))
-        self.handler = observe.make_handler(feed, SECRET, ["127.0.0.1"])
+        self.handler = observe.make_handler(feed, SECRET, ["127.0.0.1"], runs=no_logs())
         srv = ThreadingHTTPServer(("127.0.0.1", 0), self.handler)
         srv.daemon_threads = True
         threading.Thread(target=srv.serve_forever, daemon=True).start()
@@ -250,13 +263,16 @@ class Viewer(unittest.TestCase):
         return r, r.read()
 
     def test_page_headers(self):
-        r, _ = self.get("/")
-        csp = r.getheader("Content-Security-Policy")
-        for directive in ("default-src 'none'", "frame-ancestors 'none'", "base-uri 'none'", "form-action 'none'"):
-            self.assertIn(directive, csp)
-        self.assertRegex(csp, r"script-src 'nonce-[A-Za-z0-9_-]{16,}';")
-        self.assertEqual((r.getheader("X-Content-Type-Options"), r.getheader("Referrer-Policy")),
-                         ("nosniff", "no-referrer"))
+        for path in ("/", "/runs"):
+            r, page = self.get(path)
+            csp = r.getheader("Content-Security-Policy")
+            for directive in ("default-src 'none'", "frame-ancestors 'none'", "base-uri 'none'", "form-action 'none'"):
+                self.assertIn(directive, csp)
+            nonce = re.search(r"script-src 'nonce-([A-Za-z0-9_-]{16,})';", csp).group(1)
+            if path == "/runs":
+                self.assertEqual(re.findall(r"<script[^>]*>", page.decode()), [f'<script nonce="{nonce}">'])
+            self.assertEqual((r.getheader("X-Content-Type-Options"), r.getheader("Referrer-Policy")),
+                             ("nosniff", "no-referrer"))
 
     def test_hostile_run_data_is_served_as_json_data(self):
         r, body = self.get("/api/snapshot")
@@ -360,6 +376,8 @@ class Page(unittest.TestCase):
             cls.page = f.read()
         with open(APPROVALS_UI, encoding="utf-8") as f:
             cls.approvals = f.read()
+        with open(RUNS_UI, encoding="utf-8") as f:
+            cls.runs = f.read()
 
     @unittest.skipUnless(shutil.which("node"), "needs node to run the page's esc()")
     def test_esc_neutralises_markup_quotes_and_format_characters(self):
@@ -373,19 +391,22 @@ class Page(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which("node"), "needs node to run the approval page's vis()")
     def test_approval_page_shows_data_as_text_with_format_characters_escaped(self):
-        self.assertNotRegex(self.approvals, r"innerHTML|outerHTML|insertAdjacentHTML")
-        vis = re.search(r"^(const vis = .*?;)$", self.approvals, re.M | re.S).group(1)
-        out = json.loads(subprocess.run(["node", "-e", f"{vis} process.stdout.write(JSON.stringify("
-                                         f"{json.dumps(HOSTILE)}.map(vis)))"],
-                                        capture_output=True, text=True, check=True).stdout)
-        for s in out:
-            self.assertNotRegex(s, FORMAT_CHARS)
-        self.assertEqual(out[2], "rm\\u202e/hs.exe")
+        for page in (self.approvals, self.runs):
+            self.assertNotRegex(page, r"innerHTML|outerHTML|insertAdjacentHTML")
+            vis = re.search(r"^(const vis = .*?;)$", page, re.M | re.S).group(1)
+            out = json.loads(subprocess.run(["node", "-e", f"{vis} process.stdout.write(JSON.stringify("
+                                             f"{json.dumps(HOSTILE)}.map(vis)))"],
+                                            capture_output=True, text=True, check=True).stdout)
+            for s in out:
+                self.assertNotRegex(s, FORMAT_CHARS)
+            self.assertEqual(out[2], "rm\\u202e/hs.exe")
 
     def test_no_url_or_code_sink_takes_data(self):
-        for page in (self.page, self.approvals):
+        for page in (self.page, self.approvals, self.runs):
             self.assertEqual([v for v in re.findall(r'\b(?:href|src|action)="([^"]*)"', page) if "${" in v], [])
-            self.assertNotRegex(page, r"\beval\(|new Function|\.href\s*=|window\.open|document\.write|location\.")
+            # the one href set: the downloaded bundle's object URL, never data
+            self.assertNotRegex(page, r"\beval\(|new Function|\.href\s*=(?! URL\.createObjectURL\(await r\.blob\(\)\);)"
+                                      r"|window\.open|document\.write|location\.")
 
 
 if __name__ == "__main__":

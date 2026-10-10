@@ -79,14 +79,15 @@ view:
     client_id: tracekit-viewer        # the ID token's audience
     client_secret_file: viewer-secret   # optional: a confidential client
     redirect_uri: https://view.corp.example/callback
-    roles: {auditor: ["group:corp/auditors"], approver: ["group:corp/approvers"]}
+    roles: {auditor: ["group:corp/auditors"], approver: ["group:corp/approvers"], operator-admin: ["group:corp/sre"]}
   signer: https://signer.corp.example:8443   # optional: approval pages for approvers
 ```
 
 `/login` starts an authorization code flow with PKCE (S256), a `state` held in a login cookie and a `nonce`;
 `/callback` exchanges the code, checks the ID token and opens a server-side session (a random `HttpOnly;
-SameSite=Strict` cookie, 8 hours). A person needs a role and the issuer's tenant claim; both roles see, read-only, the
-runs of that tenant only. With `view.signer`, an approver (a person in both roles is an approver) also answers that
+SameSite=Strict` cookie, 8 hours). An auditor or approver needs the issuer's tenant claim and sees, read-only, the runs
+of that tenant only; an operator-admin sees every tenant's, read-only, and answers no approval. A person in several roles
+is an approver first, then an operator-admin. A central viewer (`view.logs`) reads every log: [viewer.md](viewer.md). With `view.signer`, an approver (a person in both roles is an approver) also answers that
 tenant's approvals at `/approvals` ([approvals.md](approvals.md#web-approvals-and-passkeys)). The token URL the viewer prints
 keeps working for the laptop. The viewer serves the `redirect_uri` host name besides its own; off loopback it needs
 `--tls-cert` and `--tls-key` ([security-checklist.md](security-checklist.md)).
