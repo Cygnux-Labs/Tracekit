@@ -13,6 +13,7 @@ Normative test vectors:
 | `tests/vectors/jcs.jsonl` | canonical JSON: input, canonical bytes, SHA-256 |
 | `tests/vectors/sig_v2.jsonl` | records (event, signature message, signed record) and the Ed25519 acceptance rules |
 | `tests/vectors/c2sp_checkpoint.json` | a checkpoint note, its log signature and a witness cosignature |
+| `tests/vectors/slh_dsa_note.json` | a hybrid checkpoint note: Ed25519 and SLH-DSA-SHA2-128s lines, keys, key ids |
 | `tests/golden/v2/` | bundles (closed, open, approval, run-set) with `trust.json` and the expected report |
 | `tests/golden/negative/` | one bundle per rejection, with the expected report in `expected.json` |
 
@@ -206,6 +207,31 @@ signed by `tracekit.example.org/log/0190f3a0-test+070965d6+AZsfhHkc/HZjBFhU04net
 The signer signs a record-tree note after each `run.final`, on `checkpoint_nudge`, every 10 s while the tree grows and
 on close, then one note per tenant registry that grew. How witnesses are run and pinned: [witnesses](witnesses.md).
 
+### Hybrid checkpoint signature
+
+With `log_key: {slh_dsa: {file: keys/log-slh.key}}` in signer.yaml, every stored note (record tree and registries)
+carries a second log line after the Ed25519 one, from a stateless hash-based key: SLH-DSA-SHA2-128s
+([FIPS 205](https://csrc.nist.gov/pubs/fips/205/final)), pure mode, empty context, over the same note text
+(`format/slh_dsa.py`, pure Python, no native dependency). Records stay Ed25519; a record is covered long-term through
+the tree root the SLH-DSA line signs.
+
+- The line has type **0xff** and the same key name as the log line. Its "public key" is
+  `"tracekit/slh-dsa-sha2-128s" ‖ PK.seed ‖ PK.root` (26 + 32 bytes), so the key id is
+  `SHA-256(origin ‖ 0x0A ‖ 0xff ‖ "tracekit/slh-dsa-sha2-128s" ‖ pub)[:4]` and the vkey
+  `<origin>+<hex key id>+<base64(0xff ‖ "tracekit/slh-dsa-sha2-128s" ‖ pub)>`. The signature is 7856 bytes (a line of
+  about 10.5 KB).
+- **Never sent to witnesses** (litewitness caps requests at 10 KiB, omniwitness at 16 KiB) or to Rekor: they get the
+  note text and the Ed25519 line only. It is in the stored note and in bundles.
+- A verifier that does not pin the hybrid key ignores the line, so old verifiers read new notes. One that pins it
+  (`tracekit signer trust` pins both keys, `tracekit signer vkey` prints both) requires **both** a valid Ed25519 line and
+  a valid SLH-DSA line from the origin's pinned keys; a note without the line, or with either line bad, fails
+  `checkpoint`. Notes signed before the key was configured have no line and fail against a trust config that pins it.
+- Cost: signing takes about 1 s of CPU per note (pure Python; about 0.8 s on an Apple M-series core), once per tree that
+  grew, at most once per second per tree; verifying takes about 1 ms. The signer signs notes off the writer thread.
+
+Worked example (`tests/vectors/slh_dsa_note.json`): the note text above, signed by the Ed25519 key above and by
+`tracekit.example.org/log/0190f3a0-test+b412f80c+/3RyYWNla2l0L3NsaC1kc2Etc2hhMi0xMjhzP2n4dHiz4830nh9Ilj+5EtFbGqwUwJGvStS72PP3Q7g=` (key id `b412f80c`).
+
 ## 7. Registry logs and run-sets
 
 Each tenant has a **registry log**, a second tree whose leaves are fixed-width (89 bytes, `format/registry.py`):
@@ -285,7 +311,7 @@ with no `.` or `..` segment; no symlinks; no duplicate names. A bundle carries n
 The verifier pins its own trust, never the bundle's (`verify.v2.load_trust`):
 
 ```json
-{"logs": ["<log vkey>"],
+{"logs": ["<log vkey>", "<hybrid SLH-DSA log vkey, optional>"],
  "witnesses": [{"vkey": "<cosignature vkey>", "class": "public|customer|tracekit|operator"}],
  "algs": ["ed25519"],
  "witnesses_required": 0,
@@ -306,9 +332,9 @@ line and verdict is in [verdicts](verdicts.md).
    `verifier_min_version` a version number not above the verifier's own, else `UNVERIFIABLE (needs tracekit >= x)`.
    Failure: `UNUSABLE BUNDLE`, exit 2.
 3. **Manifest.** The listed files and hashes must equal the files present, exactly (`manifest`).
-4. **Checkpoint.** Open the note named by `proofs/records.json` (§6) with the pinned log keys and witness keys; its
-   tree size must equal `tree_size` (`checkpoint`). Count the pinned cosignatures against `witnesses_required`
-   (`witness quorum`). If the trust config pins `rekor` and the bundle has `rekor/<size>.json`, verify the anchor
+4. **Checkpoint.** Open the note named by `proofs/records.json` (§6) with the pinned log keys (both lines when a hybrid
+   key is pinned) and witness keys; its tree size must equal `tree_size` (`checkpoint`). Count the pinned cosignatures
+   against `witnesses_required` (`witness quorum`). If the trust config pins `rekor` and the bundle has `rekor/<size>.json`, verify the anchor
    (`rekor anchor`).
 5. **Keys.** Walk `keys/records.jsonl` in increasing seq: each must be a `signer.epoch` or `key.retire` record included
    in the checkpointed tree; each declared key's `kid` and `alg` must match its SPKI; each record must verify (§4)
