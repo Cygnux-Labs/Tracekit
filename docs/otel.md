@@ -105,3 +105,48 @@ tracekit verify exit: 0
 
 The denied `sudo cp` shows up in Jaeger as an `execute_tool Bash` span with `tracekit.policy.decision=deny`. Jaeger is a
 view: if a span and the bundle ever disagree, the bundle (checked by `tracekit verify`) is the record.
+
+## The v2 signer
+
+### Receiving traces (tier T3 import)
+
+With an `otlp` section in `signer.yaml`, the signer's HTTPS listener also answers OTLP/HTTP `POST /v1/traces`
+(protobuf or JSON, `gzip` or `deflate`). It is never unauthenticated: the same authenticators as the RPC (`k8s_sa`,
+`mtls`, `token`) identify the caller before its body is read, and `authorize` must grant that identity `otlp_import`
+(no identity has it by default). For local development, use a loopback listener with `insecure_loopback: true` and a
+bearer token.
+
+```yaml
+http: {listen: 0.0.0.0:8443, cert: tls/server.pem, key: tls/server.key, authenticators: [mtls], client_ca: {...}}
+otlp: {max_spans: 512}                       # spans per request, default 512
+tenants: {"mtls:spiffe://acme/collector": acme}
+authorize: {"mtls:spiffe://acme/collector": [otlp_import]}
+```
+
+- **One run per (tenant, trace id).** The caller's tenant comes from `tenants`, as for RPCs; the run id is
+  `otel:<trace id>`, never derived from `service.name`, so two services in one trace share a run and one service's two
+  traces are two runs. The signer registers it (`run.registered`, `source: import`, `tier: T3`, `fidelity: none`).
+- **Records.** A tool span becomes `tool.call` + `tool.result`, a model span one `model.exchange`, all `source: import`,
+  `tier: T3`, with the span id in `span_id`. Arguments, results and messages are redacted and kept only as commitments
+  (`hmac-sha256:`), as for the RPC. Other spans are counted and skipped. Imported runs are not reconciled.
+- **Meaning.** T3 proves receipt at the time of the record, nothing about completeness or truth; nothing is gated.
+- **Retries write nothing twice.** A (span id, record type) is written once per run, and the set is part of the run's
+  state, so it survives restarts and snapshots: a re-sent batch writes nothing, and no second `run.registered` appears.
+- **Lifecycle.** An imported run closes like any other: after `idle_s` without spans, `run.closing{idle_timeout}`, then
+  `run.final`. Spans for a final run are rejected (`partialSuccess`).
+- **Refusals.** No accepted credential: `401`; no `otlp_import`: `403`; a malformed body (nested too deep, a protobuf array or
+  attribute list over 512 entries, or any decoding error): `400`, with nothing written. A request is written whole or
+  not at all. The identity's event rate and open-run quotas apply (`503` with `Retry-After`, so exporters retry).
+
+### Exporting spans
+
+`tracekit export --v2 --run RUN --otel` writes the run's spans next to the bundle as `<name>.otel.json`
+(`--otel-endpoint` also sends them). With `otel_out: {endpoint, headers}` in `signer.yaml`, the signer sends each run
+when it reaches `run.final`, from its own thread with a queue of 1000 runs; runs it could not deliver are counted in
+`tracekit_signer_otel_export_dropped_total` ([observability](observability.md)).
+
+One trace per run: an `invoke_agent` root span and an `execute_tool` span per call (tool call id and attempt). Every span
+carries `tracekit.entry_hash` (the hash of its first signed record), `tracekit.run_seq` and `tracekit.tier`; tool spans
+add `tracekit.policy.decision`, `tracekit.policy.rule_ids`, `tracekit.args_commitment` and `tracekit.result.hash`.
+Argument and result content is never exported: v2 records hold commitments only. An imported run keeps its trace id and
+its tool spans their span ids.
