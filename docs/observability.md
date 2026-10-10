@@ -23,6 +23,7 @@ types, gap kinds, RPC error codes, verdicts); past 64 distinct values a label is
 | `tracekit_signer_records_total` | counter | `type` | Records written, by event type. |
 | `tracekit_signer_gaps_total` | counter | `kind` | `capture.gap` records written, by gap kind (`client_counter_gap`, `signer_unavailable`, ...). |
 | `tracekit_signer_refusals_total` | counter | `code` | RPC calls refused, by error code (`quota_exceeded`, `unavailable`, ...). |
+| `tracekit_signer_auth_failures_total` | counter | | Failed authentications on the HTTP transport (bad, expired or revoked credentials). |
 | `tracekit_signer_policy_decisions_total` | counter | `verdict` | `policy.decision` records written, by verdict (`allow`, `flag`, `ask`, `deny`). |
 | `tracekit_signer_policy_nondeterministic_total` | counter | | Policy decisions where a regex ran out of time (the call is denied and the record marked `nondeterministic`). |
 | `tracekit_signer_queue_depth` | gauge | | Items waiting for the writer. |
@@ -34,6 +35,7 @@ types, gap kinds, RPC error codes, verdicts); past 64 distinct values a label is
 | `tracekit_signer_witness_publish_failures_total` | counter | `witness` | Checkpoint notes a configured witness did not cosign (unreachable, refused, bad cosignature), by witness name. |
 | `tracekit_signer_witness_lag_records` | gauge | `witness` | Records in the latest record tree note that the witness has not cosigned yet; it should return to 0 within seconds. |
 | `tracekit_signer_anchor_lag_records` | gauge | `anchor` | Records in the latest record tree note not anchored in Rekor yet; it grows between anchors (at most hourly) and should drop after each. |
+| `tracekit_signer_log_key_failures_total` | counter | | Checkpoint notes the log key (file or KMS) failed to sign; the note is retried next round, and a long outage writes a signed gap. |
 | `tracekit_signer_loop_errors_total` | counter | `loop` | Unexpected errors of a background loop (`ticker`, `checkpointer`, `publisher`), which logs it and carries on. Any increase is a bug to report. |
 | `tracekit_signer_otel_export_dropped_total` | counter | `reason` | Runs the OTLP exporter (`otel_out`) did not deliver: `queue_full` (more than 1000 runs waiting), `failed` (the endpoint was unreachable or refused), `shutdown` (still queued when the signer stopped). |
 

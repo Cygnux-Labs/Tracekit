@@ -93,6 +93,8 @@ class SignerMetrics:
         self.records = self.add(Counter("tracekit_signer_records_total", "Records written, by event type.", "type"))
         self.gaps = self.add(Counter("tracekit_signer_gaps_total", "capture.gap records written, by kind.", "kind"))
         self.refusals = self.add(Counter("tracekit_signer_refusals_total", "RPC calls refused, by error code.", "code"))
+        self.auth_failures = self.add(Counter("tracekit_signer_auth_failures_total",
+                                              "Failed authentications on the HTTP transport."))
         self.decisions = self.add(Counter("tracekit_signer_policy_decisions_total",
                                           "policy.decision records written, by verdict.", "verdict"))
         self.nondeterministic = self.add(Counter("tracekit_signer_policy_nondeterministic_total",
@@ -101,6 +103,8 @@ class SignerMetrics:
                                             "Signed checkpoint notes of the record tree written."))
         self.witness_failures = self.add(Counter("tracekit_signer_witness_publish_failures_total",
                                                  "Checkpoint notes a witness did not cosign, by witness.", "witness"))
+        self.log_key_failures = self.add(Counter("tracekit_signer_log_key_failures_total",
+                                                 "Checkpoint notes the log key failed to sign (retried next round)."))
         self.loop_errors = self.add(Counter("tracekit_signer_loop_errors_total",
                                             "Unexpected errors of a background loop, which carried on, by loop.", "loop"))
         self.otel_dropped = self.add(Counter("tracekit_signer_otel_export_dropped_total",

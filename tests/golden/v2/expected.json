@@ -24,7 +24,7 @@
       "expected": {
         "exit_code": 0,
         "integrity": "Integrity: VERIFIED.",
-        "assurance": "Assurance: witnessed; records ed25519; checkpoint ed25519 (tracekit.example.org/log/golden); cosigned ed25519 by witness.example.org/fake (customer) at 2026-10-10T00:19:23Z; key retirements not proven complete.",
+        "assurance": "Assurance: witnessed; records ed25519; checkpoint Ed25519 only (tracekit.example.org/log/golden); cosigned ed25519 by witness.example.org/fake (customer) at 2026-10-10T00:19:23Z; earliest independent anchor 2026-10-10T00:19:23Z; key retirements not proven complete.",
         "checks": [
           [
             "manifest",
@@ -101,7 +101,7 @@
       "expected": {
         "exit_code": 0,
         "integrity": "Integrity: VERIFIED.",
-        "assurance": "Assurance: witnessed; records ed25519; checkpoint ed25519 (tracekit.example.org/log/golden); cosigned ed25519 by witness.example.org/fake (customer) at 2026-10-10T00:19:23Z; anchored in Rekor 127.0.0.1:53855 (public) at 2026-10-10T00:19:23Z; key retirements not proven complete.",
+        "assurance": "Assurance: witnessed; records ed25519; checkpoint Ed25519 only (tracekit.example.org/log/golden); cosigned ed25519 by witness.example.org/fake (customer) at 2026-10-10T00:19:23Z; anchored in Rekor 127.0.0.1:53855 (public) at 2026-10-10T00:19:23Z (ECDSA P-256 entry, RFC 3161 time); earliest independent anchor 2026-10-10T00:19:23Z; key retirements not proven complete.",
         "checks": [
           [
             "manifest",
@@ -182,7 +182,7 @@
       "expected": {
         "exit_code": 0,
         "integrity": "Integrity: VERIFIED TO HEAD 2 (open).",
-        "assurance": "Assurance: witnessed; records ed25519; checkpoint ed25519 (tracekit.example.org/log/golden); cosigned ed25519 by witness.example.org/fake (customer) at 2026-10-10T00:19:23Z; key retirements not proven complete.",
+        "assurance": "Assurance: witnessed; records ed25519; checkpoint Ed25519 only (tracekit.example.org/log/golden); cosigned ed25519 by witness.example.org/fake (customer) at 2026-10-10T00:19:23Z; earliest independent anchor 2026-10-10T00:19:23Z; key retirements not proven complete.",
         "checks": [
           [
             "manifest",
@@ -255,7 +255,7 @@
       "expected": {
         "exit_code": 0,
         "integrity": "Integrity: VERIFIED.",
-        "assurance": "Assurance: dev; records ed25519; checkpoint ed25519 (tracekit.example.org/log/golden); cosigned ed25519 by witness.example.org/fake (customer) at 2026-10-10T00:19:23Z; approvals: self; key retirements not proven complete.",
+        "assurance": "Assurance: dev; records ed25519; checkpoint Ed25519 only (tracekit.example.org/log/golden); cosigned ed25519 by witness.example.org/fake (customer) at 2026-10-10T00:19:23Z; earliest independent anchor 2026-10-10T00:19:23Z; approvals: self; key retirements not proven complete.",
         "checks": [
           [
             "manifest",
@@ -332,7 +332,7 @@
       "expected": {
         "exit_code": 0,
         "integrity": "Integrity: VERIFIED.",
-        "assurance": "Assurance: dev; records ed25519; checkpoint ed25519 (tracekit.example.org/log/golden); cosigned ed25519 by witness.example.org/fake (customer) at 2026-10-10T00:19:23Z; approvals: self.",
+        "assurance": "Assurance: dev; records ed25519; checkpoint Ed25519 only (tracekit.example.org/log/golden); cosigned ed25519 by witness.example.org/fake (customer) at 2026-10-10T00:19:23Z; earliest independent anchor 2026-10-10T00:19:23Z; approvals: self.",
         "checks": [
           [
             "manifest",

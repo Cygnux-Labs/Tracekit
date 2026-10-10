@@ -7,7 +7,7 @@
 [PASS] checkpoint — tracekit.example.org/log/1 at tree size 42, signed by its pinned log key
 ...
 Integrity: VERIFIED.
-Assurance: witnessed; records ed25519; checkpoint ed25519 (tracekit.example.org/log/1); cosigned ed25519 by ...
+Assurance: witnessed; records ed25519; checkpoint Ed25519 only (tracekit.example.org/log/1); cosigned ed25519 by ...
 ```
 
 Each line is `PASS`, `WARN` or `FAIL`. `--json` prints the same as `{"exit_code", "checks", "failures", "warnings",
@@ -51,9 +51,12 @@ The first word is the level; the rest lists what it rests on.
 | `local` | only `operator`-class witnesses or anchors vouch for the checkpoint |
 | `witnessed` | at least `max(1, witnesses_required)` independent (non-`operator`) cosignatures or anchors |
 
-Then: `records <algs>`, `checkpoint ed25519 (<origin>)`, each pinned cosignature with its witness class and time (or
-`no witness cosignature`), each Rekor anchor with its class and time, `approvals: self` when a run holds a
-self-approval, and `key retirements not proven complete` (see `keys`).
+Then the algorithms each conclusion rests on: `records <algs>`; `checkpoint Ed25519 only (<origin>)`, or `checkpoint
+Ed25519 + SLH-DSA-SHA2-128s (<origin>)` when your trust config pins the log's hybrid key ([format v2](format-v2.md#hybrid-checkpoint-signature));
+each pinned cosignature (Ed25519) with its witness class and time (or `no witness cosignature`); each Rekor anchor
+with its class, time and algorithms (ECDSA P-256 entry, RFC 3161 time); `earliest independent anchor <time>`, the earliest time a
+non-`operator` witness or anchor vouches the checkpoint existed; `approvals: self` when a run holds a self-approval; and
+`key retirements not proven complete` (see `keys`).
 
 The level describes who vouches for the checkpoint, not how the signer was isolated: a same-user dev signer whose
 checkpoints a public witness cosigns verifies as `witnessed`. A witness proves the log was not rolled back or forked
@@ -70,7 +73,7 @@ is `witnessed` plus a fresh, conflict-free report of a monitor your trust config
 | `trust config` | — | the trust config is malformed (exit 2) |
 | `bundle readable` | — | not a zip, unsafe entries, no manifest, or too new (exit 2) |
 | `manifest` | the files are exactly those listed, with those hashes | a file was added, removed or changed after export |
-| `checkpoint` | the note is signed by the pinned log key named after its origin, and is of the proofs' tree size | wrong key, wrong origin, edited note |
+| `checkpoint` | the note is signed by the pinned log key named after its origin (and by its pinned hybrid SLH-DSA key, if any), and is of the proofs' tree size | wrong key, wrong origin, edited note, a pinned hybrid line missing or bad |
 | `witness quorum` | at least `witnesses_required` pinned cosignatures (any class) | too few |
 | `rekor anchor` | the checkpoint is in Rekor, timestamped by a pinned TSA. Only when the trust config pins `rekor` and the bundle has an anchor | a bad anchor fails the bundle |
 | `keys` | the key records are in the checkpointed tree, in order, and every declared key matches its SPKI | a key record is missing from the tree, out of order, or retires an unknown key; a `key.retire` the registry has is withheld |
@@ -100,7 +103,7 @@ is `witnessed` plus a fresh, conflict-free report of a monitor your trust config
 | `coverage` (no unreconciled calls) | the capture layers that reported (`L1`–`L6`; `(L3 absent)` when no model calls were seen) and the number of calls reconciled | completeness is only as good as the layers listed |
 | `tiers` | tool calls by evidence tier: `T1` adapter, `T2` gateway or executor, `T3` import; `untiered` when no record names one | T3 (OTLP import) proves receipt only |
 | `args source` | records by `args_source`: `raw` (the exact bytes the model produced), `parsed`, `coerced` (after the framework changed them) | coerced arguments can't be matched to the model's call byte for byte |
-| `isolation` | the `signer_isolation` the signer measured for each run: `same-user`, `separate-user`, `unknown` | `signer-reported`: the signer's own measurement of its caller, never the client's claim |
+| `isolation` | the `signer_isolation` the signer measured for each run: `same-user`, `separate-user`, `remote`, `unknown` | `signer-reported`: the signer's own measurement of its caller, never the client's claim |
 | `fail-open classes` | tool classes the signer's config lets run when the signer is down | calls of these classes may have run unrecorded during an outage |
 | `key assurance` | `asserted`: the log declares its own record keys; nothing attests them yet | trust in the keys is trust in the pinned log key |
 
