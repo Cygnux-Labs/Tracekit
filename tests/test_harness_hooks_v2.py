@@ -127,6 +127,18 @@ class Mapping(HarnessCase):
                 self.assertEqual((result["type"], result["data"]["status"]),
                                  ("tool.result", "error" if harness == "cursor" else "ok"))
 
+    def test_a_blocked_gemini_call_leaves_the_pairing_queue(self):
+        pre = {"session_id": "s-gemini", "hook_event_name": "BeforeTool", "tool_name": "run_shell_command",
+               "tool_input": {"command": "ls"}}
+        self.decision = "deny"
+        self.assertEqual(self.hook("gemini", pre)[0], 2)
+        self.decision = "allow"
+        self.assertEqual(self.hook("gemini", pre)[0], 0)
+        self.assertEqual(self.hook("gemini", dict(pre, hook_event_name="AfterTool", tool_response={}))[0], 0)
+        run = self.signer._runs[claude_code._load(claude_code._state("s-gemini"))["run_id"]]
+        result = run["events"][-1]
+        self.assertEqual((result["type"], result["data"]["tool_call_id"]), ("tool.result", self.sent[-1]["tool_call_id"]))
+
     def test_missing_ids_block_the_call(self):
         for harness, payload, reply in (
                 ("codex", {"session_id": "s", "hook_event_name": "PreToolUse", "tool_name": "Bash",
