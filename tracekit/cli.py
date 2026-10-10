@@ -25,6 +25,7 @@ def _signer_home(a):
 
 
 _DELEGATED = {"observe": "observe", "analyze": "findings", "otel": "otlp", "cost": "cost", "witness": "witness_server",
+             "deploy": "deploy.compose",
               "signer": "signer.service", "view": "view", "monitor": "monitor", "gateway": "gateway",
               "issuer": "issuer"}  # subcommands with their own parsers
 _MOVED = {"sql": "query", "proofpack": "proofpack", "report": "proofpack", "causeway": "causeway"}  # now separate packages under contrib/
@@ -123,6 +124,9 @@ def main(argv=None):
     p = sub.add_parser("cost", help="token usage (and cost, with your price table) per run or model", add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
     p = sub.add_parser("witness", help="run a witness log: `witness init|token|serve` (append-only, Merkle tree, signed heads)", add_help=False)
+    p.add_argument("rest", nargs=argparse.REMAINDER)
+    p = sub.add_parser("deploy", help="`deploy compose [--dir DIR]`: write the compose stack (signer, witness, viewer, "
+                       "Postgres)", add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
     p = sub.add_parser("signer", help="the v2 signer service: `signer serve --dev`, `signer serve|fsck --config signer.yaml`", add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
