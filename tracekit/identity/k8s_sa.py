@@ -23,7 +23,7 @@ from collections import OrderedDict
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes
-from cryptography.hazmat.primitives.asymmetric import ec, padding, rsa
+from cryptography.hazmat.primitives.asymmetric import ec, ed25519, padding, rsa
 from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
 
 from tracekit.identity.base import CallerIdentity, bearer
@@ -76,7 +76,102 @@ def _jwk(jwk):
         return "RS256", rsa.RSAPublicNumbers(_int(jwk["e"]), _int(jwk["n"])).public_key()
     if jwk.get("kty") == "EC" and jwk.get("crv") == "P-256":
         return "ES256", ec.EllipticCurvePublicNumbers(_int(jwk["x"]), _int(jwk["y"]), ec.SECP256R1()).public_key()
+    if jwk.get("kty") == "OKP" and jwk.get("crv") == "Ed25519":
+        return "EdDSA", ed25519.Ed25519PublicKey.from_public_bytes(_unb64(jwk["x"]))
     return None
+
+
+class Jwks:
+    """An issuer's keys by kid, fetched over HTTPS from `uri` (a URL, or a function returning one) and cached: one
+    request at a time fetches, outside the lock, at most every REFETCH_S; the others use the keys at hand, which are
+    refused once older than JWKS_MAX_AGE_S. `what` names the keys in the refusal."""
+
+    def __init__(self, uri, ctx, clock, what):
+        self.uri, self.ctx, self.clock, self.what = uri, ctx, clock, what
+        self._lock = threading.Lock()
+        self._keys, self._fetched, self._tried, self._fetching = {}, None, None, False
+
+    def key(self, kid):
+        with self._lock:
+            now = self.clock()
+            due = self._fetched is None or now - self._fetched >= JWKS_TTL_S or kid not in self._keys
+            fetch = due and not self._fetching and (self._tried is None or now - self._tried >= REFETCH_S)
+            if fetch:
+                self._tried, self._fetching = now, True
+        if fetch:
+            try:
+                keys = self._fetch()
+            finally:
+                with self._lock:
+                    self._fetching = False
+            if keys is not None:
+                with self._lock:
+                    self._keys, self._fetched = keys, now
+        with self._lock:
+            if self._fetched is None or self.clock() - self._fetched >= JWKS_MAX_AGE_S:
+                raise RPCError("unavailable", f"{self.what} keys unavailable; retry later")
+            return self._keys.get(kid)
+
+    def _fetch(self):
+        """The issuer's keys by kid, or None (logged) when the fetch fails."""
+        uri = self.uri
+        try:
+            uri = uri() if callable(uri) else uri
+            jwks = _https("GET", uri, self.ctx)
+            keys = {}
+            for jwk in jwks["keys"][:KEYS_MAX]:
+                try:
+                    k = _jwk(jwk)
+                except (AttributeError, KeyError, TypeError, ValueError):
+                    continue
+                if k and isinstance(jwk.get("kid"), str):
+                    keys[jwk["kid"]] = k
+            return keys
+        except (OSError, ValueError, KeyError, TypeError, http.client.HTTPException) as e:
+            log.warning("JWKS fetch from %s failed: %s", uri, e)
+            return None
+
+
+def verify_jwt(token, key, algs, issuer, audience, now, refuse):
+    """The claims of JWT `token` once its signature verifies under `key(kid)` (an (alg, public key) or None) with an
+    alg in `algs`, and its iss, aud, exp and nbf (SKEW_S either way) hold; else raises `refuse(why)`."""
+    h64, p64, s64 = token.split(".")
+    try:
+        header, claims, sig = json.loads(_unb64(h64)), json.loads(_unb64(p64)), _unb64(s64)
+    except ValueError:
+        raise refuse("malformed") from None
+    if not isinstance(header, dict) or not isinstance(claims, dict):
+        raise refuse("malformed")
+    alg = header.get("alg")
+    if alg not in algs:
+        raise refuse(f"alg {str(alg)[:16]!r}")
+    kid = header.get("kid")
+    k = key(kid) if isinstance(kid, str) else None
+    if k is None or k[0] != alg:
+        raise refuse("unknown kid")
+    msg = f"{h64}.{p64}".encode()
+    try:
+        if alg == "RS256":
+            k[1].verify(sig, msg, padding.PKCS1v15(), hashes.SHA256())
+        elif alg == "EdDSA":
+            k[1].verify(sig, msg)
+        elif len(sig) == 64:
+            der = encode_dss_signature(int.from_bytes(sig[:32], "big"), int.from_bytes(sig[32:], "big"))
+            k[1].verify(der, msg, ec.ECDSA(hashes.SHA256()))
+        else:
+            raise InvalidSignature()
+    except InvalidSignature:
+        raise refuse("bad signature") from None
+    aud, exp, nbf = claims.get("aud"), claims.get("exp"), claims.get("nbf", 0)
+    if claims.get("iss") != issuer:
+        raise refuse("issuer")
+    if audience not in ([aud] if isinstance(aud, str) else aud if isinstance(aud, list) else []):
+        raise refuse("audience")
+    if not isinstance(exp, (int, float)) or now >= exp + SKEW_S:
+        raise refuse("expired")
+    if not isinstance(nbf, (int, float)) or now < nbf - SKEW_S:
+        raise refuse("not yet valid")
+    return claims
 
 
 def _identity(username, pod_name=None, pod_uid=None):
@@ -107,7 +202,7 @@ class K8sSaAuthenticator:
         self.token_file, self.clock = token_file, clock
         self.ctx = ssl.create_default_context(cafile=ca)
         self._lock = threading.Lock()
-        self._keys, self._fetched, self._tried, self._fetching = {}, None, None, False
+        self._jwks = Jwks(jwks_uri, self.ctx, clock, "service-account")
         self._cache = OrderedDict()   # sha256(token) -> (expires at, identity)
         self._reviews = Quotas(Limits(events_per_s=REVIEWS_PER_S, burst=REVIEW_BURST, buckets=CACHE_MAX))
 
@@ -120,79 +215,8 @@ class K8sSaAuthenticator:
 
     # --- JWKS ---
 
-    def _key(self, kid):
-        with self._lock:
-            now = self.clock()
-            due = self._fetched is None or now - self._fetched >= JWKS_TTL_S or kid not in self._keys
-            fetch = due and not self._fetching and (self._tried is None or now - self._tried >= REFETCH_S)
-            if fetch:
-                self._tried, self._fetching = now, True
-        if fetch:
-            try:
-                keys = self._fetch()
-            finally:
-                with self._lock:
-                    self._fetching = False
-            if keys is not None:
-                with self._lock:
-                    self._keys, self._fetched = keys, now
-        with self._lock:
-            if self._fetched is None or self.clock() - self._fetched >= JWKS_MAX_AGE_S:
-                raise RPCError("unavailable", "service-account keys unavailable; retry later")
-            return self._keys.get(kid)
-
-    def _fetch(self):
-        """The issuer's keys by kid, or None (logged) when the fetch fails."""
-        try:
-            jwks = _https("GET", self.jwks_uri, self.ctx)
-            keys = {}
-            for jwk in jwks["keys"][:KEYS_MAX]:
-                try:
-                    k = _jwk(jwk)
-                except (AttributeError, KeyError, TypeError, ValueError):
-                    continue
-                if k and isinstance(jwk.get("kid"), str):
-                    keys[jwk["kid"]] = k
-            return keys
-        except (OSError, ValueError, KeyError, TypeError, http.client.HTTPException) as e:
-            log.warning("JWKS fetch from %s failed: %s", self.jwks_uri, e)
-            return None
-
     def _verify(self, token):
-        h64, p64, s64 = token.split(".")
-        try:
-            header, claims, sig = json.loads(_unb64(h64)), json.loads(_unb64(p64)), _unb64(s64)
-        except ValueError:
-            raise _refuse("malformed") from None
-        if not isinstance(header, dict) or not isinstance(claims, dict):
-            raise _refuse("malformed")
-        alg = header.get("alg")
-        if alg not in ("RS256", "ES256"):
-            raise _refuse(f"alg {str(alg)[:16]!r}")
-        kid = header.get("kid")
-        key = self._key(kid) if isinstance(kid, str) else None
-        if key is None or key[0] != alg:
-            raise _refuse("unknown kid")
-        msg = f"{h64}.{p64}".encode()
-        try:
-            if alg == "RS256":
-                key[1].verify(sig, msg, padding.PKCS1v15(), hashes.SHA256())
-            elif len(sig) == 64:
-                der = encode_dss_signature(int.from_bytes(sig[:32], "big"), int.from_bytes(sig[32:], "big"))
-                key[1].verify(der, msg, ec.ECDSA(hashes.SHA256()))
-            else:
-                raise InvalidSignature()
-        except InvalidSignature:
-            raise _refuse("bad signature") from None
-        now, aud, exp, nbf = self.clock(), claims.get("aud"), claims.get("exp"), claims.get("nbf", 0)
-        if claims.get("iss") != self.issuer:
-            raise _refuse("issuer")
-        if self.audience not in ([aud] if isinstance(aud, str) else aud if isinstance(aud, list) else []):
-            raise _refuse("audience")
-        if not isinstance(exp, (int, float)) or now >= exp + SKEW_S:
-            raise _refuse("expired")
-        if not isinstance(nbf, (int, float)) or now < nbf - SKEW_S:
-            raise _refuse("not yet valid")
+        claims = verify_jwt(token, self._jwks.key, ("RS256", "ES256"), self.issuer, self.audience, self.clock(), _refuse)
         k8s = claims.get("kubernetes.io") if isinstance(claims.get("kubernetes.io"), dict) else {}
         pod = k8s.get("pod") if isinstance(k8s.get("pod"), dict) else {}
         return _identity(claims.get("sub"), pod.get("name"), pod.get("uid"))

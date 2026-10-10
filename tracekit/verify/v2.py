@@ -37,6 +37,10 @@ A run with any self-approval (dev mode: the approver was the requester) is repor
 Approvals answered under the break-glass role are listed, as a warning.
 A tool call that ran against a deny, or an ask with no consumed approval, is signed by the signer as a capture.gap
 `executed_against_policy`; each is a `policy` warning.
+External decisions: policy.external records (other systems' decisions, imported at tier T3) are counted by system and
+by whether the signer verified the system's signature; each signer-written capture.gap `decision_mismatch` (the
+import disagreed with the signer's decision or tool, or named a call the signer never decided) makes the
+`external decisions` line a warning.
 Coverage: a run.final that carries `coverage` (the capture layers that reported, calls reconciled, reconcile.* records
 by kind) gives a `coverage` line; unreconciled calls make it a warning, so `--strict` exits 3 on them.
 
@@ -405,6 +409,16 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
     if against:
         rep.check("policy", False, f"{len(against)} tool call(s) ran against a deny or an unapproved ask", against[:20],
                   warn=True)
+    external = [r["event"]["data"] for r in every if r["event"].get("type") == "policy.external"]
+    mismatched = [f"seq {r['event']['seq']}: {str(r['event']['data'].get('reason'))[:200]}" for r in every
+                  if r["event"].get("type") == "capture.gap" and r["event"]["data"].get("kind") == "decision_mismatch"]
+    if external or mismatched:
+        systems = collections.Counter(str(d["system"])[:64] for d in external)
+        verified = sum(d["signature"] == "verified" for d in external)
+        rep.check("external decisions", not mismatched,
+                  f"{len(external)} imported: " + (", ".join(f"{k} {n}" for k, n in sorted(systems.items())) or "none")
+                  + f"; signatures verified {verified}, unverified {len(external) - verified}; "
+                  + f"{len(mismatched)} disagree with the signer", mismatched[:20], warn=True)
     finals = [rs[-1]["event"]["data"]["coverage"] for rs in runs.values()
               if rs[-1]["event"].get("type") == "run.final" and "coverage" in rs[-1]["event"]["data"]]
     unreconciled = {}   # from the signed reconcile.* records themselves, not run.final's summary of them
@@ -437,6 +451,11 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
     registered = [rs[0]["event"]["data"] if rs[0]["event"].get("type") == "run.registered" else {} for rs in runs.values()]
     isolation = collections.Counter(str(d.get("signer_isolation", "unreported"))[:64] for d in registered)
     rep.check("isolation", True, "signer-reported: " + ", ".join(f"{k} {n} run(s)" for k, n in sorted(isolation.items())))
+    principals = [f"{str(e['principal'])[:256]} ({'attested' if e.get('principal_attested') is True else 'app-asserted'})"
+                  for e in (rs[0]["event"] for rs in runs.values())
+                  if e.get("type") == "run.registered" and "principal" in e]
+    if principals:
+        rep.check("principals", True, ", ".join(principals[:20]) + (", ..." if len(principals) > 20 else ""))
     if any("harness" in d for d in registered):
         bound = [f"{str(rs[0]['event'].get('run_id'))[:200]} " + (
             str(d["harness"].get("name"))[:64] if isinstance(d.get("harness"), dict) else "none")

@@ -160,7 +160,8 @@ class TestFileStorage(FileCase):
         with mock.patch.object(file_storage, "_sync", wraps=file_storage._sync) as sync:
             s = self.open(ACK_ON_FSYNC)
             s.append_batch(Chain().batch(1))
-            sync.assert_called_once_with(s.log.fd, True)
+            # only this store's log: another test's ack-on-write store may sync its own fd in the background meanwhile
+            self.assertEqual([c for c in sync.call_args_list if c.args[0] == s.log.fd], [mock.call(s.log.fd, True)])
             s.close()
             sync.reset_mock()
             s = self.open(ACK_ON_WRITE)

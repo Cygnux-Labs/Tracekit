@@ -17,6 +17,10 @@ from tracekit.signer.rpc_schema import RPCError
 
 PACKS = os.path.join(os.path.dirname(svc.DEFAULT_POLICY))
 HAVE_RE2 = importlib.util.find_spec("re2") is not None
+spec = importlib.util.spec_from_file_location(
+    "e17_policy_corpus", os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "eval", "e17_policy_corpus.py"))
+e17 = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(e17)
 
 # v2 counterparts of tests/test_known_gaps.py kg01..kg06 (kg07 needs its own policy: test_ask_rule_on_another_tool_name)
 GAPS = [("Bash", {"command": "/usr/bin/sudo id"}, "TK-D001"),
@@ -136,6 +140,15 @@ class CodingPack(unittest.TestCase):
                 self.assertEqual(self.e.decide(tool, {"command": "sudo id"})["verdict"], "deny")
         server = Engine(pc.build(os.path.join(PACKS, "server.yaml"))[0], "regex")
         self.assertEqual((server.decide("Foo", {})["verdict"], self.e.decide("Foo", {})["verdict"]), ("ask", "flag"))
+
+
+@unittest.skipUnless(HAVE_RE2, "google-re2 not installed")
+class ServerCorpora(unittest.TestCase):
+    def test_e17_server_packs_hold_on_the_corpora(self):
+        out = e17.run()
+        self.assertGreaterEqual(sum(r["deny"] for r in out["classes"].values()), 300)
+        self.assertGreaterEqual(sum(r["benign"] for r in out["classes"].values()), 600)
+        self.assertTrue(out["ok"], {k: out[k] for k in ("missed", "false_positives", "engine_mismatches", "unmapped")})
 
 
 class SignerPolicy(unittest.TestCase):

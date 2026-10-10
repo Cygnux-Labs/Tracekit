@@ -1,0 +1,20 @@
+{
+  "type": "block_actions",
+  "user": {"id": "U0APPROVER", "username": "ops.alice", "name": "ops.alice", "team_id": "T0TEAM"},
+  "api_app_id": "A0TRACEKIT",
+  "token": "legacy-verification-token-unused",
+  "container": {"type": "message", "message_ts": "1760000000.000100", "channel_id": "C0CHAN", "is_ephemeral": false},
+  "trigger_id": "1760000000.111.abcdef",
+  "team": {"id": "T0TEAM", "domain": "acme"},
+  "enterprise": null,
+  "is_enterprise_install": false,
+  "channel": {"id": "C0CHAN", "name": "agent-approvals"},
+  "message": {"type": "message", "subtype": "bot_message", "text": "Tracekit approval requested", "ts": "1760000000.000100",
+              "bot_id": "B0TRACEKIT", "blocks": []},
+  "state": {"values": {}},
+  "response_url": "https://hooks.slack.com/actions/T0TEAM/1/xyz",
+  "actions": [
+    {"action_id": "approve", "block_id": "b1", "text": {"type": "plain_text", "text": "Approve", "emoji": true},
+     "value": "APPROVAL_ID", "style": "primary", "type": "button", "action_ts": "1760000001.000200"}
+  ]
+}

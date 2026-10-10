@@ -1,0 +1,46 @@
+# Server comms pack (policy v2): payments, email and chat. Composed by server.yaml. Moving money and messaging many
+# people at once wait for a person (ask); reading balances, sending one email or posting a message does not.
+
+version: '2026.10-server-comms-1'
+description: server-hosted agents, payments, email and chat
+unknown_tools: ask
+
+tools:
+  transfer_funds: payment
+  send_payment: payment
+  create_payment: payment
+  create_payout: payment
+  create_transfer: payment
+  create_refund: payment
+  create_charge: payment
+  pay_invoice: payment
+  get_balance: payment
+  list_transactions: payment
+  get_transaction: payment
+  list_payments: payment
+  send_email: email
+  send_gmail_message: email   # LangChain GmailToolkit
+  gmail_send_message: email
+
+ask:
+  - id: TK-M001
+    class: payment
+    field: amount
+    pattern: '.'
+    reason: sending money
+    rationale: A payment tool call with an amount moves money; a person confirms the payee and the amount.
+  - id: TK-M002
+    tool: '(mcp(:[^/]+/|__.*__))?(transfer_funds|send_(payment|money)|pay_invoice|create_(payment|payout|transfer|refund|charge|payment_intent)|(confirm|capture)_payment_intent|refund_.*)'
+    pattern: '^'
+    reason: moving money
+    rationale: Payouts, transfers, charges and refunds move money even without an amount argument (a full refund), and over MCP too.
+  - id: TK-M003
+    # ten or more recipients in to, cc or bcc (a list or a comma-separated string), or a whole-company address
+    pattern: '"(to|cc|bcc|recipients)":(\[("[^"]*",){9}|"([^"@]*@){10})|"(to|cc|bcc|recipients)":(\[[^\]]*)?"(all|everyone|all-staff|allstaff|staff|all-hands|customers|users)@'
+    reason: mass email
+    rationale: One message to many people (or to a list address) cannot be recalled; a person checks the audience and the text.
+  - id: TK-M004
+    tool: 'mcp(:[^/]+/|__.*__)(slack_post_message|slack_reply_to_thread|send_slack_message|chat_post_message|post_message)'
+    pattern: '<!(channel|everyone|here)(\|[^>]*)?>'
+    reason: notifying a whole channel or workspace
+    rationale: '@channel, @here and @everyone page everyone in the channel or workspace.'

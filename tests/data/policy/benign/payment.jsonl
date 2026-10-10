@@ -1,0 +1,40 @@
+{"tool": "get_balance", "args": {}, "expect": "allow", "note": "read or set up, no money moves"}
+{"tool": "get_balance", "args": {"currency": "USD"}, "expect": "allow", "note": "read or set up, no money moves"}
+{"tool": "list_transactions", "args": {"limit": 20}, "expect": "allow", "note": "read or set up, no money moves"}
+{"tool": "list_transactions", "args": {"since": "2026-10-01"}, "expect": "allow", "note": "read or set up, no money moves"}
+{"tool": "get_transaction", "args": {"id": "txn_1"}, "expect": "allow", "note": "read or set up, no money moves"}
+{"tool": "list_payments", "args": {"status": "failed"}, "expect": "allow", "note": "read or set up, no money moves"}
+{"tool": "list_payments", "args": {"customer": "cus_9"}, "expect": "allow", "note": "read or set up, no money moves"}
+{"tool": "mcp:stripe/list_customers", "args": {"limit": 10}, "expect": "allow", "note": "read or set up, no money moves"}
+{"tool": "mcp:stripe/retrieve_balance", "args": {}, "expect": "allow", "note": "read or set up, no money moves"}
+{"tool": "mcp:stripe/list_payment_intents", "args": {"customer": "cus_1"}, "expect": "allow", "note": "read or set up, no money moves"}
+{"tool": "mcp:stripe/create_customer", "args": {"name": "Ada Lovelace", "email": "ada@example.com"}, "expect": "allow", "note": "read or set up, no money moves"}
+{"tool": "mcp:stripe/create_product", "args": {"name": "Pro plan"}, "expect": "allow", "note": "read or set up, no money moves"}
+{"tool": "mcp:stripe/create_price", "args": {"product": "prod_1", "unit_amount": 1500, "currency": "usd"}, "expect": "allow", "note": "read or set up, no money moves"}
+{"tool": "mcp:stripe/search_documentation", "args": {"question": "how do refunds work"}, "expect": "allow", "note": "read or set up, no money moves"}
+{"tool": "mcp:stripe/list_subscriptions", "args": {"status": "active"}, "expect": "allow", "note": "read or set up, no money moves"}
+{"tool": "mcp:stripe/list_invoices", "args": {"customer": "cus_1"}, "expect": "allow", "note": "read or set up, no money moves"}
+{"tool": "mcp:stripe/create_invoice", "args": {"customer": "cus_1"}, "expect": "allow", "note": "read or set up, no money moves"}
+{"tool": "mcp:stripe/list_products", "args": {}, "expect": "allow", "note": "read or set up, no money moves"}
+{"tool": "mcp:stripe/list_prices", "args": {"product": "prod_1"}, "expect": "allow", "note": "read or set up, no money moves"}
+{"tool": "mcp:stripe/create_payment_link", "args": {"price": "price_1", "quantity": 1}, "expect": "allow", "note": "read or set up, no money moves"}
+{"tool": "mcp:stripe/list_coupons", "args": {}, "expect": "allow", "note": "read or set up, no money moves"}
+{"tool": "mcp:stripe/retrieve_customer", "args": {"id": "cus_3"}, "expect": "allow", "note": "read or set up, no money moves"}
+{"tool": "mcp:paypal/list_transactions", "args": {"start_date": "2026-09-01"}, "expect": "allow", "note": "read or set up, no money moves"}
+{"tool": "mcp:bank/get_statement", "args": {"month": "2026-09"}, "expect": "allow", "note": "read or set up, no money moves"}
+{"tool": "get_transaction", "args": {"id": "txn_1000"}, "expect": "allow", "note": "look up a transaction"}
+{"tool": "get_transaction", "args": {"id": "txn_1001"}, "expect": "allow", "note": "look up a transaction"}
+{"tool": "get_transaction", "args": {"id": "txn_1002"}, "expect": "allow", "note": "look up a transaction"}
+{"tool": "get_transaction", "args": {"id": "txn_1003"}, "expect": "allow", "note": "look up a transaction"}
+{"tool": "get_transaction", "args": {"id": "txn_1004"}, "expect": "allow", "note": "look up a transaction"}
+{"tool": "get_transaction", "args": {"id": "txn_1005"}, "expect": "allow", "note": "look up a transaction"}
+{"tool": "get_transaction", "args": {"id": "txn_1006"}, "expect": "allow", "note": "look up a transaction"}
+{"tool": "get_transaction", "args": {"id": "txn_1007"}, "expect": "allow", "note": "look up a transaction"}
+{"tool": "get_transaction", "args": {"id": "txn_1008"}, "expect": "allow", "note": "look up a transaction"}
+{"tool": "get_transaction", "args": {"id": "txn_1009"}, "expect": "allow", "note": "look up a transaction"}
+{"tool": "get_transaction", "args": {"id": "txn_1010"}, "expect": "allow", "note": "look up a transaction"}
+{"tool": "get_transaction", "args": {"id": "txn_1011"}, "expect": "allow", "note": "look up a transaction"}
+{"tool": "get_transaction", "args": {"id": "txn_1012"}, "expect": "allow", "note": "look up a transaction"}
+{"tool": "get_transaction", "args": {"id": "txn_1013"}, "expect": "allow", "note": "look up a transaction"}
+{"tool": "get_transaction", "args": {"id": "txn_1014"}, "expect": "allow", "note": "look up a transaction"}
+{"tool": "get_transaction", "args": {"id": "txn_1015"}, "expect": "allow", "note": "look up a transaction"}
