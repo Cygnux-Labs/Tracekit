@@ -169,6 +169,17 @@ class TestSender(Case):
         self.srv.release.set()
 
 
+class TestObserverFailure(unittest.TestCase):
+    def test_a_failing_observer_never_fails_a_write(self):
+        s = svc.SignerService(ts.tmpdir(self))
+        self.addCleanup(s.close)
+        s.log.observers.append(mock.Mock(side_effect=RuntimeError("webhook bug")))
+        with self.assertLogs("tracekit.signer.pipeline", "ERROR"):
+            run = s.call(ts.ME, "register_run", {"request_id": "r1", "agent": {"name": "a"}})
+        s.call(ts.ME, "register_run", {"request_id": "r2", "agent": {"name": "a"}})   # the writer carries on
+        self.assertTrue(run["run_id"])
+
+
 class TestConfig(unittest.TestCase):
     def test_load(self):
         d = ts.tmpdir(self)
