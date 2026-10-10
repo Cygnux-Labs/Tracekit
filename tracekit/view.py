@@ -60,6 +60,7 @@ from .storage.file import NOTE
 from .verify import v2
 
 POLL_S = 1.0
+THREADS, PER_IP = 512, 128   # each open page holds a connection for its event stream; a team may share one address
 DEV_NOTE = ("trust pins this store's own log.vkey: dev assurance, the viewer runs as the same user as the dev signer "
             "and proves only that the records match that key")
 STORED_NOTE = ("trust pins the log vkey this store holds and proves only that the records match that key; pin the "
@@ -526,7 +527,7 @@ def server(feed, host, port, token, tls=None, login=None, desk=None, runs=None):
         def stream(self, *a):
             self.server.stop_deadline()   # an event stream lasts as long as the page is open
             return super().stream(*a)
-    return Server((host, port), Handler, tls)
+    return Server((host, port), Handler, tls, max_threads=THREADS, max_per_ip=PER_IP)
 
 
 def main(argv=None):
