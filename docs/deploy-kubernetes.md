@@ -83,7 +83,7 @@ every replica.
 | | |
 |---|---|
 | identity | HTTPS (`:8443`) with `k8s_sa`: agents send a projected service-account token of audience `tracekit-signer` (`audience`), checked by TokenReview (the signers are bound to `system:auth-delegator`). Map identities to tenants and grants in `signer.config` (`tenants`, `authorize`). |
-| routing | a new run goes to any ready replica (Service `tk`); its run id, and its approvals' ids, start with the replica's name, `tk-<n>.`, and the Python client sends every later call for them to Service `tk-<n>`. A run stays on the replica that registered it, also when another process resumes it. A client's own run_id must carry the prefix of the replica it names. |
+| routing | a new run goes to any ready replica (Service `tk`); its run id, and its approvals' ids, start with the replica's name, `tk-<n>.`, and the Python and TypeScript clients send every later call for them to Service `tk-<n>`. A run stays on the replica that registered it, also when another process resumes it. A client's own run_id must carry the prefix of the replica it names. Calls that name no run or approval (`status`, `approval_list` without a run) reach one replica: list each replica's approvals through its own Service (`tk-<n>`). `replicas` is at least 1: a replica scaled away closes its log for good. |
 | cloud credentials | only on the signers' ServiceAccount (`serviceAccount.annotations`, for workload identity to the KMS keys). Agent pods, the viewer and the monitor get none. |
 | metrics | `:9464` on each replica: Prometheus, and with the monitor the record entries it reads. The chart's NetworkPolicy admits it only from `networkPolicy.monitoringNamespace` and the monitor. |
 

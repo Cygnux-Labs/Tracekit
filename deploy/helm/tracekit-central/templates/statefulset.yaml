@@ -1,4 +1,5 @@
 {{- $n := int (include "tc.logs" .) }}
+{{- if lt (int .Values.replicas) 1 }}{{ fail "replicas must be at least 1: a replica scaled away closes its log for good" }}{{ end }}
 {{- $uid := int .Values.signer.uid }}
 apiVersion: apps/v1
 kind: StatefulSet
