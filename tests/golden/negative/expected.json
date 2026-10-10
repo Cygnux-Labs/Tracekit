@@ -1,0 +1,357 @@
+{
+  "files": {
+    "negative/checkpoint-body-edited.tkb": "5b69e6ef7955d869f2d70fd42021fa68240da372e1a41e825a4e21c0378d98dd",
+    "negative/checkpoint-wrong-origin.tkb": "35c02d6c18d66fe28ee03e06bcdcb262da07a6a96f78779d57335109b137def8",
+    "negative/json-manifest-duplicate-key.tkb": "a989a2d11df1d94b865cfef93d18bbe532280c7f873affa93ff55d9a4c5507e5",
+    "negative/json-no-final-newline.tkb": "aba095faa37af2a8bf7c2f1e18f2c568d54153149ae7e03b6e4c79a00417f052",
+    "negative/json-record-duplicate-key.tkb": "6dde1f6996968dd9035e7a771982201d8c155f1a1eee7727ff9f909793474949",
+    "negative/key-used-after-retire.tkb": "8e35fa28db97555aae2fe76c3b2ddcdbe45b25b2608383b4bd9d71737db8c0e7",
+    "negative/keys-dropped.tkb": "2d92ac099ccfffc76e2784ac6a85f4d45b97e1a6baa1f85580a8916ce5fc0424",
+    "negative/manifest-format-v1.tkb": "87677ea31a7c16c740a4ebf42b0ca73a2190fb58c17b4a7d1d6eee37b938a833",
+    "negative/manifest-newer-verifier.tkb": "18dd9b9a0647d386f10d5d01003a05f754a00a249e7ae54f83659f5e128b89c4",
+    "negative/manifest-unlisted-file.tkb": "9963f6a0aeecb8c6eee7b9fbc711819d2bb0e11697aea501e287dffae4089ff8",
+    "negative/manifest-wrong-hash.tkb": "6db588dde1fab652b0490a19eb05806c6487144e3f629a68c9100286cc9c026f",
+    "negative/policy-misnamed.tkb": "2a538ca13efbb88e97bbf1b7a97884aa3f149695c0267acc42260eb086807ea4",
+    "negative/proofs-inclusion-altered.tkb": "64b59e793db08c710d7767379c63920cd53fc8a31b8e7b10a0e33ac7c49fa367",
+    "negative/proofs-tree-size.tkb": "599a6330f848ebdc8e4bf23c88312a3bfeeaa8d6a3bb7e41c93dd9a1bdcd5e60",
+    "negative/record-alg-confusion.tkb": "2ca38a101c37818059ec030a9672ad880aa3981de54d9abead196f50bb6e16ac",
+    "negative/record-bad-signature.tkb": "222c2834252ac4f1c84cf8341906019179333270829238b79c75acb126badc65",
+    "negative/record-deleted.tkb": "368d799cc6b86d5a7cabad37cff7a54ff50dd2a16b92916b3e4988122e10eaf2",
+    "negative/record-edited.tkb": "8c3626014dd8c409510d585ea30a25aa80d886bf3ade7bd565ece024b5a9f9da",
+    "negative/record-schema-invalid.tkb": "215cd32e289e5790c40d7f05c98f8cdbd957b88282debc30593e908191e121c9",
+    "negative/record-spliced.tkb": "97e8f047166242f7d0adc7fed6feb31d19721c6fc730b204034ae6a6eb68772c",
+    "negative/record-swapped.tkb": "c59eb86e542e5a7ee5440e9a64716248b6880b506dcceb48fedf0c2dff6e2e6c",
+    "negative/record-truncated.tkb": "f48e2b731876adb3b9c83a597bd31f274de698215aa34c828b75eb5dfd7a836b",
+    "negative/run-closing-without-final.tkb": "4e574a19c120a8253c55b3a354339b38f00ab1ca377ed5ceb63bba4f07263b38",
+    "negative/run-empty.tkb": "c6e9255413e578f039d605e34fcd58c8f96c8c5b30e09cab060401c037fe0fc6",
+    "negative/run-rebuilt.tkb": "75bab2cd30d7f0e58a507c00bee5d7d5e69030e1e335c19ff6205135413319da",
+    "negative/run-record-after-final.tkb": "88cc694ccddb54fa42b2881c67deec2d1f86e6956acf2b35eb86b596aae71d56",
+    "negative/run-second-run.tkb": "8f7398817444d196ce37918464664aceccf2491ddbe451b62fd9c8a51af7beb5",
+    "negative/trust.json": "090951d638b56562abb560215bbf164f4d6cc7630227b97d7cf036050c012883",
+    "negative/witness-none.tkb": "8148aa341b08808513350e71eedb40d14d8e0b5d89455fe7e8f090d3a099b20d",
+    "negative/witness-unpinned-only.tkb": "0efd3ea1b5e73b45b054ad74ff3b96c474b38a8947217706dc49523bed5d0117",
+    "negative/zip-absolute.tkb": "c1acffa56f496499743743ce880ea929718c09838ea4eb63fd6c0b94d1c1d434",
+    "negative/zip-duplicate.tkb": "7c2fa9efe582c136444afa6011d6005f93976a5784eead280002a2ca9b79fa12",
+    "negative/zip-no-manifest.tkb": "937aaaf7513d42561a594c1852808cd5f5d4609f104d9c03d277ed18139f43a9",
+    "negative/zip-oversized.tkb": "15786f16ead8666fcc66d52ffa05ce41736c9cd59f219c437bb1d187a84011ce",
+    "negative/zip-symlink.tkb": "6b1cb7a7301dae6d0784e7a4cda7843abbf93cc06912db7bc7fc2077b6f79a67",
+    "negative/zip-traversal.tkb": "be78ee569482f9630afb9aeacef79518c23b67b2ea2b5073cc21920a46b76320"
+  },
+  "cases": [
+    {
+      "name": "zip traversal",
+      "bundle": "zip-traversal.tkb",
+      "expected": {
+        "exit_code": 2,
+        "integrity": "UNUSABLE BUNDLE",
+        "first_failure": "bundle readable"
+      }
+    },
+    {
+      "name": "absolute entry name",
+      "bundle": "zip-absolute.tkb",
+      "expected": {
+        "exit_code": 2,
+        "integrity": "UNUSABLE BUNDLE",
+        "first_failure": "bundle readable"
+      }
+    },
+    {
+      "name": "duplicate entry",
+      "bundle": "zip-duplicate.tkb",
+      "expected": {
+        "exit_code": 2,
+        "integrity": "UNUSABLE BUNDLE",
+        "first_failure": "bundle readable"
+      }
+    },
+    {
+      "name": "symlink entry",
+      "bundle": "zip-symlink.tkb",
+      "expected": {
+        "exit_code": 2,
+        "integrity": "UNUSABLE BUNDLE",
+        "first_failure": "bundle readable"
+      }
+    },
+    {
+      "name": "oversized entry",
+      "bundle": "zip-oversized.tkb",
+      "expected": {
+        "exit_code": 2,
+        "integrity": "UNUSABLE BUNDLE",
+        "first_failure": "bundle readable"
+      }
+    },
+    {
+      "name": "no manifest",
+      "bundle": "zip-no-manifest.tkb",
+      "expected": {
+        "exit_code": 2,
+        "integrity": "UNUSABLE BUNDLE",
+        "first_failure": "bundle readable"
+      }
+    },
+    {
+      "name": "non-strict JSON manifest (duplicate key)",
+      "bundle": "json-manifest-duplicate-key.tkb",
+      "expected": {
+        "exit_code": 2,
+        "integrity": "UNUSABLE BUNDLE",
+        "first_failure": "bundle readable"
+      }
+    },
+    {
+      "name": "non-strict JSON record (duplicate key)",
+      "bundle": "json-record-duplicate-key.tkb",
+      "expected": {
+        "exit_code": 1,
+        "integrity": "FAILED",
+        "first_failure": "bundle structure"
+      }
+    },
+    {
+      "name": "run file without its final newline",
+      "bundle": "json-no-final-newline.tkb",
+      "expected": {
+        "exit_code": 1,
+        "integrity": "FAILED",
+        "first_failure": "bundle structure"
+      }
+    },
+    {
+      "name": "empty run file",
+      "bundle": "run-empty.tkb",
+      "expected": {
+        "exit_code": 1,
+        "integrity": "FAILED",
+        "first_failure": "bundle structure"
+      }
+    },
+    {
+      "name": "format is not v2",
+      "bundle": "manifest-format-v1.tkb",
+      "expected": {
+        "exit_code": 2,
+        "integrity": "UNUSABLE BUNDLE",
+        "first_failure": "bundle readable"
+      }
+    },
+    {
+      "name": "needs a newer verifier",
+      "bundle": "manifest-newer-verifier.tkb",
+      "expected": {
+        "exit_code": 2,
+        "integrity": "UNVERIFIABLE (needs tracekit >= 99.0)",
+        "first_failure": "bundle readable"
+      }
+    },
+    {
+      "name": "file not in the manifest",
+      "bundle": "manifest-unlisted-file.tkb",
+      "expected": {
+        "exit_code": 1,
+        "integrity": "FAILED",
+        "first_failure": "manifest"
+      }
+    },
+    {
+      "name": "manifest hash wrong",
+      "bundle": "manifest-wrong-hash.tkb",
+      "expected": {
+        "exit_code": 1,
+        "integrity": "FAILED",
+        "first_failure": "manifest"
+      }
+    },
+    {
+      "name": "edited record",
+      "bundle": "record-edited.tkb",
+      "expected": {
+        "exit_code": 1,
+        "integrity": "FAILED",
+        "first_failure": "signatures"
+      }
+    },
+    {
+      "name": "deleted record",
+      "bundle": "record-deleted.tkb",
+      "expected": {
+        "exit_code": 1,
+        "integrity": "FAILED",
+        "first_failure": "run chain"
+      }
+    },
+    {
+      "name": "swapped records",
+      "bundle": "record-swapped.tkb",
+      "expected": {
+        "exit_code": 1,
+        "integrity": "FAILED",
+        "first_failure": "run chain"
+      }
+    },
+    {
+      "name": "record from another run spliced in",
+      "bundle": "record-spliced.tkb",
+      "expected": {
+        "exit_code": 1,
+        "integrity": "FAILED",
+        "first_failure": "run chain"
+      }
+    },
+    {
+      "name": "run.final cut off",
+      "bundle": "record-truncated.tkb",
+      "expected": {
+        "exit_code": 1,
+        "integrity": "FAILED",
+        "first_failure": "inclusion"
+      }
+    },
+    {
+      "name": "signature algorithm swapped",
+      "bundle": "record-alg-confusion.tkb",
+      "expected": {
+        "exit_code": 1,
+        "integrity": "FAILED",
+        "first_failure": "signatures"
+      }
+    },
+    {
+      "name": "another record's signature",
+      "bundle": "record-bad-signature.tkb",
+      "expected": {
+        "exit_code": 1,
+        "integrity": "FAILED",
+        "first_failure": "signatures"
+      }
+    },
+    {
+      "name": "signer.epoch dropped",
+      "bundle": "keys-dropped.tkb",
+      "expected": {
+        "exit_code": 1,
+        "integrity": "FAILED",
+        "first_failure": "keys"
+      }
+    },
+    {
+      "name": "two runs without a run-set",
+      "bundle": "run-second-run.tkb",
+      "expected": {
+        "exit_code": 1,
+        "integrity": "FAILED",
+        "first_failure": "bundle structure"
+      }
+    },
+    {
+      "name": "policy snapshot under another name",
+      "bundle": "policy-misnamed.tkb",
+      "expected": {
+        "exit_code": 1,
+        "integrity": "FAILED",
+        "first_failure": "policy snapshot"
+      }
+    },
+    {
+      "name": "checkpoint body edited",
+      "bundle": "checkpoint-body-edited.tkb",
+      "expected": {
+        "exit_code": 1,
+        "integrity": "FAILED",
+        "first_failure": "checkpoint"
+      }
+    },
+    {
+      "name": "proofs name another tree size",
+      "bundle": "proofs-tree-size.tkb",
+      "expected": {
+        "exit_code": 1,
+        "integrity": "FAILED",
+        "first_failure": "checkpoint"
+      }
+    },
+    {
+      "name": "inclusion proof altered",
+      "bundle": "proofs-inclusion-altered.tkb",
+      "expected": {
+        "exit_code": 1,
+        "integrity": "FAILED",
+        "first_failure": "inclusion"
+      }
+    },
+    {
+      "name": "run rebuilt with the real key under the real checkpoint",
+      "bundle": "run-rebuilt.tkb",
+      "expected": {
+        "exit_code": 1,
+        "integrity": "FAILED",
+        "first_failure": "run chain"
+      }
+    },
+    {
+      "name": "record after run.final",
+      "bundle": "run-record-after-final.tkb",
+      "expected": {
+        "exit_code": 1,
+        "integrity": "FAILED",
+        "first_failure": "run chain"
+      }
+    },
+    {
+      "name": "run.closing without run.final (claimed closed)",
+      "bundle": "run-closing-without-final.tkb",
+      "expected": {
+        "exit_code": 0,
+        "integrity": "VERIFIED TO HEAD 3 (open)",
+        "first_failure": null
+      }
+    },
+    {
+      "name": "key used after its key.retire",
+      "bundle": "key-used-after-retire.tkb",
+      "expected": {
+        "exit_code": 1,
+        "integrity": "FAILED",
+        "first_failure": "signatures"
+      }
+    },
+    {
+      "name": "schema-invalid event",
+      "bundle": "record-schema-invalid.tkb",
+      "expected": {
+        "exit_code": 1,
+        "integrity": "FAILED",
+        "first_failure": "signatures"
+      }
+    },
+    {
+      "name": "checkpoint of another origin",
+      "bundle": "checkpoint-wrong-origin.tkb",
+      "expected": {
+        "exit_code": 1,
+        "integrity": "FAILED",
+        "first_failure": "checkpoint"
+      }
+    },
+    {
+      "name": "cosigned only by an unpinned witness",
+      "bundle": "witness-unpinned-only.tkb",
+      "expected": {
+        "exit_code": 1,
+        "integrity": "FAILED",
+        "first_failure": "witness quorum"
+      }
+    },
+    {
+      "name": "no cosignature",
+      "bundle": "witness-none.tkb",
+      "expected": {
+        "exit_code": 1,
+        "integrity": "FAILED",
+        "first_failure": "witness quorum"
+      }
+    }
+  ]
+}
