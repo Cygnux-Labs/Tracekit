@@ -8,6 +8,8 @@
     tracekit signer vkey  [--dev | --config signer.yaml]               # the log's verifier key
     tracekit signer trust [--dev | --config signer.yaml] -o trust.json  # a v2 trust config pinning it and the witnesses
     tracekit signer reveal --record SEQ [--dev | --config signer.yaml]  # the salt of one record's commitments
+    tracekit signer token add NAME [--ttl 30d] [--tenant T] --config signer.yaml   # prints a token once (http.tokens)
+    tracekit signer token list|revoke [NAME] --config signer.yaml
 
 signer.yaml:
     data_dir: /var/lib/tracekit-signer      # keys/ and store/; relative paths are from the config file
@@ -975,7 +977,7 @@ class SignerService:
         if owner(identity) == self.log.runs[a["run_key"]]["owner"] or lookup(self._break_glass, sub, False):
             return True
         return (self.approvals is None or lookup(self._approvers, sub, False)) and \
-            a["run_key"][0] == lookup(self.tenants, sub, self.tenant)
+            a["run_key"][0] == self._tenant_of(identity)
 
     def _visible(self, identity, approval_id):
         a = self.log.approvals.get(approval_id)
@@ -1041,10 +1043,18 @@ class SignerService:
         h = self.policy.decide(tool, args, hint if hint in policy_compile.CLASSES else "unknown")
         return max(d, h, key=lambda x: STRICTNESS.index(x["verdict"])), True
 
+    def _tenant_of(self, identity):
+        """The identity's tenant: `tenants`, else the tenant its named token was issued for, else the default."""
+        token = identity.claims.get("tenant") if identity.scheme == "token" else None
+        return lookup(self.tenants, subject(identity), None) or token or self.tenant
+
     @staticmethod
     def _isolation(identity):
         if identity.scheme == "uid" and hasattr(os, "getuid"):
             return "same-user" if identity.subject == str(os.getuid()) else "separate-user"
+        # k8s_sa, mtls and tokens other than the dev transport's authenticate over the HTTP transport only
+        if identity.scheme in ("k8s_sa", "mtls", "token") and subject(identity) != "token:dev":
+            return "remote"
         return "unknown"
 
     # --- methods ---
@@ -1055,7 +1065,7 @@ class SignerService:
                                ("analyzes", self.analyzers)):
             if field in req and sub not in allowed:
                 raise RPCError("forbidden", f"{sub[:256]} is not configured to register runs with `{field}`")
-        tenant = req.get("tenant") or lookup(self.tenants, sub, self.tenant)
+        tenant = req.get("tenant") or self._tenant_of(identity)
         run_id = req.get("run_id") or secrets.token_hex(16)
         own = owner(identity)
         self.quotas.take_event(identity)
@@ -1524,8 +1534,8 @@ class SignerService:
             traces.setdefault(sp["trace_id"], []).append(recs)
             agents.setdefault(sp["trace_id"], str(sp["attrs"].get("gen_ai.agent.name") or
                                                   sp["resource"].get("service.name") or "otel")[:128] or "otel")
-        sub, own = subject(identity), owner(identity)
-        tenant = lookup(self.tenants, sub, self.tenant)
+        own = owner(identity)
+        tenant = self._tenant_of(identity)
 
         def fn(tx, _):
             out = dict(res, errors=list(res["errors"]))
@@ -1725,7 +1735,8 @@ def serve(cfg, service):
     if cfg.get("http"):
         from tracekit.transport import http
         servers.append(http.HttpServer(*http.configure(cfg["http"]), handle,
-                                       otlp=service.otlp if "otlp" in cfg else None))
+                                       otlp=service.otlp if "otlp" in cfg else None,
+                                       on_auth_failure=service.metrics.auth_failures.inc))
     for s in servers:
         threading.Thread(target=s.serve_forever, args=(0.2,), daemon=True).start()
     return servers
@@ -1866,6 +1877,23 @@ def reveal(data_dir, seq):
         return {"seq": seq, "type": e["type"], "salt": _salt(f.read(), label).hex()}
 
 
+def _token_cmd(a, cfg):
+    from tracekit.identity.token import TokenStore, parse_ttl
+    path = (cfg.get("http") or {}).get("tokens")
+    if not path:
+        raise ValueError("the config's http section names no tokens file (http.tokens)")
+    store = TokenStore(path)
+    if a.token_cmd == "add":
+        print(store.add(a.name, parse_ttl(a.ttl), a.tenant))
+        print(f"(identity token:{a.name}; this is the only time the token is shown)", file=sys.stderr)
+    elif a.token_cmd == "revoke":
+        store.revoke(a.name)
+    else:
+        print(json.dumps([{"name": name, **{k: rec[k] for k in ("tenant", "created", "expires", "revoked")}}
+                          for name, rec in sorted(store.load().items())], indent=2))
+    return 0
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="tracekit signer", description="the v2 signer service")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -1890,6 +1918,16 @@ def main(argv=None):
     g = q.add_mutually_exclusive_group()
     g.add_argument("--config")
     g.add_argument("--dev", action="store_true", help="the same-user dev signer (the default)")
+    t = sub.add_parser("token", help="named, expiring bearer tokens of the http transport (http.tokens)"
+                       ).add_subparsers(dest="token_cmd", required=True)
+    q = t.add_parser("add", help="create a token for identity token:NAME and print it (the only time it is shown)")
+    q.add_argument("name")
+    q.add_argument("--ttl", default="30d", help="lifetime: a number and s, m, h or d (default 30d)")
+    q.add_argument("--tenant", help="the tenant of its runs (the config's `tenants` map wins)")
+    t.add_parser("list", help="names, tenants, created, expires and revoked times (never the tokens)")
+    t.add_parser("revoke", help="refuse the token from its next request").add_argument("name")
+    for q in t.choices.values():
+        q.add_argument("--config", required=True)
     p = sub.add_parser("bridge", help="continue a v1 ledger in this signer's log and destroy the v1 key")
     p.add_argument("--v1-home", required=True)
     g = p.add_mutually_exclusive_group(required=True)
@@ -1930,6 +1968,8 @@ def main(argv=None):
     from tracekit.signer import format_bridge
     try:
         cfg = {"data_dir": dev_data_dir()} if getattr(a, "dev", False) else load_config(a.config)
+        if a.cmd == "token":
+            return _token_cmd(a, cfg)
     except (OSError, ValueError) as e:
         print(f"tracekit signer: {e}", file=sys.stderr)
         return 2
