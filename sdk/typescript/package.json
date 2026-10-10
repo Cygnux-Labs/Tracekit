@@ -1,6 +1,6 @@
 {
   "name": "@cygnux/tracekit",
-  "version": "1.0.0-rc.1",
+  "version": "1.0.0-rc.2",
   "description": "Tracekit for TypeScript/JavaScript agents: a native client of the Tracekit signer: policy-gated tool calls and signed evidence, no runtime dependencies.",
   "author": "Cygnux Labs",
   "license": "MIT",
@@ -23,11 +23,11 @@
     "test": "npm run build && node --test test/*.test.mjs"
   },
   "optionalDependencies": {
-    "@cygnux/tracekit-signer-darwin-arm64": "1.0.0-rc.1",
-    "@cygnux/tracekit-signer-darwin-x64": "1.0.0-rc.1",
-    "@cygnux/tracekit-signer-linux-x64-gnu": "1.0.0-rc.1",
-    "@cygnux/tracekit-signer-linux-arm64-gnu": "1.0.0-rc.1",
-    "@cygnux/tracekit-signer-win32-x64": "1.0.0-rc.1"
+    "@cygnux/tracekit-signer-darwin-arm64": "1.0.0-rc.2",
+    "@cygnux/tracekit-signer-darwin-x64": "1.0.0-rc.2",
+    "@cygnux/tracekit-signer-linux-x64-gnu": "1.0.0-rc.2",
+    "@cygnux/tracekit-signer-linux-arm64-gnu": "1.0.0-rc.2",
+    "@cygnux/tracekit-signer-win32-x64": "1.0.0-rc.2"
   },
   "peerDependencies": { "@openai/agents": ">=0.20.0", "ai": ">=7.0.0", "@anthropic-ai/claude-agent-sdk": ">=0.3.0" },
   "peerDependenciesMeta": {
