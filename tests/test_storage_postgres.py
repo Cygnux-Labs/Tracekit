@@ -12,6 +12,7 @@ import shutil
 import socket
 import subprocess
 import tempfile
+import threading
 import time
 import unittest
 from unittest import mock
@@ -142,6 +143,37 @@ class TestPostgresStorage(PgCase):
         s.append_batch(c.batch(2))
         self.assertEqual(s.tail_state()["tree_size"], 5)
 
+    def test_a_stuck_write_fails_instead_of_hanging(self):
+        with mock.patch.object(postgres, "WRITER_TIMEOUT", "300ms"):
+            s = self.open()
+        self.addCleanup(s.close)
+        self.assertEqual(s.conn.info.get_parameters()["tcp_user_timeout"], postgres.NET_TIMEOUTS["tcp_user_timeout"])
+        with postgres._connect(self.dsn + " connect_timeout=3") as c:   # the DSN's own value wins
+            self.assertEqual(c.info.get_parameters()["connect_timeout"], "3")
+        with psycopg.connect(self.admin) as holder:
+            holder.execute("LOCK TABLE tracekit_records IN ACCESS EXCLUSIVE MODE")   # until its transaction ends
+            release = threading.Timer(5, sql, (self.admin, "SELECT pg_terminate_backend(%s)",
+                                               (holder.info.backend_pid,)))
+            release.start()
+            self.addCleanup(release.cancel)
+            with self.assertRaises(StorageUnavailable):
+                s.append_batch(Chain().batch(1))
+            self.assertTrue(release.is_alive())   # failed before the lock went away
+            holder.rollback()
+
+    def test_search_runs_compares_times_not_strings(self):
+        s = self.open()
+        s.append_batch(Chain().batch(1))   # ts 2026-10-09T12:00:00.000000Z
+        s.close()
+        for since, until, found in (("2026-10-09T12:00:00Z", None, 1), ("2026-10-09T14:00:00+02:00", None, 1),
+                                    ("2026-10-09T12:00:01Z", None, 0), (None, "2026-10-09T12:00:00Z", 1),
+                                    (None, "2026-10-09T11:59:59.999999Z", 0), ("2026-10", "2026", 0),
+                                    ("2026-10", "2027", 1)):
+            rows = postgres.search_runs(self.dsn, "acme", 10, since=since, until=until)
+            self.assertEqual(len(rows), found, (since, until))
+        with self.assertRaisesRegex(ValueError, "RFC 3339"):
+            postgres.search_runs(self.dsn, "acme", 10, since="yesterday")
+
     def test_one_writer_waits_then_names_the_holder(self):
         s = self.open()
         start = time.monotonic()
@@ -207,9 +239,9 @@ class TestPostgresStorage(PgCase):
         s.close()
         self.assertEqual(sql(self.admin, "SELECT size FROM tracekit_snapshots ORDER BY size"), [(307,), (308,)])
         sql(self.admin, "UPDATE tracekit_snapshots SET body = replace(body, '\"state\":{}', '\"state\":{\"y\":1}')")
-        self.assertEqual(postgres.fsck(self.dsn, key), [
+        self.assertEqual([p for p in postgres.fsck(self.dsn, key) if not p.startswith("registry: leaf 0")], [
             f"snapshots/{n}: does not match the log or its MAC, so open ignores it and replays the log in full"
-            for n in (307, 308)])
+            for n in (307, 308)])   # the registry leaf is a placeholder, of no record
         s = self.open(snapshot_key=key)
         self.addCleanup(s.close)
         self.assertIsNone(s.snapshot)

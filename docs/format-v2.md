@@ -351,11 +351,13 @@ line and verdict is in [verdicts](verdicts.md).
    run_id, a seq above the previous record's; and follow no `run.final`. The run's first and last records must be
    included in the checkpointed tree.
 7. **Run-set** (with `registry/run-set.json`). Open the registry notes at `a` and `b` with the pinned log key renamed
-   to the registry origin of §7; check consistency `a → b`; require `b > 0` and exactly `b − a` leaves, each included
-   in the registry tree at `b`, each pointing to a record in `registry/records.jsonl` with that hash, seq, type,
+   to the registry origin of §7 and the pinned witnesses; each needs `witnesses_required` cosignatures, and caps the
+   assurance level by the same rule as the checkpoint; check consistency `a → b`; require `b > 0` and exactly `b − a`
+   leaves, each included in the registry tree at `b`, each pointing to a record in `registry/records.jsonl` with that hash, seq, type,
    log_id and run hash, included in the record tree. One `run.final` per run; every run final in the range present in
    the bundle from its `run.registered` (when in the range) to that `run.final`; every bundled run but one the target
-   of a leaf. Every `key.retire` leaf in the range must be among the key records. A `log.closed` in the range must be
+   of a leaf; every bundled run of the tenant the range's run leaves name (the run-set line names it). Every
+   `key.retire` leaf in the range must be among the key records. A `log.closed` in the range must be
    the checkpoint's last record, or later records were added after the log closed.
 8. **Format bridge** (with `--v1-ledger`/`--v1-key`, §12).
 9. **Policy snapshots.** Each `policies/` file is named by its own SHA-256.
