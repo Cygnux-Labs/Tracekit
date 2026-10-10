@@ -5,8 +5,8 @@ Eight experiments. E1 to E4 and E6 are offline and run with `make eval`; E5 uses
 system-mode signer and runs in CI as a merge gate. Results are written to
 `eval/results/`. For the v2 signer: E4 v2 (`eval/e4_seeded_faults_v2.py`, seeded faults against a v2 bundle, in
 `make eval`), E9 (`eval/e9_signer_perf.py`, latency and throughput over the Unix socket, gated on Linux; `make eval`
-runs its `--quick` form on Linux) and E15 (`eval/e15_durability.py`, `kill -9` of the signer under concurrent clients,
-POSIX). `tests/INVARIANTS.md` maps each invariant to its tests. The experiments are small, synthetic and written by the authors. They show how the mechanisms
+runs its `--quick` form on Linux), E11 and E12 (below, in `make eval`, POSIX) and E15 (`eval/e15_durability.py`,
+`kill -9` of the signer under concurrent clients, POSIX). `tests/INVARIANTS.md` maps each invariant to its tests. The experiments are small, synthetic and written by the authors. They show how the mechanisms
 behave, not how Tracekit performs across real agents and projects. The v0.1 paper's experiments (14 Claude Code
 runs, seeded faults, hook latency) were ported to v0.2 as E2, E4 and E5, with different scenarios and numbers.
 
@@ -209,6 +209,40 @@ pull request and blocks the merge on a miss. Results: `eval/results/e8_insider.j
 Run it yourself as root after `sudo tracekit init --user AGENT --harness agent=HARNESS` (the script's docstring has the
 setup). E8 does not cover fabricated events sent into the live run from inside the harness session; only the model
 proxy cross-check catches those.
+
+## E11: tampering with L1 saved state
+
+`eval/e11_l1_tampering.py` runs a short session through each L1 source against a v2 dev signer: the LangGraph
+checkpointer wrapper (over SQLite, paused before a tool call and resumed by a new checkpointer), the Claude Agent SDK
+session store wrapper (over a JSONL file store, driven as the SDK mirrors a transcript, without the CLI) and the Claude
+Code transcript tailer. It tampers with the saved state in seven ways: edit an entry, delete one, reorder, truncate,
+replace the file (new inode), swap in a symlink to another session's file, and change the pending tool call. In-place
+edits keep the file's size. A case is detected when the run holds the signer-written gap: `state_tamper` for the
+wrappers (on the resumed session's next write), `tailer_lost` for the tailer (on its next wake). It fails unless all
+21 cases are detected and an untampered control run of each source has no gap. A source whose framework is not
+installed is reported as skipped. Results: `eval/results/e11_l1_tampering.json`.
+
+## E12: tenant isolation
+
+`eval/e12_cross_tenant.py` puts two tenants, mapped from two uid identities by the `tenants` config, on one signer
+(in process). Tenant b's identity attacks tenant a's run, which has a pending approval and an imported trace run, and
+every attack must be refused, or reach and change nothing of tenant a's:
+
+| Case | Attack |
+|---|---|
+| run_token | a's run id and run token, presented from b's identity, for each per-run method |
+| guessed_id | a's run id or a random one with b's own token; b's token edited to name a's run |
+| delegate_run | delegate b's run to an identity with no `authorize` entry; delegate a's run with a's token |
+| approvals | get, decide, wait on, consume or list a's approval |
+| otlp_import | post spans of a's trace id; they must land in b's own run |
+| run_set | a's run-set export must hold nothing of b's; b's run-set presented as a's must fail verification |
+| observability | the metrics and the witnesses' logs list must name no tenant, run id or identity |
+
+Then, against `tracekit signer serve`, eight concurrent asyncio tasks and eight threads, each in its own
+`with client.run(...)`, make 20 calls each through the `current_run` contextvar, and eight concurrent promises in Node do
+the same with `withRun`/`currentRun` (AsyncLocalStorage; skipped with the reason when node or the built TS SDK is
+missing: `make test-ts` builds it). Every call must be in its own run's records and nowhere else. Results:
+`eval/results/e12_cross_tenant.json`.
 
 ## What is not measured
 
