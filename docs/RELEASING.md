@@ -74,8 +74,10 @@ Until these are done the publish jobs fail and nothing is released; the build jo
 
 ## npm signer packages (`npx @cygnux/tracekit up` without Python)
 
-`@cygnux/tracekit` lists `@cygnux/tracekit-signer-{darwin-arm64,darwin-x64,linux-x64-gnu,linux-arm64-gnu,win32-x64}`
-as `optionalDependencies` at its own version; npm installs the one matching the platform, with no postinstall. Each
+`@cygnux/tracekit` lists `@cygnux/tracekit-signer-{darwin-arm64,linux-x64-gnu,linux-arm64-gnu,win32-x64}`
+as `optionalDependencies` at its own version; npm installs the one matching the platform, with no postinstall. There
+is no Intel-Mac package (its dependencies publish no usable wheels there): on an Intel Mac, `pip install
+'tracekit-ai[signer]'` and the launcher uses that `tracekit` from PATH. Each
 holds a python-build-standalone CPython (release and sha256 pinned in the script) with `tracekit-ai[signer]` and its
 wheels unpacked into site-packages. The release workflow builds them from the release's own files:
 `python3 scripts/build-signer-bundles.py [--release release]` checks the tracekit-ai wheel in `release/` against
