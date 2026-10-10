@@ -406,8 +406,11 @@ class Helper(unittest.TestCase):
 
     def test_answers_only_the_signers_uid(self):
         start_helper(self, self.sock, os.getuid() + 1, harness_helper.Server)   # bound as is: no chown to another uid
-        self.assertEqual(raw_request(self.sock, b'{"pid": 1}\n'), b"")
-        with self.assertRaises(ValueError):
+        try:   # closed unanswered: an empty read, or on Linux a reset when the request was not read
+            self.assertEqual(raw_request(self.sock, b'{"pid": 1}\n'), b"")
+        except ConnectionResetError:
+            pass
+        with self.assertRaises((OSError, ValueError)):
             harness_helper.ask(self.sock, os.getpid())
 
     @pytest.mark.root
@@ -424,7 +427,7 @@ class Helper(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         me = json.loads(r.stdout)
         self.assertEqual(me["exe"], os.path.realpath(sys.executable))   # root's process, which nobody can't read
-        with self.assertRaises(ValueError):   # root is not the signer: no answer
+        with self.assertRaises((OSError, ValueError)):   # root is not the signer: no answer (or a reset)
             harness_helper.ask(self.sock, os.getpid())
 
 
