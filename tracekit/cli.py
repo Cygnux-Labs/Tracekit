@@ -576,33 +576,40 @@ def _export_v2(a):
     from .format import registry
     from .sdk.client import Client, Incompatible, SignerUnavailable
     from .signer.rpc_schema import RPCError
-    from .signer.service import file_store, signer_config
-    from .storage.base import StorageCorrupt, registry_tree
-    from .storage.file import FileReader
+    from .signer.service import reader as open_reader
+    from .signer.service import signer_config
+    from .storage.base import StorageCorrupt, StorageUnavailable, registry_tree
     if not (a.run or a.run_set) or a.dev and a.config:
         print("tracekit export --v2: needs --run RUN_ID or --run-set, and --dev or --config (not both)", file=sys.stderr)
         return 2
+    reader = None
+
+    def reopen():   # a reader opened now holds every record and note written before
+        nonlocal reader
+        if reader:
+            reader.close()
+        reader = open_reader(cfg)
     try:
         cfg = signer_config(a.config)
-        store, tenant = file_store(cfg, "export --v2"), a.tenant or cfg.get("tenant", "default")
-        reader = FileReader(store)
+        tenant = a.tenant or cfg.get("tenant", "default")
+        reopen()
         if a.run_set:
             with open(os.path.join(cfg["data_dir"], "keys", "registry_salt.key"), "rb") as f:
                 tsalt = registry.tenant_salt(f.read(), tenant)
             for _ in range(5):   # a reader opened after reading the record note holds the registry notes it covers
                 note = reader.checkpoint_latest()
-                reader = FileReader(store)
+                reopen()
                 if reader.checkpoint_latest() == note:
                     break
             reg = reader.checkpoint_latest(registry_tree(tenant))
             if note is None or reg is None:
-                raise ValueError(f"no registry checkpoint of tenant {tenant!r} in {store} yet")
+                raise ValueError(f"no registry checkpoint of tenant {tenant!r} in the store yet")
             print(json.dumps(export(reader, tenant, a.run, note[1], a.out, run_set=(0, reg[0]), tenant_salt=tsalt),
                              indent=2))
             return 0
         run = reader.runs.get((tenant, a.run))
         if run is None:
-            raise ValueError(f"no run {a.run!r} of tenant {tenant!r} in {store}")
+            raise ValueError(f"no run {a.run!r} of tenant {tenant!r} in the store")
         last = run["seqs"][-1]
 
         def signers(n):
@@ -630,14 +637,19 @@ def _export_v2(a):
             deadline = time.monotonic() + NUDGE_WAIT_S
             while (note := covering()) is None and time.monotonic() < deadline:
                 time.sleep(0.1)
+                reopen()
             if note is None:
                 raise ValueError(f"the signer wrote no checkpoint covering run {a.run!r} within {NUDGE_WAIT_S:g}s")
-        info = export(FileReader(store), tenant, a.run, note[1], a.out)   # opened after the note: holds its records
+        reopen()   # opened after the note: holds its records
+        info = export(reader, tenant, a.run, note[1], a.out)
         if a.otel or a.otel_endpoint:
             info["otel"] = _otel_v2(a, info["bundle"])
-    except (OSError, ValueError, SignerUnavailable, StorageCorrupt) as e:
+    except (OSError, ValueError, SignerUnavailable, StorageCorrupt, StorageUnavailable) as e:
         print(f"tracekit export: {e}", file=sys.stderr)
         return 1
+    finally:
+        if reader:
+            reader.close()
     print(json.dumps(info, indent=2))
     return 0
 
