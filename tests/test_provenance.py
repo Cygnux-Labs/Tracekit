@@ -195,7 +195,7 @@ class Signer(unittest.TestCase):
     def test_a_truncated_index_matches_no_from_rule(self):
         with mock.patch.object(svc, "PROVENANCE_MAX", 3):
             self.call("http_get", {"url": "https://notes.example/a"}, {"body": INJECTED}, "tc-fetch")
-        self.assertEqual(self.record("tc-fetch")["provenance_state"], "complete")
+        self.assertNotIn("provenance_state", self.record("tc-fetch"))   # nothing untrusted in its arguments: no fields
         d = self.email("tc-mail")
         self.assertNotIn("TK-P001", d["rule_ids"])
         self.assertEqual(self.record("tc-mail")["provenance_state"], "truncated")

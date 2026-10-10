@@ -179,8 +179,9 @@ call's arguments) that untrusted tools' results and observed inputs carried, wit
   hold.
 
 A rule with `from: untrusted` matches only when its pattern matches as usual **and** a value in that subject is
-untrusted-only in the run. Every decision records `provenance_state` (`complete`, `truncated` past 20000 values in a
-run, or `unavailable` after a signer restart, as the index lives in memory only) and `provenance`: up to 16 arguments
+untrusted-only in the run. A decision records `provenance_state` (`complete`, `truncated` past 20000 values in a
+run, or `unavailable` after a signer restart, as the index lives in memory only) when it isn't `complete` or there is
+something to show, and `provenance`: up to 16 arguments
 whose values are untrusted-only, as `{field, kind, source: {run_seq, tool, tool_call_id}}` — never the value
 ([format](format-v2.md#3-events)). With the index truncated or unavailable, a `from` rule does not match.
 
