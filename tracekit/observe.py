@@ -29,10 +29,12 @@ from urllib.parse import parse_qs, urlparse
 from .core import event_hash, read_text
 from .ledger import read_records, verify_record_sig
 from .replay import CSP_META
+from .storage.base import StorageCorrupt, StorageUnavailable
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 UI = os.path.join(HERE, "ui", "terminal.html")
 APPROVALS_UI = os.path.join(HERE, "ui", "approvals.html")
+RUNS_UI = os.path.join(HERE, "ui", "runs.html")
 MAX_POST = 64 * 1024
 
 
@@ -347,12 +349,13 @@ def _session(token):
     return hmac.new(token.encode(), b"tracekit-observe-session", hashlib.sha256).hexdigest()
 
 
-def make_handler(feed, token, allowed_hosts=None, secure=False, login=None, approvals=None):
+def make_handler(feed, token, allowed_hosts=None, secure=False, login=None, approvals=None, runs=None):
     """`feed`: records, base, lock and verify() -> (records, problems, head), as Feed has. `secure`: served over HTTPS,
     so the session cookie is Secure. `login`: a view.OidcLogin; its sessions see the records of their tenant only
     (`feed.verify(tenant)` and each record's `tenant`). `approvals`: a view.ApprovalDesk; an approver's session gets
     /approvals, its GET API and, with the session's CSRF token in X-CSRF-Token, its JSON POSTs (the only requests that
-    change state, and only on this handler)."""
+    change state, and only on this handler). `runs`: a view.Runs; /runs and its GET API, for the token and every
+    session, each read scoped to the session's tenant by Runs itself; `feed` may then be None (`/` goes to /runs)."""
     allowed = set(LOOPBACK_HOSTS) | {h.lower() for h in (allowed_hosts or ()) if h.lower() not in WILDCARD_HOSTS}
 
     class Handler(BaseHTTPRequestHandler):
@@ -446,6 +449,12 @@ def make_handler(feed, token, allowed_hosts=None, secure=False, login=None, appr
                     ("Location", u.path),
                     ("Set-Cookie", f"{COOKIE}={_session(token)}; HttpOnly; SameSite=Strict; Path=/"
                                    + ("; Secure" if secure else ""))])
+            if runs and u.path in ("/runs", "/api/runs", "/api/run", "/api/bundle"):
+                return self._runs(u, scope)
+            if feed is None:
+                if u.path in ("/", "/index.html"):
+                    return self._send(303, "", "text/plain", headers=[("Location", "/runs")])
+                return self._send(404, '{"error":"not found"}')
             if u.path in ("/", "/index.html"):
                 nonce = secrets.token_urlsafe(18)
                 return self._send(200, _page(nonce=nonce), "text/html", nonce=nonce)
@@ -464,6 +473,26 @@ def make_handler(feed, token, allowed_hosts=None, secure=False, login=None, appr
                     return self._send(400, '{"error":"from must be an integer"}')
                 return self.stream(start, scope)
             self._send(404, '{"error":"not found"}')
+
+        def _runs(self, u, scope):
+            """The run pages of a central deployment's logs (view.Runs), read-only."""
+            if u.path == "/runs":
+                nonce = secrets.token_urlsafe(18)
+                return self._send(200, read_text(RUNS_UI).replace("<script>", f'<script nonce="{nonce}">'),
+                                  "text/html", nonce=nonce)
+            q = {k: v[0] for k, v in parse_qs(u.query).items()}
+            try:
+                out = {"/api/runs": runs.search, "/api/run": runs.run, "/api/bundle": runs.bundle}[u.path](scope, q)
+            except ValueError as e:
+                return self._send(400, json.dumps({"error": str(e)}))
+            except (OSError, StorageUnavailable, StorageCorrupt):
+                return self._send(502, '{"error":"store unavailable"}')
+            if out is None:
+                return self._send(404, '{"error":"no such run"}')
+            if u.path == "/api/bundle":
+                return self._send(200, out, "application/octet-stream",
+                                  headers=[("Content-Disposition", 'attachment; filename="run.tkb"')])
+            return self._send(200, json.dumps(out, ensure_ascii=False))
 
         def _desk(self, path, post=False):
             """The approval pages, for an approver's OIDC session only."""
