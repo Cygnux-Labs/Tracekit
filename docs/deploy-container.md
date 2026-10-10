@@ -1,6 +1,6 @@
 # The signer as a container
 
-`deploy/docker/Dockerfile` builds the v2 signer (`tracekit-ai[signer]`, with google-re2 where it has a wheel) on a
+`deploy/docker/Dockerfile` builds the v2 signer (`tracekit-ai[signer,postgres]`, with google-re2 where it has a wheel) on a
 digest-pinned `python:3.12-slim` base. It runs `tracekit signer serve --config /etc/tracekit/signer.yaml` as uid/gid
 10001 and works with a read-only root filesystem.
 
