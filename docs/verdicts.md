@@ -58,7 +58,8 @@ self-approval, and `key retirements not proven complete` (see `keys`).
 The level describes who vouches for the checkpoint, not how the signer was isolated: a same-user dev signer whose
 checkpoints a public witness cosigns verifies as `witnessed`. A witness proves the log was not rolled back or forked
 after it cosigned. Witness classes come from **your** trust config, never from the bundle. `witnessed+monitored`
-needs a log monitor and is not reported yet.
+is `witnessed` plus a fresh, conflict-free report of a monitor your trust config pins, passed with `--monitor-report`
+([monitor.md](monitor.md)).
 
 ## Lines
 

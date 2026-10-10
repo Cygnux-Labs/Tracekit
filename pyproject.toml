@@ -34,6 +34,7 @@ dependencies = ["cryptography>=41", "rfc8785>=0.1,<0.2"]   # signing (`tracekit 
 yaml = ["PyYAML>=6"]   # optional: policies are parsed with a built-in YAML subset otherwise
 langchain = ["langchain-core>=0.2"]   # tracekit.adapters.langchain (LangChain / LangGraph tools)
 grpc = ["grpcio>=1.50"]   # `tracekit otel serve --grpc-port 4317`
+postgres = ["psycopg[binary]>=3.1"]   # tracekit.storage.postgres: the signer's Postgres store
 signer = ["google-re2>=1.1; python_version>='3.10'", "regex>=2023.8"]   # tracekit.policy2 engine; regex is the fallback where RE2 has no wheel
 dev = ["pytest>=7", "PyYAML>=6", "pyflakes", "regex>=2023.8", "google-re2>=1.1; python_version>='3.10'",
        "hypothesis>=6.100",   # property tests of the v2 verifier (tests/test_verify_v2_property.py)
