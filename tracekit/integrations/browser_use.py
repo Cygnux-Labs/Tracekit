@@ -78,7 +78,7 @@ class _Actions(HeldCalls):
         secrets = _secrets(kw.get("sensitive_data"))
         args = _mask({**(params or {}), "page_url": await _page_url(kw.get("browser_session", a[0] if a else None))},
                      secrets)
-        # Browser Use fills a <secret>name</secret> placeholder, and a param that is exactly a secret's name
+        # Registry._replace_sensitive_data fills a <secret>name</secret> placeholder, and a param that is exactly a name
         typed = {n for s in _strings(args) for n in _PLACEHOLDER.findall(s) + [s]}
         # lean: a domain-scoped name gets the digest of its value on every domain; match page_url to the domain
         # patterns if one digest per call is needed

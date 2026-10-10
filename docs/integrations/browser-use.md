@@ -51,7 +51,8 @@ value when the action runs. The adapter never sends a value to the signer:
 
 The signer publishes only its HMAC commitment to the args, under a salt it holds for that record. An auditor who holds
 a value and gets the record's salt (`tracekit signer reveal --record SEQ`) recomputes the commitment and confirms what
-was typed; the record itself never contains the value.
+was typed; the record itself never contains the value. An approver's copy of the args (`approval_get`) shows each
+digest as `[REDACTED:typed_secret]`.
 
 ## Decisions
 

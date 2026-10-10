@@ -171,6 +171,15 @@ class BrowserUseContract(ac.Contract):
             {"index": 6, "text": "<secret>pw</secret>", "page_url": PAGE, "typed_secrets": {"pw": [_sha(PW)]}}])
         self.assert_bound(3)
 
+    def test_the_approver_never_sees_a_typed_secrets_digest(self):
+        self.d.secrets = SECRETS
+        aid = self.d.call("pay", {"to": "<secret>pw</secret>", "cents": 1500})["approval_id"]
+        self.assertEqual(self.client.approval_get({"approval_id": aid})["args"],
+                         {"to": "<secret>pw</secret>", "cents": 1500, "page_url": PAGE,
+                          "typed_secrets": {"pw": ["[REDACTED:typed_secret]"]}})
+        self.approve(aid)
+        self.assertEqual(self.d.resume()["ran"], ["pay"])
+
     def test_ask_is_refused_when_the_caller_cannot_wait_or_nobody_decides_in_time(self):
         self.d.kw["approval_wait_s"] = 0
         self.refused(self.d.call("pay", ac.PAY), "cannot wait")
@@ -238,13 +247,21 @@ class OnRealTools(unittest.TestCase):
         @tools.registry.action("Delete a path.")
         async def wipe(path: str):
             raise AssertionError("a denied action ran")
-        signer = FakeSigner(ac._rule)
-        trace_tools(tools, signer, signer.register_run({"request_id": "r1", "agent": {"name": "bu"}}))
+        fake = FakeSigner(ac._rule)
+        signer = Recording(fake)
+        trace_tools(tools, signer, fake.register_run({"request_id": "r1", "agent": {"name": "bu"}}))
+        model = tools.registry.create_action_model()
 
-        async def go():
-            return (await tools.registry.execute_action("echo", {"text": "hi"}),
-                    await tools.registry.execute_action("wipe", {"path": "/"}))
-        ok, denied = asyncio.run(go())
-        self.assertEqual(ok, "echo hi")
+        async def go():   # Tools.act, the path Agent.run takes
+            return [await tools.act(model(**{name: params}), browser_session=None, sensitive_data={"pw": PW, "user": USER})
+                    for name, params in (("echo", {"text": "<secret>pw</secret>"}), ("echo", {"text": "user"}),
+                                         ("wipe", {"path": "/"}))]
+        placeholder, bare, denied = asyncio.run(go())
+        self.assertEqual((placeholder.extracted_content, bare.extracted_content), (f"echo {PW}", f"echo {USER}"))
         self.assertIsInstance(denied, ActionResult)
         self.assertIn("R-WIPE", denied.error)
+        self.assertNotIn(PW, json.dumps(signer.sent))
+        self.assertEqual([json.loads(r)["args"] for m, r in signer.sent if m == "decide"], [
+            {"text": "<secret>pw</secret>", "page_url": "", "typed_secrets": {"pw": [_sha(PW)]}},
+            {"text": "user", "page_url": "", "typed_secrets": {"user": [_sha(USER)]}},
+            {"path": "/", "page_url": ""}])
