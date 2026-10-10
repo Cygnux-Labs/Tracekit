@@ -29,6 +29,13 @@ If a vulnerability is being actively exploited we may disclose sooner, and will 
 Until the first stable release ships, fixes land on `main` and in the next release; no older line is
 patched.
 
+## Verifying a release
+
+Every PyPI file, npm package and signer image a release publishes carries SLSA build provenance from this
+repository's release workflow, plus SBOMs and `SHA256SUMS`; the image is also cosign-signed.
+[docs/RELEASING.md](docs/RELEASING.md#verifying-a-release) shows how to check a download with
+`scripts/release/verify-release.sh`.
+
 ## Scope
 
 Tracekit proves what its capture path recorded and that the record has not changed since it was signed
