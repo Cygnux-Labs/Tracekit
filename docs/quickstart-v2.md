@@ -69,7 +69,7 @@ tracekit verify run.tkb --trust trust.json
 
 ```text
 Integrity: VERIFIED.
-Assurance: dev; records ed25519; checkpoint ed25519 (...); no witness cosignature; approvals: self
+Assurance: dev; records ed25519; checkpoint Ed25519 only (...); no witness cosignature; approvals: self
 ```
 
 The signer finalises a run a few seconds after it closes. A bundle exported before that verifies as

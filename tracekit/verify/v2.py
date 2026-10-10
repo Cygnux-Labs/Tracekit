@@ -2,7 +2,8 @@
 
 Trust comes only from the verifier's own pinned config (JSON):
 
-    {"logs": ["<log vkey>", ...],                         Ed25519 (0x01) log keys; the key name is the origin
+    {"logs": ["<log vkey>", ...],                         Ed25519 (0x01) log keys; the key name is the origin; and
+                                                          hybrid SLH-DSA (0xff) log keys (tracekit.format.checkpoint)
      "witnesses": [{"vkey": "<cosigner vkey>", "class": "public|customer|tracekit|operator"}, ...],
      "algs": ["ed25519"],                                 record signature algorithms accepted
      "witnesses_required": 0,                             pinned cosignatures a checkpoint must carry
@@ -10,8 +11,9 @@ Trust comes only from the verifier's own pinned config (JSON):
                                                           trusted_root and the signer's P-256 Rekor publishing key
      "monitors": [{"vkey": "<monitor vkey>", "class": "...", "max_age_s": 3600}]}   optional: `tracekit monitor` keys
 
-Integrity VERIFIED needs: a checkpoint note signed by the pinned log key of its origin (and cosigned by the required
-number of pinned witnesses); with `rekor` pinned, the checkpoint's Rekor anchor (rekor/, tsa/) when the bundle has one
+Integrity VERIFIED needs: a checkpoint note signed by the pinned log key of its origin, and by the origin's pinned
+hybrid SLH-DSA key when there is one (registry notes too), and cosigned by the required number of pinned witnesses;
+with `rekor` pinned, the checkpoint's Rekor anchor (rekor/, tsa/) when the bundle has one
 (tracekit.anchor.rekor2: an anchor that does not verify fails the bundle; without `rekor` it is ignored); every record
 signed with an allowed algorithm by a key that the log declared in a signer.epoch record before it and had not retired
 (key.retire) by then; schema-valid events; one run's chain, contiguous from run_seq 0 to a run.final record; the run's
@@ -19,6 +21,9 @@ first and last records and every key record included in the checkpointed tree. A
 to its head. The bundle's manifest is an index, never trusted.
 A record signed by a key after that key's key.retire fails `signatures`, naming the retired key (keys are valid by
 position only). A record after a run's run.final breaks the run chain.
+The assurance line names the algorithms each conclusion rests on (records; the checkpoint: "Ed25519 only" or
+"Ed25519 + SLH-DSA-SHA2-128s"; cosignatures; anchors) and the earliest independent anchor time (a cosignature or a
+TSA time of a witness or anchor not classed operator).
 Report lines (also in --json): tool calls by evidence tier (T1/T2/T3), records by args_source, the signer_isolation the
 signer recorded per run, the tool classes run.registered says fail open, and key assurance (asserted: the log declares
 its keys; this format has no key attestation).
@@ -381,7 +386,7 @@ def _run_set(rep, files, trust, origin, size, runs, included, check_record):
     lo, hi, reg_origin = rs["from"], rs["to"], registry.origin(origin, tsalt)
     span = f"registry {lo}..{hi}"
     # the registry notes are signed by the record log's own pinned key, under the registry origin
-    vkeys = [checkpoint.vkey(reg_origin, checkpoint.ED25519, checkpoint.parse_vkey(k)[3]) for k in trust["logs"]
+    vkeys = [checkpoint.vkey(reg_origin, *checkpoint.parse_vkey(k)[2:]) for k in trust["logs"]
              if checkpoint.parse_vkey(k)[0] == origin]
     roots = {}
     for n in sorted({lo, hi} - {0}):
@@ -501,7 +506,7 @@ def _anchor(rep, files, trust, note, origin, size):
     try:
         signed = []
         for k in trust["logs"]:
-            if checkpoint.parse_vkey(k)[0] == origin:
+            if checkpoint.parse_vkey(k)[0::2] == (origin, checkpoint.ED25519):
                 try:
                     signed.append(log_signed(note.decode("utf-8"), k).encode("utf-8"))
                 except ValueError:   # another pinned key of the origin
@@ -569,6 +574,9 @@ def _assurance(origin, cosigs, witnesses, trust, algs, self_approved=False, anch
     ones; witnessed: enough independent ones (a pinned Rekor anchor counts as one, unless classed operator);
     witnessed+monitored: witnessed, and a pinned monitor's (not classed operator) fresh report covers the checkpoint."""
     independent = [k for k, _ in cosigs if witnesses[k] != "operator"] + [a for a in anchors if a[1] != "operator"]
+    hybrid = any(checkpoint.parse_vkey(k)[0::2] == (origin, checkpoint.HYBRID) for k in trust["logs"])
+    times = [datetime.datetime.fromtimestamp(ts, datetime.timezone.utc) for k, ts in cosigs if witnesses[k] != "operator"]
+    times += [at for _, cls, at in anchors if cls != "operator"]
     level = ("dev" if self_approved else "witnessed" if len(independent) >= max(1, trust["witnesses_required"])
              else "local" if cosigs or anchors else "dev")
     if level == "witnessed" and any(cls != "operator" for _, cls, _ in monitored):
@@ -576,9 +584,12 @@ def _assurance(origin, cosigs, witnesses, trust, algs, self_approved=False, anch
     cosigned = ", ".join(f"{k.split('+')[0]} ({witnesses[k]}) at "
                         f"{datetime.datetime.fromtimestamp(ts, datetime.timezone.utc):%Y-%m-%dT%H:%M:%SZ}"
                         for k, ts in sorted(cosigs, key=lambda c: c[1]))
-    return (f"{level}; records {'+'.join(sorted(algs))}; checkpoint ed25519 ({origin})"
+    return (f"{level}; records {'+'.join(sorted(algs))}; checkpoint "
+            f"{'Ed25519 + SLH-DSA-SHA2-128s' if hybrid else 'Ed25519 only'} ({origin})"
             + (f"; cosigned ed25519 by {cosigned}" if cosigned else "; no witness cosignature")
-            + "".join(f"; anchored in Rekor {log} ({cls}) at {at:%Y-%m-%dT%H:%M:%SZ}" for log, cls, at in anchors)
+            + "".join(f"; anchored in Rekor {log} ({cls}) at {at:%Y-%m-%dT%H:%M:%SZ} (ECDSA P-256 entry, RFC 3161 time)"
+                      for log, cls, at in anchors)
+            + (f"; earliest independent anchor {min(times):%Y-%m-%dT%H:%M:%SZ}" if times else "")
             + "".join(f"; monitored by {name} ({cls}) at {at}" for name, cls, at in monitored)
             + ("; approvals: self" if self_approved else ""))
 
