@@ -214,6 +214,20 @@ def _dotenv(args):
     return isinstance(args, dict) and privacy.mentions_dotenv(*(args.get(k) for k in privacy.ACTION_FIELDS))
 
 
+_DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
+
+
+def _shown(args, dotenv):
+    """The approver's copy of parsed `args`: privacy.redact, and each digest under `typed_secrets` (a secret the
+    Browser Use adapter typed) hidden, since an approver could test guesses of a weak secret against it."""
+    shown = privacy.redact(args, dotenv)[0]
+    if isinstance(shown, dict) and isinstance(shown.get("typed_secrets"), dict):
+        shown = {**shown, "typed_secrets": {n: [d if not (isinstance(d, str) and _DIGEST.fullmatch(d))
+                                                else "[REDACTED:typed_secret]" for d in v] if isinstance(v, list) else v
+                                            for n, v in shown["typed_secrets"].items()}}
+    return shown
+
+
 def _write_new(path, data):
     """Create `path` (0600) holding all of `data`, or leave nothing there; FileExistsError when it exists."""
     tmp = f"{path}.{secrets.token_hex(8)}.tmp"
@@ -1090,7 +1104,7 @@ class SignerService:
             if any(r.get("approval") == {"executor": "t2"} for _, r, *_ in self.policy.rules
                    if r["id"] in call["rule_ids"]):
                 data["executor"] = "t2"
-            shown = privacy.redact(args, call["dotenv"])[0]   # redact the parsed args, so a raw copy stays valid JSON
+            shown = _shown(args, call["dotenv"])   # redact the parsed args, so a raw copy stays valid JSON
             if p["args_source"] == "raw":
                 shown = p["args"] if shown == args else canonical(shown).decode()
             copy = {"args_source": p["args_source"], "args": shown}
