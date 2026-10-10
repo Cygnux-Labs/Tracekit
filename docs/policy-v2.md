@@ -190,7 +190,7 @@ whose values are untrusted-only, as `{field, kind, source: {run_seq, tool, tool_
 | `server-comms.yaml` | ask | `TK-P001` an email recipient (`to`, `cc`, `bcc`, `recipients`) that is untrusted-only · `TK-P002` a payee or account (`payee`, `to`, `recipient`, `destination`, `account`, `account_number`, `iban`) that is untrusted-only |
 | `server-net.yaml`, `browser.yaml` | ask | `TK-P003` data sent (a method other than GET or HEAD, or a body; in a browser, typing or an upload) to a host that is untrusted-only |
 
-Limits: it matches values verbatim, and only what came in through untrusted tools and observed inputs: a page the
+Limits ([all of Tracekit's](limits.md)): it matches values verbatim, and only what came in through untrusted tools and observed inputs: a page the
 agent fetches with a tool the policy doesn't list as untrusted (`curl` in a shell) is not indexed, so list such tools
 or observe the content. A value the model paraphrases, splits or re-encodes (spelled out, base64, a URL
 shortener) reads as a new value and gets past it. It is a tripwire on the commonest way injected instructions act; to

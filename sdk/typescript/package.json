@@ -24,7 +24,6 @@
   },
   "optionalDependencies": {
     "@cygnux/tracekit-signer-darwin-arm64": "1.1.0-dev.0",
-    "@cygnux/tracekit-signer-darwin-x64": "1.1.0-dev.0",
     "@cygnux/tracekit-signer-linux-x64-gnu": "1.1.0-dev.0",
     "@cygnux/tracekit-signer-linux-arm64-gnu": "1.1.0-dev.0",
     "@cygnux/tracekit-signer-win32-x64": "1.1.0-dev.0"
