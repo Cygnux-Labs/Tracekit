@@ -1,0 +1,28 @@
+# tracekit signer config for the container image (deploy/docker/Dockerfile); the image ships this file as
+# /etc/tracekit/signer.yaml. Mount your own over it. Every key: the docstring of tracekit/signer/service.py.
+
+# --- sidecar (active): the agent's container shares only /run/tracekit-signer and runs as another uid ---
+data_dir: /var/lib/tracekit-signer           # keys and log: a volume only this container mounts
+socket: /run/tracekit-signer/signer.sock     # the agent sets TRACEKIT_SIGNER to this path
+socket_mode: "0666"                          # the agent's uid connects; its identity is its peer uid
+durability: ack-on-fsync
+tenants: {"uid:1000": default}               # agent peer uid -> tenant
+metrics: {listen: 127.0.0.1:9464}            # Prometheus /metrics; the image HEALTHCHECK reads it
+# witnesses:                                 # docs/witnesses.md
+#   - {url: https://witness.example.org, vkey: "witness.example.org+1234abcd+BA...", class: customer}
+
+# --- central: replace the sidecar block above with this; agents reach it over HTTPS ---
+# data_dir: /var/lib/tracekit-signer
+# durability: ack-on-fsync
+# http:
+#   listen: 0.0.0.0:8443
+#   cert: /etc/tracekit/tls/tls.crt
+#   key: /etc/tracekit/tls/tls.key
+#   authenticators: [k8s_sa]                 # Kubernetes service-account tokens, checked by TokenReview
+#   k8s_sa: {audience: tracekit-signer, tokenreview: https://kubernetes.default.svc,
+#            token_file: /var/run/secrets/kubernetes.io/serviceaccount/token,
+#            ca: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt}
+#   # or mTLS with SPIFFE ids: authenticators: [mtls] and client_ca: {example.org: /etc/tracekit/tls/client-ca.pem}
+# tenants: {"k8s_sa:system:serviceaccount:acme:*": acme}
+# authorize: {"k8s_sa:system:serviceaccount:acme:*": [register_run, decide, complete, close_run]}
+# metrics: {listen: 0.0.0.0:9464, allow_remote: true}   # scraped by Prometheus, for the HPA
