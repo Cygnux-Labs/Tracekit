@@ -27,6 +27,8 @@
     "negative/run-rebuilt.tkb": "75bab2cd30d7f0e58a507c00bee5d7d5e69030e1e335c19ff6205135413319da",
     "negative/run-record-after-final.tkb": "88cc694ccddb54fa42b2881c67deec2d1f86e6956acf2b35eb86b596aae71d56",
     "negative/run-second-run.tkb": "8f7398817444d196ce37918464664aceccf2491ddbe451b62fd9c8a51af7beb5",
+    "negative/run-set-foreign-run.tkb": "26ecca52a68cd63bfeec460ae2e2671cd6fc70bed2ae4ff37278989a743f497a",
+    "negative/run-set-registry-uncosigned.tkb": "66838d8a2c2bb6e8ee3ad1d70d8cd21d6c415bd6a5310ae14b3a6b2e91c3d1e2",
     "negative/trust.json": "090951d638b56562abb560215bbf164f4d6cc7630227b97d7cf036050c012883",
     "negative/witness-none.tkb": "8148aa341b08808513350e71eedb40d14d8e0b5d89455fe7e8f090d3a099b20d",
     "negative/witness-unpinned-only.tkb": "0efd3ea1b5e73b45b054ad74ff3b96c474b38a8947217706dc49523bed5d0117",
@@ -351,6 +353,24 @@
         "exit_code": 1,
         "integrity": "FAILED",
         "first_failure": "witness quorum"
+      }
+    },
+    {
+      "name": "run-set whose registry note no witness cosigned",
+      "bundle": "run-set-registry-uncosigned.tkb",
+      "expected": {
+        "exit_code": 1,
+        "integrity": "FAILED",
+        "first_failure": "run-set"
+      }
+    },
+    {
+      "name": "run-set bundled with a run of another tenant",
+      "bundle": "run-set-foreign-run.tkb",
+      "expected": {
+        "exit_code": 1,
+        "integrity": "FAILED",
+        "first_failure": "run-set"
       }
     }
   ]

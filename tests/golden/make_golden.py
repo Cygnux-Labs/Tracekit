@@ -237,7 +237,8 @@ def negative(out):
     import test_bundle_v2 as tb
     from factories import rewrite_bundle
     from tracekit.bundle_v2 import export
-    from tracekit.format import checkpoint
+    from tracekit.format import checkpoint, registry
+    from tracekit.storage.base import registry_tree
     d = tempfile.mkdtemp()
     cases, n = [], [0]
 
@@ -269,6 +270,26 @@ def negative(out):
             if edit:
                 edit(files, manifest)
         rewrite_bundle(good, os.path.join(out, file), apply)
+        cases.append((name, file))
+
+    def run_set(name, file, foreign=False, witnesses=()):
+        """A run-set of acme's run.registered leaves, its registry note cosigned by `witnesses`; `foreign`: the registry
+        stored under tenant beta, so the export bundles beta's run with it."""
+        lg = log(close=False)
+        tsalt, tenant = registry.tenant_salt(b"\x01" * 32, "acme"), "beta" if foreign else "acme"
+        if foreign:
+            lg.add("run.registered", {"agent": {"name": "agent"}, "identity": {"scheme": "token", "subject": "svc",
+                                                                                 "attested": True}}, "run-c", tenant="beta")
+        for r in lg.store.iter_range(0, lg.store.tree.size):
+            if (r["event"]["type"], r["event"]["tenant"]) == ("run.registered", "acme"):
+                lg.store.registry_append(tenant, registry.leaf(r, tsalt))
+        reg, origin = lg.store.registry_merkle(tenant), registry.origin(tb.ORIGIN, tsalt)
+        text = checkpoint.body(origin, reg.size, reg.root_at(reg.size))
+        lg.store.checkpoint_put(reg.size, text + "\n" + checkpoint.sign(text, origin, tb.LOG_SECRET)
+                                + "".join(tb.cosign(text, n, s, 1760000000) for n, s in witnesses), registry_tree(tenant))
+        export(lg.store, tenant, "run-c" if foreign else None, lg.note(), os.path.join(out, file),
+               run_set=(0, reg.size), tenant_salt=tsalt)
+        lg.store.close()
         cases.append((name, file))
 
     def raw(name, file, entries):
@@ -398,6 +419,9 @@ def negative(out):
         signed("cosigned only by an unpinned witness", "witness-unpinned-only.tkb", log(),
                witnesses=(("rogue.example.org/w", hashlib.sha256(b"rogue").digest()),))
         signed("no cosignature", "witness-none.tkb", log(), witnesses=())
+        run_set("run-set whose registry note no witness cosigned", "run-set-registry-uncosigned.tkb")
+        run_set("run-set bundled with a run of another tenant", "run-set-foreign-run.tkb", foreign=True,
+                witnesses=((tb.WITNESS, tb.WIT_SECRET),))
         trust = {"logs": [checkpoint.vkey(tb.ORIGIN, checkpoint.ED25519, tb.pub(tb.LOG_SECRET))],
                  "witnesses": [{"vkey": checkpoint.vkey(tb.WITNESS, checkpoint.COSIGNATURE, tb.pub(tb.WIT_SECRET)),
                                 "class": "customer"}], "algs": ["ed25519"], "witnesses_required": 1}
