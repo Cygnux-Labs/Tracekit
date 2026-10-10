@@ -17,6 +17,38 @@ def registry_tree(tenant):
     return "registry-" + hashlib.sha256(tenant.encode("utf-8")).hexdigest()[:32]
 
 
+def check_records(lines, name, verify=None):
+    """The problems of a record log given as its records' JSON texts in seq order (line n holds seq n - 1): strict JSON,
+    record hash, the seq/prev_hash chain, each run's chain and, with `verify(record)` (raises ValueError), the
+    signatures."""
+    from tracekit.format.canon import event_hash, loads_strict   # not at import: v1 verification needs the stdlib only
+    problems, prev, runs = [], ZERO_HASH, {}
+    for n, line in enumerate(lines, 1):
+        where = f"{name} line {n}"
+        try:
+            r = loads_strict(line)
+            e = r["event"]
+            intact = r["hash"] == event_hash(e)
+            key = (e.get("tenant"), e.get("run_id"))
+        except (ValueError, KeyError, TypeError, AttributeError) as x:
+            problems.append(f"{where}: unreadable ({x})")
+            continue
+        if not intact:
+            problems.append(f"{where}: hash does not match the event")
+        if e.get("seq") != n - 1 or e.get("prev_hash") != prev:
+            problems.append(f"{where}: breaks the log chain")
+        count, head = runs.get(key, (0, ZERO_HASH))
+        if e.get("run_seq") != count or e.get("run_prev_hash") != head:
+            problems.append(f"{where}: breaks the chain of run {key[1]!r}")
+        if verify:
+            try:
+                verify(r)
+            except ValueError as x:
+                problems.append(f"{where}: {x}")
+        prev, runs[key] = r["hash"], (count + 1, r["hash"])
+    return problems
+
+
 class StorageUnavailable(Exception):
     """The disk refused a write (EIO, ENOSPC); the signer answers `unavailable` until it is reopened."""
 
