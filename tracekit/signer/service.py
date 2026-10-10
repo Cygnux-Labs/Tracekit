@@ -402,12 +402,11 @@ class SignerService:
             self.vkey = checkpoint.vkey(self.origin, checkpoint.ED25519, self._log_key.public)
             latest = storage.checkpoint_latest()
             if latest:   # the log key is stable: another key (a backend switch, a replaced log.key) never takes over
-                origin = latest[1].split("\n", 1)[0]
-                try:
-                    checkpoint.open_note(latest[1], [checkpoint.vkey(origin, checkpoint.ED25519, self._log_key.public)])
-                except checkpoint.NoteError:
+                origin = latest[1].split("\n", 1)[0]   # signature checks of the note are the rollback check's job
+                if (origin, checkpoint.key_id(origin, checkpoint.ED25519, self._log_key.public)) \
+                        not in checkpoint.signers(latest[1]):
                     raise ValueError("the configured log key did not sign this log's notes: a log keeps its log key, "
-                                     "so switch backends only to a key with the same public key") from None
+                                     "so switch backends only to a key with the same public key")
             d = files.open_dir(data_dir)
             try:
                 files.write(d, "log.vkey", (self.vkey + "\n").encode("ascii"), 0o644)
