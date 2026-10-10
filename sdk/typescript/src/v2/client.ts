@@ -21,7 +21,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { execFile } from "node:child_process";
 import { createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import { lstatSync, readFileSync, statSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, statSync } from "node:fs";
 import { Agent, request } from "node:https";
 import { createConnection, type Socket } from "node:net";
 import { homedir } from "node:os";
@@ -30,7 +30,7 @@ import { argsDigest } from "./jcs.js";
 import { REQUESTS, RPC_VERSION } from "./rpc_schema.js";
 import { validate } from "./validate.js";
 
-export { RPC_VERSION, validate };
+export { RPC_VERSION };
 export { argsDigest, canonicalize, strictParse, StrictJSONError } from "./jcs.js";
 
 export const SYSTEM_CONFIG = "/etc/tracekit/client.json";
@@ -220,6 +220,12 @@ export function runtimeDir(env: NodeJS.ProcessEnv = process.env): string {
     return Buffer.byteLength(join(d, "signer.sock")) > 103 ? `/tmp/tk-${process.getuid!()}` : d;   // macOS: 104-byte socket paths
   }
   return env.XDG_RUNTIME_DIR ? join(env.XDG_RUNTIME_DIR, "tracekit") : `/tmp/tracekit-${process.getuid!()}`;
+}
+
+/** The runtime dir of the same-user dev signer; refused in system mode, as tracekit/sdk/autospawn.py `ensure` does. */
+export function devRuntimeDir(system = SYSTEM_CONFIG): string {
+  if (existsSync(system)) throw new SignerUnavailable("dev auto-spawn is off when TRACEKIT_SIGNER is set or in system mode");
+  return runtimeDir();
 }
 
 /** [path, token] of the dev signer in runtime dir `d`; SignerUnavailable while there is none or the dir isn't private. */
@@ -429,7 +435,7 @@ export class Client {
     if (this.signer) {
       c = await connect(this.signer);
     } else {
-      const d = runtimeDir();
+      const d = devRuntimeDir();
       try {
         c = await connect(...devAddress(d));
       } catch (e) {

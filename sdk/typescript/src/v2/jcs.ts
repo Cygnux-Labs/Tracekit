@@ -99,7 +99,7 @@ export function canonicalize(v: unknown): string {
   throw new StrictJSONError("syntax", `${typeof v} is not JSON`);
 }
 
-export function sha256(text: string): string {
+function sha256(text: string): string {
   return "sha256:" + createHash("sha256").update(text, "utf8").digest("hex");
 }
 

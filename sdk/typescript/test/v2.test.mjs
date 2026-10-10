@@ -9,9 +9,10 @@ import { createServer } from "node:net";
 import { join, resolve } from "node:path";
 import {
   Client, Incompatible, RPCError, RPC_VERSION, SignerUnavailable, StrictJSONError, argsDigest, canonicalize, currentRun,
-  defaultSigner, strictParse, systemConfig, withRun,
+  defaultSigner, devRuntimeDir, strictParse, systemConfig, withRun,
 } from "../dist/v2/client.js";
 import { REQUESTS } from "../dist/v2/rpc_schema.js";
+import { validate } from "../dist/v2/validate.js";
 
 const ROOT = resolve(import.meta.dirname, "../../..");
 const PY = process.env.TRACEKIT_PYTHON ?? "python3";
@@ -291,4 +292,11 @@ test("system mode: its signer wins and another TRACEKIT_SIGNER is refused", (t) 
   assert.equal(systemConfig(cfg), null);
   writeFileSync(cfg, JSON.stringify(system));
   if (process.getuid?.() !== 0) assert.throws(() => systemConfig(cfg), /owned by root/);   // the agent's own file is not trusted
+  assert.throws(() => devRuntimeDir(cfg), /system mode/);   // a config without `signer` still rules out a same-user dev signer
+  assert.equal(typeof devRuntimeDir(join(tmp(t), "absent.json")), "string");
+});
+
+test("the validator refuses schema keywords it does not implement", () => {
+  assert.deepEqual(validate({ type: "string" }, "x"), []);
+  assert.throws(() => validate({ allOf: [] }, "x"), /unsupported schema keywords at \$: allOf/);
 });
