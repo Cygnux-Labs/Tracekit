@@ -45,10 +45,12 @@ Coverage: a run.final that carries `coverage` (the capture layers that reported,
 by kind) gives a `coverage` line; unreconciled calls make it a warning, so `--strict` exits 3 on them.
 
 Run-set (a bundle with registry/run-set.json): the tenant's registry notes, signed by the pinned log key under the
-origin `<origin>/registry/<id of the bundle's tenant salt>`, and consistent with each other; every leaf of the range
-present and in the registry tree; each pointing to a record of the checkpointed tree with that hash, seq, type and
-H(tenant_salt ‖ run_id); one run.final per run; every run final in the range in the bundle from its run.registered (when
-in the range) to that run.final; every bundled run but the selected one the target of a leaf in the range; a range ending
+origin `<origin>/registry/<id of the bundle's tenant salt>`, cosigned by the required number of pinned witnesses (their
+cosignatures cap the assurance level by the same rule as the checkpoint's), and consistent with each other; every
+leaf of the range present and in the registry tree; each pointing to a record of the checkpointed tree with that hash,
+seq, type and H(tenant_salt ‖ run_id); one run.final per run; every run final in the range in the bundle from its
+run.registered (when in the range) to that run.final; every bundled run but the selected one the target of a leaf in
+the range, and every bundled run of the tenant the range's run leaves name (the run-set line names it); a range ending
 above size 0. Anything else is `run-set: INCOMPLETE` (FAILED). Tenant-level gaps in the range (signer capture.gap
 and trace.tamper leaves: witness failures, clock skew, rollbacks) are counted by kind on the run-set line and warned. Every key.retire leaf in the range must be among the key
 records, so a withheld retirement fails `keys`; without a range from size 0 that reaches every bundled record, that is
@@ -364,10 +366,10 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
                              "continue the run")
         if not (included(records[0]) and included(records[-1])):
             outside.append(f"run {str(head.get('run_id'))[:200]!r}")
-    retired, proven_to = [], -1
+    retired, proven_to, reg_cosigs = [], -1, []
     if run_set:
-        retired, proven_to = _run_set(rep, files, trust, origin, size, runs, included, lambda r, p: check_record(
-            r, keys_at(r["event"]["seq"]), p))
+        retired, proven_to, reg_cosigs = _run_set(rep, files, trust, witnesses, origin, size, runs, included,
+                                                  lambda r, p: check_record(r, keys_at(r["event"]["seq"]), p))
         listed = {(r["event"]["seq"], r["hash"]) for r in key_records}
         key_problems.extend(f"seq {seq}: key.retire withheld (the registry log has it)"
                             for seq, h in retired if (seq, h) not in listed)
@@ -467,7 +469,7 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
                                      f"{', '.join(sorted(set(issued.values())))}" if issued else
               "asserted: the log declares its record keys; none is attested")
     rep.assurance = (_assurance(origin, cosigs, witnesses, trust, {r["alg"] for r in every + key_records}, self_approved,
-                                anchors, monitored)
+                                anchors, monitored, reg_cosigs)
                      + ("; key retirements not proven complete" if proven_to < relied else ""))
     glass = [r["event"] for r in every if r["event"].get("type") == "approval"
              and r["event"]["data"].get("break_glass") is True]
@@ -478,10 +480,10 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
                   warn=True)
 
 
-def _run_set(rep, files, trust, origin, size, runs, included, check_record):
+def _run_set(rep, files, trust, witnesses, origin, size, runs, included, check_record):
     """The run-set line (COMPLETE or INCOMPLETE) and the log tail line. Returns the (seq, hash) of every key.retire
-    the registry range points to, and the highest seq the range points to when it starts at registry size 0 (else -1):
-    every key.retire up to there is in the range."""
+    the registry range points to, the highest seq the range points to when it starts at registry size 0 (else -1):
+    every key.retire up to there is in the range, and the pinned cosignatures of each registry note."""
     rs, problems = loads_strict(files["registry/run-set.json"]), []
     tsalt = base64.b64decode(rs["tenant_salt"], validate=True)
     lo, hi, reg_origin = rs["from"], rs["to"], registry.origin(origin, tsalt)
@@ -489,17 +491,21 @@ def _run_set(rep, files, trust, origin, size, runs, included, check_record):
     # the registry notes are signed by the record log's own pinned key, under the registry origin
     vkeys = [checkpoint.vkey(reg_origin, *checkpoint.parse_vkey(k)[2:]) for k in trust["logs"]
              if checkpoint.parse_vkey(k)[0] == origin]
-    roots = {}
+    roots, reg_cosigs = {}, []
     for n in sorted({lo, hi} - {0}):
         try:
-            _, n2, roots[n], _ = checkpoint.open_note(files[f"checkpoints/registry-{n}.note"], vkeys)
+            _, n2, roots[n], c = checkpoint.open_note(files[f"checkpoints/registry-{n}.note"], vkeys, list(witnesses))
+            reg_cosigs.append(c)
+            if len(c) < trust["witnesses_required"]:
+                problems.append(f"registry checkpoint at size {n}: {len(c)} pinned cosignature(s), "
+                                f"{trust['witnesses_required']} required")
         except (checkpoint.NoteError, KeyError) as e:
             n2 = f"unusable ({type(e).__name__}: {e})"
         if n2 != n:
             problems.append(f"registry checkpoint at size {n}: {n2}")
     if problems or not 0 <= lo <= hi or hi == 0:
         rep.check("run-set", False, f"INCOMPLETE, {span}", problems or [f"bad registry range {lo}..{hi}"])
-        return [], -1
+        return [], -1, reg_cosigs
     if 0 < lo < hi and not verify_consistency(lo, hi, roots[lo], roots[hi], [
             base64.b64decode(p, validate=True) for p in rs["consistency"]]):
         problems.append(f"registry checkpoint {lo} is not a prefix of {hi}")
@@ -543,21 +549,24 @@ def _run_set(rep, files, trust, origin, size, runs, included, check_record):
         if (not recs or recs[-1]["hash"] != final["hash"]
                 or run_id in registered and recs[0]["hash"] != registered[run_id]["hash"]):
             problems.append(f"run {run_id[:200]!r} is final in the range but its records are not in the bundle")
+    if any(rs[0]["event"].get("tenant") != tenant for rs in runs.values()):
+        problems.append("a run in the bundle is not of the run-set's tenant")
     if len(set(runs) - targets) > 1:
         problems.append(f"{len(set(runs) - targets)} runs in the bundle, but only the selected run may be in no leaf "
                         "of the range")
     if closed and size > closed["data"]["final_seq"] + 1:
         problems.append(f"records after log.closed at seq {closed['seq']}")
     counted = ", ".join(f"{k} {n}" for k, n in sorted(gaps.items()))
-    rep.check("run-set", not problems, f"COMPLETE, {span} ({len(registered)} runs registered, {len(finals)} final, "
-                                       f"{len(set(registered) - set(finals))} open"
+    named = "" if tenant is None else f" of tenant {tenant[:64]!r}"
+    rep.check("run-set", not problems, f"COMPLETE, {span}{named} ({len(registered)} runs registered, {len(finals)} "
+                                       f"final, {len(set(registered) - set(finals))} open"
                                        + (f"; tenant-level gaps: {counted}" if gaps else "") + ")" if not problems else
               f"INCOMPLETE, {span}", problems)
     if gaps:
         rep.check("tenant-level gaps", False, f"{sum(gaps.values())} in the range: {counted}", warn=True)
     rep.check("log tail", bool(closed), f"none: log.closed at seq {closed['seq']} is the last record" if closed else
               f"records after tree size {size} are unproven (no log.closed in the range)", warn=True)
-    return retired, top if lo == 0 else -1
+    return retired, top if lo == 0 else -1, reg_cosigs
 
 
 def _bridge(rep, key_records, v1_ledger, v1_key):
@@ -670,16 +679,28 @@ def _monitor(rep, trust, paths, origin, size, root):
     return out
 
 
-def _assurance(origin, cosigs, witnesses, trust, algs, self_approved=False, anchors=(), monitored=()):
+def _level(cosigs, witnesses, trust, anchors=()):
+    independent = [k for k, _ in cosigs if witnesses[k] != "operator"] + [a for a in anchors if a[1] != "operator"]
+    return ("witnessed" if len(independent) >= max(1, trust["witnesses_required"])
+            else "local" if cosigs or anchors else "dev")
+
+
+def _assurance(origin, cosigs, witnesses, trust, algs, self_approved=False, anchors=(), monitored=(),
+               registry_notes=()):
     """dev: no pinned witness cosigned or anchor verified, or a self-approval in the run; local: only operator-run
     ones; witnessed: enough independent ones (a pinned Rekor anchor counts as one, unless classed operator);
-    witnessed+monitored: witnessed, and a pinned monitor's (not classed operator) fresh report covers the checkpoint."""
-    independent = [k for k, _ in cosigs if witnesses[k] != "operator"] + [a for a in anchors if a[1] != "operator"]
+    witnessed+monitored: witnessed, and a pinned monitor's (not classed operator) fresh report covers the checkpoint.
+    A run-set's registry notes (`registry_notes`: the cosignatures of each) cap the level by the same rule."""
     hybrid = any(checkpoint.parse_vkey(k)[0::2] == (origin, checkpoint.HYBRID) for k in trust["logs"])
     times = [datetime.datetime.fromtimestamp(ts, datetime.timezone.utc) for k, ts in cosigs if witnesses[k] != "operator"]
     times += [at for _, cls, at in anchors if cls != "operator"]
-    level = ("dev" if self_approved else "witnessed" if len(independent) >= max(1, trust["witnesses_required"])
-             else "local" if cosigs or anchors else "dev")
+    order = ("dev", "local", "witnessed")
+    level = "dev" if self_approved else _level(cosigs, witnesses, trust, anchors)
+    capped = min((_level(c, witnesses, trust) for c in registry_notes), key=order.index, default="witnessed")
+    if order.index(capped) < order.index(level):
+        level = capped
+    else:
+        capped = None
     if level == "witnessed" and any(cls != "operator" for _, cls, _ in monitored):
         level = "witnessed+monitored"
     cosigned = ", ".join(f"{k.split('+')[0]} ({witnesses[k]}) at "
@@ -692,6 +713,7 @@ def _assurance(origin, cosigs, witnesses, trust, algs, self_approved=False, anch
                       for log, cls, at in anchors)
             + (f"; earliest independent anchor {min(times):%Y-%m-%dT%H:%M:%SZ}" if times else "")
             + "".join(f"; monitored by {name} ({cls}) at {at}" for name, cls, at in monitored)
+            + (f"; capped by the run-set's registry notes ({capped})" if capped else "")
             + ("; approvals: self" if self_approved else ""))
 
 

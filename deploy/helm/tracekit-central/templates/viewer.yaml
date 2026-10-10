@@ -38,6 +38,7 @@ spec:
             runAsUser: {{ int $.Values.signer.uid }}
             runAsGroup: {{ int $.Values.signer.uid }}
             {{- include "tc.hardened" $ | nindent 12 }}
+          resources: {{- toYaml $.Values.viewer.resources | nindent 12 }}
           ports: [{name: view, containerPort: 7778}]
           volumeMounts:
             - {name: tmp, mountPath: /tmp}

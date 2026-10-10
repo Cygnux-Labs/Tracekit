@@ -18,22 +18,23 @@ signer.yaml:
 
 Every request is authenticated again (no session state): the authenticators are asked in order and the first that
 recognises its credential decides. Failed authentications are limited per source address and in total
-(FAILED_PER_ADDR, FAILED_TOTAL: token buckets in a fixed-size LRU). Past an address's limit its requests are refused
-without looking at their credentials; past the total limit failures are refused as over it, while a valid credential
-still gets in, so no one can lock out every client. Refusals carry only the error, never log state. Bodies over
-MAX_LINE are refused; reads time out like the other transports; the connection is kept alive between requests. RPC
-refusals are answered with status 200 and the error frame.
+(FAILED_PER_ADDR, FAILED_TOTAL: token buckets in a fixed-size LRU). Past either limit failures are refused as over it,
+while a valid credential still gets in, so clients behind one address are not locked out by another's failures; past
+an address's limit only the credentials checked locally (a client certificate, a token) are looked at, never one that
+needs another service (a TokenReview, an OIDC issuer's keys). Refusals carry only the error, never log state. Bodies
+over MAX_LINE are refused; reads time out like the other transports; connections are served by tracekit.netserver
+(bounded threads, overall and per address; each request must arrive within its deadline, and so must the next one on a
+kept-alive connection, while answering one, such as an approval_wait, has none). RPC refusals are answered with status
+200 and the error frame.
 
 With `otlp` (the signer's `otlp` config section), `POST /v1/traces` takes OTLP/HTTP (protobuf or JSON, bodies up to
 otlp_wire.MAX_BODY) from the same authenticators: the caller is authenticated before its body is read, and answered
 401 without a credential this signer accepts, 429 past the failed-authentication limit and 403 without the otlp_import
 grant.
 """
-import contextlib
 import ipaddress
 import json
 import os
-import socketserver
 import ssl
 from http.server import BaseHTTPRequestHandler
 
@@ -41,6 +42,7 @@ from tracekit.identity.k8s_sa import K8sSaAuthenticator
 from tracekit.identity.mtls import MtlsAuthenticator
 from tracekit.identity.oidc import OidcAuthenticator
 from tracekit.identity.token import BearerToken, TokenStore
+from tracekit.netserver import Server
 from tracekit.otlp_wire import MAX_BODY as OTLP_MAX_BODY
 from tracekit.signer.quotas import MAX_LINE, Limits, Quotas
 from tracekit.signer.rpc_schema import RPCError
@@ -53,6 +55,9 @@ KEYS = {"listen", "cert", "key", "client_ca", "authenticators", "k8s_sa", "oidc"
 AUTHENTICATORS = {"k8s_sa", "mtls", "oidc", "token"}
 FAILED_PER_ADDR = Limits(events_per_s=1, burst=20, buckets=4096)   # failed authentications per source address
 FAILED_TOTAL = Limits(events_per_s=50, burst=500, buckets=1)
+LOCAL = (MtlsAuthenticator, TokenStore, BearerToken)   # checked without asking another service
+# lean: fixed connection limits; an http.max_connections setting once a deployment needs more behind one address
+MAX_THREADS, MAX_PER_IP = 1024, 256
 
 
 def configure(cfg, oidc=None):
@@ -136,6 +141,10 @@ class _Handler(BaseHTTPRequestHandler):
         self.timeout = self.server.read_timeout
         super().setup()
 
+    def handle_one_request(self):
+        self.server.restart_deadline()
+        super().handle_one_request()
+
     def do_POST(self):
         otlp = self.path == OTLP_PATH and self.server.otlp
         if self.path != PATH and not otlp:
@@ -160,6 +169,7 @@ class _Handler(BaseHTTPRequestHandler):
         if len(body) < int(n):
             self.close_connection = True
             return
+        self.server.stop_deadline()   # the request is in; answering it may wait (approval_wait)
         if otlp:
             try:
                 return self._send(*otlp(identity, body, self.headers.get("Content-Type"),
@@ -192,12 +202,7 @@ class _Handler(BaseHTTPRequestHandler):
         pass
 
 
-class HttpServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
-    # lean: one thread per connection, and the read timeout is per recv, not per request; a bounded pool and a request
-    # deadline when the signer service needs a connection cap
-    daemon_threads = True
-    allow_reuse_address = True
-
+class HttpServer(Server):
     def __init__(self, address, authenticators, tls, handle_frame, read_timeout=READ_TIMEOUT_S, otlp=None,
                  handler=_Handler, on_auth_failure=lambda: None, failed=(FAILED_PER_ADDR, FAILED_TOTAL)):
         """`otlp(identity, body, content type, content encoding)` -> (status, headers, body) answers POST /v1/traces;
@@ -206,36 +211,27 @@ class HttpServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
         self.authenticators, self.tls, self.handle_frame, self.read_timeout = authenticators, tls, handle_frame, read_timeout
         self.otlp, self.on_auth_failure = otlp, on_auth_failure
         self.failed = [Quotas(lim) for lim in failed]
-        super().__init__(address, handler)
-
-    def finish_request(self, request, client_address):
-        """In the connection's thread: the TLS handshake (under the read timeout), then the requests."""
-        request.settimeout(self.read_timeout)
-        if self.tls is None:
-            return super().finish_request(request, client_address)
-        try:
-            conn = self.tls.wrap_socket(request, server_side=True)
-        except OSError:   # the read timeout, not TLS, or a certificate the client CAs don't vouch for
-            return
-        try:
-            super().finish_request(conn, client_address)
-        finally:
-            conn.close()
+        super().__init__(address, handler, tls, read_timeout, MAX_THREADS, max_per_ip=MAX_PER_IP)
 
     def authenticate(self, conn, frame):
         per_addr, total = self.failed
         addr = conn.client_address[0]
-        per_addr.take(addr, "too many failed authentications", spend=0)
+        try:
+            per_addr.take(addr, "", spend=0)
+            over = False
+        except RPCError:
+            over = True
         try:
             for a in self.authenticators:
+                if over and not isinstance(a, LOCAL):   # past the address's limit nothing is sent to another service
+                    continue
                 identity = a.authenticate(conn, frame)
                 if identity is not None:
                     return identity
             raise RPCError("unauthenticated", "no credential this signer accepts")
         except RPCError as e:
             if e.code == "unauthenticated":
+                per_addr.take(addr, "too many failed authentications")
                 self.on_auth_failure()
-                with contextlib.suppress(RPCError):   # emptied by a concurrent failure since the check
-                    per_addr.take(addr, "")
                 total.take(None, "too many failed authentications")
             raise

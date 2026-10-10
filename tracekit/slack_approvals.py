@@ -30,10 +30,11 @@ import threading
 import time
 import urllib.parse
 import urllib.request
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
 
 from tracekit import yamlmini
 from tracekit.client import no_redirect_opener
+from tracekit.netserver import Server
 from tracekit.signer.metrics import _loopback
 from tracekit.signer.rpc_schema import RPCError
 
@@ -202,8 +203,6 @@ class Bridge:
 
 def make_handler(bridge):
     class Handler(BaseHTTPRequestHandler):
-        timeout = TIMEOUT_S   # a slow client is cut off
-
         def do_POST(self):
             if self.path != PATH:
                 return self.answer(404)
@@ -241,12 +240,11 @@ def serve(cfg, signer):
     """A started bridge: (the bound HTTP server, serving; the Bridge). Stop with shutdown() and server_close()."""
     bridge = Bridge(cfg, signer)
     host, _, port = str(cfg["listen"]).rpartition(":")
-    srv = ThreadingHTTPServer((host.strip("[]"), int(port)), make_handler(bridge))
-    srv.daemon_threads = True
+    ctx = None
     if cfg.get("tls"):
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         ctx.load_cert_chain(cfg["tls"]["cert"], cfg["tls"]["key"])
-        srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
+    srv = Server((host.strip("[]"), int(port)), make_handler(bridge), ctx)
 
     def loop():
         while True:

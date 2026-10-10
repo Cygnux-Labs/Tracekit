@@ -28,7 +28,7 @@ from tracekit.format.records import RecordError, RecordSigner, verify_record
 from tracekit.schema import V2
 from tracekit.signer import reconcile
 from tracekit.signer.rpc_schema import RPCError
-from tracekit.storage.base import ZERO_HASH, StorageCorrupt
+from tracekit.storage.base import ZERO_HASH, StorageCorrupt, registry_tree
 
 BATCH = 512
 TAIL = 1024          # records whose signatures are checked on every open; `tracekit signer fsck` checks them all
@@ -349,11 +349,20 @@ class RecordLog:
         self.runs, self.head, self.tenants, self.keys = runs, {"seq": size, "prev": prev, "closed": closed}, tenants, keys
         self.approvals, self.approval_index = approvals, index   # approval_id -> state; (tenant, run, call, attempt) -> id
         self.open_runs = {k: n for k, n in open_runs.items() if n}
+        keep, missing = {}, {}   # keep: past it, leaves of records a power loss lost (none under a note); set aside
         for tenant in sorted(set(leaves) | set(tail["registry"])):
             ls, stored = leaves.get(tenant, []), list(s.registry_iter(tenant, base.get(tenant, 0)))
-            if stored != ls[:len(stored)]:
+            n, note = base.get(tenant, 0) + len(ls), s.checkpoint_latest(registry_tree(tenant))
+            if (len(stored) > len(ls) and stored[:len(ls)] == ls and (note is None or note[0] <= n)
+                    and all(registry.parse(x)[3] >= size for x in stored[len(ls):])):
+                keep[tenant] = n
+            elif stored != ls[:len(stored)]:
                 raise StorageCorrupt(f"the registry log of tenant {tenant[:64]!r} holds leaves its records do not give")
-            for leaf in ls[len(stored):]:
+            missing[tenant] = ls[len(stored):]
+        if keep:
+            s.registry_set_aside(keep)
+        for tenant, ls in missing.items():
+            for leaf in ls:
                 s.registry_append(tenant, leaf)
 
     def tenant_salt(self, tenant):

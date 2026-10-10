@@ -1,0 +1,19 @@
+# Runtime dependency pins: every package the signer image (deploy/docker/Dockerfile) and the npm signer bundles
+# (scripts/build-signer-bundles.py) install next to tracekit-ai, for CPython 3.12 on every bundle target.
+# lean: versions only, no hashes (a wheel per platform each); add --hash pins with a lock tool when one is adopted.
+boto3==1.43.111
+botocore==1.43.111
+cffi==2.1.1
+cryptography==50.0.2
+google-re2==1.1.20251105
+jmespath==1.1.0
+psycopg==3.3.6
+psycopg-binary==3.3.6
+pycparser==3.11
+python-dateutil==2.9.0.post0
+regex==2026.9.29
+rfc8785==0.1.4
+s3transfer==0.19.2
+six==1.17.0
+typing_extensions==4.16.0
+urllib3==2.8.0

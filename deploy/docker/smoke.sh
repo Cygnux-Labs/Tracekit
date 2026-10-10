@@ -1,7 +1,7 @@
 #!/bin/sh
 # Smoke test of the signer image: build it, run it read-only with fresh volumes, register a run and decide a call from
-# a second container (another uid) through the shared socket dir, check the signer's uid and that it can write only
-# its volumes, then run `tracekit doctor --config` in the image. Needs docker; tests/test_container.py runs it.
+# a second container (another uid) through the shared socket dir, mounted read-only, check the signer's uid and that it
+# can write only its volumes, then run `tracekit doctor --config` in the image (the server policy pack). Needs docker; tests/test_container.py runs it.
 set -eu
 cd "$(dirname "$0")/../.."
 image=${IMAGE:-tracekit-signer:smoke}
@@ -32,7 +32,7 @@ until [ "$(docker inspect -f '{{.State.Health.Status}}' "$tag")" = healthy ]; do
     sleep 1
 done
 
-docker run --rm --read-only --cap-drop ALL --user 1000:1000 -v "$tag-run:/run/tracekit-signer" \
+docker run --rm --read-only --cap-drop ALL --user 1000:1000 -v "$tag-run:/run/tracekit-signer:ro" \
     --entrypoint python "$image" -c '
 from tracekit.sdk.client import Client
 with Client("/run/tracekit-signer/signer.sock").run(agent="smoke") as run:
@@ -67,5 +67,8 @@ bad = [results.get(i, {"id": i, "status": "missing"}) for i in
        if results.get(i, {}).get("status") != "ok"]
 if bad:
     raise SystemExit(f"smoke: doctor: {bad}")
+policy = results["D-POLICY-ENGINE"]["detail"]
+if not policy.startswith("/etc/tracekit/packs/server.yaml "):
+    raise SystemExit(f"smoke: not the server pack: {policy}")
 print("smoke: doctor:", results["D-POLICY-ENGINE"]["detail"])'
 echo "smoke: ok ($image)"

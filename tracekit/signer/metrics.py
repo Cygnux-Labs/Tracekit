@@ -9,7 +9,9 @@ docs/observability.md lists every metric.
 import ipaddress
 import json
 import threading
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler
+
+from tracekit.netserver import Server
 
 CONTENT_TYPE = "text/plain; version=0.0.4; charset=utf-8"
 DEFAULT_LISTEN = "127.0.0.1:9464"
@@ -174,4 +176,4 @@ def server(cfg, registry, logs=None, tlog=None):
             pass
 
     # lean: IPv4 and host names only; set address_family from the host once an IPv6 listen is needed
-    return ThreadingHTTPServer((host, int(port)), Handler)
+    return Server((host, int(port)), Handler)
