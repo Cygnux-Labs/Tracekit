@@ -238,7 +238,7 @@ class Signer(unittest.TestCase):
         text = checkpoint.body(ORIGIN, size, root)
         with open(os.path.join(self.dir, "signer", "keys", "rekor.key"), "rb") as f:
             publisher = RekorAnchor(self.sc, self.tr, f.read())
-        publisher.add_checkpoint(text + "\n" + checkpoint.sign(text, ORIGIN, self.s._log_key), self.s.vkey, 0, None)
+        publisher.add_checkpoint(self.s._note(text, ORIGIN), self.s.vkey, 0, None)
         self.assertEqual(self.poll(self.rekor)["conflicts"], [])   # an anchor the signer may be storing right now
         self.assertEqual([c["rule"] for c in self.poll(self.rekor)["conflicts"]], ["rekor anchors"])
 
