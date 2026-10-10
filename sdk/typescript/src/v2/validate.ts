@@ -11,8 +11,13 @@ const TYPES: Record<string, (v: unknown) => boolean> = {
   null: (v) => v === null,
 };
 
-/** Error strings for `v` against `s` (empty when valid). */
+const KEYWORDS = new Set(["type", "const", "enum", "pattern", "minLength", "maxLength", "minimum", "maximum", "maxItems",
+  "items", "required", "properties", "additionalProperties", "oneOf", "if", "then"]);
+
+/** Error strings for `v` against `s` (empty when valid); throws on a keyword it doesn't implement, like `_check`. */
 export function validate(s: Schema, v: any, path = "$", errs: string[] = []): string[] {
+  const unknown = Object.keys(s).filter((k) => !KEYWORDS.has(k));
+  if (unknown.length) throw new Error(`unsupported schema keywords at ${path}: ${unknown.join(", ")}`);
   if ("type" in s) {
     const ts: string[] = Array.isArray(s.type) ? s.type : [s.type];
     if (!ts.some((t) => TYPES[t](v))) {
