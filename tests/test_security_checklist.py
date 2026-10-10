@@ -19,17 +19,20 @@ import types
 import unittest
 from http.server import ThreadingHTTPServer
 
+from test_e13_approvals import Sessions
 from test_observe_render import XSS
 from tracekit import gateway, ingest, observe, otlp, proxy, witness_server
+from tracekit.observe import _session
 from tracekit.identity.token import BearerToken
 from tracekit.ledger import Keys
 from tracekit.signer import metrics
 from tracekit.transport import http as transport
-from tracekit.view import OidcLogin
+from tracekit.view import ApprovalDesk, OidcLogin
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DOC = os.path.join(ROOT, "docs", "security-checklist.md")
 UI = os.path.join(ROOT, "tracekit", "ui", "terminal.html")
+APPROVALS_UI = os.path.join(ROOT, "tracekit", "ui", "approvals.html")
 SECRET = "tk-checklist-" + "s" * 40
 HOSTILE = [XSS, "javascript:alert(1)", "rm\u202e/hs.exe", "a\u200bb", "tenant\u2066x\u2069", "\ufeffBash", "\u061cx"]
 FORMAT_CHARS = "[\u061c\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]"
@@ -262,6 +265,65 @@ class Viewer(unittest.TestCase):
             self.assertEqual(r.status, 501, method)
 
 
+class Approvals(unittest.TestCase):
+    """The approval pages (view.ApprovalDesk): an approver's OIDC session only, and every POST with that session's CSRF
+    token, as JSON, within the size cap, to an expected Host; nothing else reaches the signer."""
+
+    def setUp(self):
+        self.calls, self.sessions = [], Sessions()
+        desk = ApprovalDesk(types.SimpleNamespace(call=lambda m, req: self.calls.append(m) or {"approval_id": "apr-1"}))
+        feed = types.SimpleNamespace(records=[], base=0, lock=threading.Condition(), verify=lambda t=None: (0, [], None))
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), observe.make_handler(feed, SECRET, ["127.0.0.1"],
+                                                                         login=self.sessions, approvals=desk))
+        srv.daemon_threads = True
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        self.port = srv.server_address[1]
+        self.sid = self.sessions.add({"subject": "corp/u", "person": "corp/p", "groups": [], "tenant": "acme"},
+                                     "approver")
+        self.good = {"Cookie": f"{observe.COOKIE}={self.sid}", "Content-Type": "application/json",
+                     "X-CSRF-Token": self.sessions.by_id[self.sid]["csrf"]}
+
+    def request(self, method, path, headers, body=b""):
+        c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=5)
+        try:
+            c.request(method, path, body=body or None, headers=headers)
+            r = c.getresponse()
+            return r, r.read()
+        finally:
+            c.close()
+
+    def test_page_headers(self):
+        r, page = self.request("GET", "/approvals", {"Cookie": f"{observe.COOKIE}={self.sid}"})
+        self.assertEqual(r.status, 200)
+        csp = r.getheader("Content-Security-Policy")
+        for directive in ("default-src 'none'", "frame-ancestors 'none'", "base-uri 'none'", "form-action 'none'"):
+            self.assertIn(directive, csp)
+        nonce = re.search(r"script-src 'nonce-([A-Za-z0-9_-]{16,})';", csp).group(1)
+        self.assertEqual(re.findall(r"<script[^>]*>", page.decode()), [f'<script nonce="{nonce}">'])
+        self.assertEqual((r.getheader("X-Content-Type-Options"), r.getheader("Referrer-Policy")),
+                         ("nosniff", "no-referrer"))
+
+    def test_posts_need_the_session_csrf_token(self):
+        body = b'{"decision": "approve"}'
+        auditor = self.sessions.add({"subject": "corp/a", "person": "corp/a", "groups": [], "tenant": "acme"}, "auditor")
+        for headers, data, status in (
+                ({k: v for k, v in self.good.items() if k != "X-CSRF-Token"}, body, 403),
+                (dict(self.good, **{"X-CSRF-Token": "forged"}), body, 403),
+                (dict(self.good, **{"Content-Type": "text/plain"}), body, 403),
+                (dict(self.good, Cookie=f"{observe.COOKIE}={auditor}"), body, 403),
+                (dict(self.good, Cookie=f"{observe.COOKIE}={_session(SECRET)}"), body, 403),   # the operator token
+                (dict(self.good, Host="evil.example"), body, 403),
+                (dict(self.good, **{"Content-Length": BIG}), b"", 413),
+                (self.good, b"[1]", 400)):
+            with self.subTest(headers=headers, body=data):
+                self.assertEqual(self.request("POST", "/api/approvals/apr-1", headers, data)[0].status, status)
+        self.assertEqual(self.calls, [])
+        self.assertEqual(self.request("POST", "/api/approvals/apr-1", self.good, body)[0].status, 200)
+        self.assertEqual(self.calls, ["approval_decide"])
+
+
 class PlainHttp(unittest.TestCase):
     """The CLIs that serve HTTP refuse plain HTTP beyond loopback (view, the signer's http section and the issuer have
     their own tests); ingest and witness take --insecure-http for TLS terminated in front."""
@@ -286,6 +348,8 @@ class Page(unittest.TestCase):
     def setUpClass(cls):
         with open(UI, encoding="utf-8") as f:
             cls.page = f.read()
+        with open(APPROVALS_UI, encoding="utf-8") as f:
+            cls.approvals = f.read()
 
     @unittest.skipUnless(shutil.which("node"), "needs node to run the page's esc()")
     def test_esc_neutralises_markup_quotes_and_format_characters(self):
@@ -297,9 +361,21 @@ class Page(unittest.TestCase):
             self.assertNotRegex(s, "[<>\"']|" + FORMAT_CHARS)
         self.assertEqual(out[2], "rm\\u202e/hs.exe")
 
+    @unittest.skipUnless(shutil.which("node"), "needs node to run the approval page's vis()")
+    def test_approval_page_shows_data_as_text_with_format_characters_escaped(self):
+        self.assertNotRegex(self.approvals, r"innerHTML|outerHTML|insertAdjacentHTML")
+        vis = re.search(r"^(const vis = .*?;)$", self.approvals, re.M | re.S).group(1)
+        out = json.loads(subprocess.run(["node", "-e", f"{vis} process.stdout.write(JSON.stringify("
+                                         f"{json.dumps(HOSTILE)}.map(vis)))"],
+                                        capture_output=True, text=True, check=True).stdout)
+        for s in out:
+            self.assertNotRegex(s, FORMAT_CHARS)
+        self.assertEqual(out[2], "rm\\u202e/hs.exe")
+
     def test_no_url_or_code_sink_takes_data(self):
-        self.assertEqual([v for v in re.findall(r'\b(?:href|src|action)="([^"]*)"', self.page) if "${" in v], [])
-        self.assertNotRegex(self.page, r"\beval\(|new Function|\.href\s*=|window\.open|document\.write|location\.")
+        for page in (self.page, self.approvals):
+            self.assertEqual([v for v in re.findall(r'\b(?:href|src|action)="([^"]*)"', page) if "${" in v], [])
+            self.assertNotRegex(page, r"\beval\(|new Function|\.href\s*=|window\.open|document\.write|location\.")
 
 
 if __name__ == "__main__":

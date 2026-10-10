@@ -90,6 +90,41 @@ approvals:
 `tracekit init --v2` (system mode) refuses an approver that is the agent's own user, and refuses to install without
 one.
 
+## Web approvals and passkeys
+
+`tracekit view` with a `view.signer` ([identity.md](identity.md#viewer-login)) serves approval pages to approvers
+who signed in with OIDC: `/approvals` lists their tenant's pending approvals and shows one from the signer's copy (tool,
+rule, run, requester, expiry, arguments with redaction markers), with approve and reject and a reason. The pages call
+the signer as a **bridge**: the viewer's own identity, granted `approval_on_behalf` in `authorize` (never a default),
+passes `on_behalf` (the person's subject, person id, groups and tenant from the login) on `approval_list`,
+`approval_get` and `approval_decide`. The signer applies the rules above to that person, so the requester, the run's
+principal (by person id) and other tenants are refused as they are on the CLI. The `approval` record carries the person
+as `approver_identity` (`attested: false`: the bridge vouches for them), the bridge as `bridge`, and channel `bridge`.
+Every `POST` needs the session's CSRF token ([security-checklist.md](security-checklist.md)).
+
+```yaml
+authorize: {"mtls:spiffe://corp/viewer": [approval_list, approval_get, approval_decide, passkey_register,
+                                          approval_on_behalf]}
+approvals:
+  approvers: ["group:corp/approvers"]
+  break_glass: ["group:corp/oncall"]
+  webauthn: {rp_id: view.corp.example, origin: "https://view.corp.example"}   # the viewer's host and origin
+```
+
+An ask rule with `approval: {passkey: required}` marks a high-risk call (`passkey: true` on its `approval.request`).
+Approving it needs a WebAuthn assertion from the approver's passkey over
+`SHA-256(JCS({"v": 1, "approval_id", "binding_digest", "decision": "approve"}))`. The binding digest covers the call's
+arguments, so the assertion can't approve another approval, other arguments or another run. The signer checks it
+(`tracekit/identity/webauthn.py`): clientDataJSON type `webauthn.get`, the challenge and `webauthn.origin`;
+authenticatorData's rpIdHash for `webauthn.rp_id`, user present and user verified, and a signCount that grows; the
+ES256 or EdDSA signature under the registered key. The record carries `passkey: {credential_id, user_verified: true}`.
+An approval without one is refused, on every channel, so such calls are approved on the web only. Rejecting needs no
+passkey.
+
+An approver registers a passkey once from the page ("Register a passkey"), stored by person id in the signer's
+`data_dir/passkeys.json`. A person keeps the first passkey they register: to replace it, an operator removes their
+entry from that file.
+
 ## Expiry and abandon
 
 An approval expires, with a signed `approval.expired`:
@@ -107,4 +142,6 @@ abandoned.
 
 `tests/test_signer_approvals.py` (replay, edited arguments, another run's approval, resume without a human, retries,
 abandon, expiry, restart, encryption at rest, self-approval, tenant visibility), `tests/test_e13_approvals.py`
-(a signer with an approver config, answered from the CLI), and `eval/e8_insider_v2.py` case E8v2.5 (the agent approving its own call in system mode).
+(a signer with an approver config, answered from the CLI and from the viewer's approval pages: arguments changed after
+approval, a replayed assertion, expiry, self-approval by person id, another tenant, a passkey rule without a passkey,
+break-glass without a reason), `tests/test_webauthn.py` (the assertion checks, with a software authenticator), and `eval/e8_insider_v2.py` case E8v2.5 (the agent approving its own call in system mode).

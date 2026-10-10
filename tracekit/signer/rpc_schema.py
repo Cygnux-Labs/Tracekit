@@ -1,4 +1,4 @@
-"""The signer RPC contract, version 9: one JSON Schema per request and response, the error shape, and `SignerAPI`.
+"""The signer RPC contract, version 11: one JSON Schema per request and response, the error shape, and `SignerAPI`.
 
 Frozen: a change to any schema here is a new RPC_VERSION. The caller's identity comes from the transport (peer
 credentials, token, mTLS), never from a request field. Calls that change state carry `request_id`, scoped to that
@@ -12,7 +12,7 @@ from typing import Protocol
 from tracekit.format.canon import MAX_SAFE_INT
 from tracekit.schema import _check
 
-RPC_VERSION = 10
+RPC_VERSION = 11
 MAX_RAW_ARGS = 1 << 20   # characters of a raw arguments string
 MAX_EXTERNAL_RECORD = 1 << 16   # characters of an external system's own decision record
 MAX_RESULTS_SENT = 1024
@@ -57,6 +57,14 @@ REASON = _str(1024)
 IDENTITY = _str(256, pattern=r"^[a-z0-9_]+:.+" + _END)   # scheme:subject
 ANY = {}   # any JSON value; bounded by the transport's line limit
 APPROVAL_STATE = {"enum": ["requested", "approved", "rejected", "expired", "consumed"]}
+B64URL = _str(4096, minLength=1, pattern=r"^[A-Za-z0-9_-]+" + _END)
+# the person a bridge (an identity `authorize` grants approval_on_behalf, such as the viewer) acts for, as its OIDC
+# login established them; the signer records the bridge too
+PERSON = _obj(["subject", "person"], subject=_str(256, minLength=1), person=_str(256, minLength=1),
+              groups={"type": "array", "maxItems": 64, "items": _str(256)}, tenant=ID)
+# a WebAuthn assertion (identity.webauthn) over webauthn.challenge(approval_id, binding_digest, decision)
+PASSKEY = _obj(["credential_id", "client_data_json", "authenticator_data", "signature"], credential_id=B64URL,
+               client_data_json=B64URL, authenticator_data=B64URL, signature=B64URL)
 
 _RUN = dict(request_id=ID, run_id=ID, run_token=TOKEN)
 _EVENT = dict(_RUN, stream=ID, client_seq=SEQ)
@@ -89,7 +97,8 @@ _TOOL_USE = dict(_obj(["id", "name", "executed_by"], id=ID, name=_str(256, minLe
 _SUMMARY = _obj(["approval_id", "state", "run_id", "tool_call_id", "attempt", "tool", "rule_ids", "policy_hash",
                  "requester", "expires_at"],
                 approval_id=ID, state=APPROVAL_STATE, run_id=ID, tool_call_id=ID, attempt=SEQ, tool=_str(256),
-                rule_ids=RULE_IDS, policy_hash=DIGEST, requester=_str(256), expires_at=_str(40))
+                rule_ids=RULE_IDS, policy_hash=DIGEST, requester=_str(256), expires_at=_str(40),
+                passkey={"const": True})   # approving needs a passkey assertion
 
 REQUESTS = {
     "register_run": _obj(["request_id", "agent"], request_id=ID, run_id=ID,
@@ -120,13 +129,15 @@ REQUESTS = {
     "approval_request": _obj(_RUN_REQ + ["tool_call_id"], **_RUN, tool_call_id=ID, attempt=SEQ,
                              reason=REASON),   # the agent's words: shown to the approver as such, never as the args
     "approval_decide": _obj(["request_id", "approval_id", "decision"], request_id=ID, approval_id=ID,
-                            decision={"enum": ["approve", "reject"]}, reason=REASON),
+                            decision={"enum": ["approve", "reject"]}, reason=REASON, on_behalf=PERSON,
+                            passkey=PASSKEY),
     "approval_wait": _obj(["run_id", "run_token", "approval_id"], run_id=ID, run_token=TOKEN, approval_id=ID,
                           timeout_ms={"type": "integer", "minimum": 0, "maximum": 300000}),
     "approval_consume": _consume,
-    "approval_get": _obj(["approval_id"], approval_id=ID),
+    "approval_get": _obj(["approval_id"], approval_id=ID, on_behalf=PERSON),
     # a page of the approvals the caller may see, oldest first; `cursor` is the previous page's next_cursor
-    "approval_list": _obj([], run_id=ID, cursor=ID, limit={"type": "integer", "minimum": 1, "maximum": 1000}),
+    "approval_list": _obj([], run_id=ID, cursor=ID, limit={"type": "integer", "minimum": 1, "maximum": 1000},
+                          on_behalf=PERSON),
     # the adapter will never resume this paused call: the approval ends at once and a later consume is refused
     "approval_abandon": _obj(_RUN_REQ + ["approval_id"], **_RUN, approval_id=ID, reason=REASON),
     "close_run": _obj(_RUN_REQ, **_RUN, reason=_str(256)),
@@ -148,6 +159,10 @@ REQUESTS = {
                             decision={"enum": ["allow", "deny", "ask"]}, tool_call_id=ID, tool=_str(256, minLength=1),
                             rule_ids=RULE_IDS, reason=REASON, record=_str(MAX_EXTERNAL_RECORD, minLength=1),
                             signature=_str(128)),
+    # a bridge registers the passkey of the person it acts for (once: a person with a passkey keeps it);
+    # `public_key` is the credential's DER SubjectPublicKeyInfo (getPublicKey() in the browser), P-256 or Ed25519
+    "passkey_register": _obj(["on_behalf", "credential_id", "public_key"], on_behalf=PERSON, credential_id=B64URL,
+                             public_key=B64URL),
 }
 
 _FAIL_MODES = {"type": "object", "additionalProperties": {"enum": ["open", "closed"]}}
@@ -193,6 +208,7 @@ RESPONSES = {
                                                   "data": {"type": "object"}}}}),
     "checkpoint_nudge": _obj(["scheduled"], scheduled={"type": "boolean"}),
     "decision_import": _obj(["run_seq", "signature"], run_seq=SEQ, signature={"enum": ["verified", "unverified"]}),
+    "passkey_register": _obj(["credential_id"], credential_id=B64URL),
 }
 
 ERROR = _obj(["error"], error=_obj(["code", "message"], code={"enum": ERROR_CODES}, message=REASON,
@@ -241,3 +257,4 @@ class SignerAPI(Protocol):
     def read(self, req: dict) -> dict: ...
     def checkpoint_nudge(self, req: dict) -> dict: ...
     def decision_import(self, req: dict) -> dict: ...
+    def passkey_register(self, req: dict) -> dict: ...

@@ -1312,6 +1312,52 @@
         "break_glass": {
           "type": "boolean",
           "description": "answered under the break-glass role, which may answer any approval"
+        },
+        "bridge": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "scheme",
+            "subject",
+            "attested"
+          ],
+          "properties": {
+            "scheme": {
+              "type": "string",
+              "maxLength": 32
+            },
+            "subject": {
+              "type": "string",
+              "maxLength": 256
+            },
+            "attested": {
+              "type": "boolean"
+            },
+            "person": {
+              "type": "string",
+              "maxLength": 256,
+              "description": "an OIDC identity's stable person id"
+            }
+          },
+          "description": "the bridge (an identity granted approval_on_behalf) that answered for the approver"
+        },
+        "passkey": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "credential_id",
+            "user_verified"
+          ],
+          "properties": {
+            "credential_id": {
+              "type": "string",
+              "maxLength": 4096
+            },
+            "user_verified": {
+              "const": true
+            }
+          },
+          "description": "the WebAuthn credential whose assertion over the approval's binding digest the signer verified"
         }
       }
     },
@@ -2132,6 +2178,10 @@
             "t2"
           ],
           "description": "t2: approval_consume returns the approved arguments and its caller runs exactly those"
+        },
+        "passkey": {
+          "const": true,
+          "description": "approving needs a passkey assertion"
         }
       }
     },

@@ -62,10 +62,12 @@ signer.yaml:
     anchors: {rekor: {signing_config: sigstage-signing_config.json, trusted_root: sigstage-trusted_root.json,
                       every_s: 3600}}        # Rekor v2 + RFC 3161 anchors of the record note (tracekit.anchor.rekor2)
     approvals: {self_approval: deny, approvers: ["uid:1001", "mtls:spiffe://acme/ops/*", "group:corp/approvers"],
-                break_glass: ["uid:0", "group:corp/oncall"]}   # may answer any approval, with a reason; recorded
+                break_glass: ["uid:0", "group:corp/oncall"],   # may answer any approval, with a reason; recorded
                                              # break_glass
+                webauthn: {rp_id: view.example, origin: "https://view.example"}}   # where passkeys sign approvals
     view: {oidc: {issuer: corp, client_id: tracekit-viewer, redirect_uri: https://view.example/callback,
-                  roles: {auditor: ["group:corp/auditors"]}}}   # `tracekit view` OIDC login (tracekit.view)
+                  roles: {auditor: ["group:corp/auditors"], approver: ["group:corp/approvers"]}},
+           signer: https://signer.internal:8443}   # `tracekit view` OIDC login and approval pages (tracekit.view)
     acknowledge_rollback: false
     lock_timeout_s: 10                    # wait this long for the storage lock, then exit naming its holder's pid
     fsck_every_s: 86400                      # full-chain check in the background (0: off; the dev signer's is off)
@@ -143,6 +145,13 @@ Who answers (design §5): with a config (`approvals`), only an approver of the r
 are listed and shown only to the run's owner and to those who may answer them. OIDC identities are compared by person
 id (an alias of the requester or the run's owner is the same person), and a run's attested principal never answers
 its run's approvals, break-glass or not.
+Bridges (design §5, M4): an identity `authorize` grants approval_on_behalf (the viewer's approval pages, tracekit.view)
+lists, shows and answers approvals for the OIDC person its login established (`on_behalf`), under the same rules as
+that person; the `approval` record carries the person (not attested: the bridge vouches for them) and the bridge.
+Passkeys: an ask rule with `approval: {passkey: required}` is approved only with a WebAuthn assertion
+(tracekit.identity.webauthn) over its approval_id, binding digest and the decision, by the passkey the person
+registered through a bridge (`passkey_register`, kept in data_dir/passkeys.json), verified here against
+`approvals.webauthn`; the record carries the credential id and that the user was verified.
 
 Principal (04-design §2.2): register_run's `principal` is app-asserted (principal_attested: false); its
 `principal_token`, an end user's token that the `oidc` issuers (http.oidc) verify, records that user's person id with
@@ -188,6 +197,7 @@ from tracekit.format import checkpoint, registry, slh_dsa
 from tracekit.format.canon import StrictJSONError, canonical, event_hash, loads_strict
 from tracekit.format.records import RecordSigner, verify_record
 from tracekit.identity.base import CallerIdentity
+from tracekit.identity import webauthn
 from tracekit.identity.oidc import keys, person
 from tracekit.locking import lock_file
 from tracekit.policy2 import compile as policy_compile
@@ -227,10 +237,12 @@ CONFIG_KEYS = {"data_dir", "socket", "socket_mode", "tcp_endpoint", "http", "dur
                "fail_modes", "grace_s", "idle_s", "origin", "metrics", "witnesses", "contact", "approvals",
                "lock_timeout_s", "fsck_every_s", "clock_skew_s", "anchors", "otlp", "otel_out", "storage", "gateways",
                "gateway_mandatory", "log_key", "harness_binding", "record_key", "route", "view", "decision_keys"}
-APPROVAL_KEYS = {"self_approval", "approvers", "break_glass"}
+APPROVAL_KEYS = {"self_approval", "approvers", "break_glass", "webauthn"}
 OTLP_IMPORT = "otlp_import"   # an `authorize` grant, never a default: OTLP/HTTP import (otlp config section)
 OTLP_MAX_SPANS = 512
 DECISION_IMPORT = "decision_import"   # an `authorize` grant, never a default: an external policy system's decisions
+ON_BEHALF = "approval_on_behalf"   # an `authorize` grant, never a default: a bridge answers for its logged-in people
+PASSKEYS = "passkeys.json"   # in data_dir: person id -> {id, key (base64 SPKI), count (last signCount)}
 
 
 def load_policy(path=DEFAULT_POLICY, backend=None):
@@ -390,6 +402,12 @@ class SignerService:
                 and approvals.get("self_approval", "deny") in ("allow", "deny")
                 and all(isinstance(approvals.get(k, []), list) for k in ("approvers", "break_glass"))):
             raise ValueError("approvals takes self_approval (allow|deny), approvers and break_glass (identity lists)")
+        self._webauthn = (approvals or {}).get("webauthn")
+        if self._webauthn is not None and not (
+                isinstance(self._webauthn, dict) and set(self._webauthn) == {"rp_id", "origin"}
+                and isinstance(self._webauthn["rp_id"], str) and isinstance(self._webauthn["origin"], str)
+                and self._webauthn["origin"].startswith(("https://", "http://localhost"))):
+            raise ValueError("approvals.webauthn takes rp_id and origin (https://, or http://localhost)")
         otlp = {} if otlp is None else otlp
         if not (isinstance(otlp, dict) and set(otlp) <= {"max_spans"} and isinstance(
                 otlp.get("max_spans", 1), int) and otlp.get("max_spans", 1) > 0):
@@ -418,8 +436,9 @@ class SignerService:
             raise ValueError("decision_keys maps system names to base64 Ed25519 public keys")
         self.metrics = metrics.SignerMetrics()
         authorize = dict(authorize or {})
-        if not all(isinstance(m, list) and set(m) <= {*REQUESTS, OTLP_IMPORT} for m in authorize.values()):
-            raise ValueError(f"authorize maps identities to lists of methods out of {sorted({*REQUESTS, OTLP_IMPORT})}")
+        grants = {*REQUESTS, OTLP_IMPORT, ON_BEHALF}
+        if not all(isinstance(m, list) and set(m) <= grants for m in authorize.values()):
+            raise ValueError(f"authorize maps identities to lists of methods out of {sorted(grants)}")
         keys = os.path.join(data_dir, "keys")
         if open_storage is None and storage_config:
             from tracekit.storage import postgres
@@ -474,6 +493,9 @@ class SignerService:
                                               for name in ("approvers", "break_glass"))
         self._swept = self._noted = time.monotonic()
         self._args_dir = os.path.join(data_dir, "approvals")   # approval_id -> the encrypted args of a live approval
+        # lean: passkeys live in this signer's data_dir; one store shared by replicas once a central signer has several
+        self._passkeys = json.loads(files.read(data_dir, PASSKEYS) or "{}")
+        self._passkeys_lock = threading.Lock()
         self._cond = threading.Condition()
         self._refusals, self._refusals_lock = {}, threading.Lock()
         self._stop, self._nudged, self._checkpointing = threading.Event(), threading.Event(), threading.Lock()
@@ -1091,7 +1113,40 @@ class SignerService:
     def _summary(approval_id, a):
         return {"approval_id": approval_id, "state": a["state"], "run_id": a["run_key"][1],
                 **{k: a[k] for k in ("tool_call_id", "attempt", "tool", "rule_ids", "policy_hash", "requester",
-                                     "expires_at")}}
+                                     "expires_at")}, **({"passkey": True} if a.get("passkey") else {})}
+
+    def _on_behalf(self, identity, req):
+        """The person a bridge acts for (`on_behalf`, for an identity granted approval_on_behalf), else `identity`."""
+        p = req.get("on_behalf")
+        if p is None:
+            return identity
+        self._grant(identity, ON_BEHALF)
+        return CallerIdentity("oidc", p["subject"], False, {"person": p["person"], "groups": p.get("groups", []),
+                                                            **({"tenant": p["tenant"]} if "tenant" in p else {})})
+
+    def _passkey(self, identity, aid, a, assertion):
+        """The credential id of a passkey assertion that approves `a` for `identity`; RPCError forbidden otherwise."""
+        who = person(identity)
+        if assertion is None or not who or self._webauthn is None:
+            raise RPCError("forbidden", "approving this call needs a passkey assertion")
+        with self._passkeys_lock:
+            cred = self._passkeys.get(who)
+            if cred is None or cred["id"] != assertion["credential_id"]:
+                raise RPCError("forbidden", "not the passkey registered for this person")
+            try:
+                count = webauthn.verify(
+                    base64.b64decode(cred["key"]), cred["count"], self._webauthn["rp_id"], self._webauthn["origin"],
+                    webauthn.challenge(aid, a["binding_digest"], "approve"),
+                    *(webauthn.unb64url(assertion[k]) for k in ("client_data_json", "authenticator_data", "signature")))
+            except ValueError as e:
+                raise RPCError("forbidden", f"passkey refused: {e}") from None
+            self._save_passkeys(dict(self._passkeys, **{who: dict(cred, count=count)}))
+        return cred["id"]
+
+    def _save_passkeys(self, passkeys):
+        """Replace passkeys.json (under _passkeys_lock), then the in-memory copy."""
+        files.write(self.data_dir, PASSKEYS, json.dumps(passkeys).encode("utf-8"))
+        self._passkeys = passkeys
 
     def _seal(self, approval_id, value):
         nonce = os.urandom(12)
@@ -1430,9 +1485,11 @@ class SignerService:
                     "binding_digest": "sha256:" + hashlib.sha256(canonical(binding)).hexdigest(), "salt_id": sid}
             if person(identity):
                 data["requester_person"] = person(identity)
-            if any(r.get("approval") == {"executor": "t2"} for _, r, *_ in self.policy.rules
-                   if r["id"] in call["rule_ids"]):
+            options = [r.get("approval") or {} for _, r, *_ in self.policy.rules if r["id"] in call["rule_ids"]]
+            if any(o.get("executor") == "t2" for o in options):
                 data["executor"] = "t2"
+            if any(o.get("passkey") == "required" for o in options):
+                data["passkey"] = True
             shown = _shown(args, call["dotenv"])   # redact the parsed args, so a raw copy stays valid JSON
             if p["args_source"] == "raw":
                 shown = p["args"] if shown == args else canonical(shown).decode()
@@ -1450,6 +1507,8 @@ class SignerService:
         return self.log.submit(identity, "approval_request", req, fn, key)
 
     def _approval_decide(self, identity, req):
+        bridge = identity if "on_behalf" in req else None
+        identity = self._on_behalf(identity, req)
         aid, sub = req["approval_id"], subject(identity)
         a = self._visible(identity, aid)
         run_key, who = a["run_key"], person(identity)
@@ -1469,6 +1528,8 @@ class SignerService:
                     raise RPCError("forbidden", f"{sub[:256]} is not an approver")
                 if "reason" not in req:
                     raise RPCError("forbidden", "a break-glass answer needs a reason")
+        credential = a.get("passkey") and req["decision"] == "approve" and \
+            self._passkey(identity, aid, a, req.get("passkey"))
         self.quotas.take_event(identity)
 
         def fn(tx, run):
@@ -1480,7 +1541,11 @@ class SignerService:
             tx.set(a, "state", "approved" if req["decision"] == "approve" else "rejected")
             data = {"tool_use_id": a["tool_call_id"], "approval_id": aid, "decision": req["decision"], "approver": sub,
                     "approver_identity": _recorded(identity),
-                    "channel": "rpc", "self_approved": same}
+                    "channel": "bridge" if bridge else "rpc", "self_approved": same}
+            if bridge:
+                data["bridge"] = _recorded(bridge)
+            if credential:
+                data["passkey"] = {"credential_id": credential, "user_verified": True}
             if glass:
                 data["break_glass"] = True
             if "reason" in req:
@@ -1558,13 +1623,14 @@ class SignerService:
         return out
 
     def _approval_get(self, identity, req):
-        aid = req["approval_id"]
+        identity, aid = self._on_behalf(identity, req), req["approval_id"]
         a = self.log.write(lambda tx: dict(self._visible(identity, aid)))   # committed state only
         copy = self._unseal(aid) or {"args_source": a["args_source"], "args": None}
         copy.pop("exec_args", None)   # the approver sees the redacted copy only
         return {**self._summary(aid, a), "binding_digest": a["binding_digest"], **copy}
 
     def _approval_list(self, identity, req):
+        identity = self._on_behalf(identity, req)
         # copied on the writer, so only committed states are listed
         items = iter(self.log.write(lambda tx: [(aid, dict(a)) for aid, a in self.log.approvals.items()]))
         page, cursor = [], req.get("cursor")
@@ -1687,6 +1753,23 @@ class SignerService:
             return {"run_seq": tx.emit(run, "policy.external", data, source="import", tier="T3",
                                        request_id=req["request_id"]), "signature": signature}
         return self.log.submit(identity, DECISION_IMPORT, req, fn, key, late=True)
+
+    def _passkey_register(self, identity, req):
+        """Register the passkey of the person a bridge acts for; trust on first use: a person keeps the first one."""
+        who = person(self._on_behalf(identity, req))
+        try:
+            spki = webauthn.unb64url(req["public_key"])
+            webauthn.public_key(spki)
+        except ValueError as e:
+            raise RPCError("invalid_request", str(e)) from None
+        with self._passkeys_lock:
+            # lean: the first registration wins and only an operator removes it (passkeys.json); enrol further passkeys
+            # with an assertion of the registered one when people need more than one
+            if who in self._passkeys:
+                raise RPCError("forbidden", f"{who[:256]} has a passkey already")
+            self._save_passkeys(dict(self._passkeys, **{who: {"id": req["credential_id"],
+                                                              "key": base64.b64encode(spki).decode(), "count": 0}}))
+        return {"credential_id": req["credential_id"]}
 
     # --- OTLP import (tracekit.signer.otel) ---
 

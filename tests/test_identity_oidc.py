@@ -24,7 +24,7 @@ from tracekit.sdk.client import Client
 from tracekit.signer import service as svc
 from tracekit.signer.rpc_schema import REQUESTS, RPCError
 from tracekit.transport import answering_hello, hello
-from tracekit.view import OidcLogin
+from tracekit.view import ApprovalDesk, OidcLogin
 
 AUD = "tracekit-signer"
 
@@ -276,7 +276,10 @@ class TestViewerLogin(unittest.TestCase):
         login = OidcLogin({"issuer": "corp", "client_id": AUD, "redirect_uri": "http://127.0.0.1/callback",
                            "roles": {"auditor": ["group:corp/auditors"], "approver": ["person:corp/ann@corp.example"]}},
                           self.idp.config(self.pki))
-        srv = ThreadingHTTPServer(("127.0.0.1", 0), observe.make_handler(feed, "tok", ["127.0.0.1"], login=login))
+        self.calls = []
+        desk = ApprovalDesk(types.SimpleNamespace(call=lambda m, req: self.calls.append(req) or {"approvals": []}))
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), observe.make_handler(feed, "tok", ["127.0.0.1"], login=login,
+                                                                         approvals=desk))
         self.port, srv.daemon_threads = srv.server_address[1], True
         threading.Thread(target=srv.serve_forever, daemon=True).start()
         self.addCleanup(srv.server_close)
@@ -325,10 +328,24 @@ class TestViewerLogin(unittest.TestCase):
         self.assertEqual(len(json.loads(body)["records"]), 2)
 
     def test_approver_role_by_person(self):
-        r, _, cookie = self.sign_in(sub="u-ann", tenant="beta")
+        r, _, cookie = self.sign_in(sub="u-ann", tenant="beta", groups=["auditors"])   # approver wins over auditor
         self.assertEqual(r.status, 200)
         _, body = self.get("/api/snapshot", cookie.split(";")[0])
         self.assertEqual([x["tool_name"] for x in json.loads(body)["records"]], ["b1"])
+        r, body = self.get("/api/session", cookie.split(";")[0])
+        self.assertEqual(r.status, 200)
+        session = json.loads(body)
+        self.assertEqual(session["person"], "corp/ann@corp.example")
+        self.assertGreaterEqual(len(session["csrf"]), 32)
+        self.assertEqual(self.get("/api/approvals", cookie.split(";")[0])[0].status, 200)
+        self.assertEqual(self.calls, [{"on_behalf": {"subject": "corp/u-ann", "person": "corp/ann@corp.example",
+                                                     "groups": ["corp/auditors"], "tenant": "beta"}}])
+
+    def test_auditor_session_gets_no_approval_pages(self):
+        _, _, cookie = self.sign_in(sub="u-aud", groups=["auditors"])
+        for path in ("/approvals", "/api/session", "/api/approvals"):
+            self.assertEqual(self.get(path, cookie.split(";")[0])[0].status, 403, path)
+        self.assertEqual(self.calls, [])
 
     def test_refusals(self):
         for claims in ({"sub": "u-nobody"}, {"sub": "u-aud", "groups": ["auditors"], "tenant": None},
