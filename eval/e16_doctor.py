@@ -371,9 +371,14 @@ def pg_admin():
         return None, "needs TRACEKIT_TEST_PG_DSN, or initdb and pg_ctl on PATH"
     cluster = tempfile.mkdtemp(dir="/tmp" if os.path.isdir("/tmp") else None)   # short: the socket path
     data = os.path.join(cluster, "data")
-    subprocess.run(["initdb", "-D", data, "-A", "trust", "-U", "postgres", "--no-sync"], check=True, capture_output=True)
-    subprocess.run(["pg_ctl", "-D", data, "-l", os.path.join(cluster, "log"), "-w", "-o",
-                    f"-k {cluster} -c listen_addresses='' -c fsync=off", "start"], check=True, capture_output=True)
+    try:
+        subprocess.run(["initdb", "-D", data, "-A", "trust", "-U", "postgres", "--no-sync"], check=True,
+                       capture_output=True)
+        subprocess.run(["pg_ctl", "-D", data, "-l", os.path.join(cluster, "log"), "-w", "-o",
+                        f"-k {cluster} -c listen_addresses='' -c fsync=off", "start"], check=True, capture_output=True)
+    except subprocess.CalledProcessError as e:
+        shutil.rmtree(cluster, ignore_errors=True)
+        return None, f"{e.cmd[0]} failed: {e.stderr.decode(errors='replace').strip()[-256:]}"
     return make_conninfo(host=cluster, dbname="postgres", user="postgres"), cluster
 
 
