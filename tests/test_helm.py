@@ -198,7 +198,8 @@ class Central(unittest.TestCase):
 
     def test_refusals(self):
         for sets, err in ((["tls.secretName=tls", "awsKms.region=r", "awsKms.keyIds={k0}"], "awsKms.keyIds needs a key"),
-                          ([], "tls.secretName is required")):
+                          ([], "tls.secretName is required"),
+                          (["tls.secretName=tls", "replicas=0"], "replicas must be at least 1")):
             p = render_central(*sets)
             self.assertNotEqual(p.returncode, 0)
             self.assertIn(err, p.stderr)
