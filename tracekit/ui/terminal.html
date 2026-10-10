@@ -1075,7 +1075,9 @@
     const BOOT = /*__TRACE_DATA__*/null;
     const RAW = /*__RAW_DATA__*/null;
     const $ = id => document.getElementById(id);
-    const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+    // bidi and invisible format characters are shown as \uXXXX, so a name cannot render as something else
+    // lean: a filter clicked on such a name compares the shown text and matches nothing; decode data-* if that matters
+    const esc = s => String(s ?? "").replace(/[&<>"'\u061c\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c] || "\\u" + c.charCodeAt(0).toString(16).padStart(4, "0")));
     const FIELD = { Bash: "command", Write: "file_path", Edit: "file_path", MultiEdit: "file_path", Read: "file_path", NotebookEdit: "notebook_path", WebFetch: "url", WebSearch: "query", Glob: "pattern", Grep: "pattern", Agent: "description", Task: "description" };
     const FILE_TOOLS = { Read: "R", Write: "W", Edit: "W", MultiEdit: "W", NotebookEdit: "W" };
     const SEVERE = new Set(["denied", "out_of_scope_write", "secrets_access"]);
@@ -1560,7 +1562,7 @@
         es.onmessage = e => { try { ingest(JSON.parse(e.data)); schedule(); } catch (err) { console.error("bad stream record", err); } };
         es.onopen = () => { liveOk = true; liveErr = ""; schedule(); };
         es.onerror = () => { liveOk = false; liveErr = "Connection lost; reconnecting…"; schedule(); };
-        const check = async () => { try { const v = await getJSON("api/verify"); chainState = { ok: v.ok, n: v.records, detail: (v.problems || []).join("\n") || "Verified by the observer (hash chain and Ed25519 signatures). Head " + (v.head || "").slice(0, 16) }; schedule(); } catch { } };
+        const check = async () => { try { const v = await getJSON("api/verify"); chainState = { ok: v.ok, n: v.records, detail: (v.problems || []).join("\n") || "Verified by the observer (hash chain and Ed25519 signatures): operator-side view — re-verify with the signed release for evidence. Head " + (v.head || "").slice(0, 16) }; schedule(); } catch { } };
         check(); setInterval(check, 10000);
       } catch (e) {
         liveOk = false; liveErr = e.message || String(e); schedule();

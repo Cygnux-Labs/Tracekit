@@ -354,6 +354,11 @@ def make_handler(feed, token, allowed_hosts=None, secure=False):
         def log_message(self, *a):
             pass
 
+        def end_headers(self):   # every answer, the default error pages and the stream too
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Referrer-Policy", "no-referrer")
+            super().end_headers()
+
         def _send(self, code, body, ctype="application/json", nonce=None, headers=()):
             data = body.encode("utf-8") if isinstance(body, str) else body
             self.send_response(code)
@@ -362,8 +367,6 @@ def make_handler(feed, token, allowed_hosts=None, secure=False):
             self.send_header("Content-Type", ctype + "; charset=utf-8")
             self.send_header("Content-Length", str(len(data)))
             self.send_header("Cache-Control", "no-store")
-            self.send_header("X-Content-Type-Options", "nosniff")
-            self.send_header("Referrer-Policy", "no-referrer")
             self.send_header("Cross-Origin-Resource-Policy", "same-origin")
             if ctype == "text/html":
                 self.send_header("Content-Security-Policy", CSP.format(nonce=nonce or secrets.token_urlsafe(18)))
@@ -428,7 +431,6 @@ def make_handler(feed, token, allowed_hosts=None, secure=False):
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
             self.send_header("Cache-Control", "no-store")
-            self.send_header("X-Content-Type-Options", "nosniff")
             self.end_headers()
             last_ping = time.time()
             try:
@@ -516,8 +518,9 @@ def main(argv=None):
         print(f"Wrote {a.export} ({len(raw_recs)} ledger records)")
         return 0
     token = os.environ.get("TRACEKIT_OBSERVE_TOKEN")
-    if a.host not in ("127.0.0.1", "localhost", "::1") and not token:
-        print("Refusing to listen beyond localhost without TRACEKIT_OBSERVE_TOKEN set.", file=sys.stderr)
+    if a.host not in LOOPBACK_HOSTS:
+        print("tracekit observe: serves plain HTTP, so only on loopback; reach it from another machine through an "
+              "SSH tunnel", file=sys.stderr)
         return 1
     feed = Feed(path, prices=prices)
     try:
