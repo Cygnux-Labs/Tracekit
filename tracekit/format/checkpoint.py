@@ -84,6 +84,12 @@ def _cosigned(text, ts):
     return f"cosignature/v1\ntime {ts}\n{text}".encode("utf-8")
 
 
+def cosign(text, name, secret, ts):
+    """A type 0x04 cosignature line over the note text, made at unix time `ts`."""
+    sig = struct.pack(">Q", ts) + crypto.sign(secret, _cosigned(text, ts))
+    return f"{DASH}{name} {_b64(key_id(name, COSIGNATURE, crypto.public_from_secret(secret)) + sig)}\n"
+
+
 def open_note(note, log_keys, witness_keys=()):
     """Verify a checkpoint note against pinned vkeys. Returns (origin, size, root bytes, [(witness vkey, timestamp)]).
     A pinned log key named after the origin must sign it."""

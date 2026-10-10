@@ -186,6 +186,8 @@ def main(argv=None):
     p = sub.add_parser("demo", help="end-to-end demo in a temp folder")
     p.add_argument("--real", action="store_true", help="drive a real `claude -p` session instead of the scripted agent")
     p.add_argument("--keep", action="store_true")
+    p.add_argument("--server", action="store_true",
+                   help="the v2 signer: a dev signer, a test witness, allow/deny/approve, export and verify")
     p.add_argument("--agent", default="claude", choices=["claude", "codex", "cursor", "gemini"],
                    help="send the scripted run as this coding agent's own hook payloads (default: claude)")
 
@@ -497,6 +499,9 @@ def _run(a):
     if a.cmd == "migrate":
         from . import migrate
         return migrate.main(a.rest)
+    if a.cmd == "demo" and a.server:
+        from . import demo_server
+        return demo_server.main(keep=a.keep)
     if a.cmd == "demo":
         from . import demo
         return demo.main(real=a.real, keep=a.keep, agent=a.agent)
