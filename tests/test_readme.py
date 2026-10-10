@@ -21,7 +21,7 @@ def readme_commands():
 class Readme(unittest.TestCase):
     def test_shell_blocks_listed(self):
         cmds = readme_commands()
-        for prefix in ("pip install tracekit-ai", "tracekit demo", "tracekit init --dev", "tracekit verify docs/sample/"):
+        for prefix in ("pip install 'tracekit-ai[signer]'", "tracekit demo --server", "tracekit init --dev --v2", "tracekit verify docs/sample/"):
             self.assertTrue(any(c.startswith(prefix) for c in cmds), prefix)
 
     def test_annotated_commands_exit_as_stated(self):
