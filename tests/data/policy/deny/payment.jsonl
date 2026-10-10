@@ -1,0 +1,29 @@
+{"tool": "transfer_funds", "args": {"amount": 2500, "currency": "USD", "to": "acct_93812"}, "expect": "ask", "note": "moving money"}
+{"tool": "send_payment", "args": {"amount": "19.99", "currency": "EUR", "payee": "Acme GmbH"}, "expect": "ask", "note": "moving money"}
+{"tool": "create_payout", "args": {"amount_cents": 500000, "currency": "usd", "destination": "ba_1"}, "expect": "ask", "note": "moving money"}
+{"tool": "create_refund", "args": {"payment_intent": "pi_3Nx"}, "expect": "ask", "note": "moving money"}
+{"tool": "create_refund", "args": {"charge": "ch_1", "amount": 1200}, "expect": "ask", "note": "moving money"}
+{"tool": "create_charge", "args": {"amount": 4999, "currency": "usd", "customer": "cus_1"}, "expect": "ask", "note": "moving money"}
+{"tool": "pay_invoice", "args": {"invoice_id": "in_77"}, "expect": "ask", "note": "moving money"}
+{"tool": "create_transfer", "args": {"amount": 10000, "currency": "gbp", "destination": "acct_2"}, "expect": "ask", "note": "moving money"}
+{"tool": "create_payment", "args": {"amount": 75, "currency": "USD", "recipient": "vendor-17"}, "expect": "ask", "note": "moving money"}
+{"tool": "transfer_funds", "args": {"amount": 1, "currency": "USD", "to": "new-payee"}, "expect": "ask", "note": "moving money"}
+{"tool": "mcp:stripe/create_refund", "args": {"payment_intent": "pi_1"}, "expect": "ask", "note": "moving money"}
+{"tool": "mcp:stripe/create_payment_intent", "args": {"amount": 1000, "currency": "usd"}, "expect": "ask", "note": "moving money"}
+{"tool": "mcp:payments/transfer_funds", "args": {"amount": 300, "to": "x"}, "expect": "ask", "note": "moving money"}
+{"tool": "mcp:paypal/create_payout", "args": {"amount": "40.00"}, "expect": "ask", "note": "moving money"}
+{"tool": "mcp:stripe/capture_payment_intent", "args": {"id": "pi_9"}, "expect": "ask", "note": "moving money"}
+{"tool": "mcp:bank/send_payment", "args": {"amount": 900, "iban": "DE00 0000"}, "expect": "ask", "note": "moving money"}
+{"tool": "mcp:stripe/confirm_payment_intent", "args": {"id": "pi_8"}, "expect": "ask", "note": "moving money"}
+{"tool": "mcp:shop/refund_order", "args": {"order_id": "1001"}, "expect": "ask", "note": "moving money"}
+{"tool": "mcp__stripe__create_refund", "args": {"charge": "ch_2"}, "expect": "ask", "note": "moving money"}
+{"tool": "send_payment", "args": {"amount": 1, "currency": "USD", "payee": "supplier-4"}, "expect": "ask", "note": "payment of 1"}
+{"tool": "send_payment", "args": {"amount": 10, "currency": "USD", "payee": "supplier-4"}, "expect": "ask", "note": "payment of 10"}
+{"tool": "send_payment", "args": {"amount": 99.5, "currency": "USD", "payee": "supplier-4"}, "expect": "ask", "note": "payment of 99.5"}
+{"tool": "send_payment", "args": {"amount": 1000, "currency": "USD", "payee": "supplier-4"}, "expect": "ask", "note": "payment of 1000"}
+{"tool": "send_payment", "args": {"amount": 25000, "currency": "USD", "payee": "supplier-4"}, "expect": "ask", "note": "payment of 25000"}
+{"tool": "send_payment", "args": {"amount": "0.01", "currency": "USD", "payee": "supplier-4"}, "expect": "ask", "note": "payment of 0.01"}
+{"tool": "send_payment", "args": {"amount": "1,000.00", "currency": "USD", "payee": "supplier-4"}, "expect": "ask", "note": "payment of 1,000.00"}
+{"tool": "transfer_funds", "args": {"amount": 5, "currency": "EUR", "to": "acct_x"}, "expect": "ask", "note": "transfer of 5"}
+{"tool": "transfer_funds", "args": {"amount": 120, "currency": "EUR", "to": "acct_x"}, "expect": "ask", "note": "transfer of 120"}
+{"tool": "transfer_funds", "args": {"amount": 7800, "currency": "EUR", "to": "acct_x"}, "expect": "ask", "note": "transfer of 7800"}

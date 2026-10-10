@@ -1,0 +1,41 @@
+# Server network pack (policy v2): HTTP tools. Composed by server.yaml.
+#
+# The egress allowlist is example.com in TK-N002: a deployment extends this pack and redefines TK-N002 with its own
+# hosts (a rule in the extending file replaces the parent's). Cloud metadata addresses are denied for every tool by
+# TK-S001 in server.yaml.
+
+version: '2026.10-server-net-1'
+description: server-hosted agents, HTTP egress
+unknown_tools: ask
+
+tools:
+  http_request: http
+  http_get: http
+  http_post: http
+  requests_get: http          # LangChain RequestsToolkit
+  requests_post: http
+  requests_put: http
+  requests_patch: http
+  requests_delete: http
+  fetch: http
+  web_fetch: http
+  'mcp:fetch/fetch': http     # MCP reference fetch server
+
+deny:
+  - id: TK-N001
+    class: http
+    field: host
+    # loopback, private, link-local, CGNAT, unspecified, IPv6 local and IPv4-mapped addresses, numeric hosts (decimal,
+    # hex, octal) and internal names; the host is the signer's parse of the URL (lowercase, no brackets or port)
+    pattern: '^(localhost|.*\.localhost|127\.[0-9.]+|10\.[0-9.]+|192\.168\.[0-9.]+|172\.(1[6-9]|2[0-9]|3[01])\.[0-9.]+|169\.254\.[0-9.]+|100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.[0-9.]+|0[0-7]*(\.[0-9.]*)?|[0-9]+|0x[0-9a-fx.]+|::1?|::ffff:.*|f[cd][0-9a-f]*:.*|fe[89ab][0-9a-f]*:.*|.*\.(internal|local|lan|corp|intranet|svc))\.?$'
+    reason: request to an internal address
+    rationale: A server-hosted agent reaches what its server reaches; internal services, admin ports and cloud metadata are not part of the web it was given.
+  - id: TK-N002
+    class: http
+    # a body or a body-carrying method, to a URL outside the allowlist. The subject is the whole call as sorted-key
+    # JSON: `url` must be its last key, so an allowlisted URL nested in the body exempts nothing
+    pattern: '"method":"([Pp][Oo][Ss][Tt]|[Pp][Uu][Tt]|[Pp][Aa][Tt][Cc][Hh])"|"(body|data|json|files|form|content)":'
+    # the allowlist: replace example.com with the hosts the agent may send data to
+    unless: '"url":"https://([A-Za-z0-9.-]*\.)?example\.com\.?(:[0-9]+)?([/?#][^"\\]*)?"}$'
+    reason: sending data to a host outside the allowlist
+    rationale: A request with a body is how data leaves; a server agent sends data only to the hosts its deployment names.
