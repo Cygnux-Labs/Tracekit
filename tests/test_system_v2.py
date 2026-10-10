@@ -14,7 +14,7 @@ import unittest
 from unittest import mock
 
 from test_system_install import as_root_on_linux
-from tracekit import install
+from tracekit import agent_hooks, install
 from tracekit.sdk import client as sdk_client
 from tracekit.signer import service
 
@@ -181,7 +181,8 @@ class InstallAndUninstall(unittest.TestCase):
         if sudo_why:
             return sys_cfg
         del v1["tailer"]
-        self.assertEqual(sys_cfg.call_args.args[0], dict(v1, signer=sock, hooks={"user": "agent", "settings": settings},
+        self.assertEqual(sys_cfg.call_args.args[0], dict(v1, signer=sock, hooks={"user": "agent", "settings": settings,
+                                                                                      "agent": "claude"},
                                                          tailer={"user": self.me.pw_name, "uid": self.me.pw_uid,
                                                                  "python": install.OPT_PYTHON}))
         self.assertIn(f'authorize:\n  "uid:{self.me.pw_uid}": [model_event, state_write, tailer_lost, status]', yaml)
@@ -189,11 +190,36 @@ class InstallAndUninstall(unittest.TestCase):
                                                   "module": install.V2_HOOK, "signer": sock})
         self.assertIn(["systemctl", "restart", "tracekit-signer"], [c.args[0] for c in run.call_args_list])
 
+    def test_init_and_uninstall_wire_a_harness_hook(self):
+        home = os.path.join(self.d, "home")
+        agent = types.SimpleNamespace(**dict(vars(AGENT), pw_dir=home))
+        run = mock.Mock(return_value=mock.Mock(returncode=0, stdout=POLICY + "\n", stderr=""))
+        with mock.patch.object(install.pwd, "getpwnam", return_value=agent), \
+                mock.patch.object(install.pwd, "getpwuid", return_value=self.me), \
+                mock.patch.dict(os.environ, {"SUDO_UID": str(self.me.pw_uid)}), \
+                mock.patch.object(install, "_privileges", return_value=[]), \
+                mock.patch.object(install, "_install_source", return_value=None), \
+                mock.patch.object(install, "_system_user", return_value=self.me), \
+                mock.patch.object(install, "_install_venv"), \
+                mock.patch.object(install.subprocess, "run", run), \
+                mock.patch.object(install.client, "system_config", return_value={}), \
+                mock.patch.object(install, "_write_system_client_config") as sys_cfg, \
+                mock.patch.object(install.files, "as_user", lambda pw, fn, *a, errors=(): fn(*a)):
+            sock, settings = install.init_system_v2("agent", agent="codex")
+            self.assertEqual(settings, agent_hooks.config_path("codex", home))
+            with open(settings) as f:
+                self.assertIn(f"{install.OPT_PYTHON} -I -m tracekit.integrations.harness_hooks codex; s=$?", f.read())
+            sc = sys_cfg.call_args.args[0]
+            self.assertEqual(sc["hooks"], {"user": "agent", "settings": settings, "agent": "codex"})
+            self.uninstall(sc)
+            with open(settings) as f:
+                self.assertNotIn("tracekit", f.read())
+
     def uninstall(self, sc, purge=False):
         run = mock.Mock(return_value=mock.Mock(returncode=0))
         for p in (install.V2_CONFIG, os.path.join(self.d, "tracekit-signer.service")):
             open(p, "w").close()
-        os.makedirs(install.V2_DATA)
+        os.makedirs(install.V2_DATA, exist_ok=True)
         with mock.patch.object(install.client, "system_config", return_value=sc), \
                 mock.patch.object(install.subprocess, "run", run), \
                 mock.patch.object(install, "_write_system_client_config") as sys_cfg, \

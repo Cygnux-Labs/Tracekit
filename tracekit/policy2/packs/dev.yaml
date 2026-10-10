@@ -1,10 +1,18 @@
-# The signer's default policy: the coding pack plus one visible demo deny rule, so a deny is easy to see.
+# The signer's default policy: the coding pack plus a visible demo deny and ask, so both are easy to see. They also
+# match an MCP tool of that name (mcp:<server>/<name>), which the coding pack only flags.
 extends: coding.yaml
-description: dev default (coding pack and a demo deny)
+description: dev default (coding pack, a demo deny and a demo ask)
 
 deny:
   - id: TK-DEMO-DENY
-    tool: tracekit_demo_denied
+    tool: '(mcp:[^/]+/)?tracekit_demo_denied'
     pattern: '^'
     reason: demo deny rule
     rationale: Shows what a signed deny looks like.
+
+ask:
+  - id: TK-DEMO-ASK
+    tool: '(mcp:[^/]+/)?tracekit_demo_ask'
+    pattern: '^'
+    reason: demo ask rule
+    rationale: Shows a call held for a person's approval.

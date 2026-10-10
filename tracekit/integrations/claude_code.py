@@ -90,7 +90,7 @@ def _run(client, sid, register=True, send=None, transcript=None, **fields):
 
 
 def _register(client, path, transcript=None):
-    version = os.environ.get("CLAUDE_CODE_VERSION")
+    version = os.environ.get("CLAUDE_CODE_VERSION") if AGENT == "claude-code" else None
     out = client.register_run({"agent": {"name": AGENT, **({"version": version[:64]} if version else {})}})
     # lean: any process of the agent's uid can read and use this token (another uid cannot); binding runs to the
     # harness's processes (a root-owned harness helper) narrows that
@@ -104,7 +104,8 @@ def _tail(client, path, st):
     """Start tracekit.tailer for the run, detached, unless it has one. System mode: through sudo as the tailer's own
     user (the root-owned system config names it), with a token the signer issued to that user's uid for this run; with
     no tailer installed, the signer records a tailer_lost gap for the run instead."""
-    if not (st and st.get("transcript")) or st.get("tailer") == st["run_id"] or os.name == "nt":   # POSIX only
+    if (AGENT != "claude-code" or not (st and st.get("transcript")) or st.get("tailer") == st["run_id"]
+            or os.name == "nt"):   # Claude Code transcripts only; POSIX only
         return
     # lean: a tailer for a run registered after an idle close reads the transcript from its start, so that run repeats
     # the earlier runs' exchanges; hand it the earlier tailer's offset if that matters
@@ -243,7 +244,12 @@ def _entry():
         p = json.loads(raw) if raw.strip() else {}
     except ValueError:
         p = {}
-    p = p if isinstance(p, dict) else {}
+    return handle(p if isinstance(p, dict) else {})
+
+
+def handle(p):
+    """One hook event in Claude Code's payload shape (tracekit.integrations.harness_hooks maps the other harnesses'
+    onto it). -> exit code: 0 lets the call proceed, 2 blocks it; the reason is on stderr."""
     name, sid, tid = p.get("hook_event_name"), p.get("session_id"), p.get("tool_use_id")
     missing = [k for k, v in (("session_id", sid), ("tool_use_id", tid if name in TOOL_EVENTS else "-"))
                if not isinstance(v, str) or not v]

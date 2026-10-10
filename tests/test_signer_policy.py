@@ -57,6 +57,12 @@ class Packs(unittest.TestCase):
         self.assertEqual(dev["extends"], pc.policy_hash(coding))
         self.assertEqual([r["id"] for r in dev["deny"]], [r["id"] for r in coding["deny"]] + ["TK-DEMO-DENY"])
         self.assertEqual(dev["unknown_tools"], "flag")
+        e = Engine(dev)
+        for tool in ("tracekit_demo_denied", "mcp:demo/tracekit_demo_denied"):
+            self.assertEqual(e.decide(tool, {})["verdict"], "deny")
+        for tool in ("tracekit_demo_ask", "mcp:demo/tracekit_demo_ask"):
+            self.assertEqual(e.decide(tool, {})["verdict"], "ask")
+        self.assertEqual(e.decide("mcp:demo/list_files", {})["verdict"], "flag")
 
     @unittest.skipUnless(HAVE_RE2, "google-re2 not installed")
     def test_re2_and_regex_decide_identically_on_the_packs(self):
