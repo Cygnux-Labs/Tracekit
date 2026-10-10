@@ -1312,6 +1312,43 @@
         "break_glass": {
           "type": "boolean",
           "description": "answered under the break-glass role, which may answer any approval"
+        },
+        "via": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "scheme",
+            "subject",
+            "attested"
+          ],
+          "properties": {
+            "scheme": {
+              "type": "string",
+              "maxLength": 32
+            },
+            "subject": {
+              "type": "string",
+              "maxLength": 256
+            },
+            "attested": {
+              "type": "boolean"
+            }
+          },
+          "description": "the bridge (e.g. Slack) that answered for the approver, as the signer's transport established it"
+        },
+        "groups": {
+          "type": "array",
+          "maxItems": 32,
+          "items": {
+            "type": "string",
+            "maxLength": 64
+          },
+          "description": "user groups the bridge found the approver in"
+        },
+        "person": {
+          "type": "string",
+          "maxLength": 4096,
+          "description": "the person id the signer's config maps the approver to"
         }
       }
     },

@@ -12,7 +12,7 @@ from typing import Protocol
 from tracekit.format.canon import MAX_SAFE_INT
 from tracekit.schema import _check
 
-RPC_VERSION = 10
+RPC_VERSION = 11
 MAX_RAW_ARGS = 1 << 20   # characters of a raw arguments string
 MAX_EXTERNAL_RECORD = 1 << 16   # characters of an external system's own decision record
 MAX_RESULTS_SENT = 1024
@@ -55,6 +55,7 @@ TOKEN = _str(1024, minLength=1)
 RULE_IDS = {"type": "array", "maxItems": 32, "items": _str(64)}
 REASON = _str(1024)
 IDENTITY = _str(256, pattern=r"^[a-z0-9_]+:.+" + _END)   # scheme:subject
+SLACK_ID = _str(64, pattern=r"^slack:[A-Z0-9]+/[A-Z0-9]+" + _END)   # slack:<team id>/<user or user group id>
 ANY = {}   # any JSON value; bounded by the transport's line limit
 APPROVAL_STATE = {"enum": ["requested", "approved", "rejected", "expired", "consumed"]}
 
@@ -121,6 +122,11 @@ REQUESTS = {
                              reason=REASON),   # the agent's words: shown to the approver as such, never as the args
     "approval_decide": _obj(["request_id", "approval_id", "decision"], request_id=ID, approval_id=ID,
                             decision={"enum": ["approve", "reject"]}, reason=REASON),
+    # a chat bridge answers for the person who clicked (`approver`, slack:<team>/<user>), who `groups` (user groups of
+    # the same team, slack:<team>/<group>) the bridge found them in; an `authorize` grant, never a default
+    "approval_decide_on_behalf": _obj(["request_id", "approval_id", "decision", "approver"], request_id=ID,
+                                      approval_id=ID, decision={"enum": ["approve", "reject"]}, approver=SLACK_ID,
+                                      groups={"type": "array", "maxItems": 32, "items": SLACK_ID}),
     "approval_wait": _obj(["run_id", "run_token", "approval_id"], run_id=ID, run_token=TOKEN, approval_id=ID,
                           timeout_ms={"type": "integer", "minimum": 0, "maximum": 300000}),
     "approval_consume": _consume,
@@ -166,6 +172,8 @@ RESPONSES = {
                              expires_at=_str(40)),
     "approval_decide": _obj(["approval_id", "state", "self_approved"], approval_id=ID, state=APPROVAL_STATE,
                             self_approved={"type": "boolean"}),   # dev mode only; caps assurance at `dev`
+    "approval_decide_on_behalf": _obj(["approval_id", "state", "self_approved"], approval_id=ID, state=APPROVAL_STATE,
+                                      self_approved={"type": "boolean"}),
     "approval_wait": _obj(["approval_id", "state"], approval_id=ID, state=APPROVAL_STATE, reason=REASON),
     # ok: the call may run now (an approval is consumed, or the call needed none); else rule_ids say why not
     "approval_consume": _obj(["ok", "rule_ids"], ok={"type": "boolean"}, rule_ids=RULE_IDS, approval_id=ID,
@@ -229,6 +237,7 @@ class SignerAPI(Protocol):
     def model_event(self, req: dict) -> dict: ...
     def approval_request(self, req: dict) -> dict: ...
     def approval_decide(self, req: dict) -> dict: ...
+    def approval_decide_on_behalf(self, req: dict) -> dict: ...
     def approval_wait(self, req: dict) -> dict: ...
     def approval_consume(self, req: dict) -> dict: ...
     def approval_get(self, req: dict) -> dict: ...
