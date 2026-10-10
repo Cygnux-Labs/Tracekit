@@ -15,7 +15,8 @@
  * signer of the runtime dir is used, started with `tracekit up --json` (found as src/v2/launcher.ts says) when none answers.
  * Requests go out in order on one connection and are answered in order; `approval_wait` gets a connection of its own.
  * Every request is validated against the RPC contract before it is sent. Calls that change state carry a `request_id`
- * and are resent with it when the connection drops. Event calls carry this client's `stream` and a `client_seq` per run.
+ * and are resent with it when the connection drops. Event calls carry this client's `stream` and a `client_seq` per run;
+ * a run's events go out one at a time, each once the one before it is answered, so they reach the signer in order.
  * The client writes nothing to disk.
  */
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -117,9 +118,10 @@ class Conn {
   send(frame: Frame): Promise<Frame> {
     return new Promise((resolve, reject) => {
       if (this.sock.destroyed) return reject(new ConnectionLost());
+      const line = JSON.stringify(frame) + "\n";   // may throw: before anything waits for an answer
       this.pending.push({ resolve, reject });
       this.sock.ref();
-      this.write(frame);
+      this.sock.write(line);
     });
   }
 }
@@ -337,6 +339,7 @@ export class Client {
   private https: Https | null;
   private conn: Promise<Conn> | null = null;
   private seqs = new Map<string, number>();
+  private order = new Map<string, Promise<void>>();   // run_id -> settles once its last event so far is answered
   private inflight = new Set<Promise<unknown>>();
 
   constructor(opts: ClientOptions = {}) {
@@ -384,6 +387,11 @@ export class Client {
     if (claim) Object.assign(req, { stream: this.stream, client_seq: this.seqs.get(req.run_id) ?? 0 });
     const errs = validate(schema, req);
     if (errs.length) throw new RPCError("invalid_request", errs.join("; "));
+    try {
+      JSON.stringify(req);
+    } catch (e) {
+      throw new RPCError("invalid_request", `the ${method} request is not JSON: ${(e as Error).message}`);
+    }
     const frame = () => {   // the event takes its client_seq as it goes out: in the order of the wire
       if (claim) {
         req.client_seq = this.seqs.get(req.run_id) ?? 0;
@@ -392,33 +400,67 @@ export class Client {
       }
       return { method, ...req };
     };
-    const timeout = this.timeoutMs + (req.timeout_ms ?? 0);
-    for (let i = 0; i < RETRIES; i++) {
-      let reply: Frame;
+    const timeout = this.timeoutMs + (req.timeout_ms ?? 0), deadline = Date.now() + timeout;
+    let release = () => {};
+    if (claim) {
       try {
-        if (this.https) {
-          reply = await this.https.rpc(frame(), timeout);
-          this.hello = this.https.hello;
-        } else if ("timeout_ms" in schema.properties) {
-          reply = await this.poll(frame(), timeout);
-        } else {
-          const conn = await this.connection();
-          reply = await withTimeout(conn.send(frame()), timeout, () => conn.sock.destroy());
-        }
+        release = await this.turn(req.run_id, timeout);
       } catch (e) {
-        if (e instanceof ConnectionLost) continue;
-        if (e instanceof SignerUnavailable) frame();   // used up: the signer's client_counter_gap covers a call it never saw
+        frame();   // used up: the signer's client_counter_gap covers a call it never saw
         throw e;
       }
-      if (reply.error) {
-        const e = reply.error;
-        if (["run_closed", "unknown_run"].includes(e.code)) this.seqs.delete(req.run_id);   // no more events for it
-        throw new RPCError(e.code, e.message ?? "", e.retry_after_ms);
-      }
-      if (method === "close_run") this.seqs.delete(req.run_id);
-      return reply;
     }
-    throw new SignerUnavailable(`lost the connection to the signer ${RETRIES} times`);
+    try {
+      for (let i = 0; i < RETRIES; i++) {
+        const left = Math.max(deadline - Date.now(), 1);
+        let reply: Frame;
+        try {
+          if (this.https) {
+            reply = await this.https.rpc(frame(), left);
+            this.hello = this.https.hello;
+          } else if ("timeout_ms" in schema.properties) {
+            reply = await this.poll(frame(), left);
+          } else {
+            const conn = await this.connection();
+            reply = await withTimeout(conn.send(frame()), left, () => conn.sock.destroy());
+          }
+        } catch (e) {
+          if (e instanceof ConnectionLost) continue;
+          if (e instanceof SignerUnavailable) frame();   // used up: the signer's client_counter_gap covers a call it never saw
+          throw e;
+        }
+        if (reply.error) {
+          const e = reply.error;
+          if (["run_closed", "unknown_run"].includes(e.code)) this.seqs.delete(req.run_id);   // no more events for it
+          throw new RPCError(e.code, e.message ?? "", e.retry_after_ms);
+        }
+        if (method === "close_run") this.seqs.delete(req.run_id);
+        return reply;
+      }
+      throw new SignerUnavailable(`lost the connection to the signer ${RETRIES} times`);
+    } finally {
+      release();
+    }
+  }
+
+  /** Waits up to `ms` for the run's event before this one to be answered, so a run's events reach the signer in
+   * client_seq order on every transport and retry. -> what ends this event's turn; SignerUnavailable after `ms`. */
+  private async turn(runId: string, ms: number): Promise<() => void> {
+    const prev = this.order.get(runId) ?? Promise.resolve();
+    let done!: () => void;
+    const mine = new Promise<void>((r) => (done = r)), tail = prev.then(() => mine);
+    this.order.set(runId, tail);
+    const release = () => {
+      done();
+      if (this.order.get(runId) === tail) this.order.delete(runId);
+    };
+    try {
+      await withTimeout(prev, ms, () => {});
+    } catch (e) {
+      release();
+      throw e;
+    }
+    return release;
   }
 
   /** One request on a connection of its own, closed after the answer. */
