@@ -31,6 +31,7 @@ from http.server import BaseHTTPRequestHandler
 from urllib.parse import parse_qs, urlsplit
 
 from . import crypto, merkle
+from .merkle import tiles
 from .netserver import Server
 from .core import b64d, b64e, canon, now_ts
 from .locking import lock_file
@@ -55,7 +56,7 @@ def verify_sth(sth, public):
 class Log:
     def __init__(self, home):
         self.home = home
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()
         self.leaves_path = os.path.join(home, "log.jsonl")
         self.conflicts_path = os.path.join(home, "conflicts.jsonl")
         self._lockf = open(os.path.join(home, "log.lock"), "a+b")  # held for the Log's lifetime
@@ -68,7 +69,8 @@ class Log:
             self.secret = f.read()
         self.public = crypto.public_from_secret(self.secret)
         self.kid = crypto.kid(self.public)
-        self.entries, self.hashes, self.by_kid_seq = [], [], {}
+        self.entries, self.by_kid_seq, self._sth = [], {}, None
+        self.tree = tiles.Tree(tiles.MemoryTileStore())   # proofs read O(log n) tiles, not every leaf
         if os.path.exists(self.leaves_path):
             with open(self.leaves_path, "rb+") as f:
                 data = f.read()
@@ -90,14 +92,18 @@ class Log:
 
     def _index(self, e):
         self.entries.append(e)
-        self.hashes.append(merkle.leaf_hash(canon(e["cp"]).encode("utf-8")))
+        self.tree.append(merkle.leaf_hash(canon(e["cp"]).encode("utf-8")))
         self.by_kid_seq[(e["cp"]["kid"], e["cp"]["head_seq"])] = len(self.entries) - 1
 
-    def sth(self, size=None):
-        size = len(self.hashes) if size is None else size
-        body = {"type": STH_TYPE, "tree_size": size, "root_hash": merkle.root(self.hashes[:size]).hex(), "ts": now_ts(), "kid": self.kid}
-        body["sig"] = b64e(crypto.sign(self.secret, sth_message(body)))
-        return body
+    def sth(self):
+        """The signed head of the tree as it is now, signed once per tree size."""
+        with self.lock:
+            if self._sth is None or self._sth["tree_size"] != self.tree.size:
+                body = {"type": STH_TYPE, "tree_size": self.tree.size, "root_hash": self.tree.root().hex(), "ts": now_ts(),
+                        "kid": self.kid}
+                body["sig"] = b64e(crypto.sign(self.secret, sth_message(body)))
+                self._sth = body
+            return self._sth
 
     def tokens(self):
         try:
@@ -135,28 +141,27 @@ class Log:
 
     def _receipt(self, i, duplicate=False):
         sth = self.sth()
-        return {"index": i, "sth": sth, "inclusion": [h.hex() for h in merkle.inclusion_proof(i, self.hashes[:sth["tree_size"]])],
+        return {"index": i, "sth": sth, "inclusion": [h.hex() for h in self.tree.inclusion_proof(i, sth["tree_size"])],
                 "duplicate": duplicate}
 
     def page(self, kid=None, after=-1):
         with self.lock:
             sth = self.sth()
-            leaves = self.hashes[:sth["tree_size"]]
             out = []
             for i in range(max(0, after + 1), sth["tree_size"]):
                 cp = self.entries[i]["cp"]
                 if kid and cp["kid"] != kid:
                     continue
-                out.append({"index": i, "cp": cp, "inclusion": [h.hex() for h in merkle.inclusion_proof(i, leaves)]})
+                out.append({"index": i, "cp": cp, "inclusion": [h.hex() for h in self.tree.inclusion_proof(i, sth["tree_size"])]})
                 if len(out) >= PAGE:
                     break
             return {"sth": sth, "entries": out}
 
     def consistency(self, first, second):
         with self.lock:
-            if not 0 < first <= second <= len(self.hashes):
+            if not 0 < first <= second <= self.tree.size:
                 return None
-            return [h.hex() for h in merkle.consistency_proof(first, self.hashes[:second])]
+            return [h.hex() for h in self.tree.consistency_proof(first, second)]
 
 
 def init(home):
