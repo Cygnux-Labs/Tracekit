@@ -50,6 +50,7 @@ approves it; then the example pins the signer's key, exports the run and verifie
 tracekit signer trust -o trust.json
 tracekit export --v2 --run <run id> -o run.tkb
 tracekit verify run.tkb --trust trust.json          # Integrity: VERIFIED. / Assurance: dev; ...
+tracekit view --dev                                 # browse the runs: verdicts, denials, approvals, replay
 ```
 
 Other frameworks: [OpenAI Agents SDK](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/quickstarts/openai-agents.md),
@@ -99,6 +100,7 @@ a laptop to a server: [migration](https://github.com/Cygnux-Labs/Tracekit/blob/m
   [doctor](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/doctor.md),
   [witnesses](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/witnesses.md),
   [monitor](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/monitor.md),
+  [viewer](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/viewer.md),
   [observability](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/observability.md),
   [privacy](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/privacy.md)
 - Deciding calls: [policy reference](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/policy-v2.md),
