@@ -23,6 +23,10 @@ signer.yaml:
              {slh_dsa: {file: keys/log-slh.key}}   # and/or a hybrid SLH-DSA-SHA2-128s line on every stored note
                                              # (created on first start; tracekit.format.checkpoint), never sent to
                                              # witnesses; about 1 s of signing per note
+    record_key: {issuer: {url: https://issuer.internal:8444, vkey: "...", issuance_log_vkey: "...", tenants: [acme],
+                          ttl_s: 86400, cert: tls/c.pem, key: tls/c.key, ca: tls/ca.pem, token_file: ...}}
+                                             # short-lived record keys certified by a record-key issuer
+                                             # (tracekit.issuer, docs/issuer.md); default the file key keys/record.key
     storage: {postgres: {dsn_file: pg.dsn}}  # a Postgres store (tracekit.storage.postgres): the DSN is read from the
                                              # file, never inline (no dsn_file: the libpq PG* variables); default the
                                              # file store in data_dir/store
@@ -193,7 +197,7 @@ LIST_PAGE = 100
 TICK_S = 1.0
 CHECKPOINT_S, CHECKPOINT_MIN_S = 10.0, 1.0
 WITNESS_GAP_S, LOG_KEY_GAP_S, BACKOFF_S = 300.0, 300.0, (1.0, 300.0)
-FSCK_S, CLOCK_SKEW_S, LOCK_TIMEOUT_S = 86400.0, 300.0, 10.0
+FSCK_S, CLOCK_SKEW_S, LOCK_TIMEOUT_S, RENEW_RETRY_S = 86400.0, 300.0, 10.0, 60.0
 SNAPSHOT_RECORDS = 100_000
 CLASSES = ("public", "customer", "tracekit", "operator")
 GRACE_S, IDLE_S = 5.0, 3600.0
@@ -204,7 +208,7 @@ CONFIG_KEYS = {"data_dir", "socket", "socket_mode", "tcp_endpoint", "http", "dur
                "authorize", "limits", "acknowledge_rollback", "policy", "multi_tenant_apps", "migrators", "analyzers",
                "fail_modes", "grace_s", "idle_s", "origin", "metrics", "witnesses", "contact", "approvals",
                "lock_timeout_s", "fsck_every_s", "clock_skew_s", "anchors", "otlp", "otel_out", "storage", "gateways",
-               "gateway_mandatory", "log_key", "harness_binding"}
+               "gateway_mandatory", "log_key", "harness_binding", "record_key"}
 APPROVAL_KEYS = {"self_approval", "approvers", "break_glass"}
 OTLP_IMPORT = "otlp_import"   # an `authorize` grant, never a default: OTLP/HTTP import (otlp config section)
 OTLP_MAX_SPANS = 512
@@ -288,6 +292,9 @@ def _snapshot_key(keys):
     return key if len(key) == 32 else None
 
 
+EXPIRED = "the record key's certificate has expired and the issuer has not renewed it yet"
+
+
 def _secret(path, make, size=32):
     """The `size`-byte secret in `path`, created (0600) on first use. Called under the storage lock, so never by two
     signers. A file of another size stops the start: a key is never used cut short."""
@@ -327,7 +334,7 @@ class SignerService:
                  bridge=None, origin=None, authorize=None, contact=None, approvals=None, lock_timeout_s=0,
                  fsck_every_s=FSCK_S, clock_skew_s=CLOCK_SKEW_S, rekor=None, otlp=None, otel_out=None,
                  storage_config=None, gateways=(), gateway_mandatory=False, log_key=None, slh_dsa_file=None,
-                 harness_binding=None):
+                 harness_binding=None, record_key=None):
         """`identity` answers the in-process SignerAPI calls (default: this process's uid); transports call
         handle_frame with the identity they established. `policy` is a policy2 Engine (default: load_policy()).
         `open_storage()` defaults to the store `storage_config` (the `storage` config section) names, else file storage
@@ -343,7 +350,9 @@ class SignerService:
         `gateways` (identities or prefixes) and `gateway_mandatory`: see the config keys.
         `log_key`: a signer.logkey key (default: the file key in keys/log.key); it must be the key of the log's notes.
         `slh_dsa_file`: the SLH-DSA secret key file (created on first use) that adds a hybrid line to every note.
-        `harness_binding` ({helper, required, harnesses}): the config section, or None."""
+        `harness_binding` ({helper, required, harnesses}): the config section, or None.
+        `record_key`: the `record_key` config section: a fresh record key, certified by its issuer, at every start and
+        once two thirds of its certificate's validity have passed (else the file key in keys/record.key)."""
         fail_modes = dict(fail_modes or FAIL_MODES)
         if not all(isinstance(k, str) and v in ("open", "closed") for k, v in fail_modes.items()):
             raise ValueError("fail_modes maps tool classes to open or closed")
@@ -389,7 +398,12 @@ class SignerService:
             _mkdir(keys)
             os.chmod(keys, 0o700)
             storage.snapshot_key = _secret(os.path.join(keys, "snapshot.key"), lambda: os.urandom(32))
-            sign = RecordSigner(_secret(os.path.join(keys, "record.key"), lambda: crypto.generate()[0]))
+            certify = None
+            if record_key:
+                from tracekit import issuer
+                certify, sign = functools.partial(issuer.certify, record_key["issuer"]), None
+            else:
+                sign = RecordSigner(_secret(os.path.join(keys, "record.key"), lambda: crypto.generate()[0]))
             self.tokens = RunTokens(_secret(os.path.join(keys, "run_token.key"), lambda: os.urandom(32)))
             self._salt_key = _secret(os.path.join(keys, "args_salt.key"), lambda: os.urandom(32))
             self._args_key = AESGCM(_secret(os.path.join(keys, "approval_args.key"), lambda: os.urandom(32)))
@@ -401,7 +415,7 @@ class SignerService:
             self.anchors = [] if rekor is None else [RekorAnchor(
                 rekor["signing_config"], rekor["trusted_root"],
                 _secret(os.path.join(keys, "rekor.key"), rekor2.new_key), rekor.get("every_s", rekor2.MIN_EVERY_S))]
-            self.log = RecordLog(storage, open_storage, sign, self.quotas, salt, self.metrics, bridge)
+            self.log = RecordLog(storage, open_storage, sign, self.quotas, salt, self.metrics, bridge, certify)
         except BaseException:
             storage.close()
             raise
@@ -416,6 +430,7 @@ class SignerService:
         self._harnesses, self._helper = harnesses, hb.get("helper")
         self._harness_required = {k: True for k in hb.get("required", ())}
         self._chains, self._chains_lock = {}, threading.Lock()   # pid -> (start time, its chain)
+        self.record_key, self._renew_at = record_key, self._renewal()
         self.fsck_every_s, self.clock_skew_s, self._skewed, self._fsck_seen = fsck_every_s, clock_skew_s, set(), set()
         self._snapped = storage.tail_state()["tree_size"]
         self._approvers, self._break_glass = ({k: True for k in (approvals or {}).get(name, ())}
@@ -595,6 +610,31 @@ class SignerService:
         self.metrics.loop_errors.inc(loop)
         logging.getLogger(__name__).exception("tracekit signer: the %s loop failed; retrying", loop)
 
+    def _renewal(self):
+        """Unix time to replace a certified record key: two thirds into its certificate's validity (None: no issuer)."""
+        c = self.log.cert and self.log.cert["certificate"]["cert"]
+        return c and c["not_after"] - (c["not_after"] - c["not_before"]) / 3
+
+    def rotate_key(self):
+        """A fresh record key, certified by the issuer, takes over from the current one (signer.epoch, key.retire)."""
+        sign, cert = self.log.certify(self.log.log_id)
+        self.log.write(lambda tx: self.log.epoch(tx, sign, cert))
+        self._renew_at = self._renewal()
+        if self.log.refuse_writes == EXPIRED:   # writes refused only for the expiry resume with the new key
+            self.log.refuse_writes = None
+
+    def _renew(self):
+        """Replace the record key; while the issuer can't, the current key stays, until its certificate expires: then
+        client writes are refused until a renewal succeeds (a key never signs past its certificate)."""
+        try:
+            self.rotate_key()
+        except Exception:   # issuer or storage down
+            self._renew_at = time.time() + RENEW_RETRY_S
+            self._loop_error("record key renewal")
+            c = self.log.cert and self.log.cert["certificate"]["cert"]
+            if c and time.time() >= c["not_after"] and not self.log.refuse_writes:
+                self.log.refuse_writes = EXPIRED
+
     def _tick_loop(self):
         flushed = time.monotonic()
         while not self._stop.wait(TICK_S):
@@ -604,6 +644,8 @@ class SignerService:
                 pass
             except Exception:
                 self._loop_error("ticker")
+            if self._renew_at and time.time() >= self._renew_at:
+                self._renew()
             if time.monotonic() - flushed >= REFUSAL_WINDOW_S:
                 flushed = time.monotonic()
                 try:
@@ -648,7 +690,7 @@ class SignerService:
         def written(tx):
             t = self.log.storage.tail_state()
             return {"records.jsonl": t["tree_size"], "registry.jsonl": sum(n for n, _ in t["registry"].values())}
-        problems = fsck(self.data_dir, self.log.write(written), self.storage_config)
+        problems = fsck(self.data_dir, self.log.write(written), self.storage_config, record_key=self.record_key)
         new = [p for p in problems if p not in self._fsck_seen]
         if new:   # acknowledge_rollback covers the rollback found at start, never a later finding
             self._fsck_seen.update(new)
@@ -1663,6 +1705,9 @@ def load_config(path):
                              "(default: keys/log.key, no hybrid line)")
         if slh:
             slh["file"] = os.path.join(base, slh["file"])
+    if "record_key" in cfg:
+        from tracekit import issuer
+        issuer.check_signer_section(cfg["record_key"], path)
     approvals = cfg.get("approvals") if isinstance(cfg.get("approvals"), dict) else {}
     for table in (cfg.get("tenants"), cfg.get("authorize"), approvals.get("approvers"), approvals.get("break_glass"),
                   cfg.get("gateways")):
@@ -1758,7 +1803,7 @@ def open_service(cfg, **kw):
                          rekor=(cfg.get("anchors") or {}).get("rekor"), otlp=cfg.get("otlp"),
                          otel_out=cfg.get("otel_out"), storage_config=cfg.get("storage"), gateways=cfg.get("gateways", ()),
                          gateway_mandatory=cfg.get("gateway_mandatory") is True,
-                         harness_binding=cfg.get("harness_binding"), **kw)
+                         harness_binding=cfg.get("harness_binding"), record_key=cfg.get("record_key"), **kw)
 
 
 def serve(cfg, service):
@@ -1894,14 +1939,19 @@ def _serve_dev():
     return 1
 
 
-def fsck(data_dir, upto=None, storage=None):
+def fsck(data_dir, upto=None, storage=None, record_key=None):
     """Every problem in the store (the `storage` config section's, else data_dir/store): the storage check (hashes,
-    chains) plus every record's signature. `upto`: see storage.file.fsck (a Postgres check reads one consistent
-    snapshot instead)."""
+    chains) plus every record's signature, under keys/record.key or, with `record_key` (the config section), the
+    keys its issuer certified. `upto`: see storage.file.fsck (a Postgres check reads one consistent snapshot
+    instead)."""
     keys = os.path.join(data_dir, "keys")
-    with open(os.path.join(keys, "record.key"), "rb") as f:
-        sign = RecordSigner(f.read())
-    verify = functools.partial(verify_record, keys=[sign.spki], algs={sign.alg})
+    if record_key:
+        from tracekit import issuer
+        verify = issuer.record_verifier(record_key["issuer"])
+    else:
+        with open(os.path.join(keys, "record.key"), "rb") as f:
+            sign = RecordSigner(f.read())
+        verify = functools.partial(verify_record, keys=[sign.spki], algs={sign.alg})
     if storage:
         from tracekit.storage import postgres
         return postgres.fsck(postgres.read_dsn(storage["postgres"]), _snapshot_key(keys), verify)
@@ -2043,7 +2093,7 @@ def main(argv=None):
         return 0
     if a.cmd == "fsck":
         try:
-            problems = fsck(cfg["data_dir"], storage=cfg.get("storage"))
+            problems = fsck(cfg["data_dir"], storage=cfg.get("storage"), record_key=cfg.get("record_key"))
         except (OSError, ValueError, StorageUnavailable) as e:
             print(f"tracekit signer fsck: {e}", file=sys.stderr)
             return 2
