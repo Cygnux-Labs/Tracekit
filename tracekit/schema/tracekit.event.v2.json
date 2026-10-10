@@ -1332,9 +1332,14 @@
             },
             "attested": {
               "type": "boolean"
+            },
+            "person": {
+              "type": "string",
+              "maxLength": 256,
+              "description": "an OIDC identity's stable person id"
             }
           },
-          "description": "the bridge (e.g. Slack) that answered for the approver, as the signer's transport established it"
+          "description": "the bridge (Slack, or the viewer's approval pages) that answered for the approver, as the signer's transport established it"
         },
         "groups": {
           "type": "array",
@@ -1349,6 +1354,24 @@
           "type": "string",
           "maxLength": 4096,
           "description": "the person id the signer's config maps the approver to"
+        },
+        "passkey": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "credential_id",
+            "user_verified"
+          ],
+          "properties": {
+            "credential_id": {
+              "type": "string",
+              "maxLength": 4096
+            },
+            "user_verified": {
+              "const": true
+            }
+          },
+          "description": "the WebAuthn credential whose assertion over the approval's binding digest the signer verified"
         }
       }
     },

@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Tracekit approvals</title>
+<style>
+body { font: 14px system-ui, sans-serif; margin: 2em; max-width: 64em; }
+table { border-collapse: collapse; }
+th, td { padding: .3em .6em; border-bottom: 1px solid #ddd; text-align: left; vertical-align: top; }
+pre { background: #f4f4f4; padding: 1em; white-space: pre-wrap; overflow-wrap: anywhere; }
+dt { font-weight: bold; } dd { margin: 0 0 .4em 0; overflow-wrap: anywhere; }
+.error { color: #b00020; }
+</style>
+</head>
+<body>
+<h1>Approvals</h1>
+<p id="who"></p>
+<p><button id="register">Register a passkey</button></p>
+<p class="error" id="error"></p>
+<table>
+<thead><tr><th>Approval</th><th>State</th><th>Tool</th><th>Rules</th><th>Run</th><th>Expires</th></tr></thead>
+<tbody id="list"></tbody>
+</table>
+<section id="detail" hidden>
+<h2 id="title"></h2>
+<dl id="facts"></dl>
+<h3>Arguments (the signer's copy)</h3>
+<pre id="args"></pre>
+<p><label>Reason <input id="reason" maxlength="1024" size="60"></label></p>
+<p><button id="approve">Approve</button> <button id="reject">Reject</button></p>
+</section>
+<script>
+"use strict";
+// every value is set with textContent, never parsed as markup; bidi and invisible format characters are shown escaped
+const vis = s => String(s).replace(/[؜​-‏‪-‮⁠-⁩﻿]/g,
+  c => "\\u" + c.charCodeAt(0).toString(16).padStart(4, "0"));
+const $ = id => document.getElementById(id);
+const b64u = buf => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+const unb64u = s => Uint8Array.from(atob(s.replace(/-/g, "+").replace(/_/g, "/")), c => c.charCodeAt(0));
+let session = null, current = null;
+
+async function api(path, body) {
+  const r = await fetch(path, body === undefined ? {} : {method: "POST", body: JSON.stringify(body),
+    headers: {"Content-Type": "application/json", "X-CSRF-Token": session.csrf}});
+  const out = await r.json();
+  if (!r.ok) throw new Error(out.error || String(r.status));
+  return out;
+}
+
+function fail(e) { $("error").textContent = vis(e.message || e); }
+
+async function list() {
+  const page = await api("/api/approvals"), rows = $("list");
+  rows.replaceChildren();
+  for (const a of page.approvals) {
+    const row = rows.insertRow(), open = document.createElement("button");
+    open.textContent = vis(a.approval_id);
+    open.addEventListener("click", () => show(a.approval_id).catch(fail));
+    row.insertCell().append(open);
+    for (const v of [a.state, a.tool + (a.passkey ? " (passkey)" : ""), a.rule_ids.join(", "), a.run_id, a.expires_at])
+      row.insertCell().textContent = vis(v);
+  }
+}
+
+async function show(id) {
+  current = await api("/api/approvals/" + encodeURIComponent(id));
+  $("title").textContent = vis(current.approval_id + " (" + current.state + ")");
+  const facts = [["tool", current.tool], ["rules", current.rule_ids.join(", ")], ["run", current.run_id],
+    ["call", current.tool_call_id + " attempt " + current.attempt], ["requester", current.requester],
+    ["expires", current.expires_at], ["binding", current.binding_digest],
+    ["passkey", current.passkey ? "required to approve" : "not required"]];
+  if ("reason" in current) facts.push(["reason given by the agent (unverified)", current.reason]);
+  $("facts").replaceChildren(...facts.flatMap(([k, v]) => {
+    const dt = document.createElement("dt"), dd = document.createElement("dd");
+    dt.textContent = k;
+    dd.textContent = vis(v);
+    return [dt, dd];
+  }));
+  $("args").textContent = vis(current.args === null ? "(deleted: the approval is no longer live)"
+    : current.args_source === "raw" ? current.args : JSON.stringify(current.args, null, 2));
+  $("detail").hidden = false;
+}
+
+async function decide(decision) {
+  const body = {decision}, reason = $("reason").value;
+  if (reason) body.reason = reason;
+  if (decision === "approve" && current.passkey) {
+    const cred = await navigator.credentials.get({publicKey: {challenge: unb64u(current.challenge),
+      rpId: session.rp_id, userVerification: "required", timeout: 120000}});
+    body.passkey = {credential_id: b64u(cred.rawId), client_data_json: b64u(cred.response.clientDataJSON),
+      authenticator_data: b64u(cred.response.authenticatorData), signature: b64u(cred.response.signature)};
+  }
+  const out = await api("/api/approvals/" + encodeURIComponent(current.approval_id), body);
+  $("error").textContent = "";
+  await show(out.approval_id);
+  await list();
+}
+
+async function register() {
+  const user = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(session.person));
+  const cred = await navigator.credentials.create({publicKey: {challenge: crypto.getRandomValues(new Uint8Array(32)),
+    rp: {id: session.rp_id, name: "Tracekit"}, user: {id: user, name: session.person, displayName: session.person},
+    pubKeyCredParams: [{type: "public-key", alg: -7}, {type: "public-key", alg: -8}],
+    authenticatorSelection: {residentKey: "required", userVerification: "required"}}});
+  await api("/api/passkey", {credential_id: b64u(cred.rawId), public_key: b64u(cred.response.getPublicKey())});
+  $("error").textContent = "";
+  $("who").textContent = vis("Signed in as " + session.person + "; passkey registered");
+}
+
+$("approve").addEventListener("click", () => decide("approve").catch(fail));
+$("reject").addEventListener("click", () => decide("reject").catch(fail));
+$("register").addEventListener("click", () => register().catch(fail));
+api("/api/session").then(s => {
+  session = s;
+  $("who").textContent = vis("Signed in as " + s.person);
+  $("register").hidden = !s.rp_id;
+  return list();
+}).catch(fail);
+</script>
+</body>
+</html>
