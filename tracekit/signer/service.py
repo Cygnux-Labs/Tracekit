@@ -29,7 +29,10 @@ signer.yaml:
     policy: /etc/tracekit/policy.yaml        # policy v2 (YAML or JSON); default tracekit/policy2/packs/dev.yaml
     origin: tracekit.example.org/log/1       # checkpoint origin, the log key's name; default tracekit.local/<log_id>
     metrics: {listen: 127.0.0.1:9464}        # Prometheus GET /metrics on its own port (tracekit.signer.metrics),
-                                             # and GET /logs/v0: this signer's logs, for witnesses to poll
+                                             # and GET /logs/v0: this signer's logs, for witnesses to poll, and
+                                             # the logs' tiles and anchors, for monitors (SignerService.tlog);
+                                             # serve_records: true adds the record entries a monitor of the record
+                                             # log reads (every tenant's records: keep that port private)
     witnesses:                               # C2SP tlog-witnesses that cosign every new note (tracekit.tlog_witness)
       - {url: https://witness.example.org, vkey: "witness.example.org/w1+1234abcd+BA...", class: customer}
     contact: ops@example.org                 # the logs list's contact line; default the origin
@@ -84,6 +87,9 @@ the latest record tree note in Rekor v2 with an RFC 3161 timestamp, at most once
 keys/rekor.key (P-256, its public key written to <data_dir>/rekor.pub on start), and stores the anchor through the
 storage (anchors.jsonl). It shares the retry queue, backoff and `witness_failed` gap.
 
+Monitoring (04-design §2.9): the metrics port also serves each log read-only as C2SP tlog-tiles, for
+`tracekit monitor` (SignerService.tlog).
+
 Policy (04-design §4): the signer classifies the tool and decides with policy2; every decide gets a fresh decision_id
 that one `complete` with the same arguments consumes. Only deny and ask are memoised, per (tool_call_id, attempt).
 
@@ -112,6 +118,7 @@ import collections
 import datetime
 import hashlib
 import hmac
+import itertools
 import json
 import logging
 import os
@@ -168,6 +175,8 @@ SNAPSHOT_RECORDS = 100_000
 CLASSES = ("public", "customer", "tracekit", "operator")
 GRACE_S, IDLE_S = 5.0, 3600.0
 FAIL_MODES = {"default": "closed"}
+TLOG_PATH = re.compile(r"/(?:registry/([0-9a-f]{32})/)?(?:(checkpoint)|tile/(entries|[0-9]|[1-5][0-9]|6[0-3])/"
+                       r"((?:x[0-9]{3}/)*[0-9]{3})(?:\.p/([1-9][0-9]?|1[0-9][0-9]|2[0-4][0-9]|25[0-5]))?)")
 CONFIG_KEYS = {"data_dir", "socket", "socket_mode", "tcp_endpoint", "http", "durability", "tenant", "tenants",
                "authorize", "limits", "acknowledge_rollback", "policy", "multi_tenant_apps", "migrators", "analyzers",
                "fail_modes", "grace_s", "idle_s", "origin", "metrics", "witnesses", "contact", "approvals",
@@ -692,6 +701,45 @@ class SignerService:
             out += [f"vkey {checkpoint.vkey(origin, checkpoint.ED25519, public)}",
                     f"qpd {int(86400 / CHECKPOINT_MIN_S)}", f"contact {self.contact}", ""]
         return "".join(line + "\n" for line in out)
+
+    def tlog(self, path, records=False):
+        """The bytes at `path` of the logs' read-only C2SP tlog-tiles API, or None: the record log at /, each tenant's
+        registry log at /registry/<id>/ (its origin's suffix), each with `checkpoint` (the latest note), hash tiles
+        `tile/<L>/<N>[.p/<W>]` and entry bundles `tile/entries/<N>[.p/<W>]`; and /anchors, the stored Rekor anchors
+        as JSON lines. A registry bundle is C2SP's (uint16 length ‖ leaf, per leaf); a record log bundle is JSON lines,
+        one record per line, as a record can be longer than a uint16 length. The record log's entry bundles (every
+        tenant's records: run ids, tool names, commitments) only with `records` (metrics.serve_records: true); its
+        checkpoint and hash tiles, and the registry logs (salted leaves), always."""
+        if path == "/anchors":
+            return "".join(json.dumps(a) + "\n" for a in self.log.storage.anchors()).encode("utf-8")
+        m = TLOG_PATH.fullmatch(path)
+        if not m:
+            return None
+        reg, note, kind, index, width = m.groups()
+        tenant = reg and next((t for t in sorted(self.log.tenants)
+                               if registry.origin(self.origin, self.log.tenant_salt(t)).endswith("/" + reg)), None)
+        if reg and tenant is None:
+            return None
+        if note:
+            latest = self.log.storage.checkpoint_latest(RECORDS if tenant is None else registry_tree(tenant))
+            return latest and latest[1].encode("utf-8")
+        n, w = int(index.replace("x", "").replace("/", "")), int(width or 256)
+
+        def read(tx):   # lean: on the writer thread, which owns the trees' edges; read tiles off it if monitors poll often
+            s = self.log.storage
+            tree, lo = s.tree if tenant is None else s.registry_merkle(tenant), n * 256
+            level = 0 if kind == "entries" else int(kind)
+            count = tree.size >> (8 * level)
+            if count < lo + w:
+                return None
+            if kind == "entries" and tenant is None:
+                if not records:
+                    return None
+                return "".join(json.dumps(r, separators=(",", ":")) + "\n" for r in s.iter_range(lo, lo + w)).encode()
+            if kind == "entries":
+                return b"".join(len(x).to_bytes(2, "big") + x for x in itertools.islice(s.registry_iter(tenant, lo), w))
+            return (b"".join(tree.edge[level]) if n == count // 256 else tree.store.get(level, n, 256))[:32 * w]
+        return self.log.write(read)
 
     def close_log(self):
         """Close the log for good: a signed log.closed{final_seq: its own seq} (a leaf in every tenant's registry),
@@ -1520,7 +1568,9 @@ def serve(cfg, service):
         raise ValueError("configure socket, tcp_endpoint and/or http")
     if "otlp" in cfg and not cfg.get("http"):
         raise ValueError("otlp is served on the http listener: configure http")
-    servers = [metrics.server(cfg["metrics"], service.metrics, service.logs_list)] if "metrics" in cfg else []
+    servers = [metrics.server(cfg["metrics"], service.metrics, service.logs_list,
+                              lambda p: service.tlog(p, cfg["metrics"].get("serve_records") is True))
+               ] if "metrics" in cfg else []
     handle = answering_hello(service.handle_frame, hello())
     if cfg.get("socket"):
         from tracekit.transport.unix import UnixServer
