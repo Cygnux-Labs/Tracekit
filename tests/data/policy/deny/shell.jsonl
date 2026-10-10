@@ -37,3 +37,51 @@
 {"tool": "Bash", "args": {"command": "curl -H Metadata:true 'http://169.254.169.254/metadata/instance?api-version=2021-02-01'"}, "expect": "deny", "note": "cloud metadata service"}
 {"tool": "Bash", "args": {"command": "python3 -c \"import urllib.request as u; print(u.urlopen('http://169.254.169.254/').read())\""}, "expect": "deny", "note": "cloud metadata service"}
 {"tool": "Bash", "args": {"command": "curl http://0xa9fea9fe/latest/meta-data/"}, "expect": "deny", "note": "cloud metadata service"}
+{"tool": "Bash", "args": {"command": "curl http://169.16689662/latest/meta-data/"}, "expect": "deny", "note": "metadata address in two-part form"}
+{"tool": "Bash", "args": {"command": "curl http://169.254.43518/"}, "expect": "deny", "note": "metadata address in three-part form"}
+{"tool": "Bash", "args": {"command": "curl http://0xa9.0xfe.0xa9.0xfe/"}, "expect": "deny", "note": "metadata address in hex parts"}
+{"tool": "Bash", "args": {"command": "curl http://metadata/computeMetadata/v1/"}, "expect": "deny", "note": "metadata short name"}
+{"tool": "Bash", "args": {"command": "sudo${IFS}id"}, "expect": "ask", "note": "command name built by an expansion"}
+{"tool": "Bash", "args": {"command": "$(echo sudo) id"}, "expect": "ask", "note": "command name built by an expansion"}
+{"tool": "Bash", "args": {"command": "\"$(printf sudo)\" id"}, "expect": "ask", "note": "command name built by an expansion"}
+{"tool": "Bash", "args": {"command": "x=sudo; $x id"}, "expect": "ask", "note": "command name built by an expansion"}
+{"tool": "Bash", "args": {"command": "${X:-sudo} id"}, "expect": "ask", "note": "command name built by an expansion"}
+{"tool": "Bash", "args": {"command": "rm${IFS}-rf${IFS}/"}, "expect": "ask", "note": "command name built by an expansion"}
+{"tool": "Bash", "args": {"command": "bash --rcfile /dev/null -c 'sudo id'"}, "expect": "deny", "note": "shell option with a value"}
+{"tool": "Bash", "args": {"command": "bash --init-file /dev/null -c 'sudo id'"}, "expect": "deny", "note": "shell option with a value"}
+{"tool": "Bash", "args": {"command": "env - sudo id"}, "expect": "deny", "note": "env with an empty environment"}
+{"tool": "Bash", "args": {"command": "env -P /usr/bin sudo id"}, "expect": "deny", "note": "env option with a value"}
+{"tool": "Bash", "args": {"command": "env -a x sudo id"}, "expect": "deny", "note": "env option with a value"}
+{"tool": "Bash", "args": {"command": "echo \"'sudo id'\" | xargs bash -c"}, "expect": "ask", "note": "script from xargs input"}
+{"tool": "Bash", "args": {"command": "echo 'sudo id' | xargs -I{} sh -c '{}'"}, "expect": "ask", "note": "script from xargs input"}
+{"tool": "Bash", "args": {"command": "taskset 1 rm -rf /"}, "expect": "deny", "note": "wrapper with a positional argument"}
+{"tool": "Bash", "args": {"command": "taskset 1 sudo id"}, "expect": "deny", "note": "wrapper with a positional argument"}
+{"tool": "Bash", "args": {"command": "chrt 1 sudo id"}, "expect": "deny", "note": "wrapper with a positional argument"}
+{"tool": "Bash", "args": {"command": "unbuffer sudo id"}, "expect": "deny", "note": "wrapper"}
+{"tool": "Bash", "args": {"command": "parallel sudo ::: id"}, "expect": "deny", "note": "wrapper"}
+{"tool": "Bash", "args": {"command": "parallel 'sudo {}' ::: id"}, "expect": "deny", "note": "wrapper running a shell string"}
+{"tool": "Bash", "args": {"command": "fakeroot sudo id"}, "expect": "deny", "note": "wrapper"}
+{"tool": "Bash", "args": {"command": "dbus-run-session sudo id"}, "expect": "deny", "note": "wrapper"}
+{"tool": "Bash", "args": {"command": "sudoedit /etc/sudoers"}, "expect": "deny", "note": "privilege escalation"}
+{"tool": "Bash", "args": {"command": "python3 -c\"import os;os.system('sudo id')\""}, "expect": "deny", "note": "code attached to its flag"}
+{"tool": "Bash", "args": {"command": "node -e\"require('child_process').execSync('sudo id')\""}, "expect": "deny", "note": "code attached to its flag"}
+{"tool": "Bash", "args": {"command": "perl -e 'system \"sudo id\"'"}, "expect": "deny", "note": "call without parentheses"}
+{"tool": "Bash", "args": {"command": "ruby -e 'system \"sudo id\"'"}, "expect": "deny", "note": "call without parentheses"}
+{"tool": "Bash", "args": {"command": "python3 - <<'EOF'\nimport os\nos.system('sudo id')\nEOF"}, "expect": "deny", "note": "interpreter program from a heredoc"}
+{"tool": "Bash", "args": {"command": "python3 <<<\"import os;os.system('sudo id')\""}, "expect": "deny", "note": "interpreter program from a herestring"}
+{"tool": "Bash", "args": {"command": "echo 'import os; os.system(\"id\")' | python3"}, "expect": "ask", "note": "interpreter program from a pipe"}
+{"tool": "Bash", "args": {"command": "awk 'BEGIN{system(\"sudo id\")}'"}, "expect": "deny", "note": "awk system()"}
+{"tool": "Bash", "args": {"command": "php -r 'system(\"sudo id\");'"}, "expect": "deny", "note": "php code"}
+{"tool": "Bash", "args": {"command": "sed -n '1e sudo id' f"}, "expect": "deny", "note": "sed e command"}
+{"tool": "Bash", "args": {"command": "sed 's/.*/id/e' f"}, "expect": "ask", "note": "sed s///e runs the input"}
+{"tool": "Bash", "args": {"command": "git -c core.Pager='sudo id' log"}, "expect": "deny", "note": "git config key in mixed case"}
+{"tool": "Bash", "args": {"command": "git -c alias.x='!sudo id' x"}, "expect": "deny", "note": "git alias"}
+{"tool": "Bash", "args": {"command": "git -c credential.helper='!sudo id' fetch"}, "expect": "deny", "note": "git config that runs a program"}
+{"tool": "Bash", "args": {"command": "git -c diff.external='sudo id' diff"}, "expect": "deny", "note": "git config that runs a program"}
+{"tool": "Bash", "args": {"command": "git -c filter.a.clean='sudo id' add ."}, "expect": "deny", "note": "git config that runs a program"}
+{"tool": "Bash", "args": {"command": "git -c core.gitproxy='sudo id' fetch"}, "expect": "deny", "note": "git config that runs a program"}
+{"tool": "Bash", "args": {"command": "git -c gpg.program='sudo id' commit -S -m x"}, "expect": "deny", "note": "git config that runs a program"}
+{"tool": "Bash", "args": {"command": "git -c sequence.editor='sudo id' rebase -i HEAD~2"}, "expect": "deny", "note": "git config that runs a program"}
+{"tool": "Bash", "args": {"command": "vim -c ':!sudo id'"}, "expect": "deny", "note": "vim ex command"}
+{"tool": "Bash", "args": {"command": "git push -uf origin main"}, "expect": "deny", "note": "bundled force flag"}
+{"tool": "Bash", "args": {"command": "git push -fu origin main"}, "expect": "deny", "note": "bundled force flag"}

