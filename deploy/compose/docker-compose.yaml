@@ -1,0 +1,115 @@
+# The Tracekit compose stack: signer, witness, viewer and Postgres, and an example agent (docs/deploy-compose.md).
+# `tracekit deploy compose --dir DIR` copies this file and writes signer.yaml, viewer.yaml, postgres/20-schema.sql and
+# secrets/ next to it. Keys and DSNs are secret files, never environment variables; .env holds ports only.
+name: tracekit
+
+services:
+  postgres:
+    # postgres:17-bookworm (multi-arch index), pinned by digest
+    image: postgres:17-bookworm@sha256:3645570cccdfa447589da9f57dd740faa29b30938e861289a5574b6ca6b03826
+    environment:
+      POSTGRES_DB: tracekit
+      POSTGRES_PASSWORD_FILE: /run/secrets/pg-admin.password
+    secrets: [pg-admin.password, pg-signer.password, pg-viewer.password]
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+      - ./postgres:/docker-entrypoint-initdb.d:ro   # roles, then the tables and grants, on the first start only
+    networks: [db]
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres", "-d", "tracekit"]
+      interval: 2s
+      retries: 30
+    restart: unless-stopped
+
+  signer:
+    build: {context: ../.., dockerfile: deploy/docker/Dockerfile}
+    image: tracekit-signer:compose
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: [/tmp]
+    volumes:
+      - ./signer.yaml:/etc/tracekit/signer.yaml:ro
+      - signer-data:/var/lib/tracekit-signer      # keys: only the signer mounts it
+      - signer-run:/run/tracekit-signer           # the socket: shared with the agent only
+    secrets: [signer.dsn]
+    networks: [db, witness]                       # metrics and /logs/v0 on 9464, internal
+    depends_on:
+      postgres: {condition: service_healthy}
+      witness: {condition: service_started}
+    restart: unless-stopped
+
+  witness:
+    # omniwitness from a pinned commit; litewitness with `docker compose build --build-arg WITNESS=litewitness witness`
+    build: {context: ./witness, args: {WITNESS: omniwitness}}
+    image: tracekit-witness:compose
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: [/tmp]
+    volumes: [witness-data:/data]
+    secrets: [witness.key, witness.ssh]
+    networks: [witness]
+    restart: unless-stopped
+
+  viewer:
+    build: {context: ../.., dockerfile: deploy/docker/Dockerfile}
+    image: tracekit-signer:compose
+    entrypoint: [tracekit, view, --config, /etc/tracekit/viewer.yaml, --host, 0.0.0.0, --port, "7778", --insecure-http]
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: [/tmp]
+    healthcheck: {disable: true}
+    volumes: [./viewer.yaml:/etc/tracekit/viewer.yaml:ro]
+    secrets: [viewer.dsn]                         # the SELECT-only role
+    networks: [db, front]
+    ports: ["127.0.0.1:${VIEWER_PORT:-7778}:7778"]
+    depends_on:
+      signer: {condition: service_healthy}
+    restart: unless-stopped
+
+  agent:
+    # An example agent: another uid, its own network, only the socket volume. `docker compose run --rm agent`
+    build: {context: ../.., dockerfile: deploy/docker/Dockerfile}
+    image: tracekit-signer:compose
+    profiles: [agent]
+    user: "1000:1000"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    healthcheck: {disable: true}
+    volumes: [signer-run:/run/tracekit-signer]
+    networks: [agent]
+    depends_on:
+      signer: {condition: service_healthy}
+    entrypoint:
+      - python
+      - -c
+      - |
+        from tracekit.sdk.client import Client
+        with Client("/run/tracekit-signer/signer.sock").run(agent="compose-example") as run:
+            d = run.decide("c1", "Bash", {"command": "ls"})
+            run.complete("c1")
+        print(run.run_id, d["decision"])
+
+networks:
+  db: {internal: true}
+  witness: {internal: true}
+  agent: {internal: true}
+  front: {}
+
+volumes:
+  pg-data:
+  signer-data:
+  signer-run:
+  witness-data:
+
+secrets:
+  signer.dsn: {file: ./secrets/signer.dsn}
+  viewer.dsn: {file: ./secrets/viewer.dsn}
+  witness.key: {file: ./secrets/witness.key}
+  witness.ssh: {file: ./secrets/witness.ssh}
+  pg-admin.password: {file: ./secrets/pg-admin.password}
+  pg-signer.password: {file: ./secrets/pg-signer.password}
+  pg-viewer.password: {file: ./secrets/pg-viewer.password}

@@ -6,8 +6,8 @@
 The witness gets the note text and the log's Ed25519 signature only (any other line, such as a hybrid signature, is
 stripped), in a body of at most 10 KiB (litewitness's limit). A 409 carries the size the witness last cosigned: the
 client resends once from that size with a matching proof. Every other failure raises WitnessError, `retryable` for
-network errors, timeouts, a second 409 (a race), 429 and 5xx; not for 400/403/404/422 (malformed, unknown key or origin, inconsistent tree)
-or a bad cosignature."""
+network errors, timeouts, a second 409 (a race), 404 (an origin the witness has not registered yet from the signer's
+logs/v0 list), 429 and 5xx; not for 400/403/422 (malformed, unknown key, inconsistent tree) or a bad cosignature."""
 import base64
 import urllib.error
 import urllib.request
@@ -70,7 +70,7 @@ class TlogWitness:
             raise WitnessError(f"{self.name}: {e}", True) from None
 
     def _fail(self, status, resp):
-        return WitnessError(f"{self.name}: HTTP {status}: {resp.strip()[:200]}", status in (409, 429) or status >= 500)
+        return WitnessError(f"{self.name}: HTTP {status}: {resp.strip()[:200]}", status in (404, 409, 429) or status >= 500)
 
     def _size(self, resp, at_most):
         size = resp.strip()

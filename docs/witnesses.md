@@ -20,30 +20,14 @@ Signed with the same key as the records (over the canonical form without `sig`).
 | git repo without a remote | The signer's user on this machine | Same, locally | Root (A4) can rewrite it with the ledger. In system mode it protects against the agent's user (A1–A3); in dev mode the agent's user owns it and can rewrite it too. Not off-machine |
 | file | Whoever can write the file | Checkpoint lines | Anyone who can write the file; use storage the host cannot rewrite (WORM, another machine's mount) |
 | Rekor (experimental) | Sigstore's public log | Retains each signed checkpoint publicly and permanently | Append-only and not controlled by the host, but publishing reveals activity timing to everyone; off by default |
-| witness service (`tracekit witness serve`) | Whoever runs it: the security team, or a third party | Every checkpoint in an append-only RFC 6962 Merkle log with signed tree heads | Nothing logged, without detection: a second history for a logged sequence number is refused (fork), and readers with a pinned witness key check inclusion proofs. A reader that also keeps a `state=` file checks each new tree head is consistent with the last one it saw, so the operator cannot drop or rewrite entries that reader has already seen. Without `state=`, a rewrite is not detected |
+| v1 witness log (HTTP, `https://` spec) | Whoever runs it | Every checkpoint in an append-only RFC 6962 Merkle log with signed tree heads | Nothing logged, without detection, for a reader that pins the witness key and keeps a `state=` file. Tracekit no longer ships this server: new deployments use the v2 C2SP witness below |
 
-## Witness service
+## v1 witness logs
 
-```bash
-# on the witness host
-tracekit witness init  --home /srv/tkw          # creates the witness key; give witness.pub to signers and verifiers
-tracekit witness token box-1 --home /srv/tkw --signer-pub signer.pub     # prints a token once; binds it to that signer key
-tracekit witness serve --home /srv/tkw --host 0.0.0.0 --port 8444 --cert c.pem --key k.pem
-
-# signer: publish to it
-tracekit init ... --witness 'https://witness.example:8444#token=/var/lib/tracekit/witness.token&key=/var/lib/tracekit/witness.pub'
-# verifier: read from it (the witness key must be pinned; state= remembers the last tree head for consistency checks)
-tracekit verify run.tkb --witness 'https://witness.example:8444#key=witness.pub&state=~/.tkw-sth.json'
-```
-
-| Endpoint | |
-|---|---|
-| `POST /v1/checkpoints` | token-authenticated; the checkpoint must be signed by the key registered for the token. Returns the index, a signed tree head and an inclusion proof. Same checkpoint again: the same receipt. Different head for a logged sequence number: `409` and a conflict record |
-| `GET /v1/checkpoints?after=N` | entries with inclusion proofs against the current signed tree head |
-| `GET /v1/sth`, `/v1/consistency?first=&second=` | signed tree head; RFC 6962 consistency proof between two sizes |
-| `GET /v1/conflicts`, `/v1/key` | refused forks; the witness public key |
-
-The witness holds checkpoints only (sequence numbers, hashes, key ids, timestamps), never ledger content.
+`tracekit verify run.tkb --witness 'https://witness.example:8444#key=witness.pub&state=~/.tkw-sth.json'` still reads an
+existing v1 witness log: every entry needs an inclusion proof against a tree head signed by the pinned key, and with
+`state=` each new tree head must be consistent with the last one seen. The v1 witness server itself is gone; the v2
+signer's witness is a C2SP tlog-witness (below), and the compose stack ships one (docs/deploy-compose.md).
 
 ## Kinds
 
@@ -119,8 +103,9 @@ metrics: {listen: 0.0.0.0:9464, allow_remote: true}   # serves GET /logs/v0 to t
 - The signer's logs list, in the witness network's `logs/v0` format (vkey, qpd, contact per log), is at
   `GET /logs/v0` on the metrics port. A new tenant adds a registry log to it.
 
-**omniwitness** (tested against, not shipped or pinned: `tests/test_witness_publish.py` runs it when the binary is on
-PATH; Apache-2.0, github.com/transparency-dev/witness). Its key file
+**omniwitness** (shipped: the compose stack builds it from a pinned commit, `deploy/compose/witness/Dockerfile`, see
+docs/deploy-compose.md; `tests/test_witness_publish.py` runs it when the binary is on PATH; Apache-2.0,
+github.com/transparency-dev/witness). Its key file
 is a note signing key, `PRIVATE+KEY+<name>+<key id>+<base64(0x01 ‖ Ed25519 seed)>`; it registers the signer's logs by
 polling the list:
 
@@ -130,7 +115,7 @@ omniwitness --listen=:8080 --private_key_path=/etc/omniwitness/key --db_file=/va
   --rate_limit=10
 ```
 
-**litewitness** (supported; BSD-3-Clause, `go install filippo.io/torchwood/cmd/litewitness@v0.10.0`). Its key lives in
+**litewitness** (supported, and the compose stack's alternative build; BSD-3-Clause, `go install filippo.io/torchwood/cmd/litewitness@v0.10.0`). Its key lives in
 an ssh-agent on a dedicated socket. Register the logs from the list with `witnessctl pull-logs` (from cron, so new
 tenants' registry logs are added):
 
