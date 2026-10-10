@@ -1,10 +1,12 @@
-"""HTTP(S) server for the network services that face other machines (witness, ingest gateway).
+"""HTTP(S) server for the network services (signer, issuer, gateway, viewer, Slack bridge, metrics, witness, ingest).
 
 The TLS handshake runs in the connection's own thread under a timeout, never in accept() on the serving thread, so a
 client that connects and says nothing holds one handler slot until it times out instead of stalling every client.
 Each read has a timeout, and each connection an overall deadline, so a client that sends one byte per read timeout is
 closed too. Handler threads are bounded overall and per client IP: a connection over the per-IP limit is closed at once,
-one over the overall limit waits briefly for a free slot and is then closed."""
+one over the overall limit waits briefly for a free slot and is then closed. A handler whose answers may take long (a
+long-poll, an event stream) stops the deadline once it has read a request (stop_deadline) and, on a kept-alive
+connection, starts it again before reading the next one (restart_deadline), so an idle connection is closed too."""
 import socket
 import threading
 from http.server import ThreadingHTTPServer
@@ -25,6 +27,7 @@ class Server(ThreadingHTTPServer):
         self.ssl_context, self.conn_timeout, self.deadline = ssl_context, timeout, deadline
         self._slots = threading.BoundedSemaphore(max_threads)
         self.max_per_ip, self._per_ip, self._ip_lock = max_per_ip, {}, threading.Lock()
+        self._conn = threading.local()   # the connection this handler thread serves, and its deadline timer
 
     def _ip_release(self, ip):
         with self._ip_lock:
@@ -53,10 +56,8 @@ class Server(ThreadingHTTPServer):
             raise
 
     def process_request_thread(self, request, client_address):
-        raw = request.dup()  # wrap_socket detaches request; the dup still reaches the connection
-        timer = threading.Timer(self.deadline, self._cut, (raw,))  # handshake, request line, headers and body
-        timer.daemon = True
-        timer.start()
+        raw = self._conn.raw = request.dup()  # wrap_socket detaches request; the dup still reaches the connection
+        self.restart_deadline()  # handshake, request line, headers and body
         try:
             request.settimeout(self.conn_timeout)  # handshake and every read or write after it
             if self.ssl_context:
@@ -68,11 +69,24 @@ class Server(ThreadingHTTPServer):
         except Exception:
             self.handle_error(request, client_address)
         finally:
-            timer.cancel()
+            self.stop_deadline()
             raw.close()
             self.shutdown_request(request)
             self._slots.release()
             self._ip_release(client_address[0])
+
+    def restart_deadline(self):
+        """From the handler's thread: the connection is cut `deadline` seconds from now."""
+        self.stop_deadline()
+        timer = self._conn.timer = threading.Timer(self.deadline, self._cut, (self._conn.raw,))
+        timer.daemon = True
+        timer.start()
+
+    def stop_deadline(self):
+        """From the handler's thread: no deadline until restart_deadline(); every read and write still times out."""
+        timer = getattr(self._conn, "timer", None)
+        if timer:
+            timer.cancel()
 
     @staticmethod
     def _cut(sock):
