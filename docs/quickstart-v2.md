@@ -81,6 +81,9 @@ coerced), the `signer_isolation` the signer recorded for each run (`isolation`),
 (`fail-open classes`), and `key assurance`: `asserted`, because the log declares its own keys and nothing attests them
 yet. `witnessed+monitored` needs a log monitor's report ([monitor.md](monitor.md)).
 
+To browse the runs instead, `tracekit view` (the dev signer's store, read-only) lists each run with its verifier
+verdict, and replays and reviews one ([viewer.md](viewer.md#laptop-viewer)).
+
 ## What `dev` assurance means
 
 `Integrity: VERIFIED` means three things. The bundle's records were signed by the log key you pinned. They form one

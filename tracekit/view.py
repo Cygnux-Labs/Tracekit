@@ -28,6 +28,7 @@ import argparse
 import atexit
 import base64
 import collections
+import glob
 import hashlib
 import hmac
 import io
@@ -52,7 +53,9 @@ from .format.records import RecordSigner
 from .identity import oidc, webauthn
 from .identity.k8s_sa import _https
 from .netserver import Server
+from .policy2 import compile as policy_compile
 from .sdk.client import Client, Incompatible, SignerUnavailable
+from .signer.pipeline import SIGNER_RUN
 from .signer.rpc_schema import RPCError
 from .signer.service import dev_data_dir, load_config, lookup, read_vkeys, reader
 from .storage.base import StorageCorrupt, StorageUnavailable
@@ -235,22 +238,198 @@ class ApprovalDesk:
                                               **{k: body[k] for k in ("decision", "reason", "passkey") if k in body}})
 
 
+ENGINE_RULES = {"TK-UNKNOWN-TOOL": "a tool the policy does not map", "TK-SQL-PARSE": "SQL no dialect reads",
+                "TK-OVERSIZE": "arguments too large to check", "TK-SHELL-PARSE": "a shell command that does not parse"}
+SEVERE_GAPS = {"hook_missing", "proxy_missing", "policy_unrecorded", "state_tamper", "rollback", "key_revoked",
+               "decision_flip", "executed_against_denial"}
+
+
+def policy_reasons(paths=()):
+    """policy_hash -> {rule id: reason} of the shipped packs and the policy files `paths`: a decision's rule reasons
+    are shown only from the policy whose hash it records."""
+    out = {}
+    for p in sorted(glob.glob(os.path.join(os.path.dirname(policy_compile.__file__), "packs", "*.yaml"))) + list(paths):
+        pol, errors = policy_compile.build(p)
+        if not errors:
+            out[policy_compile.policy_hash(pol)] = {r["id"]: r.get("reason") or r.get("label") or ""
+                                                    for sec in policy_compile.SECTIONS for r in pol.get(sec, [])}
+    return out
+
+
+def _who(i):
+    """An identity record ({scheme, subject, attested, person?}) as text."""
+    if not isinstance(i, dict):
+        return "?"
+    return (f"{i.get('scheme')}:{i.get('subject')} ({'attested' if i.get('attested') else 'not attested'})"
+            + (f" · person {i['person']}" if i.get("person") else ""))
+
+
+def _hms(ts):
+    return ts[11:19] + " UTC" if ts else "?"
+
+
 class Translator(observe.Translator):
-    """v2 records -> the observer's record shape. A v2 policy.decision names its tool (there is no tool.call), and a
-    type the observer has no row for is shown as an info alert, so every record of the run appears in order."""
+    """v2 records -> the observer's record shape. A v2 policy.decision names its tool (there is no tool.call), and
+    every other type is an alert with a line of text, so every record of the run appears in order. Each record carries
+    `v2` (type, run_seq and what the page's detail and run review need); the signer's own run is `signer`, no agent.
+    Arguments are only a salted commitment: a decision's target is its rules' reasons, from `reasons` (policy_reasons)."""
+
+    def __init__(self, reasons=None):
+        super().__init__()
+        self.reasons = reasons or {}
+        # lean: approval_id -> tool for the viewer's life, like agent_names; bound both once stores hold millions
+        self.requests = {}
+
+    def _base(self, e, rec, event):
+        return {**super()._base(e, rec, event), "agent": self.agent_names.get(e["run_id"], "agent")}
+
+    def rules(self, d):
+        known = self.reasons.get(d.get("policy_hash"), {})
+        return [{"id": i, "reason": known.get(i) or ENGINE_RULES.get(i, "")} for i in d.get("rule_ids") or []]
 
     def feed(self, rec):
         e = rec["event"]
         t, d = e["type"], e.get("data") or {}
+        out = self._v2(e, rec, t, d)
+        info = {"type": t, "run_seq": e.get("run_seq"), "tool_use_id": d.get("tool_use_id")
+                or (d.get("binding") or {}).get("tool_call_id") or e.get("tool_call_id")}
+        for x in out:
+            x["v2"] = {**info, **x.get("v2", {})}
+            if e["run_id"] == SIGNER_RUN[1]:
+                x.update(signer=True, agent="signer")
+        return out
+
+    def _v2(self, e, rec, t, d):
+        def alert(sev, title, text, tape, **v2):
+            return [{**self.alert(e, rec, sev, title, text, tape), "v2": v2}]
         if t == "run.registered":
             self.agent_names[e["run_id"]] = (d.get("agent") or {}).get("name") or "agent"
-            return [{**self._base(e, rec, "SessionStart"), "source": f"{d.get('signer_isolation')} signer"}]
-        if t in ("run.closing", "run.final"):
-            return [{**self._base(e, rec, "SessionEnd"), "reason": d.get("reason") or t}]
+            return [{**self._base(e, rec, "SessionStart"),
+                     "source": f"{d.get('signer_isolation')} signer · {_who(d.get('identity'))}"}]
+        if t == "run.closing":
+            return [{**self._base(e, rec, "SessionEnd"), "reason": {"close_run": "closed by the agent",
+                                                                    "idle_timeout": "closed after the idle timeout"}
+                     .get(d.get("reason"), d.get("reason"))}]
+        if t == "run.final":
+            cov = d.get("coverage") or {}
+            line = (f"final · head run_seq {d.get('head_run_seq')} · coverage {'+'.join(cov.get('layers') or []) or 'none'}"
+                    f" · reconciled {cov.get('reconciled', 0)}"
+                    + "".join(f" · unreconciled {k} {v}" for k, v in sorted((cov.get("unreconciled") or {}).items())))
+            return [{**self._base(e, rec, "SessionEnd"), "reason": line, "v2": {"coverage": line}}]
         if t == "policy.decision":
-            self.pending[d.get("tool_use_id")] = ({**e, "data": {"name": d.get("tool"), "tool_use_id": d.get("tool_use_id")}},
-                                                  rec)
-        return super().feed(rec) or [self.alert(e, rec, "info", t, json.dumps(d, ensure_ascii=False)[:200])]
+            dec, rules = d.get("decision"), self.rules(d)
+            r = self._base(e, rec, "PreToolUse")
+            r.update(tool_name=d.get("tool"), tool_use_id=d.get("tool_use_id"), tool_input={},
+                     target="; ".join(f"{x['id']} {x['reason']}".strip() for x in rules) or "no rule matched",
+                     policy={"decision": "deny" if dec == "deny" else "allow", "reasons": [x["id"] for x in rules],
+                             "flags": {"flag": ["flagged"], "ask": ["held_for_approval"]}.get(dec, [])},
+                     v2={"decision": dec, "rules": rules, "args_commitment": d.get("args_commitment"),
+                         "policy_hash": d.get("policy_hash"), "decision_id": d.get("decision_id")})
+            return [r]
+        tool = self.requests.get(d.get("approval_id"), "")
+        if t == "approval.request":
+            self.requests[d.get("approval_id")] = tool = (d.get("binding") or {}).get("tool", "")
+            rules = self.rules(d)
+            return alert("med", f"APPROVAL REQUESTED · {tool}",
+                         f"requested by {d.get('requester')} · rules "
+                         + ", ".join(f"{x['id']} {x['reason']}".strip() for x in rules)
+                         + f" · expires {_hms(d.get('expires_at'))}"
+                         + (" · signer executes (t2)" if d.get("executor") == "t2" else ""), "HOLD",
+                         approval="requested", rules=rules, binding_digest=d.get("binding_digest"))
+        if t == "approval":
+            dec, who = d.get("decision"), d.get("approver_identity")
+            text = (f"by {_who(who) if who else d.get('approver')}"
+                    + (f" · vouched for by {_who(d['via'])} via {d.get('channel')}" if d.get("via") else "")
+                    + (f" · “{d['reason']}”" if d.get("reason") else "")
+                    + (" · SELF-APPROVED" if d.get("self_approved") else " · not self-approved")
+                    + (" · BREAK-GLASS" if d.get("break_glass") else "") + (" · passkey" if d.get("passkey") else ""))
+            sev = "high" if dec == "self_approval_refused" or d.get("break_glass") else \
+                "med" if d.get("self_approved") else "info"
+            word = {"approve": "APPROVED", "reject": "REJECTED", "timeout": "TIMED OUT",
+                    "self_approval_refused": "SELF-APPROVAL REFUSED"}.get(dec, str(dec).upper())
+            return alert(sev, f"{word} · {tool or d.get('tool_use_id')}", text,
+                         "APPROVE" if dec == "approve" else "REJECT", approval=dec, approver=_who(who) if who else
+                         d.get("approver"), via=d.get("via") and _who(d["via"]), self_approved=d.get("self_approved"),
+                         break_glass=bool(d.get("break_glass")), reason=d.get("reason"))
+        if t in ("approval.consumed", "approval.expired", "approval.abandoned", "approval.refused",
+                 "approval.binding_mismatch"):
+            word = t.split(".")[1]
+            text = {"approval.consumed": "the approved call ran with the approved arguments",
+                    "approval.expired": "expired before anyone answered",
+                    "approval.binding_mismatch": "the call's arguments differ from the approved ones: refused"}.get(
+                t, d.get("reason") or "")
+            sev = {"approval.consumed": "info", "approval.expired": "med", "approval.abandoned": "low"}.get(t, "high")
+            return alert(sev, f"APPROVAL {word.replace('_', ' ').upper()} · {tool}", text,
+                         "APPROVE" if word == "consumed" else "HOLD" if sev != "high" else "ALERT", approval=word)
+        if t == "capture.gap" or t.startswith("reconcile."):
+            kind = d.get("kind") or t
+            text = (d.get("reason") or d.get("detail") or "")
+            text += f" · {d['missed_events']} events missed" if d.get("missed_events") else ""
+            text += f" · {_hms(d.get('from_ts'))}–{_hms(d.get('to_ts'))}" if d.get("from_ts") else ""
+            sev = "high" if t.startswith("reconcile.") or kind in SEVERE_GAPS else "med"
+            return alert(sev, f"GAP · {kind}", text.strip(" ·") or "signed gap: records may be missing", "GAP",
+                         kind=kind)
+        if t == "signer.epoch":
+            keys = d.get("keys") or []
+            return alert("info", "SIGNER EPOCH", f"{len(keys)} signing key(s): " + ", ".join(
+                f"{k.get('alg')} {str(k.get('kid'))[7:19]}" for k in keys)
+                + (f" · bridges v1 ledger at seq {d['bridge'].get('v1_last_seq')}" if d.get("bridge") else ""), "SIGNER")
+        if t == "key.retire":
+            return alert("med", "KEY RETIRED", f"{str(d.get('kid'))[7:19]} signs nothing after seq {d.get('last_seq')}",
+                         "SIGNER")
+        if t == "log.closed":
+            return alert("med", "LOG CLOSED", f"final seq {d.get('final_seq')}", "SIGNER")
+        if t == "refusal.summary":
+            return alert("med", f"SIGNER REFUSED {d.get('count')} · {d.get('code')}",
+                         f"from {d.get('identity')} · {_hms(d.get('from_ts'))}–{_hms(d.get('to_ts'))}", "SIGNER")
+        if t == "policy.external":
+            return alert("high" if d.get("decision") == "deny" else "info",
+                         f"EXTERNAL DECISION · {d.get('system')} · {d.get('decision')} · {d.get('tool')}",
+                         f"{', '.join(d.get('rule_ids') or [])} {d.get('reason', '')} · signature {d.get('signature')}",
+                         "ALERT")
+        if t == "state.write":
+            return alert("info", f"STATE WRITE · {d.get('store')}", f"key {d.get('key')}", "STATE")
+        return super().feed(rec) or alert("info", t, json.dumps(d, ensure_ascii=False)[:200], "ALERT")
+
+
+def review(records, rep, verdict):
+    """The run review of a verified run's records: what the page's run list and review show. `rep` is verify.v2's
+    report and `verdict` one of VERDICTS; `first` maps each line to the seq of its first record."""
+    out = {"verdict": verdict, "integrity": rep.integrity, "assurance": rep.assurance.split(";")[0],
+           "label": OPERATOR_SIDE, "agent": None, "records": len(records), "first_ts": None, "last_ts": None,
+           "decisions": collections.Counter(), "approvals": [], "gaps": collections.Counter(), "coverage": None,
+           "state": "open", "first": {}}
+    for rec in records:
+        e = rec["event"]
+        t, d = e["type"], e.get("data") or {}
+        out["first_ts"] = out["first_ts"] or e.get("ts")
+        out["last_ts"] = e.get("ts")
+        key = None
+        if t == "run.registered":
+            out["agent"] = (d.get("agent") or {}).get("name") or "agent"
+        elif t == "policy.decision":
+            out["decisions"][d.get("decision")] += 1
+            key = d.get("decision")
+        elif t == "approval":
+            out["approvals"].append({"decision": d.get("decision"), "tool_use_id": d.get("tool_use_id"),
+                                     "approver": _who(d["approver_identity"]) if d.get("approver_identity")
+                                     else d.get("approver"), "via": d.get("via") and _who(d["via"]),
+                                     "self_approved": bool(d.get("self_approved")),
+                                     "break_glass": bool(d.get("break_glass")), "seq": e.get("seq")})
+            key = "approval"
+        elif t == "capture.gap" or t.startswith("reconcile."):
+            key = "gap:" + (d.get("kind") or t)
+            out["gaps"][key[4:]] += 1
+        elif t == "run.final":
+            cov = d.get("coverage") or {}
+            out["coverage"] = {"layers": cov.get("layers") or [], "reconciled": cov.get("reconciled", 0),
+                               "unreconciled": cov.get("unreconciled") or {}}
+            out["state"] = "final"
+        elif t == "run.closing" and out["state"] == "open":
+            out["state"] = "closing"
+        if key and key not in out["first"]:
+            out["first"][key] = e.get("seq")
+    return out
 
 
 class StoreFeed:
@@ -273,7 +452,7 @@ class StoreFeed:
             checkpoint.parse_vkey(k)
         self.records, self.base, self.lock = [], 0, threading.Condition()
         self.runs = {}   # (tenant, run_id) -> {"count": records verified, "shown": records translated, "failed": report}
-        self.tr = Translator()
+        self.tr = Translator(policy_reasons([cfg["policy"]] if cfg.get("policy") else []))
         self.tmp = tempfile.mkdtemp(prefix="tk-view-")
         atexit.register(shutil.rmtree, self.tmp, True)
         self.trust = write_trust(os.path.join(self.tmp, "trust.json"), vkeys)
@@ -309,6 +488,14 @@ class StoreFeed:
             for key, run in list(r.runs.items()):
                 if note and run["seqs"][-1] < note[0] and len(run["seqs"]) != self.runs.get(key, {}).get("count"):
                     self._verify(r, note[1], key, len(run["seqs"]))
+                elif key not in self.runs and key != SIGNER_RUN:   # no checkpoint covers it yet: listed as pending
+                    first = next(iter(r.iter_run(*key)), None)
+                    name = first and ((first["event"].get("data") or {}).get("agent") or {}).get("name")
+                    with self.lock:
+                        self.runs[key] = {"count": 0, "shown": 0, "failed": None}
+                        self.records.append({**self.tr._base({"run_id": key[1]}, {}, "tk_run"), "tenant": key[0],
+                                             "review": {"verdict": "pending", "agent": name, "label": OPERATOR_SIDE}})
+                        self.lock.notify_all()
         finally:
             r.close()
 
@@ -318,22 +505,29 @@ class StoreFeed:
         state = self.runs.get(key) or {"count": 0, "shown": 0, "failed": None}
         e = {"run_id": run_id}
         if code:
+            rv = {"verdict": "failed", "integrity": rep.integrity, "assurance": rep.assurance.split(";")[0],
+                  "label": OPERATOR_SIDE, "agent": None}
+            try:   # placed at its run's last record's time, as a run that verifies is; only the time is read
+                e["ts"] = collections.deque(reader.iter_run(tenant, run_id), 1)[0]["event"]["ts"]
+            except (ValueError, KeyError, IndexError, TypeError, StorageCorrupt):
+                pass
             new = [self.tr.alert(e, {}, "high", f"RUN {run_id} · Integrity {rep.integrity}",
-                                 f"{OPERATOR_SIDE}\n\n{text}")]
+                                 f"{OPERATOR_SIDE}\n\n{text}", "VERIFY")]
             state = dict(state, count=count, failed=rep.integrity)
         else:
             records = list(reader.iter_run(tenant, run_id))
+            e["ts"] = records[-1]["event"]["ts"]   # the report sits at the end of what it covers
             new = [x for r in records[state["shown"]:] for x in self.tr.feed(r)]
-            types = collections.Counter(r["event"]["type"] for r in records)
-            verdicts = collections.Counter(r["event"]["data"].get("decision") for r in records
-                                           if r["event"]["type"] == "policy.decision")
-            summary = (f"tenant {tenant} · agent {self.tr.agent_names.get(run_id, '?')} · "
-                       f"{'final' if types['run.final'] else 'closing' if types['run.closing'] else 'open'} · decisions "
-                       + (", ".join(f"{v} {n}" for v, n in sorted(verdicts.items())) or "none")
-                       + f" · approvals {types['approval']} · gaps {types['capture.gap']}")
+            rv = review(records, rep, "verified")
+            summary = (f"tenant {tenant} · agent {rv['agent'] or '?'} · {rv['state']} · decisions "
+                       + (", ".join(f"{v} {n}" for v, n in sorted(rv["decisions"].items())) or "none")
+                       + f" · approvals {len(rv['approvals'])} · gaps {sum(rv['gaps'].values())}")
             new.append(self.tr.alert(e, records[-1], "info", f"RUN {run_id} · Integrity {rep.integrity} · Assurance "
-                                     f"{rep.assurance.split(';')[0]}", f"{summary}\n{self.note}\n{OPERATOR_SIDE}\n\n{text}"))
+                                     f"{rv['assurance']}", f"{summary}\n{self.note}\n{OPERATOR_SIDE}\n\n{text}", "VERIFY"))
             state = dict(state, count=count, shown=len(records), failed=None)
+        new[-1]["review"] = rv
+        if key == SIGNER_RUN:
+            new[-1].update(signer=True, agent="signer")
         with self.lock:
             self.runs[key] = state
             # lean: keeps every translated record in memory; bound it like observe.Feed once stores hold millions
