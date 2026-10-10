@@ -397,11 +397,13 @@ class SignerAnchors(unittest.TestCase):
         for origin in (ORIGIN, registry.origin(ORIGIN, self.s.log.tenant_salt("default"))):
             w.logs[origin] = checkpoint.vkey(origin, checkpoint.ED25519, public)
         self.s.close()
+        self.fake.status = 503   # one anchor per every_s: not of the restart's own note, but of the run's (the retry)
         self.s = svc.SignerService(self.dir, grace_s=0, origin=ORIGIN, witnesses=[TlogWitness(w.url, VKEY, timeout=5)],
                                    rekor={"signing_config": self.sc, "trusted_root": self.tr})
         self.addCleanup(self.s.close)
         cosigned = lambda: f"— {NAME} " in self.s.log.storage.checkpoint_latest()[1]   # noqa: E731
         run = self.finished_run()
+        self.fake.status = None
         anchored = lambda: f"— {NAME} " in (self.s.log.storage.anchors() or [{"note": ""}])[-1]["note"]   # noqa: E731
         self.assertTrue(wait_for(lambda: anchored() and cosigned(), 10))
         self.finished_run()
