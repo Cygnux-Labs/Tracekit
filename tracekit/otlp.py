@@ -270,6 +270,10 @@ def _tool_result(a):
     return None
 
 
+def tool_use_id(a, span_id):
+    return str(a.get("gen_ai.tool.call.id") or a.get("tool_call.id") or a.get("ai.toolCall.id") or f"otel_{span_id}")[:200]
+
+
 class _LRU:
     def __init__(self, cap):
         self.cap, self.d = cap, collections.OrderedDict()
@@ -355,7 +359,7 @@ class Mapper:
         name, args = _tool_name(a, sp), jsonable(_tool_args(a))
         if not isinstance(args, dict):
             args = {"arguments": args}
-        use_id = str(a.get("gen_ai.tool.call.id") or a.get("tool_call.id") or a.get("ai.toolCall.id") or f"otel_{sid}")[:200]
+        use_id = tool_use_id(a, sid)
         d = policy.evaluate(pol, name, args, self.cwd)
         would = d["decision"]
         decision = "flag" if would in ("deny", "ask") else would
