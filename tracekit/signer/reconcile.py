@@ -15,6 +15,11 @@ digests live in the run's `digests`, which no snapshot holds.
 L3 from the LLM gateway (source gateway, tier T2) takes precedence over agent-reported L3 for the same tool use id. With
 `gateway_mandatory` (signer.yaml) only gateway L3 counts, and a run with none still has its decides checked: each
 decide the gateway did not see is fabricated, whatever the agent reported.
+
+Decisions other systems made (policy.external, from decision_import) are indexed by tool call and system; each that
+disagrees with the signer's last decision for that call (flag counts as allow), names another tool, or names a call
+the signer never decided is a signed
+`capture.gap{decision_mismatch}` at the same point. The signer's decision stays the one that applied.
 """
 
 LAYERS = {"state.write": "L1", "policy.decision": "L2", "tool.result": "L2", "model.exchange": "L3"}
@@ -31,6 +36,12 @@ def observe(put, run, e, digests=None):
     # lean: the digests of a run's calls are lost on a restart; keep them in the sealed approvals store if runs often
     # outlive a signer restart
     rec, layer = run.get("rec"), LAYERS.get(e["type"])
+    if rec is not None and e["type"] == "policy.external":
+        if "ext" not in rec:
+            put(rec, "ext", {})
+        d = e["data"]
+        tcid = d["tool_use_id"]
+        put(rec["ext"], tcid, {**rec["ext"].get(tcid, {}), d["system"]: [d["decision"], d["tool"]]})
     if rec is None or layer is None:
         return
     digests = digests or {}
@@ -38,7 +49,8 @@ def observe(put, run, e, digests=None):
         put(rec["layers"], layer, True)
     if e["type"] == "policy.decision":
         tcid = e["tool_call_id"]
-        put(rec["l2"], tcid, {"name": e["data"]["tool"], "coerced": e.get("args_source") == "coerced"})
+        put(rec["l2"], tcid, {"name": e["data"]["tool"], "coerced": e.get("args_source") == "coerced",
+                              "decision": e["data"]["decision"]})
         put(run["digests"], "l2:" + tcid, digests.get(tcid))
     elif e["type"] == "model.exchange":
         gw = e["source"] == "gateway"
@@ -90,10 +102,25 @@ def finish(tx, run, mandatory=False):
     gateway_mandatory."""
     if run.get("rec") is None:
         return None
+    rec = run["rec"]
+    for tcid, systems in rec.get("ext", {}).items():
+        l2 = rec["l2"].get(tcid)
+        mine = l2 and ("allow" if l2.get("decision") == "flag" else l2.get("decision"))
+        for system, (theirs, tool) in systems.items():
+            if not l2:
+                reason = f"{system[:64]} decided {theirs} on {tool[:256]}; the signer decided nothing on this call"
+            elif tool != l2["name"]:
+                reason = f"{system[:64]} decided {theirs} on {tool[:256]}; the signer decided {mine} on {l2['name']}"
+            elif theirs != mine:
+                reason = f"{system[:64]} decided {theirs}; the signer decided {mine}"
+            else:
+                continue
+            tx.emit(run, "capture.gap", {"kind": "decision_mismatch", "tool_use_id": tcid, "reason": reason},
+                    source="signer", tool_call_id=tcid)
     found, unreconciled = _found(run, mandatory), {}
     for kind, tcid, layers, detail in found:
         tx.emit(run, "reconcile." + kind, {"layers": layers, "detail": detail}, source="signer", tool_call_id=tcid)
         unreconciled[kind] = unreconciled.get(kind, 0) + 1
-    rec, flagged = run["rec"], {tcid for _, tcid, _, _ in found}
+    flagged = {tcid for _, tcid, _, _ in found}
     return {"layers": sorted(rec["layers"]), "unreconciled": unreconciled,
             "reconciled": sum(t in rec["l2"] and t not in flagged for t in _l3(rec, mandatory))}

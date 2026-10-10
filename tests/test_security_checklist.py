@@ -26,6 +26,7 @@ from tracekit.identity.token import BearerToken
 from tracekit.ledger import Keys
 from tracekit.signer import metrics
 from tracekit.transport import http as transport
+from tracekit.view import OidcLogin
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DOC = os.path.join(ROOT, "docs", "security-checklist.md")
@@ -113,10 +114,15 @@ class Surfaces(unittest.TestCase):
     def viewer(self):
         feed = types.SimpleNamespace(records=[{"tool_name": s} for s in HOSTILE], base=0, lock=threading.Condition(),
                                      verify=lambda: (0, [], None))
-        srv = ThreadingHTTPServer(("127.0.0.1", 0), observe.make_handler(feed, SECRET, ["127.0.0.1"]))
+        login = OidcLogin({"issuer": "corp", "client_id": "viewer", "redirect_uri": "https://127.0.0.1/callback",
+                           "roles": {"auditor": ["group:corp/auditors"]}},
+                          {"corp": {"issuer": "https://idp.invalid", "audience": "viewer"}})
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), observe.make_handler(feed, SECRET, ["127.0.0.1"], login=login))
         auth = {"Authorization": f"Bearer {SECRET}"}
         return srv, SECRET, [("GET", f"/nope?token={SECRET}", {}, 401), ("GET", "/nope", auth, 404),
-                             ("GET", "/api/stream?from=x", auth, 400), ("POST", "/", auth, 501)]
+                             ("GET", "/api/stream?from=x", auth, 400), ("POST", "/", auth, 501),
+                             ("GET", f"/callback?state=x&code={SECRET}", {"Cookie": "tracekit_login=x"}, 403),
+                             ("GET", "/api/snapshot", {"Cookie": f"tracekit_observe={SECRET}"}, 401)]
 
     def signer_http(self):
         srv = transport.HttpServer(("127.0.0.1", 0), [BearerToken(self.bearer)], None, lambda identity, frame: {})

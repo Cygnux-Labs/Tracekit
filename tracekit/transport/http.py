@@ -7,8 +7,10 @@ signer.yaml:
       key: tls/server.key
       client_ca:                                 # mtls: SPIFFE trust domain -> the CA bundle its IDs must chain to
         example.org: tls/example-ca.pem
-      authenticators: [k8s_sa, mtls, token]
+      authenticators: [oidc, k8s_sa, mtls, token]
       k8s_sa: {audience: tracekit-signer, ...}  # tracekit/identity/k8s_sa.py
+      oidc: {corp: {issuer: https://..., audience: tracekit-signer, ...}}   # tracekit/identity/oidc.py; also checks
+                                                 # register_run's principal_token when not an authenticator
       token_file: tls/bearer                     # token: a bearer secret (identity token:http)
       tokens: tokens.json                        # token: named, expiring tokens (identity token:NAME), managed with
                                                  # `tracekit signer token add|list|revoke` (identity/token.TokenStore)
@@ -37,6 +39,7 @@ from http.server import BaseHTTPRequestHandler
 
 from tracekit.identity.k8s_sa import K8sSaAuthenticator
 from tracekit.identity.mtls import MtlsAuthenticator
+from tracekit.identity.oidc import OidcAuthenticator
 from tracekit.identity.token import BearerToken, TokenStore
 from tracekit.otlp_wire import MAX_BODY as OTLP_MAX_BODY
 from tracekit.signer.quotas import MAX_LINE, Limits, Quotas
@@ -45,14 +48,16 @@ from tracekit.transport import READ_TIMEOUT_S, parse_frame
 
 PATH = "/v2/rpc"
 OTLP_PATH = "/v1/traces"
-KEYS = {"listen", "cert", "key", "client_ca", "authenticators", "k8s_sa", "token_file", "tokens", "insecure_loopback"}
+KEYS = {"listen", "cert", "key", "client_ca", "authenticators", "k8s_sa", "oidc", "token_file", "tokens",
+        "insecure_loopback"}
+AUTHENTICATORS = {"k8s_sa", "mtls", "oidc", "token"}
 FAILED_PER_ADDR = Limits(events_per_s=1, burst=20, buckets=4096)   # failed authentications per source address
 FAILED_TOTAL = Limits(events_per_s=50, burst=500, buckets=1)
 
 
-def configure(cfg):
+def configure(cfg, oidc=None):
     """((host, port), authenticators, TLS context or None) for the `http` section of signer.yaml, its paths absolute.
-    ValueError for anything missing, unknown or unsafe."""
+    ValueError for anything missing, unknown or unsafe. `oidc`: the OidcAuthenticator to use (default: a new one)."""
     if not isinstance(cfg, dict) or set(cfg) - KEYS:
         raise ValueError(f"http: a mapping of {sorted(KEYS)}")
     host, _, port = str(cfg.get("listen", "")).rpartition(":")
@@ -60,8 +65,8 @@ def configure(cfg):
     if not host or not port.isdigit():
         raise ValueError("http.listen: host:port")
     names = cfg.get("authenticators")
-    if not isinstance(names, list) or not names or len(set(names)) != len(names) or set(names) - {"k8s_sa", "mtls", "token"}:
-        raise ValueError("http.authenticators: a list of k8s_sa, mtls, token")
+    if not isinstance(names, list) or not names or len(set(names)) != len(names) or set(names) - AUTHENTICATORS:
+        raise ValueError(f"http.authenticators: a list of {', '.join(sorted(AUTHENTICATORS))}")
     cas = cfg.get("client_ca")
     if cas is not None and not (isinstance(cas, dict) and cas and all(
             isinstance(k, str) and k and isinstance(v, str) and v for k, v in cas.items())):
@@ -77,6 +82,8 @@ def configure(cfg):
             tls.verify_mode = ssl.CERT_OPTIONAL   # a presented certificate must verify; mtls refuses a missing one
     elif cfg.get("cert") or cfg.get("key") or cfg.get("insecure_loopback") is not True or not _loopback(host):
         raise ValueError("http: needs cert and key (plain HTTP only with insecure_loopback on a loopback address)")
+    if oidc is None and cfg.get("oidc") is not None:
+        oidc = OidcAuthenticator(cfg["oidc"])
     auths = []
     for name in names:
         if name == "mtls":
@@ -90,6 +97,10 @@ def configure(cfg):
                 auths.append(TokenStore(cfg["tokens"]))
             if cfg.get("token_file"):
                 auths.append(BearerToken(cfg["token_file"]))
+        elif name == "oidc":
+            if oidc is None:
+                raise ValueError("http: oidc needs the oidc section")
+            auths.append(oidc)
         else:
             try:
                 auths.append(K8sSaAuthenticator(**cfg.get("k8s_sa", {})))
@@ -104,6 +115,9 @@ def resolve(cfg, base):
         for k in ("cert", "key", "token_file", "tokens", "ca"):
             if isinstance(section, dict) and isinstance(section.get(k), str) and section[k]:
                 section[k] = os.path.join(base, section[k])
+    for section in (cfg.get("oidc") or {}).values() if isinstance(cfg, dict) and isinstance(cfg.get("oidc"), dict) else ():
+        if isinstance(section, dict) and isinstance(section.get("ca"), str) and section["ca"]:
+            section["ca"] = os.path.join(base, section["ca"])
     if isinstance(cfg, dict) and isinstance(cfg.get("client_ca"), dict):
         cfg["client_ca"] = {td: os.path.join(base, p) if isinstance(p, str) else p for td, p in cfg["client_ca"].items()}
 

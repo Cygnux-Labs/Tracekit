@@ -16,7 +16,7 @@ signer.yaml:
     socket: /run/tracekit/signer.sock        # Unix socket transport (peer uid, per frame on Linux)
     socket_mode: "0666"                      # chmod the socket after bind (default: as the umask leaves it)
     tcp_endpoint: /run/tracekit/endpoint.json   # loopback TCP dev transport (token, mutual HMAC)
-    http: {listen: 0.0.0.0:8443, ...}        # HTTPS with k8s_sa, mtls or token identity (tracekit/transport/http.py)
+    http: {listen: 0.0.0.0:8443, ...}        # HTTPS with k8s_sa, mtls, oidc or token identity (tracekit/transport/http.py)
     durability: ack-on-write                 # or ack-on-fsync
     log_key: {aws_kms: {key_id: alias/tracekit-log, region: eu-west-1}}   # the log key in AWS KMS
                                              # (tracekit.signer.logkey); default keys/log.key
@@ -32,6 +32,8 @@ signer.yaml:
                                              # file store in data_dir/store
     tenant: default                          # tenant of callers not in `tenants`
     tenants: {"uid:1001": acme, "k8s_sa:system:serviceaccount:acme:*": acme}   # identity or prefix:* -> tenant (attested)
+                                             # (identities, here and in authorize and approvals, also match as
+                                             # person:<id> and group:<alias>/<name> when OIDC: tracekit.identity.oidc)
     authorize: {"mtls:spiffe://acme/agent": [register_run, decide, complete, close_run]}   # identity or prefix:* ->
                                              # methods; uid and token:dev default to all, the rest to none
     multi_tenant_apps: ["uid:1002"]          # may assert a tenant per run (recorded as not attested)
@@ -59,18 +61,23 @@ signer.yaml:
     contact: ops@example.org                 # the logs list's contact line; default the origin
     anchors: {rekor: {signing_config: sigstage-signing_config.json, trusted_root: sigstage-trusted_root.json,
                       every_s: 3600}}        # Rekor v2 + RFC 3161 anchors of the record note (tracekit.anchor.rekor2)
-    approvals: {self_approval: deny, approvers: ["uid:1001", "mtls:spiffe://acme/ops/*"],   # identity or prefix/*
-                break_glass: ["uid:0"],      # may answer any approval, with a reason; recorded break_glass
+    approvals: {self_approval: deny, approvers: ["uid:1001", "mtls:spiffe://acme/ops/*", "group:corp/approvers"],
+                break_glass: ["uid:0", "group:corp/oncall"],   # may answer any approval, with a reason; recorded
+                                             # break_glass
                 persons: {"slack:T01/U02": alice, "mtls:spiffe://acme/ops/alice": alice}}   # identity -> person id,
                                              # so self-approval holds across channels (docs/approvals.md)
+    view: {oidc: {issuer: corp, client_id: tracekit-viewer, redirect_uri: https://view.example/callback,
+                  roles: {auditor: ["group:corp/auditors"]}}}   # `tracekit view` OIDC login (tracekit.view)
     webhook: [{url: https://siem.example.org/tracekit, format: ocsf, events: [deny, approval, gap, tamper],
                secret_file: webhook.secret}]  # OCSF events, HMAC-signed, off the writer (tracekit.signer.webhook)
     acknowledge_rollback: false
-    lock_timeout_s: 10                       # wait this long for the storage lock, then exit naming its holder's pid
+    lock_timeout_s: 10                    # wait this long for the storage lock, then exit naming its holder's pid
     fsck_every_s: 86400                      # full-chain check in the background (0: off; the dev signer's is off)
     clock_skew_s: 300                        # a witness cosignature this far from the signer's clock: clock_skew gap
     otlp: {max_spans: 512}                   # OTLP/HTTP POST /v1/traces on the `http` listener, for identities
                                              # `authorize` grants otlp_import (tracekit.signer.otel; docs/otel.md)
+    decision_keys: {vscode-agent-hooks: "<base64 Ed25519 public key>"}   # external policy systems whose record signatures
+                                             # decision_import requires and verifies (others: unverified)
     otel_out: {endpoint: https://otel.example.org/v1/traces, headers: {x-api-key: "..."}}   # each final run's spans
     harness_binding:                         # runs of these identities must come from a registered harness process
       helper: /var/lib/tracekit-signer/harness-helper.sock   # tracekit.harness_helper (default: read /proc here)
@@ -138,9 +145,15 @@ Who answers (design §5): with a config (`approvals`), only an approver of the r
 `self_approval: allow`. Without one (the dev signer), any identity of the run's tenant, a self-approval labelled
 (`self_approved`). The `approval` record carries the approver's identity as the transport established it. Approvals
 are listed and shown only to the run's owner and to those who may answer them. The requester, the run's owner and its
-principal count as one person with every identity `persons` maps to the same person id. A chat bridge granted
-`approval_decide_on_behalf` (never a default) sees its tenant's approvals and answers for the Slack user who clicked:
-that user (or a user group the bridge found them in) must be an approver; the record names both (`via`: the bridge).
+principal count as one person with every identity `persons` maps to the same person id; OIDC identities are compared
+by person id (an alias of the requester or the run's owner is the same person), and a run's attested principal never
+answers its run's approvals, break-glass or not. A chat bridge granted `approval_decide_on_behalf` (never a default)
+sees its tenant's approvals and answers for the Slack user who clicked: that user (or a user group the bridge found
+them in) must be an approver; the record names both (`via`: the bridge).
+
+Principal (04-design §2.2): register_run's `principal` is app-asserted (principal_attested: false); its
+`principal_token`, an end user's token that the `oidc` issuers (http.oidc) verify, records that user's person id with
+principal_attested: true. The token itself is never recorded.
 
 Privacy (04-design §1.2, §2.4; docs/privacy.md): a result and the approver's copy of the arguments go through
 privacy.redact before they are committed or stored; a result's record carries a `redaction` manifest (the rules that
@@ -182,6 +195,7 @@ from tracekit.format import checkpoint, registry, slh_dsa
 from tracekit.format.canon import StrictJSONError, canonical, event_hash, loads_strict
 from tracekit.format.records import RecordSigner, verify_record
 from tracekit.identity.base import CallerIdentity
+from tracekit.identity.oidc import keys, person
 from tracekit.locking import lock_file
 from tracekit.policy2 import compile as policy_compile
 from tracekit.policy2.engine import Engine
@@ -219,11 +233,13 @@ CONFIG_KEYS = {"data_dir", "socket", "socket_mode", "tcp_endpoint", "http", "dur
                "authorize", "limits", "acknowledge_rollback", "policy", "multi_tenant_apps", "migrators", "analyzers",
                "fail_modes", "grace_s", "idle_s", "origin", "metrics", "witnesses", "contact", "approvals",
                "lock_timeout_s", "fsck_every_s", "clock_skew_s", "anchors", "otlp", "otel_out", "storage", "gateways",
-               "gateway_mandatory", "log_key", "harness_binding", "record_key", "route", "webhook"}
+               "gateway_mandatory", "log_key", "harness_binding", "record_key", "route", "view", "decision_keys",
+               "webhook"}
 APPROVAL_KEYS = {"self_approval", "approvers", "break_glass", "persons"}
 OTLP_IMPORT = "otlp_import"   # an `authorize` grant, never a default: OTLP/HTTP import (otlp config section)
 ON_BEHALF = "approval_decide_on_behalf"   # an `authorize` grant, never a default: a chat bridge answers for its user
 OTLP_MAX_SPANS = 512
+DECISION_IMPORT = "decision_import"   # an `authorize` grant, never a default: an external policy system's decisions
 
 
 def load_policy(path=DEFAULT_POLICY, backend=None):
@@ -335,6 +351,13 @@ def lookup(table, sub, default=None):
     return default if best is None else table[best]
 
 
+def _recorded(identity):
+    """An identity as run.registered and approval records carry it."""
+    who = person(identity)
+    return {"scheme": identity.scheme, "subject": identity.subject[:256], "attested": identity.attested,
+            **({"person": who} if who else {})}
+
+
 def _process_identity():
     return CallerIdentity("uid", str(os.getuid()) if hasattr(os, "getuid") else "0", True)
 
@@ -346,7 +369,7 @@ class SignerService:
                  bridge=None, origin=None, authorize=None, contact=None, approvals=None, lock_timeout_s=0,
                  fsck_every_s=FSCK_S, clock_skew_s=CLOCK_SKEW_S, rekor=None, otlp=None, otel_out=None,
                  storage_config=None, gateways=(), gateway_mandatory=False, log_key=None, slh_dsa_file=None,
-                 harness_binding=None, record_key=None, route=None, webhooks=()):
+                 harness_binding=None, record_key=None, route=None, oidc=None, decision_keys=None, webhooks=()):
         """`identity` answers the in-process SignerAPI calls (default: this process's uid); transports call
         handle_frame with the identity they established. `policy` is a policy2 Engine (default: load_policy()).
         `open_storage()` defaults to the store `storage_config` (the `storage` config section) names, else file storage
@@ -363,9 +386,11 @@ class SignerService:
         `log_key`: a signer.logkey key (default: the file key in keys/log.key); it must be the key of the log's notes.
         `slh_dsa_file`: the SLH-DSA secret key file (created on first use) that adds a hybrid line to every note.
         `harness_binding` ({helper, required, harnesses}): the config section, or None.
+        `oidc`: the identity.oidc.OidcAuthenticator that checks register_run's principal_token, or None.
         `record_key`: the `record_key` config section: a fresh record key, certified by its issuer, at every start and
         once two thirds of its certificate's validity have passed (else the file key in keys/record.key).
         `route`: the prefix (before a dot) of this signer's run and approval ids, or None.
+        `decision_keys`: external system -> its base64 Ed25519 public key (the `decision_keys` config section).
         `webhooks`: webhook.Sender arguments ({url, events, secret}) of the `webhook` config section."""
         fail_modes = dict(fail_modes or FAIL_MODES)
         if not all(isinstance(k, str) and v in ("open", "closed") for k, v in fail_modes.items()):
@@ -397,6 +422,13 @@ class SignerService:
                 and isinstance(hb.get("helper", ""), str) and isinstance(hb.get("required", []), list)):
             raise ValueError("harness_binding takes helper (a socket path), required (identities) and harnesses "
                              "(name -> an absolute executable path, or {exe, script})")
+        try:
+            self._decision_keys = {k: crypto.spki(base64.b64decode(v, validate=True))
+                                   for k, v in (decision_keys or {}).items()}
+        except (AttributeError, TypeError, ValueError):
+            self._decision_keys = None
+        if self._decision_keys is None or any(crypto.key_alg(v) != "ed25519" for v in self._decision_keys.values()):
+            raise ValueError("decision_keys maps system names to base64 Ed25519 public keys")
         self.metrics = metrics.SignerMetrics()
         authorize = dict(authorize or {})
         if not all(isinstance(m, list) and set(m) <= {*REQUESTS, OTLP_IMPORT} for m in authorize.values()):
@@ -445,7 +477,7 @@ class SignerService:
         self._gateways, self.gateway_mandatory = {k: True for k in gateways}, bool(gateway_mandatory)
         self.fail_modes, self.grace_s, self.idle_s = fail_modes, grace_s, idle_s
         self.otlp_max_spans = otlp.get("max_spans", OTLP_MAX_SPANS)
-        self.approvals, self.data_dir, self.storage_config = approvals, data_dir, storage_config
+        self.approvals, self.data_dir, self.storage_config, self.oidc = approvals, data_dir, storage_config, oidc
         self.id_prefix = f"{route}." if route else ""
         self._harnesses, self._helper = harnesses, hb.get("helper")
         self._harness_required = {k: True for k in hb.get("required", ())}
@@ -614,9 +646,11 @@ class SignerService:
             raise
 
     def _grant(self, identity, method):
-        granted = lookup(self.authorize, subject(identity))
-        if granted is None:   # unconfigured: a uid or the dev token (scoped by DevToken) keeps every RPC method
-            granted = REQUESTS.keys() - {ON_BEHALF} if identity.scheme == "uid" or subject(identity) == "token:dev" else ()
+        found = [g for k in keys(identity) if (g := lookup(self.authorize, k)) is not None]
+        granted = {m for g in found for m in g}
+        if not found:   # unconfigured: a uid or the dev token (scoped by DevToken) keeps every RPC method
+            granted = [m for m in REQUESTS if m not in (DECISION_IMPORT, ON_BEHALF)] if (
+                identity.scheme == "uid" or subject(identity) == "token:dev") else ()
         if method not in granted:
             raise RPCError("forbidden", f"{subject(identity)[:256]} is not authorized for {method}")
 
@@ -1054,20 +1088,25 @@ class SignerService:
             raise RPCError("unknown_approval", approval_id)
         return a
 
+    @staticmethod
+    def _in(table, identity):
+        """Whether any of the identity's keys is in `table` (approvers, break_glass)."""
+        return any(lookup(table, k, False) for k in keys(identity))
+
     def _may_see(self, identity, a):
         """Whether `identity` may see approval `a`: the run's owner, a break-glass identity, or an identity of the
         run's tenant (with a config, only an approver of it or a bridge granted ON_BEHALF)."""
-        sub = subject(identity)
-        if owner(identity) == self.log.runs[a["run_key"]]["owner"] or lookup(self._break_glass, sub, False):
+        if owner(identity) == self.log.runs[a["run_key"]]["owner"] or self._in(self._break_glass, identity):
             return True
-        return (self.approvals is None or lookup(self._approvers, sub, False)
-                or ON_BEHALF in (lookup(self.authorize, sub) or ())) and a["run_key"][0] == self._tenant_of(identity)
+        return (self.approvals is None or self._in(self._approvers, identity)
+                or ON_BEHALF in (lookup(self.authorize, subject(identity)) or ())) and \
+            a["run_key"][0] == self._tenant_of(identity)
 
     def _self_approval(self, a, *approver):
         """Whether one of the `approver` identities is approval `a`'s requester, its run's owner or principal, directly
         or as the same person (`persons`)."""
         run = self.log.runs[a["run_key"]]
-        theirs = {a["requester"], run["owner"], run.get("principal")}
+        theirs = {a["requester"], run["owner"], run["principal"]}
         theirs |= {self._persons.get(x) for x in theirs}
         return bool(({*approver} | {self._persons.get(x) for x in approver}) & theirs - {None})
 
@@ -1166,16 +1205,17 @@ class SignerService:
             raise RPCError("forbidden", "not from the run's harness process")
 
     def _tenant_of(self, identity):
-        """The identity's tenant: `tenants`, else the tenant its named token was issued for, else the default."""
-        token = identity.claims.get("tenant") if identity.scheme == "token" else None
-        return lookup(self.tenants, subject(identity), None) or token or self.tenant
+        """The identity's tenant: `tenants`, else the tenant its named token was issued for (or its OIDC issuer's
+        tenant claim), else the default."""
+        token = identity.claims.get("tenant") if identity.scheme in ("token", "oidc") else None
+        return next((t for k in keys(identity) if (t := lookup(self.tenants, k))), None) or token or self.tenant
 
     @staticmethod
     def _isolation(identity):
         if identity.scheme == "uid" and hasattr(os, "getuid"):
             return "same-user" if identity.subject == str(os.getuid()) else "separate-user"
         # k8s_sa, mtls and tokens other than the dev transport's authenticate over the HTTP transport only
-        if identity.scheme in ("k8s_sa", "mtls", "token") and subject(identity) != "token:dev":
+        if identity.scheme in ("k8s_sa", "mtls", "oidc", "token") and subject(identity) != "token:dev":
             return "remote"
         return "unknown"
 
@@ -1194,6 +1234,14 @@ class SignerService:
                 None, "no process chain: no peer pid, or the harness helper did not answer")
             if harness is None and lookup(self._harness_required, sub, False):
                 raise RPCError("forbidden", f"not from a registered harness ({why})")
+        if "principal_token" in req:
+            if "principal" in req:
+                raise RPCError("invalid_request", "principal or principal_token, not both")
+            if self.oidc is None:
+                raise RPCError("invalid_request", "this signer has no oidc issuers to verify a principal_token")
+            principal = person(self.oidc.validate(req["principal_token"]))
+        else:
+            principal = req.get("principal")
         tenant = req.get("tenant") or self._tenant_of(identity)
         run_id = req.get("run_id") or self.id_prefix + secrets.token_hex(16)
         if not run_id.startswith(self.id_prefix):
@@ -1212,17 +1260,18 @@ class SignerService:
             tx.set(run, "owner", own)
             tx.set(self.log.open_runs, own, n + 1)
             tx.set(run, "source", req.get("source", "sdk"))
+            tx.set(run, "people", (person(identity), principal if "principal_token" in req else None))
             if harness:
                 tx.set(run, "harness", (harness["pid"], harness["start_time"]))
+            attested = "principal_token" in req
             out = {"run_id": run_id, "run_token": self.tokens.issue(tenant, run_id, identity), "tenant": tenant,
-                   "tenant_attested": "tenant" not in req, "principal_attested": False, "fail_modes": self.fail_modes}
-            top = {"tenant_attested": out["tenant_attested"], "principal_attested": False}
-            if "principal" in req:
-                out["principal"] = top["principal"] = req["principal"]
-                tx.set(run, "principal", req["principal"])
+                   "tenant_attested": "tenant" not in req, "principal_attested": attested, "fail_modes": self.fail_modes}
+            top = {"tenant_attested": out["tenant_attested"], "principal_attested": attested}
+            if principal is not None:
+                out["principal"] = top["principal"] = principal
+                tx.set(run, "principal", principal)
             data = {"agent": req["agent"], "signer_isolation": self.isolation or self._isolation(identity), "fail_modes": self.fail_modes,
-                    "identity": {"scheme": identity.scheme, "subject": identity.subject[:256],
-                                 "attested": identity.attested}}
+                    "identity": _recorded(identity)}
             if "analyzes" in req:
                 data["analyzes"] = req["analyzes"]
             if harness:
@@ -1409,6 +1458,8 @@ class SignerService:
             data = {"approval_id": aid, "decision_id": call["decision_id"], "policy_hash": self.policy.policy_hash,
                     "rule_ids": call["rule_ids"], "expires_at": expires_at, "requester": sub, "binding": binding,
                     "binding_digest": "sha256:" + hashlib.sha256(canonical(binding)).hexdigest(), "salt_id": sid}
+            if person(identity):
+                data["requester_person"] = person(identity)
             if any(r.get("approval") == {"executor": "t2"} for _, r, *_ in self.policy.rules
                    if r["id"] in call["rule_ids"]):
                 data["executor"] = "t2"
@@ -1443,14 +1494,19 @@ class SignerService:
         aid = req["approval_id"]
         a = self._visible(identity, aid)
         run_key = a["run_key"]
-        same = self._self_approval(a, sub, own)
+        who = self._persons.get(sub) if groups is not None else person(identity) or self._persons.get(sub)
+        owner_person, principal = self.log.runs[run_key]["people"]
+        if who and who == principal:
+            raise RPCError("forbidden", f"{sub[:256]} is the run's principal and may not answer its approvals")
+        same = self._self_approval(a, sub, own) or bool(who) and who in (a.get("requester_person"), owner_person)
         glass = False
         if self.approvals is not None:
             if same:
                 if self.approvals.get("self_approval") != "allow":
                     raise RPCError("forbidden", f"{sub[:256]} may not answer its own run's approval")
-            elif not any(lookup(self._approvers, x, False) for x in (sub, *(groups or ()))):
-                glass = groups is None and bool(lookup(self._break_glass, sub, False))
+            elif not (self._in(self._approvers, identity) if groups is None else
+                      any(lookup(self._approvers, x, False) for x in (sub, *groups))):
+                glass = groups is None and self._in(self._break_glass, identity)
                 if not glass:
                     raise RPCError("forbidden", f"{sub[:256]} is not an approver")
                 if "reason" not in req:
@@ -1465,8 +1521,7 @@ class SignerService:
                 raise RPCError("approval_not_pending", "expired")
             tx.set(a, "state", "approved" if req["decision"] == "approve" else "rejected")
             data = {"tool_use_id": a["tool_call_id"], "approval_id": aid, "decision": req["decision"], "approver": sub,
-                    "approver_identity": {"scheme": identity.scheme, "subject": identity.subject[:256],
-                                          "attested": identity.attested},
+                    "approver_identity": _recorded(identity),
                     "channel": "rpc", "self_approved": same}
             if groups is not None:   # the bridge vouches for the person; the record names both
                 scheme, _, subj = sub.partition(":")
@@ -1648,6 +1703,39 @@ class SignerService:
         self._nudged.set()
         return {"scheduled": True}
 
+    def _decision_import(self, identity, req):
+        """Record another system's decision about a tool call of a run of the caller's tenant as `policy.external`
+        (source import, tier T3): its own record only as a salted commitment, its signature verified when
+        `decision_keys` pins the system's key. reconcile compares it with the signer's decision, which stays
+        authoritative."""
+        key = (self._tenant_of(identity), req["run_id"])
+        raw, sig = req["record"].encode("utf-8"), req.get("signature")
+        signature = "unverified"
+        if req["system"] in self._decision_keys:
+            if sig is None:
+                raise RPCError("invalid_request", f"{req['system'][:64]} has a pinned key: its records must be signed")
+            try:
+                ok = crypto.verify_v2("ed25519", self._decision_keys[req["system"]], raw, base64.b64decode(sig, validate=True))
+            except ValueError:
+                ok = False
+            if not ok:
+                raise RPCError("invalid_request", f"the signature does not verify under the pinned key of {req['system']}")
+            signature = "verified"
+        sid = secrets.token_hex(16)
+        data = {"system": req["system"], "decision": req["decision"], "tool_use_id": req["tool_call_id"],
+                "tool": req["tool"], "rule_ids": req.get("rule_ids", []), "signature": signature, "salt_id": sid,
+                "record": {"hash": self._commit(f"policy.external:{sid}", "sha256:" + hashlib.sha256(raw).hexdigest()),
+                           "size": len(raw)},
+                "identity": {"scheme": identity.scheme, "subject": identity.subject[:256], "attested": identity.attested}}
+        if "reason" in req:
+            data["reason"] = privacy.redact_text(req["reason"])[0]
+        self.quotas.take_event(identity)
+
+        def fn(tx, run):
+            return {"run_seq": tx.emit(run, "policy.external", data, source="import", tier="T3",
+                                       request_id=req["request_id"]), "signature": signature}
+        return self.log.submit(identity, DECISION_IMPORT, req, fn, key, late=True)
+
     # --- OTLP import (tracekit.signer.otel) ---
 
     def otlp(self, identity, body, content_type, content_encoding):
@@ -1754,6 +1842,9 @@ def load_config(path):
         from tracekit.transport import http
         http.resolve(h, base)
         http.configure(h)   # validates the section now; serve() builds it again
+    oidc = (cfg.get("view") or {}).get("oidc") if isinstance(cfg.get("view"), dict) else None
+    if isinstance(oidc, dict) and isinstance(oidc.get("client_secret_file"), str):
+        oidc["client_secret_file"] = os.path.join(base, oidc["client_secret_file"])
     if "storage" in cfg:
         pg = cfg["storage"].get("postgres") if isinstance(cfg["storage"], dict) and set(cfg["storage"]) == {"postgres"} else None
         if not (isinstance(pg, dict) and set(pg) <= {"dsn_file"} and isinstance(pg.get("dsn_file", ""), str)):
@@ -1863,6 +1954,8 @@ def open_service(cfg, **kw):
         kw["log_key"] = logkey.from_config(lk)
     if lk.get("slh_dsa"):
         kw.setdefault("slh_dsa_file", lk["slh_dsa"]["file"])
+    if "oidc" not in kw:
+        kw["oidc"] = _oidc(cfg)
     return SignerService(cfg["data_dir"], durability=cfg.get("durability", ACK_ON_WRITE),
                          tenant=cfg.get("tenant", "default"), tenants=cfg.get("tenants"),
                          limits=Limits(**cfg.get("limits", {})),
@@ -1878,7 +1971,17 @@ def open_service(cfg, **kw):
                          otel_out=cfg.get("otel_out"), storage_config=cfg.get("storage"), gateways=cfg.get("gateways", ()),
                          gateway_mandatory=cfg.get("gateway_mandatory") is True,
                          harness_binding=cfg.get("harness_binding"), record_key=cfg.get("record_key"),
-                         route=cfg.get("route"), webhooks=cfg.get("webhook", ()), **kw)
+                         route=cfg.get("route"), decision_keys=cfg.get("decision_keys"), webhooks=cfg.get("webhook", ()),
+                         **kw)
+
+
+def _oidc(cfg):
+    """The OidcAuthenticator of the config's http.oidc section, or None."""
+    section = (cfg.get("http") or {}).get("oidc")
+    if section is None:
+        return None
+    from tracekit.identity.oidc import OidcAuthenticator
+    return OidcAuthenticator(section)
 
 
 def serve(cfg, service):
@@ -1906,7 +2009,7 @@ def serve(cfg, service):
         servers.append(TcpDevServer(cfg["tcp_endpoint"], _dev_token(), handle))
     if cfg.get("http"):
         from tracekit.transport import http
-        servers.append(http.HttpServer(*http.configure(cfg["http"]), handle,
+        servers.append(http.HttpServer(*http.configure(cfg["http"], service.oidc), handle,
                                        otlp=service.otlp if "otlp" in cfg else None,
                                        on_auth_failure=service.metrics.auth_failures.inc))
     for s in servers:
