@@ -27,7 +27,8 @@ NOT_CONTENT = {"/properties/prev_hash", "/properties/run_prev_hash", "/$defs/run
                "/$defs/run_final/properties/head_hash", "/$defs/approval_request/properties/policy_hash",
                "/$defs/approval_request/properties/binding/properties/policy_hash",
                "/$defs/approval_request/properties/binding_digest", "/$defs/signer_epoch/properties/keys/items/properties/kid",
-               "/$defs/key_retire/properties/kid"}
+               "/$defs/key_retire/properties/kid",
+               "/$defs/signer_epoch/properties/keys/items/properties/cert/properties/certificate/properties/cert/properties/kid"}
 
 
 class SignerPrivacy(Harness, unittest.TestCase):

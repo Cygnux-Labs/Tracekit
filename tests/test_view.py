@@ -74,6 +74,7 @@ class View(unittest.TestCase):
         self.assertIn("tenant default · agent e2e · final · decisions allow 1, ask 1, deny 1 · approvals 1 · gaps 0",
                       rep["text"])
         self.assertIn("same user as the dev signer", rep["text"])
+        self.assertIn(view.OPERATOR_SIDE, rep["text"])
         self.assertIn("Integrity: VERIFIED.\nAssurance: dev;", rep["text"])   # verify.v2's own report
         rows = self.rows(feed, run_id)
         self.assertEqual([r["tool_name"] for r in rows if r["event"] == "PreToolUse"], ["Bash", "rm", "pay"])
@@ -92,6 +93,7 @@ class View(unittest.TestCase):
         feed = view.StoreFeed({"data_dir": self.d})
         [rep] = self.report(feed, run_id)
         self.assertEqual(rep["title"], f"RUN {run_id} · Integrity FAILED")
+        self.assertIn(view.OPERATOR_SIDE, rep["text"])
         self.assertEqual(self.rows(feed, run_id), [rep])   # none of its events
         self.assertEqual(feed.verify()[1], [f"run {run_id} of tenant default: FAILED"])
 

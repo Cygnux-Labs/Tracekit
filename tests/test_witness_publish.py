@@ -131,7 +131,8 @@ class Client(unittest.TestCase):
     def test_errors_are_classified(self):
         big = signed_note(self.origin, self.leaves[:3], self.secret) + "— x " + "A" * MAX_BODY + "\n"
         self.assertTrue(self.client.add_checkpoint(big, self.log_vkey, 0, list))   # the big line is stripped
-        for status, retryable in ((503, True), (429, True), (404, False), (403, False)):
+        # 404: a witness that registers logs from the signer's polled logs/v0 list knows a new one at its next poll
+        for status, retryable in ((503, True), (429, True), (404, True), (403, False)):
             self.w.status = status
             with self.assertRaises(WitnessError) as cm:
                 self.add(4, 3)
@@ -235,6 +236,20 @@ class Publisher(unittest.TestCase):
         rep, code = v2.verify(out, self.trust([]))   # the witness's line from an unpinned key is ignored
         self.assertEqual((rep.integrity, code), ("VERIFIED", 0), rep.checks)
         self.assertTrue(rep.assurance.startswith("dev;"), rep.assurance)
+
+    def test_close_log_waits_for_the_witness_to_cosign_the_final_notes(self):
+        self.finished_run()
+        self.assertTrue(self.s.close_log(wait_s=10))
+        last = next(self.s.log.storage.iter_range(self.s.log.head["seq"] - 1, self.s.log.head["seq"]))["event"]
+        self.assertEqual(last["type"], "log.closed")
+        self.assertEqual(self.cosigned()[0], last["seq"] + 1)   # a cosigned note covers log.closed: no unproven tail
+        self.assertTrue(self.cosigned(registry_tree("default")))
+
+    def test_close_log_stops_waiting_for_a_witness_that_is_down(self):
+        self.finished_run()
+        self.w.status = 503
+        self.assertFalse(self.s.close_log(wait_s=0.3))
+        self.assertEqual(self.s.log.storage.checkpoint_latest()[0], self.s.log.head["seq"])   # noted, not cosigned
 
     def test_retry_queue_survives_restart(self):
         self.finished_run()

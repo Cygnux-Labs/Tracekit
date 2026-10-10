@@ -1,0 +1,89 @@
+{{- if .Values.issuer.enabled }}
+{{- $cfg := merge (dict "data_dir" "/var/lib/tracekit-issuer/data"
+      "http" (dict "listen" "0.0.0.0:8444" "cert" "/etc/tracekit/tls/tls.crt" "key" "/etc/tracekit/tls/tls.key"
+                   "authenticators" (list "k8s_sa")
+                   "k8s_sa" (dict "audience" .Values.audience "tokenreview" "https://kubernetes.default.svc"
+                                  "token_file" "/var/run/secrets/kubernetes.io/serviceaccount/token"
+                                  "ca" "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt")))
+      (deepCopy .Values.issuer.config) }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-issuer
+  labels: {{- include "tc.labels" (dict "root" . "component" "issuer") | nindent 4 }}
+data:
+  issuer.yaml: |
+    {{- range $k, $v := $cfg }}
+    {{ $k }}: {{ toJson $v }}
+    {{- end }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Release.Name }}-issuer
+  labels: {{- include "tc.labels" (dict "root" . "component" "issuer") | nindent 4 }}
+  {{- with .Values.issuer.serviceAccount.annotations }}
+  annotations: {{- toYaml . | nindent 4 }}
+  {{- end }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-issuer-data
+  annotations: {helm.sh/resource-policy: keep}   # the issuance log outlives an uninstall
+  labels: {{- include "tc.labels" (dict "root" . "component" "issuer") | nindent 4 }}
+spec:
+  accessModes: [ReadWriteOnce]
+  {{- with .Values.issuer.storage.storageClass }}
+  storageClassName: {{ . }}
+  {{- end }}
+  resources: {requests: {storage: {{ .Values.issuer.storage.size }}}}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-issuer
+  labels: {{- include "tc.labels" (dict "root" . "component" "issuer") | nindent 4 }}
+spec:
+  replicas: 1
+  strategy: {type: Recreate}   # one issuer per issuance log
+  selector:
+    matchLabels: {{- include "tc.labels" (dict "root" . "component" "issuer") | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "tc.labels" (dict "root" . "component" "issuer") | nindent 8 }}
+      annotations:
+        checksum/config: {{ toJson $cfg | sha256sum }}
+    spec:
+      serviceAccountName: {{ .Release.Name }}-issuer
+      automountServiceAccountToken: true   # TokenReview of the signers' tokens
+      securityContext:
+        fsGroup: {{ int .Values.signer.uid }}
+        fsGroupChangePolicy: OnRootMismatch
+      containers:
+        - name: issuer
+          image: {{ .Values.signer.image }}
+          command: [sh, -c, "umask 077 && mkdir -p /var/lib/tracekit-issuer/data && exec tracekit issuer serve --config /etc/tracekit/issuer/issuer.yaml"]
+          securityContext:
+            runAsUser: {{ int .Values.signer.uid }}
+            runAsGroup: {{ int .Values.signer.uid }}
+            {{- include "tc.hardened" . | nindent 12 }}
+          ports: [{name: https, containerPort: 8444}]
+          volumeMounts:
+            - {name: data, mountPath: /var/lib/tracekit-issuer}
+            - {name: config, mountPath: /etc/tracekit/issuer, readOnly: true}
+            - {name: tls, mountPath: /etc/tracekit/tls, readOnly: true}
+      volumes:
+        - {name: data, persistentVolumeClaim: {claimName: {{ .Release.Name }}-issuer-data}}
+        - {name: config, configMap: {name: {{ .Release.Name }}-issuer}}
+        - {name: tls, secret: {secretName: {{ required "issuer.tlsSecretName is required" .Values.issuer.tlsSecretName }}, defaultMode: 0440}}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-issuer
+  labels: {{- include "tc.labels" (dict "root" . "component" "issuer") | nindent 4 }}
+spec:
+  selector: {{- include "tc.labels" (dict "root" . "component" "issuer") | nindent 4 }}
+  ports: [{name: https, port: 8444, targetPort: https}]
+{{- end }}
