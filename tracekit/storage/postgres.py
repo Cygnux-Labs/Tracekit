@@ -18,7 +18,8 @@ signer's role needs no UPDATE or DELETE on the logs: records, registry, notes an
 finds a row edited behind the signer's back (hash, chains, signatures). GRANTS is the signer role's set.
 
 Export, view and reveal read through PostgresReader, with the DSN of their own config's dsn_file: give it a role
-holding READ_GRANTS only (SELECT), so a reader can't write even by mistake.
+holding READ_GRANTS only (SELECT), so a reader can't write even by mistake. The central viewer searches runs with
+search_runs, on the same DSN.
 
 One writer per log: open takes a session-level advisory lock keyed by the schema, waiting up to `lock_timeout_s`, and
 holds it on the connection every write goes through, so a lost connection loses the lock and the writes with it; a
@@ -45,6 +46,7 @@ import time
 
 import psycopg
 from psycopg import errors
+from psycopg.rows import dict_row
 
 from tracekit.format.canon import event_hash
 from tracekit.merkle import leaf_hash
@@ -477,6 +479,40 @@ class PostgresReader(_Reads):
 
     def close(self):
         self.conn.close()
+
+
+_E = "record->'event'"
+RUN_COLUMNS = {   # search_runs: each run's summary, aggregated over its records
+    "first": "min(seq)", "records": "count(*)", "started": f"min({_E}->>'ts')", "ended": f"max({_E}->>'ts')",
+    "agent": f"max({_E}->'data'->'agent'->>'name') FILTER (WHERE {_E}->>'type' = 'run.registered')",
+    "gaps": f"count(*) FILTER (WHERE {_E}->>'type' = 'capture.gap')",
+    "denies": f"count(*) FILTER (WHERE {_E}->>'type' = 'policy.decision' AND {_E}->'data'->>'decision' = 'deny')",
+    "approvals": f"count(*) FILTER (WHERE {_E}->>'type' = 'approval')"}
+
+
+def search_runs(dsn, tenant, limit, before=None, run=None, agent=None, since=None, until=None, gaps=False,
+                denies=False, approvals=False):
+    """At most `limit` runs of the log at `dsn`, newest first, each {tenant, run_id} and RUN_COLUMNS: of `tenant` (of
+    every tenant with None), whose first record is before seq `before`, with id `run`, of agent `agent`, with a record at
+    or after `since` and one at or before `until` (event times, RFC 3339 UTC), and with a gap, deny or approval. One
+    query, as a role holding READ_GRANTS."""
+    c = RUN_COLUMNS
+    where = [s for s, v in (("tenant = %(tenant)s", tenant), ("run_id = %(run)s", run)) if v is not None]
+    having = [s for s, v in ((f"{c['first']} < %(before)s", before), (f"{c['agent']} = %(agent)s", agent),
+                             (f"{c['ended']} >= %(since)s", since), (f"{c['started']} <= %(until)s", until),
+                             (f"{c['gaps']} > 0", gaps or None), (f"{c['denies']} > 0", denies or None),
+                             (f"{c['approvals']} > 0", approvals or None)) if v is not None]
+    # lean: aggregates the tenant's records on every page; a run table the signer keeps once logs hold millions
+    sql = ("SELECT tenant, run_id, " + ", ".join(f"{e} AS {k}" for k, e in c.items()) + " FROM tracekit_records"
+           + (" WHERE " + " AND ".join(where) if where else "") + " GROUP BY tenant, run_id"
+           + (" HAVING " + " AND ".join(having) if having else "") + " ORDER BY min(seq) DESC LIMIT %(limit)s")
+    try:
+        with _connect(dsn) as conn:
+            return conn.cursor(row_factory=dict_row).execute(sql, {
+                "tenant": tenant, "run": run, "before": before, "agent": agent, "since": since, "until": until,
+                "limit": limit}).fetchall()
+    except psycopg.Error as e:
+        raise StorageUnavailable(f"Postgres: {str(e).strip() or type(e).__name__}") from e
 
 
 def fsck(dsn, snapshot_key=None, verify=None):

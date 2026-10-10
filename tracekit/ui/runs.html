@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Tracekit runs</title>
+<style>
+body { font: 14px system-ui, sans-serif; margin: 2em; }
+table { border-collapse: collapse; }
+th, td { padding: .3em .6em; border-bottom: 1px solid #ddd; text-align: left; vertical-align: top; }
+pre { background: #f4f4f4; padding: 1em; white-space: pre-wrap; overflow-wrap: anywhere; }
+.error { color: #b00020; }
+.label { color: #8a5a00; }
+</style>
+</head>
+<body>
+<h1>Runs</h1>
+<p>
+<label>Run <input id="run" size="20"></label>
+<label>Agent <input id="agent" size="12"></label>
+<label>Tenant <input id="tenant" size="10"></label>
+<label>Since <input id="since" size="22" placeholder="2026-01-01T00:00:00Z"></label>
+<label>Until <input id="until" size="22"></label>
+<label>Verdict <select id="verdict"><option value="">any</option><option>verified</option><option>failed</option>
+<option>pending</option></select></label>
+<label><input type="checkbox" id="gaps"> gaps</label>
+<label><input type="checkbox" id="denies"> denies</label>
+<label><input type="checkbox" id="approvals"> approvals</label>
+<button id="search">Search</button>
+</p>
+<p class="error" id="error"></p>
+<table>
+<thead><tr><th>Run</th><th>Log</th><th>Tenant</th><th>Agent</th><th>Started</th><th>Ended</th><th>Records</th><th>Gaps</th>
+<th>Denies</th><th>Approvals</th><th>Verdict</th></tr></thead>
+<tbody id="list"></tbody>
+</table>
+<p><button id="more" hidden>More runs</button></p>
+<section id="detail" hidden>
+<h2 id="title"></h2>
+<p><strong id="integrity"></strong> <span class="label" id="label"></span></p>
+<p><button id="download">Download the bundle</button> and check it with <code>tracekit verify</code> from the signed
+release: that, not this page, is the evidence. <a id="save" hidden></a></p>
+<pre id="report"></pre>
+<h3 id="records-title"></h3>
+<pre id="records"></pre>
+<p><button id="more-records" hidden>More records</button></p>
+</section>
+<script>
+"use strict";
+// every value is set with textContent, never parsed as markup; bidi and invisible format characters are shown escaped
+const vis = s => String(s).replace(/[؜​-‏‪-‮⁠-⁩﻿]/g,
+  c => "\\u" + c.charCodeAt(0).toString(16).padStart(4, "0"));
+const $ = id => document.getElementById(id);
+let next = null, current = null;
+
+async function api(path) {
+  const r = await fetch(path);
+  const out = await r.json();
+  if (!r.ok) throw new Error(out.error || String(r.status));
+  return out;
+}
+
+function fail(e) { $("error").textContent = vis(e.message || e); }
+
+async function search(after) {
+  const q = new URLSearchParams();
+  for (const k of ["run", "agent", "tenant", "since", "until", "verdict"]) if ($(k).value) q.set(k, $(k).value);
+  for (const k of ["gaps", "denies", "approvals"]) if ($(k).checked) q.set(k, "1");
+  if (after) q.set("after", after);
+  const page = await api("/api/runs?" + q), rows = $("list");
+  if (!after) rows.replaceChildren();
+  for (const r of page.runs) {
+    const row = rows.insertRow(), open = document.createElement("button");
+    open.textContent = vis(r.run_id);
+    open.addEventListener("click", () => show(r, 0).catch(fail));
+    row.insertCell().append(open);
+    for (const v of [r.log, r.tenant, r.agent ?? "", r.started, r.ended, r.records, r.gaps, r.denies, r.approvals,
+                     r.verdict.integrity + " (" + r.verdict.label + ")"])
+      row.insertCell().textContent = vis(v);
+  }
+  next = page.next;
+  $("more").hidden = !next;
+  $("error").textContent = "";
+}
+
+async function show(r, from) {
+  const run = await api("/api/run?" + new URLSearchParams({log: r.log, tenant: r.tenant, run: r.run_id, from}));
+  current = run;
+  $("title").textContent = vis("Run " + run.run_id + " of tenant " + run.tenant + ", log " + run.log);
+  $("integrity").textContent = vis(run.verdict.integrity);
+  $("label").textContent = vis(run.verdict.label);
+  $("report").textContent = vis(run.verdict.report);
+  $("records-title").textContent = run.verdict.verdict === "verified" ? "Records from " + from
+    : "Records are shown only for a run that verifies";
+  $("records").textContent = vis(run.records.map(x => JSON.stringify(x)).join("\n"));
+  $("more-records").hidden = run.next === null;
+  $("detail").hidden = false;
+  $("error").textContent = "";
+}
+
+async function download() {
+  const q = new URLSearchParams({log: current.log, tenant: current.tenant, run: current.run_id});
+  const r = await fetch("/api/bundle?" + q);
+  if (!r.ok) throw new Error((await r.json()).error || String(r.status));
+  const save = $("save");
+  save.download = "run.tkb";
+  save.href = URL.createObjectURL(await r.blob());
+  save.click();
+}
+
+$("search").addEventListener("click", () => search(null).catch(fail));
+$("more").addEventListener("click", () => search(next).catch(fail));
+$("more-records").addEventListener("click", () => show(current, current.next).catch(fail));
+$("download").addEventListener("click", () => download().catch(fail));
+search(null).catch(fail);
+</script>
+</body>
+</html>

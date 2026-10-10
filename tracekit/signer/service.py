@@ -68,8 +68,11 @@ signer.yaml:
                 persons: {"slack:T01/U02": alice, "mtls:spiffe://acme/ops/alice": alice}}   # identity -> person id,
                                              # so self-approval holds across channels (docs/approvals.md)
     view: {oidc: {issuer: corp, client_id: tracekit-viewer, redirect_uri: https://view.example/callback,
-                  roles: {auditor: ["group:corp/auditors"], approver: ["group:corp/approvers"]}},
-           signer: https://signer.internal:8443}   # `tracekit view` OIDC login and approval pages (tracekit.view)
+                  roles: {auditor: ["group:corp/auditors"], approver: ["group:corp/approvers"],
+                         operator-admin: ["group:corp/sre"]}},
+           signer: https://signer.internal:8443,   # `tracekit view` OIDC login and approval pages (tracekit.view)
+           logs: [log-0.dsn, log-1.dsn]}           # a central viewer: each log's DSN file, a SELECT-only role
+                                             # (docs/viewer.md)
     webhook: [{url: https://siem.example.org/tracekit, format: ocsf, events: [deny, approval, gap, tamper],
                secret_file: webhook.secret}]  # OCSF events, HMAC-signed, off the writer (tracekit.signer.webhook)
     acknowledge_rollback: false
@@ -1927,6 +1930,11 @@ def load_config(path):
     oidc = (cfg.get("view") or {}).get("oidc") if isinstance(cfg.get("view"), dict) else None
     if isinstance(oidc, dict) and isinstance(oidc.get("client_secret_file"), str):
         oidc["client_secret_file"] = os.path.join(base, oidc["client_secret_file"])
+    if isinstance(cfg.get("view"), dict) and "logs" in cfg["view"]:
+        logs = cfg["view"]["logs"]
+        if not (isinstance(logs, list) and logs and all(isinstance(x, str) and x for x in logs)):
+            raise ValueError(f"{path}: view.logs is a list of DSN files, one per log")
+        cfg["view"]["logs"] = [os.path.join(base, x) for x in logs]
     if "storage" in cfg:
         pg = cfg["storage"].get("postgres") if isinstance(cfg["storage"], dict) and set(cfg["storage"]) == {"postgres"} else None
         if not (isinstance(pg, dict) and set(pg) <= {"dsn_file"} and isinstance(pg.get("dsn_file", ""), str)):
