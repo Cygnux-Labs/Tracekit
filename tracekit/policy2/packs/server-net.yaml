@@ -60,4 +60,4 @@ ask:
     pattern: '.'
     from: untrusted
     reason: sending data to a host that came from untrusted content
-    rationale: A host the agent read in a page, a mail or a ticket, and in nothing the task or a trusted tool gave it, is where injected instructions send data; a person checks it.
+    rationale: A host the agent read in a page, a mail or a ticket, and in nothing the caller observed as trusted (the task), is where injected instructions send data; a person checks it.

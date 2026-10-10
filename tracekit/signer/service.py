@@ -175,10 +175,10 @@ it still finds. Every published digest of agent content is an HMAC under a per-r
 keys/args_salt.key (`salt_label`), which `reveal` prints for one record. Policy decides on the unredacted arguments.
 
 Provenance (docs/policy-v2.md): each run registered since the signer started has an index, in memory only, of the
-values (tracekit.provenance) its tool results and `observe` inputs carried, keyed by an HMAC under a key drawn per
-process, each with the record that first brought it and whether that content was trusted (a tool's results are
-untrusted when the policy's `untrusted` list says so; an observed input is what the caller says). A value once seen in
-trusted content stays trusted. `from: untrusted` rules match on it, and every decision records which arguments carry
+values (tracekit.provenance) its untrusted tools' results (the policy's `untrusted` list) and its `observe` inputs
+carried, keyed by an HMAC under a key drawn per process, each with the record that first brought it and whether that
+content was trusted (an observed input is what the caller says; other tools' results are not indexed: they can echo
+the agent's own arguments). A value once observed as trusted stays trusted. `from: untrusted` rules match on it, and every decision records which arguments carry
 untrusted-only values (field, kind, source record; never the value). After a restart a run's index is unavailable.
 """
 import argparse
@@ -1270,10 +1270,10 @@ class SignerService:
         h = self.policy.decide(tool, args, hint if hint in policy_compile.CLASSES else "unknown", untrusted)
         return max(d, h, key=lambda x: STRICTNESS.index(x["verdict"])), True
 
-    def _keys(self, obj):
-        """[(kind, provenance index key)] of the values `obj` carries."""
+    def _keys(self, obj, email_hosts=True):
+        """[(kind, provenance index key)] of the values `obj` carries (provenance.values)."""
         return [(kind, hmac.new(self._prov_key, f"{kind}\0{v}".encode("utf-8", "surrogatepass"), "sha256").digest())
-                for kind, v in provenance.values(obj)]
+                for kind, v in provenance.values(obj, email_hosts)]
 
     def _index(self, tx, run, keys, source):
         """Index `keys` (from _keys) as brought into `run` by `source` ({run_seq, trust, tool?, tool_call_id?}), on the
@@ -1296,12 +1296,12 @@ class SignerService:
         prov = self.log.runs[key].get("prov")
         if prov is None:
             return None, {"provenance_state": "unavailable"}
-        # lean: read off the writer, which may be adding to it: a value of a batch the storage then refuses can count
-        # for that moment (stricter, never looser); read on the writer if that ever matters
+        # lean: read off the writer, which may be adding to it: a decide racing a batch the storage then refuses may
+        # see that batch's values for that moment; read on the writer if that ever matters
         idx, state = prov["index"], prov["state"]
 
         def hits(obj):
-            return [(kind, s) for kind, k in self._keys(obj) if (s := idx.get(k)) and s["trust"] == "untrusted"]
+            return [(kind, s) for kind, k in self._keys(obj, False) if (s := idx.get(k)) and s["trust"] == "untrusted"]
         entries = []
         for field, v in (args if isinstance(args, dict) else {"value": args}).items():
             for kind, s in hits(v):
@@ -1504,7 +1504,10 @@ class SignerService:
             raise RPCError("invalid_request", f"result is not canonical JSON: {e}") from None
         output = {"hash": self._commit("result:" + did, "sha256:" + hashlib.sha256(c).hexdigest()), "size": len(c),
                   "redacted": manifest["count"] > 0 or manifest["client_claimed"]}
-        keys = self._keys(value) if self.log.runs[key].get("prov") else []   # what the signer commits to
+        # what the signer commits to; only an untrusted tool's results: any other tool may echo what the agent put in
+        # its arguments, which would launder an injected value into trusted content
+        tool = (self.log.runs[key].get("decisions", {}).get(did) or {}).get("tool")   # None: decided before a restart
+        keys = self._keys(value) if tool and self.log.runs[key].get("prov") and self.policy.untrusted_results(tool) else []
         self.quotas.take_event(identity)
 
         def fn(tx, run):
@@ -1517,10 +1520,9 @@ class SignerService:
             seq = tx.event(run, req, "tool.result", {"tool_use_id": tcid, "ok": req["status"] == "ok", "output": output,
                                                      "decision_id": did, "redaction": manifest},
                            tool_call_id=tcid, attempt=attempt)
-            if keys:   # a call decided since this signer started: its tool is known
-                tool = call["tool"]
-                self._index(tx, run, keys, {"run_seq": seq, "tool": tool, "tool_call_id": tcid,
-                                            "trust": "untrusted" if self.policy.untrusted_results(tool) else "trusted"})
+            if keys:
+                self._index(tx, run, keys, {"run_seq": seq, "tool": call["tool"], "tool_call_id": tcid,
+                                            "trust": "untrusted"})
             a = self.log.approvals.get(self.log.approval_index.get((*key, tcid, attempt)), {})
             approved = a.get("state") == "consumed" and self._opens(a["commitment"], a["label"], req["args_digest"])
             if call["decision"] == "deny" or (call["decision"] == "ask" and not approved):

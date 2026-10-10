@@ -13,17 +13,19 @@ MAX_TEXT = 1 << 20   # characters scanned per value
 MAX_VALUES = 4096    # pairs returned per value
 _URL = re.compile(r"(?i)\b(?:https?|wss?|ftp)://[^\s'\"<>`]+")
 _EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@(?:[A-Za-z0-9-]+\.)+[A-Za-z]{2,63}\b")
-_HOST = re.compile(r"(?<![\w.-])(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}\b(?![.-]?\w)")
+_HOST = re.compile(r"(?<![\w.@-])(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}\b(?![.-]?\w)")
 _IP = re.compile(r"(?<![\w.:])(?:[0-9]{1,3}\.){3}[0-9]{1,3}(?![\w.])|\[[0-9A-Fa-f:.]+\]")
 _PATH = re.compile(r"(?<![^\s\"'=(\[,])(?:/|[A-Za-z]:[\\/])[^\s\"'<>`|;]+")
 _DIGITS = re.compile(r"[0-9](?:[ -]?[0-9]){7,}")
 _TRAIL = ".,;:!?)]}'\""
 
 
-def _text(s, out):
+def _text(s, out, email_hosts):
     t = unicodedata.normalize("NFKC", s).replace("\u3002", ".")
     for m in _EMAIL.finditer(t):
         out["email", m.group(0).casefold()] = True
+        if email_hosts:
+            out["host", m.group(0).rsplit("@", 1)[1].casefold()] = True
     for m in _URL.finditer(s):
         url = m.group(0).rstrip(_TRAIL)
         out["url", url] = True
@@ -45,9 +47,11 @@ def _text(s, out):
         out["digits", re.sub("[ -]", "", m.group(0))] = True
 
 
-def values(obj):
+def values(obj, email_hosts=True):
     """[(kind, value)] of a JSON value, in a fixed order (dict keys sorted), without repeats; at most MAX_VALUES pairs
-    from at most MAX_TEXT characters of text."""
+    from at most MAX_TEXT characters of text. With `email_hosts`, an email's domain is a host value too (content: a page
+    naming audit@vendor.example brings the host vendor.example); without, it is not (a recipient's own domain is not
+    a host the call sends to)."""
     out, budget, stack = {}, MAX_TEXT, [obj]
     while stack and budget > 0 and len(out) < MAX_VALUES:
         v = stack.pop()
@@ -56,10 +60,10 @@ def values(obj):
         elif isinstance(v, list):
             stack.extend(reversed(v))
         elif isinstance(v, (int, float)) and not isinstance(v, bool):
-            _text(str(v), out)
+            _text(str(v), out, email_hosts)
         elif isinstance(v, str):
             s, budget = v[:budget], budget - len(v)
-            _text(s, out)
+            _text(s, out, email_hosts)
             leaf = " ".join(s.split())
             if 6 <= len(leaf) <= 256:
                 out["string", leaf] = True
