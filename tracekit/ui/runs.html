@@ -105,6 +105,8 @@ async function download() {
   save.download = "run.tkb";
   save.href = URL.createObjectURL(await r.blob());
   save.click();
+  const url = save.href;
+  setTimeout(() => URL.revokeObjectURL(url));
 }
 
 $("search").addEventListener("click", () => search(null).catch(fail));

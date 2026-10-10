@@ -127,6 +127,15 @@ class View(unittest.TestCase):
         token = server.call_args[0][3]
         self.assertGreaterEqual(len(token), 32)
         self.assertIn(f"http://127.0.0.1:7778/?token={token} ", out.getvalue())
+        with mock.patch.object(view, "server") as server, mock.patch.object(view, "Runs") as runs, \
+                mock.patch.object(view, "load_config", return_value={"view": {"logs": ["a.dsn", "b.dsn"]}}), \
+                mock.patch.dict(os.environ), contextlib.redirect_stdout(io.StringIO()) as out:
+            os.environ.pop("TRACEKIT_VIEW_TOKEN", None)
+            server.return_value.serve_forever.side_effect = KeyboardInterrupt
+            server.return_value.server_address = ("127.0.0.1", 7778)
+            runs.return_value.logs = ["a.dsn", "b.dsn"]
+            self.assertEqual(view.main(["--config", "signer.yaml"]), 0)
+        self.assertIn(f"http://127.0.0.1:7778/?token={server.call_args[0][3]}  (2 Postgres logs", out.getvalue())
         with self.assertRaises(ValueError):
             view.server(None, "127.0.0.1", 0, None)
 

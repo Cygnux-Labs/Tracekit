@@ -399,9 +399,9 @@ class Runs:
             raise ValueError("needs log (a log number), tenant and run")
         return (int(q["log"]), q["tenant"], q["run"]) if scope is observe.ALL or q["tenant"] == scope else None
 
-    def _verdict(self, r, i, note, tenant, run_id):
+    def _verdict(self, r, i, note, tenant, run_id, cached=True):
         """{verdict (VERDICTS), integrity, assurance, label, report} of the run in reader `r` of log `i`, or None when it
-        holds no such run."""
+        holds no such run; with `cached` False, checked on `r` whatever the cache holds."""
         run = r.runs.get((tenant, run_id))
         if run is None:
             return None
@@ -410,7 +410,7 @@ class Runs:
                     "report": "No checkpoint covers the run's last record yet."}
         key = (i, tenant, run_id, len(run["seqs"]))
         with self._lock:
-            v = self._verdicts.get(key)
+            v = self._verdicts.get(key) if cached else None
         if v is None:
             fd, out = tempfile.mkstemp(suffix=".tkb", dir=self.tmp)   # requests run concurrently: a file each
             os.close(fd)
@@ -428,7 +428,8 @@ class Runs:
 
     def search(self, scope, q):
         """GET /api/runs: {runs, next}: at most `limit` (RUNS_PAGE) runs that `scope` may read and query `q` (SEARCH_KEYS)
-        matches, log by log, newest first, and the `after` of the next page or None. At most one query per log."""
+        matches, log by log, newest first, and the `after` of the next page or None. One search query per log, plus a
+        reader of each log with matching runs."""
         if set(q) - SEARCH_KEYS or q.get("verdict", "verified") not in VERDICTS:
             raise ValueError(f"the query takes {', '.join(sorted(SEARCH_KEYS))}; verdict is one of {', '.join(VERDICTS)}")
         try:
@@ -441,6 +442,8 @@ class Runs:
         tenant = (q.get("tenant") or None) if scope is observe.ALL else scope
         filters = {**{k: q[k] for k in ("run", "agent", "since", "until") if q.get(k)},
                    **{k: True for k in ("gaps", "denies", "approvals") if k in q}}
+        if any(q[k] != "1" for k in ("gaps", "denies", "approvals") if k in q):
+            raise ValueError("gaps, denies and approvals take 1")
         out = []
         for i in range(start, len(self.logs)):
             want = limit - len(out)
@@ -473,7 +476,7 @@ class Runs:
         start = int(start)
         r, note = self._open(i)
         try:
-            v = self._verdict(r, i, note, tenant, run_id)
+            v = self._verdict(r, i, note, tenant, run_id, cached=False)   # the records served are the ones checked
             if v is None:
                 return None
             records = list(itertools.islice(r.iter_run(tenant, run_id), start, start + RECORDS_PAGE)) \
@@ -577,7 +580,7 @@ def main(argv=None):
     scheme = "https" if tls else "http"
     print(f"tracekit view on {scheme}://{a.host}:{srv.server_address[1]}/"
           + ("" if os.environ.get("TRACEKIT_VIEW_TOKEN") else f"?token={token}")
-          + (f"runs  ({len(runs.logs)} Postgres logs, read-only)" if runs else
+          + (f"  ({len(runs.logs)} Postgres logs, read-only)" if runs else
              f"  (store: {feed.store}, read-only; {feed.note})"), flush=True)
     try:
         srv.serve_forever()
