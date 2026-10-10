@@ -110,6 +110,7 @@ a laptop to a server: [migration](https://github.com/Cygnux-Labs/Tracekit/blob/m
   [evaluation](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/evaluation.md),
   [technical report](https://github.com/Cygnux-Labs/Tracekit/blob/main/report/tracekit-v2.md),
   [FAQ and limits](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/faq.md)
+- Releasing: [launch checklist for 1.0](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/launch-checklist.md)
 - The v1 laptop signer (`tracekitd`, `tracekit init --dev`, `tracekit demo`, `tracekit observe`) and its bundles keep
   working: [coding agents](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/coding-agents.md),
   [signing](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/signing.md),

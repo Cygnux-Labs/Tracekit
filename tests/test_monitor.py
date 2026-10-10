@@ -32,6 +32,7 @@ VKEY = checkpoint.vkey(ORIGIN, checkpoint.ED25519, crypto.public_from_secret(SEC
 MONITOR = hashlib.sha256(b"monitor test key").digest()
 MONITOR_VKEY = checkpoint.vkey(monitor.NAME, checkpoint.ED25519, crypto.public_from_secret(MONITOR))
 KID = "ed25519:" + "ab" * 16
+PIN = [{"vkey": MONITOR_VKEY, "class": "customer", "max_age_s": 3600}]
 
 
 def chain(specs):
@@ -249,29 +250,31 @@ class Signer(unittest.TestCase):
         export(self.s.log.storage, "default", run, anchor["note"], bundle)
         self.poll()
         report = os.path.join(self.state, "report.json")
-        pinned = {"logs": [self.s.vkey], "algs": ["ed25519"], "rekor": {
-            "trusted_root": self.fake.trusted_root(), "publishing_key": base64.b64encode(self.rekor[1]).decode(),
-            "class": "public"}}
 
         def assurance(monitors, path=report):
-            trust = os.path.join(self.dir, "trust.json")
-            with open(trust, "w") as f:
-                json.dump({**pinned, "monitors": monitors}, f)
-            rep, code = v2.verify(bundle, trust, monitor_reports=[path])
-            return rep.assurance.split(";")[0], code
-        pin = [{"vkey": MONITOR_VKEY, "class": "customer", "max_age_s": 3600}]
-        self.assertEqual(assurance(pin), ("witnessed+monitored", 0))
+            return self.assurance(bundle, monitors, path)
+        self.assertEqual(assurance(PIN), ("witnessed+monitored", 0))
         self.assertEqual(assurance([]), ("witnessed", 0))   # an unpinned monitor
-        self.assertEqual(assurance([dict(pin[0], **{"class": "operator"})]), ("witnessed", 0))
+        self.assertEqual(assurance([dict(PIN[0], **{"class": "operator"})]), ("witnessed", 0))
         with open(report) as f:
             doc = json.load(f)
         stale = os.path.join(self.dir, "stale.json")
         self.resign(stale, dict(doc["report"], time=(datetime.datetime.now(datetime.timezone.utc)
                                                      - datetime.timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%SZ")))
-        self.assertEqual(assurance(pin, stale), ("witnessed", 0))
+        self.assertEqual(assurance(PIN, stale), ("witnessed", 0))
         conflicted = os.path.join(self.dir, "conflicts.json")
         self.resign(conflicted, dict(doc["report"], conflicts=[{"rule": "run chain", "detail": "seq 9: ..."}]))
-        self.assertEqual(assurance(pin, conflicted)[1], 1)
+        self.assertEqual(assurance(PIN, conflicted)[1], 1)
+
+    def assurance(self, bundle, monitors, report):
+        """(assurance level, exit code) of `bundle` verified pinning the log, the in-test Rekor and `monitors`."""
+        trust = os.path.join(self.dir, "trust.json")
+        with open(trust, "w") as f:
+            json.dump({"logs": [self.s.vkey], "algs": ["ed25519"], "monitors": monitors, "rekor": {
+                "trusted_root": self.fake.trusted_root(), "publishing_key": base64.b64encode(self.rekor[1]).decode(),
+                "class": "public"}}, f)
+        rep, code = v2.verify(bundle, trust, monitor_reports=[report])
+        return rep.assurance.split(";")[0], code
 
     def resign(self, path, report):
         with open(path, "w") as f:
