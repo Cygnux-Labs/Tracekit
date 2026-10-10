@@ -14,6 +14,7 @@ from unittest import mock
 import test_signer_service as ts
 from test_identity_mtls import Pki, post, tmpdir
 from tracekit import cli
+from tracekit.identity.k8s_sa import K8sSaAuthenticator
 from tracekit.identity.token import TokenStore, parse_ttl
 from tracekit.sdk.client import Client
 from tracekit.signer import service as svc
@@ -36,14 +37,30 @@ class TestTokenStore(unittest.TestCase):
         a, b = self.store.add("a", 60, tenant="acme"), self.store.add("b", 3600)
         identity = self.store.authenticate(conn(a), {})
         self.assertEqual((identity.scheme, identity.subject, identity.claims["tenant"]), ("token", "a", "acme"))
-        self.assertNotIn(a.split(".")[2], open(self.store.path).read())   # only a salted hash is stored
+        self.assertNotIn(a.split(".")[1], open(self.store.path).read())   # only a salted hash is stored
         self.now += 60
         self.store.revoke("b")
-        for token in (a, b, a[:-1] + "x", "tk2.nobody.x"):
+        for token in (a, b, a[:-1] + "x", "tk2_nobody.x"):
             with self.subTest(token), self.assertRaises(RPCError) as cm:
                 self.store.authenticate(conn(token), {})
             self.assertEqual(cm.exception.code, "unauthenticated")
         self.assertIsNone(self.store.authenticate(conn("not-ours"), {}))   # left to the next authenticator
+
+    def test_k8s_sa_first_leaves_a_token_to_the_store(self):
+        k8s = K8sSaAuthenticator(audience="a", tokenreview="https://127.0.0.1:1", token_file="unused")
+        srv = tk_http.HttpServer(("127.0.0.1", 0), [k8s, self.store], None, None)
+        self.addCleanup(srv.server_close)
+        with mock.patch.object(k8s, "_review", side_effect=AssertionError("sent to TokenReview")):
+            self.assertEqual(srv.authenticate(conn(self.store.add("a", 60)), {}).subject, "a")
+
+    def test_an_unreadable_store_is_an_error_not_a_crash(self):
+        token = self.store.add("a", 60)
+        for content in ('{"a": [1]}', '{"a": {"salt": "zz"}}', "[]", '{"a'):
+            with open(self.store.path, "w") as f:
+                f.write(content)
+            with self.subTest(content), self.assertRaises(RPCError) as cm:
+                self.store.authenticate(conn(token), {})
+            self.assertEqual(cm.exception.code, "unavailable")
 
     def test_names_cannot_collide(self):
         for name in ("a:b", "token:x", "A", "", "x" * 65, "dev", "http", "a.b"):
@@ -72,7 +89,7 @@ class TestFailedAuth(unittest.TestCase):
         token = srv.authenticators[0].add("a", 60)
         for _ in range(3):
             with self.assertRaises(RPCError) as cm:
-                srv.authenticate(conn("tk2.a.wrong"), {})
+                srv.authenticate(conn("tk2_a.wrong"), {})
             self.assertEqual(cm.exception.code, "unauthenticated")
         with self.assertRaises(RPCError) as cm:   # past the limit even a valid token is not looked at
             srv.authenticate(conn(token), {})
@@ -84,12 +101,13 @@ class TestFailedAuth(unittest.TestCase):
                 srv.authenticate(conn("nope", f"10.1.0.{i}"), {})
         self.assertLessEqual(len(srv.failed[0]._buckets), 4)
         codes = []
-        for i in range(60):   # the total limit: 53 failures so far of 100, then every address is refused
+        for i in range(60):   # the total limit: 53 failures so far of 100, then every failure is refused as over it
             try:
                 srv.authenticate(conn("nope", f"10.2.0.{i}"), {})
             except RPCError as e:
                 codes.append(e.code)
         self.assertEqual(codes, ["unauthenticated"] * 47 + ["quota_exceeded"] * 13)
+        self.assertEqual(srv.authenticate(conn(token, "10.3.0.1"), {}).subject, "a")   # yet a valid token gets in
 
 
 class TestRemoteSigner(unittest.TestCase):
@@ -141,7 +159,7 @@ class TestRemoteSigner(unittest.TestCase):
         self.tokens.revoke("v1")
         self.assertEqual(c.status()["identity"]["subject"], "v2")
         with open(path, "w") as f:
-            f.write(f"tk2.v1.{'x' * 43}")
+            f.write(f"tk2_v1.{'x' * 43}")
         with self.assertRaises(RPCError) as cm:
             c.status()
         self.assertEqual(cm.exception.code, "unauthenticated")
@@ -150,7 +168,7 @@ class TestRemoteSigner(unittest.TestCase):
         a, _ = self.client(self.tokens.add("a", 3600))
         run = a.run("agent")
         frame = {"method": "read", "run_id": run.run_id, "run_token": run.run_token}
-        bodies = [post(self.port, frame, self.ctx, {"Authorization": "Bearer tk2.a.wrong"}) for _ in range(3)]
+        bodies = [post(self.port, frame, self.ctx, {"Authorization": "Bearer tk2_a.wrong"}) for _ in range(3)]
         self.assertEqual([b[1]["error"]["code"] for b in bodies], ["unauthenticated", "unauthenticated", "quota_exceeded"])
         self.assertEqual(next(self.s.metrics.auth_failures.samples())[-1], 2)
         for status, body in bodies:
@@ -179,19 +197,19 @@ class TestCli(unittest.TestCase):
     def test_token_add_list_revoke(self):
         code, token, _ = self.run_cli("add", "ci-1", "--ttl", "1d", "--tenant", "acme")
         self.assertEqual(code, 0)
-        self.assertTrue(token.startswith("tk2.ci-1."))
+        self.assertTrue(token.startswith("tk2_ci-1."))
         self.assertEqual(self.run_cli("add", "ci:1")[0], 2)
         self.assertEqual(self.run_cli("revoke", "ci-1")[0], 0)
         code, listed, _ = self.run_cli("list")
         [entry] = json.loads(listed)
         self.assertEqual((entry["name"], entry["tenant"], entry["expires"] - entry["created"]), ("ci-1", "acme", 86400))
         self.assertIsNotNone(entry["revoked"])
-        self.assertNotIn(token.split(".")[2].strip(), listed)
+        self.assertNotIn(token.split(".")[1].strip(), listed)
 
     def test_init_remote_v2_wires_the_hooks(self):
         token = os.path.join(self.d, "token")
         with open(token, "w") as f:
-            f.write("tk2.a.secret")
+            f.write("tk2_a.secret")
         cwd = os.getcwd()
         os.chdir(self.d)
         self.addCleanup(os.chdir, cwd)

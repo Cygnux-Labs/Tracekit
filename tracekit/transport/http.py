@@ -16,9 +16,11 @@ signer.yaml:
 
 Every request is authenticated again (no session state): the authenticators are asked in order and the first that
 recognises its credential decides. Failed authentications are limited per source address and in total
-(FAILED_PER_ADDR, FAILED_TOTAL: token buckets in a fixed-size LRU); past either, requests are refused without looking
-at their credentials. Refusals carry only the error, never log state. Bodies over MAX_LINE are refused; reads time out like the other transports; the
-connection is kept alive between requests. RPC refusals are answered with status 200 and the error frame.
+(FAILED_PER_ADDR, FAILED_TOTAL: token buckets in a fixed-size LRU). Past an address's limit its requests are refused
+without looking at their credentials; past the total limit failures are refused as over it, while a valid credential
+still gets in, so no one can lock out every client. Refusals carry only the error, never log state. Bodies over
+MAX_LINE are refused; reads time out like the other transports; the connection is kept alive between requests. RPC
+refusals are answered with status 200 and the error frame.
 
 With `otlp` (the signer's `otlp` config section), `POST /v1/traces` takes OTLP/HTTP (protobuf or JSON, bodies up to
 otlp_wire.MAX_BODY) from the same authenticators: the caller is authenticated before its body is read, and answered
@@ -207,9 +209,9 @@ class HttpServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
             conn.close()
 
     def authenticate(self, conn, frame):
-        keys = [conn.client_address[0], None]
-        for q, k in zip(self.failed, keys):
-            q.take(k, "too many failed authentications", spend=0)
+        per_addr, total = self.failed
+        addr = conn.client_address[0]
+        per_addr.take(addr, "too many failed authentications", spend=0)
         try:
             for a in self.authenticators:
                 identity = a.authenticate(conn, frame)
@@ -219,7 +221,7 @@ class HttpServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
         except RPCError as e:
             if e.code == "unauthenticated":
                 self.on_auth_failure()
-                for q, k in zip(self.failed, keys):
-                    with contextlib.suppress(RPCError):   # emptied by a concurrent failure since the check
-                        q.take(k, "")
+                with contextlib.suppress(RPCError):   # emptied by a concurrent failure since the check
+                    per_addr.take(addr, "")
+                total.take(None, "too many failed authentications")
             raise

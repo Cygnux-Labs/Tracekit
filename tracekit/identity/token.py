@@ -45,7 +45,7 @@ class DevToken:
 
 NAME_RE = re.compile(r"[a-z0-9_-]{1,64}")
 RESERVED = {"dev", "http"}   # token:dev (the dev transport) and token:http (BearerToken)
-PREFIX = "tk2."
+PREFIX = "tk2_"   # one dot in the whole token, so k8s_sa never takes it for a JWT
 TTL_UNITS = {"s": 1, "m": 60, "h": 3600, "d": 86400}
 
 
@@ -59,7 +59,7 @@ def parse_ttl(text):
 
 class TokenStore:
     """Named bearer tokens for the HTTP transport, in a 0600 JSON file the signer reads on every request, so adding,
-    revoking or rotating a token needs no restart. A token is `tk2.<name>.<secret>`; the file keeps only a salted hash
+    revoking or rotating a token needs no restart. A token is `tk2_<name>.<secret>`; the file keeps only a salted hash
     of the secret with its created and expires times and an optional tenant. Identity token:<name>."""
 
     def __init__(self, path, clock=time.time):
@@ -107,9 +107,13 @@ class TokenStore:
             return None
         name, _, secret = token[len(PREFIX):].partition(".")
         # lean: re-reads the store per request; cache it by mtime if it ever shows in a profile
-        rec = self.load().get(name) if NAME_RE.fullmatch(name) else None
-        if not (rec and hmac.compare_digest(self._hash(rec["salt"], secret), rec["sha256"])
-                and rec["revoked"] is None and self.clock() < rec["expires"]):
+        try:
+            rec = self.load().get(name) if NAME_RE.fullmatch(name) else None
+            ok = rec and (hmac.compare_digest(self._hash(rec["salt"], secret), rec["sha256"])
+                          and rec["revoked"] is None and self.clock() < rec["expires"])
+        except (OSError, ValueError, KeyError, TypeError) as e:
+            raise RPCError("unavailable", "token store unreadable") from e
+        if not ok:
             raise RPCError("unauthenticated", "unknown, expired or revoked token")
         return CallerIdentity("token", name, True, {"expires_at": rec["expires"], "tenant": rec["tenant"]})
 

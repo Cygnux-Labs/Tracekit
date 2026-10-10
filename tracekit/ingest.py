@@ -28,6 +28,7 @@ import ssl
 import sys
 import threading
 import time
+from collections import OrderedDict
 from http.server import BaseHTTPRequestHandler
 
 from . import client
@@ -46,6 +47,7 @@ DEPRECATION = ("tracekit ingest is deprecated and is removed in tracekit 0.5: se
                "HTTPS transport instead (`tracekit signer token add`, `tracekit init --remote URL --v2`; "
                "docs/remote-ingest.md)")
 RATE_PER_S, BURST = 100.0, 300.0
+MAX_OTLP_RUNS = 4096   # per client: the runs whose OTLP event counter the gateway keeps
 
 
 def _tokens_path(home):
@@ -142,11 +144,11 @@ def _otlp_receiver(cid, forward):
     """An OTLP receiver for one authenticated client: events are sanitised exactly like SDK events (namespaced
     run, source=sdk) and carry a per-run counter so the signer can see gaps."""
     from . import otlp
-    counters = {}
+    counters = OrderedDict()
 
     def sink(ev, attach):
         run = ev["run_id"]
-        req = {"op": "append", "event": ev, "cseq": counters.get(run, -1) + 1}
+        req = {"op": "append", "event": ev, "cseq": counters.pop(run, -1) + 1}
         if attach:
             req["attach"] = attach
         safe, err = sanitize(req, cid, getattr(_REQ, "addr", "?"), client.client_config().get("signer_isolation", "same-user"),
@@ -154,8 +156,11 @@ def _otlp_receiver(cid, forward):
         if err:
             return {"ok": False, "error": err}
         resp = forward(safe)
-        if resp.get("ok"):
-            counters[run] = req["cseq"]
+        counters[run] = req["cseq"] if resp.get("ok") else req["cseq"] - 1
+        # lean: an evicted run that sends again restarts at cseq 0 and the signer records each later event as a counter
+        # gap; fine for a gateway removed in 0.5
+        while len(counters) > MAX_OTLP_RUNS:
+            counters.popitem(last=False)
         return resp
     return otlp.Receiver(sink)
 
@@ -231,7 +236,7 @@ def make_handler(home, forward=None):
             if err:
                 return self._send(400, {"ok": False, "error": err})
             try:
-                return self._send(200, forward(safe))
+                return self._send(200, {k: v for k, v in forward(safe).items() if k in ("ok", "error", "retryable")})
             except client.SignerUnavailable as e:
                 return self._send(503, {"ok": False, "error": f"signer unavailable: {e}", "retryable": True})
     return H
