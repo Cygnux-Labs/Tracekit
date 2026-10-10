@@ -178,5 +178,27 @@ class Signer(unittest.TestCase):
         self.assertEqual(svc.read_vkeys(d), [s.vkey])
 
 
+class StableHybridKey(unittest.TestCase):
+    """The hybrid key is pinned by verifiers like the log key: a log that has it keeps it."""
+
+    def started(self, d, key):
+        s = svc.SignerService(d, grace_s=0, slh_dsa_file=key)
+        s.call(ME, "register_run", {"request_id": os.urandom(8).hex(), "agent": {"name": "h"}})
+        s.checkpoint()
+        s.close()
+
+    def test_a_replaced_or_dropped_hybrid_key_stops_the_start(self):
+        d = tmpdir(self)
+        key = os.path.join(d, "keys", "log-slh.key")
+        svc.SignerService(d).close()          # a log without the hybrid line can turn it on
+        self.started(d, key)
+        os.remove(key)                        # lost: a new key would be made
+        with self.assertRaises(ValueError) as cm:
+            svc.SignerService(d, slh_dsa_file=key)
+        self.assertIn("another SLH-DSA key", str(cm.exception))
+        with self.assertRaises(ValueError):   # no longer configured
+            svc.SignerService(d)
+
+
 if __name__ == "__main__":
     unittest.main()
