@@ -1,4 +1,7 @@
+import contextlib
+import hashlib
 import http.client
+import io
 import json
 import os
 import shutil
@@ -6,6 +9,7 @@ import sys
 import tempfile
 import threading
 import unittest
+import unittest.mock
 from http.server import ThreadingHTTPServer
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -60,10 +64,34 @@ class Tokens(unittest.TestCase):
         self.assertIsNone(ingest.authenticate(ingest.load_tokens(d), token))
         with self.assertRaises(ValueError):
             ingest.add_token(d, "build-1")
-        with self.assertRaises(ValueError):
-            ingest.add_token(d, "bad name!")
+        for bad in ("bad name!", "a:b"):   # ':' would make remote:<client>:<run> name two clients
+            with self.assertRaises(ValueError):
+                ingest.add_token(d, bad)
         if os.name != "nt":  # Windows has no POSIX permission bits
             self.assertEqual(oct(os.stat(os.path.join(d, ingest.TOKENS_FILE)).st_mode & 0o777), "0o600")
+
+    def test_a_stored_client_name_with_a_colon_never_authenticates(self):
+        tokens = {"a:b": {"sha256": hashlib.sha256(b"t").hexdigest()}}
+        self.assertIsNone(ingest.authenticate(tokens, "Bearer t"))
+
+    def test_otlp_counters_are_bounded(self):
+        sent = []
+        rcv = ingest._otlp_receiver("bot", lambda req: sent.append(req["cseq"]) or {"ok": True})
+        with unittest.mock.patch.object(ingest, "MAX_OTLP_RUNS", 2), \
+                unittest.mock.patch.object(client, "client_config", return_value={}):
+            for run in ("r1", "r2", "r3", "r3", "r1"):
+                rcv.sink({"run_id": run, "source": "sdk", "type": "tool.call", "data": {}}, None)
+        self.assertEqual(sent, [0, 0, 0, 1, 0])   # r1 was evicted by r3
+
+    def test_deprecation_warning(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        err = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            self.assertEqual(ingest.main(["token", "box", "--home", d]), 0)
+        self.assertEqual(err.getvalue().count("deprecated"), 1)
+        self.assertIn("removed in tracekit 0.5", err.getvalue())
+        self.assertIn("tracekit init --remote URL --v2", err.getvalue())
 
 
 class EndToEnd(unittest.TestCase):
@@ -129,6 +157,7 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual(self.post({"op": "approve"}, self.token)[0], 400)
         self.assertEqual(self.post(b"{nope", self.token)[0], 400)
         self.assertEqual(self.post({"op": "status"}, self.token, path="/other")[0], 404)
+        self.assertEqual(self.post({"op": "status"}, self.token), (200, {"ok": True}))   # no seq, head or hash
         try:  # the server refuses an oversize body before reading it, so the client may see 413 or a closed connection
             self.assertEqual(self.post(b"x" * (ingest.MAX_BODY + 1), self.token)[0], 413)
         except (BrokenPipeError, ConnectionResetError):
@@ -176,13 +205,13 @@ class ClientConfig(unittest.TestCase):
             open(tf, "w").write("tk_abc\n")
             open(os.path.join(d, "config.json"), "w").close()
             os.chmod(os.path.join(d, "config.json"), 0o644)  # an existing readable file must not keep its mode
-            rc = cli._init_remote(argparse.Namespace(remote="https://tk.example:8443/", token_file=tf))
+            rc = cli._init_remote(argparse.Namespace(remote="https://tk.example:8443/", token_file=tf, v2=False))
             self.assertEqual(rc, 0)
             cfg = json.load(open(os.path.join(d, "config.json")))
             self.assertEqual((cfg["socket"], cfg["socket_token"]), ("https://tk.example:8443", "tk_abc"))
             if os.name != "nt":  # Windows has no POSIX permission bits
                 self.assertEqual(oct(os.stat(os.path.join(d, "config.json")).st_mode & 0o777), "0o600")
-            self.assertEqual(cli._init_remote(argparse.Namespace(remote="http://evil.example", token_file=tf)), 2)
+            self.assertEqual(cli._init_remote(argparse.Namespace(remote="http://evil.example", token_file=tf, v2=False)), 2)
         finally:
             shutil.rmtree(d, ignore_errors=True)
 
@@ -212,7 +241,7 @@ class RemoteUrls(unittest.TestCase):
     def init_remote(self, url):
         import argparse
         from tracekit import cli
-        return cli._init_remote(argparse.Namespace(remote=url, token_file=self.tf))
+        return cli._init_remote(argparse.Namespace(remote=url, token_file=self.tf, v2=False))
 
     def test_init_remote(self):
         for url in REJECTED:
