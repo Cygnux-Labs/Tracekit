@@ -1,0 +1,42 @@
+# Browser pack (policy v2): Browser Use actions, as tracekit.integrations.browser_use records them
+# (`browser_use:<action>`, with the URL of the page the action ran on as `page_url`). Rules stay tripwires.
+#
+# To allow a host TK-B002 denies, or to set the domains typing is allowed on (TK-B011), extend this pack and redefine
+# the rule with the same id: a rule in the extending file replaces the parent's.
+
+version: '2026.10-browser-1'
+description: browser agents (Browser Use)
+unknown_tools: ask
+
+tools:
+  'browser_use:*': browser
+
+deny:
+  - id: TK-B001
+    class: browser
+    field: url
+    pattern: '^\s*[Ff][Ii][Ll][Ee]:'
+    reason: local file navigation
+    rationale: A file:// page shows the agent's own disk to the model, and from there to any site it visits.
+  - id: TK-B002
+    class: browser
+    field: url
+    # loopback, private, link-local (cloud metadata), unspecified and IPv6 local addresses, and .internal/.local names
+    pattern: '^\s*([A-Za-z][A-Za-z0-9+.-]*://)?([^/@?#]*@)?(([Ll][Oo][Cc][Aa][Ll][Hh][Oo][Ss][Tt]|127\.[0-9.]+|10\.[0-9.]+|192\.168\.[0-9.]+|172\.(1[6-9]|2[0-9]|3[01])\.[0-9.]+|169\.254\.[0-9.]+|0\.0\.0\.0|0|\[[0-9A-Fa-f:.]*\]|[^/:?#]*\.([Ii][Nn][Tt][Ee][Rr][Nn][Aa][Ll]|[Ll][Oo][Cc][Aa][Ll]|[Ll][Oo][Cc][Aa][Ll][Hh][Oo][Ss][Tt]))\.?)(:[0-9]*)?([/?#]|$)'
+    reason: internal network navigation
+    rationale: A browser on a server reaches what the server reaches; internal services and cloud metadata are not the web.
+
+ask:
+  - id: TK-B010
+    tool: '^browser_use:upload_file$'
+    pattern: '^'
+    reason: file upload
+    rationale: An upload sends a local file to a site; a person checks which file and where.
+  - id: TK-B011
+    tool: '^browser_use:input$'
+    field: page_url
+    pattern: '^'
+    # the allowlist: replace example.com with the domains the agent may type into without asking
+    unless: '^https://([A-Za-z0-9.-]*\.)?example\.com\.?(:[0-9]+)?([/?#]|$)'
+    reason: typing on a site outside the allowlist
+    rationale: Typed text (credentials, personal data, messages) is what a browser agent can leak or send.
