@@ -69,7 +69,7 @@ two sources you obtained yourself, means a bug in one doesn't decide your audit:
 npx @cygnux/tracekit@<version> verify run.tkb --trust trust.json --strict
 ```
 
-It needs only Node ≥ 20. Where it can't check something the bundle relies on (an SLH-DSA checkpoint line, a Rekor
+It needs only Node ≥ 20.12. Where it can't check something the bundle relies on (an SLH-DSA checkpoint line, a Rekor
 anchor, a certified record key) it says `UNVERIFIABLE` and names it; use the Python verifier for those.
 
 ## 5. Read the report

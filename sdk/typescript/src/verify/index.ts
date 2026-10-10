@@ -323,7 +323,7 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
     + "record(s)", keyProblems);
   const every = [...runs.values()].flat();
   const seqs = [...keyRecords, ...every].map((r) => num(at(at(r, "event"), "seq")));
-  if (!seqs.length) throw new Error("max() arg is an empty sequence");
+  if (!seqs.length) throw new Error("the bundle holds no key or run records");
   const relied = Math.max(...seqs);
   if (provenTo < relied)
     rep.check("keys", false, "retirements not proven complete",

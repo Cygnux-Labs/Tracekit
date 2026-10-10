@@ -48,7 +48,7 @@ await client.close();                                     // waits for what is i
 ## Verify a bundle (`@cygnux/tracekit/verify`)
 
 An independent verifier of v2 bundles (`.tkb`), written from [docs/format-v2.md](../../docs/format-v2.md) and tested to
-agree with the Python verifier. No dependencies: Web Crypto and `DecompressionStream`, so Node ≥ 20 and current
+agree with the Python verifier. No dependencies: Web Crypto and `DecompressionStream`, so Node ≥ 20.12 and current
 browsers.
 
 ```sh

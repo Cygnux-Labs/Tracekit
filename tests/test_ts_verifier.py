@@ -42,12 +42,17 @@ def _node():
     node = shutil.which("node")
     if not node:
         return "needs node"
-    major = subprocess.run([node, "--version"], capture_output=True, text=True).stdout.strip().lstrip("v").split(".")[0]
-    if not major.isdigit() or int(major) < 20:
-        return "needs node >= 20"
+    v = subprocess.run([node, "--version"], capture_output=True, text=True).stdout.strip().lstrip("v").split(".")[:2]
+    if not all(x.isdigit() for x in v) or tuple(map(int, v)) < (20, 12):   # JSON imports and deflate-raw
+        return "needs node >= 20.12"
+    return None if os.path.exists(TSC) or os.path.exists(os.path.join(TS, "dist", "verify", "cli.js")) else \
+        "needs the TypeScript build (make test-ts)"
+
+
+def _build():
+    """Compile the TypeScript (a compile error fails the tests that need it, not the whole suite's collection)."""
     if os.path.exists(TSC):
-        subprocess.run([node, TSC, "-p", TS], check=True)
-    return None if os.path.exists(os.path.join(TS, "dist", "verify", "cli.js")) else "needs the TypeScript build (make test-ts)"
+        subprocess.run(["node", TSC, "-p", TS], check=True)
 
 
 SKIP = _node()
@@ -64,6 +69,7 @@ def ts_verify(bundle, trust):
 class Agreement(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        _build()
         cls.d = d = tempfile.mkdtemp(dir="/tmp" if os.path.isdir("/tmp") else None)
         cls.addClassCleanup(shutil.rmtree, d, True)
         witness = Witness()
@@ -232,3 +238,38 @@ class Agreement(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipIf(SKIP, SKIP)
+class Primitives(unittest.TestCase):
+    def test_consistency_proofs_agree_with_the_reference(self):
+        """RFC 9162 consistency proofs for every first < second <= 33 (run-sets past registry size 0 use them), plus a
+        tampered proof and a wrong first root for each, through the TypeScript verifyConsistency."""
+        from tracekit import merkle
+        _build()
+        b64 = lambda b: base64.b64encode(b).decode()   # noqa: E731
+        cases = []
+        for n in range(2, 34):
+            leaves = [merkle.leaf_hash(bytes([i])) for i in range(n)]
+            for m in range(1, n):
+                proof, r1, r2 = merkle.consistency_proof(m, leaves), merkle.root(leaves[:m]), merkle.root(leaves)
+                bad = [bytes([proof[0][0] ^ 1]) + proof[0][1:]] + proof[1:] if proof else proof
+                for p_, first, want in ((proof, r1, True), (bad, r1, not proof), (proof, r2 if m != n else r1, False)):
+                    cases.append({"m": m, "n": n, "r1": b64(first), "r2": b64(r2), "proof": [b64(x) for x in p_],
+                                  "want": want and merkle.verify_consistency(m, n, first, r2, p_)})
+        script = ("import { verifyConsistency } from %s;\n"
+                  "const d = (s) => Uint8Array.from(Buffer.from(s, 'base64'));\n"
+                  "const cases = JSON.parse(require_stdin());\n" % json.dumps(
+                      "file://" + os.path.join(TS, "dist", "verify", "primitives.js").replace(os.sep, "/")))
+        script = script.replace("require_stdin()", "(await new Response(process.stdin).text())")
+        script += ("const out = [];\nfor (const c of cases) out.push(await verifyConsistency(c.m, c.n, d(c.r1), d(c.r2), "
+                   "c.proof.map(d)));\nconsole.log(JSON.stringify(out));\n")
+        p = subprocess.run(["node", "--input-type=module", "-e", script], input=json.dumps(cases), capture_output=True,
+                           text=True, check=True)
+        self.assertEqual(json.loads(p.stdout), [c["want"] for c in cases])
+
+    def test_the_schema_copy_is_the_schema(self):
+        """The TypeScript verifier carries a copy of the v2 event schema (browsers can't read the Python package)."""
+        with open(os.path.join(ROOT, "tracekit", "schema", "tracekit.event.v2.json"), "rb") as a, \
+                open(os.path.join(TS, "src", "verify", "tracekit.event.v2.json"), "rb") as b:
+            self.assertEqual(json.loads(a.read()), json.loads(b.read()))
