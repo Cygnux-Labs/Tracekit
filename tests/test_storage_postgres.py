@@ -250,6 +250,17 @@ class TestPostgresReader(PgCase):
         with self.assertRaises(psycopg.errors.InsufficientPrivilege):
             sql(reader_dsn(self.admin), "INSERT INTO tracekit_meta VALUES ('k', 'v')")
 
+    def test_a_reader_role_missing_a_grant_is_unavailable_not_a_traceback(self):
+        s = self.open()
+        s.append_batch(Chain().batch(3))
+        s.checkpoint_put(3, "note 3")
+        s.close()
+        dsn = reader_dsn(self.admin)
+        schema = sql(self.admin, "SELECT current_schema()")[0][0]
+        sql(self.admin, f"REVOKE SELECT ON {schema}.tracekit_records FROM {READER}")
+        with self.assertRaises(StorageUnavailable):
+            postgres.PostgresReader(dsn).iter_range(0, 3).__next__()
+
     def test_a_missing_tile_is_an_error_not_a_write(self):
         s = self.open()
         s.append_batch(Chain().batch(600))
