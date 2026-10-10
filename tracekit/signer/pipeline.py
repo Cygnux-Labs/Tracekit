@@ -42,11 +42,12 @@ _MISSING = object()
 
 def new_run(tenant, run_id):
     """`closed`: run.closing written, late records only; `final`: run.final written, nothing more. `active` and
-    `closing_at` are monotonic times for the idle and grace clocks."""
+    `closing_at` are monotonic times for the idle and grace clocks. `prov`: the provenance index of a run registered
+    since this signer started (SignerService._index), memory only; None after a restart (unavailable)."""
     return {"tenant": tenant, "run_id": run_id, "run_seq": 0, "head": ZERO_HASH, "streams": {}, "closed": False,
             "final": False, "calls": {}, "decisions": {}, "denied": {}, "states": {}, "owner": None, "source": "sdk",
             "principal": None, "people": (None, None), "harness": None, "active": time.monotonic(), "closing_at": None,
-            "rec": reconcile.new(), "digests": {}}
+            "rec": reconcile.new(), "digests": {}, "prov": None}
 
 
 FINAL_KEYS = ("tenant", "run_id", "run_seq", "head", "closed", "final", "owner", "source")
@@ -230,7 +231,7 @@ class RecordLog:
         times as wall clock times."""
         wall, runs = time.time() - time.monotonic(), []
         for run in self.runs.values():
-            r = {k: v for k, v in run.items() if k not in ("denied", "digests")}
+            r = {k: v for k, v in run.items() if k not in ("denied", "digests", "prov")}
             if "calls" in r:
                 r["calls"] = {t: {k: c[k] for k in CALL_KEYS} for t, c in run["calls"].items()}
                 r["decisions"] = {d: c and {k: c[k] for k in CALL_KEYS} for d, c in run["decisions"].items()}
@@ -278,7 +279,7 @@ class RecordLog:
                     if r.get(k) is not None:
                         r[k] = _monotonic(r[k])
                 if "states" in r:
-                    r["denied"], r["digests"] = {}, {}
+                    r["denied"], r["digests"], r["prov"] = {}, {}, None
                 runs[(r["tenant"], r["run_id"])] = r
             approvals = {aid: dict(a, run_key=tuple(a["run_key"])) for aid, a in st["approvals"].items()}
             index = {tuple(k[:4]): k[4] for k in st["index"]}

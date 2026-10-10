@@ -9,12 +9,17 @@
 # grep searches for). Each URL is also matched as scheme://canonical-host/, so any notation of an address counts.
 
 extends: [coding.yaml, browser.yaml, server-data.yaml, server-net.yaml, server-cloud.yaml, server-comms.yaml]
-version: '2026.10-server-3'
+version: '2026.10-server-4'
 description: server-hosted agents (coding, browser and server packs; unmapped tools ask)
 unknown_tools: ask
 
 tools:
   bash: shell                  # Anthropic bash tool
+
+# untrusted content: web pages and HTTP responses, browser pages and MCP tools' results (the packs above add WebFetch
+# and WebSearch). The packs map no tool that reads mail, tickets or documents; a deployment lists its own (read_inbox,
+# get_ticket, ...). SQL results stay trusted: the deployment's own data.
+untrusted: [http, browser, mcp]
 
 deny:
   - id: TK-S001

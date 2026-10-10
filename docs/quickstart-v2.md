@@ -27,6 +27,7 @@ decision.
 from tracekit.sdk.client import Client
 
 with Client().run(agent="quickstart") as run:
+    run.observe("List the files here.", source="task", trust="trusted")   # the task: what it names counts as trusted
     d = run.decide("call-1", "Bash", {"command": "ls"})            # allow
     run.complete("call-1")                                          # the result is recorded against that decision
     d = run.decide("call-2", "Bash", {"command": "pkill tracekitd"})
@@ -43,6 +44,12 @@ with Client().run(agent="quickstart") as run:
 
 The default policy is the coding pack (`tracekit/policy2/packs/coding.yaml`). An approval is bound to the call's
 arguments: if they change after the approval, `approval_consume` refuses them.
+
+`run.observe(value, source=..., trust="untrusted")` records content that reached the agent other than as a tool result
+(a mail, a ticket, a page your app fetched); the signer records a commitment to it, never the value, and every
+decision then names the arguments whose values only untrusted content brought in
+([provenance](policy-v2.md#provenance-untrusted-and-from-untrusted)). Send the task as `trusted` from your app, not
+from the agent.
 
 Claude Code: `tracekit init --dev --v2` wires its hooks to the same signer (`python -I -m tracekit.integrations.claude_code`).
 

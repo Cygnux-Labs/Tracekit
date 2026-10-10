@@ -1,7 +1,7 @@
 # Server comms pack (policy v2): payments, email and chat. Composed by server.yaml. Moving money and messaging many
 # people at once wait for a person (ask); reading balances, sending one email or posting a message does not.
 
-version: '2026.10-server-comms-1'
+version: '2026.10-server-comms-2'
 description: server-hosted agents, payments, email and chat
 unknown_tools: ask
 
@@ -44,3 +44,19 @@ ask:
     pattern: '<!(channel|everyone|here)(\|[^>]*)?>'
     reason: notifying a whole channel or workspace
     rationale: '@channel, @here and @everyone page everyone in the channel or workspace.'
+  - id: TK-P001
+    class: email
+    # every address in to, cc, bcc or recipients
+    field: recipients
+    pattern: '.'
+    from: untrusted
+    reason: an email recipient that came from untrusted content
+    rationale: An address the agent read only in a page, a mail or a ticket is where injected instructions send mail; a person checks the recipient.
+  - id: TK-P002
+    class: payment
+    # payee, to, recipient, destination, account, account_number and iban
+    field: payees
+    pattern: '.'
+    from: untrusted
+    reason: a payee or account that came from untrusted content
+    rationale: An account number or payee the agent read only in untrusted content is how an injected invoice redirects money; a person checks the payee.

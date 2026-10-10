@@ -103,6 +103,14 @@ coverage}`. Key records: `signer.epoch{keys: [{kid, alg, spki, cert?}], bridge?}
 record-key issuer, [issuer.md](issuer.md)) and `key.retire{kid, last_seq}`. The log's
 last record, if it is ever closed: `log.closed{final_seq}`.
 
+Provenance (format 1.1, [policy](policy-v2.md#provenance-untrusted-and-from-untrusted)): `input.observed{source,
+trust, output: {hash, size, redacted}, redaction, salt_id}` records content that entered the run through the
+`observe` RPC (a mail, a ticket, the task), committed to as a tool result is (§2), never in clear; `source` is the
+caller's name for it and `trust` its claim. `policy.decision` carries `provenance_state` (`complete`, `truncated` or
+`unavailable`) and `provenance`: at most 16 `{field, kind, source: {run_seq, tool?, tool_call_id?}}`, the top-level
+arguments whose values only untrusted content brought into the run, the kind of value (`email`, `url`, `host`, `path`,
+`digits`, `string`) and the record that brought it — never the value.
+
 ## 4. Records and the signature message
 
 A record is one line of JSON:
@@ -309,6 +317,10 @@ runs/                     every run whose run.final is in the range, and the sel
 JSON lines files end in a newline, one strict JSON text (§1) per line, each line at most 1 MiB. Zip limits: at most
 10,000 entries, 64 MiB per entry, 512 MiB in total; entry names match `[A-Za-z0-9_-][A-Za-z0-9._-]*(/[A-Za-z0-9._-]+)*`
 with no `.` or `..` segment; no symlinks; no duplicate names. A bundle carries no code and no trust configuration.
+
+`verifier_min_version` is `1.1.0` when a bundled record is `input.observed` or a decision carrying `provenance` or
+`provenance_state`, else `1.0.0`; a 1.0 verifier reports such a bundle `UNVERIFIABLE (needs tracekit >= 1.1.0)`, never
+FAILED.
 
 ## 10. The trust config
 
