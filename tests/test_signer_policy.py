@@ -142,6 +142,105 @@ class CodingPack(unittest.TestCase):
         self.assertEqual((server.decide("Foo", {})["verdict"], self.e.decide("Foo", {})["verdict"]), ("ask", "flag"))
 
 
+class PackReading(unittest.TestCase):
+    """How the shipped packs read SQL, hosts, paths and commands an agent can spell more than one way."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.server = Engine(pc.build(os.path.join(PACKS, "server.yaml"))[0], "regex")
+        cls.dev = Engine(pc.build(svc.DEFAULT_POLICY)[0], "regex")
+
+    def check(self, engine, cases, want):
+        for tool, args in cases:
+            with self.subTest(tool=tool, args=str(args)[:80]):
+                self.assertEqual(engine.decide(tool, args)["verdict"], want, engine.decide(tool, args))
+
+    def test_sql_rules_match_outside_comments_and_every_literal_form(self):
+        self.check(self.server, [("run_sql", {"sql": s}) for s in (
+            "DROP/**/TABLE users", "SELECT 1 -- '\nDROP TABLE users", "SELECT 1 /* ' */; DROP TABLE users",
+            "SELECT $$'$$; DROP TABLE users; --'", "SELECT E'\\''; DROP TABLE users; --'",
+            "SELECT 1 AS \"'\"; DROP TABLE users; --'", "GRANT/**/ALL ON x TO y", "CREATE/**/ROLE x SUPERUSER",
+            "SELECT 1 -- '\nCOPY x TO PROGRAM 'id'", "DELETE FROM users WHERE 'a' = 'a'")], "deny")
+        self.check(self.server, [("run_sql", {"sql": s}) for s in (
+            "SELECT 1 /* don't drop anything */", "SELECT name FROM t WHERE note = 'it''s' -- drop this later",
+            "CREATE FUNCTION f() RETURNS trigger AS $$ BEGIN NEW.at = now(); RETURN NEW; END; $$ LANGUAGE plpgsql")], "allow")
+        d = self.server.decide("run_sql", {"sql": "SELECT 'unclosed; DROP TABLE users"})
+        self.assertEqual((d["verdict"], d["rule_ids"]), ("ask", ["TK-SQL-PARSE"]))
+
+    def test_hosts_are_normalised_before_matching(self):
+        urls = ("http://127.0.0.1\\@evil.com/", "http://169.16689662/latest/meta-data/", "http://[0:0:0:0:0:ffff:a9fe:a9fe]/",
+                "http://[0:0::1]/", "http://2130706433/", "http://0177.0.0.1/", "http://metadata/computeMetadata/v1/",
+                "http://instance-data/latest/meta-data/", "http:/127.0.0.1/")
+        self.check(self.server, [("http_get", {"url": u}) for u in urls], "deny")
+        self.check(self.server, [("browser_use:go_to_url", {"url": u}) for u in urls + (
+            "http:\\\\127.0.0.1\\", "view-source:http://127.0.0.1/", "fi\tle:///etc/passwd",
+            "view-source:file:///etc/passwd")], "deny")
+        self.check(self.server, [("Bash", {"command": "curl " + u}) for u in (
+            "http://169.16689662/latest/meta-data/", "http://169.254.43518/", "http://0xa9.0xfe.0xa9.0xfe/",
+            "169.16689662/latest/meta-data/", "http://metadata/computeMetadata/v1/")], "deny")
+        self.check(self.server, [("http_get", {"url": u}) for u in (
+            "https://example.com./docs", "https://[2606:4700:4700::1111]/dns-query", "http:/example.com/")], "flag")
+
+    def test_credential_and_metadata_rules_match_what_a_call_acts_on(self):
+        self.check(self.server, [
+            ("Write", {"file_path": "/repo/compose.yaml", "content": "POSTGRES_PASSWORD_FILE: /run/secrets/pg"}),
+            ("Edit", {"file_path": "/repo/README.md", "old_string": "a", "new_string": "read from ~/.netrc"}),
+            ("Write", {"file_path": "/repo/app.py", "content": "get('http://169.254.169.254/latest/meta-data/')"}),
+            ("Bash", {"command": "grep -rn /run/secrets/ deploy/"}),
+            ("Bash", {"command": "git commit -m 'read token from /var/run/secrets/kubernetes.io'"})], "allow")
+        self.check(self.server, [
+            ("Read", {"file_path": "/run/secrets/db"}), ("Bash", {"command": "cat < /run/secrets/db"}),
+            ("Bash", {"command": "F=/run/secrets/db; cat $F"}), ("Bash", {"command": "grep -r x /run/secrets/"}),
+            ("Bash", {"command": "grep -e x /run/secrets/db"}), ("Bash", {"command": "git commit -F /run/secrets/db"}),
+            ("Bash", {"command": "python3 <<<\"print(open('/run/secrets/db').read())\""}),
+            ("Bash", {"command": "echo \"$(cat ~/.netrc)\""}), ("Bash", {"command": "cat /run/secrets/db; echo \"open"}),
+            ("send_email", {"to": "a@example.com", "attachments": ["/home/app/.netrc"]}),
+            ("mcp:filesystem/read_file", {"path": "/home/app/.kube/config"})], "deny")
+
+    def test_options_that_make_a_command_run_a_program(self):
+        self.check(self.server, [("Bash", {"command": c}) for c in (
+            "git -c core.Pager='sudo id' log", "git -c alias.x='!sudo id' x", "git -c alias.p='push -f' p",
+            "git -c credential.helper='!sudo id' fetch", "git -c diff.external='sudo id' diff",
+            "git -c filter.a.clean='sudo id' add .", "git -c core.gitproxy='sudo id' fetch",
+            "git -c gpg.program='sudo id' commit -S -m x", "git -c sequence.editor='sudo id' rebase -i HEAD~2",
+            "vim -c ':!sudo id'", "vim +'r !id'")], "deny")
+
+    def test_coding_pack_shell_rules(self):
+        self.check(self.dev, [("Bash", {"command": c}) for c in (
+            "git push -uf origin main", "git push -fu origin main", "sudoedit /etc/sudoers", "taskset 1 rm -rf /",
+            "chrt 1 sudo id", "unbuffer sudo id", "parallel sudo ::: id", "fakeroot sudo id", "dbus-run-session sudo id",
+            "env - sudo id", "bash --rcfile /dev/null -c 'sudo id'", "python3 -c\"import os;os.system('sudo id')\"",
+            "perl -e 'system \"sudo id\"'", "awk 'BEGIN{system(\"sudo id\")}'", "sed -n '1e sudo id' f",
+            "python3 - <<'EOF'\nimport os\nos.system('sudo id')\nEOF")], "deny")
+        self.check(self.dev, [("Bash", {"command": c}) for c in (
+            "sudo${IFS}id", "$(echo sudo) id", "echo \"'sudo id'\" | xargs bash -c")], "ask")
+        self.check(self.dev, [("Bash", {"command": c}) for c in (
+            "git push -u origin main", "git push origin my-feature-branch")], "flag")
+
+    def test_paths_from_windows_and_case_insensitive_file_systems(self):
+        self.check(self.dev, [("Write", {"file_path": p}) for p in (
+            "C:\\Users\\u\\.ssh\\id_rsa", "C:\\proj\\.env", "/Users/u/.SSH/authorized_keys", "/Users/u/proj/.ENV",
+            "/ETC/tracekit/policy.yaml", "/Users/u/.Claude/projects/x.jsonl",
+            "/Users/u/library/application support/Tracekit/keys")], "deny")
+        self.check(self.dev, [("Write", {"file_path": p}) for p in ("/Users/u/proj/.ENV.example", "C:\\proj\\app.py")],
+                   "allow")
+
+    def test_a_large_write_is_flagged_on_the_laptop_pack(self):
+        d = self.dev.decide("Write", {"file_path": "/repo/data.py", "content": "x = 1\n" * 12000})
+        self.assertEqual((d["verdict"], d["rule_ids"]), ("flag", ["TK-OVERSIZE"]))
+
+    def test_a_deployment_glob_for_one_mcp_server_beats_the_packs_catch_all(self):
+        d = os.path.join(tmpdir(self), "packs")
+        shutil.copytree(PACKS, d)
+        path = os.path.join(d, "deploy.yaml")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("extends: server.yaml\ntools:\n  'mcp:postgres/*': sql\n")
+        pol, errors = pc.build(path)
+        self.assertEqual(errors, [])
+        e = Engine(pol, "regex")
+        self.assertEqual(e.decide("mcp:postgres/execute", {"sql": "DROP TABLE users"})["verdict"], "deny")
+
+
 @unittest.skipUnless(HAVE_RE2, "google-re2 not installed")
 class ServerCorpora(unittest.TestCase):
     def test_e17_server_packs_hold_on_the_corpora(self):

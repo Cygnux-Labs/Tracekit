@@ -34,6 +34,7 @@ import zlib
 
 from . import client, privacy
 from .core import content_ref, new_id, now_ts
+from .observe import LOOPBACK_HOSTS, _host_only
 
 HOP = {"connection", "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailers", "transfer-encoding",
        "upgrade", "host", "content-length", "accept-encoding"}
@@ -223,6 +224,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self._proxy()
 
     def _proxy(self):
+        if _host_only(self.headers.get("Host")) not in LOOPBACK_HOSTS:   # a rebound DNS name: not a local client
+            self.close_connection = True
+            return self._error(403, "tracekit proxy: unexpected Host header")
         if self.path == "/__tracekit_health":
             body = json.dumps({"ok": True, "upstream": CFG["upstream"], "fail_mode": CFG["fail_mode"]}).encode()
             self.send_response(200); self.send_header("content-type", "application/json")

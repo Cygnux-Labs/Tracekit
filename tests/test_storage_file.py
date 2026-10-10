@@ -13,9 +13,10 @@ from unittest import mock
 
 from factories import wait_for
 from storage_contract import Chain, StorageContract, leaves
-from tracekit.merkle import root
+from tracekit.format import checkpoint
+from tracekit.merkle import leaf_hash, root
 from tracekit.storage import file as file_storage
-from tracekit.storage.base import ACK_ON_FSYNC, ACK_ON_WRITE, StorageCorrupt, StorageUnavailable
+from tracekit.storage.base import ACK_ON_FSYNC, ACK_ON_WRITE, StorageCorrupt, StorageUnavailable, registry_tree
 from tracekit.storage.file import FileStorage, fsck
 
 TESTS = os.path.dirname(os.path.abspath(__file__))
@@ -71,6 +72,41 @@ class TestFileStorage(FileCase):
         self.addCleanup(s.close)
         with self.assertRaisesRegex(StorageCorrupt, "witness-queue.json"):
             s.witness_queue()
+
+    def test_registry_leaves_set_aside_are_the_last_lines(self):
+        s = self.open()
+        a, b = [bytes([1, i]) * 44 + b"a" for i in range(3)], [bytes([2, i]) * 44 + b"b" for i in range(2)]
+        for tenant, leaf in (("acme", a[0]), ("beta", b[0]), ("acme", a[1]), ("acme", a[2]), ("beta", b[1])):
+            s.registry_append(tenant, leaf)
+        with self.assertRaises(StorageCorrupt):
+            s.registry_set_aside({"acme": 1})   # beta's leaves follow acme's second
+        s.registry_set_aside({"acme": 2, "beta": 1})
+        self.assertEqual((list(s.registry_iter("acme")), list(s.registry_iter("beta"))), (a[:2], b[:1]))
+        self.assertEqual(s.tail_state()["registry"]["acme"], (2, root([leaf_hash(x) for x in a[:2]])))
+        self.assertEqual(s.torn[0]["log"], "registry.jsonl")
+        s.close()
+        s = self.open()
+        self.addCleanup(s.close)
+        self.assertEqual((list(s.registry_iter("acme")), s.registry_merkle("beta").size), (a[:2], 1))
+
+    def test_registry_notes_are_indexed_not_kept(self):
+        key, tree = b"k" * 32, registry_tree("acme")
+        notes = [checkpoint.body("example.org/log/registry/x", n, bytes(32)) + "\n— example.org/log c2ln\n"
+                 for n in (1, 2, 3)]
+        s = FileStorage(self.root, snapshot_key=key)
+        s.append_batch(Chain().batch(1))
+        for n, note in enumerate(notes, 1):
+            s.checkpoint_put(n, note, tree)
+        self.assertEqual(s.notes[tree], [(1, 0), (2, 1), (3, 2)])   # line numbers in registry-notes.jsonl
+        s.snapshot_put({})
+        s.close()
+        with open(file_storage._snapshots(self.root)[0][1], "rb") as f:
+            self.assertNotIn(b"c2ln", f.read())
+        s = FileStorage(self.root, snapshot_key=key)
+        self.addCleanup(s.close)
+        self.assertIsNotNone(s.snapshot)
+        self.assertEqual((s.checkpoint_at(tree, 1), s.checkpoint_at(tree, 4), s.checkpoint_latest(tree)),
+                         (notes[0], None, (3, notes[2])))
 
     def test_tile_outliving_lost_log_lines_is_rewritten(self):
         s = self.open()

@@ -30,22 +30,27 @@ server crash or power loss, never a signer crash, can lose the last records ackn
 consistent prefix of the log). Notes, anchors, snapshots and the witness queue always commit with synchronous_commit
 on, which also makes every record before them durable. A batch is one transaction: a failure leaves none of it. A
 connection lost while a commit is in flight leaves its outcome unknown: the store answers StorageUnavailable and the
-signer's reopen reads back what was committed.
+signer's reopen reads back what was committed. A server that stops answering fails the call, never hangs it: connections
+take NET_TIMEOUTS (connect, keepalives, tcp_user_timeout; the DSN's own values win) and the writer's statements and
+transactions WRITER_TIMEOUT, so the store answers StorageUnavailable.
 
 There is no torn last line: a crash mid-transaction leaves nothing. Run and registry indexes and the trees' right edges
 live in memory, as in the file store, rebuilt on open from the newest snapshot that still matches the log (else from
 nothing) and the rows after it."""
 import contextlib
+import datetime
 import errno
 import hashlib
 import hmac
 import json
 import os
+import re
 import threading
 import time
 
 import psycopg
 from psycopg import errors
+from psycopg.conninfo import conninfo_to_dict
 from psycopg.rows import dict_row
 
 from tracekit.format.canon import event_hash
@@ -53,7 +58,7 @@ from tracekit.merkle import leaf_hash
 from tracekit.merkle.tiles import W, Tree, _reduce
 
 from .base import (ACK_ON_FSYNC, ACK_ON_WRITE, RECORDS, ZERO_HASH, Storage, StorageCorrupt, StorageUnavailable,
-                   check_records, registry_tree)
+                   check_records, check_trees, registry_tree)
 from .file import _edge, _mac, _raw, _unedge
 from . import pg_schema
 
@@ -62,6 +67,11 @@ GRANTS, READ_GRANTS = pg_schema.GRANTS, pg_schema.READ_GRANTS   # the roles' gra
 
 PAGE = 1000
 LOCK_CLASS = 0x746b   # the advisory lock's first key: "tk"
+# a server that stops answering (a dropped network, a blackholed route) fails the call instead of hanging it; the DSN's
+# own values win. tcp_user_timeout bounds unacknowledged data in flight (Linux), keepalives an idle connection
+NET_TIMEOUTS = {"connect_timeout": "10", "keepalives": "1", "keepalives_idle": "10", "keepalives_interval": "5",
+                "keepalives_count": "3", "tcp_user_timeout": "30000"}
+WRITER_TIMEOUT = "30s"   # the writer's statement and idle-in-transaction timeouts: a stuck write fails, then retries
 
 
 def read_dsn(section):
@@ -76,7 +86,8 @@ def read_dsn(section):
 
 def _connect(dsn):
     try:
-        return psycopg.connect(dsn, autocommit=True, application_name=f"tracekit-signer pid {os.getpid()}")
+        return psycopg.connect(**{**NET_TIMEOUTS, **conninfo_to_dict(dsn)}, autocommit=True,
+                               application_name=f"tracekit-signer pid {os.getpid()}")
     except psycopg.OperationalError as e:
         raise StorageUnavailable(f"cannot connect to Postgres: {e}") from None
 
@@ -231,6 +242,8 @@ class PostgresStorage(_Reads, Storage):
             with self._db():
                 _check_version(self.conn)
                 self.conn.execute("SET synchronous_commit = " + ("on" if self.full else "off"))
+                for setting in ("statement_timeout", "idle_in_transaction_session_timeout"):
+                    self.conn.execute(f"SET {setting} = '{WRITER_TIMEOUT}'")
                 _take(self.conn, lock_timeout_s)
                 self._open()
         except BaseException:
@@ -490,6 +503,19 @@ RUN_COLUMNS = {   # search_runs: each run's summary, aggregated over its records
     "approvals": f"count(*) FILTER (WHERE {_E}->>'type' = 'approval')"}
 
 
+def _event_time(value):
+    """`value`, an RFC 3339 time, as the records' ts sort (%Y-%m-%dT%H:%M:%S.%fZ, UTC); a year, month or date is kept,
+    as a prefix of them."""
+    if re.fullmatch(r"\d{4}(-\d{2}){0,2}", value):
+        return value
+    try:
+        t = datetime.datetime.fromisoformat(value.replace("Z", "+00:00").replace("z", "+00:00"))
+    except ValueError:
+        raise ValueError(f"not an RFC 3339 time: {value[:40]!r}") from None
+    return (t if t.tzinfo else t.replace(tzinfo=datetime.timezone.utc)).astimezone(
+        datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+
 def search_runs(dsn, tenant, limit, before=None, run=None, agent=None, since=None, until=None, gaps=False,
                 denies=False, approvals=False):
     """At most `limit` runs of the log at `dsn`, newest first, each {tenant, run_id} and RUN_COLUMNS: of `tenant` (of
@@ -497,6 +523,7 @@ def search_runs(dsn, tenant, limit, before=None, run=None, agent=None, since=Non
     or after `since` and one at or before `until` (event times, RFC 3339 UTC), and with a gap, deny or approval. One
     query, as a role holding READ_GRANTS."""
     c = RUN_COLUMNS
+    since, until = (None if v is None else _event_time(v) for v in (since, until))
     where = [s for s, v in (("tenant = %(tenant)s", tenant), ("run_id = %(run)s", run)) if v is not None]
     having = [s for s, v in ((f"{c['first']} < %(before)s", before), (f"{c['agent']} = %(agent)s", agent),
                              (f"{c['ended']} >= %(since)s", since), (f"{c['started']} <= %(until)s", until),
@@ -519,7 +546,8 @@ def search_runs(dsn, tenant, limit, before=None, run=None, agent=None, since=Non
 def fsck(dsn, snapshot_key=None, verify=None):
     """Check every row of a Postgres store, in one consistent snapshot of it, as the file store's fsck checks its lines:
     each record (base.check_records, `verify`) and that its columns match it, each tenant's registry leaves numbered
-    0, 1, 2, ..., and every snapshot (one that no longer matches the log, or whose MAC under `snapshot_key` fails, is
+    0, 1, 2, ..., then the registry leaves, the notes and the stored tiles against the logs (base.check_trees), and
+    every snapshot (one that no longer matches the log, or whose MAC under `snapshot_key` fails, is
     ignored on open). Takes no lock: safe while the signer runs."""
     with _connect(dsn) as conn, conn.transaction():
         conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
@@ -539,6 +567,19 @@ def fsck(dsn, snapshot_key=None, verify=None):
         for tenant, top in conn.execute("SELECT tenant, max(idx) FROM tracekit_registry GROUP BY tenant"):
             if top + 1 != counts[tenant]:
                 problems.append(f"registry: the leaves of tenant {tenant[:64]!r} are not numbered 0 to {counts[tenant] - 1}")
+        if not problems:
+            cur = conn.cursor(name="tracekit_fsck_trees")
+            cur.execute("SELECT seq, record->'event'->>'type', hash, record->'event'->>'log_id' FROM tracekit_records "
+                        "ORDER BY seq")
+            records = [tuple(r) for r in cur]
+            cur.close()
+            registry = {}
+            for tenant, leaf in conn.execute("SELECT tenant, leaf FROM tracekit_registry ORDER BY tenant, idx"):
+                registry.setdefault(tenant, []).append(bytes(leaf))
+            tiles = {tuple(k): bytes(data) for *k, data in conn.execute(
+                "SELECT tree, level, idx, width, data FROM tracekit_tiles WHERE width = 256")}
+            notes = conn.execute("SELECT tree, note FROM tracekit_notes").fetchall()
+            problems.extend(check_trees(records, registry, notes, lambda *k: tiles.get(k)))
         for size, mac, body in conn.execute("SELECT size, mac, body FROM tracekit_snapshots ORDER BY size"):
             if _snapshot(conn, mac, body, snapshot_key, counts) is None:
                 problems.append(f"snapshots/{size}: does not match the log or its MAC, so open ignores it and replays "

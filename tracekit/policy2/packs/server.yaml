@@ -3,9 +3,13 @@
 #
 # A deployment extends this pack, maps its own tool names under `tools`, and redefines a rule by id to change it (the
 # egress allowlist TK-N002, for one). docs/policy-v2.md lists every rule.
+#
+# TK-S001 and TK-S004 match each call's `target`: what it acts on (a path, a URL, a command's argv, redirections and
+# assignments, attachments, an MCP tool's arguments), not what it carries (file content, a commit message, the pattern
+# grep searches for). Each URL is also matched as scheme://canonical-host/, so any notation of an address counts.
 
 extends: [coding.yaml, browser.yaml, server-data.yaml, server-net.yaml, server-cloud.yaml, server-comms.yaml]
-version: '2026.10-server-2'
+version: '2026.10-server-3'
 description: server-hosted agents (coding, browser and server packs; unmapped tools ask)
 unknown_tools: ask
 
@@ -15,8 +19,9 @@ tools:
 deny:
   - id: TK-S001
     # AWS, Azure, GCP, Oracle and DigitalOcean (169.254.169.254, also in decimal, hex and octal), AWS IPv6, ECS task
-    # credentials, Alibaba
-    pattern: '169\.254\.169\.254|169\.254\.170\.2|\b2852039166\b|\b0[Xx][Aa]9[Ff][Ee][Aa]9[Ff][Ee]\b|\b0251\.0376\.0251\.0376\b|\[?[Ff][Dd]00:[Ee][Cc]2::254\b|[Mm][Ee][Tt][Aa][Dd][Aa][Tt][Aa]\.[Gg][Oo][Oo][Gg][Ll][Ee]\.[Ii][Nn][Tt][Ee][Rr][Nn][Aa][Ll]|100\.100\.100\.200'
+    # credentials, Alibaba, and the short names metadata and instance-data
+    field: target
+    pattern: '://([^/@\s"]*@)?([Mm][Ee][Tt][Aa][Dd][Aa][Tt][Aa]|[Ii][Nn][Ss][Tt][Aa][Nn][Cc][Ee]-[Dd][Aa][Tt][Aa])\.?([:/?#"\s]|$)|169\.254\.169\.254|169\.254\.170\.2|\b2852039166\b|\b0[Xx][Aa]9[Ff][Ee][Aa]9[Ff][Ee]\b|\b0251\.0376\.0251\.0376\b|\[?[Ff][Dd]00:[Ee][Cc]2::254\b|[Mm][Ee][Tt][Aa][Dd][Aa][Tt][Aa]\.[Gg][Oo][Oo][Gg][Ll][Ee]\.[Ii][Nn][Tt][Ee][Rr][Nn][Aa][Ll]|100\.100\.100\.200'
     reason: cloud metadata service
     rationale: The metadata service hands out the server's own cloud credentials; no tool call of an agent has a reason to reach it.
   - id: TK-S002
@@ -32,22 +37,17 @@ deny:
     reason: a secret in a shell command
     rationale: TK-S002 for the whole command line, where a secret can sit in a VAR= prefix, a redirection or a heredoc.
   - id: TK-S004
-    # on a shell tool each command's argv, elsewhere the whole call (a file path, an MCP argument)
-    pattern: '\.aws/credentials|\.kube/config\b|\.docker/config\.json|\.config/gcloud/(application_default_credentials\.json|credentials\.db|access_tokens\.db|legacy_credentials)|\.azure/(accessTokens\.json|msal_token_cache)|/var/run/secrets/|/run/secrets/|\.pgpass\b|\.netrc\b|\.git-credentials\b|\.vault-token\b|/etc/shadow\b|\.ssh/id_[a-z0-9]+($|[^.a-z0-9_])|/proc/(self|[0-9]+)/environ\b'
+    field: target
+    pattern: '\.aws/credentials|\.kube/config\b|\.docker/config\.json|\.config/gcloud/(application_default_credentials\.json|credentials\.db|access_tokens\.db|legacy_credentials)|\.azure/([Aa]ccess[Tt]okens\.json|msal_token_cache)|/var/run/secrets/|/run/secrets/|\.pgpass\b|\.netrc\b|\.git-credentials\b|\.vault-token\b|/etc/shadow\b|\.ssh/id_[a-z0-9]+($|[^.a-z0-9_])|/proc/(self|[0-9]+)/environ\b'
     reason: reading or touching a credentials file
     rationale: Cloud, cluster, registry and database credentials and the service account token on a server are the keys to everything else; the agent's tools get access through the deployment, not these files.
-  - id: TK-S005
-    class: shell
-    field: line
-    pattern: '\.aws/credentials|\.kube/config\b|\.docker/config\.json|\.config/gcloud/(application_default_credentials\.json|credentials\.db|access_tokens\.db|legacy_credentials)|\.azure/(accessTokens\.json|msal_token_cache)|/var/run/secrets/|/run/secrets/|\.pgpass\b|\.netrc\b|\.git-credentials\b|\.vault-token\b|/etc/shadow\b|\.ssh/id_[a-z0-9]+($|[^.a-z0-9_])|/proc/(self|[0-9]+)/environ\b'
-    reason: a credentials file in a shell command
-    rationale: TK-S004 for the whole command line, where the file can be a redirection (< ~/.aws/credentials).
   - id: TK-S006
     class: shell
-    # options that make a non-shell command run another command
-    pattern: '^tar .*(--to-command|--checkpoint-action=exec|--use-compress-program|-I )|^git .*(-c [^ ]*\.(sshcommand|sshCommand|pager|editor|fsmonitor|hooksPath|askpass|askPass)=|--upload-pack|--receive-pack|--exec=|ext::)|^ssh .*(ProxyCommand|LocalCommand|PermitLocalCommand)|^scp .*-S |^zip .*(-TT|--unzip-command)|^rsync .*--rsync-path|^(vim?|nvim|less|man) .*(-c ?!|\+!)'
+    # options that make a non-shell command run another command; git config keys in any case, and every alias (a
+    # `!` alias runs a shell command, any alias can rename a subcommand the shell rules stop)
+    pattern: '^tar .*(--to-command|--checkpoint-action=exec|--use-compress-program|-I )|^git .*(-c ([^ =]*\.)?([Ss][Ss][Hh][Cc][Oo][Mm][Mm][Aa][Nn][Dd]|[Pp][Aa][Gg][Ee][Rr]|[Ee][Dd][Ii][Tt][Oo][Rr]|[Ff][Ss][Mm][Oo][Nn][Ii][Tt][Oo][Rr]|[Hh][Oo][Oo][Kk][Ss][Pp][Aa][Tt][Hh]|[Aa][Ss][Kk][Pp][Aa][Ss][Ss]|[Gg][Ii][Tt][Pp][Rr][Oo][Xx][Yy]|[Pp][Rr][Oo][Gg][Rr][Aa][Mm]|[Ee][Xx][Tt][Ee][Rr][Nn][Aa][Ll]|[Cc][Oo][Mm][Mm][Aa][Nn][Dd]|[Tt][Ee][Xx][Tt][Cc][Oo][Nn][Vv]|[Dd][Rr][Ii][Vv][Ee][Rr]|[Cc][Ll][Ee][Aa][Nn]|[Ss][Mm][Uu][Dd][Gg][Ee]|[Pp][Rr][Oo][Cc][Ee][Ss][Ss]|[Hh][Ee][Ll][Pp][Ee][Rr]|[Rr][Ee][Cc][Ee][Ii][Vv][Ee][Pp][Aa][Cc][Kk]|[Uu][Pp][Ll][Oo][Aa][Dd][Pp][Aa][Cc][Kk]|[Pp][Aa][Cc][Kk][Oo][Bb][Jj][Ee][Cc][Tt][Ss][Hh][Oo][Oo][Kk]|[Dd][Ii][Ff][Ff][Ff][Ii][Ll][Tt][Ee][Rr])=|-c ([Aa][Ll][Ii][Aa][Ss]|[Pp][Aa][Gg][Ee][Rr])\.|--config-env|--upload-pack|--receive-pack|--exec=|ext::)|^ssh .*(ProxyCommand|LocalCommand|PermitLocalCommand)|^scp .*-S |^zip .*(-TT|--unzip-command)|^rsync .*--rsync-path|^(vim?|nvim|view|ex|less|man) .*(-c ?|\+)[: ]*(([rw][a-z]* *)?!|call +system)'
     reason: running a command through another command's options
-    rationale: tar, git, ssh, zip and rsync options that run a program are a way to run what the shell rules would stop.
+    rationale: tar, git, ssh, zip, rsync and vim options that run a program are a way to run what the shell rules would stop.
 
 ask:
   - id: TK-S010

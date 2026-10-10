@@ -31,7 +31,11 @@ if kubectl exec "deploy/$release" -c agent -- ls /var/lib/tracekit-signer/data/k
     echo "e2e: the agent can list the signer's keys" >&2
     exit 1
 fi
-echo "e2e: the agent cannot read the signer's files"
+if kubectl exec "deploy/$release" -c agent -- rm /run/tracekit-signer/signer.sock >/dev/null 2>&1; then
+    echo "e2e: the agent can remove the signer's socket" >&2
+    exit 1
+fi
+echo "e2e: the agent cannot read the signer's files or replace its socket"
 
 # doctor exits 1 here (no witnesses, no /opt/tracekit venv in the image); the checks it can run in a pod must pass
 kubectl exec "deploy/$release" -c tracekit-signer -- tracekit doctor --json --config /etc/tracekit/signer.yaml \

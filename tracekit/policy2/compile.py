@@ -18,10 +18,13 @@ TOP_KEYS = {"version", "description", "extends", "tools", "unknown_tools", "deny
 RULE_KEYS = {"id", "class", "tool", "field", "pattern", "unless", "reason", "rationale", "label", "approval"}
 # an ask rule's `approval`: executor t2 runs only the signer's copy; passkey required: approving needs a passkey
 APPROVAL = {"executor": ("t1", "t2"), "passkey": ("required",)}
-CLASSES = {"shell": {"command", "argv", "line"}, "fs": {"path", "op", "content_digest"}, "http": {"method", "url", "host"},
-           "sql": {"statement", "verb", "db"}, "payment": {"amount", "currency", "payee", "new_payee"},
-           "email": {"to", "domains", "attachments"}, "mcp": {"server", "tool", "args"}, "browser": {"action", "url"},
-           "unknown": set()}
+# every class also has `target`: what the call acts on (engine.Engine._targets), so one rule without a class can match it
+CLASSES = {"shell": {"command", "argv", "line"}, "fs": {"path", "op", "content_digest"},
+           "http": {"method", "url", "host", "internal"}, "sql": {"statement", "code", "verb", "db"},
+           "payment": {"amount", "currency", "payee", "new_payee"}, "email": {"to", "domains", "attachments"},
+           "mcp": {"server", "tool", "args"}, "browser": {"action", "url", "scheme", "host", "internal"}, "unknown": set()}
+for _fields in CLASSES.values():
+    _fields.add("target")
 MAX_REPEAT = 1000   # RE2's limit for {n,m}
 WS = "\\t\\n\\f\\r "   # RE2's \s; Python's also has \v
 _ESCAPES = set("dDwWsSbBAntrfv")
@@ -106,7 +109,9 @@ def check_pattern(pattern):
 def _read(path):
     with open(path, encoding="utf-8") as f:
         text = f.read()
-    return yamlmini.load_any(text) if path.endswith((".yaml", ".yml")) else json.loads(text)
+    # always the built-in subset, never PyYAML: a policy must mean the same on every signer (PyYAML would keep the last
+    # of two duplicate keys and expand anchors and merge keys the subset rejects)
+    return yamlmini.loads(text) if path.endswith((".yaml", ".yml")) else json.loads(text)
 
 
 def build(path, seen=()):

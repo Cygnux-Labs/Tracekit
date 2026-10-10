@@ -56,8 +56,10 @@ Then the algorithms each conclusion rests on: `records <algs>`; `checkpoint Ed25
 Ed25519 + SLH-DSA-SHA2-128s (<origin>)` when your trust config pins the log's hybrid key ([format v2](format-v2.md#hybrid-checkpoint-signature));
 each pinned cosignature (Ed25519) with its witness class and time (or `no witness cosignature`); each Rekor anchor
 with its class, time and algorithms (ECDSA P-256 entry, RFC 3161 time); `earliest independent anchor <time>`, the earliest time a
-non-`operator` witness or anchor vouches the checkpoint existed; `approvals: self` when a run holds a self-approval; and
-`key retirements not proven complete` (see `keys`).
+non-`operator` witness or anchor vouches the checkpoint existed; `capped by the run-set's registry notes (<level>)`
+when a run-set's registry notes, judged by the same rule from their own cosignatures, earn a lower level than the
+checkpoint (the level shown is then theirs); `approvals: self` when a run holds a self-approval; and `key retirements
+not proven complete` (see `keys`).
 
 The level describes who vouches for the checkpoint, not how the signer was isolated: a same-user dev signer whose
 checkpoints a public witness cosigns verifies as `witnessed`. A witness proves the log was not rolled back or forked
@@ -82,7 +84,7 @@ is `witnessed` plus a fresh, conflict-free report of a monitor your trust config
 | `run chain` | each run is contiguous from `run_seq` 0, one tenant and run, increasing seq, nothing after `run.final` | a record deleted, swapped, spliced from another run, or appended after `run.final` |
 | `inclusion` | each run's first and last record is in the checkpointed tree | the run was rebuilt or the proofs are for another tree |
 | `policy snapshot` | the snapshot file is named by its own SHA-256 | the snapshot was edited |
-| `run-set` | `COMPLETE, registry a..b (r runs registered, f final, o open)` | `INCOMPLETE`: a leaf is missing or points elsewhere, a final run's records are missing, a second `run.final`, an unrelated run, or records after `log.closed` |
+| `run-set` | `COMPLETE, registry a..b of tenant 't' (r runs registered, f final, o open)` | `INCOMPLETE`: a registry note without `witnesses_required` pinned cosignatures, a leaf is missing or points elsewhere, a final run's records are missing, a second `run.final`, an unrelated run or a run of another tenant, or records after `log.closed` |
 | `format bridge` | the v1 ledger verifies up to the bridge and ends in its key retirement (only with `--v1-ledger`) | a v1 record after the bridge, wrong key, broken v1 chain |
 | `bundle structure` | — | the bundle is malformed in a way no other line covers |
 
