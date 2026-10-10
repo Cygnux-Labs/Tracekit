@@ -93,10 +93,16 @@ def build(key, version, out):
                 z.extractall(site)
     with open(os.path.join(pkg, "wheels.sha256"), "w") as f:
         f.writelines(lines)
-    for top, dirs, _ in os.walk(os.path.join(pkg, "python"), topdown=True):
+    for top, dirs, names in os.walk(os.path.join(pkg, "python"), topdown=True):
         for d in [d for d in dirs if d in STRIP]:
             shutil.rmtree(os.path.join(top, d))
             dirs.remove(d)
+        for n in names:   # npm pack drops symlinks (PBS's bin/python3 -> python3.12): store copies
+            path = os.path.join(top, n)
+            if os.path.islink(path):
+                target = os.path.realpath(path)
+                os.remove(path)
+                shutil.copy2(target, path)
     with open(os.path.join(pkg, "package.json"), "w") as f:
         json.dump(package_json(key, version), f, indent=2)
         f.write("\n")

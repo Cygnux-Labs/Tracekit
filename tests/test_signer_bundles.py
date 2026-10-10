@@ -19,7 +19,10 @@ spec.loader.exec_module(bsb)
 
 def fake_pbs(url, digest, dest):
     with tarfile.open(dest, "w:gz") as tar:
-        for name in ["python/bin/python3", "python/include/python3.12/Python.h",
+        link = tarfile.TarInfo("python/bin/python3")
+        link.type, link.linkname = tarfile.SYMTYPE, "python3.12"
+        tar.addfile(link)
+        for name in ["python/bin/python3.12", "python/include/python3.12/Python.h",
                      "python/lib/python3.12/test/test_x.py", "python/lib/python3.12/os.py",
                      "python/Lib/os.py", "python/python.exe"]:
             info = tarfile.TarInfo(name)
@@ -68,6 +71,11 @@ class TestSignerBundles(unittest.TestCase):
                 for gone in [site + "/tracekit/tests", "python/include", "python/lib/python3.12/test"]:
                     self.assertFalse(os.path.exists(os.path.join(pkg, gone)), gone)
                 self.assertTrue(os.path.exists(os.path.join(pkg, "python/lib/python3.12/os.py")))
+                self.assertFalse([os.path.join(top, n) for top, dirs, names in os.walk(pkg) for n in dirs + names
+                                  if os.path.islink(os.path.join(top, n))])
+                if key == "linux-x64-gnu":
+                    with open(os.path.join(pkg, "python/bin/python3"), "rb") as f:
+                        self.assertEqual(f.read(), b"x")
                 with open(os.path.join(pkg, "wheels.sha256")) as f:
                     self.assertRegex(f.read(), re.compile(r"^[0-9a-f]{64}  tracekit_ai-9\.9\.9-py3-none-any\.whl\n$"))
 
