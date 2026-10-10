@@ -140,8 +140,8 @@ def _loopback(host):
 def server(cfg, registry, logs=None, tlog=None):
     """A bound, not yet started, HTTP server answering only `GET /metrics` with `registry`, `GET /logs/v0` with
     `logs()` (the signer's logs list) when given, and any other GET with `tlog(path)` (bytes, or None for 404). `cfg` is the `metrics` section of signer.yaml. Start it with serve_forever(); stop it with shutdown() and server_close()."""
-    if not isinstance(cfg, dict) or set(cfg) - {"listen", "allow_remote"}:
-        raise ValueError("metrics: takes listen and allow_remote")
+    if not isinstance(cfg, dict) or set(cfg) - {"listen", "allow_remote", "serve_records"}:
+        raise ValueError("metrics: takes listen, allow_remote and serve_records")
     host, _, port = str(cfg.get("listen", DEFAULT_LISTEN)).rpartition(":")
     if not _loopback(host) and cfg.get("allow_remote") is not True:
         raise ValueError(f"metrics: listen {host!r} is not loopback; set metrics.allow_remote: true to serve it")

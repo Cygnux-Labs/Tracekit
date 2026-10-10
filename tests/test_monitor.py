@@ -196,7 +196,8 @@ class Signer(unittest.TestCase):
         self.s = svc.SignerService(os.path.join(self.dir, "signer"), grace_s=0, origin=ORIGIN,
                                    rekor={"signing_config": self.sc, "trusted_root": self.tr, "every_s": 3600})
         self.addCleanup(self.s.close)
-        server = metrics.server({"listen": "127.0.0.1:0"}, self.s.metrics, self.s.logs_list, self.s.tlog)
+        server = metrics.server({"listen": "127.0.0.1:0"}, self.s.metrics, self.s.logs_list,
+                                lambda p: self.s.tlog(p, records=True))
         threading.Thread(target=server.serve_forever, args=(0.05,), daemon=True).start()
         self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
@@ -277,3 +278,16 @@ class Signer(unittest.TestCase):
             json.dump({"report": report, "sig": base64.b64encode(
                 crypto.sign(MONITOR, monitor.CONTEXT + canonical(report))).decode()}, f)
 
+
+
+class RecordEntries(unittest.TestCase):
+    def test_record_entries_only_when_configured(self):
+        """Hash tiles and the checkpoint are public; the record log's entries (every tenant's records) are opt-in."""
+        s = svc.SignerService(tmpdir(self), grace_s=0)
+        self.addCleanup(s.close)
+        run = s.call(ME, "register_run", {"request_id": "r1", "agent": {"name": "m"}})
+        s.checkpoint()
+        path = f"/tile/entries/000.p/{s.log.storage.tree.size}"
+        self.assertIsNone(s.tlog(path))
+        self.assertIn(run["run_id"].encode(), s.tlog(path, records=True))
+        self.assertIsNotNone(s.tlog("/checkpoint"))

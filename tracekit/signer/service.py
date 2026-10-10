@@ -30,7 +30,9 @@ signer.yaml:
     origin: tracekit.example.org/log/1       # checkpoint origin, the log key's name; default tracekit.local/<log_id>
     metrics: {listen: 127.0.0.1:9464}        # Prometheus GET /metrics on its own port (tracekit.signer.metrics),
                                              # and GET /logs/v0: this signer's logs, for witnesses to poll, and
-                                             # the logs' tiles and anchors, for monitors (SignerService.tlog)
+                                             # the logs' tiles and anchors, for monitors (SignerService.tlog);
+                                             # serve_records: true adds the record entries a monitor of the record
+                                             # log reads (every tenant's records: keep that port private)
     witnesses:                               # C2SP tlog-witnesses that cosign every new note (tracekit.tlog_witness)
       - {url: https://witness.example.org, vkey: "witness.example.org/w1+1234abcd+BA...", class: customer}
     contact: ops@example.org                 # the logs list's contact line; default the origin
@@ -686,12 +688,14 @@ class SignerService:
                     f"qpd {int(86400 / CHECKPOINT_MIN_S)}", f"contact {self.contact}", ""]
         return "".join(line + "\n" for line in out)
 
-    def tlog(self, path):
+    def tlog(self, path, records=False):
         """The bytes at `path` of the logs' read-only C2SP tlog-tiles API, or None: the record log at /, each tenant's
         registry log at /registry/<id>/ (its origin's suffix), each with `checkpoint` (the latest note), hash tiles
         `tile/<L>/<N>[.p/<W>]` and entry bundles `tile/entries/<N>[.p/<W>]`; and /anchors, the stored Rekor anchors
         as JSON lines. A registry bundle is C2SP's (uint16 length ‖ leaf, per leaf); a record log bundle is JSON lines,
-        one record per line, as a record can be longer than a uint16 length."""
+        one record per line, as a record can be longer than a uint16 length. The record log's entry bundles (every
+        tenant's records: run ids, tool names, commitments) only with `records` (metrics.serve_records: true); its
+        checkpoint and hash tiles, and the registry logs (salted leaves), always."""
         if path == "/anchors":
             return "".join(json.dumps(a) + "\n" for a in self.log.storage.anchors()).encode("utf-8")
         m = TLOG_PATH.fullmatch(path)
@@ -715,6 +719,8 @@ class SignerService:
             if count < lo + w:
                 return None
             if kind == "entries" and tenant is None:
+                if not records:
+                    return None
                 return "".join(json.dumps(r, separators=(",", ":")) + "\n" for r in s.iter_range(lo, lo + w)).encode()
             if kind == "entries":
                 return b"".join(len(x).to_bytes(2, "big") + x for x in itertools.islice(s.registry_iter(tenant, lo), w))
@@ -1548,7 +1554,9 @@ def serve(cfg, service):
         raise ValueError("configure socket, tcp_endpoint and/or http")
     if "otlp" in cfg and not cfg.get("http"):
         raise ValueError("otlp is served on the http listener: configure http")
-    servers = [metrics.server(cfg["metrics"], service.metrics, service.logs_list, service.tlog)] if "metrics" in cfg else []
+    servers = [metrics.server(cfg["metrics"], service.metrics, service.logs_list,
+                              lambda p: service.tlog(p, cfg["metrics"].get("serve_records") is True))
+               ] if "metrics" in cfg else []
     handle = answering_hello(service.handle_frame, hello())
     if cfg.get("socket"):
         from tracekit.transport.unix import UnixServer
