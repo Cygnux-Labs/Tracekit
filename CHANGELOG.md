@@ -2,6 +2,110 @@
 
 All notable changes to Tracekit. Versions follow [PEP 440](https://peps.python.org/pep-0440/).
 
+## 1.0.0rc1 (2026-10-10) — server deployments and teams
+
+The first 1.0 release candidate: the v2 signer becomes the way to run Tracekit, on a laptop, in a container, as a
+Kubernetes sidecar or as a central service on Postgres, with witnesses, a monitor and team approvals. The v1 laptop
+setup and v1 bundles keep working unchanged. [docs/launch-checklist.md](docs/launch-checklist.md) lists what the 1.0
+release still waits on; 1.0 itself is the owner's call after real use.
+
+### Upgrade notes
+- **Signer RPC version 12** (0.4.0 spoke 7). Clients and signers of different versions refuse each other; upgrade the
+  signer and its clients together. A dev signer of the old version is reported, never restarted behind your back.
+- **v2 bundles now need tracekit >= 1.0.0 to verify** (`verifier_min_version`): they can carry anchors, hybrid
+  checkpoint signatures, certified record keys and other records 0.4.0's verifier doesn't know. An older verifier
+  reports them `UNVERIFIABLE`, never as failed. 0.4.0 bundles still verify. v1 bundles and the v1 verifier are unchanged.
+- **TypeScript**: `@cygnux/tracekit`'s default import is now the native v2 client; the v1 API is at
+  `@cygnux/tracekit/v1`, and the Python bridge it used is deprecated.
+- **Server deployments run the server policy pack.** The image, the compose stack and both Helm charts now set
+  `policy:` (before, they fell back to the laptop pack). Replace `/etc/tracekit/policy.yaml` to run your own.
+- **Run-sets need their registry notes cosigned**: with `witnesses_required` set, a run-set exported before the
+  witnesses cosigned its registry note verifies `INCOMPLETE`; the run-set line now names its tenant.
+- **Policy packs**: rules now match what a call acts on (`target`) rather than everything it carries, so writing a file
+  that merely mentions a credentials path is no longer denied; `TK-S005` is folded into `TK-S004`; new rules
+  `TK-N003`, `TK-B003` and `TK-SQL-PARSE`. Policy files are always read by the built-in YAML subset (duplicate keys and
+  anchors are errors even where PyYAML is installed). A command or SQL statement the parser can't read is held (ask).
+- **Clients**: one run's events are sent one at a time (other runs still in parallel); a v2 hook that can't start now
+  blocks the call in dev mode too.
+
+### Fixes from the pre-1.0 review
+A five-part review of the signer, storage and verifier, network services, clients and policy before this release; each
+fix has a regression test.
+- **Approvals**: self-approval is detected across every identity mapped to the same person, including OIDC person ids;
+  a consumed approval covers only the arguments it approved; a passkey-required approval is refused without a verified
+  assertion on every path; a blank break-glass reason is refused; a bridge acts for people of its own tenant only
+  (unless it is a multi-tenant app); passkeys are registered only soon after a sign-in.
+- **Signer**: nothing is signed with a record key whose certificate has expired; runs are refused in tenants the key
+  isn't certified for; closing a log ends its open runs first; finished runs leave the writer's working set; retry
+  caches are bounded per identity and keep no executor arguments; OTLP import adds spans only to the importer's own runs.
+- **Verifier and storage**: run-set completeness requires the registry notes' witness quorum and that every bundled run
+  is of the run-set's tenant; a power loss can no longer leave the file store unable to start; Postgres calls time out
+  instead of hanging; registry notes are read on demand; fsck checks the trees against the logs; exporting an active
+  run works; the monitor and export write durably.
+- **Network services**: the signer's HTTPS listener, the viewer, metrics and the Slack bridge bound their connections
+  and enforce request deadlines; a pending viewer login can't be evicted; valid credentials work behind an address
+  that others failed from; loopback receivers answer only loopback host names; witness proofs no longer rehash the log.
+- **Clients**: an answer can't reach the wrong caller; a stalled signer fails every waiting call within its timeout;
+  installers refuse agent settings of an unexpected shape rather than rewriting them; hook approval waits fit the
+  harness's hook timeout.
+- **Policy**: SQL rules match outside comments and every literal form; hosts are normalised (numeric, mapped and
+  encoded forms) before matching; command names built from expansions, more wrappers, interpreter programs in every
+  form, option-borne commands and bundled force-push flags are covered; paths match whatever the separator or case.
+- **Deploy**: the agent's mount of the signer socket is read-only; every chart container has resource requests and
+  limits; image and npm bundle dependencies are pinned, and the npm bundles are built from the release's checked wheel.
+
+### Deploy anywhere
+- **Container image** of the signer (non-root uid 10001, digest-pinned base) and a **Docker Compose stack**: signer,
+  Postgres, a shipped witness and the viewer.
+- **Postgres storage** (one writer per log, advisory lock, a SELECT-only reader role for export, view and reveal) next
+  to the file store, whose snapshots are now HMAC-authenticated.
+- **Helm charts**: `tracekit-signer` (a sidecar the agent's container can't read) and `tracekit-central` (one writer
+  per log, run ids routed by prefix, a viewer of every log).
+- **Keys**: the log key can live in AWS KMS (Ed25519) or GCP; an issuer service certifies short-lived record keys,
+  witnessed before it returns them; checkpoints can carry a second, post-quantum signature (SLH-DSA, FIPS 205).
+- **Anchoring and monitoring**: checkpoints anchored in Rekor v2 with RFC 3161 timestamps; `tracekit monitor` follows a
+  log, checks its rules and publishes signed reports, so bundles can verify at `witnessed+monitored`.
+- **`tracekit doctor`** checks v2 deployments, including Kubernetes; laptop **system mode** runs the v2 signer as its
+  own user, with harness binding through a root-owned helper.
+- **Remote clients** reach the signer over HTTPS with Kubernetes service-account, mTLS, bearer-token or OIDC
+  identities; v1 remote ingest is replaced.
+- **LLM gateway** (OpenAI-compatible) that records model calls through the signer, optionally mandatory.
+
+### Capture and evidence
+- **Reconciliation** of three capture layers (transcripts, hooks, SDK) in the signer, with signed coverage gaps; a
+  hardened Claude Code transcript tailer; v2 hooks for Codex, Cursor and Gemini CLI.
+- **Verifier**: the complete v2 report, a golden corpus and a negative corpus, run-set completeness, retired-key use
+  failing, revocations reported as unverifiable.
+- **OpenTelemetry** in (OTLP into the signer) and out (spans from v2 records).
+
+### Policy and approvals
+- **Server policy packs**: SQL, HTTP egress, cloud CLIs and MCP tools, payments, email and chat, plus cloud metadata,
+  secrets and credential files on every tool. On the shipped corpora they catch every deny case and hold 0.16% of
+  benign calls. `extends` takes a list of packs.
+- **Team approvals**: OIDC sign-in for approvers and the viewer; a run's end-user principal can be attested from their
+  token and never approves its own run; web approval pages, with passkeys (WebAuthn) required for high-risk rules;
+  Slack approvals; break-glass answers need a reason and are recorded.
+- **External decisions** from AWS AgentCore Policy, Amazon Verified Permissions, VS Code agent hooks and GitHub Copilot
+  hooks are imported as signed inputs, and a disagreement with the signer becomes a signed gap.
+- **OCSF webhook**: decisions, denies, approvals, gaps and tamper records sent HMAC-signed to a SIEM, without agent
+  content.
+
+### Viewer
+- **Multi-tenant viewer** over every log of a central deployment: auditor (one tenant), approver and operator-admin
+  roles, search and pagination, each run checked by the verifier (labelled as the operator's view) and downloadable as a
+  bundle to re-verify.
+
+### SDKs and integrations
+- **Native TypeScript client** of the signer RPC, with adapters for the OpenAI Agents SDK, the Vercel AI SDK and the
+  Claude Agent SDK, and `npx @cygnux/tracekit up` for Node-only users.
+- Runnable v2 examples and quickstarts per framework; `tracekit demo --server`; a Browser Use adapter.
+
+### Release and docs
+- Release engineering for signed artifacts with provenance, SBOMs and multi-arch images (the target workflow is in
+  [docs/RELEASING.md](docs/RELEASING.md)).
+- Deployment, migration, architecture, security-checklist, FAQ and limits docs; a rewritten README; the technical
+  report ([report/tracekit-v2.md](report/tracekit-v2.md)) with the E-series results.
+
 ## 0.4.0 (2026-10-10) — v2 signer preview
 
 A **preview of the v2 architecture** for server-hosted agents, shipped alongside the unchanged v1 laptop setup.
