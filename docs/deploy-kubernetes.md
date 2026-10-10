@@ -18,12 +18,13 @@ What the chart sets up:
 | | Signer (sidecar) | Agent |
 |---|---|---|
 | user | uid/gid 10001 (`signer.uid`) | uid 1000 (`agent.uid`); the chart refuses 0 and the signer's uid |
-| socket dir `/run/tracekit-signer` (emptyDir, 1 MiB) | mounted | mounted, `TRACEKIT_SIGNER=/run/tracekit-signer/signer.sock` |
+| socket dir `/run/tracekit-signer` (emptyDir, 1 MiB) | mounted | mounted read-only, `TRACEKIT_SIGNER=/run/tracekit-signer/signer.sock` |
 | keys and log (PVC, `persistence`) | mounted | not mounted |
-| `signer.yaml` (ConfigMap, `subPath`, root-owned) | mounted | not mounted |
+| `signer.yaml` and `policy.yaml` (ConfigMap, `subPath`, root-owned) | mounted | not mounted |
 | record key Secret (`recordKey.secretName`) | mounted | not mounted |
 
-The socket directory is the only volume the two share. The signer knows the agent by its peer uid: signer.yaml's
+The socket directory is the only volume the two share, read-only in the agent's container: connecting needs write
+access to the 0666 socket only, so the agent can't unlink or replace the socket or put anything at its path. The signer knows the agent by its peer uid: signer.yaml's
 `tenants` maps `uid:<agent.uid>` to `signer.tenant`. Both containers run with `runAsNonRoot`, `readOnlyRootFilesystem`,
 `allowPrivilegeEscalation: false`, all capabilities dropped and the `RuntimeDefault` seccomp profile. If your agent
 needs a writable path, mount an emptyDir of its own.
@@ -31,7 +32,13 @@ needs a writable path, mount an emptyDir of its own.
 Values (`values.yaml` documents each):
 
 - `signer.config`: more signer.yaml keys, e.g. `witnesses`. The chart's own keys (`data_dir`, `socket`, `socket_mode`,
-  `durability`, `tenants`, `metrics`) win over them.
+  `durability`, `tenants`, `metrics`, `policy`) win over them.
+- `signer.policy`: the signer's policy file, mounted at `/etc/tracekit/policy.yaml`. The default, `extends:
+  packs/server.yaml`, runs the server pack the image ships in `/etc/tracekit/packs`
+  ([policy-v2.md](policy-v2.md#packs-shipped)); replace it with your own, extending `packs/server.yaml` to keep its
+  rules. The same value in the central chart sets every replica's policy.
+- `signer.resources`, `agent.resources` (central: `signer`, `viewer`, `monitor`, `issuer` `.resources`): CPU and memory
+  requests and limits; the defaults suit a light load, so size them for yours.
 - `persistence`: the chart makes a `ReadWriteOnce` PVC kept on uninstall, or uses `existingClaim`. The volume's root
   must be writable by uid 10001; the signer keeps its data in a 0700 `data/` directory it makes there. The chart sets no
   `fsGroup`: that would add the signer's group to the agent's container too. `persistence.enabled: false` keeps the log

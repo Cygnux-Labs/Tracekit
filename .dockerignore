@@ -7,4 +7,6 @@
 !tracekit_sdk.py
 !tracekit/
 !deploy/docker/signer.yaml.example
+!scripts/release/constraints.txt
+!scripts/release/runtime-constraints.txt
 **/__pycache__

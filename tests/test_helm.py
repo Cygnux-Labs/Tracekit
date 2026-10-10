@@ -4,6 +4,7 @@ signer's data, keys and config; deploy/helm/e2e.sh runs it on a kind cluster. Th
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -13,6 +14,19 @@ from tracekit.sdk.client import _Https
 from tracekit.signer import service
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(ROOT, "tests"))
+from test_container import parent_is_server_pack  # noqa: E402
+
+RESOURCES = {"requests", "limits"}
+
+
+def assert_resources(test, pods):
+    """Every container of `pods` has CPU and memory requests and limits."""
+    for pod in pods:
+        for c in pod.get("initContainers", []) + pod["containers"]:
+            test.assertEqual(set(c["resources"]), RESOURCES, c["name"])
+            for k in RESOURCES:
+                test.assertEqual(set(c["resources"][k]), {"cpu", "memory"}, (c["name"], k))
 CHART = os.path.join(ROOT, "deploy", "helm", "tracekit-signer")
 HARDENED = {"runAsNonRoot": True, "readOnlyRootFilesystem": True, "allowPrivilegeEscalation": False,
             "capabilities": {"drop": ["ALL"]}, "seccompProfile": {"type": "RuntimeDefault"}}
@@ -43,10 +57,14 @@ class Chart(unittest.TestCase):
         for c, uid in ((signer, 10001), (agent, 1000)):
             self.assertEqual(c["securityContext"], {**HARDENED, "runAsUser": uid, "runAsGroup": uid})
         volumes = {v["name"]: v for v in pod["volumes"]}
-        self.assertEqual([v["name"] for v in agent["volumeMounts"]], ["signer-socket"])
+        # read-only: the agent connects to the socket but can't unlink it, replace it or plant anything at its path
+        self.assertEqual(agent["volumeMounts"],
+                         [{"name": "signer-socket", "mountPath": "/run/tracekit-signer", "readOnly": True}])
         self.assertIn("emptyDir", volumes["signer-socket"])
         self.assertEqual({v["name"] for v in signer["volumeMounts"]},
                          {"signer-data", "signer-socket", "signer-config", "record-key"})
+        self.assertIn({"name": "signer-config", "mountPath": "/etc/tracekit/policy.yaml", "subPath": "policy.yaml",
+                       "readOnly": True}, signer["volumeMounts"])
         self.assertEqual(volumes["signer-data"]["persistentVolumeClaim"]["claimName"], "t-signer-data")
         self.assertEqual(volumes["record-key"]["secret"]["secretName"], "rk")
         self.assertIn({"name": "TRACEKIT_SIGNER", "value": "/run/tracekit-signer/signer.sock"}, agent["env"])
@@ -59,6 +77,19 @@ class Chart(unittest.TestCase):
         self.assertEqual(cfg["tenants"], {"uid:1000": "default"})
         self.assertEqual(cfg["socket"], "/run/tracekit-signer/signer.sock")
         self.assertEqual(cfg["metrics"], {"listen": "127.0.0.1:9464"})
+        self.assertEqual(cfg["policy"], "/etc/tracekit/policy.yaml")
+
+    def test_runs_the_server_pack_unless_replaced(self):
+        m = self.manifests()
+        self.assertTrue(parent_is_server_pack(m["ConfigMap"]["data"]["policy.yaml"]))
+        own = "extends: packs/server.yaml\ntools: {my_search: web}\n"
+        m = self.manifests("signer.policy=" + own)
+        self.assertEqual(m["ConfigMap"]["data"]["policy.yaml"], own)
+
+    def test_resources(self):
+        assert_resources(self, [self.manifests()["Deployment"]["spec"]["template"]["spec"]])
+        pod = self.manifests("agent.resources.limits.memory=4Gi")["Deployment"]["spec"]["template"]["spec"]
+        self.assertEqual(pod["containers"][0]["resources"]["limits"], {"cpu": "2", "memory": "4Gi"})
 
     def test_config_keeps_the_chart_keys(self):
         p = render("signer.config.socket=/tmp/s", "signer.config.grace_s=9")
@@ -109,6 +140,8 @@ class Central(unittest.TestCase):
         out = {}
         with tempfile.TemporaryDirectory() as d, mock.patch("tracekit.transport.http.configure"):   # no TLS files here
             for name, text in m["ConfigMap", "t-signer"]["data"].items():
+                if name == "policy.yaml":
+                    continue
                 with open(os.path.join(d, name), "w") as f:
                     f.write(text)
                 out[name] = service.load_config(os.path.join(d, name))
@@ -129,11 +162,15 @@ class Central(unittest.TestCase):
             self.assertEqual((c["route"], c["origin"], c["storage"]["postgres"]["dsn_file"], c["log_key"]),
                              (f"t-{n}", f"t.ns/log/{n}", f"/etc/tracekit/dsn/dsn-{n}",
                               {"aws_kms": {"key_id": f"k{n}", "region": "eu-west-1"}}))
+            self.assertEqual(c["policy"], "/etc/tracekit/policy.yaml")
+        self.assertTrue(parent_is_server_pack(m["ConfigMap", "t-signer"]["data"]["policy.yaml"]))
         sts = m["StatefulSet", "t"]
         self.assertNotIn("replicas", sts["spec"])   # the HPA's
         pod = sts["spec"]["template"]["spec"]
         [signer] = pod["containers"]
         self.assertIn('--config "/etc/tracekit/central/signer-${HOSTNAME##*-}.yaml"', signer["command"][2])
+        self.assertIn({"name": "config", "mountPath": "/etc/tracekit/policy.yaml", "subPath": "policy.yaml",
+                       "readOnly": True}, signer["volumeMounts"])
         [dsn] = [v for v in pod["volumes"] if v["name"] == "dsn"]
         self.assertEqual([s["secret"] for s in dsn["projected"]["sources"]],
                          [{"name": f"tracekit-log-{n}", "items": [{"key": "dsn", "path": f"dsn-{n}"}]} for n in range(3)])
@@ -181,6 +218,7 @@ class Central(unittest.TestCase):
         m = self.objects(*FULL)
         pods = [d["spec"]["template"]["spec"] for (kind, _), d in m.items() if kind in ("StatefulSet", "Deployment")]
         self.assertEqual(len(pods), 4)
+        assert_resources(self, pods)
         for pod in pods:
             for c in pod["containers"]:
                 sc = c["securityContext"]
