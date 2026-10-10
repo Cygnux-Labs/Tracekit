@@ -1,17 +1,23 @@
 """E13: approvals on a signer with an approver config (04-design §5, decision S6). The approver is another identity, the
-CLI answers as this process's uid, and each test fails without the part of the approvals it names."""
+CLI answers as this process's uid, the web path answers through the viewer's approval pages for an OIDC person, and
+each test fails without the part of the approvals it names."""
+import http.client
 import json
 import os
 import socket
 import threading
 import time
+import types
 import unittest
 import uuid
 
 import test_bundle_v2 as tb
 import test_signer_service as ts
+from test_webauthn import ORIGIN, RP_ID, Authenticator
+from tracekit import observe, view
 from tracekit.bundle_v2 import export
 from tracekit.identity.base import CallerIdentity
+from tracekit.identity.webauthn import b64url, unb64url
 from tracekit.policy2 import compile as policy_compile
 from tracekit.policy2.engine import Engine
 from tracekit.signer import service as svc
@@ -46,11 +52,12 @@ class Signer(unittest.TestCase):
 
     def pending(self, tool="pay", raw='{"to": "acct-42", "cents": 1500}'):
         """A run of this process whose call tc-1 waits for approval; its approval_id."""
-        run = self.s.register_run({"request_id": "reg", "agent": {"name": "a"}})
+        n = uuid.uuid4().hex
+        run = self.s.register_run({"request_id": f"reg{n}", "agent": {"name": "a"}})
         self.run = {"run_id": run["run_id"], "run_token": run["run_token"]}
-        self.s.decide({"request_id": "d", **self.run, "stream": "s", "client_seq": 0, "tool_call_id": "tc-1",
+        self.s.decide({"request_id": f"d{n}", **self.run, "stream": "s", "client_seq": 0, "tool_call_id": "tc-1",
                        "tool": tool, "args_source": "raw", "args": raw})
-        return self.s.approval_request({"request_id": "a", **self.run, "tool_call_id": "tc-1"})["approval_id"]
+        return self.s.approval_request({"request_id": f"a{n}", **self.run, "tool_call_id": "tc-1"})["approval_id"]
 
     def decide(self, aid, who=APPROVER, decision="approve", **kw):
         return self.s.call(who, "approval_decide", {"request_id": f"h{uuid.uuid4().hex}", "approval_id": aid,
@@ -208,6 +215,191 @@ class TestExecutorAndListing(Signer):
         self.decide(aid)
         t.join()
         self.assertEqual(self.s.approval_wait(dict(wait, timeout_ms=0))["state"], "approved")
+
+
+BRIDGE = CallerIdentity("mtls", "spiffe://acme/viewer", True)
+ALICE = {"subject": "corp/u-alice", "person": "corp/alice", "groups": ["corp/approvers"], "tenant": "default"}
+BOB = {"subject": "corp/u-bob", "person": "corp/bob", "groups": ["corp/approvers"], "tenant": "default"}
+CAROL = {"subject": "corp/u-carol", "person": "corp/carol", "groups": ["corp/approvers"], "tenant": "acme"}
+OLIVE = {"subject": "corp/u-olive", "person": "corp/olive", "groups": ["corp/oncall"], "tenant": "acme"}
+WEB = {"approvers": ["group:corp/approvers", f"uid:{APPROVER.subject}", "slack:T01/U02"],
+       "break_glass": ["group:corp/oncall"],
+       "webauthn": {"rp_id": RP_ID, "origin": ORIGIN}}
+WIRE = Engine({"ask": [{"id": "WIRE", "tool": "^wire$", "pattern": "^", "approval": {"passkey": "required"}},
+                       {"id": "MAIL", "tool": "^mail$", "pattern": "^"}]})
+
+
+class Sessions:
+    """Stands in for view.OidcLogin: sessions as its login leaves them (tests/test_identity_oidc.py logs in for real)."""
+    redirect_uri = "https://127.0.0.1/callback"
+
+    def __init__(self):
+        self.by_id = {}
+
+    def add(self, person, role):
+        sid = uuid.uuid4().hex
+        self.by_id[sid] = {"tenant": person["tenant"], "role": role, "person": person, "csrf": uuid.uuid4().hex}
+        return sid
+
+    def session(self, sid):
+        return self.by_id.get(sid)
+
+    def tenant(self, sid):
+        return self.by_id.get(sid, {}).get("tenant")
+
+
+class TestWeb(Signer):
+    """The viewer's approval pages, answering for OIDC people over the signer RPC as an authorized bridge."""
+    approvals = WEB
+
+    def setUp(self):
+        super().setUp()
+        self.sessions = Sessions()
+        desk = view.ApprovalDesk(types.SimpleNamespace(call=lambda m, req: self.s.call(BRIDGE, m, req)), WEB["webauthn"])
+        feed = types.SimpleNamespace(records=[], base=0, lock=threading.Condition(), verify=lambda t=None: (0, [], None))
+        srv = view.server(feed, "127.0.0.1", 0, "tok", login=self.sessions, desk=desk)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        self.port = srv.server_address[1]
+
+    def open(self):
+        self.cfg["authorize"] = {
+            "person:corp/bob": ["register_run", "decide", "approval_request"],
+            f"mtls:{BRIDGE.subject}": ["approval_list", "approval_get", "approval_decide", "passkey_register",
+                                       svc.ON_BEHALF]}
+        s = svc.open_service(self.cfg, policy=WIRE)
+        self.addCleanup(s.close)
+        return s
+
+    def web(self, method, path, person=ALICE, body=None, role="approver", csrf=True, ctype="application/json"):
+        """(status, answer) of a request from a fresh session of `person`; the answer parsed when it is JSON."""
+        sid = self.sessions.add(person, role)
+        headers = {"Cookie": f"{observe.COOKIE}={sid}"}
+        if body is not None:
+            headers["Content-Type"] = ctype
+            if csrf:
+                headers["X-CSRF-Token"] = self.sessions.by_id[sid]["csrf"]
+        c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        try:
+            c.request(method, path, body=None if body is None else json.dumps(body).encode(), headers=headers)
+            r = c.getresponse()
+            out = r.read()
+            return r.status, json.loads(out) if r.getheader("Content-Type").startswith("application/json") else out
+        finally:
+            c.close()
+
+    def register(self, person=ALICE):
+        auth = Authenticator()
+        code, _ = self.web("POST", "/api/passkey", person, {"credential_id": b64url(auth.id),
+                                                            "public_key": b64url(auth.spki)})
+        self.assertEqual(code, 200)
+        return auth
+
+    def assertion(self, aid, auth, person=ALICE):
+        code, shown = self.web("GET", f"/api/approvals/{aid}", person)
+        self.assertEqual((code, shown["passkey"]), (200, True))
+        return auth.sign(unb64url(shown["challenge"]))
+
+    def approve(self, aid, person=ALICE, **body):
+        return self.web("POST", f"/api/approvals/{aid}", person, {"decision": "approve", **body})
+
+    def test_answer_records_the_person_and_the_bridge(self):
+        aid = self.pending("mail")
+        code, page = self.web("GET", "/approvals")
+        self.assertEqual(code, 200)
+        self.assertIn(b"<script nonce=", page)
+        code, listed = self.web("GET", "/api/approvals")
+        self.assertEqual([a["approval_id"] for a in listed["approvals"]], [aid])
+        code, out = self.approve(aid, reason="checked")
+        self.assertEqual((code, out["state"]), (200, "approved"))
+        [rec] = self.records("approval")
+        self.assertEqual((rec["approver"], rec["channel"], rec["reason"]), ("oidc:corp/u-alice", "web", "checked"))
+        self.assertEqual(rec["approver_identity"], {"scheme": "oidc", "subject": "corp/u-alice", "attested": False,
+                                                    "person": "corp/alice"})
+        self.assertEqual(rec["via"], {"scheme": "mtls", "subject": BRIDGE.subject, "attested": True})
+        self.assertNotIn("passkey", rec)
+
+    def test_bait_and_switch_after_a_passkey_approval(self):
+        auth = self.register()
+        aid = self.pending("wire")
+        code, out = self.approve(aid, passkey=self.assertion(aid, auth))
+        self.assertEqual((code, out["state"]), (200, "approved"))
+        self.assertEqual(self.consume(dict(PAY, cents=1500000), tool="wire")["rule_ids"], ["TK-APPROVAL-MISMATCH"])
+        self.assertTrue(self.consume(tool="wire")["ok"])
+        [rec] = self.records("approval")
+        self.assertEqual(rec["passkey"], {"credential_id": b64url(auth.id), "user_verified": True})
+
+    def test_replayed_assertion_is_refused(self):
+        auth = self.register()
+        first = self.pending("wire")
+        signed = self.assertion(first, auth)
+        second = self.pending("wire")   # the same arguments, another run
+        self.assertEqual(self.approve(second, passkey=signed)[0], 403)
+        self.assertEqual(self.approve(first, passkey=signed)[0], 200)
+        self.assertEqual(self.approve(first, passkey=signed)[0], 403)
+        self.assertEqual(self.s.log.approvals[second]["state"], "requested")
+
+    def test_expired_approval_is_refused(self):
+        auth = self.register()
+        aid = self.pending("wire")
+        signed = self.assertion(aid, auth)
+        self.s.sweep(wall=time.time() + svc.APPROVAL_TTL_S + 1)
+        self.assertEqual(self.approve(aid, passkey=signed)[0], 409)
+
+    def test_self_approval_by_person_id_is_refused(self):
+        bob = CallerIdentity("oidc", "corp/u-bob-laptop", True, {"person": "corp/bob", "groups": []})
+        run = self.s.call(bob, "register_run", {"request_id": "reg", "agent": {"name": "a"}})
+        r = {"run_id": run["run_id"], "run_token": run["run_token"]}
+        self.s.call(bob, "decide", {"request_id": "d", **r, "stream": "s", "client_seq": 0, "tool_call_id": "tc-1",
+                                    "tool": "mail", "args_source": "parsed", "args": PAY})
+        aid = self.s.call(bob, "approval_request", {"request_id": "a", **r, "tool_call_id": "tc-1"})["approval_id"]
+        code, out = self.approve(aid, BOB)   # another subject, the same person
+        self.assertEqual(code, 403, out)
+        self.assertEqual(self.approve(aid)[0], 200)
+
+    def test_cross_tenant_approval_is_refused(self):
+        aid = self.pending("mail")
+        self.assertEqual(self.web("GET", "/api/approvals", CAROL), (200, {"approvals": [], "next_cursor": None}))
+        self.assertEqual(self.web("GET", f"/api/approvals/{aid}", CAROL)[0], 404)
+        self.assertEqual(self.approve(aid, CAROL)[0], 404)
+
+    def test_passkey_rule_is_not_approved_without_an_assertion(self):
+        self.register()
+        aid = self.pending("wire")
+        self.assertEqual(self.approve(aid)[0], 403)
+        self.refused("forbidden", self.decide, aid)   # nor over the CLI's RPC
+        self.refused("forbidden", self.s.call, BRIDGE, svc.ON_BEHALF, {   # nor through a chat bridge
+            "request_id": "slack-1", "approval_id": aid, "decision": "approve", "approver": "slack:T01/U02"})
+        self.assertEqual(self.web("POST", f"/api/approvals/{aid}", body={"decision": "reject"})[0], 200)
+
+    def test_break_glass_without_a_reason_is_refused(self):
+        aid = self.pending("mail")
+        self.assertEqual(self.approve(aid, OLIVE)[0], 403)
+        code, out = self.approve(aid, OLIVE, reason="incident 7")
+        self.assertEqual((code, out["state"]), (200, "approved"))
+        [rec] = self.records("approval")
+        self.assertEqual((rec["break_glass"], rec["approver_identity"]["person"]), (True, "corp/olive"))
+
+    def test_csrf_role_and_bridge_grant(self):
+        aid = self.pending("mail")
+        self.assertEqual(self.web("POST", f"/api/approvals/{aid}", body={"decision": "approve"}, csrf=False)[0], 403)
+        self.assertEqual(self.web("POST", f"/api/approvals/{aid}", body={"decision": "approve"},
+                                  ctype="text/plain")[0], 403)
+        self.assertEqual(self.web("POST", f"/api/approvals/{aid}", body={"decision": "approve"}, role="auditor")[0], 403)
+        self.assertEqual(self.web("GET", "/api/approvals", role="auditor")[0], 403)
+        self.refused("forbidden", self.s.call, APPROVER, "approval_list", {"on_behalf": ALICE})   # not a bridge
+        self.assertEqual(self.s.log.approvals[aid]["state"], "requested")
+
+    def test_a_person_registers_one_passkey(self):
+        first, auth = self.register(), Authenticator()
+        code, _ = self.web("POST", "/api/passkey", ALICE, {"credential_id": b64url(auth.id),
+                                                           "public_key": b64url(auth.spki)})
+        self.assertEqual(code, 403)
+        self.restart()   # kept in data_dir
+        aid = self.pending("wire")
+        self.assertEqual(self.approve(aid, passkey=self.assertion(aid, auth))[0], 403)
+        self.assertEqual(self.approve(aid, passkey=self.assertion(aid, first))[0], 200)
 
 
 class TestVerifierListsBreakGlass(tb.Case):

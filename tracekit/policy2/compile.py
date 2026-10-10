@@ -16,7 +16,8 @@ from ..policy import PolicyError, _sre_c, _sre_p, check_regex
 SECTIONS = ("deny", "ask", "flag")
 TOP_KEYS = {"version", "description", "extends", "tools", "unknown_tools", "deny", "ask", "flag"}
 RULE_KEYS = {"id", "class", "tool", "field", "pattern", "unless", "reason", "rationale", "label", "approval"}
-EXECUTORS = ({"executor": "t1"}, {"executor": "t2"})   # an ask rule's `approval`: t2 runs only the signer's copy
+# an ask rule's `approval`: executor t2 runs only the signer's copy; passkey required: approving needs a passkey
+APPROVAL = {"executor": ("t1", "t2"), "passkey": ("required",)}
 CLASSES = {"shell": {"command", "argv", "line"}, "fs": {"path", "op", "content_digest"}, "http": {"method", "url", "host"},
            "sql": {"statement", "verb", "db"}, "payment": {"amount", "currency", "payee", "new_payee"},
            "email": {"to", "domains", "attachments"}, "mcp": {"server", "tool", "args"}, "browser": {"action", "url"},
@@ -165,8 +166,9 @@ def _lint(pol, path):
             errors += [f"{where}: unknown key {k!r}" for k in sorted(set(r) - RULE_KEYS)]
             errors += [f"{where}: {k} must be a string" for k in sorted(set(r) & RULE_KEYS - {"approval"})
                        if not isinstance(r[k], str)]
-            if "approval" in r and (sec != "ask" or r["approval"] not in EXECUTORS):
-                errors.append(f"{where}: approval must be {{executor: t1|t2}}, on an ask rule")
+            if "approval" in r and (sec != "ask" or not isinstance(r["approval"], dict) or not r["approval"]
+                                    or any(v not in APPROVAL.get(k, ()) for k, v in r["approval"].items())):
+                errors.append(f"{where}: approval must be {{executor?: t1|t2, passkey?: required}}, on an ask rule")
             if r["id"] in ids:
                 errors.append(f"{where}: duplicate id")
             ids.add(r["id"])

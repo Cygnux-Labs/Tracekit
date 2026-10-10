@@ -74,7 +74,7 @@ def approval(tenant, run_id, data):
             "args_source": b["args_source"], "decision_id": data["decision_id"], "commitment": b["args_commitment"],
             "rule_ids": data["rule_ids"], "policy_hash": data["policy_hash"], "requester": data["requester"],
             "expires_at": data["expires_at"], "binding_digest": data["binding_digest"], "state": "requested",
-            "executor": data.get("executor", "t1"),
+            "executor": data.get("executor", "t1"), "passkey": data.get("passkey", False),
             "requester_person": data.get("requester_person"), "label": salt_label({"type": "approval.request", "data": data})}
 
 
