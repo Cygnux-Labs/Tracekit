@@ -60,7 +60,7 @@ def main(argv=None):
     p.add_argument("--token-file", help="with --remote: file holding the client token (or set TRACEKIT_REMOTE_TOKEN)")
     p.add_argument("--dev", action="store_true", help="same-user signer (no root; weaker: the agent could rewrite the ledger)")
     p.add_argument("--home", help="signer home (dev mode)")
-    p.add_argument("--v2", action="store_true", help="the v2 signer: with --dev, wire its Claude Code hook (the signer "
+    p.add_argument("--v2", action="store_true", help="the v2 signer: with --dev, wire its hook for --agent (the signer "
                                                      "starts on first use); as root, install it in system mode")
     p.add_argument("--approver", help="with --v2, system mode: the user who answers the agent's approvals (default: "
                                       "$SUDO_USER, the admin running init)")
@@ -271,9 +271,6 @@ def _run(a):
                       "assurance": a.key_assurance}
             if a.key_attestation:
                 signer["attestation"] = os.path.abspath(a.key_attestation)
-        if a.v2 and a.agent != "claude":
-            print("tracekit: --v2 wires the Claude Code hook only", file=sys.stderr)
-            return 2
         if a.v2 and (a.home or a.witness or a.proxy or a.fail_closed or signer or a.harness or a.managed):
             print("tracekit: --home, --witness, --proxy, --fail-closed, --signer-cmd, --harness and --managed are v1 "
                   "signer options; they don't apply with --v2", file=sys.stderr)
@@ -288,12 +285,23 @@ def _run(a):
             try:
                 sock, settings = install.init_system_v2(a.user, a.approver, a.policy, os.getcwd() if a.project else None,
                                                         a.no_service, not a.no_hooks, a.experimental_macos,
-                                                        a.allow_privileged)
+                                                        a.allow_privileged, a.agent)
             except install.SettingsError as e:
                 print(f"tracekit: {e}", file=sys.stderr)
                 return 1
             print(f"v2 signer installed as a separate user; socket {sock}; config {install.V2_CONFIG}; "
                   f"hooks: {settings or 'not installed'}")
+            return 0
+        if a.dev and a.v2 and a.agent != "claude":
+            from . import agent_hooks
+            if not _signer_extra():
+                return 2
+            try:
+                path = None if a.no_hooks else agent_hooks.install(a.agent, os.getcwd() if a.project else None, v2=True)
+            except install.SettingsError as e:
+                print(f"tracekit: {e}", file=sys.stderr)
+                return 1
+            print(f"v2 {a.agent} hooks:", path or "not installed")
             return 0
         if a.dev and a.agent != "claude":
             from . import agent_hooks
