@@ -110,3 +110,14 @@
 {"tool": "mcp:sqlite/write_query", "args": {"query": "SELECT * FROM documents WHERE body LIKE '%ALTER USER%'"}, "expect": "allow", "note": "near-miss or routine"}
 {"tool": "execute_query", "args": {"query": "VACUUM ANALYZE orders"}, "expect": "allow", "note": "near-miss or routine"}
 {"tool": "mcp:supabase/execute_sql", "args": {"query": "SELECT pg_size_pretty(pg_database_size('app'))"}, "expect": "allow", "note": "near-miss or routine"}
+{"tool": "run_sql", "args": {"sql": "-- list recent orders\nSELECT id FROM orders WHERE created_at > now() - interval '1 day'"}, "expect": "allow", "note": "leading comment"}
+{"tool": "run_sql", "args": {"sql": "SELECT 1 /* don't drop anything */"}, "expect": "allow", "note": "comment with a quote and a keyword"}
+{"tool": "run_sql", "args": {"sql": "SELECT name FROM users WHERE note = 'it''s fine' -- drop this filter later"}, "expect": "allow", "note": "doubled quote and a comment"}
+{"tool": "run_sql", "args": {"sql": "CREATE FUNCTION touch_updated() RETURNS trigger AS $$ BEGIN NEW.updated_at = now(); RETURN NEW; END; $$ LANGUAGE plpgsql"}, "expect": "allow", "note": "dollar-quoted function body"}
+{"tool": "run_sql", "args": {"sql": "CREATE OR REPLACE FUNCTION note() RETURNS text AS $body$ SELECT 'drop shipping'::text $body$ LANGUAGE sql"}, "expect": "allow", "note": "tagged dollar-quoted body with a keyword in a literal"}
+{"tool": "run_sql", "args": {"sql": "SELECT $tag$it's a 'quoted' -- not a comment$tag$ AS note"}, "expect": "allow", "note": "dollar-quoted literal with quotes"}
+{"tool": "run_sql", "args": {"sql": "SELECT \"order\", drop_date FROM shipments WHERE \"drop\" IS NULL"}, "expect": "allow", "note": "identifiers named like keywords"}
+{"tool": "run_sql", "args": {"sql": "SELECT E'line\\nbreak' AS s"}, "expect": "allow", "note": "E'' literal"}
+{"tool": "run_sql", "args": {"sql": "SELECT * FROM t WHERE a = 'x' # mysql comment"}, "expect": "allow", "note": "MySQL comment"}
+{"tool": "run_sql", "args": {"sql": "SELECT `drop` FROM `events` LIMIT 5"}, "expect": "allow", "note": "backtick identifiers"}
+{"tool": "run_sql", "args": {"sql": "SELECT [drop] FROM [events]"}, "expect": "allow", "note": "bracket identifiers"}

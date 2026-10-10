@@ -1,10 +1,12 @@
 # Server data pack (policy v2): SQL tools. Composed by server.yaml; a deployment adds its own SQL tool names under
 # `tools` (class sql reads the statement from `sql`, `query` or `statement`).
 #
-# Every pattern starts with ^([^']|'[^']*')*, which steps over whole '...' string literals, so a keyword only matches
-# outside one (SELECT 'DROP TABLE x' is allowed). Keywords are matched in any case.
+# The rules match `code`: the statement with comments blanked and every literal and quoted identifier ('...', E'...',
+# $tag$...$tag$, "...", `...`, [...]) replaced by '' or "", once per SQL dialect's reading of it, so a keyword only
+# matches outside a literal or comment in every dialect (SELECT 'DROP TABLE x' is allowed). A statement no dialect can
+# read (an unclosed literal or comment) asks (TK-SQL-PARSE). Keywords are matched in any case.
 
-version: '2026.10-server-data-1'
+version: '2026.10-server-data-2'
 description: server-hosted agents, SQL tools
 unknown_tools: ask
 
@@ -23,32 +25,32 @@ tools:
 deny:
   - id: TK-DB001
     class: sql
-    field: statement
-    pattern: '^([^'']|''[^'']*'')*\b[Dd][Rr][Oo][Pp]\s'
+    field: code
+    pattern: '\b[Dd][Rr][Oo][Pp]\s'
     reason: dropping a database object
     rationale: DROP TABLE, DATABASE, SCHEMA or COLUMN destroys data that a restore may not bring back; schema changes go through migrations, not an agent.
   - id: TK-DB002
     class: sql
-    field: statement
-    pattern: '^([^'']|''[^'']*'')*\b[Tt][Rr][Uu][Nn][Cc][Aa][Tt][Ee]\b'
+    field: code
+    pattern: '\b[Tt][Rr][Uu][Nn][Cc][Aa][Tt][Ee]\b'
     reason: truncating a table
     rationale: TRUNCATE empties a table at once and is not logged row by row.
   - id: TK-DB003
     class: sql
-    field: statement
+    field: code
     # DELETE FROM <table> [alias] [RETURNING ...] with nothing else, or with a WHERE that is always true
-    pattern: '^([^'']|''[^'']*'')*\b[Dd][Ee][Ll][Ee][Tt][Ee]\s+[Ff][Rr][Oo][Mm]\s+([^\s;]+(\s+([Aa][Ss]\s+)?[A-Za-z_][A-Za-z0-9_]*)?(\s+[Rr][Ee][Tt][Uu][Rr][Nn][Ii][Nn][Gg]\s[^;]*)?|[^;]*\s[Ww][Hh][Ee][Rr][Ee]\s+(1\s*=\s*1|''1''\s*=\s*''1''|[Tt][Rr][Uu][Ee]|1))\s*(;|--|$)'
+    pattern: '\b[Dd][Ee][Ll][Ee][Tt][Ee]\s+[Ff][Rr][Oo][Mm]\s+([^\s;]+(\s+([Aa][Ss]\s+)?[A-Za-z_][A-Za-z0-9_]*)?(\s+[Rr][Ee][Tt][Uu][Rr][Nn][Ii][Nn][Gg]\s[^;]*)?|[^;]*\s[Ww][Hh][Ee][Rr][Ee]\s+(1\s*=\s*1|(''''|"")\s*=\s*(''''|"")|[Tt][Rr][Uu][Ee]|1))\s*(;|$)'
     reason: deleting every row of a table
     rationale: A DELETE without a WHERE clause (or with one that is always true) wipes the table.
   - id: TK-DB004
     class: sql
-    field: statement
-    pattern: '^([^'']|''[^'']*'')*\b([Gg][Rr][Aa][Nn][Tt]|[Rr][Ee][Vv][Oo][Kk][Ee])\s|^([^'']|''[^'']*'')*\b([Aa][Ll][Tt][Ee][Rr]|[Cc][Rr][Ee][Aa][Tt][Ee])\s+([Uu][Ss][Ee][Rr]|[Rr][Oo][Ll][Ee]|[Ll][Oo][Gg][Ii][Nn])\b'
+    field: code
+    pattern: '\b([Gg][Rr][Aa][Nn][Tt]|[Rr][Ee][Vv][Oo][Kk][Ee])\s|\b([Aa][Ll][Tt][Ee][Rr]|[Cc][Rr][Ee][Aa][Tt][Ee])\s+([Uu][Ss][Ee][Rr]|[Rr][Oo][Ll][Ee]|[Ll][Oo][Gg][Ii][Nn])\b'
     reason: changing database privileges or accounts
     rationale: GRANT, REVOKE and ALTER or CREATE USER/ROLE change who can do what; an agent must not widen its own access.
   - id: TK-DB005
     class: sql
-    field: statement
-    pattern: '^([^'']|''[^'']*'')*\b([Cc][Oo][Pp][Yy]\b[^;]*\b[Pp][Rr][Oo][Gg][Rr][Aa][Mm]\b|[Xx][Pp]_[Cc][Mm][Dd][Ss][Hh][Ee][Ll][Ll]|[Ss][Pp]_[Oo][Aa][Cc][Rr][Ee][Aa][Tt][Ee]|[Pp][Gg]_[Rr][Ee][Aa][Dd]_([Bb][Ii][Nn][Aa][Rr][Yy]_)?[Ff][Ii][Ll][Ee]|[Pp][Gg]_[Ll][Ss]_[Dd][Ii][Rr]|[Ll][Oo]_([Ii][Mm][Pp][Oo][Rr][Tt]|[Ee][Xx][Pp][Oo][Rr][Tt])|[Ll][Oo][Aa][Dd]_([Ff][Ii][Ll][Ee]|[Ee][Xx][Tt][Ee][Nn][Ss][Ii][Oo][Nn])|[Ii][Nn][Tt][Oo]\s+([Oo][Uu][Tt]|[Dd][Uu][Mm][Pp])[Ff][Ii][Ll][Ee]|[Ll][Oo][Aa][Dd]\s+[Dd][Aa][Tt][Aa]\s+([Ll][Oo][Cc][Aa][Ll]\s+)?[Ii][Nn][Ff][Ii][Ll][Ee]|[Aa][Tt][Tt][Aa][Cc][Hh]\s+([Dd][Aa][Tt][Aa][Bb][Aa][Ss][Ee]\s+)?'')'
+    field: code
+    pattern: '\b([Cc][Oo][Pp][Yy]\b[^;]*\b[Pp][Rr][Oo][Gg][Rr][Aa][Mm]\b|[Xx][Pp]_[Cc][Mm][Dd][Ss][Hh][Ee][Ll][Ll]|[Ss][Pp]_[Oo][Aa][Cc][Rr][Ee][Aa][Tt][Ee]|[Pp][Gg]_[Rr][Ee][Aa][Dd]_([Bb][Ii][Nn][Aa][Rr][Yy]_)?[Ff][Ii][Ll][Ee]|[Pp][Gg]_[Ll][Ss]_[Dd][Ii][Rr]|[Ll][Oo]_([Ii][Mm][Pp][Oo][Rr][Tt]|[Ee][Xx][Pp][Oo][Rr][Tt])|[Ll][Oo][Aa][Dd]_([Ff][Ii][Ll][Ee]|[Ee][Xx][Tt][Ee][Nn][Ss][Ii][Oo][Nn])|[Ii][Nn][Tt][Oo]\s+([Oo][Uu][Tt]|[Dd][Uu][Mm][Pp])[Ff][Ii][Ll][Ee]|[Ll][Oo][Aa][Dd]\s+[Dd][Aa][Tt][Aa]\s+([Ll][Oo][Cc][Aa][Ll]\s+)?[Ii][Nn][Ff][Ii][Ll][Ee]|[Aa][Tt][Tt][Aa][Cc][Hh]\s+([Dd][Aa][Tt][Aa][Bb][Aa][Ss][Ee]\s+)?(''|"))'
     reason: reaching the server's shell or files through SQL
     rationale: COPY ... PROGRAM, xp_cmdshell, server-side file functions and ATTACH run commands or read and write files as the database server, outside what the tool is for.

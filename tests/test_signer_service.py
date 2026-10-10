@@ -236,6 +236,24 @@ class TestService(unittest.TestCase):
         self.assertIn("torn last line", gaps[0]["reason"])
         self.assertEqual(svc.fsck(self.dir), [])
 
+    def test_restart_sets_aside_a_registry_leaf_whose_record_was_lost(self):
+        s = self.open()
+        self.register(s)
+        s.close()
+        path = os.path.join(self.dir, "store", "registry.jsonl")
+        line = json.loads(open(path, "rb").read().splitlines()[-1])
+        leaf = bytes.fromhex(line["leaf"])
+        size = len(records(self.dir))
+        with open(path, "ab") as f:   # ack-on-write power loss: the leaf's line survived, its record's did not
+            f.write(json.dumps({**line, "leaf": (leaf[:49] + size.to_bytes(8, "big") + leaf[57:]).hex()}).encode() + b"\n")
+        s = self.open()
+        self.register(s)
+        s.close()
+        gaps = [r["event"]["data"] for r in records(self.dir) if r["event"]["type"] == "capture.gap"]
+        self.assertEqual(len(gaps), 1)
+        self.assertIn("registry.jsonl set aside", gaps[0]["reason"])
+        self.assertEqual(svc.fsck(self.dir), [])
+
     def test_a_damaged_tail_signature_stops_startup(self):
         s = self.open()
         self.register(s)

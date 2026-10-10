@@ -4,7 +4,7 @@
 # hosts (a rule in the extending file replaces the parent's). Cloud metadata addresses are denied for every tool by
 # TK-S001 in server.yaml.
 
-version: '2026.10-server-net-1'
+version: '2026.10-server-net-2'
 description: server-hosted agents, HTTP egress
 unknown_tools: ask
 
@@ -24,12 +24,21 @@ tools:
 deny:
   - id: TK-N001
     class: http
-    field: host
-    # loopback, private, link-local, CGNAT, unspecified, IPv6 local and IPv4-mapped addresses, numeric hosts (decimal,
-    # hex, octal) and internal names; the host is the signer's parse of the URL (lowercase, no brackets or port)
-    pattern: '^(localhost|.*\.localhost|127\.[0-9.]+|10\.[0-9.]+|192\.168\.[0-9.]+|172\.(1[6-9]|2[0-9]|3[01])\.[0-9.]+|169\.254\.[0-9.]+|100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.[0-9.]+|0[0-7]*(\.[0-9.]*)?|[0-9]+|0x[0-9a-fx.]+|::1?|::ffff:.*|f[cd][0-9a-f]*:.*|fe[89ab][0-9a-f]*:.*|.*\.(internal|local|lan|corp|intranet|svc))\.?$'
+    field: internal
+    # the signer's reading of the host (classes.url_info): a loopback, private, link-local, shared (CGNAT), reserved,
+    # multicast or unspecified address in any notation (decimal, hex, octal, IPv6, IPv4 inside IPv6), a host that looks
+    # like an address and is none, or a URL that a browser and Python's urllib read as different hosts
+    pattern: '^true$'
     reason: request to an internal address
     rationale: A server-hosted agent reaches what its server reaches; internal services, admin ports and cloud metadata are not part of the web it was given.
+  - id: TK-N003
+    class: http
+    field: host
+    # internal names: localhost, a name without a dot (resolved through the server's search domains, as metadata is),
+    # and internal suffixes; the host is canonical (lowercase, fullwidth letters folded, no port)
+    pattern: '^(localhost|[^.:\[]+|kubernetes\.default|.*\.(localhost|internal|local|lan|corp|intranet|svc|home\.arpa))\.?$'
+    reason: request to an internal name
+    rationale: The name twin of TK-N001; a deployment that calls an internal service by name redefines this rule with an unless.
   - id: TK-N002
     class: http
     # a body or a body-carrying method, to a URL outside the allowlist. The subject is the whole call as sorted-key
