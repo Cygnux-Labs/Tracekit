@@ -375,6 +375,17 @@ class TestCli(unittest.TestCase):
         out = subprocess.run(cmd + ["fsck", "--config", cfg], cwd=ROOT, capture_output=True, timeout=30)
         self.assertEqual((out.returncode, out.stdout.strip()), (0, b"ok"))
 
+    def test_file_store_readers_refuse_a_postgres_config(self):
+        cfg = os.path.join(tmpdir(self), "signer.yaml")
+        with open(cfg, "w") as f:
+            f.write("data_dir: data\nstorage: {postgres: {dsn_file: pg.dsn}}\n")
+        for argv in (["-m", "tracekit", "signer", "reveal", "--record", "0", "--config", cfg],
+                     ["-m", "tracekit", "export", "--v2", "--config", cfg, "--run", "r", "-o", "x.tkb"],
+                     ["-m", "tracekit.view", "--config", cfg]):
+            out = subprocess.run([sys.executable, *argv], cwd=ROOT, capture_output=True, timeout=30)
+            self.assertNotEqual(out.returncode, 0, argv)
+            self.assertIn(b"reads the file store only", out.stderr, argv)
+
 
 @pytest.mark.perf
 @unittest.skipUnless(sys.platform.startswith("linux"), "the S1 gates are Linux-only")
