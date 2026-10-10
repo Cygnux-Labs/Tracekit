@@ -88,6 +88,8 @@ approvals:
   capped at `dev`.
 - Approvals are listed and shown only to the run's owner and to those who may answer them; another tenant never sees
   them.
+- OIDC identities are compared by person id, and a run's attested principal never answers its run's approvals
+  ([identity.md](identity.md)).
 
 `tracekit init --v2` (system mode) refuses an approver that is the agent's own user, and refuses to install without
 one.

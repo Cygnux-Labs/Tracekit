@@ -12,8 +12,9 @@ from typing import Protocol
 from tracekit.format.canon import MAX_SAFE_INT
 from tracekit.schema import _check
 
-RPC_VERSION = 9
+RPC_VERSION = 11
 MAX_RAW_ARGS = 1 << 20   # characters of a raw arguments string
+MAX_EXTERNAL_RECORD = 1 << 16   # characters of an external system's own decision record
 MAX_RESULTS_SENT = 1024
 
 ERROR_CODES = [
@@ -94,6 +95,7 @@ _SUMMARY = _obj(["approval_id", "state", "run_id", "tool_call_id", "attempt", "t
 REQUESTS = {
     "register_run": _obj(["request_id", "agent"], request_id=ID, run_id=ID,
                          tenant=ID, principal=_str(256),   # app-asserted; recorded as not attested
+                         principal_token=_str(16384),   # an end user's OIDC token: principal attested
                          source={"const": "migrated"},     # events imported from another log
                          analyzes=ID,                      # a findings run about this run of the same tenant
                          agent=_obj(["name"], name=_str(128, minLength=1), version=_str(64))),
@@ -144,6 +146,14 @@ REQUESTS = {
     "read": _obj(["run_id", "run_token"], run_id=ID, run_token=TOKEN, from_seq=SEQ,
                  limit={"type": "integer", "minimum": 1, "maximum": 1000}),
     "checkpoint_nudge": _obj([]),
+    # another system's decision about a tool call of a run of the caller's tenant (an `authorize` grant, never a
+    # default); `record` is that system's own record as it emitted it, `signature` its Ed25519 signature over the
+    # record's UTF-8 bytes, base64
+    "decision_import": _obj(["request_id", "run_id", "system", "decision", "tool_call_id", "tool", "record"],
+                            request_id=ID, run_id=ID, system=_str(64, minLength=1),
+                            decision={"enum": ["allow", "deny", "ask"]}, tool_call_id=ID, tool=_str(256, minLength=1),
+                            rule_ids=RULE_IDS, reason=REASON, record=_str(MAX_EXTERNAL_RECORD, minLength=1),
+                            signature=_str(128)),
 }
 
 _FAIL_MODES = {"type": "object", "additionalProperties": {"enum": ["open", "closed"]}}
@@ -190,6 +200,7 @@ RESPONSES = {
                                    "properties": {"run_seq": SEQ, "type": _str(64), "event_hash": DIGEST,
                                                   "data": {"type": "object"}}}}),
     "checkpoint_nudge": _obj(["scheduled"], scheduled={"type": "boolean"}),
+    "decision_import": _obj(["run_seq", "signature"], run_seq=SEQ, signature={"enum": ["verified", "unverified"]}),
 }
 
 ERROR = _obj(["error"], error=_obj(["code", "message"], code={"enum": ERROR_CODES}, message=REASON,
@@ -238,3 +249,4 @@ class SignerAPI(Protocol):
     def status(self, req: dict) -> dict: ...
     def read(self, req: dict) -> dict: ...
     def checkpoint_nudge(self, req: dict) -> dict: ...
+    def decision_import(self, req: dict) -> dict: ...

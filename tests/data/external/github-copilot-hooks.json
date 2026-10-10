@@ -1,0 +1,5 @@
+{
+  "input": {"sessionId": "s-1", "timestamp": 1760091305120, "cwd": "/workspace/app", "toolName": "bash",
+            "toolArgs": "{\"command\": \"rm -rf build\"}"},
+  "output": {"permissionDecision": "deny", "permissionDecisionReason": "deletes outside the workspace's build rules"}
+}
