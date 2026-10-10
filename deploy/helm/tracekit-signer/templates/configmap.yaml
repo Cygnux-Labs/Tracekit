@@ -1,0 +1,14 @@
+{{- $tenants := dict (printf "uid:%d" (int .Values.agent.uid)) .Values.signer.tenant }}
+{{- $metrics := ternary (dict "listen" "0.0.0.0:9464" "allow_remote" true) (dict "listen" "127.0.0.1:9464") .Values.metrics.remote }}
+{{- $cfg := merge (dict "data_dir" "/var/lib/tracekit-signer/data" "socket" "/run/tracekit-signer/signer.sock"
+      "socket_mode" "0666" "durability" .Values.signer.durability "tenants" $tenants "metrics" $metrics)
+      (deepCopy .Values.signer.config) }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-signer
+data:
+  signer.yaml: |
+    {{- range $k, $v := $cfg }}
+    {{ $k }}: {{ toJson $v }}
+    {{- end }}

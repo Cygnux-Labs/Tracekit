@@ -1,0 +1,16 @@
+{{- if .Values.networkPolicy.enabled }}
+{{- if not .Values.metrics.remote }}
+{{- fail "networkPolicy.enabled needs metrics.remote" }}
+{{- end }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}
+spec:
+  podSelector:
+    matchLabels: {app.kubernetes.io/name: tracekit-signer, app.kubernetes.io/instance: {{ .Release.Name }}}
+  policyTypes: [Ingress]
+  ingress:
+    - from: [{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: {{ .Values.networkPolicy.monitoringNamespace }}}}}]
+      ports: [{port: 9464, protocol: TCP}]
+{{- end }}
