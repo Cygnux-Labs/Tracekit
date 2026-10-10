@@ -26,7 +26,7 @@ class IsolatedCommand(unittest.TestCase):
         for name in ("posix", "nt"):
             for spec in (None, SITE):
                 with mock.patch.object(install.os, "name", name), mock.patch("importlib.util.find_spec", return_value=spec):
-                    for cmd in (install._hook_command(), agent_hooks._command("codex")):
+                    for cmd in (install._hook_command(), install._hook_command("tracekit.agent_hooks", "entry", ("codex",))):
                         self.assertIn(" -I ", cmd, (name, spec, cmd))
                         self.assertNotIn("PYTHONPATH", cmd)
 
@@ -39,7 +39,7 @@ class IsolatedCommand(unittest.TestCase):
                 fh.write(shadow)
         env = dict(os.environ, TRACEKIT_CLIENT_HOME=os.path.join(self.d, "client"), PYTHONPATH=proj)
         event = json.dumps({"hook_event_name": "SessionStart", "session_id": "shadow-test", "cwd": proj})
-        for cmd in (install._hook_command(), agent_hooks._command("codex")):
+        for cmd in (install._hook_command(), install._hook_command("tracekit.agent_hooks", "entry", ("codex",))):
             r = subprocess.run(cmd, shell=True, cwd=proj, input=event, capture_output=True, text=True, env=env, timeout=60)
             self.assertNotIn(MARKER, r.stdout + r.stderr, cmd)
             self.assertNotIn("Traceback", r.stderr, cmd)
