@@ -25,6 +25,7 @@ from tracekit.core import now_ts
 from tracekit.format import registry
 from tracekit.format.records import RecordError, verify_record
 from tracekit.schema import V2
+from tracekit.signer import reconcile
 from tracekit.signer.rpc_schema import RPCError
 from tracekit.storage.base import ZERO_HASH, StorageCorrupt
 
@@ -41,7 +42,7 @@ def new_run(tenant, run_id):
     `closing_at` are monotonic times for the idle and grace clocks."""
     return {"tenant": tenant, "run_id": run_id, "run_seq": 0, "head": ZERO_HASH, "streams": {}, "closed": False,
             "final": False, "calls": {}, "decisions": {}, "denied": {}, "states": {}, "owner": None, "source": "sdk",
-            "active": time.monotonic(), "closing_at": None}
+            "active": time.monotonic(), "closing_at": None, "rec": reconcile.new(), "digests": {}}
 
 
 FINAL_KEYS = ("tenant", "run_id", "run_seq", "head", "closed", "final", "owner", "source")
@@ -133,8 +134,9 @@ class Tx:
         self.set(self.log.runs, (tenant, run_id), run)
         return run
 
-    def emit(self, run, typ, data, source=None, **top):
-        """Sign one event into `run` (source: the run's unless given); returns its run_seq. Nothing follows log.closed."""
+    def emit(self, run, typ, data, source=None, digests=None, **top):
+        """Sign one event into `run` (source: the run's unless given) and feed it to the run's reconcile index
+        (`digests`: see reconcile.observe); returns its run_seq. Nothing follows log.closed."""
         log = self.log
         if log.head["closed"]:
             raise RPCError("unavailable", "the log is closed (log.closed): it takes no more records")
@@ -150,9 +152,10 @@ class Tx:
         self.set(log.head, "prev", r["hash"])
         self.set(run, "run_seq", e["run_seq"] + 1)
         self.set(run, "head", r["hash"])
+        reconcile.observe(self.set, run, e, digests)
         return e["run_seq"]
 
-    def event(self, run, req, typ, data, **top):
+    def event(self, run, req, typ, data, digests=None, **top):
         """A client event call: skipped client_seq values first become a signer-written gap."""
         stream, cseq = req["stream"], req["client_seq"]
         last = run["streams"].get(stream, -1)
@@ -161,7 +164,8 @@ class Tx:
                                            "reason": f"stream {stream} skipped client_seq {last + 1}..{cseq - 1}"},
                       source="signer", stream=stream)
         self.set(run["streams"], stream, cseq)
-        return self.emit(run, typ, data, request_id=req["request_id"], stream=stream, client_seq=cseq, **top)
+        return self.emit(run, typ, data, digests=digests, request_id=req["request_id"], stream=stream, client_seq=cseq,
+                         **top)
 
     def closing(self, run, reason, **top):
         self.set(run, "closed", True)
@@ -207,11 +211,11 @@ class RecordLog:
     # --- state from storage ---
 
     def _state(self):
-        """The run state as replay rebuilds it, as JSON: no deny sets, no pending arguments; monotonic times as wall
-        clock times."""
+        """The run state as replay rebuilds it, as JSON: no deny sets, args digests or pending arguments; monotonic
+        times as wall clock times."""
         wall, runs = time.time() - time.monotonic(), []
         for run in self.runs.values():
-            r = {k: v for k, v in run.items() if k != "denied"}
+            r = {k: v for k, v in run.items() if k not in ("denied", "digests")}
             if "calls" in r:
                 r["calls"] = {t: {k: c[k] for k in CALL_KEYS} for t, c in run["calls"].items()}
                 r["decisions"] = {d: c and {k: c[k] for k in CALL_KEYS} for d, c in run["decisions"].items()}
@@ -254,7 +258,7 @@ class RecordLog:
                     if r.get(k) is not None:
                         r[k] = _monotonic(r[k])
                 if "states" in r:
-                    r["denied"] = {}
+                    r["denied"], r["digests"] = {}, {}
                 runs[(r["tenant"], r["run_id"])] = r
             approvals = {aid: dict(a, run_key=tuple(a["run_key"])) for aid, a in st["approvals"].items()}
             index = {tuple(k[:4]): k[4] for k in st["index"]}
@@ -283,6 +287,7 @@ class RecordLog:
             closed = closed or e["type"] == "log.closed"
             if not run["final"]:
                 run["active"] = since(e["ts"])
+                reconcile.observe(dict.__setitem__, run, e)
             if e["type"] == "run.registered":
                 run["owner"], run["source"] = "{scheme}:{subject}".format(**e["data"]["identity"]), e["source"]
                 open_runs[run["owner"]] = open_runs.get(run["owner"], 0) + 1
