@@ -57,7 +57,8 @@ signer.yaml:
                                              # the logs' tiles and anchors, for monitors (SignerService.tlog);
                                              # serve_records: true adds the record entries a monitor of the record
                                              # log reads (every tenant's records: keep that port private)
-    witnesses:                               # C2SP tlog-witnesses that cosign every new note (tracekit.tlog_witness)
+    witnesses:                               # C2SP tlog-witnesses that cosign every new note (tracekit.tlog_witness);
+                                             # `- public`: the public witness (tracekit.public_witness)
       - {url: https://witness.example.org, vkey: "witness.example.org/w1+1234abcd+BA...", class: customer}
     contact: ops@example.org                 # the logs list's contact line; default the origin
     anchors: {rekor: {signing_config: sigstage-signing_config.json, trusted_root: sigstage-trusted_root.json,
@@ -199,7 +200,7 @@ import rfc8785
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-from tracekit import __version__, crypto, harness_helper, merkle, otlp, privacy, yamlmini
+from tracekit import __version__, crypto, harness_helper, merkle, otlp, privacy, public_witness, yamlmini
 from tracekit.client import remote_url_error
 from tracekit.anchor import rekor2
 from tracekit.anchor.rekor2 import RekorAnchor
@@ -2032,6 +2033,13 @@ def load_config(path):
             if "*" in str(k) and not (str(k).endswith(PREFIX_ENDS) and str(k).count("*") == 1):
                 raise ValueError(f"{path}: {k!r}: a prefix key must end in :* or /*")
     names = set()
+    if isinstance(cfg.get("witnesses"), list) and "public" in cfg["witnesses"]:
+        try:
+            cfg["witnesses"] = [public_witness.entry() if w == "public" else w for w in cfg["witnesses"]]
+        except ValueError as e:
+            raise ValueError(f"{path}: witnesses: public: {e}") from None
+        if not public_witness.ORIGIN.fullmatch(str(cfg.get("origin", "tracekit.local/log"))):
+            raise ValueError(f"{path}: origin: the public witness takes origins shaped {public_witness.ORIGIN_FORMAT}")
     for w in cfg.get("witnesses") or ():
         if not (isinstance(w, dict) and set(w) == {"url", "vkey", "class"} and w["class"] in CLASSES):
             raise ValueError(f"{path}: each witness is {{url, vkey, class}}, class one of {', '.join(CLASSES)}")

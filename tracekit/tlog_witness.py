@@ -5,10 +5,13 @@
 
 The witness gets the note text and the log's Ed25519 signature only (any other line, such as a hybrid signature, is
 stripped), in a body of at most 10 KiB (litewitness's limit). A 409 carries the size the witness last cosigned: the
-client resends once from that size with a matching proof. Every other failure raises WitnessError, `retryable` for
+client resends once from that size with a matching proof. A 404 (an origin the witness does not know) is answered with
+POST /register {origin, vkey, checkpoint} (the log's vkey and the note, as proof of possession), then one resend; a
+witness without registration answers it 404 too. Every other failure raises WitnessError, `retryable` for
 network errors, timeouts, a second 409 (a race), 404 (an origin the witness has not registered yet from the signer's
-logs/v0 list), 429 and 5xx; not for 400/403/422 (malformed, unknown key, inconsistent tree) or a bad cosignature."""
+logs/v0 list, or registration refused for now), 429 and 5xx; not for 400/403/422 (malformed, unknown key, inconsistent tree) or a bad cosignature."""
 import base64
+import json
 import urllib.error
 import urllib.request
 
@@ -55,12 +58,10 @@ class TlogWitness:
             raise ValueError(f"witness {name}: not a cosignature vkey")
         self.url, self.vkey, self.name, self.timeout = url.rstrip("/"), vkey, name, timeout
 
-    def _post(self, old, hashes, signed):
-        body = (f"old {old}\n" + "".join(base64.b64encode(h).decode() + "\n" for h in hashes) + "\n"
-                + signed).encode("utf-8")
+    def _send(self, path, body):
         if len(body) > MAX_BODY:
             raise WitnessError(f"{self.name}: request body of {len(body)} bytes is over {MAX_BODY}", False)
-        req = urllib.request.Request(self.url + "/add-checkpoint", data=body, method="POST")
+        req = urllib.request.Request(self.url + path, data=body, method="POST")
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as r:
                 return r.status, r.read(MAX_BODY).decode("utf-8", "replace")
@@ -68,6 +69,22 @@ class TlogWitness:
             return e.code, e.read(256).decode("utf-8", "replace")
         except (OSError, ValueError) as e:   # refused, reset, timeout
             raise WitnessError(f"{self.name}: {e}", True) from None
+
+    def _post(self, old, hashes, signed, log_vkey):
+        body = (f"old {old}\n" + "".join(base64.b64encode(h).decode() + "\n" for h in hashes) + "\n"
+                + signed).encode("utf-8")
+        status, resp = self._send("/add-checkpoint", body)
+        if status == 404:   # an origin it does not know: register it (tracekit.public_witness_server), then resend
+            origin, first = signed.split("\n", 1)[0], resp
+            status, resp = self._send("/register", json.dumps(
+                {"origin": origin, "vkey": log_vkey, "checkpoint": signed}).encode("utf-8"))
+            if status == 404:   # a witness without registration: its add-checkpoint answer stands
+                raise self._fail(404, first)
+            if status != 200:
+                raise WitnessError(f"{self.name}: registering {origin}: HTTP {status}: {resp.strip()[:200]}",
+                                   status == 429 or status >= 500)
+            status, resp = self._send("/add-checkpoint", body)
+        return status, resp
 
     def _fail(self, status, resp):
         return WitnessError(f"{self.name}: HTTP {status}: {resp.strip()[:200]}", status in (404, 409, 429) or status >= 500)
@@ -84,10 +101,10 @@ class TlogWitness:
         cosignature lines, verified, as one string."""
         signed = log_signed(note, log_vkey)
         size = int(signed.split("\n")[1])
-        status, resp = self._post(old, proof(old) if 0 < old < size else [], signed)
+        status, resp = self._post(old, proof(old) if 0 < old < size else [], signed, log_vkey)
         if status == 409:
             old = self._size(resp, size)
-            status, resp = self._post(old, proof(old) if 0 < old < size else [], signed)
+            status, resp = self._post(old, proof(old) if 0 < old < size else [], signed, log_vkey)
         if status != 200:
             raise self._fail(status, resp)
         lines = signed_by(resp, self.vkey)
@@ -101,7 +118,7 @@ class TlogWitness:
     def latest(self, empty_note, log_vkey):
         """(the size this witness last cosigned for the log, None: the protocol gives no root). `empty_note` is the
         log's signed checkpoint of size 0, sent from old 0: a witness further along answers 409 with its size."""
-        status, resp = self._post(0, [], log_signed(empty_note, log_vkey))
+        status, resp = self._post(0, [], log_signed(empty_note, log_vkey), log_vkey)
         if status == 409:
             return self._size(resp, float("inf")), None
         if status != 200:

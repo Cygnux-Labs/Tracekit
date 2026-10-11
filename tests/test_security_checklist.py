@@ -22,7 +22,7 @@ from http.server import ThreadingHTTPServer
 
 from test_e13_approvals import Sessions
 from test_observe_render import XSS
-from tracekit import gateway, ingest, observe, otlp, proxy, slack_approvals, witness_server
+from tracekit import gateway, ingest, observe, otlp, proxy, public_witness_server, slack_approvals, witness_server
 from tracekit.observe import _session
 from tracekit.identity.token import BearerToken
 from tracekit.ledger import Keys
@@ -49,6 +49,7 @@ SURFACES = {
     "tracekit/otlp.py:H": "local OTLP receiver (tracekit otel serve)",
     "tracekit/ingest.py:H": "remote ingest",
     "tracekit/witness_server.py:H": "checkpoint witness",
+    "tracekit/public_witness_server.py:H": "public tlog-witness",
     "tracekit/proxy.py:Handler": "Anthropic proxy",
     "tracekit/slack_approvals.py:Handler": "Slack approvals bridge (interactivity callbacks)",
 }
@@ -179,6 +180,14 @@ class Surfaces(unittest.TestCase):
         return srv, token, [("GET", f"/nope?token={token}", auth, 404), ("GET", "/v1/checkpoints?after=x", auth, 400),
                             ("POST", "/v1/checkpoints", {**auth, "Content-Length": BIG}, 413)]
 
+    def public_witness(self):
+        home = os.path.join(self.d, "pw")
+        public_witness_server.init(home, "witness.example.org/w1")
+        srv = public_witness_server.serve(home)
+        return srv, SECRET, [("GET", f"/nope?token={SECRET}", {}, 404), ("POST", f"/nope?token={SECRET}", {}, 404),
+                             ("POST", "/add-checkpoint", {}, 413), ("POST", "/register", {"Content-Length": BIG}, 413),
+                             ("PUT", "/register", {}, 501)]
+
     def proxy(self):
         srv = proxy.Server(("127.0.0.1", 0), proxy.Handler)
         auth = {"x-api-key": SECRET}
@@ -196,7 +205,8 @@ class Surfaces(unittest.TestCase):
     PROBES = {"tracekit/observe.py:Handler": viewer, "tracekit/transport/http.py:_Handler": signer_http,
               "tracekit/gateway.py:_Handler": gateway, "tracekit/signer/metrics.py:Handler": metrics,
               "tracekit/otlp.py:H": otlp, "tracekit/ingest.py:H": ingest, "tracekit/witness_server.py:H": witness,
-              "tracekit/proxy.py:Handler": proxy, "tracekit/slack_approvals.py:Handler": slack}
+              "tracekit/proxy.py:Handler": proxy, "tracekit/slack_approvals.py:Handler": slack,
+              "tracekit/public_witness_server.py:H": public_witness}
 
     def request(self, port, method, path, headers):
         c = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
@@ -355,7 +365,7 @@ class Approvals(unittest.TestCase):
 
 class PlainHttp(unittest.TestCase):
     """The CLIs that serve HTTP refuse plain HTTP beyond loopback (view, the signer's http section and the issuer have
-    their own tests); ingest and witness take --insecure-http for TLS terminated in front."""
+    their own tests); ingest and the witnesses take --insecure-http for TLS terminated in front."""
 
     def test_plain_http_beyond_loopback_is_refused(self):
         d = tempfile.mkdtemp()
@@ -363,6 +373,7 @@ class PlainHttp(unittest.TestCase):
         for main, argv, code in ((observe.main, ["--host", "0.0.0.0", "--home", d], 1),
                                  (ingest.main, ["serve", "--experimental", "--home", d, "--host", "0.0.0.0"], 2),
                                  (witness_server.main, ["serve", "--home", d, "--host", "0.0.0.0"], 2),
+                                 (public_witness_server.main, ["serve", "--home", d, "--host", "0.0.0.0"], 2),
                                  (otlp.main, ["serve", "--experimental", "--host", "0.0.0.0"], 2)):
             with self.subTest(main.__module__), contextlib.redirect_stderr(io.StringIO()) as err:
                 self.assertEqual(main(argv), code)

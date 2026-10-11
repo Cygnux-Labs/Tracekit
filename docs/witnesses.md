@@ -134,6 +134,37 @@ v2 assurance levels (`dev`, `local`, `witnessed`) describe checkpoint cosigning 
 dev signer with a witness verifies as `witnessed`. The witness shows the log was not rolled back or forked after it
 cosigned; whether the agent could reach the signer is each run's `signer_isolation` (`same-user`, `separate-user`).
 
+## The public witness
+
+Cygnux runs a free public C2SP tlog-witness, so a team gets `Assurance: witnessed` without running or finding one.
+
+```yaml
+# signer.yaml
+witnesses: [public]          # or, with your own witnesses: [public, {url: ..., vkey: ..., class: customer}]
+```
+
+or `sudo tracekit init --v2 --user AGENT --public-witness` (v2 system mode). `public` expands to the witness's URL and
+cosignature vkey from `tracekit/public_witness.py`, with class `public`; until those are set (the witness is not
+deployed yet) the signer and `init` refuse it and say so. Off by default.
+
+- **First use.** The witness does not know a new log: it answers `404`, and the signer registers the log (its origin
+  and log vkey, proved by a checkpoint signed with that key), then resends. The record log and each tenant's registry
+  log register separately. Failures are retried like any witness failure. One key per origin, the first registered:
+  a log with a new log key needs a new `origin` in signer.yaml.
+- **Pinning.** `tracekit signer trust` pins the witness's vkey with class `public`.
+- **What it sees.** Checkpoints only: each log's origin and log vkey, tree sizes and root hashes, the log's signature,
+  and when they arrive, so how often and how fast each log grows (docs/privacy.md). Never records or content. It
+  keeps, per origin, the key, the latest cosigned size and root and the last cosigning time; `GET /stats` publishes
+  only counts (distinct origins cosigned in the last 7 days and per ISO week), which is how Cygnux counts adoption.
+- **What it proves.** That the log was not rolled back or forked after the witness cosigned it, independently of the
+  signer's operator: the witness never cosigns a tree that is not an extension of the one it last cosigned. It is not
+  independent of Cygnux: whoever controls the witness key could cosign anything. For assurance that depends on no
+  single party, add a witness you or a partner run (above) and raise `witnesses_required` in the trust config.
+- **Limits.** 30 checkpoints per log a minute (a busier log is cosigned at that rate, always its newest note), 100
+  registrations per client network (an IPv4 address or IPv6 /64) a day, and a cap on logs in total (docs/limits.md).
+
+Running it: `tracekit public-witness init|serve` and deploy/public-witness/README.md.
+
 ## v2: Rekor v2 anchors and RFC 3161 timestamps
 
 The v2 signer can also anchor its record log's checkpoint notes in [Rekor v2](https://blog.sigstore.dev/rekor-v2-ga),
