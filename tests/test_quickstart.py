@@ -76,7 +76,7 @@ class Quickstart(unittest.TestCase):
                 print(f"skipped {name}: {' '.join(reqs)} does not install here")   # skipTest would skip them all
                 continue
             with self.subTest(name):
-                path = os.path.join(self.dir, f"{name}.py")
+                path = os.path.join(self.dir, f"quickstart_{name.replace('-', '_')}.py")   # never a package's name
                 with open(path, "w") as f:
                     f.write(script)
                 t = time.monotonic()
