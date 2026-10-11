@@ -251,14 +251,14 @@ class InitV2(unittest.TestCase):
                 self.assertIn("call blocked (fail-closed)", p.stderr)
             self.assertEqual(install._hook_command(), "false")   # the v1 dev hook keeps its own fail mode
 
-    def test_v2_without_the_signer_extra_is_refused(self):
+    def test_v2_without_the_policy_engine_is_refused(self):
         from tracekit.policy2 import engine
         with mock.patch.object(engine, "_backend", side_effect=ImportError("no regex")):
             for argv in (["init", "--dev", "--v2", "--no-hooks"], ["up"]):
                 err = io.StringIO()
                 with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
                     self.assertEqual(cli.main(argv), 2, argv)
-                self.assertIn("pip install 'tracekit-ai[signer]'", err.getvalue())
+                self.assertIn("pip install tracekit-ai", err.getvalue())
 
     def test_replacing_hooks_of_the_other_version_is_reported(self):
         d = tempfile.mkdtemp()

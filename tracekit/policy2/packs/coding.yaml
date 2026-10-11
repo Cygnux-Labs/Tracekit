@@ -7,7 +7,7 @@
 # normalised one), with `\` as `/` and also casefolded (the agent's file system may ignore case). Rules stay tripwires: the
 # protection is the signer, its storage and the witnesses.
 
-version: '2026.10-v2-2'
+version: '2026.10-v2-3'
 description: coding agents on a laptop (Claude Code, Codex, Cursor, Gemini)
 # laptop: a tool the pack does not map is flagged, not held; server.yaml holds it for a person (ask)
 unknown_tools: flag
@@ -31,6 +31,9 @@ tools:
   WebSearch: http
   'mcp__*': mcp
   'mcp:*/*': mcp
+
+# tool classes and tool names whose results are untrusted content (the signer's provenance index)
+untrusted: [http, mcp, WebFetch, WebSearch]
 
 deny:
   # --- shell ---

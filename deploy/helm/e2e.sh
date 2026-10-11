@@ -113,7 +113,7 @@ signer "cat e2e.tkb" >"$dir/run.tkb"
 signer "tracekit verify e2e.tkb --trust e2e-trust.json --json; rm -f e2e.tkb e2e-trust.json" | python3 -c '
 import json, sys, zipfile
 report = json.load(sys.stdin)
-if report["integrity"] != "VERIFIED":
+if not report["integrity"].startswith("VERIFIED"):   # VERIFIED TO HEAD n (open): exported before run.final
     raise SystemExit(f"e2e: run bundle: {report}")
 z = zipfile.ZipFile(sys.argv[1])
 evs = [json.loads(line)["event"] for n in z.namelist() if n.startswith("runs/") for line in z.read(n).splitlines()]

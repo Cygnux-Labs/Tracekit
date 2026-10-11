@@ -1,4 +1,4 @@
-"""The signer RPC contract, version 12: one JSON Schema per request and response, the error shape, and `SignerAPI`.
+"""The signer RPC contract, version 13: one JSON Schema per request and response, the error shape, and `SignerAPI`.
 
 Frozen: a change to any schema here is a new RPC_VERSION. The caller's identity comes from the transport (peer
 credentials, token, mTLS), never from a request field. Calls that change state carry `request_id`, scoped to that
@@ -12,7 +12,7 @@ from typing import Protocol
 from tracekit.format.canon import MAX_SAFE_INT
 from tracekit.schema import _check
 
-RPC_VERSION = 12
+RPC_VERSION = 13
 MAX_RAW_ARGS = 1 << 20   # characters of a raw arguments string
 MAX_EXTERNAL_RECORD = 1 << 16   # characters of an external system's own decision record
 MAX_RESULTS_SENT = 1024
@@ -115,6 +115,10 @@ REQUESTS = {
                      status={"enum": ["ok", "error"]}, result=ANY, error=_str(4096),
                      # the client redacted result/error already; recorded as its claim, the signer redacts regardless
                      redacted={"const": True}, redaction=_obj([], rules=RULE_IDS, count=SEQ)),
+    # content that entered the run other than as a tool result (the task, a mail, a ticket): recorded as its
+    # commitment and indexed for provenance; `trust` is the caller's claim, about content it supplies itself
+    "observe": _obj(_EVENT_REQ + ["source", "trust", "value"], **_EVENT, source=_str(256, minLength=1),
+                    trust={"enum": ["trusted", "untrusted"]}, value=ANY),
     "state_write": _obj(_EVENT_REQ + ["key", "value_digest"], **_EVENT, key=_str(256, minLength=1), value_digest=DIGEST,
                         prev_digest={"oneOf": [DIGEST, {"type": "null"}]}),   # the state the write started from
     # agent-reported (L3): what the model asked to run, and the tool results the request sent back
@@ -181,6 +185,7 @@ RESPONSES = {
                    decision_id=ID,   # fresh for every decide; `complete` consumes it once
                    rule_ids=RULE_IDS, reason=REASON, run_seq=SEQ, expires_at=_str(40)),
     "complete": _SEQ_ONLY,
+    "observe": _SEQ_ONLY,
     "state_write": _SEQ_ONLY,
     "model_event": _obj(["run_seq"], run_seq=SEQ, fail_modes=_FAIL_MODES),   # fail_modes: to a gateway
     "approval_request": _obj(["approval_id", "state"], approval_id=ID, state=APPROVAL_STATE,
@@ -249,6 +254,7 @@ class SignerAPI(Protocol):
     def register_run(self, req: dict) -> dict: ...
     def decide(self, req: dict) -> dict: ...
     def complete(self, req: dict) -> dict: ...
+    def observe(self, req: dict) -> dict: ...
     def state_write(self, req: dict) -> dict: ...
     def model_event(self, req: dict) -> dict: ...
     def approval_request(self, req: dict) -> dict: ...

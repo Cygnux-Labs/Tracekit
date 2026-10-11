@@ -9,7 +9,7 @@ the signer. The ask pauses the graph with `interrupt()`; it resumes with `Comman
 
 ```sh
 python3 -m venv .venv && . .venv/bin/activate
-pip install 'tracekit-ai[signer]' 'langchain>=1.4,<1.5' 'langgraph>=1.2,<1.3'       # from a checkout: pip install '.[signer]'
+pip install tracekit-ai 'langchain>=1.4,<1.5' 'langgraph>=1.2,<1.3'       # from a checkout: pip install .
 python examples/v2/langchain/agent.py --scripted
 ```
 

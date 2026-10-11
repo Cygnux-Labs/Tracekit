@@ -5,7 +5,7 @@ only one page. This page collects them in one place. Each release's notes link h
 section must be linked from this page (`tests/test_docs.py` checks it).
 
 Each row says what the limit is, why it is so, what to do about it, and where the details are. Rows marked
-**(1.1, in review)** describe behaviour in an open pull request that has not been released yet.
+**(1.1)** describe behaviour new in 1.1, not in 1.0.
 
 ## Evidence and verification
 
@@ -18,7 +18,7 @@ Each row says what the limit is, why it is so, what to do about it, and where th
 | Tracekit is tamper-evident, not tamper-proof: a deletion shows, it isn't prevented. | Prevention would need attested hardware (a TEE), which Tracekit doesn't claim. | Keep independent witnesses and a monitor so a rewrite is detected. | [FAQ](faq.md#what-cant-tracekit-prove) |
 | Whoever holds the signer's key can rewrite or fork its log; nothing in the bundle alone shows it. | Signatures prove who signed, not that the key holder didn't sign again. | Pin a witness the operator doesn't run (`witnessed`) and a monitor (`witnessed+monitored`). | [server threat model](threat-model-server.md#s4-the-operator-organisation-and-the-exporter) |
 | Records after the last cosigned checkpoint are unproven. | A witness vouches only for what it has cosigned. | Export after the next checkpoint; read the `log tail` warning. | [verdicts](verdicts.md#warnings---strict-exits-3), [witnesses](witnesses.md#trust-model-per-witness-type) |
-| A bundle exported before its run is finalised verifies only `TO HEAD n (open)`. | The signer finalises a run a few seconds after it closes. | Re-export after `run.final`; for audits require `VERIFIED`. | [quickstart](quickstart-v2.md#4-export-and-verify), [verdicts](verdicts.md#integrity) |
+| A bundle exported before its run is finalised verifies only `TO HEAD n (open)`. | The signer finalises a run a few seconds after it closes. | Re-export after `run.final`; for audits require `VERIFIED`. | [quickstart](quickstart-v2.md#export-and-verify-by-hand), [verdicts](verdicts.md#integrity) |
 | A single run's bundle doesn't show that no other run was left out. | The exporter chooses which runs to export. | Ask for the tenant's run-set bundle and require `run-set: COMPLETE`. | [auditor guide](auditor-guide.md#3-get-the-bundles) |
 | A withheld key retirement isn't visible unless a run-set from registry size 0 reaches the bundle. | Only the registry log proves which `key.retire` records exist. | Check for the `retirements not proven complete` warning. | [verdicts](verdicts.md#warnings---strict-exits-3) |
 | `key assurance` is `asserted` unless a record-key issuer certifies the keys. | Without an issuer the log declares its own record keys. | Run an [issuer](issuer.md) and pin it in the trust config. | [issuer](issuer.md#verifying) |
@@ -81,15 +81,15 @@ Each row says what the limit is, why it is so, what to do about it, and where th
 | `unless` on a whole command line could exempt a different target. | The subject holds several targets. | Use `unless` only where the subject is one target. | [policy](policy-v2.md#what-a-rule-matches-the-subject) |
 | v1 rules (`tracekit/policy/default.yaml`) match raw strings, so quoted text that mentions a risky command can trip them. | The v1 engine doesn't parse commands. | Use the v2 signer's policy; add exceptions for known false positives. | [evaluation](evaluation.md#e3-policy-gate) |
 
-## Provenance (1.1, in review)
+## Provenance (1.1)
 
 | Limit | Why it is so | What to do | Details |
 |---|---|---|---|
-| **(1.1, in review)** Provenance matches values verbatim: a value the model paraphrases, splits or re-encodes reads as a new value. | It is a tripwire on the commonest way injected instructions act, not information-flow control. | To prevent the flow, use information-flow control (CaMeL, FIDES) in the agent. | [policy](policy-v2.md#provenance-untrusted-and-from-untrusted) |
-| **(1.1, in review)** Only untrusted tools' results and observed inputs are indexed: a page fetched with a tool the policy doesn't list as untrusted (`curl` in a shell) isn't seen. | Results of other tools can echo the agent's own arguments, so they aren't counted either way. | List such tools under `untrusted`, or observe the content with `run.observe`. | [policy](policy-v2.md#provenance-untrusted-and-from-untrusted) |
-| **(1.1, in review)** Only an input observed as trusted makes a value trusted: a value from your own data that also appears in untrusted content (a customer's address from the CRM that is also in their ticket) is held. | Counting other tool output as trusted could launder an injected value. | Observe the record you looked up as `trusted`, or answer the hold. | [policy](policy-v2.md#provenance-untrusted-and-from-untrusted) |
-| **(1.1, in review)** After a signer restart a run's provenance is `unavailable`, and `from: untrusted` rules don't match for the rest of that run. | The index lives in memory only. | Watch `provenance_state` on decisions; keep other rules for those calls. | [policy](policy-v2.md#provenance-untrusted-and-from-untrusted) |
-| **(1.1, in review)** Past 20,000 values a run's index is `truncated`, and `from: untrusted` rules don't match for the rest of that run. | The index is bounded per run. | Same as above; split very long runs. | [policy](policy-v2.md#provenance-untrusted-and-from-untrusted) |
+| **(1.1)** Provenance matches values verbatim: a value the model paraphrases, splits or re-encodes reads as a new value. | It is a tripwire on the commonest way injected instructions act, not information-flow control. | To prevent the flow, use information-flow control (CaMeL, FIDES) in the agent. | [policy](policy-v2.md#provenance-untrusted-and-from-untrusted) |
+| **(1.1)** Only untrusted tools' results and observed inputs are indexed: a page fetched with a tool the policy doesn't list as untrusted (`curl` in a shell) isn't seen. | Results of other tools can echo the agent's own arguments, so they aren't counted either way. | List such tools under `untrusted`, or observe the content with `run.observe`. | [policy](policy-v2.md#provenance-untrusted-and-from-untrusted) |
+| **(1.1)** Only an input observed as trusted makes a value trusted: a value from your own data that also appears in untrusted content (a customer's address from the CRM that is also in their ticket) is held. | Counting other tool output as trusted could launder an injected value. | Observe the record you looked up as `trusted`, or answer the hold. | [policy](policy-v2.md#provenance-untrusted-and-from-untrusted) |
+| **(1.1)** After a signer restart a run's provenance is `unavailable`, and `from: untrusted` rules don't match for the rest of that run. | The index lives in memory only. | Watch `provenance_state` on decisions; keep other rules for those calls. | [policy](policy-v2.md#provenance-untrusted-and-from-untrusted) |
+| **(1.1)** Past 20,000 values a run's index is `truncated`, and `from: untrusted` rules don't match for the rest of that run. | The index is bounded per run. | Same as above; split very long runs. | [policy](policy-v2.md#provenance-untrusted-and-from-untrusted) |
 
 ## Approvals
 
@@ -165,6 +165,21 @@ Each row says what the limit is, why it is so, what to do about it, and where th
 | The public witness's compose file pins Caddy by tag, not digest. | The digest is taken when it is deployed. | Pin `caddy` by digest before production. | [deploy/public-witness](../deploy/public-witness/README.md) |
 | A restored backup of the public witness's `state.db` holds older sizes. | The backup is a point in time. | Nothing: logs answered `409` resend from the older size with a consistency proof. | [deploy/public-witness](../deploy/public-witness/README.md#backup) |
 
+## Investigation (`tracekit why`)
+
+| Limit | Why it is so | What to do | Details |
+|---|---|---|---|
+| A measured effect is the total effect for this program on this task; it doesn't explain the model's reasons and may not transfer to other tasks. | Replay measures what changes when an input is removed, nothing more. | Re-test on the tasks you care about. | [why](why.md#limits) |
+| `ruled-out` means smaller than 20 points, not zero. | Finite replays give an interval, not an exact value. | Raise `--n-max` until the interval is narrow enough for your decision. | [why](why.md#how-causality-is-tested) |
+| The app's single **Run test** isn't corrected for testing many inputs one by one: about 1 in 20 inputs with no effect can come out `causal` by chance. | Each test reports its own interval. | Use **Find the cause** (`attribute`), which corrects for every test it runs. | [why](why.md#limits) |
+| The causal graph is only as complete as the recorded context. | Content sent to a model without being recorded is invisible to it. | Record model calls through an adapter or the gateway. | [why](why.md#limits) |
+| Replay costs model calls (about 2·n per test per downstream model call); there are no budgets or caching yet. | Proving a cause means re-running the model with and without each suspect. | Start with `attribute`, which tests the group first; set `--n-max`. | [why](why.md#how-causality-is-tested) |
+| Run replay needs a re-executable program; decision replay doesn't. | Re-running a whole run means running its code again. | Use decision replay for calls recorded with their request. | [why](why.md#limits) |
+| Tape matching is exact on tool arguments; new calls are stubbed, which can change what the agent does after the stub. | Replays must never repeat a real side effect. | Read `off_tape_actions` in each result. | [why](why.md#limits) |
+| Inferred edges are a heuristic and miss paraphrase. | They come from word overlap, not a recorded path. | Treat them as hints; only tested edges say "caused". | [why](why.md#evidence-grades) |
+| The `tracekit why` guard is a string-matching tripwire, in the agent's process. | It checks verbatim values only, where the agent runs. | Use the signer's `from: untrusted` rules, which the agent can't skip. | [why](why.md#live-mode-and-the-guard) |
+| `tracekit why`'s own log is hash-chained but unsigned: whoever can rewrite the whole log can rebuild the chain. | It holds the content a signer never stores. | Cite the signed Tracekit records for every claim that matters. | [why](why.md) |
+
 ## Viewer
 
 | Limit | Why it is so | What to do | Details |
@@ -175,6 +190,41 @@ Each row says what the limit is, why it is so, what to do about it, and where th
 | A run stays `PENDING` until a checkpoint covers its last record. | The verdict needs a checkpoint. | Wait for the next checkpoint. | [viewer](viewer.md#laptop-viewer) |
 | The viewer's printed token is one operator credential over every tenant's runs. | It is the local operator's access. | Use OIDC roles for auditors and approvers. | [viewer](viewer.md#who-sees-what) |
 | The timeline is scaled to the calls shown, not the clock. | It shows sequence, not duration. | Read times from the records. | [viewer](viewer.md#laptop-viewer) |
+
+## Install
+
+| Limit | Why it is so | What to do | Details |
+|---|---|---|---|
+| `pip install tracekit-ai` also installs `cryptography`, `rfc8785`, `google-re2` (Python 3.10+) and `regex`. | The dev signer starts from that one install. It signs, canonicalises JSON and runs its policy engine. | To get the verifier alone, `pip install --no-deps tracekit-ai`. It runs on the standard library. | [quickstart](quickstart-v2.md#1-install) |
+| A `--no-deps` install verifies bundles but can't run a signer. `tracekit up` and `tracekit init --dev --v2` refuse to start. | The signer needs the policy engine and `cryptography`. Neither is in the standard library. | `pip install tracekit-ai` | [doctor](doctor.md) |
+| Where `google-re2` has no wheel (a new Python, an uncommon platform), pip builds it from source, and without a C++ toolchain and abseil the whole install fails. | pip has no fallback between dependencies. The signer itself uses `regex` when `google-re2` isn't importable. | `pip install --no-deps tracekit-ai`, then `pip install cryptography "rfc8785>=0.1,<0.2" regex` (with their own dependencies) | [quickstart](quickstart-v2.md#1-install) |
+| A `--no-deps` verifier is slower. | It falls back to pure-Python Ed25519 and JCS. Both are checked against `cryptography` and `rfc8785` and give the same verdict. | Install `cryptography` and `rfc8785` if you verify many large bundles. | [signing](signing.md) |
+
+## One-line setup (`tracekit.instrument()`)
+
+| Limit | Why it is so | What to do | Details |
+|---|---|---|---|
+| It only gates agents, tools, graphs, options and sessions built after it runs. | It wires each framework where its objects are built: `Agent`, `ToolNode`, `ClaudeAgentOptions`, `ClientSession.call_tool`. | Make `import tracekit; tracekit.instrument()` the first line of your agent. | [quickstart](quickstart-v2.md#2-one-line-in-your-agent) |
+| It raises `SignerUnavailable` when no signer answers. | A run's fail mode is closed until a signer says otherwise. Without a run, no call could be recorded. | Follow the message. With no `TRACEKIT_SIGNER` set, it starts a dev signer itself. With it set, start that signer or unset it. In system mode, run `sudo tracekit doctor`. | [quickstart](quickstart-v2.md#first-run-errors) |
+| A process has one run, and the run closes when the process exits. A killed process leaves its run open until the signer's idle timeout. | The run belongs to the process, not to any one agent loop or session. | `tracekit last` names a run that is still open and skips it. For one run per task, wire the adapter by hand. | [quickstarts](quickstarts/custom.md) |
+| An `ask` (a call waiting for a person) only completes where the framework can wait. OpenAI Agents interrupts the run, and your code must apply the decision. LangGraph pauses only with a checkpointer and denies the call without one. MCP waits up to 300 s in `call_tool`. The Claude Agent SDK waits up to 9 minutes in its hook. | Waiting for a person is part of each framework's own control flow. | For approvals, wire the adapter by hand as its quickstart shows. | [OpenAI Agents](quickstarts/openai-agents.md), [LangGraph](quickstarts/langchain.md) |
+| A framework version outside the tested range gets a warning. If its adapter can't be wired at all, it is skipped. | Each adapter hooks the framework's internals at one tested minor version. | Install the versions the warning names, or wire the adapter by hand. | [adapters](adapters.md) |
+| Don't wire an adapter by hand in a process that also calls `instrument()`. | The signer would decide the same call twice. | Use one or the other. | [quickstart](quickstart-v2.md#2-one-line-in-your-agent) |
+| OpenAI Agents SDK hosted tools, computer use and handoffs are not gated. A Runner call with a context that isn't a dict can't wait for an approval. | They run outside the tool hooks. Approval ids are kept in the run context. | Their calls are still in the signed model responses. Pass `context={}` or a dict. | [OpenAI Agents](quickstarts/openai-agents.md) |
+| Every MCP `ClientSession` in the process shares one signer stream, so their calls are recorded in one order. | A run allows 64 streams (`streams_per_run`), and a server agent may open a session per request. | For one stream per session, wrap each session with `TracekitSession` by hand. | [MCP](quickstarts/mcp.md) |
+| `tracekit.instrument(tracer)` (the v1 model-call tracer) is now `tracekit.autotrace.instrument(tracer)`. `tracekit.instrument()` takes the run's name and raises `TypeError` with that fix for anything else. | `tracekit.instrument()` is the one-line v2 entry point. | Call `tracekit.autotrace.instrument(tracer)`, and `tracekit.uninstrument()` to undo it. | [autotrace](quickstarts/custom.md) |
+| Model calls are recorded only when made through the OpenAI, Anthropic or Google Gen AI Python SDKs. | Those are the clients autotrace wraps. | Record other calls with the client (`run.call("model_event", ...)`). | [custom](quickstarts/custom.md) |
+| In TypeScript, `instrument()` returns the adapters for you to pass to the framework. It doesn't wire them. | ES modules can't be patched from outside. | `const tk = await instrument()`, then `tk.ai` (Vercel AI SDK) or `tk.agents` (OpenAI Agents JS). | [TypeScript SDK](../sdk/typescript/README.md) |
+| In TypeScript, the run closes on `beforeExit`, which Node skips on `process.exit()`. That run stays open until the idle timeout, and `tracekit last` skips it. | Node runs no async work after `process.exit()`. | `await tk.run.close()` before `process.exit()`. | [TypeScript SDK](../sdk/typescript/README.md) |
+
+## `tracekit last`
+
+| Limit | Why it is so | What to do | Details |
+|---|---|---|---|
+| It pins the dev signer's key from the signer's own data dir, so the verdict is `dev` assurance. | The dev signer runs as your user. Anything that runs as you could also have rewritten that key and the log. | For evidence against the agent, use system mode and witnesses, and pin keys you got another way. | [what dev assurance means](quickstart-v2.md#what-dev-assurance-means) |
+| It shows finished runs only. A newer run that is still open is named and skipped. A run that just closed is waited for, up to 15 s. | The signer finalises a run a few seconds after the run closes. A bundle exported before that verifies only to its head. | End the agent, then run `tracekit last` again. `tracekit export --v2 --run ID` exports an open run to its head. | [quickstart](quickstart-v2.md#3-see-it-verified) |
+| It writes `<run id>.tkb` and `<run id>.trust.json` in the current directory. | They sit where you can find them. | Use `-o PATH` to write somewhere else. | [quickstart](quickstart-v2.md#3-see-it-verified) |
+| It reads only the same-user dev signer. | A configured signer's store and keys belong to another user or host. | `tracekit signer trust --config signer.yaml -o trust.json`, then `tracekit export --v2 --config signer.yaml --run ID`. | [deploy](deploy.md) |
 
 ## Platforms
 

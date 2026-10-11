@@ -13,6 +13,10 @@ from tracekit.format.canon import event_hash
 
 SHELL_KEYS = ("command", "cmd", "commands")
 PATH_KEYS = ("file_path", "notebook_path", "path")
+BODY_KEYS = ("body", "data", "json", "files", "form", "content")   # an http call with one of these sends data
+TYPING = ("input", "upload_file")   # Browser Use actions that send data to the page they run on
+RECIPIENT_KEYS = ("to", "cc", "bcc", "recipients")
+PAYEE_KEYS = ("payee", "to", "recipient", "destination", "account", "account_number", "iban")
 FS_OPS = {"Write": "write", "Edit": "edit", "MultiEdit": "edit", "NotebookEdit": "edit", "Read": "read",
           "Grep": "read", "Glob": "read"}
 
@@ -231,8 +235,13 @@ def extract(cls, tool, args):
         out = {"url": url, "host": info.get("host"), "internal": info.get("internal")}
         if cls == "browser":
             out.update(action=args.get("action"), scheme=info.get("scheme"))
+            page = args.get("page_url")
+            if tool.rpartition(":")[2] in TYPING and isinstance(page, str):
+                out["sends_to"] = url_info(page).get("host")
         else:
             out["method"] = str(args.get("method") or "GET").upper()
+            if out["method"] not in ("GET", "HEAD") or any(args.get(k) is not None for k in BODY_KEYS):
+                out["sends_to"] = info.get("host")
     elif cls == "sql":
         stmt = first(args, "sql", "query", "statement")
         text = stmt if isinstance(stmt, str) else "\n;\n".join(stmt) if isinstance(stmt, list) and all(
@@ -243,11 +252,13 @@ def extract(cls, tool, args):
                "verb": code[0].split()[0].upper() if code and code[0].split() else None}
     elif cls == "payment":
         out = {"amount": first(args, "amount", "amount_cents"), "currency": args.get("currency"),
-               "payee": first(args, "payee", "to", "recipient")}
+               "payee": first(args, "payee", "to", "recipient"),
+               "payees": [args[k] for k in PAYEE_KEYS if args.get(k) is not None] or None}
     elif cls == "email":
         to = args.get("to")
         to = [to] if isinstance(to, str) else to if isinstance(to, list) else []
         out = {"to": to, "attachments": args.get("attachments"),
+               "recipients": [args[k] for k in RECIPIENT_KEYS if args.get(k) is not None] or None,
                "domains": sorted({a.rsplit("@", 1)[1].lower() for a in to if isinstance(a, str) and "@" in a})}
     elif cls == "mcp":
         server, name = None, tool

@@ -85,7 +85,10 @@ class Compile(unittest.TestCase):
         self.assertEqual(pol["extends"], [pc.policy_hash(pc.build(p)[0]) for p in (a, b)])
         self.assertEqual((pol["tools"], pol["unknown_tools"]), ({"Bash": "shell", "run_sql": "sql"}, "ask"))
         self.assertEqual(([r["id"] for r in pol["deny"]], [r["id"] for r in pol["ask"]]), (["A1"], ["B1"]))
-        self.assertIn("rule A1: duplicate id", "\n".join(self.errors("extends: [a.yaml, a.yaml]\n")))
+        self.write("a2.yaml", "tools:\n  Bash: shell\ndeny:\n  - {id: A1, class: shell, pattern: y}\n")
+        self.assertIn("rule A1: duplicate id", "\n".join(self.errors("extends: [a.yaml, a2.yaml]\n")))
+        pol, errs = pc.build(self.write("p.yaml", "extends: [a.yaml, a.yaml]\n"))   # the same rule twice is one rule
+        self.assertEqual((errs, [r["id"] for r in pol["deny"]]), ([], ["A1"]))
         self.assertIn("extends must be a relative path", "\n".join(self.errors(f"extends: [b.yaml, {a}]\n")))
 
     def test_extends_loop_through_dot_path(self):
@@ -329,7 +332,8 @@ class Shell(unittest.TestCase):
         start = time.monotonic()
         with self.assertRaises(shell.ParseError):
             shell.parse(cmd)
-        self.assertLess(time.monotonic() - start, 2)   # ~0.4 s on a laptop; the old 1 MiB budget took 1.7–5 s
+        # ~0.4 s on a laptop; the old 1 MiB budget took 1.7–5 s; a coverage run traces every line, about 3x slower
+        self.assertLess(time.monotonic() - start, 6 if "coverage" in sys.modules else 2)
 
     def test_backslashes_and_brackets_parse_in_linear_time(self):
         for cmd, limit in (("python3 -c 'import os; os.system(\"" + "\\" * 200 + "'", 0.1),
