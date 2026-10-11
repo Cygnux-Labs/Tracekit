@@ -39,6 +39,7 @@ langchain = ["langchain-core>=0.2"]   # tracekit.adapters.langchain (LangChain /
 grpc = ["grpcio>=1.50"]   # `tracekit otel serve --grpc-port 4317`
 postgres = ["psycopg[binary]>=3.1"]   # tracekit.storage.postgres: the signer's Postgres store
 aws = ["boto3>=1.34"]   # the signer's log key in AWS KMS (log_key: {aws_kms: ...})
+why-anthropic = ["anthropic>=0.30"]   # tracekit.why.adapters.anthropic (recording and replaying Claude calls)
 signer = []   # now in the default dependencies; kept so `tracekit-ai[signer]` still installs
 dev = ["pytest>=7", "PyYAML>=6", "pyflakes", "regex>=2023.8", "google-re2>=1.1; python_version>='3.10'",
        "hypothesis>=6.100",   # property tests of the v2 verifier (tests/test_verify_v2_property.py)
@@ -71,7 +72,7 @@ include = ["tracekit", "tracekit.*"]   # every subpackage; new modules need no e
 version = { attr = "tracekit.__version__" }
 
 [tool.setuptools.package-data]
-tracekit = ["schema/*.json", "policy/*.yaml", "policy2/packs/*.yaml", "ui/*.html"]
+tracekit = ["schema/*.json", "policy/*.yaml", "policy2/packs/*.yaml", "ui/*.html", "why/app.html"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

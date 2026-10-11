@@ -28,7 +28,7 @@ def _signer_home(a):
 _DELEGATED = {"observe": "observe", "analyze": "findings", "otel": "otlp", "cost": "cost", "witness": "witness_server",
              "deploy": "deploy.compose",
               "signer": "signer.service", "view": "view", "monitor": "monitor", "gateway": "gateway",
-              "issuer": "issuer"}  # subcommands with their own parsers
+              "issuer": "issuer", "why": "why.cli"}  # subcommands with their own parsers
 _MOVED = {"sql": "query", "proofpack": "proofpack", "report": "proofpack", "causeway": "causeway"}  # now separate packages under contrib/
 
 
@@ -152,6 +152,9 @@ def main(argv=None):
     p = sub.add_parser("observe", help="live terminal for the ledger or a bundle (read-only web UI)")
     p.add_argument("rest", nargs=argparse.REMAINDER)
     p = sub.add_parser("view", help="laptop viewer for the v2 signer's runs, each verified (read-only web UI)")
+    p.add_argument("rest", nargs=argparse.REMAINDER)
+    p = sub.add_parser("why", help="causal investigation and replay of multi-agent runs: `why demo|record|serve|test|...`",
+                       add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
 
     sub.add_parser("pending", help="list tool calls waiting for approval")

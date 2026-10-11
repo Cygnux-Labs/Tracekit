@@ -156,6 +156,21 @@ Each row says what the limit is, why it is so, what to do about it, and where th
 | The compose end-to-end test runs only where Docker and root (or passwordless sudo) are available; elsewhere it is skipped. | It brings up the real stack. | Run `deploy/compose/e2e.sh` on a Docker host before relying on a change. | [deploy compose](deploy-compose.md#end-to-end-test) |
 | `tracekit doctor` output is advice about the host, not evidence. | Nothing it prints is signed or read by a verifier. | Rely on the bundle and the verifier's trust config. | [doctor](doctor.md) |
 
+## Investigation (`tracekit why`)
+
+| Limit | Why it is so | What to do | Details |
+|---|---|---|---|
+| A measured effect is the total effect for this program on this task; it doesn't explain the model's reasons and may not transfer to other tasks. | Replay measures what changes when an input is removed, nothing more. | Re-test on the tasks you care about. | [why](why.md#limits) |
+| `ruled-out` means smaller than 20 points, not zero. | Finite replays give an interval, not an exact value. | Raise `--n-max` until the interval is narrow enough for your decision. | [why](why.md#how-causality-is-tested) |
+| The app's single **Run test** isn't corrected for testing many inputs one by one: about 1 in 20 inputs with no effect can come out `causal` by chance. | Each test reports its own interval. | Use **Find the cause** (`attribute`), which corrects for every test it runs. | [why](why.md#limits) |
+| The causal graph is only as complete as the recorded context. | Content sent to a model without being recorded is invisible to it. | Record model calls through an adapter or the gateway. | [why](why.md#limits) |
+| Replay costs model calls (about 2·n per test per downstream model call); there are no budgets or caching yet. | Proving a cause means re-running the model with and without each suspect. | Start with `attribute`, which tests the group first; set `--n-max`. | [why](why.md#how-causality-is-tested) |
+| Run replay needs a re-executable program; decision replay doesn't. | Re-running a whole run means running its code again. | Use decision replay for calls recorded with their request. | [why](why.md#limits) |
+| Tape matching is exact on tool arguments; new calls are stubbed, which can change what the agent does after the stub. | Replays must never repeat a real side effect. | Read `off_tape_actions` in each result. | [why](why.md#limits) |
+| Inferred edges are a heuristic and miss paraphrase. | They come from word overlap, not a recorded path. | Treat them as hints; only tested edges say "caused". | [why](why.md#evidence-grades) |
+| The `tracekit why` guard is a string-matching tripwire, in the agent's process. | It checks verbatim values only, where the agent runs. | Use the signer's `from: untrusted` rules, which the agent can't skip. | [why](why.md#live-mode-and-the-guard) |
+| `tracekit why`'s own log is hash-chained but unsigned: whoever can rewrite the whole log can rebuild the chain. | It holds the content a signer never stores. | Cite the signed Tracekit records for every claim that matters. | [why](why.md) |
+
 ## Viewer
 
 | Limit | Why it is so | What to do | Details |
