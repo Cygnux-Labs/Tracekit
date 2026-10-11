@@ -1,10 +1,11 @@
 /**
  * JCS (RFC 8785) and the strict parser of docs/format-v2.md §1, byte for byte (tests/vectors/jcs.jsonl).
  * Strict: bytes that are not UTF-8, duplicate keys, NaN/±Infinity (and overflow such as 1e400), lone surrogates and
- * integer tokens (no `.` or exponent) outside ±(2^53-1) are refused. No node: imports: browsers load this too.
+ * integer tokens (no `.` or exponent) outside ±(2^53-1) are refused, and so are arrays and objects nested deeper than
+ * MAX_DEPTH. No node: imports: browsers load this too.
  */
 
-/** `code` is one of: invalid_utf8, syntax, duplicate_key, non_finite, int_range, lone_surrogate. */
+/** `code` is one of: invalid_utf8, syntax, duplicate_key, non_finite, int_range, lone_surrogate, depth. */
 export class StrictJSONError extends Error {
   constructor(readonly code: string, message: string) {
     super(`${code}: ${message}`);
@@ -12,8 +13,9 @@ export class StrictJSONError extends Error {
 }
 
 const WS = /[ \t\n\r]*/y;
-const STR = /"(?:[^"\\\u0000-\u001f]|\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4}))*"/y;
+const ESC = /\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4})/y;
 const NUM = /-?(?:0|[1-9]\d*)(\.\d+)?([eE][+-]?\d+)?/y;
+export const MAX_DEPTH = 128;
 const LONE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
 
 /** Where number tokens with a fraction or exponent sit (container -> keys): JSON Schema's "integer" excludes them. */
@@ -34,20 +36,27 @@ export function strictParse(text: string, floats?: Floats): unknown {
     if (m) i = re.lastIndex;
     return m;
   };
-  const str = (): string => {
-    const m = match(STR) ?? fail("syntax", `string expected at ${i}`);
-    const s: string = JSON.parse(m[0]);
-    if (LONE.test(s)) fail("lone_surrogate", m[0]);
+  const str = (): string => {   // a loop, not one regex: V8 runs out of regex stack on strings of millions of characters
+    const start = i;
+    if (text[i++] !== '"') fail("syntax", `string expected at ${start}`);
+    for (let c; (c = text.charCodeAt(i)) !== 0x22;) {
+      if (c === 0x5c) match(ESC) ?? fail("syntax", `bad escape at ${i}`);
+      else if (c < 0x20 || Number.isNaN(c)) fail("syntax", `unterminated string at ${start}`);
+      else i++;
+    }
+    const raw = text.slice(start, ++i), s: string = JSON.parse(raw);
+    if (LONE.test(s)) fail("lone_surrogate", raw.slice(0, 80));
     return s;
   };
   const expect = (c: string) => {
     match(WS);
     if (text[i++] !== c) fail("syntax", `${c} expected at ${i - 1}`);
   };
-  const value = (): unknown => {
+  const value = (depth: number): unknown => {
     float = false;
     match(WS);
     const c = text[i];
+    if ((c === "{" || c === "[") && depth === MAX_DEPTH) fail("depth", `nesting deeper than ${MAX_DEPTH} at ${i}`);
     if (c === "{") {
       i++;
       const o: Record<string, unknown> = {};
@@ -58,7 +67,7 @@ export function strictParse(text: string, floats?: Floats): unknown {
         const k = str();
         if (Object.hasOwn(o, k)) fail("duplicate_key", JSON.stringify(k));
         expect(":");
-        Object.defineProperty(o, k, { value: value(), enumerable: true, writable: true, configurable: true });   // "__proto__" too
+        Object.defineProperty(o, k, { value: value(depth + 1), enumerable: true, writable: true, configurable: true });   // "__proto__" too
         mark(o, k);
         match(WS);
       } while (text[i] === "," && ++i);
@@ -71,7 +80,7 @@ export function strictParse(text: string, floats?: Floats): unknown {
       const a: unknown[] = [];
       match(WS);
       if (text[i] === "]") return i++, a;
-      do a.push(value()), mark(a, a.length - 1); while ((match(WS), text[i] === ",") && ++i);
+      do a.push(value(depth + 1)), mark(a, a.length - 1); while ((match(WS), text[i] === ",") && ++i);
       expect("]");
       float = false;
       return a;
@@ -87,7 +96,7 @@ export function strictParse(text: string, floats?: Floats): unknown {
     float = !!(m[1] || m[2]);
     return n;
   };
-  const v = value();
+  const v = value(0);
   match(WS);
   if (i < text.length) fail("syntax", `extra data at ${i}`);
   return v;

@@ -314,7 +314,7 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
   let retired: [number, string][] = [], provenTo = -1, regCosigs: [string, bigint][][] = [];
   if (runSet) {
     [retired, provenTo, regCosigs] = await checkRunSet(rep, json("registry/run-set.json"), jsonl, file, trust, witnesses,
-      origin, size, runs, included, (r, p) => checkRecord(r, keysAt(num(at(at(r, "event"), "seq"))), p));
+      origin, size, runs, included, (r, p) => checkRecord(r, keysAt(num(at(at(r, "event"), "seq"))), p), floats);
     const keyed = new Set(keyRecords.map((r) => `${at(at(r, "event"), "seq")} ${at(r, "hash")}`));
     keyProblems.push(...retired.filter(([seq, h]) => !keyed.has(`${seq} ${h}`))
       .map(([seq]) => `seq ${seq}: key.retire withheld (the registry log has it)`));
@@ -452,11 +452,15 @@ export async function verifyRecord(r: J, keys: Uint8Array[], algs: string[]): Pr
  * cosignatures of each registry note. */
 async function checkRunSet(rep: Report, rs: J, jsonl: (n: string) => J[], file: (n: string) => Uint8Array, trust: Trust,
   witnesses: Map<string, string>, origin: string, size: number, runs: Map<string, J[]>,
-  included: (r: J) => Promise<boolean>, checkRecord: (r: J, p: string[]) => Promise<void>,
+  included: (r: J) => Promise<boolean>, checkRecord: (r: J, p: string[]) => Promise<void>, floats: Floats,
 ): Promise<[[number, string][], number, [string, bigint][][]]> {
   const problems: string[] = [], tsalt = b64decode(at(rs, "tenant_salt"));
   const lo = at(rs, "from"), hi = at(rs, "to"), regOrigin = await registryOrigin(origin, tsalt);
   const span = `registry ${str(lo)}..${str(hi)}`;
+  if (![lo, hi].every((n) => Number.isSafeInteger(n)) || floats.get(rs)?.has("from") || floats.get(rs)?.has("to")) {
+    rep.check("run-set", false, `INCOMPLETE, ${span}`, ["the registry range is not two integers"]);
+    return [[], -1, []];
+  }
   // the registry notes are signed by the record log's own pinned key, under the registry origin
   const vkeys: string[] = [];
   for (const k of trust.logs) {
