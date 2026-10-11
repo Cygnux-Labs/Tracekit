@@ -140,8 +140,8 @@ def build(path, seen=()):
         errors.append(f"{path}: handoffs must list tool name globs")
         pol["handoffs"] = []
     for h in pol.get("handoffs", []):
-        if not h.strip("*?[]!"):   # a call to any tool would never be a missing decide
-            errors.append(f"{path}: handoffs glob {h!r} matches every tool: name your framework's handoff tools")
+        if len(re.sub(r"\[[^]]*\]|[*?]", "", h)) < 3:   # a glob this loose makes any tool a handoff
+            errors.append(f"{path}: handoffs entry {h!r} is too loose: name your agents' handoff tools exactly")
     base = pol.pop("extends", None)
     parents = []
     for b in base if isinstance(base, list) else [] if base is None else [base]:

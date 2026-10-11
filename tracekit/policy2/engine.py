@@ -38,7 +38,6 @@ def _backend(name):
                 s, timeout=max(deadline - time.monotonic(), 1e-6)))
 
 
-
 class Engine:
     def __init__(self, policy, backend=None):
         """`policy` is a compiled policy (compile.build); `backend` forces "re2" or "regex"."""

@@ -19,8 +19,8 @@ from quickstart_agents import AGENTS, REFUSED
 
 from tracekit import autowire
 from tracekit.format.canon import event_hash
-from tracekit.sdk.client import Client, SignerUnavailable, current_run
-from tracekit.signer.rpc_schema import RPCError
+from tracekit.sdk.client import AsyncClient, Client, SignerUnavailable, current_run
+from tracekit.signer.rpc_schema import REQUESTS, RPCError
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -193,7 +193,8 @@ class ProcessRun(OnReal, unittest.TestCase):
     the run it was decided in, and a process run the signer closed is renewed, never refused for good."""
 
     def setUp(self):
-        self.client = autowire._process_client(Client, RPCError, current_run)(self.serve_signer())
+        self.path = self.serve_signer()
+        self.client = autowire._process_client(Client, RPCError, current_run, REQUESTS)(self.path)
         self.addCleanup(self.client.close)
         self.process = self.client.start("server")
         self.seq = 0
@@ -263,3 +264,43 @@ class ProcessRun(OnReal, unittest.TestCase):
         self.decide("c3")   # an adapter still addressing the first run reaches the new one
         self.assertEqual(self.records(self.process, "policy.decision"), ["c2", "c3"])
         self.assertEqual(self.gaps(self.process), [])
+
+    def test_approval_list_reaches_the_current_run(self):
+        self.assertEqual(self.client.approval_list({"run_id": self.process.run_id})["approvals"], [])
+
+    def test_one_call_id_in_two_conversations_stays_in_each(self):
+        with self.client.run("a") as a:
+            d1 = self.decide("call_0")
+            with self.client.run("b") as b:
+                self.complete("call_0", self.decide("call_0"))   # the same id in another conversation
+            self.complete("call_0", d1)
+        self.assertEqual((self.records(a, "tool.result"), self.records(b, "tool.result")), (["call_0"], ["call_0"]))
+
+    def test_a_forgotten_call_completes_in_the_current_run(self):
+        with mock.patch.object(autowire, "KEEP", 2), self.client.run("a") as a:
+            ds = [self.decide(f"c{i}") for i in range(3)]   # pushes c0's entries out
+            self.complete("c0", ds[0])
+        self.assertEqual(self.records(a, "tool.result"), ["c0"])
+
+    def test_a_model_response_goes_to_the_run_of_its_request(self):
+        ev = {"run_id": self.process.run_id, "run_token": self.process.run_token, "provider": "p", "model": "m",
+              "exchange_id": "ex-1"}
+        self.client.call("model_event", {**ev, "phase": "request"})
+        with self.client.run("conversation") as conversation:   # e.g. a stream finished during the next request
+            self.client.call("model_event", {**ev, "phase": "response"})
+        self.assertEqual([e["data"]["phase"] for e in self.events({"run_id": self.process.run_id})
+                          if e["type"] == "model.exchange"], ["request", "response"])
+        self.assertEqual([e for e in self.events({"run_id": conversation.run_id}) if e["type"] == "model.exchange"], [])
+
+    def test_a_process_run_closed_on_purpose_is_not_renewed(self):
+        self.process.close()
+        with self.assertRaises(RPCError):
+            self.decide("c1")
+        self.assertEqual(self.client.ids, {self.process.run_id})
+
+    def test_an_async_handle_can_be_current(self):
+        async def go():
+            run = await AsyncClient(self.path).run("async")
+            with run.current():
+                return current_run.get() is run
+        self.assertTrue(asyncio.run(go()))

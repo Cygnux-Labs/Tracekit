@@ -75,7 +75,9 @@ def _found(run, mandatory, handoff=lambda tool: False):
     for tcid, u in l3.items():
         d = rec["l2"].get(tcid)
         if d is None and not handoff(u["name"]):
-            out.append(("hook_missing", tcid, ["L2", "L3"], f"the model asked for {u['name'][:200]}; no decide"))
+            hint = ("; if it is a handoff to another agent, name it in the policy's handoffs:"
+                    if u["name"].startswith("transfer_to_") else "")
+            out.append(("hook_missing", tcid, ["L2", "L3"], f"the model asked for {u['name'][:200]}; no decide{hint}"))
         if u["unparseable"]:
             out.append(("args_unparseable", tcid, ["L3"], "the model's raw arguments failed strict parsing"))
         if d is None:

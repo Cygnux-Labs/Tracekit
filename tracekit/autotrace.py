@@ -374,14 +374,17 @@ class _RawProxy:
         return type(self._tk_inner)
 
     def __getattr__(self, name):
+        if name.startswith("_tk_"):   # a copy made without __init__: no inner object to delegate to
+            raise AttributeError(name)
         return getattr(self._tk_inner, name)
 
     def __setattr__(self, name, value):
         setattr(self._tk_inner, name, value)
 
     def __del__(self):
-        if self._tk_out is None and not self._tk_ex.done:
-            _LATE.append(self._tk_ex)   # finalisation may run from the GC: no signer I/O here
+        ex = self.__dict__.get("_tk_ex")
+        if ex is not None and self.__dict__.get("_tk_out") is None and not ex.done:
+            _LATE.append(ex)   # finalisation may run from the GC: no signer I/O here
 
     def _parsed(self, out):
         if self._tk_out is None:   # parse() caches its result: record it once

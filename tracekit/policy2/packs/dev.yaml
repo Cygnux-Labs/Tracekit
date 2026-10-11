@@ -2,7 +2,6 @@
 # match an MCP tool of that name (mcp:<server>/<name>), which the coding pack only flags.
 extends: coding.yaml
 description: dev default (coding pack, a demo deny and a demo ask)
-handoffs: ['transfer_to_*']   # the OpenAI Agents SDK's handoffs to another agent: run by the framework, never gated
 
 deny:
   - id: TK-DEMO-DENY

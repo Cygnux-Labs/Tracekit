@@ -36,61 +36,77 @@ _STATE = {"run": None}
 
 
 NEW_WORK = {"decide", "model_event", "observe", "state_write", "approval_list"}   # go to the current run
-BOUND = {"complete", "approval_request", "approval_consume", "approval_abandon"}   # go where their call was decided
-KEEP = 65536   # lean: tool calls, approvals and resent events remembered; raise it for very busy servers
+BY_CALL = {"complete", "approval_request", "approval_consume"}   # go where their call was decided
+BY_APPROVAL = {"approval_wait", "approval_abandon"}   # go where their approval was opened
+KEEP = 65536   # lean: tool calls, approvals, exchanges and resent events remembered; raise it for very busy servers
 
 
-def _process_client(Client, RPCError, current_run):
+def _process_client(Client, RPCError, current_run, schemas):
     class Process(Client):
         """The client every adapter instrument() wires gets. New work addressed to the process run (decide,
         model_event, observe, state_write, approval_list) goes to the current run while one is set (a run per
-        conversation: `with run.client.run(...)`, or `with conversation.current()`), and to a newly registered process
-        run once the signer has closed it after it was idle. A call's complete and approvals go to the run it was
-        decided in; anything else goes where it is addressed. Events are numbered per run, the same number for a
-        resend, so no run sees a gap the adapter's own counter would leave."""
+        conversation: `with conversation.current()`), and to a newly registered process run once the signer has
+        closed it after it was idle. A call's complete and approvals, and a model exchange's response, go to the run
+        the call was decided or the exchange begun in; anything else goes where it is addressed. Events are numbered
+        per run, the same number for a resend, so no run sees a gap the adapter's own counter would leave."""
         process, agent, ids = None, None, set()   # the process RunHandle, its name, every id it has had
 
         def start(self, agent):
             """Register the process run."""
-            self._calls, self._approvals, self._numbers, self._next, self._made = {}, {}, {}, {}, 0
+            self._calls, self._approvals, self._exchanges, self._numbers, self._next = {}, {}, {}, {}, {}
+            self._made = 0
             self.process, self.agent = self.run(agent=agent), agent
             self.ids = {self.process.run_id}
             return self.process
+
+        def _current(self):
+            cur = current_run.get()
+            return cur if cur is not None and cur.run_id not in self.ids else self.process
 
         def call(self, method, req=None):
             req, p = dict(req or {}), self.process
             if p is None or req.get("run_id") not in self.ids:
                 return super().call(method, req)
-            if method in BOUND and req.get("tool_call_id") in self._calls:
-                target = self._calls[req["tool_call_id"]]
-            elif method == "approval_wait" and req.get("approval_id") in self._approvals:
-                target = self._approvals[req["approval_id"]]
-            elif method in NEW_WORK:
-                cur = current_run.get()
-                target = cur if cur is not None and cur.run_id not in self.ids else p
-            elif "client_seq" in req:   # an event: numbered by this client, as every other
-                target = p
-            else:
+            cur = self._current()
+            with _LOCK:
+                if method in BY_CALL:
+                    target = (self._calls.get((cur.run_id, req.get("tool_call_id")))
+                              or self._calls.get(req.get("tool_call_id")) or cur)
+                elif method in BY_APPROVAL:
+                    target = self._approvals.get(req.get("approval_id")) or cur
+                elif method == "model_event" and req.get("phase") == "response":
+                    target = self._exchanges.get(req.get("exchange_id")) or cur
+                elif method in NEW_WORK or "client_seq" in req:   # an event: numbered by this client, as every other
+                    target = cur
+                else:
+                    target = None
+            if target is None:
                 return super().call(method, req)
             addressed = target.run_id
             try:
                 out, sent = self._route(method, req, target)
             except RPCError as e:
-                if e.code != "run_closed" or target is not p or method not in NEW_WORK:
+                if e.code != "run_closed" or target is not p or method not in NEW_WORK or p.closed:
                     raise
                 self._renew(e, addressed)
                 out, sent = self._route(method, req, p)
-            if method == "decide":
-                _keep(self._calls, req["tool_call_id"], sent)
-            elif method == "approval_request" and "approval_id" in out:
-                _keep(self._approvals, out["approval_id"], sent)
+            with _LOCK:
+                if method == "decide":
+                    _keep(self._calls, (cur.run_id, req["tool_call_id"]), sent)
+                    _keep(self._calls, req["tool_call_id"], sent)
+                elif method == "approval_request" and "approval_id" in out:
+                    _keep(self._approvals, out["approval_id"], sent)
+                elif method == "model_event" and req.get("phase") == "request" and req.get("exchange_id"):
+                    _keep(self._exchanges, req["exchange_id"], sent)
             return out
 
         def _route(self, method, req, target):
             """(the answer, the run it went to): `target` is a RunHandle or such a run."""
             with _LOCK:   # a renewal swaps the id and the token together
                 sent = types.SimpleNamespace(run_id=target.run_id, run_token=target.run_token, client=target.client)
-                req = {**req, "run_id": sent.run_id, "run_token": sent.run_token}
+                req = {**req, "run_id": sent.run_id}
+                if "run_token" in schemas[method]["properties"]:
+                    req["run_token"] = sent.run_token
                 if "client_seq" in req:
                     key = (sent.run_id, req["stream"], req["client_seq"])
                     if key not in self._numbers:
@@ -124,6 +140,7 @@ def _process_client(Client, RPCError, current_run):
 
 
 def _keep(d, k, v):
+    """Under _LOCK."""
     d[k] = v
     if len(d) > KEEP:
         del d[next(iter(d))]
@@ -270,7 +287,7 @@ def instrument(agent=None):
     from . import autotrace
     from .client import SYSTEM_CONFIG
     from .sdk.client import Client, SignerUnavailable, current_run
-    from .signer.rpc_schema import RPCError
+    from .signer.rpc_schema import REQUESTS, RPCError
     if agent is not None and not isinstance(agent, str):
         raise TypeError("tracekit.instrument(agent) takes the run's name. For v1 model-call tracing with a Tracer, "
                         "call tracekit.autotrace.instrument(tracer)")
@@ -286,7 +303,7 @@ def instrument(agent=None):
         script = sys.argv[0] if sys.argv and sys.argv[0] not in ("", "-c") else "python"
         name = agent or os.environ.get("TRACEKIT_AGENT") or os.path.splitext(os.path.basename(script))[0]
         try:
-            run = _process_client(Client, RPCError, current_run)().start(name)
+            run = _process_client(Client, RPCError, current_run, REQUESTS)().start(name)
         except SignerUnavailable as e:
             fix = ("dev auto-spawn is off while TRACEKIT_SIGNER is set: start the signer it names, or unset it for a "
                    "same-user dev signer" if os.environ.get("TRACEKIT_SIGNER") else

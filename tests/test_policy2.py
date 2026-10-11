@@ -160,14 +160,16 @@ class Handoffs(unittest.TestCase):
         base, errs = self.build("base.yaml", "version: b\nhandoffs: ['route_*']\n")
         self.assertEqual(errs, [])
         self.assertTrue(Engine(base).is_handoff("route_to_refunds"))
-        self.assertFalse(Engine(base).is_handoff("transfer_to_refunds"))   # declared: the default no longer applies
+        self.assertFalse(Engine(base).is_handoff("transfer_to_refunds"))
         self.assertFalse(Engine(self.build("none.yaml", "version: n\n")[0]).is_handoff("transfer_to_refunds"))
-        dev = pc.build(os.path.join(os.path.dirname(pc.__file__), "packs", "dev.yaml"))[0]
-        self.assertTrue(Engine(dev).is_handoff("transfer_to_refunds"))   # the dev pack declares the SDK's handoffs
+        for pack in ("dev.yaml", "server.yaml"):   # the default policies name none: a tool's name is the app's choice
+            built = pc.build(os.path.join(os.path.dirname(pc.__file__), "packs", pack))[0]
+            self.assertFalse(Engine(built).is_handoff("transfer_to_refunds"), pack)
         child, _ = self.build("child.yaml", "version: c\nextends: base.yaml\nhandoffs: ['go_*']\n")
         self.assertEqual(child["handoffs"], ["route_*", "go_*"])
         self.assertIn("handoffs must list tool name globs", "\n".join(self.build("bad.yaml", "version: x\nhandoffs: 3\n")[1]))
-        self.assertIn("matches every tool", "\n".join(self.build("all.yaml", "version: a\nhandoffs: ['*']\n")[1]))
+        for loose in ("'*'", "'*_*'", "'[a-z]*'", "'??'"):
+            self.assertIn("too loose", "\n".join(self.build("all.yaml", f"version: a\nhandoffs: [{loose}]\n")[1]), loose)
 
 
 class Engines(unittest.TestCase):

@@ -554,3 +554,12 @@ class AsyncRunHandle(_Async):
     async def __aexit__(self, *exc):
         current_run.reset(self._ctx)
         await self.close()
+
+    @contextlib.contextmanager
+    def current(self):
+        """As RunHandle.current: this run current inside the block, not closed after it."""
+        token = current_run.set(self)
+        try:
+            yield self
+        finally:
+            current_run.reset(token)

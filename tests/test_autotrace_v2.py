@@ -1,6 +1,7 @@
 """Autotrace into v2 runs (tracekit/autotrace.py with tracekit.sdk.client run handles): each provider SDK, sync, async
 and streaming, against FakeSigner and the real signer served in this process; the SDKs talk to mock transports."""
 import asyncio
+import copy
 import gc
 import json
 import os
@@ -144,6 +145,7 @@ class Recording:
         raw = openai_client(lambda r: (200, RESPONSES["response"], False)).responses.with_raw_response.create(
             model="gpt-5", input="hi")
         self.assertIsInstance(raw, openai._legacy_response.LegacyAPIResponse)
+        copy.copy(raw)   # no recursion through the proxy's delegation
         self.assertIsInstance(raw.parse(to=str), str)   # the caller's own type: not recorded, not cached
         self.assertEqual(self.exchanges()[0][1], None)
         self.assertEqual(type(raw.parse()).__name__, "Response")

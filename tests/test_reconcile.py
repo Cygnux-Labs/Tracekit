@@ -67,11 +67,15 @@ class TestReconcile(Reconcile):
         return run
 
     def test_a_handoff_is_a_missing_decide_unless_the_policy_names_it(self):
-        [(found, _)] = self.final(self.handoff_run())
+        run = self.handoff_run()
+        [(found, _)] = self.final(run)
         self.assertEqual(found, [("reconcile.hook_missing", "tc-1"), ("reconcile.hook_missing", "tc-2")])
+        details = [r["event"]["data"]["detail"] for r in records(self.dir) if r["event"]["type"] == "reconcile.hook_missing"]
+        self.assertIn("name it in the policy's handoffs:", details[0])   # what to do, for the handoff only
+        self.assertNotIn("handoffs", details[1])
 
     def test_a_handoff_the_policy_names_is_not_a_missing_decide(self):
-        self.s.policy = Engine({**self.s.policy.policy, "handoffs": ["transfer_to_*"]})   # the operator declares them
+        self.s.policy = Engine({**self.s.policy.policy, "handoffs": ["transfer_to_refunds_agent"]})   # the operator
         [(found, _)] = self.final(self.handoff_run())
         self.assertEqual(found, [("reconcile.hook_missing", "tc-2")])
 
