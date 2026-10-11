@@ -8,6 +8,7 @@ import sys
 from . import __version__
 
 NUDGE_WAIT_S = 5.0
+LAST_WAIT_S = 15.0   # `tracekit last`: how long a run that just closed may take to be finalised (the grace window is 5 s)
 
 
 def experimental_gate(enabled, what):
@@ -190,6 +191,10 @@ def main(argv=None):
     p.add_argument("--tenant", help="with --v2: the run's tenant (default: the signer's default tenant)")
     p.add_argument("--config", help="with --v2: the signer's config (default: the same-user dev signer)")
     p.add_argument("--dev", action="store_true", help="with --v2: the same-user dev signer (the default)")
+
+    p = sub.add_parser("last", help="the dev signer's most recent finished run: export it, pin the dev signer's key "
+                                    "and verify it")
+    p.add_argument("-o", "--out", help="the bundle (default: <run id>.tkb here); its trust config goes next to it")
 
     p = sub.add_parser("verify", help="verify a .tkb offline")
     p.add_argument("bundle")
@@ -508,6 +513,8 @@ def _run(a):
         return _approvals(a)
     if a.cmd == "export" and a.v2:
         return _export_v2(a)
+    if a.cmd == "last":
+        return _last(a)
     if a.cmd == "export":
         from . import bundle
         from .otel import parse_headers
@@ -579,14 +586,16 @@ def _signer_extra():
     try:
         engine._backend(None)
     except ImportError:
-        print("tracekit: the v2 signer needs its policy engine: pip install 'tracekit-ai[signer]'", file=sys.stderr)
+        print("tracekit: the v2 signer needs its policy engine (google-re2 or regex), which a --no-deps install "
+              "leaves out: pip install tracekit-ai", file=sys.stderr)
         return False
     return True
 
 
-def _export_v2(a):
+def _export_v2(a, show=print):
     """`tracekit export --v2`: read the store without its lock, with the newest checkpoint note. When none covers the
-    run's last record yet, nudge the running signer and wait up to NUDGE_WAIT_S for one."""
+    run's last record yet, nudge the running signer and wait up to NUDGE_WAIT_S for one. `show` gets the export's
+    summary (JSON)."""
     import time
 
     from .bundle_v2 import export
@@ -667,8 +676,87 @@ def _export_v2(a):
     finally:
         if reader:
             reader.close()
-    print(json.dumps(info, indent=2))
+    show(json.dumps(info, indent=2))
     return 0
+
+
+def _quote(path):
+    """`path` as one argument of a command line the user can paste (spaces in a profile dir, Windows backslashes)."""
+    import shlex
+    import subprocess
+    return subprocess.list2cmdline([path]) if os.name == "nt" else shlex.quote(path)
+
+
+def _last(a):
+    """`tracekit last`: the dev signer's most recent finished run, exported, checked against a trust config that pins
+    the dev signer's own log key (dev assurance: the same user holds that key), and verified. A newer run that is
+    closing is waited for, up to LAST_WAIT_S; a newer one still open is named and skipped."""
+    import argparse
+    import collections
+    import time
+
+    from .signer.pipeline import SIGNER_RUN
+    from .signer.service import read_vkeys, reader as open_reader, signer_config
+    from .storage.base import StorageCorrupt, StorageUnavailable
+    from .verify import v2
+    from .view import write_trust
+    deadline = time.monotonic() + LAST_WAIT_S
+    try:
+        cfg = signer_config(None)
+        store = os.path.join(cfg["data_dir"], "store")
+        while True:
+            r = open_reader(cfg)
+            try:   # newest first, by their last record; each with the type of that record and its agent's name
+                runs = []
+                for _, key in sorted(((run["seqs"][-1], key) for key, run in r.runs.items() if key != SIGNER_RUN),
+                                     reverse=True):
+                    first = next(iter(r.iter_run(*key)))["event"]
+                    runs.append((key, collections.deque(r.iter_run(*key), 1)[0]["event"]["type"],
+                                 ((first.get("data") or {}).get("agent") or {}).get("name") or "?"))
+                    if runs[-1][1] == "run.final":
+                        break
+            finally:
+                r.close()
+            if not (runs and runs[0][1] == "run.closing" and time.monotonic() < deadline):
+                break
+            time.sleep(0.25)   # the signer finalises a closed run once its grace window has passed
+    except FileNotFoundError:
+        runs = []
+    except (OSError, ValueError, StorageCorrupt, StorageUnavailable) as e:
+        print(f"tracekit last: cannot read the dev signer's store: {e}", file=sys.stderr)
+        return 1
+    final = [x for x in runs if x[1] == "run.final"]
+    for (_, run_id), kind, agent in runs[:len(runs) - len(final)]:
+        why = ("closed, and not finalised yet: is the dev signer still running (`tracekit up`)?" if kind == "run.closing"
+               else "still open: it finishes when the agent's process exits (tracekit.instrument() closes its run "
+                    "then) or after the signer's idle timeout")
+        print(f"tracekit last: the newer run {run_id} ({agent}) is {why}" + (
+            "; showing the run before it" if final else "; run tracekit last again once it has finished"),
+            file=sys.stderr)
+    if not final:
+        if not runs:
+            print(f"tracekit last: no runs in the dev signer's store ({store}) yet: add `import tracekit; "
+                  "tracekit.instrument()` to your agent and run it", file=sys.stderr)
+        return 1
+    (tenant, run_id), _, agent = final[0]
+    out = os.path.abspath(a.out or f"{run_id}.tkb")
+    ns = argparse.Namespace(run=run_id, run_set=False, dev=True, config=None, tenant=tenant, out=out, otel=False,
+                            otel_endpoint=None)
+    if _export_v2(ns, show=lambda s: None):
+        return 1
+    try:
+        trust = write_trust(os.path.splitext(out)[0] + ".trust.json", read_vkeys(cfg["data_dir"]))
+    except (OSError, ValueError) as e:
+        print(f"tracekit last: cannot pin the dev signer's key: {e}", file=sys.stderr)
+        return 1
+    rep, code = v2.verify(out, trust)
+    if code:
+        v2.print_report(rep, code)
+    else:
+        print(f"run {run_id} ({agent})\nIntegrity: {rep.integrity}.\nAssurance: {rep.assurance}.")
+    print(f"bundle: {out}\ncheck it again: tracekit verify {_quote(out)} --trust {_quote(trust)}\n"
+          "next: tracekit view --dev   (every run, replayed and reviewed)")
+    return code
 
 
 def _otel_v2(a, bundle):

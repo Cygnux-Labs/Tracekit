@@ -1,16 +1,33 @@
-# Quickstart: the v2 signer (preview)
+# Quickstart: the v2 signer
 
 The v2 signer is still a preview. It records every tool call your agent makes as a signed event, decides each call
 against a policy before it runs, and exports a run as a bundle that anyone can verify offline. This page runs it on
-your own machine (macOS, Linux or Windows) as a **dev** signer, which runs as your own user. It takes about a minute;
-`make quickstart` runs the same steps on a clean venv (`tests/test_quickstart.py`).
+your own machine (macOS, Linux or Windows) as a **dev** signer, which runs as your own user. Three steps, under two
+minutes; `make quickstart` runs them on a clean venv from the built wheel for each framework
+(`tests/test_quickstart.py`). What this path doesn't cover is in [limits](limits.md).
 
 ## 1. Install
 
 ```sh
-python3 -m venv .venv && . .venv/bin/activate      # Windows: .venv\Scripts\activate
-pip install 'tracekit-ai[signer]'                  # preview: pip install '.[signer]' from a checkout
+pip install tracekit-ai
 ```
+
+That is all the dev signer needs (`tracekit-ai[signer]` still works and installs the same). Auditors who only verify
+bundles can take the verifier alone, which runs on the standard library: `pip install --no-deps tracekit-ai`.
+
+## 2. One line in your agent
+
+```python
+import tracekit; tracekit.instrument()     # the first line, before your agent builds its agents, tools or sessions
+```
+
+Then run your agent as usual. `instrument()` registers a run with the signer and closes it when the process exits. It
+wires every framework it finds installed: OpenAI Agents SDK tools, LangGraph / LangChain `ToolNode`s (which
+`create_agent` builds), Claude Agent SDK hooks, MCP `ClientSession.call_tool`, and the OpenAI, Anthropic and Google Gen
+AI clients' model calls. Each tool call is decided by the signer before it runs (`allow`, `deny`, `ask`) and recorded
+after. A denied call reaches the model as a refusal and the agent goes on. Calling it again returns the same run. With
+none of these installed it warns and does nothing. TypeScript: `const tk = await instrument()` from
+`@cygnux/tracekit`, then pass `tk.ai` (Vercel AI SDK) or `tk.agents` (OpenAI Agents JS) to the framework.
 
 You don't start anything yourself. The first client that needs a signer starts one in the background and later
 clients reuse it (`tracekit up` / `tracekit down` do the same by hand). The signer's keys and store live in your user's
@@ -18,7 +35,49 @@ data dir. It listens on a Unix socket in a private runtime dir. On Windows it li
 and publishes the port and a token in `%LOCALAPPDATA%\tracekit\run\endpoint.json`, which only you can read. Each side
 proves it holds the token before any request is answered.
 
-## 2. A scripted agent
+## 3. See it verified
+
+```sh
+tracekit last
+```
+
+```text
+run 40c7ee89ae9eaec8f8eb8556b32fdc9d (my-agent)
+Integrity: VERIFIED.
+Assurance: dev; records ed25519; checkpoint Ed25519 only (...); no witness cosignature; ...
+bundle: /home/me/project/40c7ee89ae9eaec8f8eb8556b32fdc9d.tkb
+check it again: tracekit verify 40c7....tkb --trust 40c7....trust.json
+next: tracekit view --dev   (every run, replayed and reviewed)
+```
+
+`tracekit last` finds the dev signer's most recent finished run, exports it, writes a trust config that pins the dev
+signer's log key next to the bundle, and verifies the bundle. `-o PATH` writes the bundle elsewhere. The report is
+explained [below](#export-and-verify-by-hand). `tracekit view --dev` lists each run with its verdict, and replays and
+reviews one ([viewer.md](viewer.md#laptop-viewer)).
+
+Per framework, the same three steps with a 10-line example: [LangChain / LangGraph](quickstarts/langchain.md),
+[OpenAI Agents SDK](quickstarts/openai-agents.md), [Claude Agent SDK](quickstarts/claude-agent-sdk.md),
+[MCP client](quickstarts/mcp.md), [a custom agent](quickstarts/custom.md).
+
+## First-run errors
+
+| You see | What to do |
+|---|---|
+| `tracekit.instrument(): no signer answering at ...; dev auto-spawn is off while TRACEKIT_SIGNER is set` | Start the signer `TRACEKIT_SIGNER` names, or unset it for a same-user dev signer. |
+| `tracekit.instrument(): ...; system mode: start the system signer` | `sudo tracekit doctor` says what is wrong with the system signer. |
+| `the Tracekit signer X (pid N, protocol [a, b]) ... cannot serve this client` | A dev signer from another Tracekit version is running: `tracekit up --replace` stops it and starts this one. |
+| `tracekit last: the newer run ID (agent) is still open` | The agent is still running, or was killed before it closed its run. End it and run `tracekit last` again; meanwhile it shows the run before. |
+| `tracekit last: no runs in the dev signer's store` | Add `import tracekit; tracekit.instrument()` to your agent and run it first. |
+| `tracekit.instrument(): <framework> <version> not wired ... Tracekit is tested with ...` | Install the versions it names, or wire that adapter by hand as its quickstart shows. |
+| `the v2 signer needs its policy engine ... pip install tracekit-ai` | A `--no-deps` install verifies but can't sign: install with its dependencies. |
+| A path with spaces (Windows profiles, macOS `Application Support`) | Paste the commands `tracekit last` prints as they are: their paths are quoted for your shell. |
+
+## Deeper: drive the signer yourself
+
+The rest of this page does by hand what `instrument()` and `tracekit last` do, with the approval step a framework's
+own control flow needs.
+
+### A scripted agent
 
 Before each tool call runs, the agent asks the signer. The signer answers `allow`, `deny` or `ask` and signs that
 decision.
@@ -46,12 +105,10 @@ arguments: if they change after the approval, `approval_consume` refuses them.
 
 Claude Code: `tracekit init --dev --v2` wires its hooks to the same signer (`python -I -m tracekit.integrations.claude_code`).
 
-Per framework, each with a runnable offline example: [LangChain / LangGraph](quickstarts/langchain.md),
-[OpenAI Agents SDK](quickstarts/openai-agents.md), [Claude Agent SDK](quickstarts/claude-agent-sdk.md),
-[MCP client](quickstarts/mcp.md), [a custom agent](quickstarts/custom.md). `tracekit demo --server` runs the whole loop
-in a temp dir, with a test witness's cosignature and a tampered copy that fails.
+`tracekit demo --server` runs the whole loop in a temp dir, with a test witness's cosignature and a tampered copy that
+fails. A deployment for server-hosted agents: [deploy.md](deploy.md).
 
-## 3. Approve from another terminal
+### Approve from another terminal
 
 ```sh
 tracekit approvals list
@@ -59,7 +116,7 @@ tracekit approvals show <id>        # the signer's copy of the arguments, in ful
 tracekit approvals approve <id>     # or: reject <id>
 ```
 
-## 4. Export and verify
+### Export and verify by hand
 
 ```sh
 tracekit signer trust -o trust.json             # pins this signer's log key

@@ -26,7 +26,9 @@ import { existsSync, lstatSync, readFileSync, statSync } from "node:fs";
 import { Agent, request } from "node:https";
 import { createConnection, type Socket } from "node:net";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, extname, join } from "node:path";
+import { TracekitAgents } from "./adapters/openai-agents.js";
+import { tracekitAI } from "./adapters/vercel-ai.js";
 import { argsDigest } from "./jcs.js";
 import { INSTALL_HINT, signerCommand, signerEnv } from "./launcher.js";
 import { REQUESTS, RPC_VERSION } from "./rpc_schema.js";
@@ -616,4 +618,32 @@ export function withRun<T>(handle: RunHandle, fn: () => T): T {
 
 export function currentRun(): RunHandle | undefined {
   return current.getStore();
+}
+
+export interface Instrumented {
+  run: RunHandle;
+  /** Vercel AI SDK: `wrapLanguageModel({ model, middleware: ai.middleware })`, `tools: ai.tools({...})`,
+   * `toolApproval: ai.toolApproval` (src/v2/adapters/vercel-ai.ts). */
+  ai: ReturnType<typeof tracekitAI>;
+  /** OpenAI Agents SDK: `agents.tool(tool, {...})` for each tool (src/v2/adapters/openai-agents.ts). */
+  agents: TracekitAgents;
+}
+
+let instrumented: Promise<Instrumented> | null = null;
+
+/** One call: registers a run (with the same-user dev signer, started if none answers, unless a signer is configured as
+ * described above), closes it when the process is about to exit, and returns it with the Vercel AI SDK and OpenAI
+ * Agents adapters bound to it. A second call returns the same. ES modules can't be patched from outside, so the
+ * adapters are handed to you to pass to the framework, rather than wired as `tracekit.instrument()` does in Python.
+ * `agent` names the run (default: $TRACEKIT_AGENT, else the script's name). */
+export function instrument(agent?: string, opts: ClientOptions = {}): Promise<Instrumented> {
+  const name = agent ?? process.env.TRACEKIT_AGENT ?? basename(process.argv[1] ?? "node", extname(process.argv[1] ?? ""));
+  instrumented ??= new Client(opts).registerRun(name).then((run) => {
+    process.once("beforeExit", () => void run.close().catch(() => {}).then(() => run.client.close()));
+    return { run, ai: tracekitAI(run), agents: new TracekitAgents(run) };
+  }, (e) => {
+    instrumented = null;
+    throw e;
+  });
+  return instrumented;
 }
