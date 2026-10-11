@@ -79,6 +79,14 @@ the bundle and it reads `Integrity: FAILED`, naming the check (`tracekit demo --
 says no pinned witness cosigned the checkpoint and the approval was a self-approval. [The v2
 quickstart](../quickstart-v2.md#export-and-verify-by-hand) explains every line.
 
+## Find why it did something
+
+A recorded thread can be replayed from its own checkpoints to test which input caused an action: `tracekit why
+attribute --langgraph myapp:graph_factory --thread T --target tool=send_email`, where `graph_factory()` returns your
+compiled graph over its checkpointer. Each trial forks the checkpoint where a suspect entered, with and without it,
+and serves every tool call from the thread, so nothing runs for real. `python examples/v2/langchain/injection.py`
+runs it on a page with a planted instruction. How it works: [fork replay](../why.md#how-causality-is-tested).
+
 ## Next steps
 
 - **System mode** runs the signer as its own OS user, so the agent can't reach its keys, store or policy, and approvals

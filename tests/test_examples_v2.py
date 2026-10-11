@@ -48,6 +48,15 @@ class Examples(unittest.TestCase):
     def test_langchain(self):
         self.run_example("langchain")
 
+    def test_langchain_injection_fork_replay(self):
+        if any(importlib.util.find_spec(m) is None for m in NEEDS["langchain"]):
+            self.skipTest("langchain / langgraph not installed")
+        p = python(os.path.join(ROOT, "examples", "v2", "langchain", "injection.py"), env=self.env, cwd=self.dir)
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertIn("recorded: fetch_page, get_weather, send_email", p.stdout)
+        self.assertIn("primary cause", p.stdout)
+        self.assertIn("Integrity: VERIFIED.", p.stdout)
+
     def test_openai_agents(self):
         self.run_example("openai_agents")
 

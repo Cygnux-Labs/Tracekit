@@ -21,6 +21,14 @@ tracekit approvals show <id>
 tracekit approvals approve <id>      # or: reject <id>
 ```
 
+`injection.py` records a thread whose fetched page carries a planted instruction (the mock model follows it in about
+half of its runs), then forks the thread's checkpoints with `tracekit.why.langgraph` to find the cause: the page is
+the primary cause and the weather lookup is ruled out. No tool runs during the replays.
+
+```sh
+python examples/v2/langchain/injection.py
+```
+
 The first call starts a dev signer in the background (`tracekit down` stops it). The example writes `trust.json` and
 `<run id>.tkb` to the current directory and prints the `tracekit verify` report. Read it in [the
 quickstart](../../../docs/quickstarts/langchain.md).

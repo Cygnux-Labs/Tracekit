@@ -183,6 +183,30 @@ call with and without one context item, from the log alone. Use it when the whol
 the model call an effect enters at. `--anthropic` re-sends a call recorded by the Anthropic adapter (needs
 `ANTHROPIC_API_KEY`). Real models ignore seeds, so decision tests compare against a no-removal control call.
 
+**LangGraph fork replay (rung 3)** (`tracekit why attribute --langgraph module:graph_factory --thread T --target
+SPEC`, or `tracekit.why.langgraph.fork_replay` / `attribute_thread` in Python) tests a LangGraph agent without a
+`System`. The factory takes no arguments and returns the compiled graph over the app's own checkpointer, so the
+thread's checkpoints are there; `--langgraph` imports and calls it, so name only code you trust (as with `--system`
+and `--allow-program`). For each trial:
+
+1. Fork the checkpoint at which the suspect entered the state (found by its tool_call_id or message id), with
+   `update_state(..., as_node=<the node that added it>)`: once as recorded, once with the suspect removed. A removed
+   tool result is replaced by a placeholder, since model APIs reject a tool call left without its result; any other
+   message is removed with `RemoveMessage`. `--checkpoint ID` starts from an earlier checkpoint than the latest.
+2. Run only what comes after (`invoke(None, fork)`). The prefix is the recorded run itself, not a re-execution: this
+   is a counterfactual on the run that happened.
+3. Every ToolNode call is served from the thread's own tool results (same tool, same canonical arguments, in order)
+   or a stub (`off_tape_actions`). No tool runs and the signer sees nothing; a model node that wants paired seeds reads
+   `config["configurable"]["tracekit_seed"]`.
+4. Score the target on the branch's tool calls, with the same verdicts, intervals and attribution as above. Results
+   carry `rung: 3` and the fork point, and each test is appended to the why log at
+   `runs/langgraph-<thread>/tests.jsonl` (`--out DIR`; `log=` in Python, where nothing is written without it).
+
+Branches run on a copy of the graph over a scratch in-memory checkpointer holding only the fork point, so nothing is
+written to the thread. Default suspects: every tool result before the first matching tool call. `--suspect` takes a
+tool_call_id or message id. `examples/v2/langchain/injection.py` records a thread whose fetched page carries a planted
+instruction and finds it as the primary cause while ruling out the benign weather lookup.
+
 Intervention specs: `input:<glob>`, `msg:<from>-><to>`, `result:<tool>`, `ref:<hash>`, `untrusted`.
 Target specs: comma-separated `tool=`, `agent=`, `arg~` (substring of the arguments), `result~`.
 
@@ -390,6 +414,7 @@ with `--allow-program`. The server is in the [HTTP security checklist](security-
 | `tracekit why test RUN --remove SPEC --target SPEC [--n N] [--n-max N] [--live-tools]` | run replay test |
 | `tracekit why test RUN --decision SEQ --remove SPEC [--contains TEXT] [--anthropic]` | decision replay test |
 | `tracekit why attribute RUN --target SPEC [--suspect SPEC] [--n N] [--n-max N] [--workers N] [--no-roles]` | Find the cause |
+| `tracekit why attribute --langgraph MODULE:FACTORY --thread T --target SPEC [--checkpoint ID] [--suspect ID] [--out DIR]` | Find the cause in a LangGraph thread by forking its checkpoints |
 | `tracekit why matrix RUN --target SPEC [--n N]` | test every channel and input against targets |
 | `tracekit why replay RUN [--remove SPEC]` | re-run from tape and diff against the original |
 | `tracekit why graph RUN [--json] [--no-infer]` | edges with evidence grades |
@@ -411,6 +436,10 @@ All of Tracekit's limits: [limits.md](limits.md).
 - Run replay needs a re-executable program; decision replay does not.
 - Tape matching is exact on tool arguments. New calls are stubbed, which can change behaviour after the stub; results
   report `off_tape_actions`.
+- LangGraph fork replay serves tools only through `ToolNode`: a graph without one is refused, and a tool called
+  any other way (inside a model node, say) would run for real. All tests of one attribution fork where the earliest
+  suspect entered; a later suspect that is not a tool result cannot be removed in that branch and is refused. One
+  fork replay at a time per graph object.
 - Inferred edges are heuristic and miss paraphrase.
 - The guard is a string-matching tripwire; it inherits the provenance alert's false positives and misses re-encoded
   values.
