@@ -286,7 +286,7 @@ report it.
 
 - **Stable:** evidence format v2 and its verifier. 1.x verifiers verify every 1.0 bundle. v1 bundles and the v1
   verifier are unchanged.
-- **Versioned:** the signer RPC (version 12). Clients and signers of different RPC versions refuse each other, so
+- **Versioned:** the signer RPC (version 15). Clients and signers of different RPC versions refuse each other, so
   upgrade them together ([changelog](https://github.com/Cygnux-Labs/Tracekit/blob/main/CHANGELOG.md)).
 - **Experimental:** laptop system mode on macOS, the Rekor witness of the v1 signer, and the v1 OTLP receiver, ingest
   gateway and model proxy (each needs `--experimental`).
