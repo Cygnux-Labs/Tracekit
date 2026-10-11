@@ -46,7 +46,8 @@ signer.yaml:
     gateways: ["mtls:spiffe://acme/gateway"]  # LLM and MCP gateways, tool executors (tracekit.gateway, .mcp_gateway,
                                              # .executor): their calls name the client they authenticated (`caller`):
                                              # model_event, decide, complete, approval_request and observe are
-                                             # recorded source gateway (tier T2)
+                                             # recorded source gateway (tier T2, naming the gateway in `via`); a
+                                             # call a gateway decided takes its later steps from it alone (_hold)
     gateway_mandatory: false                 # true: reconcile decides against gateway L3 only (tracekit.signer.reconcile)
     fail_modes: {default: closed, read: open}   # tool class -> fail mode, recorded and returned by register_run
     grace_s: 5                               # reconciliation window between run.closing and run.final
@@ -1206,14 +1207,16 @@ class SignerService:
 
     # --- helpers ---
 
-    def _authorize(self, identity, req):
-        """The (tenant, run_id) of a per-run call, after checking its capability token."""
+    def _authorize(self, identity, req, via=None):
+        """The (tenant, run_id) of a per-run call, after checking its capability token. `via`: the gateway making the
+        call for `identity` (_as_caller), which its own authentication vouches for, so no harness process binds it."""
         tenant = self.tokens.claims(req["run_token"])["tenant"]
         key = (tenant, req["run_id"])
         if key not in self.log.runs:
             raise RPCError("unknown_run", req["run_id"])
         self.tokens.verify(req["run_token"], tenant, req["run_id"], identity)
-        self._check_harness(identity, key)
+        if via is None:
+            self._check_harness(identity, key)
         return key
 
     def _approval(self, key, approval_id):
@@ -1569,8 +1572,8 @@ class SignerService:
         return self.log.submit(identity, "register_run", req, fn)
 
     def _decide(self, identity, req):
-        identity, top = self._as_caller(identity, "decide", req), T2 if "caller" in req else {}
-        key = self._authorize(identity, req)
+        identity, via = self._as_caller(identity, "decide", req)
+        key, top = self._authorize(identity, req, via), T2 if via else {}
         self.quotas.take_event(identity)
         tool, tcid, attempt, hint = req["tool"], req["tool_call_id"], req.get("attempt", 0), req.get("tool_class_hint")
         args, digest = self._args(req)
@@ -1586,8 +1589,11 @@ class SignerService:
 
         def fn(tx, run):
             memo, gaps = run["calls"].get(tcid), []
+            self._hold(memo, via, tcid)
             data = {"tool_use_id": tcid, "tool": tool, "decision_id": did, "policy_hash": self.policy.policy_hash,
                     "engine": self.policy.engine, "nonce": secrets.token_hex(16), "expires_at": expires_at, **prov}
+            if via:   # the call is the gateway's: only it may answer for it (_hold), after a restart too
+                data["via"] = via
             if digest is None:
                 verdict, rule_ids = "deny", ["TK-ARGS-INVALID"]
             elif memo and memo["attempt"] == attempt and memo["decision"] in ("deny", "ask") and self._same(memo, digest):
@@ -1608,7 +1614,7 @@ class SignerService:
             if commitment:
                 data["args_commitment"] = commitment
             call = {"tool_call_id": tcid, "attempt": attempt, "decision": verdict, "rule_ids": rule_ids,
-                    "decision_id": did, "commitment": commitment, "dotenv": _dotenv(args), "tool": tool}
+                    "decision_id": did, "commitment": commitment, "dotenv": _dotenv(args), "tool": tool, "via": via}
             if verdict == "ask":   # the signer's copy, for the approval request (memory only: decide again after a restart)
                 call["pending"] = {"tool": tool, "args_source": req["args_source"], "args": req["args"]}
             tx.set(run["calls"], tcid, call)
@@ -1630,10 +1636,12 @@ class SignerService:
             self._retain(key, written[0], commitment, _shown(args, _dotenv(args)))
         return out
 
-    def _event(self, identity, method, req, typ, data, need_call=False, digests=None, out=None, keep=None, **top):
+    def _event(self, identity, method, req, typ, data, need_call=False, digests=None, out=None, keep=None, via=None,
+               **top):
         """`data(commit)`: the event's data, given `commit(digest)`, the commitment under this record's salt. `out`:
-        more fields of the response. `keep`: (the content its content_digest commits to,) for the content vault."""
-        key = self._authorize(identity, req)
+        more fields of the response. `keep`: (the content its content_digest commits to,) for the content vault.
+        `via`: the gateway making the call (_as_caller)."""
+        key = self._authorize(identity, req, via)
         self.quotas.take_event(identity)
         sid = secrets.token_hex(16)
         label = salt_label({"type": typ, "data": {"salt_id": sid}})
@@ -1651,8 +1659,9 @@ class SignerService:
         return res
 
     def _complete(self, identity, req):
-        identity, top = self._as_caller(identity, "complete", req), T2 if "caller" in req else {}
-        key, tcid, attempt, did = self._authorize(identity, req), req["tool_call_id"], req.get("attempt", 0), req["decision_id"]
+        identity, via = self._as_caller(identity, "complete", req)
+        key, top = self._authorize(identity, req, via), T2 if via else {}
+        tcid, attempt, did = req["tool_call_id"], req.get("attempt", 0), req["decision_id"]
         # read off the writer thread, which checks the decision again; unknown after a restart (arguments are never
         # logged), so a replayed decision redacts as if the call touched a .env file
         dotenv = (self.log.runs[key].get("decisions", {}).get(did) or {}).get("dotenv", True)
@@ -1681,11 +1690,13 @@ class SignerService:
             call = run["decisions"].get(did)
             if call is None or (call["tool_call_id"], call["attempt"]) != (tcid, attempt):
                 raise RPCError("unknown_decision", f"{did} is not an open decision for {tcid} attempt {attempt}")
+            self._hold(call, via, tcid)
             if not self._same(call, req["args_digest"]):
                 raise RPCError("args_mismatch", f"{tcid} ran with other arguments than decision {did}")
             tx.pop(run["decisions"], did)
             seq = tx.event(run, req, "tool.result", {"tool_use_id": tcid, "ok": req["status"] == "ok", "output": output,
-                                                     "decision_id": did, "redaction": manifest},
+                                                     "decision_id": did, "redaction": manifest,
+                                                     **({"via": via} if via else {})},
                            tool_call_id=tcid, attempt=attempt, **top)
             written.append(seq)
             if keys:
@@ -1711,8 +1722,8 @@ class SignerService:
         return res
 
     def _observe(self, identity, req):
-        identity, top = self._as_caller(identity, "observe", req), T2 if "caller" in req else {}
-        key = self._authorize(identity, req)
+        identity, via = self._as_caller(identity, "observe", req)
+        key, top = self._authorize(identity, req, via), T2 if via else {}
         try:
             value, manifest = _redact(req["value"], False)
             c = canonical(value)
@@ -1722,7 +1733,7 @@ class SignerService:
         label = salt_label({"type": "input.observed", "data": {"salt_id": sid}})
         data = {"source": req["source"], "trust": req["trust"], "redaction": manifest, "salt_id": sid,
                 "output": {"hash": self._commit(label, "sha256:" + hashlib.sha256(c).hexdigest()), "size": len(c),
-                           "redacted": manifest["count"] > 0}}
+                           "redacted": manifest["count"] > 0}, **({"via": via} if via else {})}
         keys, overflow = self._keys(req["value"]) if self.log.runs[key].get("prov") else ([], False)   # before redaction
         self.quotas.take_event(identity)
         written = []
@@ -1763,20 +1774,33 @@ class SignerService:
         return self.log.submit(identity, "state_write", req, fn, key, late=True)
 
     def _as_caller(self, identity, method, req):
-        """The identity a call is made as: a `gateways` identity (an LLM or MCP gateway, a tool executor) that names
-        `caller` acts for the client it authenticated, under that client's run token and grants."""
+        """(the identity a call is made as, the gateway making it or None): a `gateways` identity (an LLM or MCP
+        gateway, a tool executor) that names `caller` acts for the client it authenticated, under that client's run
+        token and grants."""
         if "caller" not in req:
-            return identity
+            return identity, None
         if not lookup(self._gateways, subject(identity), False):
             raise RPCError("forbidden", f"{subject(identity)[:256]} is not a configured gateway")
+        via = subject(identity)[:256]
         identity = CallerIdentity(*req["caller"].split(":", 1), True)
         self._grant(identity, method)
-        return identity
+        return identity, via
+
+    @staticmethod
+    def _hold(call, via, tcid):
+        """Refuses a call about tool call `tcid` (its state `call`) from other than the one that decided it: the
+        gateway `via` names, or the run's client itself (`via` None), so neither answers for the other's call."""
+        if call is not None and call.get("via") != via:
+            raise RPCError("forbidden", (
+                f"tool call {tcid[:128]} is held by {call['via']}, which decided it for this run: only it may "
+                "decide, approve or complete it" if call.get("via") else
+                f"tool call {tcid[:128]} was decided by the run's client, not through a gateway: a gateway call takes "
+                "a tool_call_id of its own"))
 
     def _model_event(self, identity, req):
-        top, out = {}, None
+        top, out, via = {}, None, None
         if "caller" in req:   # an LLM gateway reports the exchange of the client it authenticated, under its run token
-            identity = self._as_caller(identity, "model_event", req)
+            identity, via = self._as_caller(identity, "model_event", req)
             top, out = {"source": "gateway"}, {"fail_modes": self.fail_modes}
         keep, content_digest = None, req.get("content_digest")
         if "body" in req:   # committed to after redaction, as a result is; kept when the vault is on
@@ -1806,21 +1830,23 @@ class SignerService:
             return d
         return self._event(identity, "model_event", req, "model.exchange", data,
                            digests={t["id"]: t.get("args_digest") for t in req.get("tool_uses", ())}, out=out, keep=keep,
-                           **top)
+                           via=via, **top)
 
     def _approval_request(self, identity, req):
-        identity, top = self._as_caller(identity, "approval_request", req), T2 if "caller" in req else {}
-        key, tcid, sub = self._authorize(identity, req), req["tool_call_id"], subject(identity)
+        identity, via = self._as_caller(identity, "approval_request", req)
+        key, top = self._authorize(identity, req, via), T2 if via else {}
+        tcid, sub = req["tool_call_id"], subject(identity)
         attempt = req.get("attempt", 0)
         self.quotas.take_event(identity)
         aid, sid = f"{self.id_prefix}apr-{secrets.token_hex(16)}", secrets.token_hex(16)
 
         def fn(tx, run):
+            call = run["calls"].get(tcid)
+            self._hold(call, via, tcid)
             had = self.log.approval_index.get((*key, tcid, attempt))
             if had:   # one approval per call attempt: asking again returns it, whatever its state
                 a = self.log.approvals[had]
                 return {"approval_id": had, "state": a["state"], "expires_at": a["expires_at"]}
-            call = run["calls"].get(tcid)
             if call is None or call["attempt"] != attempt or not call.get("pending"):
                 raise RPCError("unknown_tool_call", f"{tcid} attempt {attempt} has no pending `ask` decision")
             self.quotas.check_count("pending_approvals", sum(a["requester"] == sub and a["state"] == "requested"
@@ -1837,6 +1863,8 @@ class SignerService:
                     "binding_digest": "sha256:" + hashlib.sha256(canonical(binding)).hexdigest(), "salt_id": sid}
             if person(identity):
                 data["requester_person"] = person(identity)
+            if via:
+                data["via"] = via
             options = [r.get("approval") or {} for _, r, *_ in self.policy.rules if r["id"] in call["rule_ids"]]
             if any(o.get("executor") == "t2" for o in options):
                 data["executor"] = "t2"
@@ -1943,9 +1971,9 @@ class SignerService:
         return out
 
     def _approval_wait(self, identity, req):
-        identity = self._as_caller(identity, "approval_wait", req)
-        aid = req["approval_id"]
-        self._approval(self._authorize(identity, req), aid)
+        identity, via = self._as_caller(identity, "approval_wait", req)
+        aid = req["approval_id"]   # only waits for a state the run's records show anyway: no hold
+        self._approval(self._authorize(identity, req, via), aid)
         with self.quotas.wait_slot(identity), self._cond:
             self._cond.wait_for(lambda: self.log.approvals.get(aid, {}).get("state") != "requested",
                                 req.get("timeout_ms", 0) / 1000)
@@ -1954,8 +1982,8 @@ class SignerService:
             lambda tx: self.log.approvals.get(aid, {"state": "expired"})["state"])}
 
     def _approval_consume(self, identity, req):
-        identity = self._as_caller(identity, "approval_consume", req)
-        key, tcid, attempt, hint = self._authorize(identity, req), req["tool_call_id"], req.get("attempt", 0), \
+        identity, via = self._as_caller(identity, "approval_consume", req)
+        key, tcid, attempt, hint = self._authorize(identity, req, via), req["tool_call_id"], req.get("attempt", 0), \
             req.get("approval_id_hint")
         self.quotas.take_event(identity)
         args, digest = self._args(req)
@@ -1966,6 +1994,7 @@ class SignerService:
         def fn(tx, run):
             aid = self.log.approval_index.get((*key, tcid, attempt))
             a, call, top = self.log.approvals.get(aid), run["calls"].get(tcid), {"tool_call_id": tcid, "attempt": attempt}
+            self._hold(call, via, tcid)
             if hint is not None and hint != aid:
                 why = "TK-APPROVAL-UNBOUND", "approval_id not bound to this call"
             elif digest is None:
@@ -2040,6 +2069,8 @@ class SignerService:
 
         def fn(tx, run):
             a = self.log.approvals[aid]
+            # takes no caller: an approval of a gateway's call expires on its own, or with its run
+            self._hold(run["calls"].get(a["tool_call_id"]), None, a["tool_call_id"])
             if a["state"] not in LIVE:
                 raise RPCError("approval_not_pending", a["state"])
             tx.set(a, "state", "expired")

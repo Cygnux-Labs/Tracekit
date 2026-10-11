@@ -26,7 +26,9 @@ position only). A record after a run's run.final breaks the run chain.
 The assurance line names the algorithms each conclusion rests on (records; the checkpoint: "Ed25519 only" or
 "Ed25519 + SLH-DSA-SHA2-128s"; cosignatures; anchors) and the earliest independent anchor time (a cosignature or a
 TSA time of a witness or anchor not classed operator).
-Report lines (also in --json): tool calls by evidence tier (T1/T2/T3), records by args_source, the signer_isolation the
+Report lines (also in --json): tool calls by evidence tier (T1/T2/T3; a call whose records disagree counts as the
+weakest, and one whose decision and result came by different capture paths is a `tiers` warning), records by
+args_source, the signer_isolation the
 signer recorded per run, the harness it attested per run (when any run has one), the tool classes run.registered says
 fail open, and key assurance (asserted: the log declares its keys; this format has no key attestation).
 Monitor reports (`tracekit monitor`) come from the verifier's side, never the bundle: verify(..., monitor_reports=[path]).
@@ -513,15 +515,29 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
     if vault:   # signer records of the content vault (docs/privacy.md): who read or erased retained content
         rep.check("content vault", True, f"{vault['content.accessed']} access(es), {vault['content.erased']} erasure(s) "
                                          "of retained content, each signed by the signer")
-    tiers = {}   # (run, tool_call_id) -> the tier any of its records names
+    # a tool call's tier is the weakest its records claim (untiered < T1 < T2 < T3): each tier a record names, and
+    # untiered for a decision or result that names none, so a call decided at T2 and completed elsewhere isn't T2;
+    # paths: the (source, tier)s of its decisions and results, which differ only when another layer answered for it
+    order, tiers, claims, paths = (None, "T1", "T2", "T3"), {}, {}, {}
     for r in every:
         e = r["event"]
-        if e.get("tool_call_id") is not None:
-            tiers[(e.get("run_id"), e["tool_call_id"])] = tiers.get((e.get("run_id"), e["tool_call_id"])) or e.get("tier")
+        if e.get("tool_call_id") is None:
+            continue
+        k, decided = (e.get("run_id"), e["tool_call_id"]), e.get("type") in ("policy.decision", "tool.result")
+        tier, tiers[k] = e.get("tier") if e.get("tier") in order else None, None
+        if tier is not None or decided:
+            claims[k] = min(claims.get(k, tier), tier, key=order.index)
+        if decided:
+            paths.setdefault(k, set()).add((str(e.get("source"))[:64], tier))
+    tiers.update(claims)
+    split = [f"{str(k[0])[:200]} {str(k[1])[:200]}: " + ", ".join(sorted(f"{s} {t or 'untiered'}" for s, t in p))
+             for k, p in paths.items() if len(p) > 1]
     if tiers:
         n = collections.Counter(tiers.values())
-        rep.check("tiers", True, f"{len(tiers)} tool call(s): " + ", ".join(f"{t} {n[t]}" for t in ("T1", "T2", "T3"))
-                  + (f", untiered {n[None]}" if n[None] else ""))
+        rep.check("tiers", not split, f"{len(tiers)} tool call(s): "
+                  + ", ".join(f"{t} {n[t]}" for t in ("T1", "T2", "T3")) + (f", untiered {n[None]}" if n[None] else "")
+                  + (f"; {len(split)} decided and completed by different capture paths" if split else ""),
+                  split[:20], warn=True)
     sources = collections.Counter(r["event"]["args_source"] for r in every if "args_source" in r["event"])
     if sources:
         rep.check("args source", True, f"{sum(sources.values())} record(s): "

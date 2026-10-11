@@ -91,6 +91,34 @@ class Log:
                 + "".join(cosign(text, n, s, 1760000000 + i) for i, (n, s) in enumerate(witnesses)))
 
 
+def trust_config(witnesses_required=1, algs=("ed25519",)):
+    return {"logs": [checkpoint.vkey(ORIGIN, ED25519, pub(LOG_SECRET))],
+            "witnesses": [{"vkey": checkpoint.vkey(WITNESS, COSIGNATURE, pub(WIT_SECRET)), "class": "customer"},
+                          {"vkey": checkpoint.vkey(OPERATOR, COSIGNATURE, pub(OP_SECRET)), "class": "operator"}],
+            "algs": list(algs), "witnesses_required": witnesses_required}
+
+
+def tiers_bundle(log, out):
+    """Export to `out` a run of three calls: decided and completed by a gateway (T2); decided by it and completed by
+    the run's client, which the signer refuses; decided in process, with another system's view of it imported (T3)."""
+    log.epoch(KEY1)
+    log.register()
+    gw = {"source": "gateway", "tier": "T2"}
+    for tcid, result in (("t2", gw), ("hijacked", {"source": "sdk"})):
+        log.add("policy.decision", {"tool_use_id": tcid, "decision": "allow", "rule_ids": [], "via": "uid:10012"},
+                tool_call_id=tcid, **gw)
+        log.add("tool.result", {"tool_use_id": tcid, "ok": True, "output": OUTPUT}, tool_call_id=tcid, **result)
+    log.add("policy.decision", {"tool_use_id": "t1", "decision": "allow", "rule_ids": []}, tool_call_id="t1", source="sdk")
+    log.add("policy.external", {"system": "opa", "decision": "allow", "tool_use_id": "t1", "tool": "pay", "rule_ids": [],
+                                "signature": "unverified", "salt_id": "a" * 32,
+                                "record": {"hash": "hmac-sha256:" + "0" * 64, "size": 2},
+                                "identity": {"scheme": "token", "subject": "opa", "attested": True}},
+            tool_call_id="t1", source="import", tier="T3")
+    log.final()
+    export(log.store, "acme", "run-a", log.note(), out)
+    return out
+
+
 class Case(unittest.TestCase):
     def setUp(self):
         self.d = tempfile.mkdtemp()
@@ -98,13 +126,9 @@ class Case(unittest.TestCase):
         self.trust = self.write_trust()
 
     def write_trust(self, witnesses_required=1, algs=("ed25519",), name="trust.json"):
-        t = {"logs": [checkpoint.vkey(ORIGIN, ED25519, pub(LOG_SECRET))],
-             "witnesses": [{"vkey": checkpoint.vkey(WITNESS, COSIGNATURE, pub(WIT_SECRET)), "class": "customer"},
-                           {"vkey": checkpoint.vkey(OPERATOR, COSIGNATURE, pub(OP_SECRET)), "class": "operator"}],
-             "algs": list(algs), "witnesses_required": witnesses_required}
         p = os.path.join(self.d, name)
         with open(p, "w") as f:
-            json.dump(t, f)
+            json.dump(trust_config(witnesses_required, algs), f)
         return p
 
     def log(self, name="store", key=KEY1):
@@ -281,6 +305,13 @@ class TestVerifyV2(Case):
                 "key assurance": "asserted: the log declares its record keys; none is attested"}
         details = {c["check"]: c["detail"] for c in rep.checks if c["status"] == "pass"}
         self.assertEqual({k: details.get(k) for k in want}, want)
+
+    def test_a_call_counts_at_its_weakest_tier_and_a_split_capture_path_warns(self):
+        rep, code = self.verify(tiers_bundle(self.log(), os.path.join(self.d, "tiers.tkb")))
+        [line] = [c for c in rep.checks if c["check"] == "tiers"]
+        self.assertEqual((code, line["status"], line["detail"]), (0, "warn", "3 tool call(s): T1 0, T2 1, T3 0, untiered 2"
+                                                                  "; 1 decided and completed by different capture paths"))
+        self.assertEqual(line["problems"], ["run-a hijacked: gateway T2, sdk untiered"])
 
     def test_principals_are_reported_attested_or_app_asserted(self):
         for attested, word in ((True, "attested"), (False, "app-asserted")):
@@ -601,15 +632,23 @@ def decision(**data):
     return ("policy.decision", {"tool_use_id": "t1", "decision": "allow", "rule_ids": [], **data}, "run-a")
 
 
+OUTPUT = {"hash": "hmac-sha256:" + "0" * 64, "size": 2, "redacted": False}
+OBSERVED = {"source": "inbox:1", "trust": "untrusted", "salt_id": "a" * 32, "output": OUTPUT,
+            "redaction": {"rules": [], "count": 0, "client_claimed": False}}
+H = "sha256:" + "0" * 64
+EXPIRES = "2026-10-09T12:05:00.000000Z"
+APPROVAL = {"approval_id": "ap-1", "policy_hash": H, "rule_ids": ["R-PAY"], "expires_at": EXPIRES, "requester": "token:svc",
+            "decision_id": "dec-1", "binding_digest": H, "binding": {
+                "v": 1, "approval_id": "ap-1", "tenant": "acme", "run_id": "run-a", "tool_call_id": "t1", "attempt": 0,
+                "tool": "pay", "args_commitment": "hmac-sha256:" + "0" * 64, "args_source": "parsed", "policy_hash": H,
+                "nonce": "0" * 32, "expires_at": EXPIRES}}
+VIA = "mtls:spiffe://acme/executor"
 FINDING = {"target": "tool=pay", "intervention": "i", "n": 0, "p_with": 0, "p_without": 0, "effect": 0,
            "interval": [-1, 1], "verdict": "inconclusive", "replay_runs": [], "models": [], "rung": 1, "off_tape": 0,
            "investigation": "i", "looks": 1, "family": 1, "min_effect": 0.2, "applied": True, "stopped": "budget"}
 # per VERSIONS entry ("type" or "type.field"), records that use it
 ENTRIES = {
-    "input.observed": [registered(), ("input.observed", {
-        "source": "inbox:1", "trust": "untrusted", "salt_id": "a" * 32,
-        "output": {"hash": "hmac-sha256:" + "0" * 64, "size": 2, "redacted": False},
-        "redaction": {"rules": [], "count": 0, "client_claimed": False}}, "run-a")],
+    "input.observed": [registered(), ("input.observed", OBSERVED, "run-a")],
     "content.accessed": [registered(), ("content.accessed", {"principal": "token:svc", "run_id": "run-x", "seqs": [1],
                                                              "purpose": "case 1"}, "run-a")],
     "content.erased": [registered(), ("content.erased", {"run_id": "run-x", "reason": "retention", "by": "signer"},
@@ -621,6 +660,11 @@ ENTRIES = {
     "run.registered.replay_of": [registered(replay_of="run-x", investigation="i")],
     "run.registered.parent_run": [registered(parent_run="run-p", session="run-p")],
     "run.registered.session": [registered(parent_run="run-p", session="run-root")],
+    "policy.decision.via": [registered(), decision(via=VIA)],
+    "approval.request.via": [registered(), ("approval.request", dict(APPROVAL, via=VIA), "run-a")],
+    "tool.result.via": [registered(), ("tool.result", {"tool_use_id": "t1", "ok": True, "output": OUTPUT, "via": VIA},
+                                       "run-a")],
+    "input.observed.via": [registered(), ("input.observed", dict(OBSERVED, via=VIA), "run-a")],
 }
 
 
