@@ -151,17 +151,29 @@ deployed yet) the signer and `init` refuse it and say so. Off by default.
   and log vkey, proved by a checkpoint signed with that key), then resends. The record log and each tenant's registry
   log register separately. Failures are retried like any witness failure. One key per origin, the first registered:
   a log with a new log key needs a new `origin` in signer.yaml.
+- **Origin squatting.** Registration is open and the first registration of an origin wins, so anyone can register an
+  origin before its log does, and that log is then refused (`409`). The default origin, `tracekit.local/<log id>`, is
+  unguessable before the log exists, so it cannot be taken first; a custom `origin` (such as `example.com/log`) can.
+  With a custom origin, register early or use your own witness.
+- **Expiry.** An origin that registered but was never cosigned within 24 hours, or not cosigned for 90 days, is
+  deleted with its stored size. A returning log registers again on its next checkpoint (automatic), and the witness
+  then holds nothing from before: its protection starts again from that checkpoint.
 - **Pinning.** `tracekit signer trust` pins the witness's vkey with class `public`.
 - **What it sees.** Checkpoints only: each log's origin and log vkey, tree sizes and root hashes, the log's signature,
   and when they arrive, so how often and how fast each log grows (docs/privacy.md). Never records or content. It
   keeps, per origin, the key, the latest cosigned size and root and the last cosigning time; `GET /stats` publishes
   only counts (distinct origins cosigned in the last 7 days and per ISO week), which is how Cygnux counts adoption.
+- **What it tells anyone.** Without any key: whether an origin is registered (`/register` and `add-checkpoint` answer
+  differently), and, to anyone holding one of a log's older checkpoint notes (from any bundle), the log's current size
+  (the `409` answer names it).
 - **What it proves.** That the log was not rolled back or forked after the witness cosigned it, independently of the
   signer's operator: the witness never cosigns a tree that is not an extension of the one it last cosigned. It is not
   independent of Cygnux: whoever controls the witness key could cosign anything. For assurance that depends on no
   single party, add a witness you or a partner run (above) and raise `witnesses_required` in the trust config.
-- **Limits.** 30 checkpoints per log a minute (a busier log is cosigned at that rate, always its newest note), 100
-  registrations per client network (an IPv4 address or IPv6 /64) a day, and a cap on logs in total (docs/limits.md).
+- **Limits.** 30 checkpoints per log and client network a minute that grow the log (a busier log is cosigned at that
+  rate, always its newest note; resending a note it holds is answered with its cosignature again, an older one with
+  `409`, neither counted), 100 registrations per client network (an IPv4 /24 or IPv6 /48) a day and 60 in all a
+  minute, 8 requests at a time per client, and a cap on logs in total (docs/limits.md).
 
 Running it: `tracekit public-witness init|serve` and deploy/public-witness/README.md.
 

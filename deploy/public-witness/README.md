@@ -1,6 +1,8 @@
 # Deploying the public witness
 
-`tracekit public-witness serve` (tracekit/public_witness_server.py) behind Caddy, which terminates TLS for one domain.
+`tracekit public-witness serve` (tracekit/public_witness_server.py) behind Caddy, which terminates TLS for one domain
+and reads each request body whole (at most 10 KiB) before passing it on (Caddyfile here). Only the compose file passes
+`--proxied`, which makes the witness trust X-Forwarded-For: never pass it without a proxy that sets that header.
 Signers opt in with `witnesses: [public]` once the two constants in `tracekit/public_witness.py` name this deployment
 (docs/witnesses.md, "The public witness"). It stores, per log origin, the log's key, the latest cosigned size and root
 and when it last cosigned; no request is logged and no client address is stored.
@@ -56,19 +58,16 @@ latest cosigned size and root). Back up the key once, offline:
 docker run --rm -v tracekit-public-witness_witness-data:/data -v "$PWD":/out alpine tar czf /out/witness-key.tgz -C /data witness.key witness.vkey
 ```
 
-Back up the state daily with SQLite's online backup, so a copy taken while it runs is consistent:
-
-```bash
-docker compose exec witness python -c "import sqlite3; sqlite3.connect('/data/state.db').backup(sqlite3.connect('/data/state.bak.db'))"
-docker compose cp witness:/data/state.bak.db "state-$(date +%F).db"
-```
-
-Restoring an older `state.db` rolls origins back to older sizes: the witness then answers those logs with 409 and the
-size it holds, and they catch up with a consistency proof, so nothing forks; a log registered after the backup
-registers again on its next checkpoint.
+The state must never roll back. A witness restored from an older `state.db` holds older sizes and would cosign a
+tree that forks from one it cosigned after the backup, which is exactly what a witness exists to prevent. So a backup
+of `state.db` is not a way to restore this witness: if the state is lost, or anything older replaces it, retire the key
+and start a new witness (`init` in a fresh volume: a new vkey), and release tracekit with the new vkey in
+`tracekit/public_witness.py`. Protect the volume itself (a replicated or snapshotted disk) instead.
 
 ## Limits
 
-Set in `tracekit/public_witness_server.py`: bodies of 10 KiB, 100 registrations per client network (IPv4 address or
-IPv6 /64) a day, 30 checkpoints per origin a minute (429), 100,000 origins (then registration is refused). docs/limits.md lists them with
+Set in `tracekit/public_witness_server.py`: bodies of 10 KiB, 100 registrations per client network (IPv4 /24 or
+IPv6 /48) a day and 60 in all a minute, 30 checkpoints per origin and client network a minute (429), 8 requests at a
+time per client, 100,000 origins (then registration is refused). Origins never cosigned within 24 hours of registering,
+or not cosigned for 90 days, are deleted. docs/limits.md lists them with
 what a signer sees.

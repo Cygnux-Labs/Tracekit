@@ -23,4 +23,5 @@ VOLUME ["/data"]
 USER 10001:10001
 EXPOSE 7380
 ENTRYPOINT ["tracekit", "public-witness"]
-CMD ["serve", "--home", "/data", "--host", "0.0.0.0", "--port", "7380", "--insecure-http", "--proxied"]
+# no --proxied: only behind a proxy that sets X-Forwarded-For (docker-compose.yml passes it)
+CMD ["serve", "--home", "/data", "--host", "0.0.0.0", "--port", "7380", "--insecure-http"]

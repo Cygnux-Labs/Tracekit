@@ -9,9 +9,11 @@ client resends once from that size with a matching proof. A 404 (an origin the w
 POST /register {origin, vkey, checkpoint} (the log's vkey and the note, as proof of possession), then one resend; a
 witness without registration answers it 404 too. Every other failure raises WitnessError, `retryable` for
 network errors, timeouts, a second 409 (a race), 404 (an origin the witness has not registered yet from the signer's
-logs/v0 list, or registration refused for now), 429 and 5xx; not for 400/403/422 (malformed, unknown key, inconsistent tree) or a bad cosignature."""
+logs/v0 list, or registration refused for now), 429 and 5xx; not for 400/403/422 (malformed, unknown key, inconsistent tree) or a bad cosignature.
+Each request has `timeout` for each socket operation and, for reading the answer, in all."""
 import base64
 import json
+import time
 import urllib.error
 import urllib.request
 
@@ -58,15 +60,32 @@ class TlogWitness:
             raise ValueError(f"witness {name}: not a cosignature vkey")
         self.url, self.vkey, self.name, self.timeout = url.rstrip("/"), vkey, name, timeout
 
+    def _read(self, r, most, deadline):
+        """Up to `most` bytes of `r`, or TimeoutError once `deadline` passes (a witness trickling its answer)."""
+        data = b""
+        while len(data) < most:
+            if time.monotonic() > deadline:
+                raise TimeoutError(f"no complete answer within {self.timeout}s")
+            got = r.read1(most - len(data))
+            if not got:
+                break
+            data += got
+        return data.decode("utf-8", "replace")
+
     def _send(self, path, body):
         if len(body) > MAX_BODY:
             raise WitnessError(f"{self.name}: request body of {len(body)} bytes is over {MAX_BODY}", False)
         req = urllib.request.Request(self.url + path, data=body, method="POST")
+        deadline = time.monotonic() + self.timeout
+        # lean: the status line and headers time out per socket operation only; cut the socket on a timer when a
+        # witness is seen trickling them
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as r:
-                return r.status, r.read(MAX_BODY).decode("utf-8", "replace")
-        except urllib.error.HTTPError as e:
-            return e.code, e.read(256).decode("utf-8", "replace")
+            try:
+                with urllib.request.urlopen(req, timeout=self.timeout) as r:
+                    return r.status, self._read(r, MAX_BODY, deadline)
+            except urllib.error.HTTPError as e:
+                with e:
+                    return e.code, self._read(e, 256, deadline)
         except (OSError, ValueError) as e:   # refused, reset, timeout
             raise WitnessError(f"{self.name}: {e}", True) from None
 

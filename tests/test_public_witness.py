@@ -5,6 +5,7 @@ import http.client
 import io
 import json
 import os
+import socket
 import threading
 import time
 import unittest
@@ -20,6 +21,7 @@ from tracekit.signer import service as svc
 from tracekit.storage.base import RECORDS, registry_tree
 from tracekit.tlog_witness import MAX_BODY, TlogWitness, WitnessError
 
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ORIGIN = "tracekit.example.org/log/public"
 NAME = "witness.example.org/public"
 
@@ -33,8 +35,8 @@ class Server(unittest.TestCase):
         self.log_vkey = self.vkey_of(self.secret)
         self.leaves = [merkle.leaf_hash(b"%d" % i) for i in range(40)]
 
-    def start(self):
-        self.srv = pws.serve(self.home)
+    def start(self, proxied=False):
+        self.srv = pws.serve(self.home, proxied=proxied)
         threading.Thread(target=self.srv.serve_forever, args=(0.05,), daemon=True).start()
         self.addCleanup(self.stop)
         self.url = f"http://127.0.0.1:{self.srv.server_address[1]}"
@@ -52,10 +54,10 @@ class Server(unittest.TestCase):
         return self.client.add_checkpoint(signed_note(origin, leaves[:n], secret), self.vkey_of(secret, origin), old,
                                           lambda m: merkle.consistency_proof(m, leaves[:n]))
 
-    def post(self, path, body, method="POST"):
+    def post(self, path, body, method="POST", xff=None):
         c = http.client.HTTPConnection("127.0.0.1", self.srv.server_address[1], timeout=5)
         try:
-            c.request(method, path, body=body and body.encode("utf-8"))
+            c.request(method, path, body=body and body.encode("utf-8"), headers={"X-Forwarded-For": xff} if xff else {})
             r = c.getresponse()
             return r.status, r.getheader("Content-Type"), r.read().decode()
         finally:
@@ -65,6 +67,14 @@ class Server(unittest.TestCase):
         secret = secret or self.secret
         return self.post("/register", json.dumps({"origin": origin, "vkey": vkey or self.vkey_of(secret, origin),
                                                   "checkpoint": note or signed_note(origin, [], secret)}))[:3:2]
+
+    def restart_proxied(self):
+        self.stop()
+        self.start(proxied=True)
+
+    def origins(self):
+        with self.srv.witness.lock:
+            return [r[0] for r in self.srv.witness.db.execute("SELECT origin FROM origins ORDER BY origin")]
 
     def test_round_trip_with_the_client_registers_on_first_use(self):
         lines = self.add(5, 0)   # 404, then /register, then the resend
@@ -131,16 +141,12 @@ class Server(unittest.TestCase):
             self.assertIn("run your own witness", text)
         self.assertEqual(self.post("/add-checkpoint", "x" * (MAX_BODY + 1))[0], 413)
         with mock.patch.object(pws, "REGISTRATIONS_PER_DAY", 1):   # behind the proxy, the forwarded address counts
-            self.stop()
-            self.srv = pws.serve(self.home, proxied=True)
-            threading.Thread(target=self.srv.serve_forever, args=(0.05,), daemon=True).start()
-            for ip, status in (("192.0.2.1", 403), ("192.0.2.2", 403), ("192.0.2.1", 429),   # 403: a bad vkey
-                               ("2001:db8::1", 403), ("2001:db8::2", 429), ("2001:db8:0:1::1", 403)):   # IPv6: per /64
-                c = http.client.HTTPConnection("127.0.0.1", self.srv.server_address[1], timeout=5)
-                c.request("POST", "/register", json.dumps({"origin": "c.example.org/" + ip.replace(":", "-"), "vkey": "x",
-                                                           "checkpoint": "x"}), {"X-Forwarded-For": f"203.0.113.9, {ip}"})
-                self.assertEqual(c.getresponse().status, status, ip)
-                c.close()
+            self.restart_proxied()
+            for ip, status in (("192.0.2.1", 403), ("192.0.2.200", 429), ("198.51.100.1", 403),   # 403: a bad vkey
+                               ("::ffff:198.51.100.2", 429),   # IPv4-mapped: its IPv4 /24
+                               ("2001:db8::1", 403), ("2001:db8:0:1::1", 429), ("2001:db8:1::1", 403)):   # IPv6: /48
+                body = json.dumps({"origin": "c.example.org/" + ip.replace(":", "-"), "vkey": "x", "checkpoint": "x"})
+                self.assertEqual(self.post("/register", body, xff=f"203.0.113.9, {ip}")[0], status, ip)
         self.assertEqual(self.post("/add-checkpoint", "old x\n\nnote")[0], 400)
         self.assertEqual(self.post("/add-checkpoint", "old 0\n\n" + signed_note("unknown.example.org/1", [],
                                                                                 self.secret))[0], 404)
@@ -152,9 +158,113 @@ class Server(unittest.TestCase):
         self.assertEqual((status, body), (400, "the tree size is over 2^63 - 1\n"))
 
     def test_deeply_nested_json_is_a_400_not_a_crash(self):
-        with contextlib.redirect_stderr(io.StringIO()) as err:
-            status, _, body = self.post("/register", "[" * 5000 + "]" * 5000)
-        self.assertEqual((status, body, err.getvalue()), (400, "malformed request\n", ""))   # nothing logged
+        with contextlib.redirect_stderr(io.StringIO()) as err:   # parsed or past the parser's depth: 400 either way
+            status = self.post("/register", "[" * 5000 + "]" * 5000)[0]
+        self.assertEqual((status, err.getvalue()), (400, ""))   # nothing logged
+
+    def test_replayed_old_notes_never_hold_up_the_log(self):
+        self.add(3, 0)
+        old = signed_note(ORIGIN, self.leaves[:2], self.secret)
+        held = signed_note(ORIGIN, self.leaves[:3], self.secret)
+        with mock.patch.object(pws, "CHECKPOINTS_PER_MIN", 3), mock.patch("time.time", return_value=time.time()):
+            for _ in range(5):   # anyone holding the log's public notes
+                self.assertEqual(self.post("/add-checkpoint", "old 2\n\n" + old)[:3:2], (409, "3\n"))
+                status, _, lines = self.post("/add-checkpoint", "old 3\n\n" + held)
+                self.assertEqual(status, 200)   # the tree it holds: cosigned again, not counted
+                self.assertEqual(len(checkpoint.open_note(held + lines, [self.log_vkey], [self.vkey])[3]), 1)
+            self.assertTrue(self.add(5, 3))
+            self.assertTrue(self.add(6, 5))   # the third that grows the log this minute
+            with self.assertRaises(WitnessError):
+                self.add(7, 6)
+        self.assertEqual(self.client.latest(signed_note(ORIGIN, [], self.secret), self.log_vkey), (6, None))
+
+    def test_the_checkpoint_limit_is_per_client_network(self):
+        self.restart_proxied()
+
+        def push(n, ip):
+            proof = n > 1 and merkle.consistency_proof(n - 1, self.leaves[:n]) or []
+            return self.post("/add-checkpoint", f"old {n - 1}\n" + "".join(checkpoint._b64(h) + "\n" for h in proof) + "\n"
+                             + signed_note(ORIGIN, self.leaves[:n], self.secret), xff=ip)[0]
+        self.assertEqual(self.register()[0], 200)
+        with mock.patch.object(pws, "CHECKPOINTS_PER_MIN", 1), mock.patch("time.time", return_value=time.time()):
+            self.assertEqual([push(1, "192.0.2.1"), push(2, "192.0.2.1"), push(2, "::ffff:192.0.2.2"),
+                              push(3, "2001:db8::1"), push(4, "2001:db8::2")], [200, 429, 200, 200, 429])
+
+    def test_registrations_are_capped_in_all_and_the_counts_are_bounded(self):
+        with mock.patch.object(pws, "REGISTRATIONS_PER_MIN", 1), mock.patch("time.time", return_value=time.time()):
+            self.assertEqual(self.register(origin="a.example.org/1")[0], 200)
+            self.assertEqual(self.register(origin="a.example.org/1")[0], 200)   # already there: not counted
+            self.assertEqual(self.register(origin="a.example.org/2")[0], 429)
+        self.restart_proxied()
+        with mock.patch.object(pws, "MAX_HITS", 2):
+            bad = json.dumps({"origin": "b.example.org/1", "vkey": "x", "checkpoint": "x"})
+            self.assertEqual([self.post("/register", bad, xff=ip)[0] for ip in ("192.0.2.1", "198.51.100.1",
+                                                                                "203.0.113.1", "192.0.2.1")],
+                             [403, 403, 429, 403])   # a full table refuses new networks; it never grows past it
+            self.assertEqual(len(self.srv.witness._hits["register"][1]), 2)
+
+    def test_unused_and_idle_origins_expire(self):
+        now = time.time()
+        self.register(origin="a.example.org/unused")
+        self.add(1, 0, origin="a.example.org/idle")
+        self.add(1, 0, origin="a.example.org/used")
+        with mock.patch("time.time", return_value=now + 89 * 86400):
+            self.add(2, 1, origin="a.example.org/used")
+        with mock.patch("time.time", return_value=now + 90 * 86400 + 60):
+            self.register(origin="a.example.org/new")
+            self.assertEqual(self.origins(), ["a.example.org/new", "a.example.org/used"])
+            self.assertTrue(self.add(3, 0, origin="a.example.org/idle"))   # a returning log registers again
+        with mock.patch("time.time", return_value=now + 3600):
+            self.register(origin="a.example.org/young")
+        self.assertIn("a.example.org/young", self.origins())   # within its 24 hours
+
+    def test_requests_in_flight_are_capped_per_forwarded_client(self):
+        self.restart_proxied()
+        port, held = self.srv.server_address[1], []
+        self.addCleanup(lambda: [s.close() for s in held])
+        with mock.patch.object(pws, "MAX_PER_IP", 2):
+            for _ in range(2):   # bodies that never complete, all from one client behind the proxy
+                s = socket.create_connection(("127.0.0.1", port))
+                s.sendall(b"POST /add-checkpoint HTTP/1.1\r\nHost: x\r\nX-Forwarded-For: 192.0.2.1\r\n"
+                          b"Content-Length: 100\r\n\r\nold 0\n")
+                held.append(s)
+            self.assertTrue(wait_for(lambda: self.post("/register", "{}", xff="192.0.2.1")[0] == 429, 5))
+            self.assertEqual(self.post("/register", "{}", xff="192.0.2.2")[0], 400)   # another client is served
+
+    def test_deploy_buffers_bodies_and_only_compose_trusts_the_proxy(self):
+        def read(name):
+            with open(os.path.join(ROOT, "deploy", "public-witness", name), encoding="utf-8") as f:
+                return f.read()
+        caddy, compose, dockerfile = read("Caddyfile"), read("docker-compose.yml"), read("Dockerfile")
+        for line in ("max_size 10KiB", "request_buffers 10KiB", "header_up X-Forwarded-For {remote_host}"):
+            self.assertIn(line, caddy)
+        self.assertEqual(MAX_BODY, 10 * 1024)
+        self.assertIn("./Caddyfile:/etc/caddy/Caddyfile:ro", compose)
+        self.assertIn("--proxied", compose)
+        self.assertNotIn("--proxied", next(line for line in dockerfile.splitlines() if line.startswith("CMD")))
+
+    def test_a_trickling_witness_answer_is_cut_at_the_deadline(self):
+        ls = socket.socket()
+        ls.bind(("127.0.0.1", 0))
+        ls.listen()
+        self.addCleanup(ls.close)
+        stop = threading.Event()
+        self.addCleanup(stop.set)
+
+        def serve():
+            c, _ = ls.accept()
+            with c:
+                c.recv(65536)
+                c.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 10240\r\n\r\n")
+                while not stop.wait(0.3):   # one byte at a time, each well within the per-read timeout
+                    c.sendall(b"x")
+        threading.Thread(target=serve, daemon=True).start()
+        client = TlogWitness(f"http://127.0.0.1:{ls.getsockname()[1]}", self.vkey, timeout=1)
+        start = time.monotonic()
+        with self.assertRaises(WitnessError) as cm:
+            client.latest(signed_note(ORIGIN, [], self.secret), self.log_vkey)
+        self.assertLess(time.monotonic() - start, 3)
+        self.assertTrue(cm.exception.retryable)
 
     def test_a_witness_without_registration_keeps_its_404(self):
         with mock.patch.object(TlogWitness, "_send", side_effect=[(404, "unknown log\n"), (404, "not found\n")]):
@@ -180,7 +290,7 @@ class Server(unittest.TestCase):
             self.add(1, 0, origin=origin)
             self.add(2, 1, origin=origin)   # twice in a week: counted once
         with mock.patch("time.time", return_value=now + 8 * 86400):
-            w.add_checkpoint("old 2\n" + "".join(
+            w.add_checkpoint("192.0.2.1", "old 2\n" + "".join(
                 checkpoint._b64(h) + "\n" for h in merkle.consistency_proof(2, self.leaves[:3])) + "\n"
                 + signed_note("a.example.org/1", self.leaves[:3], self.secret))
             stats = w.stats()

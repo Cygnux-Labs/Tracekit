@@ -241,6 +241,7 @@ STRICTNESS = ("allow", "flag", "ask", "deny")
 LIVE = ("requested", "approved")   # approval states that may still lead to a consume
 LIST_PAGE = 100
 TICK_S = 1.0
+WITNESS_START_S = 30.0   # start-up: how long the witnesses, asked at once, have to say how far they cosigned
 CLOSE_WAIT_S = 60.0   # serve --close-on-stop: how long the final notes wait for witnesses (within the pod's grace)
 CHECKPOINT_S, CHECKPOINT_MIN_S = 10.0, 1.0
 WITNESS_GAP_S, LOG_KEY_GAP_S, BACKOFF_S = 300.0, 300.0, (1.0, 300.0)
@@ -639,11 +640,19 @@ class SignerService:
             empty = self._note(text, self.origin)
         except Exception:   # the log key can't sign now (KMS down): no witness can be asked, as when none answers
             witnesses = ()
-        for w in witnesses:
+
+        def ask(w):
             try:
                 heads.append(w.latest(empty, self.vkey))
             except Exception:   # unreachable or unreadable: counted as no answer
                 pass
+        asks = [threading.Thread(target=ask, args=(w,), name="tracekit-witness-start", daemon=True) for w in witnesses]
+        for t in asks:
+            t.start()
+        end = time.monotonic() + WITNESS_START_S
+        for t in asks:   # one that has not answered by then counts as no answer
+            t.join(max(0.0, end - time.monotonic()))
+        heads = list(heads)
         if not heads:
             self.log.write(lambda tx: tx.gap("degraded_unanchored", "no configured witness answered at startup"))
             return
