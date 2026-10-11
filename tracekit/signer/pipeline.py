@@ -69,7 +69,7 @@ def _monotonic(t):
 
 def since(ts):
     """The monotonic time at which a record with wall-clock `ts` was written (never in the future)."""
-    return _monotonic(datetime.datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp())
+    return _monotonic(epoch(ts))
 
 
 def approval(tenant, run_id, data, ts):
@@ -127,7 +127,7 @@ def agent_state(set_, log, run, e):
     elif typ == "approval.escalated":
         set_(a, "escalated", True)
     if typ == "approval.escalated" or typ == "approval" and d.get("approver_kind") == "agent" and \
-            d["decision"] != "approve" or typ == "approval.abandoned" and a.get("escalated"):
+            d["decision"] != "approve":
         set_(run, "person_only", {**run.get("person_only", {}), **{k: True for k in person_only_keys(a)}})
 
 

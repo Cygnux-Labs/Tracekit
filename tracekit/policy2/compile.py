@@ -259,8 +259,9 @@ def _lint_agent(rule):
                 and _int(budget.get("count", 1), 1) and budget.get("scope") in ("tenant", "requester")
                 and _int(budget.get("window"), 1) and budget["window"] <= MAX_WINDOW_S
                 and (s is None or isinstance(s, dict) and set(s) == {"field", "max"} and _int(s["max"], 1)
-                     and fields.get(s["field"], {}).get("type") == "integer")):
-            errors.append(f"budget must be {{count?, sum?: {{field (an integer field), max}}, window (seconds, at most "
+                     and fields.get(s["field"], {}).get("type") == "integer"
+                     and _int(fields[s["field"]].get("min"), 0))):
+            errors.append(f"budget must be {{count?, sum?: {{field (an integer field with min >= 0), max}}, window (seconds, at most "
                           f"{MAX_WINDOW_S}), scope: tenant|requester}}, with count or sum")
     return errors
 

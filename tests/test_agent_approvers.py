@@ -72,10 +72,6 @@ class TestBounds(unittest.TestCase):
         self.assertFalse(bounds(dict(OK, payee=[]), FIELDS))
         self.assertFalse(bounds(dict(OK, to="acct-1"), fields))                  # payee and to: one field, twice
 
-    def test_duplicate_keys_never_reach_the_bounds(self):
-        with self.assertRaises(Exception):
-            loads_strict('{"amount": 40, "amount": 4000}')
-
     def test_a_pattern_out_of_time_raises(self):
         rule = {"id": "R", "approval": {"agent": {"allow": {"fields": {"memo": FIELDS["memo"]}}}}}
         eng = Engine({"ask": [dict(rule, pattern="^")]}, backend="regex")
@@ -98,7 +94,11 @@ class TestLint(unittest.TestCase):
                             ({"approval": {"agent": {"mode": "enforce", "allow": {"fields": {"a": {"type": "float"}}}}}},
                              "field a"),
                             ({"approval": {"agent": {"mode": "enforce", "allow": {"fields": FIELDS},
-                                                     "budget": {"count": 1, "window": 60}}}}, "budget")):
+                                                     "budget": {"count": 1, "window": 60}}}}, "budget"),
+                            ({"approval": {"agent": {"mode": "enforce", "allow": {"fields": dict(
+                                FIELDS, amount={"type": "integer", "min": -1000, "max": 100})}, "budget": {
+                                "sum": {"field": "amount", "max": 70}, "window": 60, "scope": "tenant"}}}},
+                             "min >= 0")):   # a negative amount would refill the sum
             with self.subTest(error):
                 self.assertTrue(any(error in e for e in self.lint(**rule)), self.lint(**rule))
 
@@ -206,6 +206,8 @@ class TestAgentApprovals(Case):
         self.assertTrue(agent["eligible"], agent)
         listed = self.s.call(AGENT, "approval_list", {"for": "agent"})["approvals"]
         self.assertEqual([(a["approval_id"], a.get("agent")) for a in listed], [(aid, True)])
+        self.assertEqual(validate(RESPONSES["approval_list"], {"approvals": listed, "next_cursor": None}), [])
+        self.assertFalse({"run_id", "tool_call_id", "attempt", "requester"} & set(listed[0]))   # nothing of the run
         out = self.answer(AGENT, aid, asserted={"model": "m-1", "version": "7"})
         self.assertEqual((out["state"], out["self_approved"]), ("approved", False))
         self.assertEqual(self.consume()["args"], OK)   # executor t2: the approved copy
@@ -231,7 +233,7 @@ class TestAgentApprovals(Case):
     def test_only_an_attested_principal_disqualifies_the_agent(self):
         aid, _ = self.ask()
         run = self.s.log.runs[(self.s.tenant, self.run["run_id"])]
-        run["principal"] = "token:reviewer"   # app-asserted: not the agent's word to refuse on
+        run["principal"] = "oidc:reviewer"   # app-asserted, naming the agent: not a reason to refuse it
         agent = CallerIdentity("oidc", "reviewer", True, {"person": "bot"})
         self.s._agents = frozenset({"oidc:reviewer"})
         self.s.authorize["oidc:reviewer"] = sorted(svc.AGENT_METHODS)

@@ -290,6 +290,7 @@ APPROVAL_KEYS = {"self_approval", "approvers", "break_glass", "persons", "webaut
 AGENT_METHODS = frozenset({"approval_list", "approval_review", "approval_decide", "status"})
 AGENT_CONSUME_S, AGENT_TIMEOUT_S = 300, 600
 # anti-shopping: approvals routed to agents per run, and per tenant per window; past them, people answer
+# lean: fixed caps; make them approvals.* keys if deployments need others
 AGENT_REVIEWS_PER_RUN, AGENT_REVIEWS_PER_TENANT, AGENT_REVIEWS_WINDOW_S = 10, 1000, 3600
 _CONTROL = re.compile("[\x00-\x1f\x7f-\x9f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]")
 OTLP_IMPORT = "otlp_import"   # an `authorize` grant, never a default: OTLP/HTTP import (otlp config section)
@@ -2364,6 +2365,7 @@ class SignerService:
 
     def _approval_list(self, identity, req):
         identity = self._on_behalf(identity, req)
+        agent_view = self._is_agent(identity)
         # copied on the writer, so only committed states are listed
         items = iter(self.log.write(lambda tx: [(aid, dict(a)) for aid, a in self.log.approvals.items()]))
         page, cursor = [], req.get("cursor")
@@ -2379,7 +2381,9 @@ class SignerService:
                     req.get("escalated") in (None, bool(a.get("escalated"))) and self._may_see(identity, a):
                 if len(page) == req.get("limit", LIST_PAGE):
                     return {"approvals": page, "next_cursor": page[-1]["approval_id"]}
-                page.append(self._summary(aid, a))
+                s = self._summary(aid, a)
+                page.append({k: v for k, v in s.items() if k not in ("run_id", "tool_call_id", "attempt", "requester",
+                                                                     "passkey")} if agent_view else s)
         return {"approvals": page, "next_cursor": None}
 
     def _approval_abandon(self, identity, req):

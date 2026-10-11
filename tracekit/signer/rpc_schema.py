@@ -123,6 +123,10 @@ _SUMMARY = _obj(["approval_id", "state", "run_id", "tool_call_id", "attempt", "t
                 passkey={"const": True},   # approving needs a passkey assertion
                 escalated={"const": True},   # an agent or the signer handed it to people: only people answer it
                 agent={"const": True})   # an agent approver may answer it
+# what approval_list shows an agent approver: nothing from the run or the requesting agent
+_AGENT_SUMMARY = _obj(["approval_id", "state", "tool", "rule_ids", "policy_hash", "expires_at"],
+                      **{k: _SUMMARY["properties"][k] for k in ("approval_id", "state", "tool", "rule_ids",
+                                                                "policy_hash", "expires_at", "escalated", "agent")})
 
 REQUESTS = {
     "register_run": _obj(["request_id", "agent"], request_id=ID, run_id=ID,
@@ -258,7 +262,8 @@ RESPONSES = {
     "approval_get": dict(_SUMMARY, required=_SUMMARY["required"] + ["args_source", "args", "binding_digest"],
                          properties=dict(_SUMMARY["properties"], args_source={"enum": ["raw", "parsed", "coerced"]},
                                          args=ANY, binding_digest=DIGEST, reason=REASON)),
-    "approval_list": _obj(["approvals", "next_cursor"], approvals={"type": "array", "maxItems": 1000, "items": _SUMMARY},
+    "approval_list": _obj(["approvals", "next_cursor"], approvals={"type": "array", "maxItems": 1000,
+                                                              "items": {"oneOf": [_SUMMARY, _AGENT_SUMMARY]}},
                           next_cursor={"oneOf": [ID, {"type": "null"}]}),
     "approval_abandon": _obj(["approval_id", "state"], approval_id=ID, state=APPROVAL_STATE),
     # view_digest: sha256(JCS(the rest of the answer))

@@ -90,7 +90,7 @@ within bounds ([approvals](approvals.md#agent-approvers)). It is part of the pol
 |---|---|
 | `mode` | `enforce`, or `shadow`: answers are recorded as `approval.suggested` and change nothing |
 | `allow.fields` | argument name → `{type: integer\|string\|boolean, min?, max?, enum?, pattern?}`; `min`/`max` on integers, `pattern` (RE2 subset, whole value) on strings, `enum` values of the field's type. A closed world: every argument must be named, every named one present |
-| `budget` | `{count?, sum?: {field, max}, window, scope: tenant\|requester}`: at most `count` agent approvals, and `sum` of an integer field, in `window` seconds (at most 30 days) |
+| `budget` | `{count?, sum?: {field, max}, window, scope: tenant\|requester}`: at most `count` agent approvals, and `sum` of an integer field with `min` >= 0, in `window` seconds (at most 30 days) |
 | `veto_s` | an agent's approval runs only after this many seconds, so people may revoke it first |
 
 Lint errors: `approval.agent` with `passkey: required`, or on a `from: untrusted` rule (people answer those). A warning

@@ -264,7 +264,8 @@ run; asking again writes a signed `capture.gap{reask_after_reject}`. A run gets 
 `rationale`, each bound and whether it passed, the budget left, the signer's redacted copy of the arguments with control
 and bidirectional-override characters escaped (`\u202e`), the arguments redaction changed, the expiry and a
 `view_digest` (SHA-256 of JCS of the rest). Never the requesting agent's reason, the run id, the tool call id or where
-a value came from. Agents can't call `approval_get`. `approval_list` takes `state`, `for: agent|person` and `escalated`.
+a value came from. Agents can't call `approval_get`, and their `approval_list` leaves out the run id, tool call id,
+attempt and requester. `approval_list` takes `state`, `for: agent|person` and `escalated`.
 
 **Answers.** `approval_decide` with `approve`, `reject` or `escalate` (agents only), optionally `asserted: {model,
 version, prompt_hash}` (recorded `attested: false`). The `approval` record carries `approver_kind: agent`; an approval
