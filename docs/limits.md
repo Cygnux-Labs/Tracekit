@@ -28,6 +28,7 @@ Each row says what the limit is, why it is so, what to do about it, and where th
 | v1: the exporter can replace a selected record with an elided stub, and `manifest.json` is unsigned. | v1 stubs are not bound to a run; the manifest is an index, recomputed from signed records. | Use v2 bundles; read the "run completeness unproven" warning. | [laptop threat model](threat-model-laptop.md#open-problems) |
 | Record timestamps come from the signer host's clock; `seq` and the chain prove order only. | Only witnesses and RFC 3161 timestamps give independent time. | Read cosignature and anchor times in the `Assurance` line. | [laptop threat model](threat-model-laptop.md#what-each-attack-comes-to), [witnesses](witnesses.md#v2-rekor-v2-anchors-and-rfc-3161-timestamps) |
 | A v1 record after a v1 → v2 bridge is reported only with `--v1-ledger`. | The frozen v1 verifier sees bridge records as ordinary gaps. | Verify bridged logs with `--v1-ledger`. | [format v2](format-v2.md#12-v1--v2-bridge) |
+| JSON nested deeper than 128 levels is refused: a bundle file is unusable, a record fails, and a tool call's arguments are denied (`TK-ARGS-INVALID`). | A fixed depth makes every verifier and the signer read the same documents the same way, whatever their parser's limits. | Flatten arguments deeper than that. | [format v2](format-v2.md#1-canonical-json) |
 
 ## Dev mode vs system mode
 
