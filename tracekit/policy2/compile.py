@@ -14,10 +14,19 @@ from .. import yamlmini
 from ..policy import PolicyError, _sre_c, _sre_p, check_regex
 
 SECTIONS = ("deny", "ask", "flag")
-TOP_KEYS = {"version", "description", "extends", "tools", "untrusted", "unknown_tools", "deny", "ask", "flag"}
+DETECT = ("sequences", "limits", "respond")   # signer-side detection (signer/detect.py), merged by id like rules
+TOP_KEYS = {"version", "description", "extends", "tools", "untrusted", "unknown_tools", *SECTIONS, *DETECT}
 RULE_KEYS = {"id", "class", "tool", "field", "pattern", "unless", "reason", "rationale", "label", "approval", "from"}
 # an ask rule's `approval`: executor t2 runs only the signer's copy; passkey required: approving needs a passkey
 APPROVAL = {"executor": ("t1", "t2"), "passkey": ("required",)}
+SCOPES = ("run", "session", "owner", "principal")
+MAX_WINDOW = 86400   # seconds
+TRIGGERS = ("executed_against_policy", "denied_calls", "provenance", "class_mismatch", "refusal_burst", "tamper")
+NOTIFY_ONLY = ("class_mismatch", "refusal_burst", "tamper")   # never enforced, whatever `respond` says
+MODES, ACTIONS = ("off", "shadow", "enforce"), ("notify", "hold", "quarantine")
+SEQ_KEYS = {"id", "steps", "scope", "window", "unless"}
+LIMIT_KEYS = {"id", "match", "count", "sum", "max", "window", "scope"}
+RESPOND_KEYS = {"trigger", "mode", "action", "max", "window", "scope"}
 # every class also has `target`: what the call acts on (engine.Engine._targets), so one rule without a class can match it
 CLASSES = {"shell": {"command", "argv", "line"}, "fs": {"path", "op", "content_digest"},
            "http": {"method", "url", "host", "internal", "sends_to"}, "sql": {"statement", "code", "verb", "db"},
@@ -125,7 +134,7 @@ def build(path, seen=()):
     if not isinstance(pol, dict):
         return {}, [f"{path}: not a mapping"]
     errors = [f"{path}: unknown key {k!r}" for k in sorted(set(pol) - TOP_KEYS)]
-    for sec in SECTIONS:
+    for sec in SECTIONS + DETECT:
         if not isinstance(pol.get(sec, []), list):
             errors.append(f"{path}: {sec} must be a list")
             pol[sec] = []
@@ -158,9 +167,20 @@ def build(path, seen=()):
             rules = [r for p in parents for r in p.get(sec, []) if isinstance(r, dict) and r.get("id") not in own]
             # a rule two parents both carry (TK-P003 in server-net and browser) is kept once
             merged[sec] = [r for i, r in enumerate(rules) if r not in rules[:i]] + pol.get(sec, [])
+        for sec in DETECT:   # by id (respond: by trigger): a deployment adds a sequence and keeps the pack's
+            mine = {item_id(x) for x in pol.get(sec, [])}
+            items = [x for p in parents for x in p.get(sec, []) if item_id(x) not in mine]
+            items = [x for i, x in enumerate(items) if x not in items[:i]] + pol.get(sec, [])
+            if items:
+                merged[sec] = items
         merged["extends"] = [policy_hash(p) for p in parents] if isinstance(base, list) else policy_hash(parents[0])
         pol = merged
     return pol, errors + _lint(pol, path)
+
+
+def item_id(x):
+    """The id a detection entry is merged and named by: a respond entry's trigger, anything else's id."""
+    return x.get("trigger" if "trigger" in x else "id") if isinstance(x, dict) else None
 
 
 def _lint(pol, path):
@@ -201,5 +221,90 @@ def _lint(pol, path):
                 errors.append(f"{where}: can never fire: class {cls} has no field {field!r}")
             elif cls not in (None, "unknown") and cls not in tools.values():
                 errors.append(f"{where}: can never fire: no tool maps to class {cls}")
+    return errors + _lint_detect(pol, path)
+
+
+def _int(v, lo, hi):
+    return isinstance(v, int) and not isinstance(v, bool) and lo <= v <= hi
+
+
+def _lint_detect(pol, path):
+    """Errors of the sequences, limits and respond sections. A step or limit names a rule id, a rule's label or `*`
+    (every call); it counts only allowed calls and consumed approvals, so a name only deny rules carry never counts."""
+    rules = [r for sec in SECTIONS for r in pol.get(sec, []) if isinstance(r, dict) and isinstance(r.get("id"), str)]
+    known = {"*"} | {r["id"] for r in rules} | {r["label"] for r in rules if isinstance(r.get("label"), str)}
+    live = {"*"} | {n for sec in ("ask", "flag") for r in pol.get(sec, []) if isinstance(r, dict)
+                    for n in (r.get("id"), r.get("label"))}
+    errors, ids = [], set()
+    if (pol.get("sequences") or pol.get("limits")) and pol.get("unknown_tools", "allow") == "allow":
+        errors.append(f"{path}: sequences and limits need unknown_tools flag, ask or deny: an unmapped tool's calls "
+                      "would count for nothing")
+
+    def name(where, n):
+        if not isinstance(n, str):
+            errors.append(f"{where}: {n!r} is not a rule id or label")
+        elif n in pol.get("tools", {}) and n not in known:
+            errors.append(f"{where}: {n!r} is a raw tool name; name a rule id or label (the signer's reading of the "
+                          "call), which an alias can't dodge")
+        elif n not in known:
+            errors.append(f"{where}: unknown rule id or label {n!r}")
+        elif n not in live:
+            errors.append(f"{where}: {n!r} can never count: only deny rules carry it, and a denied call never counts")
+
+    def common(where, x, keys, required):
+        errors.extend(f"{where}: unknown key {k!r}" for k in sorted(set(x) - keys))
+        errors.extend(f"{where}: needs {k}" for k in required if k not in x)
+        if "window" in x and not _int(x["window"], 1, MAX_WINDOW):
+            errors.append(f"{where}: window must be whole seconds from 1 to {MAX_WINDOW}")
+        if x.get("scope", "run") not in SCOPES:
+            errors.append(f"{where}: scope must be one of {', '.join(SCOPES)}")
+        if "max" in x and not _int(x["max"], 1, 2 ** 53 - 1):
+            errors.append(f"{where}: max must be a positive integer")
+
+    for sec, keys in (("sequences", SEQ_KEYS), ("limits", LIMIT_KEYS)):
+        for x in pol.get(sec, []):
+            if not isinstance(x, dict) or not isinstance(x.get("id"), str):
+                errors.append(f"{path}: {sec} entry needs a string id: {x!r}")
+                continue
+            where = f"{path}: {sec} {x['id']}"
+            if x["id"] in ids or x["id"] in TRIGGERS:
+                errors.append(f"{where}: duplicate id (sequences, limits and built-in triggers share names)")
+            ids.add(x["id"])
+            common(where, x, keys, ("steps", "window") if sec == "sequences" else ("match", "max", "window"))
+            if sec == "sequences":
+                steps, unless = x.get("steps"), x.get("unless", [])
+                if not isinstance(steps, list) or not steps:
+                    errors.append(f"{where}: steps must be a non-empty list")
+                for n in steps if isinstance(steps, list) else []:
+                    name(f"{where}: step", n)
+                if not isinstance(unless, list) or not all(isinstance(n, str) and n in known for n in unless):
+                    errors.append(f"{where}: unless must list rule ids or labels of this policy")
+                continue
+            if "match" in x:
+                name(f"{where}: match", x["match"])
+            s = x.get("sum")
+            if ("count" in x) == ("sum" in x) or "count" in x and x["count"] is not True:
+                errors.append(f"{where}: needs `count: true` or `sum: {{field, currency_field}}`, not both")
+            elif s is not None and not (isinstance(s, dict) and set(s) == {"field", "currency_field"}
+                                        and all(isinstance(v, str) for v in s.values())):
+                errors.append(f"{where}: sum must be {{field, currency_field}}: argument names, in minor units")
+    triggers = set()
+    for x in pol.get("respond", []):
+        if not isinstance(x, dict) or not isinstance(x.get("trigger"), str):
+            errors.append(f"{path}: respond entry needs a string trigger: {x!r}")
+            continue
+        t, where = x["trigger"], f"{path}: respond {x['trigger']}"
+        if t in triggers:
+            errors.append(f"{where}: duplicate trigger")
+        triggers.add(t)
+        common(where, x, RESPOND_KEYS, ("mode", "action") + (("max",) if t in ("denied_calls", "refusal_burst") else ()))
+        if t not in ids and t not in TRIGGERS:
+            errors.append(f"{where}: trigger must be a sequence or limit id or one of {', '.join(TRIGGERS)}")
+        if x.get("mode") not in MODES or x.get("action") not in ACTIONS:
+            errors.append(f"{where}: mode must be {'|'.join(MODES)} and action {'|'.join(ACTIONS)}")
+        if t in NOTIFY_ONLY and x.get("action") != "notify":
+            errors.append(f"{where}: {t} is notify-only: it is never enforced")
+        if t == "denied_calls" and "window" not in x:
+            errors.append(f"{where}: needs window")
     return errors
 

@@ -243,7 +243,7 @@ from tracekit.identity.oidc import keys, person
 from tracekit.locking import lock_file
 from tracekit.policy2 import compile as policy_compile, engine
 from tracekit.policy2.engine import Engine
-from tracekit.signer import logkey, metrics, reconcile, rpc_schema, webhook
+from tracekit.signer import detect, logkey, metrics, reconcile, rpc_schema, webhook
 from tracekit.signer import otel as signer_otel
 from tracekit.signer.pipeline import EXPIRED, RecordLog, approval, final_run, owner, salt_label, subject
 from tracekit.signer.quotas import MAX_LINE, Limits, Quotas
@@ -552,13 +552,15 @@ class SignerService:
             self.anchors = [] if rekor is None else [RekorAnchor(
                 rekor["signing_config"], rekor["trusted_root"],
                 _secret(os.path.join(keys, "rekor.key"), rekor2.new_key), rekor.get("every_s", rekor2.MIN_EVERY_S))]
-            self.log = RecordLog(storage, open_storage, sign, self.quotas, salt, self.metrics, bridge, certify)
+            self.policy = policy or load_policy()
+            self.log = RecordLog(storage, open_storage, sign, self.quotas, salt, self.metrics, bridge, certify,
+                                 detect.Detector.of(self.policy))
         except BaseException:
             storage.close()
             raise
         self._webhooks = [webhook.Sender(**w, dropped=self.metrics.webhook_dropped) for w in webhooks]
         self.log.observers += [w.put for w in self._webhooks]   # before the startup checks, so their records go out too
-        self.policy, self.isolation = policy or load_policy(), isolation
+        self.isolation = isolation
         self.identity = identity or _process_identity()
         self.tenant, self.tenants, self.authorize = tenant, dict(tenants or {}), authorize
         self.multi_tenant_apps, self.migrators, self.analyzers = set(multi_tenant_apps), set(migrators), set(analyzers)
@@ -1336,13 +1338,15 @@ class SignerService:
         return bool(commitment and digest) and hmac.compare_digest(commitment, self._commit(label, digest))
 
     def _evaluate(self, tool, args, hint, untrusted=None):
-        """(policy decision, hint disagreed). A class hint that disagrees with the policy's class gets the stricter of
-        the two decisions."""
+        """(policy decision, hint disagreed, the rule ids of both readings). A class hint that disagrees with the
+        policy's class gets the stricter of the two decisions; detection sees the rules of both, so a mismatch can't
+        hide a step."""
         d = self.policy.decide(tool, args, untrusted=untrusted)
         if hint is None or hint == self.policy.tool_class(tool):
-            return d, False
+            return d, False, d["rule_ids"]
         h = self.policy.decide(tool, args, hint if hint in policy_compile.CLASSES else "unknown", untrusted)
-        return max(d, h, key=lambda x: STRICTNESS.index(x["verdict"])), True
+        return (max(d, h, key=lambda x: STRICTNESS.index(x["verdict"])), True,
+                list(dict.fromkeys(d["rule_ids"] + h["rule_ids"])))
 
     def _key(self, kind, v):
         return hmac.new(self._prov_key, f"{kind}\0{v}".encode("utf-8", "surrogatepass"), "sha256").digest()
@@ -1574,6 +1578,7 @@ class SignerService:
         # matched here, off the writer thread; the writer picks a memoised deny/ask or this result
         ruled = self._evaluate(tool, args, hint, untrusted) if digest else None
         prov = prov()
+        sums, unreadable = self.log.detector.prepare(tool, args, ruled[2]) if self.log.detector and ruled else ({}, False)
         did = "dec-" + secrets.token_hex(16)
         commitment = self._commit(did, digest) if digest else None
         # lean: expires_at is signed but `complete` does not enforce it; enforce once executors check it before running
@@ -1589,8 +1594,10 @@ class SignerService:
             elif memo and memo["attempt"] == attempt and memo["decision"] in ("deny", "ask") and self._same(memo, digest):
                 verdict, rule_ids = memo["decision"], memo["rule_ids"]
             else:
-                d, mismatch = ruled
+                d, mismatch, both = ruled
                 verdict, rule_ids = d["verdict"], d["rule_ids"]
+                if self.log.detector and self.log.detector.counts and both != rule_ids:
+                    data["detect"] = {"rule_ids": both}
                 if d.get("nondeterministic"):
                     data["nondeterministic"] = True
                 if mismatch:
@@ -1601,6 +1608,10 @@ class SignerService:
                     tx.set(run["denied"], digest, True)
                 elif verdict != "ask" and digest in run["denied"]:
                     gaps.append(("decision_flip", f"{verdict} after a deny for the same arguments in this run"))
+            if unreadable and verdict in ("allow", "flag"):
+                verdict, rule_ids = "ask", rule_ids + [detect.SUM_UNREADABLE]
+            if sums:
+                data["detect"] = {**data.get("detect", {}), **sums}
             if commitment:
                 data["args_commitment"] = commitment
             call = {"tool_call_id": tcid, "attempt": attempt, "decision": verdict, "rule_ids": rule_ids,

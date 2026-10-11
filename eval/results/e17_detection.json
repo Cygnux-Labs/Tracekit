@@ -1,0 +1,72 @@
+{
+  "alias_unknown": {
+    "incidents": 1,
+    "ok": true
+  },
+  "denied_step": {
+    "incidents": [
+      "denied_calls"
+    ],
+    "ok": true
+  },
+  "detector_cost": {
+    "ok": true,
+    "state_keys_after_50_and_400_calls": [
+      566,
+      566
+    ]
+  },
+  "get_query_egress": {
+    "incidents": [
+      [
+        "TK-Q001"
+      ]
+    ],
+    "ok": true
+  },
+  "merge_keeps_pack": {
+    "errors": [],
+    "ok": true,
+    "sequences": [
+      "TK-Q001",
+      "X-MINE"
+    ]
+  },
+  "parallel": {
+    "incidents_per_run": [
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1,
+      1
+    ],
+    "ok": true
+  },
+  "recover": {
+    "incidents": 1,
+    "ok": true
+  },
+  "restart_mid_sequence": {
+    "ok": true,
+    "replay": [
+      1,
+      "complete"
+    ],
+    "snapshot": [
+      1,
+      "complete"
+    ]
+  },
+  "session_scope": {
+    "ok": true,
+    "with_parent_run": 1,
+    "without_parent_run": 0
+  },
+  "snapshot_then_restart": {
+    "incidents": 1,
+    "ok": true
+  }
+}

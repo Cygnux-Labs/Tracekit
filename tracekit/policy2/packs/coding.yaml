@@ -7,7 +7,7 @@
 # normalised one), with `\` as `/` and also casefolded (the agent's file system may ignore case). Rules stay tripwires: the
 # protection is the signer, its storage and the witnesses.
 
-version: '2026.10-v2-3'
+version: '2026.10-v2-4'
 description: coding agents on a laptop (Claude Code, Codex, Cursor, Gemini)
 # laptop: a tool the pack does not map is flagged, not held; server.yaml holds it for a person (ask)
 unknown_tools: flag
@@ -172,3 +172,10 @@ flag:
     field: command
     pattern: '\b(export\s+)?(PATH|LD_PRELOAD|LD_LIBRARY_PATH|BASH_ENV|ENV|PROMPT_COMMAND|PYTHONPATH|NODE_OPTIONS)=|\bunset\s+(ANTHROPIC_BASE_URL|HTTPS?_PROXY)\b|>>?\s*~?/?[^\s]*\.(bashrc|profile|zshrc|bash_profile)\b'
     label: env_tamper
+  - id: TK-F012
+    # any URL a call acts on: an http or browser call, a URL in a command's argv, an MCP tool's arguments. A GET with
+    # a query string sends data too, so egress is not only what TK-P003's sends_to reads
+    field: target
+    pattern: '\b([Hh][Tt][Tt][Pp][Ss]?|[Ww][Ss][Ss]?|[Ff][Tt][Pp])://'
+    label: egress
+

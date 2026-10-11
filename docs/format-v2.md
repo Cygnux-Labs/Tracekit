@@ -119,6 +119,12 @@ with nothing untrusted in its arguments needs no 1.1 verifier), `provenance_reas
 arguments whose values only untrusted content brought into the run, the kind of value (`email`, `url`, `host`, `path`,
 `digits`, `string`) and the record that brought it — never the value.
 
+Detection (format 1.2, [policy](policy-v2.md#detection-sequences-limits-and-respond)): under a policy with sequences
+or limits, `policy.decision` carries `detect{sequences: [{id, step}], limits: [{id, count, window_start}], state,
+rule_ids?, sums?}`. Signer records in the run whose record fired them: `incident.opened{incident_id, trigger, rule_ids,
+scope: {kind, id}, cites: [{run_id, run_seq}], mode, actions, would}`, `incident.updated{incident_id, cites}` and
+`incident.capped{cap, max, reason}`.
+
 Content vault (format 1.1, [privacy](privacy.md#the-content-vault)): `content.accessed{principal, run_id, seqs,
 purpose}` records that the signer returned the retained content of records `seqs` (run_seqs) of run `run_id` to
 `principal`, for `purpose`; `content.erased{run_id, reason, by}` records that it deleted that run's retained content.
@@ -376,7 +382,7 @@ what it added: record types, data fields per record type, and enum values per (r
 | Version | Record types | Data fields | Enum values |
 |---|---|---|---|
 | 1.1.0 | `input.observed`, `content.accessed`, `content.erased`, `why.finding` | `policy.decision`: `provenance`, `provenance_state`; `run.registered`: `replay_of` | — |
-| 1.2.0 | — | `run.registered`: `parent_run`, `session` | — |
+| 1.2.0 | `incident.opened`, `incident.updated`, `incident.capped` | `run.registered`: `parent_run`, `session`; `policy.decision`: `detect` | — |
 
 Every v2 definition is closed (`additionalProperties: false`), so an older verifier would fail a record that uses a
 newer entry; the version the manifest declares makes it report `UNVERIFIABLE (needs tracekit >= x)` instead, never

@@ -101,6 +101,21 @@ Each row says what the limit is, why it is so, what to do about it, and where th
 | **(1.1)** Reading values is bounded: linear in the text, at most 1 MiB and 4096 values per result or argument. | A result is attacker-controlled; the work must not grow with it. | Nothing: past the bound the run is `truncated` and fails closed. | [policy](policy-v2.md#provenance-untrusted-and-from-untrusted) |
 | **(1.1)** Bundles from a 1.1 signer must be exported with tracekit >= 1.1: a 1.0 exporter labels them 1.0.0, and a 1.0 verifier fails their schema. | Provenance adds record fields 1.0 doesn't know. | Upgrade the exporter and verifiers together with the signer. | [format](format-v2.md#3-events) |
 
+## Detection (1.2)
+
+| Limit | Why it is so | What to do | Details |
+|---|---|---|---|
+| **(1.2)** Sequences and limits catch the patterns they describe, nothing else: a reworded attack that carries none of their labels isn't seen. | Detection is deterministic rules over rule ids and labels, no model. | Read incidents as tripwires; add sequences for the patterns you care about and backtest them. | [policy](policy-v2.md#detection-sequences-limits-and-respond) |
+| **(1.2)** Incidents are recorded in shadow only: nothing is held or quarantined, whatever `respond` says. | Responses come in a later release; detection is measured first. | Watch `incident.opened` records; backtest before relying on a trigger. | [policy](policy-v2.md#detection-sequences-limits-and-respond) |
+| **(1.2)** `session` scope joins runs only through `parent_run`: a sequence split across runs registered without `parent` is two sessions. | The signer joins runs only on a link it can check (the parent's run token). | Register subagent runs with `parent`; use `owner` scope to join all runs of one identity. | [policy](policy-v2.md#detection-sequences-limits-and-respond) |
+| **(1.2)** Windows use the signer's clock, and are fixed: an NTP step moves them, and a burst straddling two windows can reach up to twice `max` before a limit fires. | Records' `ts` is the only clock a verifier can recompute; fixed windows keep the work O(1) per call. | Keep the signer on NTP; set `max` at half the burst you must catch. | [policy](policy-v2.md#detection-sequences-limits-and-respond) |
+| **(1.2)** A sum limit holds a call it counts without an integer amount and a currency (`ask`, `TK-LIMIT-SUM`). | A total across currencies or of an unreadable amount would mean nothing. | Send amounts as integers in minor units, with their currency field. | [policy](policy-v2.md#detection-sequences-limits-and-respond) |
+| **(1.2)** After a restart from a snapshot written without detection, decisions say `detect.state: unavailable` until the longest window has passed. | What came before the snapshot is no longer read. | Expect missed steps across such a restart; it clears on its own. | [policy](policy-v2.md#detection-sequences-limits-and-respond) |
+| **(1.2)** A scope idle past its longest window at a snapshot is dropped with its open incident: a later match opens a new one. | State must not grow with every run and owner the signer has seen. | Group incidents by trigger and scope when you read them. | [policy](policy-v2.md#detection-sequences-limits-and-respond) |
+| **(1.2)** Past 100 incident records in a run, or 60 in a tenant in a minute, one `incident.capped` is written and the rest are not. | A loop must not flood the log with incidents. | Read the run's decisions (their `detect` field) or backtest the policy to see the rest. | [policy](policy-v2.md#detection-sequences-limits-and-respond) |
+| **(1.2)** The server pack's thresholds were backtested on small shipped runs only. | Those are the runs that ship. | Backtest your own store (`tracekit policy backtest`) and set `max` above your busiest minute. | [policy](policy-v2.md#choosing-thresholds) |
+| **(1.2)** A bundle with `detect` fields or incident records needs a 1.2 verifier. | They are format 1.2 additions. | Upgrade verifiers with the signer. | [format](format-v2.md#3-events) |
+
 ## Content vault (1.1)
 
 | Limit | Why it is so | What to do | Details |

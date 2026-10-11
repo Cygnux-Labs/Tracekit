@@ -50,7 +50,8 @@ VERSIONS = {
     "1.1.0": {"types": ["input.observed", "content.accessed", "content.erased", "why.finding"],
               "fields": {"policy.decision": ["provenance", "provenance_state"], "run.registered": ["replay_of"]},
               "values": {}},
-    "1.2.0": {"types": [], "fields": {"run.registered": ["parent_run", "session"]}, "values": {}},
+    "1.2.0": {"types": ["incident.opened", "incident.updated", "incident.capped"],
+              "fields": {"run.registered": ["parent_run", "session"], "policy.decision": ["detect"]}, "values": {}},
 }
 KEY_TYPES = ("signer.epoch", "key.retire")
 

@@ -246,7 +246,9 @@ class ApprovalDesk:
 
 
 ENGINE_RULES = {"TK-UNKNOWN-TOOL": "a tool the policy does not map", "TK-SQL-PARSE": "SQL no dialect reads",
-                "TK-OVERSIZE": "arguments too large to check", "TK-SHELL-PARSE": "a shell command that does not parse"}
+                "TK-OVERSIZE": "arguments too large to check", "TK-SHELL-PARSE": "a shell command that does not parse",
+                "TK-LIMIT-SUM": "a sum limit counts this call: send the amount as an integer in minor units, with its "
+                                "currency"}
 SEVERE_GAPS = {"hook_missing", "proxy_missing", "policy_unrecorded", "state_tamper", "rollback", "key_revoked",
                "decision_flip", "executed_against_denial"}
 

@@ -26,7 +26,7 @@ from tracekit.core import now_ts
 from tracekit.format import registry
 from tracekit.format.records import RecordError, RecordSigner, verify_record
 from tracekit.schema import V2
-from tracekit.signer import reconcile
+from tracekit.signer import detect, reconcile
 from tracekit.signer.rpc_schema import RPCError
 from tracekit.storage.base import ZERO_HASH, StorageCorrupt, registry_tree
 
@@ -145,7 +145,8 @@ class Tx:
 
     def emit(self, run, typ, data, source=None, digests=None, **top):
         """Sign one event into `run` (source: the run's unless given) and feed it to the run's reconcile index
-        (`digests`: see reconcile.observe); returns its run_seq. Nothing follows log.closed."""
+        (`digests`: see reconcile.observe) and the detector, whose incident records follow it; returns its run_seq.
+        Nothing follows log.closed."""
         log = self.log
         if log.head["closed"]:
             raise RPCError("unavailable", "the log is closed (log.closed): it takes no more records")
@@ -157,6 +158,9 @@ class Tx:
              "ts": now_ts(), "run_id": run["run_id"], "agent_id": "main", "parent_id": None, "source": source or run["source"],
              "type": typ, "data": data, "tenant": run["tenant"], "log_id": log.log_id, "run_seq": run["run_seq"],
              "run_prev_hash": run["head"], **top}
+        view, incidents = log.detector.observe(self, log.det, e) if log.detector else (None, ())
+        if view is not None:
+            e["data"] = {**data, "detect": view}
         r = log.sign(e)
         self.records.append(r)
         self.set(log.head, "seq", e["seq"] + 1)
@@ -164,6 +168,8 @@ class Tx:
         self.set(run, "run_seq", e["run_seq"] + 1)
         self.set(run, "head", r["hash"])
         reconcile.observe(self.set, run, e, digests)
+        for t, d in incidents:
+            self.emit(run, t, d, source="signer")
         return e["run_seq"]
 
     def event(self, run, req, typ, data, digests=None, **top):
@@ -197,13 +203,14 @@ class Tx:
 
 
 class RecordLog:
-    def __init__(self, storage, open_storage, sign, quotas, salt, metrics, bridge=None, certify=None):
+    def __init__(self, storage, open_storage, sign, quotas, salt, metrics, bridge=None, certify=None, detector=None):
         """`storage` is open (and holds its lock); `open_storage()` reopens it after a disk error. `sign` is a
         format.records.RecordSigner; `salt` the secret the registry's per-tenant salts derive from; `metrics` a
         signer.metrics.SignerMetrics. `bridge`: the v1 ledger this log continues (signer.epoch `bridge`), refused
         unless the log is empty or already starts with it. `certify(log_id)` -> (RecordSigner, issuance entry): a
         fresh certified record key (tracekit.issuer.certify), taken instead of `sign` once the log is replayed; its
-        signer.epoch retires the key before it."""
+        signer.epoch retires the key before it. `detector`: a detect.Detector, or None when the policy detects nothing."""
+        self.detector = detector
         self.storage, self.open_storage, self.sign, self.quotas, self.salt = storage, open_storage, sign, quotas, salt
         self.metrics = metrics
         self.observers = []   # f(records), called on the writer once storage has taken a batch: must not block
@@ -244,7 +251,7 @@ class RecordLog:
                 "open_runs": self.open_runs, "approvals": self.approvals, "index": [[*k, a] for k, a in
                                                                                    self.approval_index.items()],
                 "registry": {t: size for t, (size, _) in self.storage.tail_state()["registry"].items()},
-                "keys": self.keys}
+                "keys": self.keys, **({"detect": self.det} if self.detector else {})}
 
     def snapshot(self):
         """Have the storage snapshot its indexes and the run state, unless a write is in flight or the storage is
@@ -253,6 +260,8 @@ class RecordLog:
         # write it off it once snapshots take more than a few hundred ms
         def fn(tx):
             if not tx.records and not self.down:
+                if self.detector:
+                    self.detector.prune(self.det, time.time())
                 self.storage.snapshot_put(self._state())
         self.write(fn)
 
@@ -265,12 +274,15 @@ class RecordLog:
         size = tail["tree_size"]
         runs, prev, leaves, approvals, index, tenants, closed = {}, ZERO_HASH, {}, {}, {}, set(), False
         open_runs, by_run, start, base, keys = {}, {}, 0, {}, []   # owner -> runs not closing; run key -> its approval ids
+        det = detect.new()
 
         def spkis():   # the keys replayed records verify under: certified keys the log declared, else the file key
             return [base64.b64decode(k) for _, k in keys] if self.certify else [self.sign.spki]
         if s.snapshot:
             st, start, prev = s.snapshot["state"], s.snapshot["size"], s.snapshot["hash"]
             keys = st.get("keys", [])
+            # a snapshot written without detection can't say what came before it
+            det = st.get("detect") or detect.new(self.detector and time.time() + self.detector.window)
             try:
                 verify_record(next(s.iter_range(start - 1, start)), spkis(), {RecordSigner.alg})
             except RecordError as x:
@@ -309,6 +321,8 @@ class RecordLog:
             for tenant, leaf in self.leaves(r, tenants):
                 leaves.setdefault(tenant, []).append(leaf)
             closed = closed or e["type"] == "log.closed"
+            if self.detector:
+                self.detector.observe(detect.Plain, det, e)
             if not run["final"]:
                 run["active"] = since(e["ts"])
                 reconcile.observe(dict.__setitem__, run, e)
@@ -360,6 +374,7 @@ class RecordLog:
                 approvals[e["data"]["approval_id"]]["state"] = APPROVAL_ENDS[e["type"]]
         self.log_id = self.log_id or secrets.token_hex(16)
         self.runs, self.head, self.tenants, self.keys = runs, {"seq": size, "prev": prev, "closed": closed}, tenants, keys
+        self.det = det
         # lean: final runs stay in `runs` as final_run stubs, so tokens, run_exists and late writes answer from memory;
         # look them up in storage instead once a signer holds millions of runs
         self.live = {k: True for k, r in runs.items() if not r["final"] and k[1] != SIGNER_RUN[1]}   # the runs sweep visits
