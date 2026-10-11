@@ -490,10 +490,15 @@ class WhyData(WhyServer):
         run = self.exfil()
         acts = run.of_type("action")
         cite(run.path, "signed-run", range(10, 10 + len(acts)))
+        self.assertEqual(self.get("/api/why/workspace")["calls"], {})   # no signed record yet: nothing joins
+        with self.store.out.lock:   # the signed records, the first of another tool than its why event says
+            self.store.out.records.extend({"session_id": "signed-run", "tool_name": "other" if i == 0 else a["tool"],
+                                           "v2": {"run_seq": 10 + i}} for i, a in enumerate(acts))
         ws = self.get("/api/why/workspace")
         self.assertEqual([r["run_id"] for r in ws["runs"]], [run.run_id])
-        self.assertEqual(ws["calls"]["signed-run|10"], [run.run_id, "ev:" + acts[0]["id"]])
-        self.assertEqual(len(ws["calls"]), len(acts))
+        self.assertNotIn("signed-run|10", ws["calls"])
+        self.assertEqual(ws["calls"]["signed-run|11"], [run.run_id, "ev:" + acts[1]["id"]])
+        self.assertEqual(len(ws["calls"]), len(acts) - 1)
         high = [a for a in ws["alerts"] if a["severity"] == "high"]
         self.assertTrue(high and high[0]["run_id"] == run.run_id and "send_email" in high[0]["title"])
         node = next(n for n in self.get(f"/api/why/runs/{run.run_id}")["nodes"] if n["id"] == "ev:" + acts[0]["id"])

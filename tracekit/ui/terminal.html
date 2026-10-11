@@ -2103,6 +2103,7 @@
       const kind = x => { const n = d.nodes.find(n => n.id === x.node); return x.label === "task" ? "task" : `${x.trust} ${n && n.type === "action" ? "result" : "input"}`; };
       return `<span class="${p.status === "untrusted-only" ? "s-deny" : "s-ok"}">${p.status === "untrusted-only" ? "only untrusted" : "trusted"}</span> · ` + p.sources.map(x => esc(kind(x) + " " + x.label)).join(", ");
     }
+    const shq = s => "'" + String(s).replace(/'/g, "'\\''") + "'";   // one POSIX shell word, whatever the run's log says
     function argsFrom(a) {
       const v = a.v2, ref = whyRef(a);
       if (!v && !ref) return "";
@@ -2149,14 +2150,14 @@
       const d = whyDetail(ref.run), A = d && !d.error && d.actions[ref.node];
       if (!A) { el.innerHTML = `<div class="empty">${esc(!d ? "loading…" : d.error || "WHY explains tool calls: select one.")}</div>`; return; }
       const key = ref.run + "|" + ref.node, target = WTARGET[key] ?? A.target, rp = d.replay, busy = WBUSY === key;
-      const path = d.path || d.run_id;
+      const path = shq(d.path || d.run_id), prog = shq(rp.program || ""), tq = shq(target || "");
       const rows = A.candidates.map(c => {
         const t = c.test, st = c.status === "confirmed" && c.role !== "primary" ? "CONFIRMED" : c.status === "untested" && WJOINT.has(ref.run + "|" + c.intervention) ? "JOINT" : WSTATUS[c.status] || c.status;
         return `<tr><td title="${esc(c.intervention)}">${esc(c.label)}${c.trust === "untrusted" ? ` <span class="s-deny">untrusted</span>` : ""}</td><td class="${c.status === "confirmed" ? "s-deny" : c.status === "contributing" ? "s-flag" : "dim"}">${esc(st)}</td>
           <td>${esc(t ? `${sgn(t.effect)} [${sgn(t.ci[0])}, ${sgn(t.ci[1])}]` : "–")}</td><td>${esc(t ? `${pct(t.p_with)} → ${pct(t.p_without)} · n=${t.n}` : "–")}</td>
           <td>${rp.allowed ? `<button type="button" data-wtest="${esc(c.intervention)}"${busy ? " disabled" : ""}>${t ? "RE-TEST" : "RUN TEST"}</button>` : ""}</td></tr>`;
       }).join("");
-      const how = rp.allowed ? "" : `<p class="dim">${esc(rp.program ? `FIND THE CAUSE and RUN TEST replay ${rp.program}: start the viewer with --allow-program ${rp.program} to run them here, or run: tracekit why attribute ${path} --target '${target}' (one cause: tracekit why test ${path} --remove SPEC --target '${target}')` : "This run names no program, so it cannot be replayed: record it with a System (docs/why.md).")}</p>`;
+      const how = rp.allowed ? "" : `<p class="dim">${esc(rp.program ? `FIND THE CAUSE and RUN TEST replay ${rp.program}: start the viewer with --allow-program ${prog} to run them here, or run: tracekit why attribute ${path} --target ${tq} (one cause: tracekit why test ${path} --remove SPEC --target ${tq})` : "This run names no program, so it cannot be replayed: record it with a System (docs/why.md).")}</p>`;
       const left = `<div class="sec">VERDICT</div><div class="wverdict">${esc(verdict(A))}</div><div class="sec">HOW IT GOT HERE</div>` + lineageHtml(d, A.lineage);
       const right = `<div class="sec">CANDIDATE CAUSES</div><div class="wbar">${rp.allowed ? `<button type="button" data-wfind${busy ? " disabled" : ""}>${busy ? "REPLAYING…" : "FIND THE CAUSE"}</button>` : ""}<label>target <input id="wtarget" value="${esc(target)}" spellcheck="false"></label></div>
         <table class="wt"><thead><tr><th>REMOVE</th><th>STATUS</th><th>EFFECT [95%]</th><th>WITH → WITHOUT</th><th></th></tr></thead><tbody>` + (rows || `<tr><td colspan="5" class="empty">Nothing upstream to remove.</td></tr>`) + `</tbody></table>`

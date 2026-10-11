@@ -231,10 +231,14 @@ class Store:
     # -- what the page reads
     def workspace(self) -> Dict[str, Any]:
         """workspace() of every run, plus `alerts` (every run's, with its run id) and `calls`: "<signed run id>|<run_seq>"
-        -> [why run id, node id] of each tool call whose why event cites the signed record it produced."""
+        -> [why run id, node id] of each tool call whose why event cites a signed record of the same tool (the citation
+        is the why log's own claim, so a signed record of another tool, or none, joins nothing)."""
         paths = self.paths()
         out = workspace(paths)
         out["alerts"], out["calls"] = [], {}
+        with self.out.lock:
+            signed = {f"{r.get('session_id')}|{r['v2'].get('run_seq')}": r.get("tool_name")
+                      for r in self.out.records if isinstance(r.get("v2"), dict)}
         # lean: reads every run again on each request; cache by (size, mtime) as scan() does if workspaces grow large
         for p in paths:
             try:
@@ -246,8 +250,9 @@ class Store:
                                                                                 "tool", "agent", "seq")}} for a in al]
             for ev in run.of_type("action"):
                 tk = ev.get("tracekit")
-                if isinstance(tk, dict):
-                    out["calls"][f"{tk.get('run_id')}|{tk.get('run_seq')}"] = [run.run_id, "ev:" + ev["id"]]
+                key = isinstance(tk, dict) and f"{tk.get('run_id')}|{tk.get('run_seq')}"
+                if key and signed.get(key) == ev["tool"]:
+                    out["calls"][key] = [run.run_id, "ev:" + ev["id"]]
         return out
 
     def detail(self, run_id: str) -> Dict[str, Any]:
