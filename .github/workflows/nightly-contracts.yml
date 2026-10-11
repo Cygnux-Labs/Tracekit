@@ -1,0 +1,57 @@
+name: Nightly adapter contracts (@latest)
+# M2-11: the adapter contract suites against the newest release of every framework; a failure opens one issue
+# (label nightly-contracts) until it is closed.
+on:
+  schedule:
+    - cron: "17 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --upgrade -e ".[signer]" pytest langchain langgraph openai-agents claude-agent-sdk mcp browser-use
+      - run: python -m pip freeze | grep -iE 'langchain|langgraph|openai-agents|claude-agent|mcp|browser-use' | tee versions.txt
+      - run: python -m pytest -q tests/test_contract_*.py tests/test_integration_langchain.py
+
+  typescript:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+      - run: python -m pip install -e ".[signer]"
+      - working-directory: sdk/typescript
+        run: |
+          npm ci
+          npm i --no-save @openai/agents@latest ai@latest @anthropic-ai/claude-agent-sdk@latest
+          npm test
+
+  report:
+    needs: [python, typescript]
+    if: failure()
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const title = `Nightly adapter contracts failed against @latest (${new Date().toISOString().slice(0, 10)})`;
+            const open = await github.rest.issues.listForRepo({...context.repo, state: "open", labels: "nightly-contracts"});
+            if (open.data.length) return;
+            await github.rest.issues.create({...context.repo, title, labels: ["nightly-contracts"],
+              body: `Run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`});
