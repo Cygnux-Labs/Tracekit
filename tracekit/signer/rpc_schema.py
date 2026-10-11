@@ -1,7 +1,8 @@
 """The signer RPC contract, version 16: one JSON Schema per request and response, the error shape, and `SignerAPI`.
 
 Frozen: a change to any schema here is a new RPC_VERSION. Version 16 (all of Tracekit 1.2) adds register_run's optional
-`parent`; a signer serves RPC_MIN..RPC_VERSION (its `hello` `proto`), so a version 15 client keeps working unchanged.
+`parent`, agent approvers (approval_review, approval_revoke, approval_agents, approval_decide's `escalate` and
+`asserted`, approval_list's filters); a signer serves RPC_MIN..RPC_VERSION (its `hello` `proto`), so a version 15 client keeps working unchanged.
 The caller's identity comes from the transport (peer credentials, token, mTLS), never from a request field. Calls that change state carry `request_id`, scoped to that
 identity: a retry with the same id and payload gets the original response, the same id with another payload is refused
 with `conflict`, and the same id from another identity is a different request.
@@ -119,7 +120,9 @@ _SUMMARY = _obj(["approval_id", "state", "run_id", "tool_call_id", "attempt", "t
                  "requester", "expires_at"],
                 approval_id=ID, state=APPROVAL_STATE, run_id=ID, tool_call_id=ID, attempt=SEQ, tool=_str(256),
                 rule_ids=RULE_IDS, policy_hash=DIGEST, requester=_str(256), expires_at=_str(40),
-                passkey={"const": True})   # approving needs a passkey assertion
+                passkey={"const": True},   # approving needs a passkey assertion
+                escalated={"const": True},   # an agent or the signer handed it to people: only people answer it
+                agent={"const": True})   # an agent approver may answer it
 
 REQUESTS = {
     "register_run": _obj(["request_id", "agent"], request_id=ID, run_id=ID,
@@ -159,8 +162,10 @@ REQUESTS = {
     "approval_request": _obj(_RUN_REQ + ["tool_call_id"], **_RUN, tool_call_id=ID, attempt=SEQ,
                              reason=REASON),   # the agent's words: shown to the approver as such, never as the args
     "approval_decide": _obj(["request_id", "approval_id", "decision"], request_id=ID, approval_id=ID,
-                            decision={"enum": ["approve", "reject"]}, reason=REASON, on_behalf=PERSON,
-                            passkey=PASSKEY),
+                            decision={"enum": ["approve", "reject", "escalate"]},   # escalate: an agent approver's
+                            reason=REASON, on_behalf=PERSON, passkey=PASSKEY,
+                            # an agent approver's word for what it runs: recorded as unattested
+                            asserted=_obj([], model=_str(128), version=_str(64), prompt_hash=DIGEST)),
     # a chat bridge answers for the person who clicked (`approver`, slack:<team>/<user>), who `groups` (user groups of
     # the same team, slack:<team>/<group>) the bridge found them in; an `authorize` grant, never a default
     "approval_decide_on_behalf": _obj(["request_id", "approval_id", "decision", "approver"], request_id=ID,
@@ -172,7 +177,16 @@ REQUESTS = {
     "approval_get": _obj(["approval_id"], approval_id=ID, on_behalf=PERSON),
     # a page of the approvals the caller may see, oldest first; `cursor` is the previous page's next_cursor
     "approval_list": _obj([], run_id=ID, cursor=ID, limit={"type": "integer", "minimum": 1, "maximum": 1000},
-                          on_behalf=PERSON),
+                          on_behalf=PERSON, state=APPROVAL_STATE, escalated={"type": "boolean"},
+                          # agent: approvals an agent approver may answer now; person: every other one
+                          **{"for": {"enum": ["agent", "person"]}}),
+    # an agent approver's view of an approval it may answer (an `authorize` grant, never a default)
+    "approval_review": _obj(["approval_id"], approval_id=ID),
+    # a person vetoes an agent's approval before it is consumed
+    "approval_revoke": _obj(["request_id", "approval_id"], request_id=ID, approval_id=ID, reason=REASON,
+                            on_behalf=PERSON),
+    # the operator's kill switch for agent approvals (an `authorize` grant, never a default)
+    "approval_agents": _obj(["request_id", "enabled"], request_id=ID, enabled={"type": "boolean"}, reason=REASON),
     # the adapter will never resume this paused call: the approval ends at once and a later consume is refused
     "approval_abandon": _obj(_RUN_REQ + ["approval_id"], **_RUN, approval_id=ID, reason=REASON),
     "close_run": _obj(_RUN_REQ, **_RUN, reason=_str(256)),
@@ -228,10 +242,13 @@ RESPONSES = {
     "approval_request": _obj(["approval_id", "state"], approval_id=ID, state=APPROVAL_STATE,
                              expires_at=_str(40)),
     "approval_decide": _obj(["approval_id", "state", "self_approved"], approval_id=ID, state=APPROVAL_STATE,
-                            self_approved={"type": "boolean"}),   # dev mode only; caps assurance at `dev`
+                            self_approved={"type": "boolean"},   # dev mode only; caps assurance at `dev`
+                            escalated={"const": True},   # an agent's answer handed it to people
+                            suggested={"const": True}),   # a shadow-mode agent's answer: recorded, nothing changed
     "approval_decide_on_behalf": _obj(["approval_id", "state", "self_approved"], approval_id=ID, state=APPROVAL_STATE,
                                       self_approved={"type": "boolean"}),
-    "approval_wait": _obj(["approval_id", "state"], approval_id=ID, state=APPROVAL_STATE, reason=REASON),
+    "approval_wait": _obj(["approval_id", "state"], approval_id=ID, state=APPROVAL_STATE, reason=REASON,
+                          escalated={"const": True}),   # still requested, for people only: keep waiting
     # ok: the call may run now (an approval is consumed, or the call needed none); else rule_ids say why not
     "approval_consume": _obj(["ok", "rule_ids"], ok={"type": "boolean"}, rule_ids=RULE_IDS, approval_id=ID,
                              reason=REASON,
@@ -244,6 +261,20 @@ RESPONSES = {
     "approval_list": _obj(["approvals", "next_cursor"], approvals={"type": "array", "maxItems": 1000, "items": _SUMMARY},
                           next_cursor={"oneOf": [ID, {"type": "null"}]}),
     "approval_abandon": _obj(["approval_id", "state"], approval_id=ID, state=APPROVAL_STATE),
+    # view_digest: sha256(JCS(the rest of the answer))
+    "approval_review": _obj(["approval_id", "tool", "expires_at", "rules", "conditions", "budget", "args", "redacted",
+                             "view_digest"], approval_id=ID, tool=_str(256), expires_at=_str(40),
+                            rules={"type": "array", "maxItems": 32, "items": _obj(
+                                ["id"], id=_str(64), reason=REASON, rationale=REASON)},
+                            conditions={"type": "array", "maxItems": 4096, "items": _obj(
+                                ["rule", "condition", "passed"], rule=_str(64), condition=REASON,
+                                passed={"type": "boolean"})},
+                            budget={"type": "object"}, args=ANY,
+                            redacted={"type": "array", "maxItems": 4096, "items": _str(4096)},
+                            view_digest=DIGEST),
+    "approval_revoke": _obj(["approval_id", "state"], approval_id=ID, state=APPROVAL_STATE),
+    "approval_agents": _obj(["enabled", "revoked"], enabled={"type": "boolean"},
+                            revoked={"type": "array", "maxItems": 100000, "items": ID}),   # the agent approvals revoked
     "close_run": _obj(["run_id", "state", "run_seq"], run_id=ID, state={"const": "closing"}, run_seq=SEQ),
     "delegate_run": _obj(["run_token"], run_token=TOKEN),
     "tailer_lost": _SEQ_ONLY,
@@ -311,6 +342,9 @@ class SignerAPI(Protocol):
     def approval_get(self, req: dict) -> dict: ...
     def approval_list(self, req: dict) -> dict: ...
     def approval_abandon(self, req: dict) -> dict: ...
+    def approval_review(self, req: dict) -> dict: ...
+    def approval_revoke(self, req: dict) -> dict: ...
+    def approval_agents(self, req: dict) -> dict: ...
     def close_run(self, req: dict) -> dict: ...
     def delegate_run(self, req: dict) -> dict: ...
     def tailer_lost(self, req: dict) -> dict: ...

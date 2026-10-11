@@ -16,8 +16,13 @@ from ..policy import PolicyError, _sre_c, _sre_p, check_regex
 SECTIONS = ("deny", "ask", "flag")
 TOP_KEYS = {"version", "description", "extends", "tools", "untrusted", "unknown_tools", "deny", "ask", "flag"}
 RULE_KEYS = {"id", "class", "tool", "field", "pattern", "unless", "reason", "rationale", "label", "approval", "from"}
-# an ask rule's `approval`: executor t2 runs only the signer's copy; passkey required: approving needs a passkey
+# an ask rule's `approval`: executor t2 runs only the signer's copy; passkey required: approving needs a passkey;
+# agent: a reviewer agent may answer calls within its bounds (_lint_agent)
 APPROVAL = {"executor": ("t1", "t2"), "passkey": ("required",)}
+AGENT_KEYS, BOUND_KEYS, BUDGET_KEYS = {"mode", "allow", "budget", "veto_s"}, {"type", "min", "max", "enum", "pattern"}, \
+    {"count", "sum", "window", "scope"}
+BOUND_TYPES = {"integer": int, "string": str, "boolean": bool}
+MAX_WINDOW_S = 30 * 86400   # a budget's longest window: the signer keeps agent approvals this long
 # every class also has `target`: what the call acts on (engine.Engine._targets), so one rule without a class can match it
 CLASSES = {"shell": {"command", "argv", "line"}, "fs": {"path", "op", "content_digest"},
            "http": {"method", "url", "host", "internal", "sends_to"}, "sql": {"statement", "code", "verb", "db"},
@@ -183,8 +188,12 @@ def _lint(pol, path):
             if r.get("from", "untrusted") != "untrusted":
                 errors.append(f"{where}: from must be untrusted")
             if "approval" in r and (sec != "ask" or not isinstance(r["approval"], dict) or not r["approval"]
-                                    or any(v not in APPROVAL.get(k, ()) for k, v in r["approval"].items())):
-                errors.append(f"{where}: approval must be {{executor?: t1|t2, passkey?: required}}, on an ask rule")
+                                    or any(v not in APPROVAL.get(k, ()) for k, v in r["approval"].items()
+                                           if k != "agent")):
+                errors.append(f"{where}: approval must be {{executor?: t1|t2, passkey?: required, agent?}}, on an ask "
+                              "rule")
+            elif "agent" in r.get("approval", {}):
+                errors += [f"{where}: approval.agent: {e}" for e in _lint_agent(r)]
             if r["id"] in ids:
                 errors.append(f"{where}: duplicate id")
             ids.add(r["id"])
@@ -202,4 +211,65 @@ def _lint(pol, path):
             elif cls not in (None, "unknown") and cls not in tools.values():
                 errors.append(f"{where}: can never fire: no tool maps to class {cls}")
     return errors
+
+
+def _int(v, low=0):
+    return type(v) is int and v >= low
+
+
+def _lint_agent(rule):
+    """The errors of an ask rule's approval.agent: {mode, allow: {fields: {NAME: {type, min?, max?, enum?, pattern?}}},
+    budget?: {count?, sum?: {field, max}, window, scope}, veto_s?}."""
+    a, errors = rule["approval"]["agent"], []
+    if not isinstance(a, dict) or not set(a) <= AGENT_KEYS:
+        return [f"takes {sorted(AGENT_KEYS)}"]
+    if a.get("mode") not in ("shadow", "enforce"):
+        errors.append("mode must be shadow or enforce")
+    if rule["approval"].get("passkey") == "required":
+        errors.append("a passkey rule is answered by people only")
+    if "from" in rule:
+        errors.append("a `from: untrusted` rule is answered by people only")
+    if "veto_s" in a and not _int(a["veto_s"], 1):
+        errors.append("veto_s must be a positive integer (seconds)")
+    fields = a.get("allow", {}).get("fields") if isinstance(a.get("allow"), dict) and set(a["allow"]) == {"fields"} \
+        else None
+    if not (isinstance(fields, dict) and fields):
+        return errors + ["allow must be {fields: {NAME: {type, min?, max?, enum?, pattern?}}}, at least one field"]
+    for name, b in fields.items():
+        if not (isinstance(b, dict) and set(b) <= BOUND_KEYS and b.get("type") in BOUND_TYPES):
+            errors.append(f"field {name}: takes type (integer|string|boolean), min, max, enum, pattern")
+            continue
+        typ = BOUND_TYPES[b["type"]]
+        if any(k in b for k in ("min", "max")) and (typ is not int or not all(_int(b.get(k, 0), -2 ** 53)
+                                                                            for k in ("min", "max"))):
+            errors.append(f"field {name}: min and max are integers, on an integer field")
+        if "enum" in b and not (isinstance(b["enum"], list) and b["enum"] and all(type(v) is typ for v in b["enum"])):
+            errors.append(f"field {name}: enum lists values of its type")
+        if "pattern" in b:
+            try:
+                if typ is not str or not isinstance(b["pattern"], str):
+                    raise PolicyError("a pattern is a string, on a string field")
+                check_pattern(b["pattern"])
+            except PolicyError as e:
+                errors.append(f"field {name}: pattern: {e}")
+    budget = a.get("budget")
+    if budget is not None:
+        s = budget.get("sum") if isinstance(budget, dict) else None
+        if not (isinstance(budget, dict) and set(budget) <= BUDGET_KEYS and ({"count", "sum"} & set(budget))
+                and _int(budget.get("count", 1), 1) and budget.get("scope") in ("tenant", "requester")
+                and _int(budget.get("window"), 1) and budget["window"] <= MAX_WINDOW_S
+                and (s is None or isinstance(s, dict) and set(s) == {"field", "max"} and _int(s["max"], 1)
+                     and fields.get(s["field"], {}).get("type") == "integer")):
+            errors.append(f"budget must be {{count?, sum?: {{field (an integer field), max}}, window (seconds, at most "
+                          f"{MAX_WINDOW_S}), scope: tenant|requester}}, with count or sum")
+    return errors
+
+
+def warnings(pol):
+    """What lint lets through but a person should know: an agent approver on a money-moving class without executor t2
+    binds the approval, not what runs."""
+    return [f"ask rule {r['id']}: approval.agent on class {r.get('class')} without executor t2: the agent's approval "
+            "binds the arguments the agent reported, not what its process runs; add executor: t2"
+            for r in pol.get("ask", []) if isinstance(r, dict) and isinstance(r.get("approval"), dict)
+            and "agent" in r["approval"] and r.get("class") == "payment" and r["approval"].get("executor") != "t2"]
 

@@ -113,6 +113,11 @@ class SignerMetrics:
                                              "Runs the OTLP exporter (otel_out) did not deliver, by reason.", "reason"))
         self.webhook_dropped = self.add(Counter("tracekit_signer_webhook_dropped_total",
                                                 "Events a webhook did not deliver, by reason.", "reason"))
+        # escalations and shadow-mode suggestions: tracekit_signer_records_total{type="approval.escalated"|"approval.suggested"}
+        self.agent_answers = self.add(Counter("tracekit_signer_agent_approvals_total",
+                                              "Agent approvers' answers, by decision.", "decision"))
+        self.agent_budget = self.add(Counter("tracekit_signer_agent_budget_spent_total",
+                                             "What agent approvals took from sum budgets, by rule.", "rule"))
 
     def add(self, m):
         self.metrics.append(m)
@@ -129,6 +134,10 @@ class SignerMetrics:
                 self.decisions.inc(e["data"]["decision"])
                 if e["data"].get("nondeterministic"):
                     self.nondeterministic.inc()
+            elif e["type"] == "approval" and e["data"].get("approver_kind") == "agent":
+                self.agent_answers.inc(e["data"]["decision"])
+                for rule, n in e["data"].get("spent", {}).items():
+                    self.agent_budget.inc(rule, n)
 
     def render(self):
         out = []

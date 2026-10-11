@@ -378,7 +378,8 @@ class Runtime:
     it) and completed after, model calls are model_events (unless `record_models` is False: a gateway records
     them). Each event stores the citation of its record (`tracekit`); the signer is the gate, not the guard. A call held
     for approval is held again, under the same tool call and approval, when the agent retries it with the same arguments:
-    an approval given meanwhile lets the retry run. finish() (or close()) abandons the approvals still held."""
+    an approval given meanwhile lets the retry run. finish() (or close()) abandons the approvals still held, except
+    those an agent approver escalated to people (they expire with the run)."""
 
     def __init__(
         self,
@@ -543,7 +544,7 @@ class Runtime:
             **({"tool_uses": ex["tool_uses"][:128]} if ex["tool_uses"] else {}))) for ex in self._exchanges.values()]
         calls += [(lambda h=h: h["run"].call("approval_abandon", approval_id=h["aid"],
                                              reason="the run ended before the call was retried"))
-                  for h in self._held.values()]
+                  for h in self._held.values() if not h["escalated"]]   # people answer an escalated one
         calls += [run.close for run in self._tk_runs.values()]
         self._exchanges.clear()
         self._held.clear()
@@ -772,14 +773,16 @@ class Agent:
                 state, deadline = "requested", time.monotonic() + rt.approval_wait_s
                 while True:
                     left_ms = int(max(min(deadline - time.monotonic(), 300), 0.001) * 1000)
-                    state = run.call("approval_wait", approval_id=aid, timeout_ms=left_ms)["state"]
+                    waited = run.call("approval_wait", approval_id=aid, timeout_ms=left_ms)
+                    state = waited["state"]
                     if state != "requested" or time.monotonic() >= deadline:
                         break
                 policy["approval"] = {"id": aid, "state": state}
                 if state != "approved":
                     if state == "requested" and digest:
                         with rt._lock:
-                            rt._held[key] = {"tcid": tcid, "d": d, "aid": aid, "run": run}
+                            rt._held[key] = {"tcid": tcid, "d": d, "aid": aid, "run": run,
+                                             "escalated": waited.get("escalated", False)}
                     out["blocked"] = {"error": why + (
                         "; a person rejected it" if state == "rejected" else
                         f"; approval {aid} is requested: answer it (`tracekit approvals`), then retry the same call "

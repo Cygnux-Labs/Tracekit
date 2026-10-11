@@ -1,0 +1,44 @@
+{
+  "all_caught": true,
+  "cases": {
+    "E18.1 bounds": {
+      "attempts": 9,
+      "caught": true,
+      "ran": []
+    },
+    "E18.2 untrusted": {
+      "caught": true,
+      "ran": false
+    },
+    "E18.3 shopping": {
+      "caught": true,
+      "ran": {
+        "abandon after escalation": false,
+        "attempt+1": false,
+        "new tool_call_id": false
+      }
+    },
+    "E18.4 variants": {
+      "agent_reviews": 10,
+      "cap": 10,
+      "caught": true
+    },
+    "E18.5 budget": {
+      "caught": true,
+      "ran": 3,
+      "sum": 300
+    },
+    "E18.6 escalated": {
+      "caught": true,
+      "refusals": [
+        "forbidden",
+        "forbidden"
+      ]
+    },
+    "E18.7 kill switch": {
+      "caught": true,
+      "ran": false
+    }
+  },
+  "platform": "darwin"
+}

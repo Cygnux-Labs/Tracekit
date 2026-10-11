@@ -190,13 +190,110 @@ approvals:
 - A refusal (not an approver, self-approval, already answered) is shown to the clicker only, as an ephemeral message.
 - The bridge keeps which messages it posted in memory: after a restart it posts the approvals still pending again.
 
+## Agent approvers
+
+A reviewer agent may clear routine held calls (format 1.2, RPC 16). Its judgment is model output, and under prompt
+injection the requesting agent controls every argument it reviews, so the guarantees come from the signer: an agent
+answers only calls inside bounds the policy sets, people answer everything else, and an agent can only narrow what the
+bounds allow.
+
+**Identities.** In `signer.yaml`:
+
+```yaml
+authorize:
+  "mtls:spiffe://acme/reviewer": [approval_list, approval_review, approval_decide, status]
+  "mtls:spiffe://acme/ops/oncall": [approval_agents]      # the kill switch
+approvals:
+  approvers: ["oidc:alice", "group:acme/payments"]       # people: with agents, each one a person
+  persons: {"slack:T0123/U0456": alice}
+  agents: ["mtls:spiffe://acme/reviewer"]                # exact identities: no prefix, no group
+  agent_consume_s: 300      # an agent's approval is consumed within this, or never (default 300)
+  agent_timeout_s: 600      # no agent answer by then: the signer escalates to people (default 600)
+  ttl_s: 3600               # every approval's lifetime (default 3600)
+```
+
+The signer refuses to start when an agent is also an approver (directly or by a prefix), break-glass, in `persons`,
+in `multi_tenant_apps` or granted `approval_decide_on_behalf`; when `agents` is set without `approvers`; and when an
+approver is not a person (mapped in `persons`, an OIDC person or group). An agent is an agent on every path: never
+break-glass, never covered by `self_approval: allow`, never answered for by a bridge. It may call only
+`approval_list`, `approval_review`, `approval_decide` and `status`, and only with an `authorize` entry (no default
+grant). It never answers an approval of a run it requested or owns, or whose attested principal is its own person.
+
+**Bounds.** An ask rule says what agents may answer ([policy](policy-v2.md#agent-approvers-approvalagent)):
+
+```yaml
+ask:
+  - id: PAY-SMALL
+    class: payment
+    pattern: "^"
+    approval:
+      executor: t2
+      agent:
+        mode: enforce                     # or shadow
+        allow:
+          fields:
+            amount: {type: integer, min: 1, max: 10000}
+            payee: {type: string, enum: [acct-1, acct-2]}
+            memo: {type: string, pattern: "[A-Za-z0-9 ]{0,64}"}
+        budget: {count: 20, sum: {field: amount, max: 50000}, window: 86400, scope: tenant}   # or scope: requester
+        veto_s: 60                        # optional: people may revoke for this long before it runs
+```
+
+The bounds are a closed world, checked by the signer on the arguments it decided: every argument must be named, and
+every named one present and not null; a value has exactly its JSON type (the string `"100"`, `1e2`, `99.9` and `true`
+are no integer); a list passes only when it has elements and each one does; two arguments the class reads as one
+(`amount` and `amount_cents`, `payee` and `to`) fail; so do arguments over 16 KiB and a pattern that runs out of time.
+
+**The floor: people answer** unless every rule the call was held by (flags aside) has `approval.agent` and its bounds
+pass; the tool is one `tools` names exactly; no argument carries a value only untrusted content brought into the run
+and the run's provenance is complete; the run is no replay or findings run; agent approvals are on; and the budget has
+room. Synthetic rules (`TK-UNKNOWN-TOOL`, `TK-SQL-PARSE`, `TK-SHELL-PARSE`, `TK-OVERSIZE`) always need a person.
+`approval.request` records the outcome as `agent: {eligible, reason, rules, conditions_hash, args_key}` (only when a
+rule has `approval.agent`, so person-only bundles stay readable by a 1.1 verifier).
+
+**Budgets** count the agent approvals the signed records hold (rebuilt on restart), by rule, per tenant or per
+requesting identity (never an app-asserted principal). An approval under a `sum` budget records what it took
+(`spent`). An answer that would exceed a budget is escalated to people instead.
+
+**Anti-shopping.** Once an agent rejects or escalates a call (or the adapter abandons it after an escalation), the same
+tool with the same arguments, or the same tool call id in any attempt, is a person's to answer for the rest of the
+run; asking again writes a signed `capture.gap{reask_after_reject}`. A run gets at most 10 agent reviews and a tenant
+1000 an hour; past them, people answer.
+
+**What the reviewer sees.** `approval_review {approval_id}`: the tool, the rule ids with the policy's `reason` and
+`rationale`, each bound and whether it passed, the budget left, the signer's redacted copy of the arguments with control
+and bidirectional-override characters escaped (`\u202e`), the arguments redaction changed, the expiry and a
+`view_digest` (SHA-256 of JCS of the rest). Never the requesting agent's reason, the run id, the tool call id or where
+a value came from. Agents can't call `approval_get`. `approval_list` takes `state`, `for: agent|person` and `escalated`.
+
+**Answers.** `approval_decide` with `approve`, `reject` or `escalate` (agents only), optionally `asserted: {model,
+version, prompt_hash}` (recorded `attested: false`). The `approval` record carries `approver_kind: agent`; an approval
+carries `not_before` (after `veto_s`) and `consume_by` (`agent_consume_s` later): `approval_wait` answers `requested`
+until `not_before`, a consume before it is refused `TK-APPROVAL-VETO`, and one after `consume_by` expires
+(`approval.expired{reason: consume_window}`). `escalate` writes `approval.escalated`; the approval stays `requested`
+(`approval_wait` adds `escalated: true`) and only people answer it, across restarts. The signer escalates on its own
+after `agent_timeout_s` and when a budget is used up. In **shadow** mode an agent's answer is an `approval.suggested`
+record and changes nothing: compare suggestions with what people decide before you enforce.
+
+**Revocation and the kill switch.** A person revokes an agent's approval that is not consumed yet with
+`approval_revoke` (`approval.revoked`; the call never runs). `approval_agents {enabled: false}` (an `authorize` grant,
+never a default) writes a signed `approval.agents`, revokes every agent approval not consumed yet and sends every
+approval to people until it is switched on again.
+
+**Adapters** keep waiting while an approval is `requested`, escalated or not, until their own deadline; none abandons
+an escalated approval (`tracekit why` leaves it to expire with its run).
+
+Metrics: `tracekit_signer_agent_approvals_total{decision}`, `tracekit_signer_agent_budget_spent_total{rule}`, and
+`tracekit_signer_records_total{type="approval.escalated"|"approval.suggested"}`.
+
 ## Expiry and abandon
 
-An approval expires, with a signed `approval.expired`:
+An approval expires, with a signed `approval.expired` (on an approval agents may answer, with its `reason`):
 
-- one hour after it was requested (`APPROVAL_TTL_S`); a consume or answer after `expires_at` is refused even before
-  the sweep records it;
-- when its run goes final, since nothing could consume it afterwards.
+- `approvals.ttl_s` (default one hour) after it was requested; a consume or answer after `expires_at` is refused even
+  before the sweep records it (`ttl`);
+- when its run goes final, since nothing could consume it afterwards (`run_final`);
+- an agent's approval, `agent_consume_s` after it may be consumed (`consume_window`).
 
 The adapter can give up on one at once with `approval_abandon` (for example, when the user cancelled the run): the
 signer signs `approval.abandoned` and the approval can never be consumed. While an approval is pending, the run's idle
@@ -211,4 +308,7 @@ abandon, expiry, restart, encryption at rest, self-approval, tenant visibility),
 approval, a replayed assertion, expiry, self-approval by person id, another tenant, a passkey rule without a passkey,
 break-glass without a reason), `tests/test_webauthn.py` (the assertion checks, with a software authenticator),
 `tests/test_slack_approvals.py` (the Slack bridge against a real signer: signatures, replays, approve and reject, groups,
-self-approval, message updates), and `eval/e8_insider_v2.py` case E8v2.5 (the agent approving its own call in system mode).
+self-approval, message updates), `eval/e8_insider_v2.py` case E8v2.5 (the agent approving its own call in system mode),
+`tests/test_agent_approvers.py` (bounds, lint, config, eligibility, budgets, anti-shopping, escalation across a
+restart, revocation, the kill switch, shadow mode, the reviewer's view) and `eval/e18_agent_approvers.py` (a reviewer
+that approves anything, against every guarantee above).

@@ -76,10 +76,27 @@ duplicate-id error, unless both carry the identical rule, which is kept once), a
 | `unless` | no | regex; a subject that matches it is exempt |
 | `reason`, `rationale`, `label` | no | text; `reason` is shown with the decision, `label` names a flag's category |
 | `from` | no | `untrusted`: the rule also needs a value of its subject that only untrusted content brought into the run (Provenance) |
-| `approval` | no | on an `ask` rule only: `executor: t1` (default) or `t2` ([approvals](approvals.md#tiers-t1-and-t2-executors)), and/or `passkey: required` ([approvals](approvals.md#web-approvals-and-passkeys)) |
+| `approval` | no | on an `ask` rule only: `executor: t1` (default) or `t2` ([approvals](approvals.md#tiers-t1-and-t2-executors)), and/or `passkey: required` ([approvals](approvals.md#web-approvals-and-passkeys)), and/or `agent` (below) |
 
 Lint also rejects unknown keys, a `field` the rule's class doesn't have, and a class rule no tool maps to ("can never
 fire").
+
+### Agent approvers (`approval.agent`)
+
+`approval: {agent: {mode, allow: {fields}, budget?, veto_s?}}` lets an agent approver answer the rule's held calls
+within bounds ([approvals](approvals.md#agent-approvers)). It is part of the policy, so of `policy_hash`.
+
+| Key | Meaning |
+|---|---|
+| `mode` | `enforce`, or `shadow`: answers are recorded as `approval.suggested` and change nothing |
+| `allow.fields` | argument name → `{type: integer\|string\|boolean, min?, max?, enum?, pattern?}`; `min`/`max` on integers, `pattern` (RE2 subset, whole value) on strings, `enum` values of the field's type. A closed world: every argument must be named, every named one present |
+| `budget` | `{count?, sum?: {field, max}, window, scope: tenant\|requester}`: at most `count` agent approvals, and `sum` of an integer field, in `window` seconds (at most 30 days) |
+| `veto_s` | an agent's approval runs only after this many seconds, so people may revoke it first |
+
+Lint errors: `approval.agent` with `passkey: required`, or on a `from: untrusted` rule (people answer those). A warning
+(`tracekit policy lint`): `approval.agent` on a `payment` rule without `executor: t2`, where the approval binds the
+arguments the agent reported rather than what runs. The signer refuses to start with a policy that has agent rules
+and no `approvals.agents`.
 
 `policy_hash` is `sha256:` of the compiled policy as sorted-key, compact JSON (`policy2.compile.canonical`).
 
