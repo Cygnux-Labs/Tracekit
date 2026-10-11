@@ -118,6 +118,20 @@ class Recording:
         want = [(t["id"], t["executed_by"]) for t in RESPONSES["expect"]["tool_uses"]]
         self.assertEqual([self.ids(resp) for _, resp in self.exchanges()], [want, want])
 
+    def test_raw_and_streaming_responses_record_what_parse_returns(self):
+        """openai-agents streams through with_streaming_response.create and reads parse(): the stream it parses is the
+        one recorded (it used to be recorded as abandoned after 0 chunks, with no tool calls)."""
+        async def agents_sdk_way():
+            c = openai_client(lambda r: (200, sse(RESPONSES_STREAM["stream"]), True), openai.AsyncOpenAI)
+            async with c.responses.with_streaming_response.create(model="gpt-5", input="weather?", stream=True) as r:
+                return [ev async for ev in await r.parse()]
+        self.assertTrue(asyncio.run(agents_sdk_way()))
+        openai_client(lambda r: (200, RESPONSES["response"], False)).responses.with_raw_response.create(
+            model="gpt-5", input="hi").parse()
+        (_, streamed), (_, raw) = self.exchanges()
+        self.assertEqual((streamed.get("error"), self.ids(streamed)), (None, [("call_s", "client")]))
+        self.assertEqual(self.ids(raw), [(t["id"], t["executed_by"]) for t in RESPONSES["expect"]["tool_uses"]])
+
     # --- Anthropic ---
 
     def test_messages_create_and_stream_true(self):
