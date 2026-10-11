@@ -422,7 +422,7 @@ def cite(path, run_id, seqs):
     prev, seqs = GENESIS, iter(seqs)
     for ev in events:
         if ev["type"] == "action":
-            ev["tracekit"] = {"log_id": "log", "run_id": run_id, "run_seq": next(seqs)}
+            ev["tracekit"] = {"run_id": run_id, "run_seq": next(seqs), "type": "tool.result"}
         ev["prev_hash"] = prev
         ev.pop("hash")
         ev["hash"] = prev = event_hash(ev)
@@ -531,7 +531,7 @@ class WhyData(WhyServer):
         high = [a for a in ws["alerts"] if a["severity"] == "high"]
         self.assertTrue(high and high[0]["run_id"] == run.run_id and "send_email" in high[0]["title"])
         node = next(n for n in self.get(f"/api/why/runs/{run.run_id}")["nodes"] if n["id"] == "ev:" + acts[0]["id"])
-        self.assertEqual(node["tracekit"], {"log_id": "log", "run_id": "signed-run", "run_seq": 10})
+        self.assertEqual(node["tracekit"], {"run_id": "signed-run", "run_seq": 10, "type": "tool.result"})
 
     def test_a_why_log_on_the_tape(self):
         run = SYSTEM.run(seed=0, out_dir=self.store.root, run_id="t0")
