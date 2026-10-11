@@ -158,6 +158,11 @@ def _probe_keys(L):
         os.chmod(L.path(rel), mode)
 
 
+def _vault_key(L):
+    L.write("data/keys/content.key", os.urandom(32), 0o640)
+    L.signer_yaml(content={"retain": True})
+
+
 def _unit_without(*directives):
     def mutate(L):
         unit = L.kw["unit"]
@@ -187,6 +192,7 @@ CASES = [
     ("venv missing", "D-CODE-TRUST", lambda L: shutil.rmtree(L.path("opt"))),
     ("key file 0640", "D-KEYS-MODE", _chmod("data/keys/record.key", 0o640)),
     ("data dir 0750", "D-KEYS-MODE", _chmod("data", 0o750)),
+    ("content vault on, its key group-readable", "D-CONTENT-VAULT", _vault_key),
     ("log key is the record key", "D-KEYS-DISTINCT",
      lambda L: L.write("data/keys/log.key", open(L.path("data/keys/record.key"), "rb").read(), 0o600)),
     ("signer may dump core", "D-KEY-HYGIENE",

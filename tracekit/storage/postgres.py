@@ -12,8 +12,12 @@ picks the database, and its search_path the schema (`options=-csearch_path=trace
     tracekit_snapshots      size, mac, body: the indexes at a record tree size and the signer's state; the newest two
                             are kept
     tracekit_meta           key, value: what readers need without the signer's data dir ("log_vkey", the log key's vkey)
+    tracekit_content_keys   log_id, tenant, run_id, wrapped, stored: the content vault's wrapped run keys ('' erased)
+    tracekit_content        log_id, tenant, run_id, seq, blob: its encrypted blobs (signer only: not in READ_GRANTS)
 
-migrate() creates them (idempotent); run it as a migration role, `tracekit signer migrate --config signer.yaml`. The
+migrate() creates them (idempotent); run it as a migration role, `tracekit signer migrate --config signer.yaml`. A
+version 1 store (no content vault tables) still opens for readers and for a signer with the vault off; with it on the
+signer needs version 2, which migrate adds. The
 signer's role needs no UPDATE or DELETE on the logs: records, registry, notes and anchors are insert-only, and fsck
 finds a row edited behind the signer's back (hash, chains, signatures). GRANTS is the signer role's set.
 
@@ -98,19 +102,23 @@ def migrate(dsn):
         conn.execute("SELECT pg_advisory_xact_lock(%s, 0)", (LOCK_CLASS,))   # one migrate at a time
         conn.execute(SCHEMA)
         row = conn.execute("SELECT max(version) FROM tracekit_schema").fetchone()
-        if row[0] is None:
+        if row[0] is None or row[0] < VERSION:   # the tables a later version adds were created above
             conn.execute("INSERT INTO tracekit_schema VALUES (%s)", (VERSION,))
         elif row[0] > VERSION:
             raise ValueError(f"the store's schema is version {row[0]}, newer than this tracekit's {VERSION}")
     return VERSION
 
 
-def _check_version(conn):
+def _check_version(conn, need=1):
+    """Refuse a store whose schema is not version `need` to VERSION (1 lacks only the content vault's tables)."""
     try:
         version = conn.execute("SELECT max(version) FROM tracekit_schema").fetchone()[0]
     except errors.UndefinedTable:
         version = None
-    if version != VERSION:
+    if version is not None and version < need:
+        raise ValueError(f"the Postgres store's schema is version {version}; the content vault (content.retain) needs "
+                         f"version {need}: run `tracekit signer migrate --config signer.yaml`")
+    if version is None or version > VERSION:
         raise ValueError(f"the Postgres store's schema is version {version}, not {VERSION}: run "
                          "`tracekit signer migrate --config signer.yaml`")
 
@@ -228,9 +236,10 @@ class _Reads:
 
 
 class PostgresStorage(_Reads, Storage):
-    def __init__(self, dsn, mode=ACK_ON_WRITE, lock_timeout_s=0, snapshot_key=None):
+    def __init__(self, dsn, mode=ACK_ON_WRITE, lock_timeout_s=0, snapshot_key=None, content=False):
         """Another process holding the log's lock for `lock_timeout_s` raises BlockingIOError naming it. `snapshot_key`
-        authenticates snapshots: without it none is read or written (set the attribute once the key exists)."""
+        authenticates snapshots: without it none is read or written (set the attribute once the key exists).
+        `content`: the signer's content vault is on, which needs schema version 2."""
         if mode not in (ACK_ON_WRITE, ACK_ON_FSYNC):
             raise ValueError(f"unknown durability mode {mode!r}")
         self.dsn, self.full, self.snapshot_key, self._error = dsn, mode == ACK_ON_FSYNC, snapshot_key, None
@@ -240,7 +249,7 @@ class PostgresStorage(_Reads, Storage):
         self.conn = _connect(dsn)
         try:
             with self._db():
-                _check_version(self.conn)
+                _check_version(self.conn, 2 if content else 1)
                 self.conn.execute("SET synchronous_commit = " + ("on" if self.full else "off"))
                 for setting in ("statement_timeout", "idle_in_transaction_session_timeout"):
                     self.conn.execute(f"SET {setting} = '{WRITER_TIMEOUT}'")
@@ -394,6 +403,41 @@ class PostgresStorage(_Reads, Storage):
         with self._write(True) as conn:
             conn.execute("INSERT INTO tracekit_meta VALUES (%s, %s) ON CONFLICT (key) DO UPDATE SET value = "
                          "excluded.value", (key, value))
+
+    def content_key(self, log_id, tenant, run_id):
+        with self._db() as conn:
+            row = conn.execute("SELECT wrapped FROM tracekit_content_keys WHERE log_id = %s AND tenant = %s AND "
+                               "run_id = %s", (log_id, tenant, run_id)).fetchone()
+        return row and bytes(row[0])
+
+    def content_key_put(self, log_id, tenant, run_id, wrapped):
+        with self._write(True) as conn:
+            conn.execute("INSERT INTO tracekit_content_keys VALUES (%s, %s, %s, %s, %s) ON CONFLICT (log_id, tenant, "
+                         "run_id) DO UPDATE SET wrapped = excluded.wrapped, stored = excluded.stored",
+                         (log_id, tenant, run_id, wrapped, time.time()))
+
+    def content_put(self, log_id, tenant, run_id, seq, blob):
+        with self._write(True) as conn:
+            conn.execute("INSERT INTO tracekit_content VALUES (%s, %s, %s, %s, %s) ON CONFLICT (log_id, tenant, run_id, "
+                         "seq) DO UPDATE SET blob = excluded.blob", (log_id, tenant, run_id, seq, blob))
+
+    def content_get(self, log_id, tenant, run_id, seq):
+        with self._db() as conn:
+            row = conn.execute("SELECT blob FROM tracekit_content WHERE log_id = %s AND tenant = %s AND run_id = %s AND "
+                               "seq = %s", (log_id, tenant, run_id, seq)).fetchone()
+        return row and bytes(row[0])
+
+    def content_erase(self, log_id, tenant, run_id):
+        with self._write(True) as conn:
+            conn.execute("INSERT INTO tracekit_content_keys VALUES (%s, %s, %s, '', %s) ON CONFLICT (log_id, tenant, "
+                         "run_id) DO UPDATE SET wrapped = ''", (log_id, tenant, run_id, time.time()))
+            conn.execute("DELETE FROM tracekit_content WHERE log_id = %s AND tenant = %s AND run_id = %s",
+                         (log_id, tenant, run_id))
+
+    def content_runs(self):
+        with self._db() as conn:
+            return [tuple(r) for r in conn.execute("SELECT log_id, tenant, run_id, stored FROM tracekit_content_keys "
+                                                   "WHERE wrapped <> '' ORDER BY stored")]
 
     def fsck(self):
         return fsck(self.dsn, self.snapshot_key)

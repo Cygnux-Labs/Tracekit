@@ -38,6 +38,10 @@ gateway_mandatory: true                # optional, see Reconciliation
 Only an identity in `gateways` may record an exchange for another identity's run; the signer refuses `caller` from
 anyone else.
 
+To keep exchanges in the signer's [content vault](privacy.md#the-content-vault), turn the vault on in `signer.yaml`
+and also grant the gateway `status`: `[model_event, status]`. The gateway asks the signer's status once, and from then
+on each `model_event` carries the exchange's `body`. Restart the gateway after you turn the vault on or off.
+
 ## Calling it
 
 Each request needs two things:
@@ -69,7 +73,11 @@ Before forwarding a request: `model.exchange` phase `request`, with a digest of 
 request sends back. After the response completes: phase `response`, with the tool uses the model asked for (name,
 args commitment, `executed_by`), usage, the stop reason and any error. A non-streamed response reaches the client only
 after it is recorded; a streamed one passes through as it arrives, except the chunk with its terminal event, held
-until the response is recorded. If the signer refuses the record (the run closed, its quota is used up), the client
+until the response is recorded. With the signer's content vault on, each record also carries the body: the request as
+the client sent it, the response as the upstream sent it (a stream: assembled), when it fits the vault's
+`max_record_bytes` and half the signer's 1 MiB frame. The signer redacts it, commits to the redacted form as the
+record's `content_digest` and keeps it encrypted. Without the vault, the digest covers the raw bytes and no body leaves
+the gateway. If the signer refuses the record (the run closed, its quota is used up), the client
 gets an error whatever the fail mode.
 
 Errors are never a clean end:

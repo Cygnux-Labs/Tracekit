@@ -36,6 +36,7 @@ RECOVER_S = 1.0
 DONE_MAX = 100_000   # request_ids remembered for retries
 DONE_PER_IDENTITY = 10_000   # of them, at most this many per identity, so no caller evicts another's
 SIGNER_RUN = ("tracekit", "tracekit/signer")   # signer-level records; "/" keeps it out of reach of client run_ids
+# a tenant's signer records (content.accessed, content.erased) go in that tenant's run SIGNER_RUN[1]: never swept
 EXPIRED = "the record key's certificate has expired and the issuer has not renewed it yet"
 _MISSING = object()
 
@@ -138,7 +139,7 @@ class Tx:
     def new_run(self, tenant, run_id):
         run = new_run(tenant, run_id)
         self.set(self.log.runs, (tenant, run_id), run)
-        if (tenant, run_id) != SIGNER_RUN:
+        if run_id != SIGNER_RUN[1]:
             self.set(self.log.live, (tenant, run_id), True)
         return run
 
@@ -357,7 +358,7 @@ class RecordLog:
         self.runs, self.head, self.tenants, self.keys = runs, {"seq": size, "prev": prev, "closed": closed}, tenants, keys
         # lean: final runs stay in `runs` as final_run stubs, so tokens, run_exists and late writes answer from memory;
         # look them up in storage instead once a signer holds millions of runs
-        self.live = {k: True for k, r in runs.items() if not r["final"] and k != SIGNER_RUN}   # the runs sweep visits
+        self.live = {k: True for k, r in runs.items() if not r["final"] and k[1] != SIGNER_RUN[1]}   # the runs sweep visits
         self.approvals, self.approval_index = approvals, index   # approval_id -> state; (tenant, run, call, attempt) -> id
         self.open_runs = {k: n for k, n in open_runs.items() if n}
         keep, missing = {}, {}   # keep: past it, leaves of records a power loss lost (none under a note); set aside
@@ -417,8 +418,9 @@ class RecordLog:
             tx.emit(self.signer_run(tx), "key.retire", {"kid": self.keys[-1][0], "last_seq": last}, source="signer")
         tx.set(vars(self), "keys", self.keys + [[key["kid"], key["spki"]]])
 
-    def signer_run(self, tx):
-        return self.runs.get(SIGNER_RUN) or tx.new_run(*SIGNER_RUN)
+    def signer_run(self, tx, tenant=SIGNER_RUN[0]):
+        """The signer-level run, or with `tenant` that tenant's signer run."""
+        return self.runs.get((tenant, SIGNER_RUN[1])) or tx.new_run(tenant, SIGNER_RUN[1])
 
     # --- handlers ---
 

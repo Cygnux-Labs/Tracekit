@@ -1,4 +1,4 @@
-"""The signer RPC contract, version 13: one JSON Schema per request and response, the error shape, and `SignerAPI`.
+"""The signer RPC contract, version 14: one JSON Schema per request and response, the error shape, and `SignerAPI`.
 
 Frozen: a change to any schema here is a new RPC_VERSION. The caller's identity comes from the transport (peer
 credentials, token, mTLS), never from a request field. Calls that change state carry `request_id`, scoped to that
@@ -12,7 +12,7 @@ from typing import Protocol
 from tracekit.format.canon import MAX_SAFE_INT
 from tracekit.schema import _check
 
-RPC_VERSION = 13
+RPC_VERSION = 14
 MAX_RAW_ARGS = 1 << 20   # characters of a raw arguments string
 MAX_EXTERNAL_RECORD = 1 << 16   # characters of an external system's own decision record
 MAX_RESULTS_SENT = 1024
@@ -130,7 +130,8 @@ REQUESTS = {
                                    cache_write_tokens=SEQ, reasoning_tokens=SEQ),
                         tool_uses={"type": "array", "maxItems": 128, "items": _TOOL_USE},
                         tool_results_sent={"type": "array", "maxItems": MAX_RESULTS_SENT, "items": ID},
-                        caller=IDENTITY),   # from a `gateways` identity only: the client it authenticated (source gateway)
+                        caller=IDENTITY,   # from a `gateways` identity only: the client it authenticated (source gateway)
+                        body=ANY),   # the exchange's body, for the content vault when status says it is on
     "approval_request": _obj(_RUN_REQ + ["tool_call_id"], **_RUN, tool_call_id=ID, attempt=SEQ,
                              reason=REASON),   # the agent's words: shown to the approver as such, never as the args
     "approval_decide": _obj(["request_id", "approval_id", "decision"], request_id=ID, approval_id=ID,
@@ -173,6 +174,13 @@ REQUESTS = {
     # `public_key` is the credential's DER SubjectPublicKeyInfo (getPublicKey() in the browser), P-256 or Ed25519
     "passkey_register": _obj(["on_behalf", "credential_id", "public_key"], on_behalf=PERSON, credential_id=B64URL,
                              public_key=B64URL),
+    # the content vault (docs/privacy.md): the retained content of records of a run of the caller's tenant, each read
+    # recorded as `content.accessed`; `purpose` says why (a case id). The `content_read` grant, never a default
+    "content_get": _obj(["run_id", "seqs", "purpose"], run_id=ID,
+                        seqs={"type": "array", "maxItems": 1000, "items": SEQ},   # run_seqs
+                        purpose=_str(512, minLength=1)),
+    # delete a run's retained content for good (`content.erased`); an `authorize` grant, never a default
+    "content_erase": _obj(["request_id", "run_id"], request_id=ID, run_id=ID, reason=REASON),
 }
 
 _FAIL_MODES = {"type": "object", "additionalProperties": {"enum": ["open", "closed"]}}
@@ -216,7 +224,8 @@ RESPONSES = {
     "status": _obj(["rpc_version", "signer", "identity"], rpc_version={"const": RPC_VERSION},
                    signer=_obj(["name", "version"], name=_str(128), version=_str(64)),
                    identity=_obj(["scheme", "subject", "attested"], scheme=_str(32), subject=_str(256),
-                                 attested={"type": "boolean"})),
+                                 attested={"type": "boolean"}),
+                   content=_obj(["max_record_bytes"], max_record_bytes=SEQ)),   # the content vault is on
     "read": _obj(["events", "next_seq"], next_seq={"type": ["integer", "null"], "minimum": 0},
                  events={"type": "array", "maxItems": 1000,
                          "items": {"type": "object", "required": ["run_seq", "type", "event_hash", "data"],
@@ -225,6 +234,13 @@ RESPONSES = {
     "checkpoint_nudge": _obj(["scheduled"], scheduled={"type": "boolean"}),
     "decision_import": _obj(["run_seq", "signature"], run_seq=SEQ, signature={"enum": ["verified", "unverified"]}),
     "passkey_register": _obj(["credential_id"], credential_id=B64URL),
+    # per seq, in request order: the content and the record's salt (as `tracekit signer reveal` gives it), the content
+    # marked redacted (changed by redaction, so it opens no commitment: no salt), or why not
+    "content_get": _obj(["items"], items={"type": "array", "maxItems": 1000, "items": dict(
+        _obj(["seq"], seq=SEQ, content=ANY, salt=_str(64), redacted={"const": True},
+             state={"enum": ["not_retained", "too_large", "erased"]}),
+        oneOf=[{"required": ["content", "salt"]}, {"required": ["content", "redacted"]}, {"required": ["state"]}])}),
+    "content_erase": _SEQ_ONLY,   # of the content.erased record, in the tenant's signer run (tracekit/signer)
 }
 
 ERROR = _obj(["error"], error=_obj(["code", "message"], code={"enum": ERROR_CODES}, message=REASON,
@@ -276,3 +292,5 @@ class SignerAPI(Protocol):
     def checkpoint_nudge(self, req: dict) -> dict: ...
     def decision_import(self, req: dict) -> dict: ...
     def passkey_register(self, req: dict) -> dict: ...
+    def content_get(self, req: dict) -> dict: ...
+    def content_erase(self, req: dict) -> dict: ...

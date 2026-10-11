@@ -102,6 +102,49 @@ With the v2 signer service (`tracekit signer serve`), the signer redacts itself,
   itself instead of its digest: the signer redacts it and commits to it like any result, and keeps nothing of it in
   clear.
 
+## The content vault
+
+Records hold commitments, never content. Replaying a run (`tracekit why`) needs the content: the exact model requests
+and responses, tool arguments and results. The signer can keep it, when you turn it on:
+
+```yaml
+# signer.yaml
+content: {retain: true, retention_days: 30, max_record_bytes: 1048576}   # default: retain: false
+```
+
+- **Off by default.** With `retain: false` the signer stores no content at all. `tracekit doctor` (`D-CONTENT-VAULT`)
+  says whether the vault is on and for how long it keeps content.
+- **What it keeps.** Exactly what the signer commits to, after its own redaction, one item per record: a
+  `policy.decision`'s arguments (redacted as the approver sees them), a `tool.result`'s result or error, an
+  `input.observed` value, and a `model.exchange`'s `body` (the request, or the assembled response) when the client
+  sends one. The [gateway](gateway.md#what-is-recorded) sends it only when the signer says the vault is on. Content over
+  `max_record_bytes` is not kept, and the vault says `too_large`. Nothing unredacted is ever written. A decision whose
+  arguments the redaction changed no longer opens its `args_commitment`: `content_get` marks it `redacted` and returns
+  no salt, which could only test guesses of the removed value.
+- **Encryption.** AES-256-GCM per record, under a random key per run. That key is stored wrapped by the content master
+  key `keys/content.key`, created on first start (0600, the signer's user, like the other keys). The record is bound in
+  as associated data: `{log_id, run_id, seq (its run_seq), commitment}`. A blob copied to another record doesn't decrypt.
+  The file store keeps blobs under `store/content/<log>/<run>/<seq>`; Postgres in `tracekit_content` and
+  `tracekit_content_keys` (schema version 2: run `tracekit signer migrate`). Neither is in the readers' grants.
+- **Access is signed.** Only the signer reads the vault, through the `content_get` RPC: `{run_id, seqs (at most 1000
+  run_seqs), purpose}`, for a run of the caller's tenant. The caller needs the `content_read` grant in `authorize`,
+  which no identity has by default (agents never do). Each item comes back as `{content, salt}`, with the record's salt
+  as `tracekit signer reveal` gives it, so the caller recomputes the commitment, as `{content, redacted: true}` (no
+  salt) for decision arguments redaction changed and for a model exchange redaction changed whose `tool_uses` carry
+  `args_commitment` (the record's salt opens those too, over the arguments before redaction), or as `{state: not_retained | too_large
+  | erased}`. Every successful call writes a signed `content.accessed{principal, run_id, seqs, purpose}` into the
+  tenant's signer run (`tracekit/signer`). From the shell: `tracekit signer content get --run R --seq N... --purpose
+  CASE-1`; from Python: `Client().content_get({...})`.
+- **Erasure.** `tracekit signer content erase --run R [--reason TEXT]` (the `content_erase` grant, never a default), and
+  retention: at the signer's start and every hour after, runs whose key was stored more than `retention_days` ago.
+  Both delete the run's wrapped key and its blobs, then write a signed `content.erased{run_id, reason, by}`: the record
+  is written only once the key is gone (a storage error writes none, and the erasure can be retried). The signer keeps
+  nothing more for an erased run in its live store. Erasure doesn't reach copies taken before it: a backup, a WAL
+  archive or a replica of the store still holds the run's wrapped key and blobs, and opens with `keys/content.key`
+  ([limits](limits.md#content-vault-11)). Records and commitments are untouched, and bundles still verify.
+- **Bundles never hold vault content.** A bundle that holds `content.accessed` or `content.erased` records needs a 1.1
+  verifier.
+
 ## What leaves the machine
 
 - The ledger stays on the signer host.

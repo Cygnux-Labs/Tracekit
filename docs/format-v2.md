@@ -39,6 +39,7 @@ strict parser (`format.canon.loads_strict`) that rejects input JCS could hash di
 | `NaN`, `Infinity`, `-Infinity`, or a number that overflows to them | `non_finite` |
 | an integer token (no `.` or exponent) above 2^53 − 1 in magnitude, or longer than 16 digits | `int_range` |
 | a string or key with a lone UTF-16 surrogate (`"\ud800"`) | `lone_surrogate` |
+| arrays and objects nested more than 128 deep (`[[1]]` is 2 deep) | `depth` |
 
 Send larger integers as strings. A tool call whose raw arguments fail strict parsing is denied with rule
 `TK-ARGS-INVALID` and gets no `args_commitment` ([policy](policy-v2.md)).
@@ -82,7 +83,7 @@ its record hash is that of `"seq": 1`. It adds to v1:
 |---|---|---|
 | `log_id` | signer | the record log, 32 hex |
 | `seq`, `prev_hash` | signer | position in the log and the previous record's `hash` (`sha256:` + 64 zeros at seq 0) |
-| `tenant`, `run_id` | signer | the run; signer-level records use tenant `tracekit`, run `tracekit/signer` |
+| `tenant`, `run_id` | signer | the run; signer-level records use tenant `tracekit`, run `tracekit/signer`, and a tenant's own signer records (the content vault's) that tenant's run `tracekit/signer` |
 | `run_seq`, `run_prev_hash` | signer | position in the run and the run's previous record hash (zeros at run_seq 0) |
 | `tenant_attested`, `principal`, `principal_attested` | signer | whether tenant and principal came from the caller's verified identity |
 | `request_id`, `stream`, `client_seq` | client | idempotency key and per-stream counter; a skipped `client_seq` becomes a signer gap |
@@ -114,6 +115,12 @@ with nothing untrusted in its arguments needs no 1.1 verifier), `provenance_reas
 256 characters) and `provenance`: at most 16 `{field, kind, source: {run_seq, tool?, tool_call_id?}}`, the top-level
 arguments whose values only untrusted content brought into the run, the kind of value (`email`, `url`, `host`, `path`,
 `digits`, `string`) and the record that brought it — never the value.
+
+Content vault (format 1.1, [privacy](privacy.md#the-content-vault)): `content.accessed{principal, run_id, seqs,
+purpose}` records that the signer returned the retained content of records `seqs` (run_seqs) of run `run_id` to
+`principal`, for `purpose`; `content.erased{run_id, reason, by}` records that it deleted that run's retained content.
+Both are signer records (`source: signer`) in the run `tracekit/signer` of the tenant they concern, never in the run
+itself, whose records stay unchanged. They hold no content. A bundle with either needs `verifier_min_version` 1.1.0.
 
 ## 4. Records and the signature message
 
@@ -280,7 +287,9 @@ registry origin    tracekit.example.org/log/1/registry/62d28187e34b4d26bb63c6d6f
 A **run-set** is the range of registry leaves `a..b−1` between two registry checkpoints. It proves which runs of the
 tenant were registered and finalised in that window: a run deleted, a second `run.final`, or a withheld `key.retire`
 shows as a missing or extra leaf. A bundle with a run-set carries the tenant salt, so its holder can test guessed run
-ids against this tenant's leaves; other tenants' leaves stay opaque.
+ids against this tenant's leaves; other tenants' leaves stay opaque. In `registry/run-set.json` (§9), `from` and `to`
+are integer tokens: a number with a fraction or exponent (`4.0`, `4e0`), or any other type, makes the run-set
+INCOMPLETE.
 
 ## 8. Anchors
 
@@ -311,7 +320,7 @@ policies/<sha256>.json    policy snapshots, named by the SHA-256 of their bytes
 A run-set bundle adds:
 
 ```text
-registry/run-set.json     {"tenant_salt": base64, "from": a, "to": b, "consistency": [base64 hash, ...],
+registry/run-set.json     {"tenant_salt": base64, "from": a, "to": b (integer tokens), "consistency": [base64 hash, ...],
                            "leaves": [{"leaf": base64, "inclusion": [base64 hash, ...]}, ...]}
 registry/records.jsonl    the record each leaf points to, in leaf order
 checkpoints/registry-<n>.note   the registry notes at a (none when a = 0) and b
@@ -320,12 +329,26 @@ runs/                     every run whose run.final is in the range, and the sel
 
 JSON lines files end in a newline, one strict JSON text (§1) per line, each line at most 1 MiB. Hashes and keys in
 bundle files are standard base64 with padding (checkpoint notes and vkeys: canonical base64, §6). Zip limits: at most
-10,000 entries, 64 MiB per entry, 512 MiB in total; entries stored or deflated, not encrypted, each matching its CRC-32,
-no zip64; entry names match `[A-Za-z0-9_-][A-Za-z0-9._-]*(/[A-Za-z0-9._-]+)*` with no `.` or `..` segment; no
-symlinks; no duplicate names. A bundle carries no code and no trust configuration.
+10,000 entries, 64 MiB per entry, 512 MiB in total; entry names match `[A-Za-z0-9_-][A-Za-z0-9._-]*(/[A-Za-z0-9._-]+)*`
+with no `.` or `..` segment; no symlinks; no duplicate names. A bundle carries no code and no trust configuration.
 
-`verifier_min_version` is `1.1.0` when a bundled record is `input.observed` or a decision carrying `provenance` or
-`provenance_state`, else `1.0.0`; a 1.0 verifier reports such a bundle `UNVERIFIABLE (needs tracekit >= 1.1.0)`, never
+A bundle has one zip layout, so every reader sees the same entries; anything else is `UNUSABLE BUNDLE`:
+
+- the entries, in central-directory order, start at offset 0 and follow each other with no gap or overlap: each is a
+  local header, its name and its data, and the next starts where that data ends;
+- the central directory starts where the last entry ends and ends where the end-of-central-directory record starts
+  (offset + size = the record's offset), and the record is the file's last 22 bytes: no archive comment, no bytes
+  before the first entry or after the record;
+- the record is for disk 0 only, and both of its entry counts equal the number of central directory entries;
+- no zip64 record or locator, and no extra or comment field in any header;
+- each local header repeats its central entry: name, general-purpose flags, method, CRC-32 and both sizes;
+- general-purpose flags 0 (so no encryption and no data descriptor); method 0 (stored, with equal sizes) or 8 (deflate);
+- each entry's data is exactly its stated size and matches its CRC-32.
+
+`tracekit.bundle_v2` writes this layout (Python's `zipfile` writing a seekable file).
+
+`verifier_min_version` is `1.1.0` when a bundled record is `input.observed`, `content.accessed` or `content.erased`, or
+a decision carrying `provenance` or `provenance_state`, else `1.0.0`; a 1.0 verifier reports such a bundle `UNVERIFIABLE (needs tracekit >= 1.1.0)`, never
 FAILED.
 
 ## 10. The trust config
