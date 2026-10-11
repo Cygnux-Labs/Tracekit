@@ -26,5 +26,14 @@ class FlowMappings(unittest.TestCase):
         self.assertEqual(cfg["metrics"], {"listen": "127.0.0.1:9464"})
 
 
+class WithoutPyYAML(unittest.TestCase):
+    def test_a_json_config_loads_without_pyyaml(self):
+        """A config written as JSON (JSON is YAML) loads where PyYAML isn't installed, as it does where it is."""
+        text = '{"data_dir": "viewer", "storage": {"postgres": {"dsn_file": "reader.dsn"}}}'
+        with mock.patch.dict("sys.modules", {"yaml": None}):
+            self.assertEqual(yamlmini.load_any(text), {"data_dir": "viewer", "storage": {"postgres": {"dsn_file": "reader.dsn"}}})
+            self.assertEqual(yamlmini.load_any("data_dir: viewer\n"), {"data_dir": "viewer"})
+
+
 if __name__ == "__main__":
     unittest.main()

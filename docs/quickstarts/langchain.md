@@ -1,30 +1,45 @@
 # Quickstart: LangChain and LangGraph
 
-Every tool call is decided by the v2 signer before it runs and recorded after, as a signed event. This page runs the
-example in [examples/v2/langchain](../../examples/v2/langchain/) offline (a mock model, no API key), then reads the
-report of its verified bundle. It uses the dev signer, which runs as your own user (see [what dev assurance
+Every tool call is decided by the v2 signer before it runs and recorded after, as a signed event. This page adds it
+to the agent you have in three steps. It uses the dev signer, which runs as your own user (see [what dev assurance
 means](../quickstart-v2.md#what-dev-assurance-means)).
 
 ## 1. Install
 
 ```sh
-python3 -m venv .venv && . .venv/bin/activate      # Windows: .venv\Scripts\activate
-pip install 'tracekit-ai[signer]' 'langchain>=1.4,<1.5' 'langgraph>=1.2,<1.3'
+pip install tracekit-ai 'langchain>=1.4,<1.5' 'langgraph>=1.2,<1.3'
 ```
 
-## 2. Run the example
+## 2. One line in your agent
+
+```python
+import tracekit; tracekit.instrument()     # first
+from langchain.agents import create_agent
+from langchain_core.tools import tool
+
+@tool
+def bash(command: str) -> str:
+    """Run a shell command."""
+    return f"ran {command}"
+
+agent = create_agent("openai:gpt-5", [bash])
+print(agent.invoke({"messages": [("user", "tidy up")]})["messages"][-1].content)
+```
+
+Every `ToolNode` built after `instrument()` gates its calls, the one `create_agent` builds included, after any
+middleware's own `wrap_tool_call`. An `ask` pauses the graph with `interrupt()`, which needs a checkpointer; without one
+the call is denied. For approvals and the checkpointer commitments, wire the adapter by hand (below).
+
+## 3. See it verified
 
 ```sh
-python examples/v2/langchain/agent.py --scripted
+tracekit last
 ```
 
-The first call starts a dev signer in the background. One call is allowed, one is denied and the agent goes on, one is
-held until it is approved. `--scripted` approves it from a second process; without it, approve it yourself from another
-terminal with `tracekit approvals approve <id>` (`tracekit approvals show <id>` shows the signer's copy of the arguments
-first). The example then pins the signer's key (`tracekit signer trust -o trust.json`), exports the run (`tracekit
-export --v2 --run <id>`) once the signer has finalised it, and verifies it.
+It exports the most recent finished run, pins the dev signer's key, verifies the bundle and says where it is
+([the v2 quickstart](../quickstart-v2.md#3-see-it-verified)).
 
-## 3. Wire it into your agent
+## Approvals: wire it by hand
 
 ```python
 from tracekit.integrations.langchain import TracekitCheckpointer, TracekitMiddleware, tracekit_tool_node
@@ -43,7 +58,10 @@ agent = create_agent(model, tools, checkpointer=InMemorySaver(),
 An ask needs a checkpointer: the graph pauses with `interrupt()` and resumes with `Command(resume={"approval_id":
 ...})`. Without one the call is denied.
 
-## 4. Read the verify report
+An offline run of all this (a mock model, no API key), with an approval: `python examples/v2/langchain/agent.py
+--scripted` from a checkout.
+
+## Read the verify report
 
 ```text
 [PASS] checkpoint — tracekit.local/... at tree size 12, signed by its pinned log key
@@ -59,7 +77,7 @@ Assurance: dev; records ed25519; checkpoint Ed25519 only (...); no witness cosig
 checkpoint signed by that key includes it: nothing was edited, dropped or reordered after signing. Change one byte of
 the bundle and it reads `Integrity: FAILED`, naming the check (`tracekit demo --server` shows this). `Assurance: dev`
 says no pinned witness cosigned the checkpoint and the approval was a self-approval. [The v2
-quickstart](../quickstart-v2.md#4-export-and-verify) explains every line.
+quickstart](../quickstart-v2.md#export-and-verify-by-hand) explains every line.
 
 ## Next steps
 

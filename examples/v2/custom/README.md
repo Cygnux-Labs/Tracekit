@@ -9,7 +9,7 @@ agrees and records it with `run.complete`.
 
 ```sh
 python3 -m venv .venv && . .venv/bin/activate
-pip install 'tracekit-ai[signer]'       # from a checkout: pip install '.[signer]'
+pip install tracekit-ai       # from a checkout: pip install .
 python examples/v2/custom/agent.py --scripted
 ```
 

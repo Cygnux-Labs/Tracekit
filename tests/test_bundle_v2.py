@@ -428,15 +428,33 @@ class TestVerifyV2(Case):
                                        "--trust", self.trust)
             self.assertEqual((code, stdout), (2, ""))
 
-    def test_v1_verify_needs_only_the_standard_library(self):
-        v1 = os.path.join(os.path.dirname(TESTS), "docs", "sample", "demo-run.tkb")
-        code = ("import sys; sys.modules['rfc8785'] = None\n"
-                "from tracekit import cli\n"
-                f"sys.exit(cli.main(['verify', {v1!r}]))")
-        p = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
-                           cwd=os.path.dirname(TESTS))
-        self.assertEqual(p.returncode, 0, p.stderr)
-        self.assertIn("VERIFIED", p.stdout)
+    @unittest.skipIf(sys.version_info < (3, 10), "sys.stdlib_module_names is 3.10+")
+    def test_verifiers_need_only_the_standard_library(self):
+        """`pip install --no-deps tracekit-ai`: both verifiers import and run with every module outside the standard
+        library blocked, cryptography and rfc8785 included."""
+        sample = os.path.join(os.path.dirname(TESTS), "docs", "sample")
+        _, v2_bundle = self.honest()
+        blocker = ("import importlib.abc, sys\n"
+                   "class Block(importlib.abc.MetaPathFinder):\n"
+                   "    def find_spec(self, name, path=None, target=None):\n"
+                   "        if name.partition('.')[0] not in sys.stdlib_module_names | {'tracekit'}:\n"
+                   "            raise ImportError(f'blocked: {name}')\n"
+                   "sys.meta_path.insert(0, Block())\n"
+                   "import tracekit.verify.v1, tracekit.verify.v2\n"
+                   "from tracekit import cli, crypto\n"
+                   "assert crypto.BACKEND == 'pure-python'\n"
+                   "sys.exit(cli.main(sys.argv[1:]))\n")
+        key = ["--key", os.path.join(sample, "signer.pub")]
+        cases = {"v1 sample": (["verify", os.path.join(sample, "demo-run.tkb"), *key], 0, "Integrity: VERIFIED."),
+                 "v1 tampered sample": (["verify", os.path.join(sample, "demo-run-tampered.tkb"), *key], 1,
+                                        "Integrity: VERIFICATION FAILED."),
+                 "v2 bundle": (["verify", v2_bundle, "--trust", self.trust], 0, "Integrity: VERIFIED.")}
+        for why, (argv, want, verdict) in cases.items():
+            with self.subTest(why):
+                p = subprocess.run([sys.executable, "-c", blocker, *argv], capture_output=True, text=True,
+                                   cwd=os.path.dirname(TESTS))
+                self.assertEqual(p.returncode, want, p.stdout + p.stderr)
+                self.assertIn(verdict, p.stdout)
 
 
 class TestMalformedInput(Case):

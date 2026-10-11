@@ -41,7 +41,7 @@ Every mode is checked the same way: `tracekit doctor` ([doctor](doctor.md)) list
 For trying Tracekit and catching mistakes, not attacks. Prerequisites: Python 3.9+.
 
 ```sh
-pip install 'tracekit-ai[signer]'
+pip install tracekit-ai
 tracekit up --wait                 # optional: the first client starts it anyway
 tracekit init --dev --v2           # optional: wire Claude Code's hooks to it
 tracekit doctor                    # dev profile: a same-user signer and no witness are warnings
