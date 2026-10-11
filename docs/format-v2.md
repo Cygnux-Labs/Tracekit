@@ -122,14 +122,22 @@ Both are signer records (`source: signer`) in the run `tracekit/signer` of the t
 itself, whose records stay unchanged. They hold no content. A bundle with either needs `verifier_min_version` 1.1.0.
 
 `tracekit why` findings (format 1.1, [why](why.md#attribution-on-signed-runs)): a replay run's `run.registered` carries
-`replay_of` (the run it replays) and `investigation`; `why.finding{target, intervention, n, p_with, p_without, effect,
-interval, verdict, replay_runs: [{run_id, arm: control|ablated, hit}], models, rung, off_tape, investigation}`, written
-through the `why_finding` RPC in a findings run (`run.registered` `analyzes`), records a finished test. A bundle of a
-run with its findings and replay runs (`tracekit export --v2 --run R --with-findings`) holds those runs too; the
-verifier checks that every replay run a finding names is in the bundle, once, as a replay run of the analysed run in
-the finding's investigation, and that their arms and outcomes count to its `n`, `p_with`, `p_without` and `effect`
-(`findings`, FAILED otherwise). In any other bundle (a findings run alone, a run-set) a finding whose replay runs are
-absent is not counted (`findings counted`, a warning). A bundle with either needs `verifier_min_version` 1.1.0.
+`replay_of` (the run it replays) and `investigation`, and the signer does not reconcile it; `why.finding{target,
+intervention, n, p_with, p_without, effect, interval: [lo, hi], verdict, replay_runs: [{run_id, arm: control|ablated,
+hit}], models, rung, off_tape, investigation, looks, family, min_effect, applied, stopped, uncounted?: [{run_id,
+reason: ranking|budget}]}`, written through the `why_finding` RPC in a findings run (`run.registered` `analyzes`),
+records a finished test. A bundle of a run with its findings and replay runs (`tracekit export --v2 --run R
+--with-findings`) holds those runs too; the verifier checks that every replay run a finding names is in the bundle,
+once, as a replay run of the analysed run in the finding's investigation, holding its model calls as `source: gateway`
+model.exchange request and response pairs (one pair for rung 1 and for `ranking`); that an `uncounted` run is `budget`
+only in a finding `stopped: budget`; that with a target of `tool` clauses each `hit` has a response tool use those
+clauses match and, with `tool` clauses alone, each miss has none; that the arms and outcomes count to its `n`,
+`p_with`, `p_without` and `effect`; that `interval` is the Newcombe interval of those counts at z for `looks` ×
+`family` comparisons (Bonferroni), rounded to 4 places, with lo ≤ hi; and that `verdict` follows from it, `applied`
+and `min_effect` (`inconclusive` when `stopped` is `budget`); and that every replay run in the bundle of an
+investigation with findings is named by one (`findings`, FAILED otherwise). Replay runs of an investigation with no
+finding are a `replay runs` warning. In any other bundle (a findings run alone, a run-set) a finding whose replay runs
+are absent is not counted (`findings counted`, a warning). A bundle with either needs `verifier_min_version` 1.1.0.
 
 ## 4. Records and the signature message
 

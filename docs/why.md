@@ -385,22 +385,47 @@ shows, so the surrogate only orders what to test.
 - **Through the gateway, as evidence.** Each arm is a replay run registered with `replay_of: R` and the investigation
   id, by an investigator listed in signer.yaml `analyzers` (with the `content_read` grant); its model calls go through
   the gateway (`--gateway`, authenticated as the same identity: `--gateway-token-file`, or `--gateway-cert`/`--gateway-key`),
-  so they are signed records. Tools never run. Requests are sent with `stream: false`.
-- **Tests** are paired and sequential with the same intervals, corrections and verdicts as above (`--n`, `--n-max`,
-  `--workers N` arms in parallel). Every result reports `off_tape_actions` and its assumptions: no code between the
-  model calls rewrote the history, and tools are deterministic.
-- **Budgets** per investigation: `--max-calls` model calls, `--max-cost` estimated cost (with `--prices`, the
-  [price table](../tracekit/usage.py) `tracekit cost` reads). A test that reaches one stops `inconclusive` with
-  `stopped: budget`, reporting the looks it finished.
+  so they are signed records. After each call the investigator reads the replay run back: a call the gateway did not
+  record (a fail-open gateway that could not reach the signer) stops the investigation. Requests are sent with
+  `stream: false`, and to OpenAI with `store: false`. A replay run is not reconciled (no `reconcile.*` records, no
+  coverage in its `run.final`): it has model exchanges and, by design, no decisions.
+- **When tools run.** Tools the client runs (function and custom tools, and in rung 2 every tool use the model makes)
+  never run: their results come from the tape or the stub. A tool the provider runs itself would run again on every
+  arm, so a call whose request enables one is refused before anything is sent, naming it: OpenAI Responses tools other
+  than function and custom (hosted MCP, web search, file search, code interpreter, computer use, ...), Anthropic typed
+  server tools (web search, web fetch, code execution, ...), `mcp_servers` and `container`, chat completions'
+  `web_search_options`, or a recorded response in which the provider ran a tool. So is a Responses call that continues
+  context the provider holds (`previous_response_id`, `conversation`), which a removal can't reach. Test such a run on a
+  call without them (`--decision`), or record runs without provider-executed tools.
+- **Tests** are paired and sequential with the same intervals, corrections and verdicts as above (`--n`, `--n-max` up
+  to 1024, `--workers N` arms in parallel, 1 to 16). Every result reports `off_tape_actions` and its assumptions: no
+  code between the model calls rewrote the history, and tools are deterministic. A removed tool output keeps its
+  shape: a screenshot becomes a blank image, content parts one text part.
+- **Budgets** per investigation, counted in the `tracekit why` process (two processes with the same `--investigation`
+  each have their own): `--max-calls` model calls, `--max-cost` estimated cost (with `--prices`, the
+  [price table](../tracekit/usage.py) `tracekit cost` reads). Before each call the costliest call so far (recorded or
+  replayed) is reserved, and the call is sent only while spent + reserved stays within `--max-cost`; a call overshoots
+  only by what it costs past that estimate. A test that reaches a budget stops `inconclusive` with `stopped: budget`,
+  reporting the looks it finished. One reached while ranking, before any test finished, ends `attribute` with
+  `inconclusive (budget)` (exit 2).
 - **Find the cause** (`attribute`) without `--suspect`: a ContextCite-style surrogate re-sends the target's call with
-  32 random halves of its blocks removed, scores each response (the target's log-probability when the provider returns
-  logprobs, else whether it hit), fits a sparse linear model and ranks the blocks, labelled `predicted`. The four
-  top-ranked blocks with a positive weight become the suspects of the group-then-narrow search.
+  32 random halves of its blocks removed, scores each response (the target's log-probability when every response
+  carries it, which only OpenAI chat calls can: they are sent with `logprobs: true`; else whether it hit), fits a
+  sparse linear model and ranks the blocks, labelled `predicted`. The four top-ranked blocks with a positive weight
+  become the suspects of the group-then-narrow search.
 - **Signed findings.** Each finished test is written by the investigator through the signer as a `why.finding` record
-  (target, intervention, n, the rates, effect, interval, verdict, every replay run with its arm and outcome, models,
-  rung, off-tape actions, investigation) in a findings run (`analyzes: R`) of the run's tenant.
-  `tracekit export --v2 --run R --with-findings` bundles the run with its findings and replay runs; the verifier checks
-  that each finding's replay runs are in the bundle, are replay runs of R in that investigation, and count to its rates.
+  (target, intervention, n, the rates, effect, interval, verdict and what it was decided on: `looks`, `family`,
+  `min_effect`, `applied`, `stopped`; every replay run with its arm and outcome; models, rung, off-tape actions,
+  investigation; and `uncounted`: the replay runs of the investigation it doesn't count, the ranking's calls and the
+  arms a budget stop abandoned) in a findings run (`analyzes: R`) of the run's tenant.
+  `tracekit export --v2 --run R --with-findings` bundles the run with its findings and replay runs. The verifier checks
+  that each finding's replay runs are in the bundle, are replay runs of R in that investigation, each holds its model
+  calls as gateway records (exactly one for rung 1 and the ranking), and count to its rates; recomputes the interval
+  and verdict from those outcomes; for a `tool=` target, checks each outcome against the tool uses the gateway recorded
+  (a hit needs one; a miss must have none when the target is `tool` clauses alone); and fails a replay run of an
+  investigation with findings that no finding counts or lists. Replay runs of an investigation with no finding are a
+  warning. What stays the investigator's claim: outcomes scored on `text~` and `arg~` clauses, `applied`, and why a
+  run is `uncounted`.
 
 For the viewer and other tools: `tracekit.why.signed.Investigation(records, client, gateway)`, then
 `counterfactual_signed`, `attribute_signed` and `rank`. Limits:

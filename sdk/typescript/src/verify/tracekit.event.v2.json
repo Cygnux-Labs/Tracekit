@@ -2947,9 +2947,14 @@
         "models",
         "rung",
         "off_tape",
-        "investigation"
+        "investigation",
+        "looks",
+        "family",
+        "min_effect",
+        "applied",
+        "stopped"
       ],
-      "description": "A finished tracekit why test (format 1.1; why_finding), written in a findings run about the run it analyses: how often the target happened in the control arm (p_with) and with the intervention (p_without) over n paired replays, the interval and verdict, and every replay run with its arm and outcome. rung 1: one recorded model call re-sent; rung 2: the agent loop re-simulated from the recorded run.",
+      "description": "A finished tracekit why test (format 1.1; why_finding), written in a findings run about the run it analyses: how often the target happened in the control arm (p_with) and with the intervention (p_without) over n paired replays, the interval and verdict with what they were decided on (looks: the sequential test's planned looks, family: the tests corrected for together, min_effect, applied: whether the intervention matched anything, stopped: why the test ended), every replay run with its arm and outcome, and the replay runs of the investigation it does not count (uncounted: the surrogate's ranking calls, arms a budget stop abandoned). rung 1: one recorded model call re-sent; rung 2: the agent loop re-simulated from the recorded run.",
       "properties": {
         "target": {
           "type": "string",
@@ -2981,6 +2986,7 @@
         },
         "interval": {
           "type": "array",
+          "minItems": 2,
           "maxItems": 2,
           "items": {
             "type": "number",
@@ -3045,6 +3051,55 @@
         },
         "investigation": {
           "$ref": "#/$defs/id"
+        },
+        "looks": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4096
+        },
+        "family": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4096
+        },
+        "min_effect": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "applied": {
+          "type": "boolean"
+        },
+        "stopped": {
+          "enum": [
+            "decisive",
+            "futility",
+            "n_max",
+            "budget"
+          ]
+        },
+        "uncounted": {
+          "type": "array",
+          "maxItems": 4096,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "run_id",
+              "reason"
+            ],
+            "properties": {
+              "run_id": {
+                "$ref": "#/$defs/id"
+              },
+              "reason": {
+                "enum": [
+                  "ranking",
+                  "budget"
+                ]
+              }
+            }
+          }
         }
       }
     }

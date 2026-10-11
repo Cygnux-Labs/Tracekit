@@ -13,8 +13,11 @@ The ladder (docs/why.md "Attribution on signed runs"):
     rung 3  program replay: tracekit.why.replay with the run's System
 
 Every executed replay is evidence: each arm is a replay run registered with `replay_of` and the investigation id,
-whose model calls go through the Tracekit gateway as the investigator, so they are signed records; tools never run.
-A finished test is written through the signer as a `why.finding` in a findings run (`analyzes`) of the run's tenant.
+whose model calls go through the Tracekit gateway as the investigator, so they are signed records (each call is read
+back from the replay run: one the gateway did not record stops the investigation). No tool the client runs is
+executed: its results come from the tape or a stub. A request that lets the provider run a tool itself (hosted MCP, web
+search, code execution, ...) or continues context the provider holds is refused before anything is sent. A finished
+test is written through the signer as a `why.finding` in a findings run (`analyzes`) of the run's tenant.
 
 Content comes from `content_get` (purpose: the investigation id), each record checked against its commitment with the
 returned salt; a mismatch stops the investigation (EvidenceAlert).
@@ -47,7 +50,7 @@ from ..gateway import KINDS, OPEN, UPSTREAM_TIMEOUT_S, _NoRedirect
 from .analysis import atoms
 from .core import content_hash
 from .import_v2 import _calls, cite
-from .replay import MIN_EFFECT, Stop, find_cause, paired, summary
+from .replay import MIN_EFFECT, Stop, clauses, find_cause, holds, looks, paired, summary
 
 PATHS = {kind: path for path, kind in KINDS.items()}
 VAULTED = ("input.observed", "policy.decision", "tool.result", "model.exchange")
@@ -55,6 +58,13 @@ CHUNK = 100   # records per content_get
 REMOVED = "[removed by tracekit why]"
 STUB = {"error": "not in the recorded run"}
 MARGIN = 2   # model calls a rung 2 replay may make past the recorded number of turns
+MAX_WORKERS = 16
+MAX_N = 1024   # pairs per test: a finding names two replay runs per pair
+MAX_K = 1024   # the surrogate's samples
+# a 1x1 PNG: what a removed screenshot becomes, so a computer_call_output keeps its shape
+BLANK_PNG = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
+ANTHROPIC_CLIENT_TOOLS = ("custom", "bash_", "text_editor_", "computer_", "memory_")   # typed tools the client runs
+SERVER_HELD = ("previous_response_id", "conversation")   # OpenAI Responses: context the provider holds
 ASSUMPTIONS = ["no code between model calls rewrote the history the model was sent",
                "tools are deterministic: a recorded result is what the tool would return again"]
 
@@ -94,8 +104,11 @@ class Investigation:
     `records`: the run's v2 records (import_v2.store_records or bundle_records). `client`: the investigator's signer
     client (tracekit.sdk.client.Client): content_get needs the `content_read` grant, replay and findings runs the
     investigator in signer.yaml `analyzers`. `gateway`: the gateway's base URL; `headers` authenticate the investigator
-    to it (the same identity as `client`), `context` an ssl.SSLContext. Budgets: `max_calls` model calls, `max_cost`
-    (with `prices`, a tracekit.usage.Prices) cost estimate; a test that reaches one stops `inconclusive` (budget)."""
+    to it (the same identity as `client`), `context` an ssl.SSLContext. Budgets, for this object's lifetime (one
+    process): `max_calls` model calls, `max_cost` (with `prices`, a tracekit.usage.Prices) cost estimate; a test that
+    reaches one stops `inconclusive` (budget). Each call reserves its estimate before it is sent: the costliest call so
+    far (recorded or replayed), so it is sent only while spent + reserved stays within max_cost, and a call overshoots
+    only by what it costs past that estimate."""
 
     def __init__(self, records: List[Dict[str, Any]], client: Any, gateway: str, *, headers: Optional[Dict[str, str]] = None,
                  context: Any = None, investigation: Optional[str] = None, max_calls: Optional[int] = None,
@@ -105,8 +118,8 @@ class Investigation:
             if context else OPEN
         self.id = investigation or "inv-" + uuid.uuid4().hex[:16]
         self.max_calls, self.max_cost, self.prices = max_calls, max_cost, prices
-        self.calls, self.cost, self.models, self.lock = 0, 0.0, set(), threading.Lock()
-        self.findings_run = None
+        self.calls, self.cost, self.held, self.models, self.lock = 0, 0.0, 0.0, set(), threading.Lock()
+        self.findings_run, self.runs, self.counted = None, {}, set()   # replay run id -> "test" | "ranking"
         first = records[0]["event"]
         self.run_id = first["run_id"]
         content = self._content(records)
@@ -131,6 +144,9 @@ class Investigation:
             if unpriced:
                 raise ValueError(f"--max-cost needs a price for every model the run called (--prices): none for "
                                  f"{', '.join(unpriced)}")
+        self.estimate = max((prices.cost(x["model"], parsers.parse(x["kind"], x["response"], x["request"])["usage"]) or 0
+                             for x in self.exchanges if isinstance(x.get("response"), dict)), default=0.0) \
+            if max_cost is not None else 0.0
 
     def _content(self, records: List[Dict[str, Any]]) -> Dict[int, Any]:
         """run_seq -> vaulted content of every record with a commitment; EvidenceAlert when one does not open it."""
@@ -191,36 +207,70 @@ class Investigation:
 
     # ----------------------------------------------------------------------- replays
 
-    def arm(self):
-        """A new replay run: (run_id, run_token)."""
-        out = self.client.register_run({"agent": {"name": "tracekit-why"}, "replay_of": self.run_id,
-                                        "investigation": self.id})
-        return out["run_id"], out["run_token"]
+    def reserve(self) -> float:
+        """Take one model call and its cost estimate from the budgets, before it is sent; Budget once one is spent."""
+        with self.lock:
+            est = self.estimate if self.max_cost is not None else 0.0
+            if self.max_calls is not None and self.calls >= self.max_calls or self.max_cost is not None and (
+                    self.cost >= self.max_cost or self.cost + self.held + est > self.max_cost):
+                raise Budget("budget")
+            self.calls += 1
+            self.held += est
+        return est
+
+    def arm(self, purpose: str = "test") -> list:
+        """A new replay run, its first call reserved: [run_id, run_token, the run_seq read next, the reservation]."""
+        est = self.reserve()
+        try:
+            out = self.client.register_run({"agent": {"name": "tracekit-why"}, "replay_of": self.run_id,
+                                            "investigation": self.id})
+        except BaseException:
+            self._release(est, 0.0)
+            raise
+        with self.lock:
+            self.runs[out["run_id"]] = purpose
+        return [out["run_id"], out["run_token"], 1, est]
 
     def close(self, run) -> None:
         self.client.close_run({"run_id": run[0], "run_token": run[1]})
 
-    def call(self, run, kind: str, model: str, req: Dict[str, Any]) -> Dict[str, Any]:
-        """The response body to `req`, sent through the gateway in replay run `run`; Budget once one is spent."""
+    def _release(self, est: float, cost: float) -> None:
         with self.lock:
-            if self.max_calls is not None and self.calls >= self.max_calls:
-                raise Budget("budget")
-            if self.max_cost is not None and self.cost >= self.max_cost:
-                raise Budget("budget")
-            self.calls += 1
+            self.held -= est
+            self.cost += cost
+            self.estimate = max(self.estimate, cost)
+
+    def call(self, run: list, kind: str, model: str, req: Dict[str, Any]) -> Dict[str, Any]:
+        """The response body to `req`, sent through the gateway in replay run `run` and read back from it; Budget once
+        one is spent, ValueError for a request that can't be replayed, RuntimeError when the gateway did not record it."""
+        why = unreplayable(kind, req)
+        if why:
+            raise ValueError(f"a replay of run {self.run_id}: {why}; it was not sent")
+        est, run[3] = (self.reserve() if run[3] is None else run[3]), None
         body = {k: v for k, v in req.items() if k != "stream_options"}
         body["stream"] = False
+        if kind.startswith("openai:"):
+            body["store"] = False   # the provider keeps no copy of a replay
         r = urllib.request.Request(self.url + PATHS[kind], data=json.dumps(body).encode(), method="POST", headers={
             **self.headers, "Content-Type": "application/json", "X-Tracekit-Run": f"{run[0]}.{run[1]}"})
+        cost = 0.0
         try:
-            with self.open(r, timeout=UPSTREAM_TIMEOUT_S) as resp:
-                out = json.loads(resp.read())
-        except urllib.error.HTTPError as e:
-            raise RuntimeError(f"the gateway answered {e.code} for a replay of run {self.run_id}: "
-                               f"{e.read()[:500].decode('utf-8', 'replace')}") from None
-        cost = self.prices.cost(model, parsers.parse(kind, out, body)["usage"]) if self.prices else None
+            try:
+                with self.open(r, timeout=UPSTREAM_TIMEOUT_S) as resp:
+                    out = json.loads(resp.read())
+            except urllib.error.HTTPError as e:
+                raise RuntimeError(f"the gateway answered {e.code} for a replay of run {self.run_id}: "
+                                   f"{e.read()[:500].decode('utf-8', 'replace')}") from None
+            cost = (self.prices.cost(model, parsers.parse(kind, out, body)["usage"]) if self.prices else None) or 0.0
+        finally:
+            self._release(est, cost)
+        got = self.client.read({"run_id": run[0], "run_token": run[1], "from_seq": run[2]})["events"]
+        if sorted(e["data"].get("phase") for e in got if e["type"] == "model.exchange") != ["request", "response"]:
+            raise RuntimeError(f"the gateway did not record the model call of replay run {run[0]} (its model.exchange "
+                               "request and response): the investigation stopped. Check that the gateway reaches the "
+                               "signer: a gateway whose fail mode is open forwards calls it could not record")
+        run[2] = got[-1]["run_seq"] + 1
         with self.lock:
-            self.cost += cost or 0
             self.models.add(str(out.get("model") or model)[:128])
         return out
 
@@ -230,11 +280,19 @@ class Investigation:
             if self.findings_run is None:
                 out = self.client.register_run({"agent": {"name": "tracekit-why"}, "analyzes": self.run_id})
                 self.findings_run = out["run_id"], out["run_token"]
+            cited = {x["run_id"] for x in result["replay_runs"]}
+            # what the investigation ran and no finding counts: the ranking's calls, and with a budget stop the arms it
+            # abandoned; any other uncited replay run is left for the verifier to report
+            uncounted = [{"run_id": r, "reason": p if p == "ranking" else "budget"} for r, p in self.runs.items()
+                         if r not in cited | self.counted and (p == "ranking" or result["stopped"] == "budget")]
+            self.counted |= cited | {u["run_id"] for u in uncounted}
         finding = {"target": result["target"], "intervention": result["intervention"], "n": result["n"],
                    "p_with": result["p_with"], "p_without": result["p_without"], "effect": result["effect"],
                    "interval": result["ci"], "verdict": result["verdict"], "replay_runs": result["replay_runs"],
                    "models": result["models"], "rung": result["rung"], "off_tape": result["off_tape_actions"],
-                   "investigation": self.id}
+                   "investigation": self.id, "looks": result["looks"], "family": result["family"],
+                   "min_effect": result["min_effect"], "applied": result["applied"], "stopped": result["stopped"],
+                   **({"uncounted": uncounted} if uncounted else {})}
         return self.client.why_finding({"run_id": self.findings_run[0], "run_token": self.findings_run[1],
                                         "finding": finding})["run_seq"]
 
@@ -247,6 +305,50 @@ class Investigation:
 
 # --------------------------------------------------------------------------- request bodies
 
+def unreplayable(kind: str, req: Dict[str, Any], resp: Any = None) -> Optional[str]:
+    """Why request `req` (with its recorded response `resp`) can't be replayed, or None: it lets the provider run a tool
+    itself (a replay would run it again), or continues context the provider holds (a removal can't reach it)."""
+    tools = [t for t in req.get("tools") or [] if isinstance(t, dict)]
+    if kind == "anthropic:messages":
+        names = [str(t.get("name") or t["type"]) for t in tools
+                 if "type" in t and not str(t["type"]).startswith(ANTHROPIC_CLIENT_TOOLS)]
+        names += [k for k in ("mcp_servers", "container") if req.get(k)]
+    else:
+        names = [":".join(str(v) for v in (t.get("type"), t.get("server_label")) if v) for t in tools
+                 if t.get("type", "function") not in ("function", "custom")]
+        names += ["web_search_options"] * ("web_search_options" in req)
+    if isinstance(resp, dict):
+        names += [u["name"] for u in parsers.parse(kind, resp, req)["tool_uses"] if u["executed_by"] == "provider"]
+    if names:
+        return f"its request lets the provider run {', '.join(sorted(set(names)))[:300]} itself, which a replay would run again"
+    held = [k for k in SERVER_HELD if req.get(k)]
+    if held:
+        return f"its request continues context the provider holds ({', '.join(held)}), which a removal cannot reach"
+    return None
+
+
+def _replayable(inv: "Investigation", xs: Sequence[Dict[str, Any]]) -> None:
+    """ValueError, before anything is sent, when the first of recorded exchanges `xs` (the one a replay starts from)
+    can't be replayed, or a later one's response shows the provider ran a tool."""
+    for i, x in enumerate(xs):
+        why = unreplayable(x["kind"], {} if i else x["request"], x.get("response"))
+        if why:
+            raise ValueError(f"record {x['seq']} of run {inv.run_id}: {why}; nothing was sent. Test a model call whose "
+                             "request declares only tools the client runs (function or custom) and holds its whole "
+                             "context, or record the run without provider-executed tools")
+
+
+def _cleared(v: Any) -> Any:
+    """A tool call's output with its content removed and its shape kept."""
+    if isinstance(v, list):
+        if all(isinstance(p, dict) and "stdout" in p for p in v):   # shell_call_output
+            return [dict(p, stdout=REMOVED, stderr="") for p in v]
+        return [{"type": "input_text", "text": REMOVED}]   # content parts
+    if isinstance(v, dict) and v.get("type") == "computer_screenshot":
+        return {"type": "computer_screenshot", "image_url": BLANK_PNG}
+    return REMOVED
+
+
 def _blocks(kind: str, req: Dict[str, Any]) -> List[Block]:
     """Every removable block of request body `req`: its path, what replaces it, its content, the tool whose result it
     is, its role and its message index."""
@@ -255,11 +357,11 @@ def _blocks(kind: str, req: Dict[str, Any]) -> List[Block]:
         items = req.get("input") if isinstance(req.get("input"), list) else []   # a plain string: nothing to remove
         for i, it in enumerate(items):
             t = it.get("type", "message")
-            if t == "function_call":
-                names[it.get("call_id")] = it.get("name")
+            if t in parsers.CLIENT_ITEMS:
+                names[it.get("call_id")] = parsers.CLIENT_ITEMS[t][0] or it.get("name")
             elif t.endswith("_output"):
-                out.append(Block(("input", i), dict(it, output=REMOVED), it.get("output"), names.get(it.get("call_id")),
-                                 "tool", i))
+                out.append(Block(("input", i), dict(it, output=_cleared(it.get("output"))), it.get("output"),
+                                 names.get(it.get("call_id")), "tool", i))
             elif t == "message":
                 out.append(Block(("input", i), dict(it, content=REMOVED), it.get("content"), None, it.get("role"), i))
         return out
@@ -330,13 +432,16 @@ def outputs(kind: str, resp: Dict[str, Any]):
     elif kind == "openai:chat":
         m = ((resp.get("choices") or [{}])[0]).get("message") or {}
         text.append(m.get("content"))
-        uses += [(tc.get("id"), (tc.get("function") or {}).get("name"), (tc.get("function") or {}).get("arguments"))
-                 for tc in m.get("tool_calls") or []]
+        for tc in m.get("tool_calls") or []:
+            f = tc.get("custom") or tc.get("function") or {}
+            uses.append((tc.get("id"), f.get("name"), f.get("input", f.get("arguments"))))
     else:
         for it in resp.get("output") or []:
-            if it.get("type") == "function_call":
-                uses.append((it.get("call_id"), it.get("name"), it.get("arguments")))
-            elif it.get("type") == "message":
+            t = it.get("type")
+            if t in parsers.CLIENT_ITEMS:
+                name, field, _ = parsers.CLIENT_ITEMS[t]
+                uses.append((it.get("call_id"), name or it.get("name"), it.get(field)))
+            elif t == "message":
                 text += [p.get("text") for p in it.get("content") or [] if isinstance(p, dict)]
     return uses, "\n".join(t for t in text if isinstance(t, str))
 
@@ -353,31 +458,23 @@ def _append(kind: str, req: Dict[str, Any], resp: Dict[str, Any], results: List[
         return dict(req, messages=list(req["messages"]) + [msg] + [
             {"role": "tool", "tool_call_id": i, "content": _txt(r)} for i, r in results])
     prior = req.get("input") if isinstance(req.get("input"), list) else [{"role": "user", "content": req.get("input")}]
+    calls = {it.get("call_id"): it.get("type") for it in resp.get("output") or []}
     return dict(req, input=prior + list(resp.get("output") or []) + [
-        {"type": "function_call_output", "call_id": i, "output": _txt(r)} for i, r in results])
+        {"type": f"{calls.get(i) or 'function_call'}_output", "call_id": i, "output": _txt(r)} for i, r in results])
 
 
 # --------------------------------------------------------------------------- targets
 
 def parse_target(spec: str):
     """'tool=send_email,arg~evil.example' or 'text~wire the money' -> predicate on (tool uses, text)."""
-    conds = []
-    for part in filter(None, (p.strip() for p in spec.split(","))):
-        op = "~" if "~" in part and ("=" not in part or part.index("~") < part.index("=")) else "="
-        k, sep, v = part.partition(op)
-        if not sep or k.strip() not in ("tool", "arg", "text"):
-            raise ValueError(f"bad target clause {part!r}: tool=NAME, arg~TEXT or text~TEXT")
-        conds.append((k.strip(), op, v))
-
-    def ok(op: str, hay: str, v: str) -> bool:
-        return v in hay if op == "~" else hay == v
+    conds = clauses(spec)
 
     def pred(uses: List[tuple], text: str) -> bool:
-        if not all(ok(op, text, v) for k, op, v in conds if k == "text"):
+        if not all(holds(op, text, v) for k, op, v in conds if k == "text"):
             return False
         per_use = [c for c in conds if c[0] != "text"]
-        return not per_use or any(all(ok(op, (name or "") if k == "tool" else _txt(args), v) for k, op, v in per_use)
-                                  for _, name, args in uses)
+        return not per_use or any(all(holds(op, (name or "") if k == "tool" else _txt(args), v)
+                                      for k, op, v in per_use) for _, name, args in uses)
     pred.needle = next((v for k, _, v in conds if k != "tool"), next((v for _, _, v in conds), ""))
     return pred
 
@@ -400,9 +497,18 @@ def _logprob(resp: Dict[str, Any], needle: str) -> Optional[float]:
 
 # --------------------------------------------------------------------------- tests
 
-def _one_call(inv: Investigation, i: int, req: Dict[str, Any], pred) -> tuple:
+def _sized(label: str, target: str, n: int, n_max: Optional[int], workers: int) -> None:
+    """ValueError, before any replay, for a test whose finding the signer would refuse or whose workers are too many."""
+    if not 1 <= workers <= MAX_WORKERS:
+        raise ValueError(f"--workers takes 1 to {MAX_WORKERS}")
+    if max(len(label), len(target)) > 1024 or not 1 <= n <= looks(n, n_max)[-1] <= MAX_N:
+        raise ValueError(f"a finding takes an intervention and a target of up to 1024 characters and 1 to {MAX_N} "
+                         "pairs (--n, --n-max)")
+
+
+def _one_call(inv: Investigation, i: int, req: Dict[str, Any], pred, purpose: str = "test") -> tuple:
     """Rung 1: (replay run id, target hit, off-tape actions, response) of one re-sent exchange."""
-    x, run = inv.exchanges[i], inv.arm()
+    x, run = inv.exchanges[i], inv.arm(purpose)
     try:
         resp = inv.call(run, x["kind"], x["model"], req)
     finally:
@@ -450,12 +556,15 @@ def counterfactual_signed(inv: Investigation, intervention: Union[str, Sequence[
     result as a why.finding."""
     specs = [intervention] if isinstance(intervention, str) else list(intervention)
     pred = parse_target(target)
+    label = " | ".join(specs)
+    _sized(label, target, n, n_max, workers)
     rung = rung or (1 if decision is not None else 2)
     if rung == 1:
         at = inv.exchange(decision) if decision is not None else inv.target_exchange(target)
     else:
         at = start if start is not None else inv.exchange(decision) if decision is not None else inv.first_with(specs)
     x = inv.exchanges[at]
+    _replayable(inv, [x] if rung == 1 else inv.exchanges[at:])
     ablated, applied = ablate(inv, x["kind"], x["request"], specs)
     if rung == 2 and not applied:
         applied = any(ablate(inv, y["kind"], y["request"], specs)[1] for y in inv.exchanges[at:])
@@ -482,7 +591,7 @@ def counterfactual_signed(inv: Investigation, intervention: Union[str, Sequence[
     s = paired(trial, n, n_max, family, min_effect, workers, size_role)
     runs = [{"run_id": cache[i][0], "arm": "control", "hit": cache[i][1]} for i in range(s["n"])] + \
         [{"run_id": treated[i][0], "arm": "ablated", "hit": treated[i][1]} for i in range(s["n"])]
-    result = {**summary(s, " | ".join(specs), target, family, min_effect),
+    result = {**summary(s, label, target, family, min_effect), "applied": applied,
               "scope": "decision" if rung == 1 else "run", "rung": rung, "decision": x["seq"], "run_id": inv.run_id,
               "replay_runs": runs, "models": sorted(inv.models)[:32], "investigation": inv.id,
               "model_calls": inv.calls, "content_unchecked": inv.unchecked, "assumptions": ASSUMPTIONS,
@@ -521,10 +630,13 @@ def rank(inv: Investigation, target: str, *, decision: Optional[int] = None, k: 
     whose response hits the target) with k random halves of its blocks removed, score each response (the target's
     log-probability when the provider returns logprobs for every one, else whether it hit), fit a sparse linear
     model of the score on which blocks were kept, and rank the blocks by weight. A ranking says what to test first,
-    never what caused the target."""
+    never what caused the target. OpenAI chat requests ask for logprobs; other providers' are scored by hit."""
     pred = parse_target(target)
+    if not 1 <= k <= MAX_K or not 1 <= workers <= MAX_WORKERS:
+        raise ValueError(f"the ranking takes 1 to {MAX_K} samples and 1 to {MAX_WORKERS} workers")
     at = inv.exchange(decision) if decision is not None else inv.target_exchange(target)
     x = inv.exchanges[at]
+    _replayable(inv, [x])
     blocks = _blocks(x["kind"], x["request"])
     if not blocks:
         raise ValueError(f"the request of record {x['seq']} has no blocks to rank")
@@ -536,7 +648,9 @@ def rank(inv: Investigation, target: str, *, decision: Optional[int] = None, k: 
         for keep, b in zip(mask, blocks):
             if not keep:
                 _set(req, b.path, b.repl)
-        _, hit, _, resp = _one_call(inv, at, req, pred)
+        if x["kind"] == "openai:chat":
+            req["logprobs"] = True
+        _, hit, _, resp = _one_call(inv, at, req, pred, "ranking")
         return hit, _logprob(resp, pred.needle)
 
     if workers > 1:
@@ -562,6 +676,7 @@ def attribute_signed(inv: Investigation, target: str, suspects: Optional[Sequenc
     """Find the cause on a signed run: replay.find_cause over counterfactual_signed. Without suspects, rank() the target's
     exchange and test its `top` blocks with a positive weight (the ranking is returned, labelled predicted). Every
     test is written as a why.finding unless record=False."""
+    _sized(" | ".join(suspects or ()), target, n, n_max, workers)
     ranking = None
     if suspects is None:
         ranking = rank(inv, target, decision=decision, k=k, workers=workers)

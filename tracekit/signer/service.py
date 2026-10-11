@@ -1474,6 +1474,8 @@ class SignerService:
             tx.set(run, "source", req.get("source", "sdk"))
             tx.set(run, "people", (person(identity), principal if "principal_token" in req else None))
             tx.set(run, "prov", {"state": "complete", "index": {}})
+            if "replay_of" in req:   # not reconciled: a replay run has model exchanges and, by design, no decisions
+                tx.set(run, "rec", None)
             if harness:
                 tx.set(run, "harness", (harness["pid"], harness["start_time"]))
             attested = "principal_token" in req
@@ -2186,25 +2188,56 @@ class SignerService:
         return self._erase(key, reason, subject(identity)[:256],
                            lambda fn: self.log.submit(identity, "content_erase", req, fn))
 
-    def _erase(self, key, reason, by, submit=None):
-        """Delete run `key`'s data key (replaced by its tombstone) and blobs, then write content.erased, in one writer
-        item: the record is signed only once the key is gone. A storage failure writes no record and raises
-        unavailable; a retry erases again (blobs a failure left behind stay inert: no key opens them)."""
+    def _vault_replays(self, runs):
+        """{(tenant, run_id): [(tenant, replay run id)]}: of `runs` (content_runs), those whose run.registered names a
+        run in `replay_of` (tracekit why), by that run."""
+        # lean: reads the first record of every run with content in the vault per erasure or retention sweep; index runs
+        # by replay_of when vaults hold many runs
+        out = {}
+        for log_id, tenant, run_id, _ in runs:
+            first = next(iter(self.log.storage.iter_run(tenant, run_id)), None) if log_id == self.log.log_id else None
+            of = first and first["event"]["data"].get("replay_of")
+            if of:
+                out.setdefault((tenant, of), []).append((tenant, run_id))
+        return out
+
+    def _erase(self, key, reason, by, submit=None, replays=None):
+        """Delete run `key`'s data key (replaced by its tombstone) and blobs, and those of its replay runs (`replays`,
+        default: every one in the vault), each then a content.erased, in one writer item: a record is signed only once
+        the key is gone. A storage failure writes no record and raises unavailable; a retry erases again (blobs a
+        failure left behind stay inert: no key opens them)."""
+        try:
+            if replays is None:
+                replays = self._vault_replays(self.log.write(lambda tx: self.log.storage.content_runs())).get(key, [])
+        except (OSError, StorageUnavailable) as e:
+            raise RPCError("unavailable", f"the content of run {key[1]} was not erased: {e}") from None
+
         def fn(tx, _=None):
-            try:
-                self.log.storage.content_erase(self.log.log_id, *key)
-            except (OSError, StorageUnavailable) as e:
-                raise RPCError("unavailable", f"the content of run {key[1]} was not erased: {e}") from None
-            return {"run_seq": tx.emit(self.log.signer_run(tx, key[0]), "content.erased",
-                                       {"run_id": key[1], "reason": reason, "by": by}, source="signer")}
+            out = None
+            for k in (key, *replays):
+                try:
+                    self.log.storage.content_erase(self.log.log_id, *k)
+                except (OSError, StorageUnavailable) as e:
+                    raise RPCError("unavailable", f"the content of run {k[1]} was not erased: {e}") from None
+                why = reason if k == key else f"{reason} (a replay of run {key[1]})"[:1024]
+                seq = tx.emit(self.log.signer_run(tx, k[0]), "content.erased", {"run_id": k[1], "reason": why, "by": by},
+                              source="signer")
+                out = out or {"run_seq": seq}
+            return out
         return (submit or self.log.write)(fn)
 
     def expire_content(self, now=None):
-        """Erase the content of every run whose data key was stored more than retention_days before `now`."""
+        """Erase the content of every run whose data key was stored more than retention_days before `now`, with its
+        replay runs' (a replay run's content never outlives its run's)."""
         cutoff = (time.time() if now is None else now) - self.content["retention_days"] * 86400
-        for log_id, tenant, run_id, stored in self.log.write(lambda tx: self.log.storage.content_runs()):
-            if log_id == self.log.log_id and stored < cutoff:
-                self._erase((tenant, run_id), f"retention: kept {self.content['retention_days']} days", "signer")
+        runs = self.log.write(lambda tx: self.log.storage.content_runs())
+        replays, done = self._vault_replays(runs), set()
+        for log_id, tenant, run_id, stored in runs:
+            if log_id == self.log.log_id and stored < cutoff and (tenant, run_id) not in done:
+                todo = [k for k in replays.get((tenant, run_id), []) if k not in done]
+                self._erase((tenant, run_id), f"retention: kept {self.content['retention_days']} days", "signer",
+                            replays=todo)
+                done.update([(tenant, run_id), *todo])
 
     # --- OTLP import (tracekit.signer.otel) ---
 

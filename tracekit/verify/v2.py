@@ -46,7 +46,11 @@ by kind) gives a `coverage` line; unreconciled calls make it a warning, so `--st
 
 Findings (tracekit why): a bundle may hold one run with its findings runs (run.registered `analyzes` it) and replay
 runs (`replay_of` it). Each why.finding's replay runs must be in the bundle as replay runs of the analysed run in the
-finding's investigation, and their arms and outcomes count to its n, rates and effect; else `findings` fails.
+finding's investigation, each holding its model calls as gateway records (exactly one for rung 1); with a `tool`
+target each outcome must agree with the tool uses those records name; the outcomes must count to its n, rates and
+effect and give its interval and verdict (recomputed from looks, family, min_effect, applied and stopped); and every
+replay run of an investigation with findings must be counted or listed `uncounted` by one; else `findings` fails.
+Replay runs of an investigation with no finding are a `replay runs` warning.
 
 Run-set (a bundle with registry/run-set.json): the tenant's registry notes, signed by the pinned log key under the
 origin `<origin>/registry/<id of the bundle's tenant salt>`, cosigned by the required number of pinned witnesses (their
@@ -568,44 +572,104 @@ def _about_one(runs):
                                  and head.get("run_id") in _about(rs)[:2]) for rs in runs.values())
 
 
+def _exchanges(records):
+    """The tool-use names of each response of a replay run's model calls, when every one is a gateway record and they
+    pair up (as many requests as responses, at least one); else None."""
+    ex = [r["event"] for r in records if r["event"].get("type") == "model.exchange"]
+    phases = [e["data"].get("phase") for e in ex]
+    if not ex or any(e.get("source") != "gateway" for e in ex) or phases.count("request") != phases.count("response"):
+        return None
+    return [[str(t.get("name")) for t in e["data"].get("tool_uses", ())] for e in ex if e["data"].get("phase") == "response"]
+
+
+def _finding(f, where, about, analyzes, runs_by_id):
+    """The problems of one why.finding whose replay runs are all in the bundle."""
+    from tracekit.why.replay import clauses, holds, newcombe_diff, verdict_for, z_for
+    problems, cited = [], [x["run_id"] for x in f["replay_runs"]] + [x["run_id"] for x in f.get("uncounted", ())]
+    if len(set(cited)) != len(cited):
+        problems.append(f"{where}: cites a replay run more than once")
+    try:
+        conds = clauses(f["target"])
+    except ValueError:
+        conds = []
+        problems.append(f"{where}: its target is not a tracekit why target")
+    tools = [(op, v) for k, op, v in conds if k == "tool"]
+    only_tools = bool(conds) and len(tools) == len(conds)
+    arms = {"control": [], "ablated": []}
+    for x in [*f["replay_runs"], *f.get("uncounted", ())]:
+        rid = x["run_id"][:128]
+        if about.get(x["run_id"]) != (None, analyzes, f["investigation"]):
+            problems.append(f"{where}: replay run {rid} is not in the bundle as a replay run of {str(analyzes)[:128]} "
+                            f"in investigation {f['investigation'][:128]}")
+            continue
+        names = _exchanges(runs_by_id[x["run_id"]])
+        one = f["rung"] == 1 or x.get("reason") == "ranking"
+        if names is None or one and len(names) != 1:
+            problems.append(f"{where}: replay run {rid} does not hold {'one' if one else 'its'} model call as gateway "
+                            "model.exchange request and response records")
+            continue
+        if "reason" in x:
+            if x["reason"] == "budget" and f["stopped"] != "budget":
+                problems.append(f"{where}: leaves replay run {rid} uncounted for a budget stop it does not report")
+            continue
+        arms[x["arm"]].append(x["hit"])
+        seen = tools and any(all(holds(op, name, v) for op, v in tools) for ns in names for name in ns)
+        if tools and x["hit"] and not seen or only_tools and not x["hit"] and seen:
+            problems.append(f"{where}: replay run {rid} is scored a {'hit' if x['hit'] else 'miss'}, but its gateway "
+                            f"records {'hold no' if x['hit'] else 'hold a'} tool use the target names")
+    n, (c, a) = f["n"], arms.values()
+    p = [sum(h) / n if n else 0.0 for h in (c, a)]
+    if (len(c), len(a)) != (n, n) or [round(x, 4) for x in p] != [f["p_with"], f["p_without"]] \
+            or round(p[0] - p[1], 4) != f["effect"]:
+        problems.append(f"{where}: its replay runs count {sum(c)}/{len(c)} with and {sum(a)}/{len(a)} without, not the "
+                        f"n={n}, {f['p_with']} and {f['p_without']} (effect {f['effect']}) it reports")
+        return problems
+    lo, hi = newcombe_diff(sum(c), n, sum(a), n, z_for(f["looks"] * f["family"])) if n else (-1.0, 1.0)
+    verdict = "inconclusive" if f["stopped"] == "budget" else verdict_for(lo, hi, f["applied"], f["min_effect"])
+    if not f["interval"][0] <= f["interval"][1] or f["interval"] != [round(lo, 4), round(hi, 4)] \
+            or f["verdict"] != verdict:
+        problems.append(f"{where}: its outcomes give the interval [{lo:.4f}, {hi:.4f}] and the verdict {verdict}, not "
+                        f"the {f['interval']} and {f['verdict']} it reports")
+    return problems
+
+
 def _findings(rep, runs):
     """The `findings` line: each why.finding's replay runs are bundled, are distinct replay runs of the run its
-    findings run analyses in its investigation, and their arms and outcomes count to its n, rates and effect. Outside
-    a findings bundle (one run with its findings and replay runs) a finding whose replay runs are absent is a warning:
-    not counted, not failed."""
-    replays = {rs[0]["event"].get("run_id"): _about(rs) for rs in runs.values()}
+    findings run analyses in its investigation, each holding its model calls as gateway records (one for rung 1), a
+    `tool` target's outcomes agree with the tool uses those records name, and the outcomes count to its n, rates and
+    effect and give its interval and verdict; every replay run of an investigation with findings is counted by one,
+    or listed as uncounted (the ranking's calls, arms of a budget stop). Outside a findings bundle (one run with its
+    findings and replay runs) a finding whose replay runs are absent is a warning: not counted, not failed."""
+    by_id = {rs[0]["event"].get("run_id"): rs for rs in runs.values()}
+    about = {rid: _about(rs) for rid, rs in by_id.items()}
     complete = _about_one(runs)
-    found, problems, uncounted = 0, [], []
+    found, problems, uncounted, named, investigations = 0, [], [], set(), set()
     for rs in runs.values():
         analyzes = _about(rs)[0]
         for r in rs:
             if r["event"].get("type") != "why.finding":
                 continue
             found, f, where = found + 1, r["event"]["data"], f"seq {r['event']['seq']}"
-            ids = [x["run_id"] for x in f["replay_runs"]]
-            if not complete and not set(ids) <= replays.keys():
+            ids = {x["run_id"] for x in [*f["replay_runs"], *f.get("uncounted", ())]}
+            if not complete and not ids <= about.keys():
                 uncounted.append(f"{where}: its replay runs are not in the bundle")
                 continue
-            if len(set(ids)) != len(ids):
-                problems.append(f"{where}: cites a replay run more than once")
-            arms = {"control": [], "ablated": []}
-            for x in f["replay_runs"]:
-                if replays.get(x["run_id"]) != (None, analyzes, f["investigation"]):
-                    problems.append(f"{where}: replay run {x['run_id'][:128]} is not in the bundle as a replay run of "
-                                    f"{str(analyzes)[:128]} in investigation {f['investigation'][:128]}")
-                arms[x["arm"]].append(x["hit"])
-            n, (c, a) = f["n"], arms.values()
-            p = [sum(h) / n if n else 0.0 for h in (c, a)]
-            if (len(c), len(a)) != (n, n) or [round(x, 4) for x in p] != [f["p_with"], f["p_without"]] \
-                    or round(p[0] - p[1], 4) != f["effect"]:
-                problems.append(f"{where}: its replay runs count {sum(c)}/{len(c)} with and {sum(a)}/{len(a)} without, "
-                                f"not the n={n}, {f['p_with']} and {f['p_without']} (effect {f['effect']}) it reports")
+            named |= ids
+            investigations.add(f["investigation"])
+            problems += _finding(f, where, about, analyzes, by_id)
+    stray = sorted(rid for rid, a in about.items() if a[1] is not None and rid not in named) if complete else []
+    problems += [f"replay run {rid[:128]} of investigation {str(about[rid][2])[:128]} is counted by no finding" for rid in stray
+                 if about[rid][2] in investigations]
     if found > len(uncounted):
         rep.check("findings", not problems, f"{found - len(uncounted)} tracekit why finding(s), each counted from its "
                   "replay runs", problems[:20])
     if uncounted:
         rep.check("findings counted", False, f"{len(uncounted)} finding(s) not counted: export the analysed run with "
                   "`tracekit export --v2 --run <run> --with-findings` to count them", uncounted[:20], warn=True)
+    orphans = [rid for rid in stray if about[rid][2] not in investigations]
+    if orphans:
+        rep.check("replay runs", False, f"{len(orphans)} replay run(s) of investigations with no finding in the bundle",
+                  [rid[:128] for rid in orphans[:20]], warn=True)
 
 
 def _run_set(rep, files, trust, witnesses, origin, size, runs, included, check_record):

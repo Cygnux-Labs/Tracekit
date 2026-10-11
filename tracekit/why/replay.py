@@ -39,6 +39,23 @@ def verdict_for(lo: float, hi: float, applied: bool = True, min_effect: float = 
 DECISIVE = ("causal", "suppressive", "ruled-out")
 
 
+def clauses(spec: str) -> List[tuple]:
+    """A signed-run target ('tool=send_email,arg~evil.example', 'text~wire the money') as [(key, op, value)]; key tool,
+    arg or text, op '=' (equals) or '~' (contains)."""
+    out = []
+    for part in filter(None, (p.strip() for p in spec.split(","))):
+        op = "~" if "~" in part and ("=" not in part or part.index("~") < part.index("=")) else "="
+        k, sep, v = part.partition(op)
+        if not sep or k.strip() not in ("tool", "arg", "text"):
+            raise ValueError(f"bad target clause {part!r}: tool=NAME, arg~TEXT or text~TEXT")
+        out.append((k.strip(), op, v))
+    return out
+
+
+def holds(op: str, hay: str, v: str) -> bool:
+    return v in hay if op == "~" else hay == v
+
+
 def looks(n: int, n_max: Optional[int]) -> List[int]:
     """Trial counts at which a sequential test checks its interval: n, 2n, 4n, ... and finally n_max."""
     if not n_max or n_max <= n:

@@ -97,16 +97,22 @@ _TOOL_USE = dict(_obj(["id", "name", "executed_by"], id=ID, name=_str(256, minLe
                          "properties": {"executed_by": {"const": "client"}}}])
 RATE = {"type": "number", "minimum": 0, "maximum": 1}
 DIFF = {"type": "number", "minimum": -1, "maximum": 1}
-# a finished `tracekit why` test (tracekit/why/signed.py): its counts, verdict, and the replay runs they came from
+# a finished `tracekit why` test (tracekit/why/signed.py): its counts, what its verdict was decided on (looks, family,
+# min_effect, applied, stopped), and the replay runs they came from; `uncounted`: replay runs of the investigation it
+# does not count (the surrogate's ranking calls, arms a budget stop abandoned)
+COUNT = {"type": "integer", "minimum": 1, "maximum": 4096}
 FINDING = _obj(["target", "intervention", "n", "p_with", "p_without", "effect", "interval", "verdict", "replay_runs",
-                "models", "rung", "off_tape", "investigation"],
+                "models", "rung", "off_tape", "investigation", "looks", "family", "min_effect", "applied", "stopped"],
                target=_str(1024), intervention=_str(1024), n=SEQ, p_with=RATE, p_without=RATE, effect=DIFF,
-               interval={"type": "array", "maxItems": 2, "items": DIFF},
+               interval={"type": "array", "minItems": 2, "maxItems": 2, "items": DIFF},
                verdict={"enum": ["causal", "suppressive", "ruled-out", "inconclusive", "not-applied"]},
                replay_runs={"type": "array", "maxItems": 4096, "items": _obj(
                    ["run_id", "arm", "hit"], run_id=ID, arm={"enum": ["control", "ablated"]}, hit={"type": "boolean"})},
                models={"type": "array", "maxItems": 32, "items": _str(128)}, rung={"enum": [1, 2]}, off_tape=SEQ,
-               investigation=ID)
+               investigation=ID, looks=COUNT, family=COUNT, min_effect=RATE, applied={"type": "boolean"},
+               stopped={"enum": ["decisive", "futility", "n_max", "budget"]},
+               uncounted={"type": "array", "maxItems": 4096, "items": _obj(
+                   ["run_id", "reason"], run_id=ID, reason={"enum": ["ranking", "budget"]})})
 _SUMMARY = _obj(["approval_id", "state", "run_id", "tool_call_id", "attempt", "tool", "rule_ids", "policy_hash",
                  "requester", "expires_at"],
                 approval_id=ID, state=APPROVAL_STATE, run_id=ID, tool_call_id=ID, attempt=SEQ, tool=_str(256),

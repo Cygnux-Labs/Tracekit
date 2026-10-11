@@ -71,10 +71,20 @@ def _investigation(a):
 
 
 def _signed_errors():
-    """What a signed-run test reports and exits 2 on: a bad spec or run, the gateway's or the signer's refusal."""
+    """What a signed-run test reports and exits 2 on: a bad spec or run, the gateway's or the signer's refusal, a budget
+    spent before any test finished (the surrogate's ranking)."""
     from ..sdk.client import SignerUnavailable
     from ..signer.rpc_schema import RPCError
-    return ValueError, RuntimeError, OSError, RPCError, SignerUnavailable
+    from .signed import Budget
+    return ValueError, RuntimeError, OSError, RPCError, SignerUnavailable, Budget
+
+
+def _signed_error(cmd, e):
+    from .signed import Budget
+    print(f"tracekit why {cmd}: " + ("inconclusive (budget): the investigation's budget ran out before a test "
+                                     "finished; raise --max-calls or --max-cost" if isinstance(e, Budget) else str(e)),
+          file=sys.stderr)
+    return 2
 
 
 def _signed_args(p):
@@ -211,10 +221,10 @@ def cmd_test(a):
         try:
             r = counterfactual_signed(inv, a.remove, a.target, decision=a.decision, rung=a.rung, n=a.n,
                                       n_max=a.n_max, workers=a.workers)
-            inv.finish()
         except _signed_errors() as e:
-            print(f"tracekit why test: {e}", file=sys.stderr)
-            return 2
+            return _signed_error("test", e)
+        finally:
+            inv.finish()
         _p(json.dumps(r, indent=2) if a.json else _fmt_test(r) + _fmt_signed(r))
         return 0
     if not a.run:
@@ -250,10 +260,10 @@ def cmd_attribute(a):
         try:
             r = attribute_signed(inv, a.target, a.suspect or None, decision=a.decision, rung=a.rung,
                                  n=a.n, n_max=a.n_max, workers=a.workers, size_roles=not a.no_roles)
-            inv.finish()
         except _signed_errors() as e:
-            print(f"tracekit why attribute: {e}", file=sys.stderr)
-            return 2
+            return _signed_error("attribute", e)
+        finally:
+            inv.finish()
         if a.json:
             _p(json.dumps(r, indent=2, default=str))
             return 0
@@ -516,7 +526,7 @@ def main(argv=None):
                    help="with --decision: re-send a call recorded by the Anthropic adapter (needs ANTHROPIC_API_KEY)")
     p.add_argument("--n", type=int, default=30); p.add_argument("--system"); p.add_argument("--live-tools", action="store_true")
     p.add_argument("--n-max", type=int, help="sequential: keep doubling n up to this until the verdict is decisive")
-    p.add_argument("--workers", type=int, default=1, help="with --run: replay arms in parallel")
+    p.add_argument("--workers", type=int, default=1, help="with --run: replay arms in parallel (1 to 16)")
     _signed_args(p)
     p.add_argument("--json", action="store_true"); p.set_defaults(f=cmd_test)
 

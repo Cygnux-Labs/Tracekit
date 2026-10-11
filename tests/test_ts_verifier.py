@@ -18,6 +18,7 @@ import zipfile
 TESTS = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(TESTS)
 sys.path.insert(0, TESTS)
+import test_why_signed_replay  # noqa: E402
 from factories import rewrite_bundle  # noqa: E402
 from tracekit.bundle_v2 import export  # noqa: E402
 from tracekit.demo_server import Witness  # noqa: E402
@@ -30,6 +31,7 @@ from tracekit.signer import service as svc  # noqa: E402
 from tracekit.storage.base import registry_tree  # noqa: E402
 from tracekit.tlog_witness import signed_by  # noqa: E402
 from tracekit.verify import v2  # noqa: E402
+from tracekit.why import signed  # noqa: E402
 
 TS = os.path.join(ROOT, "sdk", "typescript")
 CLI = os.path.join(TS, "bin", "tracekit.mjs")
@@ -256,6 +258,29 @@ class Agreement(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipIf(SKIP, SKIP)
+class Findings(test_why_signed_replay.SignedReplay):
+    """tracekit why findings are not checked by the TypeScript verifier: a bundle with them is UNVERIFIABLE, naming
+    them, never FAILED."""
+    bundle = test_why_signed_replay.TestFindings.bundle
+
+    def test_a_findings_bundle_is_unverifiable_in_typescript(self):
+        _build()
+        inv = self.investigation()
+        signed.counterfactual_signed(inv, "result:fetch", test_why_signed_replay.TARGET,
+                                     decision=self.exchange_seqs()[1], n=2)
+        findings_run = inv.findings_run[0]
+        inv.finish()
+        trust = os.path.join(self.dir, "trust.json")
+        for run, with_runs in ((None, None), (findings_run, [])):   # the run with its findings; the findings run alone
+            with self.subTest(run=run):
+                (rep, code), _ = self.bundle(run, with_runs)
+                ts = ts_verify(os.path.join(self.dir, "b.tkb"), trust)
+                self.assertEqual(code, 0, rep.checks)
+                self.assertEqual((ts["exit_code"], ts["integrity"]),
+                                 (2, "UNVERIFIABLE (not checked by this verifier: tracekit why findings)"))
 
 
 @unittest.skipIf(SKIP, SKIP)
