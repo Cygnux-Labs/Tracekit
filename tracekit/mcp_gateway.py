@@ -12,13 +12,14 @@ mcp-gateway.yaml:
     approval_wait_s: 300                   # how long a call the policy asks about waits for a person
     max_body: 1048576                      # request bodies
     upstreams:
-      - name: github                       # [A-Za-z0-9-]+: tools are listed as github__<tool>
-        command: [npx, -y, "@modelcontextprotocol/server-github"]   # stdio: the gateway runs it
-        env: {GITHUB_PERSONAL_ACCESS_TOKEN: secrets/github.token}     # variable -> the file holding its value
+      - name: notion                       # [A-Za-z0-9-]+: tools are listed as notion__<tool>
+        command: [npx, -y, "@notionhq/notion-mcp-server@2.5.2"]   # stdio: the gateway runs it, as its own uid;
+        env: {NOTION_TOKEN: secrets/notion.token}                # pin the version. variable -> the file holding it
       - name: linear
         url: https://mcp.linear.app/mcp                              # Streamable HTTP
         headers: {authorization: secrets/linear.header}             # header -> the file holding its value
-    trusted: [github]                      # upstreams whose resources and prompts are recorded trusted
+    trusted: []                            # upstreams whose resources are recorded trusted: only ones whose content
+                                           # neither the agent nor outsiders can write
 
 The agent's MCP client connects over Streamable HTTP to `POST /mcp` with its run, as at the LLM gateway
 (`X-Tracekit-Run: <run_id>.<run token>` and an identity the authenticators accept); the gateway answers each request
@@ -28,15 +29,16 @@ identity) under the agent's run token, so the records are source gateway, tier T
 person, up to approval_wait_s; the gateway consumes the approval (an approval with a T2 executor returns the signer's
 copy of the arguments, which is what runs), calls the upstream and completes the call with its result, which the
 signer redacts. A denial, a refusal or the signer unreachable (fail closed, whatever the run's fail modes) is a tool
-result with `isError: true` and the reason, and the upstream never sees the call. Resources (resources/list, read)
-and prompts (prompts/list, get, listed as `<upstream>__<prompt>`) pass through; each one read or got is recorded as an
-observed input (`observe`, source `mcp:<upstream>/resource` or `/prompt`), untrusted unless its upstream is in
-`trusted`. The upstreams' credentials never reach the agent or the signer: each value is cut from everything the
-gateway answers or records. Relative paths are from the config file.
+result with `isError: true` and the reason, and the upstream never sees the call. prompts/get sends the agent's
+arguments upstream too, so it is decided, run and completed the same way, as `mcp:<upstream>/prompt:<name>` (a refusal
+is an error response). Resources (resources/list, read) and prompts (prompts/list, listed as `<upstream>__<prompt>`)
+pass through; each resource read and prompt got is recorded as an observed input (`observe`, source
+`mcp:<upstream>/resource` or `/prompt`): a prompt untrusted (a template echoes its arguments), a resource untrusted
+unless its upstream is in `trusted`. The upstreams' credentials never reach the agent or the signer: each value is cut
+from the decoded strings of everything the gateway answers or records. Relative paths are from the config file.
 """
 import asyncio
 import concurrent.futures
-import json
 import os
 import re
 import threading
@@ -44,7 +46,7 @@ import uuid
 
 from tracekit import __version__, yamlmini
 from tracekit.client import remote_url_error
-from tracekit.executor import APPROVAL_WAIT_S, MAX_BODY, REDACTED, Custody, main as _main, secret_values
+from tracekit.executor import APPROVAL_WAIT_S, MAX_BODY, Custody, cut, main as _main, read_secret, secret_values
 from tracekit.gateway import _Handler
 from tracekit.sdk.client import Client, SignerUnavailable, result_field
 from tracekit.signer.rpc_schema import RPCError
@@ -57,6 +59,7 @@ SEP = "__"
 PROTOCOL = "2025-06-18"   # answered to an initialize that names no protocol version
 UPSTREAM_TIMEOUT_S = 600
 BLOCKED = "Tool call blocked by policy: "
+MAX_RESOURCES = 10000   # resource URI -> its upstream, as listed
 
 
 class Upstreams:
@@ -133,7 +136,7 @@ class _McpGateway(_Handler):
         except Exception as e:   # an upstream that failed or went away
             out = {"error": {"code": -32603, "message": f"upstream error: {type(e).__name__}: {e}; if the upstream "
                                                         "went away, restart the MCP gateway (it doesn't reconnect)"}}
-        self._json(200, json.loads(gw["cut"](json.dumps({"jsonrpc": "2.0", "id": msg["id"], **out}))))
+        self._json(200, gw["cut"]({"jsonrpc": "2.0", "id": msg["id"], **out}))
 
     def _answer(self, gw, key, method, params):
         ups = gw["upstreams"]
@@ -154,15 +157,22 @@ class _McpGateway(_Handler):
             listed = []
             for up in ups.clients:
                 for r in ups.call(up, "list_resources").resources:
+                    if len(gw["resources"]) >= MAX_RESOURCES:   # lean: forgets every listed URI when full, so a read
+                        gw["resources"].clear()                 # asks for a new listing; an LRU if that bites
                     gw["resources"][str(r.uri)] = up
                     listed.append(_dump(r))
             return {"resources": listed}
         if method == "tools/call":
-            return self._call(gw, key, *_split(ups, params.get("name")), params.get("arguments") or {})
+            out = self._call(gw, key, "call_tool", *_split(ups, params.get("name")), params.get("arguments") or {})
+            if isinstance(out, str):
+                return {"content": [{"type": "text", "text": BLOCKED + out}], "isError": True}
+            return out
         if method == "prompts/get":
-            up, name = _split(ups, params.get("name"))
-            out = _dump(ups.call(up, "get_prompt", name, params.get("arguments")))
-            return self._observe(gw, key, up, "prompt", out)
+            up, prompt = _split(ups, params.get("name"))
+            out = self._call(gw, key, "get_prompt", up, prompt, params.get("arguments") or {})
+            if isinstance(out, str):
+                raise _Error(-32000, "Prompt blocked: " + out)
+            return self._observe(gw, key, up, "prompt", out, trusted=False)
         if method == "resources/read":
             up = gw["resources"].get(str(params.get("uri")))
             if up is None:
@@ -170,28 +180,32 @@ class _McpGateway(_Handler):
             return self._observe(gw, key, up, "resource", _dump(ups.call(up, "read_resource", params["uri"])))
         raise _Error(-32601, f"method not found: {str(method)[:64]}")
 
-    def _call(self, gw, key, up, tool, args):
-        name, tcid = f"mcp:{up}/{tool}", "mcp-" + uuid.uuid4().hex
-        why, d, args = gw["custody"].gate(key, tcid, name, args)
+    def _call(self, gw, key, method, up, name, args):
+        """Upstream `up`'s `method` (call_tool, get_prompt) of `name`, decided, run and completed as tool
+        mcp:<up>/<name> (a prompt's: mcp:<up>/prompt:<name>): its answer, or why it may not run (a string)."""
+        tool = f"mcp:{up}/" + ("prompt:" if method == "get_prompt" else "") + name
+        tcid = "mcp-" + uuid.uuid4().hex
+        why, d, args = gw["custody"].gate(key, tcid, tool, args)
         if why is not None:
-            return {"content": [{"type": "text", "text": BLOCKED + why[1]}], "isError": True}
+            return why[1]
         try:
-            out = json.loads(gw["cut"](json.dumps(_dump(gw["upstreams"].call(up, "call_tool", tool, args)))))
+            out = gw["cut"](_dump(gw["upstreams"].call(up, method, name, args)))
         except Exception as e:
-            gw["custody"].complete(key, tcid, d, name, args, "error", error=gw["cut"](f"{type(e).__name__}: {e}")[:4096])
+            gw["custody"].complete(key, tcid, d, tool, args, "error", error=gw["cut"](f"{type(e).__name__}: {e}")[:4096])
             raise
-        gw["custody"].complete(key, tcid, d, name, args, "error" if out.get("isError") else "ok",
+        gw["custody"].complete(key, tcid, d, tool, args, "error" if out.get("isError") else "ok",
                                result=result_field(True, out))
         return out
 
-    def _observe(self, gw, key, up, kind, out):
-        """Record `out` as an input the agent got; answer it only once recorded (fail closed)."""
-        out = json.loads(gw["cut"](json.dumps(out)))
+    def _observe(self, gw, key, up, kind, out, trusted=True):
+        """Record `out` as an input the agent got (trusted when `trusted` and its upstream is in `trusted`); answer it
+        only once recorded (fail closed)."""
+        out = gw["cut"](out)
         run_id, token, caller = key
         try:
             gw["custody"].client.observe({"run_id": run_id, "run_token": token, "caller": caller,
                                           "source": f"mcp:{up}/{kind}", "value": result_field(True, out),
-                                          "trust": "trusted" if up in gw["trusted"] else "untrusted"})
+                                          "trust": "trusted" if trusted and up in gw["trusted"] else "untrusted"})
         except (SignerUnavailable, RPCError) as e:
             raise _Error(-32603, f"the {kind} could not be recorded, so it is withheld: {e}") from None
         return out
@@ -250,10 +264,7 @@ def _targets(cfg):
     from mcp.client.streamable_http import streamable_http_client
     targets, values = {}, []
     for u in cfg["upstreams"]:
-        secrets = {}
-        for k, p in u["secrets"].items():
-            with open(p, encoding="utf-8") as f:
-                secrets[k] = f.read().strip()
+        secrets = {k: read_secret(p, header="url" in u) for k, p in u["secrets"].items()}
         values += secrets.values()
         targets[u["name"]] = StdioServerParameters(command=u["command"][0], args=u["command"][1:], env=secrets) \
             if "command" in u else streamable_http_client(u["url"], http_client=httpx2.AsyncClient(headers=secrets))
@@ -266,14 +277,8 @@ def serve(cfg, client=None, targets=None):
     configured, values = _targets(cfg)
     values = secret_values(values)
     srv = transport.HttpServer(*transport.configure(cfg["http"]), None, handler=_McpGateway)
-
-    def cut(text):
-        # lean: cut from the JSON text, so a value JSON escapes (a quote, a backslash) is missed; keep such
-        # characters out of upstream credentials, or cut from the decoded strings if one needs them
-        for v in values:
-            text = text.replace(v, REDACTED)
-        return text
-    srv.mcp = {"upstreams": Upstreams(targets or configured), "trusted": set(cfg.get("trusted", [])), "cut": cut,
+    srv.mcp = {"upstreams": Upstreams(targets or configured), "trusted": set(cfg.get("trusted", [])),
+               "cut": lambda x: cut(x, values),
                "max_body": cfg.get("max_body", MAX_BODY), "resources": {},
                "custody": Custody(client or Client(cfg["signer"]), cfg.get("approval_wait_s", APPROVAL_WAIT_S))}
     close = srv.server_close

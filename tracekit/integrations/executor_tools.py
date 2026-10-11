@@ -18,7 +18,7 @@ import json
 import urllib.error
 import urllib.request
 
-from tracekit.client import no_redirect_opener
+from tracekit.client import no_redirect_opener, remote_url_error
 
 
 class ExecutorRefused(Exception):
@@ -53,6 +53,8 @@ def _get(req, context):
 
 def actions(url, run, headers=None, context=None):
     """The executor's actions, each callable for `run` (a register_run response: run_id, run_token)."""
+    if remote_url_error(url):   # the run token and the agent's credential for the executor never go in clear
+        raise ValueError(f"{url[:256]}: {remote_url_error(url)}")
     listed = _get(urllib.request.Request(f"{url.rstrip('/')}/v1/actions", headers=headers or {}), context)
     return [Action(url, run, a, headers or {}, context) for a in listed["actions"]]
 

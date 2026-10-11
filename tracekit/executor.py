@@ -14,7 +14,7 @@ executor.yaml:
       - name: create_issue                 # the tool name the signer's policy decides on
         description: Open a GitHub issue   # for the model, via the client helpers
         method: POST
-        url_template: https://api.github.com/repos/{owner}/{repo}/issues   # {arg}: that argument, URL-quoted
+        url_template: https://api.github.com/repos/{owner}/{repo}/issues   # {arg}: that argument (_url)
         headers: {authorization: secrets/github.header}   # header -> the file holding its value
         args: {type: object, required: [owner, repo, title], additionalProperties: false,
                properties: {owner: {type: string}, repo: {type: string}, title: {type: string}}}
@@ -29,14 +29,17 @@ holds the call until a person decides or approval_wait_s passes; it consumes the
 executor returns the signer's copy of the arguments, which is what runs); it sends the request, the arguments as its
 JSON body (none for GET and DELETE), with the action's headers; and it completes the call with the response, which the
 signer redacts. The agent gets `{"status": <the upstream's>, "result": <its JSON or text>}`. A denial or any other
-refusal: 403; the signer unreachable: 503 (fail closed, whatever the run's fail modes); the upstream unreachable: 502,
-completed as an error. The header values never reach the agent or the signer: each is cut from the response before
-it is recorded or answered. Relative paths are from the config file.
+refusal: 403; the signer unreachable: 503 (fail closed, whatever the run's fail modes); the request not sent, or its
+response unreadable once sent: 502, completed as an error saying which. The header values never reach the agent or the
+signer: each is cut from the response's decoded strings and from errors before they are recorded or answered.
+A call it decided is held by it: the signer takes its completion and approval steps from no one else (the agent's own
+run token included). Relative paths are from the config file.
 """
 import argparse
 import http.client
 import json
 import os
+import re
 import string
 import sys
 import time
@@ -62,6 +65,9 @@ MAX_BODY = 1 << 20
 APPROVAL_WAIT_S = 300
 UPSTREAM_TIMEOUT_S = 60
 REDACTED = "[REDACTED:executor_secret]"
+SEGMENT = re.compile(r"[A-Za-z0-9._~-]+")   # an {arg} in a URL path
+HEADER_NAME = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+")
+HEADER_VALUE = re.compile(r"[\t\x20-\x7e]*")
 
 
 class Custody:
@@ -99,14 +105,30 @@ class Custody:
         return None, d, c.get("args", args)
 
     def complete(self, key, tcid, d, tool, args, status, **outcome):
-        """Record the outcome; a failure to record warns (the call ran: its result still goes to the client)."""
+        """Record the outcome, trying twice under one request_id; a failure to record warns (the call ran: its result
+        still goes to the client)."""
         run_id, token, caller = key
-        try:
-            self.client.complete({"run_id": run_id, "run_token": token, "caller": caller, "tool_call_id": tcid,
-                                  "decision_id": d["decision_id"], "args_digest": event_hash({"tool": tool, "args": args}),
-                                  "status": status, **outcome})
-        except (SignerUnavailable, RPCError) as e:
-            print(f"tracekit: the outcome of {tool} call {tcid} (run {run_id}) was not recorded: {e}", file=sys.stderr)
+        req = {"request_id": uuid.uuid4().hex, "run_id": run_id, "run_token": token, "caller": caller,
+               "tool_call_id": tcid, "decision_id": d["decision_id"],
+               "args_digest": event_hash({"tool": tool, "args": args}), "status": status, **outcome}
+        for attempt in (1, 2):
+            try:
+                self.client.complete(req)
+                return
+            except SignerUnavailable as e:
+                err = e
+            except RPCError as e:
+                if e.code == "conflict":   # the retry of a first try that was recorded (it took another client_seq)
+                    return
+                err = e
+                if e.code not in ("unavailable", "quota_exceeded"):
+                    break
+            if attempt == 1:
+                time.sleep(min((getattr(err, "retry_after_ms", None) or 1000) / 1000, 5))
+        print(f"tracekit: the outcome of {tool} call {tcid} (run {run_id}, decision {d['decision_id']}) was not "
+              f"recorded: {err}. It ran and its result went to the client; the run shows the decision without a "
+              "tool.result. Check that the signer is reachable and this service may complete calls (authorize).",
+              file=sys.stderr)
 
 
 class _Executor(_Handler):
@@ -124,12 +146,12 @@ class _Executor(_Handler):
 
     def do_POST(self):
         ex, path = self.server.executor, self.path.split("?")[0]
+        got = self._authenticated(ex["max_body"])   # first: only a caller it accepts learns which actions exist
+        if got is None:
+            return
         action = ex["actions"].get(path[len("/v1/actions/"):]) if path.startswith("/v1/actions/") else None
         if action is None:
             return self._error(404, "no such action: GET /v1/actions lists them")
-        got = self._authenticated(ex["max_body"])
-        if got is None:
-            return
         key, req, _ = got
         args, tcid = req.get("args"), req.get("tool_call_id", "ex-" + uuid.uuid4().hex)
         errs = rpc_schema.validate(rpc_schema.ID, tcid) or rpc_schema.validate(action["args"], args)
@@ -145,8 +167,10 @@ class _Executor(_Handler):
             return self._error(*why)
         try:
             status, result = _send(action, args, ex["max_body"])
-        except (urllib.error.URLError, http.client.HTTPException, OSError, ValueError) as e:
-            err = f"upstream unreachable: {e}"
+        except (http.client.HTTPException, OSError, ValueError) as e:
+            err = cut(f"upstream unreachable, the request was not sent: {e.args[0]}" if isinstance(e, Unsent) else
+                      f"the request was sent but its response could not be read ({e}): the action may have run; "
+                      "check before running it again", action["cut"])
             ex["custody"].complete(key, tcid, d, action["name"], args, "error", error=err[:4096])
             return self._error(502, err)
         ex["custody"].complete(key, tcid, d, action["name"], args, "ok" if status < 400 else "error",
@@ -155,15 +179,21 @@ class _Executor(_Handler):
 
 
 def _url(action, args):
-    """The action's URL for `args`: each {arg} URL-quoted, so it stays in its path segment or query value."""
-    values = {k: urllib.parse.quote(str(v), safe="") for k, v in args.items()}
-    if {values.get(f) for f in action["fields"]} & {".", ".."}:
-        raise ValueError("an argument in the URL is . or ..")
-    return action["url_template"].format_map(values)
+    """The action's URL for `args`: an {arg} in the path is one plain segment (a slash, backslash or dot segment
+    could leave it once a proxy decodes it), one in the query is URL-quoted."""
+    for f in sorted(action["path_fields"]):
+        if not (SEGMENT.fullmatch(str(args[f])) and str(args[f]).strip(".")):
+            raise ValueError(f"{f}: an argument in the URL path takes letters, digits and . _ ~ - and isn't all dots")
+    return action["url_template"].format_map({k: urllib.parse.quote(str(v), safe="") for k, v in args.items()})
+
+
+class Unsent(OSError):
+    """The action's request was not sent: connecting or sending it failed."""
 
 
 def _send(action, args, max_body):
-    """(status, the response's JSON or text, with every header value cut out (secret_values)) of the action's request for `args`."""
+    """(status, the response's JSON or text, with every header value cut out (secret_values)) of the action's request
+    for `args`. Unsent when it wasn't sent; any other error once it was."""
     url = _url(action, args)
     body = None if action["method"] in NO_BODY else json.dumps(args).encode()
     req = urllib.request.Request(url, data=body, method=action["method"],
@@ -173,17 +203,44 @@ def _send(action, args, max_body):
         resp = OPEN(req, timeout=UPSTREAM_TIMEOUT_S)
     except urllib.error.HTTPError as e:
         resp = e
+    except (urllib.error.URLError, ValueError) as e:   # urllib wraps a failure to connect or send (a ValueError: a
+        raise Unsent(getattr(e, "reason", e)) from None   # header it refused); reading the answer raises as is
     with resp:
         status, data = resp.getcode(), resp.read(max_body + 1)
     if len(data) > max_body:
         raise ValueError(f"upstream response over {max_body} bytes")
     text = data.decode("utf-8", "replace")
-    for v in action["cut"]:
-        text = text.replace(v, REDACTED)
     try:
-        return status, json.loads(text)
-    except ValueError:
-        return status, text
+        try:
+            value = json.loads(text)
+        except ValueError:
+            value = text
+        return status, cut(value, action["cut"])   # from the decoded strings: an escaped value is a value too
+    except RecursionError:
+        raise ValueError("the response nests too deeply to cut the credentials out of it") from None
+
+
+def cut(x, values):
+    """`x` (JSON) with each of `values` (secret_values) replaced by REDACTED in every string, keys too."""
+    if isinstance(x, str):
+        for v in values:
+            x = x.replace(v, REDACTED)
+        return x
+    if isinstance(x, list):
+        return [cut(v, values) for v in x]
+    if isinstance(x, dict):
+        return {cut(k, values): cut(v, values) for k, v in x.items()}
+    return x
+
+
+def read_secret(path, header):
+    """The value file `path` holds, stripped; one a header can carry (one line of printable ASCII) when `header`."""
+    with open(path, encoding="utf-8") as f:
+        value = f.read().strip()
+    if header and not HEADER_VALUE.fullmatch(value):
+        raise ValueError(f"{path}: a header value is one line of printable ASCII; this one has a line break, a control "
+                         "character or a non-ASCII character")
+    return value
 
 
 def secret_values(values):
@@ -226,10 +283,13 @@ def load_config(path):
         fields = {f for _, f, _, _ in string.Formatter().parse(a["url_template"]) if f is not None}
         if fields - set(a["args"].get("required", [])):
             raise ValueError(f"{where}: url_template uses {sorted(fields)}: each must be a required argument")
+        path = {f for _, f, _, _ in string.Formatter().parse(a["url_template"].split("?", 1)[0]) if f is not None}
         headers = a.get("headers", {})
-        if not isinstance(headers, dict) or not all(isinstance(v, str) for v in headers.values()):
+        if not (isinstance(headers, dict) and all(isinstance(v, str) and HEADER_NAME.fullmatch(k)
+                                                  for k, v in headers.items())):
             raise ValueError(f"{where}: headers maps a header name to the file holding its value")
-        actions[a["name"]] = dict(a, fields=fields, headers={k: os.path.join(base, v) for k, v in headers.items()})
+        actions[a["name"]] = dict(a, fields=fields, path_fields=path,
+                                  headers={k: os.path.join(base, v) for k, v in headers.items()})
     cfg["actions"] = actions
     transport.resolve(cfg["http"], base)
     return cfg
@@ -239,10 +299,7 @@ def serve(cfg, client=None):
     """The executor's server for a loaded config, not yet serving; stop it with shutdown() and server_close()."""
     actions = {}
     for name, a in cfg["actions"].items():
-        headers = {}
-        for k, p in a["headers"].items():
-            with open(p, encoding="utf-8") as f:
-                headers[k] = f.read().strip()
+        headers = {k: read_secret(p, header=True) for k, p in a["headers"].items()}
         actions[name] = dict(a, headers=headers, cut=secret_values(headers.values()))
     srv = transport.HttpServer(*transport.configure(cfg["http"]), None, handler=_Executor)
     srv.executor = {"actions": actions, "max_body": cfg.get("max_body", MAX_BODY),

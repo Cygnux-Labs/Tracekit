@@ -28,6 +28,11 @@ test("executor actions: listed, called for the run, refusals thrown, as OpenAI A
   assert.deepEqual(await pay.call({ to: "a" }, "call-1"), { status: 201, result: { ok: true } });
   assert.deepEqual(seen.at(-1), { method: "POST", url: "/v1/actions/pay", auth: "Bearer agent", run: "run-1.p.mac", body: { args: { to: "a" }, tool_call_id: "call-1" } });
   await assert.rejects(wipe.call({ to: "a" }), (e) => e instanceof ExecutorRefused && /R-WIPE/.test(e.message));
+  for (const url of ["http://executor.internal:8090", "https://user:pw@executor.internal", "executor.internal"]) {
+    const before = seen.length;   // refused before anything is sent: the run token never goes in clear
+    await assert.rejects(executorActions(url, run, { headers: { authorization: "Bearer agent" } }), /must use https|must not contain|invalid URL/);
+    assert.equal(seen.length, before);
+  }
 
   const oa = openaiAgentsTool((o) => o, pay);
   assert.deepEqual([oa.name, oa.parameters, oa.strict], ["pay", ARGS, false]);

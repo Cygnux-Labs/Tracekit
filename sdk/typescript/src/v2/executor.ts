@@ -28,8 +28,23 @@ export type Action = {
 
 type Options = { headers?: Record<string, string>; fetch?: typeof globalThis.fetch };
 
+/** Why `url` may not receive the run token and the agent's credential, or null: https, or plain http to loopback. */
+function remoteUrlError(url: string): string | null {
+  let u: URL;
+  try {
+    u = new URL(url);
+  } catch {
+    return "invalid URL";
+  }
+  if (u.username || u.password) return "URL must not contain user@ credentials";
+  if (u.protocol === "https:" || (u.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(u.hostname))) return null;
+  return "URL must use https (plain http only for localhost, 127.0.0.1 or ::1)";
+}
+
 /** The executor's actions, each callable for `run`. */
 export async function executorActions(url: string, run: RunHandle, { headers = {}, fetch = globalThis.fetch }: Options = {}): Promise<Action[]> {
+  const why = remoteUrlError(url);
+  if (why) throw new Error(`${url.slice(0, 256)}: ${why}`);   // the run token and the credential never go in clear
   const base = url.replace(/\/+$/, "");
   // the agent's credential for the executor never follows a redirect
   const get = async (path: string, init: RequestInit = {}) => {

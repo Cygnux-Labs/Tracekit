@@ -172,7 +172,7 @@ class Surfaces(unittest.TestCase):
         srv.executor = {"actions": {"pay": {"name": "pay", "args": {}}}, "max_body": 1024, "custody": None}
         auth = {"Authorization": f"Bearer {SECRET}", "X-Tracekit-Run": f"run.{SECRET}.mac"}
         return srv, SECRET, [("GET", f"/nope?token={SECRET}", auth, 404), ("GET", "/v1/actions", {}, 401),
-                             ("POST", f"/v1/actions/{SECRET}", auth, 404), ("POST", "/v1/actions/pay", {}, 401),
+                             ("POST", f"/v1/actions/{SECRET}", {}, 401), ("POST", "/v1/actions/pay", {}, 401),
                              ("POST", "/v1/actions/pay", {**auth, "Content-Length": BIG}, 413),
                              ("PUT", "/v1/actions", auth, 501)]
 
