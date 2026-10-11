@@ -1,13 +1,12 @@
-"""The investigation app. One HTML file; works as a static report or served by `tracekit why serve`."""
+"""What the viewer's why views show of one run (served by why.server.Store.detail)."""
 from __future__ import annotations
 
 import json
 import os
 from typing import Any, Dict, List, Optional
 
-from ..core import read_text
-from .analysis import investigation, workspace
-from .core import Run, load_run
+from .analysis import investigation
+from .core import Run
 from .evals import structure
 
 
@@ -62,7 +61,7 @@ def run_detail(run: Run) -> Dict[str, Any]:
                              "duration_ms": ev.get("duration_ms"), "status": ev.get("status"),
                              "sensitive": ev.get("sensitive", False), "mode": ev.get("mode"),
                              "evidence": evidence.get(ev["id"]) or _cited(ev), "policy": ev.get("policy"),
-                             "context_mode": ev.get("context_mode")}
+                             "context_mode": ev.get("context_mode"), "tracekit": ev.get("tracekit")}
         if n["type"] == "decision":
             d.update(model=ev["model"], purpose=ev.get("purpose"), usage=ev.get("usage") or {},
                      context=[{"source": c["source"] or c["kind"], "kind": c["kind"], "trust": c["trust"],
@@ -83,35 +82,3 @@ def run_detail(run: Run) -> Dict[str, Any]:
             "critical_path": st["critical_path"], "tests": run.tests,
             "source": (run.start.get("meta") or {}) if (run.start.get("meta") or {}).get("source") == "tracekit" else None,
             "outcome": run.events[-1].get("outcome") if run.events and run.events[-1]["type"] == "run.end" else None}
-
-
-def app_data(paths: List[str]) -> Dict[str, Any]:
-    ws = workspace(paths)
-    details = {}
-    for p in paths:
-        try:
-            r = load_run(p)
-            details[r.run_id] = run_detail(r)
-        except Exception:  # workspace() already reported it
-            continue
-    ws["details"] = details
-    return ws
-
-
-def render_app(data: Optional[Dict[str, Any]], *, server: bool = False) -> str:
-    payload = json.dumps(data, ensure_ascii=False, default=str).replace("</", "<\\/") if data else "null"
-    return (TEMPLATE.replace("__DATA__", payload).replace("__SERVER__", "true" if server else "false"))
-
-
-def render_html(run: Run) -> str:
-    """Static report for one run (kept for the old `view` command)."""
-    return render_app(app_data([run.path]) if run.path else None)
-
-
-def render_workspace(root_or_paths) -> str:
-    from .evals import list_runs
-    paths = list_runs(root_or_paths) if isinstance(root_or_paths, str) else list(root_or_paths)
-    return render_app(app_data(paths))
-
-
-TEMPLATE = read_text(os.path.join(os.path.dirname(__file__), "app.html"))

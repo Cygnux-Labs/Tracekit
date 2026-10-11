@@ -28,6 +28,45 @@ run with the code `tracekit verify` runs. The page is the observer's terminal, f
 The timeline is scaled to the calls shown, not the clock. The page and server are the observer's, with its
 checklist ([security-checklist.md](security-checklist.md)).
 
+## Why
+
+The viewer is also the UI of [`tracekit why`](why.md): with why logs it investigates them on the same page, so one run
+is both signed evidence and a causal log.
+
+```bash
+tracekit view --why runs --allow-program myapp.agents:SYSTEM
+tracekit why serve runs --allow-program myapp.agents:SYSTEM     # the same page on why logs alone, no signer store
+```
+
+`--why DIR` names the why logs (default: `why/` in the signer's data dir, where the signer-backed why runtime writes
+them, when it exists). A tool call's why event cites the signed record it produced (`tracekit: {run_id, run_seq}`);
+that citation joins the two.
+
+- **Detail · where the arguments came from**: from the signed `provenance` of the call's decision (labelled
+  `signed · observed`): each argument whose value only untrusted content brought into the run, its kind and the record
+  that brought it (click to select it), never the value; `unavailable (signer restarted)` or `truncated` when the
+  signer's index could not say. With a why log of the run, also the why analysis of each value: the task, a trusted
+  input or result, an untrusted input or result, or written by the model.
+- **Detail · WHY** (the detail's second view, for the selected call): the verdict sentence, **how it got here** (the
+  observed path through agents, model calls and messages, from every untrusted input), **candidate causes** with their
+  status (primary cause, contributing, confirmed, joint, inconclusive, no effect seen, ruled out, not tested), effect,
+  95% interval and with → without rates, and **FIND THE CAUSE** / **RUN TEST**.
+- **Views** (header buttons; the run list and tape stay): **GRAPH**, the run's data flow (observed edges; tested causes
+  in red; inferred links and ruled-out tests hidden until ticked; click a node for what it came from and led to),
+  **AGENTS** (the channels used, the influence matrix, the critical path), **INFLUENCE** (across runs: sources ×
+  tools, with tested effects). **DESK** returns to the panels.
+- **Alerts**: the why alerts (a sensitive call using a value only untrusted content supplied, a call downstream of
+  untrusted input, evidence alerts) join the alert panel labelled `WHY`; signed records' alerts are labelled `SIGNED`.
+
+FIND THE CAUSE and RUN TEST replay the run, so they run only for the programs passed with `--allow-program` (the run
+names its program; replay imports it). Otherwise the panel shows the `tracekit why` command to run instead. New runs
+and new alerts arrive over the page's event stream as they are recorded.
+
+The why API is served by the viewer, on its session and checklist: `GET /api/why/workspace`, `GET /api/why/runs/<id>`,
+`POST /api/why/runs/<id>/tests` and `/attribute` (the token, a same-origin JSON body) and `POST /v1/ingest` (the
+token as a Bearer token only; [why.md](why.md#server-and-api)). Why logs belong to no tenant, so only the printed token
+sees them, never an OIDC session.
+
 ## Central viewer
 
 `tracekit view` with a `view.logs` section reads every log of a central deployment

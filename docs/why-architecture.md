@@ -176,23 +176,23 @@ All tests share `base_cache`, the "nothing removed" arm keyed by trial index; wi
 - **Testing several inputs of one action** (`family=k`): the interval is corrected by Bonferroni across the k inputs (and the looks of a sequential test), so the verdicts for all of an action's suspects together keep a 5% false-positive rate. The benchmark scores this verdict. `replay.benjamini_hochberg` is still available for false-discovery-rate control over p-values.
 - **Futility stopping** (sequential tests): after at least 2n pairs, a test whose estimated effect is within 5 points of zero stops. It can only lose power, never add false positives.
 
-Intervals are computed at 95% (z = 1.96). The app's verdicts use each test's own interval and are not corrected across tests.
+Intervals are computed at 95% (z = 1.96). The viewer's verdicts use each test's own interval and are not corrected across tests.
 
 ## Server and ingestion
 
-`tracekit why serve ROOT` runs on `tracekit.netserver.Server` (bounded threads, per-IP limits, read timeouts and a
-deadline per connection; the event stream and the replay POSTs lift the deadline once their request is read).
+`tracekit why serve ROOT` is the viewer (`tracekit.view.server`, on `tracekit.netserver.Server`) on the why logs under
+ROOT: the same page, session, headers and limits ([viewer.md](viewer.md#why)). The event stream and the replay POSTs
+lift the connection deadline once their request is read.
 
 | Method | Path | Notes |
 |---|---|---|
-| GET | `/` | the app, fetching from the API |
-| GET | `/api/workspace` | run summaries and the cross-run influence graph |
-| GET | `/api/runs/<id>` | everything the app shows for one run |
-| POST | `/api/runs/<id>/tests` | `{"intervention", "target", "n", "n_max"}` → run replay; only for programs passed with `--allow-program` |
-| POST | `/api/runs/<id>/attribute` | `{"target", "n", "n_max", "suspects"}` → Find the cause; same allow-list |
+| GET | `/` | the viewer's page |
+| GET | `/api/why/workspace` | run summaries, the cross-run influence graph, every run's alerts, and the signed calls each why event cites (joined only when the signed record is of the same tool) |
+| GET | `/api/why/runs/<id>` | everything the page shows for one run |
+| POST | `/api/why/runs/<id>/tests` | `{"intervention", "target", "n", "n_max"}` → run replay; only for programs passed with `--allow-program` |
+| POST | `/api/why/runs/<id>/attribute` | `{"target", "n", "n_max", "suspects"}` → Find the cause; same allow-list |
 | POST | `/v1/ingest` | `Authorization: Bearer <token>`; body `{"events": [...], "blobs": {ref: value}}` |
-| GET | `/api/stream` | server-sent events: `{"type": "run", run_id, events, finished, alerts: [new ones]}` and `{"type": "test", ...}` |
-| GET | `/healthz` | liveness (needs the token like every request) |
+| GET | `/api/stream` | the viewer's event stream: each run's records and `why` records for new runs, alerts and test results |
 
 Ingest validation, all before anything is written:
 

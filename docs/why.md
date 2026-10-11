@@ -46,14 +46,15 @@ tracekit why serve runs --allow-program tracekit.why.demo:SYSTEM
 ```
 
 All three untrusted inputs reached the email; replaying without the vendor note drops it from 80% of runs to 0%, and
-removing the other two changes nothing detectable. `demo` also writes `runs/report.html`, the investigation app with
-the runs embedded (static, opens anywhere). `serve` prints a URL with a one-time token; open it for the live app.
+removing the other two changes nothing detectable. `serve` prints a URL with a one-time token; open it.
 
-The app has these views: **Runs** (alert counts, tests, log integrity), **Overview** (the tool calls and the alerts),
-**Why did it happen?** (for one tool call: where each argument came from, the recorded path through the agents, and
-every candidate cause with its test status), **Timeline**, **Graph** (the data-flow graph, confirmed causes in red),
-**Agents** (per-channel usage and tested influence, the influence matrix, the critical path) and **Influence** (across
-runs: which content reached which tools, and which links were confirmed by tests).
+**The UI is the viewer** ([viewer.md](viewer.md#why)): `tracekit why serve` is `tracekit view`'s page on why logs, and
+`tracekit view --why DIR` adds them to a signer's runs. Each run's calls are on the tape; select one and open **WHY**
+in the detail panel for where each argument came from, the recorded path through the agents, and every candidate cause
+with its test status and the **FIND THE CAUSE** / **RUN TEST** buttons. The header switches the lower panels to
+**GRAPH** (the data-flow graph, tested causes in red), **AGENTS** (per-channel usage and tested influence, the
+influence matrix, the critical path) or **INFLUENCE** (across runs: which content reached which tools, and which links
+tests confirmed). The why alerts join the alert panel.
 
 ## Instrumenting agents
 
@@ -160,9 +161,9 @@ then cannot decide. With `--n 10 --n-max 160` the test runs 10 pairs, checks, an
 decisive or it reaches 160. The interval is widened for the number of checks (Bonferroni), so stopping early does not
 add false positives. On an agent that follows an injection in 25% of runs, 10 fixed trials find the cause 13% of the
 time; sequential testing finds it every time, using 38 trials on average. Across 200 tests of an input with no effect
-it called 5.5% causal. The app's **Run test** button uses `--n 20 --n-max 160`.
+it called 5.5% causal. The viewer's **RUN TEST** button uses `--n 20 --n-max 160`.
 
-**Find the cause** (`tracekit why attribute RUN --target SPEC`, or the button in the app) runs the investigation for one
+**Find the cause** (`tracekit why attribute RUN --target SPEC`, or FIND THE CAUSE in the viewer) runs the investigation for one
 action:
 
 1. Remove every untrusted input upstream of the action at once. If the action still happens about as often, none of
@@ -269,8 +270,8 @@ With the Anthropic adapter, `msgs.run_tool(block, fn)` checks, runs, records and
 `tracekit why record module:SYSTEM --guard block` runs a System under the guard. Replays never use the guard. The guard
 sees only what the log has recorded so far.
 
-**The app updates as runs are recorded.** `tracekit why serve` watches the runs folder (and anything ingested),
-recomputes alerts for each run that changes and pushes them over `/api/stream`. `--webhook URL` also POSTs each new
+**The page updates as runs are recorded.** `tracekit why serve` (and `tracekit view --why`) watches the runs folder
+(and anything ingested), recomputes alerts for each run that changes and pushes them over the viewer's `/api/stream`. `--webhook URL` also POSTs each new
 high alert (Slack-compatible JSON). `tracekit why watch ROOT` prints new alerts in the terminal. To try it:
 
 ```bash
@@ -297,8 +298,8 @@ tracekit why import --v1 ~/.tracekit --run <session> --out runs --sensitive send
 | `capture.gap`, `trace.tamper`, failed signatures | high alerts: the evidence is incomplete |
 
 The import checks the ledger's chain and signatures (`signer.pub` next to the ledger) and records the result in the
-run; `tracekit-map.json` maps each why event to the signed records (seq, hash) it came from, and the app shows them in
-each event's details. Values can be traced only with `content_capture: full` (at least for untrusted tools); with
+run; `tracekit-map.json` maps each why event to the signed records (seq, hash) it came from, and the run's data carries
+them per event. Values can be traced only with `content_capture: full` (at least for untrusted tools); with
 hashed content provenance says the content was hashed instead of guessing. Model calls appear only when they were
 recorded (autotrace, the SDK or the model proxy).
 
@@ -375,19 +376,22 @@ tracekit why serve runs --allow-program myapp.agents:SYSTEM
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/` | the app |
-| GET | `/api/workspace` | run summaries and the influence graph |
-| GET | `/api/runs/<id>` | one run's investigation data |
-| GET | `/api/stream` | server-sent events: a run changed (with its new alerts), a test finished |
-| POST | `/api/runs/<id>/tests` | `{"intervention", "target", "n", "n_max"}`: a replay test |
-| POST | `/api/runs/<id>/attribute` | `{"target", "n", "n_max"}`: Find the cause |
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/` | the viewer's page |
+| GET | `/api/why/workspace` | run summaries, the influence graph, every run's alerts and the signed calls each why event cites |
+| GET | `/api/why/runs/<id>` | one run's investigation data, and whether this server may replay it |
+| GET | `/api/stream` | the viewer's server-sent events: each run's events as tape rows, and `why` records (a run changed, with its new alerts; a test finished) |
+| POST | `/api/why/runs/<id>/tests` | `{"intervention", "target", "n", "n_max"}`: a replay test |
+| POST | `/api/why/runs/<id>/attribute` | `{"target", "n", "n_max"}`: Find the cause |
 | POST | `/v1/ingest` | `{"events": [...], "blobs": {ref: value}}`: receive events |
 
-Every request needs the token: `--token`, else `$TRACEKIT_WHY_TOKEN`, else a random one printed in the URL. The page
-exchanges the URL's `?token=` once for an HttpOnly, SameSite=Strict cookie; the API also takes the token as
-`Authorization: Bearer`, and `/v1/ingest` takes only that. Requests addressed to a Host other than loopback or the bound
-address need the token (DNS rebinding); POSTs need the bearer token or an expected Host. The replay POSTs need a JSON body and a
-same-origin `Origin`, if any. The page is served with a strict CSP (a script nonce per response, `default-src 'none'`).
+The server is the viewer's ([viewer.md](viewer.md#why)), with its security checklist. Every request needs the token:
+`--token`, else `$TRACEKIT_WHY_TOKEN`, else a random one printed in the URL. The page exchanges the URL's `?token=`
+once for an HttpOnly, SameSite=Strict cookie; the API also takes the token as `Authorization: Bearer`, and
+`/v1/ingest` takes only that. Requests addressed to a Host other than loopback or the bound address need the token (DNS
+rebinding); POSTs need the bearer token or an expected Host. The replay POSTs need a JSON body and a same-origin
+`Origin`, if any, and run only the programs passed with `--allow-program`.
 The server binds to 127.0.0.1; beyond loopback it needs `--tls-cert` and `--tls-key`, or `--insecure-http` when TLS is
 terminated in front. Connections are bounded overall and per client address, with read timeouts and deadlines.
 
@@ -401,11 +405,9 @@ with `--allow-program`. The server is in the [HTTP security checklist](security-
 
 | Command | What it does |
 |---|---|
-| `tracekit why demo [--out DIR] [--n N]` | record the demo, run tests, write `report.html` |
+| `tracekit why demo [--out DIR] [--n N]` | record the demo and run tests |
 | `tracekit why record module:SYSTEM [--out DIR] [--seed S] [--guard off\|alert\|block] [--webhook URL]` | record one run of a System |
-| `tracekit why report ROOT [-o FILE]` | static app for every run under ROOT |
-| `tracekit why view RUN [-o FILE]` | static app for one run |
-| `tracekit why serve ROOT [--host] [--port] [--token] [--allow-program SPEC] [--webhook URL] [--tls-cert --tls-key \| --insecure-http]` | app, API, ingest and live updates |
+| `tracekit why serve ROOT [--host] [--port] [--token] [--allow-program SPEC] [--webhook URL] [--tls-cert --tls-key \| --insecure-http]` | the viewer on ROOT's why logs: page, API, ingest and live updates |
 | `tracekit why watch ROOT [--webhook URL]` | print new alerts as runs are recorded |
 | `tracekit why import --v1 SRC [--run R] [--out DIR] [--sensitive TOOL] [--list]` | import runs from a v1 ledger |
 | `tracekit why import --store DIR \| --bundle FILE --trust FILE [--run R] [--out DIR] [--list]` | import runs from the v2 signer, merged with the why log that cites them |
@@ -428,7 +430,7 @@ All of Tracekit's limits: [limits.md](limits.md).
   not transfer to other tasks.
 - `ruled-out` means smaller than 20 points, not zero. At n = 40 the demo's intervals are about ±18 points.
 - Each test reports an exact paired p-value; `family=k` corrects the interval when k inputs of one action are tested
-  together (attribution and the benchmark do). The app's **Run test** button tests one input at a time without that
+  together (attribution and the benchmark do). The viewer's **RUN TEST** button tests one input at a time without that
   correction, so testing many inputs one by one there can produce a chance `causal` (about 1 in 20 per input with no
   effect).
 - The graph is only as complete as the recorded context: content sent to a model without being recorded is missing.

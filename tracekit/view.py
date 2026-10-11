@@ -21,8 +21,12 @@ identity (`authorize` grants it approval_decide_on_behalf), and the signer decid
 Dev assurance: the pinned log key is read from the directory being checked, so a run that verifies matches the key of
 whoever can write that directory, the same user as the dev signer and this viewer.
 
+With why logs (`--why DIR`, else WHY_DIR in the data dir when present) the page also investigates them
+(why.server.Store, docs/viewer.md#why): their alerts, the why provenance of each call's arguments, the WHY, GRAPH,
+AGENTS and INFLUENCE views; FIND THE CAUSE and RUN TEST replay only the programs passed with --allow-program.
+
     tracekit view [--dev | --config signer.yaml | --data-dir DIR] [--log-vkey VKEY] [--host H] [--port N]
-                  [--tls-cert FILE --tls-key FILE | --insecure-http]
+                  [--tls-cert FILE --tls-key FILE | --insecure-http] [--why DIR] [--allow-program SPEC]
 """
 import argparse
 import atexit
@@ -61,8 +65,10 @@ from .signer.service import dev_data_dir, load_config, lookup, read_vkeys, reade
 from .storage.base import StorageCorrupt, StorageUnavailable
 from .storage.file import NOTE
 from .verify import v2
+from .why.server import Store
 
 POLL_S = 1.0
+WHY_DIR = "why"   # where the signer-backed why runtime writes its logs, in the signer's data dir
 THREADS, PER_IP = 512, 128   # each open page holds a connection for its event stream; a team may share one address
 DEV_NOTE = ("trust pins this store's own log.vkey: dev assurance, the viewer runs as the same user as the dev signer "
             "and proves only that the records match that key")
@@ -324,7 +330,8 @@ class Translator(observe.Translator):
                      policy={"decision": "deny" if dec == "deny" else "allow", "reasons": [x["id"] for x in rules],
                              "flags": {"flag": ["flagged"], "ask": ["held_for_approval"]}.get(dec, [])},
                      v2={"decision": dec, "rules": rules, "args_commitment": d.get("args_commitment"),
-                         "policy_hash": d.get("policy_hash"), "decision_id": d.get("decision_id")})
+                         "policy_hash": d.get("policy_hash"), "decision_id": d.get("decision_id"),
+                         **{k: d[k] for k in ("provenance", "provenance_state") if k in d}})
             return [r]
         tool = self.requests.get(d.get("approval_id"), "")
         if t == "approval.request":
@@ -714,19 +721,20 @@ class Runs:
             os.unlink(out)
 
 
-def server(feed, host, port, token, tls=None, login=None, desk=None, runs=None):
+def server(feed, host, port, token, tls=None, login=None, desk=None, runs=None, why=None):
     """The viewer's HTTP server (HTTPS with `tls`, an ssl.SSLContext), open to requests that present `token` (or the
     session cookie it is exchanged for), or with `login` (an OidcLogin) a session of its own, whose approver sessions
     get the approval pages of `desk` (an ApprovalDesk); with `runs` (a Runs, and no `feed`), the run pages of a central
-    deployment's logs; call serve_forever()."""
+    deployment's logs; with `why` (a why.server.Store publishing into `feed`), the why views' API; call
+    serve_forever()."""
     if not token:
         raise ValueError("the viewer needs a token")
     hosts = [host] + ([urlsplit(login.redirect_uri).hostname] if login else [])
 
-    class Handler(observe.make_handler(feed, token, hosts, secure=bool(tls), login=login, approvals=desk, runs=runs)):
-        def stream(self, *a):
-            self.server.stop_deadline()   # an event stream lasts as long as the page is open
-            return super().stream(*a)
+    class Handler(observe.make_handler(feed, token, hosts, secure=bool(tls), login=login, approvals=desk, runs=runs,
+                                       why=why)):
+        def long_request(self):
+            self.server.stop_deadline()   # an event stream lasts as long as the page is open, a replay its trials
     return Server((host, port), Handler, tls, max_threads=THREADS, max_per_ip=PER_IP)
 
 
@@ -742,6 +750,10 @@ def main(argv=None):
     ap.add_argument("--tls-cert", help="PEM certificate: serve HTTPS (required beyond loopback)")
     ap.add_argument("--tls-key", help="PEM private key of --tls-cert")
     ap.add_argument("--insecure-http", action="store_true", help="serve plain HTTP beyond loopback anyway")
+    ap.add_argument("--why", metavar="DIR", help=f"why logs to investigate (default: {WHY_DIR}/ in the data dir, if "
+                                                 "present)")
+    ap.add_argument("--allow-program", action="append", default=[], metavar="SPEC",
+                    help="a why System (module:ATTR) FIND THE CAUSE and RUN TEST may replay (repeatable)")
     a = ap.parse_args(argv)
     loopback = a.host in observe.LOOPBACK_HOSTS
     if bool(a.tls_cert) != bool(a.tls_key):
@@ -767,7 +779,10 @@ def main(argv=None):
                                                              (cfg.get("approvals") or {}).get("webauthn"))
         runs = view.get("logs") and Runs(view["logs"], a.log_vkey)
         feed = None if runs else StoreFeed(cfg, a.log_vkey)
-        srv = server(feed, a.host, a.port, token, tls, login, desk, runs)
+        why_dir = a.why or (cfg.get("data_dir") and os.path.join(cfg["data_dir"], WHY_DIR))
+        why = Store(why_dir, a.allow_program, out=feed) if feed and why_dir and (a.why or os.path.isdir(why_dir)) \
+            else None
+        srv = server(feed, a.host, a.port, token, tls, login, desk, runs, why)
     except (OSError, ValueError, StorageUnavailable) as e:
         print(f"tracekit view: {e}", file=sys.stderr)
         return 1
@@ -776,6 +791,11 @@ def main(argv=None):
           + ("" if os.environ.get("TRACEKIT_VIEW_TOKEN") else f"?token={token}")
           + (f"  ({len(runs.logs)} Postgres logs, read-only)" if runs else
              f"  (store: {feed.store}, read-only; {feed.note})"), flush=True)
+    if why:
+        why.watch()
+        print(f"  why logs: {why.root}; FIND THE CAUSE and RUN TEST "
+              + (f"replay {', '.join(a.allow_program)}" if a.allow_program else
+                 "show the command to run (start with --allow-program module:SYSTEM to run them here)"), flush=True)
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

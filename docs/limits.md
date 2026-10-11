@@ -198,7 +198,7 @@ Each row says what the limit is, why it is so, what to do about it, and where th
 |---|---|---|---|
 | A measured effect is the total effect for this program on this task; it doesn't explain the model's reasons and may not transfer to other tasks. | Replay measures what changes when an input is removed, nothing more. | Re-test on the tasks you care about. | [why](why.md#limits) |
 | `ruled-out` means smaller than 20 points, not zero. | Finite replays give an interval, not an exact value. | Raise `--n-max` until the interval is narrow enough for your decision. | [why](why.md#how-causality-is-tested) |
-| The app's single **Run test** isn't corrected for testing many inputs one by one: about 1 in 20 inputs with no effect can come out `causal` by chance. | Each test reports its own interval. | Use **Find the cause** (`attribute`), which corrects for every test it runs. | [why](why.md#limits) |
+| The viewer's single **RUN TEST** isn't corrected for testing many inputs one by one: about 1 in 20 inputs with no effect can come out `causal` by chance. | Each test reports its own interval. | Use **Find the cause** (`attribute`), which corrects for every test it runs. | [why](why.md#limits) |
 | The causal graph is only as complete as the recorded context. | Content sent to a model without being recorded is invisible to it. | Record model calls through an adapter or the gateway. | [why](why.md#limits) |
 | Replay costs model calls (about 2·n per test per downstream model call); there are no budgets or caching yet. | Proving a cause means re-running the model with and without each suspect. | Start with `attribute`, which tests the group first; set `--n-max`. | [why](why.md#how-causality-is-tested) |
 | Run replay needs a re-executable program; decision replay doesn't. | Re-running a whole run means running its code again. | Use decision replay for calls recorded with their request. | [why](why.md#limits) |
@@ -234,6 +234,12 @@ Each row says what the limit is, why it is so, what to do about it, and where th
 | A run stays `PENDING` until a checkpoint covers its last record. | The verdict needs a checkpoint. | Wait for the next checkpoint. | [viewer](viewer.md#laptop-viewer) |
 | The viewer's printed token is one operator credential over every tenant's runs. | It is the local operator's access. | Use OIDC roles for auditors and approvers. | [viewer](viewer.md#who-sees-what) |
 | The timeline is scaled to the calls shown, not the clock. | It shows sequence, not duration. | Read times from the records. | [viewer](viewer.md#laptop-viewer) |
+| Why logs are shown to the printed token only; an OIDC session gets none of them. | A why log belongs to no tenant, so the viewer can't scope it. | Give investigators the token, or run `tracekit why serve` for them on their own logs. | [viewer](viewer.md#why) |
+| FIND THE CAUSE and RUN TEST run only for programs passed with `--allow-program`; otherwise the WHY panel shows the command to run. | A replay imports and runs the program a run names. | Start the viewer with `--allow-program module:SYSTEM`, or run the printed `tracekit why` command. | [viewer](viewer.md#why) |
+| A signed call is joined to its why event only when that event cites the signed record it produced and both name the same tool; why logs without the citation (recorded without a signer, or imported from v1) show in GRAPH, AGENTS and INFLUENCE but not in a signed call's detail. | The citation is the only link between the two logs. | Record with the signer-backed why runtime, or open the logs with `tracekit why serve`. | [viewer](viewer.md#why) |
+| A joint cause FIND THE CAUSE reports is marked in the candidate list only until the page reloads; its summary line says it either way. | Joint groups aren't saved per candidate. | Re-run FIND THE CAUSE, or read the summary. | [viewer](viewer.md#why) |
+| The why workspace reads every why log on each refresh. | It is recomputed rather than cached. | Keep the `--why` directory to the runs under investigation. | [viewer](viewer.md#why) |
+| There is no static, offline why report; the why views need a running viewer. | The views are served by the viewer, which runs the analysis and replays. | Run `tracekit why serve DIR` (or `tracekit view --why DIR`) and share the page with its token. | [why](why.md) |
 
 ## Install
 

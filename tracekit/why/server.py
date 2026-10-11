@@ -1,54 +1,42 @@
-"""`tracekit why serve`: the investigation app, its JSON API, and a token-protected ingestion endpoint.
+"""The why logs behind the viewer (`tracekit view --why DIR`, `tracekit why serve DIR`): ingest, the live watcher, the
+analysis the page shows and the allow-listed replays. observe.make_handler serves them (`why=`, a Store), on the
+viewer's own session and security conventions:
 
-GET  /                         the app
-GET  /api/workspace            run summaries + cross-run influence graph
-GET  /api/runs/<id>            everything the app shows for one run
-GET  /api/stream               server-sent events: a run changed (with its new alerts), a test finished
-POST /api/runs/<id>/tests      {"intervention","target","n"} -> counterfactual replay (allow-listed programs only)
-POST /api/runs/<id>/attribute  {"target","n","n_max"} -> group test, then narrow down to the causes
-POST /v1/ingest                Authorization: Bearer <token>; {"events":[...], "blobs":{ref: value}}
+GET  /api/why/workspace            run summaries, the cross-run influence graph, every run's alerts and the signed calls
+                                   each why event cites
+GET  /api/why/runs/<id>            everything the page's WHY, GRAPH and AGENTS views show of one run
+POST /api/why/runs/<id>/tests      {"intervention","target","n"} -> counterfactual replay (allow-listed programs only)
+POST /api/why/runs/<id>/attribute  {"target","n","n_max"} -> group test, then narrow down to the causes
+POST /v1/ingest                    Authorization: Bearer <token>; {"events":[...], "blobs":{ref: value}}
 
-Live: a watcher polls the runs folder, so runs written to disk by a local Runtime show up as they are
-recorded, the same as ingested ones. Each change recomputes that run's alerts; new ones are pushed to
-the app over /api/stream and, with a webhook, POSTed out.
+Live: a watcher polls the runs folder, so runs written to disk by a local Runtime show up as they are recorded, the
+same as ingested ones. Each change recomputes that run's alerts; the change and its new alerts go out on the viewer's
+event stream as a `why` record and, with a webhook, new high alerts are POSTed out. With `tape` (`tracekit why serve`,
+which has no signed records to show), each run's events also go out as the viewer's records (tape()), so its calls
+are on the tape.
 
-Security: the conventions of `tracekit view` (observe.py). Every request needs the token: the page's `?token=` is
-exchanged once for an HttpOnly, SameSite=Strict cookie derived from it, the API also takes it as a bearer token, and
-ingest takes the bearer token only. Requests to a Host name other than loopback or the bound address are refused
-unless they carry the token (DNS rebinding); a POST under another Host needs the bearer token (a remote agent's ingest),
-never the cookie. The replay POSTs need a
-JSON body, which a cross-site form cannot send. Ingest validates every event's hash, its link to the previous event
-and every blob's content hash before anything is written. Replay imports the program a run names, so only programs
-passed with --allow-program can be replayed. Served by netserver.Server: bounded threads, per-IP limits, deadlines.
+Ingest validates every event's hash, its link to the previous event and every blob's content hash before anything is
+written. Replay imports the program a run names, so only programs passed with --allow-program can be replayed.
 """
 from __future__ import annotations
 
-import hmac
 import json
 import os
 import re
-import secrets
 import sys
 import threading
 import time
-import traceback
-from collections import deque
-from http.server import BaseHTTPRequestHandler
 from typing import Any, Dict, Iterable, List, Optional, Tuple
-from urllib.parse import parse_qs, unquote, urlparse
 
-from ..netserver import Server
-from ..observe import CSP, LOOPBACK_HOSTS, WILDCARD_HOSTS, _host_only, _session
+from ..observe import _epoch
+from .analysis import alerts, workspace
 from .core import EVENT_TYPES, GENESIS, SCHEMA, content_hash, event_hash, load_run
 from .evals import list_runs
 from .graph import build_graph
 from .replay import attribute, counterfactual, load_system
-from .view import render_app, run_detail
-from .analysis import alerts, workspace
+from .view import run_detail
 
 RUN_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$")
-MAX_BODY = 20 * 1024 * 1024
-COOKIE = "tracekit_why"
 # fields each event type must carry for the analysis to read it
 REQUIRED = {"run.start": (), "agent.start": (), "run.end": (), "input": ("ref", "source", "trust"),
             "decision": ("model", "context", "output"), "action": ("tool", "args_ref", "result_ref"),
@@ -68,34 +56,92 @@ def _int(val) -> int:
         raise IngestError(400, "n and n_max must be integers")
 
 
+class Feed:
+    """observe.make_handler's feed of a server with no signed records (`tracekit why serve`, `tracekit why watch`): the
+    why records Store publishes."""
+
+    def __init__(self):
+        self.records, self.base, self.lock = [], 0, threading.Condition()
+
+    def verify(self, tenant=None):
+        return 0, [], None
+
+
+def _agent(ev: Dict[str, Any]) -> Dict[str, Any]:
+    """The viewer's agent fields of a why event: the run's own events are its main agent, each why agent a subagent."""
+    return {} if ev["agent"] == "run" else {"agent_id": ev["agent"], "agent_type": ev["agent"]}
+
+
+def _brief(v: Any, n: int = 300) -> str:
+    s = v if isinstance(v, str) else json.dumps(v, ensure_ascii=False, default=str)
+    return s[:n]
+
+
+def tape(run, start: int = 0) -> List[Dict[str, Any]]:
+    """The viewer's records (observe.Translator's shape) of `run`'s events from the `start`th: what its tape, agents
+    and detail show of a why log. Every record carries `why` (run id, graph node id), so the page opens it in WHY."""
+    out = []
+    for ev in run.events[start:]:
+        t = ev["type"]
+        r = {"ts": _epoch(ev["ts"]), "session_id": run.run_id, "seq": ev["seq"], "hash": ev["hash"],
+             "prev": ev["prev_hash"], "why": {"run": run.run_id, "node": "ev:" + ev["id"]}, **_agent(ev)}
+        if t == "run.start":
+            out.append({**r, "event": "SessionStart", "source": f"why log · {ev.get('program') or 'no program'}"})
+        elif t == "agent.start":
+            out.append({**r, "event": "SubagentStart", "parent_id": ev.get("parent")})
+        elif t == "input":
+            r.update(event="log", text=f"{'TASK' if ev.get('kind') == 'task' else 'INPUT'} {ev['source']} "
+                                       f"({ev['trust']}) · {_brief(run.value(ev['ref']))}")
+            if ev.get("kind") == "task":
+                out.append({**r, "event": "UserPromptSubmit", "prompt": _brief(run.value(ev["ref"]), 2000)})
+            out.append(r)
+        elif t == "decision":
+            out.append({**r, "event": "tk_model", "model": ev["model"], "usage": ev.get("usage"),
+                        "text": f"{ev.get('purpose') or 'model call'} · {_brief(run.value(ev['output']), 200)}"})
+        elif t == "action":
+            uid = ev["id"]
+            blocked = ev.get("status") == "blocked"
+            out.append({**r, "event": "PreToolUse", "tool_name": ev["tool"], "tool_use_id": uid,
+                        "tool_input": run.value(ev["args_ref"]) or {},
+                        "policy": {"decision": "deny" if blocked else "allow",
+                                   "reasons": list((ev.get("policy") or {}).get("rule_ids") or [])}})
+            if not blocked:
+                out.append({**r, "event": "PostToolUse", "tool_name": ev["tool"], "tool_use_id": uid,
+                            "tool_response": run.value(ev["result_ref"]), "failed": ev.get("status") == "error",
+                            "duration_ms": ev.get("duration_ms")})
+        elif t == "message":
+            out.append({**r, "event": "log", "text": f"MESSAGE → {ev['to']} · {_brief(run.value(ev['ref']))}"})
+        elif t == "run.end":
+            out.append({**r, "event": "SessionEnd", "reason": _brief(ev.get("outcome"), 200)})
+    return out
+
+
 class Store:
-    def __init__(self, root: str, token: Optional[str], allow_programs: Iterable[str] = (),
-                 webhook: Optional[str] = None):
+    """The why logs under `root`. Live changes are published into `out` (an observe.make_handler feed: the viewer's,
+    or a Feed) as `{"event": "why", "why": {...}}` records; with `tape`, each run's events too (tape())."""
+
+    def __init__(self, root: str, allow_programs: Iterable[str] = (), webhook: Optional[str] = None,
+                 out=None, tape: bool = False):
         self.root = root
-        self.token = token
         self.allow = set(allow_programs)
         self.webhook = webhook
+        self.out = out or Feed()
+        self.tape = tape
         self.lock = threading.Lock()
         os.makedirs(root, exist_ok=True)
-        # live feed: a counter, recent messages, and a condition the stream handlers wait on
-        self.cond = threading.Condition()
-        self.counter = 0
-        self.feed: deque = deque(maxlen=500)
         self._stat: Dict[str, Tuple[int, float]] = {}
         self._seen: Dict[str, set] = {}
+        self._sent: Dict[str, int] = {}   # with tape: events of each run already published
         self._watching = False
         self._analyse = threading.Lock()  # ingest and the watcher may both see the same change
 
     # -- live
-    def publish(self, msg: Dict[str, Any]) -> None:
-        with self.cond:
-            self.counter += 1
-            self.feed.append((self.counter, msg))
-            self.cond.notify_all()
-
-    def since(self, n: int) -> List[Tuple[int, Dict[str, Any]]]:
-        with self.cond:
-            return [(i, m) for i, m in self.feed if i > n]
+    def publish(self, msg: Dict[str, Any], records: Iterable[Dict[str, Any]] = ()) -> None:
+        with self.out.lock:
+            # lean: kept for the server's life, like the viewer's own records; trim with feed.base if that grows
+            self.out.records.extend(records)
+            self.out.records.append({"event": "why", "ts": time.time(), "why": msg})
+            self.out.lock.notify_all()
 
     def changed(self, path: str, announce: bool = True) -> None:
         """A run's log grew: recompute its alerts and announce the new ones (each one once)."""
@@ -118,12 +164,13 @@ class Store:
             if key not in seen:
                 seen.add(key)
                 new.append({k: a.get(k) for k in ("severity", "title", "detail", "node", "tool", "agent", "seq")})
-        if not announce:
-            return
+        records = tape(run, self._sent.get(path, 0)) if self.tape else []
+        self._sent[path] = len(run.events)
         finished = bool(run.events) and run.events[-1]["type"] == "run.end"
-        self.publish({"type": "run", "run_id": run.run_id, "events": len(run.events), "finished": finished,
-                      "alerts": new})
-        if self.webhook:
+        if announce or records:
+            self.publish({"type": "run", "run_id": run.run_id, "events": len(run.events), "finished": finished,
+                          "alerts": new if announce else []}, records)
+        if announce and self.webhook:
             for a in new:
                 if a["severity"] == "high":
                     self._post_webhook(run.run_id, a)
@@ -180,6 +227,42 @@ class Store:
         if not RUN_ID.match(run_id):
             raise IngestError(400, "bad run id")
         return os.path.join(self.root, run_id)
+
+    # -- what the page reads
+    def workspace(self) -> Dict[str, Any]:
+        """workspace() of every run, plus `alerts` (every run's, with its run id) and `calls`: "<signed run id>|<run_seq>"
+        -> [why run id, node id] of each tool call whose why event cites a signed record of the same tool (the citation
+        is the why log's own claim, so a signed record of another tool, or none, joins nothing)."""
+        paths = self.paths()
+        out = workspace(paths)
+        out["alerts"], out["calls"] = [], {}
+        with self.out.lock:
+            signed = {f"{r.get('session_id')}|{r['v2'].get('run_seq')}": r.get("tool_name")
+                      for r in self.out.records if isinstance(r.get("v2"), dict)}
+        # lean: reads every run again on each request; cache by (size, mtime) as scan() does if workspaces grow large
+        for p in paths:
+            try:
+                run = load_run(p)
+                al = alerts(run, build_graph(run, infer=False))
+            except Exception:  # workspace() already reported it
+                continue
+            out["alerts"] += [{"run_id": run.run_id, **{k: a.get(k) for k in ("severity", "title", "detail", "node",
+                                                                                "tool", "agent", "seq")}} for a in al]
+            for ev in run.of_type("action"):
+                tk = ev.get("tracekit")
+                key = isinstance(tk, dict) and f"{tk.get('run_id')}|{tk.get('run_seq')}"
+                if key and signed.get(key) == ev["tool"]:
+                    out["calls"][key] = [run.run_id, "ev:" + ev["id"]]
+        return out
+
+    def detail(self, run_id: str) -> Dict[str, Any]:
+        """run_detail() of one run, plus `replay`: its program and whether this server may replay it."""
+        path = self.run_path(run_id)
+        if not os.path.exists(os.path.join(path, "events.jsonl")):
+            raise IngestError(404, "no such run")
+        run = load_run(path)
+        prog = run.start.get("program")
+        return {**run_detail(run), "replay": {"program": prog, "allowed": bool(prog) and prog in self.allow}}
 
     # -- ingest
     def ingest(self, body: Dict[str, Any]) -> Dict[str, Any]:
@@ -248,7 +331,9 @@ class Store:
         run = load_run(path)
         prog = run.start.get("program")
         if not prog or prog not in self.allow:
-            raise IngestError(403, f"replay of program {prog!r} is not allowed on this server (--allow-program)")
+            raise IngestError(403, f"replay of {prog!r} is not allowed here: start the viewer with --allow-program "
+                                   f"{prog}, or run the test with `tracekit why test`" if prog else
+                              "this run names no program to replay: record it with a System")
         return run, prog
 
     def attribute(self, run_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
@@ -281,168 +366,3 @@ class Store:
             raise IngestError(400, str(e))
         self.publish({"type": "test", "run_id": run.run_id, "verdict": result["verdict"]})
         return result
-
-
-def make_handler(store: Store, token: str, allowed_hosts: Iterable[str] = (), secure: bool = False):
-    allowed = set(LOOPBACK_HOSTS) | {h.lower() for h in allowed_hosts if h.lower() not in WILDCARD_HOSTS}
-    cookie = _session(token)
-
-    class H(BaseHTTPRequestHandler):
-        server_version = "tracekit-why"
-
-        def log_message(self, *a):
-            pass
-
-        def end_headers(self):  # every answer, the default error pages and the stream too
-            self.send_header("X-Content-Type-Options", "nosniff")
-            self.send_header("Referrer-Policy", "no-referrer")
-            super().end_headers()
-
-        def _send(self, status: int, body: Any, ctype: str = "application/json", headers=()) -> None:
-            data = body if isinstance(body, (bytes, bytearray)) else (
-                body.encode() if isinstance(body, str) else json.dumps(body, default=str).encode())
-            self.send_response(status)
-            for k, v in headers:
-                self.send_header(k, v)
-            self.send_header("Content-Type", ctype + "; charset=utf-8")
-            self.send_header("Content-Length", str(len(data)))
-            self.send_header("Cache-Control", "no-store")
-            self.send_header("Cross-Origin-Resource-Policy", "same-origin")
-            self.end_headers()
-            self.wfile.write(data)
-
-        def _bearer(self) -> bool:
-            return hmac.compare_digest(self.headers.get("Authorization", "").encode(), f"Bearer {token}".encode())
-
-        def _authorized(self) -> bool:
-            got = ""
-            for part in self.headers.get("Cookie", "").split(";"):
-                k, _, v = part.strip().partition("=")
-                if k == COOKIE:
-                    got = v
-            return self._bearer() or hmac.compare_digest(got.encode(), cookie.encode())
-
-        def _guarded(self, fn) -> None:
-            try:
-                fn()
-            except IngestError as e:
-                self._send(e.status, {"error": str(e)})
-            except (BrokenPipeError, ConnectionResetError):
-                pass
-            except Exception:
-                traceback.print_exc()
-                try:
-                    self._send(500, {"error": "internal error"})
-                except OSError:
-                    pass
-
-        def _stream(self) -> None:
-            self.server.stop_deadline()  # an event stream lasts as long as the page is open
-            self.send_response(200)
-            self.send_header("Content-Type", "text/event-stream")
-            self.send_header("Cache-Control", "no-store")
-            self.end_headers()
-            last = store.counter
-            self.wfile.write(b"retry: 2000\n\n")
-            self.wfile.flush()
-            while True:
-                with store.cond:
-                    store.cond.wait_for(lambda: store.counter > last, timeout=15)
-                items = store.since(last)
-                if not items:
-                    self.wfile.write(b": ping\n\n")
-                for i, msg in items:
-                    self.wfile.write(("data: " + json.dumps(msg, default=str) + "\n\n").encode())
-                    last = i
-                self.wfile.flush()
-
-        def _body(self) -> Dict[str, Any]:
-            try:
-                n = int(self.headers.get("Content-Length") or 0)
-            except ValueError:
-                raise IngestError(400, "bad Content-Length")
-            if not 0 <= n <= MAX_BODY:
-                raise IngestError(413, "body too large")
-            try:
-                body = json.loads(self.rfile.read(n) or b"{}")
-            except (UnicodeDecodeError, ValueError):
-                raise IngestError(400, "invalid JSON")
-            if not isinstance(body, dict):
-                raise IngestError(400, "the body is not a JSON object")
-            return body
-
-        def do_GET(self):
-            self._guarded(self._get)
-
-        def do_POST(self):
-            self._guarded(self._post)
-
-        def _get(self):
-            u = urlparse(self.path)
-            supplied = parse_qs(u.query).get("token", [""])[0]
-            exchange = bool(supplied and u.path in ("/", "/index.html")
-                            and hmac.compare_digest(supplied.encode(), token.encode()))
-            authorized = exchange or self._authorized()
-            # DNS rebinding: other names (a wildcard bind reached by its LAN address) only with the token
-            if _host_only(self.headers.get("Host")) not in allowed and not authorized:
-                return self._send(403, {"error": "unexpected Host header"})
-            if not authorized:
-                return self._send(401, {"error": "missing or wrong token"})
-            if exchange:
-                return self._send(303, "", "text/plain", headers=[
-                    ("Location", u.path), ("Set-Cookie", f"{COOKIE}={cookie}; HttpOnly; SameSite=Strict; Path=/"
-                                           + ("; Secure" if secure else ""))])
-            p = u.path
-            if p in ("/", "/index.html"):
-                nonce = secrets.token_urlsafe(18)
-                return self._send(200, render_app(None, server=True).replace("<script>", f'<script nonce="{nonce}">'),
-                                  "text/html", headers=[("Content-Security-Policy", CSP.format(nonce=nonce))])
-            if p == "/api/workspace":
-                return self._send(200, workspace(store.paths()))
-            m = re.match(r"^/api/runs/([^/]+)$", p)
-            if m:
-                path = store.run_path(unquote(m.group(1)))
-                if not os.path.exists(os.path.join(path, "events.jsonl")):
-                    return self._send(404, {"error": "no such run"})
-                return self._send(200, run_detail(load_run(path)))
-            if p == "/healthz":
-                return self._send(200, {"ok": True})
-            if p == "/api/stream":
-                return self._stream()
-            self._send(404, {"error": "not found"})
-
-        def _post(self):
-            if _host_only(self.headers.get("Host")) not in allowed and not self._bearer():
-                return self._send(403, {"error": "unexpected Host header"})
-            p = urlparse(self.path).path
-            if p == "/v1/ingest":
-                if not self._bearer():
-                    return self._send(401, {"error": "unauthorized"})
-                return self._send(200, store.ingest(self._body()))
-            m = re.match(r"^/api/runs/([^/]+)/(tests|attribute)$", p)
-            if not m:
-                return self._send(404, {"error": "not found"})
-            if not self._authorized():
-                return self._send(401, {"error": "missing or wrong token"})
-            # CSRF: a JSON body needs a preflight a cross-site page never gets answered, on top of SameSite=Strict
-            if self.headers.get("Content-Type", "").split(";")[0].strip() != "application/json" or (
-                    self.headers.get("Origin") and urlparse(self.headers["Origin"]).netloc != self.headers.get("Host")):
-                return self._send(403, {"error": "cross-origin request refused"})
-            body = self._body()
-            self.server.stop_deadline()  # a replay takes as long as its trials
-            run_id = unquote(m.group(1))
-            self._send(200, store.test(run_id, body) if m.group(2) == "tests" else store.attribute(run_id, body))
-
-    return H
-
-
-def serve(root: str, host: str = "127.0.0.1", port: int = 7788, token: Optional[str] = None,
-          allow_programs: Iterable[str] = (), webhook: Optional[str] = None, watch: bool = True,
-          tls=None) -> Tuple[Server, Store]:
-    """The server (HTTPS with `tls`, an ssl.SSLContext) and its Store; call serve_forever(). Without `token`, a random
-    one: read it from store.token."""
-    store = Store(root, token or secrets.token_urlsafe(24), allow_programs, webhook)
-    httpd = Server((host, port), make_handler(store, store.token, [host], secure=bool(tls)), tls)
-    if watch:
-        store.watch()
-    return httpd, store
