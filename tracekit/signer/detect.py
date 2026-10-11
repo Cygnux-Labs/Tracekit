@@ -32,10 +32,11 @@ class Plain:
     pop = staticmethod(dict.pop)
 
 
-def new(until=None):
-    """Empty state; `until`: a wall-clock time before which decisions say `state: unavailable` (a restart that could
-    not rebuild the state: after the longest window nothing before the restart counts any more)."""
-    return {"until": until or 0, "runs": {}, "scopes": {}, "minute": {}}
+def new(policy_hash=None, until=None):
+    """Empty state for the policy `policy_hash` (a snapshot's state is reused only under the same policy); `until`: a
+    wall-clock time before which decisions say `state: unavailable` (a restart that could not rebuild the state: after
+    the longest window nothing before the restart counts any more)."""
+    return {"policy": policy_hash, "until": until or 0, "runs": {}, "scopes": {}, "minute": {}}
 
 
 def _t(ts):
@@ -78,7 +79,8 @@ class Detector:
         return ({"sums": sums} if sums else {}), bad
 
     def prune(self, det, now):
-        """Drop the scopes no window reaches any more (with their open incidents): run before a snapshot."""
+        """Drop the scopes no window reaches any more: run before a snapshot. The next record of such a scope would
+        reset it anyway (`_scope`), so this only frees memory."""
         # lean: idle session, owner and principal scopes stay in memory until the next snapshot (every
         # SNAPSHOT_RECORDS records); prune on a timer if a signer sees very many owners between snapshots
         for k in [k for k, st in det["scopes"].items() if now - _t(st["t"]) > self.window]:
@@ -86,14 +88,16 @@ class Detector:
 
     def _scope(self, tx, det, e, run, kind):
         """(state key, record `scope`, state) of record `e`'s scope `kind`. A run whose principal is not attested is
-        keyed by its owner; a run the state does not know (registered before a restart that lost it) by itself."""
+        keyed by its owner; a run the state does not know (registered before a restart that lost it) by itself. A scope
+        idle past the longest window starts over, open incidents included, by the records' clock."""
         if kind == "principal" and not (run and run["principal"]):
             kind = "owner"
         if run is None:
             kind = "run"
         val = (e["run_id"] if kind == "run" else run[kind])[:256]
         key = f"{kind}\0{e['tenant']}\0{val}"
-        if key not in det["scopes"]:
+        old = det["scopes"].get(key)
+        if old is None or _t(e["ts"]) - _t(old["t"]) > self.window:
             tx.set(det["scopes"], key, {"seq": {}, "lim": {}, "den": None, "open": {}, "t": e["ts"]})
         st = det["scopes"][key]
         tx.set(st, "t", e["ts"])

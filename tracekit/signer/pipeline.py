@@ -274,15 +274,18 @@ class RecordLog:
         size = tail["tree_size"]
         runs, prev, leaves, approvals, index, tenants, closed = {}, ZERO_HASH, {}, {}, {}, set(), False
         open_runs, by_run, start, base, keys = {}, {}, 0, {}, []   # owner -> runs not closing; run key -> its approval ids
-        det = detect.new()
+        policy = self.detector and self.detector.engine.policy_hash
+        det = detect.new(policy)
 
         def spkis():   # the keys replayed records verify under: certified keys the log declared, else the file key
             return [base64.b64decode(k) for _, k in keys] if self.certify else [self.sign.spki]
         if s.snapshot:
             st, start, prev = s.snapshot["state"], s.snapshot["size"], s.snapshot["hash"]
             keys = st.get("keys", [])
-            # a snapshot written without detection can't say what came before it
-            det = st.get("detect") or detect.new(self.detector and time.time() + self.detector.window)
+            # a snapshot written without detection, or under another policy, can't say what came before it
+            det = st.get("detect")
+            if not det or det.get("policy") != policy:
+                det = detect.new(policy, self.detector and time.time() + self.detector.window)
             try:
                 verify_record(next(s.iter_range(start - 1, start)), spkis(), {RecordSigner.alg})
             except RecordError as x:

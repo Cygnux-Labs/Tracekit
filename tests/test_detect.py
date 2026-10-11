@@ -200,6 +200,35 @@ class TestDecisions(Case):
         s.decide(run, SECRET)
         self.assertEqual(s.events(run)[-1]["data"]["detect"]["state"], "unavailable")
 
+    def test_a_snapshot_under_another_policy_is_not_reused(self):
+        s = self.signer()
+        run = s.register()
+        s.decide(run, SECRET)
+        s.decide(run, ("shell", {"command": "rm a"}))
+        s.s.close()   # its snapshot holds Q's and L's state
+        s.eng = engine({**POLICY, "sequences": [{**POLICY["sequences"][0], "steps": ["secret", "egress", "egress"]}],
+                        "limits": [{"id": "L", "match": "destructive", "sum": {"field": "n", "currency_field": "c"},
+                                    "max": 3, "window": 60}]})
+        s.open()
+        s.decide(run, EGRESS)
+        s.decide(run, ("shell", {"command": "rm b", "n": 1, "c": "USD"}))
+        self.assertEqual([e["data"]["detect"]["state"] for e in s.events(run)[-2:]], ["unavailable"] * 2)
+
+    def test_an_idle_scope_starts_over_by_the_records_clock(self):
+        s = self.signer()
+        run = s.register()
+        for _ in range(4):
+            s.decide(run, ("shell", {"command": "rm a"}))
+        events = [e for e in s.events(run) if not e["type"].startswith("incident.")]
+        later = [{**e, "ts": e["ts"][:2] + str(int(e["ts"][2:4]) + 1) + e["ts"][4:], "tool_call_id": "x" + e["tool_call_id"]}
+                 for e in events if e["type"] == "policy.decision"]   # a year later: past every window
+        det, state, out = detect.Detector(s.eng), detect.new(), []
+        for e in events + later:
+            for typ, data in det.observe(detect.Plain, state, e)[1]:
+                out.append(typ)
+                det.observe(detect.Plain, state, {**e, "type": typ, "data": data})
+        self.assertEqual(out, ["incident.opened", "incident.opened"])
+
 
 def e17_digest(tool, args):
     from tracekit.format.canon import event_hash

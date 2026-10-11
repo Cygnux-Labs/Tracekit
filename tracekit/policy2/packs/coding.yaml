@@ -178,4 +178,3 @@ flag:
     field: target
     pattern: '\b([Hh][Tt][Tt][Pp][Ss]?|[Ww][Ss][Ss]?|[Ff][Tt][Pp])://'
     label: egress
-
