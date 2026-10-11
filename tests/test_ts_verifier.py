@@ -18,7 +18,6 @@ import zipfile
 TESTS = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(TESTS)
 sys.path.insert(0, TESTS)
-import test_why_signed_replay  # noqa: E402
 from factories import rewrite_bundle  # noqa: E402
 from tracekit.bundle_v2 import export  # noqa: E402
 from tracekit.demo_server import Witness  # noqa: E402
@@ -256,71 +255,78 @@ class Agreement(unittest.TestCase):
             json.dump({**t, "logs": t["logs"] + [checkpoint.vkey(checkpoint.parse_vkey(t["logs"][0])[0], *slh[2:])]}, f)
         self.assertEqual(self.agree(os.path.join(golden, "closed.tkb"), trust)[0], 1)
 
+
+try:   # the findings case builds on the replay tests, whose helpers need pytest (absent when the TypeScript suite runs this)
+    import test_why_signed_replay  # noqa: E402
+except ImportError:
+    test_why_signed_replay = None
+
+if test_why_signed_replay is not None:
+    @unittest.skipIf(SKIP, SKIP)
+    class Findings(test_why_signed_replay.SignedReplay):
+        """tracekit why findings are not checked by the TypeScript verifier: a bundle with them is UNVERIFIABLE, naming
+        them, never FAILED."""
+        bundle = test_why_signed_replay.TestFindings.bundle
+
+        def test_a_findings_bundle_is_unverifiable_in_typescript(self):
+            _build()
+            inv = self.investigation()
+            signed.counterfactual_signed(inv, "result:fetch", test_why_signed_replay.TARGET,
+                                         decision=self.exchange_seqs()[1], n=2)
+            findings_run = inv.findings_run[0]
+            inv.finish()
+            trust = os.path.join(self.dir, "trust.json")
+            for run, with_runs in ((None, None), (findings_run, [])):   # the run with its findings; the findings run alone
+                with self.subTest(run=run):
+                    (rep, code), _ = self.bundle(run, with_runs)
+                    ts = ts_verify(os.path.join(self.dir, "b.tkb"), trust)
+                    self.assertEqual(code, 0, rep.checks)
+                    self.assertEqual((ts["exit_code"], ts["integrity"]),
+                                     (2, "UNVERIFIABLE (not checked by this verifier: tracekit why findings)"))
+
+
+    @unittest.skipIf(SKIP, SKIP)
+    class Primitives(unittest.TestCase):
+        def test_consistency_proofs_agree_with_the_reference(self):
+            """RFC 9162 consistency proofs for every first < second <= 33 (run-sets past registry size 0 use them), plus a
+            tampered proof and a wrong first root for each, through the TypeScript verifyConsistency."""
+            from tracekit import merkle
+            _build()
+            b64 = lambda b: base64.b64encode(b).decode()   # noqa: E731
+            cases = []
+            for n in range(2, 34):
+                leaves = [merkle.leaf_hash(bytes([i])) for i in range(n)]
+                for m in range(1, n):
+                    proof, r1, r2 = merkle.consistency_proof(m, leaves), merkle.root(leaves[:m]), merkle.root(leaves)
+                    bad = [bytes([proof[0][0] ^ 1]) + proof[0][1:]] + proof[1:] if proof else proof
+                    for p_, first, want in ((proof, r1, True), (bad, r1, not proof), (proof, r2 if m != n else r1, False)):
+                        cases.append({"m": m, "n": n, "r1": b64(first), "r2": b64(r2), "proof": [b64(x) for x in p_],
+                                      "want": want and merkle.verify_consistency(m, n, first, r2, p_)})
+            script = ("import { verifyConsistency } from %s;\n"
+                      "const d = (s) => Uint8Array.from(Buffer.from(s, 'base64'));\n"
+                      "const cases = JSON.parse(require_stdin());\n" % json.dumps(
+                          "file://" + os.path.join(TS, "dist", "verify", "primitives.js").replace(os.sep, "/")))
+            script = script.replace("require_stdin()", "(await new Response(process.stdin).text())")
+            script += ("const out = [];\nfor (const c of cases) out.push(await verifyConsistency(c.m, c.n, d(c.r1), d(c.r2), "
+                       "c.proof.map(d)));\nconsole.log(JSON.stringify(out));\n")
+            p = subprocess.run(["node", "--input-type=module", "-e", script], input=json.dumps(cases), capture_output=True,
+                               text=True, check=True)
+            self.assertEqual(json.loads(p.stdout), [c["want"] for c in cases])
+
+        def test_the_verifier_is_the_package_version(self):
+            """VERSION is what it compares a bundle's verifier_min_version with: the package's own release."""
+            with open(os.path.join(TS, "package.json")) as f:
+                pkg = json.load(f)["version"]
+            with open(os.path.join(TS, "src", "verify", "index.ts")) as f:
+                src = f.read()
+            self.assertIn(f'export const VERSION = "{pkg.split("-")[0]}";', src)
+
+        def test_the_schema_copy_is_the_schema(self):
+            """The TypeScript verifier carries a copy of the v2 event schema (browsers can't read the Python package)."""
+            with open(os.path.join(ROOT, "tracekit", "schema", "tracekit.event.v2.json"), "rb") as a, \
+                    open(os.path.join(TS, "src", "verify", "tracekit.event.v2.json"), "rb") as b:
+                self.assertEqual(json.loads(a.read()), json.loads(b.read()))
+
+
 if __name__ == "__main__":
     unittest.main()
-
-
-@unittest.skipIf(SKIP, SKIP)
-class Findings(test_why_signed_replay.SignedReplay):
-    """tracekit why findings are not checked by the TypeScript verifier: a bundle with them is UNVERIFIABLE, naming
-    them, never FAILED."""
-    bundle = test_why_signed_replay.TestFindings.bundle
-
-    def test_a_findings_bundle_is_unverifiable_in_typescript(self):
-        _build()
-        inv = self.investigation()
-        signed.counterfactual_signed(inv, "result:fetch", test_why_signed_replay.TARGET,
-                                     decision=self.exchange_seqs()[1], n=2)
-        findings_run = inv.findings_run[0]
-        inv.finish()
-        trust = os.path.join(self.dir, "trust.json")
-        for run, with_runs in ((None, None), (findings_run, [])):   # the run with its findings; the findings run alone
-            with self.subTest(run=run):
-                (rep, code), _ = self.bundle(run, with_runs)
-                ts = ts_verify(os.path.join(self.dir, "b.tkb"), trust)
-                self.assertEqual(code, 0, rep.checks)
-                self.assertEqual((ts["exit_code"], ts["integrity"]),
-                                 (2, "UNVERIFIABLE (not checked by this verifier: tracekit why findings)"))
-
-
-@unittest.skipIf(SKIP, SKIP)
-class Primitives(unittest.TestCase):
-    def test_consistency_proofs_agree_with_the_reference(self):
-        """RFC 9162 consistency proofs for every first < second <= 33 (run-sets past registry size 0 use them), plus a
-        tampered proof and a wrong first root for each, through the TypeScript verifyConsistency."""
-        from tracekit import merkle
-        _build()
-        b64 = lambda b: base64.b64encode(b).decode()   # noqa: E731
-        cases = []
-        for n in range(2, 34):
-            leaves = [merkle.leaf_hash(bytes([i])) for i in range(n)]
-            for m in range(1, n):
-                proof, r1, r2 = merkle.consistency_proof(m, leaves), merkle.root(leaves[:m]), merkle.root(leaves)
-                bad = [bytes([proof[0][0] ^ 1]) + proof[0][1:]] + proof[1:] if proof else proof
-                for p_, first, want in ((proof, r1, True), (bad, r1, not proof), (proof, r2 if m != n else r1, False)):
-                    cases.append({"m": m, "n": n, "r1": b64(first), "r2": b64(r2), "proof": [b64(x) for x in p_],
-                                  "want": want and merkle.verify_consistency(m, n, first, r2, p_)})
-        script = ("import { verifyConsistency } from %s;\n"
-                  "const d = (s) => Uint8Array.from(Buffer.from(s, 'base64'));\n"
-                  "const cases = JSON.parse(require_stdin());\n" % json.dumps(
-                      "file://" + os.path.join(TS, "dist", "verify", "primitives.js").replace(os.sep, "/")))
-        script = script.replace("require_stdin()", "(await new Response(process.stdin).text())")
-        script += ("const out = [];\nfor (const c of cases) out.push(await verifyConsistency(c.m, c.n, d(c.r1), d(c.r2), "
-                   "c.proof.map(d)));\nconsole.log(JSON.stringify(out));\n")
-        p = subprocess.run(["node", "--input-type=module", "-e", script], input=json.dumps(cases), capture_output=True,
-                           text=True, check=True)
-        self.assertEqual(json.loads(p.stdout), [c["want"] for c in cases])
-
-    def test_the_verifier_is_the_package_version(self):
-        """VERSION is what it compares a bundle's verifier_min_version with: the package's own release."""
-        with open(os.path.join(TS, "package.json")) as f:
-            pkg = json.load(f)["version"]
-        with open(os.path.join(TS, "src", "verify", "index.ts")) as f:
-            src = f.read()
-        self.assertIn(f'export const VERSION = "{pkg.split("-")[0]}";', src)
-
-    def test_the_schema_copy_is_the_schema(self):
-        """The TypeScript verifier carries a copy of the v2 event schema (browsers can't read the Python package)."""
-        with open(os.path.join(ROOT, "tracekit", "schema", "tracekit.event.v2.json"), "rb") as a, \
-                open(os.path.join(TS, "src", "verify", "tracekit.event.v2.json"), "rb") as b:
-            self.assertEqual(json.loads(a.read()), json.loads(b.read()))
