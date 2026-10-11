@@ -291,6 +291,8 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
   }
 
   // the runs: one, or with a run-set any number
+  // lean: a run with its tracekit why findings and replay runs is refused here; port verify/v2.py's _findings when
+  // TS users verify findings bundles
   const names = [...files.keys()].filter((n) => n.startsWith("runs/")).sort();
   const runSet = files.has("registry/run-set.json");
   if (names.length !== 1 && !runSet) throw new Error("a v2 bundle holds exactly one run, or a run-set");

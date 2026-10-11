@@ -44,6 +44,10 @@ import disagreed with the signer's decision or tool, or named a call the signer 
 Coverage: a run.final that carries `coverage` (the capture layers that reported, calls reconciled, reconcile.* records
 by kind) gives a `coverage` line; unreconciled calls make it a warning, so `--strict` exits 3 on them.
 
+Findings (tracekit why): a bundle may hold one run with its findings runs (run.registered `analyzes` it) and replay
+runs (`replay_of` it). Each why.finding's replay runs must be in the bundle as replay runs of the analysed run in the
+finding's investigation, and their arms and outcomes count to its n, rates and effect; else `findings` fails.
+
 Run-set (a bundle with registry/run-set.json): the tenant's registry notes, signed by the pinned log key under the
 origin `<origin>/registry/<id of the bundle's tenant salt>`, cosigned by the required number of pinned witnesses (their
 cosignatures cap the assurance level by the same rule as the checkpoint's), and consistent with each other; every
@@ -409,8 +413,6 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
     # the runs: one, or with a run-set any number
     names = sorted(n for n in files if n.startswith("runs/"))
     run_set = "registry/run-set.json" in files
-    if len(names) != 1 and not run_set:
-        raise ValueError("a v2 bundle holds exactly one run, or a run-set")
     runs, problems, chain, outside = {}, [], [], []
     for name in names:
         records = runs[name] = _jsonl(files[name])
@@ -428,6 +430,8 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
                              "continue the run")
         if not (included(records[0]) and included(records[-1])):
             outside.append(f"run {str(head.get('run_id'))[:200]!r}")
+    if len(runs) != 1 and not run_set and not _about_one(runs):
+        raise ValueError("a v2 bundle holds exactly one run, one run with its findings and replay runs, or a run-set")
     retired, proven_to, reg_cosigs = [], -1, []
     if run_set:
         retired, proven_to, reg_cosigs = _run_set(rep, files, trust, witnesses, origin, size, runs, included,
@@ -499,6 +503,7 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
                   [f"seq {r['event']['seq']}: {r['event']['type']} {str(r['event'].get('tool_call_id'))[:200]}: "
                    f"{str(r['event']['data'].get('detail'))[:200]}" for r in every
                    if str(r["event"].get("type")).startswith("reconcile.")][:20], warn=True)
+    _findings(rep, runs)
     vault = collections.Counter(r["event"]["type"] for r in every if r["event"].get("type") in ("content.accessed",
                                                                                               "content.erased"))
     if vault:   # signer records of the content vault (docs/privacy.md): who read or erased retained content
@@ -545,6 +550,50 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
                   [f"seq {e['seq']}: {e['data']['decision']} {e['data'].get('approval_id')} by "
                    f"{e['data']['approver'][:256]}: {str(e['data'].get('reason'))[:200]!r}" for e in glass][:20],
                   warn=True)
+
+
+def _about(records):
+    """(analyzes, replay_of, investigation) of a run's run.registered (Nones when it is not one)."""
+    d = records[0]["event"].get("data") if records[0]["event"].get("type") == "run.registered" else None
+    return tuple((d or {}).get(k) for k in ("analyzes", "replay_of", "investigation"))
+
+
+def _about_one(runs):
+    """Whether every run but one of the same tenant is a findings or replay run of that one."""
+    main = [rs for rs in runs.values() if _about(rs)[:2] == (None, None)]
+    if len(main) != 1:
+        return False
+    head = main[0][0]["event"]
+    return all(rs is main[0] or (rs[0]["event"].get("tenant") == head.get("tenant")
+                                 and head.get("run_id") in _about(rs)[:2]) for rs in runs.values())
+
+
+def _findings(rep, runs):
+    """The `findings` line: each why.finding's replay runs are bundled, are replay runs of the run its findings run
+    analyses in its investigation, and their arms and outcomes count to its n and rates."""
+    replays = {rs[0]["event"].get("run_id"): _about(rs) for rs in runs.values()}
+    found, problems = 0, []
+    for rs in runs.values():
+        analyzes = _about(rs)[0]
+        for r in rs:
+            if r["event"].get("type") != "why.finding":
+                continue
+            found, f, where = found + 1, r["event"]["data"], f"seq {r['event']['seq']}"
+            arms = {"control": [], "ablated": []}
+            for x in f["replay_runs"]:
+                if replays.get(x["run_id"]) != (None, analyzes, f["investigation"]):
+                    problems.append(f"{where}: replay run {x['run_id'][:128]} is not in the bundle as a replay run of "
+                                    f"{str(analyzes)[:128]} in investigation {f['investigation'][:128]}")
+                arms[x["arm"]].append(x["hit"])
+            n, (c, a) = f["n"], arms.values()
+            rates = [round(sum(h) / n, 4) if n else 0 for h in (c, a)]
+            if (len(c), len(a)) != (n, n) or rates != [f["p_with"], f["p_without"]] \
+                    or round(f["p_with"] - f["p_without"], 4) != f["effect"]:
+                problems.append(f"{where}: its replay runs count {sum(c)}/{len(c)} with and {sum(a)}/{len(a)} without, "
+                                f"not the n={n}, {f['p_with']} and {f['p_without']} (effect {f['effect']}) it reports")
+    if found:
+        rep.check("findings", not problems, f"{found} tracekit why finding(s), each counted from its replay runs",
+                  problems[:20])
 
 
 def _run_set(rep, files, trust, witnesses, origin, size, runs, included, check_record):

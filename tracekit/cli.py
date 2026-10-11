@@ -201,6 +201,8 @@ def main(argv=None):
     p.add_argument("--tenant", help="with --v2: the run's tenant (default: the signer's default tenant)")
     p.add_argument("--config", help="with --v2: the signer's config (default: the same-user dev signer)")
     p.add_argument("--dev", action="store_true", help="with --v2: the same-user dev signer (the default)")
+    p.add_argument("--with-findings", action="store_true", help="with --v2 --run: also the run's `tracekit why` "
+                   "findings and their replay runs, which the verifier counts")
 
     p = sub.add_parser("last", help="the dev signer's most recent finished run: export it, pin the dev signer's key "
                                     "and verify it")
@@ -614,6 +616,7 @@ def _export_v2(a, show=print):
     summary (JSON)."""
     import time
 
+    from .bundle_v2 import about as about_run
     from .bundle_v2 import export
     from .format import registry
     from .sdk.client import Client, Incompatible, SignerUnavailable
@@ -652,7 +655,8 @@ def _export_v2(a, show=print):
         run = reader.runs.get((tenant, a.run))
         if run is None:
             raise ValueError(f"no run {a.run!r} of tenant {tenant!r} in the store")
-        last = run["seqs"][-1]
+        about = about_run(reader, tenant, a.run) if a.with_findings else []
+        last = max(reader.runs[(tenant, r)]["seqs"][-1] for r in [a.run, *about])
 
         def signers(n):
             return {line.split(" ")[1] for line in n.split("\n\n", 1)[1].splitlines()}
@@ -683,7 +687,7 @@ def _export_v2(a, show=print):
             if note is None:
                 raise ValueError(f"the signer wrote no checkpoint covering run {a.run!r} within {NUDGE_WAIT_S:g}s")
         reopen()   # opened after the note: holds its records
-        info = export(reader, tenant, a.run, note[1], a.out)
+        info = export(reader, tenant, a.run, note[1], a.out, with_findings=bool(about))
         if a.otel or a.otel_endpoint:
             info["otel"] = _otel_v2(a, info["bundle"])
     except (OSError, ValueError, SignerUnavailable, StorageCorrupt, StorageUnavailable) as e:
@@ -757,7 +761,7 @@ def _last(a):
     (tenant, run_id), _, agent = final[0]
     out = os.path.abspath(a.out or f"{run_id}.tkb")
     ns = argparse.Namespace(run=run_id, run_set=False, dev=True, config=None, tenant=tenant, out=out, otel=False,
-                            otel_endpoint=None)
+                            otel_endpoint=None, with_findings=False)
     if _export_v2(ns, show=lambda s: None):
         return 1
     try:

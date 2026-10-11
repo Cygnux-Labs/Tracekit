@@ -95,6 +95,15 @@ signer has already accepted through this gateway.
 Each run's records from one gateway share a stream and counter, so exchanges forwarded while the signer was
 down show as a signed `client_counter_gap` once a later exchange of that run is recorded.
 
+## Replay runs
+
+`tracekit why` replays a recorded run's model calls through the gateway
+([attribution on signed runs](why.md#attribution-on-signed-runs)). Each arm of a test is a run the investigator
+registers with `replay_of: <run id>` and the investigation id (an identity in signer.yaml `analyzers`), then calls the
+gateway exactly as an agent does: its own identity and `X-Tracekit-Run`. Its exchanges are recorded like any other,
+source `gateway`, in the replay run, never in the run it replays. No tool runs: the investigator answers tool uses from
+the recorded run itself, so a replay run has model exchanges and no decisions.
+
 ## Reconciliation
 
 Gateway tool uses are L3 and take precedence over agent-reported L3 (autotrace) for the same tool call id. With

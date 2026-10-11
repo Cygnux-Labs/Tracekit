@@ -41,7 +41,8 @@ signer.yaml:
     multi_tenant_apps: ["uid:1002"]          # may assert a tenant per run (recorded as not attested), or a
                                              # bridge's on_behalf person's tenant
     migrators: ["uid:1003"]                  # may register `migrated` runs
-    analyzers: ["uid:1004"]                  # may register findings runs, each bound to the run it analyses
+    analyzers: ["uid:1004"]                  # may register findings runs, each bound to the run it analyses, and
+                                             # `tracekit why` replay runs of it (replay_of)
     gateways: ["mtls:spiffe://acme/gateway"]  # LLM gateways (tracekit.gateway): their model_event names the client it
                                              # authenticated (`caller`) and is recorded source gateway (tier T2)
     gateway_mandatory: false                 # true: reconcile decides against gateway L3 only (tracekit.signer.reconcile)
@@ -1431,7 +1432,7 @@ class SignerService:
     def _register_run(self, identity, req):
         sub = subject(identity)
         for field, allowed in (("tenant", self.multi_tenant_apps), ("source", self.migrators),
-                               ("analyzes", self.analyzers)):
+                               ("analyzes", self.analyzers), ("replay_of", self.analyzers)):
             if field in req and sub not in allowed:
                 raise RPCError("forbidden", f"{sub[:256]} is not configured to register runs with `{field}`")
         harness = None
@@ -1460,8 +1461,9 @@ class SignerService:
         def fn(tx, _):
             if (tenant, run_id) in self.log.runs:
                 raise RPCError("run_exists", run_id)
-            if "analyzes" in req and (tenant, req["analyzes"]) not in self.log.runs:
-                raise RPCError("unknown_run", req["analyzes"])
+            for field in ("analyzes", "replay_of"):
+                if field in req and (tenant, req[field]) not in self.log.runs:
+                    raise RPCError("unknown_run", req[field])
             n = self.log.open_runs.get(own, 0)
             self.quotas.check_count("open_runs", n)
             run = tx.new_run(tenant, run_id)
@@ -1481,8 +1483,7 @@ class SignerService:
                 tx.set(run, "principal", principal)
             data = {"agent": req["agent"], "signer_isolation": self.isolation or self._isolation(identity), "fail_modes": self.fail_modes,
                     "identity": _recorded(identity)}
-            if "analyzes" in req:
-                data["analyzes"] = req["analyzes"]
+            data.update({k: req[k] for k in ("analyzes", "replay_of", "investigation") if k in req})
             if harness:
                 data["harness"] = dict(harness, attested=True)
             tx.emit(run, "run.registered", data, request_id=req["request_id"], **top)
@@ -1968,6 +1969,21 @@ class SignerService:
                           f"reported by {subject(identity)[:256]})"},
                 source="signer", request_id=req["request_id"])}
         return self.log.submit(identity, "tailer_lost", req, fn, key, late=True)
+
+    def _why_finding(self, identity, req):
+        key = self._authorize(identity, req)
+        try:
+            first = next(iter(self.log.storage.iter_run(*key)))["event"]
+        except (OSError, StorageUnavailable) as e:
+            raise RPCError("unavailable", f"storage read failed: {e}") from None
+        if "analyzes" not in first["data"]:
+            raise RPCError("forbidden", "a why.finding goes in a findings run: register_run with `analyzes` (signer.yaml "
+                                        "`analyzers` lists who may)")
+        self.quotas.take_event(identity)
+
+        def fn(tx, run):
+            return {"run_seq": tx.emit(run, "why.finding", req["finding"], request_id=req["request_id"])}
+        return self.log.submit(identity, "why_finding", req, fn, key)
 
     def _status(self, identity, req):
         return {"rpc_version": rpc_schema.RPC_VERSION, "signer": {"name": "tracekit-signer", "version": __version__},
