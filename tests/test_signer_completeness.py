@@ -16,16 +16,19 @@ from tracekit.format.canon import event_hash
 from tracekit.identity.base import CallerIdentity
 from tracekit.integrations import claude_code, harness_hooks
 from tracekit.signer import service as svc
+from tracekit.signer.rpc_schema import RPCError
 
 GATEWAY = CallerIdentity("mtls", "spiffe://acme/gateway", True)
 FLEET = CallerIdentity("uid", "999004", True)
+TAILER = CallerIdentity("uid", "999005", True)
 
 
 class Completeness(Lifecycle):
     def open(self):
         self.s = svc.SignerService(self.dir, policy=PAY_ASKS, fail_modes=FAIL_MODES, grace_s=60, idle_s=3600,
                                    gateways=["mtls:spiffe://acme/*"], multi_run_apps=["uid:999004"],
-                                   authorize={"mtls:spiffe://acme/*": ["model_event", "close_run"]})
+                                   authorize={"mtls:spiffe://acme/*": ["model_event", "close_run"],
+                                              "uid:999005": ["tailer_heartbeat"]})
         self.closed = False
 
     def final(self, run):
@@ -55,8 +58,9 @@ class TestDecidedNotCompleted(Completeness):
         gaps = self.gaps(self.final(run), "decided_not_completed")
         self.assertEqual(sorted(g["tool_call_id"] for g in gaps), ["approved", "denied-after-retry", "lost"])
         self.assertTrue(all(g["source"] == "signer" and g["attempt"] == 0 for g in gaps))
-        self.assertIn("approved and never completed", next(g for g in gaps if g["tool_call_id"] == "approved")[
-            "data"]["reason"])
+        reason = next(g for g in gaps if g["tool_call_id"] == "approved")["data"]["reason"]
+        self.assertIn("approved and never completed", reason)
+        self.assertIn("declined in the harness's own permission prompt", reason)
 
     def test_capped_then_counted(self):
         run = self.register()
@@ -109,6 +113,14 @@ class TestTrailingCounterGaps(Completeness):
         es = self.events(run["run_id"])
         self.assertEqual([g["data"]["missed_events"] for g in self.gaps(es, "client_counter_gap")], [2])
         self.assertNotIn("run.closing", [e["type"] for e in es])
+
+    def test_a_stream_another_identity_ends_still_takes_its_values(self):
+        run = self.register()
+        self.call("close_run", {**run, "last_client_seq": [{"stream": "gx", "client_seq": 5}]})
+        self.call("model_event", self.ev(run, 0, stream="gx", provider="openai", model="m", phase="request",
+                                         caller=f"uid:{ME.subject}"), GATEWAY)   # not refused as reused
+        gap = self.gaps(self.events(run["run_id"]), "client_counter_gap")[0]
+        self.assertIn(f"uid:{ME.subject} said stream gx ended", gap["data"]["reason"])
 
     def test_the_gateway_reports_a_stream_whose_last_exchanges_never_arrived(self):
         client = mock.Mock()
@@ -171,7 +183,11 @@ class TestConcurrentRun(Completeness):
 class TestTailerHeartbeat(Completeness):
     def test_a_tailer_whose_heartbeats_stop_is_a_gap(self):
         run, quiet = self.register(), self.register()
-        self.s.call(ME, "tailer_heartbeat", run)
+        with self.assertRaises(RPCError) as cm:   # the agent's own token can't keep a killed tailer alive
+            self.s.call(ME, "tailer_heartbeat", run)
+        self.assertEqual(cm.exception.code, "forbidden")
+        token = self.s.call(ME, "delegate_run",{**run, "identity": f"uid:{TAILER.subject}"})["run_token"]
+        self.s.call(TAILER, "tailer_heartbeat", {**run, "run_token": token})
         self.s.sweep(time.monotonic() + svc.TAILER_LOST_S - 5)
         self.s.sweep(time.monotonic() + svc.TAILER_LOST_S + 1)
         self.s.sweep(time.monotonic() + 2 * svc.TAILER_LOST_S)   # once
@@ -182,7 +198,6 @@ class TestTailerHeartbeat(Completeness):
 
     def test_the_tailer_sends_heartbeats_and_stops_on_a_signer_without_them(self):
         from tracekit import tailer
-        from tracekit.signer.rpc_schema import RPCError
         run = mock.Mock()
         run.call.side_effect = RPCError("invalid_request", "unknown method tailer_heartbeat")
         self.assertIsNone(tailer._heartbeat(run))
@@ -228,6 +243,10 @@ class TestProviderTools(Completeness):
             {"type": "image_generation_call", "id": "ig_1"}]})["tool_uses"]
         self.assertEqual([("args_digest" in t, t["executed_by"]) for t in out], [(True, "provider"), (False, "provider")])
         run = self.register()
+        half = {k: v for k, v in use.items() if k != "args_digest"}   # an args_source needs its digest
+        self.refused("invalid_request", "model_event", self.ev(run, 0, stream="gx", provider="anthropic", model="m",
+                                                               phase="response", caller=f"uid:{ME.subject}",
+                                                               tool_uses=[half]), GATEWAY)
         self.call("model_event", self.ev(run, 0, stream="gx", provider="anthropic", model="m", phase="response",
                                          caller=f"uid:{ME.subject}", tool_uses=[use]), GATEWAY)
         self.decide(run, 0, "srvtoolu_1", tool="web_search")

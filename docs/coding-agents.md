@@ -60,8 +60,9 @@ Without anything else installed, the signer turns what it saw and then never hea
 ([format](format-v2.md#3-events), [limits](limits.md#signer-and-capture)):
 
 - a call the policy allowed, or whose approval was consumed, and that never completed (`decided_not_completed`, at the
-  end of the run);
+  end of the run), including one you declined in the harness's own permission prompt, which runs no post-call hook;
 - a second harness session of the same user open at once, not started as a sub-agent run (`concurrent_run`; list the
   owner in signer.yaml `multi_run_apps` if that is how you work);
-- a transcript tailer that stops sending its heartbeat while the run is open, killed or crashed (`tailer_lost`);
+- in system mode, a transcript tailer that stops sending its heartbeat while the run is open, killed or crashed
+  (`tailer_lost`);
 - writes after the run ended (`late_activity`, in a run-set).

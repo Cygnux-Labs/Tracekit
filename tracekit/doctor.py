@@ -356,7 +356,8 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
                 if unnamed else "each hook command names its event", hook_fix, bad=WARN)
             if prod and opt and cmds:
                 python = os.path.join(opt, "bin", "python")
-                stray = [c for ev, c in cmds if c != install._hook_command(install.V2_HOOK, args=(ev,), python=python)]
+                stray = [c for ev, c in cmds if c not in (install._hook_command(install.V2_HOOK, args=a, python=python)
+                                                          for a in ((ev,), ()))]   # a pre-1.2 one is D-HOOKS-EVENT's
                 add("D-HOOKS-VENV", not stray, f"{len(stray)} hooks run another Python than {python}" if stray else
                     f"hooks run {python}", REINIT)
             pre = [t if type(t) in (int, float) else 0 for t in (h.get("timeout", 60) for h in hooks["PreToolUse"])]

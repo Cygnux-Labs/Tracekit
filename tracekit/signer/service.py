@@ -118,9 +118,10 @@ Completeness (docs/limits.md): at run.final each latest decide of a call that wa
 consumed, with no `complete` is a signed `capture.gap{decided_not_completed}` (DECIDED_GAPS_MAX per run, then one with
 the rest counted). A run registered while another of the same owner and tenant (and harness process) is open, in
 another session (`parent`), gets a `capture.gap{concurrent_run}` naming it, unless the owner is in multi_run_apps.
-close_run's `last_client_seq` turns each stream's values never received into a client_counter_gap. A tailer that sent
-`tailer_heartbeat` and stops for TAILER_LOST_S while its run is open gets a tailer_lost gap. Writes refused because
-their run is final are counted per run and written with the refusal summaries as a `capture.gap{late_activity}` in the
+close_run's `last_client_seq` turns each stream's values not received by then into a client_counter_gap naming the
+caller. A tailer that sent `tailer_heartbeat` (an `authorize` grant only: system mode's tailer uid) and stops for
+TAILER_LOST_S while its run is open gets a tailer_lost gap. Writes refused because their run is final are counted per
+run and written with the refusal summaries as a `capture.gap{late_activity}` in the
 tenant's signer run, which (unlike the run's own records) gets a leaf in the tenant's registry, so a run-set shows it.
 
 run.registered and run.final also get a leaf in the tenant's registry log (tracekit.format.registry), log.closed and
@@ -308,9 +309,11 @@ CONTENT_READ = "content_read"   # an `authorize` grant, never a default: content
 DEFAULT_GRANTS = frozenset({
     "register_run", "decide", "complete", "observe", "state_write", "model_event", "approval_request",
     "approval_decide", "approval_wait", "approval_consume", "approval_get", "approval_list", "approval_abandon",
-    "close_run", "delegate_run", "tailer_lost", "tailer_heartbeat", "status", "read", "checkpoint_nudge",
+    "close_run", "delegate_run", "tailer_lost", "status", "read", "checkpoint_nudge",
     "passkey_register", "why_finding"})
-NEVER_DEFAULT = frozenset({DECISION_IMPORT, ON_BEHALF, "content_get", "content_erase"})
+# tailer_heartbeat: only an identity granted it (TAILER_METHODS), so the agent can't keep a killed tailer's
+# heartbeats going with its own token
+NEVER_DEFAULT = frozenset({DECISION_IMPORT, ON_BEHALF, "content_get", "content_erase", "tailer_heartbeat"})
 CONTENT = {"retain": False, "retention_days": 30, "max_record_bytes": 1 << 20}   # the `content` config section
 CONTENT_SWEEP_S = 3600.0
 ERASED = object()   # _data_key of a run whose content was erased
@@ -1135,8 +1138,9 @@ class SignerService:
                 "kind": "decided_not_completed", "tool_use_id": tcid,
                 "reason": f"{tcid} ({str(c.get('tool') or '?')[:200]}) was "
                           f"{'approved' if c['decision'] == 'ask' else 'allowed'} and never completed: no result "
-                          "reached the signer (the agent stopped, its post-call hook did not run, or the result was "
-                          "dropped)"}, source="signer", tool_call_id=tcid, attempt=c["attempt"])
+                          "reached the signer (declined in the harness's own permission prompt, the agent stopped, "
+                          "its post-call hook did not run, or the result was dropped); if the harness asks, its "
+                          "transcript says which"}, source="signer", tool_call_id=tcid, attempt=c["attempt"])
         if len(open_calls) > DECIDED_GAPS_MAX:
             n = len(open_calls) - DECIDED_GAPS_MAX
             tx.emit(run, "capture.gap", {"kind": "decided_not_completed", "missed_events": n,
@@ -2130,14 +2134,12 @@ class SignerService:
         def fn(tx, run):
             for s in req.get("last_client_seq", ()):
                 stream, last = s["stream"], run["streams"].get(s["stream"], -1)
-                if stream not in run["streams"]:
-                    self.quotas.check_count("streams_per_run", len(run["streams"]))
-                if s["client_seq"] > last:
+                if s["client_seq"] > last:   # the counter stays: values that still arrive are taken as usual
                     tx.emit(run, "capture.gap", {"kind": "client_counter_gap", "missed_events": s["client_seq"] - last,
-                                                 "reason": f"stream {stream} ended at client_seq {s['client_seq']}; "
-                                                           f"{last + 1}..{s['client_seq']} never reached the signer"},
+                                                 "reason": f"{subject(identity)[:256]} said stream {stream} ended at "
+                                                           f"client_seq {s['client_seq']}; {last + 1}..{s['client_seq']}"
+                                                           " had not reached the signer then"},
                             source="signer", stream=stream)
-                    tx.set(run["streams"], stream, s["client_seq"])
             if gateway:
                 return {"run_id": req["run_id"], "state": "closing" if run["closed"] else "open",
                         "run_seq": run["run_seq"] - 1}

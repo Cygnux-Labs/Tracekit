@@ -95,6 +95,8 @@ _TOOL_USE = dict(_obj(["id", "name", "executed_by"], id=ID, name=_str(256, minLe
                       args_digest=DIGEST, args_unparseable={"const": True},
                       id_synthetic={"const": True}),   # the provider gave no id
                  oneOf=[{"additionalProperties": False,
+                         "properties": {"id": {}, "name": {}, "executed_by": {"const": "provider"}, "id_synthetic": {}}},
+                        {"required": ["args_source", "args_digest"], "additionalProperties": False,
                          "properties": {"id": {}, "name": {}, "executed_by": {"const": "provider"}, "id_synthetic": {},
                                         "args_source": {}, "args_digest": {}}},
                         {"required": ["args_source", "args_digest"], "properties": {"executed_by": {"const": "client"}}},

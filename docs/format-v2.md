@@ -151,7 +151,7 @@ and then never heard about. All are `capture.gap` records with `source: signer`.
 | `decided_not_completed` | in the run, at `run.final`: each call whose latest decide was allowed (or asked, with its approval consumed) and has no `complete`; at most 100, then one counting the rest | `tool_use_id`, top-level `tool_call_id` and `attempt`; the last one `missed_events` |
 | `concurrent_run` | in the newer run, after its `run.registered`: another run of the same owner, tenant (and harness process) is open, in another session; not for owners in signer.yaml `multi_run_apps` | `run_id`: the open run |
 | `late_activity` | in the tenant's run `tracekit/signer`, with the refusal summaries: writes refused because their run was final | `run_id`: that run; `missed_events`: how many; `from_ts`, `to_ts` |
-| `client_counter_gap` | also at `close_run` with `last_client_seq`: the values of a stream the signer never received | `missed_events`, top-level `stream` |
+| `client_counter_gap` | also at `close_run` with `last_client_seq`: the values of a stream the signer had not received by then (the reason names the identity that said where the stream ended; values that arrive later are still recorded after it) | `missed_events`, top-level `stream` |
 | `tailer_lost` | also when a transcript tailer's `tailer_heartbeat`s stop for 90 s while its run is open | — |
 
 A gap in a tenant's run `tracekit/signer` (`late_activity`) has a leaf in that tenant's registry (§7), so a run-set
