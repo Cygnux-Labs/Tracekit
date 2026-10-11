@@ -1,0 +1,37 @@
+# The public witness behind Caddy, which gets and renews the TLS certificate for $DOMAIN (README.md here).
+#   DOMAIN=witness.example.org docker compose up -d
+name: tracekit-public-witness
+
+services:
+  witness:
+    build: {context: ../.., dockerfile: deploy/public-witness/Dockerfile}
+    image: tracekit-public-witness:latest
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: [/tmp]
+    volumes: [witness-data:/data]
+    networks: [web]                     # not published: only Caddy reaches it
+    restart: unless-stopped
+
+  caddy:
+    # lean: pinned by tag; pin by digest (as deploy/compose does) when this goes to production
+    image: caddy:2.8
+    command: [caddy, reverse-proxy, --from, "${DOMAIN:?set DOMAIN to the witness's host name}", --to, "witness:7380"]
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    security_opt: ["no-new-privileges:true"]
+    ports: ["80:80", "443:443"]
+    volumes: [caddy-data:/data, caddy-config:/config]
+    networks: [web]
+    depends_on: [witness]
+    restart: unless-stopped
+
+networks:
+  web: {}
+
+volumes:
+  witness-data: {}
+  caddy-data: {}
+  caddy-config: {}

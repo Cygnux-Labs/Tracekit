@@ -124,6 +124,13 @@ Each row says what the limit is, why it is so, what to do about it, and where th
 | A Rekor entry the signer wrote but got no reply for shows as a monitor conflict. | It matches no stored anchor. | Check the signer's `witness_failed` gaps for that outage first. | [monitor](monitor.md#what-it-checks) |
 | The issuer handles one issuance at a time and re-reads its log for each. | Fine at record-key volumes. | Past ~100k certificates it needs an index. | [issuer](issuer.md#limits) |
 | If the issuer can't be reached at start, the signer doesn't start; records signed after a key's `not_after` fail verification. | Certificates are short-lived. | Keep the issuer available; watch renewals. | [issuer](issuer.md#the-signer) |
+| The public witness makes a log `witnessed` independently of its operator, not of Cygnux. | Whoever holds the witness's key could cosign any tree. | Add a witness you or a partner run and raise `witnesses_required` in the trust config. | [witnesses](witnesses.md#the-public-witness) |
+| `witnesses: [public]` and `init --v2 --public-witness` are refused until the public witness is deployed. | Its URL and vkey are set in `tracekit/public_witness.py` once it runs. | List your own witness, `{url, vkey, class}`, meanwhile. | [witnesses](witnesses.md#the-public-witness) |
+| `init --public-witness` is for v2 system mode only. | The same-user dev signer has no signer.yaml. | Run a signer with a signer.yaml (`tracekit signer serve --config`) and list `public` there. | [witnesses](witnesses.md#the-public-witness) |
+| The public witness takes one log key per origin, the first registered: a log under a new key is refused (403, `a new log key needs a new origin`). | Anyone can register, so the first key must be the only one, or anyone could take over a log's witnessing. | Set a new `origin` in signer.yaml when the log key changes. | [witnesses](witnesses.md#the-public-witness) |
+| The public witness takes only origins shaped `host/path` (lower-case host, at least one path segment); others are refused at registration (400, naming the format). | The origin names the log publicly, so it should name a host its operator controls. | Set `origin` in signer.yaml to e.g. `tracekit.example.com/log`. | [witnesses](witnesses.md#the-public-witness) |
+| The public witness cosigns at most 30 checkpoints per log a minute; a busier log gets `429` and is cosigned at that rate, always its newest note. | It is a shared, free service. | Run your own witness for a higher rate. | [witnesses](witnesses.md#the-public-witness) |
+| The public witness takes 100 registrations per client network (IPv4 address or IPv6 /64) a day, and a fixed number of logs in total (then `this witness is full`). | Open registration must not let one client fill it. | Signers with many tenants register over several days (retries are automatic); when it is full, run your own witness. | [deploy/public-witness](../deploy/public-witness/README.md#limits) |
 
 ## Privacy
 
@@ -137,7 +144,7 @@ Each row says what the limit is, why it is so, what to do about it, and where th
 | Revealing a v2 record's salt lets anyone holding the content check that record's commitments. | That is how an auditor checks content; one salt opens one record. | Reveal only the records an audit needs. | [privacy](privacy.md#the-v2-signer) |
 | A run-set bundle carries the tenant's registry salt, so it allows testing guessed run ids against that tenant's leaves. | The verifier needs the salt to check completeness. | Share run-set bundles only with that tenant's auditors. | [auditor guide](auditor-guide.md#3-get-the-bundles) |
 | With `serve_records: true` the metrics port serves every tenant's records (run ids, tool names, commitments). | The monitor reads every record. | Expose that port only to the monitor. | [monitor](monitor.md#run-it) |
-| Witnesses learn when checkpoints happen and how many records exist. | That is what they cosign. | Choose witnesses accordingly. | [privacy](privacy.md#what-hashes-and-metadata-still-leak) |
+| Witnesses learn when checkpoints happen and how many records exist; the public witness also learns each opted-in log's origin, so how often and how much each named log grows. | That is what they cosign, and it arrives when it is made. | Choose witnesses accordingly; for the public witness pick an `origin` that names nothing you want kept private, or don't opt in. | [privacy](privacy.md#what-hashes-and-metadata-still-leak), [public witness](privacy.md#what-leaves-the-machine) |
 
 ## Deployment
 
@@ -155,6 +162,8 @@ Each row says what the limit is, why it is so, what to do about it, and where th
 | The compose stack's first start writes a `degraded_unanchored` gap. | The witness doesn't know the log yet. | Expected once; check later gaps. | [deploy compose](deploy-compose.md#the-witness) |
 | The compose end-to-end test runs only where Docker and root (or passwordless sudo) are available; elsewhere it is skipped. | It brings up the real stack. | Run `deploy/compose/e2e.sh` on a Docker host before relying on a change. | [deploy compose](deploy-compose.md#end-to-end-test) |
 | `tracekit doctor` output is advice about the host, not evidence. | Nothing it prints is signed or read by a verifier. | Rely on the bundle and the verifier's trust config. | [doctor](doctor.md) |
+| The public witness's compose file pins Caddy by tag, not digest. | The digest is taken when it is deployed. | Pin `caddy` by digest before production. | [deploy/public-witness](../deploy/public-witness/README.md) |
+| A restored backup of the public witness's `state.db` holds older sizes. | The backup is a point in time. | Nothing: logs answered `409` resend from the older size with a consistency proof. | [deploy/public-witness](../deploy/public-witness/README.md#backup) |
 
 ## Viewer
 
