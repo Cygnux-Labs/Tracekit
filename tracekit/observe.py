@@ -360,8 +360,8 @@ def make_handler(feed, token, allowed_hosts=None, secure=False, login=None, appr
     change state, and only on this handler). `runs`: a view.Runs; /runs and its GET API, for the token and every
     session, each read scoped to the session's tenant by Runs itself; `feed` may then be None (`/` goes to /runs).
     `why`: a why.server.Store; its read API (/api/why/...) for the token only (why logs belong to no tenant, so never to
-    an OIDC session), its replay POSTs for the token with a same-origin JSON body, and /v1/ingest for the bearer token
-    only."""
+    an OIDC session), its replay POSTs for the token with a same-origin JSON body, and /v1/ingest for a bearer token
+    only: one of the Store's ingest tokens, else (none set) the token."""
     allowed = set(LOOPBACK_HOSTS) | {h.lower() for h in (allowed_hosts or ()) if h.lower() not in WILDCARD_HOSTS}
 
     class Handler(BaseHTTPRequestHandler):
@@ -540,7 +540,7 @@ def make_handler(feed, token, allowed_hosts=None, secure=False, login=None, appr
                 return self._send(413, '{"error":"body too large"}')
             try:
                 body = json.loads(self.rfile.read(n))
-            except (UnicodeDecodeError, ValueError):
+            except (UnicodeDecodeError, ValueError, RecursionError):   # RecursionError: nested too deep to parse
                 body = None
             return body if isinstance(body, dict) else self._send(400, '{"error":"the body is not a JSON object"}')
 
@@ -550,19 +550,28 @@ def make_handler(feed, token, allowed_hosts=None, secure=False, login=None, appr
                 out = fn()
             except Exception as e:   # a broken run must not leave the request unanswered
                 if isinstance(e, ValueError) and hasattr(e, "status"):
-                    return self._send(e.status, json.dumps({"error": str(e)}, ensure_ascii=False))
+                    return self._send(e.status, json.dumps({"error": str(e), **getattr(e, "extra", {})},
+                                                           ensure_ascii=False))
                 traceback.print_exc()
                 return self._send(500, '{"error":"internal error"}')
             return self._send(200, json.dumps(out, ensure_ascii=False, default=str))
 
-        def _why_post(self, path, bearer):
-            """POST /v1/ingest (the bearer token only) and the replay POSTs (the token, a same-origin JSON body)."""
+        def _ingest_token(self):
+            """The bearer token when /v1/ingest takes it: one of the Store's ingest tokens, else (none set) the token."""
+            auth = self.headers.get("Authorization", "")
+            supplied = auth[7:] if auth.startswith("Bearer ") else ""
+            ok = supplied and any(hmac.compare_digest(supplied.encode(), t.encode())
+                                  for t in (why.ingest_tokens or [token]) if t)
+            return supplied if ok else None
+
+        def _why_post(self, path, ingest):
+            """POST /v1/ingest (an ingest token only) and the replay POSTs (the token, a same-origin JSON body)."""
             if path == "/v1/ingest":
-                if not bearer:
-                    return self._send(401, '{"error":"ingest needs the token as a Bearer token"}')
+                if ingest is None:
+                    return self._send(401, '{"error":"ingest needs an ingest token as a Bearer token"}')
                 body = self._body(MAX_INGEST)
                 if body is not None:
-                    self._why(lambda: why.ingest(body))
+                    self._why(lambda: why.ingest(body, ingest))
                 return
             m = re.match(r"^/api/why/runs/([^/]+)/(tests|attribute)$", path)
             if not m:
@@ -591,17 +600,24 @@ def make_handler(feed, token, allowed_hosts=None, secure=False, login=None, appr
             def do_POST(self):
                 bearer = bool(token) and hmac.compare_digest(self.headers.get("Authorization", "").encode(),
                                                              f"Bearer {token}".encode())
-                # remote agents ingest under the server's DNS name: the bearer token is enough, never the cookie
-                if _host_only(self.headers.get("Host")) not in allowed and not (why and bearer):
+                ingest = self._ingest_token() if why else None
+                # remote agents ingest under the server's DNS name: a bearer token is enough, never the cookie
+                if _host_only(self.headers.get("Host")) not in allowed and not (why and (bearer or ingest)):
                     return self._send(403, '{"error":"unexpected Host header"}')
                 u = urlparse(self.path)
                 if approvals and u.path.startswith(("/api/approvals/", "/api/passkey")):
                     return self._desk(u.path, post=True)
                 if why:
-                    return self._why_post(u.path, bearer)
+                    return self._why_post(u.path, ingest)
                 self._send(404, '{"error":"not found"}')
 
+        def stream_slot(self):
+            """Whether this connection may become an event stream: view.server counts streams on their own."""
+            return True
+
         def stream(self, i, scope=ALL):
+            if not self.stream_slot():
+                return self._send(503, '{"error":"too many open event streams"}')
             self.long_request()
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")

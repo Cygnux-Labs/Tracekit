@@ -26,7 +26,7 @@ from typing import Any, Dict, List, Optional
 
 from .. import privacy
 from ..format.canon import event_hash as jcs_hash
-from .core import GENESIS, SCHEMA, Run, content_hash, event_hash, load_run, verify
+from .core import GENESIS, SCHEMA, UNFINISHED, Run, content_hash, event_hash, load_run, verify
 from .evals import list_runs
 
 COMMITTED = "content committed, not in the log"
@@ -349,7 +349,8 @@ def check(run: Run, records: Dict[str, List[Dict[str, Any]]]):
     results = {(ev["tracekit"]["run_id"], ev["tracekit"].get("tool_call_id")) for ev in run.events
                if (ev.get("tracekit") or {}).get("type") == "tool.result"}
     # the merged log is chained anew: a break in the original's chain must not vanish with it
-    alerts = [{"title": "The why log failed its integrity check", "detail": p} for p in verify(run)[:5]]
+    alerts = [{"title": "The why log failed its integrity check", "detail": p}
+              for p in [p for p in verify(run) if not p.startswith(UNFINISHED)][:5]]
     alerts += [{"title": "A Tracekit run this log cites is not in the import",
                 "detail": f"run {rid}: import the store or bundle that holds it"} for rid in cited if rid not in records]
     problems: Dict[int, str] = {}

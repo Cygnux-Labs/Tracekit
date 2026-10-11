@@ -29,6 +29,24 @@ after. A denied call reaches the model as a refusal and the agent goes on. Calli
 none of these installed it warns and does nothing. TypeScript: `const tk = await instrument()` from
 `@cygnux/tracekit`, then pass `tk.ai` (Vercel AI SDK) or `tk.agents` (OpenAI Agents JS) to the framework.
 
+### When a call needs a person (`ask`)
+
+An `ask` holds the call until a person answers it (`tracekit approvals`, or the viewer's approval pages). Each
+integration waits its own way. Every one checks the answer with the signer before the call runs. A signer error
+refuses the call. An unanswered approval expires after an hour.
+
+| Integration | How it waits | Timeout | Then |
+|---|---|---|---|
+| OpenAI Agents SDK (Python, JS) | interrupts the run | none of its own | `apply_decisions(state)` (JS `applyDecisions`), then run the state again: an approved call runs, a rejected one reaches the model as a rejection |
+| LangGraph / LangChain, with a checkpointer | pauses the graph (`interrupt`) | none of its own | resume with `Command(resume=...)`: an approved call runs, any other answer reaches the model as an error tool message |
+| LangGraph / LangChain, no checkpointer | does not wait | none | denied at once: "approval required, and the agent has no checkpointer to wait for it" |
+| MCP client (`call_tool`) | timed wait in `call_tool` | `approval_wait_s`, 300 s (0 refuses at once) | an error `CallToolResult` when not approved; the run goes on |
+| Browser Use | timed wait before the action | `approval_wait_s`, 300 s | an error `ActionResult` when not approved; the agent goes on |
+| Claude Agent SDK (Python, TS) | timed wait in its PreToolUse hook | 540 s (the hook's own timeout is 600 s) | a `deny` with the reason when not approved; the session goes on |
+| Claude Code, Codex, Cursor, Gemini hooks | timed wait in the hook process | 540 s (hook timeout 600 s) | the harness's deny when not approved; the model may retry |
+| Vercel AI SDK (TS, `tk.ai`) | the SDK's own tool approval | none of its own | `approvalResponses(parts)`, pushed to `messages`, resumes it; a call not approved throws |
+| `tracekit.why` runtime | timed wait in `act()` | `approval_wait_s`, 300 s | an error result; retrying the same call in the same run reuses the approval |
+
 You don't start anything yourself. The first client that needs a signer starts one in the background and later
 clients reuse it (`tracekit up` / `tracekit down` do the same by hand). The signer's keys and store live in your user's
 data dir. It listens on a Unix socket in a private runtime dir. On Windows it listens on a loopback TCP port instead,

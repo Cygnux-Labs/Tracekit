@@ -15,7 +15,7 @@ from statistics import NormalDist
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Sequence, Union
 
-from .core import ModelOutput, Ref, Run, Runtime, Tape, ablation_matches, canonical, derive_seed
+from .core import ModelOutput, Ref, Run, Runtime, Tape, ablation_matches, canonical, derive_seed, glob_escape
 from .graph import parse_target
 
 Z95 = 1.959963984540054
@@ -37,6 +37,23 @@ def verdict_for(lo: float, hi: float, applied: bool = True, min_effect: float = 
 
 
 DECISIVE = ("causal", "suppressive", "ruled-out")
+
+
+def clauses(spec: str) -> List[tuple]:
+    """A signed-run target ('tool=send_email,arg~evil.example', 'text~wire the money') as [(key, op, value)]; key tool,
+    arg or text, op '=' (equals) or '~' (contains)."""
+    out = []
+    for part in filter(None, (p.strip() for p in spec.split(","))):
+        op = "~" if "~" in part and ("=" not in part or part.index("~") < part.index("=")) else "="
+        k, sep, v = part.partition(op)
+        if not sep or k.strip() not in ("tool", "arg", "text"):
+            raise ValueError(f"bad target clause {part!r}: tool=NAME, arg~TEXT or text~TEXT")
+        out.append((k.strip(), op, v))
+    return out
+
+
+def holds(op: str, hay: str, v: str) -> bool:
+    return v in hay if op == "~" else hay == v
 
 
 def looks(n: int, n_max: Optional[int]) -> List[int]:
@@ -157,7 +174,7 @@ def benjamini_hochberg(pvalues: List[float], q: float = 0.05) -> List[bool]:
 
 
 def newcombe_diff(k0: int, n0: int, k1: int, n1: int, z: float = Z95):
-    """95% CI for p0 - p1 (Newcombe hybrid score method)."""
+    """95% CI for p0 - p1 of two independent samples (Newcombe hybrid score method)."""
     p0, p1 = k0 / n0, k1 / n1
     l0, u0 = wilson(k0, n0, z)
     l1, u1 = wilson(k1, n1, z)
@@ -165,6 +182,58 @@ def newcombe_diff(k0: int, n0: int, k1: int, n1: int, z: float = Z95):
     lo = d - math.sqrt((p0 - l0) ** 2 + (u1 - p1) ** 2)
     hi = d + math.sqrt((u0 - p0) ** 2 + (p1 - l1) ** 2)
     return (max(-1.0, lo), min(1.0, hi))
+
+
+def paired_diff(a: int, b: int, c: int, d: int, z: float = Z95):
+    """CI for p0 - p1 of paired binary outcomes: Tango's (1998) score interval, every difference whose score test
+    (variance at the restricted maximum-likelihood estimate) is not rejected. a: both arms hit, b: only the first,
+    c: only the second, d: neither. Only discordant pairs move it, so pairing reaches the verdict, and no discordant
+    pair still leaves an interval as wide as the trials allow (never a false certainty)."""
+    n = a + b + c + d
+
+    def score(delta: float) -> float:   # decreases as delta grows
+        bb = -b - c + (2 * n - b + c) * delta
+        cc = -c * delta * (1 - delta)
+        q = (math.sqrt(max(0.0, bb * bb - 8 * n * cc)) - bb) / (4 * n)   # restricted MLE of P(only the second)
+        var = n * (2 * q + delta * (1 - delta))
+        diff = b - c - n * delta
+        return diff / math.sqrt(var) if var > 0 else math.copysign(math.inf, diff) if diff else 0.0
+
+    def bound(lo: float, hi: float, level: float) -> float:   # where score crosses `level`, by bisection
+        for _ in range(60):
+            mid = (lo + hi) / 2
+            lo, hi = (mid, hi) if score(mid) > level else (lo, mid)
+        return (lo + hi) / 2
+
+    est, edge = (b - c) / n, 1 - 1e-12
+    lower = -1.0 if score(-edge) <= z else bound(-edge, est, z)
+    upper = 1.0 if score(edge) >= -z else bound(est, edge, -z)
+    return (lower, upper)
+
+
+class Pairs:
+    """Counts of paired binary outcomes (x: the first arm hit, y: the second)."""
+
+    def __init__(self):
+        self.a = self.b = self.c = self.d = 0
+
+    def add(self, x: bool, y: bool) -> None:
+        if x and y:
+            self.a += 1
+        elif x:
+            self.b += 1
+        elif y:
+            self.c += 1
+        else:
+            self.d += 1
+
+    def ci(self, z: float):
+        return paired_diff(self.a, self.b, self.c, self.d, z)
+
+
+def _check_n(n: int) -> None:
+    if not isinstance(n, int) or n < 1:
+        raise ValueError("n must be an integer >= 1")
 
 
 # --------------------------------------------------------------------------- counterfactual
@@ -195,47 +264,74 @@ def counterfactual(run: Run, intervention: Union[str, Sequence[str]], target: st
     primary cause or a contributing factor.
 
     Tool calls that match the recorded tape replay its results. Calls the original run never made
-    are stubbed unless live_tools=True, so a replay cannot send a real email or move real money."""
+    are stubbed unless live_tools=True, so a replay cannot send a real email or move real money. off_tape_actions
+    counts the calls of both arms that were not served from the tape."""
+    _check_n(n)
     system = system or system_for(run)
     pred = parse_target(target)
     task = recorded_task(run)
     specs = [intervention] if isinstance(intervention, str) else list(intervention)
     label = " | ".join(specs)
-    cache = base_cache if base_cache is not None else {}
+    cache = base_cache if base_cache is not None else {}   # trial -> (hit, off-tape calls) of the base arm
     lock = threading.Lock()
     base_runs = [0]
 
     def hit(r: Run) -> bool:
         return any(pred(e, r) for e in r.events)
 
+    def unrecorded(r: Run) -> int:
+        return sum(1 for e in r.of_type("action") if e.get("mode") != "tape")
+
     def trial(i: int):
         s = derive_seed(seed_base, run.run_id, i)
         with lock:
-            h0 = cache.get(i)
-        if h0 is None:
-            h0 = hit(system.run(seed=s, tape=Tape(run) if use_tape else None, task=task,
-                                run_id=f"{run.run_id}-b{i}", live_tools=live_tools, signer=False))
+            base = cache.get(i)
+        if base is None:
+            b = system.run(seed=s, tape=Tape(run) if use_tape else None, task=task,
+                           run_id=f"{run.run_id}-b{i}", live_tools=live_tools, signer=False)
+            base = (hit(b), unrecorded(b))
             with lock:
-                cache[i] = h0
+                cache[i] = base
                 base_runs[0] += 1
         treat = system.run(seed=s, interventions=specs, tape=Tape(run) if use_tape else None,
                            task=task, run_id=f"{run.run_id}-t{i}", live_tools=live_tools, signer=False)
-        return (h0, hit(treat), any(e.get("ablated") for e in treat.of_type("decision")),
-                sum(1 for e in treat.of_type("action") if e.get("mode") != "tape"))
+        return (base[0], hit(treat), any(e.get("ablated") for e in treat.of_type("decision")), base[1] + unrecorded(treat))
 
-    k0 = k1 = 0
-    matched = 0
-    off_tape = 0
+    s = paired(trial, n, n_max, family, min_effect, workers, size_role)
+    result = {**summary(s, label, target, family, min_effect),
+              "program_runs": s["n"] + base_runs[0],  # what the test cost: base runs not served from the cache, plus treatments
+              "method": "paired re-execution, tool results from tape, Newcombe 95% CI"
+                        + (f", sequential over {s['looks']} looks (Bonferroni)" if s["looks"] > 1 else ""), "scope": "run"}
+    if len(specs) > 1:
+        result["group"] = specs
+    if save:
+        run.add_test(result)
+    return result
+
+
+class Stop(Exception):
+    """Raised by a trial to end a test early (a spent budget): the looks finished so far are reported, verdict
+    inconclusive, `stopped` the exception's text."""
+
+
+def paired(trial: Callable[[int], tuple], n: int, n_max: Optional[int], family: int, min_effect: float, workers: int,
+           size_role: bool) -> Dict[str, Any]:
+    """The sequential paired test of counterfactual(): trial(i) -> (target with, target without, intervention applied,
+    off-tape actions) for pair i; returns the counts, the interval and the verdict."""
+    k0 = k1 = matched = off_tape = i = 0
     flips = {"removed": 0, "added": 0}
     plan = looks(n, n_max)
     z = z_for(len(plan) * family)
-    i = 0
-    stopped = "n_max"
+    lo, hi, verdict, stopped = -1.0, 1.0, "inconclusive", "n_max"
     pool = ThreadPoolExecutor(workers) if workers > 1 else None
     try:
         for size in plan:
             batch = range(i, size)
-            outs = list(pool.map(trial, batch)) if pool else [trial(j) for j in batch]
+            try:
+                outs = list(pool.map(trial, batch)) if pool else [trial(j) for j in batch]
+            except Stop as e:
+                verdict, stopped = "inconclusive", str(e)
+                break
             i = size
             for h0, h1, applied, off in outs:
                 k0 += h0
@@ -259,28 +355,28 @@ def counterfactual(run: Run, intervention: Union[str, Sequence[str]], target: st
     finally:
         if pool:
             pool.shutdown()
-    n = i
-    p0, p1 = k0 / n, k1 / n
-    result = {
-        "intervention": label, "target": target, "n": n, "looks": len(plan), "n_max": plan[-1],
-        "family": family, "stopped": stopped,
+    return {"k0": k0, "k1": k1, "n": i, "looks": len(plan), "n_max": plan[-1], "lo": lo, "hi": hi, "verdict": verdict,
+            "stopped": stopped, "flips": flips, "matched": matched, "off_tape": off_tape}
+
+
+def summary(s: Dict[str, Any], label: str, target: str, family: int, min_effect: float) -> Dict[str, Any]:
+    """The result fields every paired test reports, from paired()'s counts."""
+    n, lo, hi, verdict = s["n"], s["lo"], s["hi"], s["verdict"]
+    p0, p1 = (s["k0"] / n, s["k1"] / n) if n else (0.0, 0.0)
+    out = {
+        "intervention": label, "target": target, "n": n, "looks": s["looks"], "n_max": s["n_max"],
+        "family": family, "stopped": s["stopped"],
         "p_with": round(p0, 4), "p_without": round(p1, 4),
         "effect": round(p0 - p1, 4), "ci": [round(lo, 4), round(hi, 4)],
-        "verdict": verdict, "pair_flips": flips,
-        "p_value": round(min(1.0, len(plan) * mcnemar_exact(flips["removed"], flips["added"])), 6),  # x looks
-        "intervention_applied_in": matched, "off_tape_actions": off_tape, "min_effect": min_effect,
-        "n_needed": n_hint(n, lo, hi, min_effect) if verdict == "inconclusive" else None,
-        "program_runs": n + base_runs[0],  # what the test cost: base runs not served from the cache, plus treatments
-        "method": "paired re-execution, tool results from tape, Newcombe 95% CI"
-                  + (f", sequential over {len(plan)} looks (Bonferroni)" if len(plan) > 1 else ""), "scope": "run",
+        "verdict": verdict, "pair_flips": s["flips"],
+        # corrected like the interval: for every look and every input tested together
+        "p_value": round(min(1.0, s["looks"] * family * mcnemar_exact(s["flips"]["removed"], s["flips"]["added"])), 6),
+        "intervention_applied_in": s["matched"], "off_tape_actions": s["off_tape"], "min_effect": min_effect,
+        "n_needed": n_hint(n, lo, hi, min_effect) if verdict == "inconclusive" and n else None,
     }
-    if len(specs) > 1:
-        result["group"] = specs
     if verdict == "causal":
-        result["role"] = role_for(p0, result["ci"])
-    if save:
-        run.add_test(result)
-    return result
+        out["role"] = role_for(p0, out["ci"])
+    return out
 
 
 def role_for(p_with: float, ci: Sequence[float]) -> str:
@@ -297,7 +393,24 @@ def role_for(p_with: float, ci: Sequence[float]) -> str:
 def attribute(run: Run, target: str, suspects: Optional[Sequence[str]] = None, *, n: int = 10, n_max: int = 40,
               system: Optional[System] = None, min_effect: float = MIN_EFFECT, workers: int = 1,
               save: bool = True, seed_base: str = "cf", size_roles: bool = True) -> Dict[str, Any]:
-    """Which of the suspects caused `target`, and how much of it do they explain?
+    """Which of the suspects caused `target`, and how much of it do they explain? find_cause() over replays of the
+    run's program. size_roles: keep testing a proven cause until its share is clear (primary or contributing). It
+    costs more replays; turn it off when only "which inputs" matters.
+    Default suspects: every untrusted input upstream of the first matching action."""
+    system = system or system_for(run)
+    if suspects is None:
+        suspects = _default_suspects(run, target)
+
+    def test(specs: Sequence[str], family: int, cache: Dict[int, Any], single: bool) -> Dict[str, Any]:
+        return counterfactual(run, list(specs) if len(specs) > 1 else specs[0], target, n=n, n_max=n_max,
+                              system=system, family=family, base_cache=cache, min_effect=min_effect,
+                              workers=workers, save=save, seed_base=seed_base, size_role=size_roles and single)
+    return find_cause(test, target, suspects)
+
+
+def find_cause(test: Callable[..., Dict[str, Any]], target: str, suspects: Sequence[str]) -> Dict[str, Any]:
+    """Which of the suspects caused `target`: test(specs, family, cache, single) runs one paired test of removing
+    `specs` together, corrected for `family` tests, sharing the "nothing removed" arm through `cache`.
 
     1. Remove every suspect at once. If the action still happens about as often, none of them is the
        reason: the agent does it on its own (or for a reason that was not tested). Stop there.
@@ -307,13 +420,7 @@ def attribute(run: Run, target: str, suspects: Optional[Sequence[str]] = None, *
        enough on its own, so removing one changes nothing (redundant causes).
 
     Every test shares one "nothing removed" arm, and all intervals are corrected for every test this
-    function may run, so the whole attribution keeps a 5% false-positive rate.
-    size_roles: keep testing a proven cause until its share is clear (primary or contributing). It costs
-    more replays; turn it off when only "which inputs" matters.
-    Default suspects: every untrusted input upstream of the first matching action."""
-    system = system or system_for(run)
-    if suspects is None:
-        suspects = _default_suspects(run, target)
+    function may run, so the whole attribution keeps a 5% false-positive rate."""
     suspects = list(dict.fromkeys(suspects))
     m = len(suspects)
     if m == 0:
@@ -321,17 +428,15 @@ def attribute(run: Run, target: str, suspects: Optional[Sequence[str]] = None, *
     # every test this may run: the group, the halvings or singles, and a leave-one-in test per member
     # of a joint group
     family = 1 if m == 1 else 1 + (m if m <= 4 else 2 * m - 2) + m
-    cache: Dict[int, bool] = {}
+    cache: Dict[int, Any] = {}
     tests: List[Dict[str, Any]] = []
 
-    def test(specs: Sequence[str]) -> Dict[str, Any]:
-        r = counterfactual(run, list(specs) if len(specs) > 1 else specs[0], target, n=n, n_max=n_max,
-                           system=system, family=family, base_cache=cache, min_effect=min_effect,
-                           workers=workers, save=save, seed_base=seed_base, size_role=size_roles and len(specs) == 1)
+    def run_test(specs: Sequence[str]) -> Dict[str, Any]:
+        r = test(specs, family, cache, len(specs) == 1)
         tests.append(r)
         return r
 
-    group = test(suspects)
+    group = run_test(suspects)
     causes: List[Dict[str, Any]] = []
     joint: List[List[str]] = []
     if m > 1 and group["verdict"] == "causal":
@@ -340,12 +445,12 @@ def attribute(run: Run, target: str, suspects: Optional[Sequence[str]] = None, *
             likely as with nothing removed (the leave-one-in test is not causal)."""
             if len(specs) > 4:
                 return specs
-            keep = [sp for sp in specs if test([o for o in specs if o != sp])["verdict"] != "causal"]
+            keep = [sp for sp in specs if run_test([o for o in specs if o != sp])["verdict"] != "causal"]
             return keep or specs
 
         def split(specs: List[str]) -> None:
             if len(specs) <= 4:
-                singles = [(sp, test([sp])) for sp in specs]
+                singles = [(sp, run_test([sp])) for sp in specs]
                 hits = [(sp, r) for sp, r in singles if r["verdict"] == "causal"]
                 causes.extend(_cause(sp, r) for sp, r in hits)
                 if not hits:
@@ -353,7 +458,7 @@ def attribute(run: Run, target: str, suspects: Optional[Sequence[str]] = None, *
                 return
             half = len(specs) // 2
             parts = [specs[:half], specs[half:]]
-            results = [test(p) for p in parts]
+            results = [run_test(p) for p in parts]
             causal = [p for p, r in zip(parts, results) if r["verdict"] == "causal"]
             if not causal:
                 joint.append(specs)
@@ -381,7 +486,7 @@ def attribute(run: Run, target: str, suspects: Optional[Sequence[str]] = None, *
         summary = f"inconclusive: removing all {m} suspects gave {group['effect']:+.2f} {group['ci']}"
     return {"target": target, "suspects": suspects, "group": group, "tests": tests, "causes": causes,
             "joint": joint, "explained": round(explained, 4), "unprompted_rate": unprompted,
-            "program_runs": sum(t["program_runs"] for t in tests), "family": family, "summary": summary}
+            "program_runs": sum(t.get("program_runs", 0) for t in tests), "family": family, "summary": summary}
 
 
 def _cause(spec: str, r: Dict[str, Any]) -> Dict[str, Any]:
@@ -400,7 +505,7 @@ def _default_suspects(run: Run, target: str) -> List[str]:
     for nid in sorted(anc, key=lambda x: g.nodes[x]["seq"]):
         ev = g.nodes[nid]["event"]
         if g.nodes[nid]["type"] == "input" and ev.get("kind") != "task" and ev.get("trust") == "untrusted":
-            out.append(f"input:{ev['source']}")
+            out.append("input:" + glob_escape(ev["source"]))
     return list(dict.fromkeys(out))
 
 
@@ -415,6 +520,7 @@ def decision_test(run: Run, decision: Any, intervention: str, *, n: int = 30,
     With `contains`, measures P(output contains text). Without it, measures how often removing the
     item changes the output, minus how often a second full-context call changes it (`noise`). Real
     model APIs ignore seeds, so without that control any sampling noise would read as an effect."""
+    _check_n(n)
     ev = next((e for e in run.of_type("decision") if e["seq"] == decision or e["id"] == decision), None)
     if ev is None:
         raise ValueError(f"no decision {decision!r} in run")
@@ -434,6 +540,7 @@ def decision_test(run: Run, decision: Any, intervention: str, *, n: int = 30,
         return out.value if isinstance(out, ModelOutput) else out
 
     k0 = k1 = 0
+    pairs = Pairs()   # (first, second): (with, without) for `contains`, else (changed when removed, changed anyway)
     plan = looks(n, n_max)
     z = z_for(len(plan) * family)
     i = 0
@@ -443,15 +550,15 @@ def decision_test(run: Run, decision: Any, intervention: str, *, n: int = 30,
             i += 1  # seeds are derived from the 0-based trial index, as before
             a, b = call(full, s), call(kept, s)
             if contains is not None:
-                k0 += contains in canonical(a).decode()
-                k1 += contains in canonical(b).decode()
+                x, y = contains in canonical(a).decode(), contains in canonical(b).decode()
+                k0, k1 = k0 + x, k1 + y
+                pairs.add(x, y)
             else:
-                k1 += canonical(a) != canonical(b)            # changed when the item is removed
-                k0 += canonical(a) != canonical(call(full, s))  # changed anyway: sampling noise
-        if contains is not None:
-            lo, hi = newcombe_diff(k0, i, k1, i, z)
-        else:
-            lo, hi = newcombe_diff(k1, i, k0, i, z)
+                x = canonical(a) != canonical(b)              # changed when the item is removed
+                y = canonical(a) != canonical(call(full, s))  # changed anyway: sampling noise
+                k1, k0 = k1 + x, k0 + y
+                pairs.add(x, y)
+        lo, hi = pairs.ci(z)
         verdict = verdict_for(lo, hi, applied, min_effect)
         eff_now = (k0 - k1) / i if contains is not None else (k1 - k0) / i
         if verdict in DECISIVE or verdict == "not-applied" or (len(plan) > 1 and _futile(i, n, eff_now)):
@@ -469,7 +576,8 @@ def decision_test(run: Run, decision: Any, intervention: str, *, n: int = 30,
               "effect": round(eff, 4), "ci": [round(lo, 4), round(hi, 4)], "verdict": verdict,
               "noise": noise, "min_effect": min_effect,
               "n_needed": n_hint(n, lo, hi, min_effect) if verdict == "inconclusive" else None, "scope": "decision", "decision": ev["id"], "decision_seq": ev["seq"],
-              "method": "re-call one recorded model call with and without the item, paired seeds"}
+              "method": "re-call one recorded model call with and without the item, paired seeds, Newcombe paired "
+                        "95% CI"}
     if save:
         run.add_test(result)
     return result

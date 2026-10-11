@@ -69,7 +69,8 @@ from .why.server import Store
 
 POLL_S = 1.0
 WHY_DIR = "why"   # where the signer-backed why runtime writes its logs, in the signer's data dir
-THREADS, PER_IP = 512, 128   # each open page holds a connection for its event stream; a team may share one address
+THREADS, PER_IP = 256, 32   # requests; each open page's event stream counts against STREAMS instead
+STREAMS, STREAMS_PER_IP = 256, 64   # a team may share one address
 DEV_NOTE = ("trust pins this store's own log.vkey: dev assurance, the viewer runs as the same user as the dev signer "
             "and proves only that the records match that key")
 STORED_NOTE = ("trust pins the log vkey this store holds and proves only that the records match that key; pin the "
@@ -735,7 +736,11 @@ def server(feed, host, port, token, tls=None, login=None, desk=None, runs=None, 
                                        why=why)):
         def long_request(self):
             self.server.stop_deadline()   # an event stream lasts as long as the page is open, a replay its trials
-    return Server((host, port), Handler, tls, max_threads=THREADS, max_per_ip=PER_IP)
+
+        def stream_slot(self):
+            return self.server.to_stream(self.client_address[0])
+    return Server((host, port), Handler, tls, max_threads=THREADS, max_per_ip=PER_IP, max_streams=STREAMS,
+                  max_streams_per_ip=STREAMS_PER_IP)
 
 
 def main(argv=None):
@@ -754,6 +759,9 @@ def main(argv=None):
                                                  "present)")
     ap.add_argument("--allow-program", action="append", default=[], metavar="SPEC",
                     help="a why System (module:ATTR) FIND THE CAUSE and RUN TEST may replay (repeatable)")
+    ap.add_argument("--ingest-token", action="append", default=[], metavar="TOKEN",
+                    help="a bearer token /v1/ingest takes for why logs, and nothing else (repeatable; default: the "
+                         "viewer's token)")
     a = ap.parse_args(argv)
     loopback = a.host in observe.LOOPBACK_HOSTS
     if bool(a.tls_cert) != bool(a.tls_key):
@@ -780,8 +788,8 @@ def main(argv=None):
         runs = view.get("logs") and Runs(view["logs"], a.log_vkey)
         feed = None if runs else StoreFeed(cfg, a.log_vkey)
         why_dir = a.why or (cfg.get("data_dir") and os.path.join(cfg["data_dir"], WHY_DIR))
-        why = Store(why_dir, a.allow_program, out=feed) if feed and why_dir and (a.why or os.path.isdir(why_dir)) \
-            else None
+        why = Store(why_dir, a.allow_program, out=feed, ingest_tokens=a.ingest_token) \
+            if feed and why_dir and (a.why or os.path.isdir(why_dir)) else None
         srv = server(feed, a.host, a.port, token, tls, login, desk, runs, why)
     except (OSError, ValueError, StorageUnavailable) as e:
         print(f"tracekit view: {e}", file=sys.stderr)
@@ -802,6 +810,8 @@ def main(argv=None):
         pass
     finally:
         srv.server_close()
+        if why:
+            why.stop()
     return 0
 
 

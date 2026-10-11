@@ -1,7 +1,7 @@
 """Validate events against tracekit/schema/tracekit.event.v1.json or .v2.json (picked by `schema_version`) with a
 small, dependency-free JSON Schema subset (type, const, enum, required, properties, additionalProperties, items,
-oneOf, allOf, if/then, $ref to #/$defs, pattern, minimum, maximum, minLength, maxLength, maxItems). Any other keyword
-raises, so a typo in a schema cannot silently drop a check.
+oneOf, allOf, if/then, $ref to #/$defs, pattern, minimum, maximum, minLength, maxLength, minItems, maxItems). Any other
+keyword raises, so a typo in a schema cannot silently drop a check.
 
 v2 patterns must match the whole value with ASCII semantics. v1 keeps its original semantics (`re.search`, Unicode
 classes) and reports values that pass only that way as warnings."""
@@ -16,7 +16,7 @@ _SCHEMAS = {}
 
 _TYPES = {"object": dict, "array": list, "string": str, "boolean": bool, "null": type(None)}
 KEYWORDS = {"type", "const", "enum", "required", "properties", "additionalProperties", "items", "oneOf", "allOf",
-            "if", "then", "$ref", "pattern", "minimum", "maximum", "minLength", "maxLength", "maxItems",
+            "if", "then", "$ref", "pattern", "minimum", "maximum", "minLength", "maxLength", "minItems", "maxItems",
             "$schema", "$id", "$defs", "title", "description"}
 
 
@@ -74,6 +74,8 @@ def _check(v, s, root, path, errs, warns=None, strict=False):
         errs.append(f"{path}: above {s['maximum']}")
     if isinstance(v, list) and "maxItems" in s and len(v) > s["maxItems"]:
         errs.append(f"{path}: more than {s['maxItems']} items")
+    if isinstance(v, list) and "minItems" in s and len(v) < s["minItems"]:
+        errs.append(f"{path}: fewer than {s['minItems']} items")
     if isinstance(v, dict):
         for k in s.get("required", []):
             if k not in v:

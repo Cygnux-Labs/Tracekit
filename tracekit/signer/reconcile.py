@@ -98,7 +98,8 @@ def _found(run, mandatory):
 
 def finish(tx, run, mandatory=False):
     """Write the run's reconcile.* records; returns the coverage for its run.final (None for a run restored from a
-    snapshot written before reconciliation, which has no index, or for an imported run). `mandatory`:
+    snapshot written before reconciliation, which has no index, for an imported run, or for a `tracekit why` replay run,
+    whose model exchanges have no decisions by design). `mandatory`:
     gateway_mandatory."""
     if run.get("rec") is None:
         return None

@@ -224,14 +224,29 @@ def build_graph(run: Run, *, infer: bool = True, infer_threshold: float = 0.3, m
     return g
 
 
+INFER_COMMON = 50    # a shingle in more nodes than this is boilerplate, not evidence: it stops selecting candidates
+INFER_CANDIDATES = 20  # earlier nodes scored per node: those sharing the most shingles with it
+
+
 def _infer_edges(g: Graph, run: Run, threshold: float, min_shared: int) -> None:
+    """Content-overlap edges, found through a shingle index: each node is scored against the earlier nodes that share
+    the most (non-boilerplate) shingles with it, never against every earlier node."""
     order = sorted(g.nodes.values(), key=lambda n: n["seq"])
     sh = {n["id"]: shingles(_node_text(n["event"], run)) for n in order}
+    index: Dict[str, List[int]] = {}
     for j, dst in enumerate(order):
+        hits: Dict[int, int] = {}
+        for s in sh[dst["id"]]:
+            post = index.setdefault(s, [])
+            if len(post) <= INFER_COMMON:
+                for i in post:
+                    hits[i] = hits.get(i, 0) + 1
+                post.append(j)
         if dst["type"] not in ("input", "decision", "action"):
             continue
         anc = None
-        for src in order[:j]:
+        best = sorted((i for i, k in hits.items() if k >= min_shared), key=lambda i: (-hits[i], i))[:INFER_CANDIDATES]
+        for src in (order[i] for i in sorted(best)):
             a, b = sh[src["id"]], sh[dst["id"]]
             shared = len(a & b)
             if shared < min_shared:

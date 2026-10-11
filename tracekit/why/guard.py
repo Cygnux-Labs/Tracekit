@@ -23,6 +23,8 @@ content an agent read without observe() (or an adapter) is invisible to it.
 from __future__ import annotations
 
 import json
+import queue
+import sys
 import threading
 import urllib.request
 from dataclasses import dataclass, field
@@ -135,27 +137,55 @@ class Guard:
         return c
 
 
+WEBHOOK_FIELDS = ("severity", "rule", "title", "run_id", "agent", "tool", "seq", "node", "blocked")
+
+
+def slack_text(s: Any) -> str:
+    """Text a Slack-style webhook shows as written: &, < and > escaped, so a title can never mention a channel or a
+    person (<!channel>, <@U123>) or carry a link."""
+    return str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+class Webhook:
+    """POSTs alerts as JSON ({"text": ..., "run_id", "alert": {...}}, which Slack-style incoming webhooks accept) from
+    one worker thread, so a slow endpoint never stalls the agent or the server. An alert carries its rule, title and
+    where it happened (WEBHOOK_FIELDS), never the call's arguments or detail. At most `size` alerts wait; more are
+    dropped with a warning."""
+
+    def __init__(self, url: str, *, timeout: float = 5.0, size: int = 100):
+        self.url, self.timeout = url, timeout
+        self._q: "queue.Queue[bytes]" = queue.Queue(size)
+        threading.Thread(target=self._work, daemon=True).start()
+
+    def send(self, alert: Dict[str, Any], run_id: Optional[str] = None) -> None:
+        a = {k: alert[k] for k in WEBHOOK_FIELDS if k in alert}
+        run_id = run_id or a.get("run_id")
+        verb = "BLOCKED" if a.get("blocked") else str(a.get("severity", "")).upper()
+        text = f"[tracekit why {verb}] {run_id} {a.get('agent') or ''}.{a.get('tool') or ''}: {a.get('title')}"
+        body = json.dumps({"text": slack_text(text), "run_id": run_id, "alert": a}, default=str).encode()
+        try:
+            self._q.put_nowait(body)
+        except queue.Full:
+            print("tracekit why: webhook queue full, alert dropped", file=sys.stderr)
+
+    def _work(self) -> None:
+        while True:
+            body = self._q.get()
+            try:
+                req = urllib.request.Request(self.url, data=body, method="POST",
+                                             headers={"Content-Type": "application/json"})
+                urllib.request.urlopen(req, timeout=self.timeout).close()
+            except Exception as e:
+                print(f"tracekit why: webhook failed: {e}", file=sys.stderr)
+
+
 def webhook(url: str, *, timeout: float = 5.0, min_severity: str = "high") -> Callable[[Dict[str, Any]], None]:
-    """on_alert helper: POST each alert as JSON ({"text": ..., "alert": {...}}, which Slack-style incoming
-    webhooks accept) from a background thread, so a slow endpoint never stalls the agent."""
+    """on_alert helper: each alert at or above min_severity goes to a Webhook."""
     rank = {"high": 0, "review": 1, "info": 2}
+    hook = Webhook(url, timeout=timeout)
 
     def send(alert: Dict[str, Any]) -> None:
-        if rank.get(alert.get("severity"), 2) > rank[min_severity]:
-            return
-        verb = "BLOCKED" if alert.get("blocked") else alert.get("severity", "").upper()
-        body = json.dumps({"text": f"[tracekit why {verb}] {alert['run_id']} {alert['agent']}.{alert['tool']}: "
-                                   f"{alert['title']}. {alert.get('detail', '')}",
-                           "alert": alert}, default=str).encode()
-
-        def post() -> None:
-            try:
-                req = urllib.request.Request(url, data=body, method="POST",
-                                             headers={"Content-Type": "application/json"})
-                urllib.request.urlopen(req, timeout=timeout).close()
-            except Exception:
-                pass
-
-        threading.Thread(target=post, daemon=True).start()
+        if rank.get(alert.get("severity"), 2) <= rank[min_severity]:
+            hook.send(alert)
 
     return send

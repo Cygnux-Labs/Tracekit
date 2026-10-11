@@ -122,6 +122,24 @@ purpose}` records that the signer returned the retained content of records `seqs
 Both are signer records (`source: signer`) in the run `tracekit/signer` of the tenant they concern, never in the run
 itself, whose records stay unchanged. They hold no content. A bundle with either needs `verifier_min_version` 1.1.0.
 
+`tracekit why` findings (format 1.1, [why](why.md#attribution-on-signed-runs)): a replay run's `run.registered` carries
+`replay_of` (the run it replays) and `investigation`, and the signer does not reconcile it; `why.finding{target,
+intervention, n, p_with, p_without, effect, interval: [lo, hi], verdict, replay_runs: [{run_id, arm: control|ablated,
+hit}], models, rung, off_tape, investigation, looks, family, min_effect, applied, stopped, uncounted?: [{run_id,
+reason: ranking|budget}]}`, written through the `why_finding` RPC in a findings run (`run.registered` `analyzes`),
+records a finished test. A bundle of a run with its findings and replay runs (`tracekit export --v2 --run R
+--with-findings`) holds those runs too; the verifier checks that every replay run a finding names is in the bundle,
+once, as a replay run of the analysed run in the finding's investigation, holding its model calls as `source: gateway`
+model.exchange request and response pairs (one pair for rung 1 and for `ranking`); that an `uncounted` run is `budget`
+only in a finding `stopped: budget`; that with a target of `tool` clauses each `hit` has a response tool use those
+clauses match and, with `tool` clauses alone, each miss has none; that the arms and outcomes count to its `n`,
+`p_with`, `p_without` and `effect`; that `interval` is the Newcombe interval of those counts at z for `looks` ×
+`family` comparisons (Bonferroni), rounded to 4 places, with lo ≤ hi; and that `verdict` follows from it, `applied`
+and `min_effect` (`inconclusive` when `stopped` is `budget`); and that every replay run in the bundle of an
+investigation with findings is named by one (`findings`, FAILED otherwise). Replay runs of an investigation with no
+finding are a `replay runs` warning. In any other bundle (a findings run alone, a run-set) a finding whose replay runs
+are absent is not counted (`findings counted`, a warning). A bundle with either needs `verifier_min_version` 1.1.0.
+
 ## 4. Records and the signature message
 
 A record is one line of JSON:
@@ -347,8 +365,9 @@ A bundle has one zip layout, so every reader sees the same entries; anything els
 
 `tracekit.bundle_v2` writes this layout (Python's `zipfile` writing a seekable file).
 
-`verifier_min_version` is `1.1.0` when a bundled record is `input.observed`, `content.accessed` or `content.erased`, or
-a decision carrying `provenance` or `provenance_state`, else `1.0.0`; a 1.0 verifier reports such a bundle `UNVERIFIABLE (needs tracekit >= 1.1.0)`, never
+`verifier_min_version` is `1.1.0` when a bundled record is `input.observed`, `content.accessed`, `content.erased` or
+`why.finding`, a decision carrying `provenance` or `provenance_state`, or a `run.registered` carrying `replay_of`, else
+`1.0.0`; a 1.0 verifier reports such a bundle `UNVERIFIABLE (needs tracekit >= 1.1.0)`, never
 FAILED.
 
 ## 10. The trust config

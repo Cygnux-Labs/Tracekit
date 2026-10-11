@@ -23,7 +23,7 @@ from tracekit.policy2.engine import Engine
 from tracekit.sdk.client import Client
 from tracekit.signer import service as svc
 from tracekit.storage.file import FileStorage
-from tracekit.why.core import GENESIS, HttpSink, event_hash, load_run
+from tracekit.why.core import GENESIS, HttpSink, event_hash, load_run, referenced_refs
 from tracekit.why.demo import EXFIL_TARGET, SYSTEM
 from tracekit.why.graph import target_hits
 from tracekit.why.server import IngestError, Store, tape
@@ -441,7 +441,7 @@ class WhyServer(unittest.TestCase):
         self.addCleanup(self.httpd.server_close)
         self.addCleanup(self.httpd.shutdown)
         self.store.watch()
-        self.addCleanup(setattr, self.store, "_watching", False)
+        self.addCleanup(self.store.stop)
         self.port = self.httpd.server_address[1]
         self.base = f"http://127.0.0.1:{self.port}"
 
@@ -572,7 +572,8 @@ class WhyIngest(WhyServer):
 
     def test_rejects_bad_token_tamper_and_gaps(self):
         run = SYSTEM.run(seed=0, run_id="t1")
-        evs, blobs = run.events, run.blobs
+        evs = run.events
+        blobs = {r: run.blobs[r] for ev in evs[:3] for r in referenced_refs(ev)}   # what the first batch references
         ingest = lambda events, blobs, token=TOKEN: self.post(  # noqa: E731
             "/v1/ingest", {"events": events, "blobs": blobs},
             {"Authorization": f"Bearer {token}", "Content-Type": "application/json"})[0]
@@ -582,7 +583,7 @@ class WhyIngest(WhyServer):
         bad = json.loads(json.dumps(evs[:3]))
         bad[2]["agent"] = "mallory"
         self.assertEqual(ingest(bad, blobs), 422)
-        self.assertEqual(ingest(evs[1:4], blobs), 409)
+        self.assertEqual(ingest(evs[1:4], {r: run.blobs[r] for ev in evs[1:4] for r in referenced_refs(ev)}), 409)
         fake = dict(blobs)
         fake[next(iter(fake))] = "forged"
         self.assertEqual(ingest(evs[:3], fake), 422)
@@ -597,12 +598,20 @@ class WhyIngest(WhyServer):
         self.assertEqual(self.request("POST", "/v1/ingest", {**JSON, "Content-Length": "abc"}, b"{}")[0], 411)
         self.assertEqual(self.request("POST", "/v1/ingest", {**JSON, "Content-Length": "99999999"})[0], 413)
         self.assertEqual(self.request("POST", "/v1/ingest", JSON, b"[1]")[0], 400)
-        os.makedirs(os.path.join(self.store.root, "broken"))  # a broken run written straight to disk is skipped
+        os.makedirs(os.path.join(self.store.root, "broken"))  # a broken run written straight to disk is listed
         with open(os.path.join(self.store.root, "broken", "events.jsonl"), "w", encoding="utf-8") as f:
             f.write(json.dumps(ev) + "\n")
         SYSTEM.run(seed=1, out_dir=self.store.root, run_id="fine")
         with contextlib.redirect_stderr(io.StringIO()):
-            self.assertEqual([x["run_id"] for x in self.get("/api/why/workspace")["runs"]], ["fine"])
+            runs = {x["run_id"]: x for x in self.get("/api/why/workspace")["runs"]}
+        self.assertEqual(set(runs), {"fine", "poison"})   # the log's own run id: analysed, bad values and all
+        with open(os.path.join(self.store.root, "broken", "events.jsonl"), "w", encoding="utf-8") as f:
+            f.write("{not json\n")
+        with contextlib.redirect_stderr(io.StringIO()):
+            runs = {x["run_id"]: x for x in self.get("/api/why/workspace")["runs"]}
+            self.assertEqual(self.request("GET", "/api/why/runs/broken", AUTH)[0], 422)
+        self.assertEqual(set(runs), {"fine", "broken"})   # listed as broken, not dropped
+        self.assertTrue(runs["broken"]["broken"] and not runs["fine"].get("broken"))
 
 
 class WhyLive(WhyServer):

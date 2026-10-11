@@ -121,7 +121,9 @@ tracekit last                               # Integrity: VERIFIED. / Assurance: 
 `tracekit.instrument()` starts a dev signer in the background (or reuses the running one) and gates and records every
 tool and model call of the frameworks it finds. `tracekit last` exports the most recent finished run, pins the dev
 signer's key, verifies the bundle and says where it is. Then `tracekit view --dev` browses every run: verdicts,
-denials, approvals, replay.
+denials, approvals, replay. A call the policy holds for a person (`ask`) pauses the run or waits, depending on the
+framework:
+[how each integration waits](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/quickstart-v2.md#when-a-call-needs-a-person-ask).
 
 Per framework, with a 10-line example each:
 [OpenAI Agents SDK](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/quickstarts/openai-agents.md),

@@ -136,14 +136,20 @@ run live. See [examples/why/remote_agent.py](../examples/why/remote_agent.py).
 
 ## How causality is tested
 
-**Run replay** (`tracekit why test RUN --remove SPEC --target SPEC`):
+**Run replay** (`tracekit why test RUN --system module:ATTR --remove SPEC --target SPEC`):
 
-1. Load the program the run names (`System.name`, `module:ATTR`).
+1. Load the program: `--system`, or the one the run names (`System.name`) when `--allow-program` lists it. A run file
+   is data, so the CLI never imports the module it names on its own say-so.
 2. For each of N trials, run it twice with the same seed: once as is, once with the intervention. The intervention
    removes matching items from every model call's context and records what it removed.
 3. Tool calls identical to recorded ones get the recorded result. Calls the original never made are **stubbed**, so a
-   replay does not send a real email or move real money.
-4. Report how often the target happened in each arm, the difference, and a Newcombe 95% interval.
+   replay does not send a real email or move real money. That holds for tools run through `act()` or the Anthropic
+   adapter's `run_tool`; a tool your own code runs and records with `record_action` (or the adapter's `tool_result`)
+   runs for real in a replay too, with a warning, and counts in `off_tape_actions`.
+4. Report how often the target happened in each arm, the difference, and a 95% interval (Newcombe's interval for two
+   proportions, which a verifier recomputes for signed findings; it ignores the pairing, so it is conservative; a
+   decision replay uses Tango's paired interval). `off_tape_actions` counts the calls of both arms the tape
+   did not serve; `p_value` (exact McNemar) is corrected for the looks and for `family`, as the interval is.
 
 | Verdict | Meaning |
 |---|---|
@@ -163,7 +169,7 @@ add false positives. On an agent that follows an injection in 25% of runs, 10 fi
 time; sequential testing finds it every time, using 38 trials on average. Across 200 tests of an input with no effect
 it called 5.5% causal. The viewer's **RUN TEST** button uses `--n 20 --n-max 160`.
 
-**Find the cause** (`tracekit why attribute RUN --target SPEC`, or FIND THE CAUSE in the viewer) runs the investigation for one
+**Find the cause** (`tracekit why attribute RUN --system module:ATTR --target SPEC`, or FIND THE CAUSE in the viewer) runs the investigation for one
 action:
 
 1. Remove every untrusted input upstream of the action at once. If the action still happens about as often, none of
@@ -276,7 +282,8 @@ sees only what the log has recorded so far.
 
 **The page updates as runs are recorded.** `tracekit why serve` (and `tracekit view --why`) watches the runs folder
 (and anything ingested), recomputes alerts for each run that changes and pushes them over the viewer's `/api/stream`. `--webhook URL` also POSTs each new
-high alert (Slack-compatible JSON). `tracekit why watch ROOT` prints new alerts in the terminal. To try it:
+high alert (Slack-compatible JSON): its rule, title and run, never the call's arguments, with `<`, `>` and `&`
+escaped so it cannot mention anyone; at most 100 wait to be sent. `tracekit why watch ROOT` prints new alerts in the terminal. To try it:
 
 ```bash
 tracekit why serve runs-live                          # terminal 1: open the URL it prints
@@ -372,6 +379,94 @@ row` (a row for another type of record). A mismatch exits 1 and is a high eviden
 a salts file that is not `tracekit signer reveal` lines, exits 2. Limits:
 [limits.md](limits.md#investigation-tracekit-why).
 
+## Attribution on signed runs
+
+A run the signer and the [gateway](gateway.md) recorded, with the signer's [content vault](privacy.md#the-content-vault)
+on, can be tested without its code: the vault holds each model call's request and response and each tool call's
+arguments and result.
+
+```bash
+export TRACEKIT_SIGNER=https://signer.internal:8443        # the investigator's identity, as for any client
+tracekit why test --run R --store /var/lib/tracekit-signer --gateway https://gateway.internal:8080 \
+    --gateway-token-file investigator.token --remove input:web:* --target "tool=send_email,arg~evil.example"
+tracekit why attribute --run R --bundle r.tkb --trust trust.json --gateway https://gateway.internal:8080 \
+    --target "tool=send_email" --max-calls 400
+```
+
+The ladder: what each rung can say, and what it needs.
+
+| Rung | What it does | Evidence | Needs |
+|---|---|---|---|
+| 0 | observed: signed provenance (a value only untrusted content brought); predicted: the surrogate's ranking | never "tested" | the records; the ranking also the vault and the gateway |
+| 1 | decision replay: one recorded model call re-sent with the item removed, against the same call re-sent unchanged | tested, for that call | the call's request in the vault, the gateway |
+| 2 | agentless run replay: from the first call holding the item, the loop re-simulated: each tool use answered from the run's tape when tool and canonical arguments match exactly, else the stub `{"error": "not in the recorded run"}` (counted in `off_tape_actions`); the model called again until it stops or the recorded number of turns + 2 | tested, for the run | rung 1's, and the tools' results in the vault |
+| 3 | program replay (`tracekit why test RUN` with a System) | tested, for the program | a re-executable program |
+
+`--decision SEQ` (the run_seq of the call's request record) picks rung 1; without it `test` uses rung 2; `--rung`
+overrides. Only executed replays are tested evidence: step-level credit signals don't match what an executed replay
+shows, so the surrogate only orders what to test.
+
+- **Loading.** The run's records come from `--store` or a verified `--bundle`; their content from the signer
+  (`content_get`, purpose: the investigation id, `--investigation` or a new one; each read is a signed
+  `content.accessed`). Each record's content is checked against its commitment with the salt the signer returns; a
+  mismatch stops the investigation with a high evidence alert (exit 1). Content changed by redaction comes back without
+  a salt and is used unchecked.
+- **Interventions** name blocks of the recorded request body (Anthropic messages, OpenAI chat completions and
+  responses): `input:<source glob>` blocks holding a value the run observed from that source (an address, a URL or a
+  whole string of 6+ characters, verbatim), `result:<tool glob>` tool results, `msg:<index>` one message,
+  `ref:<hash prefix>` one block by content hash. A removed block keeps its place, its content replaced by
+  `[removed by tracekit why]`, so the request stays valid.
+- **Targets**: `tool=NAME` and `arg~TEXT` (one tool use matching every such clause), `text~TEXT` (the response text).
+  Rung 2 scores the whole continuation.
+- **Through the gateway, as evidence.** Each arm is a replay run registered with `replay_of: R` and the investigation
+  id, by an investigator listed in signer.yaml `analyzers` (with the `content_read` grant); its model calls go through
+  the gateway (`--gateway`, authenticated as the same identity: `--gateway-token-file`, or `--gateway-cert`/`--gateway-key`),
+  so they are signed records. After each call the investigator reads the replay run back: a call the gateway did not
+  record (a fail-open gateway that could not reach the signer) stops the investigation. Requests are sent with
+  `stream: false`, and to OpenAI with `store: false`. A replay run is not reconciled (no `reconcile.*` records, no
+  coverage in its `run.final`): it has model exchanges and, by design, no decisions.
+- **When tools run.** Tools the client runs (function and custom tools, and in rung 2 every tool use the model makes)
+  never run: their results come from the tape or the stub. A tool the provider runs itself would run again on every
+  arm, so a call whose request enables one is refused before anything is sent, naming it: OpenAI Responses tools other
+  than function and custom (hosted MCP, web search, file search, code interpreter, computer use, ...), Anthropic typed
+  server tools (web search, web fetch, code execution, ...), `mcp_servers` and `container`, chat completions'
+  `web_search_options`, or a recorded response in which the provider ran a tool. So is a Responses call that continues
+  context the provider holds (`previous_response_id`, `conversation`), which a removal can't reach. Test such a run on a
+  call without them (`--decision`), or record runs without provider-executed tools.
+- **Tests** are paired and sequential with the same intervals, corrections and verdicts as above (`--n`, `--n-max` up
+  to 1024, `--workers N` arms in parallel, 1 to 16). Every result reports `off_tape_actions` and its assumptions: no
+  code between the model calls rewrote the history, and tools are deterministic. A removed tool output keeps its
+  shape: a screenshot becomes a blank image, content parts one text part.
+- **Budgets** per investigation, counted in the `tracekit why` process (two processes with the same `--investigation`
+  each have their own): `--max-calls` model calls, `--max-cost` estimated cost (with `--prices`, the
+  [price table](../tracekit/usage.py) `tracekit cost` reads). Before each call the costliest call so far (recorded or
+  replayed) is reserved, and the call is sent only while spent + reserved stays within `--max-cost`; a call overshoots
+  only by what it costs past that estimate. A test that reaches a budget stops `inconclusive` with `stopped: budget`,
+  reporting the looks it finished. One reached while ranking, before any test finished, ends `attribute` with
+  `inconclusive (budget)` (exit 2).
+- **Find the cause** (`attribute`) without `--suspect`: a ContextCite-style surrogate re-sends the target's call with
+  32 random halves of its blocks removed, scores each response (the target's log-probability when every response
+  carries it, which only OpenAI chat calls can: they are sent with `logprobs: true`; else whether it hit), fits a
+  sparse linear model and ranks the blocks, labelled `predicted`. The four top-ranked blocks with a positive weight
+  become the suspects of the group-then-narrow search.
+- **Signed findings.** Each finished test is written by the investigator through the signer as a `why.finding` record
+  (target, intervention, n, the rates, effect, interval, verdict and what it was decided on: `looks`, `family`,
+  `min_effect`, `applied`, `stopped`; every replay run with its arm and outcome; models, rung, off-tape actions,
+  investigation; and `uncounted`: the replay runs of the investigation it doesn't count, the ranking's calls and the
+  arms a budget stop abandoned) in a findings run (`analyzes: R`) of the run's tenant.
+  `tracekit export --v2 --run R --with-findings` bundles the run with its findings and replay runs. The verifier checks
+  that each finding's replay runs are in the bundle, are replay runs of R in that investigation, each holds its model
+  calls as gateway records (exactly one for rung 1 and the ranking), and count to its rates; recomputes the interval
+  and verdict from those outcomes; for a `tool=` target, checks each outcome against the tool uses the gateway recorded
+  (a hit needs one; a miss must have none when the target is `tool` clauses alone); and fails a replay run of an
+  investigation with findings that no finding counts or lists. Replay runs of an investigation with no finding are a
+  warning. What stays the investigator's claim: outcomes scored on `text~` and `arg~` clauses, `applied`, and why a
+  run is `uncounted`.
+
+For the viewer and other tools: `tracekit.why.signed.Investigation(records, client, gateway)`, then
+`counterfactual_signed`, `attribute_signed` and `rank`. Limits:
+[limits.md](limits.md#investigation-tracekit-why).
+
 ## Server and API
 
 ```bash
@@ -393,16 +488,23 @@ tracekit why serve runs --allow-program myapp.agents:SYSTEM
 The server is the viewer's ([viewer.md](viewer.md#why)), with its security checklist. Every request needs the token:
 `--token`, else `$TRACEKIT_WHY_TOKEN`, else a random one printed in the URL. The page exchanges the URL's `?token=`
 once for an HttpOnly, SameSite=Strict cookie; the API also takes the token as `Authorization: Bearer`, and
-`/v1/ingest` takes only that. Requests addressed to a Host other than loopback or the bound address need the token (DNS
+`/v1/ingest` takes only that, unless `--ingest-token` (repeatable) is given: then `/v1/ingest` takes only those
+tokens, and they read nothing. A run belongs to the token whose batch created it: only that token may append to it,
+and nothing may follow its `run.end`; a run written to the folder by a local Runtime is never appended to. Requests addressed to a Host other than loopback or the bound address need the token (DNS
 rebinding); POSTs need the bearer token or an expected Host. The replay POSTs need a JSON body and a same-origin
 `Origin`, if any, and run only the programs passed with `--allow-program`.
 The server binds to 127.0.0.1; beyond loopback it needs `--tls-cert` and `--tls-key`, or `--insecure-http` when TLS is
 terminated in front. Connections are bounded overall and per client address, with read timeouts and deadlines.
 
 Before writing anything, ingest checks the token, every blob's hash, that each event's `seq` and `prev_hash` continue
-the stored chain, each event's hash, the fields each event type needs, and that every referenced blob exists. Edits,
-gaps, forks, forged blobs and replayed batches are refused (401, 409, 422). A malformed run on disk is skipped rather
-than breaking the workspace. Replay imports the Python program a run names, so it is allowed only for programs listed
+the stored chain, each event's hash, its common fields (`id`, `agent`, `ts`, `type`, `seq`), the fields each event
+type needs and their types (refs are `sha256:` hashes, token counts integers >= 0), that its id is new in the run, and
+that every referenced blob exists and every blob sent is referenced. Edits, gaps, forks, forged blobs, duplicate ids
+and replayed batches are refused (401, 403, 409, 422); a body nested deeper than 64 levels is a 400. A 409 names the
+run's head (`{"head": {"seq", "hash"}}`): `HttpSink` drops the events up to it as delivered when it holds that event,
+so a batch the server committed before the client's timeout is not resent forever. Ingest answers once the batch is
+appended; the watcher analyses the run (once per change, however many batches made it). A run on disk that cannot be
+analysed is listed as broken rather than dropped or breaking the workspace. Replay imports the Python program a run names, so it is allowed only for programs listed
 with `--allow-program`. The server is in the [HTTP security checklist](security-checklist.md).
 
 ## Command reference
@@ -411,18 +513,23 @@ with `--allow-program`. The server is in the [HTTP security checklist](security-
 |---|---|
 | `tracekit why demo [--out DIR] [--n N]` | record the demo and run tests |
 | `tracekit why record module:SYSTEM [--out DIR] [--seed S] [--guard off\|alert\|block] [--webhook URL]` | record one run of a System |
-| `tracekit why serve ROOT [--host] [--port] [--token] [--allow-program SPEC] [--webhook URL] [--tls-cert --tls-key \| --insecure-http]` | the viewer on ROOT's why logs: page, API, ingest and live updates |
+| `tracekit why serve ROOT [--host] [--port] [--token] [--ingest-token T] [--allow-program SPEC] [--webhook URL] [--tls-cert --tls-key \| --insecure-http]` | the viewer on ROOT's why logs: page, API, ingest and live updates |
 | `tracekit why watch ROOT [--webhook URL]` | print new alerts as runs are recorded |
 | `tracekit why import --v1 SRC [--run R] [--out DIR] [--sensitive TOOL] [--list]` | import runs from a v1 ledger |
 | `tracekit why import --store DIR \| --bundle FILE --trust FILE [--run R] [--out DIR] [--list]` | import runs from the v2 signer, merged with the why log that cites them |
-| `tracekit why verify RUN [--salts FILE]` | check the chain, seq, event hashes and blob hashes, and with `--salts` content against commitments; exit 1 when either fails |
+| `tracekit why verify RUN [--salts FILE]` | check the chain, seq, unique event ids, event hashes, blob hashes, the closing `run.end` and the chain of `tests.jsonl`, and with `--salts` content against commitments; exit 1 when either fails |
 | `tracekit why taint RUN [--source SPEC] [--inferred] [--json]` | blast radius with paths |
-| `tracekit why test RUN --remove SPEC --target SPEC [--n N] [--n-max N] [--live-tools]` | run replay test |
-| `tracekit why test RUN --decision SEQ --remove SPEC [--contains TEXT] [--anthropic]` | decision replay test |
-| `tracekit why attribute RUN --target SPEC [--suspect SPEC] [--n N] [--n-max N] [--workers N] [--no-roles]` | Find the cause |
+| `tracekit why test RUN --system S --remove SPEC --target SPEC [--n N] [--n-max N] [--live-tools]` | run replay test |
+| `tracekit why test RUN --decision SEQ --remove SPEC [--system S] [--contains TEXT] [--anthropic]` | decision replay test |
+| `tracekit why attribute RUN --system S --target SPEC [--suspect SPEC] [--n N] [--n-max N] [--workers N] [--no-roles]` | Find the cause |
+| `tracekit why test --run R (--store DIR \| --bundle FILE --trust FILE) --gateway URL --remove SPEC --target SPEC [--decision SEQ] [--rung 1\|2] [--max-calls N] [--max-cost X --prices FILE]` | test a signed run (rung 1 or 2), signed as a finding |
+| `tracekit why attribute --run R (--store DIR \| --bundle FILE --trust FILE) --gateway URL --target SPEC [--suspect SPEC] [--decision SEQ]` | Find the cause on a signed run, the surrogate's ranking first |
 | `tracekit why attribute --langgraph MODULE:FACTORY --thread T --target SPEC [--checkpoint ID] [--suspect ID] [--out DIR]` | Find the cause in a LangGraph thread by forking its checkpoints |
-| `tracekit why matrix RUN --target SPEC [--n N]` | test every channel and input against targets |
-| `tracekit why replay RUN [--remove SPEC]` | re-run from tape and diff against the original |
+| `tracekit why matrix RUN --system S --target SPEC [--n N]` | test every channel and input against targets |
+| `tracekit why replay RUN --system S [--remove SPEC]` | re-run from tape and diff against the original |
+
+`--system S` (`module:ATTR`) is the program a replay runs; `--allow-program S` instead runs the program the run names
+when it is `S`. Without either, a replaying command exits and imports nothing.
 | `tracekit why graph RUN [--json] [--no-infer]` | edges with evidence grades |
 | `tracekit why index ROOT [--target SPEC]` | cross-run influence index |
 
@@ -438,7 +545,8 @@ All of Tracekit's limits: [limits.md](limits.md).
   correction, so testing many inputs one by one there can produce a chance `causal` (about 1 in 20 per input with no
   effect).
 - The graph is only as complete as the recorded context: content sent to a model without being recorded is missing.
-- Replay costs model calls: about 2·n per test per downstream model call. There are no budgets or caching.
+- Replay costs model calls: about 2·n per test per downstream model call. Program replay has no budgets; replays of
+  signed runs take `--max-calls` and `--max-cost`.
 - Run replay needs a re-executable program; decision replay does not.
 - Tape matching is exact on tool arguments. New calls are stubbed, which can change behaviour after the stub; results
   report `off_tape_actions`.
@@ -451,7 +559,9 @@ All of Tracekit's limits: [limits.md](limits.md).
 - Inferred edges are heuristic and miss paraphrase.
 - The guard is a string-matching tripwire; it inherits the provenance alert's false positives and misses re-encoded
   values.
-- The why log is hash-chained but not signed, and the server's runs are plain files.
+- The why log is hash-chained but not signed, and the server's runs are plain files. `verify` reports a log with no
+  `run.end` (cut short, or still running) and each test result `tests.jsonl`'s chain does not cover (the viewer marks
+  them UNCHAINED or FAILED CHECK); whoever can rewrite the files can still rebuild both chains.
 - The demo models are seeded mock policies: the demo shows the method works, not how a real model behaves.
 
 ## Benchmark

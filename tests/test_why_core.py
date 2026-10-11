@@ -337,7 +337,8 @@ class Cli(Tmp):
 
     def test_attribute_on_the_demo(self):
         run = self.exfil_run()
-        code, out = self.cli(["attribute", run.path, "--target", EXFIL_TARGET, "--n", "10", "--n-max", "40"])
+        code, out = self.cli(["attribute", run.path, "--target", EXFIL_TARGET, "--n", "10", "--n-max", "40",
+                              "--allow-program", "tracekit.why.demo:SYSTEM"])
         self.assertEqual(code, 0)
         self.assertIn("primary cause input:vendor:portal/notes.md", out)
 

@@ -6,7 +6,9 @@ Each read has a timeout, and each connection an overall deadline, so a client th
 closed too. Handler threads are bounded overall and per client IP: a connection over the per-IP limit is closed at once,
 one over the overall limit waits briefly for a free slot and is then closed. A handler whose answers may take long (a
 long-poll, an event stream) stops the deadline once it has read a request (stop_deadline) and, on a kept-alive
-connection, starts it again before reading the next one (restart_deadline), so an idle connection is closed too."""
+connection, starts it again before reading the next one (restart_deadline), so an idle connection is closed too. An
+event stream also leaves the request limits for limits of its own (to_stream), so open pages never use up the
+requests their address may make."""
 import socket
 import threading
 from http.server import ThreadingHTTPServer
@@ -15,6 +17,7 @@ TIMEOUT_S = 10.0
 DEADLINE_S = 30.0
 MAX_THREADS = 64
 MAX_PER_IP = 8
+MAX_STREAMS, MAX_STREAMS_PER_IP = 64, 16
 SLOT_WAIT_S = 1.0
 DRAIN_BYTES, DRAIN_S = 1 << 20, 0.5
 
@@ -40,12 +43,14 @@ class Server(ThreadingHTTPServer):
     daemon_threads = True
 
     def __init__(self, addr, handler, ssl_context=None, timeout=TIMEOUT_S, max_threads=MAX_THREADS,
-                 deadline=DEADLINE_S, max_per_ip=MAX_PER_IP):
+                 deadline=DEADLINE_S, max_per_ip=MAX_PER_IP, max_streams=MAX_STREAMS,
+                 max_streams_per_ip=MAX_STREAMS_PER_IP):
         super().__init__(addr, handler)
         self.ssl_context, self.conn_timeout, self.deadline = ssl_context, timeout, deadline
         self._slots = threading.BoundedSemaphore(max_threads)
         self.max_per_ip, self._per_ip, self._ip_lock = max_per_ip, {}, threading.Lock()
-        self._conn = threading.local()   # the connection this handler thread serves, and its deadline timer
+        self._conn = threading.local()   # the connection this handler thread serves, its deadline timer, its stream
+        self.max_streams, self.max_streams_per_ip, self._streams = max_streams, max_streams_per_ip, {}
 
     def _ip_release(self, ip):
         with self._ip_lock:
@@ -75,6 +80,7 @@ class Server(ThreadingHTTPServer):
 
     def process_request_thread(self, request, client_address):
         raw = self._conn.raw = request.dup()  # wrap_socket detaches request; the dup still reaches the connection
+        self._conn.stream = False
         self.restart_deadline()  # handshake, request line, headers and body
         try:
             request.settimeout(self.conn_timeout)  # handshake and every read or write after it
@@ -91,8 +97,30 @@ class Server(ThreadingHTTPServer):
             raw.close()
             drain(request)
             self.shutdown_request(request)
-            self._slots.release()
-            self._ip_release(client_address[0])
+            if self._conn.stream:
+                self._stream_release(client_address[0])
+            else:
+                self._slots.release()
+                self._ip_release(client_address[0])
+
+    def to_stream(self, ip):
+        """From the handler's thread, before it answers with an event stream: the connection leaves the request limits
+        for the stream limits (max_streams overall, max_streams_per_ip). False, and nothing changes, when those are
+        reached."""
+        with self._ip_lock:
+            if sum(self._streams.values()) >= self.max_streams or self._streams.get(ip, 0) >= self.max_streams_per_ip:
+                return False
+            self._streams[ip] = self._streams.get(ip, 0) + 1
+        self._conn.stream = True
+        self._slots.release()
+        self._ip_release(ip)
+        return True
+
+    def _stream_release(self, ip):
+        with self._ip_lock:
+            self._streams[ip] -= 1
+            if not self._streams[ip]:
+                del self._streams[ip]
 
     def restart_deadline(self):
         """From the handler's thread: the connection is cut `deadline` seconds from now."""
