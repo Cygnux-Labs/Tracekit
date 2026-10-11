@@ -4,6 +4,7 @@ A paused run is saved as RunState JSON (`to_string`) and resumed in a new proces
 process's script.
 """
 import asyncio
+import dataclasses
 import json
 import os
 import subprocess
@@ -238,6 +239,22 @@ class TestOtherTools(ac.OnReal, unittest.TestCase):
         _, res = self.go(call, ApplyPatchTool(name="pay", editor=Editor()))
         self.assertEqual(self.ran, ["a.txt"])
         self.assertIn("cannot wait", res.new_items[1].output)
+
+    def test_an_apps_own_context_object_waits_for_an_approval_too(self):
+        @dataclasses.dataclass
+        class AppState:   # apps keep their own state as the run context: a dataclass, a pydantic model
+            user: str = "u1"
+        call = ResponseFunctionShellToolCall(id="sh_1", call_id="sh-1", type="shell_call", status="completed",
+                                             action={"commands": ["make pay"]})
+        pay = ShellTool(name="pay", executor=lambda req: self.ran.append(req.data.action.commands) or "paid")
+        a = Agent(name="tools", model=StubModel(call), tools=[self.tk.tool(pay)])
+        res = Runner.run_sync(a, "go", context=AppState(), hooks=self.tk)
+        [apr] = self.client.approval_list({"run_id": self.run_["run_id"]})["approvals"]
+        self.client.approval_decide({"approval_id": apr["approval_id"], "decision": "approve"})
+        state = res.to_state()
+        self.assertEqual(asyncio.run(self.tk.apply_decisions(state)), [])
+        res = Runner.run_sync(a, state, hooks=self.tk)
+        self.assertEqual((self.ran, res.final_output), ([["make pay"]], "done"))
 
     def test_local_shell_runs_when_allowed_and_refuses_an_ask(self):
         class PayShell(LocalShellTool):

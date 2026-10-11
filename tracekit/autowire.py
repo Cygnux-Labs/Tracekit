@@ -6,8 +6,7 @@
 It registers one run with the signer (the same-user dev signer, started if none answers; in system mode the system
 signer; else $TRACEKIT_SIGNER), closes it when the process exits, and wires every adapter whose framework is installed:
 
-* OpenAI Agents SDK: the tools of every Agent built from now on are gated (TracekitAgents.tool), and a Runner call
-  without a context gets `context={}`;
+* OpenAI Agents SDK: the tools of every Agent built from now on are gated (TracekitAgents.tool);
 * LangGraph and LangChain: every ToolNode built from now on (create_agent builds one) gates its calls with
   TracekitMiddleware, innermost, after any middleware's own wrap_tool_call;
 * Claude Agent SDK: every ClaudeAgentOptions built from now on gets the PreToolUse and PostToolUse hooks
@@ -15,27 +14,144 @@ signer; else $TRACEKIT_SIGNER), closes it when the process exits, and wires ever
 * MCP client: every ClientSession.call_tool goes through TracekitSession;
 * the Anthropic, OpenAI and Google Gen AI clients: every model call (tracekit.autotrace).
 
-Idempotent: a second call returns the same run. With none of these installed it warns and returns None. A framework
+Idempotent: a second call returns the same run. Calls addressed to its run go to the current run while one is
+open (`with run.client.run(...)`, a run per request), and a run the signer closed is replaced on the next call. With
+none of these installed it warns and returns None. A framework
 whose adapter cannot be wired is skipped with a warning naming the versions Tracekit is tested with. It raises only
 when no signer answers: no call could be recorded, and a run's fail mode is closed until its signer says otherwise.
 Don't also wire an adapter by hand in the same process: the call would be decided twice.
 """
 import atexit
 import functools
+import logging
 import os
 import sys
 import threading
+import types
 import warnings
 import weakref
 from importlib import metadata
 
 _STATE = {"run": None}
+
+
+NEW_WORK = {"decide", "model_event", "observe", "state_write", "approval_list"}   # go to the current run
+BY_CALL = {"complete", "approval_request", "approval_consume"}   # go where their call was decided
+BY_APPROVAL = {"approval_wait", "approval_abandon"}   # go where their approval was opened
+KEEP = 65536   # lean: tool calls, approvals, exchanges and resent events remembered; raise it for very busy servers
+
+
+def _process_client(Client, RPCError, current_run, schemas):
+    class Process(Client):
+        """The client every adapter instrument() wires gets. New work addressed to the process run (decide,
+        model_event, observe, state_write, approval_list) goes to the current run while one is set (a run per
+        conversation: `with conversation.current()`), and to a newly registered process run once the signer has
+        closed it after it was idle. A call's complete and approvals, and a model exchange's response, go to the run
+        the call was decided or the exchange begun in; anything else goes where it is addressed. Events are numbered
+        per run, the same number for a resend, so no run sees a gap the adapter's own counter would leave."""
+        process, agent, ids = None, None, set()   # the process RunHandle, its name, every id it has had
+
+        def start(self, agent):
+            """Register the process run."""
+            self._calls, self._approvals, self._exchanges, self._numbers, self._next = {}, {}, {}, {}, {}
+            self._made = 0
+            self.process, self.agent = self.run(agent=agent), agent
+            self.ids = {self.process.run_id}
+            return self.process
+
+        def _current(self):
+            cur = current_run.get()
+            return cur if cur is not None and cur.run_id not in self.ids else self.process
+
+        def call(self, method, req=None):
+            req, p = dict(req or {}), self.process
+            if p is None or req.get("run_id") not in self.ids:
+                return super().call(method, req)
+            cur = self._current()
+            with _LOCK:
+                if method in BY_CALL:
+                    target = (self._calls.get((cur.run_id, req.get("tool_call_id")))
+                              or self._calls.get(req.get("tool_call_id")) or cur)
+                elif method in BY_APPROVAL:
+                    target = self._approvals.get(req.get("approval_id")) or cur
+                elif method == "model_event" and req.get("phase") == "response":
+                    target = self._exchanges.get(req.get("exchange_id")) or cur
+                elif method in NEW_WORK or "client_seq" in req:   # an event: numbered by this client, as every other
+                    target = cur
+                else:
+                    target = None
+            if target is None:
+                return super().call(method, req)
+            addressed = target.run_id
+            try:
+                out, sent = self._route(method, req, target)
+            except RPCError as e:
+                if e.code != "run_closed" or target is not p or method not in NEW_WORK or p.closed:
+                    raise
+                self._renew(e, addressed)
+                out, sent = self._route(method, req, p)
+            with _LOCK:
+                if method == "decide":
+                    _keep(self._calls, (cur.run_id, req["tool_call_id"]), sent)
+                    _keep(self._calls, req["tool_call_id"], sent)
+                elif method == "approval_request" and "approval_id" in out:
+                    _keep(self._approvals, out["approval_id"], sent)
+                elif method == "model_event" and req.get("phase") == "request" and req.get("exchange_id"):
+                    _keep(self._exchanges, req["exchange_id"], sent)
+            return out
+
+        def _route(self, method, req, target):
+            """(the answer, the run it went to): `target` is a RunHandle or such a run."""
+            with _LOCK:   # a renewal swaps the id and the token together
+                sent = types.SimpleNamespace(run_id=target.run_id, run_token=target.run_token, client=target.client)
+                req = {**req, "run_id": sent.run_id}
+                if "run_token" in schemas[method]["properties"]:
+                    req["run_token"] = sent.run_token
+                if "client_seq" in req:
+                    key = (sent.run_id, req["stream"], req["client_seq"])
+                    if key not in self._numbers:
+                        if (sent.run_id, req["stream"]) not in self._next:
+                            self._made += 1   # a new stream name: a forgotten one is never numbered from 0 again
+                            _keep(self._next, (sent.run_id, req["stream"]), [f"{req['stream'][:100]}.{self._made}", 0])
+                        stream = self._next[(sent.run_id, req["stream"])]
+                        _keep(self._numbers, key, (stream[0], stream[1]))
+                        stream[1] += 1
+                    req["stream"], req["client_seq"] = self._numbers[key]
+            send = super().call if sent.client is self else sent.client.call
+            return send(method, req), sent
+
+        def _renew(self, e, closed):
+            p = self.process
+            with _LOCK:
+                old, token = p.run_id, p.run_token
+                if closed != old:
+                    return   # another thread's call renewed it already
+                agent = {"agent": {"name": self.agent}}
+                try:   # linked to the closed run while it is still closing
+                    new = super().call("register_run", {**agent, "parent": {"run_id": old, "run_token": token}})
+                except RPCError:
+                    new = super().call("register_run", agent)
+                p.registered, p.run_id, p.run_token = new, new["run_id"], new["run_token"]
+                self.ids.add(p.run_id)
+            logging.getLogger("tracekit").warning(
+                "tracekit: the signer closed run %s (%s); recording in a new run %s. A server should open a run per "
+                "conversation: docs/quickstart-v2.md", old, e.message, p.run_id)
+    return Process
+
+
+def _keep(d, k, v):
+    """Under _LOCK."""
+    d[k] = v
+    if len(d) > KEEP:
+        del d[next(iter(d))]
+
+
 _LOCK = threading.RLock()   # re-entered when wiring imports a module that calls instrument() itself
 MODEL_SDKS = ("openai", "anthropic", "google-genai")
 
 
 def _openai_agents(run):
-    from agents import Agent, Runner
+    from agents import Agent
 
     from .integrations.openai_agents import TracekitAgents
     tk = TracekitAgents(run.client, run.registered)
@@ -57,13 +173,6 @@ def _openai_agents(run):
         post_init(self)
         self.tools = [gate(t) for t in self.tools]
     Agent.__post_init__ = gated
-
-    for name in ("run", "run_sync", "run_streamed"):   # an ask keeps its approval id in a dict run context
-        def with_context(cls, *a, _orig=getattr(Runner, name), **kw):
-            if kw.get("context") is None:
-                kw["context"] = {}
-            return _orig(*a, **kw)
-        setattr(Runner, name, classmethod(functools.wraps(getattr(Runner, name))(with_context)))
 
 
 def _langgraph(run):
@@ -177,7 +286,8 @@ def instrument(agent=None):
     `agent` names the run (default: $TRACEKIT_AGENT, else the script's name)."""
     from . import autotrace
     from .client import SYSTEM_CONFIG
-    from .sdk.client import Client, SignerUnavailable
+    from .sdk.client import Client, SignerUnavailable, current_run
+    from .signer.rpc_schema import REQUESTS, RPCError
     if agent is not None and not isinstance(agent, str):
         raise TypeError("tracekit.instrument(agent) takes the run's name. For v1 model-call tracing with a Tracer, "
                         "call tracekit.autotrace.instrument(tracer)")
@@ -193,7 +303,7 @@ def instrument(agent=None):
         script = sys.argv[0] if sys.argv and sys.argv[0] not in ("", "-c") else "python"
         name = agent or os.environ.get("TRACEKIT_AGENT") or os.path.splitext(os.path.basename(script))[0]
         try:
-            run = Client().run(agent=name)
+            run = _process_client(Client, RPCError, current_run, REQUESTS)().start(name)
         except SignerUnavailable as e:
             fix = ("dev auto-spawn is off while TRACEKIT_SIGNER is set: start the signer it names, or unset it for a "
                    "same-user dev signer" if os.environ.get("TRACEKIT_SIGNER") else

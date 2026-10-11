@@ -48,7 +48,7 @@ from tracekit.sdk.client import Client
 client = Client()
 tk = TracekitAgents(client, client.register_run({"agent": {"name": "my-agent"}}))
 agent = Agent(name="payer", model="gpt-5", tools=[tk.tool(transfer_funds)])
-result = await Runner.run(agent, "pay acct-42 $15", context={}, hooks=tk)   # the context must be a dict
+result = await Runner.run(agent, "pay acct-42 $15", context={}, hooks=tk)   # any run context works
 while result.interruptions:                       # an ask: once a person decided in the signer
     state = result.to_state()
     await tk.apply_decisions(state)
