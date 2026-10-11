@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import secrets
 import sys
 import tempfile
 
@@ -11,7 +12,6 @@ from .core import load_run, verify
 from .evals import influence_index, influence_matrix, list_runs, structure
 from .graph import build_graph, taint, target_hits
 from .replay import attribute, counterfactual, decision_test, diff_runs, load_system, replay
-from .view import render_html, render_workspace
 
 
 def _p(*a):
@@ -74,11 +74,8 @@ def cmd_demo(a):
     st = structure(run)
     _p("\n== structure")
     _p("  critical path: " + " -> ".join(st["critical_path"]))
-    html = os.path.join(out, "report.html")
-    with open(html, "w", encoding="utf-8") as f:
-        f.write(render_workspace(out))
-    _p(f"\nruns:   {out}\nreport: {html}   (static; open in a browser)")
-    _p(f"live:   tracekit why serve {out} --allow-program tracekit.why.demo:SYSTEM")
+    _p(f"\nruns:   {out}")
+    _p(f"open:   tracekit why serve {out} --allow-program tracekit.why.demo:SYSTEM")
 
 
 def cmd_verify(a):
@@ -188,16 +185,17 @@ def _print_and(then):
 def cmd_watch(a):
     """Follow a runs folder in the terminal: print new alerts as runs are recorded."""
     from .server import Store
-    store = Store(a.root, None, webhook=a.webhook)
+    store = Store(a.root, webhook=a.webhook)
     store.watch(a.interval)
     _p(f"watching {a.root} (Ctrl-C to stop)")
-    last = 0
+    feed, last = store.out, 0
     try:
         while True:
-            with store.cond:
-                store.cond.wait_for(lambda: store.counter > last, timeout=1)
-            for i, m in store.since(last):
-                last = i
+            with feed.lock:
+                feed.lock.wait_for(lambda: len(feed.records) > last, timeout=1)
+                new = feed.records[last:]
+            last += len(new)
+            for m in (r["why"] for r in new):
                 if m["type"] != "run":
                     continue
                 state = "finished" if m["finished"] else "running"
@@ -210,25 +208,12 @@ def cmd_watch(a):
         pass
 
 
-def cmd_view(a):
-    run = load_run(a.run)
-    out = a.output or os.path.join(a.run, "view.html")
-    with open(out, "w", encoding="utf-8") as f:
-        f.write(render_html(run))
-    _p(out)
-
-
-def cmd_report(a):
-    out = a.output or os.path.join(a.root, "report.html")
-    with open(out, "w", encoding="utf-8") as f:
-        f.write(render_workspace(a.root))
-    _p(out)
-
-
 def cmd_serve(a):
+    """The viewer (tracekit view's page and server) on the why logs under ROOT, with no signer store."""
     import ssl
+    from .. import view
     from ..observe import LOOPBACK_HOSTS
-    from .server import serve
+    from .server import Store
     if bool(a.tls_cert) != bool(a.tls_key):
         print("tracekit why serve: --tls-cert and --tls-key go together", file=sys.stderr)
         return 2
@@ -240,13 +225,17 @@ def cmd_serve(a):
     if a.tls_cert:
         tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         tls.load_cert_chain(a.tls_cert, a.tls_key)
-    token = a.token or os.environ.get("TRACEKIT_WHY_TOKEN")
-    httpd, store = serve(a.root, a.host, a.port, token, a.allow_program or [], webhook=a.webhook, tls=tls)
+    given = a.token or os.environ.get("TRACEKIT_WHY_TOKEN")
+    token = given or secrets.token_urlsafe(24)
+    store = Store(a.root, a.allow_program or [], webhook=a.webhook, tape=True)
+    httpd = view.server(store.out, a.host, a.port, token, tls, why=store)
+    store.watch()
     _p(f"tracekit why on {'https' if tls else 'http'}://{a.host}:{httpd.server_address[1]}/"
-       + ("" if token else f"?token={store.token}") + f"  (runs: {a.root})")
+       + ("" if given else f"?token={token}") + f"  (runs: {a.root})")
     _p("  ingest: POST /v1/ingest with the token as a Bearer token")
-    _p(f"  live: the app updates as runs are recorded{'; high alerts POSTed to ' + a.webhook if a.webhook else ''}")
-    _p(f"  replay from the UI: {', '.join(a.allow_program) if a.allow_program else 'disabled (--allow-program module:SYSTEM)'}")
+    _p(f"  live: the page updates as runs are recorded{'; high alerts POSTed to ' + a.webhook if a.webhook else ''}")
+    _p("  FIND THE CAUSE and RUN TEST: " + (f"replay {', '.join(a.allow_program)}" if a.allow_program else
+                                          "show the command to run (--allow-program module:SYSTEM to run them here)"))
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
@@ -298,7 +287,7 @@ def main(argv=None):
     ap = argparse.ArgumentParser(prog="tracekit why", description="Causal logs, replay and investigation for multi-agent systems")
     sp = ap.add_subparsers(dest="cmd", required=True)
 
-    p = sp.add_parser("demo", help="record the 3-agent demo, test causes, write a view")
+    p = sp.add_parser("demo", help="record the 3-agent demo and test causes")
     p.add_argument("--out"); p.add_argument("--n", type=int, default=40); p.set_defaults(f=cmd_demo)
 
     p = sp.add_parser("record", help="run a System (module:ATTR) and record it")
@@ -343,16 +332,10 @@ def main(argv=None):
     p = sp.add_parser("replay", help="re-run from tape and diff against the original")
     p.add_argument("run"); p.add_argument("--remove", action="append"); p.add_argument("--system"); p.set_defaults(f=cmd_replay)
 
-    p = sp.add_parser("view", help="write the single-file investigation view")
-    p.add_argument("run"); p.add_argument("-o", "--output"); p.set_defaults(f=cmd_view)
-
-    p = sp.add_parser("report", help="static investigation app for every run under a folder")
-    p.add_argument("root"); p.add_argument("-o", "--output"); p.set_defaults(f=cmd_report)
-
-    p = sp.add_parser("serve", help="investigation app + API + ingestion endpoint")
+    p = sp.add_parser("serve", help="the viewer on the why logs under ROOT: the page, its API and ingest")
     p.add_argument("root"); p.add_argument("--host", default="127.0.0.1"); p.add_argument("--port", type=int, default=7788)
-    p.add_argument("--token", help="token for the app, the API and /v1/ingest (or TRACEKIT_WHY_TOKEN; default: random)")
-    p.add_argument("--allow-program", action="append", help="System spec the UI may replay (repeatable)")
+    p.add_argument("--token", help="token for the page, the API and /v1/ingest (or TRACEKIT_WHY_TOKEN; default: random)")
+    p.add_argument("--allow-program", action="append", help="System spec FIND THE CAUSE and RUN TEST may replay (repeatable)")
     p.add_argument("--webhook", help="POST each new high alert here as JSON (Slack-compatible)")
     p.add_argument("--tls-cert", help="PEM certificate: serve HTTPS (required beyond loopback)")
     p.add_argument("--tls-key", help="PEM private key of --tls-cert")

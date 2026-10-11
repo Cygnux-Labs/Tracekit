@@ -10,17 +10,23 @@ import ssl
 import subprocess
 import threading
 import unittest
+import urllib.request
 from unittest import mock
 
 import test_signer_service as ts
 from factories import wait_for
 from test_observe_render import XSS, script_of, unescaped
 from tracekit import view
+from tracekit.observe import _session
 from tracekit.policy2 import compile as policy_compile
 from tracekit.policy2.engine import Engine
 from tracekit.sdk.client import Client
 from tracekit.signer import service as svc
 from tracekit.storage.file import FileStorage
+from tracekit.why.core import GENESIS, HttpSink, event_hash, load_run
+from tracekit.why.demo import EXFIL_TARGET, SYSTEM
+from tracekit.why.graph import target_hits
+from tracekit.why.server import IngestError, Store, tape
 
 POLICY = Engine({"deny": [{"id": "T-DENY", "tool": "rm", "pattern": "^"}],
                  "ask": [{"id": "T-PAY", "tool": "pay", "pattern": "^"}]})
@@ -149,6 +155,19 @@ class Translate(unittest.TestCase):
         h = policy_compile.policy_hash(policy_compile.build(path)[0])
         self.assertEqual(view.policy_reasons([path])[h], {"X-1": "removing files", "X-2": "listing"})
         self.assertEqual(SERVER[SERVER_HASH]["TK-DB001"], "dropping a database object")
+
+    def test_a_calls_signed_provenance_rides_on_its_row(self):
+        src = {"run_seq": 4, "tool": "fetch_page", "tool_call_id": "c2"}
+        call, restarted, plain = self.feed(
+            v2rec(5, "policy.decision", {"tool_use_id": "c5", "tool": "send_email", "decision": "ask",
+                                         "provenance_state": "complete",
+                                         "provenance": [{"field": "to", "kind": "email", "source": src}]}),
+            v2rec(6, "policy.decision", {"tool_use_id": "c6", "tool": "send_email", "decision": "allow",
+                                         "provenance_state": "unavailable"}),
+            v2rec(7, "policy.decision", {"tool_use_id": "c7", "tool": "ls", "decision": "allow"}))
+        self.assertEqual(call["v2"]["provenance"], [{"field": "to", "kind": "email", "source": src}])
+        self.assertEqual(restarted["v2"]["provenance_state"], "unavailable")
+        self.assertFalse({"provenance", "provenance_state"} & set(plain["v2"]))   # a 1.0 record: nothing to show
 
 
 @unittest.skipUnless(hasattr(socket, "AF_UNIX"), "no Unix sockets")
@@ -290,6 +309,26 @@ class View(unittest.TestCase):
         with self.assertRaises(ValueError):
             view.server(None, "127.0.0.1", 0, None)
 
+    def test_why_logs_default_to_the_data_dir_when_present(self):
+        def why(*args):
+            with mock.patch.object(view, "server") as server, mock.patch.object(view.Store, "watch"), \
+                    contextlib.redirect_stdout(io.StringIO()) as out:
+                server.return_value.serve_forever.side_effect = KeyboardInterrupt
+                server.return_value.server_address = ("127.0.0.1", 7778)
+                self.assertEqual(view.main(["--data-dir", self.d, *args]), 0)
+            return server.call_args[0][8], out.getvalue()
+        store, out = why()
+        self.assertIsNone(store)
+        self.assertNotIn("why logs", out)
+        os.makedirs(os.path.join(self.d, view.WHY_DIR))
+        store, out = why("--allow-program", "m:SYSTEM")
+        self.assertEqual((store.root, store.allow), (os.path.join(self.d, view.WHY_DIR), {"m:SYSTEM"}))
+        self.assertIn("replay m:SYSTEM", out)
+        other = os.path.join(self.d, "elsewhere")
+        store, out = why("--why", other)
+        self.assertEqual(store.root, other)
+        self.assertIn("start with --allow-program", out)
+
     def test_hostile_tool_names_are_data_and_the_page_escapes_every_sink(self):
         run = self.client.run(agent="a")
         run.decide("c1", XSS, {"q": XSS})
@@ -339,6 +378,276 @@ class View(unittest.TestCase):
         r.read()
         self.assertEqual(r.status, 303)
         self.assertIn("; Secure", r.getheader("Set-Cookie"))
+
+
+TOKEN = "why-test-" + "t" * 32
+AUTH = {"Authorization": f"Bearer {TOKEN}"}
+JSON = {**AUTH, "Content-Type": "application/json"}
+
+
+def cite(path, run_id, seqs):
+    """Rewrite the why log at `path` as the signer-backed runtime writes it: each tool call cites the signed record it
+    produced (`tracekit`: run_id, run_seq from `seqs`, in order), the chain rebuilt."""
+    with open(os.path.join(path, "events.jsonl"), encoding="utf-8") as f:
+        events = [json.loads(line) for line in f if line.strip()]
+    prev, seqs = GENESIS, iter(seqs)
+    for ev in events:
+        if ev["type"] == "action":
+            ev["tracekit"] = {"log_id": "log", "run_id": run_id, "run_seq": next(seqs)}
+        ev["prev_hash"] = prev
+        ev.pop("hash")
+        ev["hash"] = prev = event_hash(ev)
+    with open(os.path.join(path, "events.jsonl"), "w", encoding="utf-8") as f:
+        f.writelines(json.dumps(ev, sort_keys=True) + "\n" for ev in events)
+
+
+class WhyServer(unittest.TestCase):
+    """The viewer on why logs, as `tracekit why serve` runs it: a why.server.Store publishing into its own feed."""
+
+    def setUp(self):
+        self.tmp = ts.tmpdir(self)
+        self.store = Store(os.path.join(self.tmp, "srv"), ["tracekit.why.demo:SYSTEM"], tape=True)
+        self.httpd = view.server(self.store.out, "127.0.0.1", 0, TOKEN, why=self.store)
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+        self.addCleanup(self.httpd.server_close)
+        self.addCleanup(self.httpd.shutdown)
+        self.store.watch()
+        self.addCleanup(setattr, self.store, "_watching", False)
+        self.port = self.httpd.server_address[1]
+        self.base = f"http://127.0.0.1:{self.port}"
+
+    def request(self, method, path, headers=None, body=None):
+        c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=60)
+        try:
+            c.request(method, path, body=body, headers=headers or {})
+            r = c.getresponse()
+            return r.status, dict(r.getheaders()), r.read()
+        finally:
+            c.close()
+
+    def get(self, path):
+        status, _, body = self.request("GET", path, AUTH)
+        self.assertEqual(status, 200, body)
+        return json.loads(body)
+
+    def post(self, path, body, headers=JSON):
+        status, _, out = self.request("POST", path, headers, json.dumps(body).encode())
+        return status, json.loads(out)
+
+    def stream(self, timeout=10):
+        """The why messages on the viewer's event stream, until a run finishes; and the records the tape gets."""
+        out, rows, ready = [], [], threading.Event()
+
+        def read():
+            req = urllib.request.Request(self.base + "/api/stream", headers=AUTH)
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                ready.set()
+                for line in r:
+                    if line.startswith(b"data: "):
+                        rec = json.loads(line[6:])
+                        if rec["event"] != "why":
+                            rows.append(rec)
+                        elif rec["why"]["type"] == "run":
+                            out.append(rec["why"])
+                            if out[-1]["finished"]:
+                                return
+
+        t = threading.Thread(target=read, daemon=True)
+        t.start()
+        ready.wait(timeout)
+        return out, rows, t
+
+
+class WhyData(WhyServer):
+    """What the page shows of a why run: argument provenance, candidate causes, a test's result, the signed calls each
+    why event cites, and the tape rows of a why log."""
+
+    def exfil(self):
+        return next(r for r in (SYSTEM.run(seed=s, out_dir=self.store.root, run_id=f"fc-{s}") for s in range(8))
+                    if target_hits(r, EXFIL_TARGET))
+
+    def test_provenance_candidates_and_a_test_result(self):
+        run = self.exfil()
+        d = self.get(f"/api/why/runs/{run.run_id}")
+        self.assertEqual(d["replay"], {"program": "tracekit.why.demo:SYSTEM", "allowed": True})
+        send = next(k for k, v in d["actions"].items() if "vendor-compliance" in v["target"])
+        prov = d["actions"][send]["provenance"]
+        bad = [p for p in prov if p["status"] == "untrusted-only"]
+        self.assertTrue(bad and all(s["trust"] == "untrusted" for p in bad for s in p["sources"]))
+        self.assertIn("vendor:portal/notes.md", [s["label"] for p in bad for s in p["sources"]])
+        cands = {c["intervention"]: c for c in d["actions"][send]["candidates"]}
+        self.assertEqual(cands["input:vendor:portal/notes.md"]["status"], "untested")
+        self.assertTrue(d["actions"][send]["lineage"])
+        code, r = self.post(f"/api/why/runs/{run.run_id}/tests", {"intervention": "input:vendor:portal/notes.md",
+                                                                  "target": EXFIL_TARGET, "n": 20})
+        self.assertEqual((code, r["verdict"]), (200, "causal"))
+        c = next(c for c in self.get(f"/api/why/runs/{run.run_id}")["actions"][send]["candidates"]
+                 if c["intervention"] == "input:vendor:portal/notes.md")
+        self.assertEqual((c["status"], c["test"]["n"] >= 20), ("confirmed", True))
+        self.assertGreater(c["test"]["p_with"], c["test"]["p_without"])
+
+    def test_workspace_has_every_alert_and_the_signed_call_each_why_event_cites(self):
+        run = self.exfil()
+        acts = run.of_type("action")
+        cite(run.path, "signed-run", range(10, 10 + len(acts)))
+        ws = self.get("/api/why/workspace")
+        self.assertEqual([r["run_id"] for r in ws["runs"]], [run.run_id])
+        self.assertEqual(ws["calls"]["signed-run|10"], [run.run_id, "ev:" + acts[0]["id"]])
+        self.assertEqual(len(ws["calls"]), len(acts))
+        high = [a for a in ws["alerts"] if a["severity"] == "high"]
+        self.assertTrue(high and high[0]["run_id"] == run.run_id and "send_email" in high[0]["title"])
+        node = next(n for n in self.get(f"/api/why/runs/{run.run_id}")["nodes"] if n["id"] == "ev:" + acts[0]["id"])
+        self.assertEqual(node["tracekit"], {"log_id": "log", "run_id": "signed-run", "run_seq": 10})
+
+    def test_a_why_log_on_the_tape(self):
+        run = SYSTEM.run(seed=0, out_dir=self.store.root, run_id="t0")
+        rows = tape(load_run(run.path))
+        pre = [r for r in rows if r["event"] == "PreToolUse"]
+        self.assertEqual([r["tool_name"] for r in pre], [a["tool"] for a in run.of_type("action")])
+        self.assertEqual(pre[0]["why"], {"run": "t0", "node": "ev:" + run.of_type("action")[0]["id"]})
+        self.assertEqual(rows[0]["event"], "SessionStart")
+        self.assertEqual(rows[-1]["event"], "SessionEnd")
+        self.assertTrue(all(r["session_id"] == "t0" for r in rows))
+        sub = {r["agent_id"] for r in rows if r["event"] == "SubagentStart"}
+        self.assertEqual(sub, {e["agent"] for e in run.of_type("agent.start")})
+
+    def test_replay_without_the_program_says_what_to_run(self):
+        store = Store(os.path.join(self.tmp, "srv2"))
+        SYSTEM.run(seed=0, out_dir=store.root, run_id="r")
+        self.assertFalse(store.detail("r")["replay"]["allowed"])
+        with self.assertRaises(IngestError) as e:
+            store.test("r", {"intervention": "untrusted", "target": "tool=send_email"})
+        self.assertEqual(e.exception.status, 403)
+        self.assertIn("--allow-program tracekit.why.demo:SYSTEM", str(e.exception))
+
+
+class WhyIngest(WhyServer):
+    def test_remote_ingest_then_investigate_and_test(self):
+        for s in range(3):
+            SYSTEM.run(seed=s, run_id=f"remote-{s}", sink=HttpSink(self.base, TOKEN, batch=7))
+        ws = self.get("/api/why/workspace")
+        self.assertEqual({r["run_id"] for r in ws["runs"]}, {"remote-0", "remote-1", "remote-2"})
+        self.assertTrue(all(r["integrity"] == "ok" for r in ws["runs"]))
+        self.assertEqual(self.get("/api/why/runs/remote-0")["summary"]["alerts"]["high"], 1)
+        code, r = self.post("/api/why/runs/remote-0/tests", {"intervention": "input:vendor:*", "target": EXFIL_TARGET,
+                                                             "n": 20})
+        self.assertEqual((code, r["verdict"]), (200, "causal"))
+        d = self.get("/api/why/runs/remote-0")
+        send = [k for k, v in d["actions"].items() if "vendor-compliance" in v["target"]][0]
+        self.assertEqual(d["actions"][send]["candidates"][0]["status"], "confirmed")
+
+    def test_rejects_bad_token_tamper_and_gaps(self):
+        run = SYSTEM.run(seed=0, run_id="t1")
+        evs, blobs = run.events, run.blobs
+        ingest = lambda events, blobs, token=TOKEN: self.post(  # noqa: E731
+            "/v1/ingest", {"events": events, "blobs": blobs},
+            {"Authorization": f"Bearer {token}", "Content-Type": "application/json"})[0]
+        self.assertEqual(ingest(evs, blobs, "wrong"), 401)
+        self.assertEqual(self.request("POST", "/v1/ingest", {"Cookie": f"tracekit_observe={_session(TOKEN)}"},
+                                      b"{}")[0], 401)
+        bad = json.loads(json.dumps(evs[:3]))
+        bad[2]["agent"] = "mallory"
+        self.assertEqual(ingest(bad, blobs), 422)
+        self.assertEqual(ingest(evs[1:4], blobs), 409)
+        fake = dict(blobs)
+        fake[next(iter(fake))] = "forged"
+        self.assertEqual(ingest(evs[:3], fake), 422)
+        self.assertEqual(ingest(evs[:3], blobs), 200)
+        self.assertEqual(ingest(evs[:3], blobs), 409)  # replayed batch
+
+    def test_malformed_ingest_is_rejected_and_cannot_break_the_workspace(self):
+        ev = {"schema": "tracekit.why.event.v1", "seq": 0, "id": "x", "prev_hash": GENESIS, "run_id": "poison",
+              "agent": "run", "type": "decision", "ts": "2026-10-09T00:00:00.000000Z"}
+        ev["hash"] = event_hash(ev)
+        self.assertEqual(self.post("/v1/ingest", {"events": [ev], "blobs": {}})[0], 422)
+        self.assertEqual(self.request("POST", "/v1/ingest", {**JSON, "Content-Length": "abc"}, b"{}")[0], 411)
+        self.assertEqual(self.request("POST", "/v1/ingest", {**JSON, "Content-Length": "99999999"})[0], 413)
+        self.assertEqual(self.request("POST", "/v1/ingest", JSON, b"[1]")[0], 400)
+        os.makedirs(os.path.join(self.store.root, "broken"))  # a broken run written straight to disk is skipped
+        with open(os.path.join(self.store.root, "broken", "events.jsonl"), "w", encoding="utf-8") as f:
+            f.write(json.dumps(ev) + "\n")
+        SYSTEM.run(seed=1, out_dir=self.store.root, run_id="fine")
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual([x["run_id"] for x in self.get("/api/why/workspace")["runs"]], ["fine"])
+
+
+class WhyLive(WhyServer):
+    def test_stream_announces_runs_written_to_disk_with_their_alerts_and_tape(self):
+        msgs, rows, t = self.stream()
+        run = SYSTEM.run(seed=0, out_dir=self.store.root, run_id="disk-0")  # a local Runtime, no sink
+        t.join(10)
+        self.assertTrue(msgs and msgs[0]["run_id"] == "disk-0" and msgs[-1]["finished"])
+        highs = [a for m in msgs for a in m["alerts"] if a["severity"] == "high"]
+        self.assertEqual(len(highs), 1)
+        self.assertIn("send_email", highs[0]["title"])
+        self.assertEqual([r["tool_name"] for r in rows if r["event"] == "PreToolUse"],
+                         [a["tool"] for a in run.of_type("action")])   # each event on the tape once
+
+    def test_stream_announces_ingested_runs(self):
+        msgs, _, t = self.stream()
+        SYSTEM.run(seed=0, run_id="remote-live", sink=HttpSink(self.base, TOKEN))
+        t.join(10)
+        self.assertEqual(msgs[0]["run_id"], "remote-live")
+        self.assertGreaterEqual(len(msgs), 3)  # flushed per tool call, not only at the end
+        highs = [a for m in msgs for a in m["alerts"] if a["severity"] == "high"]
+        self.assertGreaterEqual(len(highs), 1)
+        self.assertEqual(len(highs), len({(a["title"], a["node"]) for a in highs}))
+
+    def test_find_the_cause_endpoint(self):
+        run = next(r for r in (SYSTEM.run(seed=s, out_dir=self.store.root, run_id=f"fc-{s}") for s in range(8))
+                   if target_hits(r, EXFIL_TARGET))
+        code, out = self.post(f"/api/why/runs/{run.run_id}/attribute", {"target": EXFIL_TARGET, "n": 10, "n_max": 40})
+        self.assertEqual(code, 200)
+        self.assertEqual((out["causes"][0]["intervention"], out["causes"][0]["role"]),
+                         ("input:vendor:portal/notes.md", "primary"))
+        d = self.get(f"/api/why/runs/{run.run_id}")
+        send = next(k for k, v in d["actions"].items() if "vendor-compliance" in v["target"])
+        self.assertEqual(d["actions"][send]["candidates"][0]["status"], "confirmed")
+
+
+class WhyPage(WhyServer):
+    def test_the_page_is_the_viewers_and_the_why_api_needs_the_token(self):
+        self.assertEqual(self.request("GET", "/api/why/workspace")[0], 401)
+        status, h, _ = self.request("GET", f"/?token={TOKEN}")
+        self.assertEqual(status, 303)
+        self.assertNotIn(TOKEN, h["Location"] + h["Set-Cookie"])
+        self.assertIn("HttpOnly; SameSite=Strict", h["Set-Cookie"])
+        session = {"Cookie": h["Set-Cookie"].split(";")[0]}
+        status, h, page = self.request("GET", "/", session)
+        self.assertEqual(status, 200)
+        for directive in ("script-src 'nonce-", "default-src 'none'", "frame-ancestors 'none'", "base-uri 'none'"):
+            self.assertIn(directive, h["Content-Security-Policy"])
+        self.assertIn(b'data-wtab="why"', page)
+        self.assertEqual(unescaped(script_of(page.decode())), [])
+        self.assertEqual(self.request("GET", "/api/why/workspace", session)[0], 200)
+
+    def test_foreign_host_is_refused_without_the_token(self):
+        self.assertEqual(self.request("GET", "/api/why/workspace", {"Host": "evil.example:7788"})[0], 403)
+        self.assertEqual(self.request("GET", "/api/why/workspace", {**AUTH, "Host": "evil.example:7788"})[0], 200)
+        session = {"Cookie": self.request("GET", f"/?token={TOKEN}")[1]["Set-Cookie"].split(";")[0]}
+        self.assertEqual(self.request("POST", "/api/why/runs/x/tests", {
+            **session, "Content-Type": "application/json", "Host": "evil.example"}, b"{}")[0], 403)
+        self.assertEqual(self.request("POST", "/v1/ingest", {"Host": "evil.example"}, b"{}")[0], 403)
+        # remote agents reach the server by its DNS name: the bearer token is enough
+        self.assertEqual(self.request("POST", "/v1/ingest", {**JSON, "Host": "why.example.com"}, b"{}")[0], 400)
+
+    def test_replay_posts_need_the_token_and_a_same_origin_json_body(self):
+        SYSTEM.run(seed=0, out_dir=self.store.root, run_id="r")
+        body = json.dumps({"intervention": "input:vendor:*", "target": EXFIL_TARGET, "n": 2}).encode()
+        for headers, status in (({"Content-Type": "application/json"}, 401),
+                                ({**AUTH, "Content-Type": "text/plain"}, 403),
+                                ({**AUTH}, 403),
+                                ({**JSON, "Origin": "http://evil.example"}, 403),
+                                ({**JSON, "Content-Length": "99999999"}, 413)):
+            with self.subTest(headers=headers):
+                self.assertEqual(self.request("POST", "/api/why/runs/r/tests", headers, body)[0], status)
+        for bad in ({"n": "x"}, {"n": None}, {"n_max": [1]}):
+            with self.subTest(bad=bad):
+                bad_body = json.dumps({"intervention": "input:vendor:*", "target": EXFIL_TARGET, **bad}).encode()
+                self.assertEqual(self.request("POST", "/api/why/runs/r/tests", JSON, bad_body)[0], 400)
+                self.assertEqual(self.request("POST", "/api/why/runs/r/attribute", JSON, bad_body)[0], 400)
+        self.assertEqual(self.request("POST", "/api/why/runs/r/tests", JSON, body)[0], 200)
+        self.assertEqual(self.request("POST", "/api/why/runs/no-such/tests", JSON, body)[0], 404)
 
 
 if __name__ == "__main__":

@@ -52,7 +52,6 @@ SURFACES = {
     "tracekit/witness_server.py:H": "checkpoint witness",
     "tracekit/proxy.py:Handler": "Anthropic proxy",
     "tracekit/slack_approvals.py:Handler": "Slack approvals bridge (interactivity callbacks)",
-    "tracekit/why/server.py:H": "tracekit why serve (investigation app, its API and ingest)",
 }
 
 
@@ -130,17 +129,26 @@ class Surfaces(unittest.TestCase):
         login = OidcLogin({"issuer": "corp", "client_id": "viewer", "redirect_uri": "https://127.0.0.1/callback",
                            "roles": {"auditor": ["group:corp/auditors"]}},
                           {"corp": {"issuer": "https://idp.invalid", "audience": "viewer"}})
+        why = why_server.Store(os.path.join(self.d, "why"), out=feed)
         srv = ThreadingHTTPServer(("127.0.0.1", 0), observe.make_handler(feed, SECRET, ["127.0.0.1"], login=login,
-                                                                         runs=no_logs()))
+                                                                         runs=no_logs(), why=why))
         auth = {"Authorization": f"Bearer {SECRET}"}
         return srv, SECRET, [("GET", f"/nope?token={SECRET}", {}, 401), ("GET", "/nope", auth, 404),
                              ("GET", "/runs", {}, 401), ("GET", f"/api/runs?run={SECRET}", {}, 401),
                              ("GET", f"/api/runs?limit={BIG}", auth, 400), ("GET", f"/api/runs?{SECRET}=1", auth, 400),
                              ("GET", f"/api/run?log=0&tenant=t&run={SECRET}", auth, 400),
                              ("GET", f"/api/bundle?log=0&tenant=t&run={SECRET}", {}, 401),
-                             ("GET", "/api/stream?from=x", auth, 400), ("POST", "/", auth, 501),
+                             ("GET", "/api/stream?from=x", auth, 400),
                              ("GET", f"/callback?state=x&code={SECRET}", {"Cookie": "tracekit_login=x"}, 403),
-                             ("GET", "/api/snapshot", {"Cookie": f"tracekit_observe={SECRET}"}, 401)]
+                             ("GET", "/api/snapshot", {"Cookie": f"tracekit_observe={SECRET}"}, 401),
+                             ("GET", f"/api/why/runs/{SECRET}", auth, 404), ("GET", "/api/why/runs/..%2f..", auth, 400),
+                             ("GET", "/api/why/nope", auth, 404),
+                             ("GET", "/api/why/workspace", {"Cookie": f"tracekit_observe={SECRET}"}, 401),
+                             ("POST", "/v1/ingest", {"Cookie": f"tracekit_observe={_session(SECRET)}"}, 401),
+                             ("POST", "/v1/ingest", {**auth, "Content-Length": BIG}, 413),
+                             ("POST", "/api/why/runs/x/tests", {"Content-Type": "application/json"}, 401),
+                             ("POST", "/api/why/runs/x/tests", auth, 403), ("POST", "/nope", auth, 404),
+                             ("PUT", "/", auth, 501)]
 
     def signer_http(self):
         srv = transport.HttpServer(("127.0.0.1", 0), [BearerToken(self.bearer)], None, lambda identity, frame: {})
@@ -195,22 +203,10 @@ class Surfaces(unittest.TestCase):
                              ("POST", slack_approvals.PATH, {**signed, "Content-Length": BIG}, 413),
                              ("GET", slack_approvals.PATH, {}, 501)]
 
-    def why(self):
-        srv, _ = why_server.serve(os.path.join(self.d, "why"), "127.0.0.1", 0, token=SECRET, watch=False)
-        auth = {"Authorization": f"Bearer {SECRET}"}
-        return srv, SECRET, [("GET", f"/nope?token={SECRET}", {}, 401), ("GET", "/nope", auth, 404),
-                             ("GET", f"/api/runs/{SECRET}", auth, 404), ("GET", "/api/runs/..%2f..", auth, 400),
-                             ("GET", "/api/workspace", {"Cookie": f"tracekit_why={SECRET}"}, 401),
-                             ("POST", "/v1/ingest", {"Cookie": f"tracekit_why={_session(SECRET)}"}, 401),
-                             ("POST", "/v1/ingest", {**auth, "Content-Length": BIG}, 413),
-                             ("POST", "/api/runs/x/tests", {"Content-Type": "application/json"}, 401),
-                             ("POST", "/api/runs/x/tests", auth, 403), ("PUT", "/", auth, 501)]
-
     PROBES = {"tracekit/observe.py:Handler": viewer, "tracekit/transport/http.py:_Handler": signer_http,
               "tracekit/gateway.py:_Handler": gateway, "tracekit/signer/metrics.py:Handler": metrics,
               "tracekit/otlp.py:H": otlp, "tracekit/ingest.py:H": ingest, "tracekit/witness_server.py:H": witness,
-              "tracekit/proxy.py:Handler": proxy, "tracekit/slack_approvals.py:Handler": slack,
-              "tracekit/why/server.py:H": why}
+              "tracekit/proxy.py:Handler": proxy, "tracekit/slack_approvals.py:Handler": slack}
 
     def request(self, port, method, path, headers):
         c = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
@@ -244,7 +240,7 @@ class Surfaces(unittest.TestCase):
                         self.assertNotIn(leak, body)
                     self.assertNotIn(secret, json.dumps(h))
                     self.assertNotIn(secret, err.getvalue() + logs.getvalue())
-                    if key in ("tracekit/observe.py:Handler", "tracekit/why/server.py:H"):   # browser surfaces
+                    if key == "tracekit/observe.py:Handler":   # the browser surface
                         h = dict(h)
                         self.assertEqual((h.get("X-Content-Type-Options"), h.get("Referrer-Policy")),
                                          ("nosniff", "no-referrer"))
