@@ -261,6 +261,7 @@ report it.
   [technical report](https://github.com/Cygnux-Labs/Tracekit/blob/main/report/tracekit-v2.md),
   [FAQ and limits](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/faq.md),
   [known limits and trade-offs](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/limits.md)
+- Asking why an action happened: [tracekit why](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/why.md), [its architecture](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/why-architecture.md)
 - Releasing: [launch checklist for 1.0](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/launch-checklist.md)
 - The v1 laptop signer (`tracekitd`, `tracekit init --dev`, `tracekit demo`, `tracekit observe`) and its bundles keep
   working: [coding agents](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/coding-agents.md),
