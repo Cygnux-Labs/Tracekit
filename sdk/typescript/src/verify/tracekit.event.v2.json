@@ -1323,10 +1323,17 @@
         "provenance_state": {
           "enum": [
             "complete",
+            "partial",
             "truncated",
-            "unavailable"
+            "unavailable",
+            "timeout"
           ],
-          "description": "the run's provenance index: complete, truncated (too many values; from: untrusted rules do not match) or unavailable (lost in a signer restart)"
+          "description": "the run's provenance index: complete, partial (an untrusted tool's result came as a digest), truncated (more values than it reads), unavailable (lost in a signer restart) or timeout (this call's values took past the decision's deadline); when not complete, from: untrusted rules match whenever their pattern does"
+        },
+        "provenance_reason": {
+          "type": "string",
+          "maxLength": 256,
+          "description": "why provenance_state is not complete"
         }
       }
     },

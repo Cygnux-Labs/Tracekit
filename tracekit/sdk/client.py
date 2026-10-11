@@ -41,7 +41,7 @@ import weakref
 import rfc8785
 
 from tracekit import __version__
-from tracekit.format.canon import StrictJSONError, event_hash, loads_strict
+from tracekit.format.canon import StrictJSONError, canonical, event_hash, loads_strict
 from tracekit.signer import rpc_schema
 from tracekit.signer.quotas import MAX_LINE
 from tracekit.signer.rpc_schema import RPC_VERSION, RPCError
@@ -412,6 +412,22 @@ def fail_open(fail_modes, tool_class=None):
     `fail_modes`, else their `default`, else closed. A signer refusal is never a reason to fail open."""
     modes = fail_modes or {}
     return modes.get(tool_class, modes.get("default", "closed")) == "open"
+
+
+def sendable(out):
+    """Whether a tool's result can go to the signer itself: JSON that fits in a frame."""
+    try:
+        # lean: half a frame leaves room for JSON escapes and the other fields; send larger results in parts if needed
+        return len(canonical(out)) <= MAX_LINE // 2
+    except rfc8785.CanonicalizationError:
+        return False
+
+
+def result_field(send, out):
+    """What `complete` carries as a tool's `result`: the result itself when `send` (the decision's `send_result`: an
+    untrusted tool, whose result the signer redacts, commits to and indexes for provenance) and it is sendable, else
+    its digest (for an untrusted tool, the signer then marks the run's index partial)."""
+    return out if send and sendable(out) else event_hash(out)
 
 
 def _validate(method, req):

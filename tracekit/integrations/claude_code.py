@@ -36,7 +36,7 @@ from tracekit.deploy import files
 from tracekit.format.canon import event_hash
 from tracekit.locking import lock_file
 from tracekit.sdk import autospawn
-from tracekit.sdk.client import Client, RunHandle, SignerUnavailable, fail_open
+from tracekit.sdk.client import Client, RunHandle, SignerUnavailable, fail_open, sendable
 from tracekit.signer.rpc_schema import RPCError
 
 AGENT = "claude-code"
@@ -176,7 +176,8 @@ def _pre(client, p, sid, tid):
         print(f"Held by tracekit policy: {'; '.join(c['rule_ids'])} {c.get('reason', '')}".rstrip(), file=sys.stderr)
         return 2
     files.write_json(_state(sid, tid), {"run_id": run.run_id, "decision_id": d["decision_id"],
-                                        "args_digest": event_hash({"tool": tool, "args": args})})
+                                        "args_digest": event_hash({"tool": tool, "args": args}),
+                                        "send_result": d.get("send_result", False)})
     return 0
 
 
@@ -193,9 +194,11 @@ def _post(client, p, sid, tid):
     ok = not failed and not (isinstance(resp, dict) and (resp.get("is_error") or resp.get("interrupted")))
     ti = p.get("tool_input") if isinstance(p.get("tool_input"), dict) else {}
     dotenv = privacy.mentions_dotenv(ti.get("command"), ti.get("file_path"), ti.get("path"), ti.get("pattern"))
+    value = resp if resp is not None else ""
+    if not (call.get("send_result") and sendable(value)):   # an untrusted tool's result goes itself, for provenance
+        value = privacy.content(value, cc, dotenv)
     _run(client, sid, register=False, send="complete", tool_call_id=tid, decision_id=call["decision_id"],
-         args_digest=call["args_digest"], status="ok" if ok else "error",
-         result=privacy.content(resp if resp is not None else "", cc, dotenv))
+         args_digest=call["args_digest"], status="ok" if ok else "error", result=value)
     os.remove(path)
     return 0
 

@@ -62,9 +62,10 @@ class Engine:
 
     def decide(self, tool, args, cls=None, untrusted=None):
         """Return {verdict, rule_ids, policy_hash, engine[, nondeterministic]} for one tool call. `cls` overrides the
-        class the policy maps the tool to. `untrusted(subject)`: the hits of the subject's values that only untrusted
-        content brought into the run; a `from: untrusted` rule matches a subject only when there is one (never without
-        `untrusted`)."""
+        class the policy maps the tool to. `untrusted(subject, field)`: the hits of the subject's values that only
+        untrusted content brought into the run (`field`: the rule's); a `from: untrusted` rule matches a subject only
+        when there is one (never without `untrusted`), and matches each element of a list field (payees, recipients)
+        on its own."""
         args = args if isinstance(args, dict) else {"value": args}
         cls = cls or self.tool_class(tool)
         fields = classes.extract(cls, tool, args)
@@ -93,7 +94,7 @@ class Engine:
             try:
                 if tool_re is not None and not self._match(tool_re, _text(tool), True, deadline):
                     continue
-                for subject in self._subjects(cls, rule.get("field"), args, fields, parsed):
+                for subject in self._subjects(cls, rule.get("field"), args, fields, parsed, "from" in rule):
                     subject = _text(subject)
                     if len(subject.encode("utf-8")) > MAX_SUBJECT:
                         hits[sec].append("TK-OVERSIZE")   # the rule's own verdict: a flag rule cannot block a large call
@@ -102,7 +103,7 @@ class Engine:
                     # target, e.g. a file path; in a whole command it could exempt a different target)
                     if self._match(pat, subject, False, deadline) and not (
                             unless is not None and self._match(unless, subject, False, deadline)) and (
-                            "from" not in rule or untrusted is not None and untrusted(subject)):
+                            "from" not in rule or untrusted is not None and untrusted(subject, rule.get("field"))):
                         hits[sec].append(rule["id"])
                         break
             except TimeoutError:   # the time of the whole decision is spent: deny, and leave the other rules out
@@ -117,12 +118,13 @@ class Engine:
         return out
 
     @staticmethod
-    def _subjects(cls, field, args, fields, parsed):
+    def _subjects(cls, field, args, fields, parsed, split=False):
         """A class field matches the signer's extraction; any other field names a raw argument; no field scans the
         whole call (Write/Edit content, WebFetch url and prompt, MCP args). A shell `line` is the raw command and
         each line the parser normalised; an fs `path` with `..` also matches its lexically normalised form, and each
         entry of a `paths` list (every file of a Codex patch) is a path too. `target` (every class) is what the call
-        acts on rather than what it carries (Engine._targets); sql `code` is one subject per dialect reading."""
+        acts on rather than what it carries (Engine._targets); sql `code` is one subject per dialect reading. With
+        `split`, a list value is one subject per element (nested lists flattened)."""
         if field == "target":
             return Engine._targets(cls, args, fields, parsed)
         if cls == "sql" and field == "code":
@@ -141,6 +143,8 @@ class Engine:
             return []
         if cls == "fs" and field == "path" and isinstance(value, str):
             return classes.fs_forms(classes.first(args, *classes.PATH_KEYS))
+        if split and isinstance(value, list):
+            return [v if isinstance(v, str) else canonical(v) for v in _flat(value)]
         return [value if isinstance(value, str) else canonical(value)]
 
     @staticmethod
@@ -184,6 +188,10 @@ def _shell(args):
     if strings:
         return shell.analyse_argv(value)
     raise shell.ParseError("the command is neither a string nor a list of strings")
+
+
+def _flat(values):
+    return [x for v in values for x in (_flat(v) if isinstance(v, list) else [v])]
 
 
 def _text(s):

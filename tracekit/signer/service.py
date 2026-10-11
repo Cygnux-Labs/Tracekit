@@ -194,8 +194,13 @@ Provenance (docs/policy-v2.md): each run registered since the signer started has
 values (tracekit.provenance) its untrusted tools' results (the policy's `untrusted` list) and its `observe` inputs
 carried, keyed by an HMAC under a key drawn per process, each with the record that first brought it and whether that
 content was trusted (an observed input is what the caller says; other tools' results are not indexed: they can echo
-the agent's own arguments). A value once observed as trusted stays trusted. `from: untrusted` rules match on it, and every decision records which arguments carry
-untrusted-only values (field, kind, source record; never the value). After a restart a run's index is unavailable.
+the agent's own arguments). Values are read before redaction (only their HMACs are kept). A value once observed as
+trusted stays trusted. `decide` answers `send_result` for an untrusted tool, so its adapter completes it with the
+result rather than a digest. `from: untrusted` rules match on the index, and every decision records which arguments
+carry untrusted-only values (field, kind, source record; never the value). The index is `partial` once an untrusted
+tool completes with a digest or no result, `truncated` once a result carries more values than are read or the run's
+index is full, `unavailable` after a restart (a storage recovery keeps it), and a decision whose values take past
+its deadline is `timeout`; in each, `from: untrusted` rules fail closed: they match whenever their pattern does.
 """
 import argparse
 import base64
@@ -235,7 +240,7 @@ from tracekit.identity.base import CallerIdentity
 from tracekit.identity import webauthn
 from tracekit.identity.oidc import keys, person
 from tracekit.locking import lock_file
-from tracekit.policy2 import compile as policy_compile
+from tracekit.policy2 import compile as policy_compile, engine
 from tracekit.policy2.engine import Engine
 from tracekit.signer import logkey, metrics, reconcile, rpc_schema, webhook
 from tracekit.signer import otel as signer_otel
@@ -264,6 +269,7 @@ WITNESS_GAP_S, LOG_KEY_GAP_S, BACKOFF_S = 300.0, 300.0, (1.0, 300.0)
 FSCK_S, CLOCK_SKEW_S, LOCK_TIMEOUT_S, RENEW_RETRY_S = 86400.0, 300.0, 10.0, 60.0
 SNAPSHOT_RECORDS = 100_000
 PROVENANCE_MAX, PROVENANCE_SHOWN = 20_000, 16   # index entries per run (then truncated); entries a decision records
+PROVENANCE_S = engine.REGEX_TIMEOUT_S   # reading a decision's argument values: the same budget as its policy match
 CLASSES = ("public", "customer", "tracekit", "operator")
 GRACE_S, IDLE_S = 5.0, 3600.0
 FAIL_MODES = {"default": "closed"}
@@ -1331,10 +1337,20 @@ class SignerService:
         h = self.policy.decide(tool, args, hint if hint in policy_compile.CLASSES else "unknown", untrusted)
         return max(d, h, key=lambda x: STRICTNESS.index(x["verdict"])), True
 
-    def _keys(self, obj, email_hosts=True):
-        """[(kind, provenance index key)] of the values `obj` carries (provenance.values)."""
-        return [(kind, hmac.new(self._prov_key, f"{kind}\0{v}".encode("utf-8", "surrogatepass"), "sha256").digest())
-                for kind, v in provenance.values(obj, email_hosts)]
+    def _key(self, kind, v):
+        return hmac.new(self._prov_key, f"{kind}\0{v}".encode("utf-8", "surrogatepass"), "sha256").digest()
+
+    def _keys(self, obj, email_hosts=True, deadline=None):
+        """([(kind, provenance index key)] of the values `obj` carries, overflow) (provenance.values)."""
+        pairs, overflow = provenance.values(obj, email_hosts, deadline)
+        return [(kind, self._key(kind, v)) for kind, v in pairs], overflow
+
+    @staticmethod
+    def _degrade(tx, prov, state, reason):
+        """Set the run's index `state` (partial, truncated) with its `reason`, unless it is degraded already."""
+        if prov is not None and prov["state"] == "complete":
+            tx.set(prov, "state", state)
+            tx.set(prov, "reason", reason[:256])
 
     def _index(self, tx, run, keys, source):
         """Index `keys` (from _keys) as brought into `run` by `source` ({run_seq, trust, tool?, tool_call_id?}), on the
@@ -1347,34 +1363,66 @@ class SignerService:
         for _, k in keys:
             had = idx.get(k)
             if had is None and len(idx) >= PROVENANCE_MAX:
-                if prov["state"] != "truncated":
-                    tx.set(prov, "state", "truncated")
+                self._degrade(tx, prov, "truncated", f"the run's index holds {PROVENANCE_MAX} values")
             elif had is None or had["trust"] == "untrusted" and source["trust"] == "trusted":
                 tx.set(idx, k, source)
 
     def _provenance(self, key, args):
-        """(`untrusted(subject)` for the policy, the decision's provenance fields) of a call with `args` in run `key`."""
+        """(`untrusted(subject, field)` for the policy, a function giving the decision's provenance fields) of a call
+        with `args` in run `key`. Whenever the index is not complete (partial, truncated, unavailable, or reading the
+        values took past the decision's deadline: timeout) `untrusted` fails closed: every subject is a hit."""
         prov = self.log.runs[key].get("prov")
-        if prov is None:
-            return None, {"provenance_state": "unavailable"}
         # lean: read off the writer, which may be adding to it: a decide racing a batch the storage then refuses may
         # see that batch's values for that moment; read on the writer if that ever matters
-        idx, state = prov["index"], prov["state"]
+        idx = prov["index"] if prov else {}
+        st = ({"state": prov["state"], "reason": prov.get("reason")} if prov else
+              {"state": "unavailable", "reason": "the index lives in memory and was lost in a signer restart"})
+        deadline, entries = time.monotonic() + PROVENANCE_S, []
+
+        def timeout():
+            st.update(state="timeout", reason="reading the call's values took past the decision's deadline")
 
         def hits(obj):
-            return [(kind, s) for kind, k in self._keys(obj, False) if (s := idx.get(k)) and s["trust"] == "untrusted"]
-        entries = []
-        for field, v in (args if isinstance(args, dict) else {"value": args}).items():
-            for kind, s in hits(v):
-                e = {"field": field[:256], "kind": kind,
-                     "source": {k: s[k] for k in ("run_seq", "tool", "tool_call_id") if s.get(k) is not None}}
-                if e not in entries:
-                    entries.append(e)
-        # only when there is something to say, so a run with nothing untrusted in its arguments stays readable by a 1.0
-        # verifier (bundle_v2: these fields make a bundle need 1.1)
-        out = ({"provenance_state": state, **({"provenance": entries[:PROVENANCE_SHOWN]} if entries else {})}
-               if entries or state != "complete" else {})
-        return (lambda subject: hits(subject) if state == "complete" else []), out
+            keys, overflow = self._keys(obj, False, deadline)
+            return [(kind, s) for kind, k in keys if (s := idx.get(k)) and s["trust"] == "untrusted"], overflow
+        try:
+            # only an index with entries can name an argument (and the record needs every argument's values)
+            for field, v in ((args if isinstance(args, dict) else {"value": args}) if idx else {}).items():
+                for kind, s in hits(v)[0]:
+                    e = {"field": field[:256], "kind": kind,
+                         "source": {k: s[k] for k in ("run_seq", "tool", "tool_call_id") if s.get(k) is not None}}
+                    if e not in entries:
+                        entries.append(e)
+        except TimeoutError:
+            timeout()
+
+        def untrusted(subject, field=None):
+            if st["state"] != "complete":
+                return [st["state"]]
+            if not idx:
+                return []
+            if field == "sends_to":   # a canonical host (classes.url_info): looked up as one
+                s = idx.get(self._key("host", provenance.host(subject)))
+                return [("host", s)] if s and s["trust"] == "untrusted" else []
+            try:
+                found, overflow = hits(subject)
+            except TimeoutError:
+                timeout()
+                return ["timeout"]
+            return found or (["overflow"] if overflow else [])
+
+        def fields():
+            # only when there is something to say, so a run with nothing untrusted in its arguments stays readable by
+            # a 1.0 verifier (bundle_v2: these fields make a bundle need 1.1)
+            if not entries and st["state"] == "complete":
+                return {}
+            out = {"provenance_state": st["state"]}
+            if st["state"] != "complete":
+                out["provenance_reason"] = st["reason"]
+            if entries:
+                out["provenance"] = entries[:PROVENANCE_SHOWN]
+            return out
+        return untrusted, fields
 
     def _chain(self, identity):
         """The caller's process chain (harness_helper.chain), [] when it can't be had. Cached per process instance:
@@ -1497,6 +1545,7 @@ class SignerService:
         untrusted, prov = self._provenance(key, args)
         # matched here, off the writer thread; the writer picks a memoised deny/ask or this result
         ruled = self._evaluate(tool, args, hint, untrusted) if digest else None
+        prov = prov()
         did = "dec-" + secrets.token_hex(16)
         commitment = self._commit(did, digest) if digest else None
         # lean: expires_at is signed but `complete` does not enforce it; enforce once executors check it before running
@@ -1538,8 +1587,11 @@ class SignerService:
             for kind, reason in gaps:
                 tx.emit(run, "capture.gap", {"kind": kind, "reason": reason, "tool_use_id": tcid}, source="signer",
                         tool_call_id=tcid)
-            return {"decision": "allow" if verdict == "flag" else verdict, "decision_id": did, "rule_ids": rule_ids,
-                    "run_seq": seq, "expires_at": expires_at}
+            out = {"decision": "allow" if verdict == "flag" else verdict, "decision_id": did, "rule_ids": rule_ids,
+                   "run_seq": seq, "expires_at": expires_at}
+            if self.policy.untrusted_results(tool):   # the result itself, for the provenance index
+                out["send_result"] = True
+            return out
         out = self.log.submit(identity, "decide", req, fn, key)
         if written and commitment:
             self._retain(key, written[0], commitment, _shown(args, _dotenv(args)))
@@ -1578,10 +1630,16 @@ class SignerService:
             raise RPCError("invalid_request", f"result is not canonical JSON: {e}") from None
         output = {"hash": self._commit("result:" + did, "sha256:" + hashlib.sha256(c).hexdigest()), "size": len(c),
                   "redacted": manifest["count"] > 0 or manifest["client_claimed"]}
-        # what the signer commits to; only an untrusted tool's results: any other tool may echo what the agent put in
-        # its arguments, which would launder an injected value into trusted content
+        # the provenance index: only an untrusted tool's results (any other tool may echo what the agent put in its
+        # arguments, which would launder an injected value into trusted content), read before redaction (HMACs in
+        # memory only), so a value next to a secret's label still counts. A digest instead of the result: partial.
         tool = (self.log.runs[key].get("decisions", {}).get(did) or {}).get("tool")   # None: decided before a restart
-        keys = self._keys(value) if tool and self.log.runs[key].get("prov") and self.policy.untrusted_results(tool) else []
+        keys, overflow, missing = [], False, False
+        if tool and self.log.runs[key].get("prov") and self.policy.untrusted_results(tool):
+            keys, overflow = self._keys({k: req[k] for k in ("result", "error") if k in req})
+            r = req.get("result")
+            missing = req["status"] == "ok" and ("result" not in req or isinstance(r, str) and _DIGEST.fullmatch(r)
+                                                 or isinstance(r, dict) and {"hash", "size"} <= r.keys())
         self.quotas.take_event(identity)
         written = []
 
@@ -1599,6 +1657,11 @@ class SignerService:
             if keys:
                 self._index(tx, run, keys, {"run_seq": seq, "tool": call["tool"], "tool_call_id": tcid,
                                             "trust": "untrusted"})
+            if overflow:
+                self._degrade(tx, run.get("prov"), "truncated", f"the result of {tcid} carried more values than are read")
+            if missing:
+                self._degrade(tx, run.get("prov"), "partial", f"{tcid} ({call['tool'][:64]}) completed with a digest, "
+                                                          "not its result")
             a = self.log.approvals.get(self.log.approval_index.get((*key, tcid, attempt)), {})
             approved = a.get("state") == "consumed" and self._opens(a["commitment"], a["label"], req["args_digest"])
             if call["decision"] == "deny" or (call["decision"] == "ask" and not approved):
@@ -1625,13 +1688,16 @@ class SignerService:
         data = {"source": req["source"], "trust": req["trust"], "redaction": manifest, "salt_id": sid,
                 "output": {"hash": self._commit(label, "sha256:" + hashlib.sha256(c).hexdigest()), "size": len(c),
                            "redacted": manifest["count"] > 0}}
-        keys = self._keys(value) if self.log.runs[key].get("prov") else []
+        keys, overflow = self._keys(req["value"]) if self.log.runs[key].get("prov") else ([], False)   # before redaction
         self.quotas.take_event(identity)
         written = []
 
         def fn(tx, run):
             written.append(tx.event(run, req, "input.observed", data))
             self._index(tx, run, keys, {"run_seq": written[0], "trust": req["trust"]})
+            if overflow and req["trust"] == "untrusted":   # trusted values left out only make more calls held
+                self._degrade(tx, run.get("prov"), "truncated",
+                              f"observed input {written[0]} carried more values than are read")
             return {"run_seq": written[0]}
         res = self.log.submit(identity, "observe", req, fn, key)
         if written:

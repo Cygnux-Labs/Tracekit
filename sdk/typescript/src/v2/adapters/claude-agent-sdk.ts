@@ -18,7 +18,7 @@
 import { randomUUID } from "node:crypto";
 import { RPCError, SignerUnavailable, type Frame, type RunHandle } from "../client.js";
 import { digest } from "../jcs.js";
-import { BLOCKED, Gate, commitment, failure, warn } from "./gate.js";
+import { BLOCKED, Gate, failure, warn } from "./gate.js";
 
 export const HOOK_TIMEOUT_S = 600;       // the SDK's default (60 s) is too short to wait for a person
 export const APPROVAL_WAIT_MS = 540_000; // below HOOK_TIMEOUT_S, so the hook answers before the CLI gives up on it
@@ -39,7 +39,7 @@ export function tracekitHooks(run: RunHandle) {
   async function post(inp: any, toolUseID?: string) {
     const id = inp.tool_use_id ?? toolUseID, resp = inp.tool_response;
     if (inp.hook_event_name === "PostToolUseFailure") await gate.complete(id, "error", { error: String(inp.error ?? "").slice(0, 4096) });
-    else await gate.complete(id, resp?.is_error || resp?.interrupted ? "error" : "ok", commitment(resp));
+    else await gate.complete(id, resp?.is_error || resp?.interrupted ? "error" : "ok", gate.result(id, resp));
     return {};
   }
 

@@ -191,7 +191,10 @@ RESPONSES = {
                          fail_modes=_FAIL_MODES),
     "decide": _obj(["decision", "decision_id", "rule_ids", "run_seq"], decision={"enum": ["allow", "deny", "ask"]},
                    decision_id=ID,   # fresh for every decide; `complete` consumes it once
-                   rule_ids=RULE_IDS, reason=REASON, run_seq=SEQ, expires_at=_str(40)),
+                   rule_ids=RULE_IDS, reason=REASON, run_seq=SEQ, expires_at=_str(40),
+                   # the policy lists the tool as untrusted: `complete` should carry the result itself (the signer
+                   # redacts it, commits to it and indexes its values for provenance), not a digest of it
+                   send_result={"const": True}),
     "complete": _SEQ_ONLY,
     "observe": _SEQ_ONLY,
     "state_write": _SEQ_ONLY,

@@ -29,7 +29,7 @@ from claude_agent_sdk import HookMatcher
 
 from tracekit.format.canon import event_hash
 from tracekit.signer import rpc_schema
-from tracekit.sdk.client import SignerUnavailable, fail_open
+from tracekit.sdk.client import SignerUnavailable, fail_open, result_field
 from tracekit.signer.rpc_schema import RPCError
 
 BLOCKED = "Tool call blocked by policy: "
@@ -109,7 +109,7 @@ def tracekit_hooks(signer, run):
                 return _deny(", ".join(c["rule_ids"]) + (f": {c['reason']}" if c.get("reason") else ""))
         except Exception as e:   # no fail mode once decided: a refusal or an approval that can't be had blocks
             return _deny(f"signer error ({type(e).__name__}: {e})")
-        calls[tid] = d["decision_id"], event_hash({"tool": tool, "args": args})
+        calls[tid] = d["decision_id"], event_hash({"tool": tool, "args": args}), d.get("send_result")
         if len(calls) > MAX_OPEN_CALLS:   # lean: the oldest call never got its PostToolUse; dropped, not recorded
             calls.pop(next(iter(calls)))
         return {}
@@ -123,7 +123,7 @@ def tracekit_hooks(signer, run):
             out = {"status": "error", "error": str(inp.get("error") or "")[:4096]}
         else:
             failed = isinstance(resp, dict) and (resp.get("is_error") or resp.get("interrupted"))
-            out = {"status": "error" if failed else "ok", "result": event_hash(resp)}   # a commitment, not the result
+            out = {"status": "error" if failed else "ok", "result": result_field(call[2], resp)}
         try:
             await rpc("complete", tool_call_id=inp.get("tool_use_id") or tool_use_id, decision_id=call[0],
                       args_digest=call[1], **out)

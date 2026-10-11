@@ -1,7 +1,7 @@
 // The adapter contract (04-design §7.3, tests/adapter_contract.py in TypeScript) for the v2 adapters, each driven
 // through a small stand-in for its framework's hook or middleware interface, against an in-test fake signer and, when
 // Python with the signer extra is there, the real signer.   npm test
-// The policy: "pay" asks (R-PAY), "wipe" is denied (R-WIPE), everything else is allowed.
+// The policy: "pay" asks (R-PAY), "wipe" is denied (R-WIPE), everything else is allowed; "echo"'s results are untrusted.
 import { after, before, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
@@ -42,7 +42,8 @@ async function fakeSigner({ failModes = { default: "closed" }, override = () => 
         const [decision, rule_ids] = tool === "pay" ? ["ask", ["R-PAY"]] : tool === "wipe" ? ["deny", ["R-WIPE"]] : ["allow", []];
         const d = { run_id: f.run_id, decision_id: id("dec"), tool_call_id: f.tool_call_id, attempt: f.attempt ?? 0, decision, rule_ids, digest: argsDigest(f.tool, f.args) };
         decisions.set(d.decision_id, d);
-        return { ...emit(f.run_id, "policy.decision", d), decision, rule_ids, decision_id: d.decision_id };
+        return { ...emit(f.run_id, "policy.decision", d), decision, rule_ids, decision_id: d.decision_id,
+          ...(tool.endsWith("echo") ? { send_result: true } : {}) };   // echo's results are untrusted
       }
       case "approval_request": {   // one approval per call attempt: asking again returns it
         const d = [...decisions.values()].findLast(mine(f));
@@ -78,7 +79,7 @@ async function fakeSigner({ failModes = { default: "closed" }, override = () => 
         const d = decisions.get(f.decision_id);
         if (!d || d.tool_call_id !== f.tool_call_id || d.attempt !== (f.attempt ?? 0) || d.digest !== f.args_digest)
           return { error: { code: "invalid_request", message: "not bound to its decision" } };
-        return emit(f.run_id, "tool.result", { decision_id: d.decision_id, tool_call_id: d.tool_call_id, attempt: d.attempt, ok: f.status === "ok" });
+        return emit(f.run_id, "tool.result", { decision_id: d.decision_id, tool_call_id: d.tool_call_id, attempt: d.attempt, ok: f.status === "ok", result: f.result });
       }
       case "read": return { events: events.filter((e) => e.run_id === f.run_id) };
       case "model_event": return emit(f.run_id, "model.exchange", f);
@@ -120,7 +121,7 @@ from tracekit.transport import answering_hello, hello
 from tracekit.transport.unix import UnixServer
 d = tempfile.mkdtemp(dir="/tmp")
 s = SignerService(d, policy=Engine({"ask": [{"id": "R-PAY", "tool": "^(.*/)?pay$", "pattern": "^", "approval": {"executor": "t2"}}],
-                                    "deny": [{"id": "R-WIPE", "tool": "^(.*/)?wipe$", "pattern": "^"}]}))
+                                    "deny": [{"id": "R-WIPE", "tool": "^(.*/)?wipe$", "pattern": "^"}], "untrusted": ["*echo"]}))
 def handle(identity, frame):
     if frame.get("method") == "read":
         return {"events": [r["event"] for r in s.log.storage.iter_run("default", frame["run_id"])]}
@@ -379,6 +380,17 @@ function contract(name, Driver, serve, skip) {
       assert.equal(x.decision, "allow");
       const [r] = await bound();
       assert.deepEqual([r.decision_id, r.ok], [x.decision_id, true]);
+    });
+
+    it("an untrusted tool's result goes to the signer itself (send_result), for its provenance index", async (t) => {
+      await setup(t);
+      assert.deepEqual((await d.call("echo", { text: "mail audit@vendor.example" })).ran, ["echo"]);
+      const events = async () => (await run.call("read", { limit: 1000 })).events;
+      const result = (await events()).find((e) => e.type === "tool.result").data;
+      if ("result" in result) return assert.match(JSON.stringify(result.result), /audit@vendor\.example/);   // the fake
+      await run.decide("send-1", "send", { to: "audit@vendor.example" });   // the real signer: a digest is `partial`
+      const x = (await events()).find((e) => e.type === "policy.decision" && e.data.tool_use_id === "send-1").data;
+      assert.deepEqual([x.provenance_state, x.provenance?.[0]?.kind], ["complete", "email"]);
     });
 
     it("deny: the model gets the refusal and the run goes on", async (t) => {
