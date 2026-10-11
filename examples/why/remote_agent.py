@@ -11,5 +11,6 @@ from tracekit.why.core import HttpSink
 from tracekit.why.demo import SYSTEM
 
 for seed in range(3):
-    run = SYSTEM.run(seed=seed, run_id=f"remote-{seed}", sink=HttpSink("http://127.0.0.1:7788", "dev-token"))
+    run = SYSTEM.run(seed=seed, run_id=f"remote-{seed}", sink=HttpSink("http://127.0.0.1:7788", "dev-token"),
+                     signer=False)
     print("sent", run.run_id, len(run.events), "events")

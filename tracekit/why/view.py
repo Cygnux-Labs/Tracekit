@@ -27,6 +27,17 @@ def _evidence(run: Run) -> Dict[str, Any]:
         return {}
 
 
+def _cited(ev: Dict[str, Any]) -> Optional[List[Dict[str, Any]]]:
+    """The signed record an event of the signer-backed runtime (or a v2 import) cites, as the drawer lists them: its
+    log seq and hash once imported, else run and run_seq."""
+    t = ev.get("tracekit")
+    if not t:
+        return None
+    return [{"seq": t.get("seq", f"{t['run_seq']} of run {t['run_id']}"), "hash": t.get("hash", ""),
+             "type": t["type"] + (f" · log {t['log_id']}" if t.get("log_id") else "")
+             + (" · DOES NOT MATCH: " + ev["tracekit_mismatch"] if ev.get("tracekit_mismatch") else "")}]
+
+
 def run_detail(run: Run) -> Dict[str, Any]:
     inv = investigation(run)
     evidence = _evidence(run)
@@ -49,7 +60,7 @@ def run_detail(run: Run) -> Dict[str, Any]:
                              "to": n.get("to"), "hash": ev["hash"], "prev": ev["prev_hash"], "ts": ev["ts"],
                              "duration_ms": ev.get("duration_ms"), "status": ev.get("status"),
                              "sensitive": ev.get("sensitive", False), "mode": ev.get("mode"),
-                             "evidence": evidence.get(ev["id"]), "policy": ev.get("policy"),
+                             "evidence": evidence.get(ev["id"]) or _cited(ev), "policy": ev.get("policy"),
                              "context_mode": ev.get("context_mode"), "tracekit": ev.get("tracekit")}
         if n["type"] == "decision":
             d.update(model=ev["model"], purpose=ev.get("purpose"), usage=ev.get("usage") or {},

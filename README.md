@@ -139,6 +139,7 @@ witness cosignature and a tampered copy that fails), and Claude Code's hooks wir
 
 ```sh
 tracekit demo --server                # exit 0
+tracekit demo --why                   # exit 0: a held email, its cause found by replay and cited by its signed record
 tracekit init --dev --v2
 ```
 

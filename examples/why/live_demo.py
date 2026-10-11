@@ -37,7 +37,7 @@ def main(out: str = "runs-live", mode: str = "block", runs: int = 6) -> None:
     for seed in range(runs):
         run_id = f"live-{time.strftime('%H%M%S')}-s{seed}"
         print(f"{run_id}: running")
-        run = live.run(seed=seed, out_dir=out, run_id=run_id, guard=Guard(mode, on_alert=on_alert))
+        run = live.run(seed=seed, out_dir=out, run_id=run_id, guard=Guard(mode, on_alert=on_alert), signer=False)
         print(f"{run_id}: done, tools: {', '.join(e['tool'] + ('(blocked)' if e['status'] == 'blocked' else '') for e in run.of_type('action'))}")
         time.sleep(1.5)
 

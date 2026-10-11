@@ -37,7 +37,7 @@ def cmd_demo(a):
     _p(f"== record: 8 runs of a 3-agent support system (seeded mock models, fake tools) -> {out}")
     exfil = []
     for s in range(8):
-        r = SYSTEM.run(seed=s, out_dir=out, run_id=f"demo-seed{s}")
+        r = SYSTEM.run(seed=s, out_dir=out, run_id=f"demo-seed{s}", signer=False)   # scripted: no evidence
         hit = bool(target_hits(r, EXFIL_TARGET))
         if hit:
             exfil.append(load_run(r.path))
@@ -87,7 +87,25 @@ def cmd_verify(a):
         return 1
     _p(f"[PASS] {len(run.events)} events, chain intact, {len(run.blobs)} blobs match their hashes")
     _p("       (hash-chained, not signed)")
-    return 0
+    if not a.salts:
+        return 0
+    from .import_v2 import check_content
+    try:
+        with open(a.salts, encoding="utf-8") as f:
+            rows = check_content(run, [json.loads(line) for line in f if line.strip()])
+    except (OSError, ValueError) as e:   # json's errors are ValueErrors
+        print(f"tracekit why verify: {a.salts}: {e}", file=sys.stderr)
+        return 2
+    for r in rows:
+        _p(f"  {r['verdict']:<13} {r['kind']:<8} {r['agent']:<12} log seq {r['seq']} {r['type']}"
+           + (f": {r['detail']}" if r.get("detail") else ""))
+    n = {v: sum(r["verdict"] == v for r in rows) for v in ("matched", "mismatched", "bad salt row", "not revealed")}
+    if not rows:
+        _p("  no event cites a record with a commitment: import the run from the signer first (`why import --store`)")
+    _p(f"content: {n['matched']} matched, {n['mismatched']} mismatched (content or salt does not match), "
+       f"{n['bad salt row']} bad salt rows, {n['not revealed']} not revealed"
+       + (" (reveal their salts with `tracekit signer reveal --record SEQ`)" if n["not revealed"] else ""))
+    return 1 if n["mismatched"] else 2 if n["bad salt row"] else 0
 
 
 def cmd_graph(a):
@@ -245,6 +263,10 @@ def cmd_serve(a):
 
 
 def cmd_import(a):
+    if not a.v1:
+        return _import_v2(a)
+    if not a.src:
+        raise SystemExit("tracekit why import --v1 needs the Tracekit home, ledger directory or ledger.jsonl")
     from . import import_v1 as tk
     if a.list:
         recs = tk.read_ledger(tk.ledger_path(a.src))
@@ -269,6 +291,60 @@ def cmd_import(a):
         if not decs:
             _p("  no model calls recorded: enable Tracekit autotrace, the SDK or the model proxy for decisions")
     return 0
+
+
+def _import_v2(a):
+    from . import import_v2 as tk
+    if a.store:
+        try:
+            if a.list:
+                for rid, n in sorted(tk.store_runs(a.store).items()):
+                    _p(f"{rid}  ({n} records)")
+                return 0
+            records = tk.store_records(a.store, a.run)
+        except (OSError, ValueError) as e:
+            print(f"tracekit why import: {e}", file=sys.stderr)
+            return 2
+    else:
+        if not a.trust:
+            raise SystemExit("tracekit why import --bundle needs --trust, the trust config to verify it against")
+        records, rep, code = tk.bundle_records(a.bundle, a.trust)
+        if code:
+            from ..verify import v2
+            v2.print_report(rep, code)
+            print(f"tracekit why import: refused {a.bundle}: it does not verify against {a.trust}; nothing imported",
+                  file=sys.stderr)
+            return code
+    if a.list:
+        for rid, recs in sorted(records.items()):
+            _p(f"{rid}  ({len(recs)} records)")
+        return 0
+    if a.run:
+        records = {k: v for k, v in records.items() if k == a.run}
+    if a.run and not records:
+        print(f"tracekit why import: no run {a.run} to import", file=sys.stderr)
+        return 2
+    rechecked = tk.recheck(records, a.out)   # the imports already there, before this one adds its own
+    try:
+        paths = tk.import_records(records, a.out)
+    except FileExistsError as e:
+        print(f"tracekit why import: {e}", file=sys.stderr)
+        return 2
+    for p in paths:
+        run = load_run(p)
+        meta = run.start.get("meta") or {}
+        _p(f"{p}: {len(run.events)} events, {len(run.of_type('action'))} tool calls, from Tracekit runs "
+           f"{', '.join(meta.get('tracekit_runs', []))}" + (f" (merged with {meta['merged_from']})"
+                                                          if meta.get("merged_from") else ""))
+        for al in meta.get("evidence_alerts", []):
+            _p(f"  [HIGH] {al['title']}: {al['detail']}")
+        if not meta.get("merged_from"):
+            _p("  content is committed, not in the signed log: record with the signer-backed runtime for content")
+    for p, alerts in rechecked:
+        _p(f"{p}: an earlier import that cites these runs does not hold against them")
+        for al in alerts:
+            _p(f"  [HIGH] {al['title']}: {al['detail']}")
+    return 1 if rechecked else 0
 
 
 def cmd_index(a):
@@ -297,7 +373,10 @@ def main(argv=None):
     p.add_argument("--webhook", help="POST high alerts here (with --guard)")
     p.set_defaults(f=cmd_record)
 
-    p = sp.add_parser("verify", help="check the hash chain and blobs"); p.add_argument("run"); p.set_defaults(f=cmd_verify)
+    p = sp.add_parser("verify", help="check the hash chain and blobs (and with --salts, content against commitments)")
+    p.add_argument("run")
+    p.add_argument("--salts", help="JSON lines of `tracekit signer reveal` for the records the run cites")
+    p.set_defaults(f=cmd_verify)
 
     p = sp.add_parser("graph", help="print edges with evidence grades")
     p.add_argument("run"); p.add_argument("--json", action="store_true"); p.add_argument("--no-infer", action="store_true")
@@ -346,9 +425,13 @@ def main(argv=None):
     p.add_argument("root"); p.add_argument("--webhook"); p.add_argument("--interval", type=float, default=0.5)
     p.set_defaults(f=cmd_watch)
 
-    p = sp.add_parser("import", help="import runs from a Tracekit v1 ledger")
-    p.add_argument("--v1", action="store_true", required=True, help="the source is a v1 ledger")
-    p.add_argument("src", help="Tracekit home, ledger directory or ledger.jsonl")
+    p = sp.add_parser("import", help="import runs from a Tracekit v1 ledger, a v2 signer store or a v2 bundle")
+    g = p.add_mutually_exclusive_group(required=True)
+    g.add_argument("--v1", action="store_true", help="the source is a v1 ledger")
+    g.add_argument("--store", metavar="DIR", help="a v2 signer data dir (holds store/), read-only")
+    g.add_argument("--bundle", metavar="FILE", help="a v2 bundle (.tkb), verified first with --trust")
+    p.add_argument("src", nargs="?", help="with --v1: Tracekit home, ledger directory or ledger.jsonl")
+    p.add_argument("--trust", help="with --bundle: the v2 trust config")
     p.add_argument("--run", help="Tracekit run id (default: every run in the ledger)")
     p.add_argument("--out", default="runs"); p.add_argument("--list", action="store_true", help="list runs and exit")
     p.add_argument("--untrusted-tool", action="append", help="glob of tools whose results are untrusted (default *)")
