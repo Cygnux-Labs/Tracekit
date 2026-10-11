@@ -511,12 +511,12 @@ class Housekeeping(unittest.TestCase):
         store.scan()
         path = os.path.join(store.root, "gone")
         self.assertIn(path, store._stat)
-        shutil.rmtree(path)
+        store.stop()
+        self.assertFalse(store._watcher.is_alive())
+        shutil.rmtree(path)   # once the watcher is stopped: Windows can't delete a file another thread has open
         store.scan()
         self.assertNotIn(path, store._stat)
         self.assertNotIn(path, store._seen)
-        store.stop()
-        self.assertFalse(store._watcher.is_alive())
 
     def test_a_slow_sink_does_not_hold_the_runtime(self):
         gate, sending = threading.Event(), threading.Event()

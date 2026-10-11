@@ -292,6 +292,7 @@ class RemoteUrls(unittest.TestCase):
                 pass
 
             def do_POST(self):
+                self.rfile.read(int(self.headers.get("Content-Length", 0)))
                 seen.append(self.headers.get("Authorization"))
                 self.send_response(200)
                 self.send_header("Content-Length", "11")
@@ -304,7 +305,8 @@ class RemoteUrls(unittest.TestCase):
             def log_message(self, *a):
                 pass
 
-            def do_POST(self):
+            def do_POST(self):   # reads the request first: Windows resets a connection closed with unread bytes
+                self.rfile.read(int(self.headers.get("Content-Length", 0)))
                 self.send_response(302)
                 self.send_header("Location", target + "/v1/rpc")
                 self.send_header("Content-Length", "0")
@@ -322,6 +324,7 @@ class RemoteUrls(unittest.TestCase):
                 pass
 
             def do_POST(self):
+                self.rfile.read(int(self.headers.get("Content-Length", 0)))
                 self.send_response(200)
                 self.send_header("Content-Length", "0")
                 self.end_headers()
