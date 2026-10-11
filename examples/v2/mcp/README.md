@@ -9,7 +9,7 @@ mcp package's in-memory transport. `call_tool` waits for the approval itself.
 
 ```sh
 python3 -m venv .venv && . .venv/bin/activate
-pip install 'tracekit-ai[signer]' 'mcp>=2.3,<2.4'       # from a checkout: pip install '.[signer]'
+pip install tracekit-ai 'mcp>=2.3,<2.4'       # from a checkout: pip install .
 python examples/v2/mcp/agent.py --scripted
 ```
 

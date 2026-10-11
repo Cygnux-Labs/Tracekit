@@ -1,30 +1,48 @@
 # Quickstart: a custom agent
 
-Every tool call is decided by the v2 signer before it runs and recorded after, as a signed event. This page runs the
-example in [examples/v2/custom](../../examples/v2/custom/) offline (a mock model, no API key), then reads the report of
-its verified bundle. It uses the dev signer, which runs as your own user (see [what dev assurance
+Every tool call is decided by the v2 signer before it runs and recorded after, as a signed event. This page adds it
+to the agent you have in three steps. It uses the dev signer, which runs as your own user (see [what dev assurance
 means](../quickstart-v2.md#what-dev-assurance-means)).
 
 ## 1. Install
 
 ```sh
-python3 -m venv .venv && . .venv/bin/activate      # Windows: .venv\Scripts\activate
-pip install 'tracekit-ai[signer]'
+pip install tracekit-ai
 ```
 
-## 2. Run the example
+## 2. A few lines in your agent
+
+Without a framework for `tracekit.instrument()` to wire, your agent asks the signer itself, once per tool call:
+
+```python
+from tracekit.sdk.client import Client
+
+with Client().run(agent="my-agent") as run:      # one run; starts the dev signer if none answers
+    for call_id, tool, args in my_agent_tool_calls():
+        d = run.decide(call_id, tool, args)      # before it runs: allow, deny or ask
+        if d["decision"] == "allow" and run.approval_consume(call_id, tool, args)["ok"]:
+            result = run_tool(tool, args)        # your tool, with exactly those arguments
+            run.complete(call_id)                # its outcome, bound to the decision
+        else:
+            result = "refused: " + ", ".join(d["rule_ids"])   # the model gets the refusal and goes on
+```
+
+Pass the model's raw arguments string as `args` when you have it: the signer records which form it saw. To record
+the OpenAI, Anthropic or Google Gen AI calls made inside the `with` block into its run as well, add `from tracekit
+import autotrace; autotrace.instrument(None)` before it.
+
+## 3. See it verified
 
 ```sh
-python examples/v2/custom/agent.py --scripted
+tracekit last
 ```
 
-The first call starts a dev signer in the background. One call is allowed, one is denied and the agent goes on, one is
-held until it is approved. `--scripted` approves it from a second process; without it, approve it yourself from another
-terminal with `tracekit approvals approve <id>` (`tracekit approvals show <id>` shows the signer's copy of the arguments
-first). The example then pins the signer's key (`tracekit signer trust -o trust.json`), exports the run (`tracekit
-export --v2 --run <id>`) once the signer has finalised it, and verifies it.
+It exports the most recent finished run, pins the dev signer's key, verifies the bundle and says where it is
+([the v2 quickstart](../quickstart-v2.md#3-see-it-verified)).
 
-## 3. Wire it into your agent
+## Approvals
+
+An `ask` waits for a person; this is the loop with that step:
 
 ```python
 from tracekit.sdk.client import Client
@@ -39,9 +57,10 @@ with Client().run(agent="my-agent") as run:
         run.complete(call_id)                                   # its outcome, bound to the decision
 ```
 
-Pass the model's raw arguments string as `args` when you have it: the signer records which form it saw.
+An offline run of all this (a mock model, no API key), with an approval: `python examples/v2/custom/agent.py --scripted`
+from a checkout.
 
-## 4. Read the verify report
+## Read the verify report
 
 ```text
 [PASS] checkpoint — tracekit.local/... at tree size 12, signed by its pinned log key
@@ -57,7 +76,7 @@ Assurance: dev; records ed25519; checkpoint Ed25519 only (...); no witness cosig
 checkpoint signed by that key includes it: nothing was edited, dropped or reordered after signing. Change one byte of
 the bundle and it reads `Integrity: FAILED`, naming the check (`tracekit demo --server` shows this). `Assurance: dev`
 says no pinned witness cosigned the checkpoint and the approval was a self-approval. [The v2
-quickstart](../quickstart-v2.md#4-export-and-verify) explains every line.
+quickstart](../quickstart-v2.md#export-and-verify-by-hand) explains every line.
 
 ## Next steps
 

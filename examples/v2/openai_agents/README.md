@@ -9,7 +9,7 @@ run; `tk.apply_decisions(state)` applies the signer's decision and the run resum
 
 ```sh
 python3 -m venv .venv && . .venv/bin/activate
-pip install 'tracekit-ai[signer]' 'openai-agents>=0.23.1,<0.24'       # from a checkout: pip install '.[signer]'
+pip install tracekit-ai 'openai-agents>=0.23.1,<0.24'       # from a checkout: pip install .
 python examples/v2/openai_agents/agent.py --scripted
 ```
 
