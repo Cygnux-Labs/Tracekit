@@ -339,7 +339,7 @@ class RecordLog:
                 d = e["data"]
                 call = {"tool_call_id": e["tool_call_id"], "attempt": e.get("attempt", 0), "decision": d["decision"],
                         "rule_ids": d["rule_ids"], "decision_id": d.get("decision_id"),
-                        "commitment": d.get("args_commitment")}
+                        "commitment": d.get("args_commitment"), "tool": d.get("tool")}
                 run["calls"][e["tool_call_id"]] = call
                 if call["decision_id"]:
                     run["decisions"][call["decision_id"]] = call
@@ -558,11 +558,16 @@ class RecordLog:
             self.storage.close()
         except Exception:
             pass
+        # the provenance indexes live in memory only: the replay can't rebuild them, and nothing in them was lost
+        prov = {k: r["prov"] for k, r in self.runs.items() if r.get("prov") is not None}
         try:
             self.storage = self.open_storage()
             self._replay()
         except Exception:
             return False
+        for k, p in prov.items():
+            if k in self.runs and not self.runs[k]["final"]:
+                self.runs[k]["prov"] = p
         since, err = self.down
         self.down = None
         fut = Future()

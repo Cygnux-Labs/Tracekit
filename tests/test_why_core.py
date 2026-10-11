@@ -327,17 +327,12 @@ class Cli(Tmp):
         vendor = next(r for r in rows if "vendor:portal/notes.md" in r["sources"])
         self.assertEqual((vendor["runs"], vendor["reached_action_runs"]), (6, 6))
 
-    def test_demo_report_and_verify(self):
+    def test_demo_points_at_the_viewer_and_verifies(self):
         code, out = self.cli(["demo", "--out", self.tmp, "--n", "10"])
         self.assertEqual(code, 0)
         self.assertIn("CAUSAL", out)
-        self.assertIn("tracekit why serve", out)
-        with open(os.path.join(self.tmp, "report.html"), encoding="utf-8") as f:
-            html = f.read()
-        self.assertIn("const SERVER=false;let DATA={", html)
-        self.assertTrue(html.rstrip().endswith("</html>"))
-        self.assertIn("<title>tracekit why</title>", html)
-        self.assertNotIn("causeway", html.lower())
+        self.assertIn(f"tracekit why serve {self.tmp}", out)   # the viewer is the one UI: no static report
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "report.html")))
         self.assertEqual(self.cli(["verify", os.path.join(self.tmp, "demo-seed0")])[0], 0)
 
     def test_attribute_on_the_demo(self):

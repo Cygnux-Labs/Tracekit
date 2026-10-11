@@ -41,7 +41,7 @@ from agents.tool import maybe_invoke_function_tool_failure_error_function, set_f
 
 from tracekit import parsers
 from tracekit.format.canon import event_hash, loads_strict
-from tracekit.sdk.client import SignerUnavailable, fail_open
+from tracekit.sdk.client import SignerUnavailable, fail_open, result_field
 from tracekit.signer.rpc_schema import RPCError
 
 BLOCKED = "Tool call blocked by policy: "
@@ -146,7 +146,8 @@ class TracekitAgents(RunHooks):
         except Exception as e:
             await self._complete(call_id, passed, status="error", error=f"{type(e).__name__}: {e}"[:4096])
             raise
-        await self._complete(call_id, passed, status="ok", result=event_hash(str(out)))   # a commitment, not the result
+        await self._complete(call_id, passed, status="ok",
+                             result=result_field(passed is not None and passed[0].get("send_result"), str(out)))
         return out
 
     async def _complete(self, call_id, passed, **fields):

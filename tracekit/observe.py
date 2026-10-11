@@ -23,8 +23,9 @@ import secrets
 import sys
 import threading
 import time
+import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 from .core import event_hash, read_text
 from .ledger import read_records, verify_record_sig
@@ -37,6 +38,7 @@ UI = os.path.join(HERE, "ui", "terminal.html")
 APPROVALS_UI = os.path.join(HERE, "ui", "approvals.html")
 RUNS_UI = os.path.join(HERE, "ui", "runs.html")
 MAX_POST = 64 * 1024
+MAX_INGEST = 20 * 1024 * 1024   # a why log batch (POST /v1/ingest)
 
 
 def _epoch(ts):
@@ -350,13 +352,16 @@ def _session(token):
     return hmac.new(token.encode(), b"tracekit-observe-session", hashlib.sha256).hexdigest()
 
 
-def make_handler(feed, token, allowed_hosts=None, secure=False, login=None, approvals=None, runs=None):
+def make_handler(feed, token, allowed_hosts=None, secure=False, login=None, approvals=None, runs=None, why=None):
     """`feed`: records, base, lock and verify() -> (records, problems, head), as Feed has. `secure`: served over HTTPS,
     so the session cookie is Secure. `login`: a view.OidcLogin; its sessions see the records of their tenant only
     (`feed.verify(tenant)` and each record's `tenant`). `approvals`: a view.ApprovalDesk; an approver's session gets
     /approvals, its GET API and, with the session's CSRF token in X-CSRF-Token, its JSON POSTs (the only requests that
     change state, and only on this handler). `runs`: a view.Runs; /runs and its GET API, for the token and every
-    session, each read scoped to the session's tenant by Runs itself; `feed` may then be None (`/` goes to /runs)."""
+    session, each read scoped to the session's tenant by Runs itself; `feed` may then be None (`/` goes to /runs).
+    `why`: a why.server.Store; its read API (/api/why/...) for the token only (why logs belong to no tenant, so never to
+    an OIDC session), its replay POSTs for the token with a same-origin JSON body, and /v1/ingest for the bearer token
+    only."""
     allowed = set(LOOPBACK_HOSTS) | {h.lower() for h in (allowed_hosts or ()) if h.lower() not in WILDCARD_HOSTS}
 
     class Handler(BaseHTTPRequestHandler):
@@ -452,6 +457,13 @@ def make_handler(feed, token, allowed_hosts=None, secure=False, login=None, appr
                                    + ("; Secure" if secure else ""))])
             if runs and u.path in ("/runs", "/api/runs", "/api/run", "/api/bundle"):
                 return self._runs(u, scope)
+            if why and u.path.startswith("/api/why/"):
+                if scope is not ALL:
+                    return self._send(403, '{"error":"why logs need the viewer token, not a sign-in"}')
+                m = re.match(r"^/api/why/runs/([^/]+)$", u.path)
+                if u.path != "/api/why/workspace" and not m:
+                    return self._send(404, '{"error":"not found"}')
+                return self._why(lambda: why.detail(unquote(m.group(1))) if m else why.workspace())
             if feed is None:
                 if u.path in ("/", "/index.html"):
                     return self._send(303, "", "text/plain", headers=[("Location", "/runs")])
@@ -512,35 +524,85 @@ def make_handler(feed, token, allowed_hosts=None, secure=False, login=None, appr
             if not (hmac.compare_digest(self.headers.get("X-CSRF-Token", "").encode(), s["csrf"].encode())
                     and self.headers.get("Content-Type", "").split(";")[0].strip() == "application/json"):
                 return self._send(403, '{"error":"missing or wrong CSRF token"}')
+            body = self._body(MAX_POST)
+            if body is None:
+                return
+            code, out = approvals.post(s, path, body)
+            return self._send(code, json.dumps(out, ensure_ascii=False))
+
+        def _body(self, limit):
+            """The request's JSON object, else None once the refusal is sent."""
             try:
                 n = int(self.headers.get("Content-Length", ""))
             except ValueError:
                 return self._send(411, '{"error":"needs a Content-Length"}')
-            if not 0 <= n <= MAX_POST:
+            if not 0 <= n <= limit:
                 return self._send(413, '{"error":"body too large"}')
             try:
                 body = json.loads(self.rfile.read(n))
             except (UnicodeDecodeError, ValueError):
                 body = None
-            if not isinstance(body, dict):
-                return self._send(400, '{"error":"the body is not a JSON object"}')
-            code, out = approvals.post(s, path, body)
-            return self._send(code, json.dumps(out, ensure_ascii=False))
+            return body if isinstance(body, dict) else self._send(400, '{"error":"the body is not a JSON object"}')
+
+        def _why(self, fn):
+            """Answer with `fn()`, the why Store's JSON; its refusals (why.server.IngestError) with their status."""
+            try:
+                out = fn()
+            except Exception as e:   # a broken run must not leave the request unanswered
+                if isinstance(e, ValueError) and hasattr(e, "status"):
+                    return self._send(e.status, json.dumps({"error": str(e)}, ensure_ascii=False))
+                traceback.print_exc()
+                return self._send(500, '{"error":"internal error"}')
+            return self._send(200, json.dumps(out, ensure_ascii=False, default=str))
+
+        def _why_post(self, path, bearer):
+            """POST /v1/ingest (the bearer token only) and the replay POSTs (the token, a same-origin JSON body)."""
+            if path == "/v1/ingest":
+                if not bearer:
+                    return self._send(401, '{"error":"ingest needs the token as a Bearer token"}')
+                body = self._body(MAX_INGEST)
+                if body is not None:
+                    self._why(lambda: why.ingest(body))
+                return
+            m = re.match(r"^/api/why/runs/([^/]+)/(tests|attribute)$", path)
+            if not m:
+                return self._send(404, '{"error":"not found"}')
+            if self._scope() is not ALL:
+                return self._send(401, '{"error":"missing or wrong token"}')
+            # CSRF: a JSON body needs a preflight a cross-site page never gets answered, on top of SameSite=Strict
+            if self.headers.get("Content-Type", "").split(";")[0].strip() != "application/json" or (
+                    self.headers.get("Origin") and urlparse(self.headers["Origin"]).netloc != self.headers.get("Host")):
+                return self._send(403, '{"error":"cross-origin request refused"}')
+            body = self._body(MAX_POST)
+            if body is None:
+                return
+            self.long_request()   # a replay takes as long as its trials
+            run_id = unquote(m.group(1))
+            return self._why(lambda: why.test(run_id, body) if m.group(2) == "tests" else why.attribute(run_id, body))
+
+        def long_request(self):
+            """A request that outlives the server's deadline (an event stream, a replay): view.server lifts it."""
 
         def finish(self):
             super().finish()
             drain(self.connection)
 
-        if approvals:
+        if approvals or why:
             def do_POST(self):
-                if _host_only(self.headers.get("Host")) not in allowed:
+                bearer = bool(token) and hmac.compare_digest(self.headers.get("Authorization", "").encode(),
+                                                             f"Bearer {token}".encode())
+                # remote agents ingest under the server's DNS name: the bearer token is enough, never the cookie
+                if _host_only(self.headers.get("Host")) not in allowed and not (why and bearer):
                     return self._send(403, '{"error":"unexpected Host header"}')
                 u = urlparse(self.path)
-                if u.path.startswith(("/api/approvals/", "/api/passkey")):
+                if approvals and u.path.startswith(("/api/approvals/", "/api/passkey")):
                     return self._desk(u.path, post=True)
+                if why:
+                    return self._why_post(u.path, bearer)
                 self._send(404, '{"error":"not found"}')
 
         def stream(self, i, scope=ALL):
+            self.long_request()
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
             self.send_header("Cache-Control", "no-store")

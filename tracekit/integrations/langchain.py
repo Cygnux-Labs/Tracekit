@@ -37,7 +37,7 @@ from langgraph.prebuilt import ToolNode
 from langgraph.types import interrupt
 
 from tracekit.format.canon import event_hash
-from tracekit.sdk.client import SignerUnavailable, fail_open
+from tracekit.sdk.client import SignerUnavailable, fail_open, result_field
 from tracekit.signer.rpc_schema import RPCError
 
 
@@ -107,7 +107,7 @@ class TracekitMiddleware(AgentMiddleware):
         if exc is not None:
             fields.update(status="error", error=f"{type(exc).__name__}: {exc}"[:4096])
         elif isinstance(out, ToolMessage):
-            fields["result"] = event_hash(out.content)   # a commitment, not the result itself
+            fields["result"] = result_field(decision.get("send_result"), out.content)
             if out.status == "error":
                 fields["status"] = "error"
         if event_hash({"tool": call["name"], "args": call["args"]}) != decision["args_digest"]:

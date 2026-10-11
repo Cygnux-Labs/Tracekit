@@ -530,6 +530,9 @@ export interface Decision extends Frame {
   rule_ids: string[];
   /** Set when the signer could not be reached: the decision is the run's fail mode, and nothing was recorded. */
   unavailable?: true;
+  /** Set for a tool the policy lists as untrusted: `complete` should carry the result itself, not its digest, so the
+   * signer can index its values for provenance. */
+  send_result?: true;
 }
 
 /** A registered run. Its methods fill in run_id and run_token; `fields` adds optional request fields. */

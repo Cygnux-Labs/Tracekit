@@ -7,10 +7,11 @@
  * timeout) refuses the call. A failure to record an outcome warns and changes nothing the framework sees.
  */
 import type { Decision, Frame, RunHandle } from "../client.js";
-import { argsDigest, digest } from "../jcs.js";
+import { argsDigest, canonicalize, digest } from "../jcs.js";
 
 export const BLOCKED = "Tool call blocked by policy: ";
 const MAX_OPEN_CALLS = 4096;   // per-call entries kept between a framework's hooks for one call
+const MAX_RESULT = 1 << 19;    // bytes of a result sent itself (half the signer's frame); a larger one goes as its digest
 
 /** Sets m[k]; drops the oldest entry past MAX_OPEN_CALLS. */
 export function keep<K, V>(m: Map<K, V>, k: K, v: V): void {
@@ -42,6 +43,7 @@ export async function approvalStates(run: RunHandle): Promise<Map<string, string
 export class Gate {
   private attempts = new Map<string, number>();   // tool_call_id -> the attempt its next execution is
   private passed = new Map<string, boolean>();    // tool_call_id -> let through (false: unrecorded, fail open)
+  private send = new Map<string, boolean>();      // tool_call_id -> its decision said send_result (an untrusted tool)
 
   constructor(readonly run: RunHandle) {}
 
@@ -70,6 +72,7 @@ export class Gate {
       return null;
     }
     if (d.decision === "deny") return refusal(d.rule_ids);
+    keep(this.send, id, d.send_result === true);
     try {
       if (d.decision === "ask" && waitMs !== undefined) {
         hint = (await this.run.approvalRequest(id, { attempt })).approval_id as string;
@@ -92,6 +95,7 @@ export class Gate {
   /** Records the outcome of a call admit() let through. Never rejects. */
   async complete(id: string, status: "ok" | "error", fields: Frame = {}): Promise<void> {
     const recorded = take(this.passed, id);
+    this.send.delete(id);
     if (recorded === undefined) return;
     const attempt = this.attempt(id);
     keep(this.attempts, id, attempt + 1);
@@ -108,8 +112,22 @@ export class Gate {
       await this.complete(id, "error", { error: failure(e) });
       throw e;
     }
-    await this.complete(id, "ok", commitment(out));
+    await this.complete(id, "ok", this.result(id, out));
     return out;
+  }
+
+  /** `complete`'s result for a call admit() let through: the result itself when its decision said `send_result` (an
+   * untrusted tool: the signer redacts it, commits to it and indexes its values for provenance) and it fits in a
+   * frame, else its digest (for an untrusted tool, the signer then marks the run's index partial). */
+  result(id: string, out: unknown): Frame {
+    if (!take(this.send, id)) return commitment(out);
+    try {
+      const c = canonicalize(out ?? null);
+      // lean: a larger result goes as its digest; send it in parts if that matters
+      return Buffer.byteLength(c, "utf8") <= MAX_RESULT ? { result: JSON.parse(c) } : commitment(out);
+    } catch {
+      return {};
+    }
   }
 }
 
@@ -142,7 +160,7 @@ export async function recordResponse(run: RunHandle, provider: string, model: st
 }
 
 /** `result` as a digest (a commitment, not the result), or nothing when it is not JSON. */
-export function commitment(out: unknown): Frame {
+function commitment(out: unknown): Frame {
   try {
     return { result: digest(out ?? null) };
   } catch {

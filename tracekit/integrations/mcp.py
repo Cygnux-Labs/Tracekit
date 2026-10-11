@@ -19,6 +19,7 @@ from mcp.types import CallToolResult, TextContent
 
 from tracekit.format.canon import event_hash
 from tracekit.integrations.held import HeldCalls
+from tracekit.sdk.client import result_field
 
 BLOCKED = "Tool call blocked by policy: "
 _UNSAFE = re.compile(r"[^A-Za-z0-9_.-]+")
@@ -51,5 +52,6 @@ class TracekitSession(HeldCalls):
             await self._complete(call_id, req, status="error", error=f"{type(e).__name__}: {e}"[:4096])
             raise
         await self._complete(call_id, req, status="error" if getattr(out, "is_error", False) else "ok",
-                             result=event_hash(out.model_dump(mode="json", by_alias=True, exclude_none=True)))
+                             result=result_field(d.get("send_result"),
+                                                 out.model_dump(mode="json", by_alias=True, exclude_none=True)))
         return out
