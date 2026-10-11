@@ -163,7 +163,8 @@ class Tx:
         self.set(log.head, "prev", r["hash"])
         self.set(run, "run_seq", e["run_seq"] + 1)
         self.set(run, "head", r["hash"])
-        reconcile.observe(self.set, run, e, digests)
+        for kind, tcid, layers, detail in reconcile.observe(self.set, run, e, digests):
+            self.emit(run, "reconcile." + kind, {"layers": layers, "detail": detail}, source="signer", tool_call_id=tcid)
         return e["run_seq"]
 
     def event(self, run, req, typ, data, digests=None, **top):
@@ -212,6 +213,9 @@ class RecordLog:
         self.done = OrderedDict()   # (scheme, subject, request_id) -> (payload digest, response)
         self._done_by = {}   # (scheme, subject) -> deque of its keys in `done`, oldest first
         self.refuse_writes = None   # a reason to answer client writes `unavailable`, e.g. an unacknowledged rollback
+        # run key -> [first, last, {method: count}] of writes refused because the run was final, until
+        # SignerService.flush_refusals writes them as late_activity (memory only)
+        self.late = {}
         self.down, self._last_try = None, 0.0
         self._replay()
         if bridge and self.head["seq"]:
@@ -390,8 +394,12 @@ class RecordLog:
 
     def leaves(self, r, tenants):
         """[(tenant, leaf)] of record `r`: none, its tenant's (added to `tenants`, the tenants with a registry), or
-        for a signer-level record (a gap or tamper record only when marked `tenant_level`) one in every registry."""
+        for a signer-level record (a gap or tamper record only when marked `tenant_level`) one in every registry. A gap
+        in a tenant's signer run (late_activity) is in that tenant's registry only."""
         typ, tenant = r["event"]["type"], r["event"]["tenant"]
+        if typ == "capture.gap" and r["event"]["run_id"] == SIGNER_RUN[1] and tenant != SIGNER_RUN[0]:
+            tenants.add(tenant)
+            return [(tenant, self.leaf(r))]
         if typ in registry.GAP_LEAVES and not r["event"]["data"].get("tenant_level"):
             return []
         if typ in registry.SIGNER_LEAVES:
@@ -435,7 +443,7 @@ class RecordLog:
             raise RPCError("unavailable", self.refuse_writes)
         digest = hashlib.sha256(json.dumps([method, req], sort_keys=True, default=repr).encode()).hexdigest()
         start = time.monotonic()
-        out = self._wait(lambda tx: self._item(tx, identity, req, digest, fn, run_key, late))
+        out = self._wait(lambda tx: self._item(tx, identity, method, req, digest, fn, run_key, late))
         self.metrics.ack_seconds.observe(time.monotonic() - start)
         return out
 
@@ -451,7 +459,7 @@ class RecordLog:
             self._q.put((fn, fut))
         return fut.result()
 
-    def _item(self, tx, identity, req, digest, fn, run_key, late):
+    def _item(self, tx, identity, method, req, digest, fn, run_key, late):
         rid = (identity.scheme, identity.subject, req["request_id"]) if "request_id" in req else None
         if rid in self.done:
             if self.done[rid][0] != digest:
@@ -462,6 +470,10 @@ class RecordLog:
             run = self.runs.get(run_key)
             if run is None:
                 raise RPCError("unknown_run", run_key[1])
+            if run["final"]:
+                now = time.time()
+                first, _, by = self.late.get(run_key) or (now, now, {})
+                self.late[run_key] = [first, now, {**by, method: by.get(method, 0) + 1}]
             if run["final"] or (run["closed"] and not late):
                 raise RPCError("run_closed", run_key[1])
             tx.set(run, "active", time.monotonic())

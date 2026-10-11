@@ -1,8 +1,12 @@
 """Claude Code hook on the v2 signer RPC: a thin client. The signer decides with its policy packs, signs and stores;
 this process holds no key, evaluates no policy and writes no ledger.
 
-    python -I -m tracekit.integrations.claude_code   (wired by `tracekit init --dev --v2`, or as root by
-                                                      `tracekit init --v2 --user AGENT`: system mode)
+    python -I -m tracekit.integrations.claude_code EVENT   (wired by `tracekit init --dev --v2`, or as root by
+                                                            `tracekit init --v2 --user AGENT`: system mode)
+
+EVENT is the hook event `tracekit init` configured this command for (PreToolUse, PostToolUse, ...): a payload that is
+not a JSON object still blocks a PreToolUse call (an allowed call that never completes is the signer's
+decided_not_completed gap). Without it (hooks installed before 1.2) the event comes from the payload alone.
 
 Each hook is a new process, so the run of a Claude Code session (id, token, fail modes, and the one event stream and
 next client_seq all its hooks share) and the decision binding of a tool call are kept in the runtime dir between hooks.
@@ -112,9 +116,7 @@ def _tail(client, path, st):
     handle = {"run_id": st["run_id"], "run_token": st["run_token"], "path": st["transcript"]}
     sc = system_config() or {}
     t = sc.get("tailer")
-    # lean: a tailer that dies or is killed (the agent's uid can signal it, through sudo too) leaves no gap; have the
-    # signer expect a final report from each delegated tailer at run.final if that matters
-    argv = None
+    argv = None   # a tailer that dies or is killed stops its heartbeats: the signer writes the tailer_lost gap
     if t:
         # this tailer cannot see SessionEnd (the session state is the agent's): it exits once a call finds the run
         # final, or with a tailer_lost after tailer.IDLE_TAILER_S without a new line
@@ -251,13 +253,19 @@ def _handle(client, p, name, sid, tid):
     return 0
 
 
-def _entry():
+def _entry(event=None):
+    """`event`: the hook event from the command line, or None."""
     raw = sys.stdin.read()
     try:
         p = json.loads(raw) if raw.strip() else {}
     except ValueError:
-        p = {}
-    return handle(p if isinstance(p, dict) else {})
+        p = None
+    if not isinstance(p, dict) and event:
+        pre = event == "PreToolUse"
+        print(f"[tracekit] the {event} hook payload is not a JSON object; "
+              + ("tool call blocked" if pre else "event not recorded"), file=sys.stderr)
+        return 2 if pre else 0
+    return handle(dict(p, hook_event_name=event) if event else p if isinstance(p, dict) else {})
 
 
 def handle(p):
@@ -295,4 +303,4 @@ def handle(p):
 
 
 if __name__ == "__main__":
-    sys.exit(_entry())
+    sys.exit(_entry(*sys.argv[1:2]))

@@ -14,7 +14,7 @@
         {"type": "web_search_tool_result", "tool_use_id": "srvtoolu_1", "content": []},
         {"type": "tool_use", "id": "toolu_1", "name": "Bash", "input": {"command": "ls"}}],
       "usage": {"input_tokens": 7, "output_tokens": 9, "cache_read_input_tokens": 100, "cache_creation_input_tokens": 50}},
-    "expect": {"exchange_id": "msg_1", "model": "claude-sonnet-5-5-20260101", "finish": "tool_use", "usage": {"input_tokens": 7, "output_tokens": 9, "cache_read_tokens": 100, "cache_write_tokens": 50}, "tool_uses": [{"id": "srvtoolu_1", "name": "web_search", "executed_by": "provider"}, {"id": "toolu_1", "name": "Bash", "executed_by": "client", "args_source": "parsed", "args_digest": "sha256:3c4c0234f3fd581a998c6c92ee8487a3bf04eca566ab7e58f0a5f67dbd9fc504"}], "tool_results_sent": ["toolu_prev"]}
+    "expect": {"exchange_id": "msg_1", "model": "claude-sonnet-5-5-20260101", "finish": "tool_use", "usage": {"input_tokens": 7, "output_tokens": 9, "cache_read_tokens": 100, "cache_write_tokens": 50}, "tool_uses": [{"id": "srvtoolu_1", "name": "web_search", "executed_by": "provider", "args_source": "parsed", "args_digest": "sha256:b25938767f7b190c25ffca20d3f157852112c632ea7eec414563299185450cb8"}, {"id": "toolu_1", "name": "Bash", "executed_by": "client", "args_source": "parsed", "args_digest": "sha256:3c4c0234f3fd581a998c6c92ee8487a3bf04eca566ab7e58f0a5f67dbd9fc504"}], "tool_results_sent": ["toolu_prev"]}
   },
   {
     "name": "stream: the input JSON accumulated from deltas is the raw string; a tool with no deltas keeps {}",

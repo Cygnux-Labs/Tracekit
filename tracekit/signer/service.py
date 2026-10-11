@@ -40,6 +40,8 @@ signer.yaml:
                                              # methods; uid and token:dev default to all, the rest to none
     multi_tenant_apps: ["uid:1002"]          # may assert a tenant per run (recorded as not attested), or a
                                              # bridge's on_behalf person's tenant
+    multi_run_apps: ["k8s_sa:system:serviceaccount:acme:*"]   # owners that run several runs at once by design: no
+                                             # concurrent_run gap for them (below)
     migrators: ["uid:1003"]                  # may register `migrated` runs
     analyzers: ["uid:1004"]                  # may register findings runs, each bound to the run it analyses, and
                                              # `tracekit why` replay runs of it (replay_of)
@@ -110,9 +112,19 @@ tamper records are signer-level records with a leaf in every tenant's registry, 
 
 Run lifecycle (04-design §2.7): run.registered → events → close_run or the idle timeout (paused while an approval is
 pending) → run.closing → grace window, where only late records (complete, state_write, model_event, tailer_lost) are
-accepted → the run's reconcile.* records (tracekit.signer.reconcile) → run.final{head, coverage}. run.registered and
-run.final also get a leaf in the tenant's registry log (tracekit.format.registry), log.closed and key.retire one in
-every tenant's. Gap and tamper records are written by the signer only: no request can carry an event type, source,
+accepted → the run's reconcile.* records (tracekit.signer.reconcile) → run.final{head, coverage}.
+
+Completeness (docs/limits.md): at run.final each latest decide of a call that was allowed, or asked and its approval
+consumed, with no `complete` is a signed `capture.gap{decided_not_completed}` (DECIDED_GAPS_MAX per run, then one with
+the rest counted). A run registered while another of the same owner and tenant (and harness process) is open, in
+another session (`parent`), gets a `capture.gap{concurrent_run}` naming it, unless the owner is in multi_run_apps.
+close_run's `last_client_seq` turns each stream's values never received into a client_counter_gap. A tailer that sent
+`tailer_heartbeat` and stops for TAILER_LOST_S while its run is open gets a tailer_lost gap. Writes refused because
+their run is final are counted per run and written with the refusal summaries as a `capture.gap{late_activity}` in the
+tenant's signer run, which (unlike the run's own records) gets a leaf in the tenant's registry, so a run-set shows it.
+
+run.registered and run.final also get a leaf in the tenant's registry log (tracekit.format.registry), log.closed and
+key.retire one in every tenant's. Gap and tamper records are written by the signer only: no request can carry an event type, source,
 isolation or fail mode.
 
 Checkpoints (04-design §1.6, §2.9): a C2SP note of the record tree, signed by the log key (keys/log.key or AWS KMS,
@@ -273,6 +285,9 @@ PROVENANCE_MAX, PROVENANCE_SHOWN = 20_000, 16   # index entries per run (then tr
 PROVENANCE_S = engine.REGEX_TIMEOUT_S   # reading a decision's argument values: the same budget as its policy match
 CLASSES = ("public", "customer", "tracekit", "operator")
 GRACE_S, IDLE_S = 5.0, 3600.0
+HEARTBEAT_S = 30.0   # how often a transcript tailer sends tailer_heartbeat
+TAILER_LOST_S = 3 * HEARTBEAT_S   # a tailer silent this long while its run is open is lost
+DECIDED_GAPS_MAX = 100   # decided_not_completed gaps per run, then one gap counting the rest
 FAIL_MODES = {"default": "closed"}
 TLOG_PATH = re.compile(r"/(?:registry/([0-9a-f]{32})/)?(?:(checkpoint)|tile/(entries|[0-9]|[1-5][0-9]|6[0-3])/"
                        r"((?:x[0-9]{3}/)*[0-9]{3})(?:\.p/([1-9][0-9]?|1[0-9][0-9]|2[0-4][0-9]|25[0-5]))?)")
@@ -281,7 +296,7 @@ CONFIG_KEYS = {"data_dir", "socket", "socket_mode", "tcp_endpoint", "http", "dur
                "fail_modes", "grace_s", "idle_s", "origin", "metrics", "witnesses", "contact", "approvals",
                "lock_timeout_s", "fsck_every_s", "clock_skew_s", "anchors", "otlp", "otel_out", "storage", "gateways",
                "gateway_mandatory", "log_key", "harness_binding", "record_key", "route", "view", "decision_keys",
-               "webhook", "content"}
+               "webhook", "content", "multi_run_apps"}
 APPROVAL_KEYS = {"self_approval", "approvers", "break_glass", "persons", "webauthn"}
 OTLP_IMPORT = "otlp_import"   # an `authorize` grant, never a default: OTLP/HTTP import (otlp config section)
 ON_BEHALF = "approval_decide_on_behalf"   # an `authorize` grant, never a default: a bridge answers for its people
@@ -293,8 +308,8 @@ CONTENT_READ = "content_read"   # an `authorize` grant, never a default: content
 DEFAULT_GRANTS = frozenset({
     "register_run", "decide", "complete", "observe", "state_write", "model_event", "approval_request",
     "approval_decide", "approval_wait", "approval_consume", "approval_get", "approval_list", "approval_abandon",
-    "close_run", "delegate_run", "tailer_lost", "status", "read", "checkpoint_nudge", "passkey_register",
-    "why_finding"})
+    "close_run", "delegate_run", "tailer_lost", "tailer_heartbeat", "status", "read", "checkpoint_nudge",
+    "passkey_register", "why_finding"})
 NEVER_DEFAULT = frozenset({DECISION_IMPORT, ON_BEHALF, "content_get", "content_erase"})
 CONTENT = {"retain": False, "retention_days": 30, "max_record_bytes": 1 << 20}   # the `content` config section
 CONTENT_SWEEP_S = 3600.0
@@ -443,14 +458,14 @@ class SignerService:
                  fsck_every_s=FSCK_S, clock_skew_s=CLOCK_SKEW_S, rekor=None, otlp=None, otel_out=None,
                  storage_config=None, gateways=(), gateway_mandatory=False, log_key=None, slh_dsa_file=None,
                  harness_binding=None, record_key=None, route=None, oidc=None, decision_keys=None, webhooks=(),
-                 content=None):
+                 content=None, multi_run_apps=()):
         """`identity` answers the in-process SignerAPI calls (default: this process's uid); transports call
         handle_frame with the identity they established. `policy` is a policy2 Engine (default: load_policy()).
         `open_storage()` defaults to the store `storage_config` (the `storage` config section) names, else file storage
         in data_dir/store. `origin` names the log in its checkpoints, `contact` its operator in the logs list.
         `witnesses` cosign its notes (see the module docstring).
-        `multi_tenant_apps`, `migrators` and `analyzers` are identities ("scheme:subject"); `tenants` and `authorize`
-        map identities or prefixes (`...:*`, `.../*`) to a tenant and to the methods they may call.
+        `multi_tenant_apps`, `migrators` and `analyzers` are identities ("scheme:subject"), `multi_run_apps` identities
+        or prefixes; `tenants` and `authorize` map identities or prefixes (`...:*`, `.../*`) to a tenant and to the methods they may call.
         `isolation` fixes the signer_isolation label of every run (a dev signer: same-user). `bridge`: see RecordLog.
         `approvals`: who answers approvals (the `approvals` config section); None for the dev signer's rules.
         `lock_timeout_s`, `fsck_every_s` (0: no background check) and `clock_skew_s`: see the config keys.
@@ -562,6 +577,8 @@ class SignerService:
         self.identity = identity or _process_identity()
         self.tenant, self.tenants, self.authorize = tenant, dict(tenants or {}), authorize
         self.multi_tenant_apps, self.migrators, self.analyzers = set(multi_tenant_apps), set(migrators), set(analyzers)
+        self._multi_run = {k: True for k in multi_run_apps}
+        self._beats, self._beats_lock = {}, threading.Lock()   # run key -> monotonic time of its tailer's last heartbeat
         self._gateways, self.gateway_mandatory = {k: True for k in gateways}, bool(gateway_mandatory)
         self.fail_modes, self.grace_s, self.idle_s = fail_modes, grace_s, idle_s
         self.otlp_max_spans = otlp.get("max_spans", OTLP_MAX_SPANS)
@@ -1104,12 +1121,33 @@ class SignerService:
 
     def _finish_run(self, tx, key, run, aids):
         """run.final for closing `run`, whose approvals are `aids`; returns the ids of those that expired with it."""
+        consumed = {(a["tool_call_id"], a["attempt"]) for a in map(self.log.approvals.get, aids)
+                    if a["state"] == "consumed"}
         expired = [self._expire(tx, run, aid) for aid in aids   # nothing can consume them once the run is final
                    if self.log.approvals[aid]["state"] in LIVE]
+        # each call's latest decide that let it run (allowed, or asked and approved) with no `complete`
+        open_calls = [c for did, c in run["decisions"].items()
+                      if c and (run["calls"].get(c["tool_call_id"]) or {}).get("decision_id") == did
+                      and (c["decision"] in ("allow", "flag") or (c["tool_call_id"], c["attempt"]) in consumed)]
+        for c in open_calls[:DECIDED_GAPS_MAX]:
+            tcid = c["tool_call_id"]
+            tx.emit(run, "capture.gap", {
+                "kind": "decided_not_completed", "tool_use_id": tcid,
+                "reason": f"{tcid} ({str(c.get('tool') or '?')[:200]}) was "
+                          f"{'approved' if c['decision'] == 'ask' else 'allowed'} and never completed: no result "
+                          "reached the signer (the agent stopped, its post-call hook did not run, or the result was "
+                          "dropped)"}, source="signer", tool_call_id=tcid, attempt=c["attempt"])
+        if len(open_calls) > DECIDED_GAPS_MAX:
+            n = len(open_calls) - DECIDED_GAPS_MAX
+            tx.emit(run, "capture.gap", {"kind": "decided_not_completed", "missed_events": n,
+                                         "reason": f"{n} more allowed or approved calls never completed"},
+                    source="signer")
         coverage = reconcile.finish(tx, run, self.gateway_mandatory)
+        provider = len((run.get("rec") or {}).get("provider", ()))
         tx.set(run, "final", True)
         tx.emit(run, "run.final", {"head_run_seq": run["run_seq"] - 1, "head_hash": run["head"],
-                                   **({"coverage": coverage} if coverage else {})}, source="signer")
+                                   **({"coverage": coverage} if coverage else {}),
+                                   **({"provider_executed": provider} if provider else {})}, source="signer")
         tx.set(self.log.runs, key, final_run(run))   # its calls, decisions and arguments go
         tx.pop(self.log.live, key)
         for aid in aids:   # all ended now: nothing can use them
@@ -1119,15 +1157,18 @@ class SignerService:
         return expired
 
     def sweep(self, now=None, wall=None):
-        """Close idle runs, write run.final for runs whose grace window has passed and expire approvals.
-        `now`: a monotonic time; `wall`: a time.time() for approval expiry."""
-        finals = []
+        """Close idle runs, write run.final for runs whose grace window has passed, expire approvals and write the
+        tailer_lost gap of runs whose tailer stopped its heartbeats. `now`: a monotonic time; `wall`: a time.time()
+        for approval expiry."""
+        finals, lost = [], []
 
         def fn(tx):
             t = time.monotonic() if now is None else now
             paused = max(0.0, t - self._swept)
             self._swept = max(self._swept, t)
             expired, mine, deadline = [], self._approvals_by_run(), _iso(time.time() if wall is None else wall)
+            with self._beats_lock:
+                beats = dict(self._beats)
             for key in list(self.log.live):
                 run, live = self.log.runs[key], [aid for aid in mine.get(key, ())
                                                  if self.log.approvals[aid]["state"] in LIVE]
@@ -1140,12 +1181,20 @@ class SignerService:
                         expired.append(self._expire(tx, run, aid))
                 if run["closed"]:
                     continue
+                if key in beats and t - beats[key] >= TAILER_LOST_S:
+                    tx.emit(run, "capture.gap", {"kind": "tailer_lost", "reason": f"no tailer_heartbeat for "
+                            f"{t - beats[key]:.0f}s while the run was open: the transcript tailer stopped or was "
+                            "killed; what the transcript says after that is not recorded"}, source="signer")
+                    lost.append(key)
                 if any(self.log.approvals[aid]["state"] == "requested" for aid in live):
                     tx.set(run, "active", run["active"] + paused)   # the idle clock pauses while an approval is pending
                 elif t - run["active"] >= self.idle_s:
                     tx.closing(run, "idle_timeout", source="signer")
             return expired
         expired = self.log.write(fn)
+        with self._beats_lock:   # a lost tailer's run expects no more heartbeats, a final run none at all
+            for key in lost + finals:
+                self._beats.pop(key, None)
         if finals:
             self._nudged.set()
         for key in finals if self._exporter else ():
@@ -1160,7 +1209,7 @@ class SignerService:
         """Write the refusals counted since the last flush as `refusal.summary` records, one per identity and code."""
         with self._refusals_lock:
             counted, self._refusals = self._refusals, {}
-        if not counted:
+        if not counted and not self.log.late:
             return
 
         def write(tx):
@@ -1168,6 +1217,15 @@ class SignerService:
             for (scheme, subj, code), (first, last, n) in counted.items():
                 tx.emit(run, "refusal.summary", {"code": code, "count": n, "from_ts": _iso(first), "to_ts": _iso(last),
                                                  "identity": f"{scheme}:{subj}"[:256]}, source="signer")
+            late = self.log.late
+            tx.set(vars(self.log), "late", {})   # the writer's counts since the last flush (kept if this write fails)
+            for (tenant, run_id), (first, last, by) in late.items():
+                n = sum(by.values())
+                tx.emit(self.log.signer_run(tx, tenant), "capture.gap", {
+                    "kind": "late_activity", "run_id": run_id, "missed_events": n, "from_ts": _iso(first),
+                    "to_ts": _iso(last), "reason": f"{n} write(s) to run {run_id} after its run.final, refused and not "
+                    "recorded in it (" + ", ".join(f"{m} {k}" for m, k in sorted(by.items())) + "): a client kept "
+                    "working after its run ended; register a new run for new work"}, source="signer")
         try:
             self.log.write(write)
         except RPCError:   # storage down: keep the counts for the next flush
@@ -1562,8 +1620,30 @@ class SignerService:
             if harness:
                 data["harness"] = dict(harness, attested=True)
             tx.emit(run, "run.registered", data, request_id=req["request_id"], **top)
+            other = n and not req.keys() & {"analyzes", "replay_of", "source"} and not lookup(
+                self._multi_run, sub, False) and self._overlapping(tenant, run_id, own, run.get("harness"),
+                                                                   run.get("session", run_id))
+            if other:
+                tx.emit(run, "capture.gap", {
+                    "kind": "concurrent_run", "run_id": other,
+                    "reason": f"run {other} of the same owner{' and harness process' if harness else ''} is still open "
+                              "and in another session: one of the two may not be what it says. A sub-agent's run "
+                              "passes `parent`; owners that run several runs at once by design go in signer.yaml "
+                              "multi_run_apps"}, source="signer")
             return out
         return self.log.submit(identity, "register_run", req, fn)
+
+    def _overlapping(self, tenant, run_id, own, harness, session):
+        """An open run of `own` in `tenant` (with `harness`, the same harness process) and another session than run
+        `run_id`'s, or None (on the writer)."""
+        # lean: scans the open runs; index them by owner if an owner not in multi_run_apps keeps thousands open
+        for key in self.log.live:
+            r = self.log.runs[key]
+            if (key[0] == tenant and key[1] != run_id and r["owner"] == own and not r["closed"]
+                    and (tuple(r["harness"]) if r.get("harness") else None) == harness
+                    and r.get("session", key[1]) != session):
+                return key[1]
+        return None
 
     def _decide(self, identity, req):
         key = self._authorize(identity, req)
@@ -1755,13 +1835,18 @@ class SignerService:
             return {"run_seq": seq}
         return self.log.submit(identity, "state_write", req, fn, key, late=True)
 
+    def _caller(self, identity, req):
+        """The client a `gateways` identity names in `caller`, which must itself be granted model_event."""
+        if not lookup(self._gateways, subject(identity), False):
+            raise RPCError("forbidden", f"{subject(identity)[:256]} is not a configured gateway")
+        caller = CallerIdentity(*req["caller"].split(":", 1), True)
+        self._grant(caller, "model_event")
+        return caller
+
     def _model_event(self, identity, req):
         top, out = {}, None
         if "caller" in req:   # an LLM gateway reports the exchange of the client it authenticated, under its run token
-            if not lookup(self._gateways, subject(identity), False):
-                raise RPCError("forbidden", f"{subject(identity)[:256]} is not a configured gateway")
-            identity = CallerIdentity(*req["caller"].split(":", 1), True)
-            self._grant(identity, "model_event")
+            identity = self._caller(identity, req)
             top, out = {"source": "gateway"}, {"fail_modes": self.fail_modes}
         keep, content_digest = None, req.get("content_digest")
         if "body" in req:   # committed to after redaction, as a result is; kept when the vault is on
@@ -2036,13 +2121,38 @@ class SignerService:
         return out
 
     def _close_run(self, identity, req):
+        gateway = "caller" in req
+        if gateway:   # a gateway ends its stream of the client's run: the run stays as it is
+            identity = self._caller(identity, req)
         key = self._authorize(identity, req)
         self.quotas.take_event(identity)
 
         def fn(tx, run):
+            for s in req.get("last_client_seq", ()):
+                stream, last = s["stream"], run["streams"].get(s["stream"], -1)
+                if stream not in run["streams"]:
+                    self.quotas.check_count("streams_per_run", len(run["streams"]))
+                if s["client_seq"] > last:
+                    tx.emit(run, "capture.gap", {"kind": "client_counter_gap", "missed_events": s["client_seq"] - last,
+                                                 "reason": f"stream {stream} ended at client_seq {s['client_seq']}; "
+                                                           f"{last + 1}..{s['client_seq']} never reached the signer"},
+                            source="signer", stream=stream)
+                    tx.set(run["streams"], stream, s["client_seq"])
+            if gateway:
+                return {"run_id": req["run_id"], "state": "closing" if run["closed"] else "open",
+                        "run_seq": run["run_seq"] - 1}
             return {"run_id": req["run_id"], "state": "closing",
                     "run_seq": tx.closing(run, "close_run", request_id=req["request_id"])}
-        return self.log.submit(identity, "close_run", req, fn, key)
+        return self.log.submit(identity, "close_run", req, fn, key, late=gateway)
+
+    def _tailer_heartbeat(self, identity, req):
+        key = self._authorize(identity, req)
+        self.quotas.take_event(identity)
+        if self.log.runs[key]["final"]:
+            raise RPCError("run_closed", req["run_id"])
+        with self._beats_lock:
+            self._beats[key] = time.monotonic()
+        return {}
 
     def _delegate_run(self, identity, req):
         tenant, run_id = self._authorize(identity, req)
@@ -2582,7 +2692,7 @@ def open_service(cfg, **kw):
                          gateway_mandatory=cfg.get("gateway_mandatory") is True,
                          harness_binding=cfg.get("harness_binding"), record_key=cfg.get("record_key"),
                          route=cfg.get("route"), decision_keys=cfg.get("decision_keys"), webhooks=cfg.get("webhook", ()),
-                         content=cfg.get("content"), **kw)
+                         content=cfg.get("content"), multi_run_apps=cfg.get("multi_run_apps", ()), **kw)
 
 
 def _oidc(cfg):

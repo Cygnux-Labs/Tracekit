@@ -104,13 +104,13 @@ class Translate(unittest.TestCase):
     def test_gaps_and_signer_records_in_words_and_the_signer_is_no_agent(self):
         gap, final = self.feed(
             v2rec(1, "capture.gap", {"kind": "client_counter_gap", "missed_events": 3, "reason": "stream s skipped"}),
-            v2rec(2, "run.final", {"head_run_seq": 1, "coverage": {"layers": ["L2"], "reconciled": 0,
-                                                                   "unreconciled": {"hook_missing": 1}}}))
+            v2rec(2, "run.final", {"head_run_seq": 1, "provider_executed": 2, "coverage": {
+                "layers": ["L2"], "reconciled": 0, "unreconciled": {"hook_missing": 1}}}))
         self.assertEqual((gap["tape"], gap["title"], gap["text"], gap["v2"]["kind"]),
                          ("GAP", "GAP · client_counter_gap", "stream s skipped · 3 events missed",
                           "client_counter_gap"))
         self.assertEqual(final["reason"], "final · head run_seq 1 · coverage L2 · reconciled 0 · unreconciled "
-                                          "hook_missing 1")
+                                          "hook_missing 1 · provider-run tools 2")
         signer = view.SIGNER_RUN[1]
         epoch, refused = self.feed(
             v2rec(0, "signer.epoch", {"keys": [{"kid": "sha256:6cb1e807d62770b7", "alg": "ed25519"}]}, run=signer),
@@ -141,7 +141,8 @@ class Translate(unittest.TestCase):
         self.assertEqual(rv["approvals"], [{"decision": "approve", "tool_use_id": "c4", "approver": "uid:501 (attested)",
                                             "via": None, "self_approved": True, "break_glass": False, "seq": 6}])
         self.assertEqual(rv["gaps"], {"signer_unavailable": 1, "reconcile.hook_missing": 1})
-        self.assertEqual(rv["coverage"], {"layers": ["L2", "L3"], "reconciled": 4, "unreconciled": {}})
+        self.assertEqual(rv["coverage"], {"layers": ["L2", "L3"], "reconciled": 4, "unreconciled": {},
+                                          "provider_executed": 0})
         self.assertEqual(rv["first"], {"allow": 2, "deny": 3, "ask": 5, "approval": 6, "gap:signer_unavailable": 7,
                                        "gap:reconcile.hook_missing": 8})
         self.assertEqual((rv["first_ts"], rv["last_ts"]), ("2026-10-10T17:00:01.000000Z", "2026-10-10T17:00:10.000000Z"))

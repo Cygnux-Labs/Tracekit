@@ -93,7 +93,30 @@ If the signer can't be reached, the run's fail mode for class `model` applies (t
 closed by default): closed answers 503 and forwards nothing. Open forwards only for a run, token and identity the
 signer has already accepted through this gateway.
 Each run's records from one gateway share a stream and counter, so exchanges forwarded while the signer was
-down show as a signed `client_counter_gap` once a later exchange of that run is recorded.
+down show as a signed `client_counter_gap` once a later exchange of that run is recorded. **(1.2)** When the gateway
+drops a run from memory (it keeps the last 10,000) or stops, it tells the signer where the stream of each run with
+unrecorded exchanges ended (`close_run` with `caller` and `last_client_seq`; the gateway's identity needs the
+`close_run` grant), so those become a gap too; the run stays as it is.
+
+### Provider-run tools (1.2)
+
+Tools the provider runs itself (Anthropic `server_tool_use` and `mcp_tool_use`, OpenAI `web_search_call`,
+`file_search_call`, `code_interpreter_call`, `mcp_call`, hosted shell and server tool search) are recorded with
+`executed_by: provider` and, where the provider returns their input (a search's query, the code, the MCP arguments),
+an args commitment of it. No decide covers them, so reconciliation counts them (`provider_executed` on `run.final`)
+and never reports one as `fabricated`.
+
+They run mid-response, so no policy can hold one. To keep them out, refuse the requests that declare them:
+
+```yaml
+provider_tools: {deny: [web_search_preview, code_interpreter, mcp_servers]}   # or allow: [...], refusing the rest
+```
+
+Names are those `tracekit why` uses: an Anthropic typed tool the client doesn't run by its `name` (`web_search`,
+`code_execution`), `mcp_servers` and `container`; an OpenAI tool of a type other than `function` and `custom` by its
+type (`web_search_preview`, `code_interpreter`, `mcp:<server_label>`, also client-run types such as
+`computer_use_preview`: allow them by name if you use `allow`), and `web_search_options`. A refused request is answered
+403 `provider tool(s) ... not allowed by this gateway's provider_tools` and never reaches the provider or the signer.
 
 ## Replay runs
 
@@ -109,7 +132,9 @@ call whose request enables one (OpenAI Responses tools other than function and c
 
 ## Reconciliation
 
-Gateway tool uses are L3 and take precedence over agent-reported L3 (autotrace) for the same tool call id. With
+Gateway tool uses are L3 and take precedence over agent-reported L3 (autotrace) for the same tool call id. **(1.2)** A
+gateway request that sends back the result of a gateway tool use no decide covers is recorded as
+`reconcile.hook_missing` at once, mid-run, so whatever watches the signed records sees it before the run ends. With
 `gateway_mandatory: true`, only gateway L3 counts: a decide the gateway never saw is `reconcile.fabricated` and a
 gateway tool use with no decide is `reconcile.hook_missing`, whatever the agent reported. Use it when every model call
 must go through the gateway.

@@ -259,7 +259,8 @@ class TestService(unittest.TestCase):
         s = self.open()
         self.register(s)
         s.close()
-        gaps = [r["event"]["data"] for r in records(self.dir) if r["event"]["type"] == "capture.gap"]
+        gaps = [r["event"]["data"] for r in records(self.dir) if r["event"]["type"] == "capture.gap"
+                and r["event"]["data"]["kind"] != "concurrent_run"]
         self.assertEqual(len(gaps), 1)
         self.assertIn("registry.jsonl set aside", gaps[0]["reason"])
         self.assertEqual(svc.fsck(self.dir), [])

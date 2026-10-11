@@ -237,7 +237,7 @@ class InitV2(unittest.TestCase):
             hooks = json.load(f)["hooks"]
         self.assertEqual(set(hooks), set(install.TOOL_EVENTS + install.OTHER_EVENTS))
         cmd = hooks["PreToolUse"][0]["hooks"][0]["command"]
-        self.assertEqual(cmd, HOOK)
+        self.assertEqual(cmd, install._hook_command(install.V2_HOOK, args=("PreToolUse",)))
         self.assertIn(" -I ", cmd)
         self.assertTrue(os.path.isabs(shlex.split(cmd)[0]), cmd)
         self.assertTrue(all(install._is_ours(g) for gs in hooks.values() for g in gs))

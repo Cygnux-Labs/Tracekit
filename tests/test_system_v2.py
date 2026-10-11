@@ -37,7 +37,7 @@ class SignerConfig(unittest.TestCase):
         self.assertEqual(cfg["tenant"], "local")
         self.assertEqual(cfg["approvals"], {"self_approval": "deny", "approvers": ["uid:501"]})
         self.assertEqual(cfg["policy"], POLICY)
-        self.assertEqual(cfg["authorize"], {"uid:64102": ["model_event", "state_write", "tailer_lost", "status"]})
+        self.assertEqual(cfg["authorize"], {"uid:64102": ["model_event", "state_write", "tailer_lost", "tailer_heartbeat", "status"]})
 
     def test_unit_is_hardened_with_no_capabilities(self):
         unit = install.V2_UNIT_TEXT.format(user="tracekit-signer", python=install.OPT_PYTHON,
@@ -204,7 +204,7 @@ class InstallAndUninstall(unittest.TestCase):
                                                                                       "agent": "claude"},
                                                          tailer={"user": self.me.pw_name, "uid": self.me.pw_uid,
                                                                  "python": install.OPT_PYTHON}))
-        self.assertIn(f'authorize:\n  "uid:{self.me.pw_uid}": [model_event, state_write, tailer_lost, status]', yaml)
+        self.assertIn(f'authorize:\n  "uid:{self.me.pw_uid}": [model_event, state_write, tailer_lost, tailer_heartbeat, status]', yaml)
         self.assertEqual(hooks.call_args.kwargs, {"owner": AGENT, "python": install.OPT_PYTHON,
                                                   "module": install.V2_HOOK, "signer": sock})
         self.assertIn(["systemctl", "restart", "tracekit-signer"], [c.args[0] for c in run.call_args_list])
@@ -227,7 +227,7 @@ class InstallAndUninstall(unittest.TestCase):
             sock, settings = install.init_system_v2("agent", agent="codex")
             self.assertEqual(settings, agent_hooks.config_path("codex", home))
             with open(settings) as f:
-                self.assertIn(f"{install.OPT_PYTHON} -I -m tracekit.integrations.harness_hooks codex; s=$?", f.read())
+                self.assertIn(f"{install.OPT_PYTHON} -I -m tracekit.integrations.harness_hooks codex PreToolUse; s=$?", f.read())
             sc = sys_cfg.call_args.args[0]
             self.assertEqual(sc["hooks"], {"user": "agent", "settings": settings, "agent": "codex"})
             self.uninstall(sc)

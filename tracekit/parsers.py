@@ -9,7 +9,10 @@ the request kwargs the call was made with:
 A tool use is {id, name, executed_by: client|provider, args_source, args_digest | args_unparseable}. The digest is
 sha256(JCS({"tool", "args"})) over the strictly parsed arguments: a raw arguments string that fails strict parsing
 gives `args_unparseable: true` and no digest. Tools the provider runs itself (web search, file search, code
-interpreter, hosted MCP, ...) are `executed_by: provider` and carry no arguments: no signer decision covers them.
+interpreter, hosted MCP, ...) are `executed_by: provider`, with the digest of their input where the provider returns it
+(Anthropic server_tool_use `input`, OpenAI web_search_call `action`, file_search_call `queries`, code_interpreter_call
+`code`, mcp_call `arguments`): no signer decision covers them. `provider_tools(kind, request)` names the ones a request
+declares.
 A tool use the provider sent without an id gets `<provider>:<response id>:<index>` and `id_synthetic: true` (a random
 nonce in place of a missing response id, so two such responses never share one).
 
@@ -54,9 +57,10 @@ def _id(x):
 
 
 def tool_use(id, name, args=None, args_source="parsed", executed_by="client"):
-    """`id` None or empty: `parse` gives the tool use a synthetic one."""
+    """`id` None or empty: `parse` gives the tool use a synthetic one. A provider-run tool use has an args digest only
+    when the provider returned its input (`args`) and that input parses."""
     t = {"id": _id(id) if id not in (None, "") else None, "name": str(name)[:256] or "?", "executed_by": executed_by}
-    if executed_by == "provider":
+    if executed_by == "provider" and args is None:
         return t
     t["args_source"] = args_source
     if hasattr(args, "model_dump"):   # an SDK object: the fields the provider sent
@@ -65,7 +69,10 @@ def tool_use(id, name, args=None, args_source="parsed", executed_by="client"):
         value = loads_strict(args) if args_source == "raw" else args
         t["args_digest"] = event_hash({"tool": t["name"], "args": value})
     except (ValueError, TypeError, rfc8785.CanonicalizationError):   # StrictJSONError is a ValueError
-        t["args_unparseable"] = True
+        if executed_by == "provider":   # no decide to compare it with: recorded without arguments
+            del t["args_source"]
+        else:
+            t["args_unparseable"] = True
     return t
 
 
@@ -124,6 +131,9 @@ def _openai_chat_chunk(acc, chunk):
 PROVIDER_ITEMS = {"web_search_call": "web_search", "file_search_call": "file_search",
                   "code_interpreter_call": "code_interpreter", "image_generation_call": "image_generation",
                   "mcp_call": "mcp"}
+# provider-run output item type -> (the field holding its input, args_source)
+PROVIDER_ARGS = {"web_search_call": ("action", "parsed"), "file_search_call": ("queries", "parsed"),
+                 "code_interpreter_call": ("code", "parsed"), "mcp_call": ("arguments", "raw")}
 # output item type -> (tool name or None for the item's `name`, the field holding the arguments, args_source)
 CLIENT_ITEMS = {"function_call": (None, "arguments", "raw"), "custom_tool_call": (None, "input", "parsed"),
                 "computer_call": ("computer", "action", "parsed"),
@@ -138,13 +148,17 @@ def openai_responses(resp, request=None):
         typ = _get(item, "type")
         if (typ == "shell_call" and _get(item, "environment", "type") == "container_reference"
                 or typ == "tool_search_call" and _get(item, "execution") == "server"):   # hosted: the provider runs it
-            uses.append(tool_use(_get(item, "call_id") or _get(item, "id"), CLIENT_ITEMS[typ][0], executed_by="provider"))
+            _, field, source = CLIENT_ITEMS[typ]
+            uses.append(tool_use(_get(item, "call_id") or _get(item, "id"), CLIENT_ITEMS[typ][0], _get(item, field),
+                                 source, executed_by="provider"))
         elif typ in CLIENT_ITEMS:
             name, field, source = CLIENT_ITEMS[typ]
             uses.append(tool_use(_get(item, "call_id"), name or _get(item, "name"), _get(item, field), source))
         elif typ in PROVIDER_ITEMS:
             name = _get(item, "name") if typ == "mcp_call" else PROVIDER_ITEMS[typ]
-            uses.append(tool_use(_get(item, "call_id") or _get(item, "id"), name, executed_by="provider"))
+            field, source = PROVIDER_ARGS.get(typ, (None, "parsed"))
+            uses.append(tool_use(_get(item, "call_id") or _get(item, "id"), name, field and _get(item, field), source,
+                                 executed_by="provider"))
     sent = [_get(i, "call_id") for i in _list(request, "input") if str(_get(i, "type", default="")).endswith("_output")]
     return _out(_get(resp, "id"), _get(resp, "model"), _get(resp, "incomplete_details", "reason") or _get(resp, "status"),
                 _usage.from_openai(_get(resp, "usage")), uses, sent)
@@ -169,11 +183,10 @@ def anthropic(resp, request=None):
     uses = []
     for b in _list(resp, "content"):
         typ = _get(b, "type")
-        if typ == "tool_use":   # input: the accumulated JSON string when streamed, else the SDK's decoded object
-            inp = _get(b, "input")
-            uses.append(tool_use(_get(b, "id"), _get(b, "name"), inp, "raw" if isinstance(inp, str) else "parsed"))
-        elif typ in PROVIDER_BLOCKS:
-            uses.append(tool_use(_get(b, "id"), _get(b, "name"), executed_by="provider"))
+        inp = _get(b, "input")   # the accumulated JSON string when streamed, else the SDK's decoded object
+        if typ in ("tool_use", *PROVIDER_BLOCKS):
+            uses.append(tool_use(_get(b, "id"), _get(b, "name"), inp, "raw" if isinstance(inp, str) else "parsed",
+                                 "client" if typ == "tool_use" else "provider"))
     sent = [_get(b, "tool_use_id") for m in _list(request, "messages") for b in _list(m, "content")
             if _get(b, "type") == "tool_result"]
     return _out(_get(resp, "id"), _get(resp, "model"), _get(resp, "stop_reason"),
@@ -238,6 +251,24 @@ def _gemini_chunk(acc, chunk):
 
 PARSERS = {"openai:chat": (openai_chat, _openai_chat_chunk), "openai:responses": (openai_responses, _openai_responses_event),
            "anthropic:messages": (anthropic, _anthropic_event), "gemini:generate_content": (gemini, _gemini_chunk)}
+
+
+ANTHROPIC_CLIENT_TOOLS = ("custom", "bash_", "text_editor_", "computer_", "memory_")   # typed tools the client runs
+
+
+def provider_tools(kind, req):
+    """The tools request `req` (a dict) lets the provider run itself, by name: an Anthropic typed tool the client does
+    not run (its name), `mcp_servers`, `container`; an OpenAI tool of a type other than function and custom
+    (`<type>[:<server_label>]`), `web_search_options`. Unknown types count, so a list of them errs towards the
+    provider."""
+    tools = [t for t in req.get("tools") or [] if isinstance(t, dict)]
+    if kind == "anthropic:messages":
+        names = [str(t.get("name") or t["type"]) for t in tools
+                 if "type" in t and not str(t["type"]).startswith(ANTHROPIC_CLIENT_TOOLS)]
+        return names + [k for k in ("mcp_servers", "container") if req.get(k)]
+    names = [":".join(str(v) for v in (t.get("type"), t.get("server_label")) if v) for t in tools
+             if t.get("type", "function") not in ("function", "custom")]
+    return names + ["web_search_options"] * ("web_search_options" in req)
 
 
 def parse(kind, response, request=None):

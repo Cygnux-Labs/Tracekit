@@ -248,7 +248,7 @@ class ApprovalDesk:
 ENGINE_RULES = {"TK-UNKNOWN-TOOL": "a tool the policy does not map", "TK-SQL-PARSE": "SQL no dialect reads",
                 "TK-OVERSIZE": "arguments too large to check", "TK-SHELL-PARSE": "a shell command that does not parse"}
 SEVERE_GAPS = {"hook_missing", "proxy_missing", "policy_unrecorded", "state_tamper", "rollback", "key_revoked",
-               "decision_flip", "executed_against_denial"}
+               "decision_flip", "executed_against_denial", "concurrent_run"}
 
 
 def policy_reasons(paths=()):
@@ -321,7 +321,8 @@ class Translator(observe.Translator):
             cov = d.get("coverage") or {}
             line = (f"final · head run_seq {d.get('head_run_seq')} · coverage {'+'.join(cov.get('layers') or []) or 'none'}"
                     f" · reconciled {cov.get('reconciled', 0)}"
-                    + "".join(f" · unreconciled {k} {v}" for k, v in sorted((cov.get("unreconciled") or {}).items())))
+                    + "".join(f" · unreconciled {k} {v}" for k, v in sorted((cov.get("unreconciled") or {}).items()))
+                    + (f" · provider-run tools {d['provider_executed']}" if d.get("provider_executed") else ""))
             return [{**self._base(e, rec, "SessionEnd"), "reason": line, "v2": {"coverage": line}}]
         if t == "policy.decision":
             dec, rules = d.get("decision"), self.rules(d)
@@ -431,7 +432,8 @@ def review(records, rep, verdict):
         elif t == "run.final":
             cov = d.get("coverage") or {}
             out["coverage"] = {"layers": cov.get("layers") or [], "reconciled": cov.get("reconciled", 0),
-                               "unreconciled": cov.get("unreconciled") or {}}
+                               "unreconciled": cov.get("unreconciled") or {},
+                               "provider_executed": d.get("provider_executed", 0)}
             out["state"] = "final"
         elif t == "run.closing" and out["state"] == "open":
             out["state"] = "closing"

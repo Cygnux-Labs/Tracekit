@@ -143,6 +143,24 @@ investigation with findings is named by one (`findings`, FAILED otherwise). Repl
 finding are a `replay runs` warning. In any other bundle (a findings run alone, a run-set) a finding whose replay runs
 are absent is not counted (`findings counted`, a warning). A bundle with either needs `verifier_min_version` 1.1.0.
 
+Completeness (format 1.2, [limits](limits.md#signer-and-capture)): gaps for what the signer saw decided or reported
+and then never heard about. All are `capture.gap` records with `source: signer`.
+
+| `kind` | Where, when | Fields |
+|---|---|---|
+| `decided_not_completed` | in the run, at `run.final`: each call whose latest decide was allowed (or asked, with its approval consumed) and has no `complete`; at most 100, then one counting the rest | `tool_use_id`, top-level `tool_call_id` and `attempt`; the last one `missed_events` |
+| `concurrent_run` | in the newer run, after its `run.registered`: another run of the same owner, tenant (and harness process) is open, in another session; not for owners in signer.yaml `multi_run_apps` | `run_id`: the open run |
+| `late_activity` | in the tenant's run `tracekit/signer`, with the refusal summaries: writes refused because their run was final | `run_id`: that run; `missed_events`: how many; `from_ts`, `to_ts` |
+| `client_counter_gap` | also at `close_run` with `last_client_seq`: the values of a stream the signer never received | `missed_events`, top-level `stream` |
+| `tailer_lost` | also when a transcript tailer's `tailer_heartbeat`s stop for 90 s while its run is open | — |
+
+A gap in a tenant's run `tracekit/signer` (`late_activity`) has a leaf in that tenant's registry (§7), so a run-set
+proves it; the verifier counts it with the tenant-level gaps. A `reconcile.hook_missing` for a tool use the LLM
+gateway reported is written as soon as a gateway request sends its result back with no decide, not only before
+`run.final`. A `model.exchange` tool use with `executed_by: provider` carries an `args_commitment` when the provider
+returned its input; `run.final` carries `provider_executed`, the number of such tool uses, which no decide covers and
+which are never `reconcile.fabricated`. A bundle with any of these kinds or fields needs `verifier_min_version` 1.2.0.
+
 ## 4. Records and the signature message
 
 A record is one line of JSON:

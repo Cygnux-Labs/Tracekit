@@ -1694,9 +1694,16 @@
             "identity_refused",
             "approval_expired",
             "executed_against_policy",
-            "decision_mismatch"
+            "decision_mismatch",
+            "decided_not_completed",
+            "late_activity",
+            "concurrent_run"
           ],
           "description": "Gap and tamper kinds (signer-written only)."
+        },
+        "run_id": {
+          "$ref": "#/$defs/id",
+          "description": "format 1.2: the other run the gap is about (late_activity: the final run that was written to; concurrent_run: the open run this one overlaps)"
         },
         "tool_use_id": {
           "type": [
@@ -2147,6 +2154,12 @@
         },
         "head_hash": {
           "$ref": "#/$defs/hash"
+        },
+        "provider_executed": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "description": "format 1.2: tool uses the model's provider ran itself (executed_by provider), which no decide covers"
         },
         "coverage": {
           "type": "object",
