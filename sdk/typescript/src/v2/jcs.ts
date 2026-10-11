@@ -5,13 +5,15 @@
  */
 import { createHash } from "node:crypto";
 
-/** `code` is one of: syntax, duplicate_key, non_finite, int_range, lone_surrogate. */
+/** `code` is one of: syntax, duplicate_key, non_finite, int_range, lone_surrogate, depth. */
 export class StrictJSONError extends Error {
   constructor(readonly code: string, message: string) {
     super(`${code}: ${message}`);
   }
 }
 
+/** The deepest nesting of arrays and objects a document may have (docs/format-v2.md §1). */
+export const MAX_DEPTH = 128;
 const WS = /[ \t\n\r]*/y;
 const STR = /"(?:[^"\\\u0000-\u001f]|\\(?:["\\/bfnrt]|u[0-9a-fA-F]{4}))*"/y;
 const NUM = /-?(?:0|[1-9]\d*)(\.\d+)?([eE][+-]?\d+)?/y;
@@ -36,9 +38,10 @@ export function strictParse(text: string): unknown {
     match(WS);
     if (text[i++] !== c) fail("syntax", `${c} expected at ${i - 1}`);
   };
-  const value = (): unknown => {
+  const value = (depth: number): unknown => {
     match(WS);
     const c = text[i];
+    if ((c === "{" || c === "[") && depth === MAX_DEPTH) fail("depth", `nesting deeper than ${MAX_DEPTH} at ${i}`);
     if (c === "{") {
       i++;
       const o: Record<string, unknown> = {};
@@ -49,7 +52,7 @@ export function strictParse(text: string): unknown {
         const k = str();
         if (Object.hasOwn(o, k)) fail("duplicate_key", JSON.stringify(k));
         expect(":");
-        Object.defineProperty(o, k, { value: value(), enumerable: true, writable: true, configurable: true });   // "__proto__" too
+        Object.defineProperty(o, k, { value: value(depth + 1), enumerable: true, writable: true, configurable: true });   // "__proto__" too
         match(WS);
       } while (text[i] === "," && ++i);
       expect("}");
@@ -60,7 +63,7 @@ export function strictParse(text: string): unknown {
       const a: unknown[] = [];
       match(WS);
       if (text[i] === "]") return i++, a;
-      do a.push(value()); while ((match(WS), text[i] === ",") && ++i);
+      do a.push(value(depth + 1)); while ((match(WS), text[i] === ",") && ++i);
       expect("]");
       return a;
     }
@@ -74,7 +77,7 @@ export function strictParse(text: string): unknown {
     if (!m[1] && !m[2] && !Number.isSafeInteger(n)) fail("int_range", m[0]);
     return n;
   };
-  const v = value();
+  const v = value(0);
   match(WS);
   if (i < text.length) fail("syntax", `extra data at ${i}`);
   return v;
