@@ -84,7 +84,8 @@ quickstart](../quickstart-v2.md#export-and-verify-by-hand) explains every line.
 A recorded thread can be replayed from its own checkpoints to test which input caused an action: `tracekit why
 attribute --langgraph myapp:graph_factory --thread T --target tool=send_email`, where `graph_factory()` returns your
 compiled graph over its checkpointer. Each trial forks the checkpoint where a suspect entered, with and without it,
-and serves every tool call from the thread, so nothing runs for real. `python examples/v2/langchain/injection.py`
+on a scratch copy of the graph, and serves every ToolNode call from the thread, so those tools don't run for real; a
+tool called outside a ToolNode would, and stops the replay ([limits](../limits.md#investigation-tracekit-why)). `python examples/v2/langchain/injection.py`
 runs it on a page with a planted instruction. How it works: [fork replay](../why.md#how-causality-is-tested).
 
 ## Next steps
