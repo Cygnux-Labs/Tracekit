@@ -14,6 +14,7 @@ from test_signer_service import ME, records
 from tracekit.bundle_v2 import export
 from tracekit.format import checkpoint
 from tracekit.format.canon import event_hash
+from tracekit.policy2.engine import Engine
 from tracekit.signer import service as svc
 from tracekit.signer.rpc_schema import RPCError
 from tracekit.storage.file import FileStorage
@@ -59,11 +60,19 @@ class Reconcile(Lifecycle):
 
 
 class TestReconcile(Reconcile):
-    def test_a_handoff_the_model_asked_for_is_not_a_missing_decide(self):
+    def handoff_run(self):
         run = self.register()
         self.model(run, [use("tc-1", "transfer_to_refunds_agent"), use("tc-2", "issue_refund")])
-        self.model(run, [], sent=["tc-1"])   # the SDK sends the handoff's output back: it was asked for, not fabricated
-        [(found, _)] = self.final(run)
+        self.model(run, [], sent=["tc-1"])   # the SDK sends the handoff's output back: asked for, not fabricated
+        return run
+
+    def test_a_handoff_is_a_missing_decide_unless_the_policy_names_it(self):
+        [(found, _)] = self.final(self.handoff_run())
+        self.assertEqual(found, [("reconcile.hook_missing", "tc-1"), ("reconcile.hook_missing", "tc-2")])
+
+    def test_a_handoff_the_policy_names_is_not_a_missing_decide(self):
+        self.s.policy = Engine({**self.s.policy.policy, "handoffs": ["transfer_to_*"]})   # the operator declares them
+        [(found, _)] = self.final(self.handoff_run())
         self.assertEqual(found, [("reconcile.hook_missing", "tc-2")])
 
     def test_each_kind(self):

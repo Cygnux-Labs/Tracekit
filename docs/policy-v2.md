@@ -53,7 +53,8 @@ tools:                          # tool name or glob (fnmatch) -> class
   'mcp__*': mcp
   transfer_funds: payment
 untrusted: [http, mcp, WebFetch]   # tool classes and tool name globs whose results are untrusted content (Provenance)
-handoffs: ['transfer_to_*']     # tool name globs the framework runs as handoffs to another agent (the default)
+handoffs: ['transfer_to_*']     # tool names the framework runs as handoffs to another agent: none by default;
+                                # the dev pack names the OpenAI Agents SDK's. Exact names beat globs here
 deny:  [<rule>, ...]
 ask:   [<rule>, ...]
 flag:  [<rule>, ...]

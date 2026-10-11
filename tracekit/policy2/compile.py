@@ -139,6 +139,9 @@ def build(path, seen=()):
     if not (isinstance(pol.get("handoffs", []), list) and all(isinstance(h, str) for h in pol.get("handoffs", []))):
         errors.append(f"{path}: handoffs must list tool name globs")
         pol["handoffs"] = []
+    for h in pol.get("handoffs", []):
+        if not h.strip("*?[]!"):   # a call to any tool would never be a missing decide
+            errors.append(f"{path}: handoffs glob {h!r} matches every tool: name your framework's handoff tools")
     base = pol.pop("extends", None)
     parents = []
     for b in base if isinstance(base, list) else [] if base is None else [base]:
