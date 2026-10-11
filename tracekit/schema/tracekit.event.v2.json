@@ -1897,7 +1897,7 @@
             "type": "string",
             "maxLength": 4096
           },
-          "description": "tool_use ids whose results the harness sent back in this request",
+          "description": "tool_use ids whose results this request sends since the model's last turn in it (a conversation resent each turn counts its earlier results once, where they were first sent)",
           "maxItems": 1024
         },
         "stop_reason": {

@@ -4,7 +4,11 @@ Pure functions over each SDK's response object or its `model_dump()` (Google Gen
 the request kwargs the call was made with:
 
     parse("openai:chat", response, request) -> {"exchange_id": the provider's response id, "model", "finish", "usage",
-                                                "tool_uses": [...], "tool_results_sent": [tool call ids in the request]}
+                                                "tool_uses": [...], "tool_results_sent": [tool call ids]}
+
+`tool_results_sent`: the tool results the request sends since the model's last turn in it, the ones after its last
+assistant message, tool call or reasoning item. A chat app sends the whole conversation each turn; the results of
+earlier turns were sent before, maybe in another run.
 
 A tool use is {id, name, executed_by: client|provider, args_source, args_digest | args_unparseable}. The digest is
 sha256(JCS({"tool", "args"})) over the strictly parsed arguments: a raw arguments string that fails strict parsing
@@ -69,6 +73,12 @@ def tool_use(id, name, args=None, args_source="parsed", executed_by="client"):
     return t
 
 
+def _since_model(items, by_model):
+    """The items after the last one `by_model` says the model produced."""
+    last = max((n for n, i in enumerate(items) if by_model(i)), default=-1)
+    return items[last + 1:]
+
+
 def _out(rid, model, finish, usage, uses, sent):
     return {"exchange_id": rid, "model": model, "finish": finish,
             "usage": {k: v for k, v in (usage or {}).items() if v is not None} or None,
@@ -86,7 +96,9 @@ def openai_chat(resp, request=None):
             else:
                 uses.append(tool_use(_get(tc, "id"), _get(tc, "function", "name"), _get(tc, "function", "arguments"),
                                      "raw"))
-    sent = [_get(m, "tool_call_id") for m in _list(request, "messages") if _get(m, "role") == "tool"]
+    sent = [_get(m, "tool_call_id") for m in _since_model(_list(request, "messages"),
+                                                        lambda m: _get(m, "role") == "assistant")
+            if _get(m, "role") == "tool"]
     return _out(_get(resp, "id"), _get(resp, "model"), _get(resp, "choices", 0, "finish_reason"),
                 _usage.from_openai(_get(resp, "usage")), uses, sent)
 
@@ -145,9 +157,15 @@ def openai_responses(resp, request=None):
         elif typ in PROVIDER_ITEMS:
             name = _get(item, "name") if typ == "mcp_call" else PROVIDER_ITEMS[typ]
             uses.append(tool_use(_get(item, "call_id") or _get(item, "id"), name, executed_by="provider"))
-    sent = [_get(i, "call_id") for i in _list(request, "input") if str(_get(i, "type", default="")).endswith("_output")]
+    sent = [_get(i, "call_id") for i in _since_model(_list(request, "input"), _responses_model_item)
+            if str(_get(i, "type", default="")).endswith("_output")]
     return _out(_get(resp, "id"), _get(resp, "model"), _get(resp, "incomplete_details", "reason") or _get(resp, "status"),
                 _usage.from_openai(_get(resp, "usage")), uses, sent)
+
+
+def _responses_model_item(i):
+    typ = str(_get(i, "type", default=""))
+    return _get(i, "role") == "assistant" or typ.endswith("_call") or typ == "reasoning"
 
 
 def _openai_responses_event(acc, ev):
@@ -174,8 +192,9 @@ def anthropic(resp, request=None):
             uses.append(tool_use(_get(b, "id"), _get(b, "name"), inp, "raw" if isinstance(inp, str) else "parsed"))
         elif typ in PROVIDER_BLOCKS:
             uses.append(tool_use(_get(b, "id"), _get(b, "name"), executed_by="provider"))
-    sent = [_get(b, "tool_use_id") for m in _list(request, "messages") for b in _list(m, "content")
-            if _get(b, "type") == "tool_result"]
+    sent = [_get(b, "tool_use_id") for m in _since_model(_list(request, "messages"),
+                                                       lambda m: _get(m, "role") == "assistant")
+            for b in _list(m, "content") if _get(b, "type") == "tool_result"]
     return _out(_get(resp, "id"), _get(resp, "model"), _get(resp, "stop_reason"),
                 _usage.from_anthropic(_get(resp, "usage")), uses, sent)
 
@@ -215,7 +234,9 @@ def gemini(resp, request=None):
                 continue
             uses.append(tool_use(_get(fc, "id"), _get(fc, "name"), _get(fc, "args", default={})))
     contents = _get(request, "contents")
-    sent = [_get(p, "function_response", "id") for c in (contents if isinstance(contents, list) else [contents])
+    sent = [_get(p, "function_response", "id")
+            for c in _since_model(contents if isinstance(contents, list) else [contents],
+                                  lambda c: _get(c, "role") == "model")
             for p in _list(c, "parts")]
     fr = _get(resp, "candidates", 0, "finish_reason")
     return _out(rid, _get(resp, "model_version"), getattr(fr, "name", fr), _usage.from_gemini(_get(resp, "usage_metadata")),
