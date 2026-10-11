@@ -368,6 +368,94 @@ row` (a row for another type of record). A mismatch exits 1 and is a high eviden
 a salts file that is not `tracekit signer reveal` lines, exits 2. Limits:
 [limits.md](limits.md#investigation-tracekit-why).
 
+## Attribution on signed runs
+
+A run the signer and the [gateway](gateway.md) recorded, with the signer's [content vault](privacy.md#the-content-vault)
+on, can be tested without its code: the vault holds each model call's request and response and each tool call's
+arguments and result.
+
+```bash
+export TRACEKIT_SIGNER=https://signer.internal:8443        # the investigator's identity, as for any client
+tracekit why test --run R --store /var/lib/tracekit-signer --gateway https://gateway.internal:8080 \
+    --gateway-token-file investigator.token --remove input:web:* --target "tool=send_email,arg~evil.example"
+tracekit why attribute --run R --bundle r.tkb --trust trust.json --gateway https://gateway.internal:8080 \
+    --target "tool=send_email" --max-calls 400
+```
+
+The ladder: what each rung can say, and what it needs.
+
+| Rung | What it does | Evidence | Needs |
+|---|---|---|---|
+| 0 | observed: signed provenance (a value only untrusted content brought); predicted: the surrogate's ranking | never "tested" | the records; the ranking also the vault and the gateway |
+| 1 | decision replay: one recorded model call re-sent with the item removed, against the same call re-sent unchanged | tested, for that call | the call's request in the vault, the gateway |
+| 2 | agentless run replay: from the first call holding the item, the loop re-simulated: each tool use answered from the run's tape when tool and canonical arguments match exactly, else the stub `{"error": "not in the recorded run"}` (counted in `off_tape_actions`); the model called again until it stops or the recorded number of turns + 2 | tested, for the run | rung 1's, and the tools' results in the vault |
+| 3 | program replay (`tracekit why test RUN` with a System) | tested, for the program | a re-executable program |
+
+`--decision SEQ` (the run_seq of the call's request record) picks rung 1; without it `test` uses rung 2; `--rung`
+overrides. Only executed replays are tested evidence: step-level credit signals don't match what an executed replay
+shows, so the surrogate only orders what to test.
+
+- **Loading.** The run's records come from `--store` or a verified `--bundle`; their content from the signer
+  (`content_get`, purpose: the investigation id, `--investigation` or a new one; each read is a signed
+  `content.accessed`). Each record's content is checked against its commitment with the salt the signer returns; a
+  mismatch stops the investigation with a high evidence alert (exit 1). Content changed by redaction comes back without
+  a salt and is used unchecked.
+- **Interventions** name blocks of the recorded request body (Anthropic messages, OpenAI chat completions and
+  responses): `input:<source glob>` blocks holding a value the run observed from that source (an address, a URL or a
+  whole string of 6+ characters, verbatim), `result:<tool glob>` tool results, `msg:<index>` one message,
+  `ref:<hash prefix>` one block by content hash. A removed block keeps its place, its content replaced by
+  `[removed by tracekit why]`, so the request stays valid.
+- **Targets**: `tool=NAME` and `arg~TEXT` (one tool use matching every such clause), `text~TEXT` (the response text).
+  Rung 2 scores the whole continuation.
+- **Through the gateway, as evidence.** Each arm is a replay run registered with `replay_of: R` and the investigation
+  id, by an investigator listed in signer.yaml `analyzers` (with the `content_read` grant); its model calls go through
+  the gateway (`--gateway`, authenticated as the same identity: `--gateway-token-file`, or `--gateway-cert`/`--gateway-key`),
+  so they are signed records. After each call the investigator reads the replay run back: a call the gateway did not
+  record (a fail-open gateway that could not reach the signer) stops the investigation. Requests are sent with
+  `stream: false`, and to OpenAI with `store: false`. A replay run is not reconciled (no `reconcile.*` records, no
+  coverage in its `run.final`): it has model exchanges and, by design, no decisions.
+- **When tools run.** Tools the client runs (function and custom tools, and in rung 2 every tool use the model makes)
+  never run: their results come from the tape or the stub. A tool the provider runs itself would run again on every
+  arm, so a call whose request enables one is refused before anything is sent, naming it: OpenAI Responses tools other
+  than function and custom (hosted MCP, web search, file search, code interpreter, computer use, ...), Anthropic typed
+  server tools (web search, web fetch, code execution, ...), `mcp_servers` and `container`, chat completions'
+  `web_search_options`, or a recorded response in which the provider ran a tool. So is a Responses call that continues
+  context the provider holds (`previous_response_id`, `conversation`), which a removal can't reach. Test such a run on a
+  call without them (`--decision`), or record runs without provider-executed tools.
+- **Tests** are paired and sequential with the same intervals, corrections and verdicts as above (`--n`, `--n-max` up
+  to 1024, `--workers N` arms in parallel, 1 to 16). Every result reports `off_tape_actions` and its assumptions: no
+  code between the model calls rewrote the history, and tools are deterministic. A removed tool output keeps its
+  shape: a screenshot becomes a blank image, content parts one text part.
+- **Budgets** per investigation, counted in the `tracekit why` process (two processes with the same `--investigation`
+  each have their own): `--max-calls` model calls, `--max-cost` estimated cost (with `--prices`, the
+  [price table](../tracekit/usage.py) `tracekit cost` reads). Before each call the costliest call so far (recorded or
+  replayed) is reserved, and the call is sent only while spent + reserved stays within `--max-cost`; a call overshoots
+  only by what it costs past that estimate. A test that reaches a budget stops `inconclusive` with `stopped: budget`,
+  reporting the looks it finished. One reached while ranking, before any test finished, ends `attribute` with
+  `inconclusive (budget)` (exit 2).
+- **Find the cause** (`attribute`) without `--suspect`: a ContextCite-style surrogate re-sends the target's call with
+  32 random halves of its blocks removed, scores each response (the target's log-probability when every response
+  carries it, which only OpenAI chat calls can: they are sent with `logprobs: true`; else whether it hit), fits a
+  sparse linear model and ranks the blocks, labelled `predicted`. The four top-ranked blocks with a positive weight
+  become the suspects of the group-then-narrow search.
+- **Signed findings.** Each finished test is written by the investigator through the signer as a `why.finding` record
+  (target, intervention, n, the rates, effect, interval, verdict and what it was decided on: `looks`, `family`,
+  `min_effect`, `applied`, `stopped`; every replay run with its arm and outcome; models, rung, off-tape actions,
+  investigation; and `uncounted`: the replay runs of the investigation it doesn't count, the ranking's calls and the
+  arms a budget stop abandoned) in a findings run (`analyzes: R`) of the run's tenant.
+  `tracekit export --v2 --run R --with-findings` bundles the run with its findings and replay runs. The verifier checks
+  that each finding's replay runs are in the bundle, are replay runs of R in that investigation, each holds its model
+  calls as gateway records (exactly one for rung 1 and the ranking), and count to its rates; recomputes the interval
+  and verdict from those outcomes; for a `tool=` target, checks each outcome against the tool uses the gateway recorded
+  (a hit needs one; a miss must have none when the target is `tool` clauses alone); and fails a replay run of an
+  investigation with findings that no finding counts or lists. Replay runs of an investigation with no finding are a
+  warning. What stays the investigator's claim: outcomes scored on `text~` and `arg~` clauses, `applied`, and why a
+  run is `uncounted`.
+
+For the viewer and other tools: `tracekit.why.signed.Investigation(records, client, gateway)`, then
+`counterfactual_signed`, `attribute_signed` and `rank`. Limits:
+[limits.md](limits.md#investigation-tracekit-why).
+
 ## Server and API
 
 ```bash
@@ -416,6 +504,8 @@ with `--allow-program`. The server is in the [HTTP security checklist](security-
 | `tracekit why test RUN --remove SPEC --target SPEC [--n N] [--n-max N] [--live-tools]` | run replay test |
 | `tracekit why test RUN --decision SEQ --remove SPEC [--contains TEXT] [--anthropic]` | decision replay test |
 | `tracekit why attribute RUN --target SPEC [--suspect SPEC] [--n N] [--n-max N] [--workers N] [--no-roles]` | Find the cause |
+| `tracekit why test --run R (--store DIR \| --bundle FILE --trust FILE) --gateway URL --remove SPEC --target SPEC [--decision SEQ] [--rung 1\|2] [--max-calls N] [--max-cost X --prices FILE]` | test a signed run (rung 1 or 2), signed as a finding |
+| `tracekit why attribute --run R (--store DIR \| --bundle FILE --trust FILE) --gateway URL --target SPEC [--suspect SPEC] [--decision SEQ]` | Find the cause on a signed run, the surrogate's ranking first |
 | `tracekit why attribute --langgraph MODULE:FACTORY --thread T --target SPEC [--checkpoint ID] [--suspect ID] [--out DIR]` | Find the cause in a LangGraph thread by forking its checkpoints |
 | `tracekit why matrix RUN --target SPEC [--n N]` | test every channel and input against targets |
 | `tracekit why replay RUN [--remove SPEC]` | re-run from tape and diff against the original |
@@ -434,7 +524,8 @@ All of Tracekit's limits: [limits.md](limits.md).
   correction, so testing many inputs one by one there can produce a chance `causal` (about 1 in 20 per input with no
   effect).
 - The graph is only as complete as the recorded context: content sent to a model without being recorded is missing.
-- Replay costs model calls: about 2·n per test per downstream model call. There are no budgets or caching.
+- Replay costs model calls: about 2·n per test per downstream model call. Program replay has no budgets; replays of
+  signed runs take `--max-calls` and `--max-cost`.
 - Run replay needs a re-executable program; decision replay does not.
 - Tape matching is exact on tool arguments. New calls are stubbed, which can change behaviour after the stub; results
   report `off_tape_actions`.

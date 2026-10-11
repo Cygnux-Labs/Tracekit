@@ -1,4 +1,4 @@
-"""The signer RPC contract, version 14: one JSON Schema per request and response, the error shape, and `SignerAPI`.
+"""The signer RPC contract, version 15: one JSON Schema per request and response, the error shape, and `SignerAPI`.
 
 Frozen: a change to any schema here is a new RPC_VERSION. The caller's identity comes from the transport (peer
 credentials, token, mTLS), never from a request field. Calls that change state carry `request_id`, scoped to that
@@ -12,7 +12,7 @@ from typing import Protocol
 from tracekit.format.canon import MAX_SAFE_INT
 from tracekit.schema import _check
 
-RPC_VERSION = 14
+RPC_VERSION = 15
 MAX_RAW_ARGS = 1 << 20   # characters of a raw arguments string
 MAX_EXTERNAL_RECORD = 1 << 16   # characters of an external system's own decision record
 MAX_RESULTS_SENT = 1024
@@ -95,6 +95,24 @@ _TOOL_USE = dict(_obj(["id", "name", "executed_by"], id=ID, name=_str(256, minLe
                         {"required": ["args_source", "args_digest"], "properties": {"executed_by": {"const": "client"}}},
                         {"required": ["args_source", "args_unparseable"],
                          "properties": {"executed_by": {"const": "client"}}}])
+RATE = {"type": "number", "minimum": 0, "maximum": 1}
+DIFF = {"type": "number", "minimum": -1, "maximum": 1}
+# a finished `tracekit why` test (tracekit/why/signed.py): its counts, what its verdict was decided on (looks, family,
+# min_effect, applied, stopped), and the replay runs they came from; `uncounted`: replay runs of the investigation it
+# does not count (the surrogate's ranking calls, arms a budget stop abandoned)
+COUNT = {"type": "integer", "minimum": 1, "maximum": 4096}
+FINDING = _obj(["target", "intervention", "n", "p_with", "p_without", "effect", "interval", "verdict", "replay_runs",
+                "models", "rung", "off_tape", "investigation", "looks", "family", "min_effect", "applied", "stopped"],
+               target=_str(1024), intervention=_str(1024), n=SEQ, p_with=RATE, p_without=RATE, effect=DIFF,
+               interval={"type": "array", "minItems": 2, "maxItems": 2, "items": DIFF},
+               verdict={"enum": ["causal", "suppressive", "ruled-out", "inconclusive", "not-applied"]},
+               replay_runs={"type": "array", "maxItems": 4096, "items": _obj(
+                   ["run_id", "arm", "hit"], run_id=ID, arm={"enum": ["control", "ablated"]}, hit={"type": "boolean"})},
+               models={"type": "array", "maxItems": 32, "items": _str(128)}, rung={"enum": [1, 2]}, off_tape=SEQ,
+               investigation=ID, looks=COUNT, family=COUNT, min_effect=RATE, applied={"type": "boolean"},
+               stopped={"enum": ["decisive", "futility", "n_max", "budget"]},
+               uncounted={"type": "array", "maxItems": 4096, "items": _obj(
+                   ["run_id", "reason"], run_id=ID, reason={"enum": ["ranking", "budget"]})})
 _SUMMARY = _obj(["approval_id", "state", "run_id", "tool_call_id", "attempt", "tool", "rule_ids", "policy_hash",
                  "requester", "expires_at"],
                 approval_id=ID, state=APPROVAL_STATE, run_id=ID, tool_call_id=ID, attempt=SEQ, tool=_str(256),
@@ -107,6 +125,8 @@ REQUESTS = {
                          principal_token=_str(16384),   # an end user's OIDC token: principal attested
                          source={"const": "migrated"},     # events imported from another log
                          analyzes=ID,                      # a findings run about this run of the same tenant
+                         replay_of=ID,                     # a replay run (tracekit why) of this run of the same tenant
+                         investigation=ID,                 # with replay_of: the investigation it is an arm of
                          agent=_obj(["name"], name=_str(128, minLength=1), version=_str(64))),
     "decide": _decide,
     "complete": _obj(_EVENT_REQ + ["tool_call_id", "decision_id", "args_digest", "status"], **_EVENT,
@@ -181,6 +201,8 @@ REQUESTS = {
                         purpose=_str(512, minLength=1)),
     # delete a run's retained content for good (`content.erased`); an `authorize` grant, never a default
     "content_erase": _obj(["request_id", "run_id"], request_id=ID, run_id=ID, reason=REASON),
+    # a `tracekit why` finding about the run a findings run (register_run `analyzes`) analyses: a why.finding record
+    "why_finding": _obj(_RUN_REQ + ["finding"], **_RUN, finding=FINDING),
 }
 
 _FAIL_MODES = {"type": "object", "additionalProperties": {"enum": ["open", "closed"]}}
@@ -241,6 +263,7 @@ RESPONSES = {
              state={"enum": ["not_retained", "too_large", "erased"]}),
         oneOf=[{"required": ["content", "salt"]}, {"required": ["content", "redacted"]}, {"required": ["state"]}])}),
     "content_erase": _SEQ_ONLY,   # of the content.erased record, in the tenant's signer run (tracekit/signer)
+    "why_finding": _SEQ_ONLY,
 }
 
 ERROR = _obj(["error"], error=_obj(["code", "message"], code={"enum": ERROR_CODES}, message=REASON,
@@ -294,3 +317,4 @@ class SignerAPI(Protocol):
     def passkey_register(self, req: dict) -> dict: ...
     def content_get(self, req: dict) -> dict: ...
     def content_erase(self, req: dict) -> dict: ...
+    def why_finding(self, req: dict) -> dict: ...

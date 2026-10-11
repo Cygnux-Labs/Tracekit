@@ -1,7 +1,7 @@
 /**
  * The JSON Schema 2020-12 subset tracekit.event.v2.json uses (docs/format-v2.md §3): type, const, enum, required,
  * properties, additionalProperties, items, oneOf, allOf, if/then, $ref to #/$defs, pattern (full match, ASCII),
- * minimum, maximum, minLength, maxLength (code points), maxItems. "integer" excludes number tokens written with a
+ * minimum, maximum, minLength, maxLength (code points), minItems, maxItems. "integer" excludes number tokens written with a
  * fraction or exponent. Any other keyword throws, so the schema can't silently lose a check.
  */
 import type { Floats } from "./jcs.js";
@@ -10,7 +10,7 @@ import SCHEMA from "./tracekit.event.v2.json" with { type: "json" };
 type Schema = { [keyword: string]: any };
 
 const KEYWORDS = new Set(["type", "const", "enum", "required", "properties", "additionalProperties", "items", "oneOf",
-  "allOf", "if", "then", "$ref", "pattern", "minimum", "maximum", "minLength", "maxLength", "maxItems", "$schema", "$id",
+  "allOf", "if", "then", "$ref", "pattern", "minimum", "maximum", "minLength", "maxLength", "minItems", "maxItems", "$schema", "$id",
   "$defs", "title", "description"]);
 const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 const isNumber = (v: unknown): v is number => typeof v === "number";
@@ -52,6 +52,7 @@ function check(v: unknown, s: Schema, path: string, errs: string[], float: boole
   if (isNumber(v) && "minimum" in s && v < s.minimum) errs.push(`${path}: below ${s.minimum}`);
   if (isNumber(v) && "maximum" in s && v > s.maximum) errs.push(`${path}: above ${s.maximum}`);
   if (Array.isArray(v) && "maxItems" in s && v.length > s.maxItems) errs.push(`${path}: more than ${s.maxItems} items`);
+  if (Array.isArray(v) && "minItems" in s && v.length < s.minItems) errs.push(`${path}: fewer than ${s.minItems} items`);
   if (isObject(v)) {
     for (const k of s.required ?? []) if (!Object.hasOwn(v, k)) errs.push(`${path}: missing required '${k}'`);
     const props = s.properties ?? {}, ap = s.additionalProperties ?? true;

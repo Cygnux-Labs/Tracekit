@@ -11,7 +11,7 @@ const TYPES: Record<string, (v: unknown) => boolean> = {
   null: (v) => v === null,
 };
 
-const KEYWORDS = new Set(["type", "const", "enum", "pattern", "minLength", "maxLength", "minimum", "maximum", "maxItems",
+const KEYWORDS = new Set(["type", "const", "enum", "pattern", "minLength", "maxLength", "minimum", "maximum", "minItems", "maxItems",
   "items", "required", "properties", "additionalProperties", "oneOf", "if", "then"]);
 
 /** Error strings for `v` against `s` (empty when valid); throws on a keyword it doesn't implement, like `_check`. */
@@ -37,6 +37,7 @@ export function validate(s: Schema, v: any, path = "$", errs: string[] = []): st
   if (typeof v === "number" && "maximum" in s && v > s.maximum) errs.push(`${path}: above ${s.maximum}`);
   if (Array.isArray(v)) {
     if ("maxItems" in s && v.length > s.maxItems) errs.push(`${path}: more than ${s.maxItems} items`);
+    if ("minItems" in s && v.length < s.minItems) errs.push(`${path}: fewer than ${s.minItems} items`);
     if ("items" in s) v.forEach((it, i) => validate(s.items, it, `${path}[${i}]`, errs));
   }
   if (TYPES.object(v)) {
