@@ -1,0 +1,62 @@
+/**
+ * The actions of a tool executor (`tracekit executor`, docs/executor.md) as framework tools. The agent holds only its
+ * run: the executor holds the actions' credentials and decides, runs and records each call in the signer (tier T2).
+ *
+ *   import { tool } from "@openai/agents";
+ *   import { jsonSchema } from "ai";
+ *   import { executorActions, openaiAgentsTool, vercelTool } from "@cygnux/tracekit/v2/executor";
+ *   const actions = await executorActions("https://executor.internal:8090", run, { headers: { authorization: `Bearer ${token}` } });
+ *   new Agent({ tools: actions.map((a) => openaiAgentsTool(tool, a)) });
+ *   generateText({ tools: Object.fromEntries(actions.map((a) => [a.name, vercelTool(a, jsonSchema)])) });
+ *
+ * `headers` authenticate the agent to the executor (a bearer or service-account token); for a client certificate pass
+ * a `fetch` that presents one. Don't also gate these tools with a Tracekit adapter: the executor records them. A
+ * refusal (deny, an approval not given, the signer unreachable) throws ExecutorRefused with the executor's message,
+ * which the framework hands the model as the tool's error.
+ */
+import type { Frame, RunHandle } from "./client.js";
+
+export class ExecutorRefused extends Error {}
+
+export type Action = {
+  name: string;
+  description: string;
+  args: Frame;   // the action's JSON Schema
+  /** {status: the upstream's HTTP status, result: its JSON or text}; rejects with ExecutorRefused when it did not run. */
+  call(args: unknown, toolCallId?: string): Promise<Frame>;
+};
+
+type Options = { headers?: Record<string, string>; fetch?: typeof globalThis.fetch };
+
+/** The executor's actions, each callable for `run`. */
+export async function executorActions(url: string, run: RunHandle, { headers = {}, fetch = globalThis.fetch }: Options = {}): Promise<Action[]> {
+  const base = url.replace(/\/+$/, "");
+  // the agent's credential for the executor never follows a redirect
+  const get = async (path: string, init: RequestInit = {}) => {
+    const r = await fetch(base + path, { ...init, redirect: "manual", headers: { ...headers, ...(init.headers as Record<string, string>) } });
+    const body = await r.json().catch(() => null);
+    if (!r.ok) throw new ExecutorRefused(body?.error?.message ?? `tracekit executor: HTTP ${r.status}`);
+    return body;
+  };
+  const { actions } = await get("/v1/actions");
+  return actions.map((a: Frame) => ({
+    ...a,
+    call: (args: unknown, toolCallId?: string) => get(`/v1/actions/${encodeURIComponent(a.name)}`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-tracekit-run": `${run.runId}.${run.runToken}` },
+      body: JSON.stringify({ args, ...(toolCallId ? { tool_call_id: toolCallId } : {}) }),
+    }),
+  }));
+}
+
+/** An @openai/agents function tool; `build` is the SDK's `tool`. */
+export const openaiAgentsTool = <T>(build: (options: any) => T, a: Action): T => build({
+  name: a.name, description: a.description, parameters: a.args, strict: false,
+  execute: async (input: unknown, _ctx?: unknown, details?: any) => JSON.stringify(await a.call(input, details?.toolCall?.callId)),
+});
+
+/** A Vercel AI SDK tool; `jsonSchema` is the `ai` package's. */
+export const vercelTool = (a: Action, jsonSchema: (s: any) => unknown) => ({
+  description: a.description, inputSchema: jsonSchema(a.args),
+  execute: (input: unknown, opts?: { toolCallId?: string }) => a.call(input, opts?.toolCallId),
+});

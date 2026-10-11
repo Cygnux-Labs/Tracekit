@@ -8,8 +8,8 @@
 
 `deny` replaces the call with an error ToolMessage and the run goes on. `ask` pauses the run with LangGraph
 `interrupt()`; resume it with `Command(resume={"approval_id": ...})`. Every call that is not denied runs only after the
-signer's `approval_consume` agrees, so an approval is checked by the signer, never by the saved state. `ask` needs a
-checkpointer: without one the call is denied.
+signer's `approval_consume` agrees, so an approval is checked by the signer, never by the saved state; an approval with
+a T2 executor runs the arguments the consume returns. `ask` needs a checkpointer: without one the call is denied.
 
 A signer that cannot be reached when a call is decided: the call runs unrecorded if register_run's `fail_modes` say
 `open`, else it is refused. Any other failure to decide or approve (a refusal, a run the signer closed after its idle
@@ -92,6 +92,8 @@ class TracekitMiddleware(AgentMiddleware):
         except (RPCError, SignerUnavailable) as e:   # e.g. a hint that is not an id at all
             c = {"ok": False, "rule_ids": [], "reason": str(e)}
         if c["ok"]:
+            if "args" in c:   # T2: the signer's copy is what runs
+                d["args"], d["args_digest"] = c["args"], event_hash({"tool": call["name"], "args": c["args"]})
             return None, d
         return self._refusal(call, ", ".join(c["rule_ids"]) + (f": {c['reason']}" if c.get("reason") else "")), d
 
@@ -124,6 +126,8 @@ class TracekitMiddleware(AgentMiddleware):
         blocked, d = self._gate(request)
         if blocked is not None:
             return blocked
+        if d is not None and "args" in d:
+            request = request.override(tool_call={**request.tool_call, "args": d["args"]})
         try:
             out = handler(request)
         except GraphBubbleUp:   # interrupt() or a handoff inside the tool: control flow, not an outcome
@@ -138,6 +142,8 @@ class TracekitMiddleware(AgentMiddleware):
         blocked, d = self._gate(request)
         if blocked is not None:
             return blocked
+        if d is not None and "args" in d:
+            request = request.override(tool_call={**request.tool_call, "args": d["args"]})
         try:
             out = await handler(request)
         except GraphBubbleUp:   # interrupt() or a handoff inside the tool: control flow, not an outcome

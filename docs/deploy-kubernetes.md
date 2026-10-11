@@ -137,4 +137,50 @@ Optional parts:
 - `monitor.enabled`: `tracekit monitor` of each log, `monitor.logKeys[n]` being replica n's vkey
   (`kubectl exec tk-<n> -- tracekit signer vkey --config /etc/tracekit/central/signer-<n>.yaml`).
 
+## Custody
+
+The central chart also runs the services that hold credentials for the agents, each in its own pod with its own
+ServiceAccount, its credentials from a Secret mounted only there:
+
+| values | service | port | Secret (`secretName`, at `/etc/tracekit/secrets/`) |
+|---|---|---|---|
+| `gateway` | [LLM gateway](gateway.md) | 8080 | the provider key, as `api_key` |
+| `executor` | [tool executor](executor.md) | 8090 | the files the actions' `headers` name |
+| `mcpGateway` | [MCP gateway](mcp-gateway.md) | 8091 | the files the upstreams' `env` and `headers` name |
+
+Each takes its config in `config` (without `http` and `signer`, which the chart sets), serves the agents on HTTPS with
+`k8s_sa` (`tlsSecretName`: a certificate for `tk-<name>.tracekit.svc`; the pods are bound to `system:auth-delegator`
+for TokenReview), and reaches the signers with a projected token of `audience` and the `ca.crt` of `tls.secretName`
+(only that key is mounted). In `signer.config`, list their identities under `gateways` and grant them their calls:
+
+```yaml
+signer:
+  config:
+    gateways: ["k8s_sa:system:serviceaccount:tracekit:tk-gateway", "k8s_sa:system:serviceaccount:tracekit:tk-executor",
+               "k8s_sa:system:serviceaccount:tracekit:tk-mcp-gateway"]
+    authorize:
+      "k8s_sa:system:serviceaccount:tracekit:tk-gateway": [model_event]
+      "k8s_sa:system:serviceaccount:tracekit:tk-executor": [decide, complete, approval_request, approval_wait, approval_consume]
+      "k8s_sa:system:serviceaccount:tracekit:tk-mcp-gateway": [decide, complete, approval_request, approval_wait, approval_consume, observe]
+```
+
+Agents call them with the same projected token they send the signers.
+
+Custody holds only if the agents can't reach the APIs around these services. `agentEgress.enabled` adds a
+NetworkPolicy for the agent pods (`agentEgress.podSelector`, in `agentEgress.namespace`) that lets them reach only the
+signers, the enabled custody services, the egress proxy (`agentEgress.egressProxy`) and DNS:
+
+```yaml
+agentEgress:
+  enabled: true
+  namespace: agents
+  podSelector: {app: support-agent}
+```
+
+It is off by default: turning it on cuts every other connection the agents make. A NetworkPolicy's egress rules hold
+only on a CNI that enforces them (Calico and Cilium do; some managed defaults don't): check from an agent pod that an
+outside address is refused, for example `kubectl exec -n agents deploy/support-agent -- python -c
+"import socket; socket.create_connection(('api.github.com', 443), 3)"` must time out. Keep the provider keys and action
+secrets out of the agents' namespace altogether.
+
 `tests/test_helm.py` checks the rendered manifests, `tests/test_central.py` the routing and the close on scale-down.

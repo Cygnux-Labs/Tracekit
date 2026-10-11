@@ -84,7 +84,7 @@
         "import",
         "gateway"
       ],
-      "description": "Capture path. transcript = harness-reported, lower trust; import = received over OTLP, or another system's decision (decision_import) (tier T3): receipt only; gateway = model.exchange recorded by the LLM gateway (tier T2)."
+      "description": "Capture path. transcript = harness-reported, lower trust; import = received over OTLP, or another system's decision (decision_import) (tier T3): receipt only; gateway = model.exchange recorded by the LLM gateway, or a tool call (policy.decision, approval.request, tool.result) or an input (input.observed) the MCP gateway or a tool executor decided, ran or received for its client (tier T2)."
     },
     "type": {
       "enum": [

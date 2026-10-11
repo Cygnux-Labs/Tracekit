@@ -10,7 +10,8 @@ The gate is the PreToolUse hook, not `can_use_tool`: the CLI skips `can_use_tool
 allow rules approve, while PreToolUse runs for every call. `deny` blocks the call with the reason, which the model
 gets as the tool's error result, and the session goes on. `ask` holds the call in the hook until a person decides in
 the signer, for at most APPROVAL_WAIT_S, below the hook's own timeout (HOOK_TIMEOUT_S, set on the matcher); a call not
-approved by then is blocked. Every call that is not denied runs only after the signer's `approval_consume` agrees.
+approved by then is blocked. Every call that is not denied runs only after the signer's `approval_consume` agrees; an
+approval with a T2 executor runs the arguments it returns (the hook's `updatedInput`).
 PostToolUse and PostToolUseFailure complete the call against its decision; SessionEnd closes the run.
 
 A signer that cannot be reached when a call is decided: the call runs unrecorded if register_run's `fail_modes` say
@@ -109,10 +110,11 @@ def tracekit_hooks(signer, run):
                 return _deny(", ".join(c["rule_ids"]) + (f": {c['reason']}" if c.get("reason") else ""))
         except Exception as e:   # no fail mode once decided: a refusal or an approval that can't be had blocks
             return _deny(f"signer error ({type(e).__name__}: {e})")
+        args = c.get("args", args)   # T2: the signer's copy is what runs
         calls[tid] = d["decision_id"], event_hash({"tool": tool, "args": args}), d.get("send_result")
         if len(calls) > MAX_OPEN_CALLS:   # lean: the oldest call never got its PostToolUse; dropped, not recorded
             calls.pop(next(iter(calls)))
-        return {}
+        return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "updatedInput": args}} if "args" in c else {}
 
     async def post(inp, tool_use_id, ctx):
         call = calls.pop(inp.get("tool_use_id") or tool_use_id, None)

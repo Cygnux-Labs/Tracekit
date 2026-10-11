@@ -12,7 +12,8 @@
  * allow rules approve, while PreToolUse runs for every call. `deny` blocks the call with the reason, which the model
  * gets as the tool's error result, and the session goes on. `ask` holds the call in the hook until a person decides in
  * the signer, for at most APPROVAL_WAIT_MS, below the hook's own timeout (HOOK_TIMEOUT_S, set on the matcher); a call
- * not approved by then is blocked. PostToolUse and PostToolUseFailure complete the call; SessionEnd closes the run.
+ * not approved by then is blocked. An approval with a T2 executor runs the signer's copy of the arguments (the hook's
+ * `updatedInput`). PostToolUse and PostToolUseFailure complete the call; SessionEnd closes the run.
  * The tools run in the CLI subprocess, so the signer's coding packs apply to them.
  */
 import { randomUUID } from "node:crypto";
@@ -33,7 +34,9 @@ export function tracekitHooks(run: RunHandle) {
     const id = inp.tool_use_id ?? toolUseID;
     if (!id) return deny(BLOCKED + "the hook got no tool_use_id");   // never defaulted: a result could not be bound to its decision
     const why = await gate.admit(id, inp.tool_name ?? "?", inp.tool_input, { waitMs: APPROVAL_WAIT_MS });
-    return why === null ? {} : deny(why);
+    if (why !== null) return deny(why);
+    const input = gate.input(id, inp.tool_input);
+    return input === inp.tool_input ? {} : { hookSpecificOutput: { hookEventName: "PreToolUse", updatedInput: input } };
   }
 
   async function post(inp: any, toolUseID?: string) {

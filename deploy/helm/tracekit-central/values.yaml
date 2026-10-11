@@ -93,6 +93,61 @@ viewer:
     requests: {cpu: 50m, memory: 128Mi}
     limits: {cpu: 500m, memory: 512Mi}
 
+# The custody services: each holds credentials the agents never get, from `secretName` (mounted at
+# /etc/tracekit/secrets in its own pod only), serves the agents on HTTPS with `k8s_sa` (`audience`; tlsSecretName: a
+# kubernetes.io/tls Secret naming <release>-<name>.<namespace>.svc) and records for their runs as the signer `gateways`
+# identity k8s_sa:system:serviceaccount:<namespace>:<release>-<name>: list it in signer.config `gateways` and grant it
+# its methods in `authorize` (docs/deploy-kubernetes.md#custody). They reach the signers with tls.secretName's ca.crt.
+# The LLM gateway (docs/gateway.md), on 8080: config is its gateway.yaml without http, signer and api_key_file
+# (upstream, api_key_header, max_body); secretName holds the provider key as `api_key`.
+gateway:
+  enabled: false
+  config: {}
+  secretName: ""
+  tlsSecretName: ""
+  image: ""                # default signer.image
+  replicas: 1
+  resources:
+    requests: {cpu: 100m, memory: 128Mi}
+    limits: {cpu: "1", memory: 512Mi}
+# The tool executor (docs/executor.md), on 8090: config is its executor.yaml without http and signer (actions,
+# approval_wait_s, max_body); the actions' headers name files under /etc/tracekit/secrets/ (secretName's keys).
+executor:
+  enabled: false
+  config: {}
+  secretName: ""
+  tlsSecretName: ""
+  image: ""
+  replicas: 1
+  resources:
+    requests: {cpu: 100m, memory: 128Mi}
+    limits: {cpu: "1", memory: 512Mi}
+# The MCP gateway (docs/mcp-gateway.md), on 8091: config is its mcp-gateway.yaml without http and signer (upstreams,
+# trusted, ...); upstream env and headers name files under /etc/tracekit/secrets/. A stdio upstream runs in its pod:
+# give it an `image` that has the upstream's command.
+mcpGateway:
+  enabled: false
+  config: {}
+  secretName: ""
+  tlsSecretName: ""
+  image: ""
+  replicas: 1
+  resources:
+    requests: {cpu: 100m, memory: 256Mi}
+    limits: {cpu: "1", memory: 1Gi}
+
+# An egress NetworkPolicy for the agent pods (podSelector, in `namespace`): they reach only the signers, the custody
+# services above that are enabled, the egress proxy and DNS. Off: agents reach anything. Needs a CNI that enforces
+# egress policies (docs/deploy-kubernetes.md#custody).
+agentEgress:
+  enabled: false
+  namespace: ""            # where the agent pods run; default the release's
+  podSelector: {}          # the agent pods' labels
+  egressProxy:             # the egress proxy (its pod labels, namespace and port), if one is deployed
+    podSelector: {}
+    namespace: ""
+    port: 3128
+
 # tracekit monitor of each log; logKeys[n] is replica n's log vkey (`tracekit signer vkey`). Turns on the metrics
 # port's record entries (serve_records), which only the monitor and networkPolicy.monitoringNamespace reach.
 monitor:

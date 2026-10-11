@@ -167,6 +167,7 @@ class _SSE:
 
 class _Handler(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
+    NAME = "tracekit gateway"   # in every error the client gets
 
     def setup(self):
         self.timeout = self.server.read_timeout
@@ -180,7 +181,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         pass
 
     def _error(self, status, msg, close=True):
-        body = json.dumps({"error": {"type": "tracekit_gateway", "message": "tracekit gateway: " + msg}}).encode()
+        body = json.dumps({"error": {"type": self.NAME.replace(" ", "_"), "message": f"{self.NAME}: {msg}"}}).encode()
         self.send_response(status)
         self.send_header("content-type", "application/json")
         self.send_header("content-length", str(len(body)))
@@ -190,10 +191,9 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def do_POST(self):
-        gw, kind = self.server.gateway, KINDS.get(self.path.split("?")[0])
-        if kind is None:
-            return self._error(404, f"POST one of {', '.join(KINDS)}")
+    def _authenticated(self, max_body):
+        """((run_id, run token, the caller as scheme:subject), the JSON object its body holds, the body) of a request
+        with an identity the authenticators accept and its run, or None once it is refused."""
         run, conn = self.headers.get("X-Tracekit-Run"), self
         if run is None:   # the run in the bearer: only a client certificate can say who is calling
             run, conn = bearer(self), types.SimpleNamespace(headers={}, connection=self.connection,
@@ -208,22 +208,31 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         n = self.headers.get("content-length", "")
         if not (n.isascii() and n.isdigit()):
             return self._error(411, "Content-Length required")
-        if int(n) > gw.max_body:
-            return self._error(413, f"request body over {gw.max_body} bytes")
+        if int(n) > max_body:
+            return self._error(413, f"request body over {max_body} bytes")
         if self.headers.get("content-encoding", "identity").lower() != "identity":
             return self._error(415, "send the request body uncompressed")
         body = self.rfile.read(int(n))
         if len(body) < int(n):
             self.close_connection = True
-            return
-        self.server.stop_deadline()   # the request is in; the upstream's answer may stream for minutes
+            return None
+        self.server.stop_deadline()   # the request is in; the answer may take minutes
         try:
             req = json.loads(body)
         except ValueError:
             req = None
         if not isinstance(req, dict):
             return self._error(400, "the request body is not a JSON object")
-        key, xid = (parts[0], f"{parts[1]}.{parts[2]}", f"{identity.scheme}:{identity.subject}"), "gx-" + uuid.uuid4().hex
+        return (parts[0], f"{parts[1]}.{parts[2]}", f"{identity.scheme}:{identity.subject}"), req, body
+
+    def do_POST(self):
+        gw, kind = self.server.gateway, KINDS.get(self.path.split("?")[0])
+        if kind is None:
+            return self._error(404, f"POST one of {', '.join(KINDS)}")
+        got = self._authenticated(gw.max_body)
+        if got is None:
+            return
+        (key, req, body), xid = got, "gx-" + uuid.uuid4().hex
         base = {"provider": kind.split(":")[0], "model": str(req.get("model") or "")[:128],
                 "streamed": req.get("stream") is True}
         sent = parsers.parse(kind, None, req)["tool_results_sent"][-MAX_RESULTS_SENT:]

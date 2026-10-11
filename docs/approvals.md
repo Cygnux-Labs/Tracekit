@@ -63,9 +63,24 @@ States: `requested → approved | rejected | expired`, `approved → consumed | 
   thing after getting approval for another. The unredacted copy is used for execution only; approvers see the
   redacted one.
 
-No shipped adapter or executor runs T2 yet: the integrations run every call in the agent's process, with the arguments
-the agent holds, even under `executor: t2`. For T2 today, run held calls in a worker of your own that calls
-`approval_consume` and executes the arguments it returns.
+To use T2, mark the rules whose calls must run exactly as approved:
+
+```yaml
+ask:
+  - id: PAY
+    tool: "^pay$"
+    pattern: "^"
+    approval: {executor: t2}
+```
+
+Who runs the call then:
+
+- The [tool executor](executor.md) and the [MCP gateway](mcp-gateway.md) run it outside the agent, with credentials
+  the agent never holds, and run the arguments the consume returns. Their records are tier T2. This is the strong
+  form: the agent can neither run the call itself nor change what runs.
+- Every shipped adapter (Python and TypeScript) also runs the arguments the consume returns, not the framework's, so
+  arguments changed after the approval don't run. The call still runs in the agent's process (T1), which could run it
+  around the adapter.
 
 ## Who may answer
 

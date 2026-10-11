@@ -73,14 +73,16 @@ _RUN_REQ = ["request_id", "run_id", "run_token"]
 _EVENT_REQ = _RUN_REQ + ["stream", "client_seq"]
 _SEQ_ONLY = _obj(["run_seq"], run_seq=SEQ)
 
-_decide = _obj(_EVENT_REQ + ["tool_call_id", "tool", "args_source", "args"], **_EVENT,
+# `caller`, from a `gateways` identity only: the client it authenticated, whose run token the call carries (tier T2)
+_decide = _obj(_EVENT_REQ + ["tool_call_id", "tool", "args_source", "args"], **_EVENT, caller=IDENTITY,
                tool_call_id=ID, attempt=SEQ, tool=_str(256, minLength=1),
                tool_class_hint=_str(64),         # a hint only: the signer classifies the tool itself
                args_source={"enum": ["raw", "parsed", "coerced"]},
                args=ANY)                         # the raw model string when args_source is raw, else the value
 _RAW = {"if": {"properties": {"args_source": {"const": "raw"}}}, "then": {"properties": {"args": _str(MAX_RAW_ARGS)}}}
 _decide.update(_RAW)
-_consume = _obj(_RUN_REQ + ["tool_call_id", "tool", "args_source", "args"], **_RUN, tool_call_id=ID, attempt=SEQ,
+_consume = _obj(_RUN_REQ + ["tool_call_id", "tool", "args_source", "args"], **_RUN, caller=IDENTITY, tool_call_id=ID,
+                attempt=SEQ,
                 tool=_str(256, minLength=1), args_source={"enum": ["raw", "parsed", "coerced"]}, args=ANY,
                 approval_id_hint=ID)   # from the framework's saved state: checked against the signer's index, never trusted
 _consume.update(_RAW)
@@ -129,7 +131,7 @@ REQUESTS = {
                          investigation=ID,                 # with replay_of: the investigation it is an arm of
                          agent=_obj(["name"], name=_str(128, minLength=1), version=_str(64))),
     "decide": _decide,
-    "complete": _obj(_EVENT_REQ + ["tool_call_id", "decision_id", "args_digest", "status"], **_EVENT,
+    "complete": _obj(_EVENT_REQ + ["tool_call_id", "decision_id", "args_digest", "status"], **_EVENT, caller=IDENTITY,
                      tool_call_id=ID, attempt=SEQ, decision_id=ID,
                      args_digest=DIGEST,   # sha256(JCS({"tool", "args"})) of the args that ran
                      status={"enum": ["ok", "error"]}, result=ANY, error=_str(4096),
@@ -137,7 +139,7 @@ REQUESTS = {
                      redacted={"const": True}, redaction=_obj([], rules=RULE_IDS, count=SEQ)),
     # content that entered the run other than as a tool result (the task, a mail, a ticket): recorded as its
     # commitment and indexed for provenance; `trust` is the caller's claim, about content it supplies itself
-    "observe": _obj(_EVENT_REQ + ["source", "trust", "value"], **_EVENT, source=_str(256, minLength=1),
+    "observe": _obj(_EVENT_REQ + ["source", "trust", "value"], **_EVENT, caller=IDENTITY, source=_str(256, minLength=1),
                     trust={"enum": ["trusted", "untrusted"]}, value=ANY),
     "state_write": _obj(_EVENT_REQ + ["key", "value_digest"], **_EVENT, key=_str(256, minLength=1), value_digest=DIGEST,
                         prev_digest={"oneOf": [DIGEST, {"type": "null"}]}),   # the state the write started from
@@ -152,7 +154,7 @@ REQUESTS = {
                         tool_results_sent={"type": "array", "maxItems": MAX_RESULTS_SENT, "items": ID},
                         caller=IDENTITY,   # from a `gateways` identity only: the client it authenticated (source gateway)
                         body=ANY),   # the exchange's body, for the content vault when status says it is on
-    "approval_request": _obj(_RUN_REQ + ["tool_call_id"], **_RUN, tool_call_id=ID, attempt=SEQ,
+    "approval_request": _obj(_RUN_REQ + ["tool_call_id"], **_RUN, caller=IDENTITY, tool_call_id=ID, attempt=SEQ,
                              reason=REASON),   # the agent's words: shown to the approver as such, never as the args
     "approval_decide": _obj(["request_id", "approval_id", "decision"], request_id=ID, approval_id=ID,
                             decision={"enum": ["approve", "reject"]}, reason=REASON, on_behalf=PERSON,
@@ -162,8 +164,8 @@ REQUESTS = {
     "approval_decide_on_behalf": _obj(["request_id", "approval_id", "decision", "approver"], request_id=ID,
                                       approval_id=ID, decision={"enum": ["approve", "reject"]}, approver=SLACK_ID,
                                       groups={"type": "array", "maxItems": 32, "items": SLACK_ID}),
-    "approval_wait": _obj(["run_id", "run_token", "approval_id"], run_id=ID, run_token=TOKEN, approval_id=ID,
-                          timeout_ms={"type": "integer", "minimum": 0, "maximum": 300000}),
+    "approval_wait": _obj(["run_id", "run_token", "approval_id"], run_id=ID, run_token=TOKEN, caller=IDENTITY,
+                          approval_id=ID, timeout_ms={"type": "integer", "minimum": 0, "maximum": 300000}),
     "approval_consume": _consume,
     "approval_get": _obj(["approval_id"], approval_id=ID, on_behalf=PERSON),
     # a page of the approvals the caller may see, oldest first; `cursor` is the previous page's next_cursor

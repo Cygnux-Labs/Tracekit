@@ -43,8 +43,10 @@ signer.yaml:
     migrators: ["uid:1003"]                  # may register `migrated` runs
     analyzers: ["uid:1004"]                  # may register findings runs, each bound to the run it analyses, and
                                              # `tracekit why` replay runs of it (replay_of)
-    gateways: ["mtls:spiffe://acme/gateway"]  # LLM gateways (tracekit.gateway): their model_event names the client it
-                                             # authenticated (`caller`) and is recorded source gateway (tier T2)
+    gateways: ["mtls:spiffe://acme/gateway"]  # LLM and MCP gateways, tool executors (tracekit.gateway, .mcp_gateway,
+                                             # .executor): their calls name the client they authenticated (`caller`):
+                                             # model_event, decide, complete, approval_request and observe are
+                                             # recorded source gateway (tier T2)
     gateway_mandatory: false                 # true: reconcile decides against gateway L3 only (tracekit.signer.reconcile)
     fail_modes: {default: closed, read: open}   # tool class -> fail mode, recorded and returned by register_run
     grace_s: 5                               # reconciliation window between run.closing and run.final
@@ -262,6 +264,7 @@ REFUSAL_WINDOW_S = 60
 STRICTNESS = ("allow", "flag", "ask", "deny")
 LIVE = ("requested", "approved")   # approval states that may still lead to a consume
 LIST_PAGE = 100
+T2 = {"source": "gateway", "tier": "T2"}   # a call a gateway or executor decided, ran and completed for its client
 TICK_S = 1.0
 WITNESS_START_S = 30.0   # start-up: how long the witnesses, asked at once, have to say how far they cosigned
 CLOSE_WAIT_S = 60.0   # serve --close-on-stop: how long the final notes wait for witnesses (within the pod's grace)
@@ -1543,6 +1546,7 @@ class SignerService:
         return self.log.submit(identity, "register_run", req, fn)
 
     def _decide(self, identity, req):
+        identity, top = self._as_caller(identity, "decide", req), T2 if "caller" in req else {}
         key = self._authorize(identity, req)
         self.quotas.take_event(identity)
         tool, tcid, attempt, hint = req["tool"], req["tool_call_id"], req.get("attempt", 0), req.get("tool_class_hint")
@@ -1587,7 +1591,8 @@ class SignerService:
             tx.set(run["calls"], tcid, call)
             tx.set(run["decisions"], did, call)
             seq = tx.event(run, req, "policy.decision", dict(data, decision=verdict, rule_ids=rule_ids),
-                           digests={tcid: digest}, tool_call_id=tcid, attempt=attempt, args_source=req["args_source"])
+                           digests={tcid: digest}, tool_call_id=tcid, attempt=attempt, args_source=req["args_source"],
+                           **top)
             written.append(seq)
             for kind, reason in gaps:
                 tx.emit(run, "capture.gap", {"kind": kind, "reason": reason, "tool_use_id": tcid}, source="signer",
@@ -1623,6 +1628,7 @@ class SignerService:
         return res
 
     def _complete(self, identity, req):
+        identity, top = self._as_caller(identity, "complete", req), T2 if "caller" in req else {}
         key, tcid, attempt, did = self._authorize(identity, req), req["tool_call_id"], req.get("attempt", 0), req["decision_id"]
         # read off the writer thread, which checks the decision again; unknown after a restart (arguments are never
         # logged), so a replayed decision redacts as if the call touched a .env file
@@ -1657,7 +1663,7 @@ class SignerService:
             tx.pop(run["decisions"], did)
             seq = tx.event(run, req, "tool.result", {"tool_use_id": tcid, "ok": req["status"] == "ok", "output": output,
                                                      "decision_id": did, "redaction": manifest},
-                           tool_call_id=tcid, attempt=attempt)
+                           tool_call_id=tcid, attempt=attempt, **top)
             written.append(seq)
             if keys:
                 self._index(tx, run, keys, {"run_seq": seq, "tool": call["tool"], "tool_call_id": tcid,
@@ -1682,6 +1688,7 @@ class SignerService:
         return res
 
     def _observe(self, identity, req):
+        identity, top = self._as_caller(identity, "observe", req), T2 if "caller" in req else {}
         key = self._authorize(identity, req)
         try:
             value, manifest = _redact(req["value"], False)
@@ -1698,7 +1705,7 @@ class SignerService:
         written = []
 
         def fn(tx, run):
-            written.append(tx.event(run, req, "input.observed", data))
+            written.append(tx.event(run, req, "input.observed", data, **top))
             self._index(tx, run, keys, {"run_seq": written[0], "trust": req["trust"]})
             if overflow and req["trust"] == "untrusted":   # trusted values left out only make more calls held
                 self._degrade(tx, run.get("prov"), "truncated",
@@ -1732,13 +1739,21 @@ class SignerService:
             return {"run_seq": seq}
         return self.log.submit(identity, "state_write", req, fn, key, late=True)
 
+    def _as_caller(self, identity, method, req):
+        """The identity a call is made as: a `gateways` identity (an LLM or MCP gateway, a tool executor) that names
+        `caller` acts for the client it authenticated, under that client's run token and grants."""
+        if "caller" not in req:
+            return identity
+        if not lookup(self._gateways, subject(identity), False):
+            raise RPCError("forbidden", f"{subject(identity)[:256]} is not a configured gateway")
+        identity = CallerIdentity(*req["caller"].split(":", 1), True)
+        self._grant(identity, method)
+        return identity
+
     def _model_event(self, identity, req):
         top, out = {}, None
         if "caller" in req:   # an LLM gateway reports the exchange of the client it authenticated, under its run token
-            if not lookup(self._gateways, subject(identity), False):
-                raise RPCError("forbidden", f"{subject(identity)[:256]} is not a configured gateway")
-            identity = CallerIdentity(*req["caller"].split(":", 1), True)
-            self._grant(identity, "model_event")
+            identity = self._as_caller(identity, "model_event", req)
             top, out = {"source": "gateway"}, {"fail_modes": self.fail_modes}
         keep, content_digest = None, req.get("content_digest")
         if "body" in req:   # committed to after redaction, as a result is; kept when the vault is on
@@ -1771,6 +1786,7 @@ class SignerService:
                            **top)
 
     def _approval_request(self, identity, req):
+        identity, top = self._as_caller(identity, "approval_request", req), T2 if "caller" in req else {}
         key, tcid, sub = self._authorize(identity, req), req["tool_call_id"], subject(identity)
         attempt = req.get("attempt", 0)
         self.quotas.take_event(identity)
@@ -1815,7 +1831,7 @@ class SignerService:
             tx.set(self.log.approvals, aid, approval(*key, data))
             tx.set(self.log.approval_index, (*key, tcid, attempt), aid)
             tx.set(call, "pending", None)   # the sealed copy on disk is what the approver sees from now on
-            tx.emit(run, "approval.request", data, request_id=req["request_id"], tool_call_id=tcid, attempt=attempt)
+            tx.emit(run, "approval.request", data, request_id=req["request_id"], tool_call_id=tcid, attempt=attempt, **top)
             return {"approval_id": aid, "state": "requested", "expires_at": expires_at}
         try:
             return self.log.submit(identity, "approval_request", req, fn, key)
@@ -1904,6 +1920,7 @@ class SignerService:
         return out
 
     def _approval_wait(self, identity, req):
+        identity = self._as_caller(identity, "approval_wait", req)
         aid = req["approval_id"]
         self._approval(self._authorize(identity, req), aid)
         with self.quotas.wait_slot(identity), self._cond:
@@ -1914,6 +1931,7 @@ class SignerService:
             lambda tx: self.log.approvals.get(aid, {"state": "expired"})["state"])}
 
     def _approval_consume(self, identity, req):
+        identity = self._as_caller(identity, "approval_consume", req)
         key, tcid, attempt, hint = self._authorize(identity, req), req["tool_call_id"], req.get("attempt", 0), \
             req.get("approval_id_hint")
         self.quotas.take_event(identity)

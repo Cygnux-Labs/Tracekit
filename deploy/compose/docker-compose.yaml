@@ -73,6 +73,41 @@ services:
       signer: {condition: service_healthy}
     restart: unless-stopped
 
+  # The custody services (profile custody: `docker compose --profile custody up -d`; docs/executor.md#compose): each
+  # holds credentials the agent never gets, in ./custody/<service>/ (its config and the secret files it names), reaches
+  # the signer's socket as its own uid (signer.yaml `gateways`; its config's `signer:
+  # /run/tracekit-signer/signer.sock`), and serves the agent on the agent network on its port
+  # with a bearer token (custody/<service>/bearer). Only they reach the internet (network egress).
+  gateway:
+    <<: &custody
+      build: {context: ../.., dockerfile: deploy/docker/Dockerfile}
+      image: tracekit-signer:compose
+      profiles: [custody]
+      read_only: true
+      cap_drop: [ALL]
+      security_opt: ["no-new-privileges:true"]
+      tmpfs: [/tmp]
+      healthcheck: {disable: true}
+      networks: [agent, egress]
+      depends_on:
+        signer: {condition: service_healthy}
+      restart: unless-stopped
+    user: "10011:10011"
+    entrypoint: [tracekit, gateway, serve, --config, /etc/tracekit/custody/gateway.yaml]
+    volumes: [./custody/gateway:/etc/tracekit/custody:ro, signer-run:/run/tracekit-signer:ro]
+
+  executor:
+    <<: *custody
+    user: "10012:10012"
+    entrypoint: [tracekit, executor, serve, --config, /etc/tracekit/custody/executor.yaml]
+    volumes: [./custody/executor:/etc/tracekit/custody:ro, signer-run:/run/tracekit-signer:ro]
+
+  mcp-gateway:
+    <<: *custody
+    user: "10013:10013"
+    entrypoint: [tracekit, mcp-gateway, serve, --config, /etc/tracekit/custody/mcp-gateway.yaml]
+    volumes: [./custody/mcp-gateway:/etc/tracekit/custody:ro, signer-run:/run/tracekit-signer:ro]
+
   agent:
     # An example agent: another uid, its own network, only the socket volume. `docker compose run --rm agent`
     build: {context: ../.., dockerfile: deploy/docker/Dockerfile}
@@ -102,6 +137,7 @@ networks:
   witness: {internal: true}
   agent: {internal: true}
   front: {}
+  egress: {}                                      # the custody services' way to their upstreams
 
 volumes:
   pg-data:
