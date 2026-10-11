@@ -173,6 +173,13 @@ privacy.redact before they are committed or stored; a result's record carries a 
 fired, never the values). A client may say it redacted already; the signer redacts again regardless and flags a secret
 it still finds. Every published digest of agent content is an HMAC under a per-record salt derived from
 keys/args_salt.key (`salt_label`), which `reveal` prints for one record. Policy decides on the unredacted arguments.
+
+Provenance (docs/policy-v2.md): each run registered since the signer started has an index, in memory only, of the
+values (tracekit.provenance) its untrusted tools' results (the policy's `untrusted` list) and its `observe` inputs
+carried, keyed by an HMAC under a key drawn per process, each with the record that first brought it and whether that
+content was trusted (an observed input is what the caller says; other tools' results are not indexed: they can echo
+the agent's own arguments). A value once observed as trusted stays trusted. `from: untrusted` rules match on it, and every decision records which arguments carry
+untrusted-only values (field, kind, source record; never the value). After a restart a run's index is unavailable.
 """
 import argparse
 import base64
@@ -199,7 +206,7 @@ import rfc8785
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-from tracekit import __version__, crypto, harness_helper, merkle, otlp, privacy, yamlmini
+from tracekit import __version__, crypto, harness_helper, merkle, otlp, privacy, provenance, yamlmini
 from tracekit.client import remote_url_error
 from tracekit.anchor import rekor2
 from tracekit.anchor.rekor2 import RekorAnchor
@@ -238,6 +245,7 @@ CHECKPOINT_S, CHECKPOINT_MIN_S = 10.0, 1.0
 WITNESS_GAP_S, LOG_KEY_GAP_S, BACKOFF_S = 300.0, 300.0, (1.0, 300.0)
 FSCK_S, CLOCK_SKEW_S, LOCK_TIMEOUT_S, RENEW_RETRY_S = 86400.0, 300.0, 10.0, 60.0
 SNAPSHOT_RECORDS = 100_000
+PROVENANCE_MAX, PROVENANCE_SHOWN = 20_000, 16   # index entries per run (then truncated); entries a decision records
 CLASSES = ("public", "customer", "tracekit", "operator")
 GRACE_S, IDLE_S = 5.0, 3600.0
 FAIL_MODES = {"default": "closed"}
@@ -448,6 +456,7 @@ class SignerService:
         if self._decision_keys is None or any(crypto.key_alg(v) != "ed25519" for v in self._decision_keys.values()):
             raise ValueError("decision_keys maps system names to base64 Ed25519 public keys")
         self.metrics = metrics.SignerMetrics()
+        self._prov_key = os.urandom(32)   # the provenance index's key: per process, as the index is
         authorize = dict(authorize or {})
         if not all(isinstance(m, list) and set(m) <= {*REQUESTS, OTLP_IMPORT} for m in authorize.values()):
             raise ValueError(f"authorize maps identities to lists of methods out of {sorted({*REQUESTS, OTLP_IMPORT})}")
@@ -1252,14 +1261,59 @@ class SignerService:
     def _opens(self, commitment, label, digest):
         return bool(commitment and digest) and hmac.compare_digest(commitment, self._commit(label, digest))
 
-    def _evaluate(self, tool, args, hint):
+    def _evaluate(self, tool, args, hint, untrusted=None):
         """(policy decision, hint disagreed). A class hint that disagrees with the policy's class gets the stricter of
         the two decisions."""
-        d = self.policy.decide(tool, args)
+        d = self.policy.decide(tool, args, untrusted=untrusted)
         if hint is None or hint == self.policy.tool_class(tool):
             return d, False
-        h = self.policy.decide(tool, args, hint if hint in policy_compile.CLASSES else "unknown")
+        h = self.policy.decide(tool, args, hint if hint in policy_compile.CLASSES else "unknown", untrusted)
         return max(d, h, key=lambda x: STRICTNESS.index(x["verdict"])), True
+
+    def _keys(self, obj, email_hosts=True):
+        """[(kind, provenance index key)] of the values `obj` carries (provenance.values)."""
+        return [(kind, hmac.new(self._prov_key, f"{kind}\0{v}".encode("utf-8", "surrogatepass"), "sha256").digest())
+                for kind, v in provenance.values(obj, email_hosts)]
+
+    def _index(self, tx, run, keys, source):
+        """Index `keys` (from _keys) as brought into `run` by `source` ({run_seq, trust, tool?, tool_call_id?}), on the
+        writer. Trusted content wins over untrusted, whichever came first; past PROVENANCE_MAX entries the index is
+        truncated and takes no new values."""
+        prov = run.get("prov")
+        if prov is None:
+            return
+        idx = prov["index"]
+        for _, k in keys:
+            had = idx.get(k)
+            if had is None and len(idx) >= PROVENANCE_MAX:
+                if prov["state"] != "truncated":
+                    tx.set(prov, "state", "truncated")
+            elif had is None or had["trust"] == "untrusted" and source["trust"] == "trusted":
+                tx.set(idx, k, source)
+
+    def _provenance(self, key, args):
+        """(`untrusted(subject)` for the policy, the decision's provenance fields) of a call with `args` in run `key`."""
+        prov = self.log.runs[key].get("prov")
+        if prov is None:
+            return None, {"provenance_state": "unavailable"}
+        # lean: read off the writer, which may be adding to it: a decide racing a batch the storage then refuses may
+        # see that batch's values for that moment; read on the writer if that ever matters
+        idx, state = prov["index"], prov["state"]
+
+        def hits(obj):
+            return [(kind, s) for kind, k in self._keys(obj, False) if (s := idx.get(k)) and s["trust"] == "untrusted"]
+        entries = []
+        for field, v in (args if isinstance(args, dict) else {"value": args}).items():
+            for kind, s in hits(v):
+                e = {"field": field[:256], "kind": kind,
+                     "source": {k: s[k] for k in ("run_seq", "tool", "tool_call_id") if s.get(k) is not None}}
+                if e not in entries:
+                    entries.append(e)
+        # only when there is something to say, so a run with nothing untrusted in its arguments stays readable by a 1.0
+        # verifier (bundle_v2: these fields make a bundle need 1.1)
+        out = ({"provenance_state": state, **({"provenance": entries[:PROVENANCE_SHOWN]} if entries else {})}
+               if entries or state != "complete" else {})
+        return (lambda subject: hits(subject) if state == "complete" else []), out
 
     def _chain(self, identity):
         """The caller's process chain (harness_helper.chain), [] when it can't be had. Cached per process instance:
@@ -1354,6 +1408,7 @@ class SignerService:
             tx.set(self.log.open_runs, own, n + 1)
             tx.set(run, "source", req.get("source", "sdk"))
             tx.set(run, "people", (person(identity), principal if "principal_token" in req else None))
+            tx.set(run, "prov", {"state": "complete", "index": {}})
             if harness:
                 tx.set(run, "harness", (harness["pid"], harness["start_time"]))
             attested = "principal_token" in req
@@ -1378,8 +1433,9 @@ class SignerService:
         self.quotas.take_event(identity)
         tool, tcid, attempt, hint = req["tool"], req["tool_call_id"], req.get("attempt", 0), req.get("tool_class_hint")
         args, digest = self._args(req)
+        untrusted, prov = self._provenance(key, args)
         # matched here, off the writer thread; the writer picks a memoised deny/ask or this result
-        ruled = self._evaluate(tool, args, hint) if digest else None
+        ruled = self._evaluate(tool, args, hint, untrusted) if digest else None
         did = "dec-" + secrets.token_hex(16)
         commitment = self._commit(did, digest) if digest else None
         # lean: expires_at is signed but `complete` does not enforce it; enforce once executors check it before running
@@ -1388,7 +1444,7 @@ class SignerService:
         def fn(tx, run):
             memo, gaps = run["calls"].get(tcid), []
             data = {"tool_use_id": tcid, "tool": tool, "decision_id": did, "policy_hash": self.policy.policy_hash,
-                    "engine": self.policy.engine, "nonce": secrets.token_hex(16), "expires_at": expires_at}
+                    "engine": self.policy.engine, "nonce": secrets.token_hex(16), "expires_at": expires_at, **prov}
             if digest is None:
                 verdict, rule_ids = "deny", ["TK-ARGS-INVALID"]
             elif memo and memo["attempt"] == attempt and memo["decision"] in ("deny", "ask") and self._same(memo, digest):
@@ -1409,7 +1465,7 @@ class SignerService:
             if commitment:
                 data["args_commitment"] = commitment
             call = {"tool_call_id": tcid, "attempt": attempt, "decision": verdict, "rule_ids": rule_ids,
-                    "decision_id": did, "commitment": commitment, "dotenv": _dotenv(args)}
+                    "decision_id": did, "commitment": commitment, "dotenv": _dotenv(args), "tool": tool}
             if verdict == "ask":   # the signer's copy, for the approval request (memory only: decide again after a restart)
                 call["pending"] = {"tool": tool, "args_source": req["args_source"], "args": req["args"]}
             tx.set(run["calls"], tcid, call)
@@ -1451,6 +1507,10 @@ class SignerService:
             raise RPCError("invalid_request", f"result is not canonical JSON: {e}") from None
         output = {"hash": self._commit("result:" + did, "sha256:" + hashlib.sha256(c).hexdigest()), "size": len(c),
                   "redacted": manifest["count"] > 0 or manifest["client_claimed"]}
+        # what the signer commits to; only an untrusted tool's results: any other tool may echo what the agent put in
+        # its arguments, which would launder an injected value into trusted content
+        tool = (self.log.runs[key].get("decisions", {}).get(did) or {}).get("tool")   # None: decided before a restart
+        keys = self._keys(value) if tool and self.log.runs[key].get("prov") and self.policy.untrusted_results(tool) else []
         self.quotas.take_event(identity)
 
         def fn(tx, run):
@@ -1463,6 +1523,9 @@ class SignerService:
             seq = tx.event(run, req, "tool.result", {"tool_use_id": tcid, "ok": req["status"] == "ok", "output": output,
                                                      "decision_id": did, "redaction": manifest},
                            tool_call_id=tcid, attempt=attempt)
+            if keys:
+                self._index(tx, run, keys, {"run_seq": seq, "tool": call["tool"], "tool_call_id": tcid,
+                                            "trust": "untrusted"})
             a = self.log.approvals.get(self.log.approval_index.get((*key, tcid, attempt)), {})
             approved = a.get("state") == "consumed" and self._opens(a["commitment"], a["label"], req["args_digest"])
             if call["decision"] == "deny" or (call["decision"] == "ask" and not approved):
@@ -1473,6 +1536,27 @@ class SignerService:
                         source="signer", tool_call_id=tcid)
             return {"run_seq": seq}
         return self.log.submit(identity, "complete", req, fn, key, late=True)
+
+    def _observe(self, identity, req):
+        key = self._authorize(identity, req)
+        try:
+            value, manifest = _redact(req["value"], False)
+            c = canonical(value)
+        except rfc8785.CanonicalizationError as e:
+            raise RPCError("invalid_request", f"value is not canonical JSON: {e}") from None
+        sid = secrets.token_hex(16)
+        label = salt_label({"type": "input.observed", "data": {"salt_id": sid}})
+        data = {"source": req["source"], "trust": req["trust"], "redaction": manifest, "salt_id": sid,
+                "output": {"hash": self._commit(label, "sha256:" + hashlib.sha256(c).hexdigest()), "size": len(c),
+                           "redacted": manifest["count"] > 0}}
+        keys = self._keys(value) if self.log.runs[key].get("prov") else []
+        self.quotas.take_event(identity)
+
+        def fn(tx, run):
+            seq = tx.event(run, req, "input.observed", data)
+            self._index(tx, run, keys, {"run_seq": seq, "trust": req["trust"]})
+            return {"run_seq": seq}
+        return self.log.submit(identity, "observe", req, fn, key)
 
     def _state_write(self, identity, req):
         key, sk = self._authorize(identity, req), req["key"]

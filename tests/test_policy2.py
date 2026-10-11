@@ -85,7 +85,10 @@ class Compile(unittest.TestCase):
         self.assertEqual(pol["extends"], [pc.policy_hash(pc.build(p)[0]) for p in (a, b)])
         self.assertEqual((pol["tools"], pol["unknown_tools"]), ({"Bash": "shell", "run_sql": "sql"}, "ask"))
         self.assertEqual(([r["id"] for r in pol["deny"]], [r["id"] for r in pol["ask"]]), (["A1"], ["B1"]))
-        self.assertIn("rule A1: duplicate id", "\n".join(self.errors("extends: [a.yaml, a.yaml]\n")))
+        self.write("a2.yaml", "tools:\n  Bash: shell\ndeny:\n  - {id: A1, class: shell, pattern: y}\n")
+        self.assertIn("rule A1: duplicate id", "\n".join(self.errors("extends: [a.yaml, a2.yaml]\n")))
+        pol, errs = pc.build(self.write("p.yaml", "extends: [a.yaml, a.yaml]\n"))   # the same rule twice is one rule
+        self.assertEqual((errs, [r["id"] for r in pol["deny"]]), ([], ["A1"]))
         self.assertIn("extends must be a relative path", "\n".join(self.errors(f"extends: [b.yaml, {a}]\n")))
 
     def test_extends_loop_through_dot_path(self):

@@ -111,6 +111,7 @@
         "approval.refused",
         "approval.binding_mismatch",
         "approval.abandoned",
+        "input.observed",
         "state.write",
         "signer.epoch",
         "key.retire",
@@ -631,6 +632,22 @@
         "properties": {
           "data": {
             "$ref": "#/$defs/approval_abandoned"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "input.observed"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/input_observed"
           }
         }
       }
@@ -1218,6 +1235,64 @@
         "nondeterministic": {
           "type": "boolean",
           "description": "a fallback-engine match ran out of time and denied"
+        },
+        "provenance": {
+          "type": "array",
+          "maxItems": 16,
+          "description": "argument values that only untrusted content brought into the run: the top-level argument, the kind of value and the record that brought it; never the value",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "field",
+              "kind",
+              "source"
+            ],
+            "properties": {
+              "field": {
+                "type": "string",
+                "maxLength": 256
+              },
+              "kind": {
+                "enum": [
+                  "email",
+                  "url",
+                  "host",
+                  "path",
+                  "digits",
+                  "string"
+                ]
+              },
+              "source": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "run_seq"
+                ],
+                "properties": {
+                  "run_seq": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "tool": {
+                    "type": "string",
+                    "maxLength": 256
+                  },
+                  "tool_call_id": {
+                    "$ref": "#/$defs/id"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "provenance_state": {
+          "enum": [
+            "complete",
+            "truncated",
+            "unavailable"
+          ],
+          "description": "the run's provenance index: complete, truncated (too many values; from: untrusted rules do not match) or unavailable (lost in a signer restart)"
         }
       }
     },
@@ -2300,6 +2375,42 @@
         }
       },
       "description": "the adapter will never resume the paused call; the approval ends at once"
+    },
+    "input_observed": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "content that entered the run other than as a tool result (observe RPC), indexed for provenance; the value itself is only committed to",
+      "required": [
+        "source",
+        "trust",
+        "output",
+        "redaction",
+        "salt_id"
+      ],
+      "properties": {
+        "source": {
+          "type": "string",
+          "maxLength": 256,
+          "description": "the caller's name for where the content came from"
+        },
+        "trust": {
+          "enum": [
+            "trusted",
+            "untrusted"
+          ],
+          "description": "the caller's claim; it only decides how this content's own values count"
+        },
+        "output": {
+          "$ref": "#/$defs/content"
+        },
+        "redaction": {
+          "$ref": "#/$defs/redaction"
+        },
+        "salt_id": {
+          "$ref": "#/$defs/id",
+          "description": "the signer's salt id for this record's commitments (salt label <type>:<salt_id>)"
+        }
+      }
     },
     "state_write": {
       "type": "object",
