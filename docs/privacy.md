@@ -91,6 +91,12 @@ With the v2 signer service (`tracekit signer serve`), the signer redacts itself,
   salt of that record. An auditor who holds the content can then recompute that record's commitments; the salt opens
   no other record. Every record has its own salt, so a reveal opens exactly one record.
   Verifying a bundle never needs a salt.
+- **The provenance index.** To know which argument values only untrusted content brought into a run
+  ([policy](policy-v2.md#provenance-untrusted-and-from-untrusted)), the signer keeps, per open run and in memory only,
+  keyed hashes (HMAC-SHA256 under a key drawn at random per signer process) of the values in its tool results and
+  observed inputs, after redaction. They are never written to disk or into a record, go when the run ends, and are
+  gone after a restart. Records name the argument (field), the kind of value and the record it came from, never the
+  value; an `input.observed` record holds only a commitment to the content, like a result.
 
 ## What leaves the machine
 

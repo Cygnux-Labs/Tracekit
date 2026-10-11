@@ -324,7 +324,7 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
         # lean: loads the policy with this process's Python; check the signer venv's engine if they ever differ
         add("D-POLICY-ENGINE", True, f"{policy} loads on {service.load_policy(policy).engine}", "")
     except ImportError as e:
-        add("D-POLICY-ENGINE", False, f"no regex engine: {e}", "install the signer extra: pip install 'tracekit-ai[signer]'")
+        add("D-POLICY-ENGINE", False, f"no regex engine: {e}", "pip install tracekit-ai (a --no-deps install leaves the engine out)")
     except (OSError, ValueError) as e:
         add("D-POLICY-ENGINE", False, f"{policy} does not load: {e}", f"fix the policy: tracekit policy lint {policy}")
 

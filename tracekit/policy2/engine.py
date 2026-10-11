@@ -55,9 +55,16 @@ class Engine:
         hits = sorted((-len(pat.replace("*", "").replace("?", "")), pat) for pat in tools if fnmatch.fnmatchcase(tool, pat))
         return tools[hits[0][1]] if hits else "unknown"
 
-    def decide(self, tool, args, cls=None):
+    def untrusted_results(self, tool):
+        """Whether the policy's `untrusted` list (tool classes and tool name globs) marks the tool's results untrusted."""
+        cls = self.tool_class(tool)
+        return any(u == cls if u in CLASSES else fnmatch.fnmatchcase(tool, u) for u in self.policy.get("untrusted", ()))
+
+    def decide(self, tool, args, cls=None, untrusted=None):
         """Return {verdict, rule_ids, policy_hash, engine[, nondeterministic]} for one tool call. `cls` overrides the
-        class the policy maps the tool to."""
+        class the policy maps the tool to. `untrusted(subject)`: the hits of the subject's values that only untrusted
+        content brought into the run; a `from: untrusted` rule matches a subject only when there is one (never without
+        `untrusted`)."""
         args = args if isinstance(args, dict) else {"value": args}
         cls = cls or self.tool_class(tool)
         fields = classes.extract(cls, tool, args)
@@ -94,7 +101,8 @@ class Engine:
                     # `unless`: an exemption checked against the same subject (use it only where the subject is one
                     # target, e.g. a file path; in a whole command it could exempt a different target)
                     if self._match(pat, subject, False, deadline) and not (
-                            unless is not None and self._match(unless, subject, False, deadline)):
+                            unless is not None and self._match(unless, subject, False, deadline)) and (
+                            "from" not in rule or untrusted is not None and untrusted(subject)):
                         hits[sec].append(rule["id"])
                         break
             except TimeoutError:   # the time of the whole decision is spent: deny, and leave the other rules out

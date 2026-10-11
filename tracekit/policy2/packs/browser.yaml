@@ -4,12 +4,15 @@
 # To allow a host TK-B002 or TK-B003 denies, or to set the domains typing is allowed on (TK-B011), extend this pack and redefine
 # the rule with the same id: a rule in the extending file replaces the parent's.
 
-version: '2026.10-browser-2'
+version: '2026.10-browser-3'
 description: browser agents (Browser Use)
 unknown_tools: ask
 
 tools:
   'browser_use:*': browser
+
+# a page's content is untrusted
+untrusted: [browser]
 
 deny:
   - id: TK-B001
@@ -48,3 +51,11 @@ ask:
     unless: '^https://([A-Za-z0-9.-]*\.)?example\.com\.?(:[0-9]+)?([/?#]|$)'
     reason: typing on a site outside the allowlist
     rationale: Typed text (credentials, personal data, messages) is what a browser agent can leak or send.
+  - id: TK-P003
+    # data sent (a method other than GET or HEAD, a body, or typing and uploads in a browser) to a host that only
+    # untrusted content (`untrusted` tools' results, observed untrusted input) brought into the run
+    field: sends_to
+    pattern: '.'
+    from: untrusted
+    reason: sending data to a host that came only from untrusted content (if your app supplied it, observe it as trusted: docs/limits.md)
+    rationale: A host the agent read in a page, a mail or a ticket, and in nothing the caller observed as trusted (the task), is where injected instructions send data; a person checks it.
