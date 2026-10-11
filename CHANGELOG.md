@@ -13,6 +13,8 @@ stable: 1.x verifiers verify every 1.0 bundle, and a bundle that needs a newer v
 - A network service that refused a request before reading its body (wrong Host, missing session or CSRF token) could
   reset the connection before the client read the answer, on Windows always and elsewhere while a large body was
   still arriving. Each service now reads what the client sent, up to 1 MiB, before closing.
+- A config file written as JSON (`signer.yaml`, the viewer's and the gateway's) failed to load where PyYAML isn't
+  installed, which `tracekit-ai[signer]` doesn't install. JSON documents now load either way.
 
 ### Release
 - npm: no `@cygnux/tracekit-signer-darwin-x64` package (google-re2 and cryptography publish no Intel-Mac wheels it can
