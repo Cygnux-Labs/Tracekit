@@ -54,7 +54,7 @@ skipped with the reason) and checks that doctor flags each one. It also checks t
 | `D-HOOKS-TIMEOUT` | the PreToolUse hook's timeout | it's below the hook's approval wait (540 s), so Claude Code would kill a call that's waiting for approval | set it to 600 (re-run init) |
 | `D-SIGNER-ENV` | `env.TRACEKIT_SIGNER` in the agent's settings | it names a socket other than the system one, so the hook refuses it and blocks every call | remove it |
 | `D-POLICY-TRUST` | the policy signer.yaml names (else the built-in pack) | the agent's user could change it | make it root-owned in root-owned directories |
-| `D-POLICY-ENGINE` | the policy, compiled by policy2 | it doesn't compile, or neither `google-re2` nor `regex` is installed | `tracekit policy lint FILE`; `pip install 'tracekit-ai[signer]'` |
+| `D-POLICY-ENGINE` | the policy, compiled by policy2 | it doesn't compile, or neither `google-re2` nor `regex` is installed | `tracekit policy lint FILE`; `pip install tracekit-ai` (a `--no-deps` install leaves the engine out) |
 | `D-DURABILITY` | `durability` | it's `ack-on-write` in a production profile, so a power loss can drop records that were already acknowledged (warn) | `durability: ack-on-fsync` |
 | `D-FAIL-MODES` | `fail_modes` and `client.json` `fail_mode` | a tool class, or the system config, fails open (warn) | set them to `closed` unless an outage must not stop the agent |
 | `D-WITNESS-CONFIGURED` | `witnesses` | there are none, so checkpoints aren't cosigned and assurance stays `local` (dev: warn) | add a witness (`docs/witnesses.md`) |

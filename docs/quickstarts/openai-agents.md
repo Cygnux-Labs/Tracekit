@@ -1,30 +1,45 @@
 # Quickstart: OpenAI Agents SDK
 
-Every tool call is decided by the v2 signer before it runs and recorded after, as a signed event. This page runs the
-example in [examples/v2/openai_agents](../../examples/v2/openai_agents/) offline (a mock model, no API key), then reads
-the report of its verified bundle. It uses the dev signer, which runs as your own user (see [what dev assurance
+Every tool call is decided by the v2 signer before it runs and recorded after, as a signed event. This page adds it
+to the agent you have in three steps. It uses the dev signer, which runs as your own user (see [what dev assurance
 means](../quickstart-v2.md#what-dev-assurance-means)).
 
 ## 1. Install
 
 ```sh
-python3 -m venv .venv && . .venv/bin/activate      # Windows: .venv\Scripts\activate
-pip install 'tracekit-ai[signer]' 'openai-agents>=0.23.1,<0.24'
+pip install tracekit-ai 'openai-agents>=0.23.1,<0.24'
 ```
 
-## 2. Run the example
+## 2. One line in your agent
+
+```python
+import tracekit; tracekit.instrument()     # first
+from agents import Agent, Runner, function_tool
+
+@function_tool
+def transfer_funds(to: str, cents: int) -> str:
+    """Send money."""
+    return f"sent {cents} to {to}"
+
+agent = Agent(name="payer", model="gpt-5", tools=[transfer_funds])
+print(Runner.run_sync(agent, "pay acct-42 $15").final_output)
+```
+
+The tools of every `Agent` built after `instrument()` are gated: function tools, ShellTool with a local executor,
+LocalShellTool and ApplyPatchTool. Hosted tools, ComputerTool and handoffs are recorded only in the signed model
+responses. An `ask` interrupts the run (`result.interruptions`); to resume it once a person decided, wire the adapter by
+hand (below).
+
+## 3. See it verified
 
 ```sh
-python examples/v2/openai_agents/agent.py --scripted
+tracekit last
 ```
 
-The first call starts a dev signer in the background. One call is allowed, one is denied and the agent goes on, one is
-held until it is approved. `--scripted` approves it from a second process; without it, approve it yourself from another
-terminal with `tracekit approvals approve <id>` (`tracekit approvals show <id>` shows the signer's copy of the arguments
-first). The example then pins the signer's key (`tracekit signer trust -o trust.json`), exports the run (`tracekit
-export --v2 --run <id>`) once the signer has finalised it, and verifies it.
+It exports the most recent finished run, pins the dev signer's key, verifies the bundle and says where it is
+([the v2 quickstart](../quickstart-v2.md#3-see-it-verified)).
 
-## 3. Wire it into your agent
+## Approvals: wire it by hand
 
 ```python
 from tracekit.integrations.openai_agents import TracekitAgents
@@ -43,7 +58,10 @@ while result.interruptions:                       # an ask: once a person decide
 Function tools, ShellTool with a local executor, LocalShellTool and ApplyPatchTool are gated. Hosted tools, ComputerTool
 and handoffs are recorded only inside the signed model responses.
 
-## 4. Read the verify report
+An offline run of all this (a mock model, no API key), with an approval: `python examples/v2/openai_agents/agent.py
+--scripted` from a checkout.
+
+## Read the verify report
 
 ```text
 [PASS] checkpoint — tracekit.local/... at tree size 12, signed by its pinned log key
@@ -59,7 +77,7 @@ Assurance: dev; records ed25519; checkpoint Ed25519 only (...); no witness cosig
 checkpoint signed by that key includes it: nothing was edited, dropped or reordered after signing. Change one byte of
 the bundle and it reads `Integrity: FAILED`, naming the check (`tracekit demo --server` shows this). `Assurance: dev`
 says no pinned witness cosigned the checkpoint and the approval was a self-approval. [The v2
-quickstart](../quickstart-v2.md#4-export-and-verify) explains every line.
+quickstart](../quickstart-v2.md#export-and-verify-by-hand) explains every line.
 
 ## Next steps
 

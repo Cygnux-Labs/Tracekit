@@ -1,11 +1,17 @@
 """Format v2 canonical JSON: the shared JCS golden vectors (tests/vectors/jcs.jsonl) and the strict parser."""
 import hashlib
+import importlib.util
 import json
 import os
+import sys
 import unittest
+from unittest import mock
 
 import rfc8785
+from hypothesis import given, settings
+from hypothesis import strategies as st
 
+from tracekit.format import canon
 from tracekit.format.canon import StrictJSONError, canonical, event_hash, loads_strict
 
 VECTORS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vectors", "jcs.jsonl")
@@ -77,6 +83,42 @@ class TestStrictParser(unittest.TestCase):
         for bad in (float("nan"), 2 ** 53, "\ud800", {"\ud800": 1}, deep):
             with self.assertRaises(rfc8785.CanonicalizationError):
                 canonical(bad)
+
+
+class TestStandardLibraryFallback(unittest.TestCase):
+    """Without rfc8785 (`pip install --no-deps`), canon falls back to its own JCS: the same bytes, the same refusals."""
+
+    @classmethod
+    def setUpClass(cls):
+        with mock.patch.dict(sys.modules, {"rfc8785": None}):
+            spec = importlib.util.spec_from_file_location("canon_stdlib", canon.__file__)
+            cls.mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(cls.mod)
+        assert cls.mod.CanonicalizationError is not rfc8785.CanonicalizationError
+
+    def test_every_vector(self):
+        for v in vectors():
+            if "error" not in v:
+                with self.subTest(v["id"]):
+                    self.assertEqual(self.mod.canonical(loads_strict(v["input"])), v["canonical"].encode("utf-8"))
+
+    @settings(max_examples=2000, deadline=None)
+    @given(st.recursive(st.none() | st.booleans() | st.floats(allow_nan=False, allow_infinity=False) | st.text()
+                        | st.integers(-(2 ** 53 - 1), 2 ** 53 - 1),
+                        lambda c: st.lists(c) | st.dictionaries(st.text(), c), max_leaves=20))
+    def test_matches_rfc8785(self, value):
+        try:
+            want = rfc8785.dumps(value)
+        except rfc8785.CanonicalizationError:   # a lone surrogate in st.text()
+            with self.assertRaises(self.mod.CanonicalizationError):
+                self.mod.canonical(value)
+            return
+        self.assertEqual(self.mod.canonical(value), want)
+
+    def test_refuses_what_rfc8785_refuses(self):
+        for bad in (float("nan"), float("inf"), 2 ** 53, "\ud800", {"\ud800": 1}, {1: 2}, object()):
+            with self.subTest(bad=bad), self.assertRaises(self.mod.CanonicalizationError):
+                self.mod.canonical(bad)
 
 
 if __name__ == "__main__":

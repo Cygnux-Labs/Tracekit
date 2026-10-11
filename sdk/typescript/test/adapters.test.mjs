@@ -9,7 +9,7 @@ import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { createServer } from "node:net";
 import { join, resolve } from "node:path";
-import { Client, RPC_VERSION, argsDigest, digest } from "../dist/v2/client.js";
+import { Client, RPC_VERSION, argsDigest, digest, instrument } from "../dist/v2/client.js";
 import { TracekitAgents } from "../dist/v2/adapters/openai-agents.js";
 import { tracekitAI } from "../dist/v2/adapters/vercel-ai.js";
 import { tracekitHooks, tracekitSessionStore } from "../dist/v2/adapters/claude-agent-sdk.js";
@@ -503,5 +503,21 @@ describe("claude-agent-sdk session store", () => {
     assert.equal(writes[1].prev_digest, writes[0].value_digest);
     assert.equal(new Set(writes.map((w) => w.stream)).size, 1);
     assert.deepEqual(writes.map((w) => w.client_seq), [0, 1]);
+  });
+});
+
+describe("instrument", () => {
+  it("one call: one run, the adapters bound to it, the same on a second call", async (t) => {
+    const signer = await fakeSigner();
+    const first = instrument("quickstart", { signer: signer.path }), tk = await first;
+    t.after(() => (tk.run.client.close(), signer.stop()));
+    assert.equal(instrument(), first);
+    assert.equal(tk.agents.run, tk.run);
+    const echo = tk.ai.tools({ echo: { execute: async (input) => input.text } }).echo;
+    const call = { toolCallId: "call-1", toolName: "echo", input: { text: "hi" } };
+    assert.equal(await tk.ai.toolApproval({ toolCall: call }), "not-applicable");   // allowed: execute consumes
+    assert.equal(await echo.execute(call.input, { toolCallId: "call-1" }), "hi");
+    const types = (await tk.run.call("read", { limit: 100 })).events.map((e) => e.type);
+    assert.deepEqual(types.filter((x) => x !== "run.registered"), ["policy.decision", "tool.result"]);
   });
 });
