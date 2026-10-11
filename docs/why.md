@@ -202,15 +202,19 @@ and `--allow-program`). For each trial:
    message is removed with `RemoveMessage`. `--checkpoint ID` starts from an earlier checkpoint than the latest.
 2. Run only what comes after (`invoke(None, fork)`). The prefix is the recorded run itself, not a re-execution: this
    is a counterfactual on the run that happened.
-3. Every ToolNode call is served from the thread's own tool results (same tool, same canonical arguments, in order)
-   or a stub (`off_tape_actions`). No tool runs and the signer sees nothing; a model node that wants paired seeds reads
-   `config["configurable"]["tracekit_seed"]`.
+3. Every call of a ToolNode that is a node of the graph, or of a subgraph added as a node, is served from the thread's
+   own recorded `ToolMessage` (same tool, same canonical arguments, in order; content, status and artifact) or a stub
+   (`off_tape_actions`); a removed tool result is blanked only at its own occurrence. Those ToolNodes run no tool and
+   the signer sees nothing. A tool called any other way would run: a branch with a tool result that was not served
+   stops with an error. A model node that wants paired seeds reads `config["configurable"]["tracekit_seed"]`.
 4. Score the target on the branch's tool calls, with the same verdicts, intervals and attribution as above. Results
    carry `rung: 3` and the fork point, and each test is appended to the why log at
    `runs/langgraph-<thread>/tests.jsonl` (`--out DIR`; `log=` in Python, where nothing is written without it).
 
-Branches run on a copy of the graph over a scratch in-memory checkpointer holding only the fork point, so nothing is
-written to the thread. Default suspects: every tool result before the first matching tool call. `--suspect` takes a
+Each branch runs on its own copy of the graph and its ToolNodes, so the app's graph object, and other threads invoked
+on it meanwhile, are untouched. Branch nodes see a fresh in-memory checkpointer holding only the fork point under a new
+`thread_id`, an empty scratch store if the graph has one, and no node cache; nothing is written to the thread, the
+store or the cache. Default suspects: every tool result before the first matching tool call. `--suspect` takes a
 tool_call_id or message id. `examples/v2/langchain/injection.py` records a thread whose fetched page carries a planted
 instruction and finds it as the primary cause while ruling out the benign weather lookup.
 
@@ -546,10 +550,12 @@ All of Tracekit's limits: [limits.md](limits.md).
 - Run replay needs a re-executable program; decision replay does not.
 - Tape matching is exact on tool arguments. New calls are stubbed, which can change behaviour after the stub; results
   report `off_tape_actions`.
-- LangGraph fork replay serves tools only through `ToolNode`: a graph without one is refused, and a tool called
-  any other way (inside a model node, say) would run for real. All tests of one attribution fork where the earliest
-  suspect entered; a later suspect that is not a tool result cannot be removed in that branch and is refused. One
-  fork replay at a time per graph object.
+- LangGraph fork replay serves tools only through a `ToolNode` that is a node of the graph or of a subgraph added as a
+  node: a graph without one is refused, and a tool called any other way (inside a function or model node, say) runs
+  for real; the branch then stops with an error, after the fact. It removes messages only: a suspect whose step also
+  wrote another state key, or a thread whose tools return `Command` updates, is refused. Async-only nodes and async
+  checkpointers are refused. Branches see an empty scratch store. All tests of one attribution fork where the
+  earliest suspect entered; a later suspect that is not a tool result cannot be removed in that branch and is refused.
 - Inferred edges are heuristic and miss paraphrase.
 - The guard is a string-matching tripwire; it inherits the provenance alert's false positives and misses re-encoded
   values.
