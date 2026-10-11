@@ -55,7 +55,8 @@ the signer's coding packs apply to them as they do to the Claude Code hook.
   (600 s), so the hook answers before the CLI gives up on it. A call not approved in time, or rejected, is denied.
 
 Every call that is not denied runs only after the signer's `approval_consume` agrees: nothing the SDK holds is taken
-as proof that no approval is needed. If the signer cannot be reached, the call is denied (fail closed).
+as proof that no approval is needed. If the signer cannot be reached, the call is denied unless the run's `fail_modes`
+make its tool class fail open (closed by default).
 
 The gate is the PreToolUse hook, not the `can_use_tool` permission callback: the CLI skips `can_use_tool` for calls
 its permission mode or allow rules approve (`bypassPermissions`, `allowed_tools`), while PreToolUse runs for every call.

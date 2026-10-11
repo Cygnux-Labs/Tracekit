@@ -96,6 +96,44 @@ class Tailer(unittest.TestCase):
         self.assertEqual((ex[0]["tool_results_sent"], ex[1]["tool_results_sent"]), ([], ["toolu_1"]))
         self.assertEqual(self.lost(), [])
 
+    def sub(self, *entries, name="agent-a1.jsonl"):
+        """Append to a subagent's transcript, where Claude Code writes it: <session>/subagents/agent-*.jsonl."""
+        d = os.path.join(self.d, "session", "subagents")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, name), "ab") as f:
+            f.write(b"".join(line(e) for e in entries))
+        return os.path.join(d, name)
+
+    def test_subagent_tool_uses_are_reported_as_they_appear(self):
+        self.write(TOOL_USE)
+        sub_use = {**NEXT, "message": {**NEXT["message"], "id": "msg_s1"}}
+        self.tail(lambda: self.sub(PROMPT), lambda: self.sub(sub_use), lambda: self.write(RESULT))
+        ex = [e["data"] for e in self.events() if e["type"] == "model.exchange" and e["data"]["phase"] == "response"]
+        self.assertEqual(sorted(x["exchange_id"] for x in ex), ["msg_1", "msg_s1"])
+        self.assertEqual([t["id"] for x in ex if x["exchange_id"] == "msg_s1" for t in x["tool_uses"]], ["toolu_2"])
+        self.assertEqual(self.lost(), [])
+
+    def test_a_subagent_line_already_read_edited_in_place_is_lost(self):
+        self.write(TOOL_USE)
+        path = self.sub(NEXT)
+
+        def edit():
+            with open(path, "r+b") as f:
+                data = f.read()
+                f.seek(0)
+                f.write(data.replace(b"a.txt", b"b.txt"))
+        self.tail(lambda: None, edit, lambda: None)
+        self.assertIn("subagent transcript agent-a1.jsonl: a line already read changed in place", self.lost()[0])
+
+    def test_a_symlink_in_place_of_the_subagents_directory_is_lost(self):
+        self.write(TOOL_USE)
+        elsewhere = os.path.join(self.d, "elsewhere")
+        os.makedirs(os.path.join(self.d, "session"))
+        os.mkdir(elsewhere)
+        os.symlink(elsewhere, os.path.join(self.d, "session", "subagents"))
+        self.tail(lambda: None)
+        self.assertIn("a symlink is in place of", self.lost()[0])
+
     def test_the_args_commitment_opens_with_the_hooks_args_digest(self):
         self.write(TOOL_USE)
         self.tail()

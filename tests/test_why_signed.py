@@ -12,6 +12,7 @@ import tempfile
 import unittest
 from unittest import mock
 
+from factories import wait_for
 from tracekit import demo_why
 from tracekit.demo_server import Witness, _serve, export_final, tamper
 from tracekit.deploy import files
@@ -96,6 +97,11 @@ class SignedRuntime(unittest.TestCase):
     def records(self):
         return import_v2.store_records(os.path.join(self.dir, "data"))
 
+    def settled(self):
+        """The records once no run is closing: the signer writes run.final grace_s after an earlier test's run.closing."""
+        self.assertTrue(wait_for(lambda: all(rs[-1]["event"]["type"] != "run.closing" for rs in self.records().values())))
+        return self.records()
+
     def actions(self, run=None):
         run = run or self.why
         return {run.value(e["args_ref"])["command"]: e for e in run.of_type("action")}
@@ -131,7 +137,7 @@ class SignedRuntime(unittest.TestCase):
         self.assertNotIn('echo "unterminated', RAN)
 
     def test_replays_write_no_evidence(self):
-        before = self.records()
+        before = self.settled()
         with mock.patch.dict(os.environ, {"TRACEKIT_SIGNER": self.path}):   # a recording would find the signer
             replay(load_run(self.why.path), system=SYSTEM)
         self.assertEqual(self.records(), before)
@@ -360,7 +366,7 @@ class SignedRuntime(unittest.TestCase):
         close.assert_called_once()
 
     def test_the_why_demo_writes_no_evidence(self):
-        before = self.records()
+        before = self.settled()
         with mock.patch.dict(os.environ, {"TRACEKIT_SIGNER": self.path}):
             self.assertEqual(quiet("demo", "--n", "2", "--out", tempfile.mkdtemp(dir=self.dir))[0], 0)
         self.assertEqual(self.records(), before)

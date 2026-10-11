@@ -86,8 +86,8 @@ What `init --v2` sets up ([system mode](quickstart-v2.md#system-mode-linux-macos
 - **harness binding** (`--harness [NAME=]PATH`, repeatable; the binary must be root-owned): the signer accepts a run
   from AGENT's uid only from below that program's process tree, attested by `tracekit-harness-helper`, a root service
   that holds only `CAP_SYS_PTRACE CAP_DAC_READ_SEARCH`. Without `--harness` there is no binding;
-- the **transcript tailer**: the `tracekit-tailer` user reads AGENT's Claude Code transcripts through an ACL and
-  reports them to the signer, which lets that uid make only `model_event`, `state_write`, `tailer_lost` and `status`
+- the **transcript tailer**: the `tracekit-tailer` user reads AGENT's Claude Code transcripts (the session's and its
+  subagents') through an ACL and reports them to the signer, which lets that uid make only `model_event`, `state_write`, `tailer_lost` and `status`
   calls. An edited, truncated or replaced transcript becomes a signed `tailer_lost` gap. When the ACL or the sudo rule
   can't be set up, init says so and each run records a `tailer_lost` gap instead.
 

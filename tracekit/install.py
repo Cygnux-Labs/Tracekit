@@ -643,7 +643,7 @@ def start_dev_daemon(home):
             # re-read each time: on TCP port 0 the signer writes the port it bound into its config
             if client._rpc({"op": "status"}, config=read_json(os.path.join(home, "config.json"))).get("ok"):
                 return p.pid
-        except client.SignerUnavailable:
+        except (client.SignerUnavailable, PermissionError, ValueError):   # its config mid-write (Windows: locked)
             pass
         time.sleep(0.05)
     try:

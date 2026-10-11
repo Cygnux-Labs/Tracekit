@@ -98,7 +98,8 @@ class Values(unittest.TestCase):
                     with self.subTest(name, unit=unit[:12]):
                         t = time.monotonic()
                         provenance.values(text)
-                        self.assertLess(time.monotonic() - t, 1.0)
+                        # a pass that isn't linear takes minutes on 1 MiB; coverage runners are ~3x slower
+                        self.assertLess(time.monotonic() - t, 3.0)
 
     def test_a_deadline_stops_the_work(self):
         with self.assertRaises(TimeoutError):
@@ -396,6 +397,7 @@ class Bundles(Case):
         log.final()
         out = os.path.join(self.d, "p.tkb")
         export(log.store, "acme", "run-a", log.note(), out)
+        log.store.close()   # Windows can't delete a store whose files are still open
         with zipfile.ZipFile(out) as z:
             return out, json.loads(z.read("manifest.json"))["verifier_min_version"]
 
