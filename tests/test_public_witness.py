@@ -360,7 +360,7 @@ class OptIn(unittest.TestCase):
 
     def test_the_shortcut_refuses_an_origin_the_witness_does_not_take(self):
         with open(self.cfg, "w") as f:
-            f.write(f'data_dir: "{self.dir}/data"\norigin: "Example.org"\nwitnesses: [public]\n')
+            f.write(f'data_dir: {json.dumps(os.path.join(self.dir, "data"))}\norigin: "Example.org"\nwitnesses: [public]\n')
         with self.assertRaisesRegex(ValueError, "origin: the public witness takes origins shaped host/path"):
             svc.load_config(self.cfg)
 
