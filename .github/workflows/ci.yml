@@ -108,7 +108,7 @@ jobs:
           sudo cp -r "$GITHUB_WORKSPACE" /opt/tracekit
           sudo chown -R root:root /opt/tracekit
           sudo chmod -R go-w /opt/tracekit
-          sudo "$(which python)" -m pip install /opt/tracekit pytest==8.3.4
+          sudo "$(which python)" -m pip install "/opt/tracekit[signer,dev]"   # the test modules import dev dependencies
       - name: Run the root tests as root
         run: |
           set -o pipefail
@@ -135,7 +135,7 @@ jobs:
           python -c "from tracekit import install; install.init_dev('$RUNNER_TEMP/signer', [], start=True)"
           cd sdk/typescript && node examples/vercel_ai.mjs
       - name: Run the v2 Vercel AI SDK example (starts a v2 dev signer on demand)
-        run: cd sdk/typescript && node examples/v2_vercel_ai.mjs
+        run: cd sdk/typescript && npm install --no-save ai@7 && node examples/v2_vercel_ai.mjs
 
   package:
     name: build and smoke-test the wheel
