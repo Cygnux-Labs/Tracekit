@@ -2,6 +2,20 @@
 
 All notable changes to Tracekit. Versions follow [PEP 440](https://peps.python.org/pep-0440/).
 
+## 1.0.1 (2026-10-11) — stricter bundle reading
+
+A patch for 1.0: the v2 verifier reads bundles more strictly. Bundles written by Tracekit are unaffected; every
+existing bundle verifies as before.
+
+### Fixed
+- A v2 bundle must have one zip layout ([format v2 §9](docs/format-v2.md#9-bundle-layout)): no zip64 records, no
+  archive or entry comments, no extra fields, entries contiguous from offset 0, the central directory and its end
+  record exactly where they belong, stored or deflate only, flags 0. Anything else is `UNUSABLE BUNDLE`, so every zip
+  reader sees the same entries the verifier checked.
+- `registry/run-set.json` bounds must be JSON integers.
+- JSON nested deeper than 128 levels is refused everywhere: by both verifiers' strict parser and by the signer, which
+  denies such tool-call arguments (`TK-ARGS-INVALID`).
+
 ## 1.0.0 (2026-10-11) — first stable release
 
 1.0.0 is 1.0.0rc2 made stable: the v2 signer, evidence format v2 and its verifier, witnesses, the monitor, team approvals,
