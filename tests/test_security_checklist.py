@@ -22,7 +22,8 @@ from http.server import ThreadingHTTPServer
 
 from test_e13_approvals import Sessions
 from test_observe_render import XSS
-from tracekit import gateway, ingest, observe, otlp, proxy, public_witness_server, slack_approvals, witness_server
+from tracekit import (executor, gateway, ingest, mcp_gateway, observe, otlp, proxy, public_witness_server,
+                      slack_approvals, witness_server)
 from tracekit.observe import _session
 from tracekit.identity.token import BearerToken
 from tracekit.ledger import Keys
@@ -46,6 +47,8 @@ SURFACES = {
     "tracekit/observe.py:Handler": "viewer (tracekit view) and observer (tracekit observe)",
     "tracekit/transport/http.py:_Handler": "signer HTTPS RPC and OTLP/HTTP; issuer",
     "tracekit/gateway.py:_Handler": "LLM gateway",
+    "tracekit/executor.py:_Executor": "tool executor",
+    "tracekit/mcp_gateway.py:_McpGateway": "MCP gateway",
     "tracekit/signer/metrics.py:Handler": "signer metrics, logs list and tlog tiles",
     "tracekit/otlp.py:H": "local OTLP receiver (tracekit otel serve)",
     "tracekit/ingest.py:H": "remote ingest",
@@ -164,6 +167,24 @@ class Surfaces(unittest.TestCase):
         return srv, SECRET, [("POST", "/nope", auth, 404), ("POST", "/v1/chat/completions", {}, 401),
                              ("POST", "/v1/chat/completions", {**auth, "Content-Length": BIG}, 413)]
 
+    def executor(self):
+        srv = transport.HttpServer(("127.0.0.1", 0), [BearerToken(self.bearer)], None, None, handler=executor._Executor)
+        srv.executor = {"actions": {"pay": {"name": "pay", "args": {}}}, "max_body": 1024, "custody": None}
+        auth = {"Authorization": f"Bearer {SECRET}", "X-Tracekit-Run": f"run.{SECRET}.mac"}
+        return srv, SECRET, [("GET", f"/nope?token={SECRET}", auth, 404), ("GET", "/v1/actions", {}, 401),
+                             ("POST", f"/v1/actions/{SECRET}", auth, 404), ("POST", "/v1/actions/pay", {}, 401),
+                             ("POST", "/v1/actions/pay", {**auth, "Content-Length": BIG}, 413),
+                             ("PUT", "/v1/actions", auth, 501)]
+
+    def mcp_gateway(self):
+        srv = transport.HttpServer(("127.0.0.1", 0), [BearerToken(self.bearer)], None, None,
+                                   handler=mcp_gateway._McpGateway)
+        srv.mcp = {"max_body": 1024}
+        auth = {"Authorization": f"Bearer {SECRET}", "X-Tracekit-Run": f"run.{SECRET}.mac"}
+        return srv, SECRET, [("POST", f"/nope?token={SECRET}", auth, 404), ("GET", "/mcp", auth, 405),
+                             ("POST", "/mcp", {}, 401), ("POST", "/mcp", {**auth, "Content-Length": BIG}, 413),
+                             ("PUT", "/mcp", auth, 501)]
+
     def metrics(self):
         srv = metrics.server({"listen": "127.0.0.1:0"}, metrics.SignerMetrics())
         return srv, SECRET, [("GET", f"/nope?token={SECRET}", {}, 404), ("POST", "/metrics", {}, 501)]
@@ -213,7 +234,8 @@ class Surfaces(unittest.TestCase):
                              ("GET", slack_approvals.PATH, {}, 501)]
 
     PROBES = {"tracekit/observe.py:Handler": viewer, "tracekit/transport/http.py:_Handler": signer_http,
-              "tracekit/gateway.py:_Handler": gateway, "tracekit/signer/metrics.py:Handler": metrics,
+              "tracekit/gateway.py:_Handler": gateway, "tracekit/executor.py:_Executor": executor,
+              "tracekit/mcp_gateway.py:_McpGateway": mcp_gateway, "tracekit/signer/metrics.py:Handler": metrics,
               "tracekit/otlp.py:H": otlp, "tracekit/ingest.py:H": ingest, "tracekit/witness_server.py:H": witness,
               "tracekit/proxy.py:Handler": proxy, "tracekit/slack_approvals.py:Handler": slack,
               "tracekit/public_witness_server.py:H": public_witness}
