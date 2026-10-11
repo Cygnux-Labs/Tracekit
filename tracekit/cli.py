@@ -25,6 +25,7 @@ def _signer_home(a):
 
 
 _DELEGATED = {"observe": "observe", "analyze": "findings", "otel": "otlp", "cost": "cost", "witness": "witness_server",
+              "public-witness": "public_witness_server",
              "deploy": "deploy.compose",
               "signer": "signer.service", "view": "view", "monitor": "monitor", "gateway": "gateway",
               "issuer": "issuer"}  # subcommands with their own parsers
@@ -70,6 +71,9 @@ def main(argv=None):
     p.add_argument("--approver", help="with --v2, system mode: the user who answers the agent's approvals (default: "
                                       "$SUDO_USER, the admin running init)")
     p.add_argument("--policy", help="with --v2, system mode: the signer's policy file (root-owned; default: its own pack)")
+    p.add_argument("--public-witness", action="store_true", help="with --v2, system mode: the public witness cosigns "
+                                                                 "the signer's logs (docs/witnesses.md; it sees origins, "
+                                                                 "sizes, roots and timing, never content)")
     p.add_argument("--project", action="store_true", help="hooks in ./.claude/settings.json instead of ~/.claude")
     p.add_argument("--no-hooks", action="store_true")
     p.add_argument("--witness", action="append", default=[], help="file:/path.jsonl or git:/clone[@remote] (repeatable)")
@@ -124,6 +128,9 @@ def main(argv=None):
     p = sub.add_parser("cost", help="token usage (and cost, with your price table) per run or model", add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
     p = sub.add_parser("witness", help="run a witness log: `witness init|token|serve` (append-only, Merkle tree, signed heads)", add_help=False)
+    p.add_argument("rest", nargs=argparse.REMAINDER)
+    p = sub.add_parser("public-witness", help="run a public C2SP tlog-witness with open registration: "
+                       "`public-witness init|serve` (deploy/public-witness)", add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
     p = sub.add_parser("deploy", help="`deploy compose [--dir DIR]`: write the compose stack (signer, witness, viewer, "
                        "Postgres)", add_help=False)
@@ -334,8 +341,9 @@ def _run(a):
             print("tracekit: --home, --witness, --proxy, --fail-closed, --signer-cmd and --managed are v1 "
                   "signer options; they don't apply with --v2", file=sys.stderr)
             return 2
-        if (a.approver or a.policy or a.v2 and a.harness) and (a.dev or not a.v2):
-            print("tracekit: --approver, --policy and --harness with --v2 are for --v2 system mode", file=sys.stderr)
+        if (a.approver or a.policy or a.public_witness or a.v2 and a.harness) and (a.dev or not a.v2):
+            print("tracekit: --approver, --policy, --public-witness and --harness with --v2 are for --v2 system mode",
+                  file=sys.stderr)
             return 2
         if a.v2 and not a.dev:
             if not a.user:
@@ -344,7 +352,7 @@ def _run(a):
             try:
                 sock, settings = install.init_system_v2(a.user, a.approver, a.policy, os.getcwd() if a.project else None,
                                                         a.no_service, not a.no_hooks, a.experimental_macos,
-                                                        a.allow_privileged, a.agent, a.harness)
+                                                        a.allow_privileged, a.agent, a.harness, a.public_witness)
             except install.SettingsError as e:
                 print(f"tracekit: {e}", file=sys.stderr)
                 return 1

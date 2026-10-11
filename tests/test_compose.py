@@ -3,6 +3,7 @@ to the removed v1 witness server, and deploy/compose/e2e.sh when docker (and roo
 python3 -m pytest tests/test_compose.py -q"""
 import base64
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -153,7 +154,7 @@ class ShippedWitnessOnly(unittest.TestCase):
                 continue
             with open(os.path.join(ROOT, rel), "rb") as f:
                 data = f.read()
-            if b"witness_server" in data or b"tracekit witness " in data:
+            if re.search(rb"(?<!public_)witness_server|tracekit witness ", data):   # not the public witness
                 hits.append(rel)
         self.assertEqual(hits, [])
 

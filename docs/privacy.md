@@ -96,5 +96,10 @@ With the v2 signer service (`tracekit signer serve`), the signer redacts itself,
 
 - The ledger stays on the signer host.
 - Witnesses get only checkpoint hashes, `seq`, `kid` and timestamps, never content.
+- v2 witnesses, the public witness (`witnesses: [public]`, off by default) included, get each log's origin (signer.yaml
+  `origin`, default `tracekit.local/<log id>`; each tenant's registry log is `<origin>/registry/<hash>`, never the
+  tenant's name) and log vkey, its tree sizes and root hashes, the log's signature, and the time each checkpoint is
+  sent, so they learn how often and how much each log grows. The public witness stores per origin the key, the latest
+  size and root and the last time it cosigned, and the client address only in memory, for its rate limits.
 - A bundle contains the selected runs' events (per the table above); records from other runs are **elided** to `seq`, `hash`, `prev_hash`, `sig`.
 - `--otel` adds `otel.json` with the same fields as spans; nothing more.
