@@ -6,8 +6,7 @@
 It registers one run with the signer (the same-user dev signer, started if none answers; in system mode the system
 signer; else $TRACEKIT_SIGNER), closes it when the process exits, and wires every adapter whose framework is installed:
 
-* OpenAI Agents SDK: the tools of every Agent built from now on are gated (TracekitAgents.tool), and a Runner call
-  without a context gets `context={}`;
+* OpenAI Agents SDK: the tools of every Agent built from now on are gated (TracekitAgents.tool);
 * LangGraph and LangChain: every ToolNode built from now on (create_agent builds one) gates its calls with
   TracekitMiddleware, innermost, after any middleware's own wrap_tool_call;
 * Claude Agent SDK: every ClaudeAgentOptions built from now on gets the PreToolUse and PostToolUse hooks
@@ -35,7 +34,7 @@ MODEL_SDKS = ("openai", "anthropic", "google-genai")
 
 
 def _openai_agents(run):
-    from agents import Agent, Runner
+    from agents import Agent
 
     from .integrations.openai_agents import TracekitAgents
     tk = TracekitAgents(run.client, run.registered)
@@ -57,13 +56,6 @@ def _openai_agents(run):
         post_init(self)
         self.tools = [gate(t) for t in self.tools]
     Agent.__post_init__ = gated
-
-    for name in ("run", "run_sync", "run_streamed"):   # an ask keeps its approval id in a dict run context
-        def with_context(cls, *a, _orig=getattr(Runner, name), **kw):
-            if kw.get("context") is None:
-                kw["context"] = {}
-            return _orig(*a, **kw)
-        setattr(Runner, name, classmethod(functools.wraps(getattr(Runner, name))(with_context)))
 
 
 def _langgraph(run):
