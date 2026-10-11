@@ -354,6 +354,7 @@ test("HTTPS: an id with a central replica's route goes to that replica, others t
   const base = new URL("https://tracekit-signer.tk.svc:8443/v2/rpc");
   assert.equal(routeUrl(base, { run_id: "tracekit-signer-2.abc" }).href, "https://tracekit-signer-2.tk.svc:8443/v2/rpc");
   assert.equal(routeUrl(base, { approval_id: "tracekit-signer-0.x" }).hostname, "tracekit-signer-0.tk.svc");
+  assert.equal(routeUrl(base, { parent: { run_id: "tracekit-signer-3.y", run_token: "t" } }).hostname, "tracekit-signer-3.tk.svc");
   for (const id of ["abc", "other-2.abc", "tracekit-signer-x.abc", "tracekit-signer-2"])
     assert.equal(routeUrl(base, { run_id: id }), base, id);
 });
