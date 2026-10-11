@@ -118,7 +118,9 @@ def session(user, sid):
             return json.load(f)
     except FileNotFoundError:
         listing = os.listdir(runtime(user)) if os.path.isdir(runtime(user)) else "(no such directory)"
-        raise SystemExit(f"no hook state for session {sid} in {runtime(user)}: {listing}; last hook: {LAST_HOOK}") from None
+        # still a FileNotFoundError: E8v2.6 expects none (the signer refused the run); elsewhere the message says why
+        raise FileNotFoundError(f"no hook state for session {sid} in {runtime(user)}: {listing}; "
+                                f"last hook: {LAST_HOOK}") from None
 
 
 def recorded(run_id, tid):
