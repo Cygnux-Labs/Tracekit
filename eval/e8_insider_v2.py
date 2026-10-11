@@ -64,6 +64,9 @@ def as_user(user, argv, env=None):
     return subprocess.run(["runuser", "-u", user, "--", *argv], env=e, capture_output=True, text=True, timeout=120)
 
 
+LAST_HOOK = {}   # the last hook a Session ran: event, exit code, output (for a missing session state)
+
+
 class Session:
     """One agent session: a long-lived shell, the registered harness when inside (else /bin/sh), runs each hook as its
     child, as the agent CLI does, so every call of the session comes from the same harness process."""
@@ -85,6 +88,7 @@ class Session:
         out = []
         for line in self.p.stdout:
             if line.startswith("__rc="):
+                LAST_HOOK.update(event=event, rc=int(line[5:]), out="".join(out).strip()[-2000:])
                 return int(line[5:]), "".join(out).strip()[-300:]
             out.append(line)
         raise SystemExit(f"the {event} hook's session shell exited")
@@ -109,8 +113,12 @@ def py(user, code, env=None):
 def session(user, sid):
     """The run (id, token) the hook keeps for a session: root reads the agent's 0700 runtime dir."""
     name = "claude-code-" + hashlib.sha256(sid.encode()).hexdigest() + ".json"
-    with open(os.path.join(runtime(user), name)) as f:
-        return json.load(f)
+    try:
+        with open(os.path.join(runtime(user), name)) as f:
+            return json.load(f)
+    except FileNotFoundError:
+        listing = os.listdir(runtime(user)) if os.path.isdir(runtime(user)) else "(no such directory)"
+        raise SystemExit(f"no hook state for session {sid} in {runtime(user)}: {listing}; last hook: {LAST_HOOK}") from None
 
 
 def recorded(run_id, tid):
