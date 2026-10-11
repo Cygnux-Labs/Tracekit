@@ -46,10 +46,8 @@ class Action:
 
 
 def _get(req, context):
-    opener = no_redirect_opener()   # the agent's credential for the executor never follows a redirect
-    if context is not None:
-        opener.add_handler(urllib.request.HTTPSHandler(context=context))
-    with opener.open(req, timeout=600) as r:   # an action held for an approval answers once a person decides
+    # the agent's credential for the executor never follows a redirect
+    with no_redirect_opener(context).open(req, timeout=600) as r:   # an action held for an approval answers once a person decides
         return json.loads(r.read())
 
 

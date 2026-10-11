@@ -122,14 +122,6 @@ class _Executor(_Handler):
         self._json(200, {"actions": [{"name": a["name"], "description": a.get("description", ""), "args": a["args"]}
                                      for a in self.server.executor["actions"].values()]})
 
-    def _json(self, status, obj):
-        body = json.dumps(obj).encode()
-        self.send_response(status)
-        self.send_header("content-type", "application/json")
-        self.send_header("content-length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
     def do_POST(self):
         ex, path = self.server.executor, self.path.split("?")[0]
         action = ex["actions"].get(path[len("/v1/actions/"):]) if path.startswith("/v1/actions/") else None

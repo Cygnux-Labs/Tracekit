@@ -68,7 +68,7 @@ class Upstreams:
         from mcp import Client
         self.loop, self.clients = asyncio.new_event_loop(), {}
         threading.Thread(target=self.loop.run_forever, daemon=True).start()
-        self._stop = self._run(_event())
+        self._stop = asyncio.Event()
 
         async def hold(name, target, ready):
             try:
@@ -102,10 +102,6 @@ class Upstreams:
         self.loop.call_soon_threadsafe(self.loop.stop)
 
 
-async def _event():
-    return asyncio.Event()
-
-
 def _dump(x):
     return x.model_dump(mode="json", by_alias=True, exclude_none=True)
 
@@ -135,13 +131,9 @@ class _McpGateway(_Handler):
         except _Error as e:
             out = {"error": {"code": e.args[0], "message": e.args[1]}}
         except Exception as e:   # an upstream that failed or went away
-            out = {"error": {"code": -32603, "message": f"upstream error: {type(e).__name__}: {e}"}}
-        body = gw["cut"](json.dumps({"jsonrpc": "2.0", "id": msg["id"], **out})).encode()
-        self.send_response(200)
-        self.send_header("content-type", "application/json")
-        self.send_header("content-length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+            out = {"error": {"code": -32603, "message": f"upstream error: {type(e).__name__}: {e}; if the upstream "
+                                                        "went away, restart the MCP gateway (it doesn't reconnect)"}}
+        self._json(200, json.loads(gw["cut"](json.dumps({"jsonrpc": "2.0", "id": msg["id"], **out}))))
 
     def _answer(self, gw, key, method, params):
         ups = gw["upstreams"]

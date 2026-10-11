@@ -83,8 +83,8 @@ generateText({ tools: Object.fromEntries(actions.map((a) => [a.name, vercelTool(
 
 `run` is the agent's `register_run` response (Python) or `RunHandle` (TypeScript). A refusal reaches the model as the
 tool's error. Don't wrap these tools in a Tracekit adapter as well: the executor already decides and records them, and
-a second decide would record the call twice. In TypeScript, a Claude Agent SDK tool can call `action.call(args)` from
-its own `tool()` handler.
+a second decide would record the call twice. TypeScript has no Claude Agent SDK helper (its `tool()` takes only a zod
+shape): write a `tool()` per action with its zod shape whose handler returns `action.call(args)`.
 
 ## What is recorded
 
@@ -102,8 +102,9 @@ The compose stack ([deploy compose](deploy-compose.md)) has the executor, the LL
 `custody` profile: `docker compose --profile custody up -d`. Each reads its config and secret files from
 `custody/<service>/` (`executor.yaml` with `signer: /run/tracekit-signer/signer.sock`), reaches the signer's socket as
 its own uid, which the generated `signer.yaml` lists under `gateways`, and serves the agent on the agent network; only
-the custody services reach the internet. Give each an `http` section with `authenticators: [token]` and a
-`token_file`. The agent registers its run on the socket as its uid, so it hands the services a run token for their
+the custody services reach the internet. Give each an `http` section with `cert` and `key` (a server certificate in
+`custody/<service>/`, from a CA the agent trusts: off loopback the services serve only HTTPS),
+`authenticators: [token]` and a `token_file`. The agent registers its run on the socket as its uid, so it hands the services a run token for their
 `token:http` identity: `delegate_run` to `token:http`, then send `X-Tracekit-Run: <run_id>.<that token>` with the
 bearer token.
 
@@ -118,5 +119,9 @@ bearer token.
   least that long.
 - A result that can't be recorded (the signer went away after the action ran) still goes to the agent, with a warning
   on the executor's stderr; the run's decision then has no result in the log.
+- A call made without the model's tool-use id (the LangChain and Claude Agent SDK helpers, whose handlers don't get
+  one) is decided under an id of the executor's: with an LLM gateway on the same run it reconciles as
+  `reconcile.fabricated` plus `reconcile.hook_missing`. Read such a pair as one call through the executor; pass
+  `tool_call_id` where the framework exposes it, as the OpenAI Agents and Vercel AI helpers do.
 
 See [limits](limits.md#custody-12).

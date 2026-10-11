@@ -180,6 +180,14 @@ class _Handler(http.server.BaseHTTPRequestHandler):
     def log_message(self, *a):
         pass
 
+    def _json(self, status, obj):
+        body = json.dumps(obj).encode()
+        self.send_response(status)
+        self.send_header("content-type", "application/json")
+        self.send_header("content-length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def _error(self, status, msg, close=True):
         body = json.dumps({"error": {"type": self.NAME.replace(" ", "_"), "message": f"{self.NAME}: {msg}"}}).encode()
         self.send_response(status)

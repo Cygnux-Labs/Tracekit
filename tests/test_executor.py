@@ -6,6 +6,7 @@ import importlib.util
 import http.server
 import json
 import os
+import ssl
 import threading
 import time
 import types
@@ -15,6 +16,7 @@ from unittest import mock
 
 from adapter_contract import tmpdir
 from test_gateway import AGENT, SECRET, serve
+from test_identity_mtls import Pki
 from test_signer_service import records
 from tracekit import executor
 from tracekit.identity.base import CallerIdentity
@@ -188,6 +190,20 @@ class Executor(unittest.TestCase):
             acts["wipe"]({"to": "x", "cents": 1})
         self.assertIn("R-WIPE", str(e.exception))
         self.assertIn("call-9", [e.get("tool_call_id") for e in self.events()])
+
+    def test_client_helpers_use_the_given_tls_context(self):
+        pki = Pki(self.dir)
+        cert, key = pki.issue("executor")
+        with open(self.cfg) as f:
+            cfg = json.load(f)
+        cfg["http"] = {"listen": "127.0.0.1:0", "cert": cert, "key": key, "authenticators": ["token"],
+                       "token_file": "bearer"}
+        with open(self.cfg, "w") as f:
+            json.dump(cfg, f)
+        port = serve(self, executor.serve(executor.load_config(self.cfg), self.signer))
+        acts = executor_tools.actions(f"https://127.0.0.1:{port}", self.run, {"authorization": "Bearer " + SECRET},
+                                      ssl.create_default_context(cafile=pki.path))
+        self.assertEqual(sorted(a.name for a in acts), ["pay", "refund", "wipe"])
 
     @unittest.skipUnless(HAVE["agents"], "openai-agents not installed")
     def test_an_openai_agents_tool(self):

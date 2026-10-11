@@ -78,5 +78,11 @@ answers or records.
   reach the agent.
 - A credential value with a character JSON escapes (a quote, a backslash) isn't cut from answers; keep such
   characters out of upstream credentials.
+- One session per upstream, opened when the gateway starts, is shared by every agent and run: run one gateway per
+  tenant when an upstream keeps per-session state. A session that went away isn't reopened: a call answers
+  `upstream error ... restart the MCP gateway`; restart it.
+- A tools/call has no tool-use id from the model, so the gateway decides under one of its own: with an LLM gateway on
+  the same run, each call reconciles as `reconcile.fabricated` (the gateway's decide) plus `reconcile.hook_missing`
+  (the model's tool use). Read such a pair as one call through the gateway.
 
 See [limits](limits.md#custody-12).
