@@ -460,6 +460,12 @@ class RunHandle:
         return self.call("complete", tool_call_id=tool_call_id, status=status,
                          **{**self._decided.pop(tool_call_id, {}), **fields})
 
+    def observe(self, value, source, trust="untrusted", **fields):
+        """Record content that entered the run other than as a tool result (a mail, a ticket, a page the app fetched)
+        so the signer's provenance index has it; the task or user prompt goes in with trust="trusted". The signer
+        records a commitment, never the value."""
+        return self.call("observe", value=value, source=source, trust=trust, **fields)
+
     def approval_consume(self, tool_call_id, tool, args, approval_id_hint=None, **fields):
         """Call right before running a call that was not denied: {"ok": True} when it may run now. `args` as for
         `decide`; `approval_id_hint` is the approval id the framework saved, if any."""

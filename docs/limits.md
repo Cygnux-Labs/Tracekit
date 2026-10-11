@@ -5,7 +5,7 @@ only one page. This page collects them in one place. Each release's notes link h
 section must be linked from this page (`tests/test_docs.py` checks it).
 
 Each row says what the limit is, why it is so, what to do about it, and where the details are. Rows marked
-**(1.1, in review)** describe behaviour in an open pull request that has not been released yet.
+**(1.1)** describe behaviour new in 1.1, not in 1.0.
 
 ## Evidence and verification
 
@@ -81,15 +81,15 @@ Each row says what the limit is, why it is so, what to do about it, and where th
 | `unless` on a whole command line could exempt a different target. | The subject holds several targets. | Use `unless` only where the subject is one target. | [policy](policy-v2.md#what-a-rule-matches-the-subject) |
 | v1 rules (`tracekit/policy/default.yaml`) match raw strings, so quoted text that mentions a risky command can trip them. | The v1 engine doesn't parse commands. | Use the v2 signer's policy; add exceptions for known false positives. | [evaluation](evaluation.md#e3-policy-gate) |
 
-## Provenance (1.1, in review)
+## Provenance (1.1)
 
 | Limit | Why it is so | What to do | Details |
 |---|---|---|---|
-| **(1.1, in review)** Provenance matches values verbatim: a value the model paraphrases, splits or re-encodes reads as a new value. | It is a tripwire on the commonest way injected instructions act, not information-flow control. | To prevent the flow, use information-flow control (CaMeL, FIDES) in the agent. | [policy](policy-v2.md#provenance-untrusted-and-from-untrusted) |
-| **(1.1, in review)** Only untrusted tools' results and observed inputs are indexed: a page fetched with a tool the policy doesn't list as untrusted (`curl` in a shell) isn't seen. | Results of other tools can echo the agent's own arguments, so they aren't counted either way. | List such tools under `untrusted`, or observe the content with `run.observe`. | [policy](policy-v2.md#provenance-untrusted-and-from-untrusted) |
-| **(1.1, in review)** Only an input observed as trusted makes a value trusted: a value from your own data that also appears in untrusted content (a customer's address from the CRM that is also in their ticket) is held. | Counting other tool output as trusted could launder an injected value. | Observe the record you looked up as `trusted`, or answer the hold. | [policy](policy-v2.md#provenance-untrusted-and-from-untrusted) |
-| **(1.1, in review)** After a signer restart a run's provenance is `unavailable`, and `from: untrusted` rules don't match for the rest of that run. | The index lives in memory only. | Watch `provenance_state` on decisions; keep other rules for those calls. | [policy](policy-v2.md#provenance-untrusted-and-from-untrusted) |
-| **(1.1, in review)** Past 20,000 values a run's index is `truncated`, and `from: untrusted` rules don't match for the rest of that run. | The index is bounded per run. | Same as above; split very long runs. | [policy](policy-v2.md#provenance-untrusted-and-from-untrusted) |
+| **(1.1)** Provenance matches values verbatim: a value the model paraphrases, splits or re-encodes reads as a new value. | It is a tripwire on the commonest way injected instructions act, not information-flow control. | To prevent the flow, use information-flow control (CaMeL, FIDES) in the agent. | [policy](policy-v2.md#provenance-untrusted-and-from-untrusted) |
+| **(1.1)** Only untrusted tools' results and observed inputs are indexed: a page fetched with a tool the policy doesn't list as untrusted (`curl` in a shell) isn't seen. | Results of other tools can echo the agent's own arguments, so they aren't counted either way. | List such tools under `untrusted`, or observe the content with `run.observe`. | [policy](policy-v2.md#provenance-untrusted-and-from-untrusted) |
+| **(1.1)** Only an input observed as trusted makes a value trusted: a value from your own data that also appears in untrusted content (a customer's address from the CRM that is also in their ticket) is held. | Counting other tool output as trusted could launder an injected value. | Observe the record you looked up as `trusted`, or answer the hold. | [policy](policy-v2.md#provenance-untrusted-and-from-untrusted) |
+| **(1.1)** After a signer restart a run's provenance is `unavailable`, and `from: untrusted` rules don't match for the rest of that run. | The index lives in memory only. | Watch `provenance_state` on decisions; keep other rules for those calls. | [policy](policy-v2.md#provenance-untrusted-and-from-untrusted) |
+| **(1.1)** Past 20,000 values a run's index is `truncated`, and `from: untrusted` rules don't match for the rest of that run. | The index is bounded per run. | Same as above; split very long runs. | [policy](policy-v2.md#provenance-untrusted-and-from-untrusted) |
 
 ## Approvals
 

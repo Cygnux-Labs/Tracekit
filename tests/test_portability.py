@@ -149,7 +149,7 @@ class PluginPackage(unittest.TestCase):
             plugin = json.load(f)
         with open(os.path.join(ROOT, ".claude-plugin", "marketplace.json")) as f:
             market = json.load(f)
-        self.assertEqual(plugin["version"], tracekit.__version__.replace("rc", "-rc."))
+        self.assertEqual(plugin["version"], tracekit.__version__.replace("rc", "-rc.").replace(".dev", "-dev."))
         self.assertEqual(market["plugins"][0]["source"], "./plugin")
         self.assertEqual(market["plugins"][0]["name"], plugin["name"])
 

@@ -593,6 +593,12 @@ export class RunHandle {
     return this.call("approval_wait", { approval_id: approvalId, ...(timeoutMs === undefined ? {} : { timeout_ms: timeoutMs }) });
   }
 
+  /** Records content that entered the run other than as a tool result (a mail, a ticket, a page the app fetched) for
+   * the signer's provenance index; the task or user prompt goes in with trust "trusted". Only its commitment is recorded. */
+  observe(value: unknown, source: string, trust: "trusted" | "untrusted" = "untrusted", fields: Frame = {}): Promise<Frame> {
+    return this.call("observe", { value, source, trust, ...fields });
+  }
+
   stateWrite(key: string, valueDigest: string, fields: Frame = {}): Promise<Frame> {
     return this.call("state_write", { key, value_digest: valueDigest, ...fields });
   }
