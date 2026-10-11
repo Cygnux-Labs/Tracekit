@@ -119,16 +119,24 @@ class TestContract(StorageContract, PgCase):
 
 
 class TestPostgresStorage(PgCase):
-    def test_migrate_adds_the_content_vault_to_a_version_1_store(self):
+    def test_a_version_1_store_opens_until_the_content_vault_needs_version_2(self):
         sql(self.admin, "DROP TABLE tracekit_content, tracekit_content_keys")
         sql(self.admin, "DELETE FROM tracekit_schema")
         sql(self.admin, "INSERT INTO tracekit_schema VALUES (1)")
-        with self.assertRaises(ValueError):   # the signer refuses it until migrated
-            self.open()
+        data = tmpdir(self)
+        with open(os.path.join(data, "pg.dsn"), "w") as f:
+            f.write(self.dsn)
+        section = {"postgres": {"dsn_file": os.path.join(data, "pg.dsn")}}
+        svc.SignerService(data, storage_config=section).close()   # the vault off: an upgrade needs no migrate
+        postgres.PostgresReader(reader_dsn(self.admin)).close()
+        with self.assertRaisesRegex(ValueError, r"version 1; the content vault \(content.retain\) needs version 2: "
+                                                "run `tracekit signer migrate"):
+            svc.SignerService(data, storage_config=section, content={"retain": True})
         self.assertEqual(postgres.migrate(self.admin), postgres.VERSION)
         schema = sql(self.admin, "SELECT current_schema()")[0][0]
         sql(self.admin, postgres.GRANTS.format(schema=schema, role=SIGNER))
-        s = self.open()
+        svc.SignerService(data, storage_config=section, content={"retain": True}).close()
+        s = self.open(content=True)
         self.addCleanup(s.close)
         s.content_key_put("ab" * 16, "acme", "run-1", b"w")
         self.assertEqual(s.content_key("ab" * 16, "acme", "run-1"), b"w")

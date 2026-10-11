@@ -183,9 +183,11 @@ longer open args_commitment), a result, an observed input, a model exchange's `b
 under a random key per run, which keys/content.key wraps, with the record bound in as associated data ({log_id,
 run_id, seq: the run_seq, commitment}), and stored through the storage; content over max_record_bytes is not kept, and
 the vault says so. `content_get` (the `content_read` grant, never a default) returns it with each record's salt, so the
-caller can open the commitment (no salt for content redaction changed: it opens nothing), and writes a signed `content.accessed` into the tenant's signer run; `content_erase` and
-retention (runs whose key was stored more than retention_days ago, checked every CONTENT_SWEEP_S) delete a run's key
-and blobs and write `content.erased`. Records are never changed.
+caller can open the commitment (no salt, `redacted`, for content redaction changed: it opens nothing, or for a model
+exchange redaction changed whose tool_uses carry args_commitments, which the salt would open), and writes a signed
+`content.accessed` into the tenant's signer run; `content_erase` and retention (runs whose key was stored more than
+retention_days ago, checked at start and every CONTENT_SWEEP_S) delete a run's key and blobs, then write
+`content.erased`. Records are never changed.
 
 Provenance (docs/policy-v2.md): each run registered since the signer started has an index, in memory only, of the
 values (tracekit.provenance) its untrusted tools' results (the policy's `untrusted` list) and its `observe` inputs
@@ -204,6 +206,7 @@ import hmac
 import itertools
 import json
 import logging
+import math
 import os
 import pathlib
 import re
@@ -299,6 +302,15 @@ MARK = re.compile(r"\[REDACTED:([a-z_]+)\]")
 
 def _salt(key, label):
     return hmac.new(key, label.encode(), "sha256").digest()
+
+
+def content_config(content):
+    """The `content` config section (None: off) with its defaults filled in; ValueError when it is not valid."""
+    c = {**CONTENT, **content} if isinstance(content, dict) else content or dict(CONTENT)
+    if not (isinstance(c, dict) and set(c) == set(CONTENT) and isinstance(c["retain"], bool)
+            and all(type(c[k]) is int and c[k] > 0 for k in ("retention_days", "max_record_bytes"))):
+        raise ValueError("content takes retain (true or false), retention_days and max_record_bytes (positive integers)")
+    return c
 
 
 def _committed(e):
@@ -482,11 +494,7 @@ class SignerService:
             self._decision_keys = None
         if self._decision_keys is None or any(crypto.key_alg(v) != "ed25519" for v in self._decision_keys.values()):
             raise ValueError("decision_keys maps system names to base64 Ed25519 public keys")
-        self.content = {**CONTENT, **content} if isinstance(content, dict) else content or dict(CONTENT)
-        if not (isinstance(self.content, dict) and set(self.content) == set(CONTENT)
-                and isinstance(self.content["retain"], bool)
-                and all(type(self.content[k]) is int and self.content[k] > 0 for k in ("retention_days", "max_record_bytes"))):
-            raise ValueError("content takes retain (true or false), retention_days and max_record_bytes (positive integers)")
+        self.content = content_config(content)
         self.metrics = metrics.SignerMetrics()
         self._prov_key = os.urandom(32)   # the provenance index's key: per process, as the index is
         authorize = dict(authorize or {})
@@ -499,7 +507,7 @@ class SignerService:
             from tracekit.storage import postgres
             section = storage_config["postgres"]
             open_storage = lambda: postgres.PostgresStorage(postgres.read_dsn(section), durability,  # noqa: E731
-                                                            lock_timeout_s, _snapshot_key(keys))
+                                                            lock_timeout_s, _snapshot_key(keys), self.content["retain"])
         open_storage = open_storage or (lambda: FileStorage(os.path.join(data_dir, "store"), durability,
                                                             self.metrics.fsync_seconds.observe, lock_timeout_s,
                                                             _snapshot_key(keys)))
@@ -764,7 +772,7 @@ class SignerService:
                 self.log.refuse_writes = EXPIRED
 
     def _tick_loop(self):
-        flushed = vaulted = time.monotonic()
+        flushed, vaulted = time.monotonic(), -math.inf   # retention: on the first tick, then every CONTENT_SWEEP_S
         while not self._stop.wait(TICK_S):
             if self._content_key and time.monotonic() - vaulted >= CONTENT_SWEEP_S:
                 vaulted = time.monotonic()
@@ -2128,9 +2136,12 @@ class SignerService:
                                                   "record: the vault was altered") from None
                 digest = event_hash({"tool": e["data"]["tool"], "args": value}) if e["type"] == "policy.decision" \
                     else "sha256:" + hashlib.sha256(canonical(value)).hexdigest()
+                # the salt also opens a model exchange's args_commitments, over the arguments before redaction
+                guessable = e["type"] == "model.exchange" and MARK.search(canonical(value).decode()) and any(
+                    "args_commitment" in u for u in e["data"].get("tool_uses", ()))
                 items.append({"seq": seq, "content": value} | (
                     {"salt": _salt(self._salt_key, label).hex()} if self._opens(commitment, label, digest)
-                    else {"redacted": True}))   # no salt: it would only test guesses of what redaction removed
+                    and not guessable else {"redacted": True}))   # no salt: it would test guesses of what redaction removed
             out = {"items": items}
             if len(json.dumps(out, separators=(",", ":"), ensure_ascii=False).encode()) > MAX_LINE - 4096:
                 raise too_large()
@@ -2148,13 +2159,17 @@ class SignerService:
                            lambda fn: self.log.submit(identity, "content_erase", req, fn))
 
     def _erase(self, key, reason, by, submit=None):
-        """Write content.erased for run `key`, then delete its data key and blobs (blobs a failure leaves behind stay
-        inert, since no key opens them; a repeat content_erase deletes them and writes the record again)."""
-        out = (submit or self.log.write)(lambda tx, _=None: {"run_seq": tx.emit(
-            self.log.signer_run(tx, key[0]), "content.erased", {"run_id": key[1], "reason": reason, "by": by},
-            source="signer")})
-        self.log.write(lambda tx: self.log.storage.content_erase(self.log.log_id, *key))
-        return out
+        """Delete run `key`'s data key (replaced by its tombstone) and blobs, then write content.erased, in one writer
+        item: the record is signed only once the key is gone. A storage failure writes no record and raises
+        unavailable; a retry erases again (blobs a failure left behind stay inert: no key opens them)."""
+        def fn(tx, _=None):
+            try:
+                self.log.storage.content_erase(self.log.log_id, *key)
+            except (OSError, StorageUnavailable) as e:
+                raise RPCError("unavailable", f"the content of run {key[1]} was not erased: {e}") from None
+            return {"run_seq": tx.emit(self.log.signer_run(tx, key[0]), "content.erased",
+                                       {"run_id": key[1], "reason": reason, "by": by}, source="signer")}
+        return (submit or self.log.write)(fn)
 
     def expire_content(self, now=None):
         """Erase the content of every run whose data key was stored more than retention_days before `now`."""

@@ -126,14 +126,18 @@ content: {retain: true, retention_days: 30, max_record_bytes: 1048576}   # defau
   run_seqs), purpose}`, for a run of the caller's tenant. The caller needs the `content_read` grant in `authorize`,
   which no identity has by default (agents never do). Each item comes back as `{content, salt}`, with the record's salt
   as `tracekit signer reveal` gives it, so the caller recomputes the commitment, as `{content, redacted: true}` (no
-  salt) for decision arguments redaction changed, or as `{state: not_retained | too_large
+  salt) for decision arguments redaction changed and for a model exchange redaction changed whose `tool_uses` carry
+  `args_commitment` (the record's salt opens those too, over the arguments before redaction), or as `{state: not_retained | too_large
   | erased}`. Every successful call writes a signed `content.accessed{principal, run_id, seqs, purpose}` into the
   tenant's signer run (`tracekit/signer`). From the shell: `tracekit signer content get --run R --seq N... --purpose
   CASE-1`; from Python: `Client().content_get({...})`.
 - **Erasure.** `tracekit signer content erase --run R [--reason TEXT]` (the `content_erase` grant, never a default), and
-  retention: every hour, runs whose key was stored more than `retention_days` ago. Both delete the run's wrapped key
-  and its blobs, and write a signed `content.erased{run_id, reason, by}`. Nothing more is kept for an erased run.
-  Records and commitments are untouched, and bundles still verify.
+  retention: at the signer's start and every hour after, runs whose key was stored more than `retention_days` ago.
+  Both delete the run's wrapped key and its blobs, then write a signed `content.erased{run_id, reason, by}`: the record
+  is written only once the key is gone (a storage error writes none, and the erasure can be retried). The signer keeps
+  nothing more for an erased run in its live store. Erasure doesn't reach copies taken before it: a backup, a WAL
+  archive or a replica of the store still holds the run's wrapped key and blobs, and opens with `keys/content.key`
+  ([limits](limits.md#content-vault-11)). Records and commitments are untouched, and bundles still verify.
 - **Bundles never hold vault content.** A bundle that holds `content.accessed` or `content.erased` records needs a 1.1
   verifier.
 

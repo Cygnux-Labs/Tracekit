@@ -161,6 +161,22 @@ def _hooks(settings):
                  for h in g.get("hooks") or () if isinstance(h, dict)] for ev in install.TOOL_EVENTS}
 
 
+def _vault_off(cfg, keys):
+    """(ok, detail, fix) of D-CONTENT-VAULT with the vault off: what it kept while it was on stays until erased."""
+    from .storage import file as file_store
+    off = "off: the signer keeps commitments only, no content"
+    if not os.path.exists(os.path.join(keys, "content.key")):
+        return True, off, ""
+    fix = "erase them (tracekit signer content erase --run R), or keep them: retention still erases them"
+    if cfg.get("storage"):   # a reader's role has no grant on the vault's tables
+        return False, "off, but keys/content.key exists: runs kept while it was on may still be retained", fix
+    try:
+        n = len(file_store.content_runs(os.path.join(cfg["data_dir"], "store")))
+    except (OSError, ValueError, KeyError) as e:
+        return False, f"off; cannot count the runs still retained: {e}", "run doctor as root"
+    return (False, f"off, {n} runs still retained (erase or keep)", fix) if n else (True, off, "")
+
+
 def v2_checks(config, profile="production", agent=None, settings=None, signer=None, opt=None, unit=None,
               client_json=None, now=None, issuer_key=None):
     """Checks of a v2 signer. config: a signer.yaml path, or the dev signer's config dict. profile "dev" turns what
@@ -225,19 +241,25 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
         add("D-KEYS-MODE", False, f"cannot inspect {keys}: {e.strerror}", "run doctor as root (sudo tracekit doctor)",
             bad=WARN)
 
-    content = {**service.CONTENT, **(cfg.get("content") or {})}
-    if not content["retain"]:
-        add("D-CONTENT-VAULT", True, "off: the signer keeps commitments only, no content", "")
+    try:
+        content = service.content_config(cfg.get("content"))   # as the signer validates it
+    except ValueError as e:
+        add("D-CONTENT-VAULT", False, f"signer.yaml: {e}", "fix the content section of signer.yaml")
     else:
-        on = f"on: keeps redacted content {content['retention_days']} days, up to {content['max_record_bytes']} bytes a record"
-        try:
-            st = os.lstat(os.path.join(keys, "content.key"))
-            bad = not stat.S_ISREG(st.st_mode) or st.st_mode & 0o077 or st.st_uid != os.stat(keys).st_uid
-            add("D-CONTENT-VAULT", not bad, f"{on}; keys/content.key " + ("is readable by others than the signer" if bad
-                else "is a 0600 file of the signer's user"), f"chmod 600 {keys}/content.key; chown it to the signer's user")
-        except OSError as e:
-            add("D-CONTENT-VAULT", False, f"{on}; keys/content.key: {e.strerror}", "start the signer once (it makes the "
-                "key), or run doctor as root", bad=WARN)
+        if not content["retain"]:
+            add("D-CONTENT-VAULT", *_vault_off(cfg, keys), bad=WARN)
+        else:
+            on = (f"on: keeps redacted content {content['retention_days']} days, up to {content['max_record_bytes']} "
+                  "bytes a record")
+            try:
+                st = os.lstat(os.path.join(keys, "content.key"))
+                bad = not stat.S_ISREG(st.st_mode) or st.st_mode & 0o077 or st.st_uid != os.stat(keys).st_uid
+                add("D-CONTENT-VAULT", not bad, f"{on}; keys/content.key " + (
+                    "is readable by others than the signer" if bad else "is a 0600 file of the signer's user"),
+                    f"chmod 600 {keys}/content.key; chown it to the signer's user")
+            except OSError as e:
+                add("D-CONTENT-VAULT", False, f"{on}; keys/content.key: {e.strerror}", "start the signer once (it makes "
+                    "the key), or run doctor as root", bad=WARN)
 
     if names is not None and cfg.get("log_key"):
         add("D-KEYS-DISTINCT", True, "the log key is held in AWS KMS", "")

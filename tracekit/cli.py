@@ -711,7 +711,7 @@ def _last(a):
             r = open_reader(cfg)
             try:   # newest first, by their last record; each with the type of that record and its agent's name
                 runs = []
-                for _, key in sorted(((run["seqs"][-1], key) for key, run in r.runs.items() if key != SIGNER_RUN),
+                for _, key in sorted(((run["seqs"][-1], key) for key, run in r.runs.items() if key[1] != SIGNER_RUN[1]),
                                      reverse=True):
                     first = next(iter(r.iter_run(*key)))["event"]
                     runs.append((key, collections.deque(r.iter_run(*key), 1)[0]["event"]["type"],

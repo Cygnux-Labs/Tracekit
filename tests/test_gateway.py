@@ -1,5 +1,7 @@
 """The LLM gateway (tracekit/gateway.py) in front of a fake OpenAI-compatible upstream, recording into an in-process v2
 signer as source gateway; and gateway L3 in reconciliation (tracekit/signer/reconcile.py)."""
+import hashlib
+import hmac
 import http.client
 import http.server
 import json
@@ -14,9 +16,11 @@ from test_reconcile import use
 from test_signer_service import records
 from tracekit import gateway
 from tracekit.identity.base import CallerIdentity
+from tracekit.sdk import client
 from tracekit.sdk.client import SignerUnavailable
 from tracekit.signer import service as svc
 from tracekit.signer.rpc_schema import REQUESTS, RPCError
+from tracekit.transport import parse_frame
 
 GW = CallerIdentity("mtls", "spiffe://acme/gateway", True)
 AGENT = CallerIdentity("token", "http", True)        # what the gateway's token authenticator establishes
@@ -223,6 +227,62 @@ class TestContentVault(Gateway):
         self.assertEqual(got[:3], [{"model": "gpt-x", "messages": [], "stream": False}, COMPLETION,
                                    {"model": "gpt-x", "messages": [], "stream": True}])
         self.assertEqual(got[3]["choices"][0]["message"]["tool_calls"][0]["id"], "call_2")   # the stream, assembled
+
+
+class Wire(InProcess):
+    """model_event as the real Client frames it, then as the signer parses that frame."""
+
+    def model_event(self, req):
+        frame = parse_frame(client._encode("model_event", req))
+        frame.pop("method")
+        return super().model_event(frame)
+
+
+ODD = {"integer past 2^53": 12345678901234567890, "non-finite": float("inf"), "lone surrogate": "\ud800"}
+
+
+class TestOddBodiesVaultOff(Gateway):
+    """Bodies a frame cannot carry (the client's real frames): answered as with the vault off; with it on, recorded
+    without a body (the raw bytes' digest)."""
+
+    def setUp(self):
+        super().setUp()
+        self.signer = self.gw.gateway.client = Wire(self.s)
+
+    def test_bodies_a_frame_cannot_carry_are_answered(self):
+        usage = dict(COMPLETION["usage"])
+        for name, odd in ODD.items():
+            for side, body, reply in (
+                    ("request", {"model": "gpt-x", "messages": [], "x": odd}, ("json", COMPLETION)),
+                    ("response", None, ("json", dict(COMPLETION, x=odd))),
+                    ("stream", {"model": "gpt-x", "messages": [], "stream": True},
+                     ("sse", sse({"id": "c", "model": "gpt-x", "usage": dict(usage, x=odd), "choices": [
+                         {"index": 0, "delta": {}, "finish_reason": "stop"}]}, b"[DONE]")))):
+                with self.subTest(name, side=side):
+                    self.signer.sent.clear()
+                    self.up.reply = reply
+                    self.assertEqual(self.post(body)[0], 200)
+                    odd_phase = "request" if side == "request" else "response"
+                    self.assertEqual([("body" in r) for r in self.signer.sent if r["phase"] == odd_phase], [False])
+                    self.assertEqual([("body" in r) for r in self.signer.sent if r["phase"] != odd_phase],
+                                     [bool(self.content)])
+
+
+class TestOddBodiesVaultOn(TestOddBodiesVaultOff):
+    content = {"retain": True}
+
+    def test_not_retained_and_the_raw_digest_recorded(self):
+        raw = json.dumps({"model": "gpt-x", "messages": [], "x": ODD["integer past 2^53"]}).encode()
+        self.assertEqual(self.post(json.loads(raw))[0], 200)
+        [req] = [r["event"] for r in self.s.log.storage.iter_run("default", self.run["run_id"])
+                 if r["event"]["type"] == "model.exchange" and r["event"]["data"]["phase"] == "request"]
+        self.s.authorize["token:http"] = sorted(REQUESTS.keys() - {"content_get"}) + ["content_read"]
+        [item] = self.s.call(AGENT, "content_get", {"run_id": self.run["run_id"], "seqs": [req["run_seq"]],
+                                                    "purpose": "t"})["items"]
+        self.assertEqual(item, {"seq": req["run_seq"], "state": "not_retained"})
+        e = svc.reveal(self.dir, req["seq"])
+        self.assertEqual(req["data"]["content_digest"], "hmac-sha256:" + hmac.new(
+            bytes.fromhex(e["salt"]), ("sha256:" + hashlib.sha256(raw).hexdigest()).encode(), "sha256").hexdigest())
 
 
 class TestExchange(Gateway):

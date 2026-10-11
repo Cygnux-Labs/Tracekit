@@ -623,13 +623,7 @@ class FileStorage(_Records, Storage):
             _sync_dir(d)
 
     def content_runs(self):
-        out, top = [], os.path.join(self.root, CONTENT)
-        for log_id in sorted(os.listdir(top)) if os.path.isdir(top) else ():
-            for run in sorted(os.listdir(os.path.join(top, log_id))):
-                k = json.loads(_read_if(os.path.join(top, log_id, run, "key")) or b'{"wrapped": ""}')
-                if k["wrapped"]:
-                    out.append((log_id, k["tenant"], k["run_id"], k["stored"]))
-        return out
+        return content_runs(self.root)
 
     def fsck(self):
         return fsck(self.root)
@@ -709,6 +703,17 @@ class FileReader(_Records):
                 if os.name != "nt" or i == 19:
                     raise
                 time.sleep(0.05)
+
+
+def content_runs(root):
+    """Storage.content_runs of the store at `root`; reads only, so it's safe while the signer runs (doctor)."""
+    out, top = [], os.path.join(root, CONTENT)
+    for log_id in sorted(os.listdir(top)) if os.path.isdir(top) else ():
+        for run in sorted(os.listdir(os.path.join(top, log_id))):
+            k = json.loads(_read_if(os.path.join(top, log_id, run, "key")) or b'{"wrapped": ""}')
+            if k["wrapped"]:
+                out.append((log_id, k["tenant"], k["run_id"], k["stored"]))
+    return out
 
 
 def fsck(root, upto=None, snapshot_key=None, verify=None):

@@ -15,7 +15,9 @@ picks the database, and its search_path the schema (`options=-csearch_path=trace
     tracekit_content_keys   log_id, tenant, run_id, wrapped, stored: the content vault's wrapped run keys ('' erased)
     tracekit_content        log_id, tenant, run_id, seq, blob: its encrypted blobs (signer only: not in READ_GRANTS)
 
-migrate() creates them (idempotent); run it as a migration role, `tracekit signer migrate --config signer.yaml`. The
+migrate() creates them (idempotent); run it as a migration role, `tracekit signer migrate --config signer.yaml`. A
+version 1 store (no content vault tables) still opens for readers and for a signer with the vault off; with it on the
+signer needs version 2, which migrate adds. The
 signer's role needs no UPDATE or DELETE on the logs: records, registry, notes and anchors are insert-only, and fsck
 finds a row edited behind the signer's back (hash, chains, signatures). GRANTS is the signer role's set.
 
@@ -107,12 +109,16 @@ def migrate(dsn):
     return VERSION
 
 
-def _check_version(conn):
+def _check_version(conn, need=1):
+    """Refuse a store whose schema is not version `need` to VERSION (1 lacks only the content vault's tables)."""
     try:
         version = conn.execute("SELECT max(version) FROM tracekit_schema").fetchone()[0]
     except errors.UndefinedTable:
         version = None
-    if version != VERSION:
+    if version is not None and version < need:
+        raise ValueError(f"the Postgres store's schema is version {version}; the content vault (content.retain) needs "
+                         f"version {need}: run `tracekit signer migrate --config signer.yaml`")
+    if version is None or version > VERSION:
         raise ValueError(f"the Postgres store's schema is version {version}, not {VERSION}: run "
                          "`tracekit signer migrate --config signer.yaml`")
 
@@ -230,9 +236,10 @@ class _Reads:
 
 
 class PostgresStorage(_Reads, Storage):
-    def __init__(self, dsn, mode=ACK_ON_WRITE, lock_timeout_s=0, snapshot_key=None):
+    def __init__(self, dsn, mode=ACK_ON_WRITE, lock_timeout_s=0, snapshot_key=None, content=False):
         """Another process holding the log's lock for `lock_timeout_s` raises BlockingIOError naming it. `snapshot_key`
-        authenticates snapshots: without it none is read or written (set the attribute once the key exists)."""
+        authenticates snapshots: without it none is read or written (set the attribute once the key exists).
+        `content`: the signer's content vault is on, which needs schema version 2."""
         if mode not in (ACK_ON_WRITE, ACK_ON_FSYNC):
             raise ValueError(f"unknown durability mode {mode!r}")
         self.dsn, self.full, self.snapshot_key, self._error = dsn, mode == ACK_ON_FSYNC, snapshot_key, None
@@ -242,7 +249,7 @@ class PostgresStorage(_Reads, Storage):
         self.conn = _connect(dsn)
         try:
             with self._db():
-                _check_version(self.conn)
+                _check_version(self.conn, 2 if content else 1)
                 self.conn.execute("SET synchronous_commit = " + ("on" if self.full else "off"))
                 for setting in ("statement_timeout", "idle_in_transaction_session_timeout"):
                     self.conn.execute(f"SET {setting} = '{WRITER_TIMEOUT}'")

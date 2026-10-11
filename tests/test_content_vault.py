@@ -9,6 +9,7 @@ import json
 import os
 import shutil
 import tempfile
+import threading
 import unittest
 from unittest import mock
 
@@ -185,6 +186,43 @@ class On(Vault):
         self.assertEqual(os.listdir(os.path.dirname(self.s.log.storage._vault(self.s.log.log_id, self.run["tenant"],
                                                                               self.run["run_id"], "key"))), ["key"])
 
+    def test_a_failed_erasure_writes_no_record_and_a_retry_erases(self):
+        _, cseq = self.tool({"cmd": "ls"}, {"out": "hi"})
+        req = {"request_id": "e1", "run_id": self.run["run_id"], "reason": "GDPR"}
+        with mock.patch.object(type(self.s.log.storage), "content_erase", side_effect=OSError(28, "No space left")), \
+                self.assertRaises(RPCError) as cm:
+            self.s.call(READER, "content_erase", req)
+        self.assertEqual(cm.exception.code, "unavailable")
+        self.assertEqual([e for e in self.signer_records() if e["type"] == "content.erased"], [])
+        self.assertEqual(self.get(cseq)[0]["content"], {"result": {"out": "hi"}})   # the record would have lied
+        self.s.call(READER, "content_erase", req)
+        self.assertEqual(self.get(cseq), [{"seq": cseq, "state": "erased"}])
+        self.assertEqual(len([e for e in self.signer_records() if e["type"] == "content.erased"]), 1)
+
+    def test_no_salt_for_a_model_exchange_whose_args_commitments_redaction_changed(self):
+        def exchange(args):
+            return self.s.model_event(self.req(
+                provider="openai", model="m", phase="response",
+                tool_uses=[{"id": "c1", "name": "call_api", "executed_by": "client", "args_source": "parsed",
+                            "args_digest": event_hash({"tool": "call_api", "args": args})}],
+                body={"choices": [{"message": {"tool_calls": [
+                    {"id": "c1", "function": {"name": "call_api", "arguments": json.dumps(args)}}]}}]}))["run_seq"]
+        secret, plain = exchange({"api_key": SECRET}), exchange({"q": "weather"})
+        s, p = self.get(secret, plain)
+        self.assertNotIn(SECRET, json.dumps(s["content"]))
+        self.assertNotIn("salt", s)   # it opens args_commitment, over the secret: a guess test
+        self.assertEqual(s["redacted"], True)
+        self.assertIn("salt", p)
+        self.assertNotIn("redacted", p)
+
+    def test_retention_sweeps_on_the_first_tick(self):
+        self.s.close()
+        swept = threading.Event()
+        with mock.patch.object(svc, "TICK_S", 0.01), \
+                mock.patch.object(svc.SignerService, "expire_content", lambda s, now=None: swept.set()):
+            self.open()
+            self.assertTrue(swept.wait(5))
+
     def test_retention(self):
         _, cseq = self.tool({"cmd": "ls"}, {"out": "hi"})
         self.s.expire_content(now=self.s.log.storage.content_runs()[0][3] + 29 * DAY)
@@ -283,6 +321,29 @@ class Doctor(unittest.TestCase):
         if os.name != "nt":
             os.chmod(os.path.join(d, "keys", "content.key"), 0o644)
             self.assertEqual(self.check(on)["status"], doctor.FAIL)
+
+    def test_doctor_validates_the_section_as_the_signer_does(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        for bad in (True, "on", {"retain": "yes"}, {"retain": True, "retention_days": 0}, {"keep": True}):
+            with self.subTest(bad):
+                r = self.check({"data_dir": d, "content": bad})
+                self.assertEqual(r["status"], doctor.FAIL)
+                self.assertIn("content takes retain (true or false)", r["detail"])
+
+    def test_doctor_counts_runs_still_retained_with_the_vault_off(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        s = svc.SignerService(d, content={"retain": True}, authorize={"token:investigator": ["content_erase"]})
+        for i in range(2):
+            run = s.register_run({"request_id": f"r{i}", "agent": {"name": "a"}})
+            s.observe({"request_id": f"o{i}", "run_id": run["run_id"], "run_token": run["run_token"], "stream": "s",
+                       "client_seq": 1, "source": "inbox", "trust": "untrusted", "value": {"m": i}})
+        r = self.check({"data_dir": d, "content": {"retain": False}})
+        self.assertEqual((r["status"], r["detail"]), (doctor.WARN, "off, 2 runs still retained (erase or keep)"))
+        s.call(READER, "content_erase", {"request_id": "e", "run_id": run["run_id"]})
+        self.assertEqual(self.check({"data_dir": d})["detail"], "off, 1 runs still retained (erase or keep)")
+        s.close()
 
 
 if __name__ == "__main__":

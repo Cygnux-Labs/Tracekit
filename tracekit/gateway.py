@@ -27,7 +27,8 @@ identity (closed when it has not): closed answers 503. A signer refusal is an er
 
 When the signer's `status` says its content vault is on (signer.yaml `content.retain`; the gateway's identity needs the
 `status` grant), each model_event also carries the exchange's `body`: the request as sent, the response as received
-(a stream: as assembled), only when it fits max_record_bytes and half a frame. The signer redacts it, commits to it
+(a stream: as assembled), only when it fits max_record_bytes and half a frame and is strict JSON (else no body: the
+record keeps the raw bytes' digest, as with the vault off). The signer redacts it, commits to it
 and keeps it encrypted (docs/privacy.md).
 """
 import argparse
@@ -46,6 +47,7 @@ import uuid
 
 from tracekit import parsers, yamlmini
 from tracekit.client import remote_url_error
+from tracekit.format.canon import canonical, loads_strict
 from tracekit.identity.base import bearer
 from tracekit.proxy import HOP, MAX_SSE_LINE
 from tracekit.sdk.client import Client, SignerUnavailable, fail_open
@@ -112,7 +114,9 @@ class Gateway:
         return fail_open(self._run(key).modes, "model")
 
     def body(self, content, size):
-        """{"body": content} when the signer keeps content and `size` (its bytes) fits, else {}."""
+        """{"body": content} when the signer keeps content, `size` (its bytes) fits and `content` is strict JSON (no
+        integer past 2^53, non-finite number or lone surrogate, which a frame cannot carry), else {}: the record keeps
+        the raw bytes' digest and the vault notes the content as not retained."""
         if self._vault is None:
             # lean: asked once per gateway process, until the signer answers; restart the gateway after turning the
             # signer's vault on or off
@@ -122,7 +126,13 @@ class Gateway:
                 return {}
             except RPCError:   # not granted `status`: no body
                 self._vault = 0
-        return {"body": content} if size <= self._vault else {}
+        if size > self._vault:
+            return {}
+        try:
+            loads_strict(canonical(content))
+        except ValueError:   # CanonicalizationError, StrictJSONError
+            return {}
+        return {"body": content}
 
 
 class _SSE:
@@ -236,7 +246,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             """Record the response (`content`: as received, `size` bytes); whether the client may have it."""
             if content is None and stream.seen:
                 content = stream.acc.get("final", stream.acc)
-                size = len(json.dumps(content, separators=(",", ":"), ensure_ascii=False).encode())
+                size = len(json.dumps(content, separators=(",", ":"), ensure_ascii=False).encode("utf-8", "surrogatepass"))
             out = parsed or stream.parse(req)
             fields = {"stop_reason": out["finish"] and str(out["finish"])[:100], "usage": out["usage"],
                       "tool_uses": out["tool_uses"][:128],   # lean: the RPC's cap; split the record if models exceed it

@@ -263,7 +263,8 @@ content: {retain: true, retention_days: 30, max_record_bytes: 1048576}
 authorize: {"mtls:spiffe://acme/investigator": [content_read, status]}   # who may read it: never an agent
 ```
 
-On Postgres, run `tracekit signer migrate --config signer.yaml` first: the vault adds two tables (schema version 2).
+On Postgres, run `tracekit signer migrate --config signer.yaml` first: the vault adds two tables (schema version 2),
+and a signer with the vault on refuses to start on an older store ([upgrading](#upgrading)).
 `migrate` grants nothing: on an existing database, apply `tracekit.storage.postgres.GRANTS` to the signer's role
 again after it, or every item reads back `not_retained` and the signer logs the failed write.
 
@@ -273,3 +274,24 @@ backup of the vault needs the key it was written under. Deleting it destroys eve
 stays readable and erasable while the key exists, even after you turn `retain` off. `tracekit doctor` reports the
 vault's state, its retention and whether the key is readable only by the signer (`D-CONTENT-VAULT`). Each read is a
 signed `content.accessed` record and each erasure a `content.erased` record, in the tenant's `tracekit/signer` run.
+
+Erasure reaches the live store only: a backup, WAL archive or replica taken before it still holds the run's wrapped key
+and blobs, and opens with `keys/content.key`. Keep those shorter than `retention_days`
+([limits](limits.md#content-vault-11)).
+
+## Upgrading
+
+Stop the signer, install the new version and start it again; records, keys and bundles carry over. A Postgres store
+keeps its schema version until you run `tracekit signer migrate`, and a new version runs on the older schema as long
+as it needs nothing the schema lacks:
+
+- **1.1** adds the content vault's tables (schema version 2). A version 1 store keeps working for a signer with
+  `content.retain` off and for every reader (export, view, reveal, the central viewer). Before turning the vault on,
+  run `tracekit signer migrate --config signer.yaml` as the migration role, then apply
+  `tracekit.storage.postgres.GRANTS` to the signer's role again. A signer with the vault on refuses to start on a
+  version 1 store, with an error that names `tracekit signer migrate`.
+
+Helm (`tracekit-central`): migrate each replica's schema before upgrading the release with `signer.content.retain`
+set. Compose: the stack's init script runs only on an empty database, so on an existing stack run
+`docker compose exec signer tracekit signer migrate --config /etc/tracekit/signer.yaml` with a DSN that may create
+tables.
