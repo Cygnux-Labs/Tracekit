@@ -14,7 +14,7 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest import mock
 
-from factories import wait_for
+from factories import persisted_queue, wait_for
 from test_bundle_v2 import cosign, pub
 from test_signer_service import ME, records, tmpdir
 from tracekit import merkle
@@ -260,7 +260,7 @@ class Publisher(unittest.TestCase):
         self.finished_run()
         self.s.checkpoint()
         self.assertTrue(wait_for(lambda: len(self.w.bodies) > sent, 5))
-        attempts = lambda: self.s.log.storage.witness_queue().get(NAME, {}).get(RECORDS, {}).get("attempts", 0)  # noqa: E731
+        attempts = lambda: persisted_queue(self.s).get(NAME, {}).get(RECORDS, {}).get("attempts", 0)  # noqa: E731
         self.assertTrue(wait_for(lambda: attempts() >= 1, 10))   # the failure recorded, not only the request sent
         self.s.close()
         store = FileStorage(os.path.join(self.dir, "store"))
@@ -276,7 +276,7 @@ class Publisher(unittest.TestCase):
         self.assertEqual([h[0] for h in heads if h[h.index("") + 1:h.index("") + 3] != [ORIGIN, "0"]
                           and h[h.index("") + 1] == ORIGIN][0], f"old {cosigned}")
         # the cosignature is merged before the queue records the success: wait for it
-        self.assertTrue(wait_for(lambda: self.s.log.storage.witness_queue()[NAME][RECORDS]["attempts"] == 0, 10))
+        self.assertTrue(wait_for(lambda: persisted_queue(self.s)[NAME][RECORDS]["attempts"] == 0, 10))
 
     def test_witness_down_gets_one_gap_then_catches_up(self):
         port = self.w.server.server_address[1]

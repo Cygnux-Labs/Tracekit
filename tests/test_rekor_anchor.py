@@ -19,7 +19,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec, ed25519
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 
-from factories import wait_for
+from factories import persisted_queue, wait_for
 from test_signer_service import ME, records, tmpdir
 from test_witness_publish import NAME, VKEY, FakeWitness, signed_note
 from tracekit import cli, crypto, merkle
@@ -335,10 +335,10 @@ class SignerAnchors(unittest.TestCase):
     def test_retry_queue_survives_restart(self):
         self.fake.status = 503
         self.finished_run()
-        attempts = lambda: self.s.log.storage.witness_queue().get("rekor", {}).get(RECORDS, {}).get("attempts", 0)  # noqa: E731
+        attempts = lambda: persisted_queue(self.s).get("rekor", {}).get(RECORDS, {}).get("attempts", 0)  # noqa: E731
         self.assertTrue(wait_for(lambda: attempts() >= 1, 10))
         self.s.close()
-        self.assertEqual(self.s.log.storage.witness_queue()["rekor"][RECORDS]["size"], 0)
+        self.assertEqual(persisted_queue(self.s)["rekor"][RECORDS]["size"], 0)
         self.fake.status = None
         self.s = self.open()
         self.assertTrue(wait_for(lambda: self.s.log.storage.anchors(), 10))
@@ -370,7 +370,7 @@ class SignerAnchors(unittest.TestCase):
         self.assertLess(size, self.s.log.storage.checkpoint_latest()[0])
         with zipfile.ZipFile(out) as z:
             self.assertIn(f"rekor/{size}.json", z.namelist())
-        self.assertGreater(self.s.log.storage.witness_queue()["rekor"][RECORDS]["next"], time.time() + 3000)
+        self.assertGreater(persisted_queue(self.s)["rekor"][RECORDS]["next"], time.time() + 3000)
         self.assertRegex(self.s.metrics.render(), r'tracekit_signer_anchor_lag_records{anchor="rekor"} [1-9]')
         self.s.close()
         self.s = self.open()   # the cadence holds across a restart
@@ -384,7 +384,7 @@ class SignerAnchors(unittest.TestCase):
         self.assertTrue(wait_for(lambda: self.fake.entries, 10))
         time.sleep(0.5)   # ten backoff rounds
         self.assertEqual(len(self.fake.entries), 1)
-        st = self.s.log.storage.witness_queue()["rekor"][RECORDS]
+        st = persisted_queue(self.s)["rekor"][RECORDS]
         self.assertEqual(st["attempts"], 1)
         self.assertGreater(st["next"], time.time() + 3000)
 

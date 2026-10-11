@@ -98,6 +98,13 @@ class DaemonCase(unittest.TestCase):
         return ledger_records(self.home)
 
 
+def persisted_queue(signer):
+    """The witness queue as the signer's store holds it, read under the lock its publisher writes it with: Windows
+    can't open the file while it's being replaced."""
+    with signer._queue_lock:
+        return signer.log.storage.witness_queue()
+
+
 def wait_for(cond, timeout=10, interval=0.05):
     """Poll cond() until it returns something truthy or the deadline passes; return its last value."""
     deadline = time.monotonic() + timeout
