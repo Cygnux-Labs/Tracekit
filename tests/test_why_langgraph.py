@@ -264,8 +264,13 @@ class Branches(unittest.TestCase):
         graph.invoke(GO, CONF)
         tracemalloc.start()
         self.addCleanup(tracemalloc.stop)
-        fork_replay(graph, CONF, None, "fetch0", "tool=send", n=40)
-        self.assertLess(tracemalloc.get_traced_memory()[1], 80_000_000)   # 4 MB a branch when branches share a saver
+
+        def peak(n):
+            tracemalloc.reset_peak()
+            fork_replay(graph, CONF, None, "fetch0", "tool=send", n=n)
+            return tracemalloc.get_traced_memory()[1]
+        few, many = peak(10), peak(40)   # branches sharing one saver held ~4 MB each: 4x the trials, ~4x the peak
+        self.assertLess(many, 2 * few, (few, many))
 
 
 @unittest.skipUnless(HAVE_LG, "langchain>=1 / langgraph not installed")
