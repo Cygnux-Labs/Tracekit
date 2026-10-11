@@ -2071,6 +2071,8 @@
     const WTYPE = { input: "input", decision: "model call", action: "tool call", message: "message" };
     const WSTATUS = { confirmed: "PRIMARY CAUSE", contributing: "CONTRIBUTING", suppressive: "SUPPRESSES IT", inconclusive: "INCONCLUSIVE", untested: "NOT TESTED", "no-effect-seen": "NO EFFECT SEEN", "ruled-out": "RULED OUT" };
     const PSTATE = { unavailable: "unavailable (signer restarted: the run's untrusted-value index is kept in memory only)", truncated: "truncated (past 20000 untrusted values in the run, later ones are not tracked)" };
+    // a test result tests.jsonl's chain does not cover (written outside the chain, or edited since): marked wherever shown
+    const CHAIN = { unchained: "UNCHAINED", broken: "FAILED CHECK" }, chainMark = t => t && CHAIN[t.chain] ? ` [${CHAIN[t.chain]}]` : "";
     const pct = x => x == null ? "–" : Math.round(x * 100) + "%", sgn = x => (x > 0 ? "+" : "") + (Math.round(x * 100) / 100).toFixed(2);
     async function loadWhy() {
       try { WHY = await getJSON("api/why/workspace"); } catch { return; }   // a viewer without why logs: 404
@@ -2127,7 +2129,7 @@
       const by = st => A.candidates.filter(c => c.status === st), conf = by("confirmed"), contrib = by("contributing"), inc = by("inconclusive"), unt = by("untested");
       const ruled = A.candidates.filter(c => c.status === "ruled-out" || c.status === "no-effect-seen");
       let v;
-      if (conf.length) { const c = conf[0], t = c.test; v = `${c.role === "primary" ? "Primary cause" : "Confirmed cause"}: ${c.label}. In replays without it, this call happened ${pct(t.p_without)} of the time instead of ${pct(t.p_with)} (n=${t.n}; 95% interval for the drop: ${Math.round(t.ci[0] * 100)} to ${Math.round(t.ci[1] * 100)} points).` + (conf.length > 1 ? ` ${conf.length - 1} more confirmed.` : ""); }
+      if (conf.length) { const c = conf[0], t = c.test; v = `${c.role === "primary" ? "Primary cause" : "Confirmed cause"}: ${c.label}. In replays without it, this call happened ${pct(t.p_without)} of the time instead of ${pct(t.p_with)} (n=${t.n}; 95% interval for the drop: ${Math.round(t.ci[0] * 100)} to ${Math.round(t.ci[1] * 100)} points).` + (conf.length > 1 ? ` ${conf.length - 1} more confirmed.` : "") + chainMark(t); }
       else if (contrib.length) { const c = contrib[0], t = c.test; v = `Contributing factor: ${c.label}. It makes this call more likely (${pct(t.p_with)} with it, ${pct(t.p_without)} without), but the call mostly happens without it too.`; }
       else if (inc.length) v = `No confirmed cause yet, and the tests can't tell: the call reproduced too rarely in replays${inc[0].test?.n_needed ? ` (try n=${inc[0].test.n_needed})` : ""}.`;
       else if (ruled.length) v = `No confirmed cause yet. ${ruled.length} tested source${ruled.length > 1 ? "s" : ""} had no effect larger than ${Math.round((ruled[0].test?.min_effect || .2) * 100)} points.`;
@@ -2154,10 +2156,10 @@
       const rows = A.candidates.map(c => {
         const t = c.test, st = c.status === "confirmed" && c.role !== "primary" ? "CONFIRMED" : c.status === "untested" && WJOINT.has(ref.run + "|" + c.intervention) ? "JOINT" : WSTATUS[c.status] || c.status;
         return `<tr><td title="${esc(c.intervention)}">${esc(c.label)}${c.trust === "untrusted" ? ` <span class="s-deny">untrusted</span>` : ""}</td><td class="${c.status === "confirmed" ? "s-deny" : c.status === "contributing" ? "s-flag" : "dim"}">${esc(st)}</td>
-          <td>${esc(t ? `${sgn(t.effect)} [${sgn(t.ci[0])}, ${sgn(t.ci[1])}]` : "–")}</td><td>${esc(t ? `${pct(t.p_with)} → ${pct(t.p_without)} · n=${t.n}` : "–")}</td>
+          <td>${esc(t ? `${sgn(t.effect)} [${sgn(t.ci[0])}, ${sgn(t.ci[1])}]` : "–")}</td><td>${esc(t ? `${pct(t.p_with)} → ${pct(t.p_without)} · n=${t.n}` : "–")}${t && CHAIN[t.chain] ? `<span class="s-flag">${esc(chainMark(t))}</span>` : ""}</td>
           <td>${rp.allowed ? `<button type="button" data-wtest="${esc(c.intervention)}"${busy ? " disabled" : ""}>${t ? "RE-TEST" : "RUN TEST"}</button>` : ""}</td></tr>`;
       }).join("");
-      const how = rp.allowed ? "" : `<p class="dim">${esc(rp.program ? `FIND THE CAUSE and RUN TEST replay ${rp.program}: start the viewer with --allow-program ${prog} to run them here, or run: tracekit why attribute ${path} --target ${tq} (one cause: tracekit why test ${path} --remove SPEC --target ${tq})` : "This run names no program, so it cannot be replayed: record it with a System (docs/why.md).")}</p>`;
+      const how = rp.allowed ? "" : `<p class="dim">${esc(rp.program ? `FIND THE CAUSE and RUN TEST replay ${rp.program}: start the viewer with --allow-program ${prog} to run them here, or run: tracekit why attribute ${path} --system ${prog} --target ${tq} (one cause: tracekit why test ${path} --system ${prog} --remove SPEC --target ${tq})` : "This run names no program, so it cannot be replayed: record it with a System (docs/why.md).")}</p>`;
       const left = `<div class="sec">VERDICT</div><div class="wverdict">${esc(verdict(A))}</div><div class="sec">HOW IT GOT HERE</div>` + lineageHtml(d, A.lineage);
       const right = `<div class="sec">CANDIDATE CAUSES</div><div class="wbar">${rp.allowed ? `<button type="button" data-wfind${busy ? " disabled" : ""}>${busy ? "REPLAYING…" : "FIND THE CAUSE"}</button>` : ""}<label>target <input id="wtarget" value="${esc(target)}" spellcheck="false"></label></div>
         <table class="wt"><thead><tr><th>REMOVE</th><th>STATUS</th><th>EFFECT [95%]</th><th>WITH → WITHOUT</th><th></th></tr></thead><tbody>` + (rows || `<tr><td colspan="5" class="empty">Nothing upstream to remove.</td></tr>`) + `</tbody></table>`

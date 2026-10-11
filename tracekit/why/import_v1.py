@@ -33,7 +33,7 @@ import secrets
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from ..observe import verify_ledger
-from .core import GENESIS, SCHEMA, content_hash, event_hash
+from .core import GENESIS, SCHEMA, content_hash, event_hash, event_problem
 
 SUBAGENT_TOOLS = ("Agent", "Task")
 
@@ -86,6 +86,12 @@ def _clear(content: Any) -> Tuple[Any, bool]:
     return content, content is not None
 
 
+def _counts(usage: Any) -> Dict[str, Any]:
+    """The token counts of a record's usage that are counts (integers >= 0); anything else is left out."""
+    return {k: v for k, v in usage.items() if not k.endswith("tokens") or type(v) is int and v >= 0} \
+        if isinstance(usage, dict) else {}
+
+
 def convert(records: Sequence[Dict[str, Any]], run_id: str, out_dir: str, *,
             untrusted_tools: Sequence[str] = ("*",), trusted_tools: Sequence[str] = SUBAGENT_TOOLS,
             sensitive_tools: Sequence[str] = (), signatures: Tuple[Optional[bool], List[str]] = (None, []),
@@ -117,6 +123,10 @@ def convert(records: Sequence[Dict[str, Any]], run_id: str, out_dir: str, *,
         ev = {"schema": SCHEMA, "seq": len(events), "id": secrets.token_hex(16), "prev_hash": prev[0],
               "ts": (src or recs[0])["event"]["ts"], "run_id": rid, "agent": agent, "type": etype}
         ev.update(body)
+        problem = event_problem(ev)
+        if problem:
+            raise ValueError(f"Tracekit record {(src or {}).get('event', {}).get('seq')}: cannot import it as a why "
+                             f"{etype} event: {problem}")
         ev["hash"] = event_hash(ev)
         prev[0] = ev["hash"]
         events.append(ev)
@@ -255,9 +265,9 @@ def convert(records: Sequence[Dict[str, Any]], run_id: str, out_dir: str, *,
             else:
                 ctx, mode = list(seen_so_far.get(agent, [])), "reconstructed"
             out, _ = _clear(d.get("response"))
-            dec = emit(agent, "decision", r, model=d.get("model"), purpose="", params={}, seed=None, context=ctx,
+            dec = emit(agent, "decision", r, model=str(d.get("model") or ""), purpose="", params={}, seed=None, context=ctx,
                        ablated=[], output=blob(out if out is not None else {"stop_reason": d.get("stop_reason")}),
-                       usage=d.get("usage") or {}, status="error" if d.get("error") else "ok",
+                       usage=_counts(d.get("usage")), status="error" if d.get("error") else "ok",
                        duration_ms=d.get("duration_ms"), context_mode=mode)
             if req:
                 mapping[dec["id"]].insert(0, _cite(req))

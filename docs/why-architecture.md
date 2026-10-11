@@ -24,7 +24,8 @@ runs/
   demo-seed0/
     events.jsonl          one event per line, hash-chained, append-only
     blobs/<sha256>.json   every value, stored once: {"v": <value>}
-    tests.jsonl           results of counterfactual tests run against this run (optional)
+    tests.jsonl           results of counterfactual tests run against this run (optional), chained
+    ingest-owner          for a run created by ingest: the digest of the ingest token that may append to it
 ```
 
 Storage is plain files. Every reader goes through `tracekit.why.core.load_run`, so swapping in a database means replacing that function and `Runtime._emit` / `Runtime._blob`.
@@ -38,10 +39,10 @@ Storage is plain files. Every reader goes through `tracekit.why.core.load_run`, 
 | Event hash | `sha256(canonical(event without the "hash" key))`, hex |
 | Chain | `event.prev_hash` = previous event's `hash`; 64 zeros for seq 0 |
 
-Wrapping the value in `{"v": ...}` gives strings, numbers and objects one hashing rule. Because the event hash covers `prev_hash`, editing, deleting, inserting or reordering any event breaks every later link. `tracekit why verify` checks contiguous `seq`, every link, every event hash, every blob hash, and that every ref an event mentions exists.
+Wrapping the value in `{"v": ...}` gives strings, numbers and objects one hashing rule. Because the event hash covers `prev_hash`, editing, deleting, inserting or reordering any event breaks every later link. `tracekit why verify` checks contiguous `seq`, every link, unique event ids, every event hash, every blob hash, that every ref an event mentions exists, and that the log ends with `run.end` (a log cut short loses its end: verify reports it, as it does for a run still recording). Each line of `tests.jsonl` carries `prev` (the previous line's `hash`, 64 zeros for the first), `head` (the hash of the run's last event when it was tested) and `hash` (`sha256(canonical(line without "hash"))`); verify reports a line that does not link, and the viewer marks a line without them UNCHAINED.
 
-The chain is unsigned. Anyone who can rewrite the whole file can rebuild a consistent chain. Tracekit's signer solves
-that for the records it signs; why events are not written through it yet.
+The chains are unsigned. Anyone who can rewrite the files can rebuild consistent chains, a closing `run.end` included.
+Tracekit's signer solves that for the records it signs; the why log's own head is not recorded there yet.
 
 ## Event schema (`tracekit.why.event.v1`)
 
@@ -119,12 +120,12 @@ A tool is sensitive when the run declared it (`sensitive_tools`, or `act(..., se
 
 `replay.counterfactual(run, intervention, target, n)`:
 
-1. Load the `System` named in `run.start.program` (or use the one passed in).
+1. Load the `System` named in `run.start.program` (or use the one passed in; the CLI and the server never load the named one unless `--allow-program` lists it).
 2. Build a **tape** from the original run: a map from `(agent, tool, args hash, occurrence)` to the recorded result.
 3. For i in 0..n-1, with seed `s_i` derived from the run id and i:
    - run the program with seed `s_i`, tape on, no intervention → did the target happen?
    - run it again with seed `s_i`, tape on, intervention on → did the target happen?
-4. Report `p_with`, `p_without`, `effect = p_with - p_without`, the Newcombe 95% CI, pair flips, how many trials the intervention actually removed something in, and how many tool calls left the tape.
+4. Report `p_with`, `p_without`, `effect = p_with - p_without`, the paired 95% CI, pair flips, how many trials the intervention actually removed something in, and how many tool calls of both arms left the tape.
 
 **Interventions** remove matching items from every decision's context at call time and record what was removed in `ablated`:
 
@@ -136,7 +137,7 @@ A tool is sensitive when the run declared it (`sensitive_tools`, or `act(..., se
 | `ref:<hash prefix>` | a specific content |
 | `untrusted` | anything marked untrusted |
 
-**Tape and stubs.** A tool call identical to a recorded one replays the recorded result. A call the original run never made is stubbed (`{"_unrecorded": true}`) unless `live_tools=True`. A replay therefore never repeats a real side effect. The cost is that behaviour after a stubbed call can differ from what the real tool would have caused, which is why `off_tape_actions` is reported.
+**Tape and stubs.** A tool call identical to a recorded one replays the recorded result. A call the original run never made is stubbed (`{"_unrecorded": true}`) unless `live_tools=True`. A replay therefore never repeats a real side effect of a tool run through `Agent.act` or `TracedMessages.run_tool` (which, in a replay, goes through the same tape and stub path and never calls your function). A tool your own code runs and records with `record_action` (or `TracedMessages.tool_result`) has already run when the runtime hears of it: in a replay it runs for real, is recorded as `live`, warns, and counts in `off_tape_actions`. The cost is that behaviour after a stubbed call can differ from what the real tool would have caused, which is why `off_tape_actions` is reported.
 
 **Paired seeds** (common random numbers) mean the only difference within a pair is the intervention, which cuts the variance of the estimated difference considerably.
 
@@ -150,8 +151,8 @@ What a `causal` verdict means: in this program, on this task, removing X changes
 
 - rebuild the decision's context from blobs;
 - call the model n times with the full context and n times without the matching items, paired seeds;
-- with `contains`, measure P(output contains the text) in each arm and report the difference with a Newcombe CI;
-- without it, measure how often the output differs from the paired full-context output, minus how often a second full-context call differs (`noise`), with a Newcombe CI on the difference. Real model APIs ignore seeds, so without the control any sampling noise would read as an effect.
+- with `contains`, measure P(output contains the text) in each arm and report the difference with a paired CI;
+- without it, measure how often the output differs from the paired full-context output, minus how often a second full-context call differs (`noise`), with a paired CI on the difference. Real model APIs ignore seeds, so without the control any sampling noise would read as an effect.
 
 This measures the direct effect on one model call. It does not need the program to be re-runnable, which matters for production systems that can't be re-executed end to end. Decisions recorded through the Anthropic adapter store the request layout (which context item sat in which message block), and `adapters.anthropic.replay_model(client.messages)` rebuilds the request without the removed items. A removed tool result becomes `"[removed]"` so tool_use / tool_result pairing still holds.
 
@@ -167,10 +168,10 @@ All tests share `base_cache`, the "nothing removed" arm keyed by trial index; wi
 
 ## Statistics
 
-**Sequential tests.** With `n_max > n`, a test checks its interval at n, 2n, 4n, … and n_max (k looks), and stops at the first decisive verdict (causal, suppressive, ruled-out). Each look uses z for α = 0.05 / k (Bonferroni), and the reported McNemar p-value is multiplied by k. The union bound keeps the overall false-positive rate at or below 5% however early the test stops. It is conservative, and simpler than group-sequential boundaries (O'Brien-Fleming) that would spend α more efficiently.
+**Sequential tests.** With `n_max > n`, a test checks its interval at n, 2n, 4n, … and n_max (k looks), and stops at the first decisive verdict (causal, suppressive, ruled-out). Each look uses z for α = 0.05 / k (Bonferroni), and the reported McNemar p-value is multiplied by k (and by `family`). The union bound keeps the overall false-positive rate at or below 5% however early the test stops. It is conservative, and simpler than group-sequential boundaries (O'Brien-Fleming) that would spend α more efficiently.
 
 - **Wilson score interval** for a single proportion.
-- **Newcombe hybrid score interval** (method 10) for a difference of two proportions, built from the two Wilson intervals. It behaves well at 0% and 100%, which plain Wald intervals do not.
+- **Tango's score interval** (1998) for the difference of two paired proportions (`replay.paired_diff`): every difference whose score test, with the variance at the restricted maximum-likelihood estimate, is not rejected. Only pairs whose arms differ move it, so the pairing reaches the verdict, and with no discordant pair it is as wide as the trials allow (±0.28 at n = 10) instead of falsely certain. It behaves well at 0% and 100%, which plain Wald intervals do not. Checked against Fagerland, Lydersen & Laake (2014), Table I. `replay.newcombe_diff` (Newcombe's hybrid score interval for two independent samples) is kept for unpaired data.
 
 - **Exact McNemar test** on the discordant pairs (target happened only with the item, or only without it). Its p-value is reported as `p_value`. With b discordant pairs all in one direction the smallest possible p is 2 × 0.5^b, so fewer than 6 discordant pairs can never reach p < 0.05.
 - **Testing several inputs of one action** (`family=k`): the interval is corrected by Bonferroni across the k inputs (and the looks of a sequential test), so the verdicts for all of an action's suspects together keep a 5% false-positive rate. The benchmark scores this verdict. `replay.benjamini_hochberg` is still available for false-discovery-rate control over p-values.

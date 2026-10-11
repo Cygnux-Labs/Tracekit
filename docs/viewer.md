@@ -63,8 +63,8 @@ names its program; replay imports it). Otherwise the panel shows the `tracekit w
 and new alerts arrive over the page's event stream as they are recorded.
 
 The why API is served by the viewer, on its session and checklist: `GET /api/why/workspace`, `GET /api/why/runs/<id>`,
-`POST /api/why/runs/<id>/tests` and `/attribute` (the token, a same-origin JSON body) and `POST /v1/ingest` (the
-token as a Bearer token only; [why.md](why.md#server-and-api)). Why logs belong to no tenant, so only the printed token
+`POST /api/why/runs/<id>/tests` and `/attribute` (the token, a same-origin JSON body) and `POST /v1/ingest` (a
+Bearer token only: an `--ingest-token`, which reads nothing, else the token; [why.md](why.md#server-and-api)). Why logs belong to no tenant, so only the printed token
 sees them, never an OIDC session.
 
 ## Central viewer
