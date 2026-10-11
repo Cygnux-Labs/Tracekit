@@ -93,10 +93,14 @@ With the v2 signer service (`tracekit signer serve`), the signer redacts itself,
   Verifying a bundle never needs a salt.
 - **The provenance index.** To know which argument values only untrusted content brought into a run
   ([policy](policy-v2.md#provenance-untrusted-and-from-untrusted)), the signer keeps, per open run and in memory only,
-  keyed hashes (HMAC-SHA256 under a key drawn at random per signer process) of the values in its tool results and
-  observed inputs, after redaction. They are never written to disk or into a record, go when the run ends, and are
-  gone after a restart. Records name the argument (field), the kind of value and the record it came from, never the
-  value; an `input.observed` record holds only a commitment to the content, like a result.
+  keyed hashes (HMAC-SHA256 under a key drawn at random per signer process) of the values in its untrusted tools'
+  results and observed inputs, read before redaction (so "password: attacker@evil.example" still names its address;
+  a secret's keyed hash is in that memory too, and nothing else). They are never written to disk or into a record,
+  go when the run ends, and are gone after a restart. Records name the argument (field), the kind of value and the
+  record it came from, never the value; an `input.observed` record holds only a commitment to the content, like a
+  result. For a tool the policy lists as untrusted, `decide` answers `send_result` and the adapters send the result
+  itself instead of its digest: the signer redacts it and commits to it like any result, and keeps nothing of it in
+  clear.
 
 ## What leaves the machine
 

@@ -20,6 +20,7 @@ import uuid
 
 from tracekit.format.canon import event_hash
 from tracekit.integrations.held import HeldCalls
+from tracekit.sdk.client import result_field
 
 BLOCKED = "Action blocked by policy: "
 _PLACEHOLDER = re.compile(r"<secret>(.*?)</secret>")
@@ -102,5 +103,5 @@ class _Actions(HeldCalls):
             raise
         dump = out.model_dump(mode="json", exclude_none=True) if hasattr(out, "model_dump") else out
         await self._complete(call_id, req, status="error" if getattr(out, "error", None) else "ok",
-                             result=event_hash(dump))
+                             result=result_field(d.get("send_result"), _mask(dump, secrets)))
         return out

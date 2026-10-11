@@ -108,9 +108,10 @@ last record, if it is ever closed: `log.closed{final_seq}`.
 Provenance (format 1.1, [policy](policy-v2.md#provenance-untrusted-and-from-untrusted)): `input.observed{source,
 trust, output: {hash, size, redacted}, redaction, salt_id}` records content that entered the run through the
 `observe` RPC (a mail, a ticket, the task), committed to as a tool result is (§2), never in clear; `source` is the
-caller's name for it and `trust` its claim. `policy.decision` carries `provenance_state` (`complete`, `truncated` or
-`unavailable`; written only when it is not `complete` or `provenance` is non-empty, so a run with nothing untrusted in
-its arguments needs no 1.1 verifier) and `provenance`: at most 16 `{field, kind, source: {run_seq, tool?, tool_call_id?}}`, the top-level
+caller's name for it and `trust` its claim. `policy.decision` carries `provenance_state` (`complete`, `partial`,
+`truncated`, `unavailable` or `timeout`; written only when it is not `complete` or `provenance` is non-empty, so a run
+with nothing untrusted in its arguments needs no 1.1 verifier), `provenance_reason` (why it is not `complete`, at most
+256 characters) and `provenance`: at most 16 `{field, kind, source: {run_seq, tool?, tool_call_id?}}`, the top-level
 arguments whose values only untrusted content brought into the run, the kind of value (`email`, `url`, `host`, `path`,
 `digits`, `string`) and the record that brought it — never the value.
 

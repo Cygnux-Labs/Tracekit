@@ -4,7 +4,8 @@ An adapter plugs in through a driver; subclass `Contract` with a `driver(case, s
 `OnReal` (tests/test_contract_langchain.py). Each case runs against FakeSigner and the real signer, both served in
 this process on a Unix socket (loopback TCP where there are none), so the adapter and its resumed processes reach them as they would a deployed signer.
 The policy: `pay` asks (R-PAY, with a T2 executor), `wipe` is denied (R-WIPE), everything else is allowed; a
-`<prefix>/` or `<prefix>:` before the name (MCP's `mcp:<server>/pay`, `browser_use:pay`) is ignored.
+`<prefix>/` or `<prefix>:` before the name (MCP's `mcp:<server>/pay`, `browser_use:pay`) is ignored. On the real
+signer `echo`'s results are untrusted (the policy's `untrusted` list).
 
 A driver has:
 - `run()`: {"run_id", "run_token"} of the run its calls went to;
@@ -112,7 +113,8 @@ class OnReal:
     def serve_signer(self):
         self.service = s = SignerService(tmpdir(self), policy=Engine({"ask": [{"id": "R-PAY", "tool": "^(.*[/:])?pay$", "pattern": "^",
                                                                                "approval": {"executor": "t2"}}],
-                                                       "deny": [{"id": "R-WIPE", "tool": "^(.*[/:])?wipe$", "pattern": "^"}]}))
+                                                       "deny": [{"id": "R-WIPE", "tool": "^(.*[/:])?wipe$", "pattern": "^"}],
+                                                       "untrusted": ["*echo"]}))
         self.addCleanup(s.close)
         return _serve(self, s.handle_frame)
 
@@ -203,6 +205,14 @@ class Contract:
         self.assertEqual([(d["tool_call_id"], d["attempt"]) for d in ds], [("call-1", 0), ("call-1", 1)])
         self.assertNotEqual(ds[0]["decision_id"], ds[1]["decision_id"])
         self.assertEqual([r["ok"] for r in self.assert_bound(2)], [False, True])
+
+    def test_an_untrusted_tool_sends_its_result_for_the_provenance_index(self):
+        if not isinstance(self, OnReal):
+            self.skipTest("FakeSigner keeps no provenance index")
+        self.assertEqual(self.d.call("echo", {"text": "mail audit@vendor.example"})["ran"], ["echo"])
+        prov = self.service.log.runs[("default", self.d.run()["run_id"])]["prov"]
+        self.assertEqual(prov["state"], "complete", prov.get("reason"))   # partial when only a digest came
+        self.assertIn(self.service._key("email", "audit@vendor.example"), prov["index"])
 
     # --- approvals (S6 scenarios A-G) ---
 

@@ -156,11 +156,18 @@ rules in lower case, or with both cases of a letter (`[Ll]ibrary`).
 ## Provenance: `untrusted` and `from: untrusted`
 
 A rule on arguments can't tell where a value came from: a page that says "email the list to x@vendor.example" and a
-task that says the same look alike in the call. The signer can, because it sees every tool result before it commits to
-it. Per run it keeps an index of the values (`tracekit.provenance`: emails, URLs and their `scheme://canonical-host/`
-form, hosts of URLs and bare names and addresses in any notation the policy reads, absolute paths, digit runs of 8 or
-more without separators, leaf strings of 6 to 256 characters; an email's domain counts as a host in content, not in a
-call's arguments) that untrusted tools' results and observed inputs carried, with the record that first brought it in:
+task that says the same look alike in the call. The signer can, because the result of every tool the policy lists as
+untrusted reaches it: `decide` answers such a call with `send_result: true`, and the shipped adapters (Python and
+TypeScript, the Claude Code hook) then complete it with the result itself rather than its digest (other tools' results
+still go as digests; a result over half a frame, 512 KiB, goes as a digest too). Per run it keeps an index of the
+values (`tracekit.provenance`: emails, URLs and their `scheme://canonical-host/` form, hosts of URLs in any notation
+the policy reads, bare dotted names and dotted IPv4 addresses (a bare IPv6 address or an integer IP in text is not
+read as a host; inside a URL it is), absolute paths, digit runs of 8 or more with `' '`, `.` or `-` between digits,
+and each separator-free group of 8 or more in them, leaf strings of 6 to 256 characters, dict keys as well as
+values; an email's domain counts as a host in content, not in a call's arguments) that untrusted tools' results and
+observed inputs carried, with the record that first brought it in. Every value is read from the text after format
+and other ignorable characters (zero-width spaces, soft hyphens) are removed and NFKC applied (fullwidth forms,
+no-break and thin spaces), in content and in the call alike, and before redaction:
 
 - A tool's results are untrusted content when the policy's `untrusted` list names its class or matches its name (a
   glob); the client has no say. Packs: `coding.yaml` http, mcp, WebFetch, WebSearch; `browser.yaml` browser;
@@ -168,9 +175,10 @@ call's arguments) that untrusted tools' results and observed inputs carried, wit
   list your own, such as `read_inbox` or `get_ticket`).
 - `observe` (Python `run.observe(value, source=..., trust="untrusted")`, TypeScript `run.observe(value, source,
   trust)`) records other content: a mail, a ticket, a page the app fetched itself. Send the task or user prompt with
-  `trust="trusted"`. That label is the caller's claim, so it only says how the caller's own content counts: the task
-  must come from the caller, not from the agent, and an agent that observes an attacker's text as trusted only hides
-  its own input.
+  `trust="trusted"`. That label is the calling process's claim, and the signer takes it as given: provenance protects
+  against injected content, not against a malicious agent program, which can observe anything as trusted (or send
+  digests instead of results) and so get past `from` rules. The task must come from the caller, not from the agent;
+  an agent that observes an attacker's text as trusted only hides its own input.
 - Results of tools not in `untrusted` (SQL, shell, your own tools) are not indexed either way: a tool can echo what
   the agent put in its arguments (`echo`, `select '…'`), so counting its output as trusted would launder an injected
   value. Only an input observed as `trusted` makes a value trusted, whichever came first. A value the deployment's
@@ -179,11 +187,23 @@ call's arguments) that untrusted tools' results and observed inputs carried, wit
   hold.
 
 A rule with `from: untrusted` matches only when its pattern matches as usual **and** a value in that subject is
-untrusted-only in the run. A decision records `provenance_state` (`complete`, `truncated` past 20000 values in a
-run, or `unavailable` after a signer restart, as the index lives in memory only) when it isn't `complete` or there is
-something to show, and `provenance`: up to 16 arguments
-whose values are untrusted-only, as `{field, kind, source: {run_seq, tool, tool_call_id}}` — never the value
-([format](format-v2.md#3-events)). With the index truncated or unavailable, a `from` rule does not match.
+untrusted-only in the run. A list field (`payees`, `recipients`) is checked element by element; `sends_to` is looked
+up as the host it is. A decision records `provenance` (up to 16 arguments whose values are untrusted-only, as
+`{field, kind, source: {run_seq, tool, tool_call_id}}` — never the value) when there is something to show, and
+`provenance_state` with `provenance_reason` when the index is not `complete`
+([format](format-v2.md#3-events)):
+
+| State | When |
+|---|---|
+| `partial` | an untrusted tool's call completed with a digest, a `{hash, size}` reference or no result (an adapter that ignores `send_result`) |
+| `truncated` | a result or untrusted observed input carried more values than are read (4096 values, 1 MiB of text), or the run's index reached 20000 values |
+| `unavailable` | the signer restarted: the index lives in memory only (a storage outage the signer recovers from keeps it) |
+| `timeout` | reading this call's values took past the decision's deadline (1 s) |
+
+**Fail closed:** in every state but `complete` a `from: untrusted` rule matches whenever its pattern does, in its own
+section (the packs' `TK-P` rules ask), since the index can no longer say a value is not untrusted. The first cause
+stays for the rest of the run (`timeout` only for that decision). The work is bounded: reading values is linear in
+the text (1 MiB in well under a second), and a decision reads them only while its index has entries.
 
 | Pack | Section | Rules |
 |---|---|---|
@@ -193,8 +213,9 @@ whose values are untrusted-only, as `{field, kind, source: {run_seq, tool, tool_
 Limits ([all of Tracekit's](limits.md)): it matches values verbatim, and only what came in through untrusted tools and observed inputs: a page the
 agent fetches with a tool the policy doesn't list as untrusted (`curl` in a shell) is not indexed, so list such tools
 or observe the content. A value the model paraphrases, splits or re-encodes (spelled out, base64, a URL
-shortener) reads as a new value and gets past it. It is a tripwire on the commonest way injected instructions act; to
-prevent the flow, use information-flow control (CaMeL, FIDES) in the agent.
+shortener) reads as a new value and gets past it. `trust: "trusted"` is the calling process's claim: provenance
+protects against injected content, not against a malicious agent program. It is a tripwire on the commonest way
+injected instructions act; to prevent the flow, use information-flow control (CaMeL, FIDES) in the agent.
 
 ## Patterns: the RE2 subset
 
