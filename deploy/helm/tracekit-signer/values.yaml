@@ -7,8 +7,11 @@ signer:
   tenant: default          # the tenant of the agent's runs (signer.yaml `tenants`, keyed by the agent's uid)
   durability: ack-on-fsync
   # More signer.yaml keys (witnesses, limits, fail_modes, ...: tracekit/signer/service.py). data_dir, socket,
-  # socket_mode, durability, tenants, metrics and policy are set by the chart.
+  # socket_mode, durability, tenants, metrics, policy and content (below) are set by the chart.
   config: {}
+  # The content vault (docs/privacy.md): off. retain: true keeps each record's redacted content, encrypted under
+  # keys/content.key in the signer's data volume, for retention_days.
+  content: {retain: false, retention_days: 30, max_record_bytes: 1048576}
   # The signer's policy file (docs/policy-v2.md), mounted at /etc/tracekit/policy.yaml. The default runs the image's
   # server pack (/etc/tracekit/packs/server.yaml); replace it with your own, which may extend packs/server.yaml.
   policy: |

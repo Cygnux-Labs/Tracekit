@@ -16,7 +16,7 @@ from unittest import mock
 import test_signer_service as ts
 from factories import wait_for
 from test_observe_render import XSS, script_of, unescaped
-from tracekit import view
+from tracekit import cli, view
 from tracekit.observe import _session
 from tracekit.policy2 import compile as policy_compile
 from tracekit.policy2.engine import Engine
@@ -250,6 +250,35 @@ class View(unittest.TestCase):
         self.assertEqual((r["event"], r["session_id"], r["tenant"], r["review"]),
                          ("tk_run", "r9", "default",
                           {"verdict": "pending", "agent": "late", "label": view.OPERATOR_SIDE}))
+
+    def test_a_tenants_signer_run_is_the_signer_never_an_agent_run(self):
+        signer = ("acme", view.SIGNER_RUN[1])   # content.accessed and content.erased go in each tenant's own
+        fake = mock.Mock(runs={signer: {"seqs": [0]}, ("default", "r9"): {"seqs": [1]}})
+        fake.checkpoint_latest.return_value = None
+        fake.iter_run.side_effect = lambda *key: iter([v2rec(0, "run.registered", {"agent": {"name": "late"}}, key[1])])
+        with mock.patch.object(view, "reader", return_value=fake):
+            feed = view.StoreFeed({"data_dir": self.d})
+            self.assertTrue(wait_for(lambda: feed.records, 5))
+        with feed.lock:
+            self.assertEqual([r["session_id"] for r in feed.records], ["r9"])   # not listed as a pending agent run
+        with mock.patch.object(view, "check", return_value=(mock.Mock(integrity="FAILED", assurance="none"), 1, "t")):
+            feed._verify(fake, "note", signer, 1)
+        with feed.lock:
+            self.assertEqual((feed.records[-1]["signer"], feed.records[-1]["agent"]), (True, "signer"))
+
+    def test_last_skips_each_tenants_signer_run(self):
+        runs = {("default", "r1"): {"seqs": [1]}, ("acme", view.SIGNER_RUN[1]): {"seqs": [5]}}
+        fake = mock.Mock(runs=runs)
+        fake.iter_run.side_effect = lambda *key: iter([v2rec(0, "run.registered", {"agent": {"name": "a"}}, key[1]),
+                                                       v2rec(1, "run.final" if key[1] == "r1" else "content.accessed",
+                                                             {}, key[1])])
+        exported, err = [], io.StringIO()
+        with mock.patch.object(svc, "reader", return_value=fake), \
+                mock.patch.object(svc, "signer_config", return_value={"data_dir": self.d}), \
+                mock.patch.object(cli, "_export_v2", side_effect=lambda ns, show: exported.append(ns.run) or 1), \
+                contextlib.redirect_stderr(err):
+            self.assertEqual(cli.main(["last"]), 1)
+        self.assertEqual((exported, err.getvalue()), (["r1"], ""))
 
     def test_tampered_record_shows_only_the_failure(self):
         run_id = self.finished_run()

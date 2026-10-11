@@ -205,6 +205,12 @@ class Agreement(unittest.TestCase):
         for name, (code, how) in cases.items():
             with self.subTest(name):
                 self.assertEqual(self.agree(self.mutate(**how), self.trusts["witnessed"])[0], code)
+        for token in (b"0.0", b"0e0", b"false"):   # run-set bounds are integer tokens
+            with self.subTest(f"run-set from {token}"):
+                code, rep = self.agree(self.mutate(src="run-set", edit=lambda f, m: f.update({
+                    "registry/run-set.json": f["registry/run-set.json"].replace(b'"from": 0,', b'"from": ' + token + b",")
+                })), self.trusts["witnessed"])
+                self.assertEqual((code, rep.failures), (1, ["run-set"]))
         with self.subTest("below quorum"):
             self.assertEqual(self.agree(self.bundles["closed"], self.trusts["below-quorum"])[0], 1)
         with self.subTest("bad manifest hash"):
@@ -220,13 +226,19 @@ class Agreement(unittest.TestCase):
             self.assertEqual(self.agree(bad, self.trusts["witnessed"])[0], 1)
 
     def test_golden_corpus(self):
+        """Both verifiers agree on every golden bundle, and on each negative one give its recorded verdict."""
         golden = os.path.join(TESTS, "golden")
+        with open(os.path.join(golden, "negative", "expected.json"), encoding="utf-8") as f:
+            negative = {c["bundle"]: c["expected"] for c in json.load(f)["cases"]}
         for d in ("v2", "negative"):
             trust = os.path.join(golden, d, "trust.json")
             for name in sorted(os.listdir(os.path.join(golden, d))):
                 if name.endswith(".tkb"):
                     with self.subTest(f"{d}/{name}"):
-                        self.agree(os.path.join(golden, d, name), trust)
+                        code, rep = self.agree(os.path.join(golden, d, name), trust)
+                        if d == "negative":
+                            self.assertEqual({"exit_code": code, "integrity": rep.integrity, "first_failure": next(
+                                (c["check"] for c in rep.checks if c["status"] == "fail"), None)}, negative[name])
 
     def test_unimplemented_checks_are_unverifiable(self):
         golden = os.path.join(TESTS, "golden", "v2")

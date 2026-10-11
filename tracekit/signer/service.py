@@ -10,6 +10,8 @@
     tracekit signer reveal --record SEQ [--dev | --config signer.yaml]  # the salt of one record's commitments
     tracekit signer token add NAME [--ttl 30d] [--tenant T] --config signer.yaml   # prints a token once (http.tokens)
     tracekit signer token list|revoke [NAME] --config signer.yaml
+    tracekit signer content get --run R --seq N [N ...] --purpose P [--config signer.yaml]   # retained content (vault)
+    tracekit signer content erase --run R [--reason TEXT] [--config signer.yaml]
 
 signer.yaml:
     data_dir: /var/lib/tracekit-signer      # keys/ and store/; relative paths are from the config file
@@ -77,6 +79,7 @@ signer.yaml:
                                              # (docs/viewer.md)
     webhook: [{url: https://siem.example.org/tracekit, format: ocsf, events: [deny, approval, gap, tamper],
                secret_file: webhook.secret}]  # OCSF events, HMAC-signed, off the writer (tracekit.signer.webhook)
+    content: {retain: false, retention_days: 30, max_record_bytes: 1048576}   # the content vault (below)
     acknowledge_rollback: false
     lock_timeout_s: 10                    # wait this long for the storage lock, then exit naming its holder's pid
     fsck_every_s: 86400                      # full-chain check in the background (0: off; the dev signer's is off)
@@ -175,6 +178,18 @@ fired, never the values). A client may say it redacted already; the signer redac
 it still finds. Every published digest of agent content is an HMAC under a per-record salt derived from
 keys/args_salt.key (`salt_label`), which `reveal` prints for one record. Policy decides on the unredacted arguments.
 
+Content vault (docs/privacy.md): with `content.retain`, the signer also keeps what each record commits to, after its
+redaction: a decision's arguments (redacted, as the approver sees them: `redacted` when that changed them, so they no
+longer open args_commitment), a result, an observed input, a model exchange's `body`. Each is encrypted (AES-256-GCM)
+under a random key per run, which keys/content.key wraps, with the record bound in as associated data ({log_id,
+run_id, seq: the run_seq, commitment}), and stored through the storage; content over max_record_bytes is not kept, and
+the vault says so. `content_get` (the `content_read` grant, never a default) returns it with each record's salt, so the
+caller can open the commitment (no salt, `redacted`, for content redaction changed: it opens nothing, or for a model
+exchange redaction changed whose tool_uses carry args_commitments, which the salt would open), and writes a signed
+`content.accessed` into the tenant's signer run; `content_erase` and retention (runs whose key was stored more than
+retention_days ago, checked at start and every CONTENT_SWEEP_S) delete a run's key and blobs, then write
+`content.erased`. Records are never changed.
+
 Provenance (docs/policy-v2.md): each run registered since the signer started has an index, in memory only, of the
 values (tracekit.provenance) its untrusted tools' results (the policy's `untrusted` list) and its `observe` inputs
 carried, keyed by an HMAC under a key drawn per process, each with the record that first brought it and whether that
@@ -192,6 +207,7 @@ import hmac
 import itertools
 import json
 import logging
+import math
 import os
 import pathlib
 import re
@@ -224,7 +240,7 @@ from tracekit.policy2.engine import Engine
 from tracekit.signer import logkey, metrics, reconcile, rpc_schema, webhook
 from tracekit.signer import otel as signer_otel
 from tracekit.signer.pipeline import EXPIRED, RecordLog, approval, final_run, owner, salt_label, subject
-from tracekit.signer.quotas import Limits, Quotas
+from tracekit.signer.quotas import MAX_LINE, Limits, Quotas
 from tracekit.signer.rpc_schema import REQUESTS, RPCError
 from tracekit.signer.runtoken import RunTokens
 from tracekit.storage.base import ACK_ON_WRITE, RECORDS, StorageUnavailable, registry_tree
@@ -258,13 +274,17 @@ CONFIG_KEYS = {"data_dir", "socket", "socket_mode", "tcp_endpoint", "http", "dur
                "fail_modes", "grace_s", "idle_s", "origin", "metrics", "witnesses", "contact", "approvals",
                "lock_timeout_s", "fsck_every_s", "clock_skew_s", "anchors", "otlp", "otel_out", "storage", "gateways",
                "gateway_mandatory", "log_key", "harness_binding", "record_key", "route", "view", "decision_keys",
-               "webhook"}
+               "webhook", "content"}
 APPROVAL_KEYS = {"self_approval", "approvers", "break_glass", "persons", "webauthn"}
 OTLP_IMPORT = "otlp_import"   # an `authorize` grant, never a default: OTLP/HTTP import (otlp config section)
 ON_BEHALF = "approval_decide_on_behalf"   # an `authorize` grant, never a default: a bridge answers for its people
 OTLP_MAX_SPANS = 512
 DECISION_IMPORT = "decision_import"   # an `authorize` grant, never a default: an external policy system's decisions
 PASSKEYS = "passkeys.json"   # in data_dir: person id -> {id, key (base64 SPKI), count (last signCount)}
+CONTENT_READ = "content_read"   # an `authorize` grant, never a default: content_get (the content vault)
+CONTENT = {"retain": False, "retention_days": 30, "max_record_bytes": 1 << 20}   # the `content` config section
+CONTENT_SWEEP_S = 3600.0
+ERASED = object()   # _data_key of a run whose content was erased
 
 
 def load_policy(path=DEFAULT_POLICY, backend=None):
@@ -284,6 +304,23 @@ MARK = re.compile(r"\[REDACTED:([a-z_]+)\]")
 
 def _salt(key, label):
     return hmac.new(key, label.encode(), "sha256").digest()
+
+
+def content_config(content):
+    """The `content` config section (None: off) with its defaults filled in; ValueError when it is not valid."""
+    c = {**CONTENT, **content} if isinstance(content, dict) else content or dict(CONTENT)
+    if not (isinstance(c, dict) and set(c) == set(CONTENT) and isinstance(c["retain"], bool)
+            and all(type(c[k]) is int and c[k] > 0 for k in ("retention_days", "max_record_bytes"))):
+        raise ValueError("content takes retain (true or false), retention_days and max_record_bytes (positive integers)")
+    return c
+
+
+def _committed(e):
+    """The commitment of record event `e` that its retained content opens, or None."""
+    d = e["data"]
+    return {"policy.decision": d.get("args_commitment"), "tool.result": (d.get("output") or {}).get("hash"),
+            "input.observed": (d.get("output") or {}).get("hash"),
+            "model.exchange": d.get("content_digest")}.get(e["type"])
 
 
 def _redact(value, dotenv, claim=None):
@@ -391,7 +428,8 @@ class SignerService:
                  bridge=None, origin=None, authorize=None, contact=None, approvals=None, lock_timeout_s=0,
                  fsck_every_s=FSCK_S, clock_skew_s=CLOCK_SKEW_S, rekor=None, otlp=None, otel_out=None,
                  storage_config=None, gateways=(), gateway_mandatory=False, log_key=None, slh_dsa_file=None,
-                 harness_binding=None, record_key=None, route=None, oidc=None, decision_keys=None, webhooks=()):
+                 harness_binding=None, record_key=None, route=None, oidc=None, decision_keys=None, webhooks=(),
+                 content=None):
         """`identity` answers the in-process SignerAPI calls (default: this process's uid); transports call
         handle_frame with the identity they established. `policy` is a policy2 Engine (default: load_policy()).
         `open_storage()` defaults to the store `storage_config` (the `storage` config section) names, else file storage
@@ -413,7 +451,8 @@ class SignerService:
         once two thirds of its certificate's validity have passed (else the file key in keys/record.key).
         `route`: the prefix (before a dot) of this signer's run and approval ids, or None.
         `decision_keys`: external system -> its base64 Ed25519 public key (the `decision_keys` config section).
-        `webhooks`: webhook.Sender arguments ({url, events, secret}) of the `webhook` config section."""
+        `webhooks`: webhook.Sender arguments ({url, events, secret}) of the `webhook` config section.
+        `content`: the `content` config section (the content vault; see the module docstring), or None (off)."""
         fail_modes = dict(fail_modes or FAIL_MODES)
         if not all(isinstance(k, str) and v in ("open", "closed") for k, v in fail_modes.items()):
             raise ValueError("fail_modes maps tool classes to open or closed")
@@ -457,17 +496,20 @@ class SignerService:
             self._decision_keys = None
         if self._decision_keys is None or any(crypto.key_alg(v) != "ed25519" for v in self._decision_keys.values()):
             raise ValueError("decision_keys maps system names to base64 Ed25519 public keys")
+        self.content = content_config(content)
         self.metrics = metrics.SignerMetrics()
         self._prov_key = os.urandom(32)   # the provenance index's key: per process, as the index is
         authorize = dict(authorize or {})
-        if not all(isinstance(m, list) and set(m) <= {*REQUESTS, OTLP_IMPORT} for m in authorize.values()):
-            raise ValueError(f"authorize maps identities to lists of methods out of {sorted({*REQUESTS, OTLP_IMPORT})}")
+        grants = {*REQUESTS, OTLP_IMPORT, CONTENT_READ} - {"content_get"}
+        if not all(isinstance(m, list) and set(m) <= grants for m in authorize.values()):
+            raise ValueError(f"authorize maps identities to lists of methods out of {sorted(grants)} "
+                             "(content_get is granted as content_read)")
         keys = os.path.join(data_dir, "keys")
         if open_storage is None and storage_config:
             from tracekit.storage import postgres
             section = storage_config["postgres"]
             open_storage = lambda: postgres.PostgresStorage(postgres.read_dsn(section), durability,  # noqa: E731
-                                                            lock_timeout_s, _snapshot_key(keys))
+                                                            lock_timeout_s, _snapshot_key(keys), self.content["retain"])
         open_storage = open_storage or (lambda: FileStorage(os.path.join(data_dir, "store"), durability,
                                                             self.metrics.fsync_seconds.observe, lock_timeout_s,
                                                             _snapshot_key(keys)))
@@ -485,6 +527,9 @@ class SignerService:
             self.tokens = RunTokens(_secret(os.path.join(keys, "run_token.key"), lambda: os.urandom(32)))
             self._salt_key = _secret(os.path.join(keys, "args_salt.key"), lambda: os.urandom(32))
             self._args_key = AESGCM(_secret(os.path.join(keys, "approval_args.key"), lambda: os.urandom(32)))
+            path = os.path.join(keys, "content.key")   # kept once made: what the vault holds stays readable and erasable
+            self._content_key = AESGCM(_secret(path, lambda: os.urandom(32))) if (
+                self.content["retain"] or os.path.exists(path)) else None
             self.quotas = Quotas(limits)
             salt = _secret(os.path.join(keys, "registry_salt.key"), lambda: os.urandom(32))
             self._log_key = log_key or logkey.FileKey(_secret(os.path.join(keys, "log.key"),
@@ -675,7 +720,7 @@ class SignerService:
         try:
             if not isinstance(method, str) or method not in REQUESTS:
                 raise RPCError("invalid_request", f"unknown method {str(method)[:64]}")
-            self._grant(identity, method)
+            self._grant(identity, CONTENT_READ if method == "content_get" else method)
             errs = rpc_schema.validate(REQUESTS[method], req)
             if errs:
                 raise RPCError("invalid_request", "; ".join(errs))
@@ -693,7 +738,7 @@ class SignerService:
         found = [g for k in keys(identity) if (g := lookup(self.authorize, k)) is not None]
         granted = {m for g in found for m in g}
         if not found:   # unconfigured: a uid or the dev token (scoped by DevToken) keeps every RPC method
-            granted = [m for m in REQUESTS if m not in (DECISION_IMPORT, ON_BEHALF)] if (
+            granted = [m for m in REQUESTS if m not in (DECISION_IMPORT, ON_BEHALF, "content_erase")] if (
                 identity.scheme == "uid" or subject(identity) == "token:dev") else ()
         if method not in granted:
             raise RPCError("forbidden", f"{subject(identity)[:256]} is not authorized for {method}")
@@ -737,8 +782,14 @@ class SignerService:
                 self.log.refuse_writes = EXPIRED
 
     def _tick_loop(self):
-        flushed = time.monotonic()
+        flushed, vaulted = time.monotonic(), -math.inf   # retention: on the first tick, then every CONTENT_SWEEP_S
         while not self._stop.wait(TICK_S):
+            if self._content_key and time.monotonic() - vaulted >= CONTENT_SWEEP_S:
+                vaulted = time.monotonic()
+                try:
+                    self.expire_content()
+                except Exception:   # storage down: the next sweep retries
+                    self._loop_error("content retention")
             try:
                 self.sweep()
             except RPCError:   # storage down: the next tick retries
@@ -1450,6 +1501,7 @@ class SignerService:
         commitment = self._commit(did, digest) if digest else None
         # lean: expires_at is signed but `complete` does not enforce it; enforce once executors check it before running
         expires_at = _iso(time.time() + DECISION_TTL_S)
+        written = []   # the record's run_seq, once this call (not a retry the request_id cache answers) wrote it
 
         def fn(tx, run):
             memo, gaps = run["calls"].get(tcid), []
@@ -1482,27 +1534,36 @@ class SignerService:
             tx.set(run["decisions"], did, call)
             seq = tx.event(run, req, "policy.decision", dict(data, decision=verdict, rule_ids=rule_ids),
                            digests={tcid: digest}, tool_call_id=tcid, attempt=attempt, args_source=req["args_source"])
+            written.append(seq)
             for kind, reason in gaps:
                 tx.emit(run, "capture.gap", {"kind": kind, "reason": reason, "tool_use_id": tcid}, source="signer",
                         tool_call_id=tcid)
             return {"decision": "allow" if verdict == "flag" else verdict, "decision_id": did, "rule_ids": rule_ids,
                     "run_seq": seq, "expires_at": expires_at}
-        return self.log.submit(identity, "decide", req, fn, key)
+        out = self.log.submit(identity, "decide", req, fn, key)
+        if written and commitment:
+            self._retain(key, written[0], commitment, _shown(args, _dotenv(args)))
+        return out
 
-    def _event(self, identity, method, req, typ, data, need_call=False, digests=None, out=None, **top):
+    def _event(self, identity, method, req, typ, data, need_call=False, digests=None, out=None, keep=None, **top):
         """`data(commit)`: the event's data, given `commit(digest)`, the commitment under this record's salt. `out`:
-        more fields of the response."""
+        more fields of the response. `keep`: (the content its content_digest commits to,) for the content vault."""
         key = self._authorize(identity, req)
         self.quotas.take_event(identity)
         sid = secrets.token_hex(16)
         label = salt_label({"type": typ, "data": {"salt_id": sid}})
         data = {**data(lambda digest: self._commit(label, digest)), "salt_id": sid}
+        written = []
 
         def fn(tx, run):
             if need_call and req["tool_call_id"] not in run["calls"]:
                 raise RPCError("unknown_tool_call", req["tool_call_id"])
-            return {"run_seq": tx.event(run, req, typ, data, digests, **top), **(out or {})}
-        return self.log.submit(identity, method, req, fn, key, late=True)
+            written.append(tx.event(run, req, typ, data, digests, **top))
+            return {"run_seq": written[0], **(out or {})}
+        res = self.log.submit(identity, method, req, fn, key, late=True)
+        if written and keep:
+            self._retain(key, written[0], data.get("content_digest"), keep[0])
+        return res
 
     def _complete(self, identity, req):
         key, tcid, attempt, did = self._authorize(identity, req), req["tool_call_id"], req.get("attempt", 0), req["decision_id"]
@@ -1522,6 +1583,7 @@ class SignerService:
         tool = (self.log.runs[key].get("decisions", {}).get(did) or {}).get("tool")   # None: decided before a restart
         keys = self._keys(value) if tool and self.log.runs[key].get("prov") and self.policy.untrusted_results(tool) else []
         self.quotas.take_event(identity)
+        written = []
 
         def fn(tx, run):
             call = run["decisions"].get(did)
@@ -1533,6 +1595,7 @@ class SignerService:
             seq = tx.event(run, req, "tool.result", {"tool_use_id": tcid, "ok": req["status"] == "ok", "output": output,
                                                      "decision_id": did, "redaction": manifest},
                            tool_call_id=tcid, attempt=attempt)
+            written.append(seq)
             if keys:
                 self._index(tx, run, keys, {"run_seq": seq, "tool": call["tool"], "tool_call_id": tcid,
                                             "trust": "untrusted"})
@@ -1545,7 +1608,10 @@ class SignerService:
                                                           if call["decision"] == "ask" else "")},
                         source="signer", tool_call_id=tcid)
             return {"run_seq": seq}
-        return self.log.submit(identity, "complete", req, fn, key, late=True)
+        res = self.log.submit(identity, "complete", req, fn, key, late=True)
+        if written:
+            self._retain(key, written[0], output["hash"], value)
+        return res
 
     def _observe(self, identity, req):
         key = self._authorize(identity, req)
@@ -1561,12 +1627,16 @@ class SignerService:
                            "redacted": manifest["count"] > 0}}
         keys = self._keys(value) if self.log.runs[key].get("prov") else []
         self.quotas.take_event(identity)
+        written = []
 
         def fn(tx, run):
-            seq = tx.event(run, req, "input.observed", data)
-            self._index(tx, run, keys, {"run_seq": seq, "trust": req["trust"]})
-            return {"run_seq": seq}
-        return self.log.submit(identity, "observe", req, fn, key)
+            written.append(tx.event(run, req, "input.observed", data))
+            self._index(tx, run, keys, {"run_seq": written[0], "trust": req["trust"]})
+            return {"run_seq": written[0]}
+        res = self.log.submit(identity, "observe", req, fn, key)
+        if written:
+            self._retain(key, written[0], data["output"]["hash"], value)
+        return res
 
     def _state_write(self, identity, req):
         key, sk = self._authorize(identity, req), req["key"]
@@ -1599,6 +1669,13 @@ class SignerService:
             identity = CallerIdentity(*req["caller"].split(":", 1), True)
             self._grant(identity, "model_event")
             top, out = {"source": "gateway"}, {"fail_modes": self.fail_modes}
+        keep, content_digest = None, req.get("content_digest")
+        if "body" in req:   # committed to after redaction, as a result is; kept when the vault is on
+            try:
+                body = _redact(req["body"], False)[0]
+                keep, content_digest = (body,), "sha256:" + hashlib.sha256(canonical(body)).hexdigest()
+            except rfc8785.CanonicalizationError:   # an integer past 2^53, say: recorded as without a body
+                pass
 
         def data(commit):
             d = {"exchange_id": req.get("exchange_id", req["request_id"]), "phase": req["phase"],
@@ -1608,8 +1685,8 @@ class SignerService:
                     d[k] = req[k]
             if "error" in req:
                 d["error"] = privacy.redact_text(req["error"])[0]
-            if "content_digest" in req:
-                d["content_digest"] = commit(req["content_digest"])
+            if content_digest:
+                d["content_digest"] = commit(content_digest)
             if {"input_tokens", "output_tokens"} <= req.get("usage", {}).keys():   # the event schema needs both counts
                 d["usage"] = req["usage"]
             if "tool_uses" in req:
@@ -1619,7 +1696,8 @@ class SignerService:
                         u["args_commitment"] = commit(t["args_digest"])
             return d
         return self._event(identity, "model_event", req, "model.exchange", data,
-                           digests={t["id"]: t.get("args_digest") for t in req.get("tool_uses", ())}, out=out, **top)
+                           digests={t["id"]: t.get("args_digest") for t in req.get("tool_uses", ())}, out=out, keep=keep,
+                           **top)
 
     def _approval_request(self, identity, req):
         key, tcid, sub = self._authorize(identity, req), req["tool_call_id"], subject(identity)
@@ -1893,7 +1971,8 @@ class SignerService:
 
     def _status(self, identity, req):
         return {"rpc_version": rpc_schema.RPC_VERSION, "signer": {"name": "tracekit-signer", "version": __version__},
-                "identity": {"scheme": identity.scheme, "subject": identity.subject[:256], "attested": identity.attested}}
+                "identity": {"scheme": identity.scheme, "subject": identity.subject[:256], "attested": identity.attested},
+                **({"content": {"max_record_bytes": self.content["max_record_bytes"]}} if self.content["retain"] else {})}
 
     def _read(self, identity, req):
         key = self._authorize(identity, req)
@@ -1970,6 +2049,144 @@ class SignerService:
             self._save_passkeys(dict(self._passkeys, **{who: {"id": req["credential_id"],
                                                               "key": base64.b64encode(spki).decode(), "count": 0}}))
         return {"credential_id": req["credential_id"]}
+
+    # --- the content vault (see the module docstring) ---
+
+    def _aad(self, key, seq, commitment):
+        return canonical({"log_id": self.log.log_id, "run_id": key[1], "seq": seq, "commitment": commitment})
+
+    def _data_key(self, key, create=False):
+        """Run `key`'s data key (an AESGCM), made and stored wrapped with `create`; None when it has none, ERASED once
+        its content was erased. On the writer, so no two make one."""
+        wrapped = self.log.storage.content_key(self.log.log_id, *key)
+        if wrapped == b"":
+            return ERASED
+        aad = canonical({"log_id": self.log.log_id, "tenant": key[0], "run_id": key[1]})
+        if wrapped is None:
+            if not create:
+                return None
+            dk, nonce = os.urandom(32), os.urandom(12)
+            self.log.storage.content_key_put(self.log.log_id, *key, nonce + self._content_key.encrypt(nonce, dk, aad))
+            return AESGCM(dk)
+        try:
+            return AESGCM(self._content_key.decrypt(wrapped[:12], wrapped[12:], aad))
+        except InvalidTag:
+            raise RPCError("unavailable", f"the content key of run {key[1]} does not open under keys/content.key: "
+                                          "restore that key from a backup") from None
+
+    def _retain(self, key, seq, commitment, value):
+        """Keep `value`, the redacted content run `key`'s record `seq` commits to (`commitment`), when the vault is
+        on. The record is written by now: a failure here leaves that content not retained, never the call failed."""
+        if not self.content["retain"] or commitment is None:
+            return
+        c = canonical(value)
+
+        def put(tx):
+            dk = self._data_key(key, create=True)
+            if dk is ERASED:   # nothing more is kept for an erased run
+                return
+            nonce = os.urandom(12)
+            blob = b"" if len(c) > self.content["max_record_bytes"] else \
+                nonce + dk.encrypt(nonce, c, self._aad(key, seq, commitment))
+            self.log.storage.content_put(self.log.log_id, *key, seq, blob)
+        try:
+            # lean: on the writer, one more item per kept record, which orders it against erasure; a vault thread of
+            # its own if keeping content ever slows the writer
+            self.log.write(put)
+        except (RPCError, StorageUnavailable, OSError):
+            self.metrics.loop_errors.inc("content vault")
+            logging.getLogger(__name__).exception("tracekit signer: the content of run_seq %s of run %s was not "
+                                                  "retained: check the store (on Postgres, after `tracekit signer "
+                                                  "migrate`, grant the signer's role tracekit.storage.postgres.GRANTS "
+                                                  "again)", seq, key[1])
+
+    def _vault_run(self, identity, run_id):
+        """The key of run `run_id` of the caller's tenant, once the vault exists."""
+        if self._content_key is None:
+            raise RPCError("invalid_request", "this signer keeps no content: set content: {retain: true} in signer.yaml "
+                                              "(docs/privacy.md)")
+        key = (self._tenant_of(identity), run_id)
+        if key not in self.log.runs:
+            raise RPCError("unknown_run", run_id)
+        return key
+
+    def _content_get(self, identity, req):
+        key = self._vault_run(identity, req["run_id"])
+        self.quotas.take_event(identity)
+        wanted = set(req["seqs"])
+        try:
+            records = {r["event"]["run_seq"]: r["event"] for r in self.log.storage.iter_run(*key)
+                       if r["event"]["run_seq"] in wanted}
+        except (OSError, StorageUnavailable) as e:
+            raise RPCError("unavailable", f"storage read failed: {e}") from None
+        purpose = privacy.redact_text(req["purpose"])[0][:512]
+
+        def too_large():
+            return RPCError("quota_exceeded", "the content of these records is too large for one answer: ask for "
+                                              "fewer seqs at a time")
+
+        def fn(tx, _):
+            dk, items, size = self._data_key(key), [], 0
+            for seq in req["seqs"]:
+                e = records.get(seq)
+                blob = None if dk in (None, ERASED) or e is None else \
+                    self.log.storage.content_get(self.log.log_id, *key, seq)
+                if dk is ERASED or not blob:
+                    items.append({"seq": seq, "state": "erased" if dk is ERASED else
+                                  "too_large" if blob == b"" else "not_retained"})
+                    continue
+                size += len(blob)
+                if size > MAX_LINE - 4096:
+                    raise too_large()
+                commitment, label = _committed(e), salt_label(e)
+                try:
+                    value = loads_strict(dk.decrypt(blob[:12], blob[12:], self._aad(key, seq, commitment)))
+                except InvalidTag:
+                    raise RPCError("unavailable", f"the retained content of run_seq {seq} does not open against its "
+                                                  "record: the vault was altered") from None
+                digest = event_hash({"tool": e["data"]["tool"], "args": value}) if e["type"] == "policy.decision" \
+                    else "sha256:" + hashlib.sha256(canonical(value)).hexdigest()
+                # the salt also opens a model exchange's args_commitments, over the arguments before redaction
+                guessable = e["type"] == "model.exchange" and MARK.search(canonical(value).decode()) and any(
+                    "args_commitment" in u for u in e["data"].get("tool_uses", ()))
+                items.append({"seq": seq, "content": value} | (
+                    {"salt": _salt(self._salt_key, label).hex()} if self._opens(commitment, label, digest)
+                    and not guessable else {"redacted": True}))   # no salt: it would test guesses of what redaction removed
+            out = {"items": items}
+            if len(json.dumps(out, separators=(",", ":"), ensure_ascii=False).encode()) > MAX_LINE - 4096:
+                raise too_large()
+            tx.emit(self.log.signer_run(tx, key[0]), "content.accessed", {
+                "principal": subject(identity)[:256], "run_id": key[1], "seqs": req["seqs"], "purpose": purpose},
+                source="signer")
+            return out
+        return self.log.submit(identity, "content_get", req, fn)
+
+    def _content_erase(self, identity, req):
+        key = self._vault_run(identity, req["run_id"])
+        self.quotas.take_event(identity)
+        reason = privacy.redact_text(req.get("reason") or "erased on request")[0][:1024]
+        return self._erase(key, reason, subject(identity)[:256],
+                           lambda fn: self.log.submit(identity, "content_erase", req, fn))
+
+    def _erase(self, key, reason, by, submit=None):
+        """Delete run `key`'s data key (replaced by its tombstone) and blobs, then write content.erased, in one writer
+        item: the record is signed only once the key is gone. A storage failure writes no record and raises
+        unavailable; a retry erases again (blobs a failure left behind stay inert: no key opens them)."""
+        def fn(tx, _=None):
+            try:
+                self.log.storage.content_erase(self.log.log_id, *key)
+            except (OSError, StorageUnavailable) as e:
+                raise RPCError("unavailable", f"the content of run {key[1]} was not erased: {e}") from None
+            return {"run_seq": tx.emit(self.log.signer_run(tx, key[0]), "content.erased",
+                                       {"run_id": key[1], "reason": reason, "by": by}, source="signer")}
+        return (submit or self.log.write)(fn)
+
+    def expire_content(self, now=None):
+        """Erase the content of every run whose data key was stored more than retention_days before `now`."""
+        cutoff = (time.time() if now is None else now) - self.content["retention_days"] * 86400
+        for log_id, tenant, run_id, stored in self.log.write(lambda tx: self.log.storage.content_runs()):
+            if log_id == self.log.log_id and stored < cutoff:
+                self._erase((tenant, run_id), f"retention: kept {self.content['retention_days']} days", "signer")
 
     # --- OTLP import (tracekit.signer.otel) ---
 
@@ -2225,7 +2442,7 @@ def open_service(cfg, **kw):
                          gateway_mandatory=cfg.get("gateway_mandatory") is True,
                          harness_binding=cfg.get("harness_binding"), record_key=cfg.get("record_key"),
                          route=cfg.get("route"), decision_keys=cfg.get("decision_keys"), webhooks=cfg.get("webhook", ()),
-                         **kw)
+                         content=cfg.get("content"), **kw)
 
 
 def _oidc(cfg):
@@ -2461,6 +2678,18 @@ def main(argv=None):
     t.add_parser("revoke", help="refuse the token from its next request").add_argument("name")
     for q in t.choices.values():
         q.add_argument("--config", required=True)
+    c = sub.add_parser("content", help="the content vault: read or erase a run's retained content (docs/privacy.md)"
+                       ).add_subparsers(dest="content_cmd", required=True)
+    q = c.add_parser("get", help="print the retained content of records of a run, each with its salt (recorded as "
+                                 "content.accessed)")
+    q.add_argument("--seq", type=int, nargs="+", required=True, help="the records' run_seqs")
+    q.add_argument("--purpose", required=True, help="why, e.g. a case id (recorded)")
+    q = c.add_parser("erase", help="delete a run's retained content for good (recorded as content.erased)")
+    q.add_argument("--reason")
+    for q in c.choices.values():
+        q.add_argument("--run", required=True)
+        q.add_argument("--config", help="reach the signer on this config's socket (default: $TRACEKIT_SIGNER, else "
+                                        "the dev signer)")
     p = sub.add_parser("bridge", help="continue a v1 ledger in this signer's log and destroy the v1 key")
     p.add_argument("--v1-home", required=True)
     g = p.add_mutually_exclusive_group(required=True)
@@ -2476,6 +2705,23 @@ def main(argv=None):
         except (OSError, ValueError, StorageUnavailable) as e:
             print(f"tracekit signer: {e}", file=sys.stderr)
             return 2
+        return 0
+    if a.cmd == "content":
+        from tracekit.sdk.client import Client, Incompatible, SignerUnavailable
+        try:
+            sock = a.config and load_config(a.config).get("socket")
+            if a.config and not sock:
+                raise ValueError(f"{a.config} names no socket: reach the signer with $TRACEKIT_SIGNER instead")
+            c = Client(sock or None)
+            try:
+                out = c.content_get({"run_id": a.run, "seqs": a.seq, "purpose": a.purpose}) if a.content_cmd == "get" \
+                    else c.content_erase({"run_id": a.run, **({"reason": a.reason} if a.reason else {})})
+            finally:
+                c.close()
+        except (OSError, ValueError, RPCError, SignerUnavailable, Incompatible) as e:
+            print(f"tracekit signer content: {e}", file=sys.stderr)
+            return 1
+        print(json.dumps(out, indent=2))
         return 0
     if a.cmd in ("vkey", "trust"):
         from tracekit.sdk.client import SignerUnavailable

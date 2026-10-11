@@ -170,7 +170,7 @@ class TestCrossTenant(unittest.TestCase):
         d = tmpdir(self)
         self.pki = Pki(d)
         self.jwks = Jwks(self, self.pki)
-        all_methods = sorted(REQUESTS)
+        all_methods = sorted(REQUESTS.keys() - {"content_get"})
         self.s = svc.SignerService(ts.tmpdir(self), policy=ts.PAY_ASKS, tenants={
             "k8s_sa:system:serviceaccount:a:*": "a", "k8s_sa:system:serviceaccount:b:*": "b",
             "mtls:spiffe://example.org/a/*": "a", "mtls:spiffe://example.org/b/*": "b"},

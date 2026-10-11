@@ -1,6 +1,6 @@
 """The Postgres store's tables and each role's grants (tracekit.storage.postgres), without psycopg: `tracekit deploy
 compose` writes them into the stack's init script."""
-VERSION = 1
+VERSION = 2   # 2: the content vault's tables
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS tracekit_schema (version int NOT NULL);
 CREATE TABLE IF NOT EXISTS tracekit_records (seq bigint PRIMARY KEY, tenant text NOT NULL, run_id text NOT NULL,
@@ -15,6 +15,10 @@ CREATE TABLE IF NOT EXISTS tracekit_tiles (tree text, level int, idx bigint, wid
     PRIMARY KEY (tree, level, idx, width));
 CREATE TABLE IF NOT EXISTS tracekit_snapshots (size bigint PRIMARY KEY, mac text NOT NULL, body text NOT NULL);
 CREATE TABLE IF NOT EXISTS tracekit_meta (key text PRIMARY KEY, value text NOT NULL);
+CREATE TABLE IF NOT EXISTS tracekit_content_keys (log_id text, tenant text, run_id text, wrapped bytea NOT NULL,
+    stored double precision NOT NULL, PRIMARY KEY (log_id, tenant, run_id));
+CREATE TABLE IF NOT EXISTS tracekit_content (log_id text, tenant text, run_id text, seq bigint, blob bytea NOT NULL,
+    PRIMARY KEY (log_id, tenant, run_id, seq));
 """
 GRANTS = """
 GRANT USAGE ON SCHEMA {schema} TO {role};
@@ -22,7 +26,7 @@ GRANT SELECT ON tracekit_schema TO {role};
 GRANT SELECT, INSERT ON tracekit_records, tracekit_registry, tracekit_notes, tracekit_anchors TO {role};
 GRANT USAGE ON SEQUENCE tracekit_notes_id_seq, tracekit_anchors_id_seq TO {role};
 GRANT SELECT, INSERT, UPDATE ON tracekit_witness_queue, tracekit_tiles, tracekit_meta TO {role};
-GRANT SELECT, INSERT, UPDATE, DELETE ON tracekit_snapshots TO {role};
+GRANT SELECT, INSERT, UPDATE, DELETE ON tracekit_snapshots, tracekit_content_keys, tracekit_content TO {role};
 """
 READ_GRANTS = """
 GRANT USAGE ON SCHEMA {schema} TO {role};

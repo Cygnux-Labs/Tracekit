@@ -119,6 +119,28 @@ class TestContract(StorageContract, PgCase):
 
 
 class TestPostgresStorage(PgCase):
+    def test_a_version_1_store_opens_until_the_content_vault_needs_version_2(self):
+        sql(self.admin, "DROP TABLE tracekit_content, tracekit_content_keys")
+        sql(self.admin, "DELETE FROM tracekit_schema")
+        sql(self.admin, "INSERT INTO tracekit_schema VALUES (1)")
+        data = tmpdir(self)
+        with open(os.path.join(data, "pg.dsn"), "w") as f:
+            f.write(self.dsn)
+        section = {"postgres": {"dsn_file": os.path.join(data, "pg.dsn")}}
+        svc.SignerService(data, storage_config=section).close()   # the vault off: an upgrade needs no migrate
+        postgres.PostgresReader(reader_dsn(self.admin)).close()
+        with self.assertRaisesRegex(ValueError, r"version 1; the content vault \(content.retain\) needs version 2: "
+                                                "run `tracekit signer migrate"):
+            svc.SignerService(data, storage_config=section, content={"retain": True})
+        self.assertEqual(postgres.migrate(self.admin), postgres.VERSION)
+        schema = sql(self.admin, "SELECT current_schema()")[0][0]
+        sql(self.admin, postgres.GRANTS.format(schema=schema, role=SIGNER))
+        svc.SignerService(data, storage_config=section, content={"retain": True}).close()
+        s = self.open(content=True)
+        self.addCleanup(s.close)
+        s.content_key_put("ab" * 16, "acme", "run-1", b"w")
+        self.assertEqual(s.content_key("ab" * 16, "acme", "run-1"), b"w")
+
     def test_a_killed_transaction_leaves_nothing(self):
         s, c = self.open(ACK_ON_FSYNC), Chain()
         self.addCleanup(s.close)
@@ -211,7 +233,7 @@ class TestPostgresStorage(PgCase):
         admin, dsn = new_log(self, migrate=False)
         with self.assertRaisesRegex(ValueError, "tracekit signer migrate"):
             PostgresStorage(admin)
-        self.assertEqual((postgres.migrate(admin), postgres.migrate(admin)), (1, 1))
+        self.assertEqual((postgres.migrate(admin), postgres.migrate(admin)), (2, 2))
         PostgresStorage(admin).close()
 
     def test_durability_modes(self):
