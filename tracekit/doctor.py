@@ -33,6 +33,11 @@ MAX_SKEW_S = 300
 REINIT = "sudo /usr/bin/python3 -m tracekit init --v2 --user <agent-user>"
 
 
+
+class _Windows(Exception):
+    """POSIX file modes mean nothing on Windows (ACLs): a check that reads them reports so instead."""
+
+
 def result(id, status, detail, fix=""):
     return {"id": id, "status": status, "detail": detail, "fix": fix if status != OK else ""}
 
@@ -226,8 +231,11 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
         add("D-PROCESS-BOUNDARY", False, "dev signer: it runs as your user, so the agent could rewrite its log "
             "(dev assurance)", "use system mode where the agent must not reach the signer: " + REINIT, bad=WARN)
 
+    acl = "Windows controls access with ACLs, which doctor doesn't read: check that only the signer's user can read it"
     try:
         names = sorted(n for n in os.listdir(keys) if n.endswith(".key"))
+        if os.name == "nt":
+            raise _Windows
         bad = [f"{p} is not 0700" for p in (data, keys) if stat.S_IMODE(os.stat(p).st_mode) != 0o700]
         kowner = os.stat(keys).st_uid
         for n in names:
@@ -236,6 +244,8 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
                 bad.append(f"{n} is not a 0600 file of the signer's user")
         add("D-KEYS-MODE", not bad, "; ".join(bad) or f"{len(names)} keys, 0600 in a 0700 dir",
             f"chmod 700 {data} {keys}; chmod 600 {keys}/*.key; chown them to the signer's user")
+    except _Windows:
+        add("D-KEYS-MODE", False, f"{len(names)} keys in {keys}; modes not checked", acl, bad=WARN)
     except OSError as e:
         names = None
         add("D-KEYS-MODE", False, f"cannot inspect {keys}: {e.strerror}", "run doctor as root (sudo tracekit doctor)",
@@ -253,10 +263,14 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
                   "bytes a record")
             try:
                 st = os.lstat(os.path.join(keys, "content.key"))
+                if os.name == "nt":
+                    raise _Windows
                 bad = not stat.S_ISREG(st.st_mode) or st.st_mode & 0o077 or st.st_uid != os.stat(keys).st_uid
                 add("D-CONTENT-VAULT", not bad, f"{on}; keys/content.key " + (
                     "is readable by others than the signer" if bad else "is a 0600 file of the signer's user"),
                     f"chmod 600 {keys}/content.key; chown it to the signer's user")
+            except _Windows:
+                add("D-CONTENT-VAULT", False, f"{on}; keys/content.key present, its mode not checked", acl, bad=WARN)
             except OSError as e:
                 add("D-CONTENT-VAULT", False, f"{on}; keys/content.key: {e.strerror}", "start the signer once (it makes "
                     "the key), or run doctor as root", bad=WARN)

@@ -18,6 +18,8 @@ the message id; each tool use with the digest of its arguments; the tool results
 prompt becomes a model_event request carrying only the prompt's digest, which the signer publishes as a salted
 commitment. It exits once the signer says the run is over, or (dev mode) once `until` is gone. A transcript that never
 appears or cannot be reached, and a tailer that stops after IDLE_TAILER_S without a new line, are a tailer_lost too.
+The session's subagents' transcripts (<session>/subagents/agent-*.jsonl, next to the session's) are followed the same
+way, with the same checks, from the wake they appear on.
 """
 import ctypes
 import hashlib
@@ -130,47 +132,87 @@ def _report(run, e, sent):
         sent += [b.get("tool_use_id") for b in blocks if b.get("type") == "tool_result"]
 
 
+class _Transcript:
+    """One transcript being followed: its kept file, how far it was read, and the digest of the bytes before that."""
+
+    def __init__(self, path):
+        self.path, self.f, self.off, self.sent = path, None, 0, []
+        self.read, self.checked = hashlib.sha256(), None   # the bytes before `off`; the ctime they were last checked at
+
+
+def _subagents(path):
+    """The paths of the session's subagent transcripts: Claude Code writes them to <session>/subagents/agent-*.jsonl."""
+    d = os.path.join(os.path.splitext(path)[0], "subagents")
+    for p in (os.path.dirname(d), d):
+        try:
+            if stat.S_ISLNK(os.lstat(p).st_mode):
+                raise Lost(f"a symlink is in place of {p}")
+        except FileNotFoundError:
+            return []
+    try:
+        names = os.listdir(d)
+    except OSError as e:
+        raise Lost(f"cannot list the subagent transcripts: {e.strerror}") from None
+    return [os.path.join(d, n) for n in sorted(names) if n.startswith("agent-") and n.endswith(".jsonl")]
+
+
+def _follow(run, t, uid):
+    """Report transcript t's new complete lines. -> whether it grew."""
+    if t.f is None:
+        t.f = _open(t.path, uid)
+        if t.f is None:
+            return False
+    _check(t.f, t.path, uid, t.off)
+    ctime = os.fstat(t.f.fileno()).st_ctime_ns   # any write moves it, and no user can set it back
+    if ctime != t.checked:
+        # lean: rehashes all it has read on every change to the file; keep per-block hashes and re-read
+        # only the blocks whose bytes changed if transcripts reach hundreds of MB
+        if _sha256(t.f, t.off) != t.read.digest():
+            raise Lost("a line already read changed in place")
+        # a ctime this recent may not move for a change in the same clock tick: check it again next wake
+        t.checked = ctime if time.time_ns() - ctime > 1_000_000_000 else None
+    t.f.seek(t.off)
+    data, start = t.f.read(), t.off
+    try:
+        for n, e in transcript_entries(io.BytesIO(data)):
+            if e is None:
+                raise Lost(f"the line at offset {t.off} is not a JSON object")
+            try:
+                _report(run, e, t.sent)
+            except SignerUnavailable:
+                raise
+            except RPCError as x:
+                if x.code in ENDED:
+                    raise
+                raise Lost(f"the line at offset {t.off} was refused: {x.message[:256]}") from None
+            except Exception as x:   # e.g. a number canonical JSON cannot hold
+                raise Lost(f"the line at offset {t.off} is unreadable ({type(x).__name__})") from None
+            t.off += n
+    except SignerUnavailable:   # read again from `off` on the next wake
+        pass
+    t.read.update(data[:t.off - start])
+    return t.off > start
+
+
 def tail(run, path, uid, until=None, wait=None):
-    """Follow `path` for `run` until the run ends, `until` is gone, or the transcript is lost (reported)."""
-    wait, f, off, sent, grew = wait or _waiter(path), None, 0, [], time.monotonic()
-    read, checked = hashlib.sha256(), None   # the bytes before `off`; the ctime they were last checked at
+    """Follow `path`, and its subagents' transcripts, for `run` until the run ends, `until` is gone, or a transcript is
+    lost (reported)."""
+    wait, grew = wait or _waiter(path), time.monotonic()
+    # lean: keeps one file open per subagent transcript; close quiet ones and reopen them by (dev, inode) if sessions
+    # run more subagents than the tailer's file limit
+    main = cur = _Transcript(path)
+    ts = {path: main}
     try:
         while True:
             gone, idle = until is not None and not os.path.exists(until), time.monotonic() - grew > IDLE_TAILER_S
-            if f is None:
-                f = _open(path, uid)
-            if f is not None:
-                _check(f, path, uid, off)
-                ctime = os.fstat(f.fileno()).st_ctime_ns   # any write moves it, and no user can set it back
-                if ctime != checked:
-                    # lean: rehashes all it has read on every change to the file; keep per-block hashes and re-read
-                    # only the blocks whose bytes changed if transcripts reach hundreds of MB
-                    if _sha256(f, off) != read.digest():
-                        raise Lost("a line already read changed in place")
-                    # a ctime this recent may not move for a change in the same clock tick: check it again next wake
-                    checked = ctime if time.time_ns() - ctime > 1_000_000_000 else None
-                f.seek(off)
-                data, start = f.read(), off
-                try:
-                    for n, e in transcript_entries(io.BytesIO(data)):
-                        if e is None:
-                            raise Lost(f"the line at offset {off} is not a JSON object")
-                        try:
-                            _report(run, e, sent)
-                        except SignerUnavailable:
-                            raise
-                        except RPCError as x:
-                            if x.code in ENDED:
-                                raise
-                            raise Lost(f"the line at offset {off} was refused: {x.message[:256]}") from None
-                        except Exception as x:   # e.g. a number canonical JSON cannot hold
-                            raise Lost(f"the line at offset {off} is unreadable ({type(x).__name__})") from None
-                        off += n
-                        grew = time.monotonic()
-                except SignerUnavailable:   # read again from `off` on the next wake
-                    pass
-                read.update(data[:off - start])
-            if f is None and (gone or idle):
+            cur = main
+            for p in _subagents(path) if main.f is not None else ():
+                ts.setdefault(p, _Transcript(p))
+            for cur in ts.values():
+                if _follow(run, cur, uid):
+                    grew = time.monotonic()
+            cur = main
+            if main.f is None and (gone or idle):
                 raise Lost("the transcript never appeared")
             if idle:
                 raise Lost(f"no new transcript line for {IDLE_TAILER_S:.0f}s: the tailer stopped")
@@ -178,13 +220,15 @@ def tail(run, path, uid, until=None, wait=None):
                 return
             wait()
     except Lost as e:
-        run.call("tailer_lost", reason=str(e), offset=off)
+        name = "" if cur is main else f"subagent transcript {os.path.basename(cur.path)}: "
+        run.call("tailer_lost", reason=name + str(e), offset=cur.off)
     except RPCError as e:
         if e.code not in ENDED:
             raise
     finally:
-        if f is not None:
-            f.close()
+        for t in ts.values():
+            if t.f is not None:
+                t.f.close()
 
 
 def main():
