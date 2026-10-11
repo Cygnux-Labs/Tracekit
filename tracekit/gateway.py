@@ -24,6 +24,11 @@ response. An upstream error, a broken stream or one that ends before its termina
 ends, for the client, in an error (an SSE error event and a cut connection once the headers went out), never a clean
 end. Signer unreachable: the run's fail mode for class `model`, as the signer last answered it for this run, token and
 identity (closed when it has not): closed answers 503. A signer refusal is an error whatever the fail mode.
+
+When the signer's `status` says its content vault is on (signer.yaml `content.retain`; the gateway's identity needs the
+`status` grant), each model_event also carries the exchange's `body`: the request as sent, the response as received
+(a stream: as assembled), only when it fits max_record_bytes and half a frame. The signer redacts it, commits to it
+and keeps it encrypted (docs/privacy.md).
 """
 import argparse
 import collections
@@ -44,6 +49,7 @@ from tracekit.client import remote_url_error
 from tracekit.identity.base import bearer
 from tracekit.proxy import HOP, MAX_SSE_LINE
 from tracekit.sdk.client import Client, SignerUnavailable, fail_open
+from tracekit.signer.quotas import MAX_LINE
 from tracekit.signer.rpc_schema import MAX_RESULTS_SENT, RPCError
 from tracekit.transport import http as transport
 
@@ -70,6 +76,7 @@ class Gateway:
         self.upstream, self.max_body, self.client = upstream.rstrip("/"), max_body, client
         self.auth = (api_key_header, "Bearer " + api_key if api_key_header == "authorization" else api_key)
         self.runs, self.lock = collections.OrderedDict(), threading.Lock()
+        self._vault = None   # the largest body the signer's content vault takes; 0: it keeps none
 
     def _run(self, key):
         with self.lock:
@@ -103,6 +110,19 @@ class Gateway:
 
     def fail_open(self, key):
         return fail_open(self._run(key).modes, "model")
+
+    def body(self, content, size):
+        """{"body": content} when the signer keeps content and `size` (its bytes) fits, else {}."""
+        if self._vault is None:
+            # lean: asked once per gateway process, until the signer answers; restart the gateway after turning the
+            # signer's vault on or off
+            try:
+                self._vault = min((self.client.status({}).get("content") or {}).get("max_record_bytes", 0), MAX_LINE // 2)
+            except SignerUnavailable:
+                return {}
+            except RPCError:   # not granted `status`: no body
+                self._vault = 0
+        return {"body": content} if size <= self._vault else {}
 
 
 class _SSE:
@@ -199,7 +219,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         sent = parsers.parse(kind, None, req)["tool_results_sent"][-MAX_RESULTS_SENT:]
         try:
             ok = gw.record(key, xid, phase="request", content_digest="sha256:" + hashlib.sha256(body).hexdigest(),
-                           **base, **({"tool_results_sent": sent} if sent else {}))
+                           **base, **({"tool_results_sent": sent} if sent else {}), **gw.body(req, len(body)))
         except RPCError as e:
             return self._error(429 if e.code == "quota_exceeded" else 403, f"the signer refused the run: {e.message}")
         if not ok and not gw.fail_open(key):
@@ -212,8 +232,11 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         up = urllib.request.Request(gw.upstream + self.path, data=body, headers=headers, method="POST")
         stream, h = parsers.Stream(kind), hashlib.sha256()
 
-        def done(err, parsed=None):
-            """Record the response; whether the client may have it."""
+        def done(err, parsed=None, content=None, size=0):
+            """Record the response (`content`: as received, `size` bytes); whether the client may have it."""
+            if content is None and stream.seen:
+                content = stream.acc.get("final", stream.acc)
+                size = len(json.dumps(content, separators=(",", ":"), ensure_ascii=False).encode())
             out = parsed or stream.parse(req)
             fields = {"stop_reason": out["finish"] and str(out["finish"])[:100], "usage": out["usage"],
                       "tool_uses": out["tool_uses"][:128],   # lean: the RPC's cap; split the record if models exceed it
@@ -221,7 +244,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             try:
                 ok = gw.record(key, xid, phase="response", content_digest="sha256:" + h.hexdigest(),
                                **dict(base, model=str(out["model"] or base["model"])[:128]),
-                               **{k: v for k, v in fields.items() if v})
+                               **{k: v for k, v in fields.items() if v},
+                               **(gw.body(content, size) if content is not None else {}))
             except RPCError:
                 return False
             return ok or gw.fail_open(key)
@@ -254,7 +278,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
 
     def _whole(self, gw, resp, status, kind, req, h, done):
-        err, parsed = None if status < 300 else f"upstream status {status}", None
+        err, parsed, content = None if status < 300 else f"upstream status {status}", None, None
         try:
             data = resp.read(gw.max_body + 1)
         except (http.client.HTTPException, OSError) as e:
@@ -264,10 +288,11 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             err = f"upstream response over {gw.max_body} bytes"
         elif err is None:
             try:
-                parsed = parsers.parse(kind, json.loads(data), req)
+                content = json.loads(data)
+                parsed = parsers.parse(kind, content, req)
             except ValueError:
                 err = "upstream response is not JSON"
-        ok = done(err, parsed)
+        ok = done(err, parsed, content, len(data))
         if not ok:
             return self._error(503, "the response could not be recorded and the run's fail mode is closed")
         if err and status < 400:

@@ -38,6 +38,7 @@ storage: {{postgres: {{dsn_file: /run/secrets/signer.dsn}}}}
 tenants: {{"uid:1000": default}}               # the agent service's uid
 metrics: {{listen: 0.0.0.0:9464, allow_remote: true}}   # /metrics and the /logs/v0 list the witness polls
 policy: /etc/tracekit/policy.yaml            # ./policy.yaml
+content: {{retain: false, retention_days: 30, max_record_bytes: 1048576}}   # the content vault: docs/privacy.md
 witnesses:                                   # class {witness_class}: docs/deploy-compose.md says which to use
   - {{url: "http://witness:8080", vkey: "{witness_vkey}", class: {witness_class}}}
 """

@@ -91,6 +91,19 @@ Each row says what the limit is, why it is so, what to do about it, and where th
 | **(1.1)** After a signer restart a run's provenance is `unavailable`, and `from: untrusted` rules don't match for the rest of that run. | The index lives in memory only. | Watch `provenance_state` on decisions; keep other rules for those calls. | [policy](policy-v2.md#provenance-untrusted-and-from-untrusted) |
 | **(1.1)** Past 20,000 values a run's index is `truncated`, and `from: untrusted` rules don't match for the rest of that run. | The index is bounded per run. | Same as above; split very long runs. | [policy](policy-v2.md#provenance-untrusted-and-from-untrusted) |
 
+## Content vault (1.1)
+
+| Limit | Why it is so | What to do | Details |
+|---|---|---|---|
+| **(1.1)** With `content.retain` on, whoever holds `keys/content.key` and the store can read retained content. | The signer must decrypt it to answer `content_get`. | Keep the keys dir to the signer's user (`D-CONTENT-VAULT`), keep retention short, erase runs you no longer need. | [privacy](privacy.md#the-content-vault) |
+| **(1.1)** The content master key is a file key, even when the log key is in AWS KMS. | The KMS log key is an Ed25519 signing key, which can't wrap keys. | Protect the data volume as you do the other file keys; back the key up with them. | [deploy](deploy.md#keeping-content-for-investigations) |
+| **(1.1)** A decision's arguments are kept redacted: if redaction changed them, they no longer open `args_commitment` (`content_get` marks them `redacted`). | Nothing unredacted is written; the policy decided on the unredacted arguments. | Use the tool result and the model exchange, which open their commitments, for what the call did. | [privacy](privacy.md#the-content-vault) |
+| **(1.1)** Content over `max_record_bytes` isn't kept (`too_large`), and one `content_get` answer must fit the 1 MiB frame, so an item near 1 MiB can't be read. | The RPC answers in one frame. | Ask for fewer seqs at a time (the refusal says so); keep `max_record_bytes` well under 1 MiB if you need every item back. | [privacy](privacy.md#the-content-vault) |
+| **(1.1)** The gateway asks the signer once whether the vault is on, needs the `status` grant, and sends no body over half a frame (`not_retained`). | One status call per gateway process; the frame bounds a request. | Grant the gateway `status`; restart it after turning the vault on or off. | [gateway](gateway.md#configure) |
+| **(1.1)** Retention counts from the first item kept for a run, not per record. | A run's items share one key, erased at once. | Pick `retention_days` for your longest runs. | [privacy](privacy.md#the-content-vault) |
+| **(1.1)** `content_get` and `content_erase` reach runs of the caller's own tenant only. | The tenant comes from the caller's identity. | Give each tenant's investigator its own identity. | [privacy](privacy.md#the-content-vault) |
+| **(1.1)** An item is stored just after its record: a crash or storage error in between leaves it `not_retained`, and a model body that isn't canonical JSON (an integer past 2^53) is recorded without it. | The record is never held back for its content. | Treat `not_retained` as missing evidence, not as an empty value. | [privacy](privacy.md#the-content-vault) |
+
 ## Approvals
 
 | Limit | Why it is so | What to do | Details |

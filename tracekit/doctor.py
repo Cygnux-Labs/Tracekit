@@ -225,6 +225,20 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
         add("D-KEYS-MODE", False, f"cannot inspect {keys}: {e.strerror}", "run doctor as root (sudo tracekit doctor)",
             bad=WARN)
 
+    content = {**service.CONTENT, **(cfg.get("content") or {})}
+    if not content["retain"]:
+        add("D-CONTENT-VAULT", True, "off: the signer keeps commitments only, no content", "")
+    else:
+        on = f"on: keeps redacted content {content['retention_days']} days, up to {content['max_record_bytes']} bytes a record"
+        try:
+            st = os.lstat(os.path.join(keys, "content.key"))
+            bad = not stat.S_ISREG(st.st_mode) or st.st_mode & 0o077 or st.st_uid != os.stat(keys).st_uid
+            add("D-CONTENT-VAULT", not bad, f"{on}; keys/content.key " + ("is readable by others than the signer" if bad
+                else "is a 0600 file of the signer's user"), f"chmod 600 {keys}/content.key; chown it to the signer's user")
+        except OSError as e:
+            add("D-CONTENT-VAULT", False, f"{on}; keys/content.key: {e.strerror}", "start the signer once (it makes the "
+                "key), or run doctor as root", bad=WARN)
+
     if names is not None and cfg.get("log_key"):
         add("D-KEYS-DISTINCT", True, "the log key is held in AWS KMS", "")
     elif names is not None:

@@ -119,6 +119,20 @@ class TestContract(StorageContract, PgCase):
 
 
 class TestPostgresStorage(PgCase):
+    def test_migrate_adds_the_content_vault_to_a_version_1_store(self):
+        sql(self.admin, "DROP TABLE tracekit_content, tracekit_content_keys")
+        sql(self.admin, "DELETE FROM tracekit_schema")
+        sql(self.admin, "INSERT INTO tracekit_schema VALUES (1)")
+        with self.assertRaises(ValueError):   # the signer refuses it until migrated
+            self.open()
+        self.assertEqual(postgres.migrate(self.admin), postgres.VERSION)
+        schema = sql(self.admin, "SELECT current_schema()")[0][0]
+        sql(self.admin, postgres.GRANTS.format(schema=schema, role=SIGNER))
+        s = self.open()
+        self.addCleanup(s.close)
+        s.content_key_put("ab" * 16, "acme", "run-1", b"w")
+        self.assertEqual(s.content_key("ab" * 16, "acme", "run-1"), b"w")
+
     def test_a_killed_transaction_leaves_nothing(self):
         s, c = self.open(ACK_ON_FSYNC), Chain()
         self.addCleanup(s.close)
@@ -211,7 +225,7 @@ class TestPostgresStorage(PgCase):
         admin, dsn = new_log(self, migrate=False)
         with self.assertRaisesRegex(ValueError, "tracekit signer migrate"):
             PostgresStorage(admin)
-        self.assertEqual((postgres.migrate(admin), postgres.migrate(admin)), (1, 1))
+        self.assertEqual((postgres.migrate(admin), postgres.migrate(admin)), (2, 2))
         PostgresStorage(admin).close()
 
     def test_durability_modes(self):

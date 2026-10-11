@@ -80,7 +80,7 @@ patterns are full-match ASCII; every string and array is bounded). It adds to v1
 |---|---|---|
 | `log_id` | signer | the record log, 32 hex |
 | `seq`, `prev_hash` | signer | position in the log and the previous record's `hash` (`sha256:` + 64 zeros at seq 0) |
-| `tenant`, `run_id` | signer | the run; signer-level records use tenant `tracekit`, run `tracekit/signer` |
+| `tenant`, `run_id` | signer | the run; signer-level records use tenant `tracekit`, run `tracekit/signer`, and a tenant's own signer records (the content vault's) that tenant's run `tracekit/signer` |
 | `run_seq`, `run_prev_hash` | signer | position in the run and the run's previous record hash (zeros at run_seq 0) |
 | `tenant_attested`, `principal`, `principal_attested` | signer | whether tenant and principal came from the caller's verified identity |
 | `request_id`, `stream`, `client_seq` | client | idempotency key and per-stream counter; a skipped `client_seq` becomes a signer gap |
@@ -111,6 +111,12 @@ caller's name for it and `trust` its claim. `policy.decision` carries `provenanc
 its arguments needs no 1.1 verifier) and `provenance`: at most 16 `{field, kind, source: {run_seq, tool?, tool_call_id?}}`, the top-level
 arguments whose values only untrusted content brought into the run, the kind of value (`email`, `url`, `host`, `path`,
 `digits`, `string`) and the record that brought it — never the value.
+
+Content vault (format 1.1, [privacy](privacy.md#the-content-vault)): `content.accessed{principal, run_id, seqs,
+purpose}` records that the signer returned the retained content of records `seqs` (run_seqs) of run `run_id` to
+`principal`, for `purpose`; `content.erased{run_id, reason, by}` records that it deleted that run's retained content.
+Both are signer records (`source: signer`) in the run `tracekit/signer` of the tenant they concern, never in the run
+itself, whose records stay unchanged. They hold no content. A bundle with either needs `verifier_min_version` 1.1.0.
 
 ## 4. Records and the signature message
 
@@ -319,8 +325,8 @@ JSON lines files end in a newline, one strict JSON text (§1) per line, each lin
 10,000 entries, 64 MiB per entry, 512 MiB in total; entry names match `[A-Za-z0-9_-][A-Za-z0-9._-]*(/[A-Za-z0-9._-]+)*`
 with no `.` or `..` segment; no symlinks; no duplicate names. A bundle carries no code and no trust configuration.
 
-`verifier_min_version` is `1.1.0` when a bundled record is `input.observed` or a decision carrying `provenance` or
-`provenance_state`, else `1.0.0`; a 1.0 verifier reports such a bundle `UNVERIFIABLE (needs tracekit >= 1.1.0)`, never
+`verifier_min_version` is `1.1.0` when a bundled record is `input.observed`, `content.accessed` or `content.erased`, or
+a decision carrying `provenance` or `provenance_state`, else `1.0.0`; a 1.0 verifier reports such a bundle `UNVERIFIABLE (needs tracekit >= 1.1.0)`, never
 FAILED.
 
 ## 10. The trust config

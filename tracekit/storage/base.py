@@ -191,6 +191,33 @@ class Storage:
     def tiles_put(self, tree, level, index, width, data):
         raise NotImplementedError
 
+    # the content vault (tracekit.signer.service, docs/privacy.md): opaque blobs the signer encrypted, per run and
+    # record (`seq`: the record's run_seq); a store never decrypts them, and no reader serves them
+
+    def content_key(self, log_id, tenant, run_id):
+        """The run's wrapped content key; b"" once erased; None when none was stored."""
+        raise NotImplementedError
+
+    def content_key_put(self, log_id, tenant, run_id, wrapped):
+        """Store the run's wrapped content key, with the time it was stored (for retention)."""
+        raise NotImplementedError
+
+    def content_put(self, log_id, tenant, run_id, seq, blob):
+        """Store the encrypted content of the run's record `seq`; b"": it was too large to keep."""
+        raise NotImplementedError
+
+    def content_get(self, log_id, tenant, run_id, seq):
+        """The stored blob of the run's record `seq` (b"": too large), or None."""
+        raise NotImplementedError
+
+    def content_erase(self, log_id, tenant, run_id):
+        """Delete the run's blobs and replace its key with b"" (erased: content_key says so from then on)."""
+        raise NotImplementedError
+
+    def content_runs(self):
+        """[(log_id, tenant, run_id, stored at)] of every run whose content key is stored and not erased."""
+        raise NotImplementedError
+
     def unsynced_s(self):
         """Seconds the oldest written but not yet synced record has waited; 0 when everything written is durable."""
         return 0.0

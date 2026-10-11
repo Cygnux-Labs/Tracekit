@@ -91,6 +91,16 @@ class Chart(unittest.TestCase):
         pod = self.manifests("agent.resources.limits.memory=4Gi")["Deployment"]["spec"]["template"]["spec"]
         self.assertEqual(pod["containers"][0]["resources"]["limits"], {"cpu": "2", "memory": "4Gi"})
 
+    @unittest.skipIf(os.name == "nt", "the chart's config names Linux container paths")
+    def test_content_vault_is_off_unless_turned_on(self):
+        for sets, retain in (((), False), (("signer.content.retain=true",), True)):
+            with tempfile.TemporaryDirectory() as d:
+                path = os.path.join(d, "signer.yaml")
+                with open(path, "w") as f:
+                    f.write(self.manifests(*sets)["ConfigMap"]["data"]["signer.yaml"])
+                self.assertEqual(service.load_config(path)["content"],
+                                 {"retain": retain, "retention_days": 30, "max_record_bytes": 1048576})
+
     def test_config_keeps_the_chart_keys(self):
         p = render("signer.config.socket=/tmp/s", "signer.config.grace_s=9")
         self.assertEqual(p.returncode, 0, p.stderr)
@@ -193,6 +203,7 @@ class Central(unittest.TestCase):
     def test_identities(self):
         m = self.objects(*FULL)
         for c in self.configs(m).values():
+            self.assertIs(c["content"]["retain"], False)   # the content vault: off by default
             self.assertEqual(c["http"]["authenticators"], ["k8s_sa"])
             self.assertEqual(c["http"]["k8s_sa"]["tokenreview"], "https://kubernetes.default.svc")
         crb = m["ClusterRoleBinding", "ns-t-tokenreview"]

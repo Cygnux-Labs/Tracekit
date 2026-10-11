@@ -27,7 +27,8 @@ The tenant salt goes into the bundle so its verifier can recompute H(tenant_salt
 whoever holds the bundle can test guessed run ids against this tenant's leaves (and link this tenant's registry
 origin); other tenants' leaves stay opaque, as each tenant has its own salt.
 
-No views, no code, no trust configuration: the verifier pins its own."""
+No views, no code, no trust configuration: the verifier pins its own. Never content from the signer's content vault:
+records hold commitments only."""
 import base64
 import hashlib
 import json
@@ -39,7 +40,8 @@ from tracekit.storage.base import registry_tree
 
 FORMAT = "tracekit.bundle.v2"
 VERIFIER_MIN_VERSION = "1.0.0"
-PROVENANCE_VERSION = "1.1.0"   # a bundle with input.observed records or decision provenance (format 1.1)
+PROVENANCE_VERSION = "1.1.0"   # a bundle with input.observed or content.* records or decision provenance (format 1.1)
+V11_TYPES = ("input.observed", "content.accessed", "content.erased")
 KEY_TYPES = ("signer.epoch", "key.retire")
 
 
@@ -126,7 +128,7 @@ def export(storage, tenant, run_id, note, out_path, policies=(), run_set=None, t
     if anchor:
         files[f"rekor/{size}.json"] = json.dumps(anchor["rekor"]).encode("utf-8")
         files[f"tsa/{size}.tsr"] = base64.b64decode(anchor["tsa"])
-    v11 = any(r["event"]["type"] == "input.observed" or {"provenance", "provenance_state"} & r["event"]["data"].keys()
+    v11 = any(r["event"]["type"] in V11_TYPES or {"provenance", "provenance_state"} & r["event"]["data"].keys()
               for r in [*pointed, *(r for rs in runs.values() for r in rs)])
     manifest = {"format": FORMAT, "verifier_min_version": PROVENANCE_VERSION if v11 else VERIFIER_MIN_VERSION,
                 "files": {n: hashlib.sha256(b).hexdigest() for n, b in files.items()}}

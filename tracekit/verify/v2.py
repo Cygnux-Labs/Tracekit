@@ -437,6 +437,11 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
                   [f"seq {r['event']['seq']}: {r['event']['type']} {str(r['event'].get('tool_call_id'))[:200]}: "
                    f"{str(r['event']['data'].get('detail'))[:200]}" for r in every
                    if str(r["event"].get("type")).startswith("reconcile.")][:20], warn=True)
+    vault = collections.Counter(r["event"]["type"] for r in every if r["event"].get("type") in ("content.accessed",
+                                                                                              "content.erased"))
+    if vault:   # signer records of the content vault (docs/privacy.md): who read or erased retained content
+        rep.check("content vault", True, f"{vault['content.accessed']} access(es), {vault['content.erased']} erasure(s) "
+                                         "of retained content, each signed by the signer")
     tiers = {}   # (run, tool_call_id) -> the tier any of its records names
     for r in every:
         e = r["event"]

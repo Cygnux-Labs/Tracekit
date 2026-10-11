@@ -78,14 +78,18 @@ class InProcess:
     """The gateway's signer client: the in-process service, called as the gateway's identity."""
 
     def __init__(self, s):
-        self.s, self.down, self.refuse = s, False, False
+        self.s, self.down, self.refuse, self.sent = s, False, False, []
 
     def model_event(self, req):
         if self.down:
             raise SignerUnavailable("down")
         if self.refuse and req["phase"] == "response":
             raise RPCError("run_closed", req["run_id"])
+        self.sent.append(req)
         return self.s.call(GW, "model_event", {"request_id": uuid.uuid4().hex, **req})
+
+    def status(self, req):
+        return self.s.call(GW, "status", req)
 
 
 def serve(case, srv):
@@ -96,14 +100,15 @@ def serve(case, srv):
 
 
 class Gateway(unittest.TestCase):
-    mandatory = False
+    mandatory, content = False, None
 
     def setUp(self):
         self.dir = tmpdir(self)
         self.s = svc.SignerService(self.dir, tenants={OTHER.scheme + ":" + OTHER.subject: "beta"},
                                    gateways=["mtls:spiffe://acme/*"], gateway_mandatory=self.mandatory,
-                                   authorize={"token:http": list(REQUESTS), "mtls:spiffe://acme/gateway": ["model_event"]},
-                                   grace_s=60, idle_s=600)
+                                   authorize={"token:http": list(REQUESTS),
+                                              "mtls:spiffe://acme/gateway": ["model_event", "status"]},
+                                   grace_s=60, idle_s=600, content=self.content)
         self.closed = False
         self.addCleanup(self.close)
         self.up = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Upstream)
@@ -203,7 +208,28 @@ class TestAuth(Gateway):
         self.assertEqual(cm.exception.code, "forbidden")
 
 
+class TestContentVault(Gateway):
+    content = {"retain": True}
+
+    def test_bodies_are_kept_with_the_vault_on(self):
+        for reply, stream in ((("json", COMPLETION), False), (("sse", STREAM), True)):
+            self.up.reply = reply
+            self.assertEqual(self.post({"model": "gpt-x", "messages": [], "stream": stream})[0], 200)
+        seqs = [r["event"]["run_seq"] for r in self.s.log.storage.iter_run("default", self.run["run_id"])
+                if r["event"]["type"] == "model.exchange"]
+        self.s.authorize["token:http"] = list(REQUESTS) + ["content_read"]
+        items = self.s.call(AGENT, "content_get", {"run_id": self.run["run_id"], "seqs": seqs, "purpose": "t"})["items"]
+        got = [i["content"] for i in items]
+        self.assertEqual(got[:3], [{"model": "gpt-x", "messages": [], "stream": False}, COMPLETION,
+                                   {"model": "gpt-x", "messages": [], "stream": True}])
+        self.assertEqual(got[3]["choices"][0]["message"]["tool_calls"][0]["id"], "call_2")   # the stream, assembled
+
+
 class TestExchange(Gateway):
+    def test_no_body_leaves_the_gateway_without_the_content_vault(self):
+        self.assertEqual(self.post({"model": "gpt-x", "messages": []})[0], 200)
+        self.assertEqual([("body" in r) for r in self.signer.sent], [False, False])
+
     def test_response_recorded_as_gateway_l3_with_the_gateways_credential(self):
         status, body = self.post({"model": "gpt-x", "messages": [{"role": "tool", "tool_call_id": "call_0"}]})
         self.assertEqual((status, json.loads(body)), (200, COMPLETION))
