@@ -57,7 +57,8 @@ signer.yaml:
                                              # the logs' tiles and anchors, for monitors (SignerService.tlog);
                                              # serve_records: true adds the record entries a monitor of the record
                                              # log reads (every tenant's records: keep that port private)
-    witnesses:                               # C2SP tlog-witnesses that cosign every new note (tracekit.tlog_witness)
+    witnesses:                               # C2SP tlog-witnesses that cosign every new note (tracekit.tlog_witness);
+                                             # `- public`: the public witness (tracekit.public_witness)
       - {url: https://witness.example.org, vkey: "witness.example.org/w1+1234abcd+BA...", class: customer}
     contact: ops@example.org                 # the logs list's contact line; default the origin
     anchors: {rekor: {signing_config: sigstage-signing_config.json, trusted_root: sigstage-trusted_root.json,
@@ -206,7 +207,7 @@ import rfc8785
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-from tracekit import __version__, crypto, harness_helper, merkle, otlp, privacy, provenance, yamlmini
+from tracekit import __version__, crypto, harness_helper, merkle, otlp, privacy, provenance, public_witness, yamlmini
 from tracekit.client import remote_url_error
 from tracekit.anchor import rekor2
 from tracekit.anchor.rekor2 import RekorAnchor
@@ -240,6 +241,7 @@ STRICTNESS = ("allow", "flag", "ask", "deny")
 LIVE = ("requested", "approved")   # approval states that may still lead to a consume
 LIST_PAGE = 100
 TICK_S = 1.0
+WITNESS_START_S = 30.0   # start-up: how long the witnesses, asked at once, have to say how far they cosigned
 CLOSE_WAIT_S = 60.0   # serve --close-on-stop: how long the final notes wait for witnesses (within the pod's grace)
 CHECKPOINT_S, CHECKPOINT_MIN_S = 10.0, 1.0
 WITNESS_GAP_S, LOG_KEY_GAP_S, BACKOFF_S = 300.0, 300.0, (1.0, 300.0)
@@ -638,11 +640,19 @@ class SignerService:
             empty = self._note(text, self.origin)
         except Exception:   # the log key can't sign now (KMS down): no witness can be asked, as when none answers
             witnesses = ()
-        for w in witnesses:
+
+        def ask(w):
             try:
                 heads.append(w.latest(empty, self.vkey))
             except Exception:   # unreachable or unreadable: counted as no answer
                 pass
+        asks = [threading.Thread(target=ask, args=(w,), name="tracekit-witness-start", daemon=True) for w in witnesses]
+        for t in asks:
+            t.start()
+        end = time.monotonic() + WITNESS_START_S
+        for t in asks:   # one that has not answered by then counts as no answer
+            t.join(max(0.0, end - time.monotonic()))
+        heads = list(heads)
         if not heads:
             self.log.write(lambda tx: tx.gap("degraded_unanchored", "no configured witness answered at startup"))
             return
@@ -2116,6 +2126,13 @@ def load_config(path):
             if "*" in str(k) and not (str(k).endswith(PREFIX_ENDS) and str(k).count("*") == 1):
                 raise ValueError(f"{path}: {k!r}: a prefix key must end in :* or /*")
     names = set()
+    if isinstance(cfg.get("witnesses"), list) and "public" in cfg["witnesses"]:
+        try:
+            cfg["witnesses"] = [public_witness.entry() if w == "public" else w for w in cfg["witnesses"]]
+        except ValueError as e:
+            raise ValueError(f"{path}: witnesses: public: {e}") from None
+        if not public_witness.ORIGIN.fullmatch(str(cfg.get("origin", "tracekit.local/log"))):
+            raise ValueError(f"{path}: origin: the public witness takes origins shaped {public_witness.ORIGIN_FORMAT}")
     for w in cfg.get("witnesses") or ():
         if not (isinstance(w, dict) and set(w) == {"url", "vkey", "class"} and w["class"] in CLASSES):
             raise ValueError(f"{path}: each witness is {{url, vkey, class}}, class one of {', '.join(CLASSES)}")

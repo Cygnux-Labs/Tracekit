@@ -31,7 +31,8 @@ records were signed by the log key you pinned, in one unbroken chain covered by 
 
 The mode shows up as each run's `isolation` (from the signer, never from the agent). So a system-mode signer with no
 witness verifies as `Assurance: dev` with `isolation: separate-user`: the agent couldn't reach the keys, but nothing
-outside the host shows the log wasn't rolled back. Add a witness the operator doesn't run to reach `witnessed`.
+outside the host shows the log wasn't rolled back. Add a witness the operator doesn't run to reach `witnessed`, such as
+the free [public witness](witnesses.md#the-public-witness) (`witnesses: [public]` in signer.yaml).
 
 Every mode is checked the same way: `tracekit doctor` ([doctor](doctor.md)) lists each check with its fix and exits 0
 (all ok), 1 (a check failed) or 2 (warnings only). Doctor output is advice about the host, not evidence.

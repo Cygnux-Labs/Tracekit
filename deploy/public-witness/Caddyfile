@@ -1,0 +1,12 @@
+# The public witness's TLS proxy (docker-compose.yml here). It reads each request body whole, at most the witness's
+# 10 KiB (tracekit.tlog_witness.MAX_BODY), before passing it on, so a slow client holds a Caddy connection, never one
+# of the witness's handlers; and it names the client in X-Forwarded-For, which the witness's limits count.
+{$DOMAIN} {
+	request_body {
+		max_size 10KiB
+	}
+	reverse_proxy witness:7380 {
+		request_buffers 10KiB
+		header_up X-Forwarded-For {remote_host}
+	}
+}
