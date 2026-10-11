@@ -15,7 +15,7 @@ from statistics import NormalDist
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Sequence, Union
 
-from .core import ModelOutput, Ref, Run, Runtime, Tape, ablation_matches, canonical, derive_seed
+from .core import ModelOutput, Ref, Run, Runtime, Tape, ablation_matches, canonical, derive_seed, glob_escape
 from .graph import parse_target
 
 Z95 = 1.959963984540054
@@ -174,7 +174,7 @@ def benjamini_hochberg(pvalues: List[float], q: float = 0.05) -> List[bool]:
 
 
 def newcombe_diff(k0: int, n0: int, k1: int, n1: int, z: float = Z95):
-    """95% CI for p0 - p1 (Newcombe hybrid score method)."""
+    """95% CI for p0 - p1 of two independent samples (Newcombe hybrid score method)."""
     p0, p1 = k0 / n0, k1 / n1
     l0, u0 = wilson(k0, n0, z)
     l1, u1 = wilson(k1, n1, z)
@@ -182,6 +182,58 @@ def newcombe_diff(k0: int, n0: int, k1: int, n1: int, z: float = Z95):
     lo = d - math.sqrt((p0 - l0) ** 2 + (u1 - p1) ** 2)
     hi = d + math.sqrt((u0 - p0) ** 2 + (p1 - l1) ** 2)
     return (max(-1.0, lo), min(1.0, hi))
+
+
+def paired_diff(a: int, b: int, c: int, d: int, z: float = Z95):
+    """CI for p0 - p1 of paired binary outcomes: Tango's (1998) score interval, every difference whose score test
+    (variance at the restricted maximum-likelihood estimate) is not rejected. a: both arms hit, b: only the first,
+    c: only the second, d: neither. Only discordant pairs move it, so pairing reaches the verdict, and no discordant
+    pair still leaves an interval as wide as the trials allow (never a false certainty)."""
+    n = a + b + c + d
+
+    def score(delta: float) -> float:   # decreases as delta grows
+        bb = -b - c + (2 * n - b + c) * delta
+        cc = -c * delta * (1 - delta)
+        q = (math.sqrt(max(0.0, bb * bb - 8 * n * cc)) - bb) / (4 * n)   # restricted MLE of P(only the second)
+        var = n * (2 * q + delta * (1 - delta))
+        diff = b - c - n * delta
+        return diff / math.sqrt(var) if var > 0 else math.copysign(math.inf, diff) if diff else 0.0
+
+    def bound(lo: float, hi: float, level: float) -> float:   # where score crosses `level`, by bisection
+        for _ in range(60):
+            mid = (lo + hi) / 2
+            lo, hi = (mid, hi) if score(mid) > level else (lo, mid)
+        return (lo + hi) / 2
+
+    est, edge = (b - c) / n, 1 - 1e-12
+    lower = -1.0 if score(-edge) <= z else bound(-edge, est, z)
+    upper = 1.0 if score(edge) >= -z else bound(est, edge, -z)
+    return (lower, upper)
+
+
+class Pairs:
+    """Counts of paired binary outcomes (x: the first arm hit, y: the second)."""
+
+    def __init__(self):
+        self.a = self.b = self.c = self.d = 0
+
+    def add(self, x: bool, y: bool) -> None:
+        if x and y:
+            self.a += 1
+        elif x:
+            self.b += 1
+        elif y:
+            self.c += 1
+        else:
+            self.d += 1
+
+    def ci(self, z: float):
+        return paired_diff(self.a, self.b, self.c, self.d, z)
+
+
+def _check_n(n: int) -> None:
+    if not isinstance(n, int) or n < 1:
+        raise ValueError("n must be an integer >= 1")
 
 
 # --------------------------------------------------------------------------- counterfactual
@@ -212,33 +264,38 @@ def counterfactual(run: Run, intervention: Union[str, Sequence[str]], target: st
     primary cause or a contributing factor.
 
     Tool calls that match the recorded tape replay its results. Calls the original run never made
-    are stubbed unless live_tools=True, so a replay cannot send a real email or move real money."""
+    are stubbed unless live_tools=True, so a replay cannot send a real email or move real money. off_tape_actions
+    counts the calls of both arms that were not served from the tape."""
+    _check_n(n)
     system = system or system_for(run)
     pred = parse_target(target)
     task = recorded_task(run)
     specs = [intervention] if isinstance(intervention, str) else list(intervention)
     label = " | ".join(specs)
-    cache = base_cache if base_cache is not None else {}
+    cache = base_cache if base_cache is not None else {}   # trial -> (hit, off-tape calls) of the base arm
     lock = threading.Lock()
     base_runs = [0]
 
     def hit(r: Run) -> bool:
         return any(pred(e, r) for e in r.events)
 
+    def unrecorded(r: Run) -> int:
+        return sum(1 for e in r.of_type("action") if e.get("mode") != "tape")
+
     def trial(i: int):
         s = derive_seed(seed_base, run.run_id, i)
         with lock:
-            h0 = cache.get(i)
-        if h0 is None:
-            h0 = hit(system.run(seed=s, tape=Tape(run) if use_tape else None, task=task,
-                                run_id=f"{run.run_id}-b{i}", live_tools=live_tools, signer=False))
+            base = cache.get(i)
+        if base is None:
+            b = system.run(seed=s, tape=Tape(run) if use_tape else None, task=task,
+                           run_id=f"{run.run_id}-b{i}", live_tools=live_tools, signer=False)
+            base = (hit(b), unrecorded(b))
             with lock:
-                cache[i] = h0
+                cache[i] = base
                 base_runs[0] += 1
         treat = system.run(seed=s, interventions=specs, tape=Tape(run) if use_tape else None,
                            task=task, run_id=f"{run.run_id}-t{i}", live_tools=live_tools, signer=False)
-        return (h0, hit(treat), any(e.get("ablated") for e in treat.of_type("decision")),
-                sum(1 for e in treat.of_type("action") if e.get("mode") != "tape"))
+        return (base[0], hit(treat), any(e.get("ablated") for e in treat.of_type("decision")), base[1] + unrecorded(treat))
 
     s = paired(trial, n, n_max, family, min_effect, workers, size_role)
     result = {**summary(s, label, target, family, min_effect),
@@ -312,7 +369,8 @@ def summary(s: Dict[str, Any], label: str, target: str, family: int, min_effect:
         "p_with": round(p0, 4), "p_without": round(p1, 4),
         "effect": round(p0 - p1, 4), "ci": [round(lo, 4), round(hi, 4)],
         "verdict": verdict, "pair_flips": s["flips"],
-        "p_value": round(min(1.0, s["looks"] * mcnemar_exact(s["flips"]["removed"], s["flips"]["added"])), 6),  # x looks
+        # corrected like the interval: for every look and every input tested together
+        "p_value": round(min(1.0, s["looks"] * family * mcnemar_exact(s["flips"]["removed"], s["flips"]["added"])), 6),
         "intervention_applied_in": s["matched"], "off_tape_actions": s["off_tape"], "min_effect": min_effect,
         "n_needed": n_hint(n, lo, hi, min_effect) if verdict == "inconclusive" and n else None,
     }
@@ -447,7 +505,7 @@ def _default_suspects(run: Run, target: str) -> List[str]:
     for nid in sorted(anc, key=lambda x: g.nodes[x]["seq"]):
         ev = g.nodes[nid]["event"]
         if g.nodes[nid]["type"] == "input" and ev.get("kind") != "task" and ev.get("trust") == "untrusted":
-            out.append(f"input:{ev['source']}")
+            out.append("input:" + glob_escape(ev["source"]))
     return list(dict.fromkeys(out))
 
 
@@ -462,6 +520,7 @@ def decision_test(run: Run, decision: Any, intervention: str, *, n: int = 30,
     With `contains`, measures P(output contains text). Without it, measures how often removing the
     item changes the output, minus how often a second full-context call changes it (`noise`). Real
     model APIs ignore seeds, so without that control any sampling noise would read as an effect."""
+    _check_n(n)
     ev = next((e for e in run.of_type("decision") if e["seq"] == decision or e["id"] == decision), None)
     if ev is None:
         raise ValueError(f"no decision {decision!r} in run")
@@ -481,6 +540,7 @@ def decision_test(run: Run, decision: Any, intervention: str, *, n: int = 30,
         return out.value if isinstance(out, ModelOutput) else out
 
     k0 = k1 = 0
+    pairs = Pairs()   # (first, second): (with, without) for `contains`, else (changed when removed, changed anyway)
     plan = looks(n, n_max)
     z = z_for(len(plan) * family)
     i = 0
@@ -490,15 +550,15 @@ def decision_test(run: Run, decision: Any, intervention: str, *, n: int = 30,
             i += 1  # seeds are derived from the 0-based trial index, as before
             a, b = call(full, s), call(kept, s)
             if contains is not None:
-                k0 += contains in canonical(a).decode()
-                k1 += contains in canonical(b).decode()
+                x, y = contains in canonical(a).decode(), contains in canonical(b).decode()
+                k0, k1 = k0 + x, k1 + y
+                pairs.add(x, y)
             else:
-                k1 += canonical(a) != canonical(b)            # changed when the item is removed
-                k0 += canonical(a) != canonical(call(full, s))  # changed anyway: sampling noise
-        if contains is not None:
-            lo, hi = newcombe_diff(k0, i, k1, i, z)
-        else:
-            lo, hi = newcombe_diff(k1, i, k0, i, z)
+                x = canonical(a) != canonical(b)              # changed when the item is removed
+                y = canonical(a) != canonical(call(full, s))  # changed anyway: sampling noise
+                k1, k0 = k1 + x, k0 + y
+                pairs.add(x, y)
+        lo, hi = pairs.ci(z)
         verdict = verdict_for(lo, hi, applied, min_effect)
         eff_now = (k0 - k1) / i if contains is not None else (k1 - k0) / i
         if verdict in DECISIVE or verdict == "not-applied" or (len(plan) > 1 and _futile(i, n, eff_now)):
@@ -516,7 +576,8 @@ def decision_test(run: Run, decision: Any, intervention: str, *, n: int = 30,
               "effect": round(eff, 4), "ci": [round(lo, 4), round(hi, 4)], "verdict": verdict,
               "noise": noise, "min_effect": min_effect,
               "n_needed": n_hint(n, lo, hi, min_effect) if verdict == "inconclusive" else None, "scope": "decision", "decision": ev["id"], "decision_seq": ev["seq"],
-              "method": "re-call one recorded model call with and without the item, paired seeds"}
+              "method": "re-call one recorded model call with and without the item, paired seeds, Newcombe paired "
+                        "95% CI"}
     if save:
         run.add_test(result)
     return result

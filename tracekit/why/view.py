@@ -5,7 +5,7 @@ import json
 import os
 from typing import Any, Dict, List, Optional
 
-from .analysis import investigation
+from .analysis import _count, investigation
 from .core import Run
 from .evals import structure
 
@@ -50,8 +50,8 @@ def run_detail(run: Run) -> Dict[str, Any]:
         decs = [e for e in run.of_type("decision") if e["agent"] == a["name"]]
         a.update(st["agents"].get(a["name"], {}))
         a["model_ms"] = round(sum(d.get("duration_ms") or 0 for d in decs), 2)
-        a["tokens"] = sum(int((d.get("usage") or {}).get("input_tokens", 0) or 0) +
-                          int((d.get("usage") or {}).get("output_tokens", 0) or 0) for d in decs)
+        a["tokens"] = sum(_count(u.get("input_tokens")) + _count(u.get("output_tokens"))
+                          for u in (d.get("usage") if isinstance(d.get("usage"), dict) else {} for d in decs))
     nodes = []
     for n in sorted(g.nodes.values(), key=lambda x: x["seq"]):
         ev = n["event"]

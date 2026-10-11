@@ -17,6 +17,12 @@
 send_email whose address only came from a fetched page is refused while the agent runs. If you run
 tools yourself, call `msgs.tool_result(block.id, result)` instead (no guard check).
 
+In a replay (counterfactual, replay) `run_tool` never calls your function: the result comes from the
+recorded run's tape, and a call the run never made gets a stub. `create` applies the replay's
+interventions to the request it sends (a removed tool result is sent as "[removed]"). A tool your own
+code runs and records with `tool_result` runs for real in a replay too: use `run_tool` for anything a
+replay must not repeat.
+
 Every system prompt, message block and tool result the request carries becomes a content-addressed
 context item, so the graph gets observed edges with no manual `decide([...])` lists. A tool_result
 block is linked back to the action recorded with `tool_result()`; results of tools listed in
@@ -117,12 +123,20 @@ class TracedMessages:
     # -- API
     def create(self, **kw: Any) -> Any:
         ctx, layout = self._context(kw)
+        rt = self.agent.rt
+        ablated = [c.ref for c in ctx if rt._ablated(c)]
+        if ablated:   # a replay's intervention: send the request without the matching items
+            ctx = [c for c in ctx if c.ref not in ablated]
+            kw = dict(kw, messages=_messages(layout, {c.ref: c.value for c in ctx}))
+            for k in ("system", "tools"):
+                if layout.get(k) in ablated:
+                    kw.pop(k)
         t0 = time.perf_counter()
         try:
             resp = self._api.create(**kw)
         except Exception as e:
             self.agent.record_decision(ctx, {"error": f"{type(e).__name__}: {e}"}, model=str(kw.get("model")),
-                                       purpose=self.purpose, status="error",
+                                       purpose=self.purpose, status="error", ablated=ablated,
                                        duration_ms=(time.perf_counter() - t0) * 1000)
             raise
         dur = (time.perf_counter() - t0) * 1000
@@ -132,7 +146,7 @@ class TracedMessages:
         params["request"] = layout
         dec = self.agent.record_decision(ctx, {"content": content, "stop_reason": getattr(resp, "stop_reason", None)},
                                          model=str(kw.get("model")), purpose=self.purpose, params=params,
-                                         usage={k: usage.get(k) for k in ("input_tokens", "output_tokens")
+                                         ablated=ablated, usage={k: usage.get(k) for k in ("input_tokens", "output_tokens")
                                                 if usage.get(k) is not None}, duration_ms=dur)
         for j, b in enumerate(content):
             # each assistant block, when sent back in the next request, should link to this decision
@@ -156,6 +170,13 @@ class TracedMessages:
         """Guard check, run fn(**input), record it. Returns the tool_result block to send back.
         A blocked call is not executed; the model gets an error result saying why."""
         b = _plain(block)
+        rt = self.agent.rt
+        if rt.tape is not None or not rt.live_tools:   # a replay: from the tape, or a stub; fn never runs
+            name, args, dec = self._tool_uses[b["id"]]
+            ref = self.agent.act(name, args if isinstance(args, dict) else {"input": args}, decision=dec,
+                                 sensitive=self._sensitive(name, sensitive), untrusted=name in self.untrusted_tools)
+            self._results[b["id"]] = self._known[content_hash(ref.value)] = ref
+            return _result_block(b["id"], ref.value)
         check = self.check(b, sensitive=sensitive)
         if check is not None and check.blocked:
             msg = "blocked by tracekit why guard: " + check.reason
@@ -169,11 +190,7 @@ class TracedMessages:
             out = {"error": f"{type(e).__name__}: {e}"}
         self.tool_result(b["id"], out, duration_ms=(time.perf_counter() - t0) * 1000, sensitive=sensitive,
                          check=check)
-        res = {"type": "tool_result", "tool_use_id": b["id"],
-               "content": out if isinstance(out, str) else json.dumps(out, default=str)}
-        if isinstance(out, dict) and out.get("error"):
-            res["is_error"] = True
-        return res
+        return _result_block(b["id"], out)
 
     def tool_result(self, tool_use_id: str, result: Any, *, duration_ms: Optional[float] = None,
                     sensitive: Optional[bool] = None, check: Any = None) -> Ref:
@@ -193,13 +210,47 @@ class TracedMessages:
         return ref
 
 
+def _result_block(tool_use_id: str, out: Any) -> Dict[str, Any]:
+    res = {"type": "tool_result", "tool_use_id": tool_use_id,
+           "content": out if isinstance(out, str) else json.dumps(out, default=str)}
+    if isinstance(out, dict) and out.get("error"):
+        res["is_error"] = True
+    return res
+
+
+def _messages(req: Dict[str, Any], vals: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """The messages of a request recorded as `req` (its layout), keeping only the context items in `vals` (ref ->
+    value). A removed tool result is replaced by "[removed]" so the tool_use / tool_result pairing the API requires
+    still holds; a message left empty is dropped and neighbouring messages from the same role are merged."""
+    msgs: List[Dict[str, Any]] = []
+    for m in req["messages"]:
+        blocks = []
+        for s in m["blocks"]:
+            if s["as"] == "tool_result":
+                v = vals.get(s["ref"], "[removed]")
+                blk = {"type": "tool_result", "tool_use_id": s["id"],
+                       "content": v if isinstance(v, str) else json.dumps(v, default=str)}
+                if s.get("is_error"):
+                    blk["is_error"] = True
+                blocks.append(blk)
+            elif s["ref"] in vals:
+                blocks.append(vals[s["ref"]])
+        if not blocks:
+            continue
+        if msgs and msgs[-1]["role"] == m["role"]:
+            msgs[-1]["content"].extend(blocks)
+        else:
+            msgs.append({"role": m["role"], "content": blocks})
+    if not msgs or msgs[0]["role"] != "user":
+        msgs.insert(0, {"role": "user", "content": [{"type": "text", "text": "(content removed)"}]})
+    return msgs
+
+
 # --------------------------------------------------------------------------- decision replay
 
 def replay_model(messages_api: Any) -> Callable[..., Any]:
     """A model function for decision_test that re-sends a call recorded by TracedMessages, minus the
-    context items an intervention removed. A removed tool result is replaced by "[removed]" so the
-    tool_use / tool_result pairing the API requires still holds; a message left empty is dropped and
-    neighbouring messages from the same role are merged."""
+    context items an intervention removed (see _messages)."""
 
     def fn(context: List[Any], *, purpose: str, seed: int, params: Dict[str, Any], agent: str) -> Any:
         req = (params or {}).get("request")
@@ -211,28 +262,7 @@ def replay_model(messages_api: Any) -> Callable[..., Any]:
         for k in ("system", "tools"):
             if req.get(k) in vals:
                 kw[k] = vals[req[k]]
-        msgs: List[Dict[str, Any]] = []
-        for m in req["messages"]:
-            blocks = []
-            for s in m["blocks"]:
-                if s["as"] == "tool_result":
-                    v = vals.get(s["ref"], "[removed]")
-                    blk = {"type": "tool_result", "tool_use_id": s["id"],
-                           "content": v if isinstance(v, str) else json.dumps(v, default=str)}
-                    if s.get("is_error"):
-                        blk["is_error"] = True
-                    blocks.append(blk)
-                elif s["ref"] in vals:
-                    blocks.append(vals[s["ref"]])
-            if not blocks:
-                continue
-            if msgs and msgs[-1]["role"] == m["role"]:
-                msgs[-1]["content"].extend(blocks)
-            else:
-                msgs.append({"role": m["role"], "content": blocks})
-        if not msgs or msgs[0]["role"] != "user":
-            msgs.insert(0, {"role": "user", "content": [{"type": "text", "text": "(content removed)"}]})
-        resp = messages_api.create(messages=msgs, **kw)
+        resp = messages_api.create(messages=_messages(req, vals), **kw)
         usage = _plain(getattr(resp, "usage", None)) or {}
         return ModelOutput({"content": _plain(getattr(resp, "content", [])),
                             "stop_reason": getattr(resp, "stop_reason", None)},

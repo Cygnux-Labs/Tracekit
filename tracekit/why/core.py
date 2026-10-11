@@ -12,9 +12,11 @@ import fnmatch
 import hashlib
 import json
 import os
+import re
 import secrets
 import threading
 import time
+import urllib.error
 import urllib.request
 import warnings
 from dataclasses import dataclass, field
@@ -69,6 +71,11 @@ class Ref:
         return f"Ref({self.kind}:{self.source or self.agent} {self.ref[:15]})"
 
 
+def glob_escape(label: str) -> str:
+    """A source label as a glob that matches only itself, for an `input:`/`msg:` spec built from a recorded label."""
+    return "".join(f"[{c}]" if c in "*?[" else c for c in label)
+
+
 def ablation_matches(spec: str, r: Ref) -> bool:
     """Intervention specs:
     ref:<hash prefix>        a specific content (with or without the sha256: prefix)
@@ -116,6 +123,11 @@ class Run:
         return self.blobs.get(ref) if ref else None
 
     def add_test(self, result: Dict[str, Any]) -> None:
+        """Appends a test result, chained: `prev` is the previous line's hash and `head` the hash of the run's last
+        event when it was tested, so a line edited, removed or inserted later breaks the chain (verify)."""
+        result["prev"] = self.tests[-1].get("hash", GENESIS) if self.tests else GENESIS
+        result["head"] = self.events[-1]["hash"] if self.events else GENESIS
+        result["hash"] = chain_hash(result)
         self.tests.append(result)
         if self.path:
             with open(os.path.join(self.path, "tests.jsonl"), "a", encoding="utf-8") as f:
@@ -143,12 +155,88 @@ def load_run(path: str) -> Run:
     return Run(run_id=run_id, events=events, blobs=blobs, path=path, tests=tests)
 
 
+UNFINISHED = "no run.end"   # how verify() reports a log without its end record
+REF = re.compile(r"sha256:[0-9a-f]{64}")
+TS = re.compile(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d{1,9})?Z")
+# fields each event type must carry for the analysis to read it, and the string fields among them
+REQUIRED = {"run.start": (), "agent.start": (), "run.end": (), "input": ("ref", "source", "trust"),
+            "decision": ("model", "context", "output"), "action": ("tool", "args_ref", "result_ref"),
+            "message": ("to", "ref")}
+_STRINGS = ("source", "model", "tool", "to")
+_REFS = ("ref", "output", "args_ref", "result_ref")
+
+
+def event_problem(ev: Any) -> Optional[str]:
+    """Why an event from outside (ingest, an import) is not one the analysis can read, else None: the common fields
+    (id, agent, ts, type, seq), the type's own fields and their types, refs as content hashes, token counts as
+    integers >= 0."""
+    if not isinstance(ev, dict):
+        return "not an object"
+    t = ev.get("type")
+    if t not in EVENT_TYPES:
+        return f"unknown type {str(t)[:40]!r}"
+    for k in ("id", "agent"):
+        if not isinstance(ev.get(k), str) or not 0 < len(ev[k]) <= 256:
+            return f"{k} must be a non-empty string"
+    if not isinstance(ev.get("ts"), str) or not TS.fullmatch(ev["ts"]):
+        return "ts must be a UTC timestamp (YYYY-MM-DDTHH:MM:SS[.ffffff]Z)"
+    if type(ev.get("seq")) is not int:
+        return "seq must be an integer"
+    missing = [k for k in REQUIRED[t] if k not in ev]
+    if missing:
+        return f"missing {', '.join(missing)}"
+    if any(k in ev and not isinstance(ev[k], str) for k in _STRINGS):
+        return f"{', '.join(k for k in _STRINGS if k in ev)} must be strings"
+    if "trust" in REQUIRED[t] and ev["trust"] not in TRUST_LEVELS:
+        return f"trust must be one of {TRUST_LEVELS}"
+    if any(ev.get(k) is not None and not (isinstance(ev[k], str) and REF.fullmatch(ev[k])) for k in _REFS):
+        return "refs must be sha256:<64 hex> strings"
+    ctx = ev.get("context", [])
+    if not isinstance(ctx, list) or not all(isinstance(c, dict) and isinstance(c.get("ref"), str)
+                                            and REF.fullmatch(c["ref"]) for c in ctx):
+        return "context must be a list of {ref: sha256:<64 hex>, ...}"
+    usage = ev.get("usage")
+    if usage is not None and not (isinstance(usage, dict) and all(type(v) is int and v >= 0 for k, v in usage.items()
+                                                                  if k.endswith("tokens"))):
+        return "usage must be an object whose token counts are integers >= 0"
+    return None
+
+
+def chain_hash(t: Dict[str, Any]) -> str:
+    return hashlib.sha256(canonical({k: v for k, v in t.items() if k not in ("hash", "chain")})).hexdigest()
+
+
+def check_tests(run: Run) -> List[str]:
+    """Checks the chain of tests.jsonl and marks each test's `chain`: ok, unchained (a line written without the chain,
+    by hand or by an older version) or broken. Returns the problems of the broken ones."""
+    problems: List[str] = []
+    heads = {e.get("hash") for e in run.events}
+    prev = GENESIS
+    for i, t in enumerate(run.tests):
+        if "hash" not in t:
+            t["chain"] = "unchained"
+        elif t.get("prev") != prev or chain_hash(t) != t["hash"] or t.get("head") not in heads:
+            t["chain"] = "broken"
+            problems.append(f"test {i}: does not link to the tests before it or to an event of the run "
+                            "(edited, removed or inserted)")
+        else:
+            t["chain"] = "ok"
+        prev = t.get("hash", GENESIS)
+    return problems
+
+
 def verify(run: Run) -> List[str]:
-    """Integrity check: chain links, event hashes, contiguous seq, blob content hashes,
-    and that every referenced ref exists. Returns a list of problems (empty = ok)."""
+    """Integrity check: chain links, event hashes, contiguous seq, unique event ids, blob content hashes, that every
+    referenced ref exists, that the log ends with run.end (else it was cut short, or the run is still going) and the
+    chain of its tests. Returns a list of problems (empty = ok). The chain is unsigned: it shows edits, insertions and
+    deletions, not who made them."""
     problems: List[str] = []
     prev = GENESIS
+    ids: set = set()
     for i, ev in enumerate(run.events):
+        if str(ev.get("id")) in ids:
+            problems.append(f"seq {i}: duplicate event id {str(ev.get('id'))[:32]}")
+        ids.add(str(ev.get("id")))
         if ev.get("seq") != i:
             problems.append(f"seq {ev.get('seq')} at position {i}: not contiguous")
         if ev.get("prev_hash") != prev:
@@ -163,7 +251,10 @@ def verify(run: Run) -> List[str]:
         for r in referenced_refs(ev):
             if r not in run.blobs:
                 problems.append(f"seq {ev['seq']}: references missing blob {r[:20]}")
-    return problems
+    if not run.events or run.events[-1].get("type") != "run.end":
+        problems.append(f"{UNFINISHED}: the log ends at seq {len(run.events) - 1}; it was cut short, or the run has "
+                        "not finished")
+    return problems + check_tests(run)
 
 
 def referenced_refs(ev: Dict[str, Any]) -> List[str]:
@@ -201,16 +292,45 @@ class HttpSink:
             self.flush()
 
     def flush(self) -> None:
-        if not self._events:
+        """Sends the batch. A batch the collector committed although the answer never arrived (a timeout) is kept and
+        sent again with what came after; the collector's 409 then names its head, and the events up to it are
+        dropped as delivered when that head is one of them (same seq and hash)."""
+        while True:   # each retry has fewer events
+            if not self._events:
+                self._blobs = {}
+                return
+            try:
+                self._post()
+            except urllib.error.HTTPError as e:
+                head = _head_of(e) if e.code == 409 else None
+                done = next((i for i, ev in enumerate(self._events)
+                             if head and ev.get("seq") == head.get("seq") and ev.get("hash") == head.get("hash")), None)
+                if done is None:
+                    raise
+                del self._events[:done + 1]
+                refs = {r for ev in self._events for r in referenced_refs(ev)}
+                self._blobs = {r: v for r, v in self._blobs.items() if r in refs}
+                continue
+            self._events, self._blobs = [], {}
+            self._last = time.monotonic()
             return
+
+    def _post(self) -> None:
         body = json.dumps({"events": self._events, "blobs": self._blobs}, ensure_ascii=False, default=str).encode()
         req = urllib.request.Request(self.url, data=body, method="POST", headers={
             "Content-Type": "application/json", "Authorization": f"Bearer {self.token}"})
         with urllib.request.urlopen(req, timeout=self.timeout) as r:
             if r.status >= 300:
                 raise RuntimeError(f"ingest failed: HTTP {r.status}")
-        self._events, self._blobs = [], {}
-        self._last = time.monotonic()
+
+
+def _head_of(err: Any) -> Optional[Dict[str, Any]]:
+    """The run head a collector's 409 names ({"head": {"seq", "hash"}}), if any."""
+    try:
+        head = json.loads(err.read()).get("head")
+    except (OSError, ValueError, AttributeError):
+        return None
+    return head if isinstance(head, dict) else None
 
 
 @dataclass
@@ -312,6 +432,8 @@ class Runtime:
         self.guard = guard  # tracekit.why.guard.Guard: checks sensitive tool calls before they run
         self.alerts: List[Dict[str, Any]] = []  # raised by the guard during this run
         self._pending_blobs: Dict[str, Any] = {}
+        self._outbox: List[tuple] = []        # (event, its new blobs) not yet handed to the sink
+        self._sink_lock = threading.Lock()    # one thread at a time hands events to the sink, in order
         # agents may run in threads: every write to the log, blob store, mail and counters takes this lock
         self._lock = threading.RLock()
         if out_dir:
@@ -345,7 +467,29 @@ class Runtime:
 
     def _emit(self, agent: str, etype: str, **body: Any) -> Dict[str, Any]:
         with self._lock:
-            return self._emit_locked(agent, etype, body)
+            ev = self._emit_locked(agent, etype, body)
+        self._ship()
+        return ev
+
+    def _ship(self, wait: bool = False) -> None:
+        """Hands the events emitted so far to the sink, in order, outside the runtime's lock (the sink may send them
+        over the network), so other agents keep recording meanwhile. One thread ships at a time; another that finds
+        it busy leaves its events to it (`wait`: ships them itself, after it). A caller holding the runtime's lock
+        ships after releasing it."""
+        if self.sink is None or self._lock._is_owned():  # type: ignore[attr-defined]
+            return
+        while self._outbox:   # read unlocked; rechecked under both locks
+            if not self._sink_lock.acquire(blocking=wait):
+                return
+            try:
+                while True:
+                    with self._lock:
+                        if not self._outbox:
+                            break
+                        ev, blobs = self._outbox.pop(0)
+                    self.sink.write(ev, blobs)
+            finally:
+                self._sink_lock.release()
 
     def _emit_locked(self, agent: str, etype: str, body: Dict[str, Any]) -> Dict[str, Any]:
         ev = {"schema": SCHEMA, "seq": len(self.events), "id": secrets.token_hex(16), "prev_hash": self._prev,
@@ -357,9 +501,9 @@ class Runtime:
         if self.path:
             with open(os.path.join(self.path, "events.jsonl"), "a", encoding="utf-8") as f:
                 f.write(json.dumps(ev, sort_keys=True, ensure_ascii=False) + "\n")
-        if self.sink is not None:
-            self.sink.write(ev, self._pending_blobs)
-            self._pending_blobs = {}
+        if self.sink is not None:   # each blob goes with the first event that references it
+            ship = {r: self._pending_blobs.pop(r) for r in referenced_refs(ev) if r in self._pending_blobs}
+            self._outbox.append((ev, ship))
         return ev
 
     def _input(self, agent: str, value: Any, *, source: str, trust: str, kind: str = "input") -> Ref:
@@ -420,7 +564,8 @@ class Runtime:
             self._emit(name, "agent.start", parent=parent, role=role, **extra)
             a = Agent(self, name)
             self._agents[name] = a
-            return a
+        self._ship()
+        return a
 
     def close(self) -> None:
         """Ends the agents' Tracekit runs and closes a client the runtime opened itself. finish() calls it; call it
@@ -435,7 +580,9 @@ class Runtime:
         self.close()
         self._emit("run", "run.end", outcome=outcome)
         if self.sink is not None:
-            self.sink.flush()
+            self._ship(wait=True)
+            with self._sink_lock:
+                self.sink.flush()
         return self.run()
 
     def run(self) -> Run:
@@ -685,8 +832,13 @@ class Agent:
                       status: Optional[str] = None, check: Any = None) -> Ref:
         """Record a tool call your own code executed (adapters use this). Pass the `check` you got
         from check() so the guard's verdict is stored with the action; a blocked check records the
-        call as blocked."""
+        call as blocked. In a replay the call your code ran was real: it is recorded as live (an off-tape action),
+        with a warning; run tools through act() (or TracedMessages.run_tool) for the tape to serve them."""
         rt = self.rt
+        if rt.tape is not None or not rt.live_tools:
+            warnings.warn(f"tracekit why: {tool} ran for real during a replay (your code ran it and recorded it with "
+                          "record_action); run it through act() or TracedMessages.run_tool so replays serve it from "
+                          "the tape", stacklevel=2)
         args_ref, res_ref = rt._blob(args or {}), rt._blob(result)
         blocked = check is not None and check.blocked
         if status is None:
@@ -718,6 +870,7 @@ class Agent:
                           trust=trust, **extra)
             r = Ref(ref, value, "message", to, f"{self.name}->{to}", trust, ev["id"])
             rt._mail.setdefault(to, []).append(r)
+        rt._ship()
         return r
 
     def inbox(self) -> List[Ref]:

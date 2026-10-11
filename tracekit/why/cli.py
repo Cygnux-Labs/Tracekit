@@ -107,6 +107,26 @@ def _signed_args(p):
     p.add_argument("--prices", help="price table for --max-cost (tracekit/usage.py)")
 
 
+def _system(a, run):
+    """The System to replay `run` with: --system, else the program the run names when --allow-program lists it. A run
+    file is data: the program it names is never imported on its say-so alone."""
+    if a.system:
+        return load_system(a.system)
+    prog = run.start.get("program")
+    if prog and prog in (a.allow_program or []):
+        return load_system(prog)
+    raise SystemExit(f"this run names the program {prog!r}: replaying it imports that module, so pass --system {prog} "
+                     f"(or --allow-program {prog}) if you trust it" if prog else
+                     "this run names no program to replay: pass --system module:ATTR")
+
+
+def _positive(v):
+    n = int(v)
+    if n < 1:
+        raise argparse.ArgumentTypeError("must be >= 1")
+    return n
+
+
 def cmd_demo(a):
     from .demo import EXFIL_TARGET, REFUND_TARGET, SYSTEM
     out = a.out or tempfile.mkdtemp(prefix="tracekit-why-")
@@ -139,13 +159,13 @@ def cmd_demo(a):
              ("input:inbox:ticket-881", EXFIL_TARGET), ("msg:researcher->planner", EXFIL_TARGET),
              ("input:kb:refund_policy.md", REFUND_TARGET)]
     for spec, target in tests:
-        _p(_fmt_test(counterfactual(run, spec, target, n=a.n)))
+        _p(_fmt_test(counterfactual(run, spec, target, n=a.n, system=SYSTEM)))
     if len(exfil) > 1:  # a second run, so the cross-run influence view has more than one data point
         for spec in ("input:vendor:portal/notes.md", "input:web:shipping_faq"):
-            counterfactual(exfil[1], spec, EXFIL_TARGET, n=a.n)
+            counterfactual(exfil[1], spec, EXFIL_TARGET, n=a.n, system=SYSTEM)
     dec = run.of_type("decision")[0]
     _p("\n== decision-level test (re-call only the researcher's model call; no program re-run needed)")
-    _p(_fmt_test(decision_test(run, dec["seq"], "input:vendor:*", n=a.n, contains="vendor-compliance")))
+    _p(_fmt_test(decision_test(run, dec["seq"], "input:vendor:*", n=a.n, contains="vendor-compliance", system=SYSTEM)))
 
     st = structure(run)
     _p("\n== structure")
@@ -227,20 +247,22 @@ def cmd_test(a):
     if not a.run:
         raise SystemExit("tracekit why test needs a why run, or --run with a signed run")
     run = load_run(a.run)
-    system = load_system(a.system) if a.system else None
     if a.decision is not None:
-        models = None
+        models, system = None, None
         if a.anthropic:  # re-send calls recorded by the Anthropic adapter
             from anthropic import Anthropic
             from .adapters.anthropic import replay_model
             fn = replay_model(Anthropic().messages)
             models = {e["model"]: fn for e in run.of_type("decision")}
+        else:
+            system = _system(a, run)
         r = decision_test(run, a.decision, a.remove, n=a.n, system=system, models=models, contains=a.contains,
                           n_max=a.n_max)
     else:
         if not a.target:
             raise SystemExit("--target is required unless --decision is given")
-        r = counterfactual(run, a.remove, a.target, n=a.n, system=system, live_tools=a.live_tools, n_max=a.n_max)
+        r = counterfactual(run, a.remove, a.target, n=a.n, system=_system(a, run), live_tools=a.live_tools,
+                           n_max=a.n_max)
     _p(json.dumps(r, indent=2) if a.json else _fmt_test(r))
 
 
@@ -284,9 +306,9 @@ def cmd_attribute(a):
                              checkpoint_id=a.checkpoint, n=a.n, n_max=a.n_max, size_roles=not a.no_roles,
                              log=a.out)
     elif a.run:
-        r = attribute(load_run(a.run), a.target, a.suspect or None, n=a.n, n_max=a.n_max,
-                      system=load_system(a.system) if a.system else None, workers=a.workers,
-                      size_roles=not a.no_roles)
+        run = load_run(a.run)
+        r = attribute(run, a.target, a.suspect or None, n=a.n, n_max=a.n_max, system=_system(a, run),
+                      workers=a.workers, size_roles=not a.no_roles)
     else:
         raise SystemExit("give a run folder, --run with a signed run, or --langgraph module:graph_factory --thread T")
     if a.json:
@@ -304,14 +326,14 @@ def cmd_attribute(a):
 
 def cmd_matrix(a):
     run = load_run(a.run)
-    rows = influence_matrix(run, a.target, n=a.n, system=load_system(a.system) if a.system else None)
+    rows = influence_matrix(run, a.target, n=a.n, system=_system(a, run))
     for r in rows:
         _p(_fmt_test(r))
 
 
 def cmd_replay(a):
     run = load_run(a.run)
-    rep = replay(run, system=load_system(a.system) if a.system else None, interventions=a.remove or [])
+    rep = replay(run, system=_system(a, run), interventions=a.remove or [])
     d = diff_runs(run, rep)
     _p("replay matches the original" if not d else json.dumps(d, indent=2))
 
@@ -359,6 +381,8 @@ def cmd_watch(a):
                        f"#{al.get('seq')}: {al['title']}. {al.get('detail') or ''}")
     except KeyboardInterrupt:
         pass
+    finally:
+        store.stop()
 
 
 def cmd_serve(a):
@@ -380,12 +404,13 @@ def cmd_serve(a):
         tls.load_cert_chain(a.tls_cert, a.tls_key)
     given = a.token or os.environ.get("TRACEKIT_WHY_TOKEN")
     token = given or secrets.token_urlsafe(24)
-    store = Store(a.root, a.allow_program or [], webhook=a.webhook, tape=True)
+    store = Store(a.root, a.allow_program or [], webhook=a.webhook, tape=True, ingest_tokens=a.ingest_token or [])
     httpd = view.server(store.out, a.host, a.port, token, tls, why=store)
     store.watch()
     _p(f"tracekit why on {'https' if tls else 'http'}://{a.host}:{httpd.server_address[1]}/"
        + ("" if given else f"?token={token}") + f"  (runs: {a.root})")
-    _p("  ingest: POST /v1/ingest with the token as a Bearer token")
+    _p("  ingest: POST /v1/ingest with " + ("an --ingest-token" if a.ingest_token else "the token")
+       + " as a Bearer token")
     _p(f"  live: the page updates as runs are recorded{'; high alerts POSTed to ' + a.webhook if a.webhook else ''}")
     _p("  FIND THE CAUSE and RUN TEST: " + (f"replay {', '.join(a.allow_program)}" if a.allow_program else
                                           "show the command to run (--allow-program module:SYSTEM to run them here)"))
@@ -395,6 +420,7 @@ def cmd_serve(a):
         pass
     finally:
         httpd.server_close()
+        store.stop()
 
 
 def cmd_import(a):
@@ -499,7 +525,7 @@ def main(argv=None):
     sp = ap.add_subparsers(dest="cmd", required=True)
 
     p = sp.add_parser("demo", help="record the 3-agent demo and test causes")
-    p.add_argument("--out"); p.add_argument("--n", type=int, default=40); p.set_defaults(f=cmd_demo)
+    p.add_argument("--out"); p.add_argument("--n", type=_positive, default=40); p.set_defaults(f=cmd_demo)
 
     p = sp.add_parser("record", help="run a System (module:ATTR) and record it")
     p.add_argument("system"); p.add_argument("--out", default="runs"); p.add_argument("--seed", type=int, default=0)
@@ -528,8 +554,9 @@ def main(argv=None):
     p.add_argument("--contains", help="with --decision: measure P(output contains this text)")
     p.add_argument("--anthropic", action="store_true",
                    help="with --decision: re-send a call recorded by the Anthropic adapter (needs ANTHROPIC_API_KEY)")
-    p.add_argument("--n", type=int, default=30); p.add_argument("--system"); p.add_argument("--live-tools", action="store_true")
-    p.add_argument("--n-max", type=int, help="sequential: keep doubling n up to this until the verdict is decisive")
+    p.add_argument("--n", type=_positive, default=30); p.add_argument("--system"); p.add_argument("--live-tools", action="store_true")
+    p.add_argument("--allow-program", action="append", metavar="SPEC", help="replay the program the run names if it is this one (repeatable); without it or --system, nothing is imported")
+    p.add_argument("--n-max", type=_positive, help="sequential: keep doubling n up to this until the verdict is decisive")
     p.add_argument("--workers", type=int, default=1, help="with --run: replay arms in parallel (1 to 16)")
     _signed_args(p)
     p.add_argument("--json", action="store_true"); p.set_defaults(f=cmd_test)
@@ -547,22 +574,26 @@ def main(argv=None):
     p.add_argument("--checkpoint", help="with --langgraph: start from this checkpoint_id (default: the thread's latest)")
     p.add_argument("--out", default="runs", help="with --langgraph: why log folder; tests go to "
                                                  "OUT/langgraph-<thread>/tests.jsonl")
-    p.add_argument("--n", type=int, default=10); p.add_argument("--n-max", type=int, default=80)
+    p.add_argument("--n", type=_positive, default=10); p.add_argument("--n-max", type=_positive, default=80)
+    p.add_argument("--allow-program", action="append", metavar="SPEC", help="replay the program the run names if it is this one (repeatable); without it or --system, nothing is imported")
     p.add_argument("--workers", type=int, default=1, help="parallel replays")
     p.add_argument("--no-roles", action="store_true", help="skip sizing each cause (primary vs contributing): cheaper")
     p.add_argument("--system"); p.add_argument("--json", action="store_true"); p.set_defaults(f=cmd_attribute)
 
     p = sp.add_parser("matrix", help="test every channel and input against targets")
-    p.add_argument("run"); p.add_argument("--target", action="append", required=True); p.add_argument("--n", type=int, default=20)
-    p.add_argument("--system"); p.set_defaults(f=cmd_matrix)
+    p.add_argument("run"); p.add_argument("--target", action="append", required=True); p.add_argument("--n", type=_positive, default=20)
+    p.add_argument("--system"); p.add_argument("--allow-program", action="append", metavar="SPEC", help="replay the program the run names if it is this one (repeatable); without it or --system, nothing is imported"); p.set_defaults(f=cmd_matrix)
 
     p = sp.add_parser("replay", help="re-run from tape and diff against the original")
-    p.add_argument("run"); p.add_argument("--remove", action="append"); p.add_argument("--system"); p.set_defaults(f=cmd_replay)
+    p.add_argument("run"); p.add_argument("--remove", action="append"); p.add_argument("--system")
+    p.add_argument("--allow-program", action="append", metavar="SPEC", help="replay the program the run names if it is this one (repeatable); without it or --system, nothing is imported"); p.set_defaults(f=cmd_replay)
 
     p = sp.add_parser("serve", help="the viewer on the why logs under ROOT: the page, its API and ingest")
     p.add_argument("root"); p.add_argument("--host", default="127.0.0.1"); p.add_argument("--port", type=int, default=7788)
     p.add_argument("--token", help="token for the page, the API and /v1/ingest (or TRACEKIT_WHY_TOKEN; default: random)")
     p.add_argument("--allow-program", action="append", help="System spec FIND THE CAUSE and RUN TEST may replay (repeatable)")
+    p.add_argument("--ingest-token", action="append", help="a bearer token /v1/ingest takes, and nothing else "
+                                                           "(repeatable; default: --token)")
     p.add_argument("--webhook", help="POST each new high alert here as JSON (Slack-compatible)")
     p.add_argument("--tls-cert", help="PEM certificate: serve HTTPS (required beyond loopback)")
     p.add_argument("--tls-key", help="PEM private key of --tls-cert")

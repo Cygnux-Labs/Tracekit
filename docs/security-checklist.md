@@ -8,7 +8,7 @@ named here no longer exists.
 
 | Handler | Serves | Kind |
 |---|---|---|
-| `tracekit/observe.py:Handler` | `tracekit view` (v2 store, or with `view.logs` every log of a central deployment at `/runs`, `/api/runs`, `/api/run` and `/api/bundle`; token, or OIDC login at `/login` and `/callback`; an approver's approval pages at `/approvals`; with why logs, `tracekit view --why` and `tracekit why serve`, the why read API `/api/why/workspace` and `/api/why/runs/<id>` for the token only, the replay POSTs `/api/why/runs/<id>/tests` and `/api/why/runs/<id>/attribute`, and `POST /v1/ingest` for the bearer token only) and `tracekit observe` (v0.2 ledger) | browser; read-only but for the approval pages and the why replay POSTs; ingest API |
+| `tracekit/observe.py:Handler` | `tracekit view` (v2 store, or with `view.logs` every log of a central deployment at `/runs`, `/api/runs`, `/api/run` and `/api/bundle`; token, or OIDC login at `/login` and `/callback`; an approver's approval pages at `/approvals`; with why logs, `tracekit view --why` and `tracekit why serve`, the why read API `/api/why/workspace` and `/api/why/runs/<id>` for the token only, the replay POSTs `/api/why/runs/<id>/tests` and `/api/why/runs/<id>/attribute`, and `POST /v1/ingest` for a bearer token only: an `--ingest-token`, which reads nothing, else the token) and `tracekit observe` (v0.2 ledger) | browser; read-only but for the approval pages and the why replay POSTs; ingest API |
 | `tracekit/transport/http.py:_Handler` | signer `POST /v2/rpc` and OTLP/HTTP `POST /v1/traces`; `tracekit issuer serve` | API |
 | `tracekit/gateway.py:_Handler` | `tracekit gateway serve` (LLM gateway) | API |
 | `tracekit/signer/metrics.py:Handler` | signer `/metrics`, `/logs/v0` and tlog tiles | API, public data |

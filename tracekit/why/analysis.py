@@ -5,17 +5,28 @@ Everything here is derived from the log and the tests recorded against it. Nothi
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-from .core import Run, load_run, verify
+from .core import UNFINISHED, Run, glob_escape, load_run, verify
 from .graph import Graph, build_graph, nodes_matching, target_hits
 
 _EMAIL = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
 _URL = re.compile(r"https?://[^\s\"'<>]+")
 SENSITIVE_HINT = re.compile(r"send|email|mail|post|publish|transfer|pay|refund|delete|remove|export|upload|"
                             r"exec|shell|bash|write|deploy|sign|approve", re.I)
+
+
+def _count(v: Any) -> int:
+    """A token count as recorded, or 0 when it is not a count (a log written by hand or another tool)."""
+    return v if type(v) is int and v >= 0 else 0
+
+
+def integrity(run: Run) -> List[str]:
+    """verify()'s problems, less a missing run.end: the page shows a running run as running, not as broken."""
+    return [p for p in verify(run) if not p.startswith(UNFINISHED)]
 
 
 def _txt(v: Any) -> str:
@@ -122,9 +133,9 @@ def suggest_target(run: Run, action_ev: Dict[str, Any], prov: Optional[List[Dict
 def intervention_for(node: Dict[str, Any]) -> Optional[str]:
     ev = node["event"]
     if node["type"] == "input" and node.get("kind") != "task":
-        return f"input:{ev['source']}"
+        return "input:" + glob_escape(ev["source"])
     if node["type"] == "message":
-        return f"msg:{ev['agent']}->{ev['to']}"
+        return f"msg:{glob_escape(ev['agent'])}->{glob_escape(ev['to'])}"
     return None
 
 
@@ -221,7 +232,7 @@ def lineage(g: Graph, action_node: str) -> List[List[str]]:
 
 def alerts(run: Run, g: Graph) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
-    problems = verify(run)
+    problems = integrity(run)
     if problems:
         out.append({"severity": "high", "title": "Log failed integrity check", "detail": problems[0], "node": None})
     for e in (run.start.get("meta") or {}).get("evidence_alerts") or []:  # e.g. Tracekit capture gaps
@@ -318,7 +329,7 @@ def timeline(run: Run) -> List[Dict[str, Any]]:
 # --------------------------------------------------------------------------- summaries
 
 def run_summary(run: Run, g: Optional[Graph] = None, al: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
-    g = g or build_graph(run)
+    g = g or build_graph(run, infer=False)
     al = alerts(run, g) if al is None else al
     task = next((run.value(e["ref"]) for e in run.of_type("input") if e.get("kind") == "task"), None)
     acts = run.of_type("action")
@@ -326,7 +337,7 @@ def run_summary(run: Run, g: Optional[Graph] = None, al: Optional[List[Dict[str,
     usage = {"input_tokens": 0, "output_tokens": 0}
     for d in decs:
         for k in usage:
-            usage[k] += int((d.get("usage") or {}).get(k, 0) or 0)
+            usage[k] += _count((d.get("usage") if isinstance(d.get("usage"), dict) else {}).get(k))
     return {
         "run_id": run.run_id, "program": run.start.get("program", ""), "started": run.events[0]["ts"] if run.events else "",
         "task": task, "agents": sorted({e["agent"] for e in run.of_type("agent.start")}),
@@ -339,7 +350,7 @@ def run_summary(run: Run, g: Optional[Graph] = None, al: Optional[List[Dict[str,
         "usage": usage, "tests": len(run.tests),
         "confirmed_causes": len([t for t in run.tests if t["verdict"] == "causal" and not t.get("group")]),
         "alerts": {s: len([a for a in al if a["severity"] == s]) for s in ("high", "review", "info")},
-        "integrity": "ok" if not verify(run) else "failed",
+        "integrity": "ok" if not integrity(run) else "failed",
         "tools_run": [a["tool"] for a in acts],
         "replayable": bool(run.start.get("program")),
         "finished": bool(run.events) and run.events[-1]["type"] == "run.end",
@@ -399,18 +410,14 @@ def investigation(run: Run) -> Dict[str, Any]:
 
 # --------------------------------------------------------------------------- workspace / influence graph
 
-def influence_graph(paths: List[str]) -> Dict[str, Any]:
-    """Cross-run, citation-like graph. Sources are content (by hash); outcomes are tools.
-    An edge says: in k runs this content was upstream of this tool (cited), and tests measured effect e."""
+def influence_graph(runs: Iterable[Tuple[Run, Graph]]) -> Dict[str, Any]:
+    """Cross-run, citation-like graph over (run, its graph without inferred edges) pairs. Sources are content (by
+    hash); outcomes are tools. An edge says: in k runs this content was upstream of this tool (cited), and tests
+    measured effect e."""
     sources: Dict[str, Dict[str, Any]] = {}
     outcomes: Dict[str, Dict[str, Any]] = {}
     edges: Dict[str, Dict[str, Any]] = {}
-    for p in paths:
-        try:
-            run = load_run(p)
-            g = build_graph(run, infer=False)
-        except Exception:  # unreadable or malformed run: leave it out rather than fail the whole view
-            continue
+    for run, g in runs:
         for nid, n in g.nodes.items():
             if n["type"] != "input" or n.get("kind") == "task":
                 continue
@@ -454,12 +461,30 @@ def influence_graph(paths: List[str]) -> Dict[str, Any]:
             "edges": list(edges.values())}
 
 
-def workspace(paths: List[str]) -> Dict[str, Any]:
-    runs = []
-    for p in paths:
-        try:
-            runs.append(run_summary(load_run(p)))
-        except Exception as e:  # unreadable or malformed run: leave it out rather than fail the whole view
-            print(f"tracekit why: skipping {p}: {e}", file=sys.stderr)
-    runs.sort(key=lambda r: r["started"], reverse=True)
-    return {"runs": runs, "influence": influence_graph(paths)}
+def broken_summary(path: str, err: Exception) -> Dict[str, Any]:
+    """The workspace row of a run that cannot be analysed: listed, with why, so a bad log never hides a run."""
+    return {"run_id": os.path.basename(path), "program": "", "started": "", "task": None, "agents": [], "decisions": 0,
+            "actions": 0, "messages": 0, "inputs": 0, "untrusted_inputs": 0, "errors": 0, "model_ms": 0, "tool_ms": 0,
+            "usage": {"input_tokens": 0, "output_tokens": 0}, "tests": 0, "confirmed_causes": 0,
+            "alerts": {"high": 1, "review": 0, "info": 0}, "integrity": "failed", "tools_run": [], "replayable": False,
+            "finished": False, "blocked": 0, "guard": None, "broken": f"{type(err).__name__}: {err}"[:300]}
+
+
+def analyse(path: str) -> Dict[str, Any]:
+    """What the workspace needs of one run folder: run, graph (no inferred edges), alerts and summary; or, for a run
+    that cannot be analysed, its broken summary (listed with why, never dropped from the view)."""
+    try:
+        run = load_run(path)
+        g = build_graph(run, infer=False)
+        al = alerts(run, g)
+        return {"run": run, "graph": g, "alerts": al, "summary": run_summary(run, g, al)}
+    except Exception as e:
+        print(f"tracekit why: cannot analyse {path}: {e}", file=sys.stderr)
+        return {"summary": broken_summary(path, e), "alerts": []}
+
+
+def workspace(paths: List[str], analysed: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+    """Run summaries (newest first) and the influence graph; `analysed`: analyse() of each path, when cached."""
+    items = analysed if analysed is not None else [analyse(p) for p in paths]
+    runs = sorted((a["summary"] for a in items), key=lambda r: r["started"], reverse=True)
+    return {"runs": runs, "influence": influence_graph((a["run"], a["graph"]) for a in items if "run" in a)}
