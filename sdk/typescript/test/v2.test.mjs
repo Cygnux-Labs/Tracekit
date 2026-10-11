@@ -55,7 +55,7 @@ def run(srv, info):
 
 test("JCS: every shared vector, byte for byte (tests/vectors/jcs.jsonl, the S4 vectors)", () => {
   const lines = readFileSync(join(ROOT, "tests/vectors/jcs.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
-  assert.equal(lines.length, 248);
+  assert.equal(lines.length, 250);
   for (const v of lines) {
     if (v.error) {
       assert.throws(() => strictParse(v.input), (e) => e instanceof StrictJSONError && e.code === v.error, v.id);

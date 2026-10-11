@@ -488,6 +488,57 @@ class TestMalformedInput(Case):
         with self.subTest("too large"), mock.patch.object(v2, "MAX_ENTRY", 10):
             self.assert_unusable(self.zip([("manifest.json", m)]))
 
+    def test_one_zip_layout(self):
+        """docs/format-v2.md §9: any other layout is unusable, so every reader sees the same entries."""
+        def built(*entries, comment=b""):
+            f = io.BytesIO()
+            with zipfile.ZipFile(f, "w") as z:
+                z.comment = comment
+                for e in entries:
+                    z.writestr(*e)
+            return bytearray(f.getvalue())
+
+        def info(name, **attrs):
+            i = zipfile.ZipInfo(name)
+            for k, v in attrs.items():
+                setattr(i, k, v)
+            return i
+
+        def patched(at, fmt, value, data=None):
+            data = bytearray(good if data is None else data)
+            for a in at:
+                struct.pack_into(fmt, data, a, value)
+            return data
+        good = built(("a", b"x"), ("b", b"y"))
+        cd = struct.unpack("<I", good[-6:-2])[0]
+        second = struct.unpack("<I", good[cd + 42:cd + 46])[0]
+        self.assertEqual(v2.read_zip(io.BytesIO(good)), {"a": b"x", "b": b"y"})
+        with open(os.path.join(self.d, "good.zip"), "wb") as f:
+            f.write(good)
+        self.assertEqual(v2.read_zip(os.path.join(self.d, "good.zip")), {"a": b"x", "b": b"y"})
+        cases = {
+            "end record": [b"MZ" + good, built(("a", b"x"), comment=b"c"), patched((len(good) - 14,), "<H", 1)],
+            "not a zip file": [good + b"\0", patched((len(good) - 22,), "<I", 0x07064b50), b"PK"],
+            "entry count": [patched((len(good) - 14, len(good) - 12), "<H", 3)],
+            "bad central directory entry": [built((info("a", extra=b"\xfe\xca\0\0"), b"x")),
+                                            built((info("a", comment=b"c"), b"x"))],
+            "general-purpose flags 0x800": [patched((6, cd + 8), "<H", 0x800)],
+            "is encrypted": [patched((6, cd + 8), "<H", 1)],
+            "bad local header": [patched((6,), "<H", 8), patched((second + 30,), "<B", ord("c"))],
+            "compression method 12": [built(("a", b"x", zipfile.ZIP_BZIP2))],
+            "compression method 14": [built(("a", b"x", zipfile.ZIP_LZMA))],
+            "compression method 0": [patched((22, cd + 24), "<I", 2)],
+            "does not follow the entry before it": [patched((cd + 46 + 1 + 42,), "<I", 0)],
+            "bytes before the central directory": [good[:cd] + b"z" + patched((len(good) - 6,), "<I", cd + 1)[cd:]],
+        }
+        short = built(("a", b"x" * 10, zipfile.ZIP_DEFLATED))
+        short_cd = struct.unpack("<I", short[-6:-2])[0]
+        cases["10 bytes, not the 100"] = [patched((22, short_cd + 24), "<I", 100, short)]
+        for why, datas in cases.items():
+            for data in datas:
+                with self.subTest(why, data=bytes(data[:8])), self.assertRaisesRegex(v2.Unusable, why):
+                    v2.read_zip(io.BytesIO(bytes(data)))
+
     def test_corrupted_bytes_never_crash(self):
         _, out = self.honest()
         with open(out, "rb") as f:

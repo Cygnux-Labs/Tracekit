@@ -73,9 +73,12 @@ bridge's two records as ordinary signer capture.gap events (a `capture gaps` war
 appended after them with a copy of the retired key from any other: only this check reports it."""
 import base64
 import collections
+import contextlib
 import datetime
 import hashlib
+import os
 import re
+import struct
 import sys
 import zipfile
 
@@ -102,34 +105,93 @@ CLASSES = ("public", "customer", "tracekit", "operator")
 _NAME = re.compile(r"[A-Za-z0-9_-][A-Za-z0-9._-]*(/[A-Za-z0-9._-]+)*")
 _VERSION = re.compile(r"\d{1,9}(\.\d{1,9}){0,2}")
 _CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+_EOCD, _CEN, _LOC = struct.Struct("<IHHHHIIH"), struct.Struct("<IHHHHHHIIIHHHHHII"), struct.Struct("<IHHHHHIIIHH")
 
 
 class Unusable(ValueError):
     pass
 
 
+def _layout(f):
+    """The entries of the one zip layout §9 accepts, in order: (name bytes, local offset, compressed size, size, CRC,
+    method). The end record ends the file; the central directory sits between the last entry and it; the entries are
+    contiguous from offset 0, each local header repeating its central entry; no zip64, comment, extra field or
+    general-purpose flag."""
+    f.seek(0, 2)
+    size = f.tell()
+    if size < 22:
+        raise Unusable("not a zip file")
+    f.seek(size - 22)
+    sig, disk, cd_disk, here, count, cd_size, cd_off, comment = _EOCD.unpack(f.read(22))
+    if sig != 0x06054b50:
+        raise Unusable("not a zip file, or bytes after its end record")
+    if disk or cd_disk or here != count or comment or cd_off + cd_size != size - 22:
+        raise Unusable("not the canonical zip layout: end record")
+    if count > MAX_ENTRIES:
+        raise Unusable("too many entries")
+    f.seek(cd_off)
+    cd, entries, at = f.read(cd_size), [], 0
+    while at < cd_size:
+        if at + 46 > cd_size:
+            raise Unusable("truncated zip")
+        sig, _, _, flags, method, _, _, crc, csize, usize, n, extra, comment, _, _, _, off = _CEN.unpack_from(cd, at)
+        if sig != 0x02014b50 or extra or comment or at + 46 + n > cd_size:
+            raise Unusable("bad central directory entry")
+        entries.append((cd[at + 46:at + 46 + n], off, csize, usize, crc, method, flags))
+        at += 46 + n
+    if len(entries) != count:
+        raise Unusable("not the canonical zip layout: entry count")
+    pos = 0
+    for raw, off, csize, usize, crc, method, flags in entries:
+        n = raw.decode("cp437")[:80]
+        if 0xffffffff in (off, csize, usize):
+            raise Unusable("zip64 is not supported")
+        if method not in (0, 8) or method == 0 and csize != usize:
+            raise Unusable(f"{n!r}: compression method {method} (only stored and deflate)")
+        if flags & 1:
+            raise Unusable(f"{n!r} is encrypted")
+        if flags:
+            raise Unusable(f"{n!r}: general-purpose flags {flags:#x}")
+        if off != pos:
+            raise Unusable(f"not the canonical zip layout: {n!r} does not follow the entry before it")
+        f.seek(off)
+        h = f.read(30 + len(raw))
+        loc = _LOC.unpack_from(h) if len(h) == 30 + len(raw) else ()
+        if h[30:] != raw or (*loc[:1], *loc[2:4], *loc[6:]) != (0x04034b50, flags, method, crc, csize, usize, len(raw), 0):
+            raise Unusable(f"bad local header for {n!r}")
+        pos = off + 30 + len(raw) + csize
+    if pos != cd_off:
+        raise Unusable("not the canonical zip layout: bytes before the central directory")
+    return [e[:6] for e in entries]
+
+
 def read_zip(path):
-    """{name: bytes} of a zip, read entry by entry under count and size caps. Refuses names that could escape a
-    directory, symlinks and duplicate entries."""
+    """{name: bytes} of a zip in the layout of §9 (`_layout`), read entry by entry under count and size caps. Refuses
+    names that could escape a directory, symlinks and duplicate entries. `path`: a path or a binary file."""
     files, total = {}, 0
-    with zipfile.ZipFile(path) as z:
-        infos = z.infolist()
-        if len(infos) > MAX_ENTRIES:
-            raise Unusable("too many entries")
-        for i in infos:
-            n = i.filename
-            if not _NAME.fullmatch(n) or any(set(p) == {"."} for p in n.split("/")):
-                raise Unusable(f"bad entry name {n[:80]!r}")
-            if n in files:
-                raise Unusable(f"duplicate entry {n}")
-            if (i.external_attr >> 16) & 0o170000 == 0o120000:
-                raise Unusable(f"symlink entry {n}")
-            cap = min(MAX_ENTRY, MAX_TOTAL - total)
-            with z.open(i) as f:
-                data = f.read(cap + 1)
-            if len(data) > cap:
-                raise Unusable(f"{n} is larger than the bundle limits")
-            files[n], total = data, total + len(data)
+    with open(path, "rb") if isinstance(path, (str, bytes, os.PathLike)) else contextlib.nullcontext(path) as f:
+        entries = _layout(f)
+        with zipfile.ZipFile(f) as z:
+            infos = z.infolist()
+            if [(i.filename.encode("cp437"), i.header_offset, i.compress_size, i.file_size, i.CRC, i.compress_type)
+                    for i in infos] != entries:
+                raise Unusable("not the canonical zip layout: central directory")
+            for i in infos:
+                n = i.filename
+                if not _NAME.fullmatch(n) or any(set(p) == {"."} for p in n.split("/")):
+                    raise Unusable(f"bad entry name {n[:80]!r}")
+                if n in files:
+                    raise Unusable(f"duplicate entry {n}")
+                if (i.external_attr >> 16) & 0o170000 == 0o120000:
+                    raise Unusable(f"symlink entry {n}")
+                cap = min(MAX_ENTRY, MAX_TOTAL - total)
+                with z.open(i) as e:
+                    data = e.read(cap + 1)
+                if len(data) > cap:
+                    raise Unusable(f"{n} is larger than the bundle limits")
+                if len(data) != i.file_size:
+                    raise Unusable(f"{n}: {len(data)} bytes, not the {i.file_size} its entry says")
+                files[n], total = data, total + len(data)
     return files
 
 
@@ -488,6 +550,9 @@ def _run_set(rep, files, trust, witnesses, origin, size, runs, included, check_r
     tsalt = base64.b64decode(rs["tenant_salt"], validate=True)
     lo, hi, reg_origin = rs["from"], rs["to"], registry.origin(origin, tsalt)
     span = f"registry {lo}..{hi}"
+    if type(lo) is not int or type(hi) is not int:
+        rep.check("run-set", False, f"INCOMPLETE, {span}", ["the registry range is not two integers"])
+        return [], -1, []
     # the registry notes are signed by the record log's own pinned key, under the registry origin
     vkeys = [checkpoint.vkey(reg_origin, *checkpoint.parse_vkey(k)[2:]) for k in trust["logs"]
              if checkpoint.parse_vkey(k)[0] == origin]

@@ -25,7 +25,7 @@ def vectors():
 class TestVectors(unittest.TestCase):
     def test_every_vector(self):
         vs = vectors()
-        self.assertEqual(len(vs), 248)
+        self.assertEqual(len(vs), 250)
         for v in vs:
             with self.subTest(v["id"]):
                 if "error" in v:
@@ -74,7 +74,14 @@ class TestStrictParser(unittest.TestCase):
         self.assertEqual(loads_strict('{"a":"é"}'.encode("utf-8")), {"a": "é"})
         self.rejects(b'"\xff"', "invalid_utf8")
         self.rejects('{"a":', "syntax")
-        self.rejects("[" * 100000, "syntax")
+
+    def test_depth(self):
+        self.assertEqual(len(str(loads_strict("[" * 128 + "]" * 128))), 256)
+        text = '{"a":' * 128 + "1" + "}" * 128
+        self.assertEqual(canonical(loads_strict(text)), text.encode())
+        for text in ("[" * 129 + "]" * 129, '{"a":' * 129 + "1" + "}" * 129, '[{"a":' * 65 + "1" + "}]" * 65,
+                     "[" * 100000):
+            self.rejects(text, "depth")
 
     def test_canonical_refuses_what_the_parser_rejects(self):
         deep = []

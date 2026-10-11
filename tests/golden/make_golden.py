@@ -9,7 +9,9 @@ bundles with one defect each. The output is frozen evidence: only rerun a sectio
 import hashlib
 import json
 import os
+import re
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
@@ -231,6 +233,32 @@ V2_CASES = [
 ]
 
 
+def two_directories(a, b):
+    """One file holding zips `a` and `b` (bytes): the end record leads to b's central directory, whose last entry's
+    comment holds a's central directory and a zip64 end record and locator that lead to a's."""
+    def parts(d):
+        n, size, off = struct.unpack("<HII", d[-12:-2])
+        cd, entries, at = d[off:off + size], [], 0
+        while at < len(cd):
+            nl, xl, cl = struct.unpack("<HHH", cd[at + 28:at + 34])
+            entries.append(bytearray(cd[at:at + 46 + nl + xl + cl]))
+            at += len(entries[-1])
+        return d[:off], entries
+    a_loc, a_cd = parts(a)
+    b_loc, b_cd = parts(b)
+    out = bytearray(a_loc) + b_loc
+    for e in b_cd:
+        e[42:46] = struct.pack("<I", struct.unpack("<I", e[42:46])[0] + len(a_loc))
+    a_bytes = b"".join(a_cd)
+    b_cd[-1][32:34] = struct.pack("<H", len(a_bytes) + 56 + 20)
+    b_bytes = b"".join(b_cd)
+    cd_b, cd_a = len(out), len(out) + len(b_bytes)
+    out += b_bytes + a_bytes
+    out += struct.pack("<IQHHIIQQQQ", 0x06064b50, 44, 45, 45, 0, 0, len(a_cd), len(a_cd), len(a_bytes), cd_a)
+    out += struct.pack("<IIQI", 0x07064b50, 0, cd_a + len(a_bytes), 1)
+    return bytes(out + struct.pack("<IHHHHIIH", 0x06054b50, 0, 0, len(b_cd), len(b_cd), len(out) - cd_b, cd_b, 0))
+
+
 def negative(out):
     """Bundles with one defect each, from a fixed-key log (tests/test_bundle_v2.Log); [(case name, bundle file)].
     Every case verifies against negative/trust.json (the log key and one pinned witness, one cosignature required)."""
@@ -318,6 +346,29 @@ def negative(out):
         raw("symlink entry", "zip-symlink.tkb", entries + [(link, b"/etc/passwd")])
         raw("oversized entry", "zip-oversized.tkb", entries + [("policies/big.json", bytes((64 << 20) + 1))])
         raw("no manifest", "zip-no-manifest.tkb", [e for e in entries if e[0] != "manifest.json"])
+
+        # one zip layout (§9): anything a reader could see differently is unusable
+        def layout(name, file, data):
+            write(os.path.join(out, file), data)
+            cases.append((name, file))
+        with open(good, "rb") as f:
+            zipped = f.read()
+        layout("bytes before the first entry", "zip-prefix.tkb", b"MZ" + zipped)
+        layout("archive comment", "zip-archive-comment.tkb", zipped[:-2] + struct.pack("<H", 4) + b"note")
+        extra = zipfile.ZipInfo("manifest.json")
+        extra.extra = b"\xfe\xca\x00\x00"
+        raw("entry with an extra field", "zip-extra-field.tkb", [(extra, entries[0][1])] + entries[1:])
+        flagged, cd = bytearray(zipped), struct.unpack("<I", zipped[-6:-2])[0]
+        flagged[6:8] = flagged[cd + 8:cd + 10] = struct.pack("<H", 0x800)   # UTF-8 names, on the first entry
+        layout("entry with a general-purpose flag", "zip-flags.tkb", bytes(flagged))
+        bz2 = zipfile.ZipInfo("manifest.json")
+        bz2.compress_type = zipfile.ZIP_BZIP2
+        raw("entry compressed with bzip2", "zip-bzip2.tkb", [(bz2, entries[0][1])] + entries[1:])
+        mutated("manifest nested deeper than 128", "json-manifest-too-deep.tkb",
+                edit=lambda f, m: m.update(x=json.loads("[" * 129 + "]" * 129)))
+        mutated("record file line nested deeper than 128", "json-record-too-deep.tkb",
+                edit=lambda f, m: f.update({k: b"[" * 129 + b"]" * 129 + b"\n" + v for k, v in f.items()
+                                            if k.startswith("runs/")}))
         raw("non-strict JSON manifest (duplicate key)", "json-manifest-duplicate-key.tkb",
             [("manifest.json", manifest[:-1] + b', "format": "tracekit.bundle.v2"}')] + entries[1:])
         mutated("non-strict JSON record (duplicate key)", "json-record-duplicate-key.tkb",
@@ -396,6 +447,9 @@ def negative(out):
             forged_runs = {k: z.read(k) for k in z.namelist() if k.startswith("runs/")}
         mutated("run rebuilt with the real key under the real checkpoint", "run-rebuilt.tkb",
                 edit=lambda f, m: f.update(forged_runs))
+        with open(tmp, "rb") as f:
+            layout("two central directories, one reached by a zip64 locator", "zip-two-directories.tkb",
+                   two_directories(zipped, f.read()))
 
         # signed by the real keys, wrong by the rules
         lg = log(close=False)
@@ -422,6 +476,11 @@ def negative(out):
         run_set("run-set whose registry note no witness cosigned", "run-set-registry-uncosigned.tkb")
         run_set("run-set bundled with a run of another tenant", "run-set-foreign-run.tkb", foreign=True,
                 witnesses=((tb.WITNESS, tb.WIT_SECRET),))
+        run_set("run-set whose range ends in a float token", "run-set-float-bound.tkb",
+                witnesses=((tb.WITNESS, tb.WIT_SECRET),))
+        bound = os.path.join(out, "run-set-float-bound.tkb")
+        rewrite_bundle(bound, bound, lambda f, m: f.update({"registry/run-set.json": re.sub(
+            rb'"to": (\d+)', rb'"to": \1.0', f["registry/run-set.json"])}))
         trust = {"logs": [checkpoint.vkey(tb.ORIGIN, checkpoint.ED25519, tb.pub(tb.LOG_SECRET))],
                  "witnesses": [{"vkey": checkpoint.vkey(tb.WITNESS, checkpoint.COSIGNATURE, tb.pub(tb.WIT_SECRET)),
                                 "class": "customer"}], "algs": ["ed25519"], "witnesses_required": 1}

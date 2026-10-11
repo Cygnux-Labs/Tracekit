@@ -7,6 +7,7 @@ import json
 import math
 
 MAX_SAFE_INT = 2 ** 53 - 1
+MAX_DEPTH = 128
 
 try:
     import rfc8785
@@ -58,7 +59,7 @@ except ImportError:   # `pip install --no-deps tracekit-ai`: the verifier runs o
 
 
 class StrictJSONError(ValueError):
-    """`code` is one of: invalid_utf8, syntax, duplicate_key, non_finite, int_range, lone_surrogate."""
+    """`code` is one of: invalid_utf8, syntax, duplicate_key, non_finite, int_range, lone_surrogate, depth."""
 
     def __init__(self, code, msg):
         super().__init__(f"{code}: {msg}")
@@ -105,14 +106,16 @@ def _int(s):
 
 
 def _check_strings(v):
-    stack = [v]
+    """Lone surrogates in strings and keys; arrays and objects nested deeper than MAX_DEPTH."""
+    stack = [(v, 0)]
     while stack:
-        v = stack.pop()
+        v, depth = stack.pop()
+        if isinstance(v, (dict, list)) and depth == MAX_DEPTH:
+            raise StrictJSONError("depth", f"nesting deeper than {MAX_DEPTH}")
         if isinstance(v, dict):
-            stack.extend(v)
-            stack.extend(v.values())
+            stack.extend((x, depth + 1) for x in [*v, *v.values()])
         elif isinstance(v, list):
-            stack.extend(v)
+            stack.extend((x, depth + 1) for x in v)
         elif isinstance(v, str):
             try:
                 v.encode("utf-8")
@@ -129,7 +132,9 @@ def loads_strict(text):
             raise StrictJSONError("invalid_utf8", str(e)) from None
     try:
         v = json.loads(text, object_pairs_hook=_object, parse_constant=_constant, parse_float=_float, parse_int=_int)
-    except (json.JSONDecodeError, RecursionError) as e:
+    except json.JSONDecodeError as e:
         raise StrictJSONError("syntax", str(e)) from None
+    except RecursionError:
+        raise StrictJSONError("depth", f"nesting deeper than {MAX_DEPTH}") from None
     _check_strings(v)
     return v

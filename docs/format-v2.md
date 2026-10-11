@@ -39,6 +39,7 @@ strict parser (`format.canon.loads_strict`) that rejects input JCS could hash di
 | `NaN`, `Infinity`, `-Infinity`, or a number that overflows to them | `non_finite` |
 | an integer token (no `.` or exponent) above 2^53 − 1 in magnitude, or longer than 16 digits | `int_range` |
 | a string or key with a lone UTF-16 surrogate (`"\ud800"`) | `lone_surrogate` |
+| arrays and objects nested more than 128 deep (`[[1]]` is 2 deep) | `depth` |
 
 Send larger integers as strings. A tool call whose raw arguments fail strict parsing is denied with rule
 `TK-ARGS-INVALID` and gets no `args_commitment` ([policy](policy-v2.md)).
@@ -268,7 +269,9 @@ registry origin    tracekit.example.org/log/1/registry/62d28187e34b4d26bb63c6d6f
 A **run-set** is the range of registry leaves `a..b−1` between two registry checkpoints. It proves which runs of the
 tenant were registered and finalised in that window: a run deleted, a second `run.final`, or a withheld `key.retire`
 shows as a missing or extra leaf. A bundle with a run-set carries the tenant salt, so its holder can test guessed run
-ids against this tenant's leaves; other tenants' leaves stay opaque.
+ids against this tenant's leaves; other tenants' leaves stay opaque. In `registry/run-set.json` (§9), `from` and `to`
+are integer tokens: a number with a fraction or exponent (`4.0`, `4e0`), or any other type, makes the run-set
+INCOMPLETE.
 
 ## 8. Anchors
 
@@ -299,7 +302,7 @@ policies/<sha256>.json    policy snapshots, named by the SHA-256 of their bytes
 A run-set bundle adds:
 
 ```text
-registry/run-set.json     {"tenant_salt": base64, "from": a, "to": b, "consistency": [base64 hash, ...],
+registry/run-set.json     {"tenant_salt": base64, "from": a, "to": b (integer tokens), "consistency": [base64 hash, ...],
                            "leaves": [{"leaf": base64, "inclusion": [base64 hash, ...]}, ...]}
 registry/records.jsonl    the record each leaf points to, in leaf order
 checkpoints/registry-<n>.note   the registry notes at a (none when a = 0) and b
@@ -309,6 +312,21 @@ runs/                     every run whose run.final is in the range, and the sel
 JSON lines files end in a newline, one strict JSON text (§1) per line, each line at most 1 MiB. Zip limits: at most
 10,000 entries, 64 MiB per entry, 512 MiB in total; entry names match `[A-Za-z0-9_-][A-Za-z0-9._-]*(/[A-Za-z0-9._-]+)*`
 with no `.` or `..` segment; no symlinks; no duplicate names. A bundle carries no code and no trust configuration.
+
+A bundle has one zip layout, so every reader sees the same entries; anything else is `UNUSABLE BUNDLE`:
+
+- the entries, in central-directory order, start at offset 0 and follow each other with no gap or overlap: each is a
+  local header, its name and its data, and the next starts where that data ends;
+- the central directory starts where the last entry ends and ends where the end-of-central-directory record starts
+  (offset + size = the record's offset), and the record is the file's last 22 bytes: no archive comment, no bytes
+  before the first entry or after the record;
+- the record is for disk 0 only, and both of its entry counts equal the number of central directory entries;
+- no zip64 record or locator, and no extra or comment field in any header;
+- each local header repeats its central entry: name, general-purpose flags, method, CRC-32 and both sizes;
+- general-purpose flags 0 (so no encryption and no data descriptor); method 0 (stored, with equal sizes) or 8 (deflate);
+- each entry's data is exactly its stated size and matches its CRC-32.
+
+`tracekit.bundle_v2` writes this layout (Python's `zipfile` writing a seekable file).
 
 ## 10. The trust config
 
