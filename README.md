@@ -34,43 +34,48 @@ anyone can verify offline, with a report that says what it proves and what it ca
   [server](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/threat-model-server.md) threat models map each to
   its attacker.
 
-## Quickstart (60 seconds)
+## Quickstart (under two minutes)
 
-A dev signer, a LangGraph agent with a mock model (no API key), and a verified bundle:
-
-```sh
-git clone https://github.com/Cygnux-Labs/Tracekit && cd Tracekit
-python3 -m venv .venv && . .venv/bin/activate
-pip install '.[signer]' 'langchain>=1.4,<1.5' 'langgraph>=1.2,<1.3'
-python examples/v2/langchain/agent.py --scripted
-```
-
-The first call starts a dev signer in the background. One call is allowed, one denied, one held until a second process
-approves it; then the example pins the signer's key, exports the run and verifies it:
+Three steps, with the agent you already have (OpenAI Agents SDK, LangGraph / LangChain, Claude Agent SDK, an MCP
+client, or plain OpenAI / Anthropic / Google Gen AI calls):
 
 ```sh
-tracekit signer trust -o trust.json
-tracekit export --v2 --run <run id> -o run.tkb
-tracekit verify run.tkb --trust trust.json          # Integrity: VERIFIED. / Assurance: dev; ...
-tracekit view --dev                                 # browse the runs: verdicts, denials, approvals, replay
+pip install tracekit-ai
 ```
 
-Other frameworks: [OpenAI Agents SDK](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/quickstarts/openai-agents.md),
+```python
+import tracekit; tracekit.instrument()     # the first line of your agent; then run it as usual
+```
+
+```sh
+tracekit last                               # Integrity: VERIFIED. / Assurance: dev; ...
+```
+
+`tracekit.instrument()` starts a dev signer in the background (or reuses the running one) and gates and records every
+tool and model call of the frameworks it finds. `tracekit last` exports the most recent finished run, pins the dev
+signer's key, verifies the bundle and says where it is. Then `tracekit view --dev` browses every run: verdicts,
+denials, approvals, replay.
+
+Per framework, with a 10-line example each:
+[OpenAI Agents SDK](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/quickstarts/openai-agents.md),
+[LangChain / LangGraph](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/quickstarts/langchain.md),
 [Claude Agent SDK](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/quickstarts/claude-agent-sdk.md),
 [MCP client](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/quickstarts/mcp.md),
 [a custom agent](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/quickstarts/custom.md). The
-[v2 quickstart](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/quickstart-v2.md) explains each step.
+[v2 quickstart](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/quickstart-v2.md) explains each step and what
+`dev` assurance means; [limits](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/limits.md) lists what this path
+doesn't cover.
 
-Without a checkout, the same loop in a temp dir (with a witness cosignature and a tampered copy that fails), and
-Claude Code's hooks wired to a dev signer:
+No agent at hand? From a checkout, `python examples/v2/langchain/agent.py --scripted` runs a LangGraph agent with a
+mock model whose calls are allowed, denied and held for an approval. Without one, the same loop in a temp dir (with a
+witness cosignature and a tampered copy that fails), and Claude Code's hooks wired to a dev signer:
 
 ```sh
-pip install 'tracekit-ai[signer]'
 tracekit demo --server                # exit 0
 tracekit init --dev --v2
 ```
 
-Or check the shipped sample bundles (v1) with the verifier alone:
+Or check the shipped sample bundles (v1) with the verifier alone (`pip install --no-deps tracekit-ai` is enough):
 
 ```sh
 tracekit verify docs/sample/demo-run.tkb --key docs/sample/signer.pub            # exit 0

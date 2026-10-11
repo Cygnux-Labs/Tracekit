@@ -28,7 +28,9 @@ classifiers = [
     "Topic :: System :: Logging",
 ]
 requires-python = ">=3.9"
-dependencies = ["cryptography>=41", "rfc8785>=0.1,<0.2"]   # signing (`tracekit verify` alone works without it); JCS for format v2
+# signing, JCS for format v2, the v2 signer's policy engine (regex is the fallback where RE2 has no wheel); `tracekit
+# verify` needs none of them: `pip install --no-deps tracekit-ai` is the verifier alone
+dependencies = ["cryptography>=41", "rfc8785>=0.1,<0.2", "google-re2>=1.1; python_version>='3.10'", "regex>=2023.8"]
 
 [project.optional-dependencies]
 yaml = ["PyYAML>=6"]   # optional: policies are parsed with a built-in YAML subset otherwise
@@ -36,7 +38,7 @@ langchain = ["langchain-core>=0.2"]   # tracekit.adapters.langchain (LangChain /
 grpc = ["grpcio>=1.50"]   # `tracekit otel serve --grpc-port 4317`
 postgres = ["psycopg[binary]>=3.1"]   # tracekit.storage.postgres: the signer's Postgres store
 aws = ["boto3>=1.34"]   # the signer's log key in AWS KMS (log_key: {aws_kms: ...})
-signer = ["google-re2>=1.1; python_version>='3.10'", "regex>=2023.8"]   # tracekit.policy2 engine; regex is the fallback where RE2 has no wheel
+signer = []   # now in the default dependencies; kept so `tracekit-ai[signer]` still installs
 dev = ["pytest>=7", "PyYAML>=6", "pyflakes", "regex>=2023.8", "google-re2>=1.1; python_version>='3.10'",
        "hypothesis>=6.100",   # property tests of the v2 verifier (tests/test_verify_v2_property.py)
        "moto>=5",   # tests/test_signer_kms.py against moto's KMS, where it has Ed25519
