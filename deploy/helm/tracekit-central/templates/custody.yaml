@@ -1,6 +1,7 @@
 {{- /* The custody services (docs/gateway.md, docs/executor.md, docs/mcp-gateway.md): each holds credentials the agents
 never get, from a Secret mounted only in its own pod, and records for the agents' runs as a signer `gateways` identity,
-k8s_sa:system:serviceaccount:<namespace>:<release>-<name>. */ -}}
+k8s_sa:system:serviceaccount:<namespace>:<release>-<name>. Each takes the agents' tokens of its own audience,
+<audience>-<name>, never the signers': a token one receives can't be replayed at the signers. */ -}}
 {{- range $s := list (dict "key" "gateway" "name" "gateway" "port" 8080 "set" (dict "api_key_file" "/etc/tracekit/secrets/api_key"))
                      (dict "key" "executor" "name" "executor" "port" 8090 "set" dict)
                      (dict "key" "mcpGateway" "name" "mcp-gateway" "port" 8091 "set" dict) }}
@@ -10,7 +11,7 @@ k8s_sa:system:serviceaccount:<namespace>:<release>-<name>. */ -}}
 {{- $cfg := merge (dict "signer" (printf "https://%s.%s.svc:8443" $.Release.Name $.Release.Namespace)
       "http" (dict "listen" (printf "0.0.0.0:%d" (int $s.port)) "cert" "/etc/tracekit/tls/tls.crt" "key" "/etc/tracekit/tls/tls.key"
                    "authenticators" (list "k8s_sa")
-                   "k8s_sa" (dict "audience" $.Values.audience "tokenreview" "https://kubernetes.default.svc"
+                   "k8s_sa" (dict "audience" (printf "%s-%s" $.Values.audience $s.name) "tokenreview" "https://kubernetes.default.svc"
                                   "token_file" "/var/run/secrets/kubernetes.io/serviceaccount/token"
                                   "ca" "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt")))
       $s.set (deepCopy $v.config) }}

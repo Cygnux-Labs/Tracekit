@@ -94,7 +94,8 @@ viewer:
     limits: {cpu: 500m, memory: 512Mi}
 
 # The custody services: each holds credentials the agents never get, from `secretName` (mounted at
-# /etc/tracekit/secrets in its own pod only), serves the agents on HTTPS with `k8s_sa` (`audience`; tlsSecretName: a
+# /etc/tracekit/secrets in its own pod only), serves the agents on HTTPS with `k8s_sa` (tokens of audience
+# `<audience>-<name>`, such as tracekit-signer-executor, never the signers' `audience`; tlsSecretName: a
 # kubernetes.io/tls Secret naming <release>-<name>.<namespace>.svc) and records for their runs as the signer `gateways`
 # identity k8s_sa:system:serviceaccount:<namespace>:<release>-<name>: list it in signer.config `gateways` and grant it
 # its methods in `authorize` (docs/deploy-kubernetes.md#custody). They reach the signers with tls.secretName's ca.crt.

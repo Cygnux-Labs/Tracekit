@@ -76,8 +76,9 @@ ask:
 Who runs the call then:
 
 - The [tool executor](executor.md) and the [MCP gateway](mcp-gateway.md) run it outside the agent, with credentials
-  the agent never holds, and run the arguments the consume returns. Their records are tier T2. This is the strong
-  form: the agent can neither run the call itself nor change what runs.
+  the agent never holds, and run the arguments the consume returns. Their records are tier T2 and name the service in
+  `via`. This is the strong form: the agent can neither run the call itself nor change what runs, and the signer takes
+  the call's approval request, consume and completion from that service alone, so the agent can't answer for it.
 - Every shipped adapter (Python and TypeScript) also runs the arguments the consume returns, not the framework's, so
   arguments changed after the approval don't run. The call still runs in the agent's process (T1), which could run it
   around the adapter.

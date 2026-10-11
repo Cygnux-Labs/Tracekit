@@ -164,7 +164,15 @@ signer:
       "k8s_sa:system:serviceaccount:tracekit:tk-mcp-gateway": [decide, complete, approval_request, approval_wait, approval_consume, observe]
 ```
 
-Agents call them with the same projected token they send the signers.
+Each takes the agents' service-account tokens of its own audience, `<audience>-<name>` (`tracekit-signer-executor`
+for the executor by default), never the signers' `audience`, so a token a custody service receives can't be replayed at
+the signers. An agent pod mounts a projected token per service it calls, next to the one it sends the signers:
+
+```yaml
+volumes:
+  - name: executor-token
+    projected: {sources: [{serviceAccountToken: {audience: tracekit-signer-executor, expirationSeconds: 3600, path: token}}]}
+```
 
 Custody holds only if the agents can't reach the APIs around these services. `agentEgress.enabled` adds a
 NetworkPolicy for the agent pods (`agentEgress.podSelector`, in `agentEgress.namespace`) that lets them reach only the
@@ -181,6 +189,9 @@ It is off by default: turning it on cuts every other connection the agents make.
 only on a CNI that enforces them (Calico and Cilium do; some managed defaults don't): check from an agent pod that an
 outside address is refused, for example `kubectl exec -n agents deploy/support-agent -- python -c
 "import socket; socket.create_connection(('api.github.com', 443), 3)"` must time out. Keep the provider keys and action
-secrets out of the agents' namespace altogether.
+secrets out of the agents' namespace altogether. The policy lets the agents reach kube-dns, which a DNS tunnel can carry
+data through: filter DNS (a DNS-aware policy, a CoreDNS allow-list) where that matters. With NodeLocal DNSCache the
+agents resolve through `169.254.20.10`, which the policy doesn't allow: add an egress rule for `169.254.20.10/32` on
+port 53.
 
 `tests/test_helm.py` checks the rendered manifests, `tests/test_central.py` the routing and the close on scale-down.

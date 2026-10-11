@@ -282,6 +282,10 @@ class Central(unittest.TestCase):
                     f.write(m["ConfigMap", f"t-{name}"]["data"][f"{name}.yaml"])
                 cfg = load(path)
             self.assertEqual((cfg["signer"], cfg["http"]["authenticators"]), ("https://t.ns.svc:8443", ["k8s_sa"]))
+            # the agents' tokens for it are of its own audience: one it receives can't be replayed at the signers
+            self.assertEqual(cfg["http"]["k8s_sa"]["audience"], f"tracekit-signer-{name}")
+            [token] = [v for v in pod["volumes"] if v["name"] == "signer-token"]
+            self.assertEqual(token["projected"]["sources"][0]["serviceAccountToken"]["audience"], "tracekit-signer")
         self.assertEqual(owners["tls"], {("t", "tls"), ("t-gateway", "signer-ca"), ("t-executor", "signer-ca"),
                                          ("t-mcp-gateway", "signer-ca")})
 

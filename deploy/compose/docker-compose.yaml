@@ -110,6 +110,8 @@ services:
 
   agent:
     # An example agent: another uid, its own network, only the socket volume. `docker compose run --rm agent`
+    # Keep any agent non-root with cap_drop ALL and no-new-privileges: the socket names its peers by uid, and the
+    # custody services' signer identities are uids too (docs/executor.md#compose)
     build: {context: ../.., dockerfile: deploy/docker/Dockerfile}
     image: tracekit-signer:compose
     profiles: [agent]

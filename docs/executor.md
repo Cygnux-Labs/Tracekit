@@ -33,9 +33,12 @@ actions:
       properties: {owner: {type: string}, repo: {type: string}, title: {type: string}, body: {type: string}}
 ```
 
-Each `{arg}` in `url_template` is that argument, URL-quoted so it stays inside its path segment or query value (`.`
-and `..` are refused); it must be a required argument, and never part of the host. The arguments go as the JSON body,
-except for GET and DELETE. Redirects are never followed: they would carry the credential elsewhere.
+Each `{arg}` in `url_template` is that argument; it must be a required argument, and never part of the host. In the
+path it must be one plain segment: letters, digits and `.`, `_`, `~`, `-`, not all dots (anything else is refused with
+400, since a slash, backslash or dot segment, even percent-encoded, can leave its segment once a proxy decodes the
+path). In the query (`?memo={memo}`) it is URL-quoted whole. The arguments go as the JSON body, except for GET and
+DELETE. Redirects are never followed: they would carry the credential elsewhere. Each `headers` file holds one line of
+printable ASCII (the executor refuses to start otherwise, naming the file).
 
 The executor reaches the signer as itself (`TRACEKIT_SIGNER_TOKEN_FILE` or `TRACEKIT_SIGNER_CERT`/`_KEY`, as for the
 Python client). In `signer.yaml`, list it under `gateways` and grant it the calls it makes for the agents:
@@ -46,7 +49,9 @@ authorize: {"mtls:spiffe://acme.org/tracekit-executor": [decide, complete, appro
 ```
 
 Only an identity in `gateways` may name a `caller`; the signer refuses it from anyone else, and checks the agent's run
-token against the agent's identity, never the executor's.
+token against the agent's identity, never the executor's. It authorizes the call by the agent's `scheme:subject` alone
+(an `authorize` entry for an OIDC person or group doesn't match it), and doesn't apply harness binding to it: the
+executor authenticated the agent itself.
 
 ## Calling it
 
@@ -59,9 +64,11 @@ against the model's tool use).
 | Answer | When |
 |---|---|
 | 200 `{"status": <the API's status>, "result": <its JSON or text>}` | the action ran (an API error status is a result too, recorded as an error) |
-| 400 | arguments off the schema, or a `{arg}` of `.` or `..` |
+| 400 | arguments off the schema, or a path `{arg}` that isn't one plain segment |
+| 401 | the caller isn't one the authenticators accept, or sent no run (before the action is looked up) |
 | 403 | the policy denied it, the approval was rejected or not given in `approval_wait_s`, or the signer refused the call |
-| 502 | the API couldn't be reached (recorded as an error) |
+| 404 | no such action |
+| 502 | `upstream unreachable, the request was not sent`: the action didn't run; or `the request was sent but its response could not be read` (over `max_body`, a timeout): it may have run, so check before running it again. Either is recorded as an error |
 | 503 | the signer can't be reached: nothing ran, whatever the run's fail modes |
 
 The client helpers build framework tools from the listing, so the model sees each action as a tool:
@@ -90,11 +97,18 @@ shape): write a `tool()` per action with its zod shape whose handler returns `ac
 
 For each call, in the agent's run: `policy.decision` (source `gateway`, tier T2) for the action's name and arguments;
 on `ask`, `approval.request` and, once answered, the approval and its consume; then `tool.result` (source `gateway`,
-tier T2) with the API's response as its result, which the signer redacts and commits to. An approval with a T2
-executor (`approval: {executor: t2}`, [approvals](approvals.md#tiers-t1-and-t2-executors)) makes the consume return the
-signer's copy of the arguments, and that is what runs. The header values are cut from the response, also from one
-that echoes them back, before it is recorded or answered (each value and, of a `<scheme> <credential>` value, the
-credential alone).
+tier T2) with the API's response as its result, which the signer redacts and commits to. Each of the executor's
+records names it in `via` (its signer identity). An approval with a T2 executor (`approval: {executor: t2}`,
+[approvals](approvals.md#tiers-t1-and-t2-executors)) makes the consume return the signer's copy of the arguments, and
+that is what runs. The header values are cut from the response's decoded strings (so also from a JSON response that
+echoes one escaped) and from errors, before either is recorded or answered: each value and, of a
+`<scheme> <credential>` value, the credential alone.
+
+The call is the executor's: the signer takes its approval request, consume and completion from the executor alone, so
+the agent, though it holds the run token, can't record a result for it or ask for its approval in its own words
+(`forbidden`, counted in the signer's `refusal.summary` records). For the same reason the executor refuses a `tool_call_id` the agent
+already decided itself, and nobody can abandon the executor's approval: unanswered, it expires. A verifier counts a
+call whose decision and result came by different capture paths at the weaker tier and warns (`tiers`).
 
 ## Compose
 
@@ -106,7 +120,9 @@ the custody services reach the internet. Give each an `http` section with `cert`
 `custody/<service>/`, from a CA the agent trusts: off loopback the services serve only HTTPS),
 `authenticators: [token]` and a `token_file`. The agent registers its run on the socket as its uid, so it hands the services a run token for their
 `token:http` identity: `delegate_run` to `token:http`, then send `X-Tracekit-Run: <run_id>.<that token>` with the
-bearer token.
+bearer token. The services' signer identities are uids on the same socket, so run every agent container as a non-root
+user with `cap_drop: [ALL]` and `no-new-privileges`, as the example `agent` service does: one that can change its uid
+could connect as a custody service.
 
 ## Limits
 
@@ -117,8 +133,9 @@ bearer token.
   `args` narrow and let the policy ask for the actions that matter.
 - An action held for a person keeps its HTTP request open up to `approval_wait_s`; an agent's HTTP client must wait at
   least that long.
-- A result that can't be recorded (the signer went away after the action ran) still goes to the agent, with a warning
-  on the executor's stderr; the run's decision then has no result in the log.
+- A result that can't be recorded (the signer went away after the action ran) still goes to the agent. The executor
+  tries twice under one request id, then says on stderr which call and run it couldn't record and what to check; the
+  run then shows the call's `policy.decision` with no `tool.result` (a signed gap for it at run end is planned).
 - A call made without the model's tool-use id (the LangChain and Claude Agent SDK helpers, whose handlers don't get
   one) is decided under an id of the executor's: with an LLM gateway on the same run it reconciles as
   `reconcile.fabricated` plus `reconcile.hook_missing`. Read such a pair as one call through the executor; pass
