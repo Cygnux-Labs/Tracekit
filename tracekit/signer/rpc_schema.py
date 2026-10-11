@@ -1,7 +1,8 @@
-"""The signer RPC contract, version 15: one JSON Schema per request and response, the error shape, and `SignerAPI`.
+"""The signer RPC contract, version 16: one JSON Schema per request and response, the error shape, and `SignerAPI`.
 
-Frozen: a change to any schema here is a new RPC_VERSION. The caller's identity comes from the transport (peer
-credentials, token, mTLS), never from a request field. Calls that change state carry `request_id`, scoped to that
+Frozen: a change to any schema here is a new RPC_VERSION. Version 16 (all of Tracekit 1.2) adds register_run's optional
+`parent`; a signer serves RPC_MIN..RPC_VERSION (its `hello` `proto`), so a version 15 client keeps working unchanged.
+The caller's identity comes from the transport (peer credentials, token, mTLS), never from a request field. Calls that change state carry `request_id`, scoped to that
 identity: a retry with the same id and payload gets the original response, the same id with another payload is refused
 with `conflict`, and the same id from another identity is a different request.
 Per-run calls carry the `run_token` that `register_run` returned. Event calls carry `stream` and `client_seq`
@@ -12,7 +13,8 @@ from typing import Protocol
 from tracekit.format.canon import MAX_SAFE_INT
 from tracekit.schema import _check
 
-RPC_VERSION = 15
+RPC_VERSION = 16
+RPC_MIN = 15   # the oldest client version a signer serves
 MAX_RAW_ARGS = 1 << 20   # characters of a raw arguments string
 MAX_EXTERNAL_RECORD = 1 << 16   # characters of an external system's own decision record
 MAX_RESULTS_SENT = 1024
@@ -129,6 +131,8 @@ REQUESTS = {
                          analyzes=ID,                      # a findings run about this run of the same tenant
                          replay_of=ID,                     # a replay run (tracekit why) of this run of the same tenant
                          investigation=ID,                 # with replay_of: the investigation it is an arm of
+                         # the run that starts this one (a sub-agent's), proven by its token: recorded with the session
+                         parent=_obj(["run_id", "run_token"], run_id=ID, run_token=TOKEN),
                          agent=_obj(["name"], name=_str(128, minLength=1), version=_str(64))),
     "decide": _decide,
     "complete": _obj(_EVENT_REQ + ["tool_call_id", "decision_id", "args_digest", "status"], **_EVENT, caller=IDENTITY,

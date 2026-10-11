@@ -43,8 +43,15 @@ from tracekit.storage.base import registry_tree
 
 FORMAT = "tracekit.bundle.v2"
 VERIFIER_MIN_VERSION = "1.0.0"
-PROVENANCE_VERSION = "1.1.0"   # input.observed, content.* or why.finding records, decision provenance or replay runs
-V11_TYPES = ("input.observed", "content.accessed", "content.erased", "why.finding")
+# what each verifier version added to format 1.0, oldest first: record types, data fields per type and enum values per
+# (type, field) (gap kinds: capture.gap and trace.tamper `kind`); a bundle needs the newest version whose entries its
+# records use (`needs`)
+VERSIONS = {
+    "1.1.0": {"types": ["input.observed", "content.accessed", "content.erased", "why.finding"],
+              "fields": {"policy.decision": ["provenance", "provenance_state"], "run.registered": ["replay_of"]},
+              "values": {}},
+    "1.2.0": {"types": [], "fields": {"run.registered": ["parent_run", "session"]}, "values": {}},
+}
 KEY_TYPES = ("signer.epoch", "key.retire")
 
 
@@ -58,6 +65,21 @@ def _b64(hashes):
 
 def run_name(tenant, run_id):
     return f"runs/{hashlib.sha256(f'{tenant}/{run_id}'.encode('utf-8')).hexdigest()[:32]}.jsonl"
+
+
+def _uses(event, added):
+    typ, data = event["type"], event["data"]
+    return typ in added["types"] or any(f in data for f in added["fields"].get(typ, ())) or any(
+        f in data and data[f] in values for f, values in added["values"].get(typ, {}).items())
+
+
+def needs(events):
+    """The verifier version a bundle of `events` needs: the newest whose VERSIONS entries one of them uses."""
+    need = VERIFIER_MIN_VERSION
+    for version, added in VERSIONS.items():
+        if any(_uses(e, added) for e in events):
+            need = version
+    return need
 
 
 def _run_set(storage, tenant, tsalt, origin, size, lo, hi):
@@ -144,9 +166,8 @@ def export(storage, tenant, run_id, note, out_path, policies=(), run_set=None, t
     if anchor:
         files[f"rekor/{size}.json"] = json.dumps(anchor["rekor"]).encode("utf-8")
         files[f"tsa/{size}.tsr"] = base64.b64decode(anchor["tsa"])
-    v11 = any(r["event"]["type"] in V11_TYPES or {"provenance", "provenance_state", "replay_of"} & r["event"]["data"].keys()
-              for r in [*pointed, *(r for rs in runs.values() for r in rs)])
-    manifest = {"format": FORMAT, "verifier_min_version": PROVENANCE_VERSION if v11 else VERIFIER_MIN_VERSION,
+    events = [r["event"] for r in [*pointed, *(r for rs in runs.values() for r in rs)]]
+    manifest = {"format": FORMAT, "verifier_min_version": needs(events),
                 "files": {n: hashlib.sha256(b).hexdigest() for n, b in files.items()}}
     tmp = out_path + ".tmp"
     try:

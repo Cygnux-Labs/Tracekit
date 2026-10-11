@@ -149,7 +149,8 @@ class _Https:
         """The host of the run or approval `req` names. A central signer's replica (docs/deploy-kubernetes.md) prefixes
         its ids with its route, `<service>-<n>.`: such an id goes to host `<service>-<n>` in the signer's domain."""
         first, _, rest = self.host.partition(".")
-        route, dot, _ = (req.get("run_id") or req.get("approval_id") or req.get("analyzes") or "").partition(".")
+        route, dot, _ = (req.get("run_id") or req.get("approval_id") or req.get("analyzes")
+                         or req.get("parent", {}).get("run_id") or "").partition(".")
         if not (dot and re.fullmatch(re.escape(first) + r"-[0-9]+", route)):
             return self.host
         return f"{route}.{rest}" if rest else route
@@ -256,10 +257,16 @@ class Client:
         self._order = {}   # run_id -> the lock its event calls hold from taking their client_seq to their answer
         _clients.add(self)
 
-    def run(self, agent, **fields):
-        """Register a run (`agent` is a name or {"name", "version"}); the handle holds its run token."""
+    def run(self, agent, parent=None, **fields):
+        """Register a run (`agent` is a name or {"name", "version"}, `parent` the RunHandle of the run starting it);
+        the handle holds its run token."""
         req = {"agent": {"name": agent} if isinstance(agent, str) else agent, **fields}
-        return RunHandle(self, self.register_run(req))
+        return RunHandle(self, self.register_run(req, parent=parent))
+
+    def register_run(self, req=None, parent=None):
+        """`parent`: the RunHandle of the run that starts this one (a sub-agent's run); the signer records the link."""
+        return self.call("register_run", {**(req or {}), **(
+            {"parent": {"run_id": parent.run_id, "run_token": parent.run_token}} if parent else {})})
 
     def call(self, method, req=None):
         req = dict(req or {})
@@ -443,7 +450,7 @@ def _rpc_method(name):
     return method
 
 
-for _name in rpc_schema.REQUESTS:
+for _name in rpc_schema.REQUESTS.keys() - {"register_run"}:
     setattr(Client, _name, _rpc_method(_name))
 
 

@@ -334,7 +334,7 @@ def _digest(req):
         return None, None
 
 
-def serve_fake(runtime_dir, signer=None, proto=(rpc_schema.RPC_VERSION, rpc_schema.RPC_VERSION), version=__version__,
+def serve_fake(runtime_dir, signer=None, proto=(rpc_schema.RPC_MIN, rpc_schema.RPC_VERSION), version=__version__,
                idle_s=900):
     """Serve `signer` (a new FakeSigner by default) as the dev signer of `runtime_dir`, with the real dev signer's
     lifecycle (tracekit.signer.service.serve_dev). Call it from the main thread; returns an exit code."""
@@ -354,7 +354,7 @@ def serve_fake(runtime_dir, signer=None, proto=(rpc_schema.RPC_VERSION, rpc_sche
 if __name__ == "__main__":
     from tracekit.sdk.autospawn import runtime_dir
     ap = argparse.ArgumentParser(prog="python -m tracekit.testing", description="serve a FakeSigner as the dev signer")
-    ap.add_argument("--proto", default=f"{rpc_schema.RPC_VERSION}-{rpc_schema.RPC_VERSION}", help="MIN-MAX")
+    ap.add_argument("--proto", default=f"{rpc_schema.RPC_MIN}-{rpc_schema.RPC_VERSION}", help="MIN-MAX")
     ap.add_argument("--version", default=__version__)
     ap.add_argument("--ask", action="append", default=[], metavar="TOOL", help="answer `ask` for this tool")
     a = ap.parse_args()

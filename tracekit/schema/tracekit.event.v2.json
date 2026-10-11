@@ -2101,6 +2101,14 @@
           "$ref": "#/$defs/id",
           "description": "with replay_of: the investigation the replay run is an arm of"
         },
+        "parent_run": {
+          "$ref": "#/$defs/id",
+          "description": "format 1.2: the run of the same tenant that started this one, whose run token the caller presented"
+        },
+        "session": {
+          "$ref": "#/$defs/id",
+          "description": "with parent_run: the root run of the chain of parents (a run without parent_run is its own session)"
+        },
         "fidelity": {
           "enum": [
             "none"

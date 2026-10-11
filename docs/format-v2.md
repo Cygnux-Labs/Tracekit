@@ -102,7 +102,10 @@ its record hash is that of `"seq": 1`. It adds to v1:
 Lifecycle records: `run.registered` (agent, the caller identity, `signer_isolation` and `fail_modes` from the signer's
 own measurement and config, and with harness binding the `harness{name, exe, pid, start_time, attested}` process the
 caller descends from), `run.closing`, the run's `reconcile.*` records, then `run.final{head_run_seq, head_hash,
-coverage}`. Key records: `signer.epoch{keys: [{kid, alg, spki, cert?}], bridge?}` (`cert`: the key's issuance entry from a
+coverage}`. A run started by another run of the same tenant (a sub-agent's: `register_run` `parent`, whose run token
+the caller presents, for a parent that is not final) has `parent_run` (that run) and `session` (the root of its chain of
+parents) in its `run.registered` (format 1.2); a run without them is the root of its own session, whose id is its
+`run_id`. Key records: `signer.epoch{keys: [{kid, alg, spki, cert?}], bridge?}` (`cert`: the key's issuance entry from a
 record-key issuer, [issuer.md](issuer.md)) and `key.retire{kid, last_seq}`. The log's
 last record, if it is ever closed: `log.closed{final_seq}`.
 
@@ -365,9 +368,18 @@ A bundle has one zip layout, so every reader sees the same entries; anything els
 
 `tracekit.bundle_v2` writes this layout (Python's `zipfile` writing a seekable file).
 
-`verifier_min_version` is `1.1.0` when a bundled record is `input.observed`, `content.accessed`, `content.erased` or
-`why.finding`, a decision carrying `provenance` or `provenance_state`, or a `run.registered` carrying `replay_of`, else
-`1.0.0`; a 1.0 verifier reports such a bundle `UNVERIFIABLE (needs tracekit >= 1.1.0)`, never
+`verifier_min_version` is the newest version in the version table (`VERSIONS` in `tracekit/bundle_v2.py`) whose
+entries a bundled record uses, else `1.0.0`. Each version lists
+what it added: record types, data fields per record type, and enum values per (record type, field), gap and tamper
+`kind`s among them:
+
+| Version | Record types | Data fields | Enum values |
+|---|---|---|---|
+| 1.1.0 | `input.observed`, `content.accessed`, `content.erased`, `why.finding` | `policy.decision`: `provenance`, `provenance_state`; `run.registered`: `replay_of` | — |
+| 1.2.0 | — | `run.registered`: `parent_run`, `session` | — |
+
+Every v2 definition is closed (`additionalProperties: false`), so an older verifier would fail a record that uses a
+newer entry; the version the manifest declares makes it report `UNVERIFIABLE (needs tracekit >= x)` instead, never
 FAILED.
 
 ## 10. The trust config
