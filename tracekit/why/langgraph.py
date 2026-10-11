@@ -16,6 +16,7 @@ that wants paired seeds reads `config["configurable"]["tracekit_seed"]`. With `l
 from __future__ import annotations
 
 import copy
+import gc
 import json
 import os
 import re
@@ -271,6 +272,8 @@ class _Fork:
                                "may have run); fork replay serves ToolNodes that are nodes of the graph or of its "
                                "subgraph nodes; stopping")
         events = _actions(new, served)
+        del branch, scratch, out, cfg   # each branch holds a copy of the thread's state: free it before the next one
+        gc.collect()   # its graph copy is cyclic; without a collection, branches pile up until the collector runs
         return _Thread(self.thread.run_id, events + ([{"type": "decision", "ablated": True}] if applied[0] else []))
 
 
