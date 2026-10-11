@@ -220,7 +220,7 @@ def make_handler(witness, proxied=False):
                     code, text = witness.register(ip, json.loads(body))
                 else:
                     code, text = witness.add_checkpoint(body)
-            except ValueError:   # not UTF-8, not JSON
+            except (ValueError, RecursionError):   # not UTF-8, not JSON, nested past the parser's depth
                 code, text = 400, "malformed request\n"
             self._send(code, text, "text/x.tlog.size" if code == 409 and self.path == "/add-checkpoint"
                        else "text/plain; charset=utf-8")

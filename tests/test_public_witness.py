@@ -1,6 +1,8 @@
 """The public witness (tracekit.public_witness_server) with the existing client, and the opt-in (tracekit.public_witness)."""
+import contextlib
 import hashlib
 import http.client
+import io
 import json
 import os
 import threading
@@ -148,6 +150,11 @@ class Server(unittest.TestCase):
         text = checkpoint.body(ORIGIN, 1 << 63, merkle.root([]))
         status, _, body = self.post("/add-checkpoint", "old 1\n\n" + text + "\n" + checkpoint.sign(text, ORIGIN, self.secret))
         self.assertEqual((status, body), (400, "the tree size is over 2^63 - 1\n"))
+
+    def test_deeply_nested_json_is_a_400_not_a_crash(self):
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            status, _, body = self.post("/register", "[" * 5000 + "]" * 5000)
+        self.assertEqual((status, body, err.getvalue()), (400, "malformed request\n", ""))   # nothing logged
 
     def test_a_witness_without_registration_keeps_its_404(self):
         with mock.patch.object(TlogWitness, "_send", side_effect=[(404, "unknown log\n"), (404, "not found\n")]):
