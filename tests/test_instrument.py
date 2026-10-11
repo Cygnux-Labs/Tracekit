@@ -1,6 +1,7 @@
 """The three-step quickstart in this checkout: `tracekit.instrument()` (tracekit/autowire.py) in a scripted agent of
 each installed framework, against a dev signer it starts, then `tracekit last`. tests/test_quickstart.py runs the same
 agents from the built wheel in a fresh venv."""
+import asyncio
 import json
 import os
 import shutil
@@ -61,9 +62,10 @@ class TestEmptyStore(DevSigner):
 class TestThreeSteps(DevSigner):
     def test_each_framework(self):
         for name, (reqs, script) in AGENTS.items():
+            if not installed(reqs):   # skipTest in a subTest skips them all where pytest has no subtests
+                print(f"skipped {name}: {' '.join(reqs)} not installed")
+                continue
             with self.subTest(name):
-                if not installed(reqs):
-                    self.skipTest(f"{' '.join(reqs)} not installed")
                 out = json.loads(self.sh("-c", script).stdout.splitlines()[-1])
                 self.assertTrue(out[0].startswith("ran "), out)
                 if name != "openai":
@@ -136,6 +138,30 @@ class TestInstrument(unittest.TestCase):
         self.assertIn("Broken 1.5 not wired (ImportError: cannot import name 'ToolNode'). Tracekit is tested with "
                       "broken>=1,<2", msgs[0])
         self.assertIn("Fine 2.1rc1 is wired but untested", msgs[1])
+
+    def test_a_tracer_names_the_v1_function(self):
+        with self.assertRaises(TypeError) as cm:
+            autowire.instrument(object())
+        self.assertIn("tracekit.autotrace.instrument(tracer)", str(cm.exception))
+
+    def test_mcp_sessions_share_one_stream(self):
+        if not installed(AGENTS["mcp"][0]):
+            self.skipTest("mcp not installed")
+        from mcp import ClientSession
+        seen = []
+
+        async def call_tool(gate, *a, **kw):
+            seen.append(gate)
+        run = mock.Mock(registered={"run_id": "r", "run_token": "t"})
+        with mock.patch.object(ClientSession, "call_tool", ClientSession.call_tool), \
+                mock.patch("tracekit.integrations.mcp.TracekitSession.call_tool", call_tool):
+            autowire._mcp(run)
+            a, b = object.__new__(ClientSession), object.__new__(ClientSession)
+            for s in (a, b, a):
+                asyncio.run(s.call_tool("t", {}))
+        self.assertIs(seen[0], seen[2])
+        self.assertIsNot(seen[0], seen[1])
+        self.assertEqual((seen[0].stream, seen[0]._seq), (seen[1].stream, seen[1]._seq))
 
     def test_release(self):
         for v, want in (("0.23.1", (0, 23, 1)), ("1.2.14", (1, 2, 14)), ("2.3.0rc1", (2, 3, 0)), ("1.4.dev0", (1, 4))):

@@ -72,9 +72,10 @@ class Quickstart(unittest.TestCase):
 
     def test_three_steps(self):
         for name, (reqs, script) in AGENTS.items():
+            if self.sh(self.py, "-m", "pip", "install", "-q", *reqs, code=None).returncode:
+                print(f"skipped {name}: {' '.join(reqs)} does not install here")   # skipTest would skip them all
+                continue
             with self.subTest(name):
-                if self.sh(self.py, "-m", "pip", "install", "-q", *reqs, code=None).returncode:
-                    self.skipTest(f"{' '.join(reqs)} does not install here")
                 path = os.path.join(self.dir, f"{name}.py")
                 with open(path, "w") as f:
                     f.write(script)
