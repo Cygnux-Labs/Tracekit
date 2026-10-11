@@ -29,13 +29,13 @@ class ForkReplay(unittest.TestCase):
         inj.SAVER.delete_thread(inj.THREAD["configurable"]["thread_id"])
         self.signer = FakeSigner(lambda tool, args: ("allow", []))
         r = self.signer.register_run({"request_id": "reg", "agent": {"name": "test"}})
-        self.run = {"run_id": r["run_id"], "run_token": r["run_token"]}
+        self.recorded = {"run_id": r["run_id"], "run_token": r["run_token"]}
         out = inj.record(inj.graph_factory(self.signer, r))
         self.page, self.weather = [m.tool_call_id for m in out["messages"] if m.type == "tool"][:2]
         self.graph = inj.graph_factory()
 
     def events(self):
-        return self.signer.read({**self.run, "limit": 1000})["events"]
+        return self.signer.read({**self.recorded, "limit": 1000})["events"]
 
     def test_names_the_page_and_rules_out_the_benign_input(self):
         before, history = len(self.events()), len(list(self.graph.get_state_history(inj.THREAD)))
