@@ -138,10 +138,21 @@ def cmd_test(a):
 
 
 def cmd_attribute(a):
-    run = load_run(a.run)
-    r = attribute(run, a.target, a.suspect or None, n=a.n, n_max=a.n_max,
-                  system=load_system(a.system) if a.system else None, workers=a.workers,
-                  size_roles=not a.no_roles)
+    if a.langgraph:
+        import importlib
+        from .langgraph import attribute_thread
+        if not a.thread:
+            raise SystemExit("--langgraph needs --thread")
+        mod, _, attr = a.langgraph.partition(":")
+        graph = getattr(importlib.import_module(mod), attr or "graph_factory")()
+        r = attribute_thread(graph, {"configurable": {"thread_id": a.thread}}, a.target, a.suspect or None,
+                             checkpoint_id=a.checkpoint, n=a.n, n_max=a.n_max, size_roles=not a.no_roles)
+    elif a.run:
+        r = attribute(load_run(a.run), a.target, a.suspect or None, n=a.n, n_max=a.n_max,
+                      system=load_system(a.system) if a.system else None, workers=a.workers,
+                      size_roles=not a.no_roles)
+    else:
+        raise SystemExit("give a run folder, or --langgraph module:graph_factory --thread T")
     if a.json:
         _p(json.dumps(r, indent=2, default=str))
         return
@@ -150,6 +161,9 @@ def cmd_attribute(a):
         _p(_fmt_test(t))
     _p(f"\n{r['summary']}")
     _p(f"({r['program_runs']} program runs, {len(r['tests'])} tests, corrected for {r['family']})")
+    if r.get("rung") == 3:
+        _p(f"(rung 3: forked checkpoint {r['fork']['checkpoint_id']} as node {r['fork']['as_node']}; tool results "
+           "from the thread, never the real tools)")
 
 
 def cmd_matrix(a):
@@ -329,8 +343,14 @@ def main(argv=None):
     p.add_argument("--json", action="store_true"); p.set_defaults(f=cmd_test)
 
     p = sp.add_parser("attribute", help="which inputs caused an action: group test first, then narrow down")
-    p.add_argument("run"); p.add_argument("--target", required=True)
-    p.add_argument("--suspect", action="append", help="intervention spec (default: untrusted inputs upstream)")
+    p.add_argument("run", nargs="?", help="run folder (or --langgraph)"); p.add_argument("--target", required=True)
+    p.add_argument("--suspect", action="append", help="intervention spec, or with --langgraph a message id or tool_call_id "
+                   "(default: untrusted inputs upstream)")
+    p.add_argument("--langgraph", metavar="MODULE:FACTORY",
+                   help="fork replay of a LangGraph thread: imports and calls FACTORY(), which returns the compiled "
+                        "graph over the app's checkpointer (only name code you trust, as with --system)")
+    p.add_argument("--thread", help="with --langgraph: the thread_id to investigate")
+    p.add_argument("--checkpoint", help="with --langgraph: start from this checkpoint_id (default: the thread's latest)")
     p.add_argument("--n", type=int, default=10); p.add_argument("--n-max", type=int, default=80)
     p.add_argument("--workers", type=int, default=1, help="parallel replays")
     p.add_argument("--no-roles", action="store_true", help="skip sizing each cause (primary vs contributing): cheaper")
