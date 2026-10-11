@@ -10,7 +10,7 @@ and `tracekit why` finds which input caused an action by replaying the run witho
 unchanged; v1 bundles and 1.0 bundles keep verifying. Every limit of the new features: [docs/limits.md](docs/limits.md).
 
 ### Upgrade notes
-- **Signer RPC version 13** (1.0 spoke 12): upgrade the signer and its clients together, as before.
+- **Signer RPC version 15** (1.0 spoke 12): upgrade the signer and its clients together, as before.
 - **Bundles with 1.1 records need a 1.1 verifier** (`verifier_min_version: 1.1.0`): `input.observed` records,
   decisions with `provenance`, content-vault and why-finding records. A 1.0 verifier reports them `UNVERIFIABLE`,
   never `FAILED`. Runs with none of them stay readable by 1.0. Export bundles from a 1.1 signer with tracekit >= 1.1.
