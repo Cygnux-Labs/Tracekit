@@ -9,10 +9,26 @@ server deployments (container, Kubernetes sidecar, central signer on Postgres) a
 stable: 1.x verifiers verify every 1.0 bundle, and a bundle that needs a newer verifier says so (`UNVERIFIABLE`), never
 `FAILED`. The v1 laptop setup and v1 bundles keep working unchanged. Upgrade notes from 0.4.0: see 1.0.0rc1 below.
 
+### Added
+- **One install, one line, a verified run.** `pip install tracekit-ai` now installs everything the dev signer needs
+  (`tracekit-ai[signer]` still works); `pip install --no-deps tracekit-ai` is the verifier alone, on the standard
+  library. `import tracekit; tracekit.instrument()` wires the frameworks it finds (OpenAI Agents SDK, LangGraph /
+  LangChain, Claude Agent SDK, MCP, and the OpenAI, Anthropic and Google Gen AI SDKs), starting a dev signer if none
+  is running. `tracekit last` exports the newest finished run, pins the dev signer's key and verifies it. The README
+  and each framework quickstart are those three steps. What this path doesn't cover:
+  [docs/limits.md](docs/limits.md).
+- [docs/limits.md](docs/limits.md): every known limit and trade-off on one page.
+
+### Changed
+- `tracekit.instrument(tracer)` (v1 model-call tracing) is now `tracekit.autotrace.instrument(tracer)`;
+  `tracekit.instrument()` raises a `TypeError` naming it when given a tracer.
+
 ### Fixed
 - A network service that refused a request before reading its body (wrong Host, missing session or CSRF token) could
   reset the connection before the client read the answer, on Windows always and elsewhere while a large body was
   still arriving. Each service now reads what the client sent, up to 1 MiB, before closing.
+- A config file written as JSON (`signer.yaml`, the viewer's and the gateway's) failed to load where PyYAML isn't
+  installed, which `tracekit-ai[signer]` doesn't install. JSON documents now load either way.
 
 ### Release
 - npm: no `@cygnux/tracekit-signer-darwin-x64` package (google-re2 and cryptography publish no Intel-Mac wheels it can

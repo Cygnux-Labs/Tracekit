@@ -47,6 +47,20 @@ await client.close();                                     // waits for what is i
 
 ## v2 framework adapters
 
+One call registers a run (the dev signer is started if none answers), closes it when the process is about to exit,
+and hands you the adapters bound to it; then `tracekit last` exports, pins and verifies the run:
+
+```ts
+import { instrument } from "@cygnux/tracekit";
+const tk = await instrument();                    // the same on a second call
+const model = wrapLanguageModel({ model: openai("gpt-5"), middleware: tk.ai.middleware });   // Vercel AI SDK
+const r = await generateText({ model, tools: tk.ai.tools({ pay }), toolApproval: tk.ai.toolApproval, messages });
+const agent = new Agent({ name: "payer", tools: [tk.agents.tool(tool, { name: "pay", description, parameters, execute })] });   // OpenAI Agents JS
+```
+
+ES modules can't be patched from outside, so unlike Python's `tracekit.instrument()` the adapters are passed to the
+framework by you.
+
 Each adapter gates every tool call through the signer: it passes the call id, its attempt and the model's raw
 arguments, the signer decides, an `ask` waits for a person (held in the hook where the framework allows, else paused
 and resumed), and every call, allowed or approved, runs only after the signer's `approval_consume` agrees. A `deny`

@@ -10,7 +10,7 @@ it is approved.
 
 ```sh
 python3 -m venv .venv && . .venv/bin/activate
-pip install 'tracekit-ai[signer]' 'claude-agent-sdk>=0.2.165,<0.3'       # from a checkout: pip install '.[signer]'
+pip install tracekit-ai 'claude-agent-sdk>=0.2.165,<0.3'       # from a checkout: pip install .
 python examples/v2/claude_agent_sdk/agent.py --scripted
 ```
 

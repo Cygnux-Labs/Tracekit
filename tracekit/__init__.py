@@ -8,9 +8,13 @@ __version__ = "1.1.0.dev0"
 
 
 def __getattr__(name):
-    """`tracekit.init()` / `tracekit.shutdown()`: one-line model-call tracing (tracekit.autotrace), imported lazily so
+    """`tracekit.instrument()`: one line wires the v2 signer into this process's agent (tracekit.autowire).
+    `tracekit.init()` / `tracekit.shutdown()`: v1 model-call tracing (tracekit.autotrace). Imported lazily so
     `import tracekit` stays cheap for the hook and the verifier."""
-    if name in ("init", "shutdown", "instrument", "uninstrument"):
+    if name == "instrument":
+        from .autowire import instrument
+        return instrument
+    if name in ("init", "shutdown", "uninstrument"):
         from . import autotrace
         return getattr(autotrace, name)
     raise AttributeError(f"module 'tracekit' has no attribute {name!r}")
