@@ -15,7 +15,7 @@ that checkpoint (witnesses, Rekor, a monitor). [Reading a verify report](verdict
   code that skips the adapter, a call outside a gateway that isn't mandatory) leaves no record. The report lists which
   layers ran, the tier of each tool call, and the signed gaps; it never says "complete".
 - **That what the agent reported is true.** In-process capture (tier T1: hooks, adapters, SDKs) proves what the agent
-  process *reported*; out-of-process capture (T2: the [LLM gateway](gateway.md), a T2 executor) proves
+  process *reported*; out-of-process capture (T2: the [LLM gateway](gateway.md), a T2 executor you run) proves
   what crossed that boundary. Imported telemetry (T3, [OpenTelemetry](otel.md)) proves only that it was received.
 - **That nothing was deleted, only that deletion shows.** Tracekit is tamper-*evident*, not tamper-proof.
 - **Anything against the operator without outside help.** Whoever runs the signer can rewrite or fork its log with its

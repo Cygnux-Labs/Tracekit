@@ -41,4 +41,5 @@ sudo tracekit init --v2 --user AGENT --agent codex       # system mode: the sign
 
 The hooks run `python -I -m tracekit.integrations.harness_hooks <agent>`: the same mapping as above, then the v2 Claude
 Code hook's core (the signer decides; approvals; the run's fail mode, closed by default and always closed in system
-mode). Unlike v1, a payload without a session or tool call id blocks the call, and so does any hook error.
+mode). Unlike v1, a payload without a session or tool call id blocks the call, and so does any hook error. A payload
+that can't be parsed at all can't be told apart from a non-tool event: it is reported on stderr and not recorded.

@@ -63,6 +63,10 @@ States: `requested → approved | rejected | expired`, `approved → consumed | 
   thing after getting approval for another. The unredacted copy is used for execution only; approvers see the
   redacted one.
 
+No shipped adapter or executor runs T2 yet: the integrations run every call in the agent's process, with the arguments
+the agent holds, even under `executor: t2`. For T2 today, run held calls in a worker of your own that calls
+`approval_consume` and executes the arguments it returns.
+
 ## Who may answer
 
 Configured in `signer.yaml`:
