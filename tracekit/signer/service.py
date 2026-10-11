@@ -253,6 +253,7 @@ WITNESS_GAP_S, LOG_KEY_GAP_S, BACKOFF_S = 300.0, 300.0, (1.0, 300.0)
 FSCK_S, CLOCK_SKEW_S, LOCK_TIMEOUT_S, RENEW_RETRY_S = 86400.0, 300.0, 10.0, 60.0
 SNAPSHOT_RECORDS = 100_000
 PROVENANCE_MAX, PROVENANCE_SHOWN = 20_000, 16   # index entries per run (then truncated); entries a decision records
+PROVENANCE_S = engine.REGEX_TIMEOUT_S   # reading a decision's argument values: the same budget as its policy match
 CLASSES = ("public", "customer", "tracekit", "operator")
 GRACE_S, IDLE_S = 5.0, 3600.0
 FAIL_MODES = {"default": "closed"}
@@ -1325,7 +1326,7 @@ class SignerService:
         idx = prov["index"] if prov else {}
         st = ({"state": prov["state"], "reason": prov.get("reason")} if prov else
               {"state": "unavailable", "reason": "the index lives in memory and was lost in a signer restart"})
-        deadline, entries = time.monotonic() + engine.REGEX_TIMEOUT_S, []
+        deadline, entries = time.monotonic() + PROVENANCE_S, []
 
         def timeout():
             st.update(state="timeout", reason="reading the call's values took past the decision's deadline")

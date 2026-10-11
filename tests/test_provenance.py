@@ -308,7 +308,7 @@ class Signer(unittest.TestCase):
 
     def test_a_decision_that_runs_out_of_time_fails_closed(self):
         self.call("http_get", {"url": "https://notes.example/a"}, {"body": INJECTED}, "tc-fetch")
-        with mock.patch.object(svc.engine, "REGEX_TIMEOUT_S", -1):
+        with mock.patch.object(svc, "PROVENANCE_S", -1):
             self.fails_closed("timeout", "decision's deadline")
 
     def test_an_untrusted_account_in_a_payment_is_held(self):
