@@ -220,15 +220,25 @@ class Server(unittest.TestCase):
 
     def test_requests_in_flight_are_capped_per_forwarded_client(self):
         self.restart_proxied()
-        port, held = self.srv.server_address[1], []
+        port, held, stop = self.srv.server_address[1], [], threading.Event()
         self.addCleanup(lambda: [s.close() for s in held])
+        self.addCleanup(stop.set)
+
+        def trickle():   # each body a byte at a time, so no read times out while the check runs
+            while not stop.wait(0.5):
+                for s in held:
+                    try:
+                        s.sendall(b" ")
+                    except OSError:
+                        pass
         with mock.patch.object(pws, "MAX_PER_IP", 2):
-            for _ in range(2):   # bodies that never complete, all from one client behind the proxy
+            for _ in range(2):   # bodies that don't complete during the check, all from one client behind the proxy
                 s = socket.create_connection(("127.0.0.1", port))
                 s.sendall(b"POST /add-checkpoint HTTP/1.1\r\nHost: x\r\nX-Forwarded-For: 192.0.2.1\r\n"
-                          b"Content-Length: 100\r\n\r\nold 0\n")
+                          b"Content-Length: 1000\r\n\r\nold 0\n")
                 held.append(s)
-            self.assertTrue(wait_for(lambda: self.post("/register", "{}", xff="192.0.2.1")[0] == 429, 5))
+            threading.Thread(target=trickle, daemon=True).start()
+            self.assertTrue(wait_for(lambda: self.post("/register", "{}", xff="192.0.2.1")[0] == 429, 20))
             self.assertEqual(self.post("/register", "{}", xff="192.0.2.2")[0], 400)   # another client is served
 
     def test_deploy_buffers_bodies_and_only_compose_trusts_the_proxy(self):
