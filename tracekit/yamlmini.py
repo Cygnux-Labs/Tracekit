@@ -229,9 +229,11 @@ def _map_from_item(lines, i, indent, first):
 
 
 def load_any(text):
-    """PyYAML's safe_load when installed, else this parser."""
+    """PyYAML's safe_load when installed, else this parser (and JSON, which is YAML too, for a JSON document)."""
     try:
         import yaml  # type: ignore
     except ImportError:
+        if text.lstrip().startswith("{"):
+            return json.loads(text)
         return loads(text)
     return yaml.safe_load(text)

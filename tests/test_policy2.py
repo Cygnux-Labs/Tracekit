@@ -329,7 +329,8 @@ class Shell(unittest.TestCase):
         start = time.monotonic()
         with self.assertRaises(shell.ParseError):
             shell.parse(cmd)
-        self.assertLess(time.monotonic() - start, 2)   # ~0.4 s on a laptop; the old 1 MiB budget took 1.7–5 s
+        # ~0.4 s on a laptop; the old 1 MiB budget took 1.7–5 s; a coverage run traces every line, about 3x slower
+        self.assertLess(time.monotonic() - start, 6 if "coverage" in sys.modules else 2)
 
     def test_backslashes_and_brackets_parse_in_linear_time(self):
         for cmd, limit in (("python3 -c 'import os; os.system(\"" + "\\" * 200 + "'", 0.1),
