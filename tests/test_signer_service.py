@@ -25,7 +25,7 @@ from tracekit.policy2.engine import Engine
 from tracekit.signer import service as svc
 from tracekit.signer.pipeline import SIGNER_RUN
 from tracekit.signer.quotas import Limits
-from tracekit.signer.rpc_schema import RPCError
+from tracekit.signer.rpc_schema import REQUESTS, RPCError
 from tracekit.storage.base import StorageCorrupt, StorageUnavailable
 from tracekit.storage.file import FileStorage
 from tracekit.tlog_witness import TlogWitness
@@ -148,6 +148,16 @@ class TestService(unittest.TestCase):
         with self.assertRaises(RPCError) as cm:
             s.call(identity, method, req)
         self.assertEqual(cm.exception.code, code, cm.exception)
+
+    def test_privileged_methods_are_never_granted_by_default(self):
+        """Every method is a default grant or never one, so a new method can't reach an unconfigured uid peer or the
+        dev token by accident."""
+        self.assertEqual(svc.DEFAULT_GRANTS | svc.NEVER_DEFAULT, set(REQUESTS))
+        self.assertFalse(svc.DEFAULT_GRANTS & svc.NEVER_DEFAULT)
+        s = self.open()
+        for who in (OTHER, CallerIdentity("token", "dev", True)):
+            for method in sorted(svc.NEVER_DEFAULT):
+                self.refused("forbidden", s, method, {}, who)
 
     def test_refusals_leave_no_state(self):
         s = self.open()

@@ -28,11 +28,14 @@ FAIL_MODES = {"default": "closed", "read": "open"}
 class Lifecycle(unittest.TestCase):
     def setUp(self):
         self.dir, self.n = tmpdir(self), 0
+        self.open()
+        self.addCleanup(self.close)
+
+    def open(self):
         self.s = svc.SignerService(self.dir, policy=PAY_ASKS, tenants={"uid:999003": "beta"},
                                    multi_tenant_apps=[f"uid:{ME.subject}"], migrators=["uid:999001"],
                                    analyzers=["uid:999002", "uid:999003"], fail_modes=FAIL_MODES, grace_s=60, idle_s=60)
         self.closed = False
-        self.addCleanup(self.close)
 
     def close(self):
         if not self.closed:
@@ -218,6 +221,32 @@ class TestBundle(Lifecycle):
             self.assertEqual(code, 0, rep.checks)
             verdicts.append(rep.integrity)
         self.assertEqual(verdicts, ["VERIFIED", "VERIFIED TO HEAD 1 (open)"])
+
+
+class TestSessions(Lifecycle):
+    def test_a_child_run_names_its_parent_and_the_root_as_its_session(self):
+        root = self.register()
+        child = self.register(parent=root)
+        self.close()
+        self.open()   # the session survives a restart: the signer rebuilds it from run.registered
+        grandchild = self.register(parent=child)
+        regs = {r["run_id"]: self.events(r["run_id"])[0]["data"] for r in (root, child, grandchild)}
+        self.assertFalse({"parent_run", "session"} & regs[root["run_id"]].keys())   # a root is its own session
+        self.assertEqual({k: regs[child["run_id"]][k] for k in ("parent_run", "session")},
+                         {"parent_run": root["run_id"], "session": root["run_id"]})
+        self.assertEqual({k: regs[grandchild["run_id"]][k] for k in ("parent_run", "session")},
+                         {"parent_run": child["run_id"], "session": root["run_id"]})
+
+    def test_the_parent_must_be_proven_open_and_of_the_same_tenant(self):
+        root, other = self.register(), self.register()
+        self.refused("run_token_invalid", "register_run",
+                     {"agent": {"name": "a"}, "parent": {"run_id": root["run_id"], "run_token": other["run_token"]}})
+        self.refused("run_token_invalid", "register_run", {"agent": {"name": "a"}, "parent": root}, OTHER)
+        self.refused("run_token_invalid", "register_run", {"agent": {"name": "a"}, "parent": root, "tenant": "acme"})
+        self.call("close_run", root)
+        self.register(parent=root)   # closing, not final: still a parent
+        self.s.sweep(time.monotonic() + 61)
+        self.refused("run_closed", "register_run", {"agent": {"name": "a"}, "parent": root})
 
 
 if __name__ == "__main__":

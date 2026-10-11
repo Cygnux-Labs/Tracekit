@@ -5,7 +5,7 @@ only one page. This page collects them in one place. Each release's notes link h
 section must be linked from this page (`tests/test_docs.py` checks it).
 
 Each row says what the limit is, why it is so, what to do about it, and where the details are. Rows marked
-**(1.1)** describe behaviour new in 1.1, not in 1.0.
+**(1.1)** describe behaviour new in 1.1, not in 1.0; **(1.2)**, new in 1.2.
 
 ## Evidence and verification
 
@@ -31,6 +31,7 @@ Each row says what the limit is, why it is so, what to do about it, and where th
 | The TypeScript verifier reports `UNVERIFIABLE` for bundles that rely on a Rekor anchor, an SLH-DSA checkpoint signature or certified record keys. | Web Crypto has no SLH-DSA, and those checks aren't ported yet; it never says `VERIFIED` for a check it skipped. | Verify such bundles with the Python verifier (`pip install tracekit-ai`). | [auditor guide](auditor-guide.md), [format v2](format-v2.md#13-implementations) |
 | The TypeScript verifier needs Node 20.12 or newer (or a current browser). | It uses JSON imports and `DecompressionStream("deflate-raw")`, which earlier Node 20 releases lack. | Upgrade Node, or use the Python verifier. | [TypeScript SDK](../sdk/typescript/README.md) |
 | `npx @cygnux/tracekit verify` with `--monitor-report`, `--revocations` or the v1 bridge options runs the Python verifier, which must be installed. | Only the Python verifier has those checks. | `pip install tracekit-ai`, or verify without those options. | [auditor guide](auditor-guide.md) |
+| **(1.2)** A bundle holding a run started by another run (`parent_run`, a sub-agent's run) needs tracekit 1.2 or newer; a 1.1 verifier reports it `UNVERIFIABLE (needs tracekit >= 1.2.0)`. | Every v2 record definition is closed, so an older verifier can't read the new fields; the manifest's `verifier_min_version` makes it say so instead of `FAILED`. | Verify with tracekit 1.2 or newer (Python or TypeScript). | [format v2](format-v2.md#9-bundle-layout) |
 | JSON nested deeper than 128 levels is refused: a bundle file is unusable, a record fails, and a tool call's arguments are denied (`TK-ARGS-INVALID`). | A fixed depth makes every verifier and the signer read the same documents the same way, whatever their parser's limits. | Flatten arguments deeper than that. | [format v2](format-v2.md#1-canonical-json) |
 
 ## Dev mode vs system mode
@@ -64,6 +65,7 @@ Each row says what the limit is, why it is so, what to do about it, and where th
 | A data directory on NFS, SMB, FUSE or similar can't be trusted for locking and fsync. | Those file systems don't give the guarantees the store needs. | Put `data_dir` on a local disk (`D-DATA-FS`). | [doctor](doctor.md#v2-checks) |
 | Gemini CLI tool calls carry no call id; Tracekit pairs them by tool and arguments, first in first out. | The harness doesn't send one. | None needed; be aware when reading paired results. | [coding agents](coding-agents.md) |
 | Reasoning capture reads only Claude Code's transcript, and the v1 model proxy fronts only the Anthropic API. | Other harnesses use other formats and APIs. | Use the v2 gateway or OpenTelemetry for model-side cross-checks. | [coding agents](coding-agents.md) |
+| **(1.2)** A run is recorded as a child (`register_run` `parent`) only when the caller presents the parent's run token as the identity it was issued to, on the parent's signer, while the parent is not final. | The token proves the caller may act for the parent run; a final run takes nothing more. | Start sub-agent runs from the code holding the parent's handle (`client.run(..., parent=handle)`), or with a `delegate_run` token for the sub-agent's identity, before the parent finishes. The refusal (`run_token_invalid`, `unknown_run`, `run_closed`) says which. | [format v2](format-v2.md#3-events) |
 | v1 OTLP receiver and ingest gateway are experimental. | They are being rebuilt; they run only with `--experimental`. | Use the v2 signer's OTLP import. | [OpenTelemetry](otel.md#receiving-traces) |
 | v1 OTLP policy is evaluated after the fact: a call a rule would deny is recorded as `flag`, not stopped. | Spans arrive when the work is done. | Block with hooks, an SDK `tool()` or an adapter. | [OpenTelemetry](otel.md#what-it-means) |
 

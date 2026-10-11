@@ -45,7 +45,8 @@ class ClientRoutes(unittest.TestCase):
         for req, host in (({"run_id": "t-2.ab"}, "t-2.ns.svc"), ({"approval_id": "t-0.apr-1"}, "t-0.ns.svc"),
                           ({"analyzes": "t-3.cd", "agent": {}}, "t-3.ns.svc"), ({}, "t.ns.svc"),
                           ({"run_id": "t-2"}, "t.ns.svc"), ({"run_id": "my.run"}, "t.ns.svc"),
-                          ({"run_id": "t-x.ab"}, "t.ns.svc"), ({"run_id": "tt-1.ab"}, "t.ns.svc")):
+                          ({"run_id": "t-x.ab"}, "t.ns.svc"), ({"run_id": "tt-1.ab"}, "t.ns.svc"),
+                          ({"agent": {}, "parent": {"run_id": "t-4.ef", "run_token": "x"}}, "t-4.ns.svc")):
             self.assertEqual(h._host(req), host, req)
         self.assertEqual(_Https("https://t:8443")._host({"run_id": "t-1.ab"}), "t-1")
 

@@ -18,7 +18,7 @@ from tracekit import __version__, cli
 from tracekit.sdk import autospawn
 from tracekit.sdk.client import Client, SignerUnavailable
 from tracekit.signer import service
-from tracekit.signer.rpc_schema import RPC_VERSION
+from tracekit.signer.rpc_schema import RPC_MIN, RPC_VERSION
 from tracekit.storage.file import FileReader
 from tracekit.transport import tcp_dev, read_frame, write_frame
 
@@ -93,6 +93,14 @@ class DevSignerEndToEnd(unittest.TestCase):
         self.cli("down")
         self.assertEqual(service.fsck(data_dir), [])   # one chain across all three signers, every signature valid
 
+    def test_a_previous_version_client_is_served(self):
+        """RPC 16 adds only optional fields: the signer serves 15..16, and a 15 client keeps working unchanged."""
+        with mock.patch("tracekit.sdk.client.RPC_VERSION", RPC_MIN):
+            c = Client()
+            self.addCleanup(c.close)
+            self.one_run(c)
+        self.assertEqual(c.hello["proto"], [RPC_MIN, RPC_VERSION])
+
     def test_dev_run_exports_and_verifies_while_the_signer_runs(self):
         c = Client()
         self.addCleanup(c.close)
@@ -125,7 +133,7 @@ class DevSignerEndToEnd(unittest.TestCase):
 
     def test_up_wait_json(self):
         hello = json.loads(self.cli("up", "--wait", "--json"))
-        self.assertEqual(hello["proto"], [RPC_VERSION, RPC_VERSION])
+        self.assertEqual(hello["proto"], [RPC_MIN, RPC_VERSION])
         self.assertEqual(hello["version"], __version__)
         with open(self.path(autospawn.ENDPOINT)) as f:
             self.assertEqual(json.load(f), hello)
@@ -141,7 +149,7 @@ class DevSignerEndToEnd(unittest.TestCase):
         sock, rfile = tcp_dev.connect(ep)
         with sock:
             write_frame(sock, {"method": "hello"})
-            self.assertEqual(read_frame(rfile)["proto"], [RPC_VERSION, RPC_VERSION])
+            self.assertEqual(read_frame(rfile)["proto"], [RPC_MIN, RPC_VERSION])
 
 
 class SpawnAndStatus(unittest.TestCase):
