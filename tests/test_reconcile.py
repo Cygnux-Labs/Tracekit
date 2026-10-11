@@ -59,6 +59,13 @@ class Reconcile(Lifecycle):
 
 
 class TestReconcile(Reconcile):
+    def test_a_handoff_the_model_asked_for_is_not_a_missing_decide(self):
+        run = self.register()
+        self.model(run, [use("tc-1", "transfer_to_refunds_agent"), use("tc-2", "issue_refund")])
+        self.model(run, [], sent=["tc-1"])   # the SDK sends the handoff's output back: it was asked for, not fabricated
+        [(found, _)] = self.final(run)
+        self.assertEqual(found, [("reconcile.hook_missing", "tc-2")])
+
     def test_each_kind(self):
         runs = [self.register() for _ in range(5)]
         missing, fabricated, mismatch, unparseable, result = runs

@@ -14,7 +14,8 @@ from .. import yamlmini
 from ..policy import PolicyError, _sre_c, _sre_p, check_regex
 
 SECTIONS = ("deny", "ask", "flag")
-TOP_KEYS = {"version", "description", "extends", "tools", "untrusted", "unknown_tools", "deny", "ask", "flag"}
+TOP_KEYS = {"version", "description", "extends", "tools", "untrusted", "handoffs", "unknown_tools", "deny", "ask",
+            "flag"}
 RULE_KEYS = {"id", "class", "tool", "field", "pattern", "unless", "reason", "rationale", "label", "approval", "from"}
 # an ask rule's `approval`: executor t2 runs only the signer's copy; passkey required: approving needs a passkey
 APPROVAL = {"executor": ("t1", "t2"), "passkey": ("required",)}
@@ -135,6 +136,9 @@ def build(path, seen=()):
     if not (isinstance(pol.get("untrusted", []), list) and all(isinstance(u, str) for u in pol.get("untrusted", []))):
         errors.append(f"{path}: untrusted must list tool classes and tool name globs")
         pol["untrusted"] = []
+    if not (isinstance(pol.get("handoffs", []), list) and all(isinstance(h, str) for h in pol.get("handoffs", []))):
+        errors.append(f"{path}: handoffs must list tool name globs")
+        pol["handoffs"] = []
     base = pol.pop("extends", None)
     parents = []
     for b in base if isinstance(base, list) else [] if base is None else [base]:
@@ -154,6 +158,8 @@ def build(path, seen=()):
         untrusted = list(dict.fromkeys(u for p in parents + [pol] for u in p.get("untrusted", [])))
         if untrusted:
             merged["untrusted"] = untrusted
+        if any("handoffs" in p for p in parents + [pol]):
+            merged["handoffs"] = list(dict.fromkeys(h for p in parents + [pol] for h in p.get("handoffs", [])))
         for sec in SECTIONS:
             rules = [r for p in parents for r in p.get(sec, []) if isinstance(r, dict) and r.get("id") not in own]
             # a rule two parents both carry (TK-P003 in server-net and browser) is kept once

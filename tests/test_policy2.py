@@ -146,6 +146,28 @@ def corpus_policy():
             "ask": rules[len(PATTERNS):-1], "deny": rules[-1:]}
 
 
+class Handoffs(unittest.TestCase):
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.d, True)
+
+    def build(self, name, text):
+        with open(os.path.join(self.d, name), "w") as f:
+            f.write(text)
+        return pc.build(os.path.join(self.d, name))
+
+    def test_declared_default_merged_and_refused(self):
+        base, errs = self.build("base.yaml", "version: b\nhandoffs: ['route_*']\n")
+        self.assertEqual(errs, [])
+        self.assertTrue(Engine(base).is_handoff("route_to_refunds"))
+        self.assertFalse(Engine(base).is_handoff("transfer_to_refunds"))   # declared: the default no longer applies
+        self.assertTrue(Engine(self.build("none.yaml", "version: n\n")[0]).is_handoff("transfer_to_refunds"))
+        self.assertFalse(Engine(self.build("off.yaml", "version: o\nhandoffs: []\n")[0]).is_handoff("transfer_to_x"))
+        child, _ = self.build("child.yaml", "version: c\nextends: base.yaml\nhandoffs: ['go_*']\n")
+        self.assertEqual(child["handoffs"], ["route_*", "go_*"])
+        self.assertIn("handoffs must list tool name globs", "\n".join(self.build("bad.yaml", "version: x\nhandoffs: 3\n")[1]))
+
+
 class Engines(unittest.TestCase):
     def setUp(self):
         self.regex = Engine(corpus_policy(), "regex")

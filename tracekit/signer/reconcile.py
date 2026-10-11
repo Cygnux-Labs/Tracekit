@@ -67,14 +67,14 @@ def _l3(rec, mandatory):
     return {t: u for t, u in rec["l3"].items() if u.get("gw") or not mandatory}
 
 
-def _found(run, mandatory):
-    """[(kind, tool_call_id, layers, detail)] of the run's discrepancies."""
+def _found(run, mandatory, handoff=lambda tool: False):
+    """[(kind, tool_call_id, layers, detail)] of the run's discrepancies; `handoff(tool)`: the policy's handoffs."""
     rec, digests, out, l3 = run["rec"], run["digests"], [], _l3(run["rec"], mandatory)
     if "L3" not in rec["layers"] and not mandatory:
         return out
     for tcid, u in l3.items():
         d = rec["l2"].get(tcid)
-        if d is None:
+        if d is None and not handoff(u["name"]):
             out.append(("hook_missing", tcid, ["L2", "L3"], f"the model asked for {u['name'][:200]}; no decide"))
         if u["unparseable"]:
             out.append(("args_unparseable", tcid, ["L3"], "the model's raw arguments failed strict parsing"))
@@ -96,11 +96,11 @@ def _found(run, mandatory):
     return out
 
 
-def finish(tx, run, mandatory=False):
+def finish(tx, run, mandatory=False, handoff=lambda tool: False):
     """Write the run's reconcile.* records; returns the coverage for its run.final (None for a run restored from a
     snapshot written before reconciliation, which has no index, for an imported run, or for a `tracekit why` replay run,
     whose model exchanges have no decisions by design). `mandatory`:
-    gateway_mandatory."""
+    gateway_mandatory; `handoff`: as for _found."""
     if run.get("rec") is None:
         return None
     rec = run["rec"]
@@ -118,7 +118,7 @@ def finish(tx, run, mandatory=False):
                 continue
             tx.emit(run, "capture.gap", {"kind": "decision_mismatch", "tool_use_id": tcid, "reason": reason},
                     source="signer", tool_call_id=tcid)
-    found, unreconciled = _found(run, mandatory), {}
+    found, unreconciled = _found(run, mandatory, handoff), {}
     for kind, tcid, layers, detail in found:
         tx.emit(run, "reconcile." + kind, {"layers": layers, "detail": detail}, source="signer", tool_call_id=tcid)
         unreconciled[kind] = unreconciled.get(kind, 0) + 1

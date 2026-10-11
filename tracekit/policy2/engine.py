@@ -38,6 +38,8 @@ def _backend(name):
                 s, timeout=max(deadline - time.monotonic(), 1e-6)))
 
 
+HANDOFFS = ("transfer_to_*",)   # the handoff tool names a policy without `handoffs:` declares
+
 class Engine:
     def __init__(self, policy, backend=None):
         """`policy` is a compiled policy (compile.build); `backend` forces "re2" or "regex"."""
@@ -46,6 +48,11 @@ class Engine:
         self.rules = [(sec, r, compile_(r["tool"]) if "tool" in r else None, compile_(r["pattern"]),
                        compile_(r["unless"]) if "unless" in r else None)
                       for sec in SECTIONS for r in self.policy.get(sec, [])]
+
+    def is_handoff(self, tool):
+        """Whether the framework runs `tool` as a handoff to another agent (`handoffs:`; by default the OpenAI Agents
+        SDK's `transfer_to_*`): never gated, so the model asking for one is not a missing decide."""
+        return any(fnmatch.fnmatchcase(tool, h) for h in self.policy.get("handoffs", HANDOFFS))
 
     def tool_class(self, tool):
         tools = self.policy.get("tools", {})
