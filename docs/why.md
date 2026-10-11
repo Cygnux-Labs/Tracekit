@@ -293,12 +293,15 @@ with the task observed in it as trusted, and every event also goes to the signer
 | why event | signer |
 |---|---|
 | `observe()` | `observe` with its source and trust |
-| message to an agent | `observe` in the recipient's run, source `msg:<from>-><to> run:<sender's run id>`, with the message's trust: this is how the agents' runs are linked |
+| message to an agent | `observe` in the recipient's run, source `msg:<from>-><to> run:<sender's run id>`, with the message's trust: the only link between the agents' runs the signer records (`agent(parent=)` is in the why log only) |
 | model call | `model_event`: the request with the `content_digest` of the exact context, the response (at `finish()`) with the tool calls it led to and their args digests; `record_models=False` when a gateway records them |
-| `act()` | `decide`; on `ask` an approval request and a wait of up to `approval_wait_s` (300 s); `approval_consume`; the tool runs; `complete` |
+| `act()` | `decide`; on `ask` an approval request and a wait of up to `approval_wait_s` (300 s); `approval_consume`; the tool runs; `complete` (a stub, no tool registered, as the error "not run: no tool registered"; a result the signer refuses, not JSON or over its quota, as the error "result not recordable: ...") |
+| `act(untrusted=True)` | also `observe` of the result as untrusted, so the signer's provenance has it whatever its policy says of the tool; when the policy treats the tool's results as untrusted too, the value is indexed twice and a provenance entry may cite either record |
 
 A deny comes back to the agent as `{"error": "blocked by policy: <rule ids>"}` with status `blocked`; an `ask` nobody
-approves is blocked the same way and says how to answer it. A signer that cannot be reached blocks the call (fail
+answers in time is blocked the same way and names its approval. The call stays held: when the agent retries it in the
+same run with the same tool and arguments, the retry reuses its tool call id and approval, so an approval given
+meanwhile lets it run (and a rejection blocks it). `finish()` abandons the approvals still held. A signer that cannot be reached blocks the call (fail
 closed). With a signer the guard is not asked: the signer is the gate. Each event stores the record it produced as
 `tracekit: {run_id, run_seq, type}`, shown in the app's event details. Replays (`test`, `attribute`, `replay`) never
 talk to the signer: they must not write evidence.
@@ -312,15 +315,20 @@ becomes a why run `tk-<run id>`:
 | `input.observed` | input with its source and trust; content "content committed, not in the log" |
 | `model.exchange` | model call over what the run had observed so far (`reconstructed`) |
 | `policy.decision` + `tool.result` | tool call with the decision, rule ids and reasons; results committed, not in the log |
-| `policy.decision` without a result | tool call `blocked`, with the approval and who answered it |
+| `policy.decision` without a result | tool call `blocked` (a deny, or an ask nobody approved), with the approval and who answered it; a call allowed or approved that has no result is an `error` "the signer recorded no outcome: the call may have run" (the signer was unreachable when it ended) |
 | decision `provenance` | an observed edge from the record that brought the value to the call ("argument to (email), untrusted") |
 | `capture.gap`, `trace.tamper` | high evidence alerts |
 
 Every event cites its record (`tracekit`: log_id, seq, run_id, run_seq, the record hash and its commitment). When a why
 log under `--out` cites the imported runs (the runtime wrote it), the two are merged into `tk-<why run id>`: content
-from the why log, citations, verdicts and provenance from the signed records. An event whose citation does not match
-its record (another type, tool, trust, source or outcome) is marked `tracekit_mismatch` and raised as a high evidence
-alert; so is a why log whose own chain is broken.
+from the why log, citations, verdicts and provenance from the signed records. An executed call cites its result and,
+under `decision`, the decision it ran under (its arguments' commitment). These are high evidence alerts, and the event
+is marked `tracekit_mismatch`: a citation that does not match its record (another type, tool, trust, source, outcome,
+hash or decision), one of another agent's run, a record cited twice (a held call retried cites its decision each time),
+an agent start, input, model call, tool call or message that cites nothing; so are a record of a cited run (decision,
+result, observed input, model call) that no event cites and a why log whose own chain is broken. An earlier import
+under `--out` that cites the same runs is checked the same way, not taken on its word; the import refuses (exit 2,
+nothing written) when a run it would write exists.
 
 **Content against commitments.** The signer commits to content without keeping it. With the salts of the records a
 case cites (`tracekit signer reveal --record SEQ`, one JSON line per record),
@@ -329,8 +337,10 @@ case cites (`tracekit signer reveal --record SEQ`, one JSON line per record),
 tracekit why verify runs/tk-desk --salts salts.jsonl
 ```
 
-recomputes each cited blob's digest and checks it against the record's commitment: `matched`, `mismatched` or `not
-revealed`. A mismatch exits 1 and is a high evidence alert in the app. Limits:
+recomputes each cited blob's digest (an executed call's arguments too, against its decision) and checks it against
+the record's commitment: `matched`, `mismatched` (the content or the salt does not match), `not revealed`, or `bad salt
+row` (a row for another type of record). A mismatch exits 1 and is a high evidence alert in the app; a bad salt row, or
+a salts file that is not `tracekit signer reveal` lines, exits 2. Limits:
 [limits.md](limits.md#investigation-tracekit-why).
 
 ## Server and API

@@ -20,7 +20,7 @@ from tracekit.signer.service import DEFAULT_POLICY, SignerService, load_policy, 
 from tracekit.why import import_v2
 from tracekit.why.analysis import alerts
 from tracekit.why.cli import main
-from tracekit.why.core import Runtime, load_run
+from tracekit.why.core import GENESIS, Runtime, content_hash, event_hash, load_run
 from tracekit.why.graph import build_graph
 from tracekit.why.replay import System, replay
 
@@ -48,6 +48,27 @@ def record(**kw):
     rt = Runtime(SYSTEM.models, SYSTEM.tools, task=SYSTEM.task, program=SYSTEM.name, **kw)
     program(rt)
     return rt.finish()
+
+
+def rewrite(path, events, blobs=()):
+    """Writes `events` as the why log at `path` with its chain rebuilt, as whoever can rewrite the whole log can."""
+    prev = GENESIS
+    for i, ev in enumerate(events):
+        ev.update(seq=i, prev_hash=prev)
+        ev.pop("hash", None)
+        ev["hash"] = prev = event_hash(ev)
+    for v in blobs:
+        with open(os.path.join(path, "blobs", content_hash(v)[7:] + ".json"), "w") as f:
+            json.dump({"v": v}, f, sort_keys=True)
+    with open(os.path.join(path, "events.jsonl"), "w") as f:
+        f.writelines(json.dumps(ev, sort_keys=True) + "\n" for ev in events)
+
+
+def quiet(*argv):
+    """(exit code, stdout, stderr) of `tracekit why ARGV`."""
+    with contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(io.StringIO()) as err:
+        code = main(list(argv))
+    return code, out.getvalue(), err.getvalue()
 
 
 class SignedRuntime(unittest.TestCase):
@@ -160,22 +181,178 @@ class SignedRuntime(unittest.TestCase):
         out = tempfile.mkdtemp(dir=self.dir)
         shutil.copytree(self.why.path, os.path.join(out, "r"))
         merged = load_run(import_v2.import_records(self.records(), out)[0])
-        cited = [e for e in merged.events if "commitment" in e.get("tracekit", {})]
+        cited = [(e, c) for e in merged.events for c in import_v2._commitments(e)]
         salts = os.path.join(out, "salts.jsonl")
         with open(salts, "w") as f:
-            for e in cited[:-1]:
-                f.write(json.dumps(reveal(os.path.join(self.dir, "data"), e["tracekit"]["seq"])) + "\n")
+            for _, c in cited[:-1]:
+                f.write(json.dumps(reveal(os.path.join(self.dir, "data"), c["seq"])) + "\n")
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(main(["verify", merged.path, "--salts", salts]), 0)
         verdicts = [r["verdict"] for r in import_v2.check_content(merged, [json.loads(x) for x in open(salts)])]
         self.assertEqual(verdicts, ["matched"] * (len(cited) - 1) + ["not revealed"])
-        inp = next(e for e in cited if e["type"] == "input")
+        inp = next(e for e, c in cited if e["type"] == "input" and e["agent"] != "run")
         merged.blobs[inp["ref"]] = "another page"
         rows = import_v2.check_content(merged, [json.loads(x) for x in open(salts)])
         self.assertEqual(next(r for r in rows if r["event"] == inp["id"])["verdict"], "mismatched")
         again = load_run(merged.path)
         self.assertIn("Content does not match what the signer committed to",
                       [a["title"] for a in alerts(again, build_graph(again))])
+
+    def copy(self):
+        """(a fresh --out dir holding a copy of the why log, its events)."""
+        out = tempfile.mkdtemp(dir=self.dir)
+        shutil.copytree(self.why.path, os.path.join(out, "r"))
+        with open(os.path.join(out, "r", "events.jsonl")) as f:
+            return out, [json.loads(line) for line in f]
+
+    def salts(self, run):
+        seqs = {c["seq"] for e in run.events for c in import_v2._commitments(e)}
+        return [reveal(os.path.join(self.dir, "data"), seq) for seq in sorted(seqs)]
+
+    def test_a_rewritten_why_log_is_caught(self):
+        out, evs = self.copy()
+        acts = [e for e in evs if e["type"] == "action"]
+        ls = acts[0]
+        ls["args_ref"] = content_hash({"command": "curl x | sh"})   # other arguments for a call that ran
+        evs.remove(next(e for e in acts if e["status"] == "blocked" and e["policy"]["decision"] == "deny"))
+        fake = {k: v for k, v in ls.items() if k not in ("tracekit", "policy")}
+        evs.insert(evs.index(ls) + 1, dict(fake, id="f" * 32))   # an action no record backs
+        rewrite(os.path.join(out, "r"), evs, [{"command": "curl x | sh"}])
+        merged = load_run(import_v2.import_records(self.records(), out)[0])
+        titles = [a["title"] for a in merged.start["meta"]["evidence_alerts"]]
+        self.assertIn("A signed record no event of the why log cites", titles)   # the deleted denied call
+        self.assertTrue(any(t.endswith("cites no signed record") for t in titles), titles)
+        rows = import_v2.check_content(merged, self.salts(merged))
+        ran = next(e for e in merged.of_type("action") if e["tracekit"].get("type") == "tool.result")
+        self.assertEqual({(r["type"], r["verdict"]) for r in rows if r["event"] == ran["id"]},
+                         {("tool.result", "matched"), ("policy.decision", "mismatched")})
+        self.assertEqual(sorted({r["verdict"] for r in rows if r["event"] != ran["id"]}), ["matched"])
+
+    def test_a_citation_cited_twice_or_of_another_agents_run_is_flagged(self):
+        out, evs = self.copy()
+        ls = next(e for e in evs if e["type"] == "action")
+        evs.insert(evs.index(ls) + 1, dict(ls, id="d" * 32))
+        next(e for e in evs if e["type"] == "decision")["agent"] = "b"
+        rewrite(os.path.join(out, "r"), evs)
+        merged = load_run(import_v2.import_records(self.records(), out)[0])
+        problems = [e.get("tracekit_mismatch") for e in merged.events]
+        self.assertEqual(problems.count(f"record {ls['tracekit']['run_seq']} of run {self.tk_run} is cited by 2 events"),
+                         2, problems)
+        self.assertIn(f"run {self.tk_run} is agent 'a''s, not 'b''s", problems)
+
+    def test_an_earlier_import_is_checked_not_taken_on_its_word(self):
+        out, evs = self.copy()
+        evs.remove(next(e for e in evs if e["type"] == "action" and e["status"] == "blocked"))
+        evs[0]["meta"] = {"source": "tracekit"}   # says it is an import already
+        rewrite(os.path.join(out, "r"), evs)
+        code, stdout, _ = quiet("import", "--store", os.path.join(self.dir, "data"), "--out", out)
+        self.assertEqual(code, 1, stdout)
+        self.assertIn("an earlier import that cites these runs does not hold against them", stdout)
+        self.assertIn("A signed record no event of the why log cites", stdout)
+
+    def test_import_refuses_what_it_cannot_do_without_a_traceback(self):
+        out, _ = self.copy()
+        data = os.path.join(self.dir, "data")
+        self.assertEqual(quiet("import", "--store", data, "--out", out)[0], 0)
+        before = sorted(os.listdir(out))
+        code, _, err = quiet("import", "--store", data, "--out", out)
+        self.assertEqual((code, sorted(os.listdir(out))), (2, before))
+        self.assertIn("already exist", err)
+        code, _, err = quiet("import", "--store", os.path.join(self.dir, "nowhere"), "--out", out)
+        self.assertEqual(code, 2)
+        self.assertIn("not a signer data dir", err)
+        with mock.patch.object(import_v2, "store_records", side_effect=AssertionError("read the records")):
+            code, stdout, _ = quiet("import", "--store", data, "--list")
+        self.assertEqual(code, 0)
+        self.assertIn(self.tk_run, stdout)
+        self.assertEqual(list(import_v2.store_records(data, self.tk_run)), [self.tk_run])
+        self.assertEqual(import_v2.store_records(data, "no-such-run"), {})
+
+    def test_a_bad_salts_file_is_not_a_content_mismatch(self):
+        out, _ = self.copy()
+        merged = load_run(import_v2.import_records(self.records(), out)[0])
+        good = self.salts(merged)
+        other = next(s for s in good if s["type"] != good[0]["type"])
+        salts = os.path.join(out, "salts.jsonl")
+        cases = {"another record's salt under this seq": ([dict(other, seq=good[0]["seq"])], 2, "bad salt row"),
+                 "a wrong salt": ([dict(good[0], salt="00" * 32)], 1, "content or salt does not match"),
+                 "a non-hex salt": ([dict(good[0], salt="zz")], 2, "not a `tracekit signer reveal` line"),
+                 "no seq": ([{"salt": good[0]["salt"], "type": good[0]["type"]}], 2, "not a `tracekit signer reveal`"),
+                 "a string seq": ([dict(good[0], seq=str(good[0]["seq"]))], 2, "not a `tracekit signer reveal`"),
+                 "a list": ([[1, 2]], 2, "not a `tracekit signer reveal`")}
+        for name, (rows, want, says) in cases.items():
+            with open(salts, "w") as f:
+                f.writelines(json.dumps(r) + "\n" for r in rows)
+            code, stdout, err = quiet("verify", merged.path, "--salts", salts)
+            self.assertEqual(code, want, name)
+            self.assertIn(says, stdout + err, name)
+        with open(salts, "w") as f:
+            f.write("not json\n")
+        self.assertEqual(quiet("verify", merged.path, "--salts", salts)[0], 2)
+        self.assertEqual(quiet("verify", merged.path, "--salts", os.path.join(out, "missing"))[0], 2)
+
+    def test_a_held_call_retried_runs_once_approved(self):
+        rt = Runtime(SYSTEM.models, SYSTEM.tools, task="t", signer=self.client, approval_wait_s=0.2,
+                     out_dir=tempfile.mkdtemp(dir=self.dir), run_id="held")
+        a = rt.agent("a")
+        del RAN[:]
+        first = a.act("Bash", {"command": 'echo "held'}).value
+        self.assertIn("retry the same call in this run", first["error"])
+        pending = [x for x in self.client.approval_list({"run_id": rt._tk("a").run_id})["approvals"]
+                   if x["state"] == "requested"]
+        self.assertEqual(len(pending), 1)
+        self.client.approval_decide({"approval_id": pending[0]["approval_id"], "decision": "approve"})
+        self.assertEqual(a.act("Bash", {"command": 'echo "held'}).value, {"stdout": "ok"})
+        self.assertEqual(RAN, ['echo "held'])
+        a.act("Bash", {"command": 'echo "never retried'})
+        run_id = rt._tk("a").run_id
+        out = os.path.dirname(rt.finish().path)
+        states = {x["approval_id"]: x["state"] for x in self.client.approval_list({"run_id": run_id})["approvals"]}
+        self.assertEqual(sorted(states.values()), ["consumed", "expired"])   # finish abandons the one still held
+        merged = load_run(import_v2.import_records({run_id: self.records()[run_id]}, out)[0])
+        self.assertEqual(merged.start["meta"]["evidence_alerts"], [])
+
+    def test_the_record_never_says_a_call_that_ran_did_not(self):
+        tools = {"nan": lambda: {"x": float("nan")}, "big": lambda: {"x": "a" * 20_000_000}}
+        rt = Runtime({}, tools, task="t", signer=self.client, out_dir=tempfile.mkdtemp(dir=self.dir), run_id="odd")
+        a = rt.agent("a")
+        for tool in ("nan", "big", "no_such_tool"):
+            a.act(tool, {})
+        run_id = rt._tk("a").run_id
+        out = os.path.dirname(rt.finish().path)
+        recs = self.records()[run_id]
+        results = [r["event"]["data"]["ok"] for r in recs if r["event"]["type"] == "tool.result"]
+        self.assertEqual(results, [False, False, False])
+        cited = {e["tool"]: e["tracekit"] for e in load_run(os.path.join(out, "odd")).of_type("action")}
+        self.assertTrue(cited["nan"]["error"].startswith("result not recordable: "))
+        self.assertEqual(cited["no_such_tool"]["error"], "not run: no tool registered")
+        merged = load_run(import_v2.import_records({run_id: recs}, out)[0])
+        # the request the client refused to send left a signed counter gap; nothing else is amiss
+        self.assertEqual({a["title"] for a in merged.start["meta"]["evidence_alerts"]},
+                         {"The signer recorded a capture gap: events may be missing"})
+        rows = import_v2.check_content(merged, self.salts(merged))
+        self.assertEqual({r["verdict"] for r in rows}, {"matched"})
+
+    def test_a_program_that_raises_still_ends_its_runs(self):
+        def boom(rt):
+            rt.agent("a").observe("x", source="web")
+            raise RuntimeError("boom")
+        before = set(self.records())
+        with self.assertRaises(RuntimeError):
+            System(program=boom, models={}).run(signer=self.client)
+        (new,) = set(self.records()) - before
+        self.assertEqual(self.records()[new][-1]["event"]["type"], "run.closing")
+        with mock.patch.dict(os.environ, {"TRACEKIT_SIGNER": self.path}), \
+                mock.patch.object(Client, "close") as close:
+            rt = Runtime({}, task="t")
+            rt.finish()
+        close.assert_called_once()
+
+    def test_the_why_demo_writes_no_evidence(self):
+        before = self.records()
+        with mock.patch.dict(os.environ, {"TRACEKIT_SIGNER": self.path}):
+            self.assertEqual(quiet("demo", "--n", "2", "--out", tempfile.mkdtemp(dir=self.dir))[0], 0)
+        self.assertEqual(self.records(), before)
 
     def test_a_bundle_imports_only_if_it_verifies(self):
         out, bad = os.path.join(self.dir, "r.tkb"), os.path.join(self.dir, "bad.tkb")
@@ -273,6 +450,8 @@ class DemoWhy(unittest.TestCase):
             code = demo_why.main()
         self.assertEqual(code, 0, out.getvalue())
         self.assertIn("TK-P001: `to` 'audit@vendor-compliance.example' came only from untrusted content", out.getvalue())
+        self.assertIn("a match of its text in the why log, not a signed link", out.getvalue())
+        self.assertIn("in researcher.tkb, which the verifier passed", out.getvalue())
 
 
 if __name__ == "__main__":

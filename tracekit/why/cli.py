@@ -37,7 +37,7 @@ def cmd_demo(a):
     _p(f"== record: 8 runs of a 3-agent support system (seeded mock models, fake tools) -> {out}")
     exfil = []
     for s in range(8):
-        r = SYSTEM.run(seed=s, out_dir=out, run_id=f"demo-seed{s}")
+        r = SYSTEM.run(seed=s, out_dir=out, run_id=f"demo-seed{s}", signer=False)   # scripted: no evidence
         hit = bool(target_hits(r, EXFIL_TARGET))
         if hit:
             exfil.append(load_run(r.path))
@@ -93,17 +93,22 @@ def cmd_verify(a):
     if not a.salts:
         return 0
     from .import_v2 import check_content
-    with open(a.salts, encoding="utf-8") as f:
-        rows = check_content(run, [json.loads(line) for line in f if line.strip()])
+    try:
+        with open(a.salts, encoding="utf-8") as f:
+            rows = check_content(run, [json.loads(line) for line in f if line.strip()])
+    except (OSError, ValueError) as e:   # json's errors are ValueErrors
+        print(f"tracekit why verify: {a.salts}: {e}", file=sys.stderr)
+        return 2
     for r in rows:
-        _p(f"  {r['verdict']:<13} {r['kind']:<8} {r['agent']:<12} log seq {r['seq']} {r['type']}")
-    bad = sum(r["verdict"] == "mismatched" for r in rows)
-    hidden = sum(r["verdict"] == "not revealed" for r in rows)
+        _p(f"  {r['verdict']:<13} {r['kind']:<8} {r['agent']:<12} log seq {r['seq']} {r['type']}"
+           + (f": {r['detail']}" if r.get("detail") else ""))
+    n = {v: sum(r["verdict"] == v for r in rows) for v in ("matched", "mismatched", "bad salt row", "not revealed")}
     if not rows:
         _p("  no event cites a record with a commitment: import the run from the signer first (`why import --store`)")
-    _p(f"content: {len(rows) - bad - hidden} matched, {bad} mismatched, {hidden} not revealed"
-       + (" (reveal their salts with `tracekit signer reveal --record SEQ`)" if hidden else ""))
-    return 1 if bad else 0
+    _p(f"content: {n['matched']} matched, {n['mismatched']} mismatched (content or salt does not match), "
+       f"{n['bad salt row']} bad salt rows, {n['not revealed']} not revealed"
+       + (" (reveal their salts with `tracekit signer reveal --record SEQ`)" if n["not revealed"] else ""))
+    return 1 if n["mismatched"] else 2 if n["bad salt row"] else 0
 
 
 def cmd_graph(a):
@@ -302,7 +307,15 @@ def cmd_import(a):
 def _import_v2(a):
     from . import import_v2 as tk
     if a.store:
-        records = tk.store_records(a.store)
+        try:
+            if a.list:
+                for rid, n in sorted(tk.store_runs(a.store).items()):
+                    _p(f"{rid}  ({n} records)")
+                return 0
+            records = tk.store_records(a.store, a.run)
+        except (OSError, ValueError) as e:
+            print(f"tracekit why import: {e}", file=sys.stderr)
+            return 2
     else:
         if not a.trust:
             raise SystemExit("tracekit why import --bundle needs --trust, the trust config to verify it against")
@@ -319,7 +332,16 @@ def _import_v2(a):
         return 0
     if a.run:
         records = {k: v for k, v in records.items() if k == a.run}
-    for p in tk.import_records(records, a.out):
+    if a.run and not records:
+        print(f"tracekit why import: no run {a.run} to import", file=sys.stderr)
+        return 2
+    rechecked = tk.recheck(records, a.out)   # the imports already there, before this one adds its own
+    try:
+        paths = tk.import_records(records, a.out)
+    except FileExistsError as e:
+        print(f"tracekit why import: {e}", file=sys.stderr)
+        return 2
+    for p in paths:
         run = load_run(p)
         meta = run.start.get("meta") or {}
         _p(f"{p}: {len(run.events)} events, {len(run.of_type('action'))} tool calls, from Tracekit runs "
@@ -329,7 +351,11 @@ def _import_v2(a):
             _p(f"  [HIGH] {al['title']}: {al['detail']}")
         if not meta.get("merged_from"):
             _p("  content is committed, not in the signed log: record with the signer-backed runtime for content")
-    return 0
+    for p, alerts in rechecked:
+        _p(f"{p}: an earlier import that cites these runs does not hold against them")
+        for al in alerts:
+            _p(f"  [HIGH] {al['title']}: {al['detail']}")
+    return 1 if rechecked else 0
 
 
 def cmd_index(a):

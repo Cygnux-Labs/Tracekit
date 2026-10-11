@@ -52,7 +52,7 @@ if __name__ == "__main__":
     sys.path.insert(0, ".")
     run = None
     for seed in range(20):
-        r = SYSTEM.run(seed=seed, out_dir="runs-quickstart", run_id=f"quickstart-{seed}")
+        r = SYSTEM.run(seed=seed, out_dir="runs-quickstart", run_id=f"quickstart-{seed}", signer=False)
         if any("partner" in str(r.value(e["args_ref"])) for e in r.of_type("action")):
             run = load_run(r.path)
             break

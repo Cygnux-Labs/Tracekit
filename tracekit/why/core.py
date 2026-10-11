@@ -256,7 +256,9 @@ class Runtime:
     task observed in it as trusted) and every event also goes through it: observe() and messages delivered to the
     agent are observed, act() is decided first (a deny, or an ask nobody approves within `approval_wait_s`, blocks
     it) and completed after, model calls are model_events (unless `record_models` is False: a gateway records
-    them). Each event stores the citation of its record (`tracekit`); the signer is the gate, not the guard."""
+    them). Each event stores the citation of its record (`tracekit`); the signer is the gate, not the guard. A call held
+    for approval is held again, under the same tool call and approval, when the agent retries it with the same arguments:
+    an approval given meanwhile lets the retry run. finish() (or close()) abandons the approvals still held."""
 
     def __init__(
         self,
@@ -280,10 +282,12 @@ class Runtime:
         approval_wait_s: float = 300,
         record_models: bool = True,
     ):
+        self._own_signer = signer is None   # a client the runtime opens itself, it closes
         if signer is None:
             from tracekit.sdk.client import Client, _default_signer
             signer = Client() if _default_signer() else None
         self.signer = signer or None
+        self._held: Dict[tuple, Dict[str, Any]] = {}   # (agent, tool, args digest) -> a call held for approval
         self.approval_wait_s = approval_wait_s
         self.record_models = record_models
         self._tk_runs: Dict[str, Any] = {}
@@ -392,8 +396,12 @@ class Runtime:
         calls = [(lambda ex=ex: ex["run"].call(
             "model_event", provider="tracekit-why", model=ex["model"], phase="response", exchange_id=ex["id"],
             **({"tool_uses": ex["tool_uses"][:128]} if ex["tool_uses"] else {}))) for ex in self._exchanges.values()]
+        calls += [(lambda h=h: h["run"].call("approval_abandon", approval_id=h["aid"],
+                                             reason="the run ended before the call was retried"))
+                  for h in self._held.values()]
         calls += [run.close for run in self._tk_runs.values()]
         self._exchanges.clear()
+        self._held.clear()
         for call in calls:   # a signer gone at the end still leaves a finished why log
             try:
                 call()
@@ -414,9 +422,17 @@ class Runtime:
             self._agents[name] = a
             return a
 
-    def finish(self, outcome: Any = None) -> Run:
+    def close(self) -> None:
+        """Ends the agents' Tracekit runs and closes a client the runtime opened itself. finish() calls it; call it
+        when a program fails before finish(). A second call does nothing."""
         if self.signer is not None:
             self._close_signer()
+            if self._own_signer:
+                self.signer.close()
+            self.signer = None
+
+    def finish(self, outcome: Any = None) -> Run:
+        self.close()
         self._emit("run", "run.end", outcome=outcome)
         if self.sink is not None:
             self.sink.flush()
@@ -520,6 +536,7 @@ class Agent:
         check = None
         if rt.signer is not None:
             gate = self._gate(tool, args, decision)
+            ids = gate.pop("ids", {})
             if "blocked" in gate:
                 result, mode = gate.pop("blocked"), "blocked"
         elif rt.guard is not None:
@@ -548,7 +565,7 @@ class Agent:
         extra = {"guard": check.record()} if check is not None and check.alerts else {}
         if gate:
             if mode != "blocked":
-                gate["tracekit"] = self._complete(gate["tracekit"], status, result)
+                gate["tracekit"] = self._complete(gate["tracekit"], ids, status, result, stub=mode == "stub")
             extra.update(gate)
         ev = rt._emit(self.name, "action", tool=tool, args_ref=args_ref, result_ref=res_ref,
                       decision=decision.event_id if decision else None, status=status, mode=mode,
@@ -563,47 +580,63 @@ class Agent:
         return ref
 
     def _gate(self, tool: str, args: dict, decision: Optional[Ref]) -> Dict[str, Any]:
-        """The signer's verdict on a call about to run: {"policy", "tracekit": its decision record}, plus "blocked",
-        the result the agent gets instead, when the call may not run."""
+        """The signer's verdict on a call about to run: {"policy", "tracekit": its decision record, "ids": what
+        `complete` names}, plus "blocked", the result the agent gets instead, when the call may not run."""
         from tracekit.format.canon import event_hash as jcs_hash
         from tracekit.sdk.client import SignerUnavailable
         from tracekit.signer.rpc_schema import RPCError
         rt = self.rt
-        tcid = "why-" + secrets.token_hex(12)
+        try:
+            digest: Optional[str] = jcs_hash({"tool": tool, "args": args})
+        except ValueError:
+            digest = None
+        key = (self.name, tool, digest)
+        with rt._lock:
+            held = rt._held.pop(key, None) if digest else None
         try:
             run = rt._tk(self.name)
-            d = run.decide(tcid, tool, args)
+            if held:   # a retry of a call held for approval: the same tool call, decision and approval
+                tcid, d, aid = held["tcid"], held["d"], held["aid"]
+            else:
+                tcid, aid = "why-" + secrets.token_hex(12), None
+                d = run.decide(tcid, tool, args)
         except (RPCError, SignerUnavailable) as e:
             return {"blocked": {"error": f"blocked: the signer did not decide this call ({e}); it did not run. "
                                          "Check that the signer is up and the run still open, then retry"}}
         policy = {"decision": d["decision"], "rule_ids": d["rule_ids"]}
-        out = {"policy": policy, "tracekit": dict(_cite(run, d["run_seq"], "policy.decision"), tool_call_id=tcid)}
+        out = {"policy": policy, "tracekit": dict(_cite(run, d["run_seq"], "policy.decision"), tool_call_id=tcid),
+               "ids": {"decision_id": d["decision_id"], "args_digest": digest} if digest else {}}
         with rt._lock:
-            ex = rt._exchanges.get(decision.event_id) if decision is not None else None
+            ex = rt._exchanges.get(decision.event_id) if decision is not None and not held else None
             if ex is not None and ex["run"] is run:  # the model call that asked for it, for reconciliation
                 use = {"id": tcid, "name": tool[:256], "executed_by": "client", "args_source": "parsed"}
-                try:
-                    use["args_digest"] = jcs_hash({"tool": tool, "args": args})
-                except ValueError:
-                    pass
+                if digest:
+                    use["args_digest"] = digest
                 ex["tool_uses"].append(use)
         why = "blocked by policy: " + (", ".join(d["rule_ids"]) or d["decision"])
         if d["decision"] == "deny":
             out["blocked"] = {"error": why}
             return out
-        aid = None
         try:
             if d["decision"] == "ask":
-                aid = run.call("approval_request", tool_call_id=tcid)["approval_id"]
+                if aid is None:
+                    aid = run.call("approval_request", tool_call_id=tcid)["approval_id"]
                 state, deadline = "requested", time.monotonic() + rt.approval_wait_s
-                while state == "requested" and time.monotonic() < deadline:
+                while True:
                     left_ms = int(max(min(deadline - time.monotonic(), 300), 0.001) * 1000)
                     state = run.call("approval_wait", approval_id=aid, timeout_ms=left_ms)["state"]
+                    if state != "requested" or time.monotonic() >= deadline:
+                        break
                 policy["approval"] = {"id": aid, "state": state}
                 if state != "approved":
-                    out["blocked"] = {"error": why + ("; a person rejected it" if state == "rejected" else
-                                                      f"; approval {aid} is {state}: answer it (`tracekit approvals`) "
-                                                      "and retry the call"), "approval": state}
+                    if state == "requested" and digest:
+                        with rt._lock:
+                            rt._held[key] = {"tcid": tcid, "d": d, "aid": aid, "run": run}
+                    out["blocked"] = {"error": why + (
+                        "; a person rejected it" if state == "rejected" else
+                        f"; approval {aid} is requested: answer it (`tracekit approvals`), then retry the same call "
+                        "in this run: the retry runs once it is approved" if state == "requested" and digest else
+                        f"; approval {aid} is {state}"), "approval": state}
                     return out
             c = run.approval_consume(tcid, tool, args, approval_id_hint=aid)
         except (RPCError, SignerUnavailable) as e:
@@ -613,18 +646,29 @@ class Agent:
                               "reason": c.get("reason")}
         return out
 
-    def _complete(self, cite: Dict[str, Any], status: str, result: Any) -> Dict[str, Any]:
-        """Records the outcome of a call the signer let run; a failure to record it warns and keeps the decision's
-        citation."""
+    def _complete(self, cite: Dict[str, Any], ids: Dict[str, Any], status: str, result: Any,
+                  stub: bool) -> Dict[str, Any]:
+        """Records the outcome of a call the signer let run, citing its result and, under `decision`, its decision.
+        A stub (no tool ran) is recorded as an error, and a result the signer refuses (not JSON, over its quota) as
+        the error "result not recordable", so the record never says a call that ran did not. A failure to record it
+        warns and keeps the decision's citation."""
         from tracekit.sdk.client import SignerUnavailable
         from tracekit.signer.rpc_schema import RPCError
+        run, tcid = self.rt._tk(self.name), cite["tool_call_id"]
+        outcome = {"error": "not run: no tool registered"} if stub else {"result": result}
         try:
-            seq = self.rt._tk(self.name).complete(cite["tool_call_id"], status, result=result)["run_seq"]
+            try:
+                seq = run.complete(tcid, "error" if stub else status, **ids, **outcome)["run_seq"]
+            except RPCError as e:
+                if stub or e.code not in ("invalid_request", "quota_exceeded"):
+                    raise
+                outcome = {"error": f"result not recordable: {e.message}"[:4096]}
+                seq = run.complete(tcid, "error", **ids, **outcome)["run_seq"]
         except (RPCError, SignerUnavailable) as e:
-            warnings.warn(f"tracekit why: the signer did not record the outcome of {cite['tool_call_id']}: {e}",
-                          stacklevel=3)
+            warnings.warn(f"tracekit why: the signer did not record the outcome of {tcid}: {e}", stacklevel=3)
             return cite
-        return dict(cite, run_seq=seq, type="tool.result")
+        return dict(cite, run_seq=seq, type="tool.result", decision={k: cite[k] for k in ("run_id", "run_seq", "type")},
+                    **({"error": outcome["error"]} if "error" in outcome else {}))
 
     def check(self, tool: str, args: Optional[dict] = None, *, decision: Optional[Ref] = None,
               sensitive: Optional[bool] = None) -> Any:

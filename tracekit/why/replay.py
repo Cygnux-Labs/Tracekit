@@ -91,8 +91,10 @@ class System:
                      interventions=interventions, tape=tape, live_tools=live_tools,
                      sensitive_tools=self.sensitive_tools, untrusted_tools=self.untrusted_tools,
                      sink=sink, guard=guard, signer=signer)
-        outcome = self.program(rt)
-        return rt.finish(outcome)
+        try:
+            return rt.finish(self.program(rt))
+        finally:
+            rt.close()   # a program that raised still ends its agents' Tracekit runs
 
 
 def load_system(spec: str) -> System:

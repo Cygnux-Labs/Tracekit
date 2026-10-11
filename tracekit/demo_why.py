@@ -56,7 +56,8 @@ def person(client, stop, held):
 
 
 def explain(run, act):
-    """(the vendor note's event, the line saying where the held recipient came from) from the signed provenance."""
+    """(the vendor note's event, the lines saying where the held recipient came from): the signed provenance names the
+    message that brought it into the executor's run; the why graph, by the value's text, the input it came from."""
     events = run.by_id()
     to = run.value(act["args_ref"])["to"]
     p = next(p for p in act["provenance"] if p["field"] == "to")
@@ -66,10 +67,10 @@ def explain(run, act):
                  if g.nodes[n]["type"] == "input" and g.nodes[n]["trust"] == "untrusted"
                  and to in json.dumps(run.value(g.nodes[n]["event"]["ref"])))
     c = cause["tracekit"]
-    return cause, (f"  {', '.join(act['policy']['rule_ids'])}: `to` {to!r} came only from untrusted content: the "
-                   f"signed record {p['record']} of the executor's run, the message {via['agent']} -> {via['to']}, "
-                   f"which carries it from {cause['source']} (record {c['run_seq']} of the researcher's run, "
-                   f"log seq {c['seq']})")
+    return cause, (f"  {', '.join(act['policy']['rule_ids'])}: `to` {to!r} came only from untrusted content: "
+                   f"signed record {p['record']} of the executor's run, the message {via['agent']} -> {via['to']}\n"
+                   f"  the why graph finds the value in {cause['source']} (record {c['run_seq']} of the researcher's "
+                   f"run, log seq {c['seq']}): a match of its text in the why log, not a signed link")
 
 
 def main(keep=False):
@@ -121,21 +122,24 @@ def main(keep=False):
         trust = os.path.join(d, "trust.json")
         files.write_json(trust, {"logs": [service.vkey], "witnesses": [{"vkey": witness.vkey, "class": "customer"}],
                                  "algs": ["ed25519"], "witnesses_required": 1}, 0o644)
-        codes = []
+        codes, bundles = [], {}
         for ev in rec.of_type("agent.start"):
-            out = os.path.join(d, f"{ev['agent']}.tkb")
+            out = bundles[ev["agent"]] = os.path.join(d, f"{ev['agent']}.tkb")
             export_final(os.path.join(d, "data", "store"), ev["tracekit"]["run_id"], witness, out)
             rep, code = v2.verify(out, trust)
             codes.append(code)
             print(f"  {ev['agent']:<10} {out}: integrity {rep.integrity}, exit {code}")
         c = cause["tracekit"]
-        print(f"\n  the cause, {cause['source']}, is signed record log {c['log_id']} seq {c['seq']} ({c['hash']}), "
-              f"in researcher.tkb")
+        signed, _, _ = import_v2.bundle_records(bundles[cause["agent"]], trust)   # only a bundle that verifies
+        found = any(r["hash"] == c["hash"] and r["event"]["seq"] == c["seq"] for r in signed.get(c["run_id"], []))
+        print(f"\n  the cause, {cause['source']}, is signed record log {c['log_id']} seq {c['seq']} ({c['hash']}): "
+              + (f"in {cause['agent']}.tkb, which the verifier passed" if found else
+                 f"NOT in {cause['agent']}.tkb"))
         ok = (len(held) == 1 and act["status"] == "blocked" and "TK-P001" in act["policy"]["rule_ids"]
               and cause["source"] == VENDOR[len("input:"):]
               and [x["intervention"] for x in r["causes"]] == [VENDOR] and r["causes"][0]["role"] == "primary"
               and single[FAQ]["verdict"] == single[TICKET]["verdict"] == "ruled-out"
-              and hop["verdict"] == "causal" and not any(codes))
+              and hop["verdict"] == "causal" and not any(codes) and found)
         print(f"\n  {'all of it holds' if ok else 'FAILED: see above'}")
         return 0 if ok else 1
     finally:
