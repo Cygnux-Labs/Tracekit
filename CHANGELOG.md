@@ -64,6 +64,12 @@ unchanged; v1 bundles and 1.0 bundles keep verifying. Every limit of the new fea
   duplicated events are refused; test results are hash-chained; p-values are corrected for every input tested.
 - The public witness: per-client limits, buffered request bodies behind Caddy, expiring unused origins, a total
   deadline on witness requests, and start-up that no hostile witness can stall.
+- Claude Code: the transcript tailer follows the session's subagent transcripts too, so a subagent's tool calls no
+  longer reconcile as `fabricated` (and `verify --strict` no longer exits 3 on them).
+- Windows: `tracekit doctor` reports that it doesn't read ACLs instead of failing the key and content-vault checks on
+  POSIX file modes; the dev signer's start tolerates its config being rewritten.
+- Docs say what ships: no T2 executor yet (run held calls in a worker of your own), a v2 hook payload that can't be
+  parsed passes unrecorded, and the Claude Agent SDK adapter honours `fail_modes`.
 
 ### Not in this release
 - The viewer's FIND THE CAUSE and RUN TEST buttons for signed runs: use `tracekit why attribute --run ...`.
