@@ -15,7 +15,8 @@ signer; else $TRACEKIT_SIGNER), closes it when the process exits, and wires ever
 * the Anthropic, OpenAI and Google Gen AI clients: every model call (tracekit.autotrace).
 
 Idempotent: a second call returns the same run. Calls addressed to its run go to the current run while one is
-open (`with run.client.run(...)`, a run per request), and a run the signer closed is replaced on the next call. With none of these installed it warns and returns None. A framework
+open (`with run.client.run(...)`, a run per request), and a run the signer closed is replaced on the next call. With
+none of these installed it warns and returns None. A framework
 whose adapter cannot be wired is skipped with a warning naming the versions Tracekit is tested with. It raises only
 when no signer answers: no call could be recorded, and a run's fail mode is closed until its signer says otherwise.
 Don't also wire an adapter by hand in the same process: the call would be decided twice.
