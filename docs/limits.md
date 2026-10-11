@@ -31,6 +31,7 @@ Each row says what the limit is, why it is so, what to do about it, and where th
 | The TypeScript verifier reports `UNVERIFIABLE` for bundles that rely on a Rekor anchor, an SLH-DSA checkpoint signature or certified record keys. | Web Crypto has no SLH-DSA, and those checks aren't ported yet; it never says `VERIFIED` for a check it skipped. | Verify such bundles with the Python verifier (`pip install tracekit-ai`). | [auditor guide](auditor-guide.md), [format v2](format-v2.md#13-implementations) |
 | The TypeScript verifier needs Node 20.12 or newer (or a current browser). | It uses JSON imports and `DecompressionStream("deflate-raw")`, which earlier Node 20 releases lack. | Upgrade Node, or use the Python verifier. | [TypeScript SDK](../sdk/typescript/README.md) |
 | `npx @cygnux/tracekit verify` with `--monitor-report`, `--revocations` or the v1 bridge options runs the Python verifier, which must be installed. | Only the Python verifier has those checks. | `pip install tracekit-ai`, or verify without those options. | [auditor guide](auditor-guide.md) |
+| JSON nested deeper than 128 levels is refused: a bundle file is unusable, a record fails, and a tool call's arguments are denied (`TK-ARGS-INVALID`). | A fixed depth makes every verifier and the signer read the same documents the same way, whatever their parser's limits. | Flatten arguments deeper than that. | [format v2](format-v2.md#1-canonical-json) |
 
 ## Dev mode vs system mode
 
