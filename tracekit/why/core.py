@@ -387,12 +387,18 @@ class Runtime:
         """Sends each model call's response (with the tool calls it led to) and closes the agents' runs."""
         # lean: responses go out at finish, so their records come last in each run; send each when its agent next
         # decides if record order ever matters more than reconciliation, which runs at the run's end
-        for ex in self._exchanges.values():
-            ex["run"].call("model_event", provider="tracekit-why", model=ex["model"], phase="response",
-                           exchange_id=ex["id"], **({"tool_uses": ex["tool_uses"][:128]} if ex["tool_uses"] else {}))
+        from tracekit.sdk.client import SignerUnavailable
+        from tracekit.signer.rpc_schema import RPCError
+        calls = [(lambda ex=ex: ex["run"].call(
+            "model_event", provider="tracekit-why", model=ex["model"], phase="response", exchange_id=ex["id"],
+            **({"tool_uses": ex["tool_uses"][:128]} if ex["tool_uses"] else {}))) for ex in self._exchanges.values()]
+        calls += [run.close for run in self._tk_runs.values()]
         self._exchanges.clear()
-        for run in self._tk_runs.values():
-            run.close()
+        for call in calls:   # a signer gone at the end still leaves a finished why log
+            try:
+                call()
+            except (RPCError, SignerUnavailable) as e:
+                warnings.warn(f"tracekit why: the signer did not record the run's end: {e}", stacklevel=3)
 
     def _ablated(self, r: Ref) -> bool:
         return any(ablation_matches(s, r) for s in self.interventions)
@@ -474,9 +480,10 @@ class Agent:
         extra, ex = {}, None
         if rt.signer is not None and rt.record_models:
             from tracekit.format.canon import event_hash as jcs_hash
+            from tracekit.usage import FIELDS as USAGE_FIELDS
             run, ex = rt._tk(self.name), {"id": secrets.token_hex(16), "model": model[:128], "tool_uses": []}
             ex["run"] = run
-            counts = {k: v for k, v in (usage or {}).items() if k in _USAGE and type(v) is int and v >= 0}
+            counts = {k: v for k, v in (usage or {}).items() if k in USAGE_FIELDS and type(v) is int and v >= 0}
             seq = run.call("model_event", provider="tracekit-why", model=ex["model"], phase="request",
                            exchange_id=ex["id"], content_digest=jcs_hash([c.value for c in kept]),
                            **({"error": str(output.get("error"))[:500]} if status == "error" else {}),
@@ -562,8 +569,9 @@ class Agent:
         from tracekit.sdk.client import SignerUnavailable
         from tracekit.signer.rpc_schema import RPCError
         rt = self.rt
-        run, tcid = rt._tk(self.name), "why-" + secrets.token_hex(12)
+        tcid = "why-" + secrets.token_hex(12)
         try:
+            run = rt._tk(self.name)
             d = run.decide(tcid, tool, args)
         except (RPCError, SignerUnavailable) as e:
             return {"blocked": {"error": f"blocked: the signer did not decide this call ({e}); it did not run. "
@@ -671,9 +679,6 @@ class Agent:
     def inbox(self) -> List[Ref]:
         with self.rt._lock:
             return list(self.rt._mail.get(self.name, []))
-
-
-_USAGE = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "reasoning_tokens")
 
 
 def _cite(run: Any, run_seq: int, rtype: str) -> Dict[str, Any]:

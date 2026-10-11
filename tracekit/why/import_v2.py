@@ -39,6 +39,7 @@ def store_records(data_dir: str) -> Dict[str, List[Dict[str, Any]]]:
     from ..signer.pipeline import SIGNER_RUN
     from ..signer.service import reader
     r = reader({"data_dir": data_dir})
+    # lean: keyed by run id alone, tenants dropped (run ids are random); key by (tenant, run_id) if ids may collide
     try:
         return {key[1]: list(r.iter_run(*key)) for key in list(r.runs) if key != SIGNER_RUN}
     finally:
