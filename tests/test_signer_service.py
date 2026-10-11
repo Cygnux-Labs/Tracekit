@@ -298,6 +298,29 @@ class TestService(unittest.TestCase):
         s = self.open(witnesses=[Witness()], acknowledge_rollback=True)
         s.close_run({"request_id": "c", "run_id": run["run_id"], "run_token": run["run_token"]})
 
+    def test_a_stuck_witness_does_not_hold_up_the_start(self):
+        s = self.open()
+        size = s.log.storage.tail_state()["tree_size"] + 5
+        s.close()
+        release = threading.Event()
+        self.addCleanup(release.set)
+
+        class Stuck(Unreachable):
+            def latest(self, empty_note, log_vkey):
+                release.wait(30)
+                raise OSError("too late")
+
+        class Ahead(Unreachable):
+            def latest(self, empty_note, log_vkey):
+                return size, None
+        start = time.monotonic()
+        with mock.patch.object(svc, "WITNESS_START_S", 0.3):
+            s = self.open(witnesses=[Stuck(), Ahead()])   # asked at once: the stuck one first holds up neither
+        self.assertLess(time.monotonic() - start, 5)
+        s.close()
+        tampers = [r["event"]["data"] for r in records(self.dir) if r["event"]["type"] == "trace.tamper"]
+        self.assertEqual([(t["kind"], t["before"]["length"]) for t in tampers], [("rollback", size)])
+
     def test_unreachable_witness_starts_degraded(self):
         class Down(Unreachable):
             def latest(self, empty_note, log_vkey):
