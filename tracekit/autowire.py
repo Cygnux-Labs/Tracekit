@@ -30,7 +30,7 @@ import weakref
 from importlib import metadata
 
 _STATE = {"run": None}
-_LOCK = threading.Lock()
+_LOCK = threading.RLock()   # re-entered when wiring imports a module that calls instrument() itself
 MODEL_SDKS = ("openai", "anthropic", "google-genai")
 
 
@@ -201,6 +201,7 @@ def instrument(agent=None):
                    if os.path.exists(SYSTEM_CONFIG) else "`tracekit doctor` says what is wrong")
             raise SignerUnavailable(f"tracekit.instrument(): {e}; {fix}") from None
         atexit.register(_close, run)
+        _STATE["run"] = run   # before wiring: an instrument() called while a framework is imported gets this run
         for (label, dist, lo, hi, req, page, wire), version in found:
             try:
                 wire(run)
@@ -213,5 +214,4 @@ def instrument(agent=None):
                 warnings.warn(f"tracekit.instrument(): {label} {version} is wired but untested; Tracekit is tested "
                               f"with {req}", stacklevel=2)
         autotrace.instrument(run)
-        _STATE["run"] = run
         return run

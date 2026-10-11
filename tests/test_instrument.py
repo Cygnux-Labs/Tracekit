@@ -139,6 +139,18 @@ class TestInstrument(unittest.TestCase):
                       "broken>=1,<2", msgs[0])
         self.assertIn("Fine 2.1rc1 is wired but untested", msgs[1])
 
+    def test_instrument_called_while_wiring_returns_the_same_run(self):
+        """A module imported while a framework is wired may call instrument() itself (a script named after the
+        package it imports): it gets the run at once instead of waiting for the call that is wiring."""
+        inner = []
+        frameworks = (("Fine", "fine", (1,), (2,), "fine>=1,<2", "custom", lambda run: inner.append(autowire.instrument())),)
+        with mock.patch.object(autowire, "FRAMEWORKS", frameworks), \
+                mock.patch.object(autowire, "_version", return_value="1.5"), \
+                mock.patch("tracekit.sdk.client.Client"), mock.patch("atexit.register"), \
+                mock.patch("tracekit.autotrace.instrument"):
+            run = autowire.instrument()
+        self.assertEqual(inner, [run])
+
     def test_a_tracer_names_the_v1_function(self):
         with self.assertRaises(TypeError) as cm:
             autowire.instrument(object())
