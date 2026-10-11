@@ -122,13 +122,13 @@ def _mcp(run):
 
     from .integrations.mcp import TracekitSession
     call_tool = ClientSession.call_tool
-    # lean: one stream per session (the signer allows 64 per run); share one gate if agents open more sessions
-    gates = weakref.WeakKeyDictionary()
+    gates, stream = weakref.WeakKeyDictionary(), {}
 
     @functools.wraps(call_tool)
     async def gated(self, *a, **kw):
-        if self not in gates:
-            gates[self] = TracekitSession(_Unpatched(self, call_tool), run.client, run.registered)
+        if self not in gates:   # every session shares one signer stream: a run allows 64 (quotas.streams_per_run)
+            g = gates[self] = TracekitSession(_Unpatched(self, call_tool), run.client, run.registered)
+            g.stream, g._seq, g._lock = stream.setdefault("s", (g.stream, g._seq, g._lock))
         return await gates[self].call_tool(*a, **kw)
     ClientSession.call_tool = gated
 
@@ -178,6 +178,9 @@ def instrument(agent=None):
     from . import autotrace
     from .client import SYSTEM_CONFIG
     from .sdk.client import Client, SignerUnavailable
+    if agent is not None and not isinstance(agent, str):
+        raise TypeError("tracekit.instrument(agent) takes the run's name. For v1 model-call tracing with a Tracer, "
+                        "call tracekit.autotrace.instrument(tracer)")
     with _LOCK:
         if _STATE["run"] is not None:
             return _STATE["run"]

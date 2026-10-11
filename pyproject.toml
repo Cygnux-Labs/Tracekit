@@ -28,8 +28,9 @@ classifiers = [
     "Topic :: System :: Logging",
 ]
 requires-python = ">=3.9"
-# signing, JCS for format v2, the v2 signer's policy engine (regex is the fallback where RE2 has no wheel); `tracekit
-# verify` needs none of them: `pip install --no-deps tracekit-ai` is the verifier alone
+# signing, JCS for format v2, the v2 signer's policy engine (it uses regex when google-re2 is not importable; pip
+# still builds google-re2 from source where it has no wheel); `tracekit verify` needs none of them:
+# `pip install --no-deps tracekit-ai` is the verifier alone
 dependencies = ["cryptography>=41", "rfc8785>=0.1,<0.2", "google-re2>=1.1; python_version>='3.10'", "regex>=2023.8"]
 
 [project.optional-dependencies]
