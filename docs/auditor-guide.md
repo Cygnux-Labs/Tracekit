@@ -61,6 +61,17 @@ tracekit verify run-set.tkb --trust trust.json --strict --json > run-set.report.
 Exit 0 is clean, 1 failed, 2 unusable, 3 warnings under `--strict`. For a bundle whose log continues a v1 ledger, add
 `--v1-ledger ledger.jsonl --v1-key signer.pub` to check the format bridge.
 
+**A second verifier.** The TypeScript verifier was written from the [format spec](format-v2.md), not from the Python
+code, and is tested to reach the same verdicts ([implementations](format-v2.md#13-implementations)). Running both, from
+two sources you obtained yourself, means a bug in one doesn't decide your audit:
+
+```sh
+npx @cygnux/tracekit@<version> verify run.tkb --trust trust.json --strict
+```
+
+It needs only Node ≥ 20.12. Where it can't check something the bundle relies on (an SLH-DSA checkpoint line, a Rekor
+anchor, a certified record key) it says `UNVERIFIABLE` and names it; use the Python verifier for those.
+
 ## 5. Read the report
 
 [Verdicts](verdicts.md) explains every line. For an audit, look at least at:
