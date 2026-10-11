@@ -1040,10 +1040,11 @@ def _system_user(name, home, darwin):
     return pwd.getpwnam(name)
 
 
-def v2_signer_yaml(agent, approver_uid, policy, sock, tailer_uid, harnesses=()):
+def v2_signer_yaml(agent, approver_uid, policy, sock, tailer_uid, harnesses=(), public_witness=False):
     """signer.yaml of v2 system mode. The agent's uid gets its own tenant (named after it), and so does the approver's,
     who alone may answer its approvals; every other local user lands in tenant `local`. The tailer's uid may make only
     the TAILER_METHODS calls. With harnesses (resolve_harness entries), the agent's runs must come from one of them.
+    public_witness: the public witness cosigns the logs (`witnesses: [public]`).
     Scalars are JSON-quoted, which the built-in YAML subset reads back exactly."""
     q = json.dumps
     tenant, me, approver = q(agent.pw_name), q(f"uid:{agent.pw_uid}"), q(f"uid:{approver_uid}")
@@ -1056,7 +1057,7 @@ def v2_signer_yaml(agent, approver_uid, policy, sock, tailer_uid, harnesses=()):
         f"socket: {q(sock)}", 'socket_mode: "0666"', 'tenant: "local"', "tenants:", f"  {me}: {tenant}",
         f"  {approver}: {tenant}", "approvals:", '  self_approval: "deny"', "  approvers:", f"    - {approver}",
         "authorize:", f"  {q(f'uid:{tailer_uid}')}: [{', '.join(TAILER_METHODS)}]", f"policy: {q(policy)}",
-        *binding, ""])
+        *binding, *(['witnesses: ["public"]'] if public_witness else []), ""])
 
 
 def _tailer_acl(owner, u, darwin, grant=True):
@@ -1123,11 +1124,18 @@ def v2_plist(user):
 
 
 def init_system_v2(target_user, approver=None, policy=None, project=None, no_service=False, hooks=True,
-                   experimental_macos=False, allow_privileged=False, agent="claude", harnesses=()):
+                   experimental_macos=False, allow_privileged=False, agent="claude", harnesses=(), public_witness=False):
     """`sudo tracekit init --v2 --user AGENT`: the v2 signer service as its own user, from the root-owned venv, with
     the v2 hook of `agent` (Claude Code, or a harness of tracekit.agent_hooks) for AGENT. Approvals are answered only by `approver` (default: the admin who ran sudo), a
     different uid from the agent's. harnesses (`--harness [NAME=]PATH`): the agent's runs must come from one of them,
-    which the harness helper attests. Returns (socket, settings path or None)."""
+    which the harness helper attests. public_witness (`--public-witness`): the public witness cosigns the signer's logs.
+    Returns (socket, settings path or None)."""
+    if public_witness:
+        from . import public_witness as pw
+        try:
+            pw.entry()
+        except ValueError as e:
+            raise SystemExit(f"--public-witness: {e}") from None
     darwin = _require_system(experimental_macos)
     owner = _agent_user(target_user, allow_privileged)
     if approver:
@@ -1168,7 +1176,8 @@ def init_system_v2(target_user, approver=None, policy=None, project=None, no_ser
         print(f"transcript tailer: {why}. No tailer is set up, so each run of {target_user}'s sessions records a "
               "tailer_lost gap instead of their tool uses and prompts")
     sock = os.path.join(run_dir, "signer.sock")
-    _write_root_file(V2_CONFIG, v2_signer_yaml(owner, approver.pw_uid, policy, sock, tailer.pw_uid, harnesses).encode())
+    _write_root_file(V2_CONFIG, v2_signer_yaml(owner, approver.pw_uid, policy, sock, tailer.pw_uid, harnesses,
+                                                public_witness).encode())
     from . import agent_hooks
     settings = None if not hooks else (os.path.join(project or owner.pw_dir, ".claude", "settings.json")
                                        if agent == "claude" else agent_hooks.config_path(agent, project or owner.pw_dir))
