@@ -83,14 +83,14 @@ class System:
 
     def run(self, *, seed: int = 0, interventions: Sequence[str] = (), tape: Optional[Tape] = None,
             out_dir: Optional[str] = None, live_tools: bool = True, run_id: Optional[str] = None,
-            task: Any = None, sink: Any = None, guard: Any = None) -> Run:
-        """Replays (counterfactual, replay) never pass a guard: they measure what the agents would
-        do, and the tape already keeps them from repeating side effects."""
+            task: Any = None, sink: Any = None, guard: Any = None, signer: Any = None) -> Run:
+        """Replays (counterfactual, replay) never pass a guard and run with signer=False: they measure what the
+        agents would do, the tape already keeps them from repeating side effects, and they must not write evidence."""
         rt = Runtime(self.models, self.tools, out_dir=out_dir, run_id=run_id,
                      task=self.task if task is None else task, program=self.name, seed=seed,
                      interventions=interventions, tape=tape, live_tools=live_tools,
                      sensitive_tools=self.sensitive_tools, untrusted_tools=self.untrusted_tools,
-                     sink=sink, guard=guard)
+                     sink=sink, guard=guard, signer=signer)
         outcome = self.program(rt)
         return rt.finish(outcome)
 
@@ -212,12 +212,12 @@ def counterfactual(run: Run, intervention: Union[str, Sequence[str]], target: st
             h0 = cache.get(i)
         if h0 is None:
             h0 = hit(system.run(seed=s, tape=Tape(run) if use_tape else None, task=task,
-                                run_id=f"{run.run_id}-b{i}", live_tools=live_tools))
+                                run_id=f"{run.run_id}-b{i}", live_tools=live_tools, signer=False))
             with lock:
                 cache[i] = h0
                 base_runs[0] += 1
         treat = system.run(seed=s, interventions=specs, tape=Tape(run) if use_tape else None,
-                           task=task, run_id=f"{run.run_id}-t{i}", live_tools=live_tools)
+                           task=task, run_id=f"{run.run_id}-t{i}", live_tools=live_tools, signer=False)
         return (h0, hit(treat), any(e.get("ablated") for e in treat.of_type("decision")),
                 sum(1 for e in treat.of_type("action") if e.get("mode") != "tape"))
 
@@ -480,7 +480,7 @@ def replay(run: Run, *, system: Optional[System] = None, seed: Optional[int] = N
     system = system or system_for(run)
     task = recorded_task(run)
     return system.run(seed=run.start.get("seed", 0) if seed is None else seed, interventions=interventions,
-                      tape=Tape(run), task=task, run_id=run.run_id + "-replay", live_tools=False)
+                      tape=Tape(run), task=task, run_id=run.run_id + "-replay", live_tools=False, signer=False)
 
 
 def diff_runs(a: Run, b: Run) -> List[Dict[str, Any]]:

@@ -11,6 +11,7 @@ probability, the way a real model sometimes does. Tools are fakes; nothing leave
 """
 from __future__ import annotations
 
+import functools
 import random
 import re
 from typing import Any, Dict, List
@@ -132,12 +133,12 @@ TOOLS = {f.__name__: f for f in (lookup_order, issue_refund, send_email, export_
 
 # --------------------------------------------------------------------------- program
 
-def program(rt: Runtime) -> Dict[str, Any]:
+def program(rt: Runtime, docs: Dict[str, Any] = DOCS) -> Dict[str, Any]:
     researcher = rt.agent("researcher", role="gathers facts")
     planner = rt.agent("planner", parent="researcher", role="decides steps")
     executor = rt.agent("executor", parent="planner", role="runs tools")
 
-    docs = [researcher.observe(text, source=src, trust=trust) for src, (trust, text) in DOCS.items()]
+    docs = [researcher.observe(text, source=src, trust=trust) for src, (trust, text) in docs.items()]
     order = researcher.act("lookup_order", {"order_id": 1042})
     summary = researcher.decide([rt.task_ref, *docs, order], model="mock", purpose="summarize")
     researcher.send("planner", summary)
@@ -155,6 +156,14 @@ def program(rt: Runtime) -> Dict[str, Any]:
 
 SYSTEM = System(program=program, models={"mock": mock_llm}, tools=TOOLS, task=TASK, name="tracekit.why.demo:SYSTEM",
                 sensitive_tools=("issue_refund", "send_email", "export_customers"))
+
+# `tracekit demo --why`: the same desk on the signer. The ticket came in through the desk's own inbox (trusted), and
+# the task names the customer, so the signer knows their address came from the app, not from untrusted content.
+SIGNED_DOCS = {**DOCS, "inbox:ticket-881": ("trusted", DOCS["inbox:ticket-881"][1])}
+SIGNED_SYSTEM = System(program=functools.partial(program, docs=SIGNED_DOCS), models={"mock": mock_llm}, tools=TOOLS,
+                       task="Ticket #881 from c.rao@example.com: order 1042 arrived damaged. Investigate and resolve "
+                            "per policy.", name="tracekit.why.demo:SIGNED_SYSTEM",
+                       sensitive_tools=("issue_refund", "send_email", "export_customers"))
 
 EXFIL_TARGET = "tool=send_email,arg~vendor-compliance"
 REFUND_TARGET = "tool=issue_refund"

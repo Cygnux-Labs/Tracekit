@@ -16,6 +16,7 @@ import secrets
 import threading
 import time
 import urllib.request
+import warnings
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence
 
@@ -248,7 +249,14 @@ _MISSING = object()
 
 class Runtime:
     """Records a multi-agent run. The same class runs counterfactual replays:
-    pass `interventions` (ablation specs), a `tape` of recorded tool results and a new `seed`."""
+    pass `interventions` (ablation specs), a `tape` of recorded tool results and a new `seed`.
+
+    `signer`: a tracekit.sdk.client.Client, False for none, or None to use one when the SDK finds a signer
+    ($TRACEKIT_SIGNER or system mode). With a signer each agent gets a Tracekit run (registered on first use, the
+    task observed in it as trusted) and every event also goes through it: observe() and messages delivered to the
+    agent are observed, act() is decided first (a deny, or an ask nobody approves within `approval_wait_s`, blocks
+    it) and completed after, model calls are model_events (unless `record_models` is False: a gateway records
+    them). Each event stores the citation of its record (`tracekit`); the signer is the gate, not the guard."""
 
     def __init__(
         self,
@@ -268,7 +276,18 @@ class Runtime:
         untrusted_tools: Sequence[str] = (),
         sink: Optional[HttpSink] = None,
         guard: Optional[Any] = None,
+        signer: Any = None,
+        approval_wait_s: float = 300,
+        record_models: bool = True,
     ):
+        if signer is None:
+            from tracekit.sdk.client import Client, _default_signer
+            signer = Client() if _default_signer() else None
+        self.signer = signer or None
+        self.approval_wait_s = approval_wait_s
+        self.record_models = record_models
+        self._tk_runs: Dict[str, Any] = {}
+        self._exchanges: Dict[str, Dict[str, Any]] = {}  # decision event id -> its model.exchange, until finish()
         self.models = dict(models)
         self.tools = dict(tools or {})
         self.run_id = run_id or time.strftime("run-%Y%m%d-%H%M%S-") + secrets.token_hex(3)
@@ -343,8 +362,37 @@ class Runtime:
         if trust not in TRUST_LEVELS:
             raise ValueError(f"trust must be one of {TRUST_LEVELS}")
         ref = self._blob(value)
-        ev = self._emit(agent, "input", ref=ref, source=source, trust=trust, kind=kind)
+        extra = {}
+        if self.signer is not None and agent != "run":  # the task goes into each agent's run as it registers
+            extra["tracekit"] = self._observe(agent, value, source, trust)
+        ev = self._emit(agent, "input", ref=ref, source=source, trust=trust, kind=kind, **extra)
         return Ref(ref, value, kind, agent, source, trust, ev["id"])
+
+    # -- signer
+    def _tk(self, agent: str) -> Any:
+        """The Tracekit run of `agent`, registered on first use with the task observed in it as trusted."""
+        with self._lock:
+            run = self._tk_runs.get(agent)
+            if run is None:
+                run = self._tk_runs[agent] = self.signer.run(agent=agent)
+                if self.task_ref is not None:
+                    run.observe(self.task_ref.value, "task", "trusted")
+            return run
+
+    def _observe(self, agent: str, value: Any, source: str, trust: str) -> Dict[str, Any]:
+        run = self._tk(agent)
+        return _cite(run, run.observe(value, source[:256], trust)["run_seq"], "input.observed")
+
+    def _close_signer(self) -> None:
+        """Sends each model call's response (with the tool calls it led to) and closes the agents' runs."""
+        # lean: responses go out at finish, so their records come last in each run; send each when its agent next
+        # decides if record order ever matters more than reconciliation, which runs at the run's end
+        for ex in self._exchanges.values():
+            ex["run"].call("model_event", provider="tracekit-why", model=ex["model"], phase="response",
+                           exchange_id=ex["id"], **({"tool_uses": ex["tool_uses"][:128]} if ex["tool_uses"] else {}))
+        self._exchanges.clear()
+        for run in self._tk_runs.values():
+            run.close()
 
     def _ablated(self, r: Ref) -> bool:
         return any(ablation_matches(s, r) for s in self.interventions)
@@ -354,12 +402,15 @@ class Runtime:
         with self._lock:
             if name in self._agents:
                 return self._agents[name]
-            self._emit(name, "agent.start", parent=parent, role=role)
+            extra = {"tracekit": _cite(self._tk(name), 0, "run.registered")} if self.signer is not None else {}
+            self._emit(name, "agent.start", parent=parent, role=role, **extra)
             a = Agent(self, name)
             self._agents[name] = a
             return a
 
     def finish(self, outcome: Any = None) -> Run:
+        if self.signer is not None:
+            self._close_signer()
         self._emit("run", "run.end", outcome=outcome)
         if self.sink is not None:
             self.sink.flush()
@@ -420,11 +471,25 @@ class Agent:
         rt = self.rt
         kept = [c for c in context if c is not None]
         out = rt._blob(output)
+        extra, ex = {}, None
+        if rt.signer is not None and rt.record_models:
+            from tracekit.format.canon import event_hash as jcs_hash
+            run, ex = rt._tk(self.name), {"id": secrets.token_hex(16), "model": model[:128], "tool_uses": []}
+            ex["run"] = run
+            counts = {k: v for k, v in (usage or {}).items() if k in _USAGE and type(v) is int and v >= 0}
+            seq = run.call("model_event", provider="tracekit-why", model=ex["model"], phase="request",
+                           exchange_id=ex["id"], content_digest=jcs_hash([c.value for c in kept]),
+                           **({"error": str(output.get("error"))[:500]} if status == "error" else {}),
+                           **({"usage": counts} if {"input_tokens", "output_tokens"} <= counts.keys() else {}))["run_seq"]
+            extra["tracekit"] = _cite(run, seq, "model.exchange")
         ev = rt._emit(self.name, "decision", model=model, purpose=purpose, params=params or {}, seed=seed,
                       context=[{"ref": c.ref, "kind": c.kind, "source": c.source, "trust": c.trust,
                                 "from_event": c.event_id} for c in kept],
                       ablated=list(ablated), output=out, usage=usage or {}, status=status,
-                      duration_ms=round(duration_ms, 3) if duration_ms is not None else None)
+                      duration_ms=round(duration_ms, 3) if duration_ms is not None else None, **extra)
+        if ex is not None:
+            with rt._lock:
+                rt._exchanges[ev["id"]] = ex
         trust = "untrusted" if any(c.trust == "untrusted" for c in kept) else "trusted"
         return Ref(out, output, "output", self.name, purpose, trust, ev["id"])
 
@@ -433,7 +498,8 @@ class Agent:
         """Run a tool. Under replay, results come from the tape when the call matches a recorded one.
 
         With a guard on the runtime, a sensitive call is checked first and may be blocked: the tool
-        does not run and the caller gets {"error": "blocked by tracekit why guard: ..."} back.
+        does not run and the caller gets {"error": "blocked by tracekit why guard: ..."} back. With a signer the
+        signer decides instead (the guard is not asked) and a call it refuses gets {"error": "blocked by policy: ..."}.
         `untrusted=True` (or the tool listed in the runtime's untrusted_tools) records the result as
         untrusted content, like observe(), so later decisions that read it are tainted."""
         rt = self.rt
@@ -443,10 +509,17 @@ class Agent:
         mode = "live"
         t0 = time.perf_counter()
         result: Any = _MISSING
-        check = rt.guard.check(rt, self.name, tool, args, decision, is_sensitive) if rt.guard is not None else None
-        if check is not None and check.blocked:
-            result, mode = {"error": "blocked by tracekit why guard: " + check.reason}, "blocked"
-        elif rt.tape is not None:
+        gate: Dict[str, Any] = {}
+        check = None
+        if rt.signer is not None:
+            gate = self._gate(tool, args, decision)
+            if "blocked" in gate:
+                result, mode = gate.pop("blocked"), "blocked"
+        elif rt.guard is not None:
+            check = rt.guard.check(rt, self.name, tool, args, decision, is_sensitive)
+            if check.blocked:
+                result, mode = {"error": "blocked by tracekit why guard: " + check.reason}, "blocked"
+        if result is _MISSING and rt.tape is not None:
             key = (self.name, tool, args_ref)
             with rt._lock:
                 n = rt._tape_seen.get(key, 0)
@@ -466,6 +539,10 @@ class Agent:
         status = "blocked" if mode == "blocked" else _status(result)
         res_ref = rt._blob(result)
         extra = {"guard": check.record()} if check is not None and check.alerts else {}
+        if gate:
+            if mode != "blocked":
+                gate["tracekit"] = self._complete(gate["tracekit"], status, result)
+            extra.update(gate)
         ev = rt._emit(self.name, "action", tool=tool, args_ref=args_ref, result_ref=res_ref,
                       decision=decision.event_id if decision else None, status=status, mode=mode,
                       sensitive=is_sensitive, duration_ms=round((time.perf_counter() - t0) * 1000, 3), **extra)
@@ -477,6 +554,69 @@ class Agent:
             # same content as the action's result, so the graph links action -> input (same-content)
             ref = rt._input(self.name, result, source=f"tool:{tool}", trust="untrusted")
         return ref
+
+    def _gate(self, tool: str, args: dict, decision: Optional[Ref]) -> Dict[str, Any]:
+        """The signer's verdict on a call about to run: {"policy", "tracekit": its decision record}, plus "blocked",
+        the result the agent gets instead, when the call may not run."""
+        from tracekit.format.canon import event_hash as jcs_hash
+        from tracekit.sdk.client import SignerUnavailable
+        from tracekit.signer.rpc_schema import RPCError
+        rt = self.rt
+        run, tcid = rt._tk(self.name), "why-" + secrets.token_hex(12)
+        try:
+            d = run.decide(tcid, tool, args)
+        except (RPCError, SignerUnavailable) as e:
+            return {"blocked": {"error": f"blocked: the signer did not decide this call ({e}); it did not run. "
+                                         "Check that the signer is up and the run still open, then retry"}}
+        policy = {"decision": d["decision"], "rule_ids": d["rule_ids"]}
+        out = {"policy": policy, "tracekit": dict(_cite(run, d["run_seq"], "policy.decision"), tool_call_id=tcid)}
+        with rt._lock:
+            ex = rt._exchanges.get(decision.event_id) if decision is not None else None
+            if ex is not None and ex["run"] is run:  # the model call that asked for it, for reconciliation
+                use = {"id": tcid, "name": tool[:256], "executed_by": "client", "args_source": "parsed"}
+                try:
+                    use["args_digest"] = jcs_hash({"tool": tool, "args": args})
+                except ValueError:
+                    pass
+                ex["tool_uses"].append(use)
+        why = "blocked by policy: " + (", ".join(d["rule_ids"]) or d["decision"])
+        if d["decision"] == "deny":
+            out["blocked"] = {"error": why}
+            return out
+        aid = None
+        try:
+            if d["decision"] == "ask":
+                aid = run.call("approval_request", tool_call_id=tcid)["approval_id"]
+                state, deadline = "requested", time.monotonic() + rt.approval_wait_s
+                while state == "requested" and time.monotonic() < deadline:
+                    left_ms = int(max(min(deadline - time.monotonic(), 300), 0.001) * 1000)
+                    state = run.call("approval_wait", approval_id=aid, timeout_ms=left_ms)["state"]
+                policy["approval"] = {"id": aid, "state": state}
+                if state != "approved":
+                    out["blocked"] = {"error": why + ("; a person rejected it" if state == "rejected" else
+                                                      f"; approval {aid} is {state}: answer it (`tracekit approvals`) "
+                                                      "and retry the call"), "approval": state}
+                    return out
+            c = run.approval_consume(tcid, tool, args, approval_id_hint=aid)
+        except (RPCError, SignerUnavailable) as e:
+            c = {"ok": False, "rule_ids": d["rule_ids"], "reason": str(e)}
+        if not c["ok"]:
+            out["blocked"] = {"error": "blocked by policy: " + (", ".join(c["rule_ids"]) or d["decision"]),
+                              "reason": c.get("reason")}
+        return out
+
+    def _complete(self, cite: Dict[str, Any], status: str, result: Any) -> Dict[str, Any]:
+        """Records the outcome of a call the signer let run; a failure to record it warns and keeps the decision's
+        citation."""
+        from tracekit.sdk.client import SignerUnavailable
+        from tracekit.signer.rpc_schema import RPCError
+        try:
+            seq = self.rt._tk(self.name).complete(cite["tool_call_id"], status, result=result)["run_seq"]
+        except (RPCError, SignerUnavailable) as e:
+            warnings.warn(f"tracekit why: the signer did not record the outcome of {cite['tool_call_id']}: {e}",
+                          stacklevel=3)
+            return cite
+        return dict(cite, run_seq=seq, type="tool.result")
 
     def check(self, tool: str, args: Optional[dict] = None, *, decision: Optional[Ref] = None,
               sensitive: Optional[bool] = None) -> Any:
@@ -518,9 +658,12 @@ class Agent:
         if decision is None and isinstance(content, Ref) and content.kind == "output":
             decision = content
         ref = rt._blob(value)
+        # the recipient's run observes what it was sent, naming the sender's run: the link between the agents' runs
+        extra = {"tracekit": rt._observe(to, value, f"msg:{self.name}->{to} run:{rt._tk(self.name).run_id}", trust)} \
+            if rt.signer is not None else {}
         with rt._lock:
             ev = rt._emit(self.name, "message", to=to, ref=ref, decision=decision.event_id if decision else None,
-                          trust=trust)
+                          trust=trust, **extra)
             r = Ref(ref, value, "message", to, f"{self.name}->{to}", trust, ev["id"])
             rt._mail.setdefault(to, []).append(r)
         return r
@@ -528,6 +671,13 @@ class Agent:
     def inbox(self) -> List[Ref]:
         with self.rt._lock:
             return list(self.rt._mail.get(self.name, []))
+
+
+_USAGE = ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "reasoning_tokens")
+
+
+def _cite(run: Any, run_seq: int, rtype: str) -> Dict[str, Any]:
+    return {"run_id": run.run_id, "run_seq": run_seq, "type": rtype}
 
 
 def _status(result: Any) -> str:

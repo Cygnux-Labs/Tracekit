@@ -19,8 +19,9 @@ What it records, per run (`events.jsonl` plus content-addressed `blobs/`, hash-c
 - tool calls, linked to the model call that asked for them;
 - messages between agents.
 
-The why log is hash-chained, not signed: anyone who can rewrite the whole log can rebuild the chain. Runs imported
-from a v1 Tracekit ledger cite the signed records they came from (see [Importing a v1 ledger](#importing-a-v1-ledger)).
+The why log is hash-chained, not signed: anyone who can rewrite the whole log can rebuild the chain. Recorded with
+the signer, or imported from a Tracekit ledger, each event cites the signed record it came from (see
+[With the signer](#with-the-signer) and [Importing a v1 ledger](#importing-a-v1-ledger)).
 The formats and algorithms are in [why-architecture.md](why-architecture.md).
 
 ## Demo
@@ -277,6 +278,61 @@ each event's details. Values can be traced only with `content_capture: full` (at
 hashed content provenance says the content was hashed instead of guessing. Model calls appear only when they were
 recorded (autotrace, the SDK or the model proxy).
 
+## With the signer
+
+One run is then both signed evidence and a causal log with content, and every causal claim cites signed records.
+
+```bash
+tracekit demo --why     # the support desk on the signer: a held email, its cause, a verified bundle; exit 0
+```
+
+**The runtime.** Give `Runtime` (or `System.run`) a Tracekit client, `signer=Client()`, or set `TRACEKIT_SIGNER`
+(the SDK's own resolution, system mode included; `signer=False` turns it off). Each agent gets its own Tracekit run,
+with the task observed in it as trusted, and every event also goes to the signer:
+
+| why event | signer |
+|---|---|
+| `observe()` | `observe` with its source and trust |
+| message to an agent | `observe` in the recipient's run, source `msg:<from>-><to> run:<sender's run id>`, with the message's trust: this is how the agents' runs are linked |
+| model call | `model_event`: the request with the `content_digest` of the exact context, the response (at `finish()`) with the tool calls it led to and their args digests; `record_models=False` when a gateway records them |
+| `act()` | `decide`; on `ask` an approval request and a wait of up to `approval_wait_s` (300 s); `approval_consume`; the tool runs; `complete` |
+
+A deny comes back to the agent as `{"error": "blocked by policy: <rule ids>"}` with status `blocked`; an `ask` nobody
+approves is blocked the same way and says how to answer it. A signer that cannot be reached blocks the call (fail
+closed). With a signer the guard is not asked: the signer is the gate. Each event stores the record it produced as
+`tracekit: {run_id, run_seq, type}`, shown in the app's event details. Replays (`test`, `attribute`, `replay`) never
+talk to the signer: they must not write evidence.
+
+**Import.** `tracekit why import --store DIR` reads a signer data dir (read-only, like `tracekit view --data-dir`);
+`--bundle FILE.tkb --trust trust.json` verifies the bundle first and refuses one that does not verify. Each v2 run
+becomes a why run `tk-<run id>`:
+
+| v2 record | why event |
+|---|---|
+| `input.observed` | input with its source and trust; content "content committed, not in the log" |
+| `model.exchange` | model call over what the run had observed so far (`reconstructed`) |
+| `policy.decision` + `tool.result` | tool call with the decision, rule ids and reasons; results committed, not in the log |
+| `policy.decision` without a result | tool call `blocked`, with the approval and who answered it |
+| decision `provenance` | an observed edge from the record that brought the value to the call ("argument to (email), untrusted") |
+| `capture.gap`, `trace.tamper` | high evidence alerts |
+
+Every event cites its record (`tracekit`: log_id, seq, run_id, run_seq, the record hash and its commitment). When a why
+log under `--out` cites the imported runs (the runtime wrote it), the two are merged into `tk-<why run id>`: content
+from the why log, citations, verdicts and provenance from the signed records. An event whose citation does not match
+its record (another type, tool, trust, source or outcome) is marked `tracekit_mismatch` and raised as a high evidence
+alert; so is a why log whose own chain is broken.
+
+**Content against commitments.** The signer commits to content without keeping it. With the salts of the records a
+case cites (`tracekit signer reveal --record SEQ`, one JSON line per record),
+
+```bash
+tracekit why verify runs/tk-desk --salts salts.jsonl
+```
+
+recomputes each cited blob's digest and checks it against the record's commitment: `matched`, `mismatched` or `not
+revealed`. A mismatch exits 1 and is a high evidence alert in the app. Limits:
+[limits.md](limits.md#investigation-tracekit-why).
+
 ## Server and API
 
 ```bash
@@ -318,7 +374,8 @@ with `--allow-program`. The server is in the [HTTP security checklist](security-
 | `tracekit why serve ROOT [--host] [--port] [--token] [--allow-program SPEC] [--webhook URL] [--tls-cert --tls-key \| --insecure-http]` | app, API, ingest and live updates |
 | `tracekit why watch ROOT [--webhook URL]` | print new alerts as runs are recorded |
 | `tracekit why import --v1 SRC [--run R] [--out DIR] [--sensitive TOOL] [--list]` | import runs from a v1 ledger |
-| `tracekit why verify RUN` | check the chain, seq, event hashes and blob hashes; exit 1 when the log fails |
+| `tracekit why import --store DIR \| --bundle FILE --trust FILE [--run R] [--out DIR] [--list]` | import runs from the v2 signer, merged with the why log that cites them |
+| `tracekit why verify RUN [--salts FILE]` | check the chain, seq, event hashes and blob hashes, and with `--salts` content against commitments; exit 1 when either fails |
 | `tracekit why taint RUN [--source SPEC] [--inferred] [--json]` | blast radius with paths |
 | `tracekit why test RUN --remove SPEC --target SPEC [--n N] [--n-max N] [--live-tools]` | run replay test |
 | `tracekit why test RUN --decision SEQ --remove SPEC [--contains TEXT] [--anthropic]` | decision replay test |
