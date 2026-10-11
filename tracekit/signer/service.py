@@ -41,7 +41,8 @@ signer.yaml:
     multi_tenant_apps: ["uid:1002"]          # may assert a tenant per run (recorded as not attested), or a
                                              # bridge's on_behalf person's tenant
     migrators: ["uid:1003"]                  # may register `migrated` runs
-    analyzers: ["uid:1004"]                  # may register findings runs, each bound to the run it analyses
+    analyzers: ["uid:1004"]                  # may register findings runs, each bound to the run it analyses, and
+                                             # `tracekit why` replay runs of it (replay_of)
     gateways: ["mtls:spiffe://acme/gateway"]  # LLM gateways (tracekit.gateway): their model_event names the client it
                                              # authenticated (`caller`) and is recorded source gateway (tier T2)
     gateway_mandatory: false                 # true: reconcile decides against gateway L3 only (tracekit.signer.reconcile)
@@ -1479,9 +1480,11 @@ class SignerService:
     def _register_run(self, identity, req):
         sub = subject(identity)
         for field, allowed in (("tenant", self.multi_tenant_apps), ("source", self.migrators),
-                               ("analyzes", self.analyzers)):
+                               ("analyzes", self.analyzers), ("replay_of", self.analyzers)):
             if field in req and sub not in allowed:
                 raise RPCError("forbidden", f"{sub[:256]} is not configured to register runs with `{field}`")
+        if ("replay_of" in req) != ("investigation" in req):
+            raise RPCError("invalid_request", "a replay run names both `replay_of` and `investigation`")
         harness = None
         if self._harnesses:
             procs = self._chain(identity)
@@ -1508,8 +1511,9 @@ class SignerService:
         def fn(tx, _):
             if (tenant, run_id) in self.log.runs:
                 raise RPCError("run_exists", run_id)
-            if "analyzes" in req and (tenant, req["analyzes"]) not in self.log.runs:
-                raise RPCError("unknown_run", req["analyzes"])
+            for field in ("analyzes", "replay_of"):
+                if field in req and (tenant, req[field]) not in self.log.runs:
+                    raise RPCError("unknown_run", req[field])
             n = self.log.open_runs.get(own, 0)
             self.quotas.check_count("open_runs", n)
             run = tx.new_run(tenant, run_id)
@@ -1518,6 +1522,8 @@ class SignerService:
             tx.set(run, "source", req.get("source", "sdk"))
             tx.set(run, "people", (person(identity), principal if "principal_token" in req else None))
             tx.set(run, "prov", {"state": "complete", "index": {}})
+            if "replay_of" in req:   # not reconciled: a replay run has model exchanges and, by design, no decisions
+                tx.set(run, "rec", None)
             if harness:
                 tx.set(run, "harness", (harness["pid"], harness["start_time"]))
             attested = "principal_token" in req
@@ -1529,8 +1535,7 @@ class SignerService:
                 tx.set(run, "principal", principal)
             data = {"agent": req["agent"], "signer_isolation": self.isolation or self._isolation(identity), "fail_modes": self.fail_modes,
                     "identity": _recorded(identity)}
-            if "analyzes" in req:
-                data["analyzes"] = req["analyzes"]
+            data.update({k: req[k] for k in ("analyzes", "replay_of", "investigation") if k in req})
             if harness:
                 data["harness"] = dict(harness, attested=True)
             tx.emit(run, "run.registered", data, request_id=req["request_id"], **top)
@@ -2035,6 +2040,21 @@ class SignerService:
                 source="signer", request_id=req["request_id"])}
         return self.log.submit(identity, "tailer_lost", req, fn, key, late=True)
 
+    def _why_finding(self, identity, req):
+        key = self._authorize(identity, req)
+        try:
+            first = next(iter(self.log.storage.iter_run(*key)))["event"]
+        except (OSError, StorageUnavailable) as e:
+            raise RPCError("unavailable", f"storage read failed: {e}") from None
+        if "analyzes" not in first["data"]:
+            raise RPCError("forbidden", "a why.finding goes in a findings run: register_run with `analyzes` (signer.yaml "
+                                        "`analyzers` lists who may)")
+        self.quotas.take_event(identity)
+
+        def fn(tx, run):
+            return {"run_seq": tx.emit(run, "why.finding", req["finding"], request_id=req["request_id"])}
+        return self.log.submit(identity, "why_finding", req, fn, key)
+
     def _status(self, identity, req):
         return {"rpc_version": rpc_schema.RPC_VERSION, "signer": {"name": "tracekit-signer", "version": __version__},
                 "identity": {"scheme": identity.scheme, "subject": identity.subject[:256], "attested": identity.attested},
@@ -2234,25 +2254,56 @@ class SignerService:
         return self._erase(key, reason, subject(identity)[:256],
                            lambda fn: self.log.submit(identity, "content_erase", req, fn))
 
-    def _erase(self, key, reason, by, submit=None):
-        """Delete run `key`'s data key (replaced by its tombstone) and blobs, then write content.erased, in one writer
-        item: the record is signed only once the key is gone. A storage failure writes no record and raises
-        unavailable; a retry erases again (blobs a failure left behind stay inert: no key opens them)."""
+    def _vault_replays(self, runs):
+        """{(tenant, run_id): [(tenant, replay run id)]}: of `runs` (content_runs), those whose run.registered names a
+        run in `replay_of` (tracekit why), by that run."""
+        # lean: reads the first record of every run with content in the vault per erasure or retention sweep; index runs
+        # by replay_of when vaults hold many runs
+        out = {}
+        for log_id, tenant, run_id, _ in runs:
+            first = next(iter(self.log.storage.iter_run(tenant, run_id)), None) if log_id == self.log.log_id else None
+            of = first and first["event"]["data"].get("replay_of")
+            if of:
+                out.setdefault((tenant, of), []).append((tenant, run_id))
+        return out
+
+    def _erase(self, key, reason, by, submit=None, replays=None):
+        """Delete run `key`'s data key (replaced by its tombstone) and blobs, and those of its replay runs (`replays`,
+        default: every one in the vault), each then a content.erased, in one writer item: a record is signed only once
+        the key is gone. A storage failure writes no record and raises unavailable; a retry erases again (blobs a
+        failure left behind stay inert: no key opens them)."""
+        try:
+            if replays is None:
+                replays = self._vault_replays(self.log.write(lambda tx: self.log.storage.content_runs())).get(key, [])
+        except (OSError, StorageUnavailable) as e:
+            raise RPCError("unavailable", f"the content of run {key[1]} was not erased: {e}") from None
+
         def fn(tx, _=None):
-            try:
-                self.log.storage.content_erase(self.log.log_id, *key)
-            except (OSError, StorageUnavailable) as e:
-                raise RPCError("unavailable", f"the content of run {key[1]} was not erased: {e}") from None
-            return {"run_seq": tx.emit(self.log.signer_run(tx, key[0]), "content.erased",
-                                       {"run_id": key[1], "reason": reason, "by": by}, source="signer")}
+            out = None
+            for k in (key, *replays):
+                try:
+                    self.log.storage.content_erase(self.log.log_id, *k)
+                except (OSError, StorageUnavailable) as e:
+                    raise RPCError("unavailable", f"the content of run {k[1]} was not erased: {e}") from None
+                why = reason if k == key else f"{reason} (a replay of run {key[1]})"[:1024]
+                seq = tx.emit(self.log.signer_run(tx, k[0]), "content.erased", {"run_id": k[1], "reason": why, "by": by},
+                              source="signer")
+                out = out or {"run_seq": seq}
+            return out
         return (submit or self.log.write)(fn)
 
     def expire_content(self, now=None):
-        """Erase the content of every run whose data key was stored more than retention_days before `now`."""
+        """Erase the content of every run whose data key was stored more than retention_days before `now`, with its
+        replay runs' (a replay run's content never outlives its run's)."""
         cutoff = (time.time() if now is None else now) - self.content["retention_days"] * 86400
-        for log_id, tenant, run_id, stored in self.log.write(lambda tx: self.log.storage.content_runs()):
-            if log_id == self.log.log_id and stored < cutoff:
-                self._erase((tenant, run_id), f"retention: kept {self.content['retention_days']} days", "signer")
+        runs = self.log.write(lambda tx: self.log.storage.content_runs())
+        replays, done = self._vault_replays(runs), set()
+        for log_id, tenant, run_id, stored in runs:
+            if log_id == self.log.log_id and stored < cutoff and (tenant, run_id) not in done:
+                todo = [k for k in replays.get((tenant, run_id), []) if k not in done]
+                self._erase((tenant, run_id), f"retention: kept {self.content['retention_days']} days", "signer",
+                            replays=todo)
+                done.update([(tenant, run_id), *todo])
 
     # --- OTLP import (tracekit.signer.otel) ---
 

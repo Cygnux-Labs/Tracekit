@@ -141,7 +141,10 @@ content: {retain: true, retention_days: 30, max_record_bytes: 1048576}   # defau
   is written only once the key is gone (a storage error writes none, and the erasure can be retried). The signer keeps
   nothing more for an erased run in its live store. Erasure doesn't reach copies taken before it: a backup, a WAL
   archive or a replica of the store still holds the run's wrapped key and blobs, and opens with `keys/content.key`
-  ([limits](limits.md#content-vault-11)). Records and commitments are untouched, and bundles still verify.
+  ([limits](limits.md#content-vault-11)). Records and commitments are untouched, and bundles still verify. Erasing a
+  run (on request or by retention) also erases its `tracekit why` replay runs (runs whose `run.registered` names it in
+  `replay_of`), each with its own `content.erased`: a replay run's requests copy the run's content, so its content
+  never outlives the run's.
 - **Bundles never hold vault content.** A bundle that holds `content.accessed` or `content.erased` records needs a 1.1
   verifier.
 

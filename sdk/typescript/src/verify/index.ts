@@ -7,7 +7,8 @@
  *     const { report, code } = await verify(bundleBytes, trustConfigBytes);
  *
  * Not implemented here, so never VERIFIED when a bundle relies on them (integrity `UNVERIFIABLE (...)` names them):
- * SLH-DSA-SHA2-128s hybrid checkpoint lines (Web Crypto has no SLH-DSA), Rekor v2 anchors, record-key certificates.
+ * SLH-DSA-SHA2-128s hybrid checkpoint lines (Web Crypto has no SLH-DSA), Rekor v2 anchors, record-key certificates,
+ * tracekit why findings and replay runs.
  * Monitor reports, revocations and the v1 format bridge are inputs of the reference's CLI that this one doesn't take.
  */
 import { type Floats, canonicalize, strictParseBytes } from "./jcs.js";
@@ -290,10 +291,11 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
     for (const [kid, k] of declared) timeline.set(kid, k);
   }
 
-  // the runs: one, or with a run-set any number
+  // the runs: one, or with a run-set any number, or one with its tracekit why findings and replay runs
+  // lean: findings (verify/v2.py's _findings) are not checked here: a bundle with them is UNVERIFIABLE; port it when
+  // TS users verify findings bundles
   const names = [...files.keys()].filter((n) => n.startsWith("runs/")).sort();
   const runSet = files.has("registry/run-set.json");
-  if (names.length !== 1 && !runSet) throw new Error("a v2 bundle holds exactly one run, or a run-set");
   const runs = new Map<string, J[]>(), problems: string[] = [], chain: string[] = [], outside: string[] = [];
   for (const name of names) {
     const records = jsonl(name);
@@ -311,6 +313,10 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
     }
     if (!(await included(records[0]) && await included(records.at(-1)))) outside.push(`run ${repr(cut(str(get(head, "run_id")), 200))}`);
   }
+  const why = [...runs.values()].some((rs) => rs.some((r) => get(r.event, "type") === "why.finding")
+    || get(rs[0].event, "type") === "run.registered" && ["analyzes", "replay_of"].some((k) => has(get(rs[0].event, "data"), k)));
+  if (why) rep.unsupport("tracekit why findings");
+  else if (names.length !== 1 && !runSet) throw new Error("a v2 bundle holds exactly one run, or a run-set");
   let retired: [number, string][] = [], provenTo = -1, regCosigs: [string, bigint][][] = [];
   if (runSet) {
     [retired, provenTo, regCosigs] = await checkRunSet(rep, json("registry/run-set.json"), jsonl, file, trust, witnesses,

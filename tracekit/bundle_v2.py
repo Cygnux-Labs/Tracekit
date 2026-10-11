@@ -27,6 +27,9 @@ The tenant salt goes into the bundle so its verifier can recompute H(tenant_salt
 whoever holds the bundle can test guessed run ids against this tenant's leaves (and link this tenant's registry
 origin); other tenants' leaves stay opaque, as each tenant has its own salt.
 
+With findings (export(..., with_runs=about(...))), the run's `tracekit why` findings runs (run.registered `analyzes`
+the run) and replay runs (`replay_of` the run) are bundled with it, so the verifier can count each finding's replay runs.
+
 No views, no code, no trust configuration: the verifier pins its own. Never content from the signer's content vault:
 records hold commitments only."""
 import base64
@@ -40,8 +43,8 @@ from tracekit.storage.base import registry_tree
 
 FORMAT = "tracekit.bundle.v2"
 VERIFIER_MIN_VERSION = "1.0.0"
-PROVENANCE_VERSION = "1.1.0"   # a bundle with input.observed or content.* records or decision provenance (format 1.1)
-V11_TYPES = ("input.observed", "content.accessed", "content.erased")
+PROVENANCE_VERSION = "1.1.0"   # input.observed, content.* or why.finding records, decision provenance or replay runs
+V11_TYPES = ("input.observed", "content.accessed", "content.erased", "why.finding")
 KEY_TYPES = ("signer.epoch", "key.retire")
 
 
@@ -84,12 +87,23 @@ def _run_set(storage, tenant, tsalt, origin, size, lo, hi):
     return files, pointed
 
 
-def export(storage, tenant, run_id, note, out_path, policies=(), run_set=None, tenant_salt=None):
+def about(storage, tenant, run_id):
+    """The runs of `tenant` whose run.registered analyzes or replays run `run_id`: its findings and replay runs."""
+    # lean: reads the first record of every run of the store; index runs by what they analyse if stores grow large
+    out = []
+    for t, rid in list(storage.runs):
+        first = next(iter(storage.iter_run(t, rid)), None) if t == tenant else None
+        if first and run_id in (first["event"]["data"].get("analyzes"), first["event"]["data"].get("replay_of")):
+            out.append(rid)
+    return out
+
+
+def export(storage, tenant, run_id, note, out_path, policies=(), run_set=None, tenant_salt=None, with_runs=()):
     """Write the bundle of run (tenant, run_id) from a store or its reader (FileReader, PostgresReader). `note` is a
     checkpoint of the store's record tree: a run's records after it are left out (a run still being written verifies to
     its head). `policies` are policy snapshots (bytes). `run_set`: (a, b), two checkpointed sizes of the tenant's
     registry tree (a may be 0), with `tenant_salt` (format.registry.tenant_salt) adds the run-set a..b; `run_id` may
-    then be None."""
+    then be None. `with_runs`: also these runs of the tenant (`about`: the run's findings and replay runs)."""
     origin, size = note.split("\n", 2)[:2]
     size = int(size)
     if not 0 < size <= storage.tree.size or not note.startswith(
@@ -102,6 +116,8 @@ def export(storage, tenant, run_id, note, out_path, policies=(), run_set=None, t
                     and r["event"]["run_id"] not in run_ids]
     elif run_id is None:
         raise ValueError("export needs a run or a run-set")
+    else:
+        run_ids += with_runs
     runs = {}
     for rid in run_ids:
         records = list(storage.iter_run(tenant, rid))
@@ -128,7 +144,7 @@ def export(storage, tenant, run_id, note, out_path, policies=(), run_set=None, t
     if anchor:
         files[f"rekor/{size}.json"] = json.dumps(anchor["rekor"]).encode("utf-8")
         files[f"tsa/{size}.tsr"] = base64.b64decode(anchor["tsa"])
-    v11 = any(r["event"]["type"] in V11_TYPES or {"provenance", "provenance_state"} & r["event"]["data"].keys()
+    v11 = any(r["event"]["type"] in V11_TYPES or {"provenance", "provenance_state", "replay_of"} & r["event"]["data"].keys()
               for r in [*pointed, *(r for rs in runs.values() for r in rs)])
     manifest = {"format": FORMAT, "verifier_min_version": PROVENANCE_VERSION if v11 else VERIFIER_MIN_VERSION,
                 "files": {n: hashlib.sha256(b).hexdigest() for n, b in files.items()}}

@@ -28,7 +28,83 @@ def _fmt_test(r):
             f"P(with)={r['p_with']:.2f} P(without)={r['p_without']:.2f} "
             f"effect={r['effect']:+.2f} [{r['ci'][0]:+.2f}, {r['ci'][1]:+.2f}] n={r['n']}  {r['verdict'].upper()}"
             + (f" ({r['role']})" if r.get("role") else "")
-            + (f" (target reproduced in {r['p_with']:.0%} of replays; try n={r['n_needed']})" if r.get("n_needed") else ""))
+            + (f" (target reproduced in {r['p_with']:.0%} of replays; try n={r['n_needed']})" if r.get("n_needed") else "")
+            + (" (budget: raise --max-calls or --max-cost to go on)" if r.get("stopped") == "budget" else ""))
+
+
+def _investigation(a):
+    """The signed run --run, from --store or a verified --bundle, with the signer ($TRACEKIT_SIGNER) for its content and
+    --gateway for its replays."""
+    import ssl
+    from ..sdk.client import Client
+    from ..usage import Prices
+    from . import import_v2, signed
+    if a.store:
+        records = import_v2.store_records(a.store, a.signed_run).get(a.signed_run)
+    elif a.bundle and a.trust:
+        found, rep, code = import_v2.bundle_records(a.bundle, a.trust)
+        if code:
+            raise SystemExit(f"tracekit why: refused {a.bundle}: it does not verify against {a.trust}")
+        records = found.get(a.signed_run)
+    else:
+        raise SystemExit("tracekit why: --run needs --store DIR, or --bundle FILE with --trust FILE")
+    if not records:
+        raise SystemExit(f"tracekit why: no run {a.signed_run}")
+    if not a.gateway:
+        raise SystemExit("tracekit why: replays of a signed run go through the Tracekit gateway: pass --gateway URL")
+    headers = {}
+    if a.gateway_token_file:
+        with open(a.gateway_token_file, encoding="utf-8") as f:
+            headers["Authorization"] = "Bearer " + f.read().strip()
+    ctx = None
+    if a.gateway_ca or a.gateway_cert:
+        ctx = ssl.create_default_context(cafile=a.gateway_ca)
+        if a.gateway_cert:
+            ctx.load_cert_chain(a.gateway_cert, a.gateway_key)
+    try:
+        return signed.Investigation(records, Client(), a.gateway, headers=headers, context=ctx,
+                                    investigation=a.investigation, max_calls=a.max_calls, max_cost=a.max_cost,
+                                    prices=Prices.load(a.prices) if a.prices else None)
+    except signed.EvidenceAlert as e:
+        print(f"tracekit why: [HIGH] {e}", file=sys.stderr)
+        raise SystemExit(1) from None
+
+
+def _signed_errors():
+    """What a signed-run test reports and exits 2 on: a bad spec or run, the gateway's or the signer's refusal, a budget
+    spent before any test finished (the surrogate's ranking)."""
+    from ..sdk.client import SignerUnavailable
+    from ..signer.rpc_schema import RPCError
+    from .signed import Budget
+    return ValueError, RuntimeError, OSError, RPCError, SignerUnavailable, Budget
+
+
+def _signed_error(cmd, e):
+    from .signed import Budget
+    print(f"tracekit why {cmd}: " + ("inconclusive (budget): the investigation's budget ran out before a test "
+                                     "finished; raise --max-calls or --max-cost" if isinstance(e, Budget) else str(e)),
+          file=sys.stderr)
+    return 2
+
+
+def _signed_args(p):
+    p.add_argument("--run", dest="signed_run", help="a Tracekit v2 run id: test the signed run (with --store or "
+                   "--bundle, and --gateway); its content comes from the signer's vault ($TRACEKIT_SIGNER)")
+    p.add_argument("--store", metavar="DIR", help="with --run: the signer data dir holding the run")
+    p.add_argument("--bundle", metavar="FILE", help="with --run: a v2 bundle holding the run, verified with --trust")
+    p.add_argument("--trust", help="with --bundle: the v2 trust config")
+    p.add_argument("--gateway", metavar="URL", help="with --run: the Tracekit gateway every replay calls models through")
+    p.add_argument("--gateway-token-file", help="the investigator's bearer token for the gateway")
+    p.add_argument("--gateway-ca", help="the CA the gateway's certificate must chain to")
+    p.add_argument("--gateway-cert", help="the investigator's client certificate for the gateway (mTLS)")
+    p.add_argument("--gateway-key", help="the key of --gateway-cert")
+    p.add_argument("--investigation", help="the investigation id (default: a new one): content_get's purpose and "
+                   "every replay run's investigation")
+    p.add_argument("--rung", type=int, choices=(1, 2), help="1: re-send one model call; 2: re-simulate the loop "
+                   "from the vault (default: 1 with --decision, else 2)")
+    p.add_argument("--max-calls", type=int, help="budget: model calls for the whole investigation")
+    p.add_argument("--max-cost", type=float, help="budget: estimated cost (needs --prices)")
+    p.add_argument("--prices", help="price table for --max-cost (tracekit/usage.py)")
 
 
 def _system(a, run):
@@ -154,6 +230,22 @@ def cmd_taint(a):
 
 
 def cmd_test(a):
+    if a.signed_run:
+        from .signed import counterfactual_signed
+        if not a.target:
+            raise SystemExit("--target is required")
+        inv = _investigation(a)
+        try:
+            r = counterfactual_signed(inv, a.remove, a.target, decision=a.decision, rung=a.rung, n=a.n,
+                                      n_max=a.n_max, workers=a.workers)
+        except _signed_errors() as e:
+            return _signed_error("test", e)
+        finally:
+            inv.finish()
+        _p(json.dumps(r, indent=2) if a.json else _fmt_test(r) + _fmt_signed(r))
+        return 0
+    if not a.run:
+        raise SystemExit("tracekit why test needs a why run, or --run with a signed run")
     run = load_run(a.run)
     if a.decision is not None:
         models, system = None, None
@@ -174,7 +266,33 @@ def cmd_test(a):
     _p(json.dumps(r, indent=2) if a.json else _fmt_test(r))
 
 
+def _fmt_signed(r):
+    return (f"\n  rung {r['rung']} at record {r['decision']}: {len(r['replay_runs'])} replay runs, "
+            f"{r['off_tape_actions']} off-tape actions; assumes {'; '.join(r['assumptions'])}"
+            + (f"\n  signed as why.finding (findings run record {r['finding']})" if "finding" in r else ""))
+
+
 def cmd_attribute(a):
+    if a.signed_run:
+        from .signed import attribute_signed
+        inv = _investigation(a)
+        try:
+            r = attribute_signed(inv, a.target, a.suspect or None, decision=a.decision, rung=a.rung,
+                                 n=a.n, n_max=a.n_max, workers=a.workers, size_roles=not a.no_roles)
+        except _signed_errors() as e:
+            return _signed_error("attribute", e)
+        finally:
+            inv.finish()
+        if a.json:
+            _p(json.dumps(r, indent=2, default=str))
+            return 0
+        for it in (r["ranking"] or {}).get("items", [])[:8]:
+            _p(f"  predicted {it['weight']:+.3f} {it['spec']}  {it['preview'][:60]}")
+        _p(f"suspects: {', '.join(r['suspects'])}")
+        for t in r["tests"]:
+            _p(_fmt_test(t) + _fmt_signed(t))
+        _p(f"\n{r['summary']}\n({r['model_calls']} model calls, {len(r['tests'])} tests, corrected for {r['family']})")
+        return 0
     if a.langgraph:
         import importlib
         from .langgraph import attribute_thread
@@ -192,7 +310,7 @@ def cmd_attribute(a):
         r = attribute(run, a.target, a.suspect or None, n=a.n, n_max=a.n_max, system=_system(a, run),
                       workers=a.workers, size_roles=not a.no_roles)
     else:
-        raise SystemExit("give a run folder, or --langgraph module:graph_factory --thread T")
+        raise SystemExit("give a run folder, --run with a signed run, or --langgraph module:graph_factory --thread T")
     if a.json:
         _p(json.dumps(r, indent=2, default=str))
         return
@@ -430,18 +548,23 @@ def main(argv=None):
     p.add_argument("--json", action="store_true"); p.set_defaults(f=cmd_taint)
 
     p = sp.add_parser("test", help="counterfactual: does removing X change whether target happens?")
-    p.add_argument("run"); p.add_argument("--remove", required=True); p.add_argument("--target")
-    p.add_argument("--decision", type=int, help="test one recorded model call (seq) instead of re-running the program")
+    p.add_argument("run", nargs="?"); p.add_argument("--remove", required=True); p.add_argument("--target")
+    p.add_argument("--decision", type=int, help="test one recorded model call (seq; with --run: the run_seq of its "
+                   "request record) instead of re-running the program")
     p.add_argument("--contains", help="with --decision: measure P(output contains this text)")
     p.add_argument("--anthropic", action="store_true",
                    help="with --decision: re-send a call recorded by the Anthropic adapter (needs ANTHROPIC_API_KEY)")
     p.add_argument("--n", type=_positive, default=30); p.add_argument("--system"); p.add_argument("--live-tools", action="store_true")
     p.add_argument("--allow-program", action="append", metavar="SPEC", help="replay the program the run names if it is this one (repeatable); without it or --system, nothing is imported")
     p.add_argument("--n-max", type=_positive, help="sequential: keep doubling n up to this until the verdict is decisive")
+    p.add_argument("--workers", type=int, default=1, help="with --run: replay arms in parallel (1 to 16)")
+    _signed_args(p)
     p.add_argument("--json", action="store_true"); p.set_defaults(f=cmd_test)
 
     p = sp.add_parser("attribute", help="which inputs caused an action: group test first, then narrow down")
-    p.add_argument("run", nargs="?", help="run folder (or --langgraph)"); p.add_argument("--target", required=True)
+    p.add_argument("run", nargs="?", help="run folder (or --langgraph, or --run)"); p.add_argument("--target", required=True)
+    p.add_argument("--decision", type=int, help="with --run: the run_seq of the model call's request record (rung 1)")
+    _signed_args(p)
     p.add_argument("--suspect", action="append", help="intervention spec, or with --langgraph a message id or tool_call_id "
                    "(default: untrusted inputs upstream)")
     p.add_argument("--langgraph", metavar="MODULE:FACTORY",
