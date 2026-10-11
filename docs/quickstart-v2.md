@@ -29,25 +29,30 @@ after. A denied call reaches the model as a refusal and the agent goes on. Calli
 none of these installed it warns and does nothing. TypeScript: `const tk = await instrument()` from
 `@cygnux/tracekit`, then pass `tk.ai` (Vercel AI SDK) or `tk.agents` (OpenAI Agents JS) to the framework.
 
-### A server: a run per request
+### A server: a run per conversation
 
-A long-running server (FastAPI, a queue worker) should record each request or conversation in its own run, so each
-can be exported, verified and investigated on its own. Open it around the work; every wired framework's tool and model
-calls inside go to it:
+A long-running server (FastAPI, a queue worker) should record each conversation in its own run, so each can be
+exported, verified and investigated on its own. Keep the run open across the conversation's requests and make it
+current around each one; every wired framework's tool and model calls inside go to it, and an approval a person gives
+between requests resumes in the same run:
 
 ```python
 run = tracekit.instrument("support-desk")             # at startup
+conversations = {}                                     # conversation id -> its Tracekit run
 
 async def respond(conversation_id, message):
-    with run.client.run("support-desk", principal=conversation_id) as conversation:   # closed when the block ends
+    if conversation_id not in conversations:
+        conversations[conversation_id] = run.client.run("support-desk", principal=conversation_id)
+    with conversations[conversation_id].current():     # current for this request; still open after it
         result = Runner.run_streamed(agent, message, context=ctx)
         async for event in result.stream_events():
             ...
 ```
 
-Calls made outside such a block go to the process run. If the signer closes the process run after it has been idle
-for its `idle_s` (an hour by default), the next call registers a new process run and warns once, instead of being
-refused.
+Close a conversation's run (`conversations.pop(cid).close()`) when it ends; the signer closes one left idle for its
+`idle_s` (an hour by default). A stateless request can use `with run.client.run(...) as r:`, which closes it at the end
+of the block. Calls made outside any such block go to the process run; if the signer closed it after it was idle, the
+next call registers a new process run and logs a warning, instead of being refused.
 
 ### When a call needs a person (`ask`)
 

@@ -23,9 +23,11 @@ Don't also wire an adapter by hand in the same process: the call would be decide
 """
 import atexit
 import functools
+import logging
 import os
 import sys
 import threading
+import types
 import warnings
 import weakref
 from importlib import metadata
@@ -33,16 +35,24 @@ from importlib import metadata
 _STATE = {"run": None}
 
 
+NEW_WORK = {"decide", "model_event", "observe", "state_write", "approval_list"}   # go to the current run
+BOUND = {"complete", "approval_request", "approval_consume", "approval_abandon"}   # go where their call was decided
+KEEP = 65536   # lean: tool calls, approvals and resent events remembered; raise it for very busy servers
+
+
 def _process_client(Client, RPCError, current_run):
     class Process(Client):
-        """The client every adapter instrument() wires gets. A call addressed to the process run goes to the current
-        run while one is set (`with run.client.run(...)`: a run per request or conversation, as a server opens), and
-        to a newly registered process run once the signer has closed it (idle for the signer's idle_s), so a
-        long-running server is never refused for good."""
+        """The client every adapter instrument() wires gets. New work addressed to the process run (decide,
+        model_event, observe, state_write, approval_list) goes to the current run while one is set (a run per
+        conversation: `with run.client.run(...)`, or `with conversation.current()`), and to a newly registered process
+        run once the signer has closed it after it was idle. A call's complete and approvals go to the run it was
+        decided in; anything else goes where it is addressed. Events are numbered per run, the same number for a
+        resend, so no run sees a gap the adapter's own counter would leave."""
         process, agent, ids = None, None, set()   # the process RunHandle, its name, every id it has had
 
         def start(self, agent):
             """Register the process run."""
+            self._calls, self._approvals, self._numbers, self._next, self._made = {}, {}, {}, {}, 0
             self.process, self.agent = self.run(agent=agent), agent
             self.ids = {self.process.run_id}
             return self.process
@@ -51,32 +61,72 @@ def _process_client(Client, RPCError, current_run):
             req, p = dict(req or {}), self.process
             if p is None or req.get("run_id") not in self.ids:
                 return super().call(method, req)
-            cur = current_run.get()
-            if cur is not None and cur.run_id not in self.ids:
-                return cur.client.call(method, _to(req, cur))
-            sent = p.run_id
+            if method in BOUND and req.get("tool_call_id") in self._calls:
+                target = self._calls[req["tool_call_id"]]
+            elif method == "approval_wait" and req.get("approval_id") in self._approvals:
+                target = self._approvals[req["approval_id"]]
+            elif method in NEW_WORK:
+                cur = current_run.get()
+                target = cur if cur is not None and cur.run_id not in self.ids else p
+            elif "client_seq" in req:   # an event: numbered by this client, as every other
+                target = p
+            else:
+                return super().call(method, req)
+            addressed = target.run_id
             try:
-                return super().call(method, _to(req, p))
+                out, sent = self._route(method, req, target)
             except RPCError as e:
-                if e.code != "run_closed":
+                if e.code != "run_closed" or target is not p or method not in NEW_WORK:
                     raise
-                with _LOCK:
-                    if p.run_id == sent:   # not renewed meanwhile by another thread's call
-                        old, new = p.run_id, super().call("register_run", {"agent": {"name": self.agent}})
-                        p.registered, p.run_id, p.run_token = new, new["run_id"], new["run_token"]
-                        self.ids.add(p.run_id)
-                        warnings.warn(f"tracekit: the signer closed run {old} ({e.message}); recording in a new run "
-                                      f"{p.run_id}. A server should open a run per request: docs/quickstart-v2.md",
-                                      stacklevel=2)
-                return super().call(method, _to(req, p))
+                self._renew(e, addressed)
+                out, sent = self._route(method, req, p)
+            if method == "decide":
+                _keep(self._calls, req["tool_call_id"], sent)
+            elif method == "approval_request" and "approval_id" in out:
+                _keep(self._approvals, out["approval_id"], sent)
+            return out
+
+        def _route(self, method, req, target):
+            """(the answer, the run it went to): `target` is a RunHandle or such a run."""
+            with _LOCK:   # a renewal swaps the id and the token together
+                sent = types.SimpleNamespace(run_id=target.run_id, run_token=target.run_token, client=target.client)
+                req = {**req, "run_id": sent.run_id, "run_token": sent.run_token}
+                if "client_seq" in req:
+                    key = (sent.run_id, req["stream"], req["client_seq"])
+                    if key not in self._numbers:
+                        if (sent.run_id, req["stream"]) not in self._next:
+                            self._made += 1   # a new stream name: a forgotten one is never numbered from 0 again
+                            _keep(self._next, (sent.run_id, req["stream"]), [f"{req['stream'][:100]}.{self._made}", 0])
+                        stream = self._next[(sent.run_id, req["stream"])]
+                        _keep(self._numbers, key, (stream[0], stream[1]))
+                        stream[1] += 1
+                    req["stream"], req["client_seq"] = self._numbers[key]
+            send = super().call if sent.client is self else sent.client.call
+            return send(method, req), sent
+
+        def _renew(self, e, closed):
+            p = self.process
+            with _LOCK:
+                old, token = p.run_id, p.run_token
+                if closed != old:
+                    return   # another thread's call renewed it already
+                agent = {"agent": {"name": self.agent}}
+                try:   # linked to the closed run while it is still closing
+                    new = super().call("register_run", {**agent, "parent": {"run_id": old, "run_token": token}})
+                except RPCError:
+                    new = super().call("register_run", agent)
+                p.registered, p.run_id, p.run_token = new, new["run_id"], new["run_token"]
+                self.ids.add(p.run_id)
+            logging.getLogger("tracekit").warning(
+                "tracekit: the signer closed run %s (%s); recording in a new run %s. A server should open a run per "
+                "conversation: docs/quickstart-v2.md", old, e.message, p.run_id)
     return Process
 
 
-def _to(req, run):
-    """`req` addressed to `run`, numbered by the client's own counter for that run: an adapter's counter would skip
-    the events it sent to other runs, which the signer records as missing."""
-    return {**{k: v for k, v in req.items() if k not in ("stream", "client_seq")},
-            "run_id": run.run_id, "run_token": run.run_token}
+def _keep(d, k, v):
+    d[k] = v
+    if len(d) > KEEP:
+        del d[next(iter(d))]
 
 
 _LOCK = threading.RLock()   # re-entered when wiring imports a module that calls instrument() itself

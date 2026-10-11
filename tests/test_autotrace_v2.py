@@ -132,6 +132,24 @@ class Recording:
         self.assertEqual((streamed.get("error"), self.ids(streamed)), (None, [("call_s", "client")]))
         self.assertEqual(self.ids(raw), [(t["id"], t["executed_by"]) for t in RESPONSES["expect"]["tool_uses"]])
 
+    def test_a_raw_response_read_without_parse_is_recorded_abandoned(self):
+        c = openai_client(lambda r: (200, sse(RESPONSES_STREAM["stream"]), True))
+        with c.responses.with_streaming_response.create(model="gpt-5", input="hi", stream=True) as r:
+            list(r.iter_lines())   # read raw, never parsed
+        autotrace.flush()
+        [(_, resp)] = self.exchanges()
+        self.assertIn("abandoned", resp["error"])
+
+    def test_parse_to_another_type_passes_through_and_isinstance_holds(self):
+        raw = openai_client(lambda r: (200, RESPONSES["response"], False)).responses.with_raw_response.create(
+            model="gpt-5", input="hi")
+        self.assertIsInstance(raw, openai._legacy_response.LegacyAPIResponse)
+        self.assertIsInstance(raw.parse(to=str), str)   # the caller's own type: not recorded, not cached
+        self.assertEqual(self.exchanges()[0][1], None)
+        self.assertEqual(type(raw.parse()).__name__, "Response")
+        want = [(t["id"], t["executed_by"]) for t in RESPONSES["expect"]["tool_uses"]]
+        self.assertEqual(self.ids(self.exchanges()[0][1]), want)
+
     # --- Anthropic ---
 
     def test_messages_create_and_stream_true(self):

@@ -361,18 +361,27 @@ def _gemini(ex, resp):
 
 class _RawProxy:
     """A raw HTTP response (OpenAI's `with_raw_response` and `with_streaming_response`, which openai-agents streams
-    through): the caller reads what `parse()` returns, so that is what is recorded (a stream through _StreamProxy)."""
+    through): the caller reads what `parse()` returns, so that is what is recorded (a stream through _StreamProxy). Read
+    any other way (`http_response`, `iter_lines()`), closed or dropped unparsed, the response is recorded abandoned."""
 
     def __init__(self, inner, ex):
         object.__setattr__(self, "_tk_inner", inner)
         object.__setattr__(self, "_tk_ex", ex)
         object.__setattr__(self, "_tk_out", None)
 
+    @property
+    def __class__(self):   # isinstance(raw, LegacyAPIResponse) still holds
+        return type(self._tk_inner)
+
     def __getattr__(self, name):
         return getattr(self._tk_inner, name)
 
     def __setattr__(self, name, value):
         setattr(self._tk_inner, name, value)
+
+    def __del__(self):
+        if self._tk_out is None and not self._tk_ex.done:
+            _LATE.append(self._tk_ex)   # finalisation may run from the GC: no signer I/O here
 
     def _parsed(self, out):
         if self._tk_out is None:   # parse() caches its result: record it once
@@ -388,13 +397,33 @@ class _RawProxy:
                 object.__setattr__(self, "_tk_out", out)
         return self._tk_out
 
+    def _failed(self, e):
+        self._tk_ex.finish(error=repr(e), status=_status_of(e))
+
     def parse(self, *args, **kwargs):
-        out = self._tk_inner.parse(*args, **kwargs)
+        if args or kwargs.get("to") is not None:   # parsed to the caller's own type: not the response the SDK reads
+            return self._tk_inner.parse(*args, **kwargs)
+        try:
+            out = self._tk_inner.parse(**kwargs)
+        except BaseException as e:
+            self._failed(e)
+            raise
         if inspect.isawaitable(out):   # the async client's parse()
             async def parsed():
-                return self._parsed(await out)
+                try:
+                    return self._parsed(await out)
+                except BaseException as e:
+                    self._failed(e)
+                    raise
             return parsed()
         return self._parsed(out)
+
+    def close(self):
+        try:
+            return self._tk_inner.close()
+        finally:
+            if self._tk_out is None:
+                self._tk_ex.finish(abandoned=True)
 
 
 def _raw(out):
