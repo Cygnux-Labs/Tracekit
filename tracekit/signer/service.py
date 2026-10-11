@@ -1435,6 +1435,8 @@ class SignerService:
                                ("analyzes", self.analyzers), ("replay_of", self.analyzers)):
             if field in req and sub not in allowed:
                 raise RPCError("forbidden", f"{sub[:256]} is not configured to register runs with `{field}`")
+        if ("replay_of" in req) != ("investigation" in req):
+            raise RPCError("invalid_request", "a replay run names both `replay_of` and `investigation`")
         harness = None
         if self._harnesses:
             procs = self._chain(identity)

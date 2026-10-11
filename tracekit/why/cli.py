@@ -207,9 +207,11 @@ def cmd_test(a):
         from .signed import counterfactual_signed
         if not a.target:
             raise SystemExit("--target is required")
+        inv = _investigation(a)
         try:
-            r = counterfactual_signed(_investigation(a), a.remove, a.target, decision=a.decision, rung=a.rung, n=a.n,
+            r = counterfactual_signed(inv, a.remove, a.target, decision=a.decision, rung=a.rung, n=a.n,
                                       n_max=a.n_max, workers=a.workers)
+            inv.finish()
         except _signed_errors() as e:
             print(f"tracekit why test: {e}", file=sys.stderr)
             return 2
@@ -244,9 +246,11 @@ def _fmt_signed(r):
 def cmd_attribute(a):
     if a.signed_run:
         from .signed import attribute_signed
+        inv = _investigation(a)
         try:
-            r = attribute_signed(_investigation(a), a.target, a.suspect or None, decision=a.decision, rung=a.rung,
+            r = attribute_signed(inv, a.target, a.suspect or None, decision=a.decision, rung=a.rung,
                                  n=a.n, n_max=a.n_max, workers=a.workers, size_roles=not a.no_roles)
+            inv.finish()
         except _signed_errors() as e:
             print(f"tracekit why attribute: {e}", file=sys.stderr)
             return 2

@@ -14,7 +14,7 @@ from test_bundle_v2 import LOG_SECRET, ORIGIN, pub
 from test_gateway import AGENT, SECRET, InProcess, serve
 from test_why_signed import quiet
 from tracekit import gateway
-from tracekit.bundle_v2 import export
+from tracekit.bundle_v2 import about, export
 from tracekit.format import checkpoint
 from tracekit.format.canon import event_hash
 from tracekit.signer import service as svc
@@ -247,7 +247,7 @@ class TestRungs(SignedReplay):
 
 
 class TestFindings(SignedReplay):
-    def bundle(self):
+    def bundle(self, run=None, with_runs=None):
         self.close()
         trust = os.path.join(self.dir, "trust.json")
         with open(trust, "w") as f:
@@ -256,8 +256,8 @@ class TestFindings(SignedReplay):
         try:
             text = checkpoint.body(ORIGIN, store.tree.size, store.tree.root())
             out = os.path.join(self.dir, "b.tkb")
-            export(store, "default", self.run, text + "\n" + checkpoint.sign(text, ORIGIN, LOG_SECRET), out,
-                   with_findings=True)
+            export(store, "default", run or self.run, text + "\n" + checkpoint.sign(text, ORIGIN, LOG_SECRET), out,
+                   with_runs=about(store, "default", self.run) if with_runs is None else with_runs)
         finally:
             store.close()
         return v2.verify(out, trust), json.loads(v2.read_zip(out)["manifest.json"])
@@ -284,6 +284,54 @@ class TestFindings(SignedReplay):
         [check] = [c for c in rep.checks if c["check"] == "findings"]
         self.assertEqual(check["status"], "fail")
         self.assertIn("count 2/2 with and 0/2 without", " ".join(check["problems"]))
+
+    def test_rates_that_do_not_round_evenly_still_count_up(self):
+        inv = self.investigation()
+        r = signed.counterfactual_signed(inv, "result:fetch", TARGET, decision=self.exchange_seqs()[1], n=3,
+                                         record=False)
+        control = [x for x in r["replay_runs"] if x["arm"] == "control"]
+        ablated = [x for x in r["replay_runs"] if x["arm"] == "ablated"]
+        runs = [dict(x, hit=i > 0) for i, x in enumerate(control)] + [dict(x, hit=i == 0) for i, x in enumerate(ablated)]
+        inv.record(dict(r, replay_runs=runs, p_with=0.6667, p_without=0.3333, effect=round(2 / 3 - 1 / 3, 4)))
+        (rep, code), _ = self.bundle()
+        self.assertEqual(code, 0, rep.checks)
+        self.assertIn(("findings", "pass"), [(c["check"], c["status"]) for c in rep.checks])
+
+    def test_a_replay_run_cited_twice_fails_verification(self):
+        inv = self.investigation()
+        r = signed.counterfactual_signed(inv, "result:fetch", TARGET, decision=self.exchange_seqs()[1], n=2,
+                                         record=False)
+        c = next(x for x in r["replay_runs"] if x["arm"] == "control")
+        runs = [c if x["arm"] == "control" else x for x in r["replay_runs"]]
+        inv.record(dict(r, replay_runs=runs))
+        (rep, code), _ = self.bundle()
+        self.assertEqual(code, 1)
+        [check] = [c for c in rep.checks if c["check"] == "findings"]
+        self.assertIn("more than once", " ".join(check["problems"]))
+
+    def test_the_findings_run_alone_verifies_with_its_findings_not_counted(self):
+        inv = self.investigation()
+        signed.counterfactual_signed(inv, "result:fetch", TARGET, decision=self.exchange_seqs()[1], n=2)
+        findings_run = inv.findings_run[0]
+        inv.finish()
+        (rep, code), _ = self.bundle(run=findings_run, with_runs=[])
+        self.assertEqual(code, 0, rep.checks)
+        [check] = [c for c in rep.checks if c["check"].startswith("findings")]
+        self.assertEqual((check["check"], check["status"]), ("findings counted", "warn"))
+        self.assertIn("--with-findings", check["detail"])
+
+    def test_finish_closes_the_findings_run(self):
+        inv = self.investigation()
+        signed.counterfactual_signed(inv, "result:fetch", TARGET, decision=self.exchange_seqs()[1], n=1)
+        rid = inv.findings_run[0]
+        inv.finish()
+        self.assertEqual(self.records(rid)[-1]["event"]["type"], "run.closing")
+
+    def test_a_replay_run_names_both_the_run_and_the_investigation(self):
+        for extra in ({"replay_of": self.run}, {"investigation": "i"}):
+            with self.assertRaises(RPCError) as cm:
+                self.agent.register_run({"agent": {"name": "x"}, **extra})
+            self.assertEqual(cm.exception.code, "invalid_request")
 
     def test_findings_and_replay_runs_need_an_analyzer(self):
         self.s.analyzers = set()

@@ -2087,13 +2087,11 @@
           "description": "a findings run: the run_id of the run of the same tenant it analyses"
         },
         "replay_of": {
-          "type": "string",
-          "maxLength": 128,
+          "$ref": "#/$defs/id",
           "description": "a tracekit why replay run: the run_id of the run of the same tenant it replays"
         },
         "investigation": {
-          "type": "string",
-          "maxLength": 128,
+          "$ref": "#/$defs/id",
           "description": "with replay_of: the investigation the replay run is an arm of"
         },
         "fidelity": {
@@ -3012,8 +3010,7 @@
             ],
             "properties": {
               "run_id": {
-                "type": "string",
-                "maxLength": 128
+                "$ref": "#/$defs/id"
               },
               "arm": {
                 "enum": [
@@ -3047,8 +3044,7 @@
           "maximum": 9007199254740991
         },
         "investigation": {
-          "type": "string",
-          "maxLength": 128
+          "$ref": "#/$defs/id"
         }
       }
     }

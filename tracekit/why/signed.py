@@ -57,7 +57,6 @@ STUB = {"error": "not in the recorded run"}
 MARGIN = 2   # model calls a rung 2 replay may make past the recorded number of turns
 ASSUMPTIONS = ["no code between model calls rewrote the history the model was sent",
                "tools are deterministic: a recorded result is what the tool would return again"]
-VERDICTS = ("causal", "suppressive", "ruled-out", "inconclusive", "not-applied")
 
 Block = namedtuple("Block", "path repl text tool role msg")
 
@@ -238,6 +237,12 @@ class Investigation:
                    "investigation": self.id}
         return self.client.why_finding({"run_id": self.findings_run[0], "run_token": self.findings_run[1],
                                         "finding": finding})["run_seq"]
+
+    def finish(self) -> None:
+        """Close the findings run, once every finding is recorded."""
+        if self.findings_run is not None:
+            self.close(self.findings_run)
+            self.findings_run = None
 
 
 # --------------------------------------------------------------------------- request bodies

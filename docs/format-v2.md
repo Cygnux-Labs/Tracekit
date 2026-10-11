@@ -126,9 +126,10 @@ itself, whose records stay unchanged. They hold no content. A bundle with either
 interval, verdict, replay_runs: [{run_id, arm: control|ablated, hit}], models, rung, off_tape, investigation}`, written
 through the `why_finding` RPC in a findings run (`run.registered` `analyzes`), records a finished test. A bundle of a
 run with its findings and replay runs (`tracekit export --v2 --run R --with-findings`) holds those runs too; the
-verifier checks that every replay run a finding names is in the bundle as a replay run of the analysed run in the
-finding's investigation, and that their arms and outcomes count to its `n`, `p_with`, `p_without` and `effect`
-(`findings`, FAILED otherwise). A bundle with either needs `verifier_min_version` 1.1.0.
+verifier checks that every replay run a finding names is in the bundle, once, as a replay run of the analysed run in
+the finding's investigation, and that their arms and outcomes count to its `n`, `p_with`, `p_without` and `effect`
+(`findings`, FAILED otherwise). In any other bundle (a findings run alone, a run-set) a finding whose replay runs are
+absent is not counted (`findings counted`, a warning). A bundle with either needs `verifier_min_version` 1.1.0.
 
 ## 4. Records and the signature message
 

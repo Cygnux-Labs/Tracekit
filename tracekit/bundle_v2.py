@@ -27,7 +27,7 @@ The tenant salt goes into the bundle so its verifier can recompute H(tenant_salt
 whoever holds the bundle can test guessed run ids against this tenant's leaves (and link this tenant's registry
 origin); other tenants' leaves stay opaque, as each tenant has its own salt.
 
-With findings (export(..., with_findings=True)), the run's `tracekit why` findings runs (run.registered `analyzes`
+With findings (export(..., with_runs=about(...))), the run's `tracekit why` findings runs (run.registered `analyzes`
 the run) and replay runs (`replay_of` the run) are bundled with it, so the verifier can count each finding's replay runs.
 
 No views, no code, no trust configuration: the verifier pins its own. Never content from the signer's content vault:
@@ -98,12 +98,12 @@ def about(storage, tenant, run_id):
     return out
 
 
-def export(storage, tenant, run_id, note, out_path, policies=(), run_set=None, tenant_salt=None, with_findings=False):
+def export(storage, tenant, run_id, note, out_path, policies=(), run_set=None, tenant_salt=None, with_runs=()):
     """Write the bundle of run (tenant, run_id) from a store or its reader (FileReader, PostgresReader). `note` is a
     checkpoint of the store's record tree: a run's records after it are left out (a run still being written verifies to
     its head). `policies` are policy snapshots (bytes). `run_set`: (a, b), two checkpointed sizes of the tenant's
     registry tree (a may be 0), with `tenant_salt` (format.registry.tenant_salt) adds the run-set a..b; `run_id` may
-    then be None. `with_findings`: also the run's findings and replay runs (`about`)."""
+    then be None. `with_runs`: also these runs of the tenant (`about`: the run's findings and replay runs)."""
     origin, size = note.split("\n", 2)[:2]
     size = int(size)
     if not 0 < size <= storage.tree.size or not note.startswith(
@@ -116,8 +116,8 @@ def export(storage, tenant, run_id, note, out_path, policies=(), run_set=None, t
                     and r["event"]["run_id"] not in run_ids]
     elif run_id is None:
         raise ValueError("export needs a run or a run-set")
-    elif with_findings:
-        run_ids += about(storage, tenant, run_id)
+    else:
+        run_ids += with_runs
     runs = {}
     for rid in run_ids:
         records = list(storage.iter_run(tenant, rid))

@@ -295,7 +295,10 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
   // TS users verify findings bundles
   const names = [...files.keys()].filter((n) => n.startsWith("runs/")).sort();
   const runSet = files.has("registry/run-set.json");
-  if (names.length !== 1 && !runSet) throw new Error("a v2 bundle holds exactly one run, or a run-set");
+  if (names.length !== 1 && !runSet) {
+    throw new Error("a v2 bundle holds exactly one run, or a run-set; a bundle with tracekit why findings and replay " +
+                    "runs: verify it with `tracekit verify` (Python)");
+  }
   const runs = new Map<string, J[]>(), problems: string[] = [], chain: string[] = [], outside: string[] = [];
   for (const name of names) {
     const records = jsonl(name);

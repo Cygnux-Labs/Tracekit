@@ -687,7 +687,7 @@ def _export_v2(a, show=print):
             if note is None:
                 raise ValueError(f"the signer wrote no checkpoint covering run {a.run!r} within {NUDGE_WAIT_S:g}s")
         reopen()   # opened after the note: holds its records
-        info = export(reader, tenant, a.run, note[1], a.out, with_findings=bool(about))
+        info = export(reader, tenant, a.run, note[1], a.out, with_runs=about)
         if a.otel or a.otel_endpoint:
             info["otel"] = _otel_v2(a, info["bundle"])
     except (OSError, ValueError, SignerUnavailable, StorageCorrupt, StorageUnavailable) as e:

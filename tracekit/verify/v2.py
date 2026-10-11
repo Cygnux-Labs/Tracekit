@@ -569,16 +569,25 @@ def _about_one(runs):
 
 
 def _findings(rep, runs):
-    """The `findings` line: each why.finding's replay runs are bundled, are replay runs of the run its findings run
-    analyses in its investigation, and their arms and outcomes count to its n and rates."""
+    """The `findings` line: each why.finding's replay runs are bundled, are distinct replay runs of the run its
+    findings run analyses in its investigation, and their arms and outcomes count to its n, rates and effect. Outside
+    a findings bundle (one run with its findings and replay runs) a finding whose replay runs are absent is a warning:
+    not counted, not failed."""
     replays = {rs[0]["event"].get("run_id"): _about(rs) for rs in runs.values()}
-    found, problems = 0, []
+    complete = _about_one(runs)
+    found, problems, uncounted = 0, [], []
     for rs in runs.values():
         analyzes = _about(rs)[0]
         for r in rs:
             if r["event"].get("type") != "why.finding":
                 continue
             found, f, where = found + 1, r["event"]["data"], f"seq {r['event']['seq']}"
+            ids = [x["run_id"] for x in f["replay_runs"]]
+            if not complete and not set(ids) <= replays.keys():
+                uncounted.append(f"{where}: its replay runs are not in the bundle")
+                continue
+            if len(set(ids)) != len(ids):
+                problems.append(f"{where}: cites a replay run more than once")
             arms = {"control": [], "ablated": []}
             for x in f["replay_runs"]:
                 if replays.get(x["run_id"]) != (None, analyzes, f["investigation"]):
@@ -586,14 +595,17 @@ def _findings(rep, runs):
                                     f"{str(analyzes)[:128]} in investigation {f['investigation'][:128]}")
                 arms[x["arm"]].append(x["hit"])
             n, (c, a) = f["n"], arms.values()
-            rates = [round(sum(h) / n, 4) if n else 0 for h in (c, a)]
-            if (len(c), len(a)) != (n, n) or rates != [f["p_with"], f["p_without"]] \
-                    or round(f["p_with"] - f["p_without"], 4) != f["effect"]:
+            p = [sum(h) / n if n else 0.0 for h in (c, a)]
+            if (len(c), len(a)) != (n, n) or [round(x, 4) for x in p] != [f["p_with"], f["p_without"]] \
+                    or round(p[0] - p[1], 4) != f["effect"]:
                 problems.append(f"{where}: its replay runs count {sum(c)}/{len(c)} with and {sum(a)}/{len(a)} without, "
                                 f"not the n={n}, {f['p_with']} and {f['p_without']} (effect {f['effect']}) it reports")
-    if found:
-        rep.check("findings", not problems, f"{found} tracekit why finding(s), each counted from its replay runs",
-                  problems[:20])
+    if found > len(uncounted):
+        rep.check("findings", not problems, f"{found - len(uncounted)} tracekit why finding(s), each counted from its "
+                  "replay runs", problems[:20])
+    if uncounted:
+        rep.check("findings counted", False, f"{len(uncounted)} finding(s) not counted: export the analysed run with "
+                  "`tracekit export --v2 --run <run> --with-findings` to count them", uncounted[:20], warn=True)
 
 
 def _run_set(rep, files, trust, witnesses, origin, size, runs, included, check_record):
