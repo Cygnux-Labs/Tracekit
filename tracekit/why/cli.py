@@ -143,10 +143,13 @@ def cmd_attribute(a):
         from .langgraph import attribute_thread
         if not a.thread:
             raise SystemExit("--langgraph needs --thread")
+        if a.run or a.system or a.workers != 1:
+            raise SystemExit("--langgraph replays the thread itself: drop the run folder, --system and --workers")
         mod, _, attr = a.langgraph.partition(":")
         graph = getattr(importlib.import_module(mod), attr or "graph_factory")()
         r = attribute_thread(graph, {"configurable": {"thread_id": a.thread}}, a.target, a.suspect or None,
-                             checkpoint_id=a.checkpoint, n=a.n, n_max=a.n_max, size_roles=not a.no_roles)
+                             checkpoint_id=a.checkpoint, n=a.n, n_max=a.n_max, size_roles=not a.no_roles,
+                             log=a.out)
     elif a.run:
         r = attribute(load_run(a.run), a.target, a.suspect or None, n=a.n, n_max=a.n_max,
                       system=load_system(a.system) if a.system else None, workers=a.workers,
@@ -351,6 +354,8 @@ def main(argv=None):
                         "graph over the app's checkpointer (only name code you trust, as with --system)")
     p.add_argument("--thread", help="with --langgraph: the thread_id to investigate")
     p.add_argument("--checkpoint", help="with --langgraph: start from this checkpoint_id (default: the thread's latest)")
+    p.add_argument("--out", default="runs", help="with --langgraph: why log folder; tests go to "
+                                                 "OUT/langgraph-<thread>/tests.jsonl")
     p.add_argument("--n", type=int, default=10); p.add_argument("--n-max", type=int, default=80)
     p.add_argument("--workers", type=int, default=1, help="parallel replays")
     p.add_argument("--no-roles", action="store_true", help="skip sizing each cause (primary vs contributing): cheaper")

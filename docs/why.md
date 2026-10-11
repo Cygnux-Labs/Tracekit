@@ -198,7 +198,8 @@ and `--allow-program`). For each trial:
    or a stub (`off_tape_actions`). No tool runs and the signer sees nothing; a model node that wants paired seeds reads
    `config["configurable"]["tracekit_seed"]`.
 4. Score the target on the branch's tool calls, with the same verdicts, intervals and attribution as above. Results
-   carry `rung: 3` and the fork point.
+   carry `rung: 3` and the fork point, and each test is appended to the why log at
+   `runs/langgraph-<thread>/tests.jsonl` (`--out DIR`; `log=` in Python, where nothing is written without it).
 
 Branches run on a copy of the graph over a scratch in-memory checkpointer holding only the fork point, so nothing is
 written to the thread. Default suspects: every tool result before the first matching tool call. `--suspect` takes a
@@ -346,7 +347,7 @@ with `--allow-program`. The server is in the [HTTP security checklist](security-
 | `tracekit why test RUN --remove SPEC --target SPEC [--n N] [--n-max N] [--live-tools]` | run replay test |
 | `tracekit why test RUN --decision SEQ --remove SPEC [--contains TEXT] [--anthropic]` | decision replay test |
 | `tracekit why attribute RUN --target SPEC [--suspect SPEC] [--n N] [--n-max N] [--workers N] [--no-roles]` | Find the cause |
-| `tracekit why attribute --langgraph MODULE:FACTORY --thread T --target SPEC [--checkpoint ID] [--suspect ID]` | Find the cause in a LangGraph thread by forking its checkpoints |
+| `tracekit why attribute --langgraph MODULE:FACTORY --thread T --target SPEC [--checkpoint ID] [--suspect ID] [--out DIR]` | Find the cause in a LangGraph thread by forking its checkpoints |
 | `tracekit why matrix RUN --target SPEC [--n N]` | test every channel and input against targets |
 | `tracekit why replay RUN [--remove SPEC]` | re-run from tape and diff against the original |
 | `tracekit why graph RUN [--json] [--no-infer]` | edges with evidence grades |

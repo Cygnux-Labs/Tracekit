@@ -6,6 +6,7 @@ import io
 import json
 import os
 import sys
+import tempfile
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -76,12 +77,58 @@ class ForkReplay(unittest.TestCase):
             fork_replay(self.graph, inj.THREAD, early, self.page, inj.TARGET, n=2)
 
     def test_cli(self):
-        out = io.StringIO()
+        out, log = io.StringIO(), tempfile.mkdtemp()
         with contextlib.redirect_stdout(out):
             main(["attribute", "--langgraph", "injection:graph_factory", "--thread", "injection",
-                  "--target", inj.TARGET, "--suspect", self.page, "--json"])
+                  "--target", inj.TARGET, "--suspect", self.page, "--out", log, "--json"])
         r = json.loads(out.getvalue())
         self.assertEqual((r["rung"], r["causes"][0]["intervention"]), (3, self.page))
+        with open(os.path.join(log, "langgraph-injection", "tests.jsonl"), encoding="utf-8") as f:
+            saved = [json.loads(line) for line in f]
+        self.assertEqual([(t["intervention"], t["rung"], t["fork"]) for t in saved],
+                         [(t["intervention"], 3, r["fork"]) for t in r["tests"]])
+
+
+@unittest.skipUnless(HAVE_LG, "langchain>=1 / langgraph not installed")
+class Tape(unittest.TestCase):
+    def test_a_branch_continues_the_tape_after_the_fork(self):
+        from langchain_core.messages import AIMessage, ToolMessage
+        from langchain_core.tools import tool
+        from langgraph.checkpoint.memory import InMemorySaver
+        from langgraph.graph import START, MessagesState, StateGraph
+        from langgraph.prebuilt import ToolNode, tools_condition
+
+        answers = iter(["pending", "done"])
+
+        @tool
+        def status(job: int) -> str:
+            """Job status."""
+            return next(answers)
+
+        @tool
+        def deploy(job: int) -> str:
+            """Deploy."""
+            return "ok"
+
+        def model(state):   # polls twice; deploys once the job is done
+            res = [m.content for m in state["messages"] if isinstance(m, ToolMessage)]
+            name = "deploy" if res and res[-1] == "done" else "status" if len(res) < 2 else None
+            if name is None or "ok" in res:
+                return {"messages": [AIMessage("stop")]}
+            return {"messages": [AIMessage("", tool_calls=[{"name": name, "args": {"job": 1},
+                                                            "id": f"c{len(res)}"}])]}
+
+        g = StateGraph(MessagesState)
+        g.add_node("model", model)
+        g.add_node("tools", ToolNode([status, deploy]))
+        g.add_edge(START, "model")
+        g.add_conditional_edges("model", tools_condition)
+        g.add_edge("tools", "model")
+        graph = g.compile(checkpointer=InMemorySaver())
+        conf = {"configurable": {"thread_id": "poll"}}
+        graph.invoke({"messages": [("user", "deploy job 1")]}, conf)
+        r = fork_replay(graph, conf, None, "c0", "tool=deploy", n=4)
+        self.assertEqual((r["p_with"], r["off_tape_actions"]), (1.0, 0))   # the second poll is served "done"
 
 
 if __name__ == "__main__":
