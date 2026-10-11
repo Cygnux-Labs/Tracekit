@@ -14,7 +14,8 @@ signer; else $TRACEKIT_SIGNER), closes it when the process exits, and wires ever
 * MCP client: every ClientSession.call_tool goes through TracekitSession;
 * the Anthropic, OpenAI and Google Gen AI clients: every model call (tracekit.autotrace).
 
-Idempotent: a second call returns the same run. With none of these installed it warns and returns None. A framework
+Idempotent: a second call returns the same run. Calls addressed to its run go to the current run while one is
+open (`with run.client.run(...)`, a run per request), and a run the signer closed is replaced on the next call. With none of these installed it warns and returns None. A framework
 whose adapter cannot be wired is skipped with a warning naming the versions Tracekit is tested with. It raises only
 when no signer answers: no call could be recorded, and a run's fail mode is closed until its signer says otherwise.
 Don't also wire an adapter by hand in the same process: the call would be decided twice.
@@ -29,6 +30,54 @@ import weakref
 from importlib import metadata
 
 _STATE = {"run": None}
+
+
+def _process_client(Client, RPCError, current_run):
+    class Process(Client):
+        """The client every adapter instrument() wires gets. A call addressed to the process run goes to the current
+        run while one is set (`with run.client.run(...)`: a run per request or conversation, as a server opens), and
+        to a newly registered process run once the signer has closed it (idle for the signer's idle_s), so a
+        long-running server is never refused for good."""
+        process, agent, ids = None, None, set()   # the process RunHandle, its name, every id it has had
+
+        def start(self, agent):
+            """Register the process run."""
+            self.process, self.agent = self.run(agent=agent), agent
+            self.ids = {self.process.run_id}
+            return self.process
+
+        def call(self, method, req=None):
+            req, p = dict(req or {}), self.process
+            if p is None or req.get("run_id") not in self.ids:
+                return super().call(method, req)
+            cur = current_run.get()
+            if cur is not None and cur.run_id not in self.ids:
+                return cur.client.call(method, _to(req, cur))
+            sent = p.run_id
+            try:
+                return super().call(method, _to(req, p))
+            except RPCError as e:
+                if e.code != "run_closed":
+                    raise
+                with _LOCK:
+                    if p.run_id == sent:   # not renewed meanwhile by another thread's call
+                        old, new = p.run_id, super().call("register_run", {"agent": {"name": self.agent}})
+                        p.registered, p.run_id, p.run_token = new, new["run_id"], new["run_token"]
+                        self.ids.add(p.run_id)
+                        warnings.warn(f"tracekit: the signer closed run {old} ({e.message}); recording in a new run "
+                                      f"{p.run_id}. A server should open a run per request: docs/quickstart-v2.md",
+                                      stacklevel=2)
+                return super().call(method, _to(req, p))
+    return Process
+
+
+def _to(req, run):
+    """`req` addressed to `run`, numbered by the client's own counter for that run: an adapter's counter would skip
+    the events it sent to other runs, which the signer records as missing."""
+    return {**{k: v for k, v in req.items() if k not in ("stream", "client_seq")},
+            "run_id": run.run_id, "run_token": run.run_token}
+
+
 _LOCK = threading.RLock()   # re-entered when wiring imports a module that calls instrument() itself
 MODEL_SDKS = ("openai", "anthropic", "google-genai")
 
@@ -169,7 +218,8 @@ def instrument(agent=None):
     `agent` names the run (default: $TRACEKIT_AGENT, else the script's name)."""
     from . import autotrace
     from .client import SYSTEM_CONFIG
-    from .sdk.client import Client, SignerUnavailable
+    from .sdk.client import Client, SignerUnavailable, current_run
+    from .signer.rpc_schema import RPCError
     if agent is not None and not isinstance(agent, str):
         raise TypeError("tracekit.instrument(agent) takes the run's name. For v1 model-call tracing with a Tracer, "
                         "call tracekit.autotrace.instrument(tracer)")
@@ -185,7 +235,7 @@ def instrument(agent=None):
         script = sys.argv[0] if sys.argv and sys.argv[0] not in ("", "-c") else "python"
         name = agent or os.environ.get("TRACEKIT_AGENT") or os.path.splitext(os.path.basename(script))[0]
         try:
-            run = Client().run(agent=name)
+            run = _process_client(Client, RPCError, current_run)().start(name)
         except SignerUnavailable as e:
             fix = ("dev auto-spawn is off while TRACEKIT_SIGNER is set: start the signer it names, or unset it for a "
                    "same-user dev signer" if os.environ.get("TRACEKIT_SIGNER") else

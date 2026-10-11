@@ -13,10 +13,12 @@ import warnings
 from importlib import metadata
 from unittest import mock
 
+from adapter_contract import OnReal
 from quickstart_agents import AGENTS, REFUSED
 
 from tracekit import autowire
-from tracekit.sdk.client import SignerUnavailable
+from tracekit.sdk.client import Client, SignerUnavailable, current_run
+from tracekit.signer.rpc_schema import RPCError
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -182,3 +184,47 @@ class TestInstrument(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ProcessRun(OnReal, unittest.TestCase):
+    """The client instrument() wires every adapter with: calls addressed to the process run follow the current run,
+    and a process run the signer closed is renewed, never refused for good."""
+
+    def setUp(self):
+        self.client = autowire._process_client(Client, RPCError, current_run)(self.serve_signer())
+        self.addCleanup(self.client.close)
+        self.process = self.client.start("server")
+        self.seq = 0
+
+    def decide(self, call_id):
+        """A decide as an adapter sends it: addressed to the process run, numbered by the adapter's own counter."""
+        self.seq += 1
+        return self.client.decide({"run_id": self.process.run_id, "run_token": self.process.run_token,
+                                   "stream": "adapter", "client_seq": self.seq - 1, "tool_call_id": call_id,
+                                   "tool": "read_file", "args_source": "parsed", "args": {}})
+
+    def tools(self, run):
+        return [e["data"]["tool_use_id"] for e in self.events({"run_id": run.run_id}) if e["type"] == "policy.decision"]
+
+    def gaps(self, run):
+        return [e for e in self.events({"run_id": run.run_id}) if e["type"] == "capture.gap"]
+
+    def test_calls_follow_the_current_run_and_leave_no_gap(self):
+        self.decide("c1")
+        with self.client.run("conversation") as conversation:   # a server's run per request
+            self.decide("c2")
+        self.decide("c3")
+        self.assertEqual((self.tools(self.process), self.tools(conversation)), (["c1", "c3"], ["c2"]))
+        self.assertEqual((self.gaps(self.process), self.gaps(conversation)), ([], []))
+
+    def test_a_process_run_the_signer_closed_is_renewed(self):
+        first = self.process.run_id
+        self.decide("c1")
+        self.client.close_run({"run_id": first, "run_token": self.process.run_token})   # as an idle close does
+        with self.assertWarnsRegex(UserWarning, "closed run .*recording in a new run"):
+            self.decide("c2")
+        self.assertNotEqual(self.process.run_id, first)
+        self.assertEqual(self.tools(self.process), ["c2"])
+        self.assertEqual(self.gaps(self.process), [])
+        self.decide("c3")   # an adapter still addressing the first run reaches the new one
+        self.assertEqual(self.tools(self.process), ["c2", "c3"])

@@ -29,6 +29,26 @@ after. A denied call reaches the model as a refusal and the agent goes on. Calli
 none of these installed it warns and does nothing. TypeScript: `const tk = await instrument()` from
 `@cygnux/tracekit`, then pass `tk.ai` (Vercel AI SDK) or `tk.agents` (OpenAI Agents JS) to the framework.
 
+### A server: a run per request
+
+A long-running server (FastAPI, a queue worker) should record each request or conversation in its own run, so each
+can be exported, verified and investigated on its own. Open it around the work; every wired framework's tool and model
+calls inside go to it:
+
+```python
+run = tracekit.instrument("support-desk")             # at startup
+
+async def respond(conversation_id, message):
+    with run.client.run("support-desk", principal=conversation_id) as conversation:   # closed when the block ends
+        result = Runner.run_streamed(agent, message, context=ctx)
+        async for event in result.stream_events():
+            ...
+```
+
+Calls made outside such a block go to the process run. If the signer closes the process run after it has been idle
+for its `idle_s` (an hour by default), the next call registers a new process run and warns once, instead of being
+refused.
+
 ### When a call needs a person (`ask`)
 
 An `ask` holds the call until a person answers it (`tracekit approvals`, or the viewer's approval pages). Each
