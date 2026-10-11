@@ -39,20 +39,25 @@ tools:
 """
 VENDOR, FAQ, TICKET = "input:vendor:portal/notes.md", "input:web:shipping_faq", "input:inbox:ticket-881"
 CHANNEL = "msg:researcher->planner"
+CUSTOMER = "c.rao@example.com"
 
 
 def person(client, stop, held):
-    """Answers every approval request the way a person who read it would: the held calls here are all rejected."""
+    """Answers every approval request the way a person who read it would. The reply to the customer is held too: its
+    address reaches the executor in the planner's message, which counts as untrusted in the executor's run (provenance
+    is per run, docs/limits.md); the person approves it. The outside address is rejected."""
     while not stop.wait(0.05):
         for a in client.approval_list({})["approvals"]:
             if a["state"] == "requested":
                 args = client.approval_get({"approval_id": a["approval_id"]})["args"]
                 print(f"  signer: held {a['tool']} to {args.get('to')!r} ({', '.join(a['rule_ids'])}), "
                       f"approval {a['approval_id']}")
-                client.approval_decide({"approval_id": a["approval_id"], "decision": "reject",
-                                        "reason": "the recipient is not ours"})
-                print("  person: rejected it (`tracekit approvals reject`)")
-                held.append(a)
+                ours = args.get("to") == CUSTOMER
+                client.approval_decide({"approval_id": a["approval_id"], "decision": "approve" if ours else "reject",
+                                        "reason": "the customer who wrote in" if ours else "the recipient is not ours"})
+                print("  person: approved it, it is the customer's own address" if ours else
+                      "  person: rejected it (`tracekit approvals reject`)")
+                held.append((a, ours))
 
 
 def explain(run, act):
@@ -135,7 +140,7 @@ def main(keep=False):
         print(f"\n  the cause, {cause['source']}, is signed record log {c['log_id']} seq {c['seq']} ({c['hash']}): "
               + (f"in {cause['agent']}.tkb, which the verifier passed" if found else
                  f"NOT in {cause['agent']}.tkb"))
-        ok = (len(held) == 1 and act["status"] == "blocked" and "TK-P001" in act["policy"]["rule_ids"]
+        ok = ([ours for _, ours in held] == [True, False] and act["status"] == "blocked" and "TK-P001" in act["policy"]["rule_ids"]
               and cause["source"] == VENDOR[len("input:"):]
               and [x["intervention"] for x in r["causes"]] == [VENDOR] and r["causes"][0]["role"] == "primary"
               and single[FAQ]["verdict"] == single[TICKET]["verdict"] == "ruled-out"
