@@ -245,6 +245,7 @@ Each row says what the limit is, why it is so, what to do about it, and where th
 | A bundle that holds a findings run without its replay runs (the findings run alone, a run-set) verifies with its findings not counted (`findings counted` warning). | Only a bundle of the analysed run with its findings and replay runs has the replay runs to count. | Export the analysed run with `tracekit export --v2 --run R --with-findings`. | [format v2](format-v2.md) |
 | The TypeScript verifier does not check findings: a bundle with `why.finding` records or replay runs is `UNVERIFIABLE (not checked by this verifier: tracekit why findings)`. | Only the reference verifier recomputes findings. | Verify bundles with findings with `tracekit verify`. | [format v2](format-v2.md) |
 | `tracekit export --v2 --with-findings` reads the first record of every run in the store to find the run's findings and replay runs. | The store does not index runs by what they analyse. | Expect a slower export on large stores. | [format v2](format-v2.md) |
+| The viewer's FIND THE CAUSE and RUN TEST don't run on signed runs yet; they replay why logs with an allow-listed program. | Signed-run attribution (content vault, gateway, signed findings) is new in 1.1 and only on the command line so far. | `tracekit why attribute --run R (--store DIR \| --bundle FILE --trust FILE) --gateway URL --target SPEC`; the viewer shows the results. | [why](why.md#attribution-on-signed-runs) |
 
 ## Viewer
 

@@ -62,6 +62,7 @@ def https_server(case, pki, handler):
     """A ThreadingHTTPServer over TLS on loopback with a certificate of `pki`; its base URL."""
     srv = ThreadingHTTPServer(("127.0.0.1", 0), handler)
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.minimum_version = ssl.TLSVersion.TLSv1_2
     ctx.load_cert_chain(*pki.issue("fake-server"))
     srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
     threading.Thread(target=srv.serve_forever, args=(0.05,), daemon=True).start()

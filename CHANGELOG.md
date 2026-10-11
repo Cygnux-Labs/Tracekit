@@ -2,6 +2,91 @@
 
 All notable changes to Tracekit. Versions follow [PEP 440](https://peps.python.org/pep-0440/).
 
+## 1.1.0rc1 (2026-10-11) — the why
+
+The first 1.1 release candidate. 1.0 records what an agent did, provably; 1.1 adds why it did it, also provably:
+the signer tracks where each argument came from and can hold a call whose value came only from untrusted content,
+and `tracekit why` finds which input caused an action by replaying the run without it. Everything 1.0 promises is
+unchanged; v1 bundles and 1.0 bundles keep verifying. Every limit of the new features: [docs/limits.md](docs/limits.md).
+
+### Upgrade notes
+- **Signer RPC version 13** (1.0 spoke 12): upgrade the signer and its clients together, as before.
+- **Bundles with 1.1 records need a 1.1 verifier** (`verifier_min_version: 1.1.0`): `input.observed` records,
+  decisions with `provenance`, content-vault and why-finding records. A 1.0 verifier reports them `UNVERIFIABLE`,
+  never `FAILED`. Runs with none of them stay readable by 1.0. Export bundles from a 1.1 signer with tracekit >= 1.1.
+- **Provenance fails closed.** After a signer restart, or when a run's index is truncated, partial or out of time,
+  `from: untrusted` rules hold the calls whose pattern matches (emails, payments, data sent to a host) until the run
+  ends; the decision records why. Values your app supplies: observe them as trusted.
+- **Postgres**: existing stores keep working; turning the content vault on needs `tracekit signer migrate` (schema 2).
+
+### Added
+- **Signed provenance** ([policy](docs/policy-v2.md#provenance-untrusted-and-from-untrusted)): per run, the signer
+  indexes (as keyed hashes, in memory) the values that untrusted tools' results and observed inputs carried; every
+  decision records which arguments carry untrusted-only values and from which record. New policy keys `untrusted:`
+  and `from: untrusted`; rules TK-P001 (an email recipient), TK-P002 (a payee or account) and TK-P003 (data sent to a
+  host) hold such calls for a person. Every shipped integration sends untrusted tools' results to the signer
+  (`send_result`), so this works with OpenAI Agents, LangGraph, the Claude Agent SDK, MCP, Browser Use, Claude Code and
+  the TypeScript adapters. `run.observe(value, source=, trust=)` (Python and TypeScript) records other content.
+- **`tracekit why`** (formerly Causeway, now part of Tracekit): a causal log of multi-agent runs, lineage and argument
+  provenance, candidate causes, counterfactual replay with paired seeds and confidence intervals, sequential tests,
+  and Find the cause (`tracekit why attribute`). Replays serve tool results from the recording and never run tools.
+  Runs recorded with a signer cite the signed records behind every event; `tracekit why import --store/--bundle`
+  turns signed runs into why runs; `tracekit why verify --salts` checks quoted content against the signed
+  commitments.
+- **Attribution on signed runs**: decision replay and agentless loop replay of OpenAI- and Anthropic-style agents,
+  through the gateway, from the content vault, without the agent's code; a ranking that picks what to test first;
+  results written as signed `why.finding` records whose replay runs are signed too, and which the verifier
+  recomputes (interval, verdict, and each hit against the recorded model responses).
+- **LangGraph fork replay** (`tracekit why attribute --langgraph module:factory`): replays a LangGraph thread from the
+  checkpoint before the suspect input, in scratch branches that never touch the app's thread, store, cache or tools.
+- **Content vault** (opt-in, [privacy](docs/privacy.md)): the signer keeps each record's redacted content encrypted
+  (per-run keys, bound to the record); reading it takes a `content_read` grant and writes a signed `content.accessed`
+  record; erasure and retention delete the run's key (and its replay runs') and write `content.erased`.
+- **The viewer is the why UI**: where each argument came from (signed), the WHY panel (lineage, candidate causes,
+  tests), graph, agents and influence views, why alerts, for runs with why logs (`tracekit view --why DIR`).
+- **Independent TypeScript verifier** (`@cygnux/tracekit/verify`, `npx @cygnux/tracekit verify`): written from
+  docs/format-v2.md, zero dependencies, Node and browsers; CI checks it agrees with the Python verifier on every case.
+- **Public witness** ([witnesses](docs/witnesses.md#the-public-witness)): a free C2SP witness server with open
+  registration (`tracekit public-witness serve`), the signer's one-line opt-in `witnesses: [public]`, and a deployment
+  kit (deploy/public-witness). Its URL and key ship once it is deployed.
+- `demo --why`: the support desk end to end — a held exfiltration email, the cause found by replay, the citation
+  checked in the verified bundle.
+- docs/quickstart-v2.md: how each integration waits for a person on a held call.
+
+### Fixed (from the pre-1.1 review)
+- The v2 verifier reads bundles strictly (one canonical zip layout, integer run-set bounds, JSON depth 128); also in
+  1.0.1.
+- Provenance: linear-time value extraction (an adversarial page no longer costs seconds per call), redaction no longer
+  hides an injected value, list fields and hosts are matched as written, normalisation of Unicode tricks, the index
+  survives a storage outage.
+- `tracekit why`: replays through the Anthropic adapter never run real tools; ingest is answered before analysis and
+  stays fast on long runs; ingest tokens are separate from the viewer's and bound to their runs; malformed or
+  duplicated events are refused; test results are hash-chained; p-values are corrected for every input tested.
+- The public witness: per-client limits, buffered request bodies behind Caddy, expiring unused origins, a total
+  deadline on witness requests, and start-up that no hostile witness can stall.
+
+### Not in this release
+- The viewer's FIND THE CAUSE and RUN TEST buttons for signed runs: use `tracekit why attribute --run ...`.
+- The public witness's URL and key (the shortcut says so until it is deployed).
+- npm packages are not published yet.
+
+### Corrections
+- The 1.0.0 entry says npm packages are signed release artifacts; no npm packages were published for 1.0.0.
+
+## 1.0.1 (2026-10-11) — stricter bundle reading
+
+A patch for 1.0: the v2 verifier reads bundles more strictly. Bundles written by Tracekit are unaffected; every
+existing bundle verifies as before.
+
+### Fixed
+- A v2 bundle must have one zip layout ([format v2 §9](docs/format-v2.md#9-bundle-layout)): no zip64 records, no
+  archive or entry comments, no extra fields, entries contiguous from offset 0, the central directory and its end
+  record exactly where they belong, stored or deflate only, flags 0. Anything else is `UNUSABLE BUNDLE`, so every zip
+  reader sees the same entries the verifier checked.
+- `registry/run-set.json` bounds must be JSON integers.
+- JSON nested deeper than 128 levels is refused everywhere: by both verifiers' strict parser and by the signer, which
+  denies such tool-call arguments (`TK-ARGS-INVALID`).
+
 ## 1.0.0 (2026-10-11) — first stable release
 
 1.0.0 is 1.0.0rc2 made stable: the v2 signer, evidence format v2 and its verifier, witnesses, the monitor, team approvals,

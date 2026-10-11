@@ -53,6 +53,14 @@ customer. Tracekit keeps that record outside the agent's control, and lets anyon
 - `tracekit view` shows runs with their verdicts, blocked and held calls, approvals, gaps, a replay of each run, and a
   run review ([viewer](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/viewer.md)).
 
+**Explain** (1.1, release candidate)
+- Where each argument came from: the signer tracks values that entered a run through untrusted content (a fetched page,
+  an email, a ticket) and can hold a call whose recipient, payee or host came only from there
+  ([provenance](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/policy-v2.md#provenance-untrusted-and-from-untrusted)).
+- Which input caused an action: `tracekit why` replays a run with each suspect input removed, tools served from the
+  recording, and reports the cause with a confidence interval; results on signed runs are signed findings the
+  verifier rechecks ([tracekit why](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/why.md)).
+
 **Integrate**
 - Coding agents through their hooks: Claude Code, Codex CLI, Cursor, Gemini CLI
   ([coding agents](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/coding-agents.md)).
