@@ -9,6 +9,11 @@ const args = process.argv.slice(2);
 // the options only the Python verifier has (monitor reports, revocations, the v1 bridge) still go to it
 const PYTHON_ONLY = ["--monitor-report", "--revocations", "--v1-ledger", "--v1-key"];
 if (args[0] === "verify" && args.includes("--trust") && !args.some((a) => PYTHON_ONLY.includes(a.split("=")[0]))) {
+  const [major, minor] = process.versions.node.split(".").map(Number);
+  if (major < 20 || major === 20 && minor < 12) {   // the verifier's JSON imports and deflate-raw
+    console.error(`tracekit verify: the TypeScript verifier needs Node >= 20.12 (this is ${process.versions.node})`);
+    process.exit(2);
+  }
   const { main } = await import("../dist/verify/cli.js");
   process.exit(await main(args.slice(1)));
 }

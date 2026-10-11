@@ -7,7 +7,7 @@ import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { deflateRawSync } from "node:zlib";
-import { MAX_ENTRY, Unusable, canonicalize, readZip, strictParse, strictParseBytes, verifyRecord } from "../dist/verify/index.js";
+import { MAX_ENTRY, StrictJSONError, Unusable, canonicalize, readZip, strictParse, strictParseBytes, verifyRecord } from "../dist/verify/index.js";
 import {
   COSIGNATURE, ED25519, b64decode, bytes, ed25519Verify, hex, keyId, leafHash, openNote, parseVkey, registryOrigin,
   runHash, sha256, spkiOf, unhex,
@@ -104,17 +104,27 @@ test("strict JSON: bytes, byte order marks, and number tokens written as floats"
   assert.equal(canonicalize({ "\u{1F600}": 1, "\uFFFF": 2 }), '{"\u{1F600}":1,"\uFFFF":2}');   // UTF-16 order
   assert.deepEqual([b64decode("AA=="), b64decode("AAAA=")], [Uint8Array.of(0), Uint8Array.of(0, 0, 0)]);
   for (const s of ["A", "AAA", "AA=", "A===", "AA AA"]) assert.throws(() => b64decode(s), /bad base64/, s);
+  // nesting: 128 deep parses, 129 deep is refused as `depth`, never a stack overflow
+  assert.equal(JSON.stringify(strictParse("[".repeat(128) + "]".repeat(128))).length, 256);
+  for (const t of ["[".repeat(129) + "]".repeat(129), '{"a":'.repeat(129) + "1" + "}".repeat(129), "[".repeat(1e6)])
+    assert.throws(() => strictParse(t), (e) => e instanceof StrictJSONError && e.code === "depth");
+  // a string of millions of characters parses, or fails as strict JSON, never with a RangeError
+  assert.equal(strictParse(`"${"a".repeat(9e6)}"`).length, 9e6);
+  assert.equal(strictParse(`"${"\\n".repeat(3e6)}"`).length, 3e6);
+  for (const t of [`"${"a".repeat(9e6)}`, `"${"a".repeat(9e6)}\\x"`, `"${"a".repeat(9e6)}\n"`])
+    assert.throws(() => strictParse(t), (e) => e instanceof StrictJSONError && e.code === "syntax");
 });
 
-/** A zip of `entries` ({name, data, method?, attr?, flags?, crc?, local?}): method 8 deflates. */
-function zip(entries) {
+/** A zip of `entries` ({name, data, method?, attr?, flags?, crc?, local?, extra?, comment?, lflags?}): method 8 deflates;
+ * `o` ({prefix?, gap?, comment?, count?}) bends the archive's layout. */
+function zip(entries, o = {}) {
   const crcTable = Array.from({ length: 256 }, (_, n) => {
     for (let k = 0; k < 8; k++) n = n & 1 ? 0xedb88320 ^ (n >>> 1) : n >>> 1;
     return n >>> 0;
   });
   const crc32 = (d) => (d.reduce((c, b) => crcTable[(c ^ b) & 0xff] ^ (c >>> 8), 0xffffffff) ^ 0xffffffff) >>> 0;
   const locals = [], central = [];
-  let offset = 0;
+  let offset = o.prefix?.length ?? 0;   // offsets count the prefix, as a self-extracting archive's do
   for (const e of entries) {
     const name = Buffer.from(e.name), data = Buffer.from(e.data), method = e.method ?? 0;
     const body = method === 8 ? deflateRawSync(data) : data;
@@ -124,12 +134,13 @@ function zip(entries) {
       return b;
     };
     const l = head(0x04034b50, 30);
-    l.writeUInt16LE(e.flags ?? 0, 6);
+    l.writeUInt16LE(e.lflags ?? e.flags ?? 0, 6);
     l.writeUInt16LE(method, 8);
     l.writeUInt32LE(e.crc ?? crc32(data), 14);
     l.writeUInt32LE(body.length, 18);
     l.writeUInt32LE(e.usize ?? data.length, 22);
     l.writeUInt16LE(name.length, 26);
+    l.writeUInt16LE(e.extra?.length ?? 0, 28);
     const c = head(0x02014b50, 46);
     c.writeUInt16LE(e.flags ?? 0, 8);
     c.writeUInt16LE(method, 10);
@@ -137,20 +148,24 @@ function zip(entries) {
     c.writeUInt32LE(body.length, 20);
     c.writeUInt32LE(e.usize ?? data.length, 24);
     c.writeUInt16LE(name.length, 28);
+    c.writeUInt16LE(e.extra?.length ?? 0, 30);
+    c.writeUInt16LE(e.comment?.length ?? 0, 32);
     c.writeUInt32LE(e.attr ?? 0, 38);
     c.writeUInt32LE(offset, 42);
-    const parts = [l, e.local ? Buffer.from(e.local) : name, body];
+    const extra = Buffer.from(e.extra ?? "");
+    const parts = [l, e.local ? Buffer.from(e.local) : name, extra, body, Buffer.from(o.gap ?? "")];
     locals.push(...parts);
-    central.push(c, name);
+    central.push(c, name, extra, Buffer.from(e.comment ?? ""));
     offset += parts.reduce((n, p) => n + p.length, 0);
   }
   const cd = Buffer.concat(central), end = Buffer.alloc(22);
   end.writeUInt32LE(0x06054b50, 0);
-  end.writeUInt16LE(entries.length, 8);
-  end.writeUInt16LE(entries.length, 10);
+  end.writeUInt16LE(o.count ?? entries.length, 8);
+  end.writeUInt16LE(o.count ?? entries.length, 10);
   end.writeUInt32LE(cd.length, 12);
   end.writeUInt32LE(offset, 16);
-  return new Uint8Array(Buffer.concat([...locals, cd, end]));
+  end.writeUInt16LE(o.comment?.length ?? 0, 20);
+  return new Uint8Array(Buffer.concat([Buffer.from(o.prefix ?? ""), ...locals, cd, end, Buffer.from(o.comment ?? "")]));
 }
 
 test("zip reader: stored and deflated entries, and every refusal within the bundle limits", async () => {
@@ -166,13 +181,38 @@ test("zip reader: stored and deflated entries, and every refusal within the bund
     "bad CRC-32": [{ name: "a", data: "x", crc: 1 }],
     "encrypted": [{ name: "a", data: "x", flags: 1 }],
     "compression method 12": [{ name: "a", data: "x", method: 12 }],
-    "names another file": [{ name: "a", data: "x", local: "b" }],
+    "does not repeat the central entry": [{ name: "a", data: "x", local: "b" }],
+    "does not repeat the central entry ": [{ name: "a", data: "x", flags: 0, lflags: 8 }],
+    "general-purpose flags 0x800": [{ name: "a", data: "x", flags: 0x800 }],
+    "compression method 0": [{ name: "a", data: "xx", usize: 1 }],
+    "bad central directory entry": [{ name: "a", data: "x", extra: "\x01\x00\x00\x00" }],
+    "bad central directory entry ": [{ name: "a", data: "x", comment: "c" }],
+    "bad entry name   ": [{ name: "a\0b", data: "x" }],
     "too many entries": Array.from({ length: 10_001 }, (_, i) => ({ name: `f${i}`, data: "" })),
     "larger than the bundle limits": [{ name: "big", data: Buffer.alloc(MAX_ENTRY + 1), method: 8 }],
   };
   for (const [why, entries] of Object.entries(refused))
     await assert.rejects(readZip(zip(entries)), (e) => e instanceof Unusable && e.message.includes(why.trim()), why);
   await assert.rejects(readZip(Uint8Array.of(1, 2, 3)), Unusable);
+  // the one layout of §9: nothing before the first entry, between entries or after the end record; counts that match
+  const two = [{ name: "a", data: "x" }, { name: "b", data: "y" }];
+  const layouts = {
+    "does not follow the entry before it": { prefix: "MZ" },
+    "does not follow the entry before it ": { gap: "z" },
+    "end record": { comment: "c" },
+    "entry count": { count: 1 },
+  };
+  for (const [why, o] of Object.entries(layouts))
+    await assert.rejects(readZip(zip(two, o)), (e) => e instanceof Unusable && e.message.includes(why.trim()), why);
+  await assert.rejects(readZip(zip(two.slice(1), { gap: "z" })), /bytes before the central directory/);
+  const good = zip(two);
+  assert.deepEqual([...(await readZip(good)).keys()], ["a", "b"]);
+  await assert.rejects(readZip(Uint8Array.from([...good, 0])), /bytes after its end record/);
+  const z64 = Buffer.from(good);   // a zip64 locator where the end record should be
+  z64.writeUInt32LE(0x07064b50, z64.length - 22);
+  await assert.rejects(readZip(new Uint8Array(z64)), /not a zip file/);
+  // a deflate stream shorter than its stated size
+  await assert.rejects(readZip(zip([{ name: "a", data: "x".repeat(10), method: 8, usize: 100 }])), /10 bytes, not the 100/);
   // a size that lies low stops the inflate there; the CRC then catches it
   await assert.rejects(readZip(zip([{ name: "a", data: "x".repeat(100), method: 8, usize: 10 }])), /bad CRC-32/);
 });
