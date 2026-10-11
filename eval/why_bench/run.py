@@ -126,7 +126,7 @@ def run_scenario(sc: Scenario, model: str, runs: int, n: int, args, workdir: str
     model_agents = len(sc.researchers) + 1
     for seed in range(runs):
         before = counter.calls
-        r = system.run(seed=seed, out_dir=os.path.join(workdir, sc.id), run_id=f"{sc.id}-{seed}")
+        r = system.run(seed=seed, out_dir=os.path.join(workdir, sc.id), run_id=f"{sc.id}-{seed}", signer=False)
         record_calls += counter.calls - before
         run = load_run(r.path)
         g = build_graph(run)
@@ -167,8 +167,8 @@ def run_scenario(sc: Scenario, model: str, runs: int, n: int, args, workdir: str
         # construction holds: a model may do the harmful thing anyway, injection or not.
         spec = [f"input:{t}" for t in sorted(sc.truth)]
         hit = lambda r: bool(target_hits(r, sc.harmful))
-        k_with = sum(hit(system.run(seed=10_000 + i)) for i in range(m))
-        k_without = sum(hit(system.run(seed=20_000 + i, interventions=spec)) for i in range(m))
+        k_with = sum(hit(system.run(seed=10_000 + i, signer=False)) for i in range(m))
+        k_without = sum(hit(system.run(seed=20_000 + i, interventions=spec, signer=False)) for i in range(m))
         lo, hi = newcombe_diff(k_with, m, k_without, m)
         oracle = {"n": m, "p_with": k_with / m, "p_without": k_without / m, "effect": (k_with - k_without) / m,
                   "ci": [round(lo, 3), round(hi, 3)], "verdict": verdict_for(lo, hi)}

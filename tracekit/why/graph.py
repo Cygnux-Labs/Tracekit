@@ -206,6 +206,10 @@ def build_graph(run: Run, *, infer: bool = True, infer_threshold: float = 0.3, m
         elif t in ("action", "message"):
             if ev.get("decision"):
                 g.add_edge("ev:" + ev["decision"], nid, "invoked" if t == "action" else "sent", "observed")
+            for p in ev.get("provenance") or []:  # the signer's: this argument's value came only from that record
+                if p.get("from_event"):
+                    g.add_edge("ev:" + p["from_event"], nid, f"argument {p['field']} ({p['kind']}), untrusted",
+                               "observed")
         elif t == "input":
             # identical content that already existed in this run: a side channel made visible by hashing
             p = producer.get(ev["ref"])

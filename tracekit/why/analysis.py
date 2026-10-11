@@ -227,6 +227,13 @@ def alerts(run: Run, g: Graph) -> List[Dict[str, Any]]:
     for e in (run.start.get("meta") or {}).get("evidence_alerts") or []:  # e.g. Tracekit capture gaps
         out.append({"severity": "high", "title": e.get("title", "Evidence problem"), "detail": e.get("detail", ""),
                     "node": None})
+    from .import_v2 import content_checks
+    for c in content_checks(run):
+        if c["verdict"] == "mismatched":
+            out.append({"severity": "high", "title": "Content does not match what the signer committed to",
+                        "detail": f"{c['kind']} of {c['agent']}: log seq {c['seq']} ({c['type']}). The why log's "
+                                  "content was changed, or the record is about something else.",
+                        "node": "ev:" + c["event"]})
     for nid, n in sorted(g.nodes.items(), key=lambda kv: kv[1]["seq"]):
         if n["type"] != "action":
             continue
