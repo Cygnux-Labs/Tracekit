@@ -146,8 +146,9 @@ run live. See [examples/why/remote_agent.py](../examples/why/remote_agent.py).
    replay does not send a real email or move real money. That holds for tools run through `act()` or the Anthropic
    adapter's `run_tool`; a tool your own code runs and records with `record_action` (or the adapter's `tool_result`)
    runs for real in a replay too, with a warning, and counts in `off_tape_actions`.
-4. Report how often the target happened in each arm, the difference, and a paired 95% interval (Tango's score
-   interval: only pairs whose two arms differ move it). `off_tape_actions` counts the calls of both arms the tape
+4. Report how often the target happened in each arm, the difference, and a 95% interval (Newcombe's interval for two
+   proportions, which a verifier recomputes for signed findings; it ignores the pairing, so it is conservative; a
+   decision replay uses Tango's paired interval). `off_tape_actions` counts the calls of both arms the tape
    did not serve; `p_value` (exact McNemar) is corrected for the looks and for `family`, as the interval is.
 
 | Verdict | Meaning |

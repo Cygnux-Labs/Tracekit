@@ -336,14 +336,13 @@ def paired(trial: Callable[[int], tuple], n: int, n_max: Optional[int], family: 
             for h0, h1, applied, off in outs:
                 k0 += h0
                 k1 += h1
-                pairs.add(h0, h1)
                 if h0 and not h1:
                     flips["removed"] += 1
                 if h1 and not h0:
                     flips["added"] += 1
                 matched += applied
                 off_tape += off
-            lo, hi = pairs.ci(z)
+            lo, hi = newcombe_diff(k0, i, k1, i, z)
             verdict = verdict_for(lo, hi, matched > 0, min_effect)
             if verdict == "causal" and size_role and role_for(k0 / i, [lo, hi]) == "cause":
                 continue  # proven; keep going until its share is clear too
