@@ -1,4 +1,4 @@
-# Quickstart: the v2 signer (preview)
+# Quickstart: the v2 signer
 
 The v2 signer is still a preview. It records every tool call your agent makes as a signed event, decides each call
 against a policy before it runs, and exports a run as a bundle that anyone can verify offline. This page runs it on
@@ -135,8 +135,8 @@ record.
 
 The report (and `--json`) also lists tool calls by evidence tier (`tiers`), records by `args_source` (raw, parsed,
 coerced), the `signer_isolation` the signer recorded for each run (`isolation`), the tool classes that fail open
-(`fail-open classes`), and `key assurance`: `asserted`, because the log declares its own keys and nothing attests them
-yet. `witnessed+monitored` needs a log monitor's report ([monitor.md](monitor.md)).
+(`fail-open classes`), and `key assurance`: `asserted`, because the log declares its own keys (`certified` when a
+[record-key issuer](issuer.md) certifies them). `witnessed+monitored` needs a log monitor's report ([monitor.md](monitor.md)).
 
 To browse the runs instead, `tracekit view` (the dev signer's store, read-only) lists each run with its verifier
 verdict, and replays and reviews one ([viewer.md](viewer.md#laptop-viewer)).
@@ -195,8 +195,8 @@ What system mode protects, and what it doesn't:
   can't answer its own). Another local user can't write into the agent's runs either. The hook keeps a run's token in
   the agent's own 0700 runtime dir, and the signer accepts that token only from the uid that registered the run.
 - **Not protected:** any process the agent's user runs can read that user's run tokens and write into the agent's own
-  runs, or start runs of its own. Binding runs to the harness's processes needs harness binding, which the v2 signer
-  doesn't have yet. Root on the machine can do anything; witnesses on another host are the defence against that.
+  runs, or start runs of its own, unless harness binding (`--harness NAME=PATH`, Linux) binds runs to the harness's
+  processes ([what binding does not stop](faq.md#what-does-harness-binding-not-stop)). Root on the machine can do anything; witnesses on another host are the defence against that.
 - **Not protected either:** the hook lives in AGENT's own `~/.claude/settings.json`, which AGENT can edit. Removing
   the hook, or running tools outside Claude Code, leaves no record and no gap; system mode secures what is recorded,
   not that everything is.

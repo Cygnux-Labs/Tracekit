@@ -36,7 +36,7 @@ For an outside reviewer. The goal is to find where Tracekit's claims are wrong o
 
 ## Known limits you do not need to rediscover
 
-The README's "Limits and not done yet" and the threat model's "Open problems": faked command output, actions
+[Known limits](limits.md), the README's "The promise, and its limits" and the threat model's "Open problems": faked command output, actions
 inside subprocesses, activity after the last hook, host compromise (A4), unsigned manifest, witness independence,
 host clocks. macOS system mode and the Rekor witness are experimental and not validated on real services.
 

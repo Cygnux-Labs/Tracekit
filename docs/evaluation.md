@@ -271,5 +271,5 @@ form (5 calls per phase instead of 20). Results: `eval/results/e14_outage.json`.
 
 Signer throughput with a separate-user signer or over the remote gateway, durability across crashes beyond the
 `kill -9` test in the suite, bypass attempts by an adversarial model (E8 scripts its attacks by hand), redaction leaks across real transcripts,
-behaviour on Windows or with macOS system mode, and any evaluation with an external reviewer. These are the
-release-gating items still listed in the README.
+behaviour on Windows or with macOS system mode, and any evaluation with an external reviewer. [Known limits](limits.md)
+lists them with the rest.
