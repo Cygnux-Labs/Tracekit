@@ -98,7 +98,8 @@ class Values(unittest.TestCase):
                     with self.subTest(name, unit=unit[:12]):
                         t = time.monotonic()
                         provenance.values(text)
-                        self.assertLess(time.monotonic() - t, 1.0)
+                        # a pass that isn't linear takes minutes on 1 MiB; coverage runners are ~3x slower
+                        self.assertLess(time.monotonic() - t, 3.0)
 
     def test_a_deadline_stops_the_work(self):
         with self.assertRaises(TimeoutError):
