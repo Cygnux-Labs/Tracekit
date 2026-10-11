@@ -256,7 +256,7 @@ function devAddress(d: string): [string, string?] {
  * in the signer's domain, as the Python client does. */
 export function routeUrl(url: URL, frame: Frame): URL {
   const host = url.hostname, dot = host.indexOf("."), first = dot < 0 ? host : host.slice(0, dot);
-  const id = String(frame.run_id ?? frame.approval_id ?? frame.analyzes ?? ""), cut = id.indexOf(".");
+  const id = String(frame.run_id ?? frame.approval_id ?? frame.analyzes ?? frame.parent?.run_id ?? ""), cut = id.indexOf(".");
   const route = cut < 0 ? "" : id.slice(0, cut);
   if (!route || !new RegExp("^" + first.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "-[0-9]+$").test(route)) return url;
   const out = new URL(url.href);
@@ -350,9 +350,13 @@ export class Client {
     this.https = this.signer?.startsWith("https://") ? new Https(this.signer) : null;
   }
 
-  /** Register a run (`agent` is a name or {name, version}); the handle holds its run token. */
-  async registerRun(agent: string | { name: string; version?: string }, fields: Frame = {}): Promise<RunHandle> {
-    return new RunHandle(this, await this.call("register_run", { agent: typeof agent === "string" ? { name: agent } : agent, ...fields }));
+  /** Register a run (`agent` is a name or {name, version}, `parent` the handle of the run starting it, such as a
+   * sub-agent's parent: the signer records the link); the handle holds its run token. */
+  async registerRun(agent: string | { name: string; version?: string }, fields: Frame = {}, parent?: RunHandle): Promise<RunHandle> {
+    return new RunHandle(this, await this.call("register_run", {
+      agent: typeof agent === "string" ? { name: agent } : agent, ...fields,
+      ...(parent ? { parent: { run_id: parent.runId, run_token: parent.runToken } } : {}),
+    }));
   }
 
   /** `request_id`, `stream` and `client_seq` are filled in when missing. */

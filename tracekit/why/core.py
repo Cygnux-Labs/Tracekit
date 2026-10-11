@@ -517,12 +517,13 @@ class Runtime:
         return Ref(ref, value, kind, agent, source, trust, ev["id"])
 
     # -- signer
-    def _tk(self, agent: str) -> Any:
-        """The Tracekit run of `agent`, registered on first use with the task observed in it as trusted."""
+    def _tk(self, agent: str, parent: Optional[str] = None) -> Any:
+        """The Tracekit run of `agent`, registered on first use (a child of `parent`'s run when it has one) with the
+        task observed in it as trusted."""
         with self._lock:
             run = self._tk_runs.get(agent)
             if run is None:
-                run = self._tk_runs[agent] = self.signer.run(agent=agent)
+                run = self._tk_runs[agent] = self.signer.run(agent=agent, parent=self._tk_runs.get(parent))
                 if self.task_ref is not None:
                     run.observe(self.task_ref.value, "task", "trusted")
             return run
@@ -560,7 +561,7 @@ class Runtime:
         with self._lock:
             if name in self._agents:
                 return self._agents[name]
-            extra = {"tracekit": _cite(self._tk(name), 0, "run.registered")} if self.signer is not None else {}
+            extra = {"tracekit": _cite(self._tk(name, parent), 0, "run.registered")} if self.signer is not None else {}
             self._emit(name, "agent.start", parent=parent, role=role, **extra)
             a = Agent(self, name)
             self._agents[name] = a

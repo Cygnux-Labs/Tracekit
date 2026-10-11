@@ -312,6 +312,17 @@ class SignedRuntime(unittest.TestCase):
         merged = load_run(import_v2.import_records({run_id: self.records()[run_id]}, out)[0])
         self.assertEqual(merged.start["meta"]["evidence_alerts"], [])
 
+    def test_a_sub_agent_run_names_its_parent_and_session(self):
+        rt = Runtime({}, {}, task="t", signer=self.client, out_dir=tempfile.mkdtemp(dir=self.dir), run_id="tree")
+        for name, parent in (("lead", None), ("sub", "lead"), ("subsub", "sub")):
+            rt.agent(name, parent=parent)
+        ids = {name: rt._tk(name).run_id for name in ("lead", "sub", "subsub")}
+        rt.finish()
+        regs = {name: self.records()[run_id][0]["event"]["data"] for name, run_id in ids.items()}
+        self.assertNotIn("parent_run", regs["lead"])
+        self.assertEqual((regs["sub"]["parent_run"], regs["sub"]["session"]), (ids["lead"], ids["lead"]))
+        self.assertEqual((regs["subsub"]["parent_run"], regs["subsub"]["session"]), (ids["sub"], ids["lead"]))
+
     def test_the_record_never_says_a_call_that_ran_did_not(self):
         tools = {"nan": lambda: {"x": float("nan")}, "big": lambda: {"x": "a" * 20_000_000}}
         rt = Runtime({}, tools, task="t", signer=self.client, out_dir=tempfile.mkdtemp(dir=self.dir), run_id="odd")

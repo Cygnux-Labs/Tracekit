@@ -289,6 +289,13 @@ OTLP_MAX_SPANS = 512
 DECISION_IMPORT = "decision_import"   # an `authorize` grant, never a default: an external policy system's decisions
 PASSKEYS = "passkeys.json"   # in data_dir: person id -> {id, key (base64 SPKI), count (last signCount)}
 CONTENT_READ = "content_read"   # an `authorize` grant, never a default: content_get (the content vault)
+# what an unconfigured uid peer or the dev token may call; every other method is an `authorize` grant only (NEVER_DEFAULT)
+DEFAULT_GRANTS = frozenset({
+    "register_run", "decide", "complete", "observe", "state_write", "model_event", "approval_request",
+    "approval_decide", "approval_wait", "approval_consume", "approval_get", "approval_list", "approval_abandon",
+    "close_run", "delegate_run", "tailer_lost", "status", "read", "checkpoint_nudge", "passkey_register",
+    "why_finding"})
+NEVER_DEFAULT = frozenset({DECISION_IMPORT, ON_BEHALF, "content_get", "content_erase"})
 CONTENT = {"retain": False, "retention_days": 30, "max_record_bytes": 1 << 20}   # the `content` config section
 CONTENT_SWEEP_S = 3600.0
 ERASED = object()   # _data_key of a run whose content was erased
@@ -744,9 +751,8 @@ class SignerService:
     def _grant(self, identity, method):
         found = [g for k in keys(identity) if (g := lookup(self.authorize, k)) is not None]
         granted = {m for g in found for m in g}
-        if not found:   # unconfigured: a uid or the dev token (scoped by DevToken) keeps every RPC method
-            granted = [m for m in REQUESTS if m not in (DECISION_IMPORT, ON_BEHALF, "content_erase")] if (
-                identity.scheme == "uid" or subject(identity) == "token:dev") else ()
+        if not found:   # unconfigured: a uid or the dev token (scoped by DevToken) keeps the default methods
+            granted = DEFAULT_GRANTS if identity.scheme == "uid" or subject(identity) == "token:dev" else ()
         if method not in granted:
             raise RPCError("forbidden", f"{subject(identity)[:256]} is not authorized for {method}")
 
@@ -1505,6 +1511,13 @@ class SignerService:
         run_id = req.get("run_id") or self.id_prefix + secrets.token_hex(16)
         if not run_id.startswith(self.id_prefix):
             raise RPCError("invalid_request", f"this signer's run ids start with {self.id_prefix!r}")
+        parent = req.get("parent")
+        if parent:   # the caller holds the parent run's token, for a run of the same tenant
+            try:
+                self.tokens.verify(parent["run_token"], tenant, parent["run_id"], identity)
+            except RPCError as e:
+                raise RPCError(e.code, f"parent: {e.message}; pass the parent run's handle, as the identity it was "
+                                       "issued to, for a child run of the same tenant") from None
         own = owner(identity)
         self.quotas.take_event(identity)
 
@@ -1514,6 +1527,12 @@ class SignerService:
             for field in ("analyzes", "replay_of"):
                 if field in req and (tenant, req[field]) not in self.log.runs:
                     raise RPCError("unknown_run", req[field])
+            up = parent and self.log.runs.get((tenant, parent["run_id"]))
+            if parent and not up:
+                raise RPCError("unknown_run", f"{parent['run_id']}: register the child run on its parent's signer")
+            if up and up["final"]:
+                raise RPCError("run_closed", f"parent run {parent['run_id']} is final: start the child run from an "
+                                             "open run, or without `parent`")
             n = self.log.open_runs.get(own, 0)
             self.quotas.check_count("open_runs", n)
             run = tx.new_run(tenant, run_id)
@@ -1526,6 +1545,8 @@ class SignerService:
                 tx.set(run, "rec", None)
             if harness:
                 tx.set(run, "harness", (harness["pid"], harness["start_time"]))
+            if up:
+                tx.set(run, "session", up.get("session", parent["run_id"]))
             attested = "principal_token" in req
             out = {"run_id": run_id, "run_token": self.tokens.issue(tenant, run_id, identity), "tenant": tenant,
                    "tenant_attested": "tenant" not in req, "principal_attested": attested, "fail_modes": self.fail_modes}
@@ -1536,6 +1557,8 @@ class SignerService:
             data = {"agent": req["agent"], "signer_isolation": self.isolation or self._isolation(identity), "fail_modes": self.fail_modes,
                     "identity": _recorded(identity)}
             data.update({k: req[k] for k in ("analyzes", "replay_of", "investigation") if k in req})
+            if up:
+                data.update(parent_run=parent["run_id"], session=run["session"])
             if harness:
                 data["harness"] = dict(harness, attested=True)
             tx.emit(run, "run.registered", data, request_id=req["request_id"], **top)
@@ -2622,7 +2645,7 @@ def dev_data_dir():
     return d
 
 
-def serve_dev(runtime_dir, open_handler, proto=(rpc_schema.RPC_VERSION, rpc_schema.RPC_VERSION), version=__version__,
+def serve_dev(runtime_dir, open_handler, proto=(rpc_schema.RPC_MIN, rpc_schema.RPC_VERSION), version=__version__,
               idle_s=900):
     """Serve as the dev signer of `runtime_dir` (decision S3) until SIGTERM, or until `idle_s` seconds (0: never) pass
     with no connection open. Takes signer.lock before anything else (gives up after 1 s) and holds it for life; then

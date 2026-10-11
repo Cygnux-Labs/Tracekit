@@ -9,12 +9,12 @@ import os
 from tracekit import __version__
 from tracekit.format.canon import StrictJSONError, loads_strict
 from tracekit.signer.quotas import MAX_LINE
-from tracekit.signer.rpc_schema import RPC_VERSION, RPCError
+from tracekit.signer.rpc_schema import RPC_MIN, RPC_VERSION, RPCError
 
 READ_TIMEOUT_S = 30
 
 
-def hello(proto=(RPC_VERSION, RPC_VERSION), version=__version__):
+def hello(proto=(RPC_MIN, RPC_VERSION), version=__version__):
     """The answer to `hello`, the first frame on every connection; a dev signer also publishes it as endpoint.json."""
     return {"proto": list(proto), "version": version, "pid": os.getpid()}
 

@@ -17,7 +17,7 @@ from unittest import mock
 
 from factories import rewrite_bundle
 from tracekit import cli, crypto
-from tracekit.bundle_v2 import export
+from tracekit.bundle_v2 import VERIFIER_MIN_VERSION, VERSIONS, export
 from tracekit.format import checkpoint
 from tracekit.format.checkpoint import COSIGNATURE, ED25519, NoteError
 from tracekit.format.records import make_record
@@ -136,6 +136,27 @@ class Case(unittest.TestCase):
         self.assertEqual(code, 1, rep.checks)
         self.assertEqual(rep.integrity, "FAILED")
         self.assertIn(check, rep.failures)
+
+    def assert_gated(self, version, *added):
+        """Records `added` ((type, data, run), each run's first its run.registered; the first run is exported, with the
+        others) need verifier `version`: the bundle declares it, a verifier of that version says VERIFIED and one of the
+        version before says UNVERIFIABLE, never FAILED."""
+        log = self.log(f"gated-{random.random()}")
+        log.epoch(KEY1)
+        for type_, data, run in added:
+            log.add(type_, data, run)
+        runs = list(dict.fromkeys(run for *_, run in added))
+        for run in runs:
+            log.final(run)
+        out = os.path.join(self.d, f"g{random.random()}.tkb")
+        export(log.store, "acme", runs[0], log.note(), out, with_runs=runs[1:])
+        self.assertEqual(json.loads(v2.read_zip(out)["manifest.json"])["verifier_min_version"], version)
+        versions = [VERIFIER_MIN_VERSION, *VERSIONS]
+        for have, want in ((version, (0, "VERIFIED")), (versions[versions.index(version) - 1],
+                                                       (2, f"UNVERIFIABLE (needs tracekit >= {version})"))):
+            with mock.patch.object(v2, "__version__", have):
+                rep, code = self.verify(out)
+            self.assertEqual((code, rep.integrity), want, rep.checks)
 
     def mutate(self, src, edit_run=None, edit=None):
         """Rewrite a bundle; `edit_run(records)` edits the run's record list in place."""
@@ -569,6 +590,49 @@ class TestMalformedInput(Case):
                 with self.subTest(name=name, junk=j):
                     rep, code = self.verify(self.mutate(out, edit=edit))
                     self.assertEqual(code, 1, rep.checks)
+
+
+def registered(run="run-a", **data):
+    return ("run.registered", {"agent": {"name": "agent"},
+                               "identity": {"scheme": "token", "subject": "svc", "attested": True}, **data}, run)
+
+
+def decision(**data):
+    return ("policy.decision", {"tool_use_id": "t1", "decision": "allow", "rule_ids": [], **data}, "run-a")
+
+
+FINDING = {"target": "tool=pay", "intervention": "i", "n": 0, "p_with": 0, "p_without": 0, "effect": 0,
+           "interval": [-1, 1], "verdict": "inconclusive", "replay_runs": [], "models": [], "rung": 1, "off_tape": 0,
+           "investigation": "i", "looks": 1, "family": 1, "min_effect": 0.2, "applied": True, "stopped": "budget"}
+# per VERSIONS entry ("type" or "type.field"), records that use it
+ENTRIES = {
+    "input.observed": [registered(), ("input.observed", {
+        "source": "inbox:1", "trust": "untrusted", "salt_id": "a" * 32,
+        "output": {"hash": "hmac-sha256:" + "0" * 64, "size": 2, "redacted": False},
+        "redaction": {"rules": [], "count": 0, "client_claimed": False}}, "run-a")],
+    "content.accessed": [registered(), ("content.accessed", {"principal": "token:svc", "run_id": "run-x", "seqs": [1],
+                                                             "purpose": "case 1"}, "run-a")],
+    "content.erased": [registered(), ("content.erased", {"run_id": "run-x", "reason": "retention", "by": "signer"},
+                                      "run-a")],
+    "why.finding": [registered(), registered("run-f", analyzes="run-a"), ("why.finding", FINDING, "run-f")],
+    "policy.decision.provenance": [registered(), decision(provenance_state="complete", provenance=[
+        {"field": "to", "kind": "email", "source": {"run_seq": 1}}])],
+    "policy.decision.provenance_state": [registered(), decision(provenance_state="complete")],
+    "run.registered.replay_of": [registered(replay_of="run-x", investigation="i")],
+    "run.registered.parent_run": [registered(parent_run="run-p", session="run-p")],
+    "run.registered.session": [registered(parent_run="run-p", session="run-root")],
+}
+
+
+class TestVersionTable(Case):
+    def test_every_entry_gates_its_version(self):
+        for version, added in VERSIONS.items():
+            names = added["types"] + [f"{t}.{f}" for t, fs in added["fields"].items() for f in fs] + [
+                f"{t}.{f}={v}" for t, fs in added["values"].items() for f, vs in fs.items() for v in vs]
+            for name in names:
+                with self.subTest(name):
+                    self.assertIn(name, ENTRIES, "add records that use it to ENTRIES")
+                    self.assert_gated(version, *ENTRIES[name])
 
 
 if __name__ == "__main__":

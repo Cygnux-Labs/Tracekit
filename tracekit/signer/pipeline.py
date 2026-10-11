@@ -320,6 +320,8 @@ class RecordLog:
                 run["people"] = (e["data"]["identity"].get("person"), e.get("principal") if e.get("principal_attested") else None)
                 h = e["data"].get("harness")
                 run["harness"] = (h["pid"], h["start_time"]) if h else None   # the process its owner's calls come from
+                if "session" in e["data"]:
+                    run["session"] = e["data"]["session"]
                 open_runs[run["owner"]] = open_runs.get(run["owner"], 0) + 1
                 if e["source"] == "import":   # not reconciled: no layer gates or reports its calls
                     run["rec"], run["spans"] = None, {}
