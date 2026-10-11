@@ -290,7 +290,7 @@ class Viewer(unittest.TestCase):
                 self.assertIn(directive, csp)
             nonce = re.search(r"script-src 'nonce-([A-Za-z0-9_-]{16,})';", csp).group(1)
             if path == "/runs":
-                self.assertEqual(re.findall(r"<script[^>]*>", page.decode()), [f'<script nonce="{nonce}">'])
+                self.assertEqual(re.findall(r"<script[^>]*>", page.decode(), re.I), [f'<script nonce="{nonce}">'])
             self.assertEqual((r.getheader("X-Content-Type-Options"), r.getheader("Referrer-Policy")),
                              ("nosniff", "no-referrer"))
 
@@ -347,7 +347,7 @@ class Approvals(unittest.TestCase):
         for directive in ("default-src 'none'", "frame-ancestors 'none'", "base-uri 'none'", "form-action 'none'"):
             self.assertIn(directive, csp)
         nonce = re.search(r"script-src 'nonce-([A-Za-z0-9_-]{16,})';", csp).group(1)
-        self.assertEqual(re.findall(r"<script[^>]*>", page.decode()), [f'<script nonce="{nonce}">'])
+        self.assertEqual(re.findall(r"<script[^>]*>", page.decode(), re.I), [f'<script nonce="{nonce}">'])
         self.assertEqual((r.getheader("X-Content-Type-Options"), r.getheader("Referrer-Policy")),
                          ("nosniff", "no-referrer"))
 

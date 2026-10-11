@@ -72,7 +72,11 @@ class Quickstart(unittest.TestCase):
 
     def test_three_steps(self):
         for name, (reqs, script) in AGENTS.items():
-            if self.sh(self.py, "-m", "pip", "install", "-q", *reqs, code=None).returncode:
+            try:
+                installed = not self.sh(self.py, "-m", "pip", "install", "-q", *reqs, code=None).returncode
+            except subprocess.TimeoutExpired:   # pip's resolver backtracking over the frameworks installed so far
+                installed = False
+            if not installed:
                 print(f"skipped {name}: {' '.join(reqs)} does not install here")   # skipTest would skip them all
                 continue
             with self.subTest(name):

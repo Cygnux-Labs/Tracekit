@@ -452,7 +452,7 @@ def make_handler(feed, token, allowed_hosts=None, secure=False, login=None, appr
                 return self._send(401, '{"error":"missing or wrong token"}')
             if exchange:
                 return self._send(303, "", "text/plain", headers=[
-                    ("Location", u.path),
+                    ("Location", "/"),
                     ("Set-Cookie", f"{COOKIE}={_session(token)}; HttpOnly; SameSite=Strict; Path=/"
                                    + ("; Secure" if secure else ""))])
             if runs and u.path in ("/runs", "/api/runs", "/api/run", "/api/bundle"):
