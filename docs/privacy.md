@@ -115,7 +115,8 @@ content: {retain: true, retention_days: 30, max_record_bytes: 1048576}   # defau
   `input.observed` value, and a `model.exchange`'s `body` (the request, or the assembled response) when the client
   sends one. The [gateway](gateway.md#what-is-recorded) sends it only when the signer says the vault is on. Content over
   `max_record_bytes` is not kept, and the vault says `too_large`. Nothing unredacted is ever written. A decision whose
-  arguments the redaction changed no longer opens its `args_commitment`: `content_get` marks it `redacted`.
+  arguments the redaction changed no longer opens its `args_commitment`: `content_get` marks it `redacted` and returns
+  no salt, which could only test guesses of the removed value.
 - **Encryption.** AES-256-GCM per record, under a random key per run. That key is stored wrapped by the content master
   key `keys/content.key`, created on first start (0600, the signer's user, like the other keys). The record is bound in
   as associated data: `{log_id, run_id, seq (its run_seq), commitment}`. A blob copied to another record doesn't decrypt.
@@ -124,7 +125,8 @@ content: {retain: true, retention_days: 30, max_record_bytes: 1048576}   # defau
 - **Access is signed.** Only the signer reads the vault, through the `content_get` RPC: `{run_id, seqs (at most 1000
   run_seqs), purpose}`, for a run of the caller's tenant. The caller needs the `content_read` grant in `authorize`,
   which no identity has by default (agents never do). Each item comes back as `{content, salt}`, with the record's salt
-  as `tracekit signer reveal` gives it, so the caller recomputes the commitment, or as `{state: not_retained | too_large
+  as `tracekit signer reveal` gives it, so the caller recomputes the commitment, as `{content, redacted: true}` (no
+  salt) for decision arguments redaction changed, or as `{state: not_retained | too_large
   | erased}`. Every successful call writes a signed `content.accessed{principal, run_id, seqs, purpose}` into the
   tenant's signer run (`tracekit/signer`). From the shell: `tracekit signer content get --run R --seq N... --purpose
   CASE-1`; from Python: `Client().content_get({...})`.

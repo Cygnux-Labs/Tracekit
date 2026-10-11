@@ -231,11 +231,12 @@ RESPONSES = {
     "checkpoint_nudge": _obj(["scheduled"], scheduled={"type": "boolean"}),
     "decision_import": _obj(["run_seq", "signature"], run_seq=SEQ, signature={"enum": ["verified", "unverified"]}),
     "passkey_register": _obj(["credential_id"], credential_id=B64URL),
-    # per seq, in request order: the content and the record's salt (as `tracekit signer reveal` gives it), or why not
+    # per seq, in request order: the content and the record's salt (as `tracekit signer reveal` gives it), the content
+    # marked redacted (changed by redaction, so it opens no commitment: no salt), or why not
     "content_get": _obj(["items"], items={"type": "array", "maxItems": 1000, "items": dict(
-        _obj(["seq"], seq=SEQ, content=ANY, salt=_str(64), redacted={"const": True},   # changed by redaction: opens
-             state={"enum": ["not_retained", "too_large", "erased"]}),                # no commitment
-        oneOf=[{"required": ["content", "salt"]}, {"required": ["state"]}])}),
+        _obj(["seq"], seq=SEQ, content=ANY, salt=_str(64), redacted={"const": True},
+             state={"enum": ["not_retained", "too_large", "erased"]}),
+        oneOf=[{"required": ["content", "salt"]}, {"required": ["content", "redacted"]}, {"required": ["state"]}])}),
     "content_erase": _SEQ_ONLY,   # of the content.erased record, in the tenant's signer run (tracekit/signer)
 }
 

@@ -183,7 +183,7 @@ longer open args_commitment), a result, an observed input, a model exchange's `b
 under a random key per run, which keys/content.key wraps, with the record bound in as associated data ({log_id,
 run_id, seq: the run_seq, commitment}), and stored through the storage; content over max_record_bytes is not kept, and
 the vault says so. `content_get` (the `content_read` grant, never a default) returns it with each record's salt, so the
-caller can open the commitment, and writes a signed `content.accessed` into the tenant's signer run; `content_erase` and
+caller can open the commitment (no salt for content redaction changed: it opens nothing), and writes a signed `content.accessed` into the tenant's signer run; `content_erase` and
 retention (runs whose key was stored more than retention_days ago, checked every CONTENT_SWEEP_S) delete a run's key
 and blobs and write `content.erased`. Records are never changed.
 
@@ -490,9 +490,10 @@ class SignerService:
         self.metrics = metrics.SignerMetrics()
         self._prov_key = os.urandom(32)   # the provenance index's key: per process, as the index is
         authorize = dict(authorize or {})
-        if not all(isinstance(m, list) and set(m) <= {*REQUESTS, OTLP_IMPORT, CONTENT_READ} for m in authorize.values()):
-            raise ValueError("authorize maps identities to lists of methods out of "
-                             f"{sorted({*REQUESTS, OTLP_IMPORT, CONTENT_READ})}")
+        grants = {*REQUESTS, OTLP_IMPORT, CONTENT_READ} - {"content_get"}
+        if not all(isinstance(m, list) and set(m) <= grants for m in authorize.values()):
+            raise ValueError(f"authorize maps identities to lists of methods out of {sorted(grants)} "
+                             "(content_get is granted as content_read)")
         keys = os.path.join(data_dir, "keys")
         if open_storage is None and storage_config:
             from tracekit.storage import postgres
@@ -2077,7 +2078,9 @@ class SignerService:
         except (RPCError, StorageUnavailable, OSError):
             self.metrics.loop_errors.inc("content vault")
             logging.getLogger(__name__).exception("tracekit signer: the content of run_seq %s of run %s was not "
-                                                  "retained", seq, key[1])
+                                                  "retained: check the store (on Postgres, after `tracekit signer "
+                                                  "migrate`, grant the signer's role tracekit.storage.postgres.GRANTS "
+                                                  "again)", seq, key[1])
 
     def _vault_run(self, identity, run_id):
         """The key of run `run_id` of the caller's tenant, once the vault exists."""
@@ -2100,8 +2103,12 @@ class SignerService:
             raise RPCError("unavailable", f"storage read failed: {e}") from None
         purpose = privacy.redact_text(req["purpose"])[0][:512]
 
+        def too_large():
+            return RPCError("quota_exceeded", "the content of these records is too large for one answer: ask for "
+                                              "fewer seqs at a time")
+
         def fn(tx, _):
-            dk, items = self._data_key(key), []
+            dk, items, size = self._data_key(key), [], 0
             for seq in req["seqs"]:
                 e = records.get(seq)
                 blob = None if dk in (None, ERASED) or e is None else \
@@ -2110,6 +2117,9 @@ class SignerService:
                     items.append({"seq": seq, "state": "erased" if dk is ERASED else
                                   "too_large" if blob == b"" else "not_retained"})
                     continue
+                size += len(blob)
+                if size > MAX_LINE - 4096:
+                    raise too_large()
                 commitment, label = _committed(e), salt_label(e)
                 try:
                     value = loads_strict(dk.decrypt(blob[:12], blob[12:], self._aad(key, seq, commitment)))
@@ -2118,12 +2128,12 @@ class SignerService:
                                                   "record: the vault was altered") from None
                 digest = event_hash({"tool": e["data"]["tool"], "args": value}) if e["type"] == "policy.decision" \
                     else "sha256:" + hashlib.sha256(canonical(value)).hexdigest()
-                items.append({"seq": seq, "content": value, "salt": _salt(self._salt_key, label).hex(),
-                              **({} if self._opens(commitment, label, digest) else {"redacted": True})})
+                items.append({"seq": seq, "content": value} | (
+                    {"salt": _salt(self._salt_key, label).hex()} if self._opens(commitment, label, digest)
+                    else {"redacted": True}))   # no salt: it would only test guesses of what redaction removed
             out = {"items": items}
             if len(json.dumps(out, separators=(",", ":"), ensure_ascii=False).encode()) > MAX_LINE - 4096:
-                raise RPCError("quota_exceeded", "the content of these records is too large for one answer: ask for "
-                                                 "fewer seqs at a time")
+                raise too_large()
             tx.emit(self.log.signer_run(tx, key[0]), "content.accessed", {
                 "principal": subject(identity)[:256], "run_id": key[1], "seqs": req["seqs"], "purpose": purpose},
                 source="signer")
@@ -2138,8 +2148,8 @@ class SignerService:
                            lambda fn: self.log.submit(identity, "content_erase", req, fn))
 
     def _erase(self, key, reason, by, submit=None):
-        """Write content.erased for run `key`, then delete its data key and blobs (a failure there is retried by the
-        next erasure or retention sweep, which writes the record again)."""
+        """Write content.erased for run `key`, then delete its data key and blobs (blobs a failure leaves behind stay
+        inert, since no key opens them; a repeat content_erase deletes them and writes the record again)."""
         out = (submit or self.log.write)(lambda tx, _=None: {"run_seq": tx.emit(
             self.log.signer_run(tx, key[0]), "content.erased", {"run_id": key[1], "reason": reason, "by": by},
             source="signer")})

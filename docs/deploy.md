@@ -264,6 +264,8 @@ authorize: {"mtls:spiffe://acme/investigator": [content_read, status]}   # who m
 ```
 
 On Postgres, run `tracekit signer migrate --config signer.yaml` first: the vault adds two tables (schema version 2).
+`migrate` grants nothing: on an existing database, apply `tracekit.storage.postgres.GRANTS` to the signer's role
+again after it, or every item reads back `not_retained` and the signer logs the failed write.
 
 Key handling: the signer creates `keys/content.key` on its first start with the vault on, 0600 and owned by the
 signer's user, next to its other keys. Back it up with them: without it the vault can't be read, and a restored

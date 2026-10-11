@@ -89,6 +89,8 @@ class Off(Vault):
         for bad in ({"retain": "yes"}, {"retention_days": 0}, {"max_record_bytes": 1.5}, {"keep": True}, "on"):
             with self.subTest(bad), self.assertRaises(ValueError):
                 svc.SignerService(self.dir, content=bad)
+        with self.assertRaisesRegex(ValueError, "content_get is granted as content_read"):
+            svc.SignerService(self.dir, authorize={"token:x": ["content_get"]})
 
 
 class On(Vault):
@@ -117,6 +119,7 @@ class On(Vault):
         mseq = self.s.model_event(self.req(provider="p", model="m", phase="response", body={"text": SECRET}))["run_seq"]
         d, c, m = self.get(dseq, cseq, mseq)
         self.assertEqual(d["redacted"], True)   # the decision was on the real arguments: these no longer open them
+        self.assertNotIn("salt", d)   # it would only test guesses of the redacted value against args_commitment
         self.assertNotIn(SECRET, json.dumps([d, c, m]))
         self.assertNotIn("redacted", c)
         e = next(e for e in self.records() if e["run_seq"] == mseq)
@@ -201,8 +204,10 @@ class On(Vault):
 
     def test_an_answer_too_large_for_one_frame_is_refused_and_not_recorded(self):
         _, cseq = self.tool({"cmd": "ls"}, {"out": "y" * 1000})
-        with mock.patch.object(svc, "MAX_LINE", 4096 + 500), self.assertRaises(RPCError) as cm:
+        with mock.patch.object(svc, "MAX_LINE", 4096 + 500), mock.patch.object(svc, "loads_strict") as parse, \
+                self.assertRaises(RPCError) as cm:
             self.get(cseq)
+        parse.assert_not_called()   # refused on the stored size, before decrypting
         self.assertEqual(cm.exception.code, "quota_exceeded")
         self.assertIn("ask for fewer seqs", cm.exception.message)
         self.assertEqual(self.signer_records(), [])
