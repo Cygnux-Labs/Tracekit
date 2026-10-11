@@ -1,6 +1,8 @@
 """Backend-independent storage contract (tracekit.storage.base). A backend's test case mixes in StorageContract with
 unittest.TestCase and supplies open() (a store over the same location every call), tear() (cut the last record's
 line short, as a crash mid-write does) and damage(seq) (change a stored record's event in place)."""
+import time
+
 from tracekit.format import checkpoint, registry
 from tracekit.format.records import make_record
 from tracekit.merkle import leaf_hash, root
@@ -44,6 +46,27 @@ class StorageContract:
     def reopen(self, s):
         s.close()
         return self.store()
+
+    def test_content_vault(self):
+        s, log = self.store(), "ab" * 16
+        self.assertIsNone(s.content_key(log, "acme", "run-1"))
+        self.assertEqual(s.content_runs(), [])
+        s.content_key_put(log, "acme", "run-1", b"wrapped")
+        s.content_put(log, "acme", "run-1", 3, b"blob-3")
+        s.content_put(log, "acme", "run-1", 4, b"")   # too large: the marker only
+        s = self.reopen(s)
+        self.assertEqual(s.content_key(log, "acme", "run-1"), b"wrapped")
+        self.assertIsNone(s.content_key(log, "beta", "run-1"))   # another tenant's run of the same id
+        self.assertEqual([s.content_get(log, "acme", "run-1", n) for n in (3, 4, 5)], [b"blob-3", b"", None])
+        [(got, stored)] = [(r[:3], r[3]) for r in s.content_runs()]
+        self.assertEqual(got, (log, "acme", "run-1"))
+        self.assertLessEqual(stored, time.time())
+        s.content_erase(log, "acme", "run-1")
+        s.content_erase(log, "acme", "run-2")   # nothing kept yet: erased all the same
+        s = self.reopen(s)
+        self.assertEqual([s.content_key(log, "acme", r) for r in ("run-1", "run-2")], [b"", b""])
+        self.assertEqual([s.content_get(log, "acme", "run-1", n) for n in (3, 4)], [None, None])
+        self.assertEqual(s.content_runs(), [])
 
     def test_empty(self):
         s = self.store()

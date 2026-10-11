@@ -20,7 +20,7 @@ data:
                                     "ca" "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"))
         "storage" (dict "postgres" (dict "dsn_file" (printf "/etc/tracekit/dsn/dsn-%d" $i)))
         "metrics" (dict "listen" "0.0.0.0:9464" "allow_remote" true "serve_records" $.Values.monitor.enabled)
-        "policy" "/etc/tracekit/policy.yaml" }}
+        "policy" "/etc/tracekit/policy.yaml" "content" $.Values.signer.content }}
   {{- if $kms.keyIds }}
   {{- $_ := set $cfg "log_key" (dict "aws_kms" (dict "key_id" (index $kms.keyIds $i) "region" (required "awsKms.region is required" $kms.region))) }}
   {{- end }}

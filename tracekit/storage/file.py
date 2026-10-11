@@ -12,12 +12,15 @@
     snapshots/<size>.json  the indexes at a record tree size, the logs' line offsets, and the signer's state; the
                          newest two are kept
     tiles/<tree>/<level>/<index>.<width>
+    content/<log>/<run>/<seq>  the content vault's encrypted blobs (<run>: 32 hex of sha256 "<tenant>/<run_id>"), and
+    content/<log>/<run>/key    {"tenant", "run_id", "wrapped": base64, "stored"}: the run's wrapped key ("" erased)
 
 Files are 0640 and directories 0750; creating or renaming a file syncs it and its directory. The lock file holds the
 writer's pid. On open the indexes and trees come from the newest snapshot whose last record is still in the log with
 that hash (else from nothing), and the log lines after it are indexed, rewriting any tile that no longer matches them
 (an ack-on-write tile can outlive the log lines it covers after a power loss). `FileReader` reads a store while its
 writer runs."""
+import base64
 import bisect
 import contextlib
 import errno
@@ -53,6 +56,7 @@ QUEUE = "witness-queue.json"
 ANCHORS = "anchors.jsonl"
 LOGS = ("records.jsonl", "registry.jsonl", "registry-notes.jsonl")
 SNAPSHOTS = "snapshots"
+CONTENT = "content"
 
 
 def _sync(fd, full):
@@ -585,6 +589,42 @@ class FileStorage(_Records, Storage):
             _mkdir(os.path.dirname(p))
             _write_new(p, data)
 
+    def _vault(self, log_id, tenant, run_id, name=""):
+        if not re.fullmatch(r"[0-9a-f]{32}", log_id):
+            raise ValueError(f"bad log id {log_id!r}")
+        return os.path.join(self.root, CONTENT, log_id,
+                            hashlib.sha256(f"{tenant}/{run_id}".encode("utf-8")).hexdigest()[:32], name)
+
+    def content_key(self, log_id, tenant, run_id):
+        data = _read_if(self._vault(log_id, tenant, run_id, "key"))
+        return None if data is None else base64.b64decode(json.loads(data)["wrapped"])
+
+    def content_key_put(self, log_id, tenant, run_id, wrapped):
+        path = self._vault(log_id, tenant, run_id, "key")
+        with self._disk():
+            _mkdir(os.path.dirname(path))
+            _write_new(path, json.dumps({"tenant": tenant, "run_id": run_id, "stored": time.time(),
+                                         "wrapped": base64.b64encode(wrapped).decode("ascii")}).encode("utf-8"))
+
+    def content_put(self, log_id, tenant, run_id, seq, blob):
+        with self._disk():
+            _write_new(self._vault(log_id, tenant, run_id, str(int(seq))), blob)
+
+    def content_get(self, log_id, tenant, run_id, seq):
+        return _read_if(self._vault(log_id, tenant, run_id, str(int(seq))))
+
+    def content_erase(self, log_id, tenant, run_id):
+        self.content_key_put(log_id, tenant, run_id, b"")   # first: a crash mid-way leaves blobs no key opens
+        d = self._vault(log_id, tenant, run_id)
+        with self._disk():
+            for n in os.listdir(d):
+                if n != "key":
+                    os.unlink(os.path.join(d, n))
+            _sync_dir(d)
+
+    def content_runs(self):
+        return content_runs(self.root)
+
     def fsck(self):
         return fsck(self.root)
 
@@ -663,6 +703,17 @@ class FileReader(_Records):
                 if os.name != "nt" or i == 19:
                     raise
                 time.sleep(0.05)
+
+
+def content_runs(root):
+    """Storage.content_runs of the store at `root`; reads only, so it's safe while the signer runs (doctor)."""
+    out, top = [], os.path.join(root, CONTENT)
+    for log_id in sorted(os.listdir(top)) if os.path.isdir(top) else ():
+        for run in sorted(os.listdir(os.path.join(top, log_id))):
+            k = json.loads(_read_if(os.path.join(top, log_id, run, "key")) or b'{"wrapped": ""}')
+            if k["wrapped"]:
+                out.append((log_id, k["tenant"], k["run_id"], k["stored"]))
+    return out
 
 
 def fsck(root, upto=None, snapshot_key=None, verify=None):

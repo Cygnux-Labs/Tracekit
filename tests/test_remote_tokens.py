@@ -132,7 +132,7 @@ class TestRemoteSigner(unittest.TestCase):
         self.d = tmpdir(self)
         self.pki = Pki(self.d)
         self.tokens = TokenStore(os.path.join(self.d, "tokens.json"))
-        self.s = svc.SignerService(ts.tmpdir(self), policy=ts.PAY_ASKS, authorize={"token:*": sorted(REQUESTS)})
+        self.s = svc.SignerService(ts.tmpdir(self), policy=ts.PAY_ASKS, authorize={"token:*": sorted(REQUESTS.keys() - {"content_get"})})
         self.addCleanup(self.s.close)
         cert, key = self.pki.issue("server")
         addr, auths, tls = tk_http.configure({"listen": "127.0.0.1:0", "cert": cert, "key": key,

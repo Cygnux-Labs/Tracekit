@@ -488,7 +488,7 @@ class StoreFeed:
             for key, run in list(r.runs.items()):
                 if note and run["seqs"][-1] < note[0] and len(run["seqs"]) != self.runs.get(key, {}).get("count"):
                     self._verify(r, note[1], key, len(run["seqs"]))
-                elif key not in self.runs and key != SIGNER_RUN:   # no checkpoint covers it yet: listed as pending
+                elif key not in self.runs and key[1] != SIGNER_RUN[1]:   # no checkpoint covers it yet: listed as pending
                     first = next(iter(r.iter_run(*key)), None)
                     name = first and ((first["event"].get("data") or {}).get("agent") or {}).get("name")
                     with self.lock:
@@ -526,7 +526,7 @@ class StoreFeed:
                                      f"{rv['assurance']}", f"{summary}\n{self.note}\n{OPERATOR_SIDE}\n\n{text}", "VERIFY"))
             state = dict(state, count=count, shown=len(records), failed=None)
         new[-1]["review"] = rv
-        if key == SIGNER_RUN:
+        if key[1] == SIGNER_RUN[1]:
             new[-1].update(signer=True, agent="signer")
         with self.lock:
             self.runs[key] = state
