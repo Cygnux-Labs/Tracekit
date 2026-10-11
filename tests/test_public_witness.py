@@ -327,7 +327,8 @@ class OptIn(unittest.TestCase):
             self.addCleanup(p.stop)
         self.cfg = os.path.join(self.dir, "signer.yaml")
         with open(self.cfg, "w") as f:
-            f.write(f'data_dir: "{self.dir}/data"\norigin: "{ORIGIN}"\ngrace_s: 0\nwitnesses: [public]\n')
+            f.write(f'data_dir: {json.dumps(os.path.join(self.dir, "data"))}\norigin: "{ORIGIN}"\ngrace_s: 0\n'
+                    'witnesses: [public]\n')   # a JSON string is a YAML string: Windows backslashes stay literal
 
     def test_the_shortcut_registers_cosigns_and_is_pinned_by_trust(self):
         cfg = svc.load_config(self.cfg)

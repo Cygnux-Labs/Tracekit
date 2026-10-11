@@ -396,6 +396,7 @@ class Bundles(Case):
         log.final()
         out = os.path.join(self.d, "p.tkb")
         export(log.store, "acme", "run-a", log.note(), out)
+        log.store.close()   # Windows can't delete a store whose files are still open
         with zipfile.ZipFile(out) as z:
             return out, json.loads(z.read("manifest.json"))["verifier_min_version"]
 

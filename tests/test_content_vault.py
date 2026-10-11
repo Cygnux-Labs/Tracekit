@@ -316,7 +316,7 @@ class Doctor(unittest.TestCase):
         self.assertEqual(self.check(on)["status"], doctor.WARN)   # no key yet
         svc.SignerService(d, content=on["content"]).close()
         r = self.check(on)
-        self.assertEqual(r["status"], doctor.OK, r)
+        self.assertEqual(r["status"], doctor.WARN if os.name == "nt" else doctor.OK, r)   # Windows: ACLs, not modes
         self.assertIn("on: keeps redacted content 7 days", r["detail"])
         if os.name != "nt":
             os.chmod(os.path.join(d, "keys", "content.key"), 0o644)
