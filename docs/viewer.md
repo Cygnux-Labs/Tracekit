@@ -63,7 +63,8 @@ record's seq, hash and previous hash. The bottom bar replays the selected run: `
 
 Type `/` (or click the box at the top), then a command and Enter: `AGT name`, `TOOL Bash`, `FILE .env`, `FLAG`
 (flagged, blocked or failed only), `FIND text`, `SEQ n` (open record n), `CLR` (clear every filter), `HELP` (this
-list). Each filter shows as a chip in the header; click its `✕` to drop it.
+list). Each filter shows as a chip in the header; click its `✕` to drop it. `SEQ n` on a record with no row of its
+own (a call's decision or result is on the call's row) opens the row before it and says so in the box.
 
 ### Why: the verdict and the path
 
@@ -71,7 +72,8 @@ list). Each filter shows as a chip in the header; click its `✕` to drop it.
 
 With why logs, select a tool call (or click a `WHY` alert, panel 3) and open **WHY** in panel 8. The verdict sentence
 says what replays found; **How it got here** is the recorded path from each untrusted input (red border) through the
-agents' model calls and messages to the call. Click any step to open it.
+agents' model calls and messages to the call. Click any step to open it. While WHY or NODE is open, panel 8 widens
+so its tables and values wrap instead of being cut; DETAIL gives the room back.
 
 ### FIND THE CAUSE and RUN TEST
 

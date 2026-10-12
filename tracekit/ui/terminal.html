@@ -1116,7 +1116,26 @@
       text-align: left;
       padding: 2px 8px;
       border-bottom: 1px solid var(--line);
-      vertical-align: top
+      vertical-align: top;
+      white-space: normal;
+      overflow-wrap: anywhere;
+      max-width: none
+    }
+
+    /* WHY and NODE: the detail panel takes the room their tables and values need */
+    .wd main,
+    .v2.wd main {
+      grid-template-areas: "agents tape alerts" "agents tape mix" "lanes lanes lanes" "reason detail detail"
+    }
+
+    .wd .files {
+      display: none
+    }
+
+    .wv.wd main,
+    .v2.wv.wd main {
+      grid-template-columns: minmax(250px, 1fr) minmax(0, 1.4fr) minmax(0, 1.9fr);
+      grid-template-areas: "agents tape alerts" "whyv whyv detail"
     }
 
     .wt th {
@@ -1606,6 +1625,7 @@
       renderTop(); renderTicker(); renderAgents(); renderTape(); renderAlerts(); renderMix(); renderLanes(); renderReason(); renderFiles();
       renderWhyView();
       if (WTAB === "node" && !WNODE) WTAB = "detail";
+      document.body.classList.toggle("wd", WTAB !== "detail");
       $("wtabnode").hidden = !WNODE;
       document.querySelectorAll(".p>h2 .wtab").forEach(b => b.classList.toggle("on", b.dataset.wtab === WTAB));
       if (WTAB === "node") renderNode(); else if (WTAB === "why") renderWhyPanel(); else if (selected) renderDetail(selected); else if (V2) renderReview();
@@ -1915,8 +1935,10 @@
       for (const h of laneHits) { if (my < h.y0 || my > h.y1) continue; const d = mx < h.x0 ? h.x0 - mx : mx > h.x1 ? mx - h.x1 : 0; if (d < bd) { bd = d; best = h; } }
       if (best) select(best.act);
     });
+    const CMD_HINT = $("cmd").placeholder;
     function runCommand(raw) {
       const s = raw.trim(); if (!s) return;
+      $("cmd").placeholder = CMD_HINT;
       const [cmd, ...rest] = s.split(/\s+/), arg = rest.join(" ");
       switch (cmd.toUpperCase()) {
         case "AGT": case "A": F.agent = arg || null; break;
@@ -1925,7 +1947,12 @@
         case "FIND": case "/": F.find = arg || null; break;
         case "FLAG": case "F": F.flag = !F.flag; break;
         case "CLR": case "CLEAR": F.agent = F.tool = F.file = F.find = F.kind = null; F.flag = false; selected = null; break;
-        case "SEQ": { const r = S.recs.find(r => lseq(r) === +arg); if (r) { const act = S.actList.find(a => a.pre === r || a.post === r); select(act || r); } break; }
+        case "SEQ": {   // a record with no row of its own (a call's decision, a checkpoint): the row before it
+          const n = +arg, r = S.recs.reduce((b, r) => lseq(r) <= n && (!b || lseq(r) > lseq(b)) ? r : b, null);
+          if (r) { const act = S.actList.find(a => a.pre === r || a.post === r); select(act || r); }
+          if (!r || lseq(r) !== n) $("cmd").placeholder = `seq ${arg} has no row of its own on the tape` + (r ? `; showing the row before it, seq ${lseq(r)}` : "");
+          break;
+        }
         case "HELP": case "?": $("help").hidden = false; break;
         case "PAUSE": if (BOOT) { playing = false; updatePlay(); } break;
         case "PLAY": if (BOOT) { playing = true; updatePlay(); tick(); } break;
