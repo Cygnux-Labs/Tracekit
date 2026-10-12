@@ -54,7 +54,7 @@ print("e2e: doctor clean")'
 # the fs fail mode; c2, once it is back, makes the signer write the gap for c1's client_seq.
 kubectl exec "deploy/$release" -c agent -- python -c '
 import os, socket, sys, time
-from tracekit.sdk.client import Client, SignerUnavailable, fail_open
+from tracekit.sdk.client import Client, fail_open
 path, read = os.environ["TRACEKIT_SIGNER"], ("Read", {"file_path": "a.txt"})
 
 def wait_until(up):
@@ -82,11 +82,9 @@ run.complete("c0")
 print(run.run_id, flush=True)
 c.close()
 wait_until(False)
-try:
-    run.decide("c1", *read)
-    sys.exit("e2e: a call was decided while the signer was down")
-except SignerUnavailable:
-    pass
+d = run.decide("c1", *read)   # the fail mode of the run decides (fs is open here), never the signer
+if not d.get("unavailable") or "decision_id" in d or d["decision"] != "allow":
+    sys.exit(f"e2e: a call was decided by the signer while it was down: {d}")
 wait_until(True)
 run.decide("c2", *read)
 run.complete("c2")
