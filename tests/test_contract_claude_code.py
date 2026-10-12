@@ -6,6 +6,7 @@ as each Claude Code event is a process of its own; between events the hook keeps
 tests/test_hook_v2.py runs the hook as the command `tracekit init` wires.
 """
 import contextlib
+import errno
 import io
 import json
 import os
@@ -16,6 +17,7 @@ import unittest
 from unittest import mock
 
 import adapter_contract as ac
+from tracekit.deploy import files
 from tracekit.integrations import claude_code
 from tracekit.sdk.client import Client, SignerUnavailable
 from tracekit.signer import service
@@ -210,6 +212,19 @@ class TestHookOnRealSigner(ac.OnReal, unittest.TestCase):
         self.set_fail_modes({"default": "open"})
         with failing("decide", SignerUnavailable("gone")):
             self.assertEqual(self.pre()[0], 0)
+
+    def test_a_local_io_error_blocks_even_when_the_run_fails_open(self):
+        self.set_fail_modes({"default": "open"})
+        real = files.write_json
+
+        def full(path, obj, *a, **kw):   # the session state can't be written: the call could not be counted
+            if isinstance(obj, dict) and obj.get("seq"):
+                raise OSError(errno.ENOSPC, "No space left on device")
+            return real(path, obj, *a, **kw)
+        with mock.patch.object(files, "write_json", full):
+            code, err = self.pre()
+        self.assertEqual(code, 2)
+        self.assertIn("No space left on device", err)
 
     def test_an_allowed_call_is_consumed_before_it_runs(self):
         with failing("approval_consume", RPCError("unknown_tool_call", "x")):

@@ -231,6 +231,8 @@ def run(harness, raw, stdout=None, stderr=None):
         code = H.main(harness_reasoning=False)
     finally:
         sys.stdin, sys.stderr = real_stdin, real_stderr
+    if code and harness == "gemini" and is_pre and q.get("tool_use_id"):   # a blocked call gets no AfterTool
+        _gemini_ids(q["session_id"], None, None, "pre", drop=q["tool_use_id"])
     msg = err.getvalue().strip()
     _reply(harness, stdout, code == 0, msg, is_pre)
     return 2 if code else 0

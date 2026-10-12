@@ -7,6 +7,7 @@ from unittest import mock
 
 from tracekit.format.canon import event_hash
 from tracekit.integrations import crewai
+from tracekit.sdk import client
 from tracekit.sdk.client import Client, RunHandle, SignerUnavailable, result_field
 from tracekit.signer.rpc_schema import RPCError
 
@@ -19,7 +20,7 @@ def run(decision="allow", rule_ids=(), consume=True, state="approved", **more):
     r = mock.Mock()
     r.decide.return_value = {"decision": decision, "rule_ids": list(rule_ids), "decision_id": "dec-1", **more}
     r.call.side_effect = lambda m, **f: {"approval_request": {"approval_id": "apr-1"},
-                                         "approval_wait": {"state": state}}[m]
+                                         "approval_wait": {"state": state}, "approval_abandon": {}}[m]
     r.approval_consume.return_value = {"ok": consume, "rule_ids": list(rule_ids)}
     return r
 
@@ -45,6 +46,11 @@ class Hooks(unittest.TestCase):
                 else:
                     self.assertIn("Tracekit policy", a)
                     r.complete.assert_not_called()
+
+    def test_an_unanswered_approval_is_withdrawn(self):
+        r = run("ask", ["A1"], state="requested")
+        self.assertIs(hook(r)[0], False)
+        self.assertEqual([c.args[0] for c in r.call.call_args_list][-1], "approval_abandon")
 
     def test_nothing_raises_into_the_crew(self):
         for exc in (RPCError("run_closed", "r"), SignerUnavailable("down"), KeyError("bug")):
@@ -92,6 +98,34 @@ class RunHandleOutage(unittest.TestCase):
             with self.subTest(modes=modes, hint=hint), self.assertWarnsRegex(UserWarning, "signer|fail"):
                 d = self.handle(modes).decide("c1", "pay", {}, **({"tool_class_hint": hint} if hint else {}))
                 self.assertEqual((d["decision"], d["unavailable"]), (want, True))
+
+    def test_refused_calls_leave_nothing_behind_on_a_long_lived_handle(self):
+        answers = {"decide": {"decision": "deny", "decision_id": "dec-1", "rule_ids": ["D"], "run_seq": 1}}
+        with mock.patch.object(Client, "call", side_effect=lambda m, req=None, **f: answers[m]):
+            h = self.handle({})
+            for i in range(10):
+                h.decide(f"c{i}", "pay", {})
+            self.assertEqual(len(h._decided), 0)
+            answers["decide"] = dict(answers["decide"], decision="ask")   # asked, never approved: capped
+            for i in range(client.KEEP_CALLS + 10):
+                h.decide(f"a{i}", "pay", {})
+            self.assertEqual(len(h._decided), client.KEEP_CALLS)
+
+    def test_a_client_serving_many_runs_keeps_a_bounded_count_of_them(self):
+        c = Client(signer="/nonexistent/tracekit.sock")   # an executor or MCP gateway: forged run ids too
+        with mock.patch.object(client, "KEEP_RUNS", 50):
+            for i in range(500):
+                with c._lock:
+                    c._prepare("decide", {"request_id": f"q{i}", "run_id": f"forged-{i}", "run_token": "t",
+                                          "tool_call_id": "c1", "tool": "pay", "args_source": "parsed", "args": {}})
+        self.assertEqual(len(c._seqs), 50)
+        self.assertEqual(list(c._seqs)[-1], "forged-499")   # the most recent kept
+
+    def test_a_fresh_clients_long_poll_on_a_closed_run_raises_the_refusal(self):
+        with mock.patch.object(Client, "_poll", return_value={"error": {"code": "run_closed", "message": "r"}}), \
+                self.assertRaises(RPCError):
+            Client(signer="/nonexistent/tracekit.sock").call("approval_wait", run_id="r", run_token="t",
+                                                            approval_id="a", timeout_ms=1)
 
     def test_complete_never_raises(self):
         with self.assertWarnsRegex(UserWarning, "the result of c1 was not recorded"):

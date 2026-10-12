@@ -142,10 +142,14 @@ def _tail(client, path, st):
         handle["until"] = path
         argv = [sys.executable, "-I", "-m", "tracekit.tailer"]
     if argv:
-        p = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                             start_new_session=True)
-        p.stdin.write(json.dumps(handle).encode())
-        p.stdin.close()
+        try:
+            p = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                 start_new_session=True)
+            p.stdin.write(json.dumps(handle).encode())
+            p.stdin.close()
+        except OSError as e:   # no tailer could start: a signed gap says so, once, and the call goes on
+            RunHandle(client, st).call("tailer_lost", reason=f"the transcript tailer did not start: {e}"[:1024],
+                                       offset=0)
     st["tailer"] = st["run_id"]
     files.write_json(path, st)
 
@@ -329,7 +333,8 @@ def handle(p):
         return 2
     try:
         return _handle(client, p, name, sid, tid)
-    except (SignerUnavailable, OSError) as e:   # the signer unreachable: the run's fail mode for the tool's class
+    except SignerUnavailable as e:   # the signer unreachable: the run's fail mode for the tool's class (a local
+        # OSError, a full disk, is no outage: it blocks below, as the call could not be counted)
         try:
             closed = bool((system_config() or {}).get("signer")) or not fail_open(   # system mode: always closed
                 (_load(_state(sid)) or {}).get("fail_modes"), _tool_class(p.get("tool_name") or "?"))

@@ -2,7 +2,8 @@
 tracekitd. It never writes the ledger. Policy is evaluated locally before a tool runs.
 
 Fail mode (policy `fail_mode`, recorded in run.start):
-  open   (default) signer down -> the tool call proceeds; a capture.gap is recorded later
+  open   (the default in dev mode; system mode defaults to closed) signer down -> the tool call proceeds; a
+         capture.gap is recorded later
   closed           signer down -> every tool call is blocked
 A policy deny always blocks, whether or not the signer is reachable.
 
@@ -160,13 +161,12 @@ def save_ack(path, length):
     try:
         lock_file(lk)
         locked = True
-        acks = _load_acks()
-        if True:  # the signer is the authority on what it has seen (it also keeps a history for races)
-            acks[path] = length
-            tmp = _acks_path() + ".tmp"
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(acks, f)
-            os.replace(tmp, _acks_path())
+        acks = _load_acks()   # the signer is the authority on what it has seen (it also keeps a history for races)
+        acks[path] = length
+        tmp = _acks_path() + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(acks, f)
+        os.replace(tmp, _acks_path())
     finally:
         try:
             if locked:

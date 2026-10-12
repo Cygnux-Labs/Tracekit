@@ -236,3 +236,16 @@ if __name__ == "__main__":
         out = invoke(GRAPHS[spec["graph"]](Client(path), spec["run"], cp), Command(resume=spec["resume"]),
                      {"configurable": spec["config"]})
     print(json.dumps(out))
+
+
+@unittest.skipUnless(HAVE_LC, "langchain>=1 / langgraph-checkpoint-sqlite not installed")
+class TestCheckpointerMemory(unittest.TestCase):
+    def test_a_deleted_thread_leaves_nothing_behind(self):
+        from langgraph.checkpoint.base import empty_checkpoint
+        from tracekit.testing import FakeSigner
+        signer = FakeSigner()
+        cp = TracekitCheckpointer(InMemorySaver(), signer, signer.register_run({"request_id": "r", "agent": {"name": "a"}}))
+        for i in range(200):   # a server: a thread per conversation, deleted when it ends
+            cp.put({"configurable": {"thread_id": f"t{i}", "checkpoint_ns": ""}}, empty_checkpoint(), {}, {})
+            cp.delete_thread(f"t{i}")
+        self.assertEqual((len(cp._seen), len(cp._acked), len(cp._read)), (0, 0, 0))

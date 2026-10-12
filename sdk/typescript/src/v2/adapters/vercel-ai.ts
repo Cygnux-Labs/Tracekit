@@ -53,13 +53,19 @@ export function tracekitAI(run: RunHandle) {
   const toolApproval = async ({ toolCall, tools }: any) => {
     if (tools?.[toolCall.toolName]?.[EXECUTOR] || executors.has(toolCall.toolName)) return "not-applicable" as const;
     const id = toolCall.toolCallId;
+    // the arguments string stays only for a call whose `execute` will take it: not one denied, nor a tool without one
+    const args = tools?.[toolCall.toolName]?.execute ? raw.get(id) : take(raw, id);
     let d;
     try {
-      d = await gate.decide(id, named.get(toolCall.toolName) ?? toolCall.toolName, raw.get(id) ?? toolCall.input);
+      d = await gate.decide(id, named.get(toolCall.toolName) ?? toolCall.toolName, args ?? toolCall.input);
     } catch (e) {
+      raw.delete(id);
       return { type: "denied" as const, reason: BLOCKED + `signer refused the call: ${failure(e)}` };
     }
-    if (d.decision === "deny") return { type: "denied" as const, reason: d.unavailable ? BLOCKED + d.reason : refusal(d.rule_ids) };
+    if (d.decision === "deny") {
+      raw.delete(id);
+      return { type: "denied" as const, reason: d.unavailable ? BLOCKED + d.reason : refusal(d.rule_ids) };
+    }
     keep(decided, id, d);
     if (d.decision !== "ask") return "not-applicable" as const;   // execute consumes
     try {

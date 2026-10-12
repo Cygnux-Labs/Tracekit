@@ -287,7 +287,7 @@ class TracekitCheckpointer(BaseCheckpointSaver):
         self.saver, self.signer, self.run = saver, signer, {"run_id": run["run_id"], "run_token": run["run_token"]}
         self.stream, self._seq, self._reads = "langgraph-" + uuid.uuid4().hex, itertools.count(), itertools.count()
         self._lock = threading.Lock()   # LangGraph writes from several threads or tasks at once
-        # lean: one entry per thread for the saver's life; prune on delete_thread if one process serves many threads
+        # one entry per thread (and namespace) until the thread is deleted (delete_thread)
         self._seen = {}    # key -> (checkpoint_id, digest) of the thread's latest checkpoint as this process last saw it
         self._acked = {}   # key -> the digest the signer last recorded: the next state_write's prev_digest
         self._read = {}    # key -> the number of the read the last commitment came from
@@ -372,12 +372,28 @@ class TracekitCheckpointer(BaseCheckpointSaver):
 
     config_specs = property(lambda self: self.saver.config_specs)
 
+    def _forget(self, thread_id):
+        """Drop what this process remembers of a deleted thread (each of its namespaces)."""
+        key = f"langgraph:{thread_id}"
+        with self._lock:
+            for d in (self._seen, self._acked, self._read):
+                for k in [k for k in d if k == key or k.startswith(key + "/")]:
+                    del d[k]
+
+    def delete_thread(self, thread_id):
+        self.saver.delete_thread(thread_id)
+        self._forget(thread_id)
+
+    async def adelete_thread(self, thread_id):
+        await self.saver.adelete_thread(thread_id)
+        self._forget(thread_id)
+
 
 def _wrapped(name):
     return lambda self, *args, **kw: getattr(self.saver, name)(*args, **kw)
 
 
-for _name in ("list", "alist", "delete_thread", "adelete_thread", "delete_for_runs", "adelete_for_runs", "copy_thread",
+for _name in ("list", "alist", "delete_for_runs", "adelete_for_runs", "copy_thread",
               "acopy_thread", "prune", "aprune", "get_delta_channel_history", "aget_delta_channel_history",
               "get_next_version"):
     setattr(TracekitCheckpointer, _name, _wrapped(_name))

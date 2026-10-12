@@ -104,8 +104,11 @@ and streams (`messages.stream()`, `streamText`) work as without Tracekit. Offlin
 - **Exit.** `instrument()` closes its run on `beforeExit`, and on SIGINT or SIGTERM when nothing else handles the
   signal (then the signal's default action runs). A signal your app or a library handles is left to it (`@openai/agents`
   exits on SIGINT/SIGTERM): close the run in your own handler (`await tk.run.close()`) before you exit. A run stays
-  open while approvals of it wait for a person or, approved, to be resumed. To approve and resume in another process, keep the run's `runId` and `runToken` with the framework's saved state and re-attach:
-  `new RunHandle(new Client(), { run_id, run_token })`. `process.exit()` skips all of this: close first.
+  open while approvals of it wait for a person or, approved, to be resumed. To approve and resume in another process,
+  keep the run's `runId` and `runToken` with the framework's saved state and re-attach:
+  `new RunHandle(new Client(), { run_id, run_token })`; close that client when you are done with it
+  (`run.client.close()`), or re-attach every run through one shared client. `process.exit()` skips all of this: close
+  first.
 - **The LLM gateway.** Point the provider at it with the run in a header, e.g. OpenAI Agents
   `setDefaultOpenAIClient(new OpenAI({ baseURL, apiKey: <gateway token>, defaultHeaders: { "X-Tracekit-Run":
   `${run.runId}.${run.runToken}` } }))`, Vercel AI `createOpenAI({ baseURL, apiKey, headers })`. Register the run as
