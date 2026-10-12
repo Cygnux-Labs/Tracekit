@@ -1,5 +1,7 @@
 # The signer on Kubernetes
 
+> **Experimental:** this works and is tested, but may change and gets less hardening than the [stable core](support.md).
+
 ## Sidecar
 
 `deploy/helm/tracekit-signer` renders one agent Deployment with the signer (the image of

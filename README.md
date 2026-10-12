@@ -18,6 +18,14 @@ offline.
 
 <img src="https://raw.githubusercontent.com/Cygnux-Labs/Tracekit/main/docs/demo/observer.gif" alt="tracekit observe: four coding agents traced live; each dangerous action is blocked by policy and recorded" width="100%">
 
+## What's stable
+
+The stable core is the v2 signer (dev mode and Linux system mode, file storage), the Python SDK with
+`tracekit.instrument()` and its OpenAI Agents, LangChain / LangGraph, Claude Agent SDK and MCP integrations, the Claude
+Code hooks, policy v2 with its packs, bundle export, the Python and TypeScript verifiers, `tracekit view` and
+`tracekit doctor`. Everything else works and is tested but is experimental: it may change, gets less hardening, and
+says so when it starts ([what's stable](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/support.md)).
+
 ## Why it exists
 
 Agents now run shell commands, edit code, query databases and send messages on real systems. Most agent logs are
@@ -278,6 +286,7 @@ report it.
   main use case, offline, with their bundles and verify reports
 - The tour: a [terminal video](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/demos/tracekit-tour.mp4) of every
   demo running (3 min 44 s)
+- What's stable and what's experimental: [support](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/support.md)
 - How it fits together: [architecture](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/architecture.md),
   [evidence format v2](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/format-v2.md)
 - Running it: [deployment](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/deploy.md),
@@ -328,8 +337,9 @@ This is 1.2.0rc1, a release candidate. 1.0 is the first stable release, and 1.x 
   verifier are unchanged.
 - **Versioned:** the signer RPC (version 16; a 1.2 signer also serves version 15 clients). A client newer than its
   signer is refused, so upgrade the signer first ([changelog](https://github.com/Cygnux-Labs/Tracekit/blob/main/CHANGELOG.md)).
-- **Experimental:** laptop system mode on macOS, the Rekor witness of the v1 signer, and the v1 OTLP receiver, ingest
-  gateway and model proxy (each needs `--experimental`).
+- **Experimental:** everything outside the stable core
+  ([what's stable](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/support.md)). The v1 OTLP receiver, ingest
+  gateway and model proxy also need `--experimental`.
 - **Not yet done:** an external review of the threat models, and some release checks that wait on the owner
   ([launch checklist](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/launch-checklist.md)).
 

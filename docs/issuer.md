@@ -1,5 +1,7 @@
 # Record-key issuer
 
+> **Experimental:** this works and is tested, but may change and gets less hardening than the [stable core](support.md).
+
 A v2 signer signs records with a record key. By default that key is a file, `keys/record.key`, pinned for the life of
 the log. With an issuer, the signer instead signs with short-lived record keys. A separate service certifies each
 key and holds the CA key; the signer never does. Every certificate is published to a witness before the signer gets

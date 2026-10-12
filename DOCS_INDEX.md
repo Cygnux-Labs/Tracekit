@@ -19,6 +19,7 @@ Last full scan: 2026-10-08 · 22 docs · 9 stale (41%)
 | Signing | `docs/signing.md` | active | 2026-10-07 |
 | Witnesses | `docs/witnesses.md` | active | 2026-10-07 |
 | Sample bundles | `docs/sample/README.md` | active | 2026-10-07 |
+| What's stable | `docs/support.md` | active | 2026-10-13 |
 
 ## Stale
 

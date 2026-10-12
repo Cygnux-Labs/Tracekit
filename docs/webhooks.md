@@ -1,5 +1,7 @@
 # Webhooks (OCSF)
 
+> **Experimental:** this works and is tested, but may change and gets less hardening than the [stable core](support.md).
+
 The v2 signer can send its security-relevant records to a SIEM or any HTTPS endpoint as
 [OCSF](https://schema.ocsf.io) 1.3 events:
 

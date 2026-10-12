@@ -38,6 +38,15 @@ class Experimental(unittest.TestCase):
             self.run_cli(["proxy", "--experimental", "--home", "/nonexistent", "--port", "0"])
         self.assertEqual(m.call_args[0][0][-2:], ["--port", "0"])
 
+    def test_experimental_commands_say_so_once_and_stable_ones_do_not(self):
+        for cmd, module, says in (("monitor", "tracekit.monitor.main", True), ("why", "tracekit.why.cli.main", True),
+                                  ("view", "tracekit.view.main", False)):
+            with mock.patch(module, return_value=0):
+                code, err = self.run_cli([cmd])
+            self.assertEqual(code, 0)
+            self.assertEqual(err.count("is experimental: it works and is tested, but may change (docs/support.md)"),
+                             int(says), cmd)
+
 
 if __name__ == "__main__":
     unittest.main()

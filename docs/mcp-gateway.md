@@ -1,5 +1,7 @@
 # MCP gateway
 
+> **Experimental:** this works and is tested, but may change and gets less hardening than the [stable core](support.md).
+
 `tracekit mcp-gateway serve` is an MCP server your agents connect to in place of the MCP servers they use. It proxies
 the upstream MCP servers you configure (stdio or Streamable HTTP), whose credentials stay in the gateway, and decides,
 runs and completes every tool call itself, in the signer, for the agent's run. Its records are `source: gateway`, tier

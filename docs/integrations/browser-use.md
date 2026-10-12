@@ -1,5 +1,7 @@
 # Browser Use (signer RPC)
 
+> **Experimental:** this works and is tested, but may change and gets less hardening than the [stable core](../support.md).
+
 `tracekit.integrations.browser_use.trace_tools` gates every action a Browser Use agent runs (navigate, click, input,
 extract, upload_file, evaluate, custom actions). Before each action it asks the Tracekit signer for a policy decision;
 after the action it records the outcome. It works with any object that implements the signer RPC

@@ -1,5 +1,7 @@
 # Incidents and containment
 
+> **Experimental:** this works and is tested, but may change and gets less hardening than the [stable core](support.md).
+
 Detection ([policy](policy-v2.md#detection-sequences-limits-and-respond)) opens an incident when a trigger fires. In
 `mode: shadow` that is all: the incident is recorded with the action it `would` take. In `mode: enforce` the signer
 acts on it, in the same writer step as the record that fired it, so no call slips in between. This page says what each

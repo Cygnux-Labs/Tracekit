@@ -1,5 +1,7 @@
 # Integrations
 
+> **Experimental:** this works and is tested, but may change and gets less hardening than the [stable core](support.md).
+
 Causeway and onchain transaction guards are separate packages: [contrib/causeway](../contrib/causeway/README.md),
 [contrib/onchain](../contrib/onchain/README.md).
 

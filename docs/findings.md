@@ -1,5 +1,7 @@
 # Findings
 
+> **Experimental:** this works and is tested, but may change and gets less hardening than the [stable core](support.md).
+
 `tracekit analyze` runs deterministic detectors over a run and signs what they find into the ledger, next to the
 evidence. A finding is not a log line or a dashboard alert: it is a signed, hash-chained record that cites the exact
 ledger entries it rests on, and `tracekit verify` fails a bundle in which a finding points at evidence that is missing or

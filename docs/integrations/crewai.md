@@ -1,5 +1,7 @@
 # CrewAI
 
+> **Experimental:** this works and is tested, but may change and gets less hardening than the [stable core](../support.md).
+
 `tracekit.integrations.crewai` gates every tool call a CrewAI crew makes, through CrewAI's global tool hooks: before
 each call it asks the Tracekit signer for a decision (an `ask` waits for a person), and after the call it records the
 outcome.

@@ -1,5 +1,7 @@
 # Approvals (v2 signer)
 
+> **Experimental:** agent approvers, the reference reviewer, Slack approvals and passkey approvals work and are tested, but may change and get less hardening than the [stable core](support.md), which includes approvals from the command line.
+
 An `ask` rule ([policy](policy-v2.md)) holds a tool call until a person answers it. The approval lives in the signer,
 is bound to the exact arguments of one call attempt, and is consumed once. The v1 daemon's `tracekit pending` /
 `approve` / `reject` are described in the [README](../README.md#policy-and-approvals).
