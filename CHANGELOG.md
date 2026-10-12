@@ -18,7 +18,8 @@ It also has fixes from running Tracekit inside eight real agent projects: OpenAI
 Browser Use, mcp-agent, OpenAI Agents JS, the Vercel AI SDK, PydanticAI and CrewAI. v1 bundles and 1.0/1.1 bundles
 keep verifying. Every limit of the new features is in [docs/limits.md](docs/limits.md).
 
-1.1.0rc1 was never published; this release candidate includes everything listed under it below.
+1.1.0rc1 was never published, and neither was 1.0.1 on PyPI; this release candidate includes everything listed under
+both below.
 
 ### Upgrade notes
 - **Signer RPC version 16.** A 1.2 signer serves RPC 15 and 16. Coming from 1.0 (RPC 12), upgrade the signer and its

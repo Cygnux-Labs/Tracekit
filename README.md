@@ -128,8 +128,11 @@ Three steps, with the agent you already have (OpenAI Agents SDK, LangGraph / Lan
 client, or plain OpenAI / Anthropic / Google Gen AI calls):
 
 ```sh
-pip install --pre tracekit-ai                # 1.2.0rc1; without --pre, pip installs 1.0
+pip install --pre tracekit-ai
 ```
+
+`--pre` gets 1.2.0rc1 once it is tagged; a plain `pip install tracekit-ai` gets 1.0.0, which lacks the 1.1 and 1.2
+features below.
 
 ```python
 import tracekit; tracekit.instrument()     # the first line of your agent; then run it as usual
@@ -178,8 +181,9 @@ tracekit verify docs/sample/demo-run-tampered.tkb --key docs/sample/signer.pub  
 ## What you need
 
 - **Python 3.9 to 3.13**, and `pip install --pre tracekit-ai`. The framework integrations need Python 3.10 or
-  newer. For the TypeScript SDK, Node 18 or newer and `npm install @cygnux/tracekit@next`
-  ([TypeScript SDK](https://github.com/Cygnux-Labs/Tracekit/blob/main/sdk/typescript/README.md)).
+  newer. For the TypeScript SDK, Node 18 or newer and `npm install @cygnux/tracekit@next`: the
+  first npm release ships with 1.2.0rc1 under the `next` tag. If npm says not found, build it from a checkout
+  ([TypeScript SDK](https://github.com/Cygnux-Labs/Tracekit/blob/main/sdk/typescript/README.md#install)).
 - **An OS.** Dev mode runs on macOS, Linux and Windows. A signer under its own OS user runs on Linux (macOS is
   experimental). Containers and Kubernetes run on Linux
   ([platforms](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/portability.md)).

@@ -4,8 +4,18 @@ Tracekit for TypeScript and JavaScript agents: every tool call is decided by the
 recorded after, and model responses become signed evidence. The client talks to the signer directly; it needs no Python
 at runtime (the same-user dev signer is started with Python when none is running).
 
+## Install
+
 ```sh
-npm install @cygnux/tracekit@next     # the 1.2 release candidate; Node 18 or newer
+npm install @cygnux/tracekit@next     # Node 18 or newer
+```
+
+The first npm release ships with 1.2.0rc1 under the `next` dist-tag. If npm says not found, build the package from a
+checkout and install the file it makes:
+
+```sh
+cd sdk/typescript && npm ci && npm run build && npm pack    # writes cygnux-tracekit-<version>.tgz
+cd /path/to/your/app && npm install /path/to/Tracekit/sdk/typescript/cygnux-tracekit-*.tgz
 ```
 
 ## Signer client (`@cygnux/tracekit`)

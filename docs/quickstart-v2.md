@@ -12,7 +12,8 @@ minutes; `make quickstart` runs them on a clean venv from the built wheel for ea
 pip install --pre tracekit-ai
 ```
 
-That is all the dev signer needs (`tracekit-ai[signer]` still works and installs the same). Auditors who only verify
+`--pre` gets 1.2.0rc1 once it is tagged; without it pip installs 1.0.0, which this page doesn't describe. That is
+all the dev signer needs (`tracekit-ai[signer]` still works and installs the same). Auditors who only verify
 bundles can take the verifier alone, which runs on the standard library: `pip install --no-deps tracekit-ai`.
 
 ## 2. One line in your agent
