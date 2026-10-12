@@ -304,7 +304,7 @@ def cmd_attribute(a):
         graph = getattr(importlib.import_module(mod), attr or "graph_factory")()
         r = attribute_thread(graph, {"configurable": {"thread_id": a.thread}}, a.target, a.suspect or None,
                              checkpoint_id=a.checkpoint, n=a.n, n_max=a.n_max, size_roles=not a.no_roles,
-                             log=a.out)
+                             log=a.out, routing=a.routing or ())
     elif a.run:
         run = load_run(a.run)
         r = attribute(run, a.target, a.suspect or None, n=a.n, n_max=a.n_max, system=_system(a, run),
@@ -572,6 +572,8 @@ def main(argv=None):
                         "graph over the app's checkpointer (only name code you trust, as with --system)")
     p.add_argument("--thread", help="with --langgraph: the thread_id to investigate")
     p.add_argument("--checkpoint", help="with --langgraph: start from this checkpoint_id (default: the thread's latest)")
+    p.add_argument("--routing", action="append", metavar="NAME", help="with --langgraph: a call a node of the app "
+                   "answers itself, not a ToolNode (a routing schema; repeatable)")
     p.add_argument("--out", default="runs", help="with --langgraph: why log folder; tests go to "
                                                  "OUT/langgraph-<thread>/tests.jsonl")
     p.add_argument("--n", type=_positive, default=10); p.add_argument("--n-max", type=_positive, default=80)

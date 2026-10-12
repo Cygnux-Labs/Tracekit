@@ -59,6 +59,10 @@ under a quarantine, and no tool.result while held or quarantined but of a call i
 or, held, one consumed with such an approval.
 Coverage: a run.final that carries `coverage` (the capture layers that reported, calls reconciled, reconcile.* records
 by kind) gives a `coverage` line; unreconciled calls make it a warning, so `--strict` exits 3 on them.
+Gaps: every other signer-written capture.gap in a run (unless its kind is in INFO_GAPS), approval.binding_mismatch and
+trace.tamper record is counted by kind on a `gaps` warning; a run that declares a fail-open class makes `fail-open
+classes` a warning (calls the agent classed as one of them may have run unrecorded while the signer was down: the
+class is the agent's own reading of the tool).
 
 Findings (tracekit why): a bundle may hold one run with its findings runs (run.registered `analyzes` it) and replay
 runs (`replay_of` it). Each why.finding's replay runs must be in the bundle as replay runs of the analysed run in the
@@ -120,6 +124,12 @@ from tracekit.schema import V2, validate
 from tracekit.signer.format_bridge import retire_data
 from tracekit.signer.pipeline import SIGNER_RUN
 from tracekit.storage.base import ZERO_HASH
+
+# capture.gap kinds that say nothing against a run's own records: the witness, anchor, key and bridge lines judge those
+# themselves, the args source line counts coerced arguments, and an approval that expired is not a missing record
+INFO_GAPS = {"witness_late", "witness_failed", "degraded_unanchored", "clock_skew", "format_upgrade", "key_retired",
+             "args_coerced", "approval_expired"}
+OWN_LINE = {"executed_against_policy", "held_call_unresolved", "decision_mismatch"}   # warned on lines of their own
 
 MAX_ENTRIES = 10_000
 MAX_ENTRY = 64 << 20
@@ -465,7 +475,8 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
     # lean: a key.retire written before the tenant's first registry leaf is in no registry of the tenant; add signer
     # leaves to a tenant's registry when it is created if keys are ever retired while tenants are being added
     relied = max(r["event"]["seq"] for r in key_records + [r for rs in runs.values() for r in rs])
-    if proven_to < relied:
+    rotated = len(timeline) > 1 or any(r["event"]["type"] == "key.retire" for r in key_records)
+    if proven_to < relied and rotated:   # one key never retired: the assurance line notes it, no warning
         rep.check("keys", False, "retirements not proven complete",
                   [f"no run-set from registry size 0 reaches seq {relied}, so a withheld key.retire would not show"],
                   warn=True)
@@ -502,6 +513,17 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
     if unresolved:   # the signer's word that a call a gateway held ended its run without a result
         rep.check("held calls", False, f"{len(unresolved)} tool call(s) a gateway or executor decided have no result",
                   unresolved[:20], warn=True)
+    alarms = [r["event"] for r in every if r["event"].get("type") in ("approval.binding_mismatch", "trace.tamper") or (
+        r["event"].get("type") == "capture.gap" and r["event"]["data"].get("kind") not in INFO_GAPS | OWN_LINE)]
+    if alarms:
+        kind = lambda e: str(e["data"].get("kind"))[:64] if e["type"] == "capture.gap" else e["type"]
+        rep.check("gaps", False, f"{len(alarms)} signed gap, tamper or mismatch record(s): "
+                  + ", ".join(f"{k} {n}" for k, n in sorted(collections.Counter(map(kind, alarms)).items())),
+                  [f"seq {e['seq']}: {kind(e)}: " + (
+                      f"approval {str(e['data'].get('approval_id'))[:200]} of call "
+                      f"{str(e['data'].get('tool_use_id'))[:200]}: the arguments differ from the approved ones"
+                      if e["type"] == "approval.binding_mismatch" else
+                      str(e["data"].get("reason", e["data"].get("path")))[:200]) for e in alarms][:20], warn=True)
     external = [r["event"]["data"] for r in every if r["event"].get("type") == "policy.external"]
     mismatched = [f"seq {r['event']['seq']}: {str(r['event']['data'].get('reason'))[:200]}" for r in every
                   if r["event"].get("type") == "capture.gap" and r["event"]["data"].get("kind") == "decision_mismatch"]
@@ -577,7 +599,10 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
             for rs, d in zip(runs.values(), registered)]
         rep.check("harness", True, "signer-attested: " + ", ".join(bound[:20]) + (", ..." if len(bound) > 20 else ""))
     fail_open = sorted({str(c)[:64] for d in registered for c, m in (d.get("fail_modes") or {}).items() if m == "open"})
-    rep.check("fail-open classes", True, ", ".join(fail_open) or "none")
+    rep.check("fail-open classes", not fail_open, ", ".join(fail_open) or "none",
+              ["calls the agent classed as one of these may have run unrecorded while the signer was down"]
+              if fail_open else [],
+              warn=True)
     rep.check("key assurance", True, f"certified: {len(issued)} of {len(timeline)} record key(s) by pinned issuer(s) "
                                      f"{', '.join(sorted(set(issued.values())))}" if issued else
               "asserted: the log declares its record keys; none is attested")

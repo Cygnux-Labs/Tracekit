@@ -502,9 +502,9 @@ line and verdict is in [verdicts](verdicts.md).
    `tool.result` while held or quarantined but of a call `in_flight` then or (held) consumed with such an approval
    (`incidents`).
 10. **Verdict.** Any failed line: `FAILED`, exit 1. Otherwise `VERIFIED`, `VERIFIED TO HEAD n (open)` for one open
-    run, or `VERIFIED (k run(s) open)`. Then the informational lines (policy, coverage, tiers, args source, isolation,
-    fail-open classes, key assurance, break-glass approvals) and the assurance level. Exit 0, or 3 with `--strict`
-    when any line is a warning.
+    run, or `VERIFIED (k run(s) open)`. Then the informational lines (policy, gaps, coverage, tiers, args source,
+    isolation, fail-open classes, key assurance, break-glass approvals) and the assurance level. Exit 0, or 3 with
+    `--strict` when any line is a warning ([verdicts](verdicts.md#signed-gaps) lists the gap kinds that warn).
 
 A malformed bundle never crashes the verifier: anything unexpected is a failed `bundle structure` line.
 

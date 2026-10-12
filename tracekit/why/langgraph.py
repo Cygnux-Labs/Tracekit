@@ -7,9 +7,11 @@ prefix is the recorded run itself, not a re-execution of it.
 
 Each branch runs on its own copy of the graph: a fresh in-memory checkpointer holding only the fork point under a
 scratch thread id, an empty scratch store if the graph has one, no node cache, and copies of every ToolNode (in
-subgraphs added as nodes too) that serve each call from the thread's own tool results (same tool, same canonical args,
-in order) or a stub. No real tool runs, and the user's graph, thread, store, cache and ToolNodes are never touched. A
-branch whose new tool results did not all come from that serving stops with an error. Model nodes run again; a node
+subgraphs added as nodes too, and inside `.with_fallbacks()`) that serve each call from the thread's own tool results
+(same tool, same canonical args, in order) or a stub. No real tool runs, and the user's graph, thread, store, cache and
+ToolNodes are never touched. A branch with a new tool result that did not come from that serving stops with an error,
+unless the call is one `routing` names: a routing schema a node of the app answers itself (as in LangGraph's
+customer-support tutorial). Model nodes run again; a node
 that wants paired seeds reads `config["configurable"]["tracekit_seed"]`. With `log`, each test is appended to
 `<log>/langgraph-<thread>/tests.jsonl`, the why log's tests file.
 """
@@ -24,6 +26,7 @@ import uuid
 from typing import Any, Dict, Iterator, List, Optional, Sequence, Tuple
 
 from langchain_core.messages import AIMessage, RemoveMessage, ToolMessage
+from langchain_core.runnables.fallbacks import RunnableWithFallbacks
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.prebuilt import ToolNode
@@ -77,6 +80,12 @@ def _actions(messages: Sequence[Any], results: Dict[str, Any]) -> List[Dict[str,
             for m in messages if isinstance(m, AIMessage) for tc in m.tool_calls]
 
 
+def _tool_node(b: Any) -> Optional[ToolNode]:
+    """The ToolNode a node runs: the node itself, or the one `.with_fallbacks()` wraps."""
+    b = b.runnable if isinstance(b, RunnableWithFallbacks) else b
+    return b if isinstance(b, ToolNode) else None
+
+
 def _nodes(graph: Any, path: str = "") -> Iterator[Tuple[str, Any]]:
     """Every node of the graph and of the subgraphs added to it as nodes, by path."""
     for name, n in graph.nodes.items():
@@ -93,17 +102,18 @@ def _check(graph: Any) -> None:
                          "matching sync checkpointer over the same database")
     tool_nodes = 0
     for path, n in _nodes(graph):
-        if getattr(n.bound, "func", True) is None:
+        # not getattr: RunnableWithFallbacks hands an attribute lookup to its runnable's type hints
+        if getattr(n.bound, "__dict__", {}).get("func", True) is None:
             raise ValueError(f"node {path!r} is async-only; fork replay runs graphs synchronously; give it a sync "
                              "function too (RunnableLambda(func, afunc))")
         if isinstance(n.bound, Pregel) and isinstance(n.bound.checkpointer, BaseCheckpointSaver):
             raise ValueError(f"subgraph {path!r} has its own checkpointer, which branches would write to; compile it "
                              "with checkpointer=None or True so it uses the parent's")
         sub = n.subgraphs[0] if n.subgraphs else None
-        if sub is not None and sub is not n.bound and any(isinstance(m.bound, ToolNode) for _, m in _nodes(sub)):
+        if sub is not None and sub is not n.bound and any(_tool_node(m.bound) for _, m in _nodes(sub)):
             raise ValueError(f"node {path!r} runs a subgraph with a ToolNode from its own code, where fork replay "
                              "cannot serve its tool calls; add the subgraph as a node instead")
-        tool_nodes += isinstance(n.bound, ToolNode)
+        tool_nodes += _tool_node(n.bound) is not None
     if not tool_nodes:
         raise ValueError("the graph has no ToolNode, so its tool calls cannot be served from the recorded run; "
                          "fork replay refuses rather than run real tools; put the graph's tools in a ToolNode")
@@ -114,12 +124,12 @@ def _copy(graph: Any, serve: Any, **update: Any) -> Any:
     graph, nodes and ToolNodes are left as they are."""
     nodes = {}
     for name, n in graph.nodes.items():
-        b = n.bound
-        if isinstance(b, ToolNode):
-            b = copy.copy(b)
-            b.func, b.afunc = b._func, b._afunc   # the copy's own methods, not the original's
-            b._wrap_tool_call, b._awrap_tool_call = serve, None
-            n = n.copy({"bound": b})
+        b, t = n.bound, _tool_node(n.bound)
+        if t is not None:
+            t = copy.copy(t)
+            t.func, t.afunc = t._func, t._afunc   # the copy's own methods, not the original's
+            t._wrap_tool_call, t._awrap_tool_call = serve, None
+            n = n.copy({"bound": t if isinstance(b, ToolNode) else b.model_copy(update={"runnable": t})})
         elif isinstance(b, Pregel):
             b = _copy(b, serve, store=None, cache=None)   # store and cache come from the branch graph
             n = n.copy({"bound": b, "subgraphs": [b]})
@@ -130,7 +140,7 @@ def _copy(graph: Any, serve: Any, **update: Any) -> Any:
 class _Step:
     """One checkpoint of the walked thread, kept small: which messages it holds and what its step wrote."""
 
-    def __init__(self, s: Any, parent: Any):
+    def __init__(self, s: Any, parent: Any, tool_steps: set):
         msgs = s.values.get("messages", ())
         self.config, self.next = s.config, s.next
         self.ids = {m.id for m in msgs} | {m.tool_call_id for m in msgs if isinstance(m, ToolMessage)}
@@ -138,21 +148,27 @@ class _Step:
         self.other = sorted(k for k in set(s.values) | set(before)
                             if k != "messages" and s.values.get(k) != before.get(k))
         old = {m.id for m in before.get("messages", ())}
-        self.tool_results = parent is not None and any(isinstance(m, ToolMessage) and m.id not in old for m in msgs)
+        # the tool results a ToolNode step added (another node may add a ToolMessage of its own: a routing call's)
+        self.tool_results = {m.tool_call_id for m in msgs if isinstance(m, ToolMessage) and m.id not in old} if (
+            parent is not None and set(parent.next) & tool_steps) else set()
 
 
 class _Fork:
     """A System for counterfactual(): each run() is one branch of the thread, forked where the suspects entered."""
 
     def __init__(self, graph: Any, thread_config: Dict[str, Any], checkpoint_id: Optional[str],
-                 log: Optional[str] = None):
+                 log: Optional[str] = None, routing: Sequence[str] = ()):
         _check(graph)
+        self.routing = set(routing)
+        # nodes whose steps add served tool results: ToolNodes, and subgraphs with one
+        tool_steps = {name for name, n in graph.nodes.items() if _tool_node(n.bound) is not None or (
+            isinstance(n.bound, Pregel) and any(_tool_node(m.bound) for _, m in _nodes(n.bound)))}
         conf = dict(thread_config["configurable"], **({"checkpoint_id": checkpoint_id} if checkpoint_id else {}))
         steps, s = [], graph.get_state({"configurable": conf})
         self.recorded = s.values.get("messages") if s is not None and s.config else None
         while s is not None and s.config:   # the checkpoints of this branch of the thread, latest first
             parent = graph.get_state(s.parent_config) if s.parent_config else None
-            steps.append(_Step(s, parent))
+            steps.append(_Step(s, parent, tool_steps))
             s = parent
         self.steps = steps[::-1]
         if not self.recorded:
@@ -216,17 +232,17 @@ class _Fork:
         return self
 
     def suspects_before(self, target: str) -> List[str]:
-        """The tool results recorded before the first tool call that matches `target`: what the model had read."""
+        """The ToolNode results recorded before the first tool call that matches `target`: what the model had read."""
         pred = parse_target(target)
         results = {m.tool_call_id: (m.content, "tape") for m in self.recorded if isinstance(m, ToolMessage)}
         hit = next((a for a in _actions(self.recorded, results) if pred(a, self.thread)), None)
         if hit is None:
             raise ValueError(f"target {target!r} did not happen in this thread")
-        out = []
+        out, served = [], {tcid for st in self.steps for tcid in st.tool_results}
         for m in self.recorded:
             if m.id == hit["message"]:
                 return out
-            if isinstance(m, ToolMessage):
+            if isinstance(m, ToolMessage) and m.tool_call_id in served:
                 out.append(m.tool_call_id)
         return out
 
@@ -266,11 +282,14 @@ class _Fork:
         out = branch.invoke(None, {"configurable": dict(cfg["configurable"], tracekit_seed=seed)})
         before = {m.id for m in at}
         new = [m for m in out["messages"] if m.id not in before]
-        ran = [m.tool_call_id for m in new if isinstance(m, ToolMessage) and m.tool_call_id not in served]
+        names = {tc["id"]: tc["name"] for m in out["messages"] if isinstance(m, AIMessage) for tc in m.tool_calls}
+        ran = [m.tool_call_id for m in new if isinstance(m, ToolMessage) and m.tool_call_id not in served
+               and names.get(m.tool_call_id, m.name) not in self.routing]
         if ran:
             raise RuntimeError(f"tool call {', '.join(ran)} ran outside a ToolNode fork replay can serve (a real tool "
                                "may have run); fork replay serves ToolNodes that are nodes of the graph or of its "
-                               "subgraph nodes; stopping")
+                               "subgraph nodes; a call a node of the app answers itself (a routing schema) goes in "
+                               "routing= (--routing); stopping")
         events = _actions(new, served)
         del branch, scratch, out, cfg   # each branch holds a copy of the thread's state: free it before the next one
         gc.collect()   # its graph copy is cyclic; without a collection, branches pile up until the collector runs
@@ -279,11 +298,12 @@ class _Fork:
 
 def fork_replay(graph: Any, thread_config: Dict[str, Any], checkpoint_id: Optional[str], intervention: str,
                 target: str, *, n: int = 30, n_max: Optional[int] = None,
-                min_effect: float = MIN_EFFECT, log: Optional[str] = None) -> Dict[str, Any]:
+                min_effect: float = MIN_EFFECT, log: Optional[str] = None, routing: Sequence[str] = ()) -> Dict[str, Any]:
     """Does removing the message `intervention` (a message id or tool_call_id) change how often `target` happens in
     the rest of the thread? `checkpoint_id` picks the recorded checkpoint to start from (None: the thread's latest).
-    Same verdicts and intervals as tracekit.why's counterfactual. `log`: the why log folder the test is appended to."""
-    fork = _Fork(graph, thread_config, checkpoint_id, log).fork_at([intervention])
+    Same verdicts and intervals as tracekit.why's counterfactual. `log`: the why log folder the test is appended to.
+    `routing`: names of calls a node of the app answers itself (routing schemas), not a ToolNode."""
+    fork = _Fork(graph, thread_config, checkpoint_id, log, routing).fork_at([intervention])
     return counterfactual(fork.thread, intervention, target, n=n, n_max=n_max, system=fork, use_tape=False,
                           min_effect=min_effect)
 
@@ -291,10 +311,11 @@ def fork_replay(graph: Any, thread_config: Dict[str, Any], checkpoint_id: Option
 def attribute_thread(graph: Any, thread_config: Dict[str, Any], target: str, suspects: Optional[Sequence[str]] = None,
                      *, checkpoint_id: Optional[str] = None, n: int = 10, n_max: int = 40,
                      min_effect: float = MIN_EFFECT, size_roles: bool = True,
-                     log: Optional[str] = None) -> Dict[str, Any]:
-    """tracekit.why's attribute() over fork replay. Default suspects: every tool result before the first tool call
-    that matches `target`. Every test forks where the earliest suspect entered, so all share one unaltered arm."""
-    fork = _Fork(graph, thread_config, checkpoint_id, log)
+                     log: Optional[str] = None, routing: Sequence[str] = ()) -> Dict[str, Any]:
+    """tracekit.why's attribute() over fork replay. Default suspects: every ToolNode result before the first tool call
+    that matches `target`. Every test forks where the earliest suspect entered, so all share one unaltered arm.
+    `routing`: as for fork_replay."""
+    fork = _Fork(graph, thread_config, checkpoint_id, log, routing)
     suspects = fork.suspects_before(target) if suspects is None else list(suspects)
     if not suspects:
         raise ValueError("no suspects: no tool result came before the action; pass suspects explicitly")

@@ -332,7 +332,8 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
   const seqs = [...keyRecords, ...every].map((r) => num(at(at(r, "event"), "seq")));
   if (!seqs.length) throw new Error("the bundle holds no key or run records");
   const relied = Math.max(...seqs);
-  if (provenTo < relied)
+  const rotated = timeline.size > 1 || keyRecords.some((r) => get(r.event, "type") === "key.retire");
+  if (provenTo < relied && rotated)   // one key never retired: the assurance line notes it, no warning
     rep.check("keys", false, "retirements not proven complete",
       [`no run-set from registry size 0 reaches seq ${relied}, so a withheld key.retire would not show`], true);
   const bridge = keyRecords.map((r) => r.event).find((e) => e.type === "signer.epoch" && has(at(e, "data"), "bridge"));
@@ -361,6 +362,20 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
   const unresolved = gaps("held_call_unresolved");   // the signer's word that a held call ended its run without a result
   if (unresolved.length)
     rep.check("held calls", false, `${unresolved.length} tool call(s) a gateway or executor decided have no result`, unresolved.slice(0, 20), true);
+  // capture.gap kinds that say nothing against a run's own records, and those warned on lines of their own
+  const info = ["witness_late", "witness_failed", "degraded_unanchored", "clock_skew", "format_upgrade", "key_retired",
+    "args_coerced", "approval_expired", "executed_against_policy", "held_call_unresolved", "decision_mismatch"];
+  const alarms = events.filter((e) => ["approval.binding_mismatch", "trace.tamper"].includes(get(e, "type"))
+    || get(e, "type") === "capture.gap" && !info.includes(get(at(e, "data"), "kind")));
+  if (alarms.length) {
+    const kindOf = (e: J) => e.type === "capture.gap" ? cut(str(get(e.data, "kind")), 64) : e.type;
+    rep.check("gaps", false, `${alarms.length} signed gap, tamper or mismatch record(s): `
+      + count(alarms.map(kindOf)).map(([k, n]) => `${k} ${n}`).join(", "),
+    alarms.map((e) => `seq ${e.seq}: ${kindOf(e)}: ` + (e.type === "approval.binding_mismatch"
+      ? `approval ${cut(str(get(e.data, "approval_id")), 200)} of call ${cut(str(get(e.data, "tool_use_id")), 200)}`
+        + ": the arguments differ from the approved ones"
+      : cut(str(get(e.data, "reason", get(e.data, "path"))), 200))).slice(0, 20), true);
+  }
   const external = typed("policy.external").map((e) => at(e, "data")), mismatched = gaps("decision_mismatch");
   if (external.length || mismatched.length) {
     const systems = count(external.map((d) => cut(str(at(d, "system")), 64)));
@@ -434,7 +449,9 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
     if (!isObj(modes)) throw new TypeError("fail_modes is not an object");
     return Object.entries(modes).filter(([, m]) => m === "open").map(([c]) => cut(c, 64));
   }))].sort();
-  rep.check("fail-open classes", true, failOpen.join(", ") || "none");
+  rep.check("fail-open classes", !failOpen.length, failOpen.join(", ") || "none",
+    failOpen.length ? ["calls the agent classed as one of these may have run unrecorded while the signer was down"] : [],
+    true);
   rep.check("key assurance", true, "asserted: the log declares its record keys; none is attested");
   const algs = new Set([...every, ...keyRecords].map((r) => text(at(r, "alg"))));
   rep.assurance = await assurance(origin, cosigs, witnesses, trust, algs, selfApproved, regCosigs)
