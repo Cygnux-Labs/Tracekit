@@ -328,6 +328,23 @@ def user_settings():
     return os.path.join(os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude"), "settings.json")
 
 
+def user_settings_all():
+    """Every user settings file hooks may have gone to: $CLAUDE_CONFIG_DIR's when set, ~/.claude's, and the one
+    `tracekit init` recorded (hooks_settings), each once (by realpath). Hooks installed from a shell with
+    CLAUDE_CONFIG_DIR are found from one without it, and back."""
+    out, seen = [], set()
+    try:
+        recorded = client.client_config().get("hooks_settings")
+    except client.SystemConfigError:   # doctor reports an untrusted system config; it records no hooks file
+        recorded = None
+    for p in (user_settings(), os.path.join(os.path.expanduser("~/.claude"), "settings.json"),
+              *([recorded] if isinstance(recorded, str) else [])):
+        if os.path.realpath(p) not in seen:
+            seen.add(os.path.realpath(p))
+            out.append(p)
+    return out
+
+
 def install_hooks(settings_path, uninstall=False, owner=None, proxy_url=None, extra=None, mode=0o600, python=None,
                   module="tracekit.hook", signer=None):
     """Add (or remove) Tracekit's hooks in a Claude Code settings file. Idempotent; backs up the
@@ -630,6 +647,8 @@ def init_dev(home, witnesses, checkpoint_every=50, hooks_path=None, start=True, 
         signer_extra["socket_token"] = socket_token
     _write_signer_config(home, witnesses, checkpoint_every, sock, pcfg, signer_extra)
     cfg = {"socket": sock, "signer_home": home, "signer_isolation": "same-user", "mode": "dev"}
+    if hooks_path:   # where the hooks went, so uninstall finds them from a shell without the same CLAUDE_CONFIG_DIR
+        cfg["hooks_settings"] = os.path.abspath(hooks_path)
     if socket_token:
         cfg["socket_token"] = socket_token
     if proxy:
@@ -1480,7 +1499,7 @@ def _installed_hooks():
     """Tracekit's hooks (events, v1/v2) in the user, project and managed Claude Code settings files that exist."""
     hooks = []
     seen = set()
-    for p in (user_settings(), os.path.join(os.getcwd(), ".claude", "settings.json")):
+    for p in (*user_settings_all(), os.path.join(os.getcwd(), ".claude", "settings.json")):
         if os.path.realpath(p) in seen:  # cwd is the home directory: one file, listed once
             continue
         seen.add(os.path.realpath(p))
@@ -1502,10 +1521,13 @@ def _installed_hooks():
 
 
 def uninstall(project=None):
-    settings = os.path.join(project, ".claude", "settings.json") if project else user_settings()
-    if os.path.exists(settings):
-        install_hooks(settings, uninstall=True)
+    """Removes Tracekit's hooks from the project's settings, or from every user settings file (user_settings_all);
+    returns the files it looked at, joined."""
+    targets = [os.path.join(project, ".claude", "settings.json")] if project else user_settings_all()
+    for settings in targets:
+        if os.path.exists(settings):
+            install_hooks(settings, uninstall=True)
     cfg = client.client_config()
     if not project and cfg.get("mode") == "dev" and cfg.get("signer_home"):
         stop_dev_daemon(cfg["signer_home"])
-    return settings
+    return ", ".join(targets)

@@ -47,7 +47,11 @@ register_after_tool_call_hook(after)
 - CrewAI's hooks carry no tool-call id, so each call gets one of its own (`crewai-<hex>`). Under autotrace or the LLM
   gateway the reconciler pairs it with the model's tool use of the same turn by its arguments (`paired_by_args` on
   `run.final`). Two calls of the same tool with the same arguments in one turn can't be told apart: both are reported
-  (`reconcile.hook_missing` and `reconcile.fabricated`).
+  (`reconcile.hook_missing` and `reconcile.fabricated`). So are calls whose decide lands after another agent's model
+  call in the same run (async tasks, or several crews in `instrument()`'s one process run): give each its own run.
+- On CrewAI's text (ReAct) path, for models without native tool calling, CrewAI retries a failing tool inside one call
+  of its hooks: the retries run under that call's one decision, and only the last outcome is recorded. A failure there
+  ("I encountered an error while trying to use the tool") is recorded as an error, as on the native path.
 - Delegation between agents (`delegate_work_to_coworker`, `ask_question_to_coworker`) is decided like any tool: give
   those tools a class in your policy to gate them.
 - A tool that runs other than through CrewAI's tool execution (a tool calling another tool directly in Python) is not

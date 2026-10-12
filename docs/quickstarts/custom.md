@@ -32,8 +32,10 @@ Pass the model's raw arguments string as `args` when you have it: the signer rec
 doesn't raise when the signer can't be reached: the run's fail mode answers, with `"unavailable": True` (an open fail
 mode lets the call run unrecorded, with a warning). Since 1.2, `decide` returns the run's fail-mode decision with
 `unavailable: True` instead of raising `SignerUnavailable`: a loop that caught that exception to block the call now
-gets `{"decision": "deny", ...}` and blocks by the decision. `complete` never raises either: the call already ran, so a result
-the signer can't take is a warning, and the signer records the call as decided and not completed. To record
+gets `{"decision": "deny", ...}` and blocks by the decision. `approval_consume` doesn't raise either: a signer that
+can't be reached or refuses answers `{"ok": False, ...}`, and the call doesn't run. `complete` never raises: the call
+already ran, so a result the signer can't take is a warning, and the signer records the call as decided and not
+completed. To record
 the OpenAI, Anthropic or Google Gen AI calls made inside the `with` block into its run as well, add `from tracekit
 import autotrace; autotrace.instrument(None)` before it.
 
@@ -71,8 +73,11 @@ with Client().run(agent="my-agent") as run:
     d, aid = run.decide(call_id, "Bash", args), None          # before the call runs: allow, deny or ask (an outage:
                                                                 # the fail mode, "unavailable": True)
     if d["decision"] == "ask":
-        aid = run.call("approval_request", tool_call_id=call_id)["approval_id"]
-        run.call("approval_wait", approval_id=aid, timeout_ms=300000)
+        try:
+            aid = run.call("approval_request", tool_call_id=call_id)["approval_id"]
+            run.call("approval_wait", approval_id=aid, timeout_ms=300000)
+        except Exception:                                       # an outage or a refusal while asking: block the call
+            d = {**d, "decision": "deny"}
     if d["decision"] != "deny" and (d.get("unavailable") or
                                     run.approval_consume(call_id, "Bash", args, approval_id_hint=aid)["ok"]):
         ...                                                     # run the call, with exactly those arguments

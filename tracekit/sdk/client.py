@@ -43,6 +43,7 @@ import weakref
 import rfc8785
 
 from tracekit import __version__
+from tracekit.core import jsonable
 from tracekit.format.canon import StrictJSONError, canonical, event_hash, loads_strict
 from tracekit.signer import rpc_schema
 from tracekit.signer.quotas import MAX_LINE
@@ -479,12 +480,18 @@ def result_field(send, out):
     """What `complete` carries as a tool's `result`: the result itself when `send` (the decision's `send_result`: an
     untrusted tool, whose result the signer redacts, commits to and indexes for provenance) and it is sendable, else
     its digest (for an untrusted tool, the signer then marks the run's index partial). A result JSON can't carry as
-    UTF-8 (a lone surrogate) is taken as its JSON text, escaped."""
+    UTF-8 (a lone surrogate) is taken as its JSON text, escaped; one that isn't JSON (bytes, a datetime, a Decimal, a
+    set, an object) as its nearest JSON (tracekit.core.jsonable). Never raises: it runs after the tool did."""
     try:
         json.dumps(out, ensure_ascii=False).encode()
     except UnicodeEncodeError:
         out = json.dumps(out)
-    return out if send and sendable(out) else event_hash(out)
+    except (TypeError, ValueError):
+        out = jsonable(out)
+    try:
+        return out if send and sendable(out) else event_hash(out)
+    except (rfc8785.CanonicalizationError, ValueError):   # NaN, an integer past ±2^53: a digest of its JSON text
+        return event_hash(json.dumps(jsonable(out)))
 
 
 def _validate(method, req):
@@ -597,10 +604,16 @@ class RunHandle:
 
     def approval_consume(self, tool_call_id, tool, args, approval_id_hint=None, **fields):
         """Call right before running a call that was not denied: {"ok": True} when it may run now. `args` as for
-        `decide`; `approval_id_hint` is the approval id the framework saved, if any."""
+        `decide`; `approval_id_hint` is the approval id the framework saved, if any. Never raises: a signer that
+        can't be reached or refuses is {"ok": False, "reason": ...} (once decided there is no fail mode: the call
+        doesn't run), so a hook that blocks by return value blocks."""
         hint = {"approval_id_hint": approval_id_hint} if approval_id_hint else {}
-        return self.call("approval_consume", tool_call_id=tool_call_id, tool=tool, args=args,
-                         **{"args_source": "raw" if isinstance(args, str) else "parsed", **hint, **fields})
+        try:
+            return self.call("approval_consume", tool_call_id=tool_call_id, tool=tool, args=args,
+                             **{"args_source": "raw" if isinstance(args, str) else "parsed", **hint, **fields})
+        except (SignerUnavailable, RPCError) as e:
+            warnings.warn(f"tracekit: {tool} is blocked: approval_consume failed: {e}", stacklevel=2)
+            return {"ok": False, "rule_ids": [], "reason": f"approval_consume failed: {e}"[:1024]}
 
     def close(self, reason=None):
         if not self.closed:

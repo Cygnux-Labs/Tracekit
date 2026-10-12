@@ -7,6 +7,7 @@ import os
 import shutil
 import time
 import unittest
+import unittest.mock
 
 from test_bundle_v2 import LOG_SECRET, ORIGIN, pub
 from test_signer_lifecycle import Lifecycle
@@ -232,6 +233,53 @@ class TestReconcile(Reconcile):
         self.assertEqual(cm.exception.code, "invalid_request")
         [(found, _)] = self.final(run)
         self.assertEqual(found, [])
+
+
+class Observe(unittest.TestCase):
+    """reconcile.observe on its own: a run index fed the records the writer writes."""
+
+    def run_(self):
+        return {"rec": reconcile.new(), "digests": {}}
+
+    def exchange(self, run, source, uses=(), sent=()):
+        e = {"type": "model.exchange", "source": source, "tool_call_id": None,
+             "data": {"tool_uses": [{"id": u, "name": "read_file", "executed_by": "client"} for u in uses],
+                      "tool_results_sent": list(sent)}}
+        return reconcile.observe(dict.__setitem__, run, e, {u: "sha256:" + u[-1] * 64 for u in uses})
+
+    def decide(self, run, tcid, digest_of):
+        e = {"type": "policy.decision", "source": "sdk", "tool_call_id": tcid,
+             "data": {"tool": "read_file", "decision": "allow", "rule_ids": []}}
+        return reconcile.observe(dict.__setitem__, run, e, {tcid: "sha256:" + digest_of[-1] * 64})
+
+    def test_a_second_copy_of_a_response_stays_in_its_turn(self):
+        for order in (("gateway", "sdk"), ("sdk", "gateway")):
+            with self.subTest(order=order):
+                run = self.run_()
+                for source in order:   # the gateway and the agent's autotrace both record the one response
+                    self.exchange(run, source, ["call_1"])
+                self.decide(run, "crewai-1", "call_1")
+                self.assertEqual(reconcile.paired(run, False), {"call_1": "crewai-1"})
+                self.assertEqual(self.exchange(run, "gateway", sent=["call_1"]), [])   # no live hook_missing
+
+    def test_the_live_check_reads_one_turn_not_the_run(self):
+        run = self.run_()
+        for i in range(300):   # one id-less call per turn under the gateway
+            tcid = f"call_{i}"
+            self.exchange(run, "gateway", [tcid], sent=[f"call_{i - 1}"] if i else [])
+            self.decide(run, f"crewai-{i}", tcid)
+        self.assertEqual(self.exchange(run, "gateway", sent=["call_299"]), [])
+        with unittest.mock.patch.object(reconcile, "paired", side_effect=AssertionError("whole-run pairing")):
+            self.exchange(run, "gateway", ["call_x"], sent=["call_299"])
+
+    def test_the_live_check_agrees_with_the_run_end_pairing(self):
+        run = self.run_()
+        self.exchange(run, "gateway", ["call_1", "call_2"])
+        self.decide(run, "crewai-1", "call_1")
+        self.decide(run, "crewai-2", "call_1")   # two decides with call_1's arguments: ambiguous, no pair
+        found = self.exchange(run, "gateway", ["call_3"], sent=["call_1", "call_2"])
+        self.assertEqual(sorted(t for _, t, *_ in found), ["call_1", "call_2"])
+        self.assertEqual(reconcile.paired(run, False), {})
 
 
 class TestCoverageLine(Reconcile):

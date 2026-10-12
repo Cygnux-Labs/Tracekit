@@ -5,8 +5,10 @@ CrewAI runs the tool when a before hook raises, so these hooks never raise: the 
 on anything but an allow or an approved ask (a deny, a rejection, a refusal, an outage under a closed fail mode, an
 error of its own), and the after hook gives the model Tracekit's reason instead of CrewAI's "blocked by hook". CrewAI's
 hooks carry no tool-call id, so each call gets one of its own, which the after hook finds in a context variable (a
-call's hooks run in one context). CrewAI hands the after hook a failed tool's exception as the text "Error executing
-tool: ...": that is recorded as an error, the rest as the result the model reads.
+call's hooks run in one context). CrewAI hands the after hook a failed tool's exception as text: "Error executing
+tool: ..." on native tool calls, "I encountered an error while trying to use the tool. ..." on its text (ReAct) path.
+Either is recorded as an error, the rest as the result the model reads. On the text path CrewAI retries a failing
+tool inside one call of its hooks, so the retries run under the call's one decision (docs/limits.md).
 """
 import contextvars
 import uuid
@@ -14,7 +16,8 @@ import warnings
 
 from tracekit.sdk.client import named_rules, result_field
 
-ERROR = "Error executing tool:"
+ERRORS = ("Error executing tool:",                                   # native tool calls
+          "I encountered an error while trying to use the tool.")        # the text path (its tool_usage_exception)
 WAIT_MS = 300000   # lean: one wait of the signer's cap (5 minutes) for an `ask`; loop to a deadline if people need longer
 _call = contextvars.ContextVar("tracekit_crewai_call", default=None)
 
@@ -64,7 +67,7 @@ def hooks(run):
         if st["decision"] is not None:
             out = ctx.tool_result
             try:
-                if isinstance(out, str) and out.startswith(ERROR):
+                if isinstance(out, str) and out.lstrip().startswith(ERRORS):
                     run.complete(st["id"], "error", error=out[:4096])
                 else:
                     run.complete(st["id"], result=result_field(st["decision"].get("send_result"), out))

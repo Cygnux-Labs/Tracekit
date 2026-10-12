@@ -172,7 +172,7 @@ class TestHookOnRealSigner(ac.OnReal, unittest.TestCase):
         with mock.patch.object(Client, "call", call):
             code, err = self.pre("pay", ac.PAY)
         self.assertEqual(code, 2)
-        self.assertIn("not approved: SignerUnavailable", err)
+        self.assertIn("Held by tracekit policy: approval_consume failed: gone", err)   # blocked, with the reason
 
     def test_parallel_hooks_reach_the_signer_in_order(self):
         self.assertEqual(self.d.hook("SessionStart", None, None, None)[0], 0)

@@ -5,6 +5,7 @@ import unittest
 import warnings
 from unittest import mock
 
+from tracekit.format.canon import event_hash
 from tracekit.integrations import crewai
 from tracekit.sdk.client import Client, RunHandle, SignerUnavailable, result_field
 from tracekit.signer.rpc_schema import RPCError
@@ -71,9 +72,13 @@ class Hooks(unittest.TestCase):
                          "Tool call blocked by Tracekit policy: CR-D001")
 
     def test_a_tool_error_is_recorded_as_an_error(self):
-        r = run()
-        hook(r, "Error executing tool: boom")
-        r.complete.assert_called_once_with(mock.ANY, "error", error="Error executing tool: boom")
+        for text in ("Error executing tool: boom",   # native tool calls; then the text (ReAct) path's
+                     "\nI encountered an error while trying to use the tool. This was the error: boom.\n Tool x "
+                     "accepts these inputs: {}.\nMoving on then."):
+            with self.subTest(text=text[:30]):
+                r = run()
+                hook(r, text)
+                r.complete.assert_called_once_with(mock.ANY, "error", error=text)
 
 
 class RunHandleOutage(unittest.TestCase):
@@ -107,6 +112,23 @@ class RunHandleOutage(unittest.TestCase):
     def test_a_result_with_a_lone_surrogate_is_recorded_escaped(self):
         self.assertEqual(result_field(True, ["a\ud800"]), '["a\\ud800"]')
         self.assertTrue(result_field(False, "a\ud800").startswith("sha256:"))
+
+    def test_result_field_never_raises_on_a_result_json_cannot_carry(self):
+        import datetime
+        import decimal
+        for value in (datetime.datetime(2026, 1, 1), b"\x00\x01", decimal.Decimal("1.5"), {1, 2}, object(),
+                      float("nan"), {"a": [float("inf")]}, 2 ** 60):
+            with self.subTest(value=type(value).__name__):
+                self.assertTrue(result_field(False, value).startswith("sha256:"))
+                event_hash(result_field(True, value))   # what goes to the signer is JSON it can take
+
+    def test_approval_consume_blocks_instead_of_raising(self):
+        for exc in (SignerUnavailable("down"), RPCError("run_closed", "r")):
+            with self.subTest(exc=exc), mock.patch.object(Client, "call", side_effect=exc), \
+                    self.assertWarnsRegex(UserWarning, "is blocked"):
+                out = self.handle({}).approval_consume("c1", "pay", {})
+            self.assertFalse(out["ok"])
+            self.assertIn("approval_consume failed", out["reason"])
 
     def test_completing_an_untrusted_tool_without_its_result_warns(self):
         answers = {"decide": {"decision": "allow", "decision_id": "dec-1", "rule_ids": [], "run_seq": 1,

@@ -87,12 +87,15 @@ def observe(put, run, e, digests=None, handoff=lambda tool: False):
                               "decision": e["data"]["decision"], "rules": e["data"]["rule_ids"], "turn": rec.get("turn")})
         put(sub(put, rec, "tools"), NAMES.get(e["source"], e["source"]), True)
         put(run["digests"], "l2:" + tcid, digests.get(tcid))
+        _index(put, rec, rec.get("turn"), digests.get(tcid), 1, tcid)
     elif e["type"] == "model.exchange":
         gw = e["source"] == "gateway"
         put(sub(put, rec, "models"), NAMES.get(e["source"], e["source"]), True)
         if e["data"].get("upstream") in PROVIDER_HOSTS:   # the provider the exchange went to
             put(sub(put, rec, "providers"), PROVIDER_HOSTS[e["data"]["upstream"]], True)
-        if "turn" in rec and any(t["executed_by"] != "provider" for t in e["data"].get("tool_uses", ())):
+        # a model answer with tool uses not seen before starts a turn; another layer's copy of one doesn't
+        if "turn" in rec and any(t["executed_by"] != "provider" and t["id"] not in rec["l3"]
+                                 for t in e["data"].get("tool_uses", ())):
             put(rec, "turn", rec["turn"] + 1)
         for t in e["data"].get("tool_uses", ()):
             if t["executed_by"] == "provider":
@@ -103,11 +106,12 @@ def observe(put, run, e, digests=None, handoff=lambda tool: False):
                                          "unparseable": t.get("args_unparseable", False), "gw": gw,
                                          "turn": rec.get("turn")})
                 put(run["digests"], "l3:" + t["id"], digests.get(t["id"]))
+                _index(put, rec, rec.get("turn"), digests.get(t["id"]), 0, t["id"])
         for tcid in e["data"].get("tool_results_sent", ()):
             put(rec["sent"], tcid, True)
             u = rec["l3"].get(tcid)
             if gw and u and u["gw"] and tcid not in rec["l2"] and tcid not in rec.get("live", {}) and tcid not in {
-                    x[1] for x in now} and not handoff(u["name"]) and tcid not in paired(run, False):
+                    x[1] for x in now} and not handoff(u["name"]) and not _paired_live(run, tcid):
                 now.append(("hook_missing", tcid, ["L2", "L3"], f"the model asked for {u['name'][:200]}; its result "
                             "went back to the model with no decide: the call ran with no hook or adapter gating it, or "
                             "one refused it before deciding (then the result is that refusal); check the agent's hooks "
@@ -171,6 +175,30 @@ def matrix(rec, posture, observed):
 def counted(rec, mandatory, k="l3"):
     """The tool uses of index `k` (l3, or provider) that count: with gateway_mandatory, the gateway's only."""
     return {t: u for t, u in rec.get(k, {}).items() if u.get("gw") or not mandatory}
+
+
+def _index(put, rec, turn, digest, side, tcid):
+    """Files call `tcid` (side 0: a tool use, 1: a decide) under its turn and args digest, so the live check reads one
+    turn's candidates, not the whole run."""
+    if turn is None or not isinstance(digest, str):
+        return
+    pairs, key = sub(put, rec, "pairs"), f"{turn} {digest}"
+    entry = pairs.get(key, [[], []])
+    if tcid not in entry[side]:
+        put(pairs, key, [entry[0] + [tcid], entry[1]] if side == 0 else [entry[0], entry[1] + [tcid]])
+
+
+def _paired_live(run, tcid):
+    """Whether tool use `tcid`, with no decide of its own, pairs by arguments: paired()'s rule (not gateway_mandatory)
+    over the candidates of its own turn and digest only."""
+    rec, digests = run["rec"], run["digests"]
+    turn, digest = rec["l3"][tcid].get("turn"), digests.get("l3:" + tcid)
+    uses, decides = rec.get("pairs", {}).get(f"{turn} {digest}", ([], []))
+    uses = [t for t in uses if t not in rec["l2"] and rec["l3"].get(t, {}).get("turn") == turn
+            and digests.get("l3:" + t) == digest]
+    decides = [t for t in decides if t not in rec["l3"] and t not in rec.get("provider", {})
+               and rec["l2"][t].get("turn") == turn and digests.get("l2:" + t) == digest]
+    return uses == [tcid] and len(decides) == 1
 
 
 def paired(run, mandatory):
