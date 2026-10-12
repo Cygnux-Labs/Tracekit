@@ -63,6 +63,9 @@ def run(name):
         cmd = ["-m", "tracekit"] if argv[0] == "tracekit" else [os.path.join(ROOT, *argv[0].split("/"))]
         p = subprocess.run([sys.executable, *cmd, *(a.replace("$TMP", tmp) for a in argv[1:])], cwd=tmp, env=env,
                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=300)
+    except subprocess.TimeoutExpired as e:   # a failure like any other: --check reports the other demos too
+        raise RuntimeError(f"{name}: {' '.join(argv)} ran past {e.timeout:g} s (its files are in {tmp})\n"
+                           f"{e.stdout or ''}") from e
     finally:   # the dev signer the example may have started
         subprocess.run([sys.executable, "-m", "tracekit", "down"], cwd=tmp, env=env, capture_output=True)
     if p.returncode:

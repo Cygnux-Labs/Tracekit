@@ -8,6 +8,7 @@ ledger, so every run is labelled signer_isolation=same-user and verify says so.
 import base64
 import json
 import os
+import re
 import secrets
 import shlex
 import socket
@@ -244,6 +245,7 @@ MANAGED_SETTINGS = {"linux": "/etc/claude-code/managed-settings.json",
                     "darwin": "/Library/Application Support/ClaudeCode/managed-settings.json"}
 HOOK_TIMEOUT = {"PreToolUse": 600, "SessionEnd": 15}   # PreToolUse may hold a call for approval (C8)
 V2_HOOK = "tracekit.integrations.claude_code"
+SIGNER_ENV = ("TRACEKIT_SIGNER", "TRACEKIT_SIGNER_TOKEN_FILE", "TRACEKIT_SIGNER_CA")   # what init --remote --v2 sets
 V2_HOOKS = (V2_HOOK, "tracekit.integrations.harness_hooks")   # Claude Code's, the other harnesses' (agent_hooks.V2_MODULE)
 
 
@@ -297,7 +299,7 @@ def _hook_version(group):
         if isinstance(hooks, list) else []
     if any(V2_HOOK in c for c in cmds):
         return "v2"
-    if any("tracekit.hook" in c or ("tracekit" in c and "hook.py" in c) for c in cmds):
+    if any("tracekit.hook" in c or re.search(r"tracekit[/\\]hook\.py", c) for c in cmds):
         return "v1"
     return None
 
@@ -350,7 +352,7 @@ def install_hooks(settings_path, uninstall=False, owner=None, proxy_url=None, ex
     """Add (or remove) Tracekit's hooks in a Claude Code settings file. Idempotent; backs up the
     file before changing it; leaves other hooks and settings alone. proxy_url sets
     env.ANTHROPIC_BASE_URL (C3), signer env.TRACEKIT_SIGNER or a dict of env variables (each removed on uninstall
-    while it still has that value).
+    while it still has that value); the SIGNER_ENV variables it doesn't name are removed.
     Raises SettingsError instead of overwriting a file it cannot parse,
     or one that is a symlink. With owner (as root) the whole edit runs as that user. python, module: see _hook_command."""
     if owner is not None:
@@ -418,7 +420,11 @@ def _install_hooks_at(d, settings_path, uninstall, proxy_url, extra, mode, pytho
     if proxy_url and not uninstall:
         env["ANTHROPIC_BASE_URL"] = proxy_url
         s[marker] = proxy_url
-    for k, v in ({"TRACEKIT_SIGNER": signer} if isinstance(signer, str) else signer or {}).items():
+    signer = {"TRACEKIT_SIGNER": signer} if isinstance(signer, str) else signer or {}
+    for k in SIGNER_ENV:   # an earlier init's signer that this one doesn't name
+        if k not in signer:
+            env.pop(k, None)
+    for k, v in signer.items():
         if not uninstall:
             env[k] = v
         elif env.get(k) == v:
@@ -491,15 +497,19 @@ def _save_config(d, cfg, tk_user=None):
 
 
 def _write_signer_config(home, witnesses, checkpoint_every, socket_path, proxy=None, extra=None, tk_user=None):
-    cfg = {"checkpoint_every": checkpoint_every, "witnesses": witnesses, "socket": socket_path, "socket_mode": "0666"}
+    """No `witnesses` or `checkpoint_every`: an earlier init's, else a local git witness and 50."""
+    cfg = {"socket": socket_path, "socket_mode": "0666"}
     if proxy:
         cfg["proxy"] = proxy
     cfg.update(extra or {})
     d = _signer_dir(home, tk_user)
     try:
         # re-running init keeps what it does not replace: dropping the external signer would make the daemon fall back
-        # to a new file key, dropping the pin or the harnesses would loosen the policy and harness checks
+        # to a new file key, dropping the pin or the harnesses would loosen the policy and harness checks, dropping a
+        # remote witness the tamper evidence
         old = _read_config(d)
+        cfg["witnesses"] = witnesses or old.get("witnesses") or [f"git:{os.path.join(home, 'witness')}"]
+        cfg["checkpoint_every"] = checkpoint_every or old.get("checkpoint_every") or 50
         for k in ("signer", "pinned_policy_hash", "harnesses", "harness_binding"):
             if k not in cfg and k in old:
                 cfg[k] = old[k]
@@ -565,11 +575,11 @@ def _upstream():
 
 def _validate_init_options(checkpoint_every, proxy, proxy_port):
     try:
-        checkpoint_every = int(checkpoint_every)
+        checkpoint_every = None if checkpoint_every is None else int(checkpoint_every)
         proxy_port = int(proxy_port)
     except (TypeError, ValueError) as e:
         raise ValueError("checkpoint interval and proxy port must be integers") from e
-    if checkpoint_every < 1:
+    if checkpoint_every is not None and checkpoint_every < 1:
         raise ValueError("checkpoint interval must be positive")
     if proxy and not 1 <= proxy_port <= 65535:
         raise ValueError("proxy port must be between 1 and 65535")
@@ -629,15 +639,13 @@ def _dev_socket(home):
     return "tcp://127.0.0.1:0", secrets.token_urlsafe(32)
 
 
-def init_dev(home, witnesses, checkpoint_every=50, hooks_path=None, start=True, proxy=False, proxy_port=8787, fail_mode=None,
+def init_dev(home, witnesses, checkpoint_every=None, hooks_path=None, start=True, proxy=False, proxy_port=8787, fail_mode=None,
              signer=None):
     checkpoint_every, proxy_port = _validate_init_options(checkpoint_every, proxy, proxy_port)
     home = os.path.abspath(home)
     for sub in ("", "keys", "ledger", "blobs"):
         os.makedirs(os.path.join(home, sub), exist_ok=True)
     sock, socket_token = _dev_socket(home)
-    if not witnesses:
-        witnesses = [f"git:{os.path.join(home, 'witness')}"]
     pcfg = {"port": proxy_port, "upstream": _upstream(), "fail_mode": fail_mode or "open"} if proxy else None
     # dev mode: the agent and the approver are the same OS user, so approvals are allowed but labelled untrustworthy
     signer_extra = {"mode": "dev", "allow_same_user_approval": True}
@@ -1370,7 +1378,7 @@ def uninstall_system_v2(purge=False):
     return [V2_DATA, *users]
 
 
-def init_system(target_user, witnesses, checkpoint_every=50, project=None, no_service=False, proxy=False, proxy_port=8787,
+def init_system(target_user, witnesses, checkpoint_every=None, project=None, no_service=False, proxy=False, proxy_port=8787,
                 managed=False, managed_only=False, fail_mode=None, experimental_macos=False, hooks=True, signer=None,
                 harnesses=None, agent="claude", allow_privileged=False):
     darwin = _require_system(experimental_macos)
@@ -1402,10 +1410,6 @@ def init_system(target_user, witnesses, checkpoint_every=50, project=None, no_se
     finally:
         files.close(home_fd)
     sock = os.path.join(SYS_HOME, "tracekitd.sock")
-    if not witnesses:
-        witnesses = [f"git:{os.path.join(SYS_HOME, 'witness')}"]
-        print("note: using a local git witness only. It protects against the agent's user, not against root on this "
-              "machine. Point --witness at a remote repository the security team owns (docs/witnesses.md).")
     pcfg = {"port": proxy_port, "upstream": _upstream(), "fail_mode": fail_mode or "open"} if proxy else None
     extra = {"signer": signer} if signer else {}
     if not darwin and (harnesses or not kept_harnesses):  # a registered harness stays until --harness replaces it
@@ -1413,22 +1417,25 @@ def init_system(target_user, witnesses, checkpoint_every=50, project=None, no_se
     if not darwin:
         extra["harness_helper"] = V1_HELPER_SOCKET
     scfg = _write_signer_config(SYS_HOME, witnesses, checkpoint_every, sock, pcfg, extra or None, tk)
+    if scfg["witnesses"] == [f"git:{os.path.join(SYS_HOME, 'witness')}"]:
+        print("note: using a local git witness only. It protects against the agent's user, not against root on this "
+              "machine. Point --witness at a remote repository the security team owns (docs/witnesses.md).")
     policy = _install_venv(requirement)
     # generate the key as the tracekit user so root-only reads are the only other path to it
     subprocess.run(["runuser" if shutil.which("runuser") else "sudo", "-u", tk.pw_name, "--", OPT_PYTHON, "-I", "-c",
                     f"from tracekit.ledger import Keys; Keys.load_or_create({os.path.join(SYS_HOME, 'keys')!r})"],
                    check=True)
+    plists = []
     if not no_service:
         if darwin:
             for label, module, enabled in (("dev.tracekit.tracekitd", "tracekit.daemon", True),
                                             ("dev.tracekit.proxy", "tracekit.proxy", proxy)):
                 if not enabled:
                     continue
-                plist = os.path.join(LAUNCHD_DIR, label + ".plist")
-                with open(plist, "wb") as f:
+                plists.append(os.path.join(LAUNCHD_DIR, label + ".plist"))
+                with open(plists[-1], "wb") as f:
                     f.write(launchd_plist(label, tk.pw_name, OPT_PYTHON, module, SYS_HOME))
-                os.chmod(plist, 0o644)
-                subprocess.run(["launchctl", "bootstrap", "system", plist], check=False)
+                os.chmod(plists[-1], 0o644)
         else:  # systemd
             with open(os.path.join(SYSTEMD_DIR, "tracekitd.service"), "w") as f:
                 f.write(UNIT.format(user=tk.pw_name, python=OPT_PYTHON, home=SYS_HOME))
@@ -1445,6 +1452,9 @@ def init_system(target_user, witnesses, checkpoint_every=50, project=None, no_se
     _write_client_config(owner.pw_dir, cfg, owner)
     _write_system_client_config(dict(cfg, fail_mode=fail_mode or "closed", policy=policy, **_v2_client_keys()))
     _pin_policy(SYS_HOME, tk)
+    for plist in plists:   # after the pin, and booted out first: a running signer must reload its config
+        subprocess.run(["launchctl", "bootout", "system", plist], check=False)
+        subprocess.run(["launchctl", "bootstrap", "system", plist], check=False)
     if not no_service and not darwin:  # restart, not enable --now: a running signer must reload its config
         units = ["tracekitd", *(["tracekit-proxy"] if proxy else [])]
         r = subprocess.run(["systemctl", "restart", *units], check=False)
@@ -1522,12 +1532,12 @@ def _installed_hooks():
 
 def uninstall(project=None):
     """Removes Tracekit's hooks from the project's settings, or from every user settings file (user_settings_all);
-    returns the files it looked at, joined."""
-    targets = [os.path.join(project, ".claude", "settings.json")] if project else user_settings_all()
-    for settings in targets:
-        if os.path.exists(settings):
-            install_hooks(settings, uninstall=True)
+    returns the files it found, joined."""
+    found = [s for s in ([os.path.join(project, ".claude", "settings.json")] if project else user_settings_all())
+             if os.path.exists(s)]
+    for settings in found:
+        install_hooks(settings, uninstall=True)
     cfg = client.client_config()
     if not project and cfg.get("mode") == "dev" and cfg.get("signer_home"):
         stop_dev_daemon(cfg["signer_home"])
-    return ", ".join(targets)
+    return ", ".join(found) or "no settings file"

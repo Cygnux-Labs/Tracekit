@@ -625,7 +625,13 @@ def main(argv=None):
     p.add_argument("--json", action="store_true"); p.set_defaults(f=cmd_index)
 
     a = ap.parse_args(argv)
-    return a.f(a) or 0
+    try:
+        return a.f(a) or 0
+    except (OSError, ValueError, KeyError, ImportError) as e:   # a path, spec, target or System that isn't there
+        if os.environ.get("TRACEKIT_DEBUG") == "1":
+            raise
+        print(f"tracekit why {a.cmd}: {type(e).__name__}: {e}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

@@ -56,7 +56,7 @@ class IngestError(ValueError):
 def _int(val) -> int:
     try:
         return int(val)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):   # OverflowError: 1e999, read as infinity
         raise IngestError(400, "n and n_max must be integers")
 
 
@@ -228,9 +228,10 @@ class Store:
             if st is not None and self._stat.get(p) != st:
                 self._changed(p, announce)
         gone = set(self._stat) - set(paths)
-        for d in (self._stat, self._seen, self._sent, self._cache):
-            for p in gone:
-                d.pop(p, None)
+        with self.lock:   # ingest reads _heads under it
+            for d in (self._stat, self._seen, self._sent, self._cache, self._heads):
+                for p in gone:
+                    d.pop(p, None)
 
     def watch(self, interval: float = 0.5) -> None:
         """Poll the runs folder in a daemon thread (ingest wakes it at once). Existing runs are indexed silently
@@ -309,7 +310,8 @@ class Store:
     # -- ingest
     def _head(self, path: str) -> Dict[str, Any]:
         """seq, hash and type of a run's last event, its event ids and its owner (the digest of the token that
-        created it by ingest; None for a run written otherwise, "" for a new one), read once, then kept here."""
+        created it by ingest; None for a run written otherwise, "" for a new one), read once, then kept here (a new
+        run's once ingest writes it)."""
         h = self._heads.get(path)
         if h is None:
             h = {"seq": -1, "hash": GENESIS, "ended": False, "ids": set(), "owner": ""}
@@ -327,7 +329,8 @@ class Store:
                                 ev = json.loads(line)
                                 h["ids"].add(str(ev.get("id")))
                                 h.update(seq=ev["seq"], hash=ev["hash"], ended=ev.get("type") == "run.end")
-            self._heads[path] = h
+            if h["owner"] != "":
+                self._heads[path] = h
         return h
 
     def ingest(self, body: Dict[str, Any], token: str = "") -> Dict[str, Any]:
@@ -396,6 +399,7 @@ class Store:
                     f.write(json.dumps(ev, sort_keys=True, ensure_ascii=False) + "\n")
             h["ids"].update(ids)
             h.update(seq=last_seq, hash=last_hash, ended=events[-1]["type"] == "run.end")
+            self._heads[path] = h
         self._wake.set()   # the watcher analyses it
         return {"run_id": run_id, "accepted": len(events), "head_seq": last_seq}
 
@@ -418,11 +422,13 @@ class Store:
     def attribute(self, run_id: str, body: Dict[str, Any]) -> Dict[str, Any]:
         run, prog = self._replayable(run_id)
         n, n_max = _int(body.get("n", 10)), _int(body.get("n_max", 80))
-        target = str(body.get("target", ""))
+        target, suspects = str(body.get("target", "")), body.get("suspects") or None
         if not target or not 1 <= n <= n_max <= 400:
             raise IngestError(400, "target is required; 1 <= n <= n_max <= 400")
+        if suspects is not None and not (isinstance(suspects, list) and all(isinstance(s, str) for s in suspects)):
+            raise IngestError(400, "suspects must be a list of intervention specs")
         try:
-            result = attribute(run, target, body.get("suspects") or None, n=n, n_max=n_max, system=load_system(prog))
+            result = attribute(run, target, suspects, n=n, n_max=n_max, system=load_system(prog))
         except ValueError as e:
             raise IngestError(400, str(e))
         self.publish({"type": "test", "run_id": run.run_id, "verdict": result["summary"]})

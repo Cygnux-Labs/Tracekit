@@ -15,7 +15,7 @@ from unittest import mock
 
 import pytest
 
-from tracekit import __version__, client, install
+from tracekit import __version__, cli, client, install
 from tracekit.ledger import Keys, Ledger
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -107,6 +107,37 @@ class SystemModeUsesOpt(unittest.TestCase):
         self.assertEqual(stat.S_IMODE(os.stat(os.path.join(home, "helper")).st_mode), 0o700)
         with open(os.path.join(units, "tracekitd.service")) as f:
             self.assertNotIn("CAP_", f.read())   # the helper reads /proc, not tracekitd
+
+    def test_macos_starts_the_signer_after_the_policy_pin(self):
+        """launchd started tracekitd before the pin was written, and a re-run's bootstrap left the running signer on
+        its old config: the daemon reads its config once."""
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        order = mock.Mock(return_value=mock.Mock(returncode=0, stdout="", stderr=""))
+        with mock.patch.object(install, "_require_system", return_value=True), \
+                mock.patch.object(install, "SYS_HOME", os.path.join(d, "home")), \
+                mock.patch.object(install, "LAUNCHD_DIR", d), \
+                mock.patch.object(install.pwd, "getpwnam", return_value=install.pwd.getpwuid(os.getuid())), \
+                mock.patch.object(install, "_privileges", return_value=[]), \
+                mock.patch.object(install, "_install_source", return_value=None), \
+                mock.patch.object(install, "_install_venv", return_value=POLICY), \
+                mock.patch.object(install.subprocess, "run", order.run), \
+                mock.patch.object(install, "_write_client_config"), \
+                mock.patch.object(install, "_write_system_client_config"), \
+                mock.patch.object(install, "_pin_policy", order.pin), \
+                mock.patch.object(install, "install_hooks"), \
+                contextlib.redirect_stdout(io.StringIO()):
+            install.init_system("agent", [])
+        calls = [c[0] if c[0] == "pin" else c[1][0][1] for c in order.mock_calls if c[0] in ("pin", "run")
+                 and (c[0] == "pin" or c[1][0][0] == "launchctl")]
+        self.assertEqual(calls, ["pin", "bootout", "bootstrap"])
+
+    def test_managed_only_without_managed_is_refused(self):
+        """--managed-only alone was ignored: the hooks went to settings the agent's user can edit."""
+        with mock.patch.object(install, "init_system") as init, contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(cli.main(["init", "--user", "agent", "--managed-only"]), 2)
+        init.assert_not_called()
+        self.assertIn("--managed-only goes with --managed", err.getvalue())
 
     def test_source_is_checked_before_any_system_change(self):
         d = tempfile.mkdtemp()

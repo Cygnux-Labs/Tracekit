@@ -48,6 +48,23 @@ class Compile(unittest.TestCase):
             with self.subTest(pattern=pattern), self.assertRaises(PolicyError):
                 pc.check_pattern(pattern)
 
+    def test_rejects_nested_repeat_counts_re2_refuses(self):
+        """RE2 refuses nested repeat counts whose product passes 1000: lint passed them, and a signer with google-re2
+        then failed to load the policy."""
+        for pattern in (r"(?:a{1000}){1000}", r"(?:[a-z]{100}){100}", r"(?:a{2,}){501}"):
+            with self.subTest(pattern=pattern), self.assertRaises(PolicyError):
+                pc.check_pattern(pattern)
+        pc.check_pattern(r"(?:a{10}){100}")
+        if HAVE_RE2:
+            Engine({"deny": [{"id": "X", "pattern": r"(?:a{10}){100}"}]}, "re2")
+
+    def test_an_unless_that_matches_every_subject_is_an_error(self):
+        for unless in ("x|", ".*", "$"):
+            with self.subTest(unless=unless):
+                self.assertIn("rule A: can never fire: unless matches every subject",
+                              "\n".join(self.errors(f"deny:\n  - {{id: A, pattern: rm, unless: '{unless}'}}\n")))
+        self.assertEqual(self.errors("deny:\n  - {id: A, pattern: rm, unless: '^$'}\n"), [])
+
     def test_accepts_ordinary_patterns(self):
         for pattern in (r"^(sudo|doas)\b", r"\bgit\s+push\b.*--force", r"[^a-z]\.env$", r"\x41{2,5}", r"(?:-[a-z]*\s+)*x",
                         r"(?P<cmd>rm)\s", r"[]a]", r"\{x\}"):
@@ -292,6 +309,24 @@ class Engines(unittest.TestCase):
             d = e.decide("Bash", {"command": "a" * 60000})
         self.assertLess(time.monotonic() - start, 1)   # ten rules took 0.2 s each when every match had its own timeout
         self.assertEqual((d["verdict"], d["rule_ids"], d.get("nondeterministic")), ("deny", ["S0"], True))
+
+    def test_target_rules_read_a_commands_data_words_once(self):
+        """data_words ran once per word of a command, for each target rule: a 16 KB grep took 24 s to decide."""
+        e = Engine({"tools": {"Bash": "shell"},
+                    "flag": [{"id": "T", "class": "shell", "field": "target", "pattern": "x"}]}, "regex")
+        with mock.patch.object(shell, "data_words", wraps=shell.data_words) as words:
+            e.decide("Bash", {"command": "grep x " + "a " * 2000})
+        self.assertEqual(words.call_count, 1)
+
+    def test_a_bare_word_is_an_address_only_when_it_reads_as_one(self):
+        """Every word starting with a digit read as an address: head -n 50, cat 1.txt and ls 2fa/ were egress."""
+        e = Engine(pc.build(os.path.join(os.path.dirname(pc.__file__), "packs", "server.yaml"))[0])
+        for command in ("head -n 50 log.txt", "cat 1.txt", "ls 2fa/", "kill 1234", "sleep 0.5"):
+            with self.subTest(command=command):
+                self.assertNotIn("TK-F012", e.decide("Bash", {"command": command})["rule_ids"])
+        for command in ("curl 2852039166", "curl 169.16689662", "curl 0251.0376.0251.0376/x", "curl 025177524776"):
+            with self.subTest(command=command):
+                self.assertIn("TK-S001", e.decide("Bash", {"command": command})["rule_ids"])
 
     def test_the_most_specific_glob_maps_the_tool(self):
         for tools in ({"mcp:*/*": "mcp", "mcp:postgres/*": "sql"}, {"mcp:postgres/*": "sql", "mcp:*/*": "mcp"}):
@@ -540,6 +575,16 @@ class Classes(unittest.TestCase):
                     "https://user@example.com:8443/a?b#c", "//example.com/x", "https://\uff11\uff12\uff17.example.com/"):
             with self.subTest(url=url):
                 self.assertFalse(classes.url_info(url)["internal"])
+
+    def test_reading_a_long_url_is_linear(self):
+        """A URL near the 1 MB frame limit took seconds per reading, and a decide reads it once per target rule too:
+        every dotted part of the host was parsed as a number, and each blob: prefix copied the rest of the URL."""
+        with mock.patch.object(classes, "_number", wraps=classes._number) as number:
+            self.assertTrue(classes.url_info("http://" + "1." * 400000 + "1/")["internal"])
+        self.assertLess(number.call_count, 10)
+        start = time.monotonic()
+        self.assertEqual(classes.url_info("blob:" * 200000 + "http://example.com/")["host"], "example.com")
+        self.assertLess(time.monotonic() - start, 0.5)
 
     def test_browser_scheme_ignores_controls_and_prefixes(self):
         for url in (" FILE:///etc/passwd", "fi\tle:///etc/passwd", "\x00file:///etc/passwd", "view-source:file:///etc/passwd",

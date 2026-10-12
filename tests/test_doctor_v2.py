@@ -289,6 +289,26 @@ class Detect(unittest.TestCase):
         ids, v2 = self.collect(None)
         self.assertEqual(v2.call_args.args[1], "dev")
 
+    def test_dev_signer_finds_the_hooks_in_any_settings_file_init_writes(self):
+        """Dev doctor read only $CLAUDE_CONFIG_DIR's (or ~/.claude's) settings: hooks in the other one, or in the
+        project's, were reported missing."""
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        home, config, project = (os.path.join(d, n) for n in ("home", "config", "project"))
+        cwd = os.getcwd()
+        self.addCleanup(os.chdir, cwd)
+        for settings, env in ((os.path.join(home, ".claude", "settings.json"), {"CLAUDE_CONFIG_DIR": config}),
+                              (os.path.join(project, ".claude", "settings.json"), {})):
+            os.makedirs(project, exist_ok=True)
+            os.chdir(project)
+            with contextlib.redirect_stdout(io.StringIO()):
+                install.install_hooks(settings, module=install.V2_HOOK)
+            with mock.patch.dict(os.environ, {"HOME": home, **env}), \
+                    mock.patch.object(install.client, "client_config", return_value={}):
+                _, v2 = self.collect(None)
+            self.assertEqual(os.path.realpath(v2.call_args.kwargs["settings"]), os.path.realpath(settings))
+            install.install_hooks(settings, uninstall=True)
+
     def test_untrusted_system_config_fails(self):
         with mock.patch.object(doctor.client, "system_config", side_effect=client.SystemConfigError("not root-owned")):
             self.assertEqual([(r["id"], r["status"]) for r in doctor.collect()], [("D-SYSTEM-CONFIG", "fail")])

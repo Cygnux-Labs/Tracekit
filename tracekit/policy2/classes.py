@@ -61,8 +61,7 @@ def _whatwg_host(url):
     and newline dropped, view-source: and blob: peeled, `\\` a `/`, any number of slashes after the scheme, the host
     after the last `@`. The host is None for a scheme that has none; the scheme is None for //host."""
     u = re.sub(r"[\t\n\r]", "", url).strip(_C0)
-    while re.match(r"(?i)(view-source|blob):", u):
-        u = u.split(":", 1)[1].strip(_C0)
+    u = u[re.match(r"(?i)(?:(?:view-source|blob):[\x00-\x20]*)*", u).end():]
     m = re.match(r"([A-Za-z][A-Za-z0-9+.-]*):", u)
     scheme = m.group(1).lower() if m else None
     if scheme not in SPECIAL and (scheme or not re.match(r"[/\\]{2}", u)):
@@ -94,10 +93,12 @@ def _address(host):
     parts = host.split(".")
     if len(parts) > 1 and parts[-1] == "":
         parts.pop()
-    nums = [_number(p) for p in parts]
-    if nums[-1] is None:
+    if _number(parts[-1]) is None:
         return None
-    if None in nums or -1 in nums or len(nums) > 4 or any(n > 255 for n in nums[:-1]) or nums[-1] >= 256 ** (5 - len(nums)):
+    if len(parts) > 4:
+        return _BAD
+    nums = [_number(p) for p in parts]
+    if None in nums or -1 in nums or any(n > 255 for n in nums[:-1]) or nums[-1] >= 256 ** (5 - len(nums)):
         return _BAD
     return ipaddress.IPv4Address(nums[-1] + sum(n << 8 * (3 - i) for i, n in enumerate(nums[:-1])))
 

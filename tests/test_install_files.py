@@ -113,6 +113,15 @@ class Settings(_Sentinel, unittest.TestCase):
         self.assertEqual(stat.S_IMODE(os.stat(bak).st_mode), 0o600)
 
 
+class HookOwnership(unittest.TestCase):
+    def test_a_users_own_hook_py_is_not_tracekits(self):
+        """Any command naming "tracekit" and "hook.py" counted as Tracekit's: uninstall removed a user's own hook."""
+        group = lambda c: {"hooks": [{"type": "command", "command": c}]}  # noqa: E731
+        self.assertIsNone(install._hook_version(group("python3 ~/src/tracekit-dogfood/scripts/hook.py")))
+        self.assertEqual(install._hook_version(group("python3 /src/tracekit/hook.py")), "v1")
+        self.assertEqual(install._hook_version(group("python3 -m tracekit.hook")), "v1")
+
+
 @unittest.skipUnless(CAN_SYMLINK, "needs symlinks")
 class SignerConfig(_Sentinel, unittest.TestCase):
     def test_symlinked_signer_config_is_refused(self):
@@ -139,6 +148,16 @@ class SignerConfig(_Sentinel, unittest.TestCase):
         self.assertEqual(json.load(open(os.path.join(self.d, "config.json"))), cfg)
         new = [{"name": "codex", "exe": "/usr/bin/codex"}]
         self.assertEqual(install._write_signer_config(self.d, [], 50, "s", extra={"harnesses": new})["harnesses"], new)
+
+    def test_rerun_keeps_the_witnesses_and_checkpoint_interval_unless_given(self):
+        """A re-run without --witness replaced a remote witness with the local one and reset the interval to 50."""
+        cfg = install._write_signer_config(self.d, [], None, "s")
+        self.assertEqual((cfg["witnesses"], cfg["checkpoint_every"]), ([f"git:{os.path.join(self.d, 'witness')}"], 50))
+        install._write_signer_config(self.d, ["git:/srv/witness@origin"], 10, "s")
+        cfg = install._write_signer_config(self.d, [], None, "s")
+        self.assertEqual((cfg["witnesses"], cfg["checkpoint_every"]), (["git:/srv/witness@origin"], 10))
+        cfg = install._write_signer_config(self.d, ["file:/w.jsonl"], 7, "s")
+        self.assertEqual((cfg["witnesses"], cfg["checkpoint_every"]), (["file:/w.jsonl"], 7))
 
     def test_signer_home_owned_by_someone_else_is_refused(self):
         other = type("pw", (), {"pw_uid": os.getuid() + 1, "pw_gid": os.getgid()})
@@ -369,7 +388,7 @@ class ClaudeConfigDir(unittest.TestCase):
                     if not removed_with:
                         os.environ.pop("CLAUDE_CONFIG_DIR", None)
                     self.assertIn(path, [h["settings"] for h in install._installed_hooks()])
-                    install.uninstall()
+                    self.assertEqual(install.uninstall(), path)   # it named files it never found
                     self.assertEqual(install._hook_summary(install.read_json(path)), install._hook_summary({}))
 
 
