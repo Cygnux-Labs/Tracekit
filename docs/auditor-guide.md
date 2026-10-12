@@ -79,7 +79,10 @@ anchor, a certified record key) it says `UNVERIFIABLE` and names it; use the Pyt
 - `Integrity:` `VERIFIED`, not `VERIFIED TO HEAD n (open)`, for runs that should be finished.
 - `Assurance:` `witnessed`, with cosignatures from witnesses you classed as independent, at times inside the window.
   `dev` or `local` means nothing outside the operator vouches for the checkpoint.
-- `run-set: COMPLETE`, and no `keys` warning `retirements not proven complete`.
+- `run-set: COMPLETE`, and no `key retirements not proven complete` on the `Assurance` line (a `keys` warning when
+  the bundle's key records show a retired key).
+- `gaps`: signed gap, tamper and mismatch records (an edited checkpoint, a refused approval binding, calls the client
+  numbered that never arrived).
 - `isolation`: `separate-user` (or a remote signer) for production runs; `same-user` is a dev signer.
 - `coverage`, `tiers` and `fail-open classes`: how much of what the agent did the evidence can speak for.
 - `policy`, `break-glass approvals` and `approvals: self`: calls that ran against policy and who approved what.

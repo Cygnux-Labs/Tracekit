@@ -123,6 +123,26 @@ def tiers_bundle(log, out):
     return out
 
 
+def gaps_bundle(log, out):
+    """Export to `out` a run that declares a fail-open class and holds signer records a person must read: a checkpoint
+    edited between pause and resume (state_tamper) and the refused consume it caused (approval.binding_mismatch), calls
+    the client numbered that never arrived (client_counter_gap: a fail-open class ran while the signer was down), and
+    an informational gap (approval_expired)."""
+    log.epoch(KEY1)
+    log.add("run.registered", {"agent": {"name": "agent"}, "identity": {"scheme": "uid", "subject": "1", "attested": True},
+                               "fail_modes": {"default": "closed", "browser": "open"}})
+    log.add("capture.gap", {"kind": "client_counter_gap", "missed_events": 2, "reason": "stream s skipped client_seq 1..2"},
+            stream="s")
+    log.add("capture.gap", {"kind": "state_tamper", "reason": "state langgraph:t changed between writes"})
+    log.add("approval.binding_mismatch", {"approval_id": "apr-1", "tool_use_id": "tc-1", "salt_id": "a" * 32,
+                                          "approved_commitment": "hmac-sha256:" + "1" * 64,
+                                          "args_commitment": "hmac-sha256:" + "2" * 64}, tool_call_id="tc-1")
+    log.add("capture.gap", {"kind": "approval_expired", "reason": "approval apr-2 expired"})
+    log.final()
+    export(log.store, "acme", "run-a", log.note(), out)
+    return out
+
+
 class Case(unittest.TestCase):
     def setUp(self):
         self.d = tempfile.mkdtemp()
@@ -258,7 +278,7 @@ class TestVerifyV2(Case):
         self.assertEqual(rep.assurance, f"witnessed; records ed25519; checkpoint Ed25519 only ({ORIGIN}); cosigned "
                                         f"ed25519 by {WITNESS} (customer) at 2025-10-09T08:53:20Z; earliest independent "
                                         "anchor 2025-10-09T08:53:20Z; key retirements not proven complete")
-        self.assertEqual(rep.warnings, ["keys"])   # one run, no run-set: a withheld key.retire would not show
+        self.assertEqual(rep.warnings, [])   # one key never retired: the assurance line notes it, no warning
         with zipfile.ZipFile(out) as z:
             names = set(z.namelist())
         self.assertFalse({n for n in names if n.endswith((".html", ".py", ".js"))})
@@ -307,8 +327,21 @@ class TestVerifyV2(Case):
                 "harness": "signer-attested: run-a claude",
                 "fail-open classes": "read",
                 "key assurance": "asserted: the log declares its record keys; none is attested"}
-        details = {c["check"]: c["detail"] for c in rep.checks if c["status"] == "pass"}
+        details = {c["check"]: c["detail"] for c in rep.checks if c["status"] == "pass" or c["check"] == "fail-open classes"}
         self.assertEqual({k: details.get(k) for k in want}, want)
+        self.assertEqual(rep.warnings, ["fail-open classes"])   # read calls may have run unrecorded in an outage
+
+    def test_signed_gaps_tampering_and_fail_open_classes_warn(self):
+        out = gaps_bundle(self.log(), os.path.join(self.d, "gaps.tkb"))
+        rep, code = self.verify(out)
+        self.assertEqual((code, rep.integrity, rep.warnings), (0, "VERIFIED", ["gaps", "fail-open classes"]), rep.checks)
+        lines = {c["check"]: c for c in rep.checks}
+        self.assertEqual(lines["gaps"]["detail"], "3 signed gap, tamper or mismatch record(s): "
+                                                  "approval.binding_mismatch 1, client_counter_gap 1, state_tamper 1")
+        self.assertEqual(lines["gaps"]["problems"][2], "seq 4: approval.binding_mismatch: approval apr-1 of call tc-1: "
+                                                       "the arguments differ from the approved ones")
+        self.assertEqual(lines["fail-open classes"]["detail"], "browser")
+        self.assertEqual(self.cli(out, "--trust", self.trust, "--strict")[0], 3)
 
     def test_a_call_counts_at_its_weakest_tier_and_a_split_capture_path_warns(self):
         rep, code = self.verify(tiers_bundle(self.log(), os.path.join(self.d, "tiers.tkb")))
@@ -465,7 +498,7 @@ class TestVerifyV2(Case):
         self.assertEqual(code, 0)
         self.assertIn("Integrity: VERIFIED.\nAssurance: witnessed;", stdout)
         self.assertEqual(self.cli(out)[0], 2)
-        self.assertEqual(self.cli(out, "--trust", self.trust, "--strict")[0], 3)   # the keys warning
+        self.assertEqual(self.cli(out, "--trust", self.trust, "--strict")[0], 0)   # no warning
 
     def test_cli_refuses_flags_of_the_other_format(self):
         _, out = self.honest()
