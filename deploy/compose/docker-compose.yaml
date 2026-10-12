@@ -108,6 +108,16 @@ services:
     entrypoint: [tracekit, mcp-gateway, serve, --config, /etc/tracekit/custody/mcp-gateway.yaml]
     volumes: [./custody/mcp-gateway:/etc/tracekit/custody:ro, signer-run:/run/tracekit-signer:ro]
 
+  egress:
+    # The egress observer (docs/egress.md): the agent's way to the outside, through which it records each run's hosts
+    # as its own uid (signer.yaml `authorize`: observe_effect). ./custody/egress/egress.yaml: listen on the agent
+    # network (http, with a certificate) and `signer: /run/tracekit-signer/signer.sock`; the agent sets
+    # HTTPS_PROXY=https://<run_id>:<run token>@egress:3128
+    <<: *custody
+    user: "10014:10014"
+    entrypoint: [tracekit, egress, serve, --config, /etc/tracekit/custody/egress.yaml]
+    volumes: [./custody/egress:/etc/tracekit/custody:ro, signer-run:/run/tracekit-signer:ro]
+
   agent:
     # An example agent: another uid, its own network, only the socket volume. `docker compose run --rm agent`
     # Keep any agent non-root with cap_drop ALL and no-new-privileges: the socket names its peers by uid, and the

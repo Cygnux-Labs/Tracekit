@@ -134,7 +134,8 @@
         "run.child",
         "incident.opened",
         "incident.updated",
-        "incident.capped"
+        "incident.capped",
+        "effect.observed"
       ]
     },
     "data": {
@@ -866,7 +867,7 @@
       "then": {
         "properties": {
           "data": {
-            "$ref": "#/$defs/reconcile"
+            "$ref": "#/$defs/reconcile_effect"
           }
         }
       }
@@ -1027,6 +1028,22 @@
         "properties": {
           "data": {
             "$ref": "#/$defs/incident_capped"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "effect.observed"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/effect_observed"
           }
         }
       }
@@ -1992,13 +2009,15 @@
             "concurrent_run",
             "tailer_redelegated",
             "reask_after_reject",
-            "held_call_unresolved"
+            "held_call_unresolved",
+            "observer_lost",
+            "effect_outside_run"
           ],
           "description": "Gap and tamper kinds (signer-written only)."
         },
         "run_id": {
           "$ref": "#/$defs/id",
-          "description": "format 1.2: the other run the gap is about (late_activity: the final run that was written to; concurrent_run: the open run this one overlaps; client_counter_gap in a tenant's signer run: the final run whose stream it is)"
+          "description": "format 1.2: the other run the gap is about (late_activity: the final run that was written to; concurrent_run: the open run this one overlaps; client_counter_gap in a tenant's signer run: the final run whose stream it is; effect_outside_run: the run the effect was attributed to)"
         },
         "tool_use_id": {
           "type": [
@@ -2416,6 +2435,30 @@
             "none"
           ],
           "description": "an imported run (source import): what its records say about the calls beyond their receipt"
+        },
+        "posture": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "network",
+            "gateway_mandatory",
+            "attested"
+          ],
+          "description": "format 1.2: the deployment's posture as the operator asserts it in signer.yaml: whether the agent's network is enforced through the egress proxy and whether the LLM gateway is the agent's only way to its model; never attested",
+          "properties": {
+            "network": {
+              "enum": [
+                "enforced",
+                "open"
+              ]
+            },
+            "gateway_mandatory": {
+              "type": "boolean"
+            },
+            "attested": {
+              "const": false
+            }
+          }
         }
       }
     },
@@ -2527,8 +2570,42 @@
                   "type": "integer",
                   "minimum": 1,
                   "maximum": 9007199254740991
+                },
+                "unexplained_effect": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 9007199254740991
                 }
               }
+            }
+          }
+        },
+        "matrix": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "model_calls",
+            "tool_calls",
+            "network",
+            "processes",
+            "services"
+          ],
+          "description": "format 1.2: per action class, how the run was covered: enforced (custody: the only way to act records it), observed (an observer outside the agent saw it and it was reconciled), reported (only the agent's own process reported it) or none; and the layers behind it",
+          "properties": {
+            "model_calls": {
+              "$ref": "#/$defs/coverage_class"
+            },
+            "tool_calls": {
+              "$ref": "#/$defs/coverage_class"
+            },
+            "network": {
+              "$ref": "#/$defs/coverage_class"
+            },
+            "processes": {
+              "$ref": "#/$defs/coverage_class"
+            },
+            "services": {
+              "$ref": "#/$defs/coverage_class"
             }
           }
         }
@@ -3716,7 +3793,8 @@
             "provenance",
             "class_mismatch",
             "refusal_burst",
-            "tamper"
+            "tamper",
+            "unexplained_effect"
           ]
         },
         "rule_ids": {
@@ -3858,7 +3936,8 @@
             "provenance",
             "class_mismatch",
             "refusal_burst",
-            "tamper"
+            "tamper",
+            "unexplained_effect"
           ],
           "description": "the trigger of the first incident not written"
         },
@@ -3869,6 +3948,166 @@
         "reason": {
           "type": "string",
           "maxLength": 512
+        }
+      }
+    },
+    "effect_observed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "observer",
+        "kind",
+        "host",
+        "port",
+        "bytes_out",
+        "bytes_in",
+        "connections",
+        "first_ts",
+        "last_ts",
+        "attribution"
+      ],
+      "description": "format 1.2: network traffic an egress observer outside the agent saw for the run (tracekit.egress), aggregated per host, port and minute; signer-written",
+      "properties": {
+        "observer": {
+          "type": "string",
+          "maxLength": 256,
+          "description": "the egress observer's signer identity (scheme:subject)"
+        },
+        "kind": {
+          "enum": [
+            "net"
+          ]
+        },
+        "host": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 253
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "bytes_out": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "bytes_in": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "connections": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "first_ts": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{6}Z$",
+          "maxLength": 27
+        },
+        "last_ts": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{6}Z$",
+          "maxLength": 27
+        },
+        "attribution": {
+          "enum": [
+            "token",
+            "identity"
+          ],
+          "description": "token: the client presented the run's token; identity: the observer authenticated the run's owner and the signer picked that owner's latest open run"
+        },
+        "explained_by": {
+          "enum": [
+            "call",
+            "gateway",
+            "explains"
+          ],
+          "description": "what explains the host: a recorded http call to it, a gateway or executor that made the connection for the run, or the policy's explains; absent: unexplained (a reconcile.unexplained_effect follows)"
+        }
+      }
+    },
+    "reconcile_effect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "layers",
+        "observer",
+        "kind",
+        "host"
+      ],
+      "description": "format 1.2: a host an observer saw the run reach that no record of the run explains",
+      "properties": {
+        "layers": {
+          "type": "array",
+          "maxItems": 6,
+          "items": {
+            "enum": [
+              "L1",
+              "L2",
+              "L3",
+              "L4",
+              "L5",
+              "L6"
+            ]
+          }
+        },
+        "detail": {
+          "type": "string",
+          "maxLength": 1024
+        },
+        "observer": {
+          "type": "string",
+          "maxLength": 256,
+          "description": "the egress observer's signer identity (scheme:subject)"
+        },
+        "kind": {
+          "enum": [
+            "net"
+          ]
+        },
+        "host": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 253
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        }
+      }
+    },
+    "coverage_class": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "layers"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "enforced",
+            "observed",
+            "reported",
+            "none"
+          ]
+        },
+        "layers": {
+          "type": "array",
+          "maxItems": 8,
+          "items": {
+            "type": "string",
+            "maxLength": 32
+          }
+        },
+        "asserted": {
+          "const": true,
+          "description": "the status rests on the operator's posture (signer.yaml), not on anything the signer measured"
         }
       }
     }

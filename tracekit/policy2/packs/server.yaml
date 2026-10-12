@@ -9,7 +9,7 @@
 # grep searches for). Each URL is also matched as scheme://canonical-host/, so any notation of an address counts.
 
 extends: [coding.yaml, browser.yaml, server-data.yaml, server-net.yaml, server-cloud.yaml, server-comms.yaml]
-version: '2026.10-server-5'
+version: '2026.10-server-6'
 description: server-hosted agents (coding, browser and server packs; unmapped tools ask)
 unknown_tools: ask
 
@@ -95,3 +95,6 @@ respond:
   - {trigger: executed_against_policy, mode: shadow, action: notify}
   - {trigger: TK-L001, mode: shadow, action: hold}
   - {trigger: TK-L002, mode: shadow, action: hold}
+  # a host an egress observer saw a run reach that no call, gateway or explains entry covers (docs/egress.md): notify
+  # only until the deployment's explains list is tuned
+  - {trigger: unexplained_effect, mode: shadow, action: notify}

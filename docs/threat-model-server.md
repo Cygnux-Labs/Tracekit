@@ -56,8 +56,11 @@ and `eval/e8_insider_v2.py` (E8v2.1 decoy signer, E8v2.3 signer down, E8v2.4 pol
 | Caught by | reconciliation across capture layers: a model call that requested a tool with no matching `decide` is `reconcile.hook_missing`, a decide no model call requested is `reconcile.fabricated`, other arguments are `reconcile.args_mismatch` (the `coverage` warning). An approval with `executor: t2` makes the executor outside the agent run the approved arguments, not the agent's |
 
 Limits: in-process autotrace (L3) runs in the same process as S2, so S2 can suppress it too; the report shows
-`(L3 absent)`. The [LLM gateway](gateway.md) captures L3 outside the agent; layers L4–L6 are not shipped yet, so
-without the gateway, coverage is what the agent's process reported. All limits: [limits.md](limits.md). Invariants: I1, I2, I6. Covered by `tests/test_reconcile.py`, `eval/e10_reconcile.py`,
+`(L3 absent)`. The [LLM gateway](gateway.md) captures L3 outside the agent, and the [egress observer](egress.md)
+the hosts each run reaches (L6): side effects beneath a recorded call, such as a shell command's own connections, are
+signed `effect.observed` records, and a host no call, gateway or `explains` entry covers is
+`reconcile.unexplained_effect`. Layers L4 and L5 (processes, services) are not shipped yet; run.final's coverage
+matrix says per action class what covered the run (enforced, observed, reported or none) and never claims more. All limits: [limits.md](limits.md). Invariants: I1, I2, I6. Covered by `tests/test_reconcile.py`, `eval/e10_reconcile.py`,
 `tests/test_signer_lifecycle.py` (`test_client_forged_gap_or_tamper_is_refused_and_summarised`,
 `test_client_isolation_and_fail_mode_claims_have_no_effect`) and `tests/test_known_gaps_v2.py::test_kg11_signer_isolation_not_taken_from_client`.
 
@@ -138,6 +141,11 @@ All limits, across every doc: [limits.md](limits.md).
   witnesses.
 - **Key assurance is `asserted`** unless a [record-key issuer](issuer.md) certifies the keys: the log declares its own
   record keys.
+- **Egress observation is hosts-only and attributed:** the [egress observer](egress.md) sees hosts and byte counts,
+  not content (no TLS interception); traffic attributed by identity goes to the identity's latest open run; whether
+  agents can bypass it (`posture: {network: enforced}`) is the operator's assertion, recorded as not attested. An
+  observer is its own identity with a never-default grant, never a run's owner, and its silence is a signed
+  `observer_lost` gap.
 - **Fail-open classes:** tool classes configured `fail_modes: {<class>: open}` run when the signer is down, unrecorded;
   the report lists them.
 - **Windows:** dev mode only.

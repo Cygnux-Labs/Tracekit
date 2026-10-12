@@ -49,6 +49,11 @@ signer.yaml:
                                              # recorded source gateway (tier T2, naming the gateway in `via`); a
                                              # call a gateway decided takes its later steps from it alone (_hold)
     gateway_mandatory: false                 # true: reconcile decides against gateway L3 only (tracekit.signer.reconcile)
+    posture: {network: enforced, gateway_mandatory: true}   # the deployment as the operator asserts it (run.registered
+                                             # records it, never attested): the agent reaches the outside only through
+                                             # the egress proxy; the LLM gateway is its only way to its model (the
+                                             # coverage matrix's enforced; docs/egress.md)
+    observe_grace_s: 120                     # how long a closing run an egress observer covers waits for its last reports
     fail_modes: {default: closed, read: open}   # tool class -> fail mode, recorded and returned by register_run
     grace_s: 5                               # reconciliation window between run.closing and run.final
     gateway_wait_s: 600                      # past grace_s, how long a closing run waits for the results of calls a
@@ -129,7 +134,10 @@ stream the closer wrote (or that never reached the signer) into a client_counter
 that arrive later are recorded with no new gap. A gateway's report about a final run goes in the tenant's signer run.
 A run's transcript tailer (delegate_run to an identity granted `tailer_heartbeat`: system mode's tailer uid) is
 watched from the delegation: TAILER_LOST_S with no call from it while the run is open is a tailer_lost gap, and a
-second tailer token for the run a `capture.gap{tailer_redelegated}`. Writes refused because their run is final are
+second tailer token for the run a `capture.gap{tailer_redelegated}`. An egress observer (tracekit.egress; an identity
+granted `observe_effect`, never the run's owner) is watched the same way: it covers each run of its tenant registered
+while it is alive, a silence of TAILER_LOST_S is an `observer_lost` gap in each open run it covers, and a covered run
+waits `observe_grace_s` after closing for its last reports (_observe_effect). Writes refused because their run is final are
 counted per run (not a close_run, nor each identity's and stream's first one: that is how a client learns its run
 ended) and written with the refusal summaries as a `capture.gap{late_activity}` in the tenant's signer run, which
 (unlike the run's own records) gets a leaf in the tenant's registry, so a run-set shows it.
@@ -265,7 +273,7 @@ from tracekit.identity.base import CallerIdentity
 from tracekit.identity import webauthn
 from tracekit.identity.oidc import keys, person
 from tracekit.locking import lock_file
-from tracekit.policy2 import compile as policy_compile, engine
+from tracekit.policy2 import classes, compile as policy_compile, engine
 from tracekit.policy2.engine import Engine
 from tracekit.signer import detect, logkey, metrics, reconcile, rpc_schema, webhook
 from tracekit.signer import otel as signer_otel
@@ -299,8 +307,9 @@ PROVENANCE_MAX, PROVENANCE_SHOWN = 20_000, 16   # index entries per run (then tr
 PROVENANCE_S = engine.REGEX_TIMEOUT_S   # reading a decision's argument values: the same budget as its policy match
 CLASSES = ("public", "customer", "tracekit", "operator")
 GRACE_S, IDLE_S = 5.0, 3600.0
-HEARTBEAT_S = 30.0   # how often a transcript tailer sends tailer_heartbeat
-TAILER_LOST_S = 3 * HEARTBEAT_S   # a tailer silent this long while its run is open is lost
+HEARTBEAT_S = 30.0   # how often a transcript tailer sends tailer_heartbeat, and an egress observer observe_effect
+TAILER_LOST_S = 3 * HEARTBEAT_S   # a tailer or observer silent this long while its run is open is lost
+OBSERVE_GRACE_S = 120.0   # an observer reports a minute's traffic once the minute ends, at its next heartbeat
 DECIDED_GAPS_MAX = 100   # decided_not_completed gaps per run, then one gap counting the rest
 GATEWAY_WAIT_S = 600.0   # the MCP gateway's upstream timeout, the longest of the shipped gateways
 FAIL_MODES = {"default": "closed"}
@@ -311,7 +320,7 @@ CONFIG_KEYS = {"data_dir", "socket", "socket_mode", "tcp_endpoint", "http", "dur
                "fail_modes", "grace_s", "idle_s", "origin", "metrics", "witnesses", "contact", "approvals",
                "lock_timeout_s", "fsck_every_s", "clock_skew_s", "anchors", "otlp", "otel_out", "storage", "gateways",
                "gateway_mandatory", "log_key", "harness_binding", "record_key", "route", "view", "decision_keys",
-               "webhook", "content", "gateway_wait_s"}
+               "webhook", "content", "gateway_wait_s", "posture", "observe_grace_s"}
 APPROVAL_KEYS = {"self_approval", "approvers", "break_glass", "persons", "webauthn", "agents", "ttl_s",
                  "agent_consume_s", "agent_timeout_s"}
 # agent approvers (docs/approvals.md#agent-approvers): what an identity in approvals.agents may call, given an authorize
@@ -337,9 +346,9 @@ DEFAULT_GRANTS = frozenset({
     "approval_revoke", "close_run", "delegate_run", "tailer_lost", "status", "read", "checkpoint_nudge",
     "passkey_register", "why_finding"})
 # tailer_heartbeat: only an identity granted it (TAILER_METHODS), so the agent can't keep a killed tailer's
-# heartbeats going with its own token
+# heartbeats going with its own token; observe_effect: an egress observer's own identity, never an agent's
 NEVER_DEFAULT = frozenset({DECISION_IMPORT, ON_BEHALF, "content_get", "content_erase", "approval_review",
-                           "approval_agents", "tailer_heartbeat"})
+                           "approval_agents", "tailer_heartbeat", "observe_effect"})
 CONTENT = {"retain": False, "retention_days": 30, "max_record_bytes": 1 << 20}   # the `content` config section
 CONTENT_SWEEP_S = 3600.0
 ERASED = object()   # _data_key of a run whose content was erased
@@ -533,7 +542,7 @@ class SignerService:
                  fsck_every_s=FSCK_S, clock_skew_s=CLOCK_SKEW_S, rekor=None, otlp=None, otel_out=None,
                  storage_config=None, gateways=(), gateway_mandatory=False, log_key=None, slh_dsa_file=None,
                  harness_binding=None, record_key=None, route=None, oidc=None, decision_keys=None, webhooks=(),
-                 content=None, gateway_wait_s=GATEWAY_WAIT_S):
+                 content=None, gateway_wait_s=GATEWAY_WAIT_S, posture=None, observe_grace_s=OBSERVE_GRACE_S):
         """`identity` answers the in-process SignerAPI calls (default: this process's uid); transports call
         handle_frame with the identity they established. `policy` is a policy2 Engine (default: load_policy()).
         `open_storage()` defaults to the store `storage_config` (the `storage` config section) names, else file storage
@@ -555,7 +564,8 @@ class SignerService:
         `route`: the prefix (before a dot) of this signer's run and approval ids, or None.
         `decision_keys`: external system -> its base64 Ed25519 public key (the `decision_keys` config section).
         `webhooks`: webhook.Sender arguments ({url, events, secret}) of the `webhook` config section.
-        `content`: the `content` config section (the content vault; see the module docstring), or None (off)."""
+        `content`: the `content` config section (the content vault; see the module docstring), or None (off).
+        `posture` ({network, gateway_mandatory}) and `observe_grace_s`: see the config keys."""
         fail_modes = dict(fail_modes or FAIL_MODES)
         if not all(isinstance(k, str) and v in ("open", "closed") for k, v in fail_modes.items()):
             raise ValueError("fail_modes maps tool classes to open or closed")
@@ -609,6 +619,13 @@ class SignerService:
         if self._decision_keys is None or any(crypto.key_alg(v) != "ed25519" for v in self._decision_keys.values()):
             raise ValueError("decision_keys maps system names to base64 Ed25519 public keys")
         self.content = content_config(content)
+        if posture is not None and not (isinstance(posture, dict) and set(posture) <= {"network", "gateway_mandatory"}
+                                        and posture.get("network", "open") in ("enforced", "open")
+                                        and isinstance(posture.get("gateway_mandatory", False), bool)):
+            raise ValueError("posture takes network (enforced or open) and gateway_mandatory (true or false)")
+        self.posture = posture and {"network": posture.get("network", "open"),
+                                    "gateway_mandatory": posture.get("gateway_mandatory", False)}
+        self.observe_grace_s = observe_grace_s
         self.metrics = metrics.SignerMetrics()
         self._prov_key = os.urandom(32)   # the provenance index's key: per process, as the index is
         authorize = dict(authorize or {})
@@ -662,7 +679,9 @@ class SignerService:
         self.identity = identity or _process_identity()
         self.tenant, self.tenants, self.authorize = tenant, dict(tenants or {}), authorize
         self.multi_tenant_apps, self.migrators, self.analyzers = set(multi_tenant_apps), set(migrators), set(analyzers)
-        self._beats, self._beats_lock = {}, threading.Lock()   # run key -> monotonic time of its tailer's last heartbeat
+        # run key -> monotonic time of its tailer's last heartbeat; (*run key, observer) -> its observer's
+        self._beats, self._beats_lock = {}, threading.Lock()
+        self._observers = {}   # (tenant, observer) -> monotonic time of its last observe_effect (under _beats_lock)
         self._gateways, self.gateway_mandatory = {k: True for k in gateways}, bool(gateway_mandatory)
         self.gateway_wait_s = gateway_wait_s
         self.fail_modes, self.grace_s, self.idle_s = fail_modes, grace_s, idle_s
@@ -1229,10 +1248,10 @@ class SignerService:
         return [c for c in run["decisions"].values()
                 if c and c.get("via") and (c["decision"] in ("allow", "flag") or consumed(c))]
 
-    def _finish_run(self, tx, key, run, aids):
+    def _finish_run(self, tx, key, run, aids, now=None):
         """run.final for closing `run`, whose approvals are `aids`, after a gap for each call a gateway holds that has
-        no result and one for each other call decided to run that never completed; returns the ids of the approvals
-        that expired with it."""
+        no result, one for each other call decided to run that never completed and one for each observer that went
+        silent (`now`: a monotonic time); returns the ids of the approvals that expired with it."""
         consumed = {(a["tool_call_id"], a["attempt"]): a["decision_id"] for a in map(self.log.approvals.get, aids)
                     if a["state"] == "consumed"}
         for c in self._held_open(key, run):
@@ -1273,11 +1292,19 @@ class SignerService:
                                                    "with no tool.result next to the harness's transcript or the "
                                                    "app's log for whether they ran"},
                     source="signer")
+        observed = False
+        for obs, at in self._covering(key).items():
+            if (time.monotonic() if now is None else now) - at < TAILER_LOST_S:
+                observed = True
+            else:
+                self._observer_lost(tx, run, obs, at, now)
         coverage = reconcile.finish(tx, run, self.gateway_mandatory, self.policy.is_handoff)
         provider = len(reconcile.counted(run["rec"], self.gateway_mandatory, "provider")) if run.get("rec") else 0
         tx.set(run, "final", True)
         tx.emit(run, "run.final", {"head_run_seq": run["run_seq"] - 1, "head_hash": run["head"],
-                                   **({"coverage": coverage} if coverage else {}),
+                                   **({"coverage": coverage,
+                                       "matrix": reconcile.matrix(run["rec"], self.posture or {}, observed)}
+                                      if coverage else {}),
                                    **({"provider_executed": provider} if provider else {})}, source="signer")
         tx.set(self.log.runs, key, final_run(run))   # its calls, decisions and arguments go
         tx.pop(self.log.live, key)
@@ -1304,14 +1331,20 @@ class SignerService:
                     tx.pop(self.log.agent["uses"], aid)
             with self._beats_lock:
                 beats = dict(self._beats)
+            watched = {}   # run key -> {observer: its last heartbeat}
+            for k, at in beats.items():
+                if len(k) == 3:
+                    watched.setdefault(k[:2], {})[k[2]] = at
             for key in list(self.log.live):
                 run, live = self.log.runs[key], [aid for aid in mine.get(key, ())
                                                  if self.log.approvals[aid]["state"] in LIVE]
                 waited = t - run["closing_at"] if run["closed"] else -1
-                # a call a gateway holds may still complete: wait for it up to gateway_wait_s past the grace window
+                # a call a gateway holds may still complete: wait for it up to gateway_wait_s past the grace window;
+                # an observer's last reports, up to observe_grace_s
                 if waited >= self.grace_s and (waited >= self.grace_s + self.gateway_wait_s
-                                               or not self._held_open(key, run)):
-                    expired += self._finish_run(tx, key, run, mine.get(key, ()))
+                                               or not self._held_open(key, run)) and (
+                        waited >= self.observe_grace_s or key not in watched):
+                    expired += self._finish_run(tx, key, run, mine.get(key, ()), t)
                     finals.append(key)
                     continue
                 for aid in live:
@@ -1335,15 +1368,20 @@ class SignerService:
                             "transcript itself for it, and run `sudo tracekit doctor` to check the tailer"},
                             source="signer")
                     lost.append(key)
+                for obs, at in watched.get(key, {}).items():
+                    if t - at >= TAILER_LOST_S:
+                        self._observer_lost(tx, run, obs, at, t)
+                        lost.append((*key, obs))
                 if any(self.log.approvals[aid]["state"] == "requested" for aid in live):
                     tx.set(run, "active", run["active"] + paused)   # the idle clock pauses while an approval is pending
                 elif t - run["active"] >= self.idle_s:
                     tx.closing(run, "idle_timeout", source="signer")
             return expired
         expired = self.log.write(fn)
-        with self._beats_lock:   # a lost tailer's run expects no more heartbeats, a final run none at all
-            for key in lost + finals:
-                self._beats.pop(key, None)
+        with self._beats_lock:   # a lost tailer's or observer's run expects no more heartbeats, a final run none at all
+            done = set(finals)
+            for k in [k for k in self._beats if k in lost or k[:2] in done]:
+                self._beats.pop(k)
         if finals:
             self._nudged.set()
         for key in finals if self._exporter else ():
@@ -1425,6 +1463,19 @@ class SignerService:
                 with self._beats_lock:
                     self._beats[key] = time.monotonic()
         return key
+
+    def _covering(self, key):
+        """{observer: its last heartbeat} of the egress observers covering run `key`."""
+        # lean: scans the beat map; key it by run if a signer watches ~100k runs at once
+        with self._beats_lock:
+            return {k[2]: at for k, at in self._beats.items() if len(k) == 3 and k[:2] == key}
+
+    def _observer_lost(self, tx, run, obs, at, now):
+        t = time.monotonic() if now is None else now
+        tx.emit(run, "capture.gap", {"kind": "observer_lost", "reason": f"no observe_effect from egress observer "
+                f"{obs[:256]} for {t - at:.0f}s while the run was open: it stopped or was killed, so the run's network "
+                "traffic from then on was not observed and its coverage says network not observed; check the egress "
+                "proxy (`tracekit egress serve`) and that its identity has the observe_effect grant"}, source="signer")
 
     def _tailer(self, identity):
         """Whether `identity` is a transcript tailer's: granted tailer_heartbeat."""
@@ -1878,6 +1929,8 @@ class SignerService:
                 data.update(parent_run=parent["run_id"], session=run["session"])
             if harness:
                 data["harness"] = dict(harness, attested=True)
+            if self.posture:
+                data["posture"] = {**self.posture, "attested": False}
             tx.emit(run, "run.registered", data, request_id=req["request_id"], **top)
             if up and harness:   # the parent's records name a child its harness process started
                 tx.emit(up, "run.child", {"run_id": run_id}, source="signer")
@@ -1888,7 +1941,12 @@ class SignerService:
                 o = self.log.runs[(tenant, other)]
                 tx.set(o, "overlapped_by", [*o.get("overlapped_by", ()), run_id])
             return out
-        return self.log.submit(identity, "register_run", req, fn)
+        out = self.log.submit(identity, "register_run", req, fn)
+        with self._beats_lock:   # the observers alive now cover the run from its start
+            for (t, obs), at in self._observers.items():
+                if t == out["tenant"] and time.monotonic() - at < TAILER_LOST_S:
+                    self._beats.setdefault((t, out["run_id"], obs), at)
+        return out
 
     def _overlapping(self, tenant, run_id, own, harness, session):
         """An open run of `own` in `tenant`, of the same harness process, in another session than run `run_id`'s, or
@@ -1915,6 +1973,9 @@ class SignerService:
         sums, unreadable = self.log.detector.prepare(tool, args, ruled[2]) if self.log.detector and ruled else ({}, False)
         agent = self._eligibility(key, identity, tool, args, digest, ruled[0], prov) if ruled and \
             ruled[0]["verdict"] == "ask" else None
+        cls = self.policy.tool_class(tool)
+        host = classes.extract(cls, tool, args).get("host") if cls in ("http", "browser") and isinstance(
+            args, dict) else None
         did = "dec-" + secrets.token_hex(16)
         commitment = self._commit(did, digest) if digest else None
         # lean: expires_at is signed but `complete` does not enforce it; enforce once executors check it before running
@@ -1959,6 +2020,10 @@ class SignerService:
                 data["detect"] = {**data.get("detect", {}), **sums}
             if commitment:
                 data["args_commitment"] = commitment
+            if isinstance(host, str) and verdict != "deny" and run.get("rec") is not None:   # explains its traffic
+                # lean: hosts are memory and snapshot state; after a restart with no snapshot since, the run's earlier
+                # http calls no longer explain an observed host (an unexplained_effect warning)
+                tx.set(reconcile.sub(tx.set, run["rec"], "hosts"), host.lower().rstrip("."), True)
             call = {"tool_call_id": tcid, "attempt": attempt, "decision": verdict, "rule_ids": rule_ids,
                     "decision_id": did, "commitment": commitment, "dotenv": _dotenv(args), "tool": tool,
                     "via": holder[0], "caller": holder[1], "nondeterministic": bool(data.get("nondeterministic")),
@@ -2716,6 +2781,79 @@ class SignerService:
             self._beats.pop(key, None)
         return out
 
+    def _observe_effect(self, identity, req):
+        """An egress observer's effects (tracekit.egress): each an effect.observed in the run it is attributed to while
+        that run is open or closing, then reconciled (a host nothing explains is one reconcile.unexplained_effect);
+        else a capture.gap{effect_outside_run} in the tenant's signer run, which a run-set shows. Every call is the
+        observer's heartbeat: the runs of its tenant registered while it is alive are covered by it."""
+        obs, tenant = subject(identity), self._tenant_of(identity)
+        if len(obs) > 256:   # each record names it in full
+            raise RPCError("forbidden", f"{obs[:64]}...: an observer's identity is at most 256 characters")
+        self.quotas.take_event(identity)
+        now = time.monotonic()
+        with self._beats_lock:
+            self._observers[(tenant, obs)] = now
+            for k in self._beats:
+                if len(k) == 3 and k[0] == tenant and k[2] == obs:
+                    self._beats[k] = now
+        labels = {r["id"]: r["label"] for _, r, *_ in self.policy.rules if "label" in r}
+        explains = self.policy.policy.get("explains", ())
+
+        def fn(tx, _):
+            for x in req["effects"]:
+                key, how, why = self._attributed(tenant, x)
+                run = key and self.log.runs.get(key)
+                if run and run["owner"] == owner(identity):
+                    raise RPCError("forbidden", f"{obs[:256]} owns run {key[1]}: an observer is never the agent's "
+                                                "identity; give the egress proxy its own")
+                if not run or run["final"]:
+                    why = why or (f"run {key[1]} was final by then (raise observe_grace_s if the observer's reports "
+                                  "often come this late)" if run else f"there is no run {key[1]}")
+                    tx.emit(self.log.signer_run(tx, tenant), "capture.gap", {
+                        "kind": "effect_outside_run", **({"run_id": key[1]} if key else {}),
+                        "reason": f"egress observer {obs[:256]} saw {x['host']}:{x['port']} ({x['bytes_out']} bytes "
+                                  f"out, {x['bytes_in']} in, {x['connections']} connection(s), {x['first_ts']} to "
+                                  f"{x['last_ts']}) that no open run holds: {why}"}, source="signer")
+                    continue
+                rec = run.get("rec")
+                by = "gateway" if x.get("client") and lookup(self._gateways, x["client"], False) else \
+                    rec is not None and reconcile.explained(rec, x["host"], explains, labels) or None
+                tx.emit(run, "effect.observed", {"observer": obs, **{k: x[k] for k in (
+                    "kind", "host", "port", "bytes_out", "bytes_in", "connections", "first_ts", "last_ts")},
+                    "attribution": how, **({"explained_by": by} if by else {})}, source="signer")
+                if by or rec is None or x["host"] in rec.get("effects", {}):   # once per host
+                    continue
+                tx.set(reconcile.sub(tx.set, rec, "effects"), x["host"], True)
+                tx.emit(run, "reconcile.unexplained_effect", {
+                    "layers": ["L6"], "observer": obs, "kind": x["kind"], "host": x["host"], "port": x["port"],
+                    "detail": f"the run reached {x['host'][:253]}:{x['port']} and no http call to it, gateway or "
+                              "explains entry of the policy covers it: if one of the run's tools needs it (a CDN, a "
+                              "package index), add it to the policy's explains; else find which call opened it"},
+                        source="signer")
+            return {"recorded": len(req["effects"])}
+        return self.log.submit(identity, "observe_effect", req, fn)
+
+    def _attributed(self, tenant, x):
+        """(run key or None, attribution, why there is none) of effect `x` of an observer of `tenant` (on the writer):
+        the run its run token names, else the latest open run of the identity the observer authenticated."""
+        if "run_token" in x:
+            try:
+                claims = self.tokens.claims(x["run_token"])
+            except RPCError:
+                return None, "token", "the run token the client presented is not one this signer issued"
+            if (claims["tenant"], claims["run_id"]) != (tenant, x.get("run_id")):
+                return None, "token", "the run token the client presented is for another run or tenant"
+            return (tenant, claims["run_id"]), "token", None
+        if "caller" not in x:
+            return None, "identity", "the client presented neither a run token nor an identity"
+        c = CallerIdentity(*x["caller"].split(":", 1), True)
+        if self._tenant_of(c) != tenant:
+            return None, "identity", f"{x['caller'][:256]} is of another tenant than the observer"
+        # lean: the owner's latest open run takes it; with concurrent runs of one owner, send the run token instead
+        key = next((k for k in reversed(list(self.log.live)) if k[0] == tenant
+                    and self.log.runs[k]["owner"] == owner(c)), None)
+        return key, "identity", None if key else f"{x['caller'][:256]} has no open run"
+
     def _why_finding(self, identity, req):
         key = self._authorize(identity, req)
         try:
@@ -3238,6 +3376,7 @@ def open_service(cfg, **kw):
                          harness_binding=cfg.get("harness_binding"), record_key=cfg.get("record_key"),
                          route=cfg.get("route"), decision_keys=cfg.get("decision_keys"), webhooks=cfg.get("webhook", ()),
                          content=cfg.get("content"), gateway_wait_s=float(cfg.get("gateway_wait_s", GATEWAY_WAIT_S)),
+                         posture=cfg.get("posture"), observe_grace_s=float(cfg.get("observe_grace_s", OBSERVE_GRACE_S)),
                          **kw)
 
 

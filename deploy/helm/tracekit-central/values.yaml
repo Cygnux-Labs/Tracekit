@@ -137,9 +137,23 @@ mcpGateway:
     requests: {cpu: 100m, memory: 256Mi}
     limits: {cpu: "1", memory: 1Gi}
 
+# The egress observer (docs/egress.md), on 3128: a CONNECT proxy for the agents' outside traffic, which records each
+# run's hosts as the signer identity k8s_sa:system:serviceaccount:<namespace>:<release>-egress: grant it
+# observe_effect in signer.config `authorize`. config is its egress.yaml without http and signer (allow); agents set
+# HTTPS_PROXY=https://<run_id>:<run token>@<release>-egress.<namespace>.svc:3128. No secretName: it holds none.
+egress:
+  enabled: false
+  config: {}
+  tlsSecretName: ""
+  image: ""
+  replicas: 1
+  resources:
+    requests: {cpu: 100m, memory: 128Mi}
+    limits: {cpu: "1", memory: 256Mi}
+
 # An egress NetworkPolicy for the agent pods (podSelector, in `namespace`): they reach only the signers, the custody
-# services above that are enabled, the egress proxy and DNS. Off: agents reach anything. Needs a CNI that enforces
-# egress policies (docs/deploy-kubernetes.md#custody).
+# services above that are enabled (the egress observer among them), the egress proxy and DNS. Off: agents reach
+# anything. Needs a CNI that enforces egress policies (docs/deploy-kubernetes.md#custody).
 agentEgress:
   enabled: false
   namespace: ""            # where the agent pods run; default the release's

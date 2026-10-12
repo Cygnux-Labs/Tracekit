@@ -96,7 +96,8 @@ is `witnessed` plus a fresh, conflict-free report of a monitor your trust config
 | `tenant-level gaps` | the run-set range holds signer gaps that concern every tenant (witness failures, clock skew, startup without a witness, rollbacks), counted by kind | that the runs in the range lost records |
 | `log tail` | records after the checkpoint are unproven: the range has no `log.closed` at the checkpoint's last record | that records were hidden |
 | `policy` | a tool call ran against a deny, or an `ask` with no consumed approval, and the signer recorded it as `capture.gap{executed_against_policy}` | that the call did harm |
-| `coverage` | the signer's reconciliation found calls it could not match across capture layers (`unreconciled: hook_missing 1, ...`) | that the agent hid a call; a layer may simply not have reported |
+| `coverage` | the signer's reconciliation found calls it could not match across capture layers (`unreconciled: hook_missing 1, ...`), or a host an [egress observer](egress.md) saw the run reach that no call, gateway or `explains` entry covers (`unexplained_effect 1`) | that the agent hid a call; a layer may simply not have reported, and an unexplained host may be a tool's own dependency the policy's `explains` doesn't list yet |
+| `observers` | an egress observer covering the run went silent while the run was open, and the signer wrote a `capture.gap{observer_lost}`: the run's traffic after that was not observed | that the run sent anything unobserved |
 | `break-glass approvals` | an approval was answered under the break-glass role, with its approver and reason | that the approval was wrong |
 | `held calls` | the signer wrote a `held_call_unresolved` gap: a call the executor or a gateway decided and may have run got no result before its run ended (after `gateway_wait_s`) | that the call ran, or did harm |
 | `tiers` (`decided and completed by different capture paths`) | a tool call's decision and result records name different `source` or `tier`, for example a call a gateway decided (T2) completed by the agent, which a current signer refuses; each such call is listed and counted at the weaker tier | which record is false, or that the call didn't run |
@@ -107,6 +108,7 @@ is `witnessed` plus a fresh, conflict-free report of a monitor your trust config
 | Line | Shows | Read it as |
 |---|---|---|
 | `coverage` (no unreconciled calls) | the capture layers that reported (`L1`–`L6`; `(L3 absent)` when no model calls were seen) and the number of calls reconciled | completeness is only as good as the layers listed |
+| `coverage matrix` | per action class, how the run was covered: `model calls enforced (gateway, asserted), tool calls reported (adapter), network observed (egress), processes not covered, services not covered`. `enforced`: custody, the only way to act records it; `observed`: an observer outside the agent saw it and the signer reconciled it; `reported`: only the agent's own process reported it; `not covered`: nothing did. The layers behind each, and `asserted` where it rests on the operator's [posture](egress.md#posture); across several runs, each class's weakest | never that a run is complete: `reported` and `not covered` classes are where the agent could act unseen |
 | `tiers` (each call decided and completed by one capture path) | tool calls by evidence tier: `T1` adapter, `T2` gateway or executor, `T3` import; `untiered` when no record names one. A call whose records disagree counts at the weakest (untiered < T3 < T1 < T2), its decision or result naming none counting as untiered | T3 (OTLP import) proves receipt only |
 | `args source` | records by `args_source`: `raw` (the exact bytes the model produced), `parsed`, `coerced` (after the framework changed them) | coerced arguments can't be matched to the model's call byte for byte |
 | `isolation` | the `signer_isolation` the signer measured for each run: `same-user`, `separate-user`, `remote`, `unknown` | `signer-reported`: the signer's own measurement of its caller, never the client's claim |
@@ -123,4 +125,5 @@ see [approvals](approvals.md).
 
 Gaps inside a run (`capture.gap` with kinds such as `client_counter_gap`, `signer_unavailable`, `decision_flip`,
 `class_mismatch`) are signed records of the run, visible in the bundle; only `executed_against_policy`, `decision_mismatch` and the
-reconciliation kinds have report lines of their own. Tenant-level gaps show on the run-set line.
+reconciliation kinds have report lines of their own, and `observer_lost` its `observers` line. Tenant-level gaps,
+and `effect_outside_run` (an observation no open run held), show on the run-set line.

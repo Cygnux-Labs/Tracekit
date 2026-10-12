@@ -1,10 +1,12 @@
 {{- /* The custody services (docs/gateway.md, docs/executor.md, docs/mcp-gateway.md): each holds credentials the agents
 never get, from a Secret mounted only in its own pod, and records for the agents' runs as a signer `gateways` identity,
 k8s_sa:system:serviceaccount:<namespace>:<release>-<name>. Each takes the agents' tokens of its own audience,
-<audience>-<name>, never the signers': a token one receives can't be replayed at the signers. */ -}}
-{{- range $s := list (dict "key" "gateway" "name" "gateway" "port" 8080 "set" (dict "api_key_file" "/etc/tracekit/secrets/api_key"))
-                     (dict "key" "executor" "name" "executor" "port" 8090 "set" dict)
-                     (dict "key" "mcpGateway" "name" "mcp-gateway" "port" 8091 "set" dict) }}
+<audience>-<name>, never the signers': a token one receives can't be replayed at the signers. The egress observer
+(docs/egress.md) holds no secret: it records the agents' outside traffic as its own identity, granted observe_effect. */ -}}
+{{- range $s := list (dict "key" "gateway" "name" "gateway" "port" 8080 "set" (dict "api_key_file" "/etc/tracekit/secrets/api_key") "secret" true)
+                     (dict "key" "executor" "name" "executor" "port" 8090 "set" dict "secret" true)
+                     (dict "key" "mcpGateway" "name" "mcp-gateway" "port" 8091 "set" dict "secret" true)
+                     (dict "key" "egress" "name" "egress" "port" 3128 "set" dict "secret" false) }}
 {{- $v := index $.Values $s.key }}
 {{- if $v.enabled }}
 {{- $name := printf "%s-%s" $.Release.Name $s.name }}
@@ -68,14 +70,18 @@ spec:
           volumeMounts:
             - {name: tmp, mountPath: /tmp}
             - {name: config, mountPath: /etc/tracekit/custody, readOnly: true}
+            {{- if $s.secret }}
             - {name: secrets, mountPath: /etc/tracekit/secrets, readOnly: true}
+            {{- end }}
             - {name: tls, mountPath: /etc/tracekit/tls, readOnly: true}
             - {name: signer-ca, mountPath: /etc/tracekit/signer-ca, readOnly: true}
             - {name: signer-token, mountPath: /var/run/secrets/tracekit, readOnly: true}
       volumes:
         - {name: tmp, emptyDir: {}}
         - {name: config, configMap: {name: {{ $name }}}}
+        {{- if $s.secret }}
         - {name: secrets, secret: {secretName: {{ required (printf "%s.secretName is required" $s.key) $v.secretName }}, defaultMode: 0440}}
+        {{- end }}
         - {name: tls, secret: {secretName: {{ required (printf "%s.tlsSecretName is required" $s.key) $v.tlsSecretName }}, defaultMode: 0440}}
         - {name: signer-ca, secret: {secretName: {{ required "tls.secretName is required" $.Values.tls.secretName }}, items: [{key: ca.crt, path: ca.crt}]}}
         - name: signer-token
@@ -98,7 +104,8 @@ spec:
 {{- end }}
 ---
 # Agent pods reach only the signers, the custody services, the egress proxy and DNS: a call that needs a credential
-# goes through a service that records it. Enforced only by a CNI that enforces egress policies.
+# goes through a service that records it, and outside traffic through the egress observer. Enforced only by a CNI
+# that enforces egress policies.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -112,7 +119,8 @@ spec:
   egress:
     {{- range $c := list (dict "component" "signer" "port" 8443) (dict "component" "gateway" "port" 8080 "on" $.Values.gateway.enabled)
                          (dict "component" "executor" "port" 8090 "on" $.Values.executor.enabled)
-                         (dict "component" "mcp-gateway" "port" 8091 "on" $.Values.mcpGateway.enabled) }}
+                         (dict "component" "mcp-gateway" "port" 8091 "on" $.Values.mcpGateway.enabled)
+                         (dict "component" "egress" "port" 3128 "on" $.Values.egress.enabled) }}
     {{- if or (eq $c.component "signer") $c.on }}
     - to:
         - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: {{ $.Release.Namespace }}}}

@@ -30,6 +30,8 @@ const MAX_LINE = 1 << 20;
 const CLASSES = ["public", "customer", "tracekit", "operator"];
 const KEY_TYPES = ["signer.epoch", "key.retire"];
 const ZERO_HASH = "sha256:" + "0".repeat(64);
+const MATRIX = ["model_calls", "tool_calls", "network", "processes", "services"];
+const COVERED = ["none", "reported", "observed", "enforced"];   // weakest first
 
 export type Check = { check: string; status: "pass" | "warn" | "fail"; detail: string; problems: string[] };
 
@@ -380,6 +382,22 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
     reconciles.map((e) => `seq ${e.seq}: ${e.type} ${cut(str(get(e, "tool_call_id")), 200)}: `
       + cut(str(get(at(e, "data"), "detail")), 200)).slice(0, 20), true);
   }
+  // the coverage matrix: per action class its weakest status across the runs, the layers behind it; never "complete"
+  const matrices = [...runs.values()].map((rs) => rs.at(-1).event)
+    .filter((e) => get(e, "type") === "run.final" && has(at(e, "data"), "matrix")).map((e) => e.data.matrix);
+  if (matrices.length)
+    rep.check("coverage matrix", true, (matrices.length > 1 ? `weakest of ${matrices.length} runs: ` : "")
+      + MATRIX.map((k) => {
+        const cs = matrices.map((m) => at(m, k));
+        const status = cs.map((c) => str(at(c, "status"))).reduce((a, b) => COVERED.indexOf(b) < COVERED.indexOf(a) ? b : a);
+        const layers = [...new Set(cs.flatMap((c) => list(at(c, "layers")).map(str)))].sort()
+          .concat(cs.some((c) => get(c, "asserted") === true) ? ["asserted"] : []);
+        return `${k.replace("_", " ")} ` + (status === "none" ? "not covered"
+          : status + (layers.length ? ` (${layers.join(", ")})` : ""));
+      }).join(", "));
+  const lost = gaps("observer_lost");
+  if (lost.length)
+    rep.check("observers", false, `${lost.length} egress observer(s) went silent while their run was open`, lost.slice(0, 20), true);
   // a tool call's tier is the weakest its records claim (untiered < T3, receipt only, < T1 < T2): each tier a record
   // names, and untiered for a decision or result that names none, so a call decided at T2 and completed elsewhere
   // isn't T2;

@@ -19,7 +19,7 @@ docker compose logs viewer                            # the viewer's URL with it
 | `witness` | omniwitness built from a pinned commit (`deploy/compose/witness/Dockerfile`), uid 10002 | the signer's `/logs/v0` |
 | `viewer` | `tracekit view` as a SELECT-only role, published on 127.0.0.1 only | Postgres |
 | `agent` | an example agent, uid 1000, profile `agent` | only the signer's socket (`signer-run` volume, read-only) |
-| `gateway`, `executor`, `mcp-gateway` | the [custody services](executor.md#compose), uids 10011-10013, profile `custody`, each with its config and secrets in `custody/<service>/` | the signer's socket (read-only), the agent network, the internet (`egress`) |
+| `gateway`, `executor`, `mcp-gateway`, `egress` | the [custody services](executor.md#compose) and the [egress observer](egress.md), uids 10011-10014, profile `custody`, each with its config and secrets in `custody/<service>/` | the signer's socket (read-only), the agent network, the internet (`egress`) |
 
 Every network but the viewer's and `egress` is `internal` (no route out). On the agent's network only the custody
 services are there with it: the agent reaches the signer only through the Unix socket in the `signer-run` volume, which

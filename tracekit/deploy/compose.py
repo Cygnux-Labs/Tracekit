@@ -41,6 +41,7 @@ authorize:                                   # theirs, and the agent's identity 
   "uid:10011": [model_event, status]
   "uid:10012": [decide, complete, approval_request, approval_wait, approval_consume]
   "uid:10013": [decide, complete, approval_request, approval_wait, approval_consume, observe]
+  "uid:10014": [observe_effect]               # the egress observer (profile custody): docs/egress.md
   "token:http": [model_event, decide, complete, approval_request, approval_wait, approval_consume, observe]
 metrics: {{listen: 0.0.0.0:9464, allow_remote: true}}   # /metrics and the /logs/v0 list the witness polls
 policy: /etc/tracekit/policy.yaml            # ./policy.yaml

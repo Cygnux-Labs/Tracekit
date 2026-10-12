@@ -55,6 +55,8 @@ tools:                          # tool name or glob (fnmatch) -> class
 untrusted: [http, mcp, WebFetch]   # tool classes and tool name globs whose results are untrusted content (Provenance)
 handoffs: [transfer_to_refunds_agent]   # tool names the framework runs as handoffs to another agent; no pack names
                                         # any: exact names, as your agents' handoff tools are called
+explains:                       # hosts a tool's own dependencies reach, for the egress observer (docs/egress.md#explains)
+  - {label: package-install, hosts: [pypi.org, '*.pythonhosted.org']}   # a rule label, or a tool glob: {tool: ...}
 deny:  [<rule>, ...]
 ask:   [<rule>, ...]
 flag:  [<rule>, ...]
@@ -63,7 +65,7 @@ limits:    [<limit>, ...]       # detection: counts and sums in a window
 respond:   [<respond>, ...]     # detection: what each trigger does (shadow only in 1.2)
 ```
 
-`extends` merges the parent's `tools` under the child's, joins every `untrusted` list, keeps the parent's other
+`extends` merges the parent's `tools` under the child's, joins every `untrusted` and `explains` list, keeps the parent's other
 top-level keys unless the child sets them, and keeps the parent's rules except those whose id the child redefines. A
 list of parents is merged in order (a later parent's top-level keys and tools win; the same rule id in two parents is a
 duplicate-id error, unless both carry the identical rule, which is kept once). `sequences`, `limits` and `respond` merge
@@ -319,7 +321,9 @@ deny or an unapproved ask), `denied_calls` (more than `max` distinct denied call
 don't count), `provenance` (a `from: untrusted` rule held a call whose decision names its provenance and whose index is
 complete), and the notify-only `class_mismatch`, `refusal_burst` (a `refusal.summary` over `max`) and `tamper`, which
 are never enforced (lint refuses `mode: enforce` or an action other than `notify` on them). Only `denied_calls` takes
-`max`, `window` and `scope`, and `refusal_burst` `max`; lint refuses them elsewhere.
+`max`, `window` and `scope`, and `refusal_burst` `max`; lint refuses them elsewhere. `unexplained_effect` (a host an
+[egress observer](egress.md) saw a run reach that nothing explains) fires once per host and run; the server pack
+notifies on it in shadow mode until a deployment's `explains` is tuned.
 
 An incident is a signed `incident.opened {incident_id, trigger, rule_ids, scope, cites, mode, actions, would}` in the
 run whose record fired it, citing the records that make it up. One stays open per scope, trigger and rule: later

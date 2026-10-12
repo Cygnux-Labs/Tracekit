@@ -18,20 +18,35 @@ L3 from the LLM gateway (source gateway, tier T2) takes precedence over agent-re
 `gateway_mandatory` (signer.yaml) only gateway L3 counts, provider-run tool uses included, and a run with none still
 has its decides checked: each decide the gateway did not see is fabricated, whatever the agent reported.
 
+Effects (an egress observer's effect.observed, written by SignerService._observe_effect): a host is explained by an
+http or browser call to it the run decided (not denied; `hosts`, which the decide sets, memory and snapshot only) or a
+model call to its provider's API host (PROVIDER_HOSTS), by
+the gateway or executor that made the connection for the run, or by an entry of the policy's `explains` whose hosts
+match it, for a tool the run called or a rule label its decisions carry (`explained`). A host nothing explains is one
+reconcile.unexplained_effect, written at once (`effects`), and counted in run.final's coverage. `matrix` is run.final's
+coverage per action class, from the sources of the run's records (`models`, `tools`), the deployment's posture and
+the observers that covered the run throughout.
+
 Decisions other systems made (policy.external, from decision_import) are indexed by tool call and system; each that
 disagrees with the signer's last decision for that call (flag counts as allow), names another tool, or names a call
 the signer never decided is a signed
 `capture.gap{decision_mismatch}` at the same point. The signer's decision stays the one that applied.
 """
 
+import fnmatch
+
 LAYERS = {"state.write": "L1", "policy.decision": "L2", "tool.result": "L2", "model.exchange": "L3"}
+NAMES = {"sdk": "adapter"}   # a record source as the coverage matrix names its layer
+# lean: each provider's public API host; a model endpoint elsewhere (Bedrock, Azure, a self-hosted one) is explained by
+# the LLM gateway that calls it, or not at all
+PROVIDER_HOSTS = {"anthropic": "api.anthropic.com", "openai": "api.openai.com"}
 
 
 def new():
     return {"layers": {}, "l2": {}, "l3": {}, "sent": {}}
 
 
-def _sub(put, rec, k):
+def sub(put, rec, k):
     """rec[k], a dict, made on first use (an index restored from an older snapshot has none)."""
     if k not in rec:
         put(rec, k, {})
@@ -50,9 +65,9 @@ def observe(put, run, e, digests=None, handoff=lambda tool: False):
     if rec is not None and e["type"] == "policy.external":
         d = e["data"]
         tcid = d["tool_use_id"]
-        put(_sub(put, rec, "ext"), tcid, {**rec["ext"].get(tcid, {}), d["system"]: [d["decision"], d["tool"]]})
+        put(sub(put, rec, "ext"), tcid, {**rec["ext"].get(tcid, {}), d["system"]: [d["decision"], d["tool"]]})
     if rec is not None and e["type"] == "reconcile.hook_missing":   # written live: finish does not write it again
-        put(_sub(put, rec, "live"), e["tool_call_id"], True)
+        put(sub(put, rec, "live"), e["tool_call_id"], True)
     if rec is None or layer is None:
         return []
     digests, now = digests or {}, []
@@ -61,14 +76,18 @@ def observe(put, run, e, digests=None, handoff=lambda tool: False):
     if e["type"] == "policy.decision":
         tcid = e["tool_call_id"]
         put(rec["l2"], tcid, {"name": e["data"]["tool"], "coerced": e.get("args_source") == "coerced",
-                              "decision": e["data"]["decision"]})
+                              "decision": e["data"]["decision"], "rules": e["data"]["rule_ids"]})
+        put(sub(put, rec, "tools"), NAMES.get(e["source"], e["source"]), True)
         put(run["digests"], "l2:" + tcid, digests.get(tcid))
     elif e["type"] == "model.exchange":
         gw = e["source"] == "gateway"
+        put(sub(put, rec, "models"), NAMES.get(e["source"], e["source"]), True)
+        if e["data"].get("upstream") in PROVIDER_HOSTS:   # the provider the exchange went to
+            put(sub(put, rec, "providers"), PROVIDER_HOSTS[e["data"]["upstream"]], True)
         for t in e["data"].get("tool_uses", ()):
             if t["executed_by"] == "provider":
                 if gw or not rec.get("provider", {}).get(t["id"], {}).get("gw"):
-                    put(_sub(put, rec, "provider"), t["id"], {"gw": gw})
+                    put(sub(put, rec, "provider"), t["id"], {"gw": gw})
             elif gw or not rec["l3"].get(t["id"], {}).get("gw"):
                 put(rec["l3"], t["id"], {"name": t["name"], "coerced": t.get("args_source") == "coerced",
                                          "unparseable": t.get("args_unparseable", False), "gw": gw})
@@ -89,6 +108,36 @@ def _hint(tool):
     """What a hook_missing detail adds for a tool that looks like a handoff the policy does not name."""
     return "; if it is a handoff to another agent, name it in the policy's handoffs:" if tool.startswith(
         "transfer_to_") else ""
+
+
+def explained(rec, host, explains, labels):
+    """What explains `host` for the run of index `rec`: "call", "explains" (`explains`: the policy's entries; `labels`:
+    rule id -> label), or None."""
+    if host in rec.get("hosts", {}) or host in rec.get("providers", {}):
+        return "call"
+    # lean: scans the run's decisions for each observed host; index tool names and labels if runs make ~10k calls
+    called = [(d["name"], d.get("rules", ())) for d in rec["l2"].values() if d["decision"] != "deny"]
+    for x in explains:
+        if any(fnmatch.fnmatchcase(host, h) for h in x["hosts"]) and any(
+                fnmatch.fnmatchcase(name, x["tool"]) if "tool" in x else x["label"] in {labels.get(r) for r in rules}
+                for name, rules in called):
+            return "explains"
+    return None
+
+
+def matrix(rec, posture, observed):
+    """run.final's coverage matrix of the run of index `rec`; `posture`: signer.yaml's; `observed`: whether an egress
+    observer covered the run and heartbeat throughout. Processes and services: none until an observer covers them."""
+    def cls(status, layers, asserted=False):
+        return {"status": status, "layers": sorted(layers), **({"asserted": True} if asserted else {})}
+    models, tools, gw = rec.get("models", {}), rec.get("tools", {}), posture.get("gateway_mandatory", False)
+    enforced = posture.get("network") == "enforced"
+    return {"model_calls": cls("enforced" if gw else "observed", models, gw) if "gateway" in models else
+            cls("reported" if models else "none", models),
+            "tool_calls": cls(("enforced" if set(tools) == {"gateway"} else "reported") if tools else "none", tools),
+            "network": cls("enforced" if enforced else "observed", ["egress"], enforced) if observed else
+            cls("reported", tools) if rec.get("hosts") else cls("none", ()),
+            "processes": cls("none", ()), "services": cls("none", ())}
 
 
 def counted(rec, mandatory, k="l3"):
@@ -152,6 +201,8 @@ def finish(tx, run, mandatory=False, handoff=lambda tool: False):
     live = rec.get("live", {})
     found = [x for x in _found(run, mandatory, handoff) if x[0] != "hook_missing" or x[1] not in live]
     unreconciled = {"hook_missing": len(live)} if live else {}
+    if rec.get("effects"):
+        unreconciled["unexplained_effect"] = len(rec["effects"])
     for kind, tcid, layers, detail in found:
         tx.emit(run, "reconcile." + kind, {"layers": layers, "detail": detail}, source="signer", tool_call_id=tcid)
         unreconciled[kind] = unreconciled.get(kind, 0) + 1
