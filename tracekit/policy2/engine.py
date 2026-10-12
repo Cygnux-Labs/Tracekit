@@ -155,8 +155,8 @@ class Engine:
     @staticmethod
     def _targets(cls, args, fields, parsed):
         """shell: each command's argv without its data words (shell.data_words), the redirection targets, assignments
-        and heredoc programs; fs: the paths; http and browser: the URL; email: the attachments; mcp and unknown tools:
-        the whole call. Each URL is also matched as scheme://canonical-host/ (classes.url_target), so a host in decimal,
+        and heredoc programs; fs: the paths; http and browser: the URL; email: the attachments; mcp, app and unknown
+        tools: the whole call. Each URL is also matched as scheme://canonical-host/ (classes.url_target), so a host in decimal,
         hex, octal or IPv6 form reads as the address it is."""
         if cls == "shell":
             words = [[a for i, a in enumerate(c["argv"]) if i not in shell.data_words(c["argv"])] for c in parsed[0]]
@@ -174,7 +174,7 @@ class Engine:
             files = fields.get("attachments")
             return [f if isinstance(f, str) else canonical(f) for f in (files if isinstance(files, list) else [files])
                     if f is not None]
-        return [canonical(args)] if cls in ("mcp", "unknown") else []
+        return [canonical(args)] if cls in ("mcp", "app", "unknown") else []
 
 
 def _shell(args):

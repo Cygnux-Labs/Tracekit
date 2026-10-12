@@ -34,7 +34,7 @@ Rule ids the signer adds itself:
 | `TK-OVERSIZE` | the rule's section | a rule's subject is over 64 KiB of UTF-8; it is never cut or windowed, and the rule's own section decides (a flag rule flags, a deny rule denies; a shell command over 64 KiB denies) |
 | `TK-SHELL-PARSE` | ask | a shell command can't be parsed, or what it runs can't be read from the line |
 | `TK-SQL-PARSE` | ask | no SQL dialect can read the statement (an unclosed literal or comment), or it is not text |
-| `TK-UNKNOWN-TOOL` | `unknown_tools` | the tool maps to no class and `unknown_tools` is `flag`, `ask` or `deny` |
+| `TK-UNKNOWN-TOOL` | `unknown_tools` | the tool maps to no class and `unknown_tools` is `flag`, `ask` or `deny` (map an application's own tools to `app`) |
 
 Each `decide` gets a new `decision_id`, consumed once by `complete` with the same arguments; `complete` with other
 arguments is refused. Only deny and ask are remembered per `(tool_call_id, attempt)`. An allow after a deny for the
@@ -52,6 +52,7 @@ tools:                          # tool name or glob (fnmatch) -> class
   Bash: shell
   'mcp__*': mcp
   transfer_funds: payment
+  search_flights: app           # an application's own tool: known (unknown_tools leaves it alone), no class fields
 untrusted: [http, mcp, WebFetch]   # tool classes and tool name globs whose results are untrusted content (Provenance)
 handoffs: [transfer_to_refunds_agent]   # tool names the framework runs as handoffs to another agent; no pack names
                                         # any: exact names, as your agents' handoff tools are called
@@ -80,8 +81,9 @@ duplicate-id error, unless both carry the identical rule, which is kept once), a
 | `from` | no | `untrusted`: the rule also needs a value of its subject that only untrusted content brought into the run (Provenance) |
 | `approval` | no | on an `ask` rule only: `executor: t1` (default) or `t2` ([approvals](approvals.md#tiers-t1-and-t2-executors)), and/or `passkey: required` ([approvals](approvals.md#web-approvals-and-passkeys)) |
 
-Lint also rejects unknown keys, a `field` the rule's class doesn't have, and a class rule no tool maps to ("can never
-fire").
+Lint also rejects unknown keys, a `field` the rule's class doesn't have, a class rule no tool maps to ("can never
+fire"), and a tool mapped to `unknown`: that is what an unmapped tool already is, so `unknown_tools` would still decide
+it. Map an application's own tools to `app`.
 
 `policy_hash` is `sha256:` of the compiled policy as sorted-key, compact JSON (`policy2.compile.canonical`).
 
@@ -101,6 +103,7 @@ class's fields from the raw arguments (`policy2/classes.py`):
 | `email` | `to`, `domains`, `attachments`, `recipients` | `to` (string or list), `attachments`; `recipients`: every one of `to`, `cc`, `bcc`, `recipients` |
 | `mcp` | `server`, `tool`, `args` | the tool name (`mcp__server__tool` or `mcp:server/tool`) and the arguments |
 | `browser` | `action`, `url`, `scheme`, `host`, `internal`, `sends_to` | `action`, `url`; `scheme`, `host` and `internal` as below; `sends_to`: the host of `page_url` for `input` and `upload_file` |
+| `app` | — | — (an application's own tool: known, so `unknown_tools` doesn't apply; rules reach it by `tool` name, `field: target` or a raw argument `field`) |
 | `unknown` | — | — |
 
 Every class also has `target`: what the call acts on rather than what it carries (below).
@@ -129,7 +132,7 @@ Every class also has `target`: what the call acts on rather than what it carries
 | `class: shell`, `field: line` | the raw command line and each line the parser normalised (quotes and escapes resolved, redirections kept) |
 | `class: fs`, `field: path` | the normalised path, and with a `..` also the lexically normalised one; each also casefolded |
 | `class: sql`, `field: code` | each dialect's reading of the statement (`code` above) |
-| `field: target` (any class, or no class) | shell: each command's argv without its data words (a `git commit`/`tag`/`merge` message, the pattern `grep`, `rg` or `git grep` searches for), its redirection targets and `VAR=` assignments, and a program an interpreter reads from a heredoc or herestring (a command it can't parse: the raw command); fs: the paths; http and browser: the URL; email: the attachments; mcp and unknown tools: the whole arguments. Each URL in a target is also matched as `scheme://canonical-host/` |
+| `field: target` (any class, or no class) | shell: each command's argv without its data words (a `git commit`/`tag`/`merge` message, the pattern `grep`, `rg` or `git grep` searches for), its redirection targets and `VAR=` assignments, and a program an interpreter reads from a heredoc or herestring (a command it can't parse: the raw command); fs: the paths; http and browser: the URL; email: the attachments; mcp, app and unknown tools: the whole arguments. Each URL in a target is also matched as `scheme://canonical-host/` |
 | another class field | the extracted field |
 | a `field` that is no class field | the raw argument of that name |
 | no `field` (not shell) | the whole arguments as compact sorted JSON (so Write content, WebFetch URLs and MCP arguments are scanned) |
@@ -256,8 +259,9 @@ such a subject the two engines can decide differently; install `google-re2` on t
 | deny | `TK-D001` privilege escalation · `TK-D002` running a downloaded script · `TK-D003` force push · `TK-D004` recursive delete of root or home · `TK-D010` writing a credentials file from the shell · `TK-D011` sending credential files off the machine · `TK-D006` uploading a secrets file · `TK-D008` modifying the harness's transcripts · `TK-D005` writing a credentials file · `TK-D009` writing the harness's transcripts · `TK-D007` touching Tracekit's own files or signer · `TK-D013` writing Tracekit's files, signer state or policy |
 | flag | `TK-F001` network commands · `TK-F002` web requests · `TK-F003` destructive commands · `TK-F004` side effects (push, publish, install, apply) · `TK-F005` secrets access · `TK-F006` MCP tools · `TK-F007` / `TK-F008` background processes · `TK-F009` harness config · `TK-F010` shell function or alias shadowing · `TK-F011` environment tampering |
 
-A deployment extends `server.yaml` (or composes only the packs it needs), maps its own tool names under `tools`, and
-redefines a rule by id to change it: TK-N002's egress allowlist and TK-B011's typing allowlist name `example.com` until
+A deployment extends `server.yaml` (or composes only the packs it needs), maps its own tool names under `tools` (a
+business tool no class fits, such as `book_hotel`, to `app`, so it isn't held as unknown), and redefines a rule by id
+to change it: TK-N002's egress allowlist and TK-B011's typing allowlist name `example.com` until
 it does. Cloud APIs are covered as CLI commands on a shell tool and as MCP tools; other cloud-SDK-shaped tools need a
 mapping and rules of their own.
 

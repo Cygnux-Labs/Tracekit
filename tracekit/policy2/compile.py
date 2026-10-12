@@ -24,7 +24,7 @@ CLASSES = {"shell": {"command", "argv", "line"}, "fs": {"path", "op", "content_d
            "http": {"method", "url", "host", "internal", "sends_to"}, "sql": {"statement", "code", "verb", "db"},
            "payment": {"amount", "currency", "payee", "new_payee", "payees"},
            "email": {"to", "domains", "attachments", "recipients"}, "mcp": {"server", "tool", "args"},
-           "browser": {"action", "url", "scheme", "host", "internal", "sends_to"}, "unknown": set()}
+           "browser": {"action", "url", "scheme", "host", "internal", "sends_to"}, "app": set(), "unknown": set()}
 for _fields in CLASSES.values():
     _fields.add("target")
 MAX_REPEAT = 1000   # RE2's limit for {n,m}
@@ -178,6 +178,9 @@ def _lint(pol, path):
     for tool, cls in tools.items():
         if cls not in CLASSES:
             errors.append(f"{path}: tool {tool!r} has unknown class {cls!r}")
+        elif cls == "unknown":   # what every unmapped tool is: it would still be decided by unknown_tools
+            errors.append(f"{path}: tool {tool!r} maps to class 'unknown', which unknown_tools decides like any "
+                          "unmapped tool: map an application's own tool to class app (known, no class fields)")
     if pol.get("unknown_tools", "allow") not in SECTIONS + ("allow",):
         errors.append(f"{path}: unknown_tools must be allow, flag, ask or deny")
     for sec in SECTIONS:

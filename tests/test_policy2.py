@@ -172,6 +172,38 @@ class Handoffs(unittest.TestCase):
             self.assertIn("too loose", "\n".join(self.build("all.yaml", f"version: a\nhandoffs: [{loose}]\n")[1]), loose)
 
 
+class AppTools(unittest.TestCase):
+    """A deployment of the server pack (unknown_tools: ask) names its own business tools: class app is known, so not
+    held as unknown, and rules still reach it by name; mapping a tool to unknown is a lint error."""
+
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.d, True)
+        shutil.copytree(os.path.join(os.path.dirname(pc.__file__), "packs"), os.path.join(self.d, "packs"))
+
+    def build(self, tools):
+        path = os.path.join(self.d, "policy.yaml")
+        with open(path, "w") as f:
+            f.write("extends: packs/server.yaml\ntools:\n" + "".join(f"  {t}: {c}\n" for t, c in tools.items())
+                    + "ask:\n  - {id: APP-A001, tool: cancel_ticket, pattern: '^'}\n")
+        return pc.build(path)
+
+    def test_app_tools_are_known_and_rules_reach_them_by_name(self):
+        pol, errs = self.build({"search_flights": "app", "cancel_ticket": "app"})
+        self.assertEqual(errs, [])
+        e = Engine(pol)
+        self.assertEqual(e.decide("search_flights", {"from": "BSL"})["verdict"], "allow")
+        self.assertEqual(e.decide("cancel_ticket", {"ticket_no": "1"})["rule_ids"], ["APP-A001"])
+        self.assertEqual(e.decide("book_hotel", {"id": 1})["rule_ids"], ["TK-UNKNOWN-TOOL"])   # still unmapped
+        self.assertEqual(e.decide("search_flights", {"q": "AKIA" + "A" * 16})["verdict"], "deny")   # TK-S002, every tool
+
+    def test_mapping_a_tool_to_unknown_is_a_lint_error(self):
+        errs = self.build({"search_flights": "unknown"})[1]
+        self.assertEqual(len(errs), 1, errs)
+        self.assertIn("tool 'search_flights' maps to class 'unknown'", errs[0])
+        self.assertIn("class app", errs[0])
+
+
 class Engines(unittest.TestCase):
     def setUp(self):
         self.regex = Engine(corpus_policy(), "regex")

@@ -1,8 +1,9 @@
 # Server pack (policy v2): everything a server-hosted agent needs, composed from the coding, browser and server-*
 # packs, plus the rules that apply to every tool. A tool the policy does not map waits for a person (ask).
 #
-# A deployment extends this pack, maps its own tool names under `tools`, and redefines a rule by id to change it (the
-# egress allowlist TK-N002, for one). docs/policy-v2.md lists every rule.
+# A deployment extends this pack, maps its own tool names under `tools` (a business tool no class fits to `app`: known,
+# so not held as unknown; rules reach it by `tool`), and redefines a rule by id to change it (the egress allowlist
+# TK-N002, for one). docs/policy-v2.md lists every rule.
 #
 # TK-S001 and TK-S004 match each call's `target`: what it acts on (a path, a URL, a command's argv, redirections and
 # assignments, attachments, an MCP tool's arguments), not what it carries (file content, a commit message, the pattern
