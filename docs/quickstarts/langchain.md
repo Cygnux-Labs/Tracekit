@@ -63,8 +63,9 @@ The gate and the checkpointer record tool calls and checkpoints only; without th
 run holds no model calls, and verify reports `(L3 absent)`. `handle.close()` ends the run.
 
 An ask needs a checkpointer: the graph pauses with `interrupt()` and resumes with `Command(resume={"approval_id":
-...})`. Without one the call is denied. The pause gets through the node's `handle_tool_errors` (any setting) and
-through `.with_fallbacks()`, as LangGraph's customer-support tutorial wraps its ToolNodes
+...})`. Without one the call is denied. The pause gets through the node's `handle_tool_errors` (any setting; a
+handler whose annotation names no exception type fails when the gated node is built, not at the tool's
+first error) and through `.with_fallbacks()`, as LangGraph's customer-support tutorial wraps its ToolNodes
 (`tracekit_tool_node(tools, client, run).with_fallbacks([...], exception_key="error")`). Code of your own that catches
 exceptions around the node ends the pause: the call doesn't run and its approval expires
 ([limits](../limits.md#approvals)).

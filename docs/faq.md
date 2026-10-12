@@ -73,7 +73,10 @@ HTTPS transport, and throughput across hosts ([evaluation](evaluation.md#what-is
 Each tool class fails **closed** by default: the call is blocked. A class you set to `open` (`fail_modes:
 {default: closed, http: open}` in signer.yaml: the keys are the policy's [classes](policy-v2.md#classes-and-fields),
 and `model` for the model calls autotrace records) runs unrecorded, and the run's next call after the outage makes the
-signer write a signed gap covering exactly the missed calls. The report warns on every fail-open class. A model call's
+signer write a signed gap covering exactly the missed calls. The report warns on every fail-open class. The class is
+the one the agent's adapter knows, since the signer can't be asked: the LangChain adapter and the Claude Code hook class
+a tool as the shipped default policy does, the MCP and Browser Use adapters use `mcp` and `browser`, and the OpenAI
+Agents and Claude Agent SDK adapters apply `default` to every tool. A model call's
 response the signer missed is sent again at the next model call or at exit, after such a gap. A `with client.run(...)`
 block that ends while the signer is down warns instead of raising, and never hides the block's own exception; the
 signer closes the run after its idle timeout. `eval/e14_outage.py` checks each outage case

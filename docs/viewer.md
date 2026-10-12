@@ -30,15 +30,16 @@ checklist ([security-checklist.md](security-checklist.md)).
 
 ### Laptop viewer API
 
-Every request needs the token in the URL `tracekit view` prints (`$TRACEKIT_VIEW_TOKEN`, else a random one). Open
-`/?token=…` once: the page exchanges it for an `HttpOnly` session cookie and reloads without it. A script sends
-`Authorization: Bearer <token>` instead; `?token=` on an `/api/` path is refused (401), so the token never sits in an
-API URL. Every request is a `GET`:
+Every request needs the token: `$TRACEKIT_VIEW_TOKEN`, else a random one that `tracekit view` prints in its URL (with
+`$TRACEKIT_VIEW_TOKEN` set the printed URL carries none: add `?token=…` yourself). Open `/?token=…` once: the page
+exchanges it for an `HttpOnly` session cookie and reloads without it. A script sends `Authorization: Bearer <token>`
+instead; `?token=` on an `/api/` path is refused (401), so the token never sits in an API URL. These requests are
+`GET`s; with `--why` the replays and ingest are `POST`s ([below](#why)):
 
 | Path | Answers |
 |---|---|
 | `/api/snapshot` | `{next, dropped, records}`: the tape rows the page renders (each run's verifier report, then its records once it verifies), `next` the index to stream from |
-| `/api/verify` | `{records, ok, problems, head}`: the records shown from runs that verified, and each run that failed with its failure (the header's chain badge) |
+| `/api/verify` | `{records, ok, problems, head}`: how many records are shown from runs that verified, and each run that failed with its failure (the header's chain badge) |
 | `/api/stream?from=N` | `text/event-stream`: one `data:` line per record from index `N` on, as they are recorded |
 | `/api/why/workspace`, `/api/why/runs/<id>` | the why logs, with `--why` ([below](#why)) |
 

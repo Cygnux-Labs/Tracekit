@@ -92,9 +92,9 @@ absolute path, `~` or a loop is an error.
 | `from` | no | `untrusted`: the rule also needs a value of its subject that only untrusted content brought into the run (Provenance) |
 | `approval` | no | on an `ask` rule only: `executor: t1` (default) or `t2` ([approvals](approvals.md#tiers-t1-and-t2-executors)), and/or `passkey: required` ([approvals](approvals.md#web-approvals-and-passkeys)), and/or `agent` (below) |
 
-Lint also rejects unknown keys, a `field` the rule's class doesn't have, a class rule no tool maps to ("can never
-fire"), and a tool mapped to `unknown`: that is what an unmapped tool already is, so `unknown_tools` would still decide
-it. Map an application's own tools to `app`.
+Lint also rejects unknown keys, a `field` the rule's class doesn't have, and a class rule no tool maps to ("can never
+fire"). It warns (`tracekit policy lint`, which loads the policy all the same) on a tool mapped to `unknown`: that is
+what an unmapped tool already is, so `unknown_tools` still decides it. Map an application's own tools to `app`.
 
 ### Agent approvers (`approval.agent`)
 
@@ -228,7 +228,7 @@ up as the host it is. A decision records `provenance` (up to 16 arguments whose 
 
 | State | When |
 |---|---|
-| `partial` | an untrusted tool's call completed with a digest, a `{hash, size}` reference or no result (an adapter that ignores `send_result`) |
+| `partial` | an untrusted tool's call completed with a digest, a `{hash, size}` reference or no result (an adapter that ignores `send_result`), or a client's events skipped a `client_seq` (`client_counter_gap`: an observe or a result the signer never got), from the decision that reveals the gap on |
 | `truncated` | a result or untrusted observed input carried more values than are read (4096 values, 1 MiB of text), or the run's index reached 20000 values |
 | `unavailable` | the signer restarted: the index lives in memory only (a storage outage the signer recovers from keeps it) |
 | `timeout` | reading this call's values took past the decision's deadline (1 s) |

@@ -47,7 +47,7 @@ and provenance holds only what a page alone brought in ([policy](../policy-v2.md
 
 | When | RPC | Sent |
 |---|---|---|
-| before an action, once per browser state | `observe` | what the model read of the page this step (Browser Use's browser state: URL, title, tab URLs and the page's text, up to 100,000 characters), as `untrusted`, source `browser_use:page` |
+| before an action | `observe` | each browser state Browser Use made since the session's last action, oldest first: what the model read of the page (URL, title, tab URLs and the page's text, up to 100,000 characters), as `untrusted`, source `browser_use:page` |
 | before the action runs | `decide` | a fresh `tool_call_id`, the tool as `browser_use:<action>`, `tool_class_hint: browser`, the args below (`parsed`) |
 | right before it runs | `approval_consume` | the same call and args, and the approval id when the action waited for one |
 | after it runs | `complete` | `status` `ok`, or `error` for an `ActionResult` with an error; the result (a page's content is untrusted, so the signer indexes it for provenance), or the exception type and message |
@@ -57,7 +57,10 @@ when Browser Use doesn't say within 2 s (an allowlist rule never exempts an empt
 
 The page is observed so that a host the agent reached without naming it (a link it clicked in a mail) is in the run's
 provenance index: typing there, or navigating there with data in the query string, is then held by TK-P003 unless your
-task named that host.
+task named that host. At a session's first action the adapter wraps its `get_browser_state_summary`, through which
+each step reads the page (and some actions, `navigate` among them, too), and queues every state it returns, so a page
+that closes itself before the action is still observed. The state the first step read, made before that, comes from
+Browser Use's cached copy.
 
 ### `sensitive_data`
 
@@ -97,8 +100,11 @@ To give a person longer, raise `BROWSER_USE_ACTION_TIMEOUT_S` (and the Agent's `
 which covers the model call and every action of a step).
 
 A signer that cannot be reached: the action runs unrecorded if register_run's `fail_modes` say `open` for the
-`browser` class (or by default), else it is refused. Any other signer failure refuses the action, a refused page
-observation included. A failure to record an outcome warns and changes nothing the agent sees.
+`browser` class (or by default), else it is refused; the same goes for a page that can't be observed before it. Any
+other signer failure refuses the action, a page observation the signer refuses included. A page that wasn't observed
+is not sent again: the signer writes a gap for the event it never got, which makes the run's provenance index `partial`,
+so TK-P003 holds every send for the rest of the run. A failure to record an outcome warns and changes nothing the
+agent sees.
 
 ## The browser policy pack
 
@@ -113,7 +119,7 @@ observation included. A failure to record an outcome warns and changes nothing t
 | TK-B010 | ask | `upload_file` |
 | TK-B011 | ask | `input` on a page outside the allowlist (`example.com` as shipped), or with no page |
 | TK-B012 | ask | `evaluate`: JavaScript the agent runs in the page, which can submit a form or send data anywhere, past every other rule |
-| TK-P003 | ask | data sent to a host that only untrusted content named: typing (`input`), an upload, or a navigation with a query string (`navigate`, `go_to_url`) |
+| TK-P003 | ask | data sent to a host that only untrusted content named: typing (`input`, `send_keys`, `select_dropdown`), an upload, or a navigation with a query string (`navigate`, `go_to_url`) |
 
 `extends` takes relative paths only, so your policy reaches the pack as a file next to it. Copy it there:
 
@@ -164,11 +170,20 @@ The rules are tripwires on the URL text: a host that resolves to an internal add
 caught.
 
 Browser Use asks the model for its actions as structured output, not as tool calls, so a model response carries no
-tool use for them (with an Anthropic model, the output comes as one forced tool call, `AgentOutput`). The pack names
-both under `structured_output:`: reconciliation doesn't expect a tool use for a `browser_use:*` decide, nor a decide
-for `AgentOutput`. That keeps [`gateway_mandatory`](../gateway.md#reconciliation) and autotrace from marking every
+tool use for them. The pack names them under `structured_output:`: reconciliation doesn't expect a tool use for a
+`browser_use:*` decide. That keeps [`gateway_mandatory`](../gateway.md#reconciliation) and autotrace from marking every
 action `reconcile.fabricated`, and it means Browser Use's actions get no L3 cross-check: the record can't show that
 the model asked for an action, only that the signer decided it.
+
+With an Anthropic model the output comes as one forced tool call, `AgentOutput`, which the pack doesn't name: a name
+under `structured_output:` needs no decide, so any agent could call a tool of its own `AgentOutput` and run it
+unchecked. Under `gateway_mandatory`, where each such call is otherwise a `reconcile.hook_missing`, a Browser Use
+deployment on an Anthropic model names it in its own policy, and only if no other tool of its agents has that name:
+
+```yaml
+extends: browser.yaml
+structured_output: [AgentOutput]
+```
 
 ## Example
 

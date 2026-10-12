@@ -133,6 +133,8 @@ must go through the gateway.
 A framework that asks the model for its actions as structured output rather than tool calls (Browser Use) leaves the
 gateway no tool use to match: name those tools in the policy's `structured_output:` and reconciliation compares them
 with nothing, in either direction ([policy](policy-v2.md#file-format)). The browser pack names Browser Use's actions
-(`browser_use:*`) and the output tool it uses with Anthropic models (`AgentOutput`). Such a tool gets no L3
-cross-check: its decides show what the signer allowed, not that the model asked for it. Only the operator's policy can
-name them; nothing the agent sends at run time can.
+(`browser_use:*`); the output tool Browser Use uses with Anthropic models (`AgentOutput`) is the deployment's to name
+([Browser Use](integrations/browser-use.md#the-browser-policy-pack)). Such a tool gets no L3 cross-check: its decides
+show what the signer allowed, not that the model asked for it, and the model asking for it needs no decide, so name
+only tools whose name no other tool of yours uses. Only the operator's policy can name them; nothing the agent sends
+at run time can.
