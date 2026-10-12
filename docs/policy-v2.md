@@ -264,7 +264,7 @@ limits:
 respond:
   - {trigger: TK-L002, mode: shadow, action: hold}   # mode off|shadow|enforce, action notify|hold|quarantine
   - {trigger: denied_calls, mode: shadow, action: notify, max: 5, window: 300, scope: run}
-  - {trigger: executed_against_policy, mode: enforce, action: quarantine, cooldown_s: 3600, suspend: true}
+  - {trigger: executed_against_policy, mode: enforce, action: quarantine, cooldown_s: 3600}
 ```
 
 **What counts.** A call's names are its rule ids from both class readings (the policy's and the client's hint, so a
@@ -339,10 +339,8 @@ did in `actions`:
 | `quarantine` | Every live run the scope reaches is quarantined, for good: each further call is denied (`TK-QUARANTINE`; past 100 such denies, refused unrecorded), approvals are refused, a gateway forwards no further model request of it, and it closes with reason `quarantine`. |
 
 `cooldown_s` (default 3600, at most 86400): for that long, a new run of the same owner and attested principal (and any
-child run of a held one) starts held or quarantined too. `suspend: true` also adds the run's owner to the suspension
-list, which refuses every call of that identity on every replica; only `executed_against_policy` may take it (content an
-agent reads can steer the other triggers, so suspending a shared identity on them is an operator's call: lint refuses
-it). Operators resolve incidents, hold, quarantine and resume runs, pause the response engine and suspend identities
+child run of a held one) starts held or quarantined too. No trigger suspends an identity: that is an operator's call
+(`tracekit signer incidents suspend`), and lint refuses `suspend:` in `respond`. Operators resolve incidents, hold, quarantine and resume runs, pause the response engine and suspend identities
 with `tracekit signer incidents` ([incidents](incidents.md)).
 
 **Backtest.** `tracekit policy backtest --policy P --store DIR` (a signer's `data_dir/store`, read-only, safe while it

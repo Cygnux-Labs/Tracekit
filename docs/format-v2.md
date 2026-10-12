@@ -133,18 +133,20 @@ match, at most once per window; for a session, owner or principal scope possibly
 the one that opened it) and `incident.capped{cap, max, trigger, reason}`.
 
 Containment (format 1.2, [incidents](incidents.md)): an enforced `incident.opened` (`mode: enforce`) lists the
-`actions` taken (`hold`, `quarantine`, `notify`, `suspend`; none while paused, with `reason`) and `in_flight`: the
+`actions` taken (`hold`, `quarantine`, `notify`; none while paused, with `reason`) and `in_flight`: the
 calls `{run_id, tool_call_id, decision_id}` allowed (or approved and consumed) and not completed then. Triggers
 `operator` (an operator's run_hold or run_quarantine) and `detector_unavailable` (the detector could not vouch for the
 cited decision) join the detection's. In each run the response reaches: `run.held{incident_id, scope, by, reason,
 in_flight?, inherited?, inherit_until?}` or `run.quarantined{...the same}`, after an `approval.expired{reason: hold |
-quarantine}` for each of its live approvals; `run.resumed{incident_id, by, person, reason?, break_glass?}` ends a hold.
+quarantine}` for each of its live approvals; `run.resumed{incident_id, by, person, reason?, break_glass?,
+held_by}` ends that incident's hold; a run held by several incidents (a `run.held` each) stays held by those `held_by`
+names.
 A held run's calls are `policy.decision{decision: ask, rule_ids: [..., TK-HOLD], incident_id}`, their approvals carry
 `incident_id` (`approval.request` and the person's `approval`); a quarantined run's are `decision: deny, rule_ids:
 [TK-QUARANTINE]` and it closes with `run.closing{reason: quarantine}`. The call whose decision fired a hold gets a
 second, signer-written decision right after the response. In the tenant's signer run: `incident.resolved{incident_id,
 by, person, reason?, break_glass?, resumed}`, `incident.response{enabled, by, reason?}` and
-`identity.suspension{identity, state: suspended | enforced | lifted, by, reason?, incident_id?}`.
+`identity.suspension{identity, state: suspended | enforced | lifted, by, reason?}`.
 
 Content vault (format 1.1, [privacy](privacy.md#the-content-vault)): `content.accessed{principal, run_id, seqs,
 purpose}` records that the signer returned the retained content of records `seqs` (run_seqs) of run `run_id` to
