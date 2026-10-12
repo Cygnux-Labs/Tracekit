@@ -119,7 +119,7 @@ class Observer:
         except OSError as e:
             return None, (502, f"{host} could not be resolved: {e}")
         for ip, _ in addresses:
-            if host not in self.allow and not ipaddress.ip_address(ip.partition("%")[0]).is_global:
+            if host not in self.allow and not _public(ip):
                 return None, (403, f"{host} resolves to {ip}, a loopback, private or link-local address: add it to "
                                    "allow in egress.yaml if agents may reach it, or to NO_PROXY in the agent's "
                                    "environment for an internal service it reaches directly")
@@ -264,6 +264,20 @@ def _connect(addresses):
         except OSError as e:
             err = e
     raise err
+
+
+NAT64 = ipaddress.ip_network("64:ff9b::/96")
+
+
+def _public(ip):
+    """Whether address `ip` is public; an IPv4-mapped or NAT64 (64:ff9b::/96) address by the IPv4 address it carries,
+    which on an IPv6-only network with DNS64 is where it really goes."""
+    a = ipaddress.ip_address(ip.partition("%")[0])
+    if a.version == 6 and a.ipv4_mapped:
+        a = a.ipv4_mapped
+    elif a in NAT64:
+        a = ipaddress.IPv4Address(int(a) & 0xFFFFFFFF)
+    return a.is_global
 
 
 def _recv_exact(sock, n):

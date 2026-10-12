@@ -14,7 +14,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import test_agent_approvers as aa
 import test_signer_service as ts
 from tracekit import reviewer, slack_approvals, view
-from tracekit.sdk.client import RunHandle
+from tracekit.sdk.client import RunHandle, SignerUnavailable
 from tracekit.signer.rpc_schema import REQUESTS, RESPONSES, RPCError, validate
 
 
@@ -106,6 +106,17 @@ class TestReviewer(Case):
                 self.assertEqual(self.state(aid)["state"], "requested")
                 rv.poll()
                 self.assertEqual(self.state(aid)["state"], "approved")
+
+    def test_an_unreachable_replica_does_not_stop_the_others(self):
+        class Down:
+            def approval_list(self, req):
+                raise SignerUnavailable("replica 0 is down")
+        aid, _ = self.ask(aa.OK | {"amount": 3}, tcid="tc-down")
+        rv = reviewer.Reviewer([("acme", Down()), ("acme", As(self, aa.AGENT))], Model(message()), "m-test")
+        rv.seen.add("apr-answered-earlier")
+        rv.poll()
+        self.assertEqual(self.state(aid)["state"], "approved")
+        self.assertIn("apr-answered-earlier", rv.seen)   # a partial listing forgets nothing
 
     def test_what_approval_review_calls_ineligible_is_never_approved(self):
         model = Model(message())

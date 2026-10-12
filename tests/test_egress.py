@@ -346,6 +346,14 @@ class TestMatrix(Observed):
                 svc.SignerService(self.dir + "-bad", posture=bad)
 
 
+class PublicAddress(unittest.TestCase):
+    def test_a_mapped_or_nat64_address_is_judged_by_the_ipv4_it_carries(self):
+        for ip, public in (("64:ff9b::a00:7", False), ("::ffff:10.0.0.7", False), ("64:ff9b::808:808", True),
+                           ("2606:4700::1111", True), ("10.0.0.7", False), ("fe80::1%en0", False)):
+            with self.subTest(ip):
+                self.assertEqual(egress._public(ip), public)
+
+
 class TestExplainsLint(unittest.TestCase):
     def lint(self, explains):
         path = os.path.join(self.d, "p.json")
