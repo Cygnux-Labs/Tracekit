@@ -22,7 +22,7 @@ from tracekit.format import checkpoint
 from tracekit.format.canon import event_hash
 from tracekit.identity.base import CallerIdentity
 from tracekit.policy2.engine import Engine
-from tracekit.signer import service as svc
+from tracekit.signer import pipeline, service as svc
 from tracekit.signer.pipeline import SIGNER_RUN
 from tracekit.signer.quotas import Limits
 from tracekit.signer.rpc_schema import REQUESTS, RPCError
@@ -221,8 +221,8 @@ class TestService(unittest.TestCase):
         Disk.fail = 1
         self.refused("unavailable", s, "decide", self.ev(run, 0, tool_call_id="t", tool="t", args_source="parsed", args={}))
         self.assertEqual(self.state(s)[1], before[1])
-        time.sleep(1.05)   # pipeline.RECOVER_S
-        out = s.decide(self.ev(run, 0, tool_call_id="t", tool="t", args_source="parsed", args={}))
+        with mock.patch.object(pipeline, "RECOVER_S", 0):
+            out = s.decide(self.ev(run, 0, tool_call_id="t", tool="t", args_source="parsed", args={}))
         self.assertEqual(out["run_seq"], 1)
         s.close()
         gaps = [r["event"]["data"] for r in records(self.dir) if r["event"]["type"] == "capture.gap"]
@@ -409,7 +409,7 @@ class TestCli(unittest.TestCase):
         d = tmpdir(self)
         cfg = os.path.join(d, "signer.yaml")
         with open(cfg, "w") as f:
-            f.write("data_dir: data\nsocket: s.sock\n")
+            f.write("data_dir: data\nsocket: s.sock\nlock_timeout_s: 0.5\n")   # the second start gives up quickly
         cmd = [sys.executable, "-m", "tracekit", "signer"]
         p = subprocess.Popen(cmd + ["serve", "--config", cfg], cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         self.addCleanup(p.kill)

@@ -323,8 +323,8 @@ class TestCommittedReads(Case):
         decided.join(5)
         reader.join(5)
         self.assertNotEqual(got, ["approved"])
-        time.sleep(1.05)   # pipeline.RECOVER_S
-        self.assertEqual(self._get(s, aid), "requested")
+        with mock.patch.object(pipeline, "RECOVER_S", 0):
+            self.assertEqual(self._get(s, aid), "requested")
 
     def _get(self, s, aid):
         try:

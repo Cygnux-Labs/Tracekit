@@ -101,13 +101,19 @@ class HostileStreams(unittest.TestCase):
                 ("anthropic:messages", {"type": "content_block_start", "index": 0,
                                         "content_block": {"type": "tool_use", "id": "t1", "name": "w", "input": {}}},
                  lambda p: {"type": "content_block_delta", "index": 0, "delta": {"partial_json": p}})):
-            with self.subTest(kind):
-                s, t0 = parsers.Stream(kind), time.monotonic()
-                s.add(start)
-                for _ in range(200_000):   # ~3.4 MB of arguments in 17-byte pieces
-                    s.add(delta(piece))
-                s.parse()
-                self.assertLess(time.monotonic() - t0, 5)   # appended to a str in place: about a minute
+            def took(n):   # the best of two, so a busy runner's pause isn't counted
+                best = float("inf")
+                for _ in range(2):
+                    s, t0 = parsers.Stream(kind), time.perf_counter()
+                    s.add(start)
+                    for _ in range(n):
+                        s.add(delta(piece))
+                    s.parse()
+                    best = min(best, time.perf_counter() - t0)
+                return best
+
+            with self.subTest(kind):   # 8x the pieces (1.7 MB in 17-byte pieces): 8x the time; appended to a str, 25x+
+                self.assertLess(took(100_000), 16 * took(12_500))
 
 
 class Rules(unittest.TestCase):
