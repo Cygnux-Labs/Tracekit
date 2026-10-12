@@ -47,6 +47,11 @@ class Engine:
                        compile_(r["unless"]) if "unless" in r else None)
                       for sec in SECTIONS for r in self.policy.get(sec, [])]
 
+    def is_handoff(self, tool):
+        """Whether the policy's `handoffs:` names `tool` as one the framework runs as a handoff to another agent: never
+        gated, so the model asking for one is not a missing decide."""
+        return any(fnmatch.fnmatchcase(tool, h) for h in self.policy.get("handoffs", ()))
+
     def tool_class(self, tool):
         tools = self.policy.get("tools", {})
         if tool in tools:

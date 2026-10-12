@@ -1108,7 +1108,7 @@ class SignerService:
         """run.final for closing `run`, whose approvals are `aids`; returns the ids of those that expired with it."""
         expired = [self._expire(tx, run, aid) for aid in aids   # nothing can consume them once the run is final
                    if self.log.approvals[aid]["state"] in LIVE]
-        coverage = reconcile.finish(tx, run, self.gateway_mandatory)
+        coverage = reconcile.finish(tx, run, self.gateway_mandatory, self.policy.is_handoff)
         tx.set(run, "final", True)
         tx.emit(run, "run.final", {"head_run_seq": run["run_seq"] - 1, "head_hash": run["head"],
                                    **({"coverage": coverage} if coverage else {})}, source="signer")
