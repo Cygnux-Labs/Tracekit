@@ -15,7 +15,9 @@ from .replay import attribute, counterfactual, decision_test, diff_runs, load_sy
 
 
 def _p(*a):
-    print(*a, flush=True)
+    """Print, replacing what the console's encoding can't show (a Windows cp1252 console and the arrow in edge labels)."""
+    enc = getattr(sys.stdout, "encoding", None) or "utf-8"
+    print(" ".join(map(str, a)).encode(enc, "replace").decode(enc), flush=True)
 
 
 def _fmt_test(r):
