@@ -3917,7 +3917,8 @@ def _serve_dev():
     logkey.harden()
 
     def open_handler():
-        service = SignerService(dev_data_dir(), isolation="same-user", fsck_every_s=0)
+        service = SignerService(dev_data_dir(), isolation="same-user", fsck_every_s=0,
+                                grace_s=float(os.environ.get("TRACEKIT_DEV_GRACE", GRACE_S)))
         return service.handle_frame, service.close
     try:
         return serve_dev(runtime_dir(), open_handler, idle_s=float(os.environ.get("TRACEKIT_DEV_IDLE", 900)))

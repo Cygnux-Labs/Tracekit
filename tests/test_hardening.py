@@ -692,6 +692,10 @@ class BurstOfWriters(unittest.TestCase):
         os.environ.pop("TRACEKIT_POLICY", None)
         try:
             install.init_dev(home, [], checkpoint_every=50)
+            # one write first: a cold daemon on a slow runner (its first file writes) is not what the burst measures
+            with Tracer(agent="burst", session_id="warmup") as t:
+                with t.tool("Read", {"file_path": "warm.py"}) as c:
+                    c.result({"bytes": 0})
             errors = []
 
             def work(w):
