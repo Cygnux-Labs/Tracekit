@@ -6,7 +6,9 @@ this process holds no key, evaluates no policy and writes no ledger.
 
 Each hook is a new process, so the run of a Claude Code session (id, token, fail modes, and the one event stream and
 next client_seq all its hooks share) and the decision binding of a tool call are kept in the runtime dir between hooks.
-Exit 0 lets the call proceed, exit 2 blocks it (reason on stderr). The signer unreachable: the run's fail mode for the
+Exit 0 lets the call proceed, exit 2 blocks it (reason on stderr). An approval with a T2 executor runs the arguments the
+consume returns: the hook prints them as `updatedInput` (Claude Code only; the other harnesses run the arguments the
+signer consumed, which it checked against the approved ones). The signer unreachable: the run's fail mode for the
 tool's class, from register_run (closed before a run is registered). A signer refusal, a failure while a call waits for
 its approval, or any other error: blocked.
 
@@ -175,6 +177,9 @@ def _pre(client, p, sid, tid):
     if not c["ok"]:
         print(f"Held by tracekit policy: {'; '.join(c['rule_ids'])} {c.get('reason', '')}".rstrip(), file=sys.stderr)
         return 2
+    if "args" in c and AGENT == "claude-code":   # T2: the signer's copy is what runs
+        args = c["args"]
+        print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "updatedInput": args}}))
     files.write_json(_state(sid, tid), {"run_id": run.run_id, "decision_id": d["decision_id"],
                                         "args_digest": event_hash({"tool": tool, "args": args}),
                                         "send_result": d.get("send_result", False)})

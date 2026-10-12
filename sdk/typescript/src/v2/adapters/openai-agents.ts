@@ -15,7 +15,8 @@
  * refusal as the tool output and the run goes on. `ask` interrupts the run; once a person has decided in the signer,
  * `await tk.applyDecisions(result.state)` approves or rejects the paused calls and the app resumes with
  * `runner.run(agent, result.state)`. The RunState JSON is not authenticated, so it carries the approval id only as a
- * hint in `context.tracekit.approvals`: every call runs only after the signer's `approval_consume` agrees. Leave the
+ * hint in `context.tracekit.approvals`: every call runs only after the signer's `approval_consume` agrees, with the
+ * signer's copy of the arguments for an approval with a T2 executor. Leave the
  * runner's `toolExecution.preApprovalInputGuardrails` off: the guardrail consumes the approval.
  *
  * Not gated: hosted tools (web and file search, code interpreter, hosted MCP, hosted shell), shell, apply_patch and
@@ -45,7 +46,7 @@ export class TracekitAgents {
       needsApproval: (ctx: any, input: unknown, callId?: string) => this.ask(ctx, callId, name, input),
       inputGuardrails: [...(options.inputGuardrails ?? []), { name: "tracekit", run: (data: any) => this.guard(data, name) }],
       execute: (input: unknown, ctx?: unknown, details?: any) =>
-        this.gate.execute(details?.toolCall?.callId, () => options.execute(input, ctx, details)),
+        this.gate.execute(details?.toolCall?.callId, () => options.execute(this.gate.input(details?.toolCall?.callId, input), ctx, details)),
     });
   }
 

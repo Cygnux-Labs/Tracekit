@@ -12,6 +12,7 @@ decided in the signer, `await tk.apply_decisions(state)` approves or rejects the
 approval id only as a hint in `context["tracekit"]["approvals"]` (any other context carries none: the signer finds the
 approval by the call id): every call that is not denied runs only after the signer's `approval_consume` agrees, and the
 SDK does not call `needs_approval` again on resume.
+An approval with a T2 executor runs a FunctionTool with the arguments the consume returns.
 
 Gated: FunctionTools (a tool input guardrail consumes on the model's raw arguments string), ShellTool with a local
 executor, LocalShellTool and ApplyPatchTool (gated in the executor or editor). LocalShellTool and ApplyPatchTool cannot
@@ -31,6 +32,7 @@ import dataclasses
 import functools
 import inspect
 import itertools
+import json
 import threading
 import uuid
 import warnings
@@ -42,6 +44,7 @@ from agents.tool import maybe_invoke_function_tool_failure_error_function, set_f
 
 from tracekit import parsers
 from tracekit.format.canon import event_hash, loads_strict
+from tracekit.integrations.executor_tools import EXECUTOR
 from tracekit.sdk.client import SignerUnavailable, fail_open, result_field
 from tracekit.signer.rpc_schema import RPCError
 
@@ -133,7 +136,9 @@ class TracekitAgents(RunHooks):
             c = {"ok": False, "rule_ids": [], "reason": str(e)}
         if not c["ok"]:
             return BLOCKED + ", ".join(c["rule_ids"]) + (f": {c['reason']}" if c.get("reason") else "")
-        _keep(self._passed, call_id, (d, tool, args))
+        # lean: only a FunctionTool runs the signer's copy (T2); a shell or patch tool runs the SDK's action, which the
+        # gate read just before; rebuild the action from the copy if those tools get T2 approvals
+        _keep(self._passed, call_id, (d, tool, c.get("args", args)))
         return None
 
     async def _body(self, call_id, fn, *a):
@@ -167,7 +172,10 @@ class TracekitAgents(RunHooks):
 
     def tool(self, t):
         """The tool gated by the signer: a function, FunctionTool, ShellTool, LocalShellTool or ApplyPatchTool.
-        The signer's policy decides approvals: the tool's own `needs_approval` is replaced."""
+        The signer's policy decides approvals: the tool's own `needs_approval` is replaced. A tool executor's tool
+        (executor_tools) is returned as it is: the executor decides and records it (T2)."""
+        if getattr(t, EXECUTOR, False):
+            return t
         if isinstance(t, ShellTool):
             if t.executor is None:
                 raise TypeError("a hosted ShellTool runs outside this process; Tracekit records it from the model "
@@ -207,6 +215,9 @@ class TracekitAgents(RunHooks):
             return ToolGuardrailFunctionOutput.allow() if why is None else ToolGuardrailFunctionOutput.reject_content(why)
 
         async def invoke(ctx, raw):
+            passed = self._passed.get(ctx.tool_call_id)
+            if passed is not None and not isinstance(passed[2], str):   # T2: the signer's copy, parsed
+                raw = json.dumps(passed[2])
             try:
                 return await self._body(ctx.tool_call_id, inner.on_invoke_tool, ctx, raw)
             except Exception as e:   # the tool's own failure policy, as without Tracekit

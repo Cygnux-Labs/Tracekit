@@ -49,8 +49,9 @@ class Driver:
     def hook(self, event, tcid, tool, args, **fields):
         payload = {"hook_event_name": event, "session_id": "s1", "tool_use_id": tcid, "tool_name": tool,
                    "tool_input": args, **fields}
-        err = io.StringIO()
-        with mock.patch("sys.stdin", io.StringIO(json.dumps(payload))), contextlib.redirect_stderr(err):
+        err, self.stdout = io.StringIO(), io.StringIO()
+        with mock.patch("sys.stdin", io.StringIO(json.dumps(payload))), contextlib.redirect_stderr(err), \
+                contextlib.redirect_stdout(self.stdout):
             return claude_code._entry(), err.getvalue()
 
     def requested(self, tcid):
@@ -63,7 +64,8 @@ class Driver:
     def call(self, tool, args, tcid="call-1", mode="sync"):
         ac.RAN.clear()
         self.pending, self.pre = (tool, args, tcid), {}
-        self.waiting = threading.Thread(target=lambda: self.pre.update(out=self.hook("PreToolUse", tcid, tool, args)))
+        self.waiting = threading.Thread(target=lambda: self.pre.update(out=self.hook("PreToolUse", tcid, tool, args),
+                                                                       said=self.stdout.getvalue()))
         self.waiting.start()
         while self.waiting.is_alive():
             aid = self.requested(tcid)
@@ -84,6 +86,8 @@ class Driver:
         if code == 2:
             return out
         self.case.assertEqual(code, 0, err)
+        if self.pre["said"]:   # Claude Code runs the hook's updatedInput instead
+            args = json.loads(self.pre["said"])["hookSpecificOutput"]["updatedInput"]
         try:
             out["seen"] = TOOLS[tool](**args)
             event, fields = "PostToolUse", {"tool_response": {"stdout": out["seen"]}}

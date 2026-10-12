@@ -378,7 +378,8 @@ class Runtime:
     it) and completed after, model calls are model_events (unless `record_models` is False: a gateway records
     them). Each event stores the citation of its record (`tracekit`); the signer is the gate, not the guard. A call held
     for approval is held again, under the same tool call and approval, when the agent retries it with the same arguments:
-    an approval given meanwhile lets the retry run. finish() (or close()) abandons the approvals still held."""
+    an approval given meanwhile lets the retry run. finish() (or close()) abandons the approvals still held, except
+    those escalated to people (they expire with the run)."""
 
     def __init__(
         self,
@@ -541,8 +542,9 @@ class Runtime:
         calls = [(lambda ex=ex: ex["run"].call(
             "model_event", provider="tracekit-why", model=ex["model"], phase="response", exchange_id=ex["id"],
             **({"tool_uses": ex["tool_uses"][:128]} if ex["tool_uses"] else {}))) for ex in self._exchanges.values()]
-        calls += [(lambda h=h: h["run"].call("approval_abandon", approval_id=h["aid"],
-                                             reason="the run ended before the call was retried"))
+        calls += [(lambda h=h: h["run"].call("approval_wait", approval_id=h["aid"], timeout_ms=0).get("escalated") or
+                   h["run"].call("approval_abandon", approval_id=h["aid"],   # people answer an escalated one
+                                 reason="the run ended before the call was retried"))
                   for h in self._held.values()]
         calls += [run.close for run in self._tk_runs.values()]
         self._exchanges.clear()

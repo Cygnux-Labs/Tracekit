@@ -105,9 +105,15 @@ caller descends from), `run.closing`, the run's `reconcile.*` records, then `run
 coverage}`. A run started by another run of the same tenant (a sub-agent's: `register_run` `parent`, whose run token
 the caller presents, for a parent that is not final) has `parent_run` (that run) and `session` (the root of its chain of
 parents) in its `run.registered` (format 1.2); a run without them is the root of its own session, whose id is its
-`run_id`. Key records: `signer.epoch{keys: [{kid, alg, spki, cert?}], bridge?}` (`cert`: the key's issuance entry from a
-record-key issuer, [issuer.md](issuer.md)) and `key.retire{kid, last_seq}`. The log's
-last record, if it is ever closed: `log.closed{final_seq}`.
+`run_id`. A tool call the [tool executor](executor.md) or the [MCP gateway](mcp-gateway.md) decided, ran or received
+for the run's client is recorded `source: gateway`, tier `T2`, its `policy.decision`, `approval.request`, `tool.result`
+and `input.observed` naming that service's signer identity (`scheme:subject`) in `via`, and its `policy.decision` the
+client it decided the call for in `caller` (format 1.2); the signer takes such a call's approval request, consume and
+completion from that service, for that client, alone. A run that ends with such a call allowed (or approved and
+consumed) and no result, after waiting `gateway_wait_s` for it, gets a signer `capture.gap{kind:
+held_call_unresolved}` for it. Key records: `signer.epoch{keys:
+[{kid, alg, spki, cert?}], bridge?}` (`cert`: the key's issuance entry from a record-key issuer, [issuer.md](issuer.md))
+and `key.retire{kid, last_seq}`. The log's last record, if it is ever closed: `log.closed{final_seq}`.
 
 Provenance (format 1.1, [policy](policy-v2.md#provenance-untrusted-and-from-untrusted)): `input.observed{source,
 trust, output: {hash, size, redacted}, redaction, salt_id}` records content that entered the run through the
@@ -383,7 +389,7 @@ what it added: record types, data fields per record type, and enum values per (r
 | Version | Record types | Data fields | Enum values |
 |---|---|---|---|
 | 1.1.0 | `input.observed`, `content.accessed`, `content.erased`, `why.finding` | `policy.decision`: `provenance`, `provenance_state`; `run.registered`: `replay_of` | — |
-| 1.2.0 | `incident.opened`, `incident.updated`, `incident.capped` | `run.registered`: `parent_run`, `session`; `policy.decision`: `detect` | — |
+| 1.2.0 | `approval.escalated`, `approval.revoked`, `approval.suggested`, `approval.agents`, `incident.opened`, `incident.updated`, `incident.capped` | `run.registered`: `parent_run`, `session`; `policy.decision`: `via`, `caller`, `detect`; `approval.request`: `agent`, `via`; `tool.result`, `input.observed`: `via`; `approval`: `approver_kind`, `asserted`, `spent`, `not_before`, `consume_by`; `approval.expired`: `reason` | `capture.gap` `kind`: `reask_after_reject`, `held_call_unresolved` |
 
 Every v2 definition is closed (`additionalProperties: false`), so an older verifier would fail a record that uses a
 newer entry; the version the manifest declares makes it report `UNVERIFIABLE (needs tracekit >= x)` instead, never

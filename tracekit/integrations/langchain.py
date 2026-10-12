@@ -8,8 +8,8 @@
 
 `deny` replaces the call with an error ToolMessage and the run goes on. `ask` pauses the run with LangGraph
 `interrupt()`; resume it with `Command(resume={"approval_id": ...})`. Every call that is not denied runs only after the
-signer's `approval_consume` agrees, so an approval is checked by the signer, never by the saved state. `ask` needs a
-checkpointer: without one the call is denied.
+signer's `approval_consume` agrees, so an approval is checked by the signer, never by the saved state; an approval with
+a T2 executor runs the arguments the consume returns. `ask` needs a checkpointer: without one the call is denied.
 
 A signer that cannot be reached when a call is decided: the call runs unrecorded if register_run's `fail_modes` say
 `open`, else it is refused. Any other failure to decide or approve (a refusal, a run the signer closed after its idle
@@ -37,6 +37,7 @@ from langgraph.prebuilt import ToolNode
 from langgraph.types import interrupt
 
 from tracekit.format.canon import event_hash
+from tracekit.integrations.executor_tools import EXECUTOR
 from tracekit.sdk.client import SignerUnavailable, fail_open, result_field
 from tracekit.signer.rpc_schema import RPCError
 
@@ -92,6 +93,8 @@ class TracekitMiddleware(AgentMiddleware):
         except (RPCError, SignerUnavailable) as e:   # e.g. a hint that is not an id at all
             c = {"ok": False, "rule_ids": [], "reason": str(e)}
         if c["ok"]:
+            if "args" in c:   # T2: the signer's copy is what runs
+                d["args"], d["args_digest"] = c["args"], event_hash({"tool": call["name"], "args": c["args"]})
             return None, d
         return self._refusal(call, ", ".join(c["rule_ids"]) + (f": {c['reason']}" if c.get("reason") else "")), d
 
@@ -121,9 +124,13 @@ class TracekitMiddleware(AgentMiddleware):
 
     # lean: signer calls are blocking in both paths; use the async client in awrap_tool_call once it exists
     def wrap_tool_call(self, request, handler):
+        if _executor(request):
+            return handler(request)
         blocked, d = self._gate(request)
         if blocked is not None:
             return blocked
+        if d is not None and "args" in d:
+            request = request.override(tool_call={**request.tool_call, "args": d["args"]})
         try:
             out = handler(request)
         except GraphBubbleUp:   # interrupt() or a handoff inside the tool: control flow, not an outcome
@@ -135,9 +142,13 @@ class TracekitMiddleware(AgentMiddleware):
         return out
 
     async def awrap_tool_call(self, request, handler):
+        if _executor(request):
+            return await handler(request)
         blocked, d = self._gate(request)
         if blocked is not None:
             return blocked
+        if d is not None and "args" in d:
+            request = request.override(tool_call={**request.tool_call, "args": d["args"]})
         try:
             out = await handler(request)
         except GraphBubbleUp:   # interrupt() or a handoff inside the tool: control flow, not an outcome
@@ -147,6 +158,11 @@ class TracekitMiddleware(AgentMiddleware):
             raise
         self._complete(request.tool_call, d, out)
         return out
+
+
+def _executor(request):
+    """Whether the call is to a tool executor's tool (executor_tools), which the executor decides and records (T2)."""
+    return bool((getattr(request.tool, "metadata", None) or {}).get(EXECUTOR))
 
 
 def tracekit_tool_node(tools, signer, run, **kw):

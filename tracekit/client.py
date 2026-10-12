@@ -130,15 +130,16 @@ def remote_url_error(url):
     return "URL must use https (plain http only for localhost, 127.0.0.1 or ::1)"
 
 
-def no_redirect_opener():
+def no_redirect_opener(context=None):
     """A urllib opener that bypasses proxies and returns any 3xx as an HTTPError instead of following it,
-    so credential headers are never re-sent to a redirect target."""
+    so credential headers are never re-sent to a redirect target. `context`: an ssl.SSLContext for HTTPS."""
     import urllib.request
 
     class _NoRedirect(urllib.request.HTTPRedirectHandler):
         def redirect_request(self, *a, **kw):
             return None
-    return urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
+    tls = [urllib.request.HTTPSHandler(context=context)] if context is not None else []
+    return urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect(), *tls)
 
 
 def _http_rpc(endpoint, cfg, req, timeout):
