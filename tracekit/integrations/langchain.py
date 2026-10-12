@@ -12,7 +12,7 @@ signer's `approval_consume` agrees, so an approval is checked by the signer, nev
 a T2 executor runs the arguments the consume returns. `ask` needs a checkpointer: without one the call is denied.
 
 A signer that cannot be reached when a call is decided: the call runs unrecorded if register_run's `fail_modes` say
-`open`, else it is refused. Any other failure to decide or approve (a refusal, a run the signer closed after its idle
+`open` for the tool's class (as the signer's default policy classes it), else it is refused. Any other failure to decide or approve (a refusal, a run the signer closed after its idle
 timeout: register a new run for a long-idle agent) refuses the call. A failure to record the outcome warns and leaves
 the tool's result as it was. Put TracekitMiddleware last in `middleware=`: a middleware after it could hand the tool a
 call other than the one decided.
@@ -74,8 +74,10 @@ class TracekitMiddleware(AgentMiddleware):
         attempt = self._attempts.get(call["id"], 0)
         try:   # LangChain hands over JSON-decoded args, never the model's raw string
             d = self._event("decide", call, tool=call["name"], args_source="parsed", args=call["args"])
-        except SignerUnavailable as e:
-            return (None if fail_open(self.fail_modes) else self._refusal(call, f"signer unavailable: {e}")), None
+        except SignerUnavailable as e:   # the run's fail mode for the tool's class
+            from tracekit.integrations.claude_code import _tool_class
+            open_ = fail_open(self.fail_modes, _tool_class(call["name"]))
+            return (None if open_ else self._refusal(call, f"signer unavailable: {e}")), None
         except RPCError as e:
             return self._refusal(call, f"signer refused the call: {e}"), None
         if d["decision"] == "deny":

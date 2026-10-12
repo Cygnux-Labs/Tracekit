@@ -229,6 +229,18 @@ class Failures(ac.OnReal, unittest.TestCase):
         out = self.agent(Down(), fail_modes={"default": "open"}).invoke(prompt("echo", text="hi"))
         self.assertEqual((tool_message(out).content, ac.RAN), ("hi", ["echo"]))
 
+    def test_signer_unreachable_follows_the_fail_mode_of_the_tools_class(self):
+        @tool
+        def terminal(commands: str) -> str:   # LangChain's ShellTool name: class shell in the default policy
+            """Run commands."""
+            ac.RAN.append("terminal")
+            return "ran"
+        agent = create_agent(StubModel(), [*TOOLS, terminal], middleware=[TracekitMiddleware(
+            Down(), **self.run, fail_modes={"default": "closed", "shell": "open"})])
+        self.assertEqual(tool_message(agent.invoke(prompt("terminal", commands="ls"))).content, "ran")
+        self.assertIn("signer unavailable", tool_message(agent.invoke(prompt("echo", text="hi"))).content)
+        self.assertEqual(ac.RAN, ["terminal"])
+
     def test_closed_run_refuses_the_call(self):
         self.client.close_run(dict(self.run))
         out = self.agent(self.client).invoke(prompt("echo", text="hi"))
