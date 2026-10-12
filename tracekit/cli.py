@@ -35,6 +35,9 @@ _MOVED = {"sql": "query", "proofpack": "proofpack", "report": "proofpack", "caus
 
 
 def main(argv=None):
+    for stream in (sys.stdout, sys.stderr):   # a legacy console encoding (Windows cp1252) can't print every character
+        if hasattr(stream, "reconfigure") and getattr(stream, "errors", "strict") == "strict":
+            stream.reconfigure(errors="replace")
     args = list(sys.argv[1:] if argv is None else argv)
     if args[:2] == ["migrate", "--system"]:  # 0.2.1; before argparse for the same REMAINDER reason as below
         rest, fm, harnesses = args[2:], None, []

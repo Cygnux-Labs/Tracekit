@@ -465,6 +465,13 @@ class Cli(Tmp):
         self.assertFalse(os.path.exists(os.path.join(self.tmp, "report.html")))
         self.assertEqual(self.cli(["verify", os.path.join(self.tmp, "demo-seed0")])[0], 0)
 
+    def test_the_demo_runs_on_a_console_that_cannot_print_every_character(self):
+        import subprocess
+        import sys
+        p = subprocess.run([sys.executable, "-m", "tracekit", "why", "demo", "--out", self.tmp, "--n", "2"],
+                           capture_output=True, env={**os.environ, "PYTHONIOENCODING": "cp1252"})   # Windows' console
+        self.assertEqual(p.returncode, 0, p.stderr.decode(errors="replace")[-400:])
+
     def test_attribute_on_the_demo(self):
         run = self.exfil_run()
         code, out = self.cli(["attribute", run.path, "--target", EXFIL_TARGET, "--n", "10", "--n-max", "40",

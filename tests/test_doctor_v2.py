@@ -303,7 +303,7 @@ class Detect(unittest.TestCase):
             os.chdir(project)
             with contextlib.redirect_stdout(io.StringIO()):
                 install.install_hooks(settings, module=install.V2_HOOK)
-            with mock.patch.dict(os.environ, {"HOME": home, **env}), \
+            with mock.patch.dict(os.environ, {"HOME": home, "USERPROFILE": home, **env}), \
                     mock.patch.object(install.client, "client_config", return_value={}):
                 _, v2 = self.collect(None)
             self.assertEqual(os.path.realpath(v2.call_args.kwargs["settings"]), os.path.realpath(settings))

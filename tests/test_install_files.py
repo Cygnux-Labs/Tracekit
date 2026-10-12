@@ -359,7 +359,7 @@ class ClaudeConfigDir(unittest.TestCase):
             self.assertIn(path, [h["settings"] for h in install._installed_hooks()])
         with mock.patch.dict(os.environ, {}, clear=False):
             os.environ.pop("CLAUDE_CONFIG_DIR", None)
-            self.assertEqual(install.user_settings(), os.path.expanduser("~/.claude/settings.json"))
+            self.assertEqual(install.user_settings(), os.path.join(os.path.expanduser("~"), ".claude", "settings.json"))
 
     def test_init_dev_records_where_it_put_the_hooks(self):
         d = tempfile.mkdtemp()

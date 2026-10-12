@@ -331,7 +331,8 @@ def _backup(path, data):
 def user_settings():
     """Claude Code's user settings file: in $CLAUDE_CONFIG_DIR when set (Claude Code's own setting for another config
     dir), else ~/.claude."""
-    return os.path.join(os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude"), "settings.json")
+    return os.path.join(os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(os.path.expanduser("~"), ".claude"),
+                        "settings.json")
 
 
 def user_settings_all():
@@ -343,7 +344,7 @@ def user_settings_all():
         recorded = client.client_config().get("hooks_settings")
     except client.SystemConfigError:   # doctor reports an untrusted system config; it records no hooks file
         recorded = None
-    for p in (user_settings(), os.path.join(os.path.expanduser("~/.claude"), "settings.json"),
+    for p in (user_settings(), os.path.join(os.path.expanduser("~"), ".claude", "settings.json"),
               *([recorded] if isinstance(recorded, str) else [])):
         if os.path.realpath(p) not in seen:
             seen.add(os.path.realpath(p))

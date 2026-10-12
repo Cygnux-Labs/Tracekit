@@ -534,6 +534,16 @@ def _close_at_exit(run, failed):
         warnings.warn(f"tracekit: run {run.run_id} was not closed: {e}", stacklevel=3)
 
 
+def _class_of(tool):
+    """The class the default policy gives `tool`, for a fail mode while the signer is unreachable (as the adapters and
+    hooks do); None (the default fail mode) when it can't be read."""
+    try:
+        from tracekit.integrations.claude_code import _tool_class
+        return _tool_class(tool)
+    except Exception:   # an outage path never raises
+        return None
+
+
 class RunHandle:
     """A registered run. As a context manager it is the current run (`current_run`) and is closed on exit (see
     _close_at_exit)."""
@@ -567,14 +577,15 @@ class RunHandle:
 
     def decide(self, tool_call_id, tool, args, **fields):
         """`args` is the model's raw arguments string, or an already parsed value. Never raises SignerUnavailable:
-        while the signer can't be reached the run's fail mode for `tool_class_hint` decides, `{"decision": "allow" or
+        while the signer can't be reached the run's fail mode for `tool_class_hint` (else the tool's class in the
+        default policy) decides, `{"decision": "allow" or
         "deny", "unavailable": True, ...}` (as the TypeScript client), so a hook that blocks by return value blocks. A
         refusal raises RPCError."""
         try:
             d = self.call("decide", tool_call_id=tool_call_id, tool=tool, args=args,
                           **{"args_source": "raw" if isinstance(args, str) else "parsed", **fields})
         except SignerUnavailable as e:
-            ok = fail_open(self.registered.get("fail_modes"), fields.get("tool_class_hint"))
+            ok = fail_open(self.registered.get("fail_modes"), fields.get("tool_class_hint") or _class_of(tool))
             warnings.warn(f"tracekit: {tool} {'runs unrecorded (fail open)' if ok else 'is denied (fail closed)'}: {e}",
                           stacklevel=2)
             return {"decision": "allow" if ok else "deny", "rule_ids": [], "unavailable": True,

@@ -19,6 +19,7 @@ import gc
 import threading
 import time
 import unittest
+import warnings
 from unittest import mock
 
 from tracekit import __version__, cli
@@ -290,6 +291,18 @@ class Transports(unittest.TestCase):
             c = Client("https://127.0.0.1:1", timeout=1)
         with self.assertRaisesRegex(client.SignerUnavailable, "token file"):
             c.status()
+
+    def test_an_outage_decides_by_the_fail_mode_of_the_tools_class(self):
+        run = client.RunHandle(Client("https://127.0.0.1:1", timeout=1),
+                               {"run_id": "r1", "run_token": "t", "fail_modes": {"default": "closed", "fs": "open"}})
+        with mock.patch.object(client._Https, "post", side_effect=client.SignerUnavailable("down")), \
+                warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            read = run.decide("c1", "Read", {"file_path": "a.txt"})   # fs in the default policy: open
+            bash = run.decide("c2", "Bash", {"command": "ls"})        # shell: the default, closed
+            hinted = run.decide("c3", "Read", {"file_path": "a.txt"}, tool_class_hint="shell")
+        self.assertEqual([(d["decision"], d["unavailable"]) for d in (read, bash, hinted)],
+                         [("allow", True), ("deny", True), ("deny", True)])
 
     def https(self, answer, timeout=5):
         """A Client of an HTTPS signer whose requests `answer(frame)` answers, in place of the network."""
