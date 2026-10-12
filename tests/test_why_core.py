@@ -184,10 +184,16 @@ class LongRuns(Tmp):
         chains = lineage(g, last)
         self.assertEqual(len(chains), LINEAGE_CHAINS)
         self.assertTrue(all(len(c) == 3 and c[-1] == last and g.nodes[c[0]]["type"] == "input" for c in chains))
-        run = full_history(150)
-        start = time.monotonic()
-        run_detail(run)
-        self.assertLess(time.monotonic() - start, 4)   # 10 s before
+
+        def took(steps):   # the best of two, so a busy runner's pause isn't counted
+            run, best = full_history(steps), float("inf")
+            for _ in range(2):
+                start = time.perf_counter()
+                run_detail(run)
+                best = min(best, time.perf_counter() - start)
+            return best
+
+        self.assertLess(took(150), 30 * took(50))   # 3x the steps: about 14x the time; 60x before
 
     def test_dense_contexts_build_their_graph_in_time(self):
         """add_edge scanned the source's edges for a duplicate: cubic when every model call sees every input."""
