@@ -16,9 +16,9 @@ from tracekit.signer import service as svc
 from tracekit.signer.rpc_schema import RESPONSES, RPCError, validate
 
 AGENT = CallerIdentity("token", "reviewer", True)
-ALICE = CallerIdentity("uid", "1001", True)
+ALICE = CallerIdentity("uid", "990001", True)
 OPS = CallerIdentity("token", "ops", True)
-APPROVALS = {"approvers": ["uid:1001"], "persons": {"uid:1001": "alice"}, "agents": ["token:reviewer"]}
+APPROVALS = {"approvers": ["uid:990001"], "persons": {"uid:990001": "alice"}, "agents": ["token:reviewer"]}
 AUTHORIZE = {"token:reviewer": sorted(svc.AGENT_METHODS), "token:ops": ["approval_agents"]}
 FIELDS = {"amount": {"type": "integer", "min": 1, "max": 100}, "payee": {"type": "string", "enum": ["acct-1", "acct-2"]},
           "memo": {"type": "string", "pattern": "[A-Za-z ]{0,64}"}}
@@ -119,8 +119,8 @@ class TestConfig(unittest.TestCase):
     def test_an_agent_is_an_agent_only(self):
         self.assertEqual(self.check({}), {"token:reviewer"})
         for approvals, authorize, mta in (({"break_glass": ["token:reviewer"]}, None, ()),
-                                          ({"approvers": ["uid:1001", "token:*"]}, None, ()),   # matched by a prefix
-                                          ({"persons": {"uid:1001": "alice", "token:reviewer": "bob"}}, None, ()),
+                                          ({"approvers": ["uid:990001", "token:*"]}, None, ()),   # matched by a prefix
+                                          ({"persons": {"uid:990001": "alice", "token:reviewer": "bob"}}, None, ()),
                                           ({}, {"token:reviewer": [svc.ON_BEHALF]}, ()),
                                           ({}, None, ("token:reviewer",)),
                                           ({"agents": ["token:*"]}, None, ()), ({"agents": ["group:bots"]}, None, ()),
@@ -133,7 +133,7 @@ class TestConfig(unittest.TestCase):
         with self.assertRaises(ValueError):
             svc.SignerService(ts.tmpdir(self), approvals=dict(APPROVALS, break_glass=["token:reviewer"]))
         with self.assertRaisesRegex(ValueError, "approvals.agents names none"):
-            svc.SignerService(ts.tmpdir(self), policy=Engine(policy()), approvals={"approvers": ["uid:1001"]})
+            svc.SignerService(ts.tmpdir(self), policy=Engine(policy()), approvals={"approvers": ["uid:990001"]})
 
 
 class Case(unittest.TestCase):
