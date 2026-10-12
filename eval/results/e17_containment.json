@@ -1,0 +1,83 @@
+{
+  "agent_cannot_operate": {
+    "default": 10,
+    "granted": 10,
+    "ok": true
+  },
+  "approval_before_hold": {
+    "consume": [
+      "TK-HOLD"
+    ],
+    "expired": [
+      "hold"
+    ],
+    "ok": true
+  },
+  "held_runs_dont_starve": {
+    "healthy_run_asks": true,
+    "held_run_capped": true,
+    "ok": true
+  },
+  "injected_ticket_cannot_suspend": {
+    "ok": true,
+    "refused_at_load": [
+      "denied_calls",
+      "provenance",
+      "Q"
+    ]
+  },
+  "quarantine_stops_gateway": {
+    "closing": [
+      "quarantine"
+    ],
+    "ok": true,
+    "request_refused": true,
+    "state": "quarantined"
+  },
+  "reregistered_inherits": {
+    "ok": true,
+    "rule_ids": [
+      "T-SECRET",
+      "TK-HOLD"
+    ],
+    "state": "held"
+  },
+  "restarts": {
+    "ok": true,
+    "recover": [
+      "held",
+      "ask"
+    ],
+    "restart": [
+      "held",
+      "ask"
+    ],
+    "snapshot_then_crash": [
+      "held",
+      "ask"
+    ]
+  },
+  "verifier_catches_allow_after_hold": {
+    "allow_after_hold": {
+      "python": [
+        1,
+        "fail"
+      ],
+      "typescript": [
+        1,
+        "fail"
+      ]
+    },
+    "honest": {
+      "python": [
+        0,
+        "pass"
+      ],
+      "typescript": [
+        0,
+        "pass"
+      ]
+    },
+    "ok": true
+  }
+}

@@ -28,10 +28,12 @@ MAX_DETECT = 1024    # sequences and limits together: a decision's `detect` list
 MAX_DENIED = 1000    # denied_calls `max`: the calls a scope remembers in its window
 TRIGGERS = ("executed_against_policy", "denied_calls", "provenance", "class_mismatch", "refusal_burst", "tamper")
 NOTIFY_ONLY = ("class_mismatch", "refusal_burst", "tamper")   # never enforced, whatever `respond` says
+# the triggers no content the agent reads can steer: only these may suspend the run's owner (`suspend: true`)
+SUSPENDABLE = ("executed_against_policy",)
 MODES, ACTIONS = ("off", "shadow", "enforce"), ("notify", "hold", "quarantine")
 SEQ_KEYS = {"id", "steps", "scope", "window", "unless"}
 LIMIT_KEYS = {"id", "match", "count", "sum", "max", "window", "scope"}
-RESPOND_KEYS = {"trigger", "mode", "action"}
+RESPOND_KEYS = {"trigger", "mode", "action", "cooldown_s", "suspend"}
 RESPOND_MORE = {"denied_calls": {"max", "window", "scope"}, "refusal_burst": {"max"}}   # the triggers that read more
 AGENT_KEYS, BOUND_KEYS, BUDGET_KEYS = {"mode", "allow", "budget", "veto_s"}, {"type", "min", "max", "enum", "pattern"}, \
     {"count", "sum", "window", "scope"}
@@ -339,6 +341,12 @@ def _lint_detect(pol, path):
             errors.append(f"{where}: needs window")
         if t == "denied_calls" and _int(x.get("max"), MAX_DENIED + 1, 2 ** 53):
             errors.append(f"{where}: max must be at most {MAX_DENIED}")
+        if "cooldown_s" in x and not _int(x["cooldown_s"], 0, MAX_WINDOW):
+            errors.append(f"{where}: cooldown_s must be whole seconds from 0 to {MAX_WINDOW}")
+        if x.get("suspend", False) is not False and (x["suspend"] is not True or t not in SUSPENDABLE):
+            errors.append(f"{where}: suspend: true is only for {', '.join(SUSPENDABLE)}: content the agent reads can "
+                          "steer this trigger, so suspending an identity on it is an operator's call (tracekit signer "
+                          "incidents suspend)")
     return errors
 
 

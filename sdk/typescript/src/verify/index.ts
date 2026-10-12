@@ -16,6 +16,7 @@ import {
   HYBRID, NoteError, SIGNER_LEAVES, b64decode, bytes, equal, keyAlg, leafHash, openNote, parseLeaf, parseVkey,
   registryOrigin, runHash, sha256hex, spkiKid, unhex, verifyConsistency, verifyInclusion, verifyV2, vkey,
 } from "./primitives.js";
+import { Detector } from "./detect.js";
 import { same, validateEvent } from "./schema.js";
 import { readZip } from "./zip.js";
 
@@ -380,6 +381,7 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
     reconciles.map((e) => `seq ${e.seq}: ${e.type} ${cut(str(get(e, "tool_call_id")), 200)}: `
       + cut(str(get(at(e, "data"), "detail")), 200)).slice(0, 20), true);
   }
+  await checkIncidents(rep, runs, files, floats);
   // a tool call's tier is the weakest its records claim (untiered < T3, receipt only, < T1 < T2): each tier a record
   // names, and untiered for a decision or result that names none, so a call decided at T2 and completed elsewhere
   // isn't T2;
@@ -442,6 +444,106 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
     rep.check("break-glass approvals", false, `${glass.length} approval(s) answered under the break-glass role`,
       glass.map((e) => `seq ${e.seq}: ${str(at(e.data, "decision"))} ${str(get(e.data, "approval_id"))} by `
         + `${cut(text(at(e.data, "approver")), 256)}: ${repr(cut(str(get(e.data, "reason")), 200))}`).slice(0, 20), true);
+}
+
+const CONTAINMENT = ["incident.opened", "incident.updated", "run.held", "run.quarantined", "run.resumed"];
+const FIRES = ["policy.decision", "approval.consumed", "capture.gap", "trace.tamper", "refusal.summary"];
+const RECOMPUTED = ["sequence", "limit", "denied_calls", "provenance", "executed_against_policy", "class_mismatch"];
+
+/** The `incidents` line, as verify/v2.py's _incidents: cited records, incidents recomputed from their run under the
+ * bundled compiled policy, responses honoured. */
+async function checkIncidents(rep: Report, runs: Map<string, J[]>, files: Map<string, Uint8Array>, floats: Floats) {
+  const byRun = new Map<J, J[]>([...runs.values()].map((rs) => [get(rs[0].event, "run_id"), rs.map((r) => r.event)]));
+  if (![...byRun.values()].some((es) => es.some((e) => CONTAINMENT.includes(get(e, "type"))))) return;
+  const problems: string[] = [], pointers = new Set<string>(), opened = new Set<string>();
+  let checked = 0;
+  for (const es of byRun.values()) for (const e of es) if (e.type === "incident.opened") opened.add(e.data.incident_id);
+  for (const [rid, events] of byRun) {
+    const mine: J[] = [];
+    for (const e of events) {
+      const d = e.data;
+      if (!["incident.opened", "incident.updated"].includes(e.type)) continue;
+      for (const c of list(d.cites)) {
+        const cited = byRun.get(c.run_id);
+        if (cited && (c.run_seq >= cited.length || !FIRES.includes(cited[c.run_seq].type)))
+          problems.push(`seq ${e.seq}: incident ${d.incident_id} cites ${cut(c.run_id, 128)} run_seq ${c.run_seq}, which is `
+            + "not a record that fires a trigger");
+      }
+      if (e.type === "incident.updated") continue;
+      if (d.trigger === "detector_unavailable") {
+        const c = d.cites.length === 1 ? d.cites[0] : {}, cited = byRun.get(c.run_id) ?? [];
+        const ok = (c.run_seq ?? cited.length) < cited.length && cited[c.run_seq].type === "policy.decision"
+          && cited[c.run_seq].data.detect?.state === "unavailable";
+        if (ok) checked++;
+        else problems.push(`seq ${e.seq}: incident ${d.incident_id} (detector_unavailable) cites no decision whose detection `
+          + "state was unavailable");
+      } else if (d.scope.kind === "run" && RECOMPUTED.includes(d.trigger) && d.cites.every((c: J) => c.run_id === rid))
+        mine.push(e);
+    }
+    const hashes = new Set(events.filter((e) => e.type === "policy.decision").map((e) => get(e.data, "policy_hash")));
+    let det: Detector | null = null;
+    if (mine.length && hashes.size === 1) {
+      const h = str([...hashes][0]), data = files.get(`policies/${h.slice(7)}.json`);
+      if (!data || "sha256:" + await sha256hex(data) !== h)
+        problems.push(`policy ${cut(h, 80)} is not in the bundle: its incidents can't be recomputed (export the run with the `
+          + "signer's config, which bundles the policies its records cite)");
+      else det = new Detector(strictParseBytes(data, floats));
+      if (det) {
+        const st = Detector.state(), expected: J[] = [], key = (d: J) => JSON.stringify([d.trigger, d.rule_ids,
+          d.cites.map((c: J) => [c.run_id, c.run_seq])]);
+        for (const e of events) {
+          if (mine.includes(e)) {
+            const i = expected.findIndex((x) => key(x) === key(e.data));
+            if (i >= 0) {
+              expected.splice(i, 1);
+              checked++;
+            } else problems.push(`seq ${e.seq}: incident ${e.data.incident_id} (${e.data.trigger}) does not follow from the `
+              + `run's records under policy ${cut(h, 80)}`);
+          }
+          expected.push(...det.observe(st, e).filter(([t]) => t === "incident.opened").map(([, d]) => d));
+        }
+      }
+    }
+    problems.push(...honoured(events, pointers));
+  }
+  const n = opened.size + [...pointers].filter((p) => !opened.has(p)).length;
+  rep.check("incidents", !problems.length, `${n} incident(s): ${checked} checked against the bundle, ${n - checked} `
+    + "signer-asserted (operator, cross-run, or under several policies)", problems.slice(0, 20));
+}
+
+/** The problems of one run's records with the holds and quarantines they record (verify/v2.py's _honoured). */
+function honoured(events: J[], pointers: Set<string>): string[] {
+  const problems: string[] = [], flight = new Set<string>(), asked = new Map<string, J>(), consumed = new Set<J>();
+  let held: J = null, quarantined: J = null;
+  const state = () => quarantined ? "quarantined" : "held";
+  for (const e of events) {
+    const t = e.type, d = e.data, where = `seq ${e.seq}`, on = quarantined || held;
+    if (t === "run.held" || t === "run.quarantined") {
+      pointers.add(d.incident_id);
+      for (const x of d.in_flight ?? []) flight.add(x.decision_id);
+      if (t === "run.quarantined") [quarantined, held] = [d.incident_id, null];
+      else if (!quarantined) held = d.incident_id;
+    } else if (t === "run.resumed") held = null;
+    else if (t === "policy.decision" && on && (quarantined ? d.decision !== "deny"
+      : d.decision !== "deny" && (d.decision !== "ask" || (d.incident_id ?? null) !== held)))
+      problems.push(`${where}: ${d.decision} while the run is ${state()} by incident ${on}`);
+    else if (t === "approval.request") {
+      asked.set(d.approval_id, d.incident_id ?? null);
+      if (quarantined || held && (d.incident_id ?? null) !== held)
+        problems.push(`${where}: an approval asked while the run is ${state()} by incident ${on}, not as its held call`);
+    } else if (t === "approval" && asked.get(d.approval_id ?? null) && d.decision === "approve" && (
+      d.approver_kind === "agent" || d.self_approved || !Object.hasOwn(d, "person")
+      && !Object.hasOwn(d.approver_identity ?? {}, "person") || (d.incident_id ?? null) !== asked.get(d.approval_id)))
+      problems.push(`${where}: a held call approved by other than a person, or without its incident id`);
+    else if (t === "approval.consumed") {
+      if (quarantined || held && !asked.get(d.approval_id))
+        problems.push(`${where}: an approval consumed while the run is ${state()} by incident ${on}`);
+      else if (asked.get(d.approval_id)) consumed.add(e.tool_call_id ?? null);
+    } else if (t === "tool.result" && on && !flight.has(d.decision_id) && (quarantined || !consumed.has(e.tool_call_id ?? null)))
+      problems.push(`${where}: a result while the run is ${state()} by incident ${on}, of a call neither in flight then nor `
+        + "approved by a person for it");
+  }
+  return problems;
 }
 
 /** §4: null when `r` is a v2 record signed by one of `keys` (SPKI DER) with an allowed algorithm that is the key's own,

@@ -8,8 +8,11 @@ The v2 signer can send its security-relevant records to a SIEM or any HTTPS endp
 webhook:
   - url: https://siem.example.org/tracekit   # https, or http to loopback
     format: ocsf
-    events: [deny, approval, gap, tamper]    # any of decision, deny, approval, gap, tamper
+    events: [deny, approval, gap, tamper]    # any of decision, deny, approval, gap, tamper, incident
     secret_file: webhook.secret              # relative paths are from signer.yaml
+  - format: slack                            # incidents as Slack messages
+    events: [incident]
+    secret_file: slack.url                   # holds the Slack incoming-webhook URL (https)
 ```
 
 | `events` | Records | OCSF class |
@@ -19,6 +22,7 @@ webhook:
 | `approval` | `approval.request`, `approval`, `approval.consumed`, `approval.expired`, `approval.abandoned`; `approval.refused`, `approval.binding_mismatch` | API Activity (Create for a request, Update for the rest); refusals and mismatches are Detection Findings |
 | `gap` | `capture.gap` | Detection Finding, severity Medium, titled `capture.gap <kind>` |
 | `tamper` | `trace.tamper` | Detection Finding, severity Critical |
+| `incident` | `incident.opened`, `incident.updated`, `incident.capped`, `incident.resolved`, `incident.response`, `run.held`, `run.resumed`, `run.quarantined`, `identity.suspension` ([incidents](incidents.md)) | Incident Finding (2005): `finding_info_list[0].uid` the incident id, `related_events` the record and the records it cites, each with its `event_hash` as `uid`; activity Create (opened), Close (resolved) or Update; severity High for a hold or quarantine |
 
 Each POST carries a JSON array of events (up to 100). Every event has `time`, `metadata` (`uid`: the record's event
 id, `correlation_uid`: the run id, `log_name`: the log id, `product`) and `unmapped.tracekit`: the tenant, run id,
@@ -43,6 +47,18 @@ or 429) is retried up to 5 times with backoff from 0.5 s to 30 s; another 4xx is
 dropped and counted in `tracekit_signer_webhook_dropped_total` by reason: `queue_full` (more than 10000 waiting),
 `failed`, `shutdown` (still queued when the signer stopped) ([observability](observability.md)). Delivery is best
 effort: the signed log, not the webhook, is the evidence.
+
+## Incidents: at least once
+
+`incident` events don't go through that queue. Each webhook subscribed to them has an outbox: a cursor over the
+signer's log (`<data_dir>/outbox-<id>.json`) that moves past a batch only once the endpoint answered 2xx, so an outage
+or a restart resends rather than loses. Receivers deduplicate by incident id and record uid. A failed post is retried
+with backoff from 0.5 s to 30 s for as long as it takes (`tracekit_signer_incident_outbox_failures_total{reason="retry"}`);
+a 4xx other than 408 or 429 skips the batch (`reason="refused"`). A new webhook starts at the log's end. Operator notes
+never leave: `reason` is not in any event.
+
+A Slack webhook gets one message per batch, a line per record (incident id, trigger, rules, scope, run, actions, and
+the tools of the records it cites), every value escaped so that a tool name or principal can't mention, link or format.
 
 Tested in `tests/test_webhook.py`: events from a real signer validated against the OCSF subset they use
 (`tests/data/ocsf/`), the signature, retries and drops.

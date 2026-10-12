@@ -28,6 +28,8 @@ def _labels(**kw):
 
 
 class Counter:
+    """`label`: a label name, or a tuple of them (then each value is a tuple)."""
+
     def __init__(self, name, help, label=None):
         self.name, self.help, self.type, self.label = name, help, "counter", label
         self._values, self._lock = {} if label else {None: 0}, threading.Lock()
@@ -35,14 +37,15 @@ class Counter:
     def inc(self, value=None, n=1):
         with self._lock:
             if value not in self._values and len(self._values) >= MAX_VALUES:
-                value = "other"
+                value = ("other",) * len(self.label) if isinstance(self.label, tuple) else "other"
             self._values[value] = self._values.get(value, 0) + n
 
     def samples(self):
         with self._lock:
             items = sorted(self._values.items(), key=lambda kv: str(kv[0]))
         for value, n in items:
-            yield self.name, _labels(**{self.label: value}) if self.label else "", n
+            labels = dict(zip(self.label, value)) if isinstance(self.label, tuple) else {self.label: value}
+            yield self.name, _labels(**labels) if self.label else "", n
 
 
 class Gauge:
@@ -118,6 +121,12 @@ class SignerMetrics:
                                               "Agent approvers' answers, by decision.", "decision"))
         self.agent_budget = self.add(Counter("tracekit_signer_agent_budget_spent_total",
                                              "What agent approvals took from sum budgets, by rule.", "rule"))
+        self.incidents = self.add(Counter("tracekit_signer_incidents_total", "Incidents opened, by trigger, the "
+                                          "actions taken (none in shadow mode or while paused) and respond mode.",
+                                          ("trigger", "action", "mode")))
+        self.outbox_failures = self.add(Counter("tracekit_signer_incident_outbox_failures_total",
+                                                "Incident outbox posts that failed (retry: sent again later; refused: "
+                                                "a 4xx, skipped), by reason.", "reason"))
 
     def add(self, m):
         self.metrics.append(m)
@@ -134,6 +143,9 @@ class SignerMetrics:
                 self.decisions.inc(e["data"]["decision"])
                 if e["data"].get("nondeterministic"):
                     self.nondeterministic.inc()
+            elif e["type"] == "incident.opened":
+                d = e["data"]
+                self.incidents.inc((d["trigger"], "+".join(d["actions"]) or "none", d["mode"]))
             elif e["type"] == "approval" and e["data"].get("approver_kind") == "agent":
                 self.agent_answers.inc(e["data"]["decision"])
                 for rule, n in e["data"].get("spent", {}).items():
