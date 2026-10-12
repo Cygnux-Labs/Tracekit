@@ -437,11 +437,74 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
   const algs = new Set([...every, ...keyRecords].map((r) => text(at(r, "alg"))));
   rep.assurance = await assurance(origin, cosigs, witnesses, trust, algs, selfApproved, regCosigs)
     + (provenTo < relied ? "; key retirements not proven complete" : "");
+  approvals(rep, runs, files, floats);
   const glass = typed("approval").filter((e) => get(at(e, "data"), "break_glass") === true);
   if (glass.length)
     rep.check("break-glass approvals", false, `${glass.length} approval(s) answered under the break-glass role`,
       glass.map((e) => `seq ${e.seq}: ${str(at(e.data, "decision"))} ${str(get(e.data, "approval_id"))} by `
         + `${cut(text(at(e.data, "approver")), 256)}: ${repr(cut(str(get(e.data, "reason")), 200))}`).slice(0, 20), true);
+}
+
+/** Approvals by people and by agents, each on a line of its own. An agent's approval fails the line unless its run holds
+ * the approval.request and policy.decision it answered, the decision has no provenance and a complete provenance_state,
+ * its approval needs no passkey, and the agent is neither the requester nor the run's owner; with the policy snapshot of
+ * the decision's policy_hash in the bundle, every rule the call was held by is an ask rule that permits agents and
+ * needs no passkey (else a warning: bounds unchecked). Argument bounds are never checkable offline (salted commitments). */
+function approvals(rep: Report, runs: Map<string, J[]>, files: Map<string, Uint8Array>, floats: Floats) {
+  let people = 0, agents = 0;
+  const problems: string[] = [], unchecked: string[] = [];
+  for (const rs of runs.values()) {
+    const events: J[] = rs.map((r) => r.event);
+    const ident = get(events[0], "type") === "run.registered" ? get(at(events[0], "data"), "identity") ?? {} : {};
+    const owner = `${str(get(ident, "scheme"))}:${cut(str(get(ident, "subject")), 256)}`;
+    const asked = new Map<J, J>(), decided = new Map<J, J>();
+    for (const e of events) {
+      if (e.type === "approval.request") asked.set(get(e.data, "approval_id"), e.data);
+      if (e.type === "policy.decision" && has(e.data, "decision_id")) decided.set(e.data.decision_id, e.data);
+    }
+    for (const e of events) {
+      const d = e.data;
+      if (e.type !== "approval" || get(d, "decision") !== "approve") continue;
+      if (get(d, "approver_kind") !== "agent") { people++; continue; }
+      agents++;
+      const where = `seq ${e.seq}: ${cut(str(get(d, "approval_id")), 128)}`;
+      const req = asked.get(get(d, "approval_id")) ?? {};
+      const dec = decided.get(get(req, "decision_id"));
+      if (dec === undefined) { problems.push(`${where}: its approval.request and policy.decision are not in the run`); continue; }
+      const ai = get(d, "approver_identity") ?? {};
+      if (truthy(get(dec, "provenance")) || get(dec, "provenance_state") !== "complete")
+        problems.push(`${where}: the decision's arguments carry provenance or it is incomplete`);
+      if (get(req, "passkey") === true) problems.push(`${where}: a rule of the call needs a passkey`);
+      if (get(d, "approver") === get(req, "requester") || `${str(get(ai, "scheme"))}:${cut(str(get(ai, "subject")), 256)}` === owner)
+        problems.push(`${where}: the agent is the requester or the run's owner`);
+      const hash = str(get(dec, "policy_hash")), snap = files.get(`policies/${hash.slice(7)}.json`);
+      if (snap === undefined) {
+        unchecked.push(`${where}: no policy snapshot of ${cut(hash, 80)}; export the run while the signer still has that `
+          + "policy to check it");
+        continue;
+      }
+      let asks: Map<J, J>, flags: Set<J>;
+      try {
+        const pol = strictParseBytes(snap, floats);
+        asks = new Map(list(get(pol, "ask", [])).map((r: J) => [at(r, "id"), r]));
+        flags = new Set(list(get(pol, "flag", [])).map((r: J) => at(r, "id")));
+      } catch {
+        problems.push(`${where}: the policy snapshot is not a policy`);
+        continue;
+      }
+      for (const rid of get(dec, "rule_ids") ?? []) {
+        const approval = get(asks.get(rid) ?? {}, "approval") ?? {};
+        if (!flags.has(rid) && (!isObj(approval) || !has(approval, "agent") || approval.passkey === "required"))
+          problems.push(`${where}: rule ${cut(str(rid), 64)} does not permit agents`);
+      }
+    }
+  }
+  if (!agents) return;   // a bundle without agent approvals keeps the report it always had
+  rep.check("approvals by people", true, `${people} approval(s) answered by people`);
+  rep.check("approvals by agents", !problems.length && !unchecked.length, `${agents} approval(s) answered by agents (model `
+      + "output); argument bounds are not checkable offline (salted commitments): audit one with `tracekit signer reveal`"
+      + (unchecked.length ? `; agent approval bounds unchecked for ${unchecked.length}` : ""),
+    (problems.length ? problems : unchecked).slice(0, 20), !problems.length);
 }
 
 /** §4: null when `r` is a v2 record signed by one of `keys` (SPKI DER) with an allowed algorithm that is the key's own,

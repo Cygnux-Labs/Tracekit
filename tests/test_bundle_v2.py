@@ -656,6 +656,60 @@ def asked(**data):
                                  "binding_digest": "sha256:" + "0" * 64, **data}, "run-a")
 
 
+AGENT_POLICY = {"ask": [{"id": "R1", "pattern": "^", "approval": {"agent": {
+    "mode": "enforce", "allow": {"fields": {"amount": {"type": "integer"}}}}}}], "flag": [{"id": "F1", "pattern": "^"}]}
+
+
+def agent_bundle(log, out, policy=AGENT_POLICY, snapshot=True, decided=None, request=None, answer=None):
+    """Export to `out` a run whose ask an agent approved, with the snapshot of `policy` (or none); `decided`, `request`
+    and `answer` override fields of the policy.decision, approval.request and approval records."""
+    snap = json.dumps(policy, sort_keys=True, separators=(",", ":")).encode()
+    h = "sha256:" + hashlib.sha256(snap).hexdigest()
+    log.epoch(KEY1)
+    log.register()
+    log.add("policy.decision", {"tool_use_id": "t1", "decision": "ask", "rule_ids": ["R1", "F1"], "decision_id": "dec-1",
+                                "policy_hash": h, "provenance_state": "complete", **(decided or {})}, tool_call_id="t1")
+    log.add(*asked(policy_hash=h, **(request or {}))[:2], tool_call_id="t1")
+    log.add(*answered(**{"approver_kind": "agent", **(answer or {})})[:2], tool_call_id="t1")
+    log.final()
+    export(log.store, "acme", "run-a", log.note(), out, policies=[snap] if snapshot else [])
+    return out
+
+
+class TestAgentApprovals(Case):
+    def lines(self, **kw):
+        name = f"agent-{len(os.listdir(self.d))}"
+        rep, code = self.verify(agent_bundle(self.log(name), os.path.join(self.d, f"{name}.tkb"), **kw))
+        return code, {c["check"]: c for c in rep.checks}
+
+    def test_people_and_agents_on_separate_lines(self):
+        code, lines = self.lines()
+        self.assertEqual((code, lines["approvals by agents"]["status"]), (0, "pass"))
+        self.assertIn("tracekit signer reveal", lines["approvals by agents"]["detail"])
+        self.assertEqual(lines["approvals by people"]["detail"], "0 approval(s) answered by people")
+        code, lines = self.lines(answer={"approver_kind": "person"})   # without agent approvals, the report as before
+        self.assertFalse({"approvals by people", "approvals by agents"} & set(lines))
+
+    def test_without_the_snapshot_the_bounds_are_unchecked(self):
+        code, lines = self.lines(snapshot=False)
+        self.assertEqual((code, lines["approvals by agents"]["status"]), (0, "warn"))
+        self.assertIn("agent approval bounds unchecked", lines["approvals by agents"]["detail"])
+
+    def test_what_an_agent_may_not_approve_fails(self):
+        person_rule = {"ask": [{"id": "R1", "pattern": "^"}], "flag": [{"id": "F1", "pattern": "^"}]}
+        for why, kw in (("provenance", {"decided": {"provenance": [{"field": "amount", "kind": "x",
+                                                                    "source": {"run_seq": 1}}]}}),
+                        ("incomplete provenance", {"decided": {"provenance_state": "partial"}}),
+                        ("passkey", {"request": {"passkey": True}}),
+                        ("requester", {"answer": {"approver": "uid:1"}}),
+                        ("run owner", {"answer": {"approver_identity": dict(AGENT, subject="svc")}}),
+                        ("a rule without approval.agent", {"policy": person_rule}),
+                        ("a synthetic rule", {"decided": {"rule_ids": ["R1", "TK-UNKNOWN-TOOL"]}})):
+            with self.subTest(why):
+                code, lines = self.lines(**kw)
+                self.assertEqual((code, lines["approvals by agents"]["status"]), (1, "fail"), lines)
+
+
 OUTPUT = {"hash": "hmac-sha256:" + "0" * 64, "size": 2, "redacted": False}
 OBSERVED = {"source": "inbox:1", "trust": "untrusted", "salt_id": "a" * 32, "output": OUTPUT,
             "redaction": {"rules": [], "count": 0, "client_claimed": False}}
@@ -694,7 +748,9 @@ ENTRIES = {
     "approval.request.agent": [registered(), asked(agent={
         "eligible": True, "reason": "within the bounds of R1", "rules": ["R1"],
         "conditions_hash": "sha256:" + "0" * 64, "args_key": "hmac-sha256:" + "0" * 64})],
-    "approval.approver_kind": [registered(), answered(approver_kind="agent")],
+    "approval.approver_kind": [registered(), decision(decision="ask", decision_id="dec-1",
+                                                      provenance_state="complete"), asked(), answered(
+        approver_kind="agent")],
     "approval.asserted": [registered(), answered(asserted={"model": "m", "attested": False})],
     "approval.spent": [registered(), answered(spent={"R1": 100})],
     "approval.not_before": [registered(), answered(not_before=TS_)],

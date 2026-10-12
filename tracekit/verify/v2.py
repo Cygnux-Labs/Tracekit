@@ -570,6 +570,7 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
     rep.assurance = (_assurance(origin, cosigs, witnesses, trust, {r["alg"] for r in every + key_records}, self_approved,
                                 anchors, monitored, reg_cosigs)
                      + ("; key retirements not proven complete" if proven_to < relied else ""))
+    _approvals(rep, runs, files)
     glass = [r["event"] for r in every if r["event"].get("type") == "approval"
              and r["event"]["data"].get("break_glass") is True]
     if glass:
@@ -577,6 +578,68 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
                   [f"seq {e['seq']}: {e['data']['decision']} {e['data'].get('approval_id')} by "
                    f"{e['data']['approver'][:256]}: {str(e['data'].get('reason'))[:200]!r}" for e in glass][:20],
                   warn=True)
+
+
+def _approvals(rep, runs, files):
+    """Approvals by people and by agents, each on a line of its own. An agent's approval fails the line unless its run
+    holds the approval.request and policy.decision it answered, the decision has no provenance and a complete
+    provenance_state, its approval needs no passkey, and the agent is neither the requester nor the run's owner; with
+    the policy snapshot of the decision's policy_hash in the bundle, every rule the call was held by is an ask rule
+    that permits agents and needs no passkey (else a warning: bounds unchecked). Argument bounds are never checkable
+    offline: the records hold the arguments as salted commitments."""
+    people, agents, problems, unchecked = 0, 0, [], []
+    for rs in runs.values():
+        events = [r["event"] for r in rs]
+        ident = (events[0]["data"].get("identity") or {}) if events[0].get("type") == "run.registered" else {}
+        owner = f"{ident.get('scheme')}:{str(ident.get('subject'))[:256]}"
+        asked = {e["data"].get("approval_id"): e["data"] for e in events if e.get("type") == "approval.request"}
+        decided = {e["data"].get("decision_id"): e["data"] for e in events
+                   if e.get("type") == "policy.decision" and "decision_id" in e["data"]}
+        for e in events:
+            d = e["data"]
+            if e.get("type") != "approval" or d.get("decision") != "approve":
+                continue
+            if d.get("approver_kind") != "agent":
+                people += 1
+                continue
+            agents += 1
+            where = f"seq {e['seq']}: {str(d.get('approval_id'))[:128]}"
+            req = asked.get(d.get("approval_id")) or {}
+            dec = decided.get(req.get("decision_id"))
+            if dec is None:
+                problems.append(f"{where}: its approval.request and policy.decision are not in the run")
+                continue
+            ai = d.get("approver_identity") or {}
+            if dec.get("provenance") or dec.get("provenance_state") != "complete":
+                problems.append(f"{where}: the decision's arguments carry provenance or it is incomplete")
+            if req.get("passkey") is True:
+                problems.append(f"{where}: a rule of the call needs a passkey")
+            if d.get("approver") == req.get("requester") or f"{ai.get('scheme')}:{str(ai.get('subject'))[:256]}" == owner:
+                problems.append(f"{where}: the agent is the requester or the run's owner")
+            snap = files.get(f"policies/{str(dec.get('policy_hash'))[7:]}.json")
+            if snap is None:
+                unchecked.append(f"{where}: no policy snapshot of {str(dec.get('policy_hash'))[:80]}; export the run "
+                                 "while the signer still has that policy to check it")
+                continue
+            try:
+                pol = loads_strict(snap)
+                asks = {r["id"]: r for r in pol.get("ask", [])}
+                flags = {r["id"] for r in pol.get("flag", [])}
+            except (ValueError, TypeError, KeyError, AttributeError):
+                problems.append(f"{where}: the policy snapshot is not a policy")
+                continue
+            for rid in dec.get("rule_ids") or []:
+                approval = (asks.get(rid) or {}).get("approval") or {}
+                if rid not in flags and (not isinstance(approval, dict) or "agent" not in approval
+                                         or approval.get("passkey") == "required"):
+                    problems.append(f"{where}: rule {str(rid)[:64]} does not permit agents")
+    if agents:   # a bundle without agent approvals keeps the report it always had
+        rep.check("approvals by people", True, f"{people} approval(s) answered by people")
+        rep.check("approvals by agents", not problems and not unchecked,
+                  f"{agents} approval(s) answered by agents (model output); argument bounds are not checkable offline "
+                  "(salted commitments): audit one with `tracekit signer reveal`"
+                  + (f"; agent approval bounds unchecked for {len(unchecked)}" if unchecked else ""),
+                  (problems or unchecked)[:20], warn=not problems)
 
 
 def _about(records):

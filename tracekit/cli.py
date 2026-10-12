@@ -29,7 +29,8 @@ _DELEGATED = {"observe": "observe", "analyze": "findings", "otel": "otlp", "cost
               "public-witness": "public_witness_server",
              "deploy": "deploy.compose",
               "signer": "signer.service", "view": "view", "monitor": "monitor", "gateway": "gateway",
-              "executor": "executor", "mcp-gateway": "mcp_gateway", "issuer": "issuer", "why": "why.cli"}  # subcommands with their own parsers
+              "executor": "executor", "mcp-gateway": "mcp_gateway", "issuer": "issuer", "why": "why.cli",
+              "reviewer": "reviewer"}  # subcommands with their own parsers
 _MOVED = {"sql": "query", "proofpack": "proofpack", "report": "proofpack", "causeway": "causeway"}  # now separate packages under contrib/
 
 
@@ -142,6 +143,9 @@ def main(argv=None):
                        add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
     p = sub.add_parser("gateway", help="LLM gateway for the v2 signer: `gateway serve --config gateway.yaml`", add_help=False)
+    p.add_argument("rest", nargs=argparse.REMAINDER)
+    p = sub.add_parser("reviewer", help="the reference agent approver: `reviewer serve|eval --config reviewer.yaml`",
+                       add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
     p = sub.add_parser("executor", help="tool executor for the v2 signer: `executor serve --config executor.yaml`",
                        add_help=False)
@@ -627,8 +631,10 @@ def _export_v2(a, show=print):
     from .bundle_v2 import about as about_run
     from .bundle_v2 import export
     from .format import registry
+    from .policy2 import compile as policy_compile
     from .sdk.client import Client, Incompatible, SignerUnavailable
     from .signer.rpc_schema import RPCError
+    from .signer.service import DEFAULT_POLICY
     from .signer.service import reader as open_reader
     from .signer.service import signer_config
     from .storage.base import StorageCorrupt, StorageUnavailable, registry_tree
@@ -695,7 +701,10 @@ def _export_v2(a, show=print):
             if note is None:
                 raise ValueError(f"the signer wrote no checkpoint covering run {a.run!r} within {NUDGE_WAIT_S:g}s")
         reopen()   # opened after the note: holds its records
-        info = export(reader, tenant, a.run, note[1], a.out, with_runs=about)
+        # the signer's current policy, named by its policy_hash: the verifier checks agent approvals' bounds against it
+        pol, errors = policy_compile.build(cfg.get("policy") or DEFAULT_POLICY)
+        info = export(reader, tenant, a.run, note[1], a.out, with_runs=about,
+                      policies=[] if errors else [policy_compile.canonical(pol).encode("utf-8")])
         if a.otel or a.otel_endpoint:
             info["otel"] = _otel_v2(a, info["bundle"])
     except (OSError, ValueError, SignerUnavailable, StorageCorrupt, StorageUnavailable) as e:

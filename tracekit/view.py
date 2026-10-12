@@ -230,7 +230,8 @@ class ApprovalDesk:
         return code, out
 
     def post(self, session, path, body):
-        """(status, body) of POST `path` with JSON `body`: a passkey registration, or an answer to an approval."""
+        """(status, body) of POST `path` with JSON `body`: a passkey registration, an answer to an approval, or
+        (`/api/approvals/<id>/revoke`) the revocation of an agent's approval."""
         who = {"on_behalf": session["person"]}
         if path == "/api/passkey":
             if self.clock() - session["at"] > PASSKEY_LOGIN_S:
@@ -240,6 +241,10 @@ class ApprovalDesk:
                                                             if k in body}})
         if not path.startswith("/api/approvals/"):
             return 404, {"error": "not found"}
+        if path.endswith("/revoke"):   # a person vetoes an agent's approval that is not consumed yet
+            return self._call("approval_revoke", {"request_id": secrets.token_hex(16),
+                                                  "approval_id": path[len("/api/approvals/"):-len("/revoke")], **who,
+                                                  **{k: body[k] for k in ("reason",) if k in body}})
         return self._call("approval_decide", {"request_id": secrets.token_hex(16),
                                               "approval_id": path[len("/api/approvals/"):], **who,
                                               **{k: body[k] for k in ("decision", "reason", "passkey") if k in body}})
@@ -284,8 +289,10 @@ class Translator(observe.Translator):
     def __init__(self, reasons=None):
         super().__init__()
         self.reasons = reasons or {}
-        # lean: approval_id -> tool for the viewer's life, like agent_names; bound both once stores hold millions
-        self.requests = {}
+        # lean: approval_id -> (tool, rule ids) and shadow suggestions for the viewer's life, like agent_names; bound
+        # them once stores hold millions
+        self.requests, self.suggested = {}, {}
+        self.shadow = collections.defaultdict(lambda: [0, 0])   # rule id -> [person answers agreeing, compared]
 
     def _base(self, e, rec, event):
         return {**super()._base(e, rec, event), "agent": self.agent_names.get(e["run_id"], "agent")}
@@ -334,9 +341,11 @@ class Translator(observe.Translator):
                          "policy_hash": d.get("policy_hash"), "decision_id": d.get("decision_id"),
                          **{k: d[k] for k in ("provenance", "provenance_state") if k in d}})
             return [r]
-        tool = self.requests.get(d.get("approval_id"), "")
+        aid = d.get("approval_id")
+        tool, rule_ids = self.requests.get(aid, ("", []))
         if t == "approval.request":
-            self.requests[d.get("approval_id")] = tool = (d.get("binding") or {}).get("tool", "")
+            tool = (d.get("binding") or {}).get("tool", "")
+            self.requests[aid] = (tool, d.get("rule_ids") or [])
             rules = self.rules(d)
             return alert("med", f"APPROVAL REQUESTED · {tool}",
                          f"requested by {d.get('requester')} · rules "
@@ -344,18 +353,48 @@ class Translator(observe.Translator):
                          + f" · expires {_hms(d.get('expires_at'))}"
                          + (" · signer executes (t2)" if d.get("executor") == "t2" else ""), "HOLD",
                          approval="requested", rules=rules, binding_digest=d.get("binding_digest"))
+        agent = d.get("approver_kind") == "agent"
+        model = " (model output" + (f", {d['asserted'].get('model')}" if (d.get("asserted") or {}).get("model") else "")\
+            + ")" if agent else ""
+        if t == "approval.suggested":   # shadow mode: recorded, changes nothing
+            self.suggested[aid] = d.get("decision")
+            return alert("low", f"AGENT SUGGESTED {str(d.get('decision')).upper()} · {tool}",
+                         f"shadow mode, changes nothing · by agent {d.get('approver')}{model}"
+                         + (f" · “{d['reason']}”" if d.get("reason") else ""), "HOLD", approval="suggested")
+        if t == "approval.escalated":
+            by = f"agent {_who(d.get('approver_identity'))} (model output, over arguments the requesting agent " \
+                 "supplied)" if d.get("by") == "agent" else "the signer"
+            return alert("med", f"ESCALATED TO PEOPLE · {tool}", f"by {by}"
+                         + (f" · “{d['reason']}”" if d.get("reason") else ""), "HOLD", approval="escalated")
+        if t == "approval.revoked":
+            return alert("med", f"AGENT APPROVAL REVOKED · {tool}", f"by {d.get('by')}"
+                         + (f" · “{d['reason']}”" if d.get("reason") else "") + " · the call never runs", "REJECT",
+                         approval="revoked")
+        if t == "approval.agents":
+            return alert("high" if not d.get("enabled") else "info",
+                         f"AGENT APPROVALS {'ON' if d.get('enabled') else 'OFF'}", f"by {d.get('by')}"
+                         + (f" · “{d['reason']}”" if d.get("reason") else ""), "SIGNER")
         if t == "approval":
             dec, who = d.get("decision"), d.get("approver_identity")
-            text = (f"by {_who(who) if who else d.get('approver')}"
+            shadow = ""
+            if aid in self.suggested and not agent:   # a person's answer to a call an agent answered in shadow mode
+                hit = self.suggested.pop(aid) == dec
+                for r in rule_ids:
+                    self.shadow[r][0] += hit
+                    self.shadow[r][1] += 1
+                shadow = " · shadow agent " + ("agreed" if hit else "disagreed") + " · agreement " + ", ".join(
+                    f"{r} {self.shadow[r][0]}/{self.shadow[r][1]}" for r in rule_ids)
+            text = (f"by {'agent ' if agent else ''}{_who(who) if who else d.get('approver')}{model}"
                     + (f" · vouched for by {_who(d['via'])} via {d.get('channel')}" if d.get("via") else "")
                     + (f" · “{d['reason']}”" if d.get("reason") else "")
                     + (" · SELF-APPROVED" if d.get("self_approved") else " · not self-approved")
-                    + (" · BREAK-GLASS" if d.get("break_glass") else "") + (" · passkey" if d.get("passkey") else ""))
+                    + (" · BREAK-GLASS" if d.get("break_glass") else "") + (" · passkey" if d.get("passkey") else "")
+                    + shadow)
             sev = "high" if dec == "self_approval_refused" or d.get("break_glass") else \
-                "med" if d.get("self_approved") else "info"
+                "med" if d.get("self_approved") or agent else "info"
             word = {"approve": "APPROVED", "reject": "REJECTED", "timeout": "TIMED OUT",
                     "self_approval_refused": "SELF-APPROVAL REFUSED"}.get(dec, str(dec).upper())
-            return alert(sev, f"{word} · {tool or d.get('tool_use_id')}", text,
+            return alert(sev, f"{'AGENT ' if agent else ''}{word} · {tool or d.get('tool_use_id')}", text,
                          "APPROVE" if dec == "approve" else "REJECT", approval=dec, approver=_who(who) if who else
                          d.get("approver"), via=d.get("via") and _who(d["via"]), self_approved=d.get("self_approved"),
                          break_glass=bool(d.get("break_glass")), reason=d.get("reason"))
@@ -419,9 +458,10 @@ def review(records, rep, verdict):
             out["decisions"][d.get("decision")] += 1
             key = d.get("decision")
         elif t == "approval":
+            who = _who(d["approver_identity"]) if d.get("approver_identity") else d.get("approver")
             out["approvals"].append({"decision": d.get("decision"), "tool_use_id": d.get("tool_use_id"),
-                                     "approver": _who(d["approver_identity"]) if d.get("approver_identity")
-                                     else d.get("approver"), "via": d.get("via") and _who(d["via"]),
+                                     "approver": f"agent {who} (model output)" if d.get("approver_kind") == "agent"
+                                     else who, "via": d.get("via") and _who(d["via"]),
                                      "self_approved": bool(d.get("self_approved")),
                                      "break_glass": bool(d.get("break_glass")), "seq": e.get("seq")})
             key = "approval"

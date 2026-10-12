@@ -159,3 +159,7 @@ content: {retain: true, retention_days: 30, max_record_bytes: 1048576}   # defau
   size and root and the last time it cosigned, and the client address only in memory, for its rate limits.
 - A bundle contains the selected runs' events (per the table above); records from other runs are **elided** to `seq`, `hash`, `prev_hash`, `sig`.
 - `--otel` adds `otel.json` with the same fields as spans; nothing more.
+- The [reference reviewer](approvals.md#the-reference-reviewer) (`tracekit reviewer`, off unless you run it) sends a
+  model provider, through your LLM gateway, the `approval_review` view of each approval it answers: the tool, the rules'
+  reason and rationale, the bounds and budget left, and the signer's **redacted** copy of the tenant's arguments. It
+  serves only the tenants its config lists; leave a tenant out when its arguments must not reach a model provider.

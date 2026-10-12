@@ -1383,7 +1383,8 @@ class SignerService:
                 **{k: a[k] for k in ("tool_call_id", "attempt", "tool", "rule_ids", "policy_hash", "requester",
                                      "expires_at")}, **({"passkey": True} if a.get("passkey") else {}),
                 **({"escalated": True} if a.get("escalated") else {}),
-                **({"agent": True} if (a.get("agent") or {}).get("eligible") else {})}
+                **({"agent": True} if (a.get("agent") or {}).get("eligible") else {}),
+                **{k: a[k] for k in ("answered", "escalation") if a.get(k)}}
 
     def _on_behalf(self, identity, req):
         """The person a bridge acts for (`on_behalf`, for an identity granted approval_decide_on_behalf), else `identity`.
@@ -2472,7 +2473,8 @@ class SignerService:
                     return {"approvals": page, "next_cursor": page[-1]["approval_id"]}
                 s = self._summary(aid, a)
                 page.append({k: v for k, v in s.items() if k not in ("run_id", "tool_call_id", "attempt", "requester",
-                                                                     "passkey")} if agent_view else s)
+                                                                     "passkey", "answered", "escalation")}
+                            if agent_view else s)
         return {"approvals": page, "next_cursor": None}
 
     def _approval_abandon(self, identity, req):
