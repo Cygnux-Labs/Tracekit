@@ -52,6 +52,27 @@ class Sanitize(unittest.TestCase):
         self.assertEqual(req["attach"], {"policy": {"a": 1}})
 
 
+class OtlpCounter(unittest.TestCase):
+    def test_an_outage_keeps_the_runs_counter(self):
+        sent, down = [], [False]
+
+        def forward(req):
+            if down[0]:
+                raise client.SignerUnavailable("down")
+            sent.append(req["cseq"])
+            return {"ok": True}
+        sink = ingest._otlp_receiver("bot", forward).sink
+        ev = {"run_id": "r1", "source": "sdk", "type": "tool.call", "data": {}}
+        for _ in range(4):
+            sink(dict(ev), None)
+        down[0] = True
+        with self.assertRaises(client.SignerUnavailable):
+            sink(dict(ev), None)
+        down[0] = False
+        sink(dict(ev), None)
+        self.assertEqual(sent, [0, 1, 2, 3, 4])   # not back to 0: that would read as a replay
+
+
 class Tokens(unittest.TestCase):
     def test_token_is_stored_hashed_and_authenticates(self):
         d = tempfile.mkdtemp()

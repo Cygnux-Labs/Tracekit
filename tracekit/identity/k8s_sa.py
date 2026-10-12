@@ -138,7 +138,7 @@ def verify_jwt(token, key, algs, issuer, audience, now, refuse):
     h64, p64, s64 = token.split(".")
     try:
         header, claims, sig = json.loads(_unb64(h64)), json.loads(_unb64(p64)), _unb64(s64)
-    except ValueError:
+    except (ValueError, RecursionError):   # RecursionError: JSON nested deeper than the parser goes
         raise refuse("malformed") from None
     if not isinstance(header, dict) or not isinstance(claims, dict):
         raise refuse("malformed")
@@ -254,7 +254,7 @@ class K8sSaAuthenticator:
         try:
             exp = json.loads(_unb64(token.split(".")[1]))["exp"]   # checked by the API server; bounds the cache only
             ttl = min(REVIEW_TTL_S, float(exp) - now)
-        except (ValueError, KeyError, TypeError):
+        except (ValueError, KeyError, TypeError, RecursionError):
             ttl = 0
         if ttl > 0:
             with self._lock:

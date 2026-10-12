@@ -610,6 +610,17 @@ class TestProxy(unittest.TestCase):
         self.assertLess(len(asked), 30)   # past the limit the signer isn't asked
         self.assertEqual(set(statuses[len(asked):]), {"429"})
 
+    def test_totals_refused_for_good_are_kept_only_up_to_a_bound(self):
+        def forbidden(req):
+            raise RPCError("forbidden", "no observe_effect grant")
+        self.client.observe_effect = forbidden
+        with mock.patch.object(egress, "MAX_REFUSED", 50), mock.patch("sys.stderr"):
+            for minute in range(5):   # 40 hosts a minute, refused every time
+                for h in range(40):
+                    self.srv.observer.add(("token", "run-1", "tok.mac", None), f"h{minute}-{h}.example", 443, 1, 1, True)
+                self.srv.observer.flush(math.inf)
+                self.assertLessEqual(len(self.srv.observer.queue), 50)
+
     def test_a_refused_total_is_split_out_and_never_dropped(self):
         for h in ("a.example", "refused.example", "c.example"):
             self.srv.observer.add(("token", "run-1", "tok.mac", None), h, 443, 1, 1, True)

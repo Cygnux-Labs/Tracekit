@@ -148,7 +148,9 @@ def _otlp_receiver(cid, forward):
 
     def sink(ev, attach):
         run = ev["run_id"]
-        req = {"op": "append", "event": ev, "cseq": counters.pop(run, -1) + 1}
+        last = counters.pop(run, -1)
+        counters[run] = last   # kept, most recent last, until the signer takes this event: an outage loses no count
+        req = {"op": "append", "event": ev, "cseq": last + 1}
         if attach:
             req["attach"] = attach
         safe, err = sanitize(req, cid, getattr(_REQ, "addr", "?"), client.client_config().get("signer_isolation", "same-user"),
@@ -156,7 +158,8 @@ def _otlp_receiver(cid, forward):
         if err:
             return {"ok": False, "error": err}
         resp = forward(safe)
-        counters[run] = req["cseq"] if resp.get("ok") else req["cseq"] - 1
+        if resp.get("ok"):
+            counters[run] = req["cseq"]
         # lean: an evicted run that sends again restarts at cseq 0 and the signer records each later event as a counter
         # gap; fine for a gateway removed in 0.5
         while len(counters) > MAX_OTLP_RUNS:

@@ -194,6 +194,19 @@ class Mapping(unittest.TestCase):
             self.assertEqual(schema.validate(ev), [], ev)
         return [ev for _, ev, _, _ in items], skipped, items
 
+    def test_a_trace_with_no_agent_in_it_is_skipped(self):
+        evs, skipped, _ = self.plan(payload(span("3333333333333333", "GET /health", {"http.method": "GET"}, parent=None)))
+        self.assertEqual((evs, skipped), ([], 1))
+        m = mapper()   # a root that comes after its trace's agent spans still ends their run
+        doc = agent_trace()
+        spans = doc["resourceSpans"][0]["scopeSpans"][0]["spans"]
+        root = [x for x in spans if "parentSpanId" not in x]
+        doc["resourceSpans"][0]["scopeSpans"][0]["spans"] = [x for x in spans if "parentSpanId" in x]
+        for key, ev, _, update in self.plan(doc, m)[2]:
+            m.commit(key, ev, update)
+        doc["resourceSpans"][0]["scopeSpans"][0]["spans"] = root
+        self.assertEqual([e["type"] for e in self.plan(doc, m)[0]], ["run.end"])
+
     def test_agent_trace_becomes_one_signed_run(self):
         evs, skipped, items = self.plan(agent_trace())
         self.assertEqual(skipped, 1)  # the HTTP span

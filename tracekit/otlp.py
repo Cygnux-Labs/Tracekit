@@ -326,6 +326,9 @@ class Mapper:
             service = first["resource"].get("service.name")
             rid = run_id_for(service, tid)
             st = self.runs.get(rid) or {"started": False, "policy_hash": None, "ended": False}
+            if not st["started"] and all(k is None for k, _ in group):   # a web request's trace, no agent in it
+                skipped += len(group)
+                continue
             agent_names = [sp["attrs"].get("gen_ai.agent.name") for k, sp in group if sp["attrs"].get("gen_ai.agent.name")]
             if not st["started"]:
                 items.append(((tid, "run", "start"), self._base(rid, _ts(first["start_ns"]), _event_id(first["span_id"], "run.start"), "run.start", {

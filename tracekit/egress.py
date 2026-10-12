@@ -74,6 +74,7 @@ CONNECT_TIMEOUT_S, IDLE_S = 30, 600
 MAX_BODY = 32 * 1024 * 1024   # a plain HTTP request's body, streamed through in CHUNK pieces, never held whole
 CHUNK = 64 * 1024
 MAX_EFFECTS = 256   # per observe_effect call
+MAX_REFUSED = 10_000   # totals the signer refused, kept to send again; past it the oldest are dropped (and counted)
 
 
 def _iso(t):
@@ -176,12 +177,18 @@ class Observer:
                     half = len(chunk) // 2
                     self.queue[:0] = [("eg-" + uuid.uuid4().hex, c) for c in (chunk[:half], chunk[half:])]
                     continue
-                print(f"tracekit egress: the signer refused {len(chunk)} observation(s) ({e.code}: {e.message}); sent "
-                      "again with the next heartbeat" + ("; grant this observer observe_effect in signer.yaml authorize"
-                                                         if e.code == "forbidden" else ""), file=sys.stderr)
+                why = e
                 refused += [(rid, chunk)] if chunk else []
                 continue
             self.queue.pop(0)
+        if refused:   # one line per heartbeat, not one per total
+            print(f"tracekit egress: the signer refused {len(refused)} observation(s) ({why.code}: {why.message}); sent "
+                  "again with the next heartbeat" + ("; grant this observer observe_effect in signer.yaml authorize"
+                                                     if why.code == "forbidden" else ""), file=sys.stderr)
+        if len(refused) > MAX_REFUSED:   # a refusal that never changes must not grow without end
+            print(f"tracekit egress: dropped the {len(refused) - MAX_REFUSED} oldest refused observation(s), past "
+                  f"{MAX_REFUSED} kept", file=sys.stderr)
+            refused = refused[-MAX_REFUSED:]
         self.queue = refused
         return True
 
