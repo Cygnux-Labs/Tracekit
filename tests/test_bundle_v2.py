@@ -16,6 +16,8 @@ import unittest
 import zipfile
 from unittest import mock
 
+import pytest
+
 from factories import rewrite_bundle
 from tracekit import cli, crypto
 from tracekit.bundle_v2 import VERIFIER_MIN_VERSION, VERSIONS, export
@@ -448,6 +450,7 @@ class TestVerifyV2(Case):
         export(log.store, "acme", "run-a", log.note(origin="other.example.org/log"), out)
         self.assert_fails(out, "checkpoint")
 
+    @pytest.mark.unverified_bundles
     def test_keys_valid_by_position(self):
         log = self.log()
         log.epoch(KEY1)
@@ -739,8 +742,8 @@ ELIGIBLE = {"eligible": True, "reason": "within the bounds of R1", "rules": ["R1
 def agent_bundle(log, out, policy=AGENT_POLICY, snapshot=True, decided=None, request=None, answer=None, before=()):
     """Export to `out` a run whose ask an agent approved, the signer's policy_dir holding the snapshot of `policy` (or
     none); `decided`, `request` and `answer` override fields of the policy.decision, approval.request and approval
-    records, and `before` ((type, data) pairs) are recorded between the request and the approval; a `request` field
-    None leaves it out."""
+    records, and `before` ((type, data) pairs) are recorded between the request and the approval; a `request` or
+    `answer` field None leaves it out."""
     snap = json.dumps(policy, sort_keys=True, separators=(",", ":")).encode()
     h = "sha256:" + hashlib.sha256(snap).hexdigest()
     log.epoch(KEY1)
@@ -751,7 +754,8 @@ def agent_bundle(log, out, policy=AGENT_POLICY, snapshot=True, decided=None, req
     log.add(*asked(policy_hash=h, **{k: v for k, v in req.items() if v is not None})[:2], tool_call_id="t1")
     for type_, data in before:
         log.add(type_, data, tool_call_id="t1")
-    log.add(*answered(**{"approver_kind": "agent", **(answer or {})})[:2], tool_call_id="t1")
+    ans = {"approver_kind": "agent", **(answer or {})}
+    log.add(*answered(**{k: v for k, v in ans.items() if v is not None})[:2], tool_call_id="t1")
     log.final()
     pol = out + ".policies"   # the signer's policy_dir
     os.makedirs(pol)
@@ -781,11 +785,11 @@ class TestAgentApprovals(Case):
         self.assertEqual((code, lines["approvals by agents"]["status"]), (0, "pass"))
         self.assertIn("tracekit signer reveal", lines["approvals by agents"]["detail"])
         self.assertEqual(lines["approvals by people"]["detail"], "0 approval(s) answered by people")
-        code, lines = self.lines(answer={"approver_kind": "person"})   # without agent approvals, the report as before
+        code, lines = self.lines(answer={"approver_kind": None})   # without agent approvals, the report as before
         self.assertFalse({"approvals by people", "approvals by agents"} & set(lines))
 
     def test_a_bundle_holds_only_the_snapshots_its_agent_approvals_cite(self):
-        for kw, want in (({}, True), ({"answer": {"approver_kind": "person"}}, False),
+        for kw, want in (({}, True), ({"answer": {"approver_kind": None}}, False),
                          ({"answer": {"decision": "reject"}}, False)):
             with self.subTest(kw):
                 name = f"cited-{len(os.listdir(self.d))}"
@@ -797,6 +801,7 @@ class TestAgentApprovals(Case):
         self.assertEqual((code, lines["approvals by agents"]["status"]), (0, "warn"))
         self.assertIn("agent approval bounds unchecked", lines["approvals by agents"]["detail"])
 
+    @pytest.mark.unverified_bundles
     def test_what_an_agent_may_not_approve_fails(self):
         person_rule = {"ask": [{"id": "R1", "pattern": "^"}], "flag": [{"id": "F1", "pattern": "^"}]}
         for why, kw in (("provenance", {"decided": {"provenance": [{"field": "amount", "kind": "x",

@@ -1,5 +1,7 @@
 # tracekit why: architecture
 
+> **Experimental:** this works and is tested, but may change and gets less hardening than the [stable core](support.md).
+
 The formats and algorithms of [`tracekit why`](why.md), in enough detail to reimplement them or to audit what a result
 means. [why.md](why.md) covers how to use them. The code is `tracekit/why/`.
 

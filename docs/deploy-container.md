@@ -1,5 +1,7 @@
 # The signer as a container
 
+> **Experimental:** this works and is tested, but may change and gets less hardening than the [stable core](support.md).
+
 `deploy/docker/Dockerfile` builds the v2 signer (`tracekit-ai[signer,postgres]`, with google-re2 where it has a wheel) on a
 digest-pinned `python:3.12-slim` base, every dependency at the version `scripts/release/runtime-constraints.txt` pins
 (and the build backend at `scripts/release/constraints.txt`'s). It runs `tracekit signer serve --config /etc/tracekit/signer.yaml` as uid/gid

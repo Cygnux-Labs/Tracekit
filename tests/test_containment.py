@@ -12,6 +12,8 @@ import types
 import unittest
 from unittest import mock
 
+import pytest
+
 from tracekit import view
 from tracekit.bundle_v2 import export
 from tracekit.identity.base import CallerIdentity
@@ -88,6 +90,7 @@ class Case(unittest.TestCase):
 
 
 class TestE17(unittest.TestCase):
+    @pytest.mark.unverified_bundles
     def test_every_scenario_holds(self):
         for name, f in e17c.SCENARIOS.items():
             with self.subTest(name):
@@ -458,6 +461,7 @@ class TestVerifier(Case):
         self.assertEqual((code, line["status"]), (0, "pass"), line)
         self.assertTrue(line["detail"].startswith("1 incident(s): 1 checked against the bundle"))
 
+    @pytest.mark.unverified_bundles
     def test_an_incident_the_records_dont_give_fails(self):
         s = self.signer()
         run = s.register()
@@ -477,6 +481,7 @@ class TestVerifier(Case):
         self.assertEqual((code, line["status"]), (1, "fail"))
         self.assertIn("does not follow from the run's records", line["problems"][0])
 
+    @pytest.mark.unverified_bundles
     def test_a_missing_policy_is_signer_asserted_and_a_wrong_one_fails(self):
         s = self.signer()
         run = s.register()
@@ -515,6 +520,7 @@ class TestVerifier(Case):
         code, line = self.check(*bundle(s, run))
         self.assertEqual((code, line["status"]), (0, "pass"), line)
 
+    @pytest.mark.unverified_bundles
     def test_an_enforced_hold_no_run_held_follows_fails(self):
         s = self.signer()
         run = s.register()
@@ -525,6 +531,7 @@ class TestVerifier(Case):
         self.assertEqual((code, line["status"]), (1, "fail"))
         self.assertIn("enforces hold on this run, which no run.held or run.quarantined follows", line["problems"][0])
 
+    @pytest.mark.unverified_bundles
     def test_an_enforced_incident_recorded_without_its_response_fails(self):
         for change, why in (({"action": None}, "records no response (hold) and no reason"),   # actions: []
                             ({"mode": "shadow"}, "does not follow from the run's records")):

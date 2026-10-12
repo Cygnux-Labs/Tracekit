@@ -8,6 +8,8 @@ import time
 import unittest
 import zipfile
 
+import pytest
+
 from factories import rewrite_bundle
 from test_bundle_v2 import KEY1, LOG_SECRET, OP_SECRET, OPERATOR, ORIGIN, WIT_SECRET, WITNESS, Case
 from test_bundle_v2 import cosign as cosign_note
@@ -168,6 +170,7 @@ class TestRunSet(RunSet):
             files["registry/records.jsonl"] = _dump(rs)
         self.assert_incomplete(self.mutate(out, swap_pointed), "points to a missing or different record")
 
+    @pytest.mark.unverified_bundles
     def test_second_run_final_is_detected(self):
         a = self.register()
         self.finish(a)

@@ -38,6 +38,28 @@ class Experimental(unittest.TestCase):
             self.run_cli(["proxy", "--experimental", "--home", "/nonexistent", "--port", "0"])
         self.assertEqual(m.call_args[0][0][-2:], ["--port", "0"])
 
+    def test_experimental_commands_say_so_once_and_stable_ones_do_not(self):
+        for cmd, module, says in (("monitor", "tracekit.monitor.main", True), ("why", "tracekit.why.cli.main", True),
+                                  ("view", "tracekit.view.main", False)):
+            with mock.patch(module, return_value=0):
+                code, err = self.run_cli([cmd])
+            self.assertEqual(code, 0)
+            self.assertEqual(err.count("is experimental: it works and is tested, but may change (docs/support.md)"),
+                             int(says), cmd)
+
+    def test_the_signer_names_the_experimental_settings_it_was_given(self):
+        from tracekit.signer import service as svc
+        for cfg, want in (({"data_dir": "/nonexistent"}, None),
+                          ({"data_dir": "/nonexistent", "storage": {"postgres": {}}, "approvals": {"agents": {"a": {}}}},
+                           "the signer's storage, approvals.agents setting(s) are experimental")):
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err), mock.patch.object(svc, "load_config", return_value=cfg), \
+                    mock.patch.object(svc.logkey, "harden"), mock.patch.object(svc, "open_service", side_effect=OSError):
+                self.assertEqual(svc.main(["serve", "--config", "signer.yaml"]), 1)
+            self.assertEqual("experimental" in err.getvalue(), want is not None, err.getvalue())
+            if want:
+                self.assertIn(want, err.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()

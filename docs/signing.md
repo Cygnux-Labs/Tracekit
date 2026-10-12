@@ -1,5 +1,7 @@
 # Signing (v0.2)
 
+> **Experimental:** this works and is tested, but may change and gets less hardening than the [stable core](support.md).
+
 ## Where the key lives
 
 | Mode | Command | Key | Runs as |

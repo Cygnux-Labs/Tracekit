@@ -9,6 +9,8 @@ import os
 import time
 import unittest
 
+import pytest
+
 import test_signer_service as ts
 from tracekit import schema
 from tracekit.bundle_v2 import export
@@ -555,6 +557,7 @@ class TestDetection(Case):
         self.assertEqual((opened["trigger"], opened["rule_ids"]), ("limit", ["L-PAY"]))
         self.assertEqual([e["data"]["approver_kind"] for e in es if e["type"] == "approval"], ["agent", "agent"])
 
+    @pytest.mark.unverified_bundles
     def test_one_policy_snapshot_serves_both_verifier_checks(self):
         """A run with agent approvals and an incident bundles its policy once; both verifiers check the agent
         approvals' bounds and recompute the incident from that one snapshot, and without it (or with edited bytes)

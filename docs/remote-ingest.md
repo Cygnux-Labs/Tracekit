@@ -1,5 +1,7 @@
 # Remote clients
 
+> **Experimental:** this works and is tested, but may change and gets less hardening than the [stable core](support.md).
+
 An agent on another machine (a CI runner, a batch worker, a framework running elsewhere) talks to a v2 signer over its
 HTTPS transport: each call is one `POST /v2/rpc`, authenticated again on every request. The signer signs, chains and
 checkpoints as it does for a local caller; the client holds no key.

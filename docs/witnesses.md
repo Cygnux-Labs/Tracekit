@@ -1,5 +1,7 @@
 # Witnesses (v0.2)
 
+> **Experimental:** this works and is tested, but may change and gets less hardening than the [stable core](support.md).
+
 A signature proves who wrote a record. It does not stop the key holder from rewriting the whole ledger and re-signing it. A **witness** is a copy of the ledger head kept somewhere the signer's machine can't quietly change later. At verify time, a bundle's chain must contain every witnessed checkpoint it claims to cover.
 
 ## Checkpoint

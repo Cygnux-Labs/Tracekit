@@ -1,5 +1,7 @@
 # Identity
 
+> **Experimental:** this works and is tested, but may change and gets less hardening than the [stable core](support.md).
+
 The signer's HTTPS transport (`http` in signer.yaml, `tracekit/transport/http.py`) establishes who calls it with one of
 its `authenticators`: `k8s_sa` (Kubernetes service-account tokens), `mtls` (SPIFFE client certificates), `token`
 (bearer secrets) and `oidc` (OpenID Connect tokens of the issuers you configure). An identity proves the workload or

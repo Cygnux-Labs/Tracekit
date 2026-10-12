@@ -1,5 +1,7 @@
 # tracekit why: causal investigation and replay
 
+> **Experimental:** this works and is tested, but may change and gets less hardening than the [stable core](support.md).
+
 `tracekit why` records multi-agent runs with their full content and answers three questions about an action one of
 the agents took:
 

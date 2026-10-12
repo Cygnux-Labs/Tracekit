@@ -9,6 +9,8 @@ import os
 import unittest
 from unittest import mock
 
+import pytest
+
 from factories import wait_for
 from test_signer_service import ME, tmpdir
 from test_witness_publish import NAME, ORIGIN, VKEY, FakeWitness
@@ -103,6 +105,7 @@ class Signer(unittest.TestCase):
         latest = self.s.log.storage.checkpoint_latest(tree)
         return latest and f"— {NAME} " in latest[1] and latest
 
+    @pytest.mark.unverified_bundles
     def test_hybrid_notes_witnessed_without_the_line_and_verified(self):
         out = self.s.call(ME, "register_run", {"request_id": "r1", "agent": {"name": "a"}})
         self.s.call(ME, "close_run", {"request_id": "r2", "run_id": out["run_id"], "run_token": out["run_token"]})

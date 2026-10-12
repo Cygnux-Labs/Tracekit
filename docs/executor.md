@@ -1,5 +1,7 @@
 # Tool executor
 
+> **Experimental:** this works and is tested, but may change and gets less hardening than the [stable core](support.md).
+
 `tracekit executor serve` runs the actions your agents may take on HTTP APIs (payments, email, GitHub, a database
 endpoint) with credentials the agents never hold. The agent asks the executor to run an action; the executor decides
 it in the signer, holds it for a person when the policy asks, runs it with its own credential and records the result.

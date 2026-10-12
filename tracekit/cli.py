@@ -20,6 +20,11 @@ def experimental_gate(enabled, what):
     return True
 
 
+def experimental(what):
+    """The one line each experimental command or server prints when it starts (docs/support.md)."""
+    print(f"tracekit: {what} is experimental: it works and is tested, but may change (docs/support.md)", file=sys.stderr)
+
+
 def _signer_home(a):
     from . import client
     return a.home or client.client_config().get("signer_home") or "/var/lib/tracekit"
@@ -31,6 +36,12 @@ _DELEGATED = {"observe": "observe", "analyze": "findings", "otel": "otlp", "cost
               "signer": "signer.service", "view": "view", "monitor": "monitor", "gateway": "gateway",
               "egress": "egress", "executor": "executor", "mcp-gateway": "mcp_gateway", "issuer": "issuer",
               "why": "why.cli", "reviewer": "reviewer"}  # subcommands with their own parsers
+# delegated subcommands that are experimental (docs/support.md); otel has its own --experimental gate
+_EXPERIMENTAL = {"why": "tracekit why", "gateway": "the LLM gateway", "egress": "the egress observer",
+                 "executor": "the tool executor", "mcp-gateway": "the MCP gateway", "reviewer": "the reference reviewer",
+                 "issuer": "the record-key issuer", "witness": "the witness", "public-witness": "the public witness",
+                 "monitor": "the log monitor", "deploy": "the compose stack", "cost": "tracekit cost",
+                 "analyze": "tracekit analyze", "observe": "tracekit observe (the v1 ledger)"}
 _MOVED = {"sql": "query", "proofpack": "proofpack", "report": "proofpack", "causeway": "causeway"}  # now separate packages under contrib/
 
 
@@ -58,6 +69,8 @@ def main(argv=None):
         return 2
     if args and args[0] in _DELEGATED:  # before argparse: REMAINDER would not pass a leading --option through
         import importlib
+        if args[0] in _EXPERIMENTAL:
+            experimental(_EXPERIMENTAL[args[0]])
         return importlib.import_module(f".{_DELEGATED[args[0]]}", __package__).main(args[1:])
     ap = argparse.ArgumentParser(prog="tracekit", description="Tamper-evident records of what AI agents did.")
     ap.add_argument("--version", action="version", version=f"tracekit {__version__}")
@@ -343,6 +356,8 @@ def _run(a):
         return _init_remote(a)
     if a.cmd == "init":
         from . import install
+        if not a.v2:
+            experimental("the v1 signer (tracekit init without --v2)")
         if a.checkpoint_every is not None and a.checkpoint_every < 1:
             print("tracekit: --checkpoint-every must be at least 1", file=sys.stderr)
             return 2
@@ -516,6 +531,7 @@ def _run(a):
         return 0
     if a.cmd == "daemon":
         from . import daemon
+        experimental("the v1 signer (tracekitd)")
         return daemon.main(["--home", _signer_home(a)])
     if a.cmd == "proxy":
         from . import proxy
@@ -863,6 +879,7 @@ def _approvals(a):
     from .signer.rpc_schema import RPCError
     if a.action == "slack":
         from . import slack_approvals
+        experimental("the Slack approvals bridge")
         return slack_approvals.main(a.config)
     c = Client(a.signer)
     try:

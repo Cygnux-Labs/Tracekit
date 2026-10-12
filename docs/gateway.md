@@ -1,5 +1,7 @@
 # LLM gateway
 
+> **Experimental:** this works and is tested, but may change and gets less hardening than the [stable core](support.md).
+
 `tracekit gateway serve` is a reverse proxy between your agents and an OpenAI-compatible model API. It records every
 model exchange in the v2 signer as `source: gateway` (tier T2): what the model asked to run, read from the response by
 the gateway, not reported by the agent. The signer reconciles those tool uses against the agent's decides, so a tool
