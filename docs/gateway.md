@@ -42,6 +42,22 @@ To keep exchanges in the signer's [content vault](privacy.md#the-content-vault),
 and also grant the gateway `status`: `[model_event, status]`. The gateway asks the signer's status once, and from then
 on each `model_event` carries the exchange's `body`. Restart the gateway after you turn the vault on or off.
 
+Your agents reach the signer too (`register_run`, the tool decisions, autotrace), each as its own identity. Over the
+signer's HTTPS listener (or `http://127.0.0.1:PORT` with `insecure_loopback: true`, for a local trial: the Python
+client speaks plain HTTP to a loopback address only), a token, certificate or service-account identity may call no
+method until `authorize` grants it; a call it isn't granted is refused `forbidden: token:NAME is not authorized for
+status`. Grant every RPC the agent makes. An agent on the Python SDK with `tracekit.instrument()`, an adapter that
+waits for approvals and the checkpoint commitments makes these:
+
+```yaml
+authorize:
+  "token:agent": [status, register_run, decide, complete, observe, model_event, state_write, approval_request,
+                  approval_wait, approval_consume, approval_abandon, approval_list, close_run]
+```
+
+The person who answers approvals needs `approval_list`, `approval_get` and `approval_decide` under an identity of
+their own ([approvals](approvals.md#who-may-answer)).
+
 ## Calling it
 
 Each request needs two things:

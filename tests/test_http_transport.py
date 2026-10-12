@@ -13,7 +13,7 @@ from cryptography import x509
 from test_identity_k8s import AUD, Jwks, claims, jwt
 from test_identity_mtls import Pki, echo, post, serve, tmpdir
 from tracekit.identity.base import CallerIdentity
-from tracekit.sdk.client import Client
+from tracekit.sdk.client import Client, SignerUnavailable
 from tracekit.signer import service as svc
 from tracekit.signer.quotas import MAX_LINE
 from tracekit.signer.rpc_schema import REQUESTS, RPCError
@@ -116,6 +116,46 @@ class TestLimits(unittest.TestCase):
             t = time.monotonic()
             self.assertEqual(s.recv(65536), b"")   # closed by the server after its read timeout
             self.assertLess(time.monotonic() - t, 3)
+
+
+class TestClientUrls(unittest.TestCase):
+    """The Python client on the signer's plain-HTTP loopback listener (insecure_loopback), and on a TLS certificate it
+    can't verify."""
+
+    def setUp(self):
+        self.d = tmpdir(self)
+        self.token = os.path.join(self.d, "bearer")
+        with open(self.token, "w") as f:
+            f.write("t" * 40)
+        self.s = svc.SignerService(ts.tmpdir(self), policy=ts.PAY_ASKS, authorize={"token:http": ["status"]})
+        self.addCleanup(self.s.close)
+        self.handle = answering_hello(self.s.handle_frame, hello())
+
+    def client(self, url, **env):
+        with mock.patch.dict(os.environ, {"TRACEKIT_SIGNER_TOKEN_FILE": self.token, **env}):
+            c = Client(url, timeout=5)
+        self.addCleanup(c.close)
+        return c
+
+    def subject(self, c):
+        return c.status({})["identity"]["subject"]
+
+    def test_plain_http_on_a_loopback_address_only(self):
+        port = serve(self, {"insecure_loopback": True, "authenticators": ["token"], "token_file": self.token},
+                     self.handle)
+        self.assertEqual(self.subject(self.client(f"http://127.0.0.1:{port}")), "http")
+        with self.assertRaisesRegex(SignerUnavailable, "must be on a loopback address"):
+            self.client("http://192.0.2.1:8080").status({})
+
+    def test_a_certificate_that_does_not_verify_is_named(self):
+        pki = Pki(self.d)
+        cert, key = pki.issue("server")
+        port = serve(self, {"cert": cert, "key": key, "authenticators": ["token"], "token_file": self.token},
+                     self.handle)
+        with self.assertRaisesRegex(SignerUnavailable, "certificate of the signer at https://127.0.0.1:[0-9]+ did "
+                                                       "not verify .*set TRACEKIT_SIGNER_CA"):
+            self.client(f"https://127.0.0.1:{port}").status({})
+        self.assertEqual(self.subject(self.client(f"https://127.0.0.1:{port}", TRACEKIT_SIGNER_CA=pki.path)), "http")
 
 
 class TestAuthorization(unittest.TestCase):
