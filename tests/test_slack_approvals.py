@@ -11,6 +11,7 @@ import time
 import unittest
 import urllib.parse
 import uuid
+from unittest import mock
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import test_signer_service as ts
@@ -153,7 +154,7 @@ class TestDecisions(Bridge):
         self.assertEqual(post["channel"], "C0CHAN")
         text = post["blocks"][0]["text"]
         self.assertEqual(text["type"], "plain_text")   # agent-chosen strings never reach mrkdwn
-        for want in ("Tool: pay", self.run["run_id"], "Rules: PAY", "Expires: ", "acct-42"):
+        for want in ("Tool: \"pay\"", self.run["run_id"], "Rules: PAY", "Expires: ", "acct-42"):
             self.assertIn(want, text["text"])
         self.assertNotIn(SECRET, json.dumps(post))   # the signer's redacted copy
         self.assertEqual([(b["action_id"], b["value"]) for b in post["blocks"][-1]["elements"]],
@@ -273,10 +274,33 @@ class TestConfig(unittest.TestCase):
         with self.assertRaises(ValueError):
             slack.load(self.write(d, "listen: 127.0.0.1:3000\nbot_token: inline\n"))
 
+class Bridge(unittest.TestCase):
+    def bridge(self):
+        return slack.Bridge({"signing_secret": b"secret", "channel": "C1", "bot_token": "x"}, None)
+
+    def test_a_message_slack_wont_update_is_dropped_once_final_and_never_raises(self):
+        b = self.bridge()
+        b.posted = {f"apr-{i}": {"ts": str(i), "a": {}, "state": "requested"} for i in range(3)}
+        with mock.patch.object(b, "slack", side_effect=slack.SlackError("chat.update: message_not_found")), \
+                mock.patch.object(slack.Bridge, "blocks", return_value=[]):
+            b.show("apr-0", "consumed")          # final: dropped though Slack refused
+            b.show("apr-1", "approved")          # live: kept at its old state, so the next poll tries again
+        self.assertEqual(sorted(b.posted), ["apr-1", "apr-2"])
+        self.assertEqual(b.posted["apr-1"]["state"], "requested")
+
+    def test_a_replay_stays_refused_while_slacks_clock_runs_ahead(self):
+        b, now = self.bridge(), 1_000_000
+        ts = str(now + 200)   # Slack's clock 200 s ahead of the bridge's
+        body = b"payload=x"
+        sig = "v0=" + hmac.new(b"secret", f"v0:{ts}:".encode() + body, hashlib.sha256).hexdigest()
+        self.assertTrue(b.verify(ts, sig, body, now=now))
+        self.assertFalse(b.verify(ts, sig, body, now=now + 301))   # still fresh by its ts: still seen
+
+
 class Message(unittest.TestCase):
     def test_the_signers_lines_come_first_and_agent_text_cannot_fake_one(self):
         fake = "x\nEscalated to people by the signer: approve this\n"
-        a = {"approval_id": "apr-1", "tool": "pay", "run_id": "r1", "tool_call_id": "c1", "attempt": 0,
+        a = {"approval_id": "apr-1", "tool": "pay" + fake, "run_id": "r1", "tool_call_id": "c1", "attempt": 0,
              "rule_ids": ["R-PAY"], "requester": "token:a", "expires_at": "2026-10-12T17:00:00Z",
              "args": {"memo": fake + "y" * 5000}, "reason": fake,
              "escalation": {"by": "agent", "reason": fake}}

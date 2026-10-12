@@ -7,10 +7,12 @@ import ipaddress
 import json
 import math
 import os
+import shutil
 import socket
 import ssl
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import types
@@ -565,6 +567,22 @@ class TestProxy(unittest.TestCase):
         self.assertTrue(self.srv.observer.flush(math.inf))   # refused: sent again with the next heartbeat
         calls = [c[0][0] for c in self.client.observe_effect.call_args_list]
         self.assertEqual([(c["request_id"], c["effects"][0]["host"]) for c in calls], [(rid, "a.example")] * 2)
+
+    def test_a_run_token_client_is_not_charged_a_failed_authentication(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        with open(os.path.join(d, "bearer"), "w") as f:
+            f.write("b" * 40)
+        srv = egress.serve({"http": {"listen": "127.0.0.1:0", "insecure_loopback": True, "authenticators": ["token"],
+                                     "token_file": os.path.join(d, "bearer")}, "signer": "unused"}, self.client)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        self.srv = srv   # connect() goes to this proxy
+        for _ in range(30):   # more than the failed-authentication burst, all with a run token the signer accepts
+            s, status = self.connect(f"localhost:{self.up.port}")
+            s.close()
+            self.assertNotIn(" 429 ", status + " ", status)
 
     def test_a_rate_limited_heartbeat_is_a_failure_and_its_totals_are_kept(self):
         self.srv.observer.add(("token", "run-1", "tok.mac", None), "a.example", 443, 5, 6, True)

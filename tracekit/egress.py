@@ -315,7 +315,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
     def _identity(self, auth):
         """scheme:subject of the identity the authenticators accept for this connection (`auth`: a bearer
         Proxy-Authorization, sent to them as Authorization), else None."""
-        if not self.server.authenticators:
+        presented = auth or (isinstance(self.connection, ssl.SSLSocket) and self.connection.getpeercert())
+        if not (self.server.authenticators and presented):   # no credential is no failed authentication
             return None
         conn = types.SimpleNamespace(headers={"Authorization": auth} if auth else {}, connection=self.connection,
                                      client_address=self.client_address)
