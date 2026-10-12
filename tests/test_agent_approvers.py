@@ -107,6 +107,9 @@ class TestLint(unittest.TestCase):
         self.assertEqual(policy_compile.warnings(pol), [])
         del pol["ask"][0]["approval"]["executor"]
         self.assertIn("executor: t2", policy_compile.warnings(pol)[0])
+        del pol["ask"][0]["class"]
+        pol["ask"][0]["tool"] = "pay"   # no class: a tool the policy maps to payment
+        self.assertIn("executor: t2", policy_compile.warnings(pol)[0])
 
 
 class TestConfig(unittest.TestCase):
@@ -229,6 +232,28 @@ class TestAgentApprovals(Case):
         self.refused("forbidden", ts.ME, "approval_review", {"approval_id": aid})   # never a default grant
         self.refused("invalid_request", ALICE, "approval_decide", {"request_id": rid(), "approval_id": aid,
                                                                   "decision": "escalate"})
+
+    def test_a_grant_held_through_a_group_reaches_no_agent(self):
+        bot = CallerIdentity("oidc", "corp/bot", True, {"groups": ["corp/bridges"]})
+        self.s._agents = frozenset({"oidc:corp/bot"})
+        self.s.authorize["group:corp/bridges"] = [*sorted(svc.AGENT_METHODS), svc.ON_BEHALF]
+        aid, agent = self.ask(dict(OK, amount=5000))
+        self.assertFalse(agent["eligible"])
+        msg = self.refused("forbidden", bot, "approval_decide", {
+            "request_id": rid(), "approval_id": aid, "decision": "approve",
+            "on_behalf": {"subject": "corp/alice", "person": "alice"}})
+        self.assertIn("agent approver", msg)
+        self.assertEqual(self.s.log.approvals[aid]["state"], "requested")
+
+    def test_the_reviewer_view_escapes_what_a_person_cannot_see(self):
+        self.assertEqual(svc._escaped({"m\u200b": "a\u2028b\U000e0041c\ufeff"}),
+                         {"m\\u200b": "a\\u2028b\\U000e0041c\\ufeff"})
+
+    def test_raw_args_with_a_duplicate_key_are_refused(self):
+        d = self.s.decide({"request_id": rid(), **self.run, "stream": "s", "client_seq": next(self.seq),
+                           "tool_call_id": "dup", "tool": "pay", "args_source": "raw",
+                           "args": '{"amount": 40, "amount": 5000, "payee": "acct-1", "memo": "x"}'})
+        self.assertEqual((d["decision"], d["rule_ids"]), ("deny", ["TK-ARGS-INVALID"]))
 
     def test_only_an_attested_principal_disqualifies_the_agent(self):
         aid, _ = self.ask()
@@ -366,6 +391,13 @@ class TestBudget(Case):
 
 class TestVetoAndRevoke(Case):
     agent = {"veto_s": 60}
+
+    def test_a_persons_veto_sticks_when_the_call_is_asked_again(self):
+        aid, _ = self.ask()
+        self.answer(AGENT, aid)
+        self.s.call(ALICE, "approval_revoke", {"request_id": rid(), "approval_id": aid})
+        _, agent = self.ask(attempt=1)   # asked again: no fresh agent review
+        self.assertFalse(agent["eligible"], agent)
 
     def test_a_person_revokes_within_the_veto_delay(self):
         aid, _ = self.ask()

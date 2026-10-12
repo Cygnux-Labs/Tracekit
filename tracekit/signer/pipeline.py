@@ -126,8 +126,8 @@ def agent_state(set_, log, run, e):
             set_(log.agent["uses"], d["approval_id"], dict(use, approved=epoch(e["ts"]), spent=d.get("spent", {})))
     elif typ == "approval.escalated":
         set_(a, "escalated", True)
-    if typ == "approval.escalated" or typ == "approval" and d.get("approver_kind") == "agent" and \
-            d["decision"] != "approve":
+    if typ in ("approval.escalated", "approval.revoked") or typ == "approval" and d.get("approver_kind") == "agent" \
+            and d["decision"] != "approve":   # a person's veto sticks as an agent's reject does
         set_(run, "person_only", {**run.get("person_only", {}), **{k: True for k in person_only_keys(a)}})
 
 

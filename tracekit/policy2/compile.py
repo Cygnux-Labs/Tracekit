@@ -267,10 +267,19 @@ def _lint_agent(rule):
 
 
 def warnings(pol):
-    """What lint lets through but a person should know: an agent approver on a money-moving class without executor t2
-    binds the approval, not what runs."""
-    return [f"ask rule {r['id']}: approval.agent on class {r.get('class')} without executor t2: the agent's approval "
-            "binds the arguments the agent reported, not what its process runs; add executor: t2"
+    """What lint lets through but a person should know: an agent approver on a money-moving rule (class payment, or a
+    tool the policy maps to payment) without executor t2 binds the approval, not what runs."""
+    payments = [t for t, c in pol.get("tools", {}).items() if c == "payment"]
+
+    def money(r):
+        if r.get("class") == "payment":
+            return True
+        try:
+            return "class" not in r and "tool" in r and any(re.fullmatch(r["tool"], t) for t in payments)
+        except re.error:
+            return False
+    return [f"ask rule {r['id']}: approval.agent on a payment tool without executor t2: the agent's approval binds the "
+            "arguments the agent reported, not what its process runs; add executor: t2"
             for r in pol.get("ask", []) if isinstance(r, dict) and isinstance(r.get("approval"), dict)
-            and "agent" in r["approval"] and r.get("class") == "payment" and r["approval"].get("executor") != "t2"]
+            and "agent" in r["approval"] and money(r) and r["approval"].get("executor") != "t2"]
 

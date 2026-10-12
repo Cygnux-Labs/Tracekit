@@ -223,6 +223,7 @@ import socket
 import sys
 import threading
 import time
+import unicodedata
 import types
 
 import rfc8785
@@ -292,7 +293,9 @@ AGENT_CONSUME_S, AGENT_TIMEOUT_S = 300, 600
 # anti-shopping: approvals routed to agents per run, and per tenant per window; past them, people answer
 # lean: fixed caps; make them approvals.* keys if deployments need others
 AGENT_REVIEWS_PER_RUN, AGENT_REVIEWS_PER_TENANT, AGENT_REVIEWS_WINDOW_S = 10, 1000, 3600
-_CONTROL = re.compile("[\x00-\x1f\x7f-\x9f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]")
+# characters a person reading the reviewer view can't see but a model reads: control, format (bidi, zero-width, tags)
+# and line/paragraph separators
+_HIDDEN = ("Cc", "Cf", "Zl", "Zp")
 OTLP_IMPORT = "otlp_import"   # an `authorize` grant, never a default: OTLP/HTTP import (otlp config section)
 ON_BEHALF = "approval_decide_on_behalf"   # an `authorize` grant, never a default: a bridge answers for its people
 OTLP_MAX_SPANS = 512
@@ -468,7 +471,8 @@ def _agents(approvals, authorize, multi_tenant_apps):
 def _escaped(value):
     """`value` with control and bidirectional-override characters in its strings (and keys) written as \\uXXXX text."""
     if isinstance(value, str):
-        return _CONTROL.sub(lambda m: f"\\u{ord(m.group()):04x}", value)
+        return "".join(c if unicodedata.category(c) not in _HIDDEN else
+                       f"\\u{ord(c):04x}" if ord(c) <= 0xFFFF else f"\\U{ord(c):08x}" for c in value)
     if isinstance(value, list):
         return [_escaped(v) for v in value]
     return {_escaped(k): _escaped(v) for k, v in value.items()} if isinstance(value, dict) else value
@@ -814,6 +818,9 @@ class SignerService:
             raise
 
     def _grant(self, identity, method):
+        if self._is_agent(identity) and method not in AGENT_METHODS:   # whatever its groups or prefixes are granted
+            raise RPCError("forbidden", f"{subject(identity)[:256]} is an agent approver: it is not authorized for "
+                                        f"{method}")
         found = [g for k in keys(identity) if (g := lookup(self.authorize, k)) is not None]
         granted = {m for g in found for m in g}
         if not found and not self._is_agent(identity):   # unconfigured: a uid or the dev token (scoped by DevToken)
@@ -2286,7 +2293,7 @@ class SignerService:
             return a["state"] == "requested" or a["state"] == "approved" and a.get("not_before", "") > _iso(now)
         end = time.monotonic() + req.get("timeout_ms", 0) / 1000
         with self.quotas.wait_slot(identity), self._cond:
-            while (aid in self.log.approvals and waiting(self.log.approvals[aid], time.time())
+            while ((a := self.log.approvals.get(aid)) is not None and waiting(a, time.time())
                    and end > time.monotonic()):
                 self._cond.wait(min(end - time.monotonic(), TICK_S))
 
