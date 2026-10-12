@@ -10,6 +10,7 @@ import unittest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import tracekit  # noqa: E402
 from tracekit import autotrace, client, schema  # noqa: E402
 from tracekit.core import GENESIS, SCHEMA_VERSION, new_id, now_ts  # noqa: E402
 from factories import DaemonCase  # noqa: E402
@@ -285,7 +286,7 @@ class Lifecycle(unittest.TestCase):
         sent = []
         c = openai.OpenAI(api_key="k", base_url="http://mock/v1", max_retries=0,
                           http_client=httpx.Client(transport=transport(lambda r: (sent.append(1), (200, OPENAI_CHAT, False))[1])))
-        with self.assertRaises(PermissionError):
+        with self.assertRaises(tracekit.Refused):   # a PermissionError of Tracekit's own, for frameworks to let through
             c.chat.completions.create(model="m", messages=[])
         self.assertEqual(sent, [], "the request must never reach the provider")
 

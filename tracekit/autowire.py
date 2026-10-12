@@ -14,6 +14,7 @@ signer; else $TRACEKIT_SIGNER), closes it when the process exits, and wires ever
   (tracekit_hooks);
 * MCP client: every ClientSession.call_tool goes through TracekitSession;
 * Browser Use: the actions of every Tools built from now on (an Agent builds one) are gated (trace_tools);
+* CrewAI: global tool hooks decide every tool call and block by return value (tracekit.integrations.crewai);
 * the Anthropic, OpenAI and Google Gen AI clients: every model call (tracekit.autotrace).
 
 Idempotent: a second call returns the same run. Calls addressed to its run go to the current run while one is
@@ -273,6 +274,15 @@ def _browser_use(run):
     Tools.__init__ = gated
 
 
+def _crewai(run):
+    from crewai.hooks import register_after_tool_call_hook, register_before_tool_call_hook
+
+    from .integrations.crewai import hooks
+    before, after = hooks(run)
+    register_before_tool_call_hook(before)
+    register_after_tool_call_hook(after)
+
+
 # name, distribution, tested versions [lo, hi), the pip requirement, its page under docs/, wire(run)
 FRAMEWORKS = (
     ("OpenAI Agents SDK", "openai-agents", (0, 23, 1), (0, 24), "openai-agents>=0.23.1,<0.24",
@@ -284,6 +294,7 @@ FRAMEWORKS = (
     ("MCP client", "mcp", (2, 3), (2, 4), "mcp>=2.3,<2.4", "quickstarts/mcp", _mcp),
     ("Browser Use", "browser-use", (0, 13, 11), (0, 14), "browser-use>=0.13.11,<0.14", "integrations/browser-use",
      _browser_use),
+    ("CrewAI", "crewai", (1, 15, 27), (1, 16), "crewai>=1.15.27,<1.16", "integrations/crewai", _crewai),
 )
 
 
@@ -331,8 +342,8 @@ def instrument(agent=None):
         found = [(f, v) for f in FRAMEWORKS if (v := _version(f[1]))]
         if not found and not any(map(_version, MODEL_SDKS)):
             warnings.warn("tracekit.instrument(): none of the frameworks or model SDKs it wires is installed (OpenAI "
-                          "Agents SDK, LangGraph, Claude Agent SDK, MCP, Browser Use, OpenAI, Anthropic, Google Gen "
-                          "AI); nothing is recorded. Record calls yourself: docs/quickstarts/custom.md", stacklevel=2)
+                          "Agents SDK, LangGraph, Claude Agent SDK, MCP, Browser Use, CrewAI, OpenAI, Anthropic, "
+                          "Google Gen AI); nothing is recorded. Record calls yourself: docs/quickstarts/custom.md", stacklevel=2)
             return None
         script = sys.argv[0] if sys.argv and sys.argv[0] not in ("", "-c") else "python"
         name = agent or os.environ.get("TRACEKIT_AGENT") or os.path.splitext(os.path.basename(script))[0]

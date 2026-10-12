@@ -61,6 +61,12 @@ class SignerUnavailable(Exception):
     pass
 
 
+class Refused(PermissionError):
+    """Tracekit refused a call (a policy deny, an unapproved ask, a fail-closed outage). Frameworks that catch
+    exceptions around tools or model calls must let it through, or the refusal turns into an empty answer or a call
+    that runs anyway (docs/quickstarts/custom.md#frameworks-that-catch-exceptions)."""
+
+
 class Incompatible(Exception):
     """The signer answered but does not speak this client's protocol version. It is left running."""
 
@@ -511,9 +517,19 @@ class RunHandle:
         return self.client.call(method, {"run_id": self.run_id, "run_token": self.run_token, **fields})
 
     def decide(self, tool_call_id, tool, args, **fields):
-        """`args` is the model's raw arguments string, or an already parsed value."""
-        d = self.call("decide", tool_call_id=tool_call_id, tool=tool, args=args,
-                      **{"args_source": "raw" if isinstance(args, str) else "parsed", **fields})
+        """`args` is the model's raw arguments string, or an already parsed value. Never raises SignerUnavailable:
+        while the signer can't be reached the run's fail mode for `tool_class_hint` decides, `{"decision": "allow" or
+        "deny", "unavailable": True, ...}` (as the TypeScript client), so a hook that blocks by return value blocks. A
+        refusal raises RPCError."""
+        try:
+            d = self.call("decide", tool_call_id=tool_call_id, tool=tool, args=args,
+                          **{"args_source": "raw" if isinstance(args, str) else "parsed", **fields})
+        except SignerUnavailable as e:
+            ok = fail_open(self.registered.get("fail_modes"), fields.get("tool_class_hint"))
+            warnings.warn(f"tracekit: {tool} {'runs unrecorded (fail open)' if ok else 'is denied (fail closed)'}: {e}",
+                          stacklevel=2)
+            return {"decision": "allow" if ok else "deny", "rule_ids": [], "unavailable": True,
+                    "reason": f"signer unavailable: {e}"[:1024]}
         try:
             digest = event_hash({"tool": tool, "args": loads_strict(args) if isinstance(args, str) else args})
         except (StrictJSONError, rfc8785.CanonicalizationError):
@@ -522,9 +538,15 @@ class RunHandle:
         return d
 
     def complete(self, tool_call_id, status="ok", **fields):
-        """Defaults decision_id and args_digest to those of the last `decide` for this tool call."""
-        return self.call("complete", tool_call_id=tool_call_id, status=status,
-                         **{**self._decided.pop(tool_call_id, {}), **fields})
+        """Defaults decision_id and args_digest to those of the last `decide` for this tool call. Never raises: the
+        call already ran, so a result the signer can't take is a warning (None), and the signer records the call as
+        decided and not completed when the run closes."""
+        try:
+            return self.call("complete", tool_call_id=tool_call_id, status=status,
+                             **{**self._decided.pop(tool_call_id, {}), **fields})
+        except (SignerUnavailable, RPCError) as e:
+            warnings.warn(f"tracekit: the result of {tool_call_id} was not recorded: {e}", stacklevel=2)
+            return None
 
     def observe(self, value, source, trust="untrusted", **fields):
         """Record content that entered the run other than as a tool result (a mail, a ticket, a page the app fetched)
