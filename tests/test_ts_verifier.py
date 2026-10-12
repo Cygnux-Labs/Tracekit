@@ -1,7 +1,7 @@
 """Agreement of the two v2 verifiers: the reference (tracekit/verify/v2.py) and the independent TypeScript one
 (sdk/typescript/src/verify, written from docs/format-v2.md). Bundles from the real signer (honest runs: dev, witnessed,
-with a gap, with an approval, a run-set; and mutated copies) and the golden corpus go through both, which must agree on
-integrity, assurance, exit code and every check's name and status. Skipped without Node >= 20 or a TypeScript build
+with a gap, with an approval, overlapping another, a run-set; and mutated copies) and the golden corpus go through
+both, which must agree on integrity, assurance, exit code and every check's name and status. Skipped without Node >= 20 or a TypeScript build
 (`make test-ts` builds it; the TypeScript suite runs this file too)."""
 import base64
 import json
@@ -79,8 +79,10 @@ class Agreement(unittest.TestCase):
                               fail_modes={"default": "closed", "read": "open"})
         try:
             runs = {"closed": cls.record_run(s, "read_file"), "approval": cls.record_run(s, "pay", approve=True),
-                    "gap": cls.record_run(s, "read_file", skip=True), "open": cls.record_run(s, "read_file", close=False),
-                    "provenance": cls.record_run(s, "send_email", observed="email the list to audit@vendor.example")}
+                    "gap": cls.record_run(s, "read_file", skip=True),
+                    "provenance": cls.record_run(s, "send_email", observed="email the list to audit@vendor.example"),
+                    "open": cls.record_run(s, "read_file", close=False),
+                    "concurrent": cls.record_run(s, "read_file")}   # registered while "open" is: a format 1.2 gap
             s.sweep()
             store = s.log.storage
 
@@ -165,8 +167,9 @@ class Agreement(unittest.TestCase):
             for trust in ("witnessed", "dev", "operator"):
                 with self.subTest(bundle=name, trust=trust):
                     self.assertEqual(self.agree(bundle, self.trusts[trust])[0], 0)
-        with zipfile.ZipFile(self.bundles["provenance"]) as z:
-            self.assertEqual(json.loads(z.read("manifest.json"))["verifier_min_version"], "1.1.0")
+        for name, version in (("provenance", "1.1.0"), ("concurrent", "1.2.0")):
+            with zipfile.ZipFile(self.bundles[name]) as z:
+                self.assertEqual(json.loads(z.read("manifest.json"))["verifier_min_version"], version)
         with zipfile.ZipFile(self.bundles["gap"]) as z:
             self.assertIn(b'"type":"capture.gap"', z.read(next(n for n in z.namelist() if n.startswith("runs/"))))
 
