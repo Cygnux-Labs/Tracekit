@@ -21,6 +21,7 @@ from tracekit import autowire
 from tracekit.format.canon import event_hash
 from tracekit.sdk.client import AsyncClient, Client, SignerUnavailable, current_run
 from tracekit.signer.rpc_schema import REQUESTS, RPCError
+from tracekit.testing import FakeSigner
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -178,6 +179,30 @@ class TestInstrument(unittest.TestCase):
         self.assertIs(seen[0], seen[2])
         self.assertIsNot(seen[0], seen[1])
         self.assertEqual((seen[0].stream, seen[0]._seq), (seen[1].stream, seen[1]._seq))
+
+    def test_browser_use_tools_are_gated_on_one_stream(self):
+        """Every Tools built after instrument() (an Agent builds one) has its actions decided, all on one signer stream
+        (a run allows 64)."""
+        class Tools:
+            def __init__(self):
+                self.registry = types.SimpleNamespace(execute_action=self.execute)
+
+            async def execute(self, action_name, params, **kw):
+                return f"ran {action_name}"
+        sent, fake = [], FakeSigner(lambda tool, args: ("allow", []))
+
+        class Recording:
+            def __getattr__(self, method):
+                return lambda req: sent.append((method, req)) or getattr(fake, method)(req)
+        run = types.SimpleNamespace(client=Recording(), registered=fake.register_run({"request_id": "r1", "agent": {"name": "bu"}}))
+        with mock.patch.dict(sys.modules, {"browser_use": types.SimpleNamespace(Tools=Tools)}):
+            autowire._browser_use(run)
+        outs = [asyncio.run(Tools().registry.execute_action("navigate", {"url": "https://example.com/"}))
+                for _ in range(2)]
+        self.assertEqual(outs, ["ran navigate"] * 2)
+        decides = [req for method, req in sent if method == "decide"]
+        self.assertEqual([d["tool"] for d in decides], ["browser_use:navigate"] * 2)
+        self.assertEqual(len({d["stream"] for d in decides}), 1)
 
     def test_release(self):
         for v, want in (("0.23.1", (0, 23, 1)), ("1.2.14", (1, 2, 14)), ("2.3.0rc1", (2, 3, 0)), ("1.4.dev0", (1, 4))):

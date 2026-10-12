@@ -4,7 +4,8 @@ approval with a T2 executor), the call runs those, not the ones the caller holds
 
 A signer that cannot be reached when a call is decided: the call runs unrecorded if register_run's `fail_modes` say
 `open` for the adapter's class, else it is refused. Any other failure to decide or approve refuses the call. A failure
-to record an outcome warns and changes nothing the caller sees.
+to record an outcome warns and changes nothing the caller sees. An approval no one answered by the end of the wait, or
+whose wait the framework cancelled (its own timeout), is withdrawn (approval_abandon), so no one can answer it later.
 """
 import asyncio
 import itertools
@@ -31,7 +32,7 @@ class HeldCalls:
         req = {"request_id": uuid.uuid4().hex, **self.run, **req}
 
         def call():
-            if method not in ("decide", "complete"):
+            if method not in ("decide", "complete", "observe"):
                 return getattr(self.signer, method)(req)
             # lean: one event at a time per adapter, so client_seq arrives in order; pipeline if it gets slow
             with self._lock:
@@ -52,7 +53,7 @@ class HeldCalls:
             return ", ".join(d["rule_ids"]) or "deny", d, args
         if d["decision"] == "ask":
             if self.wait_s <= 0:
-                return "approval required, and this caller cannot wait for one", d, args
+                return f"{', '.join(d['rule_ids'])}: approval required, and this caller cannot wait for one", d, args
             try:
                 hint = (await self._rpc("approval_request", tool_call_id=call_id))["approval_id"]
                 state, deadline = "requested", time.monotonic() + self.wait_s
@@ -62,6 +63,13 @@ class HeldCalls:
                                                                                  "timeout_ms": left_ms}))["state"]
             except (RPCError, SignerUnavailable) as e:   # once the policy asked, no fail mode applies
                 state = f"{type(e).__name__}: {e}"
+            except asyncio.CancelledError:   # the framework stopped waiting (its own timeout): so does the approval
+                await self._abandon(hint, "the caller stopped waiting for the approval")
+                raise
+            if state == "requested":
+                await self._abandon(hint, f"no answer within the caller's {self.wait_s:g} s wait")
+                return (f"{', '.join(d['rule_ids'])}: no one approved the call within {self.wait_s:g} s, so it did not "
+                        "run and its approval was withdrawn; ask a person to approve it, then try again"), d, args
             if state != "approved":
                 return f"{', '.join(d['rule_ids'])}: approval {state}", d, args
         # every call, allowed or approved: approval_consume is the signer's last word before it runs
@@ -73,6 +81,15 @@ class HeldCalls:
         if not c["ok"]:
             return ", ".join(c["rule_ids"]) + (f": {c['reason']}" if c.get("reason") else ""), d, args
         return None, d, c.get("args", args)
+
+    async def _abandon(self, approval_id, reason):
+        """Withdraw an approval the call no longer waits for; a failure warns (it then expires with the run)."""
+        if approval_id is None:
+            return
+        try:
+            await self._rpc("approval_abandon", approval_id=approval_id, reason=reason)
+        except (RPCError, SignerUnavailable) as e:
+            warnings.warn(f"tracekit: approval {approval_id} not withdrawn: {e}", stacklevel=2)
 
     async def _complete(self, call_id, req, **outcome):
         """Record the outcome; a failure to record warns and leaves the call's result or exception as it was."""

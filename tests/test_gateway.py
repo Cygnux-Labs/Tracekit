@@ -425,6 +425,18 @@ class TestMandatory(Gateway):
         self.decide(0, "tc-y")
         self.assertEqual(self.final(), [("reconcile.fabricated", "tc-y")])
 
+    def test_browser_use_actions_are_not_fabricated_under_the_browser_pack(self):
+        """Browser Use's actions come in the model's structured output, which carries no tool use: the browser pack
+        names them structured_output, so the gateway's exchanges without tool uses don't make them fabricated."""
+        self.s.policy = svc.load_policy(os.path.join(os.path.dirname(svc.DEFAULT_POLICY), "browser.yaml"))
+        self.up.reply = ("json", dict(COMPLETION, choices=[{"index": 0, "finish_reason": "stop", "message": {
+            "role": "assistant", "content": '{"action": [{"click": {"index": 3}}]}'}}]))
+        self.assertEqual(self.post()[0], 200)
+        self.s.call(AGENT, "decide", {"request_id": uuid.uuid4().hex, **self.run, "stream": "agent", "client_seq": 0,
+                                      "tool_call_id": "bu-1", "tool": "browser_use:click", "args_source": "parsed",
+                                      "args": {"index": 3, "page_url": "https://shop.example/"}})
+        self.assertEqual(self.final(), [])
+
 
 if __name__ == "__main__":
     unittest.main()

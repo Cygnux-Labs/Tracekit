@@ -94,6 +94,19 @@ class TestReconcile(Reconcile):
         [(found, _)] = self.final(self.handoff_run())
         self.assertEqual(found, [("reconcile.hook_missing", "tc-2")])
 
+    def test_calls_in_the_models_structured_output_are_not_compared_with_its_tool_uses(self):
+        """Browser Use asks for its actions as structured output (here through the forced AgentOutput tool call):
+        neither the decides nor the output tool reconcile against L3 once the policy names them (unnamed, the same run
+        is a hook_missing and a fabricated: test_each_kind)."""
+        self.s.policy = Engine({**self.s.policy.policy, "structured_output": ["browser_use:*", "AgentOutput"]})
+        run = self.register()
+        self.model(run, [use("tc-out", "AgentOutput")])
+        self.run_call(run, "tc-1", "browser_use:click", {"index": 3})
+        self.run_call(run, "tc-2", "read_file")   # any other tool still is
+        [(found, final)] = self.final(run)
+        self.assertEqual(found, [("reconcile.fabricated", "tc-2")])
+        self.assertEqual(final["data"]["coverage"]["layers"], ["L2", "L3"])
+
     def test_each_kind(self):
         runs = [self.register() for _ in range(5)]
         missing, fabricated, mismatch, unparseable, result = runs

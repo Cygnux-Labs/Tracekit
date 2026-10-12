@@ -48,8 +48,10 @@ recorded as a `capture.gap` and the stricter decision applies.
   `Tool call blocked by policy: <rule ids>`, and the run goes on.
 - **ask**: the adapter opens an approval in the signer and holds the call while it waits, up to `approval_wait_s`
   seconds (default 300), for a person to decide (CLI, web). Approved, the call is sent; rejected, expired or still
-  undecided at the deadline, it is refused as for a deny. `TracekitSession(session, signer, run, approval_wait_s=0)`
-  is for a caller that cannot wait: an `ask` is then refused without opening an approval.
+  undecided at the deadline, it is refused as for a deny, and an undecided approval is withdrawn
+  (`approval.abandoned`), as it is when the caller cancels the waiting `call_tool`.
+  `TracekitSession(session, signer, run, approval_wait_s=0)` is for a caller that cannot wait: an `ask` is then refused
+  without opening an approval.
 
 Every call that is not denied is sent only after the signer's `approval_consume` agrees for this exact call and these
 exact arguments. A result with `isError: true` is returned unchanged; an exception from the session (a protocol error,

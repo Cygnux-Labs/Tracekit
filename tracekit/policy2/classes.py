@@ -15,6 +15,7 @@ SHELL_KEYS = ("command", "cmd", "commands")
 PATH_KEYS = ("file_path", "notebook_path", "path")
 BODY_KEYS = ("body", "data", "json", "files", "form", "content")   # an http call with one of these sends data
 TYPING = ("input", "upload_file")   # Browser Use actions that send data to the page they run on
+NAVIGATE = ("navigate", "go_to_url")   # Browser Use actions that load a URL: a query string in it is data sent to its host
 RECIPIENT_KEYS = ("to", "cc", "bcc", "recipients")
 PAYEE_KEYS = ("payee", "to", "recipient", "destination", "account", "account_number", "iban")
 FS_OPS = {"Write": "write", "Edit": "edit", "MultiEdit": "edit", "NotebookEdit": "edit", "Read": "read",
@@ -235,9 +236,13 @@ def extract(cls, tool, args):
         out = {"url": url, "host": info.get("host"), "internal": info.get("internal")}
         if cls == "browser":
             out.update(action=args.get("action"), scheme=info.get("scheme"))
-            page = args.get("page_url")
-            if tool.rpartition(":")[2] in TYPING and isinstance(page, str):
+            page, action = args.get("page_url"), tool.rpartition(":")[2]
+            # the query as a browser reads it: tabs and newlines dropped, up to the fragment
+            query = re.sub(r"[\t\n\r]", "", url).partition("#")[0].partition("?")[2] if isinstance(url, str) else ""
+            if action in TYPING and isinstance(page, str):
                 out["sends_to"] = url_info(page).get("host")
+            elif action in NAVIGATE and query:
+                out["sends_to"] = info.get("host")
         else:
             out["method"] = str(args.get("method") or "GET").upper()
             if out["method"] not in ("GET", "HEAD") or any(args.get(k) is not None for k in BODY_KEYS):

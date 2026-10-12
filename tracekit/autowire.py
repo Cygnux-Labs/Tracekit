@@ -13,6 +13,7 @@ signer; else $TRACEKIT_SIGNER), closes it when the process exits, and wires ever
 * Claude Agent SDK: every ClaudeAgentOptions built from now on gets the PreToolUse and PostToolUse hooks
   (tracekit_hooks);
 * MCP client: every ClientSession.call_tool goes through TracekitSession;
+* Browser Use: the actions of every Tools built from now on (an Agent builds one) are gated (trace_tools);
 * the Anthropic, OpenAI and Google Gen AI clients: every model call (tracekit.autotrace).
 
 Idempotent: a second call returns the same run. Calls addressed to its run go to the current run while one is
@@ -246,14 +247,32 @@ def _mcp(run):
     ClientSession.call_tool = gated
 
 
-# name, distribution, tested versions [lo, hi), the pip requirement, its quickstart, wire(run)
+def _browser_use(run):
+    from browser_use import Tools
+
+    from .integrations import browser_use
+    init = Tools.__init__
+    # every Tools shares one signer stream: a run allows 64 (quotas.streams_per_run)
+    actions = browser_use._actions(run.client, run.registered)
+
+    @functools.wraps(init)
+    def gated(self, *a, **kw):
+        init(self, *a, **kw)
+        browser_use._wrap(self, actions)
+    Tools.__init__ = gated
+
+
+# name, distribution, tested versions [lo, hi), the pip requirement, its page under docs/, wire(run)
 FRAMEWORKS = (
-    ("OpenAI Agents SDK", "openai-agents", (0, 23, 1), (0, 24), "openai-agents>=0.23.1,<0.24", "openai-agents",
-     _openai_agents),
-    ("LangGraph", "langgraph", (1, 2), (1, 3), "langchain>=1.4,<1.5 langgraph>=1.2,<1.3", "langchain", _langgraph),
-    ("Claude Agent SDK", "claude-agent-sdk", (0, 2, 165), (0, 3), "claude-agent-sdk>=0.2.165,<0.3", "claude-agent-sdk",
-     _claude_agent_sdk),
-    ("MCP client", "mcp", (2, 3), (2, 4), "mcp>=2.3,<2.4", "mcp", _mcp),
+    ("OpenAI Agents SDK", "openai-agents", (0, 23, 1), (0, 24), "openai-agents>=0.23.1,<0.24",
+     "quickstarts/openai-agents", _openai_agents),
+    ("LangGraph", "langgraph", (1, 2), (1, 3), "langchain>=1.4,<1.5 langgraph>=1.2,<1.3", "quickstarts/langchain",
+     _langgraph),
+    ("Claude Agent SDK", "claude-agent-sdk", (0, 2, 165), (0, 3), "claude-agent-sdk>=0.2.165,<0.3",
+     "quickstarts/claude-agent-sdk", _claude_agent_sdk),
+    ("MCP client", "mcp", (2, 3), (2, 4), "mcp>=2.3,<2.4", "quickstarts/mcp", _mcp),
+    ("Browser Use", "browser-use", (0, 13, 11), (0, 14), "browser-use>=0.13.11,<0.14", "integrations/browser-use",
+     _browser_use),
 )
 
 
@@ -301,8 +320,8 @@ def instrument(agent=None):
         found = [(f, v) for f in FRAMEWORKS if (v := _version(f[1]))]
         if not found and not any(map(_version, MODEL_SDKS)):
             warnings.warn("tracekit.instrument(): none of the frameworks or model SDKs it wires is installed (OpenAI "
-                          "Agents SDK, LangGraph, Claude Agent SDK, MCP, OpenAI, Anthropic, Google Gen AI); nothing "
-                          "is recorded. Record calls yourself: docs/quickstarts/custom.md", stacklevel=2)
+                          "Agents SDK, LangGraph, Claude Agent SDK, MCP, Browser Use, OpenAI, Anthropic, Google Gen "
+                          "AI); nothing is recorded. Record calls yourself: docs/quickstarts/custom.md", stacklevel=2)
             return None
         script = sys.argv[0] if sys.argv and sys.argv[0] not in ("", "-c") else "python"
         name = agent or os.environ.get("TRACEKIT_AGENT") or os.path.splitext(os.path.basename(script))[0]
@@ -322,7 +341,7 @@ def instrument(agent=None):
             except Exception as e:
                 warnings.warn(f"tracekit.instrument(): {label} {version} not wired ({type(e).__name__}: {e}). "
                               f"Tracekit is tested with {req}: install those, or wire it by hand "
-                              f"(docs/quickstarts/{page}.md)", stacklevel=2)
+                              f"(docs/{page}.md)", stacklevel=2)
                 continue
             if not lo <= _release(version) < hi:
                 warnings.warn(f"tracekit.instrument(): {label} {version} is wired but untested; Tracekit is tested "

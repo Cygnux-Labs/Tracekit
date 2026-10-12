@@ -14,7 +14,8 @@ digests live in the run's `digests`, which no snapshot holds.
 
 L3 from the LLM gateway (source gateway, tier T2) takes precedence over agent-reported L3 for the same tool use id. With
 `gateway_mandatory` (signer.yaml) only gateway L3 counts, and a run with none still has its decides checked: each
-decide the gateway did not see is fabricated, whatever the agent reported.
+decide the gateway did not see is fabricated, whatever the agent reported. A tool the policy's `structured_output`
+names is not compared with L3 at all: its calls come in the model's structured output, which carries no tool use id.
 
 Decisions other systems made (policy.external, from decision_import) are indexed by tool call and system; each that
 disagrees with the signer's last decision for that call (flag counts as allow), names another tool, or names a call
@@ -67,14 +68,15 @@ def _l3(rec, mandatory):
     return {t: u for t, u in rec["l3"].items() if u.get("gw") or not mandatory}
 
 
-def _found(run, mandatory, handoff=lambda tool: False):
-    """[(kind, tool_call_id, layers, detail)] of the run's discrepancies; `handoff(tool)`: the policy's handoffs."""
+def _found(run, mandatory, handoff=lambda tool: False, structured=lambda tool: False):
+    """[(kind, tool_call_id, layers, detail)] of the run's discrepancies; `handoff(tool)`: the policy's handoffs;
+    `structured(tool)`: its structured_output, which are never compared with L3."""
     rec, digests, out, l3 = run["rec"], run["digests"], [], _l3(run["rec"], mandatory)
     if "L3" not in rec["layers"] and not mandatory:
         return out
     for tcid, u in l3.items():
         d = rec["l2"].get(tcid)
-        if d is None and not handoff(u["name"]):
+        if d is None and not handoff(u["name"]) and not structured(u["name"]):
             hint = ("; if it is a handoff to another agent, name it in the policy's handoffs:"
                     if u["name"].startswith("transfer_to_") else "")
             out.append(("hook_missing", tcid, ["L2", "L3"], f"the model asked for {u['name'][:200]}; no decide{hint}"))
@@ -89,7 +91,7 @@ def _found(run, mandatory, handoff=lambda tool: False):
         elif not (u["unparseable"] or d["coerced"] or u["coerced"]) and a and b and a != b:
             out.append(("args_mismatch", tcid, ["L2", "L3"], "decided other arguments than the model asked for"))
     for tcid, d in rec["l2"].items():
-        if tcid not in l3:
+        if tcid not in l3 and not structured(d["name"]):
             out.append(("fabricated", tcid, ["L2", "L3"], f"a decide for {d['name'][:200]} the model never asked for"
                         if tcid not in rec["l3"] else   # gateway_mandatory: only the agent reported the model asking
                         f"a decide for {d['name'][:200]} that no gateway exchange asked for: the agent reported the "
@@ -101,11 +103,11 @@ def _found(run, mandatory, handoff=lambda tool: False):
     return out
 
 
-def finish(tx, run, mandatory=False, handoff=lambda tool: False):
+def finish(tx, run, mandatory=False, handoff=lambda tool: False, structured=lambda tool: False):
     """Write the run's reconcile.* records; returns the coverage for its run.final (None for a run restored from a
     snapshot written before reconciliation, which has no index, for an imported run, or for a `tracekit why` replay run,
     whose model exchanges have no decisions by design). `mandatory`:
-    gateway_mandatory; `handoff`: as for _found."""
+    gateway_mandatory; `handoff`, `structured`: as for _found."""
     if run.get("rec") is None:
         return None
     rec = run["rec"]
@@ -123,7 +125,7 @@ def finish(tx, run, mandatory=False, handoff=lambda tool: False):
                 continue
             tx.emit(run, "capture.gap", {"kind": "decision_mismatch", "tool_use_id": tcid, "reason": reason},
                     source="signer", tool_call_id=tcid)
-    found, unreconciled = _found(run, mandatory, handoff), {}
+    found, unreconciled = _found(run, mandatory, handoff, structured), {}
     for kind, tcid, layers, detail in found:
         tx.emit(run, "reconcile." + kind, {"layers": layers, "detail": detail}, source="signer", tool_call_id=tcid)
         unreconciled[kind] = unreconciled.get(kind, 0) + 1

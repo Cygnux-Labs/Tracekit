@@ -100,8 +100,10 @@ class MCPContract(ac.Contract):
         self.d.kw["approval_wait_s"] = 0
         self.refused(self.d.call("pay", ac.PAY), "cannot wait")
         self.d.kw["approval_wait_s"] = 0.2
-        self.paused()
-        self.refused(self.d.resume(), "approval requested")
+        aid = self.paused()
+        self.refused(self.d.resume(), "no one approved the call within 0.2 s, so it did not run and its approval was "
+                                      "withdrawn")
+        self.assertEqual(self.client.approval_get({"approval_id": aid})["state"], "expired")
 
 
 @unittest.skipUnless(HAVE_MCP, "mcp not installed")

@@ -1,8 +1,8 @@
 # Browser Use (signer RPC)
 
 `tracekit.integrations.browser_use.trace_tools` gates every action a Browser Use agent runs (navigate, click, input,
-extract, upload_file, custom actions). Before each action it asks the Tracekit signer for a policy decision; after the
-action it records the outcome. It works with any object that implements the signer RPC
+extract, upload_file, evaluate, custom actions). Before each action it asks the Tracekit signer for a policy decision;
+after the action it records the outcome. It works with any object that implements the signer RPC
 (`tracekit.signer.rpc_schema.SignerAPI`), including `tracekit.testing.FakeSigner`.
 
 ## Install
@@ -12,42 +12,67 @@ pip install tracekit-ai "browser-use==0.13.11"
 ```
 
 Tested with browser-use 0.13.11 (Python 3.11 or newer, its own requirement). Browser Use is imported only to build
-the result of a refused action.
+the result of a refused action and to read its action timeout.
 
 ## Setup
 
+`import tracekit; tracekit.instrument()` before the agent is built wires it all: every `Tools` built afterwards (an
+`Agent` builds one when you pass none) has its actions gated, all on one signer stream, and Browser Use's model calls
+through the OpenAI, Anthropic and Google Gen AI SDKs are recorded (autotrace). By hand:
+
 ```python
+import tracekit.autotrace
 from browser_use import Agent, Tools
 from tracekit.integrations.browser_use import trace_tools
+from tracekit.sdk.client import Client
 
-run = signer.register_run({"request_id": "run-start-1", "agent": {"name": "shopper"}})
-tools = trace_tools(Tools(), signer, run)          # or a Controller: anything with .registry.execute_action
-agent = Agent(task="...", llm=llm, tools=tools,
+run = Client().run(agent="shopper")
+run.observe(task, source="task", trust="trusted")         # what the task names counts as trusted
+tracekit.autotrace.instrument(run)                        # Browser Use's model calls
+tools = trace_tools(Tools(), run.client, run.registered)  # or a Controller: anything with .registry.execute_action
+agent = Agent(task=task, llm=llm, tools=tools,
               sensitive_data={"https://*.shop.example": {"pw": "..."}})
 await agent.run()
+run.close()
 ```
 
-Wrap each `Tools` once. Actions run through any other registry are not seen.
+`trace_tools(tools, signer, registered)` takes any signer RPC client and its `register_run` response. Wrap each
+`Tools` once, and don't also call `instrument()` in the same process: the action would be decided twice. Actions run
+through any other registry are not seen. Model calls can also go through the [LLM gateway](../gateway.md).
+
+Observe the task as `trusted` from your application: the hosts, addresses and values it names then count as trusted,
+and provenance holds only what a page alone brought in ([policy](../policy-v2.md#provenance-untrusted-and-from-untrusted)).
 
 ## What is recorded
 
 | When | RPC | Sent |
 |---|---|---|
+| before an action, once per browser state | `observe` | what the model read of the page this step (Browser Use's browser state: URL, title, tab URLs and the page's text, up to 100,000 characters), as `untrusted`, source `browser_use:page` |
 | before the action runs | `decide` | a fresh `tool_call_id`, the tool as `browser_use:<action>`, `tool_class_hint: browser`, the args below (`parsed`) |
 | right before it runs | `approval_consume` | the same call and args, and the approval id when the action waited for one |
-| after it runs | `complete` | `status` `ok`, or `error` for an `ActionResult` with an error; a `sha256:` commitment to the result (not the result), or the exception type and message |
+| after it runs | `complete` | `status` `ok`, or `error` for an `ActionResult` with an error; the result (a page's content is untrusted, so the signer indexes it for provenance), or the exception type and message |
 
-The args are the action's params plus `page_url`, the URL of the page the action ran on (empty when there is none).
+The args are the action's params plus `page_url`, the URL of the page the action ran on: empty when there is none, or
+when Browser Use doesn't say within 2 s (an allowlist rule never exempts an empty `page_url`).
+
+The page is observed so that a host the agent reached without naming it (a link it clicked in a mail) is in the run's
+provenance index: typing there, or navigating there with data in the query string, is then held by TK-P003 unless your
+task named that host.
 
 ### `sensitive_data`
 
 Browser Use fills `<secret>name</secret>` placeholders (and a param that is exactly a secret's name) with the real
-value when the action runs. The adapter never sends a value to the signer:
+value when the action runs. Before anything is sent to the signer:
 
-- the args keep the placeholder form; a value written out in the params or the page URL is put back to its
-  placeholder before anything is sent, and so is an exception message;
+- each value in the params, the page URL, the page's text, a result or an exception message is put back to its
+  placeholder, written out or encoded: percent-encoded (`Corr3ct-H0rse-Battery%21`, either hex case, `+` for a
+  space, or encoded twice), as HTML character references (`&#33;`, `&#x21;`, `&amp;`, `&ouml;`) or JSON escapes
+  (`\"`, `\u00f6`), or any mix of these. The action still runs with what the agent wrote;
 - each secret the action types is added as `typed_secrets: {name: ["sha256:<sha256 of the value>"]}`. A secret
   scoped to several domains lists the digest of each domain's value.
+
+A value transformed any other way (base64, hashed, cut in parts, changed case) is not recognised and is sent as it
+is ([limits](../limits.md#privacy)).
 
 The signer publishes only its HMAC commitment to the args, under a salt it holds for that record. An auditor who holds
 a value and gets the record's salt (`tracekit signer reveal --record SEQ`) recomputes the commitment and confirms what
@@ -59,19 +84,26 @@ digest as `[REDACTED:typed_secret]`.
 - **allow**: the action runs.
 - **deny**: the action is skipped. The agent gets an `ActionResult` whose error is
   `Action blocked by policy: <rule ids>`, and the run goes on.
-- **ask**: the adapter opens an approval in the signer and holds the action while it waits, up to `approval_wait_s`
-  seconds (default 300), for a person to decide. Approved, the action runs; rejected, expired or undecided at the
-  deadline, it is refused as for a deny. `trace_tools(tools, signer, run, approval_wait_s=0)` refuses an `ask` without
-  opening an approval.
+- **ask**: the adapter opens an approval in the signer and holds the action while it waits for a person, up to
+  `approval_wait_s` seconds. Browser Use cancels an action at its own action timeout (`BROWSER_USE_ACTION_TIMEOUT_S`,
+  180 s by default), the wait included, so the wait is by default, and at most, five sixths of it (150 s), leaving
+  the rest for the action; a longer `approval_wait_s` warns and is cut to it. Approved, the action runs; rejected,
+  expired or unanswered at the deadline, it is refused as for a deny, and an unanswered approval is withdrawn
+  (`approval.abandoned`) so no one can answer it later. The agent then reads "no one approved the call within 150 s
+  ...". An action Browser Use cancels while it waits (its step timeout) withdraws its approval too.
+  `trace_tools(tools, signer, run, approval_wait_s=0)` refuses an `ask` without opening an approval.
+
+To give a person longer, raise `BROWSER_USE_ACTION_TIMEOUT_S` (and the Agent's `step_timeout`, 180 s by default,
+which covers the model call and every action of a step).
 
 A signer that cannot be reached: the action runs unrecorded if register_run's `fail_modes` say `open` for the
-`browser` class (or by default), else it is refused. Any other signer failure refuses the action. A failure to record
-an outcome warns and changes nothing the agent sees.
+`browser` class (or by default), else it is refused. Any other signer failure refuses the action, a refused page
+observation included. A failure to record an outcome warns and changes nothing the agent sees.
 
 ## The browser policy pack
 
-`tracekit/policy2/packs/browser.yaml` maps `browser_use:*` to the `browser` class and holds unmapped tools for a
-person (`unknown_tools: ask`):
+`tracekit/policy2/packs/browser.yaml` maps `browser_use:*` to the `browser` class, holds unmapped tools for a person
+(`unknown_tools: ask`) and counts a page's content as untrusted:
 
 | Rule | Decision | Matches |
 |---|---|---|
@@ -80,11 +112,20 @@ person (`unknown_tools: ask`):
 | TK-B003 | deny | navigating to localhost, a name without a dot, or `.internal`/`.local`/`.svc` hosts |
 | TK-B010 | ask | `upload_file` |
 | TK-B011 | ask | `input` on a page outside the allowlist (`example.com` as shipped), or with no page |
+| TK-B012 | ask | `evaluate`: JavaScript the agent runs in the page, which can submit a form or send data anywhere, past every other rule |
+| TK-P003 | ask | data sent to a host that only untrusted content named: typing (`input`), an upload, or a navigation with a query string (`navigate`, `go_to_url`) |
 
-To allow a host or set your allowlist, extend the pack and redefine the rule by id:
+`extends` takes relative paths only, so your policy reaches the pack as a file next to it. Copy it there:
+
+```bash
+cp "$(python -c 'import os, tracekit.policy2 as p; print(os.path.dirname(p.__file__))')/packs/browser.yaml" .
+```
+
+or link the installed packs directory next to your policy, as the container image does (`/etc/tracekit/packs`), and
+write `extends: packs/browser.yaml`. Then redefine a rule by id to change it, for example your typing allowlist:
 
 ```yaml
-extends: browser.yaml   # a copy of the pack next to this file
+extends: browser.yaml   # the copy next to this file
 ask:
   - id: TK-B011
     tool: '^browser_use:input$'
@@ -93,8 +134,41 @@ ask:
     unless: '^https://([A-Za-z0-9.-]*\.)?(shop\.example|intranet\.example)\.?(:[0-9]+)?([/?#]|$)'
 ```
 
+To let `evaluate` run without a person, move TK-B012 to `flag` (it runs and is marked): a rule with the same id
+replaces the pack's, in any section. To hold only typing and uploads to untrusted hosts, not navigations, redefine
+TK-P003 (in a policy that also extends the HTTP packs, this one rule replaces theirs too):
+
+```yaml
+ask:
+  - id: TK-P003
+    tool: '^browser_use:(input|upload_file)$'
+    field: sends_to
+    pattern: '.'
+    from: untrusted
+```
+
+**A rule on a click covers the click, not the request it makes.** A deny on clicking "Permanently delete" (`click`
+whose `page_url` is the delete page) doesn't stop `navigate` to the URL that button submits to
+(`deleted.html?confirm=yes`), nor `evaluate` submitting the form (TK-B012 holds that). Deny the state-changing URL
+itself as well, on navigations:
+
+```yaml
+deny:
+  - id: ACME-D002
+    class: browser
+    field: url
+    pattern: '^https?://account\.example/account/deleted\.html\?'
+```
+
 The rules are tripwires on the URL text: a host that resolves to an internal address under a public name is not
 caught.
+
+Browser Use asks the model for its actions as structured output, not as tool calls, so a model response carries no
+tool use for them (with an Anthropic model, the output comes as one forced tool call, `AgentOutput`). The pack names
+both under `structured_output:`: reconciliation doesn't expect a tool use for a `browser_use:*` decide, nor a decide
+for `AgentOutput`. That keeps [`gateway_mandatory`](../gateway.md#reconciliation) and autotrace from marking every
+action `reconcile.fabricated`, and it means Browser Use's actions get no L3 cross-check: the record can't show that
+the model asked for an action, only that the signer decided it.
 
 ## Example
 
@@ -105,3 +179,5 @@ caught.
 - Browser Use actions carry no call id, so every action is a call of its own (attempt 0); a retry is a new decision.
 - There is no saved state: an action waiting for an approval does not survive the process.
 - What the page itself does (scripts, redirects after a click) is not an action and is not seen.
+- A link's target the model never read (an `href` Browser Use doesn't show it) enters the provenance index only once
+  the agent is on that page (its URL is in the next step's browser state).

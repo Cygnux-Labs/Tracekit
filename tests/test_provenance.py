@@ -247,6 +247,18 @@ class Signer(unittest.TestCase):
         d = self.decide("browser_use:go_to_url", {"url": "https://login.vendor.example/"}, "tc-nav")
         self.assertNotIn("TK-P003", d["rule_ids"])   # navigating sends nothing
 
+    def test_a_navigation_with_a_query_string_sends_its_data_to_the_host(self):
+        self.call("browser_use:navigate", {"url": "https://notes.example/a"}, "pay at https://pay.vendor.example/",
+                  "tc-page")
+        for action, url, held in (("navigate", "https://pay.vendor.example/ok?card=4000056655665556", True),
+                                  ("go_to_url", "https://pay.vendor.example/ok?\tc=1#top", True),
+                                  ("navigate", "https://pay.vendor.example/ok#card=4000056655665556", False),
+                                  ("navigate", "https://pay.vendor.example/ok?", False),
+                                  ("navigate", "https://notes.example/b?q=1", False)):   # the host isn't untrusted-only
+            with self.subTest(url=url):
+                d = self.decide("browser_use:" + action, {"url": url, "page_url": "https://notes.example/a"}, "tc-nav")
+                self.assertEqual("TK-P003" in d["rule_ids"], held)
+
     def fails_closed(self, state, why):
         """Every from rule matches, whatever the values; the decision records the state and the reason."""
         d = self.email("tc-mail", to="ops@ours.example")
@@ -287,6 +299,7 @@ class Signer(unittest.TestCase):
         self.addCleanup(self.s.close)
         self.seq = 100
         self.fails_closed("unavailable", "signer restart")
+        self.assertIn("answer the holds, or start the task again in a new run", self.record("tc-mail")["provenance_reason"])
 
     def test_an_untrusted_result_sent_as_a_digest_makes_the_index_partial(self):
         tool, args = "http_get", {"url": "https://notes.example/a"}
