@@ -583,6 +583,8 @@ def _run(a):
             print(e, file=sys.stderr)
         if errors:
             return 1
+        for w in policy_compile.warnings(pol):
+            print(f"warning: {w}", file=sys.stderr)
         if a.action == "compile":
             print(policy_compile.canonical(pol))
             print(f"policy_hash: {policy_compile.policy_hash(pol)}", file=sys.stderr)

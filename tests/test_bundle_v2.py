@@ -638,6 +638,24 @@ def decision(**data):
     return ("policy.decision", {"tool_use_id": "t1", "decision": "allow", "rule_ids": [], **data}, "run-a")
 
 
+AGENT = {"scheme": "token", "subject": "reviewer", "attested": True}
+TS_ = "2026-10-11T00:00:00.000000Z"
+
+
+def answered(**data):
+    return ("approval", {"tool_use_id": "t1", "approval_id": "apr-1", "decision": "approve", "approver": "token:reviewer",
+                         "approver_identity": AGENT, "channel": "rpc", **data}, "run-a")
+
+
+def asked(**data):
+    binding = {"v": 1, "approval_id": "apr-1", "tenant": "acme", "run_id": "run-a", "tool_call_id": "t1", "attempt": 0,
+               "tool": "pay", "args_commitment": "hmac-sha256:" + "0" * 64, "args_source": "parsed",
+               "policy_hash": "sha256:" + "0" * 64, "nonce": "0" * 32, "expires_at": TS_}
+    return ("approval.request", {"approval_id": "apr-1", "policy_hash": "sha256:" + "0" * 64, "rule_ids": ["R1"],
+                                 "expires_at": TS_, "requester": "uid:1", "decision_id": "dec-1", "binding": binding,
+                                 "binding_digest": "sha256:" + "0" * 64, **data}, "run-a")
+
+
 OUTPUT = {"hash": "hmac-sha256:" + "0" * 64, "size": 2, "redacted": False}
 OBSERVED = {"source": "inbox:1", "trust": "untrusted", "salt_id": "a" * 32, "output": OUTPUT,
             "redaction": {"rules": [], "count": 0, "client_claimed": False}}
@@ -666,6 +684,24 @@ ENTRIES = {
     "run.registered.replay_of": [registered(replay_of="run-x", investigation="i")],
     "run.registered.parent_run": [registered(parent_run="run-p", session="run-p")],
     "run.registered.session": [registered(parent_run="run-p", session="run-root")],
+    "approval.escalated": [registered(), ("approval.escalated", {"approval_id": "apr-1", "by": "signer",
+                                                                 "reason": "no agent answered"}, "run-a")],
+    "approval.revoked": [registered(), ("approval.revoked", {"approval_id": "apr-1", "by": "uid:1"}, "run-a")],
+    "approval.suggested": [registered(), ("approval.suggested", {
+        "tool_use_id": "t1", "approval_id": "apr-1", "decision": "approve", "approver": "token:reviewer",
+        "approver_identity": AGENT, "channel": "rpc", "approver_kind": "agent"}, "run-a")],
+    "approval.agents": [registered(), ("approval.agents", {"enabled": False, "by": "uid:0"}, "run-a")],
+    "approval.request.agent": [registered(), asked(agent={
+        "eligible": True, "reason": "within the bounds of R1", "rules": ["R1"],
+        "conditions_hash": "sha256:" + "0" * 64, "args_key": "hmac-sha256:" + "0" * 64})],
+    "approval.approver_kind": [registered(), answered(approver_kind="agent")],
+    "approval.asserted": [registered(), answered(asserted={"model": "m", "attested": False})],
+    "approval.spent": [registered(), answered(spent={"R1": 100})],
+    "approval.not_before": [registered(), answered(not_before=TS_)],
+    "approval.consume_by": [registered(), answered(consume_by=TS_)],
+    "approval.expired.reason": [registered(), ("approval.expired", {"approval_id": "apr-1", "reason": "ttl"}, "run-a")],
+    "capture.gap.kind=reask_after_reject": [registered(), ("capture.gap", {
+        "kind": "reask_after_reject", "reason": "asked again", "tool_use_id": "t1"}, "run-a")],
     "policy.decision.via": [registered(), decision(via=VIA)],
     "policy.decision.caller": [registered(), decision(via=VIA, caller="token:agent")],
     "capture.gap.kind=held_call_unresolved": [registered(), ("capture.gap", {
