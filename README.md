@@ -171,7 +171,8 @@ tracekit init --dev --v2
 
 From a checkout, `python examples/v2/langchain/agent.py --scripted` runs a LangGraph agent with a mock model.
 
-Or check the shipped sample bundles (v1) with the verifier alone (`pip install --no-deps tracekit-ai` is enough):
+Or, from a checkout, check the shipped sample bundles (v1) with the verifier alone (`pip install --no-deps
+tracekit-ai` is enough):
 
 ```sh
 tracekit verify docs/sample/demo-run.tkb --key docs/sample/signer.pub            # exit 0
