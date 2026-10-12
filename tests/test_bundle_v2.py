@@ -670,6 +670,8 @@ VIA = "mtls:spiffe://acme/executor"
 FINDING = {"target": "tool=pay", "intervention": "i", "n": 0, "p_with": 0, "p_without": 0, "effect": 0,
            "interval": [-1, 1], "verdict": "inconclusive", "replay_runs": [], "models": [], "rung": 1, "off_tape": 0,
            "investigation": "i", "looks": 1, "family": 1, "min_effect": 0.2, "applied": True, "stopped": "budget"}
+INCIDENT = {"incident_id": "inc-1", "trigger": "sequence", "rule_ids": ["Q"], "scope": {"kind": "run", "id": "run-a"},
+            "cites": [{"run_id": "run-a", "run_seq": 0}], "mode": "shadow", "actions": [], "would": ["notify"]}
 # per VERSIONS entry ("type" or "type.field"), records that use it
 ENTRIES = {
     "input.observed": [registered(), ("input.observed", OBSERVED, "run-a")],
@@ -684,6 +686,13 @@ ENTRIES = {
     "run.registered.replay_of": [registered(replay_of="run-x", investigation="i")],
     "run.registered.parent_run": [registered(parent_run="run-p", session="run-p")],
     "run.registered.session": [registered(parent_run="run-p", session="run-root")],
+    "policy.decision.detect": [registered(), decision(detect={"sequences": [{"id": "Q", "step": 1}], "limits": [],
+                                                              "state": "complete"})],
+    "incident.opened": [registered(), ("incident.opened", INCIDENT, "run-a")],
+    "incident.updated": [registered(), ("incident.updated", {"incident_id": "inc-1", "cites": [
+        {"run_id": "run-a", "run_seq": 0}]}, "run-a")],
+    "incident.capped": [registered(), ("incident.capped", {"cap": "run", "max": 100, "trigger": "sequence",
+                                                           "reason": "cap"}, "run-a")],
     "approval.escalated": [registered(), ("approval.escalated", {"approval_id": "apr-1", "by": "signer",
                                                                  "reason": "no agent answered"}, "run-a")],
     "approval.revoked": [registered(), ("approval.revoked", {"approval_id": "apr-1", "by": "uid:1"}, "run-a")],

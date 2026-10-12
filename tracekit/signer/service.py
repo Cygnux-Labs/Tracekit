@@ -249,7 +249,7 @@ from tracekit.identity.oidc import keys, person
 from tracekit.locking import lock_file
 from tracekit.policy2 import compile as policy_compile, engine
 from tracekit.policy2.engine import Engine
-from tracekit.signer import logkey, metrics, reconcile, rpc_schema, webhook
+from tracekit.signer import detect, logkey, metrics, reconcile, rpc_schema, webhook
 from tracekit.signer import otel as signer_otel
 from tracekit.signer.pipeline import (EXPIRED, RecordLog, approval, epoch, final_run, owner, person_only_keys,
                                       salt_label, subject)
@@ -628,7 +628,8 @@ class SignerService:
             self.anchors = [] if rekor is None else [RekorAnchor(
                 rekor["signing_config"], rekor["trusted_root"],
                 _secret(os.path.join(keys, "rekor.key"), rekor2.new_key), rekor.get("every_s", rekor2.MIN_EVERY_S))]
-            self.log = RecordLog(storage, open_storage, sign, self.quotas, salt, self.metrics, bridge, certify)
+            self.log = RecordLog(storage, open_storage, sign, self.quotas, salt, self.metrics, bridge, certify,
+                                 detect.Detector.of(policy))
         except BaseException:
             storage.close()
             raise
@@ -1470,13 +1471,15 @@ class SignerService:
         return bool(commitment and digest) and hmac.compare_digest(commitment, self._commit(label, digest))
 
     def _evaluate(self, tool, args, hint, untrusted=None):
-        """(policy decision, hint disagreed). A class hint that disagrees with the policy's class gets the stricter of
-        the two decisions."""
+        """(policy decision, hint disagreed, the rule ids of both readings). A class hint that disagrees with the
+        policy's class gets the stricter of the two decisions; detection sees the rules of both, so a mismatch can't
+        hide a step."""
         d = self.policy.decide(tool, args, untrusted=untrusted)
         if hint is None or hint == self.policy.tool_class(tool):
-            return d, False
+            return d, False, d["rule_ids"]
         h = self.policy.decide(tool, args, hint if hint in policy_compile.CLASSES else "unknown", untrusted)
-        return max(d, h, key=lambda x: STRICTNESS.index(x["verdict"])), True
+        return (max(d, h, key=lambda x: STRICTNESS.index(x["verdict"])), True,
+                list(dict.fromkeys(d["rule_ids"] + h["rule_ids"])))
 
     def _agent_rules(self, ids):
         """The rules among rule ids `ids` with approval.agent."""
@@ -1800,6 +1803,7 @@ class SignerService:
         # matched here, off the writer thread; the writer picks a memoised deny/ask or this result
         ruled = self._evaluate(tool, args, hint, untrusted) if digest else None
         prov = prov()
+        sums, unreadable = self.log.detector.prepare(tool, args, ruled[2]) if self.log.detector and ruled else ({}, False)
         agent = self._eligibility(key, identity, tool, args, digest, ruled[0], prov) if ruled and \
             ruled[0]["verdict"] == "ask" else None
         did = "dec-" + secrets.token_hex(16)
@@ -1813,15 +1817,23 @@ class SignerService:
             self._hold(memo, holder, tcid)
             data = {"tool_use_id": tcid, "tool": tool, "decision_id": did, "policy_hash": self.policy.policy_hash,
                     "engine": self.policy.engine, "nonce": secrets.token_hex(16), "expires_at": expires_at, **prov}
+            counts = self.log.detector and self.log.detector.counts
             if gw:   # the call is the gateway's, for this caller: only it may answer for it (_hold), after a restart too
                 data["via"], data["caller"] = holder
             if digest is None:
                 verdict, rule_ids = "deny", ["TK-ARGS-INVALID"]
             elif memo and memo["attempt"] == attempt and memo["decision"] in ("deny", "ask") and self._same(memo, digest):
+                # the memo's decision as it was recorded: a retry keeps both readings' rule ids and nondeterminism
                 verdict, rule_ids = memo["decision"], memo["rule_ids"]
+                if counts and memo.get("detect_ids"):
+                    data["detect"] = {"rule_ids": memo["detect_ids"]}
+                if memo.get("nondeterministic"):
+                    data["nondeterministic"] = True
             else:
-                d, mismatch = ruled
+                d, mismatch, both = ruled
                 verdict, rule_ids = d["verdict"], d["rule_ids"]
+                if counts and both != rule_ids:
+                    data["detect"] = {"rule_ids": both}
                 if d.get("nondeterministic"):
                     data["nondeterministic"] = True
                 if mismatch:
@@ -1832,11 +1844,16 @@ class SignerService:
                     tx.set(run["denied"], digest, True)
                 elif verdict != "ask" and digest in run["denied"]:
                     gaps.append(("decision_flip", f"{verdict} after a deny for the same arguments in this run"))
+            if unreadable and verdict in ("allow", "flag"):
+                verdict, rule_ids = "ask", rule_ids + [detect.SUM_UNREADABLE]
+            if sums:
+                data["detect"] = {**data.get("detect", {}), **sums}
             if commitment:
                 data["args_commitment"] = commitment
             call = {"tool_call_id": tcid, "attempt": attempt, "decision": verdict, "rule_ids": rule_ids,
                     "decision_id": did, "commitment": commitment, "dotenv": _dotenv(args), "tool": tool,
-                    "via": holder[0], "caller": holder[1]}
+                    "via": holder[0], "caller": holder[1], "nondeterministic": bool(data.get("nondeterministic")),
+                    "detect_ids": data.get("detect", {}).get("rule_ids")}
             if verdict == "ask":   # the signer's copy, for the approval request (memory only: decide again after a restart)
                 call["pending"] = {"tool": tool, "args_source": req["args_source"], "args": req["args"]}
                 if agent and rule_ids == ruled[0]["rule_ids"]:
