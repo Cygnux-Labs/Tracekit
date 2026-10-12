@@ -1564,6 +1564,13 @@ class SignerService:
         policy's class gets the stricter of the two decisions; detection sees the rules of both, so a mismatch can't
         hide a step."""
         d = self.policy.decide(tool, args, untrusted=untrusted)
+        if tool.startswith("mcp:") and "/" in tool:
+            # an MCP tool is also checked under its bare name (the name the model may know it by), in its own class if
+            # the policy maps it, else the MCP call's: a rule on that name can't be dodged by naming the call an MCP one
+            bare, cls = tool.split("/", 1)[1], self.policy.tool_class(tool)
+            b = self.policy.decide(bare, args, None if self.policy.tool_class(bare) != "unknown" else cls, untrusted)
+            d = {**max(d, b, key=lambda x: STRICTNESS.index(x["verdict"])),
+                 "rule_ids": list(dict.fromkeys(d["rule_ids"] + b["rule_ids"]))}
         if hint is None or hint == self.policy.tool_class(tool):
             return d, False, d["rule_ids"]
         h = self.policy.decide(tool, args, hint if hint in policy_compile.CLASSES else "unknown", untrusted)
