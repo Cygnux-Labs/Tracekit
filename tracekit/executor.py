@@ -15,7 +15,8 @@ executor.yaml:
         description: Open a GitHub issue   # for the model, via the client helpers
         method: POST
         url_template: https://api.github.com/repos/{owner}/{repo}/issues   # {arg}: that argument (_url)
-        headers: {authorization: secrets/github.header}   # header -> the file holding its value
+        headers: {authorization: secrets/github.header}   # header -> the file holding its value (a secret: cut)
+        settings: {x-github-api-version: "2022-06-28"}   # headers given inline: not secrets, never cut
         args: {type: object, required: [owner, repo, title], additionalProperties: false,
                properties: {owner: {type: string}, repo: {type: string}, title: {type: string}}}
 
@@ -36,6 +37,8 @@ A call it decided is held by it: the signer takes its completion and approval st
 run token included). Relative paths are from the config file.
 """
 import argparse
+import base64
+import html
 import http.client
 import json
 import os
@@ -58,7 +61,7 @@ from tracekit.signer.rpc_schema import RPCError
 from tracekit.transport import http as transport
 
 KEYS = {"http", "signer", "actions", "approval_wait_s", "max_body"}
-ACTION_KEYS = {"name", "description", "method", "url_template", "headers", "args"}
+ACTION_KEYS = {"name", "description", "method", "url_template", "headers", "settings", "args"}
 METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE"}
 NO_BODY = {"GET", "DELETE"}
 MAX_BODY = 1 << 20
@@ -68,6 +71,7 @@ REDACTED = "[REDACTED:executor_secret]"
 SEGMENT = re.compile(r"[A-Za-z0-9._~-]+")   # an {arg} in a URL path
 HEADER_NAME = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+")
 HEADER_VALUE = re.compile(r"[\t\x20-\x7e]*")
+MIN_SECRET = 8   # characters: a shorter value ("1", "info") is not cut, as it would cut every answer
 
 
 class Custody:
@@ -221,7 +225,8 @@ def _send(action, args, max_body):
 
 
 def cut(x, values):
-    """`x` (JSON) with each of `values` (secret_values) replaced by REDACTED in every string, keys too."""
+    """`x` (JSON) with each of `values` (secret_values) replaced by REDACTED in every string value; keys, its
+    structure, are left as they are."""
     if isinstance(x, str):
         for v in values:
             x = x.replace(v, REDACTED)
@@ -229,7 +234,7 @@ def cut(x, values):
     if isinstance(x, list):
         return [cut(v, values) for v in x]
     if isinstance(x, dict):
-        return {cut(k, values): cut(v, values) for k, v in x.items()}
+        return {k: cut(v, values) for k, v in x.items()}
     return x
 
 
@@ -244,9 +249,27 @@ def read_secret(path, header):
 
 
 def secret_values(values):
-    """What to cut from responses: each value and, of an `<auth scheme> <credential>` header, the credential alone;
-    longest first."""
-    return sorted({x for v in values for x in (v, *v.split()[-1:]) if x}, key=len, reverse=True)
+    """What to cut from responses, longest first: each value, of an `<auth scheme> <credential>` value the credential
+    alone, and of a Basic credential its decoded user:password and password; each in the forms a response may carry it
+    in (JSON-escaped, also with `\\/`, and every character `\\u`-escaped; percent-encoded; HTML-escaped, also with
+    `&#x2F;`); none shorter than MIN_SECRET. An encoding beyond these (base64, a hash) isn't recognised."""
+    out = set()
+    for v in values:
+        scheme, _, cred = v.partition(" ")
+        parts = [v, *v.split()[-1:]]
+        if scheme.lower() == "basic":
+            try:
+                userpass = base64.b64decode(cred.strip(), validate=True).decode("utf-8")
+                parts += [userpass, userpass.partition(":")[2]]
+            except ValueError:   # not base64 of UTF-8 text (UnicodeDecodeError is a ValueError)
+                pass
+        for p in parts:
+            if len(p) >= MIN_SECRET:
+                escaped = json.dumps(p)[1:-1]
+                out |= {p, escaped, escaped.replace("/", "\\/"), "".join(f"\\u{ord(c):04x}" for c in p),
+                        urllib.parse.quote(p), urllib.parse.quote(p, safe=""), urllib.parse.quote_plus(p),
+                        html.escape(p), html.escape(p).replace("/", "&#x2F;")}
+    return sorted(out, key=len, reverse=True)
 
 
 def load_config(path):
@@ -284,11 +307,16 @@ def load_config(path):
         if fields - set(a["args"].get("required", [])):
             raise ValueError(f"{where}: url_template uses {sorted(fields)}: each must be a required argument")
         path = {f for _, f, _, _ in string.Formatter().parse(a["url_template"].split("?", 1)[0]) if f is not None}
-        headers = a.get("headers", {})
+        headers, settings = a.get("headers", {}), a.get("settings", {})
         if not (isinstance(headers, dict) and all(isinstance(v, str) and HEADER_NAME.fullmatch(k)
                                                   for k, v in headers.items())):
             raise ValueError(f"{where}: headers maps a header name to the file holding its value")
-        actions[a["name"]] = dict(a, fields=fields, path_fields=path,
+        if not (isinstance(settings, dict) and all(isinstance(v, str) and HEADER_NAME.fullmatch(k) and
+                                                   HEADER_VALUE.fullmatch(v) for k, v in settings.items())) \
+                or {k.lower() for k in settings} & {k.lower() for k in headers}:
+            raise ValueError(f"{where}: settings maps a header name, not one in headers, to its value (one line of "
+                             "printable ASCII)")
+        actions[a["name"]] = dict(a, fields=fields, path_fields=path, settings=settings,
                                   headers={k: os.path.join(base, v) for k, v in headers.items()})
     cfg["actions"] = actions
     transport.resolve(cfg["http"], base)
@@ -300,7 +328,7 @@ def serve(cfg, client=None):
     actions = {}
     for name, a in cfg["actions"].items():
         headers = {k: read_secret(p, header=True) for k, p in a["headers"].items()}
-        actions[name] = dict(a, headers=headers, cut=secret_values(headers.values()))
+        actions[name] = dict(a, headers={**a["settings"], **headers}, cut=secret_values(headers.values()))
     srv = transport.HttpServer(*transport.configure(cfg["http"]), None, handler=_Executor)
     srv.executor = {"actions": actions, "max_body": cfg.get("max_body", MAX_BODY),
                     "custody": Custody(client or Client(cfg["signer"]), cfg.get("approval_wait_s", APPROVAL_WAIT_S))}

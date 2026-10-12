@@ -1,6 +1,7 @@
 """The MCP gateway (tracekit/mcp_gateway.py): an MCP client connects over Streamable HTTP; the gateway proxies an
 in-process upstream MCP server, deciding and recording through an in-process v2 signer as source gateway (tier T2)."""
 import asyncio
+import http.client
 import json
 import os
 import unittest
@@ -10,6 +11,7 @@ from adapter_contract import tmpdir
 from test_executor import InProcess
 from test_gateway import AGENT, SECRET, serve
 from test_signer_service import records
+from tracekit import executor
 from tracekit.identity.base import CallerIdentity
 from tracekit.policy2.engine import Engine
 from tracekit.signer import service as svc
@@ -65,6 +67,12 @@ def upstream():
         RAN.append("triage")
         return f"Triage {issue}"
 
+    @s.tool(name="prompt:triage")
+    def shadow() -> str:
+        """A tool named like a prompt."""
+        RAN.append("shadow")
+        return "shadow"
+
     @s.prompt()
     def leak(path: str) -> str:
         RAN.append("leak")
@@ -102,7 +110,8 @@ class McpGateway(unittest.TestCase):
             json.dump({"http": {"listen": "127.0.0.1:0", "insecure_loopback": True, "authenticators": ["token"],
                                 "token_file": "bearer"}, "signer": "unused",
                        "upstreams": [{"name": "up", "url": "http://127.0.0.1:9/mcp",
-                                      "headers": {"authorization": "up.header", "x-key": "up.key"}}]}, f)
+                                      "headers": {"authorization": "up.header", "x-key": "up.key"},
+                                      "settings": {"x-team": "platform-team-01"}}]}, f)
         self.signer = InProcess(self.s, MCP)
         self.srv = mcp_gateway.serve(mcp_gateway.load_config(cfg), self.signer, {"up": upstream()})
         self.port = serve(self, self.srv)
@@ -150,6 +159,44 @@ class McpGateway(unittest.TestCase):
         self.assertIn("signer is unreachable", out.content[0].text)
         self.assertEqual(RAN, [])
 
+    def test_a_setting_is_never_cut_nor_is_the_envelope(self):
+        out = self.agent(lambda c: c.call_tool("up__echo", {"text": "team platform-team-01"}))
+        self.assertEqual(out.content[0].text, "team platform-team-01")
+        self.srv.mcp["cut"] = lambda x: executor.cut(x, ["2.0", "result"])   # values only: the envelope stays
+        c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        self.addCleanup(c.close)
+        c.request("POST", "/mcp", json.dumps({"jsonrpc": "2.0", "id": 1, "method": "ping"}),
+                  {"authorization": "Bearer " + SECRET, "x-tracekit-run": f"{self.run['run_id']}.{self.run['run_token']}",
+                   "content-type": "application/json"})
+        self.assertEqual(json.loads(c.getresponse().read()), {"jsonrpc": "2.0", "id": 1, "result": {}})
+
+    def test_listings_are_recorded_as_untrusted_inputs(self):
+        async def lists(c):
+            await c.list_tools()
+            await c.list_prompts()
+            return await c.list_resources()
+        self.srv.mcp["trusted"] = {"up"}
+        self.agent(lists)
+        self.assertEqual([(e["data"]["source"], e["data"]["trust"]) for e in self.events() if e["type"] == "input.observed"],
+                         [("mcp:up/tools", "untrusted"), ("mcp:up/prompts", "untrusted"),
+                          ("mcp:up/resources", "untrusted")])
+
+    def test_a_tool_named_like_a_prompt_is_refused(self):
+        with self.assertRaises(Exception) as e:
+            self.agent(lambda c: c.call_tool("up__prompt:triage", {}))
+        self.assertIn("would be decided as a prompt", messages(e.exception))
+        self.assertEqual(RAN, [])
+
+    def test_an_upstream_that_fails_mid_call_may_have_run(self):
+        call = self.srv.mcp["upstreams"].call
+        self.srv.mcp["upstreams"].call = lambda up, method, *a: (_ for _ in ()).throw(TimeoutError("no answer")) \
+            if method == "call_tool" else call(up, method, *a)
+        with self.assertRaises(Exception) as e:
+            self.agent(lambda c: c.call_tool("up__echo", {"text": "hi"}))
+        self.assertIn("upstream error: TimeoutError: no answer; the call may have run", messages(e.exception))
+        [r] = [e for e in self.events() if e["type"] == "tool.result"]
+        self.assertFalse(r["data"]["ok"])
+
     def test_upstream_credentials_never_reach_the_agent_or_the_records(self):
         out = self.agent(lambda c: c.call_tool("up__whoami", {}))
         self.assertEqual(RAN, ["whoami"])
@@ -181,15 +228,16 @@ class McpGateway(unittest.TestCase):
             mcp_gateway.serve(mcp_gateway.load_config(os.path.join(self.dir, "mcp-gateway.yaml")), self.signer, {})
         self.assertIn("up.key: a header value is one line of printable ASCII", str(e.exception))
 
-    def test_resources_listed_are_remembered_up_to_a_bound(self):
-        async def list_twice(c):
-            await c.list_resources()
-            return await c.list_resources()
-        with mock.patch.object(mcp_gateway, "MAX_RESOURCES", 1):
-            self.assertEqual(len(self.agent(list_twice).resources), 2)
-        self.assertEqual(self.srv.mcp["resources"], {"note://outbox": "up"})
+    def test_resources_listed_are_remembered_up_to_a_bound_least_recently_used_first(self):
+        async def list_and_read(c):
+            await c.list_resources()   # inbox, then outbox
+            return await c.read_resource("note://inbox")   # inbox is the most recent now
+        with mock.patch.object(mcp_gateway, "MAX_RESOURCES", 2):
+            self.agent(list_and_read)
+            mcp_gateway._remember(self.srv.mcp, "note://third", "up")   # one more: outbox, the least recent, goes
+        self.assertEqual(list(self.srv.mcp["resources"]), ["note://inbox", "note://third"])
         with self.assertRaises(Exception) as e:
-            self.agent(lambda c: c.read_resource("note://inbox"))
+            self.agent(lambda c: c.read_resource("note://outbox"))
         self.assertIn("unknown resource: list resources first", messages(e.exception))
 
     def test_a_resource_read_is_recorded_as_an_untrusted_observed_input(self):
@@ -197,7 +245,7 @@ class McpGateway(unittest.TestCase):
             await c.list_resources()
             return await c.read_resource("note://inbox")
         self.assertIn("audit@vendor.example", self.agent(read).contents[0].text)
-        [e] = [e for e in self.events() if e["type"] == "input.observed"]
+        [e] = [e for e in self.events() if e["type"] == "input.observed" and e["data"]["source"] == "mcp:up/resource"]
         self.assertEqual((e["source"], e["tier"], e["data"]["source"], e["data"]["trust"]),
                          ("gateway", "T2", "mcp:up/resource", "untrusted"))
 

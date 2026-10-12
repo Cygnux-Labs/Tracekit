@@ -9,8 +9,9 @@ holds the actions' credentials and decides, runs and records each call in the si
     server = ex.claude_agent_sdk(actions)                        # ClaudeAgentOptions(mcp_servers={"executor": server})
 
 `headers` authenticate the agent to the executor (its `http.authenticators`: a bearer token, a service-account
-token); `context` is an ssl.SSLContext for its CA and a client certificate. Don't also gate these tools with a Tracekit
-adapter: the executor records them. A refusal (deny, an approval not given, the signer unreachable) raises
+token); `context` is an ssl.SSLContext for its CA and a client certificate. The Tracekit adapters leave these tools to
+the executor, which decides and records them: each is marked (EXECUTOR), and the Claude Agent SDK hooks skip the tools
+of the MCP server named SERVER. A refusal (deny, an approval not given, the signer unreachable) raises
 ExecutorRefused with the executor's message, which each framework hands the model as the tool's error.
 """
 import asyncio
@@ -19,6 +20,9 @@ import urllib.error
 import urllib.request
 
 from tracekit.client import no_redirect_opener, remote_url_error
+
+EXECUTOR = "tracekit_executor"   # set on the tools built here (a LangChain tool's metadata key): adapters don't gate them
+SERVER = "tracekit-executor"     # claude_agent_sdk's server: tools mcp__tracekit-executor__<action>
 
 
 class ExecutorRefused(Exception):
@@ -64,8 +68,10 @@ def openai_agents(action):
 
     async def invoke(ctx, raw):
         return json.dumps(await asyncio.to_thread(action, json.loads(raw or "{}"), ctx.tool_call_id))
-    return FunctionTool(name=action.name, description=action.description, params_json_schema=action.args,
-                        on_invoke_tool=invoke, strict_json_schema=False)
+    t = FunctionTool(name=action.name, description=action.description, params_json_schema=action.args,
+                     on_invoke_tool=invoke, strict_json_schema=False)
+    setattr(t, EXECUTOR, True)
+    return t
 
 
 def langchain(action):
@@ -77,10 +83,10 @@ def langchain(action):
         except ExecutorRefused as e:
             raise ToolException(str(e)) from None
     return StructuredTool.from_function(run, name=action.name, description=action.description,
-                                        args_schema=action.args, handle_tool_error=True)
+                                        args_schema=action.args, handle_tool_error=True, metadata={EXECUTOR: True})
 
 
-def claude_agent_sdk(actions, name="tracekit-executor"):
+def claude_agent_sdk(actions, name=SERVER):
     from claude_agent_sdk import create_sdk_mcp_server, tool
 
     def one(action):

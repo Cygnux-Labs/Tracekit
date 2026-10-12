@@ -3,7 +3,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { ExecutorRefused, executorActions, openaiAgentsTool, vercelTool } from "../dist/v2/executor.js";
+import { EXECUTOR, ExecutorRefused, executorActions, openaiAgentsTool, vercelTool } from "../dist/v2/executor.js";
+import { tracekitAI } from "../dist/v2/adapters/vercel-ai.js";
+import { tracekitHooks } from "../dist/v2/adapters/claude-agent-sdk.js";
 
 const ARGS = { type: "object", required: ["to"], properties: { to: { type: "string" } } };
 
@@ -42,4 +44,18 @@ test("executor actions: listed, called for the run, refusals thrown, as OpenAI A
   assert.deepEqual(ai.inputSchema, { wrapped: ARGS });
   await ai.execute({ to: "c" }, { toolCallId: "call-3" });
   assert.equal(seen.at(-1).body.tool_call_id, "call-3");
+});
+
+test("the Vercel AI adapter leaves executor tools to the executor: no decide on the call id the executor gets", async () => {
+  const run = { decide: async () => { throw new Error("decided by the adapter"); } };
+  const a = { name: "pay", description: "", args: ARGS, call: async (input, id) => ({ status: 201, id }) };
+  const pay = vercelTool(a, (s) => s), call = { toolCallId: "call-1", toolName: "pay", input: { to: "a" } };
+  const tk = tracekitAI(run), tools = tk.tools({ pay });
+  assert.equal(tools.pay, pay);
+  assert.equal(await tk.toolApproval({ toolCall: call, tools: {} }), "not-applicable");   // known from tk.tools
+  assert.equal(await tracekitAI(run).toolApproval({ toolCall: call, tools: { pay } }), "not-applicable");
+  assert.deepEqual(await tools.pay.execute(call.input, { toolCallId: "call-1" }), { status: 201, id: "call-1" });
+  assert.equal(openaiAgentsTool((o) => ({ ...o }), a)[EXECUTOR], true);
+  const [pre] = tracekitHooks(run).PreToolUse[0].hooks;   // the Claude Agent SDK hooks: by the server's name
+  assert.deepEqual(await pre({ tool_name: "mcp__tracekit-executor__pay", tool_use_id: "tu-1", tool_input: {} }), {});
 });

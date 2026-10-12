@@ -43,6 +43,7 @@ from agents.tool import maybe_invoke_function_tool_failure_error_function, set_f
 
 from tracekit import parsers
 from tracekit.format.canon import event_hash, loads_strict
+from tracekit.integrations.executor_tools import EXECUTOR
 from tracekit.sdk.client import SignerUnavailable, fail_open, result_field
 from tracekit.signer.rpc_schema import RPCError
 
@@ -171,7 +172,10 @@ class TracekitAgents(RunHooks):
 
     def tool(self, t):
         """The tool gated by the signer: a function, FunctionTool, ShellTool, LocalShellTool or ApplyPatchTool.
-        The signer's policy decides approvals: the tool's own `needs_approval` is replaced."""
+        The signer's policy decides approvals: the tool's own `needs_approval` is replaced. A tool executor's tool
+        (executor_tools) is returned as it is: the executor decides and records it (T2)."""
+        if getattr(t, EXECUTOR, False):
+            return t
         if isinstance(t, ShellTool):
             if t.executor is None:
                 raise TypeError("a hosted ShellTool runs outside this process; Tracekit records it from the model "

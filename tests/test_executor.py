@@ -1,7 +1,9 @@
 """The tool executor (tracekit/executor.py) in front of a fake HTTP API, deciding and recording through an in-process v2
 signer as source gateway (tier T2); and `caller` on the signer's per-call RPCs."""
 import asyncio
+import base64
 import contextlib
+import html
 import http.client
 import io
 import importlib.util
@@ -15,6 +17,7 @@ import time
 import types
 import unittest
 import urllib.error
+import urllib.parse
 import uuid
 from unittest import mock
 
@@ -29,6 +32,7 @@ from tracekit.integrations import executor_tools
 from tracekit.policy2.engine import Engine
 from tracekit.sdk.client import SignerUnavailable
 from tracekit.signer import service as svc
+from tracekit.signer.quotas import Limits
 from tracekit.signer.rpc_schema import REQUESTS, RPCError
 
 EX = CallerIdentity("mtls", "spiffe://acme/executor", True)
@@ -218,6 +222,35 @@ class Executor(unittest.TestCase):
         status, out = executor._send(a, {}, 1 << 20)
         self.assertEqual((status, out), (401, {"error": "bad credentials", "got": executor.REDACTED, "u": executor.REDACTED}))
 
+    def test_a_credential_is_cut_in_the_forms_a_response_carries_it_and_a_short_value_or_a_key_is_not(self):
+        key = "Basic " + base64.b64encode(b"bob:s3cr3t/pw?").decode()
+        values = executor.secret_values([key, "Bearer abc", "info"])
+        for p in (key, key.split()[1], "bob:s3cr3t/pw?", "s3cr3t/pw?"):
+            esc = json.dumps(p)[1:-1]
+            for form in (p, esc, esc.replace("/", "\\/"), "".join(f"\\u{ord(c):04x}" for c in p), urllib.parse.quote(p),
+                         urllib.parse.quote(p, safe=""), urllib.parse.quote_plus(p), html.escape(p),
+                         html.escape(p).replace("/", "&#x2F;")):
+                with self.subTest(form):
+                    self.assertEqual(executor.cut({"e": f"got {form}."}, values), {"e": f"got {executor.REDACTED}."})
+        self.assertEqual(executor.cut({"Bearer abc": "abc, info"}, values), {"Bearer abc": "abc, info"})
+
+    def test_settings_go_with_the_request_and_are_never_cut(self):
+        with open(self.cfg) as f:
+            cfg = json.load(f)
+        cfg["actions"][0]["settings"] = {"x-api-version": "2022-06-28"}
+        with open(self.cfg, "w") as f:
+            json.dump(cfg, f)
+        pay = executor.serve(executor.load_config(self.cfg), self.signer).executor["actions"]["pay"]
+        self.assertEqual(pay["headers"], {"x-api-version": "2022-06-28", "authorization": API_KEY})
+        self.assertNotIn("2022-06-28", pay["cut"])
+        self.assertIn(API_KEY, pay["cut"])
+        for bad in ({"authorization": "x"}, {"x-a": "1\n2"}, {"bad name": "1"}):
+            with self.subTest(bad):
+                cfg["actions"][0]["settings"] = bad
+                with open(self.cfg, "w") as f:
+                    json.dump(cfg, f)
+                self.assertRaisesRegex(ValueError, "settings maps a header name", executor.load_config, self.cfg)
+
     def test_a_credential_in_an_error_is_cut(self):
         def refuse(req, timeout):   # an error that names the header the request carried
             raise urllib.error.URLError(f"refused {req.get_header('Authorization')}")
@@ -338,6 +371,34 @@ class Executor(unittest.TestCase):
         self.assertEqual(json.loads(executor_tools.langchain(acts["refund"]).invoke(PAID))["status"], 201)
         self.assertIn("R-WIPE", executor_tools.langchain(acts["wipe"]).invoke(PAID))   # the model gets the refusal
 
+    @unittest.skipUnless(HAVE["agents"], "openai-agents not installed")
+    def test_the_openai_agents_adapter_leaves_executor_tools_to_the_executor(self):
+        from tracekit.integrations.openai_agents import TracekitAgents
+        tk, t = TracekitAgents(InProcess(self.s, AGENT), self.run), executor_tools.openai_agents(self.actions()["refund"])
+        self.assertIs(tk.tool(t), t)   # gated as well, its decide on the model's call id would hold the executor's off
+        out = asyncio.run(tk.tool(t).on_invoke_tool(types.SimpleNamespace(tool_call_id="call-oa"), json.dumps(PAID)))
+        self.assertEqual(json.loads(out)["status"], 201)
+
+    @unittest.skipUnless(HAVE["langchain_core"], "langchain not installed")
+    def test_the_langchain_middleware_leaves_executor_tools_to_the_executor(self):
+        from langchain.agents.middleware.types import ToolCallRequest
+        from tracekit.integrations.langchain import TracekitMiddleware
+        mw = TracekitMiddleware(InProcess(self.s, AGENT), self.run["run_id"], self.run["run_token"])
+        req = ToolCallRequest(tool_call={"id": "call-lc", "name": "refund", "args": PAID},
+                              tool=executor_tools.langchain(self.actions()["refund"]), state=None, runtime=None)
+        out = mw.wrap_tool_call(req, lambda r: r.tool.invoke(r.tool_call["args"]))
+        self.assertEqual(json.loads(out)["status"], 201)
+        [d] = [e for e in self.events() if e["type"] == "policy.decision"]
+        self.assertEqual((d["source"], d["tier"]), ("gateway", "T2"))   # the executor's alone, not also the adapter's
+
+    @unittest.skipUnless(HAVE["claude_agent_sdk"], "claude-agent-sdk not installed")
+    def test_the_claude_agent_sdk_hooks_leave_executor_tools_to_the_executor(self):
+        from tracekit.integrations.claude_agent_sdk import tracekit_hooks
+        [pre] = tracekit_hooks(InProcess(self.s, AGENT), self.run)["PreToolUse"][0].hooks
+        inp = {"tool_name": "mcp__tracekit-executor__refund", "tool_use_id": "tu-1", "tool_input": PAID}
+        self.assertEqual(asyncio.run(pre(inp, "tu-1", None)), {})
+        self.assertNotIn("policy.decision", [e["type"] for e in self.events()])
+
     @unittest.skipUnless(HAVE["claude_agent_sdk"], "claude-agent-sdk not installed")
     def test_a_claude_agent_sdk_server(self):
         with mock.patch("claude_agent_sdk.create_sdk_mcp_server", lambda name, tools: tools):
@@ -422,6 +483,65 @@ class Executor(unittest.TestCase):
             self.call(AGENT, "decide", tool_call_id="c2", tool="refund", args_source="parsed", args=PAID)
         self.assertIn("harness", e.exception.message)
         self.assertEqual(self.post("refund", {"args": PAID})[0], 200)   # the executor's own identity vouches for it
+
+    def test_the_executors_events_are_its_own_to_pay_for(self):
+        self.s.quotas.limits = Limits(events_per_s=0.001, burst=2)   # two events each, hardly refilled
+        for i in range(2):   # the agent spends its own bucket
+            self.call(AGENT, "observe", source="spam", trust="trusted", value=i)
+        with self.assertRaises(RPCError) as e:
+            self.call(AGENT, "observe", source="spam", trust="trusted", value=2)
+        self.assertEqual(e.exception.code, "quota_exceeded")
+        # the executor's decide and consume take its own two; the result of its own decision takes none
+        self.assertEqual(self.post("refund", {"args": PAID})[0], 200)
+        types = [e["type"] for e in self.events()]
+        self.assertEqual((types.count("policy.decision"), types.count("tool.result")), (1, 1))
+
+    def test_a_run_closed_while_the_executor_runs_a_call_waits_for_its_result_or_says_it_never_came(self):
+        self.s.grace_s, self.s.gateway_wait_s = 0, 30
+        key, refund = ("default", self.run["run_id"]), {"tool": "refund", "args_source": "parsed", "args": PAID}
+        ds = {t: self.call(EX, "decide", tool_call_id=t, **refund) for t in ("c1", "c2")}
+        for t in ds:   # each allowed and consumed: the executor is running it
+            self.assertTrue(self.call(EX, "approval_consume", tool_call_id=t, **refund)["ok"])
+        self.call(AGENT, "close_run")   # mid-call, as the agent may
+        closing = self.s.log.runs[key]["closing_at"]
+        self.s.sweep(now=closing + 1)
+        self.assertFalse(self.s.log.runs[key]["final"])
+        self.call(EX, "complete", tool_call_id="c1", decision_id=ds["c1"]["decision_id"], status="ok",
+                  args_digest=event_hash({"tool": "refund", "args": PAID}), result={"paid": 5})   # late, still taken
+        self.s.sweep(now=closing + 2)
+        self.assertFalse(self.s.log.runs[key]["final"])   # c2 is still out
+        self.s.sweep(now=closing + 31)
+        self.assertTrue(self.s.log.runs[key]["final"])
+        evs = self.events()
+        self.assertEqual([(e["data"]["kind"], e["tool_call_id"]) for e in evs if e["type"] == "capture.gap"],
+                         [("held_call_unresolved", "c2")])
+        self.assertEqual([e["tool_call_id"] for e in evs if e["type"] == "tool.result"], ["c1"])
+
+    def test_a_call_the_executor_decided_for_one_identity_is_not_anothers(self):
+        self.s.authorize["token:other"] = ["decide", "complete", "approval_request", "approval_consume"]
+        other = {**self.run, "caller": "token:other", "run_token": self.s.call(AGENT, "delegate_run", {
+            **self.run, "identity": "token:other"})["run_token"]}
+        refund = {"tool_call_id": "c1", "tool": "refund", "args_source": "parsed", "args": PAID}
+        d = self.call(EX, "decide", **refund)
+        ex = InProcess(self.s, EX)
+        for method, req in (("decide", refund), ("approval_consume", refund), ("complete", {
+                "tool_call_id": "c1", "decision_id": d["decision_id"], "status": "ok",
+                "args_digest": event_hash({"tool": "refund", "args": PAID})})):
+            with self.subTest(method), self.assertRaises(RPCError) as e:   # the same executor, for another identity
+                getattr(ex, method)({**other, **req})
+            self.assertIn("is held by mtls:spiffe://acme/executor for token:http", e.exception.message)
+
+    def test_a_gateway_identity_is_at_most_256_characters(self):
+        long = CallerIdentity("mtls", "spiffe://acme/" + "x" * 300, True)
+        self.s.authorize[f"mtls:{long.subject}"] = ["decide"]
+        with self.assertRaises(RPCError) as e:
+            InProcess(self.s, long).decide({**self.run, "caller": "token:http", "tool_call_id": "c1", "tool": "refund",
+                                            "args_source": "parsed", "args": PAID})
+        self.assertIn("at most 256 characters", e.exception.message)
+        path = os.path.join(self.dir, "signer.yaml")
+        with open(path, "w") as f:
+            json.dump({"data_dir": ".", "gateways": [f"mtls:{long.subject}"]}, f)
+        self.assertRaisesRegex(ValueError, "gateways: an identity is at most 256 characters", svc.load_config, path)
 
 
 if __name__ == "__main__":

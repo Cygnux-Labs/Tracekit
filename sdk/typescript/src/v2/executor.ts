@@ -10,13 +10,19 @@
  *   generateText({ tools: Object.fromEntries(actions.map((a) => [a.name, vercelTool(a, jsonSchema)])) });
  *
  * `headers` authenticate the agent to the executor (a bearer or service-account token); for a client certificate pass
- * a `fetch` that presents one. Don't also gate these tools with a Tracekit adapter: the executor records them. A
+ * a `fetch` that presents one. The tools carry EXECUTOR, so the Tracekit adapters leave them to the executor, which
+ * decides and records them (T2). A
  * refusal (deny, an approval not given, the signer unreachable) throws ExecutorRefused with the executor's message,
  * which the framework hands the model as the tool's error.
  */
 import type { Frame, RunHandle } from "./client.js";
 
 export class ExecutorRefused extends Error {}
+
+/** Set on the tools built here: the Tracekit adapters don't gate them. */
+export const EXECUTOR = Symbol.for("tracekit.executor");
+/** The Claude Agent SDK hooks leave the tools of an MCP server of this name (mcp__tracekit-executor__<action>) alone. */
+export const SERVER = "tracekit-executor";
 
 export type Action = {
   name: string;
@@ -65,13 +71,13 @@ export async function executorActions(url: string, run: RunHandle, { headers = {
 }
 
 /** An @openai/agents function tool; `build` is the SDK's `tool`. */
-export const openaiAgentsTool = <T>(build: (options: any) => T, a: Action): T => build({
+export const openaiAgentsTool = <T>(build: (options: any) => T, a: Action): T => Object.assign(build({
   name: a.name, description: a.description, parameters: a.args, strict: false,
   execute: async (input: unknown, _ctx?: unknown, details?: any) => JSON.stringify(await a.call(input, details?.toolCall?.callId)),
-});
+}) as object, { [EXECUTOR]: true }) as T;
 
 /** A Vercel AI SDK tool; `jsonSchema` is the `ai` package's. */
 export const vercelTool = (a: Action, jsonSchema: (s: any) => unknown) => ({
-  description: a.description, inputSchema: jsonSchema(a.args),
+  [EXECUTOR]: true, description: a.description, inputSchema: jsonSchema(a.args),
   execute: (input: unknown, opts?: { toolCallId?: string }) => a.call(input, opts?.toolCallId),
 });

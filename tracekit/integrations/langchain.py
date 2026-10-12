@@ -37,6 +37,7 @@ from langgraph.prebuilt import ToolNode
 from langgraph.types import interrupt
 
 from tracekit.format.canon import event_hash
+from tracekit.integrations.executor_tools import EXECUTOR
 from tracekit.sdk.client import SignerUnavailable, fail_open, result_field
 from tracekit.signer.rpc_schema import RPCError
 
@@ -123,6 +124,8 @@ class TracekitMiddleware(AgentMiddleware):
 
     # lean: signer calls are blocking in both paths; use the async client in awrap_tool_call once it exists
     def wrap_tool_call(self, request, handler):
+        if _executor(request):
+            return handler(request)
         blocked, d = self._gate(request)
         if blocked is not None:
             return blocked
@@ -139,6 +142,8 @@ class TracekitMiddleware(AgentMiddleware):
         return out
 
     async def awrap_tool_call(self, request, handler):
+        if _executor(request):
+            return await handler(request)
         blocked, d = self._gate(request)
         if blocked is not None:
             return blocked
@@ -153,6 +158,11 @@ class TracekitMiddleware(AgentMiddleware):
             raise
         self._complete(request.tool_call, d, out)
         return out
+
+
+def _executor(request):
+    """Whether the call is to a tool executor's tool (executor_tools), which the executor decides and records (T2)."""
+    return bool((getattr(request.tool, "metadata", None) or {}).get(EXECUTOR))
 
 
 def tracekit_tool_node(tools, signer, run, **kw):

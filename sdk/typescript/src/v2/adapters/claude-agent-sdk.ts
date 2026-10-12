@@ -13,11 +13,13 @@
  * gets as the tool's error result, and the session goes on. `ask` holds the call in the hook until a person decides in
  * the signer, for at most APPROVAL_WAIT_MS, below the hook's own timeout (HOOK_TIMEOUT_S, set on the matcher); a call
  * not approved by then is blocked. An approval with a T2 executor runs the signer's copy of the arguments (the hook's
- * `updatedInput`). PostToolUse and PostToolUseFailure complete the call; SessionEnd closes the run.
+ * `updatedInput`). PostToolUse and PostToolUseFailure complete the call; SessionEnd closes the run. The tools of an MCP
+ * server named SERVER (`tracekit-executor`), whose handlers call a tool executor, are left to the executor.
  * The tools run in the CLI subprocess, so the signer's coding packs apply to them.
  */
 import { randomUUID } from "node:crypto";
 import { RPCError, SignerUnavailable, type Frame, type RunHandle } from "../client.js";
+import { SERVER } from "../executor.js";
 import { digest } from "../jcs.js";
 import { BLOCKED, Gate, failure, warn } from "./gate.js";
 
@@ -33,6 +35,7 @@ export function tracekitHooks(run: RunHandle) {
   async function pre(inp: any, toolUseID?: string) {
     const id = inp.tool_use_id ?? toolUseID;
     if (!id) return deny(BLOCKED + "the hook got no tool_use_id");   // never defaulted: a result could not be bound to its decision
+    if (String(inp.tool_name ?? "").startsWith(`mcp__${SERVER}__`)) return {};   // the executor decides and records it (T2)
     const why = await gate.admit(id, inp.tool_name ?? "?", inp.tool_input, { waitMs: APPROVAL_WAIT_MS });
     if (why !== null) return deny(why);
     const input = gate.input(id, inp.tool_input);
