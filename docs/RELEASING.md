@@ -64,13 +64,22 @@ cosign verify ghcr.io/cygnux-labs/tracekit-signer@sha256:<digest> \
 
 1. **PyPI** (trusted publishing, no stored token): on pypi.org, project `tracekit-ai`, add a trusted publisher: owner
    `Cygnux-Labs`, repository `Tracekit`, workflow `release.yml`, environment `pypi`.
-2. **npm** (trusted publishing, no stored token): for `@cygnux/tracekit` and each `@cygnux/tracekit-signer-*`, add a
+2. **npm** (paused: [npm paused](#npm-paused)) (trusted publishing, no stored token): for `@cygnux/tracekit` and each `@cygnux/tracekit-signer-*`, add a
    trusted publisher on npmjs.com: repository `Cygnux-Labs/Tracekit`, workflow `release.yml`, environment `npm`.
    A package must exist before it can be configured; publish the first version by hand from the dry run's tarballs.
 3. **GitHub**: environments `release`, `pypi` and `npm`, each with required reviewers and "prevent self-review",
    limited to `v*` tags. Package `tracekit-signer` on ghcr.io linked to the repository (first push creates it).
 
 Until these are done the publish jobs fail and nothing is released; the build job still checks the package.
+
+## npm paused
+
+npm publishing is off for now (owner decision, 2026-10-13): the `npm` job in `release.yml` is commented out, and
+`github-release` runs after `pypi` with the build's files. The GitHub release still carries `cygnux-tracekit-<v>.tgz`,
+which TypeScript users install with `npm install <its URL>`; npm skips the platform signer packages it can't find, so
+the dev signer needs `pip install 'tracekit-ai[signer]'` until npm is back. To turn npm back on: do step 2 of the
+one-time setup, uncomment the `npm` job, and set `github-release` back to `needs: npm` with the `release-final`
+artifact.
 
 ## npm signer packages (`npx @cygnux/tracekit up` without Python)
 

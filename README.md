@@ -182,8 +182,8 @@ tracekit verify docs/sample/demo-run-tampered.tkb --key docs/sample/signer.pub  
 ## What you need
 
 - **Python 3.9 to 3.13**, and `pip install --pre tracekit-ai`. The framework integrations need Python 3.10 or
-  newer. For the TypeScript SDK, Node 18 or newer and `npm install @cygnux/tracekit@next`: the
-  first npm release ships with 1.2.0rc1 under the `next` tag. If npm says not found, build it from a checkout
+  newer. For the TypeScript SDK, Node 18 or newer and the package file from the GitHub release:
+  `npm install https://github.com/Cygnux-Labs/Tracekit/releases/download/v1.2.0rc1/cygnux-tracekit-1.2.0-rc.1.tgz`. It isn't on npm yet
   ([TypeScript SDK](https://github.com/Cygnux-Labs/Tracekit/blob/main/sdk/typescript/README.md#install)).
 - **An OS.** Dev mode runs on macOS, Linux and Windows. A signer under its own OS user runs on Linux (macOS is
   experimental). Containers and Kubernetes run on Linux
