@@ -17,8 +17,10 @@ dt { font-weight: bold; } dd { margin: 0 0 .4em 0; overflow-wrap: anywhere; }
 <p id="who"></p>
 <p><button id="register">Register a passkey</button></p>
 <p class="error" id="error"></p>
+<p><label>Show <select id="filter"><option value="">all</option><option value="person">for people</option>
+<option value="agent">with an agent approver</option><option value="escalated">escalated to people</option></select></label></p>
 <table>
-<thead><tr><th>Approval</th><th>State</th><th>Tool</th><th>Rules</th><th>Run</th><th>Expires</th></tr></thead>
+<thead><tr><th>Approval</th><th>State</th><th>Tool</th><th>Rules</th><th>Run</th><th>Expires</th><th>Answered by</th></tr></thead>
 <tbody id="list"></tbody>
 </table>
 <section id="detail" hidden>
@@ -27,7 +29,8 @@ dt { font-weight: bold; } dd { margin: 0 0 .4em 0; overflow-wrap: anywhere; }
 <h3>Arguments (the signer's copy)</h3>
 <pre id="args"></pre>
 <p><label>Reason <input id="reason" maxlength="1024" size="60"></label></p>
-<p><button id="approve">Approve</button> <button id="reject">Reject</button></p>
+<p><button id="approve">Approve</button> <button id="reject">Reject</button>
+<button id="revoke" hidden>Revoke the agent's approval</button></p>
 </section>
 <script>
 "use strict";
@@ -48,16 +51,22 @@ async function api(path, body) {
 }
 
 function fail(e) { $("error").textContent = vis(e.message || e); }
+// an agent's answer is model output; an agent may answer only within the policy's bounds, people answer the rest
+const answeredBy = a => !a.answered ? "" : a.answered.kind === "agent" ? "agent " + a.answered.by + " (model output)"
+  : a.answered.by;
+// a.agent: an agent approver's answer can still decide it; people answer every other one
+const kinds = {person: a => !a.agent, agent: a => a.agent, escalated: a => a.escalated};
 
 async function list() {
-  const page = await api("/api/approvals"), rows = $("list");
+  const page = await api("/api/approvals"), rows = $("list"), keep = kinds[$("filter").value] || (() => true);
   rows.replaceChildren();
-  for (const a of page.approvals) {
+  for (const a of page.approvals.filter(keep)) {
     const row = rows.insertRow(), open = document.createElement("button");
     open.textContent = vis(a.approval_id);
     open.addEventListener("click", () => show(a.approval_id).catch(fail));
     row.insertCell().append(open);
-    for (const v of [a.state, a.tool + (a.passkey ? " (passkey)" : ""), a.rule_ids.join(", "), a.run_id, a.expires_at])
+    for (const v of [a.state + (a.escalated ? " (escalated)" : a.agent ? " (agent approver)" : ""),
+      a.tool + (a.passkey ? " (passkey)" : ""), a.rule_ids.join(", "), a.run_id, a.expires_at, answeredBy(a)])
       row.insertCell().textContent = vis(v);
   }
 }
@@ -70,6 +79,9 @@ async function show(id) {
     ["expires", current.expires_at], ["binding", current.binding_digest],
     ["passkey", current.passkey ? "required to approve" : "not required"]];
   if ("reason" in current) facts.push(["reason given by the agent (unverified)", current.reason]);
+  if (current.answered) facts.push(["answered by", answeredBy(current)]);
+  if (current.escalation) facts.push(["escalated by " + current.escalation.by, (current.escalation.reason || "")
+    + (current.escalation.by === "agent" ? " (model output, over arguments the requesting agent supplied)" : "")]);
   $("facts").replaceChildren(...facts.flatMap(([k, v]) => {
     const dt = document.createElement("dt"), dd = document.createElement("dd");
     dt.textContent = k;
@@ -78,12 +90,19 @@ async function show(id) {
   }));
   $("args").textContent = vis(current.args === null ? "(deleted: the approval is no longer live)"
     : current.args_source === "raw" ? current.args : JSON.stringify(current.args, null, 2));
+  $("revoke").hidden = !(current.state === "approved" && current.answered?.kind === "agent");
   $("detail").hidden = false;
 }
 
 async function decide(decision) {
-  const body = {decision}, reason = $("reason").value;
+  const body = decision === "revoke" ? {} : {decision}, reason = $("reason").value;
   if (reason) body.reason = reason;
+  if (decision === "revoke") {
+    const out = await api("/api/approvals/" + encodeURIComponent(current.approval_id) + "/revoke", body);
+    $("error").textContent = "";
+    await show(out.approval_id);
+    return list();
+  }
   if (decision === "approve" && current.passkey) {
     const cred = await navigator.credentials.get({publicKey: {challenge: unb64u(current.challenge),
       rpId: session.rp_id, userVerification: "required", timeout: 120000}});
@@ -109,6 +128,8 @@ async function register() {
 
 $("approve").addEventListener("click", () => decide("approve").catch(fail));
 $("reject").addEventListener("click", () => decide("reject").catch(fail));
+$("revoke").addEventListener("click", () => decide("revoke").catch(fail));
+$("filter").addEventListener("change", () => list().catch(fail));
 $("register").addEventListener("click", () => register().catch(fail));
 api("/api/session").then(s => {
   session = s;

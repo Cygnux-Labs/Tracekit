@@ -1,10 +1,10 @@
 $ tracekit verify run.tkb --trust trust.json
 [PASS] manifest — every file is listed with its SHA-256 and nothing else is in the bundle
-[PASS] checkpoint — tracekit.local/b2cb15bcd1c7bd62e68312f28e6d14e9 at tree size 16, signed by its pinned log key
+[PASS] checkpoint — tracekit.local/c58bbf9527f62d41a874ec221320d01d at tree size 16, signed by its pinned log key
 [PASS] witness quorum — 0 pinned cosignature(s), 0 required
 [PASS] keys — 1 record key(s) from 1 key record(s)
 [PASS] signatures — 15 record(s), keys valid at their position
-[PASS] run chain — run '218ea579808d6b59f95d4093ec22fc85' of tenant 'default', contiguous from run_seq 0
+[PASS] run chain — run '5b5184e1c6c35e251b2580fce77744df' of tenant 'default', contiguous from run_seq 0
 [PASS] inclusion — first and last records of 1 run(s) are in the checkpointed tree of size 16
 [PASS] policy snapshot — policies/0265bb47bbdf339a9a1650ea76a5fa6685fef5b75e724959f6337723dfca0fb0.json
 [PASS] coverage — layers L2 (L3 absent); 0 call(s) reconciled; unreconciled: none
@@ -17,4 +17,4 @@ $ tracekit verify run.tkb --trust trust.json
 [PASS] key assurance — asserted: the log declares its record keys; none is attested
 
 Integrity: VERIFIED.
-Assurance: dev; records ed25519; checkpoint Ed25519 only (tracekit.local/b2cb15bcd1c7bd62e68312f28e6d14e9); no witness cosignature; key retirements not proven complete.
+Assurance: dev; records ed25519; checkpoint Ed25519 only (tracekit.local/c58bbf9527f62d41a874ec221320d01d); no witness cosignature; key retirements not proven complete.

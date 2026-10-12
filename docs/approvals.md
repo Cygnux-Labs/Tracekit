@@ -285,7 +285,8 @@ gets at most 10 agent reviews and a tenant 1000 an hour; past them, people answe
 and bidirectional-override characters escaped (`\u202e`), the arguments redaction changed, the expiry and a
 `view_digest` (SHA-256 of JCS of the rest). Never the requesting agent's reason, the run id, the tool call id or where
 a value came from. Agents can't call `approval_get`, and their `approval_list` leaves out the run id, tool call id,
-attempt and requester. `approval_list` takes `state`, `for: agent|person` and `escalated`.
+attempt and requester. `approval_list` takes `state`, `escalated` and `for`: `agent` lists what an agent may still
+answer (shadow mode included), `person` what an agent's answer can't decide.
 
 **Answers.** `approval_decide` with `approve`, `reject` or `escalate` (agents only), optionally `asserted: {model,
 version, prompt_hash}` (recorded `attested: false`). The `approval` record carries `approver_kind: agent`; an approval
@@ -298,14 +299,76 @@ record and changes nothing: compare suggestions with what people decide before y
 
 **Revocation and the kill switch.** A person revokes an agent's approval that is not consumed yet with
 `approval_revoke` (`approval.revoked`; the call never runs). `approval_agents {enabled: false}` (an `authorize` grant,
-never a default) writes a signed `approval.agents`, revokes every agent approval not consumed yet and sends every
-approval to people until it is switched on again.
+never a default) writes a signed `approval.agents`, revokes every agent approval not consumed yet, escalates every
+pending one agents could answer (`approval.escalated` by the signer, so it stays with people after agents are switched
+on again) and sends every new approval to people until then.
 
 **Adapters** keep waiting while an approval is `requested`, escalated or not, until their own deadline; none abandons
 an escalated approval (`tracekit why` leaves it to expire with its run).
 
 Metrics: `tracekit_signer_agent_approvals_total{decision}`, `tracekit_signer_agent_budget_spent_total{rule}`, and
 `tracekit_signer_records_total{type="approval.escalated"|"approval.suggested"}`.
+
+**What people see.** `approval_list` and `approval_get` show people `answered: {by, kind}` (`kind: agent` is model
+output) and, once escalated, `escalation: {by: agent|signer, reason}`; an agent sees neither. Their `agent: true` means
+an agent's answer can still decide the approval: it is agent-eligible, not escalated, agent approvals are on, the
+policy is the one it was requested under, no agent said no to the same call, and no rule of it is in shadow mode. The
+Slack bridge posts every approval without it (person-only, escalated, shadow mode, agents switched off) and leaves the
+rest with the agent until it is escalated, at the latest after `agent_timeout_s`. Its messages name who answered and
+show an agent's escalation reason labelled as model output over arguments the requesting agent supplied. The viewer's
+approval desk filters for people, with an agent approver (`agent: true`), or escalated; a person revokes an agent's
+approval not consumed yet from it. The
+timeline labels agent approvals (`AGENT APPROVED`), shadow suggestions (`AGENT SUGGESTED`), escalations and
+revocations, and a person's answer to a call an agent answered in shadow mode shows whether they agreed and the
+agreement rate per rule so far. Verifiers count approvals by people and by agents on separate lines
+([verdicts](verdicts.md#approvals-in-the-report)).
+
+## The reference reviewer
+
+`tracekit reviewer` is an agent approver you can run as it is: it polls `approval_list {state: requested, for: agent}`
+on every signer replica it is given, and for each approval reads `approval_review` and makes one model call through
+the [LLM gateway](gateway.md), with no batching and no memory across approvals. Its fixed system prompt treats the
+view as data and asks for `{decision: approve|reject|escalate, reason}` (500 characters at most). An error, a timeout,
+a refusal or a malformed answer escalates (and logs a warning: check the gateway URL, run token and model), and so does
+a view in which a condition did not pass: it never asks the model about those. When the signer answers `unavailable`
+or `quota_exceeded`, it tries that approval again at the next poll. It takes the conditions from `approval_review` (it
+has no allowlist of its own) and sends `asserted: {model, version, prompt_hash}`. The signer checks every answer
+again.
+
+```yaml
+# reviewer.yaml (relative paths are from this file)
+signer: [https://tracekit-0.signer.internal:8443, https://tracekit-1.signer.internal:8443]   # or one URL
+gateway: https://gateway.internal:8080     # the LLM gateway in front of Anthropic (api_key_header: x-api-key)
+model: claude-opus-5-5                      # the default
+poll_s: 5
+timeout_s: 120                              # one model call; past it the reviewer escalates
+tenants:                                    # it serves these tenants and no other
+  acme: {token_file: acme-reviewer.token, run_token_file: acme-reviewer-runs.token}
+```
+
+```
+tracekit reviewer serve --config reviewer.yaml
+```
+
+Per tenant, `token_file` is the bearer token of the identity listed in that tenant's `approvals.agents` (with the
+`authorize` entry above); the reviewer refuses a Unix socket or `tcp://` signer, since an agent approver is never a
+uid, and a `gateway` other than https (plain http only to localhost, 127.0.0.1 or ::1), since it sends the run token
+there. `run_token_file` is an ordinary identity that registers the reviewer's runs and calls the gateway (signer.yaml
+`gateways` lists the gateway as usual). Each review is a run of its own, agent `tracekit-reviewer`, whose first record
+links it to the approval id and the view's digest, followed by the gateway's `model_event` records of the exchange.
+The reviewer sends the redacted arguments of the tenants it serves to the model provider
+([privacy](privacy.md#what-leaves-the-machine)).
+
+**Before you enforce: eval, then shadow.**
+
+1. `tracekit reviewer eval --config reviewer.yaml --store /var/lib/tracekit` (a signer's data_dir) or `--bundle
+   run.tkb` replays the approvals people answered (approve or reject) of the configured tenants through the reviewer,
+   sending no decision, and prints `{approvals, agree, false_approve, false_reject, escalate}` (a false approve: it
+   approved what a person rejected). The records hold no arguments, so these views have the tool and rules only.
+2. Set `mode: shadow` on the rules and run `tracekit reviewer serve`: its answers are `approval.suggested` records,
+   people answer every call, and the viewer shows the agreement per rule. Compare until false approves are what you
+   accept.
+3. Switch the rules to `mode: enforce`, with `veto_s` if people should be able to revoke before a call runs.
 
 ## Expiry and abandon
 
@@ -331,5 +394,8 @@ break-glass without a reason), `tests/test_webauthn.py` (the assertion checks, w
 `tests/test_slack_approvals.py` (the Slack bridge against a real signer: signatures, replays, approve and reject, groups,
 self-approval, message updates), `eval/e8_insider_v2.py` case E8v2.5 (the agent approving its own call in system mode),
 `tests/test_agent_approvers.py` (bounds, lint, config, eligibility, budgets, anti-shopping, escalation across a
-restart, revocation, the kill switch, shadow mode, the reviewer's view) and `eval/e18_agent_approvers.py` (a reviewer
+restart, revocation, the kill switch, shadow mode, the reviewer's view), `tests/test_reviewer.py` (the reference
+reviewer with fake models that always approve, answer garbage, refuse or time out; the gateway run; eval; what the
+Slack bridge posts; the desk's revoke; the timeline labels and shadow agreement), `tests/test_bundle_v2.py` and
+`tests/test_ts_verifier.py` (the verifiers' agent-approval checks, with and without the policy snapshot) and `eval/e18_agent_approvers.py` (a reviewer
 that approves anything, against every guarantee above).

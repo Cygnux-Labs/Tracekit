@@ -13,6 +13,7 @@ import threading
 import tracemalloc
 import unittest
 from typing import Annotated
+from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -32,6 +33,7 @@ try:
     from langgraph.types import CachePolicy, Command
     from tracekit.testing import FakeSigner
     from tracekit.why.cli import main
+    from tracekit.why import langgraph as lw
     from tracekit.why.langgraph import attribute_thread, fork_replay
 except ImportError:   # optional: the dev extra installs them
     HAVE_LG = False
@@ -301,6 +303,15 @@ class Branches(unittest.TestCase):
             return tracemalloc.get_traced_memory()[1]
         few, many = peak(10), peak(40)   # branches sharing one saver held ~4 MB each: 4x the trials, ~4x the peak
         self.assertLess(many, 2 * few, (few, many))
+
+    def test_a_branch_collection_scans_only_what_the_trials_allocate(self):
+        graph = _loop(self.follows, ToolNode(self.tools))
+        graph.invoke(GO, CONF)
+        frozen, collect, before = [], lw.gc.collect, lw.gc.get_freeze_count()
+        with mock.patch.object(lw.gc, "collect", lambda *a: frozen.append(lw.gc.get_freeze_count()) or collect(*a)):
+            fork_replay(graph, CONF, None, "fetch0", "tool=send", n=4)
+        self.assertTrue(frozen and all(frozen), frozen)   # the host's objects were out of every branch's collection
+        self.assertEqual(lw.gc.get_freeze_count(), before)   # and as they were after (a host's own freeze is kept)
 
 
 @unittest.skipUnless(HAVE_LG, "langchain>=1 / langgraph not installed")

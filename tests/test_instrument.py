@@ -46,7 +46,7 @@ class DevSigner(unittest.TestCase):
         cls.env = {k: v for k, v in os.environ.items() if not k.startswith("TRACEKIT_")}
         cls.env.update(HOME=home, USERPROFILE=home, LOCALAPPDATA=os.path.join(home, "local"),
                        XDG_DATA_HOME=os.path.join(home, "data"), TRACEKIT_RUNTIME_DIR=os.path.join(cls.dir, "run"),
-                       TRACEKIT_DEV_IDLE="120", PYTHONPATH=ROOT)
+                       TRACEKIT_DEV_IDLE="120", TRACEKIT_DEV_GRACE="0.2", PYTHONPATH=ROOT)
         cls.addClassCleanup(cls.sh, "-m", "tracekit", "down")
 
     @classmethod

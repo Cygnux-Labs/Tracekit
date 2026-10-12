@@ -4,17 +4,21 @@ revocation, the kill switch, shadow mode, the reviewer's view and the records, a
 import collections
 import hashlib
 import itertools
+import json
+import os
 import time
 import unittest
 
 import test_signer_service as ts
 from tracekit import schema
+from tracekit.bundle_v2 import export
 from tracekit.format.canon import canonical, loads_strict
 from tracekit.identity.base import CallerIdentity
 from tracekit.policy2 import compile as policy_compile
 from tracekit.policy2.engine import Engine
 from tracekit.signer import service as svc
 from tracekit.signer.rpc_schema import RESPONSES, RPCError, validate
+from tracekit.verify import v2
 
 AGENT = CallerIdentity("token", "reviewer", True)
 ALICE = CallerIdentity("uid", "990001", True)
@@ -509,6 +513,49 @@ class TestDetection(Case):
         [opened] = [e["data"] for e in es if e["type"] == "incident.opened"]
         self.assertEqual((opened["trigger"], opened["rule_ids"]), ("limit", ["L-PAY"]))
         self.assertEqual([e["data"]["approver_kind"] for e in es if e["type"] == "approval"], ["agent", "agent"])
+
+    def test_one_policy_snapshot_serves_both_verifier_checks(self):
+        """A run with agent approvals and an incident bundles its policy once; both verifiers check the agent
+        approvals' bounds and recompute the incident from that one snapshot, and without it (or with edited bytes)
+        both checks go without."""
+        import test_ts_verifier as tv
+        for tcid in ("tc-1", "tc-2"):
+            aid, _ = self.ask(tcid=tcid)
+            self.answer(AGENT, aid)
+            self.consume(tcid=tcid)
+        self.s.close_run({"request_id": rid(), **self.run})
+        self.s.sweep()
+        self.s.checkpoint()
+        note, pol = self.s.log.storage.checkpoint_latest()[1], os.path.join(self.dir, "policies")
+        trust = os.path.join(self.dir, "trust.json")
+        with open(trust, "w") as f:
+            json.dump({"logs": [self.s.vkey], "algs": ["ed25519"]}, f)
+
+        def lines(path, policy_dir):
+            export(self.s.log.storage, "default", self.run["run_id"], note, path, policy_dir=policy_dir)
+            rep, code = v2.verify(path, trust)
+            if not tv.SKIP:
+                ts = tv.ts_verify(path, trust)
+                self.assertEqual(ts["exit_code"], code)
+                self.assertEqual([(c["check"], c["status"], c["detail"]) for c in ts["checks"]],
+                                 [(c["check"], c["status"], c["detail"]) for c in rep.checks])
+            return code, {c["check"]: c for c in rep.checks}
+        path = os.path.join(self.dir, "both.tkb")
+        code, got = lines(path, pol)
+        self.assertEqual([n for n in v2.read_zip(path) if n.startswith("policies/")],
+                         [f"policies/{Engine(self.POLICY).policy_hash[7:]}.json"])
+        self.assertEqual((code, got["approvals by agents"]["status"], got["incidents"]["status"]), (0, "pass", "pass"))
+        self.assertTrue(got["incidents"]["detail"].startswith("1 incident(s): 1 checked against the bundle"))
+        self.assertNotIn("incident policies", got)
+        code, got = lines(os.path.join(self.dir, "none.tkb"), None)
+        self.assertEqual((code, got["approvals by agents"]["status"], got["incident policies"]["status"]),
+                         (0, "warn", "warn"))
+        for name in os.listdir(pol):
+            with open(os.path.join(pol, name), "ab") as f:
+                f.write(b" ")
+        code, got = lines(os.path.join(self.dir, "edited.tkb"), pol)
+        self.assertEqual((code, got["policy snapshot"]["status"], got["approvals by agents"]["status"],
+                          got["incident policies"]["status"]), (1, "fail", "warn", "warn"))
 
 
 if __name__ == "__main__":

@@ -348,8 +348,13 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
     + `${repr(get(only, "tenant"))}, contiguous from run_seq 0` : `${runs.size} run(s), each contiguous from run_seq 0`, chain);
   rep.check("inclusion", !outside.length, `first and last records of ${runs.size} run(s) are in the checkpointed tree of `
     + `size ${size}`, outside);
-  for (const p of [...files.keys()].filter((n) => n.startsWith("policies/")).sort())
-    rep.check("policy snapshot", p === `policies/${await sha256hex(file(p))}.json`, p);
+  // policy_hash -> the bundled snapshot named by it: the one set checkIncidents and approvals check against
+  const policies = new Map<string, Uint8Array>();
+  for (const p of [...files.keys()].filter((n) => n.startsWith("policies/")).sort()) {
+    const hex = await sha256hex(file(p));
+    rep.check("policy snapshot", p === `policies/${hex}.json`, p);
+    if (p === `policies/${hex}.json`) policies.set(`sha256:${hex}`, file(p));
+  }
 
   const open = [...runs.values()].filter((rs) => get(rs.at(-1).event, "type") !== "run.final");
   rep.integrity = !open.length ? "VERIFIED" : only ? `VERIFIED TO HEAD ${str(get(open[0].at(-1).event, "run_seq"))} (open)`
@@ -416,7 +421,7 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
   const lost = gaps("observer_lost");
   if (lost.length)
     rep.check("observers", false, `${lost.length} egress observer(s) went silent while their run was open`, lost.slice(0, 20), true);
-  await checkIncidents(rep, runs, files, floats);
+  checkIncidents(rep, runs, policies, floats);
   // a tool call's tier is the weakest its records claim (untiered < T3, receipt only, < T1 < T2): each tier a record
   // names, and untiered for a decision or result that names none, so a call decided at T2 and completed elsewhere
   // isn't T2;
@@ -476,11 +481,82 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
   const algs = new Set([...every, ...keyRecords].map((r) => text(at(r, "alg"))));
   rep.assurance = await assurance(origin, cosigs, witnesses, trust, algs, selfApproved, regCosigs)
     + (provenTo < relied ? "; key retirements not proven complete" : "");
+  approvals(rep, runs, policies, floats);
   const glass = typed("approval").filter((e) => get(at(e, "data"), "break_glass") === true);
   if (glass.length)
     rep.check("break-glass approvals", false, `${glass.length} approval(s) answered under the break-glass role`,
       glass.map((e) => `seq ${e.seq}: ${str(at(e.data, "decision"))} ${str(get(e.data, "approval_id"))} by `
         + `${cut(text(at(e.data, "approver")), 256)}: ${repr(cut(str(get(e.data, "reason")), 200))}`).slice(0, 20), true);
+}
+
+/** Approvals by people and by agents, each on a line of its own. An agent's approval fails the line unless its run
+ * holds the approval.request and policy.decision it answered, the signer called the request agent-eligible
+ * (agent.eligible) and no approval.escalated or approval.revoked of it comes first, the decision has no provenance and
+ * a complete provenance_state (or none: the signer leaves it out then), its approval needs no passkey, and the agent is
+ * neither the requester nor the run's owner; with the policy snapshot of the decision's policy_hash in `policies` (the
+ * bundle's, each named by its SHA-256), every rule the call was held by is an ask rule that permits agents and needs no
+ * passkey (else a warning: bounds unchecked). Argument bounds are never checkable offline (salted commitments). */
+function approvals(rep: Report, runs: Map<string, J[]>, policies: Map<string, Uint8Array>, floats: Floats) {
+  let people = 0, agents = 0;
+  const problems: string[] = [], unchecked: string[] = [];
+  for (const rs of runs.values()) {
+    const events: J[] = rs.map((r) => r.event);
+    const ident = get(events[0], "type") === "run.registered" ? get(at(events[0], "data"), "identity") ?? {} : {};
+    const owner = `${str(get(ident, "scheme"))}:${cut(str(get(ident, "subject")), 256)}`;
+    const asked = new Map<J, J>(), decided = new Map<J, J>();
+    for (const e of events) {
+      if (e.type === "approval.request") asked.set(get(e.data, "approval_id"), e.data);
+      if (e.type === "policy.decision" && has(e.data, "decision_id")) decided.set(e.data.decision_id, e.data);
+    }
+    const toPeople = new Set<J>();   // approval ids escalated or revoked so far: only people answer them
+    for (const e of events) {
+      const d = e.data;
+      if (e.type === "approval.escalated" || e.type === "approval.revoked") toPeople.add(get(d, "approval_id"));
+      if (e.type !== "approval" || get(d, "decision") !== "approve") continue;
+      if (get(d, "approver_kind") !== "agent") { people++; continue; }
+      agents++;
+      const where = `seq ${e.seq}: ${cut(str(get(d, "approval_id")), 128)}`;
+      const req = asked.get(get(d, "approval_id")) ?? {};
+      const dec = decided.get(get(req, "decision_id"));
+      if (dec === undefined) { problems.push(`${where}: its approval.request and policy.decision are not in the run`); continue; }
+      const ai = get(d, "approver_identity") ?? {};
+      if (get(get(req, "agent") ?? {}, "eligible") !== true)
+        problems.push(`${where}: the signer did not route its approval.request to agents (agent.eligible)`);
+      if (toPeople.has(get(d, "approval_id")))
+        problems.push(`${where}: it was escalated or revoked before the agent approved it`);
+      if (truthy(get(dec, "provenance")) || get(dec, "provenance_state", "complete") !== "complete")
+        problems.push(`${where}: the decision's arguments carry provenance or it is incomplete`);
+      if (get(req, "passkey") === true) problems.push(`${where}: a rule of the call needs a passkey`);
+      if (get(d, "approver") === get(req, "requester") || `${str(get(ai, "scheme"))}:${cut(str(get(ai, "subject")), 256)}` === owner)
+        problems.push(`${where}: the agent is the requester or the run's owner`);
+      const hash = str(get(dec, "policy_hash")), snap = policies.get(hash);
+      if (snap === undefined) {
+        unchecked.push(`${where}: no policy snapshot of ${cut(hash, 80)}; export the run with the signer's config, which `
+          + "bundles the policies its records cite");
+        continue;
+      }
+      let asks: Map<J, J>, flags: Set<J>;
+      try {
+        const pol = strictParseBytes(snap, floats);
+        asks = new Map(list(get(pol, "ask", [])).map((r: J) => [at(r, "id"), r]));
+        flags = new Set(list(get(pol, "flag", [])).map((r: J) => at(r, "id")));
+      } catch {
+        problems.push(`${where}: the policy snapshot is not a policy`);
+        continue;
+      }
+      for (const rid of get(dec, "rule_ids") ?? []) {
+        const approval = get(asks.get(rid) ?? {}, "approval") ?? {};
+        if (!flags.has(rid) && (!isObj(approval) || !has(approval, "agent") || approval.passkey === "required"))
+          problems.push(`${where}: rule ${cut(str(rid), 64)} does not permit agents`);
+      }
+    }
+  }
+  if (!agents) return;   // a bundle without agent approvals keeps the report it always had
+  rep.check("approvals by people", true, `${people} approval(s) answered by people`);
+  rep.check("approvals by agents", !problems.length && !unchecked.length, `${agents} approval(s) answered by agents (model `
+      + "output); argument bounds are not checkable offline (salted commitments): audit one with `tracekit signer reveal`"
+      + (unchecked.length ? `; agent approval bounds unchecked for ${unchecked.length}` : ""),
+    (problems.length ? problems : unchecked).slice(0, 20), !problems.length);
 }
 
 const CONTAINMENT = ["incident.opened", "incident.updated", "run.held", "run.quarantined", "run.resumed"];
@@ -489,8 +565,8 @@ const FIRES = ["policy.decision", "approval.consumed", "capture.gap", "trace.tam
 const RECOMPUTED = ["sequence", "limit", "denied_calls", "provenance", "executed_against_policy", "class_mismatch"];
 
 /** The `incidents` line, as verify/v2.py's _incidents: cited records, incidents recomputed from their run under the
- * bundled compiled policy, responses honoured. */
-async function checkIncidents(rep: Report, runs: Map<string, J[]>, files: Map<string, Uint8Array>, floats: Floats) {
+ * bundled compiled policy (`policies`, by policy_hash), responses honoured. */
+function checkIncidents(rep: Report, runs: Map<string, J[]>, policies: Map<string, Uint8Array>, floats: Floats) {
   const byRun = new Map<J, J[]>([...runs.values()].map((rs) => [get(rs[0].event, "run_id"), rs.map((r) => r.event)]));
   if (![...byRun.values()].some((es) => es.some((e) => CONTAINMENT.includes(get(e, "type"))))) return;
   const problems: string[] = [], pointers = new Set<string>(), opened = new Set<string>(), unbundled = new Set<string>();
@@ -521,9 +597,8 @@ async function checkIncidents(rep: Report, runs: Map<string, J[]>, files: Map<st
     const hashes = new Set(events.filter((e) => e.type === "policy.decision").map((e) => get(e.data, "policy_hash")));
     let det: Detector | null = null;
     if (mine.length && hashes.size === 1) {
-      const h = str([...hashes][0]), data = files.get(`policies/${h.slice(7)}.json`);
+      const h = str([...hashes][0]), data = policies.get(h);
       if (!data) unbundled.add(cut(h, 80));
-      else if ("sha256:" + await sha256hex(data) !== h) problems.push(`policy ${cut(h, 80)} in the bundle does not hash to its name`);
       else det = new Detector(strictParseBytes(data, floats));
       if (det) {
         const st = Detector.state(), expected: J[] = [], key = (d: J) => JSON.stringify([d.trigger, d.rule_ids,

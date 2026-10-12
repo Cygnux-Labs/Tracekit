@@ -7,32 +7,32 @@ call-1 issue_refund A-1001 $15.00: ask (TK-M001)
 
 call-2 issue_refund A-1002 $2500.00: ask (TK-M001)
   reviewer: none it may answer
-  reviewer, told its id: refused (unknown_approval: apr-72fc7d791fbd2269a8faeeebc5e589a1)
-$ tracekit approvals reject apr-72fc7d791fbd2269a8faeeebc5e589a1 --reason 'over the refund limit'
-rejected: apr-72fc7d791fbd2269a8faeeebc5e589a1
+  reviewer, told its id: refused (unknown_approval: apr-cc25f26b64f7e5ecf2840483af2c4c86)
+$ tracekit approvals reject apr-cc25f26b64f7e5ecf2840483af2c4c86 --reason 'over the refund limit'
+rejected: apr-cc25f26b64f7e5ecf2840483af2c4c86
   rejected: not run (TK-APPROVAL-REJECTED)
 
 call-3 issue_refund A-1001 $15.00: ask (TK-M001)
-$ tracekit approvals reject apr-bd7297bb82aa5c9aadee1307dc3cd761 --reason 'A-1001 was refunded already'
-rejected: apr-bd7297bb82aa5c9aadee1307dc3cd761
+$ tracekit approvals reject apr-c9dc50fbdb388124eb2938671fc06289 --reason 'A-1001 was refunded already'
+rejected: apr-c9dc50fbdb388124eb2938671fc06289
   rejected: not run (TK-APPROVAL-REJECTED)
 
 call-3 issue_refund A-1001 $15.00: ask (TK-M001)
   reviewer: none it may answer
-  reviewer, told its id: refused (unknown_approval: apr-73fc223d4d7031264b0461cd6435f637)
+  reviewer, told its id: refused (unknown_approval: apr-6855bf1d01bf9fb8b62964e7cb6188b2)
   call-3 attempt 1 waits for a person; the run ends and its approval expires with it
 
-$ tracekit verify e74cdfd9efad07026000c8ec89cd49c6.tkb --trust trust.json
+$ tracekit verify eab61b80df6c18fa5f2d66f4bff8b054.tkb --trust trust.json
 [PASS] manifest — every file is listed with its SHA-256 and nothing else is in the bundle
-[PASS] checkpoint — tracekit.local/c407d003a606b8610bf19027b44811d6 at tree size 21, signed by its pinned log key
+[PASS] checkpoint — tracekit.local/266bbf80b8e9dae5f9c8c988da272fdb at tree size 21, signed by its pinned log key
 [PASS] witness quorum — 0 pinned cosignature(s), 0 required
 [PASS] keys — 1 record key(s) from 1 key record(s)
 [PASS] signatures — 20 record(s), keys valid at their position
-[PASS] run chain — run 'e74cdfd9efad07026000c8ec89cd49c6' of tenant 'default', contiguous from run_seq 0
+[PASS] run chain — run 'eab61b80df6c18fa5f2d66f4bff8b054' of tenant 'default', contiguous from run_seq 0
 [PASS] inclusion — first and last records of 1 run(s) are in the checkpointed tree of size 21
 [PASS] policy snapshot — policies/e9035ace14ce1e608c4d6cdf43573b21683f23f810ec0668ef883356cb82175e.json
 [WARN] gaps — 1 signed gap, tamper or mismatch record(s): reask_after_reject 1
-        seq 17: reask_after_reject: call-3 asks again for a call an agent or a person did not approve in this run (approval apr-73fc223d4d7031264b0461cd6435f637): people answer it
+        seq 17: reask_after_reject: call-3 asks again for a call an agent or a person did not approve in this run (approval apr-6855bf1d01bf9fb8b62964e7cb6188b2): people answer it
 [PASS] coverage — layers L2 (L3 absent); 0 call(s) reconciled; unreconciled: none
 [PASS] coverage matrix — model calls not covered, tool calls reported (adapter), network not covered, processes not covered, services not covered
 [PASS] tiers — 3 tool call(s): T1 0, T2 0, T3 0, untiered 3
@@ -40,16 +40,18 @@ $ tracekit verify e74cdfd9efad07026000c8ec89cd49c6.tkb --trust trust.json
 [PASS] isolation — signer-reported: remote 1 run(s)
 [PASS] fail-open classes — none
 [PASS] key assurance — asserted: the log declares its record keys; none is attested
+[PASS] approvals by people — 0 approval(s) answered by people
+[PASS] approvals by agents — 1 approval(s) answered by agents (model output); argument bounds are not checkable offline (salted commitments): audit one with `tracekit signer reveal`
 
 Integrity: VERIFIED.
-Assurance: dev; records ed25519; checkpoint Ed25519 only (tracekit.local/c407d003a606b8610bf19027b44811d6); no witness cosignature; key retirements not proven complete.
+Assurance: dev; records ed25519; checkpoint Ed25519 only (tracekit.local/266bbf80b8e9dae5f9c8c988da272fdb); no witness cosignature; key retirements not proven complete.
 
 who answered, and what the signer recorded about each request:
-  #2 approval.request {"agent": {"eligible": true, "reason": "within the bounds of TK-M001", "rules": ["TK-M001"]}, "approval_id": "apr-a5375654c23167adcf87661aeb11d4f8", "executor": "t2", "requester": "token:agent", "rule_ids": ["TK-M001"]}
-  #3 approval {"approval_id": "apr-a5375654c23167adcf87661aeb11d4f8", "approver": "token:reviewer", "approver_kind": "agent", "asserted": {"attested": false, "model": "mock-reviewer", "version": "1"}, "decision": "approve", "spent": {"TK-M001": 1500}, "tool_use_id": "call-1"}
-  #7 approval.request {"agent": {"eligible": false, "reason": "outside the bounds: amount: {\"max\":5000,\"min\":1,\"type\":\"integer\"}", "rules": ["TK-M001"]}, "approval_id": "apr-72fc7d791fbd2269a8faeeebc5e589a1", "executor": "t2", "requester": "token:agent", "rule_ids": ["TK-M001"]}
-  #8 approval {"approval_id": "apr-72fc7d791fbd2269a8faeeebc5e589a1", "approver": "uid:501", "decision": "reject", "person": "alice", "reason": "over the refund limit", "self_approved": false, "tool_use_id": "call-2"}
-  #11 approval.request {"agent": {"eligible": true, "reason": "within the bounds of TK-M001", "rules": ["TK-M001"]}, "approval_id": "apr-bd7297bb82aa5c9aadee1307dc3cd761", "executor": "t2", "requester": "token:agent", "rule_ids": ["TK-M001"]}
-  #12 approval {"approval_id": "apr-bd7297bb82aa5c9aadee1307dc3cd761", "approver": "uid:501", "decision": "reject", "person": "alice", "reason": "A-1001 was refunded already", "self_approved": false, "tool_use_id": "call-3"}
-  #15 approval.request {"agent": {"eligible": false, "reason": "reask_after_reject: an agent or a person did not approve this call in this run; people answer it", "rules": ["TK-M001"]}, "approval_id": "apr-73fc223d4d7031264b0461cd6435f637", "executor": "t2", "requester": "token:agent", "rule_ids": ["TK-M001"]}
-  #16 capture.gap {"kind": "reask_after_reject", "reason": "call-3 asks again for a call an agent or a person did not approve in this run (approval apr-73fc223d4d7031264b0461cd6435f637): people answer it", "tool_use_id": "call-3"}
+  #2 approval.request {"agent": {"eligible": true, "reason": "within the bounds of TK-M001", "rules": ["TK-M001"]}, "approval_id": "apr-ce7dfa58ccf4fea5a2f3a5a9d03a1e3a", "executor": "t2", "requester": "token:agent", "rule_ids": ["TK-M001"]}
+  #3 approval {"approval_id": "apr-ce7dfa58ccf4fea5a2f3a5a9d03a1e3a", "approver": "token:reviewer", "approver_kind": "agent", "asserted": {"attested": false, "model": "mock-reviewer", "version": "1"}, "decision": "approve", "spent": {"TK-M001": 1500}, "tool_use_id": "call-1"}
+  #7 approval.request {"agent": {"eligible": false, "reason": "outside the bounds: amount: {\"max\":5000,\"min\":1,\"type\":\"integer\"}", "rules": ["TK-M001"]}, "approval_id": "apr-cc25f26b64f7e5ecf2840483af2c4c86", "executor": "t2", "requester": "token:agent", "rule_ids": ["TK-M001"]}
+  #8 approval {"approval_id": "apr-cc25f26b64f7e5ecf2840483af2c4c86", "approver": "uid:501", "decision": "reject", "person": "alice", "reason": "over the refund limit", "self_approved": false, "tool_use_id": "call-2"}
+  #11 approval.request {"agent": {"eligible": true, "reason": "within the bounds of TK-M001", "rules": ["TK-M001"]}, "approval_id": "apr-c9dc50fbdb388124eb2938671fc06289", "executor": "t2", "requester": "token:agent", "rule_ids": ["TK-M001"]}
+  #12 approval {"approval_id": "apr-c9dc50fbdb388124eb2938671fc06289", "approver": "uid:501", "decision": "reject", "person": "alice", "reason": "A-1001 was refunded already", "self_approved": false, "tool_use_id": "call-3"}
+  #15 approval.request {"agent": {"eligible": false, "reason": "reask_after_reject: an agent or a person did not approve this call in this run; people answer it", "rules": ["TK-M001"]}, "approval_id": "apr-6855bf1d01bf9fb8b62964e7cb6188b2", "executor": "t2", "requester": "token:agent", "rule_ids": ["TK-M001"]}
+  #16 capture.gap {"kind": "reask_after_reject", "reason": "call-3 asks again for a call an agent or a person did not approve in this run (approval apr-6855bf1d01bf9fb8b62964e7cb6188b2): people answer it", "tool_use_id": "call-3"}

@@ -1,14 +1,14 @@
 $ tracekit verify run.tkb --trust trust.json
 [PASS] manifest — every file is listed with its SHA-256 and nothing else is in the bundle
-[PASS] checkpoint — tracekit.local/c407d003a606b8610bf19027b44811d6 at tree size 21, signed by its pinned log key
+[PASS] checkpoint — tracekit.local/266bbf80b8e9dae5f9c8c988da272fdb at tree size 21, signed by its pinned log key
 [PASS] witness quorum — 0 pinned cosignature(s), 0 required
 [PASS] keys — 1 record key(s) from 1 key record(s)
 [PASS] signatures — 20 record(s), keys valid at their position
-[PASS] run chain — run 'e74cdfd9efad07026000c8ec89cd49c6' of tenant 'default', contiguous from run_seq 0
+[PASS] run chain — run 'eab61b80df6c18fa5f2d66f4bff8b054' of tenant 'default', contiguous from run_seq 0
 [PASS] inclusion — first and last records of 1 run(s) are in the checkpointed tree of size 21
 [PASS] policy snapshot — policies/e9035ace14ce1e608c4d6cdf43573b21683f23f810ec0668ef883356cb82175e.json
 [WARN] gaps — 1 signed gap, tamper or mismatch record(s): reask_after_reject 1
-        seq 17: reask_after_reject: call-3 asks again for a call an agent or a person did not approve in this run (approval apr-73fc223d4d7031264b0461cd6435f637): people answer it
+        seq 17: reask_after_reject: call-3 asks again for a call an agent or a person did not approve in this run (approval apr-6855bf1d01bf9fb8b62964e7cb6188b2): people answer it
 [PASS] coverage — layers L2 (L3 absent); 0 call(s) reconciled; unreconciled: none
 [PASS] coverage matrix — model calls not covered, tool calls reported (adapter), network not covered, processes not covered, services not covered
 [PASS] tiers — 3 tool call(s): T1 0, T2 0, T3 0, untiered 3
@@ -16,6 +16,8 @@ $ tracekit verify run.tkb --trust trust.json
 [PASS] isolation — signer-reported: remote 1 run(s)
 [PASS] fail-open classes — none
 [PASS] key assurance — asserted: the log declares its record keys; none is attested
+[PASS] approvals by people — 0 approval(s) answered by people
+[PASS] approvals by agents — 1 approval(s) answered by agents (model output); argument bounds are not checkable offline (salted commitments): audit one with `tracekit signer reveal`
 
 Integrity: VERIFIED.
-Assurance: dev; records ed25519; checkpoint Ed25519 only (tracekit.local/c407d003a606b8610bf19027b44811d6); no witness cosignature; key retirements not proven complete.
+Assurance: dev; records ed25519; checkpoint Ed25519 only (tracekit.local/266bbf80b8e9dae5f9c8c988da272fdb); no witness cosignature; key retirements not proven complete.

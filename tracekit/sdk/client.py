@@ -144,14 +144,14 @@ class _Https:
     """POST /v2/rpc to an HTTPS signer, or a plain HTTP one on a loopback address: one kept-alive connection per thread
     and host, the bearer token re-read per call."""
 
-    def __init__(self, url):
+    def __init__(self, url, token_file=None):
         u = urllib.parse.urlsplit(url)
         self.url, self.plain = f"{u.scheme}://{u.netloc}", u.scheme == "http"
         self.host, self.port = u.hostname, u.port or (80 if self.plain else 443)
         self.ctx = None if self.plain else ssl.create_default_context(cafile=os.environ.get("TRACEKIT_SIGNER_CA"))
         if os.environ.get("TRACEKIT_SIGNER_CERT") and not self.plain:
             self.ctx.load_cert_chain(os.environ["TRACEKIT_SIGNER_CERT"], os.environ.get("TRACEKIT_SIGNER_KEY"))
-        self.token_file, self.pid, self.hello = os.environ.get("TRACEKIT_SIGNER_TOKEN_FILE"), None, None
+        self.token_file, self.pid, self.hello = token_file or os.environ.get("TRACEKIT_SIGNER_TOKEN_FILE"), None, None
         self.conns = weakref.WeakSet()   # every thread's, for close()
 
     def _host(self, req):
@@ -271,12 +271,14 @@ if hasattr(os, "register_at_fork"):
 
 class Client:
     """Thread-safe. Methods named after the RPCs (`decide`, `status`, ...) take the request dict and return the
-    response dict, or raise RPCError; `request_id`, `stream` and `client_seq` are filled in when missing."""
+    response dict, or raise RPCError; `request_id`, `stream` and `client_seq` are filled in when missing. `token_file`:
+    an http(s) signer's bearer token file, in place of $TRACEKIT_SIGNER_TOKEN_FILE."""
 
-    def __init__(self, signer=None, timeout=30.0):
+    def __init__(self, signer=None, timeout=30.0, token_file=None):
         self.signer = signer or _default_signer()
         self.timeout, self.hello = timeout, None
-        self._https = _Https(self.signer) if (self.signer or "").startswith(("https://", "http://")) else None
+        http = (self.signer or "").startswith(("https://", "http://"))
+        self._https = _Https(self.signer, token_file) if http else None
         self._lock = threading.Lock()
         self._pid = self._conn = None
         self._order = {}   # run_id -> the lock its event calls hold from taking their client_seq to their answer

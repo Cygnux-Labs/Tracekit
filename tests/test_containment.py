@@ -456,9 +456,10 @@ class TestVerifier(Case):
             with open(os.path.join(pol, name), "ab") as f:
                 f.write(b" ")
         export(s.s.log.storage, "default", run["run_id"], note, path, policy_dir=pol)
-        code, line = self.check(path, trust)
-        self.assertEqual((code, line["status"]), (1, "fail"))
-        self.assertIn("does not hash to its name", line["problems"][0])
+        code, line = self.check(path, trust)   # bytes that don't hash to the name: no snapshot either check reads
+        rep, _ = v2.verify(path, trust)
+        self.assertEqual((code, [c["status"] for c in rep.checks if c["check"] == "policy snapshot"]), (1, ["fail"]))
+        self.assertIn("0 checked against the bundle, 1 signer-asserted", line["detail"])
 
     def test_a_consume_under_a_later_hold_fails(self):
         ev = [("run.held", {"incident_id": "inc-1"}), ("approval.request", {"approval_id": "a", "incident_id": "inc-1"}),

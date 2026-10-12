@@ -124,6 +124,18 @@ A run with a self-approval (the approver was the requester or the run's owner: t
 `dev` and adds `approvals: self`. Break-glass answers are a warning line. Approvals themselves are records in the run;
 see [approvals](approvals.md).
 
+When a bundle holds an approval an agent gave, approvals are counted on separate lines (both verifiers; a bundle
+without one keeps the report it always had):
+
+| Line | Pass means | Warning / failure |
+|---|---|---|
+| `approvals by people` | `n approval(s) answered by people` (always `PASS`) | — |
+| `approvals by agents` | for each approval an [agent approver](approvals.md#agent-approvers) gave (model output): its run holds the `approval.request` and `policy.decision` it answered; the request is agent-eligible (`agent.eligible: true`) and no `approval.escalated` or `approval.revoked` of it comes before the approval; the decision has no `provenance` and `provenance_state: complete` (or none, as the signer writes a decision with nothing untrusted); the approval needs no passkey; the agent is neither the requester nor the run's owner; and with the policy snapshot of the decision's `policy_hash` in the bundle, every rule the call was held by (flags aside) is an ask rule with `approval.agent` and no passkey | **warn** `agent approval bounds unchecked`: the bundle has no snapshot of that policy. **fail**: any check above, naming the approval |
+
+The argument bounds themselves are not checkable offline: the records hold the arguments as salted commitments, so the
+line says so in its detail. To audit one approval, `tracekit signer reveal --record <seq>` prints the salt of that
+record and an auditor holding the arguments recomputes the commitment ([privacy](privacy.md#the-v2-signer)).
+
 ## Signed gaps
 
 Gaps inside a run (`capture.gap`, written by the signer only) are signed records of the run, visible in the bundle.
