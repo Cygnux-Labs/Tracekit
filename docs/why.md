@@ -202,11 +202,14 @@ and `--allow-program`). For each trial:
    message is removed with `RemoveMessage`. `--checkpoint ID` starts from an earlier checkpoint than the latest.
 2. Run only what comes after (`invoke(None, fork)`). The prefix is the recorded run itself, not a re-execution: this
    is a counterfactual on the run that happened.
-3. Every call of a ToolNode that is a node of the graph, or of a subgraph added as a node, is served from the thread's
-   own recorded `ToolMessage` (same tool, same canonical arguments, in order; content, status and artifact) or a stub
-   (`off_tape_actions`); a removed tool result is blanked only at its own occurrence. Those ToolNodes run no tool and
-   the signer sees nothing. A tool called any other way would run: a branch with a tool result that was not served
-   stops with an error. A model node that wants paired seeds reads `config["configurable"]["tracekit_seed"]`.
+3. Every call of a ToolNode that is a node of the graph (also inside `.with_fallbacks()`), or of a subgraph added as a
+   node, is served from the thread's own recorded `ToolMessage` (same tool, same canonical arguments, in order;
+   content, status and artifact) or a stub (`off_tape_actions`); a removed tool result is blanked only at its own
+   occurrence. Those ToolNodes run no tool and the signer sees nothing. A tool called any other way would run: a
+   branch with a result for one of the ToolNodes' tools that was not served stops with an error. A result for a call
+   no ToolNode has (a routing schema such as `ToFlightBookingAssistant` or `CompleteOrEscalate`, which a node of the
+   app answers itself) is the app's own message, and is not a suspect by default. A model node that wants paired
+   seeds reads `config["configurable"]["tracekit_seed"]`.
 4. Score the target on the branch's tool calls, with the same verdicts, intervals and attribution as above. Results
    carry `rung: 3` and the fork point, and each test is appended to the why log at
    `runs/langgraph-<thread>/tests.jsonl` (`--out DIR`; `log=` in Python, where nothing is written without it).
@@ -551,8 +554,9 @@ All of Tracekit's limits: [limits.md](limits.md).
 - Tape matching is exact on tool arguments. New calls are stubbed, which can change behaviour after the stub; results
   report `off_tape_actions`.
 - LangGraph fork replay serves tools only through a `ToolNode` that is a node of the graph or of a subgraph added as a
-  node: a graph without one is refused, and a tool called any other way (inside a function or model node, say) runs
-  for real; the branch then stops with an error, after the fact. It removes messages only: a suspect whose step also
+  node (also inside `.with_fallbacks()`): a graph without one is refused, and a tool called any other way (inside a
+  function or model node, say) runs for real; the branch then stops with an error, after the fact, if a ToolNode
+  also has that tool, and not at all if none does. It removes messages only: a suspect whose step also
   wrote another state key, or a thread whose tools return `Command` updates, is refused. Async-only nodes and async
   checkpointers are refused. Branches see an empty scratch store. All tests of one attribution fork where the
   earliest suspect entered; a later suspect that is not a tool result cannot be removed in that branch and is refused.

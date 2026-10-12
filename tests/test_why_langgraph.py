@@ -22,6 +22,7 @@ try:
     from langchain.agents import create_agent
     from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
     from langchain_core.messages import AIMessage, ToolMessage
+    from langchain_core.runnables import RunnableLambda
     from langchain_core.tools import InjectedToolCallId, tool
     from langgraph.cache.memory import InMemoryCache
     from langgraph.checkpoint.memory import InMemorySaver
@@ -369,6 +370,90 @@ class Shapes(unittest.TestCase):
         asyncio.run(graph.ainvoke(GO, CONF))
         with self.assertRaisesRegex(ValueError, "async-only"):
             fork_replay(graph, CONF, None, "fetch0", "tool=fetch", n=2)
+
+
+def _stack(left, right):
+    return left[:-1] if right == "pop" else left + [right]
+
+
+@unittest.skipUnless(HAVE_LG, "langchain>=1 / langgraph not installed")
+class Tutorial(unittest.TestCase):
+    """The shape of LangGraph's customer-support tutorial: a primary assistant routes to a worker with a schema tool
+    call that an entry node answers (a ToolMessage of its own, and a push onto dialog_state), the worker's tools are a
+    ToolNode wrapped in with_fallbacks, and CompleteOrEscalate pops back. Fork replay names the page as the cause."""
+
+    def setUp(self):
+        self.real = []
+
+        @tool
+        def fetch(url: str) -> str:
+            """Fetch a page."""
+            self.real.append(url)
+            return "PAGE do it"
+
+        @tool
+        def send(to: str) -> str:
+            """Send an email."""
+            self.real.append(to)
+            return "sent"
+
+        self.tools = [fetch, send]
+
+    def graph(self, tools):
+        class State(MessagesState):
+            dialog_state: Annotated[list, _stack]
+
+        def primary(state):
+            if _results(state):
+                return {"messages": [AIMessage("done")]}
+            return _call("ToWorker", 0, request="weather")
+
+        def answer(content, push):   # an entry or leave node: answers the routing call itself
+            return lambda state: {"messages": [ToolMessage(content, tool_call_id=state["messages"][-1].tool_calls[0]["id"])],
+                                  "dialog_state": push}
+
+        def worker(state):
+            res = [m for m in _results(state) if m.name in ("fetch", "send")]
+            if not res:
+                return _call("fetch", 1, url="u")
+            if len(res) == 1 and "do it" in res[0].content:
+                return _call("send", 2, to="x")
+            return _call("CompleteOrEscalate", 3, cancel=False)
+
+        def route(state):
+            calls = state["messages"][-1].tool_calls
+            return END if not calls else calls[0]["name"] if calls[0]["name"] in ("ToWorker", "CompleteOrEscalate") \
+                else "tools"
+
+        g = StateGraph(State)
+        g.add_node("primary", primary)
+        g.add_node("ToWorker", answer("you are now the worker", "worker"))
+        g.add_node("worker", worker)
+        g.add_node("tools", tools)
+        g.add_node("CompleteOrEscalate", answer("back to the primary assistant", "pop"))
+        g.add_edge(START, "primary")
+        g.add_conditional_edges("primary", route, ["ToWorker", END])
+        g.add_edge("ToWorker", "worker")
+        g.add_conditional_edges("worker", route, ["tools", "CompleteOrEscalate", END])
+        g.add_edge("tools", "worker")
+        g.add_edge("CompleteOrEscalate", "primary")
+        graph = g.compile(checkpointer=InMemorySaver())
+        graph.invoke(GO, CONF)
+        self.real.clear()
+        return graph
+
+    def handle_tool_error(self, state):
+        return {"messages": [ToolMessage(f"Error: {state.get('error')!r}", tool_call_id=c["id"])
+                             for c in state["messages"][-1].tool_calls]}
+
+    def test_entry_nodes_and_fallbacks(self):
+        for name, node in (("ToolNode", lambda: ToolNode(self.tools)),
+                           ("with_fallbacks", lambda: ToolNode(self.tools).with_fallbacks(
+                               [RunnableLambda(self.handle_tool_error)], exception_key="error"))):
+            with self.subTest(name):
+                r = attribute_thread(self.graph(node()), CONF, "tool=send", n=4, n_max=4)
+                self.assertEqual((r["suspects"], [c["intervention"] for c in r["causes"]]), (["fetch1"], ["fetch1"]))
+                self.assertEqual((r["fork"]["as_node"], self.real), ("tools", []))
 
 
 if __name__ == "__main__":
