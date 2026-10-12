@@ -66,9 +66,30 @@ class StrictJSONError(ValueError):
         self.code = code
 
 
+_json = json.JSONEncoder(ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode
+
+
+def _plain(v):
+    """Whether the standard library's C encoder writes `v`'s JCS bytes: no floats (ECMA-262 number text), safe
+    integers, and ASCII keys (code point order is then UTF-16 order); its string escapes are JCS's."""
+    t = type(v)
+    if t is str or t is bool or v is None:
+        return True
+    if t is int:
+        return -MAX_SAFE_INT <= v <= MAX_SAFE_INT
+    if t is dict:
+        return all(type(k) is str and k.isascii() for k in v) and all(map(_plain, v.values()))
+    return (t is list or t is tuple) and all(map(_plain, v))
+
+
 def canonical(obj):
     """JCS bytes of a JSON value; raises CanonicalizationError for anything JCS can't encode."""
     try:
+        if _plain(obj):
+            try:
+                return _json(obj).encode("utf-8")
+            except UnicodeEncodeError:   # a lone surrogate: _dumps refuses it with its own message
+                pass
         return _dumps(obj)
     except (UnicodeEncodeError, RecursionError) as e:   # lone surrogate; nesting deeper than the stack
         raise CanonicalizationError(str(e)) from None

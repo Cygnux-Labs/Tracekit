@@ -4,6 +4,7 @@ google-re2 when installed, else the `regex` module on the same pattern subset in
 Every decision names the engine (id@version) and the policy_hash. Precedence: deny > ask > flag > allow.
 """
 import fnmatch
+import functools
 import re
 import time
 
@@ -50,6 +51,7 @@ class Engine:
     def __init__(self, policy, backend=None):
         """`policy` is a compiled policy (compile.build); `backend` forces "re2" or "regex"."""
         self.policy, self.policy_hash = policy, policy_hash(policy)
+        self.tool_class = functools.lru_cache(maxsize=1024)(self.tool_class)   # a glob scan per call otherwise
         self.engine, compile_, self._match = _backend(backend)
         self.rules = [(sec, r, compile_(r["tool"]) if "tool" in r else None, compile_(r["pattern"]),
                        compile_(r["unless"]) if "unless" in r else None)

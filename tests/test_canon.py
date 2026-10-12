@@ -3,6 +3,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import re
 import sys
 import unittest
 from unittest import mock
@@ -82,6 +83,25 @@ class TestStrictParser(unittest.TestCase):
         for text in ("[" * 129 + "]" * 129, '{"a":' * 129 + "1" + "}" * 129, '[{"a":' * 65 + "1" + "}]" * 65,
                      "[" * 100000):
             self.rejects(text, "depth")
+
+    def test_plain_values_take_the_standard_librarys_encoder(self):
+        event = {"seq": 2 ** 53 - 1, "z": [None, True, "\u2028\x7f\x00\n\"é😀", {"b": -1, "a": ()}], "a": {}}
+        with mock.patch.object(canon, "_dumps", side_effect=AssertionError("JCS library called")):
+            self.assertEqual(canonical(event), rfc8785.dumps(event))
+
+    @settings(max_examples=2000, deadline=None)
+    @given(st.recursive(st.none() | st.booleans() | st.floats(allow_nan=False, allow_infinity=False) | st.text()
+                        | st.integers(-(2 ** 53), 2 ** 53),
+                        lambda c: st.lists(c) | st.dictionaries(st.text() | st.text("abAB_\ue000\U0001F600"), c),
+                        max_leaves=20))
+    def test_matches_rfc8785(self, value):
+        try:
+            want = rfc8785.dumps(value)
+        except rfc8785.CanonicalizationError as e:   # a lone surrogate in st.text(), an unsafe integer
+            with self.assertRaisesRegex(rfc8785.CanonicalizationError, re.escape(str(e))):
+                canonical(value)
+            return
+        self.assertEqual(canonical(value), want)
 
     def test_canonical_refuses_what_the_parser_rejects(self):
         deep = []
