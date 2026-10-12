@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Record the offline demos in docs/demos/ (docs/demos/README.md). Each demo runs its example against a fresh signer in
 a temp dir (its own HOME and runtime dir, so never yours), and its folder gets transcript.txt (the command and its
-output, the temp dir shown as $TMP and your home as ~), run.tkb, trust.json and verify.txt.
+output, the temp dir shown as $TMP and your home as ~), run.tkb, trust.json and verify.txt. A demo with no bundle (why)
+gets only its transcript; its check is that its output still says what OUTPUT expects.
 
     python scripts/record_demos.py [NAME ...]           # record every demo, or the named ones
     python scripts/record_demos.py --check [NAME ...]   # write nothing: each saved run.tkb still verifies as its
@@ -31,7 +32,10 @@ SCENARIOS = {
     "containment": (["examples/v2/demos/containment.py"], (), True),
     "completeness": (["examples/v2/demos/completeness.py"], (), False),
     "egress": (["examples/v2/demos/egress.py"], (), True),
+    "why": (["tracekit", "why", "demo", "--out", "$TMP/why", "--n", "10"], (), False),
 }
+# a demo with no bundle -> what its output must say
+OUTPUT = {"why": re.compile(r"remove input:vendor:portal/notes\.md .* CAUSAL")}
 PYTHONPATH = ROOT + os.pathsep + os.environ.get("PYTHONPATH", "")   # this checkout's tracekit, installed or not
 
 
@@ -56,13 +60,14 @@ def run(name):
     for k in ("TRACEKIT_SIGNER", "TRACEKIT_SIGNER_TOKEN", "TRACEKIT_SIGNER_TOKEN_FILE", "TRACEKIT_EGRESS_PROXY"):
         env.pop(k, None)
     try:
-        p = subprocess.run([sys.executable, os.path.join(ROOT, *argv[0].split("/")), *argv[1:]], cwd=tmp, env=env,
+        cmd = ["-m", "tracekit"] if argv[0] == "tracekit" else [os.path.join(ROOT, *argv[0].split("/"))]
+        p = subprocess.run([sys.executable, *cmd, *(a.replace("$TMP", tmp) for a in argv[1:])], cwd=tmp, env=env,
                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=300)
     finally:   # the dev signer the example may have started
         subprocess.run([sys.executable, "-m", "tracekit", "down"], cwd=tmp, env=env, capture_output=True)
     if p.returncode:
         raise RuntimeError(f"{name}: {' '.join(argv)} exited {p.returncode} (its files are in {tmp})\n{p.stdout}")
-    text = f"$ python {' '.join(argv)}\n{p.stdout}"
+    text = f"$ {'' if argv[0] == 'tracekit' else 'python '}{' '.join(argv)}\n{p.stdout}"
     for path, shown in ((os.path.realpath(tmp), "$TMP"), (tmp, "$TMP"), (ROOT, "."), (os.path.expanduser("~"), "~")):
         text = text.replace(path, shown)
     return text, tmp
@@ -90,9 +95,12 @@ def record(name):
     try:
         folder = os.path.join(DEMOS, name)
         os.makedirs(folder, exist_ok=True)
-        shutil.copyfile(bundle_of(tmp), os.path.join(folder, "run.tkb"))
-        shutil.copyfile(os.path.join(tmp, "trust.json"), os.path.join(folder, "trust.json"))
-        for file, content in (("transcript.txt", text), ("verify.txt", verify(folder))):
+        files = [("transcript.txt", text)]
+        if name not in OUTPUT:
+            shutil.copyfile(bundle_of(tmp), os.path.join(folder, "run.tkb"))
+            shutil.copyfile(os.path.join(tmp, "trust.json"), os.path.join(folder, "trust.json"))
+            files.append(("verify.txt", verify(folder)))
+        for file, content in files:
             with open(os.path.join(folder, file), "w", encoding="utf-8", newline="\n") as f:
                 f.write(content)
     finally:
@@ -102,6 +110,15 @@ def record(name):
 
 def check(name):
     """(whether demo `name` holds, what to say about it)."""
+    if name in OUTPUT:
+        try:
+            text, tmp = run(name)
+        except RuntimeError as e:
+            return False, str(e)
+        shutil.rmtree(tmp, ignore_errors=True)
+        if not OUTPUT[name].search(text):
+            return False, f"{name}: its output no longer says {OUTPUT[name].pattern!r}:\n{text}"
+        return True, f"{name}: ok"
     folder = os.path.join(DEMOS, name)
     with open(os.path.join(folder, "verify.txt"), encoding="utf-8") as f:
         saved = f.read()

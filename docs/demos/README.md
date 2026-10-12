@@ -1,19 +1,29 @@
 # Demos
 
+![Tracekit in a terminal: guardrails, a prompt injection held, a tampered bundle failing verification, and tracekit why](highlights.gif)
+
+The full tour as a video: [tracekit-tour.mp4](tracekit-tour.mp4) (3 min 44 s), each demo below running in a
+terminal and `tracekit verify` on each bundle; the GIF above is an 85 s highlights reel. Both are recorded with
+[VHS](https://github.com/charmbracelet/vhs) from [tour.tape](tour.tape) and [highlights.tape](highlights.tape):
+`vhs docs/demos/tour.tape` from the repo root.
+
 Recorded runs of Tracekit's main use cases, offline: mock models, scripted approvals, and every "outside" host on
 this machine. Each folder holds what the scenario is (`README.md`), the terminal session (`transcript.txt`), the run's
 bundle (`run.tkb`), the trust config that pins its signer's key (`trust.json`) and the `tracekit verify` report
-(`verify.txt`).
+(`verify.txt`); the why demo has only the first two (its log is hash-chained, not signed).
 
-| Use case | What it proves | Folder |
+In story order: what the agent did, how it is controlled, the proof, and why it happened.
+
+| | Demo | What it proves |
 |---|---|---|
-| Guardrails | A coding agent's shell calls are allowed, denied or held for a person, each decision signed before the call runs | [guardrails](guardrails/README.md) |
-| Prompt injection | A planted instruction to email data out is held because its recipient came only from a fetched page (provenance) | [prompt-injection](prompt-injection/README.md) |
-| MCP tools | MCP tool calls go through the same policy, approvals and signed record as the agent's own tools | [mcp](mcp/README.md) |
-| Agent approvers | A reviewer agent clears only calls within its bounds; people answer the rest, and a person's reject sticks | [agent-approvers](agent-approvers/README.md) |
-| Detection and containment | A secret read then an upload opens a signed incident; the run is held until a person resumes it | [containment](containment/README.md) |
-| Completeness and tamper evidence | A call decided but never completed becomes a signed gap; one byte changed in the bundle fails verification | [completeness](completeness/README.md) |
-| Network coverage | An egress observer outside the agent records the hosts a run reached; one no call explains is flagged | [egress](egress/README.md) |
+| What | [Guardrails](guardrails/README.md) | A coding agent's shell calls are allowed, denied or held for a person, each decision signed before the call runs |
+| What | [MCP tools](mcp/README.md) | MCP tool calls go through the same policy, approvals and signed record as the agent's own tools |
+| Control | [Prompt injection](prompt-injection/README.md) | A planted instruction to email data out is held because its recipient came only from a fetched page (provenance) |
+| Control | [Agent approvers](agent-approvers/README.md) | A reviewer agent clears only calls within its bounds; people answer the rest, and a person's reject sticks |
+| Control | [Detection and containment](containment/README.md) | A secret read then an upload opens a signed incident; the run is held until a person resumes it |
+| Proof | [Completeness and tamper evidence](completeness/README.md) | A call decided but never completed becomes a signed gap; one byte changed in the bundle fails verification |
+| Proof | [Network coverage](egress/README.md) | An egress observer outside the agent records the hosts a run reached; one no call explains is flagged |
+| Why | [Why](why/README.md) | Of three untrusted inputs that all reached an exfiltration email, replays show which one caused it |
 
 Check a saved bundle yourself, offline, with nothing but the verifier:
 
