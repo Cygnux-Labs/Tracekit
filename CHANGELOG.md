@@ -17,14 +17,17 @@ keep verifying. Every limit of the new features is in [docs/limits.md](docs/limi
 1.1.0rc1 was never published; this release candidate includes everything listed under it below.
 
 ### Upgrade notes
-- **Signer RPC version 16** (1.1 spoke 15). A 1.2 signer still serves 1.1 (version 15) clients unchanged, so upgrade
-  the signer first, then its clients.
-- **Bundles with 1.2 records need a 1.2 verifier** (`verifier_min_version: 1.2.0`). These are completeness gaps
-  (`decided_not_completed`, `late_activity`, `concurrent_run`, ...), `run.child`, incidents and agent approvals,
-  `run.final`'s `provider_executed`, and `paired_by_args` (#218). Older verifiers report such a bundle
-  `UNVERIFIABLE (needs tracekit >= 1.2.0)`, never `FAILED`. Bundles with none of these stay readable by 1.1.
-- **`verify` warns on more**: every signed gap that isn't informational, and fail-open tool classes. `verify --strict`
-  exits 3 on them, so a CI gate that passed on 1.1 may now stop. Read the warning: it names the gap.
+- **Signer RPC version 16.** A 1.2 signer serves RPC 15 and 16. Coming from 1.0 (RPC 12), upgrade the signer and its
+  clients together.
+- **Bundles a 1.2 signer writes need a 1.2 verifier** (`verifier_min_version: 1.2.0`): every finished run's `run.final`
+  carries the coverage matrix, and 1.2 adds completeness gaps, `run.child`, incidents and containment records, agent
+  approvals, `effect.observed`, `run.registered`'s `posture`, `parent_run` and `session`, `provider_executed` and
+  `paired_by_args`. Older verifiers report such a bundle `UNVERIFIABLE (needs tracekit >= 1.2.0)`, never `FAILED`.
+  Bundles from 1.0 signers keep verifying as before.
+- **`verify` warns on more**: every signed gap that isn't informational, fail-open tool classes, unexplained network
+  effects, lost observers, held calls left unresolved, unchecked agent approvals, missing incident policies, and
+  calls whose records name different tiers (this one can fire on older bundles too). `verify --strict` exits 3 on
+  them, so a CI gate that passed on 1.0 may now stop. Each warning names what it found.
 - **Policies**: map your application's own tools to the new class `app` (mapping a tool to `unknown` is now a policy
   warning; a 1.1 policy still loads). Name handoff tools in `handoffs:` and structured-output tools in
   `structured_output:`. No shipped pack names any handoff, so `transfer_to_*` calls reconcile as `hook_missing` until
@@ -59,12 +62,16 @@ keep verifying. Every limit of the new features is in [docs/limits.md](docs/limi
 - `tool_results_sent` counts only results since the model's last turn (#206).
 - Refusal texts the model sees leave out `TK-UNKNOWN-TOOL`; the signed `rule_ids` are unchanged (#218).
 - `tracekit init`, `uninstall` and `doctor` use `$CLAUDE_CONFIG_DIR/settings.json` when it is set (#218).
-- Containment (#213): no trigger suspends an identity. Suspension is an operator's call, and lint refuses
-  `suspend:` in `respond`.
+- Containment (#213): no trigger suspends an identity. Suspension is an operator's call: a policy with
+  `suspend:` in `respond` fails to compile, so the signer won't load it.
 
 ### Added
+- **Signer settings** (signer.yaml): `posture`, `observe_grace_s`, `gateway_wait_s`, `suspensions`,
+  `approvals.agents`, a configurable `approvals.ttl_s`, `agent_consume_s` and `agent_timeout_s`; the signer refuses to
+  start when an agent approver's `veto_s` isn't shorter than `approvals.ttl_s`. `tracekit init --v2 --egress` routes
+  an agent user's traffic through the egress observer (Linux system mode).
 - **Custody (T2)** (#209): `tracekit executor` runs registered actions with credentials the agent never holds;
-  `tracekit mcp-gateway` proxies MCP servers whose credentials stay in it. Adapters honour `executor: t2`. Calls a
+  `tracekit mcp-gateway` proxies MCP servers whose credentials stay in it. Adapters honour an ask rule's `approval: {executor: t2}`. Calls a
   gateway holds are bound to it and its caller, recorded with `via`, and resolved or signed `held_call_unresolved` when
   the run closes. Helm and compose services and an opt-in egress NetworkPolicy ship too.
 - **Completeness** (#210): signed gaps for calls allowed or approved that never completed (`decided_not_completed`),
@@ -104,6 +111,12 @@ keep verifying. Every limit of the new features is in [docs/limits.md](docs/limi
   ([docs/case-study-oss-agents.md](docs/case-study-oss-agents.md)).
 
 ### Fixed
+- The v1 client: a reply lost after the request went out no longer resends and records a false "counter went
+  backwards" gap and a `signer_down` gap (#218).
+- Python `RunHandle.approval_consume` never raises (it returns `{"ok": False, "reason": ...}`), and result fields never
+  raise on values that aren't plain JSON (#218).
+- Claude Code's SessionEnd names the session's last `client_seq`, and a run the signer already closed still takes a
+  client's trailing gap (deep review).
 - **A denied tool ran in CrewAI while the signer was down.** CrewAI runs a tool when a hook raises, and Python's
   `decide` raised. Fixed by the fail-mode `decide` and the CrewAI integration (#218).
 - **An event lost in an outage at the very end of a run left no signed gap.** `close_run` now names each stream's last
@@ -127,6 +140,7 @@ keep verifying. Every limit of the new features is in [docs/limits.md](docs/limi
 - CI: three intermittent failures (#205).
 
 ### Security
+- A client's tool class hint can never exempt a call through a rule's `unless` (deep review).
 - Agent approvers: a person's reject now sticks: an agent can't approve the same call by asking again (deep review).
 - Bundles with a passkey-approved call verify: the schema now admits `approval.request`'s `passkey` (gated as 1.2;
   this also affected the unpublished 1.1.0rc1 commit) (deep review).
