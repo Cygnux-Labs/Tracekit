@@ -1,0 +1,52 @@
+{
+  "all_caught": true,
+  "cases": {
+    "E19.1 unexplained": {
+      "caught": true,
+      "unexplained": 1
+    },
+    "E19.2 explained": {
+      "caught": true,
+      "explained_by": [
+        "explains"
+      ]
+    },
+    "E19.3 refused": {
+      "caught": true,
+      "doh": "HTTP/1.1 403 Forbidden",
+      "internal": "HTTP/1.1 403 Forbidden",
+      "raw ip": "HTTP/1.1 403 Forbidden",
+      "sni mismatch": "HTTP/1.1 200 Connection established / then closed"
+    },
+    "E19.4 killed": {
+      "caught": true,
+      "network": "none"
+    },
+    "E19.5 late": {
+      "caught": true,
+      "in_run": 0
+    },
+    "E19.6 matrix": {
+      "caught": true,
+      "gateway_egress": {
+        "model_calls": "enforced",
+        "network": "enforced",
+        "processes": "none",
+        "services": "none",
+        "tool_calls": "enforced"
+      },
+      "plain": {
+        "model_calls": "none",
+        "network": "none",
+        "processes": "none",
+        "services": "none",
+        "tool_calls": "reported"
+      }
+    },
+    "E19.7 parity": {
+      "caught": true,
+      "matrix": "model calls not covered, tool calls reported (adapter), network observed (egress), processes not covered, services not covered"
+    }
+  },
+  "platform": "darwin"
+}

@@ -190,7 +190,8 @@ class Detector:
                     names, unknown, sums = p
                     self._count(tx, det, e, run, (set(names), unknown, sums), [e["run_id"], e["run_seq"]], fired, None)
         else:
-            trigger = {"trace.tamper": "tamper", "refusal.summary": "refusal_burst"}.get(typ)
+            trigger = {"trace.tamper": "tamper", "refusal.summary": "refusal_burst",
+                       "reconcile.unexplained_effect": "unexplained_effect"}.get(typ)
             if typ == "capture.gap" and d.get("kind") in ("executed_against_policy", "class_mismatch"):
                 trigger = d["kind"]
             if trigger and self._on(trigger) and (trigger != "refusal_burst" or d["count"] > self.respond[trigger]["max"]):

@@ -64,7 +64,8 @@ class Wording(unittest.TestCase):
         run = {"rec": reconcile.new(), "digests": {}}
         put = lambda d, k, v: d.__setitem__(k, v)
         reconcile.observe(put, run, {"type": "policy.decision", "tool_call_id": "tc-1", "args_source": "parsed",
-                                     "data": {"tool": "cancel_ticket", "decision": "allow"}})
+                                     "source": "sdk", "data": {"tool": "cancel_ticket", "decision": "allow",
+                                                               "rule_ids": []}})
         reconcile.observe(put, run, {"type": "model.exchange", "source": "sdk", "data": {"tool_uses": [use(
             "tc-1", "cancel_ticket")]}})
         self.assertEqual(reconcile._found(run, mandatory=False), [])

@@ -510,6 +510,20 @@ class RunHandle:
         self.closed = False
         self._decided = {}   # tool_call_id -> the decision_id and args_digest its `complete` must name
 
+    @property
+    def proxy_env(self):
+        """With $TRACEKIT_EGRESS_PROXY set (an egress observer, docs/egress.md#attribution): HTTPS_PROXY and HTTP_PROXY,
+        both cases, naming it with this run's id and token as credentials, for the commands the run starts
+        (`subprocess.run(cmd, env={**os.environ, **run.proxy_env})`) or an HTTP client's proxy, so the observer
+        attributes their connections to this run. {} without it. This process's own environment is left as it is."""
+        proxy = os.environ.get("TRACEKIT_EGRESS_PROXY")
+        if not proxy:
+            return {}
+        u = urllib.parse.urlsplit(proxy)
+        cred = urllib.parse.quote(self.run_id, safe="") + ":" + urllib.parse.quote(self.run_token, safe="")
+        url = u._replace(netloc=cred + "@" + u.netloc.rpartition("@")[2]).geturl()
+        return dict.fromkeys(("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"), url)
+
     def call(self, method, **fields):
         """Any per-run RPC (`state_write`, `approval_wait`, `read`, ...) with this run's id and token."""
         return self.client.call(method, {"run_id": self.run_id, "run_token": self.run_token, **fields})

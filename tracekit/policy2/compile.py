@@ -16,7 +16,7 @@ from ..policy import PolicyError, _sre_c, _sre_p, check_regex
 SECTIONS = ("deny", "ask", "flag")
 DETECT = ("sequences", "limits", "respond")   # signer-side detection (signer/detect.py), merged by id like rules
 TOP_KEYS = {"version", "description", "extends", "tools", "untrusted", "handoffs", "structured_output", "unknown_tools",
-            *SECTIONS, *DETECT}
+            "explains", *SECTIONS, *DETECT}
 RULE_KEYS = {"id", "class", "tool", "field", "pattern", "unless", "reason", "rationale", "label", "approval", "from"}
 # an ask rule's `approval`: executor t2 runs only the signer's copy; passkey required: approving needs a passkey;
 # agent: a reviewer agent may answer calls within its bounds (_lint_agent)
@@ -26,7 +26,8 @@ MAX_WINDOW = 86400   # seconds
 MAX_STEPS = 64       # an incident cites at most 64 records: one per step
 MAX_DETECT = 1024    # sequences and limits together: a decision's `detect` lists at most 1024
 MAX_DENIED = 1000    # denied_calls `max`: the calls a scope remembers in its window
-TRIGGERS = ("executed_against_policy", "denied_calls", "provenance", "class_mismatch", "refusal_burst", "tamper")
+TRIGGERS = ("executed_against_policy", "denied_calls", "provenance", "class_mismatch", "refusal_burst", "tamper",
+            "unexplained_effect")
 NOTIFY_ONLY = ("class_mismatch", "refusal_burst", "tamper")   # never enforced, whatever `respond` says
 MODES, ACTIONS = ("off", "shadow", "enforce"), ("notify", "hold", "quarantine")
 SEQ_KEYS = {"id", "steps", "scope", "window", "unless"}
@@ -161,6 +162,14 @@ def build(path, seen=()):
         for h in pol.get(key, []):
             if len(re.sub(r"\[[^]]*\]|[*?]", "", h)) < 3:   # a glob this loose names any tool
                 errors.append(f"{path}: {key} entry {h!r} is too loose: name the tools exactly")
+    explains = pol.get("explains", [])
+    if not (isinstance(explains, list) and all(
+            isinstance(x, dict) and len(set(x) & {"tool", "label"}) == 1 and set(x) <= {"tool", "label", "hosts"}
+            and isinstance(x.get("tool", x.get("label")), str) and isinstance(x.get("hosts"), list) and x["hosts"]
+            and all(isinstance(h, str) and h for h in x["hosts"]) for x in explains)):
+        errors.append(f"{path}: explains must list {{tool or label, hosts: [host globs]}}: the hosts a tool's own "
+                      "dependencies reach (docs/egress.md#explains)")
+        pol["explains"] = []
     base = pol.pop("extends", None)
     parents = []
     for b in base if isinstance(base, list) else [] if base is None else [base]:
@@ -180,6 +189,9 @@ def build(path, seen=()):
         untrusted = list(dict.fromkeys(u for p in parents + [pol] for u in p.get("untrusted", [])))
         if untrusted:
             merged["untrusted"] = untrusted
+        explains = [x for p in parents + [pol] for x in p.get("explains", [])]
+        if explains:
+            merged["explains"] = [x for i, x in enumerate(explains) if x not in explains[:i]]
         for key in ("handoffs", "structured_output"):
             if any(key in p for p in parents + [pol]):
                 merged[key] = list(dict.fromkeys(h for p in parents + [pol] for h in p.get(key, [])))
@@ -245,7 +257,24 @@ def _lint(pol, path):
                 errors.append(f"{where}: can never fire: class {cls} has no field {field!r}")
             elif cls not in (None, "unknown") and cls not in tools.values():
                 errors.append(f"{where}: can never fire: no tool maps to class {cls}")
+    labels = {r.get("label") for sec in SECTIONS for r in pol.get(sec, []) if isinstance(r, dict)}
+    for x in pol.get("explains", []):
+        if "label" in x and x["label"] not in labels:
+            errors.append(f"{path}: explains {x['label']!r}: no rule has this label")
+        errors += [f"{path}: explains host {h!r} is too loose: after its last wildcard it needs a dot and two or more "
+                   "labels (*.pythonhosted.org, not *.com or *pypi.org); or name the hosts" for h in x["hosts"]
+                   if _loose_host(h)]
     return errors + _lint_detect(pol, path)
+
+
+def _loose_host(glob):
+    """Whether host glob `glob` is too loose: not an exact host, nor a dot and two or more labels after its last
+    wildcard."""
+    if not re.search(r"[*?[]", glob):
+        return False
+    tail = re.split(r"[*?\]]", glob)[-1]
+    labels = tail.split(".")[1:]
+    return not tail.startswith(".") or len(labels) < 2 or "" in labels
 
 
 def _int(v, lo=0, hi=float("inf")):

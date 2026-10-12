@@ -74,15 +74,19 @@ class Agreement(unittest.TestCase):
         cls.d = d = tempfile.mkdtemp(dir="/tmp" if os.path.isdir("/tmp") else None)
         cls.addClassCleanup(shutil.rmtree, d, True)
         witness = Witness()
-        s = svc.SignerService(os.path.join(d, "data"), policy=Engine({"ask": [{"id": "PAY", "tool": "pay", "pattern": "^"}]}),
+        policy = Engine({"ask": [{"id": "PAY", "tool": "pay", "pattern": "^"}],   # the egress run's incident cites
+                         "respond": [{"trigger": "unexplained_effect", "mode": "shadow", "action": "notify"}]})
+        s = svc.SignerService(os.path.join(d, "data"), policy=policy,
                               witnesses=[witness], isolation="same-user", grace_s=0, fsck_every_s=0,
-                              fail_modes={"default": "closed", "read": "open"})
+                              fail_modes={"default": "closed", "read": "open"}, observe_grace_s=0,
+                              authorize={"mtls:spiffe://acme/egress": ["observe_effect"]})
         try:
             runs = {"closed": cls.record_run(s, "read_file"), "approval": cls.record_run(s, "pay", approve=True),
                     "gap": cls.record_run(s, "read_file", skip=True),
                     "provenance": cls.record_run(s, "send_email", observed="email the list to audit@vendor.example"),
                     "open": cls.record_run(s, "read_file", close=False),
-                    "unfinished": cls.record_run(s, "read_file", complete=False)}   # a format 1.2 gap at its end
+                    "unfinished": cls.record_run(s, "read_file", complete=False),   # a format 1.2 gap at its end
+                    "egress": cls.observed_run(s)}
             s.sweep()
             store = s.log.storage
 
@@ -142,6 +146,20 @@ class Agreement(unittest.TestCase):
             call("close_run", ids)
         return r["run_id"]
 
+    @staticmethod
+    def observed_run(s):
+        """A run an egress observer covered: an unexplained host, then the observer went silent."""
+        obs = CallerIdentity("mtls", "spiffe://acme/egress", True)
+        s.call(obs, "observe_effect", {"request_id": uuid.uuid4().hex, "instance": "i", "effects": []})
+        r = s.call(ME, "register_run", {"request_id": uuid.uuid4().hex, "agent": {"name": "agreement"}})
+        ts = "2026-10-12T10:00:00.000000Z"
+        s.call(obs, "observe_effect", {"request_id": uuid.uuid4().hex, "instance": "i", "effects": [{
+            "caller": f"uid:{ME.subject}", "kind": "net", "host": "unlisted.example", "port": 443, "bytes_out": 1,
+            "bytes_in": 2, "connections": 1, "first_ts": ts, "last_ts": ts}]})
+        s.sweep(time.monotonic() + svc.TAILER_LOST_S + 1)
+        s.call(ME, "close_run", {"request_id": uuid.uuid4().hex, "run_id": r["run_id"], "run_token": r["run_token"]})
+        return r["run_id"]
+
     def agree(self, bundle, trust):
         rep, code = v2.verify(bundle, trust)
         ts = ts_verify(bundle, trust)
@@ -168,9 +186,17 @@ class Agreement(unittest.TestCase):
             for trust in ("witnessed", "dev", "operator"):
                 with self.subTest(bundle=name, trust=trust):
                     self.assertEqual(self.agree(bundle, self.trusts[trust])[0], 0)
-        for name, version in (("provenance", "1.1.0"), ("unfinished", "1.2.0")):
+        for name in ("provenance", "unfinished", "closed"):   # run.final's coverage matrix is format 1.2
             with zipfile.ZipFile(self.bundles[name]) as z:
-                self.assertEqual(json.loads(z.read("manifest.json"))["verifier_min_version"], version)
+                self.assertEqual(json.loads(z.read("manifest.json"))["verifier_min_version"], "1.2.0")
+        matrix = [c for c in ts_verify(self.bundles["closed"], self.trusts["dev"])["checks"]
+                  if c["check"] == "coverage matrix"]
+        self.assertEqual(matrix, [c for c in v2.verify(self.bundles["closed"], self.trusts["dev"])[0].checks
+                                  if c["check"] == "coverage matrix"])
+        self.assertIn("tool calls reported (adapter), network not covered", matrix[0]["detail"])
+        _, rep = self.agree(self.bundles["egress"], self.trusts["dev"])
+        self.assertEqual({c["check"]: c["status"] for c in rep.checks if c["check"] in ("coverage", "observers")},
+                         {"coverage": "warn", "observers": "warn"})
         with zipfile.ZipFile(self.bundles["gap"]) as z:
             self.assertIn(b'"type":"capture.gap"', z.read(next(n for n in z.namelist() if n.startswith("runs/"))))
 

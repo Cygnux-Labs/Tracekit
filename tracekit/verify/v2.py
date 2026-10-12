@@ -58,7 +58,11 @@ the incident id, no consume under a hold but of an approval asked under an incid
 under a quarantine, and no tool.result while held or quarantined but of a call in flight when the response took effect
 or, held, one consumed with such an approval.
 Coverage: a run.final that carries `coverage` (the capture layers that reported, calls reconciled, reconcile.* records
-by kind) gives a `coverage` line; unreconciled calls make it a warning, so `--strict` exits 3 on them.
+by kind) gives a `coverage` line; unreconciled calls and unexplained effects make it a warning, so `--strict` exits 3
+on them. Its `matrix` gives the `coverage matrix` line: per action class (model calls, tool calls, network, processes,
+services) enforced, observed, reported or not covered, the layers behind it and `asserted` where the status rests on
+the operator's posture; across several runs, each class's weakest. It never says a run is complete. Each capture.gap
+`observer_lost` (an egress observer went silent while its run was open) is an `observers` warning.
 Gaps: every other signer-written capture.gap in a run (unless its kind is in INFO_GAPS), approval.binding_mismatch and
 trace.tamper record is counted by kind on a `gaps` warning; a run that declares a fail-open class makes `fail-open
 classes` a warning (calls the agent classed as one of them may have run unrecorded while the signer was down: the
@@ -129,13 +133,16 @@ from tracekit.storage.base import ZERO_HASH
 # themselves, the args source line counts coerced arguments, and an approval that expired is not a missing record
 INFO_GAPS = {"witness_late", "witness_failed", "degraded_unanchored", "clock_skew", "format_upgrade", "key_retired",
              "args_coerced", "approval_expired"}
-OWN_LINE = {"executed_against_policy", "held_call_unresolved", "decision_mismatch"}   # warned on lines of their own
+# capture.gap kinds warned on lines of their own
+OWN_LINE = {"executed_against_policy", "held_call_unresolved", "decision_mismatch", "observer_lost"}
 
 MAX_ENTRIES = 10_000
 MAX_ENTRY = 64 << 20
 MAX_TOTAL = 512 << 20
 MAX_LINE = 1 << 20
 CLASSES = ("public", "customer", "tracekit", "operator")
+MATRIX = ("model_calls", "tool_calls", "network", "processes", "services")
+COVERED = ("none", "reported", "observed", "enforced")   # weakest first
 _NAME = re.compile(r"[A-Za-z0-9_-][A-Za-z0-9._-]*(/[A-Za-z0-9._-]+)*")
 _VERSION = re.compile(r"\d{1,9}(\.\d{1,9}){0,2}")
 _CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
@@ -550,6 +557,16 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
                   [f"seq {r['event']['seq']}: {r['event']['type']} {str(r['event'].get('tool_call_id'))[:200]}: "
                    f"{str(r['event']['data'].get('detail'))[:200]}" for r in every
                    if str(r["event"].get("type")).startswith("reconcile.")][:20], warn=True)
+    matrices = [rs[-1]["event"]["data"]["matrix"] for rs in runs.values()
+                if rs[-1]["event"].get("type") == "run.final" and "matrix" in rs[-1]["event"]["data"]]
+    if matrices:
+        rep.check("coverage matrix", True, (f"weakest of {len(matrices)} runs: " if len(matrices) > 1 else "")
+                  + ", ".join(_coverage(matrices, k) for k in MATRIX))
+    lost = [f"seq {r['event']['seq']}: {str(r['event']['data'].get('reason'))[:200]}" for r in every
+            if r["event"].get("type") == "capture.gap" and r["event"]["data"].get("kind") == "observer_lost"]
+    if lost:
+        rep.check("observers", False, f"{len(lost)} egress observer(s) went silent while their run was open", lost[:20],
+                  warn=True)
     _findings(rep, runs)
     _incidents(rep, runs, files)
     vault = collections.Counter(r["event"]["type"] for r in every if r["event"].get("type") in ("content.accessed",
@@ -618,8 +635,18 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
                   warn=True)
 
 
+def _coverage(matrices, k):
+    """One class of the coverage matrix line: its weakest status in `matrices`, with the layers behind it."""
+    cs = [m[k] for m in matrices]
+    status = min((c["status"] for c in cs), key=COVERED.index)
+    layers = sorted({x for c in cs for x in c["layers"]}) + (["asserted"] if any(c.get("asserted") for c in cs) else [])
+    return f"{k.replace('_', ' ')} " + ("not covered" if status == "none" else status + (
+        f" ({', '.join(layers)})" if layers else ""))
+
+
 CONTAINMENT = ("incident.opened", "incident.updated", "run.held", "run.quarantined", "run.resumed")
-FIRES = ("policy.decision", "approval.consumed", "capture.gap", "trace.tamper", "refusal.summary")
+FIRES = ("policy.decision", "approval.consumed", "capture.gap", "trace.tamper", "refusal.summary",
+         "reconcile.unexplained_effect")
 RECOMPUTED = ("sequence", "limit", "denied_calls", "provenance", "executed_against_policy", "class_mismatch")
 
 

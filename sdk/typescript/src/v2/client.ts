@@ -573,6 +573,19 @@ export class RunHandle {
     this.failModes = registered.fail_modes;
   }
 
+  /** With $TRACEKIT_EGRESS_PROXY set (an egress observer, docs/egress.md#attribution): HTTPS_PROXY and HTTP_PROXY,
+   * both cases, naming it with this run's id and token as credentials, for the commands the run starts
+   * (`spawn(cmd, args, { env: { ...process.env, ...run.proxyEnv } })`) or an HTTP client's proxy, so the observer
+   * attributes their connections to this run. {} without it. This process's own environment is left as it is. */
+  get proxyEnv(): Record<string, string> {
+    const proxy = process.env.TRACEKIT_EGRESS_PROXY;
+    if (!proxy) return {};
+    const u = new URL(proxy);
+    u.username = encodeURIComponent(this.runId);
+    u.password = encodeURIComponent(this.runToken);
+    return Object.fromEntries(["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"].map((k) => [k, u.href]));
+  }
+
   /** Any per-run RPC with this run's id and token. A call's complete and approvals go to the run it was decided in;
    * new work refused because the signer closed a renewable run goes to a new run (renewAs). */
   async call(method: string, fields: Frame = {}): Promise<Frame> {

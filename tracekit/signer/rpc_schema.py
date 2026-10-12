@@ -3,9 +3,10 @@
 Frozen: a change to any schema here is a new RPC_VERSION. Version 16 (all of Tracekit 1.2) adds register_run's optional
 `parent`, close_run's optional `last_client_seq` (and a gateway's `caller`), `tailer_heartbeat`, args digests on tool uses
 the provider ran, agent approvers (approval_review, approval_revoke, approval_agents, approval_decide's `escalate` and
-`asserted`, approval_list's filters) and containment's operator calls (incident_list, incident_show, incident_resolve,
-run_hold, run_quarantine, run_resume, response_pause, response_resume, suspend, unsuspend; decide's `incident_id`); a
-signer serves RPC_MIN..RPC_VERSION (its `hello` `proto`), so a version 15 client keeps working unchanged.
+`asserted`, approval_list's filters), containment's operator calls (incident_list, incident_show, incident_resolve,
+run_hold, run_quarantine, run_resume, response_pause, response_resume, suspend, unsuspend; decide's `incident_id`) and
+`observe_effect`; a signer serves RPC_MIN..RPC_VERSION (its `hello` `proto`), so a version 15 client keeps working
+unchanged.
 The caller's identity comes from the transport (peer credentials, token, mTLS), never from a request field. Calls that change state carry `request_id`, scoped to that
 identity: a retry with the same id and payload gets the original response, the same id with another payload is refused
 with `conflict`, and the same id from another identity is a different request.
@@ -62,6 +63,7 @@ TOKEN = _str(1024, minLength=1)
 RULE_IDS = {"type": "array", "maxItems": 32, "items": _str(64)}
 REASON = _str(1024)
 IDENTITY = _str(256, pattern=r"^[a-z0-9_]+:.+" + _END)   # scheme:subject
+TS = _str(27, pattern=r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z" + _END)
 SLACK_ID = _str(64, pattern=r"^slack:[A-Z0-9]+/[A-Z0-9]+" + _END)   # slack:<team id>/<user or user group id>
 ANY = {}   # any JSON value; bounded by the transport's line limit
 APPROVAL_STATE = {"enum": ["requested", "approved", "rejected", "expired", "consumed"]}
@@ -218,6 +220,17 @@ REQUESTS = {
     # the transcript tailer is alive (every service.HEARTBEAT_S); once they stop while the run is open, the signer writes
     # the tailer_lost gap
     "tailer_heartbeat": _obj(["run_id", "run_token"], run_id=ID, run_token=TOKEN),
+    # an egress observer's network effects (tracekit.egress; an `authorize` grant, never a default), each attributed
+    # by the run token the client presented (run_id, run_token) or by the identity the observer authenticated for the
+    # connection (`caller`), which also goes with a token. Every call is the heartbeat of the observer's process
+    # `instance`; `check`: refused with run_token_invalid unless the signer issued that token for that run
+    "observe_effect": _obj(["request_id", "instance", "effects"], request_id=ID, instance=ID, effects={
+        "type": "array", "maxItems": 256, "items": _obj(
+            ["kind", "host", "port", "bytes_out", "bytes_in", "connections", "first_ts", "last_ts"], run_id=ID,
+            run_token=TOKEN, caller=IDENTITY, kind={"const": "net"},
+            host=_str(253, minLength=1, pattern=r"^[a-z0-9._:-]+" + _END),
+            port={"type": "integer", "minimum": 1, "maximum": 65535}, bytes_out=SEQ, bytes_in=SEQ, connections=SEQ,
+            first_ts=TS, last_ts=TS)}, check=_obj(["run_id", "run_token"], run_id=ID, run_token=TOKEN)),
     "status": _obj([]),
     "read": _obj(["run_id", "run_token"], run_id=ID, run_token=TOKEN, from_seq=SEQ,
                  limit={"type": "integer", "minimum": 1, "maximum": 1000}),
@@ -326,6 +339,7 @@ RESPONSES = {
     "delegate_run": _obj(["run_token"], run_token=TOKEN),
     "tailer_lost": _SEQ_ONLY,
     "tailer_heartbeat": _obj([]),
+    "observe_effect": _obj(["recorded"], recorded=SEQ),
     "status": _obj(["rpc_version", "signer", "identity"], rpc_version={"const": RPC_VERSION},
                    signer=_obj(["name", "version"], name=_str(128), version=_str(64)),
                    identity=_obj(["scheme", "subject", "attested"], scheme=_str(32), subject=_str(256),
@@ -407,6 +421,7 @@ class SignerAPI(Protocol):
     def delegate_run(self, req: dict) -> dict: ...
     def tailer_lost(self, req: dict) -> dict: ...
     def tailer_heartbeat(self, req: dict) -> dict: ...
+    def observe_effect(self, req: dict) -> dict: ...
     def status(self, req: dict) -> dict: ...
     def read(self, req: dict) -> dict: ...
     def checkpoint_nudge(self, req: dict) -> dict: ...

@@ -719,6 +719,11 @@ INCIDENT = {"incident_id": "inc-1", "trigger": "sequence", "rule_ids": ["Q"], "s
 FIRED = decision(detect={"sequences": [{"id": "Q", "step": 1}], "limits": [], "state": "complete"})   # run_seq 1
 HELD = ("run.held", {"incident_id": "inc-1", "scope": {"kind": "run", "id": "run-a"}, "by": "signer", "reason": "r"},
         "run-a")
+EFFECT = {"observer": "uid:7", "kind": "net", "host": "pypi.org", "port": 443, "bytes_out": 1, "bytes_in": 2,
+          "connections": 1, "first_ts": "2026-10-11T00:00:00.000000Z", "last_ts": "2026-10-11T00:00:00.000000Z",
+          "attribution": "token"}
+UNEXPLAINED = {"layers": ["L6"], "observer": "uid:7", "kind": "net", "host": "pypi.org", "port": 443}
+MATRIX = {k: {"status": "none", "layers": []} for k in ("model_calls", "tool_calls", "network", "processes", "services")}
 # per VERSIONS entry ("type" or "type.field"), records that use it
 ENTRIES = {
     "input.observed": [registered(), ("input.observed", OBSERVED, "run-a")],
@@ -786,6 +791,14 @@ ENTRIES = {
     "tool.result.via": [registered(), ("tool.result", {"tool_use_id": "t1", "ok": True, "output": OUTPUT, "via": VIA},
                                        "run-a")],
     "input.observed.via": [registered(), ("input.observed", dict(OBSERVED, via=VIA), "run-a")],
+    "effect.observed": [registered(), ("effect.observed", EFFECT, "run-a")],
+    "run.registered.posture": [registered(posture={"network": "enforced", "tool_calls": "open",
+                                                   "gateway_mandatory": True, "attested": False})],
+    "run.final.matrix": [registered(), ("run.final", {"matrix": MATRIX}, "run-a")],
+    **{f"reconcile.unexplained_effect.{f}": [registered(), ("reconcile.unexplained_effect", UNEXPLAINED, "run-a")]
+       for f in ("observer", "kind", "host", "port")},
+    **{f"capture.gap.kind={k}": [registered(), ("capture.gap", {"kind": k, "reason": "r"}, "run-a")]
+       for k in ("observer_lost", "effect_outside_run")},
 }
 
 

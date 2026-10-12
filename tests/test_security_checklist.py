@@ -4,6 +4,7 @@ requests, and every test the checklist names exists.
     python3 -m pytest tests/test_security_checklist.py -v
 """
 import ast
+import base64
 import contextlib
 import http.client
 import io
@@ -22,7 +23,7 @@ from http.server import ThreadingHTTPServer
 
 from test_e13_approvals import Sessions
 from test_observe_render import XSS
-from tracekit import (executor, gateway, ingest, mcp_gateway, observe, otlp, proxy, public_witness_server,
+from tracekit import (egress, executor, gateway, ingest, mcp_gateway, observe, otlp, proxy, public_witness_server,
                       slack_approvals, witness_server)
 from tracekit.observe import _session
 from tracekit.identity.token import BearerToken
@@ -49,6 +50,7 @@ SURFACES = {
     "tracekit/gateway.py:_Handler": "LLM gateway",
     "tracekit/executor.py:_Executor": "tool executor",
     "tracekit/mcp_gateway.py:_McpGateway": "MCP gateway",
+    "tracekit/egress.py:_Handler": "egress observer (forward and CONNECT proxy)",
     "tracekit/signer/metrics.py:Handler": "signer metrics, logs list and tlog tiles",
     "tracekit/otlp.py:H": "local OTLP receiver (tracekit otel serve)",
     "tracekit/ingest.py:H": "remote ingest",
@@ -185,6 +187,15 @@ class Surfaces(unittest.TestCase):
                              ("POST", "/mcp", {}, 401), ("POST", "/mcp", {**auth, "Content-Length": BIG}, 413),
                              ("PUT", "/mcp", auth, 501)]
 
+    def egress(self):
+        srv = transport.HttpServer(("127.0.0.1", 0), [BearerToken(self.bearer)], None, None, handler=egress._Handler)
+        srv.observer = egress.Observer(types.SimpleNamespace(observe_effect=lambda req: None))
+        run = {"Proxy-Authorization": "Basic " + base64.b64encode(f"run-1:{SECRET}".encode()).decode()}
+        return srv, SECRET, [("GET", f"/nope?token={SECRET}", run, 400), ("CONNECT", "nohost", run, 400),
+                             ("CONNECT", "x.example:443", {"Proxy-Authorization": f"Basic {SECRET}"}, 407),
+                             ("CONNECT", "dns.google:443", run, 403), ("CONNECT", "10.0.0.1:443", run, 403),
+                             ("POST", "http://x.example/", {**run, "Content-Length": BIG}, 413)]
+
     def metrics(self):
         srv = metrics.server({"listen": "127.0.0.1:0"}, metrics.SignerMetrics())
         return srv, SECRET, [("GET", f"/nope?token={SECRET}", {}, 404), ("POST", "/metrics", {}, 501)]
@@ -236,6 +247,7 @@ class Surfaces(unittest.TestCase):
     PROBES = {"tracekit/observe.py:Handler": viewer, "tracekit/transport/http.py:_Handler": signer_http,
               "tracekit/gateway.py:_Handler": gateway, "tracekit/executor.py:_Executor": executor,
               "tracekit/mcp_gateway.py:_McpGateway": mcp_gateway, "tracekit/signer/metrics.py:Handler": metrics,
+              "tracekit/egress.py:_Handler": egress,
               "tracekit/otlp.py:H": otlp, "tracekit/ingest.py:H": ingest, "tracekit/witness_server.py:H": witness,
               "tracekit/proxy.py:Handler": proxy, "tracekit/slack_approvals.py:Handler": slack,
               "tracekit/public_witness_server.py:H": public_witness}

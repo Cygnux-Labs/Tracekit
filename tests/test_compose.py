@@ -111,7 +111,7 @@ class ComposeFile(unittest.TestCase):
         with open(os.path.join(self.out, "docker-compose.yaml"), encoding="utf-8") as f:
             c = yaml.safe_load(f)
         s = c["services"]
-        custody = {"gateway", "executor", "mcp-gateway"}
+        custody = {"gateway", "executor", "mcp-gateway", "egress"}   # the egress observer among them
         self.assertEqual(set(s), {"postgres", "signer", "witness", "viewer", "agent"} | custody)
         for name, svc in s.items():
             for sec in svc.get("secrets", ()):
@@ -138,7 +138,7 @@ class ComposeFile(unittest.TestCase):
                              (["custody"], ["agent", "egress"], f"./custody/{name}:/etc/tracekit/custody:ro"))
             self.assertNotIn("secrets", s[name])
         self.assertEqual({n for n, svc in s.items() if "egress" in svc["networks"]}, custody)
-        self.assertEqual(len({s[n]["user"] for n in custody} | {s["agent"]["user"]}), 4)   # each its own uid
+        self.assertEqual(len({s[n]["user"] for n in custody} | {s["agent"]["user"]}), 5)   # each its own uid
         self.assertTrue(all(p.startswith("127.0.0.1:") for p in s["viewer"]["ports"]))
         with open(os.path.join(self.out, ".env.example"), encoding="utf-8") as f:
             env = [line for line in f.read().splitlines() if line and not line.startswith("#")]
