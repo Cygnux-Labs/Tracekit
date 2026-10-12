@@ -2170,12 +2170,15 @@ class SignerService:
         if self.approvals is not None:
             if same:
                 if self.approvals.get("self_approval") != "allow":
-                    raise RPCError("forbidden", f"{sub[:256]} may not answer its own run's approval")
+                    raise RPCError("forbidden", f"{sub[:256]} may not answer its own run's approval: answer as an "
+                                                "identity signer.yaml's approvals.approvers lists, or set approvals: "
+                                                "{self_approval: allow} there (assurance then stays dev)")
             elif not (self._in(self._approvers, identity) if groups is None else
                       any(lookup(self._approvers, x, False) for x in (sub, *groups))):
                 glass = groups is None and self._in(self._break_glass, identity)
                 if not glass:
-                    raise RPCError("forbidden", f"{sub[:256]} is not an approver")
+                    raise RPCError("forbidden", f"{sub[:256]} is not an approver: signer.yaml's approvals.approvers "
+                                                "lists who may answer")
                 if not req.get("reason", "").strip():
                     raise RPCError("forbidden", "a break-glass answer needs a reason")
         # a retry of an answer is the writer's to answer from its request_id cache: its assertion's signCount is spent

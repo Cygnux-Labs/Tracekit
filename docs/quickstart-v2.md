@@ -211,8 +211,9 @@ In dev mode the signer is not protected against the agent:
 - **No witness** has cosigned a checkpoint, so nothing outside this machine can show that the log was not rolled back or
   forked.
 - **Approvals are self-approvals**: the same user who runs the agent approved them, and the bundle says so. A signer
-  started with a config refuses self-approvals: list who may answer under `approvals: {approvers: [...]}` in
-  `signer.yaml` (see `tracekit/signer/service.py`).
+  started with a config (`signer.yaml`) refuses self-approvals, with or without an `approvals` section: list who may
+  answer under `approvals: {approvers: [...]}`, or set `approvals: {self_approval: allow}` for a single-user setup
+  ([who may answer](approvals.md#who-may-answer)).
 
 Dev mode is for trying Tracekit and for catching mistakes, not attacks. Protection against the agent needs a signer
 that runs as a different user or on another host (system mode, below), plus witnesses that cosign its checkpoints.

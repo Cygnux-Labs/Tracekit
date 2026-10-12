@@ -830,7 +830,13 @@ def _approvals(a):
                 if page["next_cursor"] is None:
                     break
             if not shown:
-                print("no approvals")
+                try:
+                    me = "{scheme}:{subject}".format(**c.status({})["identity"])
+                except (RPCError, SignerUnavailable):
+                    me = "this identity"
+                print(f"no approvals {me} may see: the signer lists an approval only to its run's owner and to those "
+                      "who may answer it (with an approvals section in signer.yaml, the identities approvals.approvers "
+                      "lists)")
         elif a.action == "show":
             x = c.approval_get({"approval_id": a.approval_id})
             args = loads_strict(x["args"]) if x["args_source"] == "raw" and x["args"] is not None else x["args"]
