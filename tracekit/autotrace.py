@@ -21,10 +21,10 @@ Content (prompts, outputs) is redacted and hashed by default, exactly as for eve
 Guarantees
 * Instrumentation never changes what the SDK returns or raises. If recording fails the call still runs, unless the
   policy says ``fail_mode: closed``, in which case a call whose request cannot be recorded is refused
-  (``PermissionError``) before it is sent.
+  (``tracekit.Refused``, a ``PermissionError``) before it is sent.
 * ``init`` is idempotent and ``shutdown`` restores the original methods.
 * Once the tracer's run has ended, model calls are no longer recorded: under ``fail_mode: closed`` they are refused
-  (``PermissionError``), under ``open`` they run unrecorded.
+  (``tracekit.Refused``), under ``open`` they run unrecorded.
 * Events are ``source=sdk``: the application reported them. They are evidence of what the process sent and received
   through these SDKs, not of calls made any other way (raw HTTP, other SDKs, other processes).
 """
@@ -43,7 +43,7 @@ from . import client, parsers, privacy
 from . import usage as _usage
 from .core import jsonable
 from .parsers import _get
-from .sdk.client import AsyncRunHandle, RunHandle, SignerUnavailable, current_run, fail_open
+from .sdk.client import AsyncRunHandle, Refused, RunHandle, SignerUnavailable, current_run, fail_open
 from .signer.rpc_schema import MAX_RESULTS_SENT
 
 MAX_TEXT = 1024 * 1024   # streamed text kept for the (hashed) response content
@@ -128,10 +128,10 @@ class _Exchange:
         try:
             self.tracer._send(self.tracer._event("model.exchange", data))
         except client.SignerUnavailable as e:
-            raise PermissionError(f"Tracekit: signer unavailable and fail_mode=closed; model call refused: {e}") from e
+            raise Refused(f"Tracekit: signer unavailable and fail_mode=closed; model call refused: {e}") from e
         except Exception as e:
             if self.tracer._policy.get("fail_mode") == "closed":
-                raise PermissionError(f"Tracekit: request not recorded and fail_mode=closed; model call refused: {e}") from e
+                raise Refused(f"Tracekit: request not recorded and fail_mode=closed; model call refused: {e}") from e
             _note_failure()
 
     def chunk(self):
@@ -205,7 +205,7 @@ class _RunExchange:
         if self.run.closed:
             self.done = True
             if self._fail_closed():
-                raise PermissionError("Tracekit: the run has ended and its fail mode is closed; model call refused")
+                raise Refused("Tracekit: the run has ended and its fail mode is closed; model call refused")
             return
         try:
             self._send("request", self.model, parsers.parse(self.kind, None, self.kwargs))
@@ -213,13 +213,13 @@ class _RunExchange:
             if not self._fail_closed():
                 _note_failure()
             elif isinstance(e, SignerUnavailable):
-                raise PermissionError(
+                raise Refused(
                     f"Tracekit: the signer can't be reached ({e}), and this run's fail mode for model calls is closed, "
                     "so the model call was refused before it was sent. Start the signer again (`tracekit doctor` says "
                     "what is wrong) and retry the call; to let model calls run unrecorded during an outage, set "
                     "fail_modes: {model: open} in signer.yaml") from e
             else:
-                raise PermissionError(f"Tracekit: the signer refused to record the request ({e}), and this run's fail "
+                raise Refused(f"Tracekit: the signer refused to record the request ({e}), and this run's fail "
                                       "mode for model calls is closed, so the model call was refused") from e
 
     def response(self, resp):
@@ -712,7 +712,7 @@ def _wrap(orig, provider, operation, is_async, on_resp, on_item, stream_kind):
             ex = _RunExchange(getattr(t, "_sync", t), provider, operation, kwargs, streamed)
         elif getattr(t, "_ended", False):
             if t._policy.get("fail_mode") == "closed":
-                raise PermissionError("Tracekit: the run has ended and fail_mode=closed; model call refused")
+                raise Refused("Tracekit: the run has ended and fail_mode=closed; model call refused")
             return None
         else:
             ex = _Exchange(t, provider, operation, _model_kw(kwargs), kwargs, streamed, on_resp, on_item)

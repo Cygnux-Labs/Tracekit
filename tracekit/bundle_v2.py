@@ -56,7 +56,7 @@ VERSIONS = {
                         "run.quarantined", "incident.resolved", "incident.response", "identity.suspension",
                         "effect.observed"],
               "fields": {"run.registered": ["parent_run", "session", "posture"], "capture.gap": ["run_id"],
-                         "run.final": ["provider_executed", "matrix"],
+                         "run.final": ["provider_executed", "paired_by_args", "matrix"],
                          "policy.decision": ["via", "caller", "detect", "incident_id"],
                          "approval.request": ["agent", "via", "incident_id"], "tool.result": ["via"],
                          "input.observed": ["via"],

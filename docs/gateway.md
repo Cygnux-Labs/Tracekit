@@ -161,6 +161,12 @@ gateway request that sends back the result of a gateway tool use no decide cover
 gateway tool use with no decide is `reconcile.hook_missing`, whatever the agent reported. Use it when every model call
 must go through the gateway.
 
+**(1.2)** An adapter whose framework hands it no tool-call id (CrewAI's hooks) decides each call under an id of its
+own. The reconciler pairs such a decide with the model's tool use when both are in the same model turn, name the same
+tool with the same arguments, and no other unpaired call of that turn does: they count as reconciled, and `run.final`
+says how many were paired so (`paired_by_args`; the verifier's coverage line names them). Anything less certain stays
+`reconcile.hook_missing` and `reconcile.fabricated`.
+
 A framework that asks the model for its actions as structured output rather than tool calls (Browser Use) leaves the
 gateway no tool use to match: name those tools in the policy's `structured_output:` and reconciliation compares them
 with nothing, in either direction ([policy](policy-v2.md#file-format)). The browser pack names Browser Use's actions

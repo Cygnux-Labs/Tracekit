@@ -189,7 +189,8 @@ def _pre(client, p, sid, tid):
         cap()
         c = run.approval_consume(tid, tool, args)   # every call that runs: once, for the decided args
     if not c["ok"]:
-        print(f"Held by tracekit policy: {'; '.join(c['rule_ids'])} {c.get('reason', '')}".rstrip(), file=sys.stderr)
+        why = " ".join(x for x in ("; ".join(c["rule_ids"]), c.get("reason", "")) if x)
+        print(f"Held by tracekit policy: {why}", file=sys.stderr)
         return 2
     if "args" in c and AGENT == "claude-code":   # T2: the signer's copy is what runs
         args = c["args"]

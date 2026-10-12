@@ -825,6 +825,7 @@ ENTRIES = {
     "run.registered.session": [registered(parent_run="run-p", session="run-root")],
     "capture.gap.run_id": [registered(), gap("concurrent_run", run_id="run-x")],
     "run.final.provider_executed": [registered(), ("run.final", {"provider_executed": 2}, "run-a")],
+    "run.final.paired_by_args": [registered(), ("run.final", {"paired_by_args": 1}, "run-a")],
     "capture.gap.kind=decided_not_completed": [registered(), gap("decided_not_completed", tool_use_id="t1")],
     "capture.gap.kind=late_activity": [registered(), gap("late_activity", run_id="run-x", missed_events=3)],
     "capture.gap.kind=concurrent_run": [registered(), gap("concurrent_run")],
