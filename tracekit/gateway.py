@@ -72,6 +72,7 @@ DROP = HOP | {"authorization", "x-api-key", "x-tracekit-run", "cookie"}   # neve
 KEYS = {"http", "upstream", "api_key_file", "api_key_header", "signer", "max_body", "provider_tools"}
 MAX_BODY = 32 * 1024 * 1024
 MAX_RUNS = 10_000   # runs remembered (stream, counter, fail modes), least recently used dropped first
+MAX_RUN_HEADER = 2048   # X-Tracekit-Run: a run id and its token (well under 1 KB)
 UPSTREAM_TIMEOUT_S = 600
 
 
@@ -116,7 +117,7 @@ class Gateway:
                                        "last_client_seq": [{"stream": run.stream, "client_seq": run.seq - 1}]})
                 run.acked = run.seq - 1
             except SignerUnavailable:
-                pass
+                return False
             except RPCError as e:
                 print(f"tracekit gateway: the signer refused the end of run {run_id}'s stream ({e.code}: {e.message}), "
                       "so exchanges it never got leave no gap"
@@ -128,7 +129,10 @@ class Gateway:
         with self.lock:
             runs = list(self.runs.items())
         for key, run in runs:
-            self.end(key, run)
+            if self.end(key, run) is False:   # the signer can't be reached: don't wait out its timeout per run
+                print(f"tracekit gateway: the signer is unreachable; {len(runs)} run(s) not told where their streams "
+                      "ended", file=sys.stderr)
+                return
 
     def refused_tools(self, kind, req):
         """The provider-run tools `req` declares that provider_tools does not allow (OpenAI tool types the client runs
@@ -158,6 +162,10 @@ class Gateway:
             except RPCError as e:
                 if e.code == "unavailable":
                     return False
+                if run.acked == -1:   # refused before the signer ever took one (a forged token): not kept
+                    with self.lock:
+                        if self.runs.get(key) is run:
+                            del self.runs[key]
                 raise
             run.modes, run.acked = out.get("fail_modes"), seq
         return True
@@ -263,10 +271,10 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         except RPCError as e:
             return self._error(401, e.message)
         parts = (run or "").rsplit(".", 2)   # a run token is <payload>.<mac>
-        if len(parts) != 3 or not all(parts):
+        if len(parts) != 3 or not all(parts) or len(run) > MAX_RUN_HEADER:
             return self._error(401, "no run: send X-Tracekit-Run: <run_id>.<run token>")
         n = self.headers.get("content-length", "")
-        if not (n.isascii() and n.isdigit()):
+        if not (n.isascii() and n.isdigit() and len(n) <= 12):
             return self._error(411, "Content-Length required")
         if int(n) > max_body:
             return self._error(413, f"request body over {max_body} bytes")
@@ -279,7 +287,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         self.server.stop_deadline()   # the request is in; the answer may take minutes
         try:
             req = json.loads(body)
-        except ValueError:
+        except (ValueError, RecursionError):
             req = None
         if not isinstance(req, dict):
             return self._error(400, "the request body is not a JSON object")

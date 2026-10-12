@@ -184,6 +184,38 @@ class Gateway(unittest.TestCase):
         return [(e["type"], e["tool_call_id"]) for e in self.events(run) if e["type"].startswith("reconcile.")]
 
 
+class RunTable(unittest.TestCase):
+    """The gateway's run table holds runs the signer took, and stopping doesn't wait on an unreachable signer."""
+
+    def gw(self, side_effect):
+        c = type("C", (), {})()
+        c.model_event = c.close_run = lambda req: side_effect(req)
+        return gateway.Gateway("https://up.example", "k", client=c)
+
+    def test_a_run_the_signer_refused_is_not_kept(self):
+        def refuse(req):
+            raise RPCError("run_token_invalid", "not one this signer issued")
+        g = self.gw(refuse)
+        for i in range(50):
+            with self.assertRaises(RPCError):
+                g.record((f"run-{i}", "forged.mac", "token:x"), "x", phase="request")
+        self.assertEqual(len(g.runs), 0)
+
+    def test_stopping_gives_up_at_the_first_unreachable_signer(self):
+        calls = []
+
+        def down(req):
+            calls.append(req)
+            raise SignerUnavailable("down")
+        g = self.gw(down)
+        for i in range(20):
+            run = g._run((f"run-{i}", "t.mac", "token:x"))
+            run.seq = 3   # exchanges the signer never acknowledged
+        calls.clear()
+        g.close()
+        self.assertEqual(len(calls), 1)
+
+
 class TestAuth(Gateway):
     def test_refusals_never_reach_the_upstream(self):
         other = self.register(OTHER)
