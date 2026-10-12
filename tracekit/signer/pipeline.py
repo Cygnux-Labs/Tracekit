@@ -45,14 +45,19 @@ _MISSING = object()
 def new_run(tenant, run_id):
     """`closed`: run.closing written, late records only; `final`: run.final written, nothing more. `active` and
     `closing_at` are monotonic times for the idle and grace clocks. `prov`: the provenance index of a run registered
-    since this signer started (SignerService._index), memory only; None after a restart (unavailable)."""
-    return {"tenant": tenant, "run_id": run_id, "run_seq": 0, "head": ZERO_HASH, "streams": {}, "closed": False,
+    since this signer started (SignerService._index), memory only; None after a restart (unavailable). `writers`: who
+    wrote each stream first (writer()), `tails`: the last client_seq a close_run said each stream ended at; both memory
+    and snapshot only."""
+    return {"tenant": tenant, "run_id": run_id, "run_seq": 0, "head": ZERO_HASH, "streams": {}, "writers": {},
+            "tails": {}, "closed": False,
             "final": False, "calls": {}, "decisions": {}, "denied": {}, "states": {}, "owner": None, "source": "sdk",
             "principal": None, "people": (None, None), "harness": None, "active": time.monotonic(), "closing_at": None,
             "rec": reconcile.new(), "digests": {}, "prov": None}
 
 
-FINAL_KEYS = ("tenant", "run_id", "run_seq", "head", "closed", "final", "owner", "source")
+# the streams: a gateway's close_run may still name one (SignerService._close_run)
+FINAL_KEYS = ("tenant", "run_id", "run_seq", "head", "closed", "final", "owner", "source", "streams", "writers",
+              "tails")
 # a call as replay has it; `via`, `caller`: the gateway that decided it and the client it named (SignerService._hold)
 CALL_KEYS = ("tool_call_id", "attempt", "decision", "rule_ids", "decision_id", "commitment", "nondeterministic",
              "detect_ids", "via", "caller")
@@ -152,6 +157,11 @@ def subject(identity):
     return f"{identity.scheme}:{identity.subject}"
 
 
+def writer(identity, req):
+    """Who writes a stream: the caller, and whether through a gateway (a request with `caller`)."""
+    return subject(identity) + (" through a gateway" if "caller" in req else "")
+
+
 def owner(identity):
     """A run's owner as run.registered records it, so the signer answers the same after a restart."""
     # lean: identities whose first 256 subject characters agree count as one owner; record a digest of the full
@@ -215,23 +225,51 @@ class Tx:
         self.set(log.head, "prev", r["hash"])
         self.set(run, "run_seq", e["run_seq"] + 1)
         self.set(run, "head", r["hash"])
-        reconcile.observe(self.set, run, e, digests)
+        found = reconcile.observe(self.set, run, e, digests, log.handoff)
         agent_state(self.set, log, run, e)
-        for t, d in incidents:
+        for t, d in incidents:   # first, as detect.backtest feeds them: right after the record that fired them
             self.emit(run, t, d, source="signer")
+        for kind, tcid, layers, detail in found:
+            self.emit(run, "reconcile." + kind, {"layers": layers, "detail": detail}, source="signer", tool_call_id=tcid)
         return e["run_seq"]
 
     def event(self, run, req, typ, data, digests=None, **top):
         """A client event call: skipped client_seq values first become a signer-written gap."""
         stream, cseq = req["stream"], req["client_seq"]
-        last = run["streams"].get(stream, -1)
+        last = max(run["streams"].get(stream, -1), run["tails"].get(stream, -1))   # a close_run's gap had those
         if cseq > last + 1:
             self.emit(run, "capture.gap", {"kind": "client_counter_gap", "missed_events": cseq - last - 1,
                                            "reason": f"stream {stream} skipped client_seq {last + 1}..{cseq - 1}"},
                       source="signer", stream=stream)
         self.set(run["streams"], stream, cseq)
-        return self.emit(run, typ, data, digests=digests, request_id=req["request_id"], stream=stream, client_seq=cseq,
-                         **top)
+        seq = self.emit(run, typ, data, digests=digests, request_id=req["request_id"], stream=stream, client_seq=cseq,
+                        **top)
+        self._overlap(run)
+        return seq
+
+    def _overlap(self, run):
+        """concurrent_run: a run registered from a harness process while another of its owner's runs, in another
+        session, was open there (SignerService._register_run) gets the gap once both have recorded an event since."""
+        # lean: which runs overlap is memory and snapshot state; a restart with no snapshot since forgets it
+        if run.get("overlap") and run["overlap"][1]:   # the newer run, and the older one has recorded an event
+            self._concurrent(run, run["overlap"][0])
+        for newer in run.get("overlapped_by", ()):   # the older run
+            n = self.log.runs[(run["tenant"], newer)]
+            if not n.get("overlap"):
+                continue
+            if n["streams"]:   # it recorded an event already
+                self._concurrent(n, run["run_id"])
+            else:
+                self.set(n, "overlap", [run["run_id"], True])
+
+    def _concurrent(self, run, other):
+        self.set(run, "overlap", None)
+        self.emit(run, "capture.gap", {
+            "kind": "concurrent_run", "run_id": other,
+            "reason": f"run {other} of the same owner and harness process, in another session, was open when this run "
+                      "registered, and both recorded events since: one harness process drives one session at a time, "
+                      "so one of the two may not be what it says. Read which of them the harness's transcripts "
+                      "show; a sub-agent's run passes `parent`"}, source="signer")
 
     def closing(self, run, reason, **top):
         self.set(run, "closed", True)
@@ -268,6 +306,10 @@ class RecordLog:
         self.done = OrderedDict()   # (scheme, subject, request_id) -> (payload digest, response)
         self._done_by = {}   # (scheme, subject) -> deque of its keys in `done`, oldest first
         self.refuse_writes = None   # a reason to answer client writes `unavailable`, e.g. an unacknowledged rollback
+        # run key -> [first, last, {method: count}] of writes refused because the run was final, until
+        # SignerService.flush_refusals writes them as late_activity (memory only)
+        self.late = {}
+        self.handoff = lambda tool: False   # the policy's handoffs (SignerService sets it): see reconcile.observe
         self.down, self._last_try = None, 0.0
         self._replay()
         if bridge and self.head["seq"]:
@@ -346,6 +388,8 @@ class RecordLog:
                         r[k] = _monotonic(r[k])
                 if "states" in r:
                     r["denied"], r["digests"], r["prov"] = {}, {}, None
+                    r.setdefault("writers", {})   # a snapshot written before 1.2
+                    r.setdefault("tails", {})
                 runs[(r["tenant"], r["run_id"])] = r
             approvals = {aid: dict(a, run_key=tuple(a["run_key"])) for aid, a in st["approvals"].items()}
             agent = st.get("agent", agent)
@@ -421,6 +465,10 @@ class RecordLog:
                 run["states"][e["data"]["key"]] = (salt_label(e), e["data"]["digest"])
             elif e["type"] == "tool.result" and "decision_id" in e["data"]:
                 run["decisions"].pop(e["data"]["decision_id"], None)
+                aid = index.get((e["tenant"], e["run_id"], e["tool_call_id"], e.get("attempt", 0)))
+                if aid and approvals[aid]["state"] == "consumed":   # its approved call completed (Service._complete)
+                    # lean: by call and attempt; the writer also checks the arguments against the approval's
+                    run["decisions"].pop(approvals[aid]["decision_id"], None)
             elif e["type"] == "approval.request":
                 a = approvals[e["data"]["approval_id"]] = approval(e["tenant"], e["run_id"], e["data"], e["ts"])
                 index[(e["tenant"], e["run_id"], a["tool_call_id"], a["attempt"])] = e["data"]["approval_id"]
@@ -470,8 +518,12 @@ class RecordLog:
 
     def leaves(self, r, tenants):
         """[(tenant, leaf)] of record `r`: none, its tenant's (added to `tenants`, the tenants with a registry), or
-        for a signer-level record (a gap or tamper record only when marked `tenant_level`) one in every registry."""
+        for a signer-level record (a gap or tamper record only when marked `tenant_level`) one in every registry. A gap
+        in a tenant's signer run (late_activity) is in that tenant's registry only."""
         typ, tenant = r["event"]["type"], r["event"]["tenant"]
+        if typ == "capture.gap" and r["event"]["run_id"] == SIGNER_RUN[1] and tenant != SIGNER_RUN[0]:
+            tenants.add(tenant)
+            return [(tenant, self.leaf(r))]
         if typ in registry.GAP_LEAVES and not r["event"]["data"].get("tenant_level"):
             return []
         if typ in registry.SIGNER_LEAVES:
@@ -515,7 +567,7 @@ class RecordLog:
             raise RPCError("unavailable", self.refuse_writes)
         digest = hashlib.sha256(json.dumps([method, req], sort_keys=True, default=repr).encode()).hexdigest()
         start = time.monotonic()
-        out = self._wait(lambda tx: self._item(tx, identity, req, digest, fn, run_key, late))
+        out = self._wait(lambda tx: self._item(tx, identity, method, req, digest, fn, run_key, late))
         self.metrics.ack_seconds.observe(time.monotonic() - start)
         return out
 
@@ -531,7 +583,7 @@ class RecordLog:
             self._q.put((fn, fut))
         return fut.result()
 
-    def _item(self, tx, identity, req, digest, fn, run_key, late):
+    def _item(self, tx, identity, method, req, digest, fn, run_key, late):
         rid = (identity.scheme, identity.subject, req["request_id"]) if "request_id" in req else None
         if rid in self.done:
             if self.done[rid][0] != digest:
@@ -542,6 +594,17 @@ class RecordLog:
             run = self.runs.get(run_key)
             if run is None:
                 raise RPCError("unknown_run", run_key[1])
+            if run["final"] and method != "close_run":
+                # a client learns from its first write after run.final that its run ended (the idle timeout) and moves
+                # to a new run: each identity's and stream's first one is not counted (up to streams_per_run of them)
+                seen = run.setdefault("late_from", {})
+                who = f"{identity.scheme}:{identity.subject}/{req.get('stream', '')}"
+                if who in seen or len(seen) >= self.quotas.limits.streams_per_run:
+                    now = time.time()
+                    first, _, by = self.late.get(run_key) or (now, now, {})
+                    self.late[run_key] = [first, now, {**by, method: by.get(method, 0) + 1}]
+                else:
+                    seen[who] = True
             if run["final"] or (run["closed"] and not late):
                 raise RPCError("run_closed", run_key[1])
             tx.set(run, "active", time.monotonic())
@@ -549,6 +612,8 @@ class RecordLog:
                 last = run["streams"].get(req["stream"])
                 if last is None:
                     self.quotas.check_count("streams_per_run", len(run["streams"]))
+                    if req["stream"] not in run["writers"]:
+                        tx.set(run["writers"], req["stream"], writer(identity, req))
                 elif req["client_seq"] <= last:
                     raise RPCError("client_seq_reused", f"{req['stream']}/{req['client_seq']}")
         out = fn(tx, run)

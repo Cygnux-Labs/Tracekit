@@ -131,6 +131,7 @@
         "content.accessed",
         "content.erased",
         "why.finding",
+        "run.child",
         "incident.opened",
         "incident.updated",
         "incident.capped"
@@ -962,6 +963,22 @@
         "properties": {
           "data": {
             "$ref": "#/$defs/why_finding"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "run.child"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/run_child"
           }
         }
       }
@@ -1970,10 +1987,18 @@
             "approval_expired",
             "executed_against_policy",
             "decision_mismatch",
+            "decided_not_completed",
+            "late_activity",
+            "concurrent_run",
+            "tailer_redelegated",
             "reask_after_reject",
             "held_call_unresolved"
           ],
           "description": "Gap and tamper kinds (signer-written only)."
+        },
+        "run_id": {
+          "$ref": "#/$defs/id",
+          "description": "format 1.2: the other run the gap is about (late_activity: the final run that was written to; concurrent_run: the open run this one overlaps; client_counter_gap in a tenant's signer run: the final run whose stream it is)"
         },
         "tool_use_id": {
           "type": [
@@ -2409,6 +2434,19 @@
         }
       }
     },
+    "run_child": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "run_id"
+      ],
+      "description": "format 1.2: a run bound to the same harness process registered with this run as its parent_run (signer-written)",
+      "properties": {
+        "run_id": {
+          "$ref": "#/$defs/id"
+        }
+      }
+    },
     "run_final": {
       "type": "object",
       "additionalProperties": false,
@@ -2424,6 +2462,12 @@
         },
         "head_hash": {
           "$ref": "#/$defs/hash"
+        },
+        "provider_executed": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "description": "format 1.2: tool uses the model's provider ran itself (executed_by provider), which no decide covers"
         },
         "coverage": {
           "type": "object",

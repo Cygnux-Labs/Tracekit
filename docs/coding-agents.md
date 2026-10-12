@@ -39,7 +39,38 @@ tracekit init --dev --v2 --agent codex                   # or cursor, gemini; re
 sudo tracekit init --v2 --user AGENT --agent codex       # system mode: the signer as its own user
 ```
 
-The hooks run `python -I -m tracekit.integrations.harness_hooks <agent>`: the same mapping as above, then the v2 Claude
-Code hook's core (the signer decides; approvals; the run's fail mode, closed by default and always closed in system
-mode). Unlike v1, a payload without a session or tool call id blocks the call, and so does any hook error. A payload
-that can't be parsed at all can't be told apart from a non-tool event: it is reported on stderr and not recorded.
+The hooks run `python -I -m tracekit.integrations.harness_hooks <agent> <event>`: the same mapping as above, then the
+v2 Claude Code hook's core (the signer decides; approvals; the run's fail mode, closed by default and always closed in
+system mode). Unlike v1, a payload without a session or tool call id blocks the call, and so does any hook error.
+
+### Hooks name their event (1.2)
+
+`tracekit init` writes each hook command with the event it's configured for as its last argument (the Claude Code
+hook: `... -m tracekit.integrations.claude_code PreToolUse`; Codex `PreToolUse`, Cursor `preToolUse`, Gemini CLI
+`BeforeTool`, and so on for every event). So a payload that can't be parsed at all is still known to be a pre-tool
+event: the call is blocked, with the reason on stderr. On any other event it is reported on stderr and not recorded;
+an allowed call whose post-tool payload was lost is completed as an error at the session's next Stop, prompt or end
+(below).
+
+Hooks installed before 1.2 have no event argument and keep working as before: an unparseable payload passes,
+unrecorded. `tracekit doctor` warns `D-HOOKS-EVENT` for Claude Code's; for Codex, Cursor and Gemini CLI it doesn't
+check, so re-run `tracekit init --agent NAME` after upgrading.
+
+### What the signer records as a gap (1.2)
+
+Without anything else installed, the signer turns what it saw and then never heard about into signed gaps
+([format](format-v2.md#3-events), [limits](limits.md#signer-and-capture)):
+
+- a call the policy allowed, or whose approval was consumed, and that never completed (`decided_not_completed`, at the
+  end of the run). A call you decline in the harness's own permission prompt runs no post-call hook, nor does one you
+  interrupt: the hook completes such calls as errors ("no PostToolUse came") when the session ends, so they get no
+  gap (a session that never ends, such as a killed harness, leaves them as gaps);
+- with harness binding (Linux system mode), a second run started from inside the same harness process while another
+  session's run is open there, once both have recorded events since (`concurrent_run`; an older session left open and
+  idle gets none). Two harness windows side by side are separate processes and get none. A sub-agent's run started
+  with `parent` from a bound harness process is a `run.child` record in its parent;
+- in system mode, a transcript tailer that stops calling the signer while the run is open, killed, crashed or never
+  started, from the moment the hook took its token (`tailer_lost`), and a second tailer token for the same run
+  (`tailer_redelegated`);
+- writes after the run ended (`late_activity`, in a run-set), apart from each client's first one, from which it learns
+  that the run ended (an idle close) and moves to a new run.

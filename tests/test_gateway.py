@@ -199,6 +199,16 @@ class TestAuth(Gateway):
         self.assertEqual(self.up.seen, [])
         self.assertEqual(self.exchanges(), [])
 
+    def test_a_denied_provider_tool_is_refused_with_a_clear_error(self):
+        self.gw.gateway.provider_tools = {"deny": ["web_search_preview"]}
+        status, body = self.post({"model": "gpt-x", "input": "hi", "tools": [{"type": "web_search_preview"}]},
+                                 path="/v1/responses")
+        self.assertEqual(status, 403)
+        self.assertIn("provider tool(s) web_search_preview not allowed by this gateway's provider_tools",
+                      json.loads(body)["error"]["message"])
+        self.assertEqual(self.up.seen, [])
+        self.assertEqual(self.post()[0], 200)   # a request without it goes through
+
     def test_caller_needs_its_own_model_event_grant(self):
         self.s.authorize["token:http"] = ["register_run"]
         self.assertEqual(self.post()[0], 403)

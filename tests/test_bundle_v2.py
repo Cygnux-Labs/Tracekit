@@ -172,10 +172,14 @@ class Case(unittest.TestCase):
         log = self.log(f"gated-{random.random()}")
         log.epoch(KEY1)
         for type_, data, run in added:
+            if type_ == "run.final":   # ends its run at its head
+                n, head = log.runs[run]
+                data = {"head_run_seq": n - 1, "head_hash": head, **data}
             log.add(type_, data, run)
         runs = list(dict.fromkeys(run for *_, run in added))
         for run in runs:
-            log.final(run)
+            if ("run.final", run) not in {(t, r) for t, _, r in added}:
+                log.final(run)
         out = os.path.join(self.d, f"g{random.random()}.tkb")
         export(log.store, "acme", runs[0], log.note(), out, with_runs=runs[1:])
         self.assertEqual(json.loads(v2.read_zip(out)["manifest.json"])["verifier_min_version"], version)
@@ -638,6 +642,10 @@ def decision(**data):
     return ("policy.decision", {"tool_use_id": "t1", "decision": "allow", "rule_ids": [], **data}, "run-a")
 
 
+def gap(kind, **data):
+    return ("capture.gap", {"kind": kind, "reason": "r", **data}, "run-a")
+
+
 AGENT = {"scheme": "token", "subject": "reviewer", "attested": True}
 TS_ = "2026-10-11T00:00:00.000000Z"
 
@@ -686,6 +694,13 @@ ENTRIES = {
     "run.registered.replay_of": [registered(replay_of="run-x", investigation="i")],
     "run.registered.parent_run": [registered(parent_run="run-p", session="run-p")],
     "run.registered.session": [registered(parent_run="run-p", session="run-root")],
+    "capture.gap.run_id": [registered(), gap("concurrent_run", run_id="run-x")],
+    "run.final.provider_executed": [registered(), ("run.final", {"provider_executed": 2}, "run-a")],
+    "capture.gap.kind=decided_not_completed": [registered(), gap("decided_not_completed", tool_use_id="t1")],
+    "capture.gap.kind=late_activity": [registered(), gap("late_activity", run_id="run-x", missed_events=3)],
+    "capture.gap.kind=concurrent_run": [registered(), gap("concurrent_run")],
+    "capture.gap.kind=tailer_redelegated": [registered(), gap("tailer_redelegated")],
+    "run.child": [registered(), ("run.child", {"run_id": "run-x"}, "run-a")],
     "policy.decision.detect": [registered(), decision(detect={"sequences": [{"id": "Q", "step": 1}], "limits": [],
                                                               "state": "complete"})],
     "incident.opened": [registered(), ("incident.opened", INCIDENT, "run-a")],
