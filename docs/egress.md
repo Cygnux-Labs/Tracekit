@@ -48,7 +48,9 @@ Each request through the proxy is attributed to a run:
   or to an HTTP client as its proxy. The SDKs never change the process's own environment, so the agent's other
   connections go where they went before. The proxy asks the signer whether it issued that token for that run before
   it opens anything: one it didn't is refused (407), and while the signer can't be asked the request is refused
-  (503), saying so.
+  (503), saying so. A check costs the observer none of its event quota, and a client address past its failed checks
+  (the signer's per-address failed-authentication limit) gets 429 without the signer being asked, so made-up tokens
+  can't crowd out the checks and heartbeats of every run.
 - **by identity**: the identity the authenticators accept (a client certificate, or `Proxy-Authorization: Bearer
   <token>`), or on Linux the uid that owns a loopback client's socket. The signer gives the observation to that
   identity's latest open run (`attribution: identity` in the record).
@@ -88,7 +90,8 @@ with every heartbeat.
 - a run id or token that can't be one (a token is 1 to 1024 of `A-Z a-z 0-9 . _ ~ + / = -`): 407.
 
 Plain HTTP requests in absolute form (`GET http://host/path`) are forwarded with `Connection: close`; a body needs a
-`Content-Length`.
+`Content-Length` (at most 32 MiB; send larger uploads over HTTPS) and is streamed through as it arrives, never held
+whole.
 
 ## What is recorded
 
@@ -110,7 +113,8 @@ reconcile.unexplained_effect {layers: [L6], observer, kind, host, port, detail} 
 
 A host is explained by:
 
-- an http or browser call to it the run decided (not denied), or a model call to its provider's API host
+- an http or browser call to it the run allowed, or asked for and had approved (an approval only requested explains
+  nothing), or a model call to its provider's API host
   (`api.openai.com`, `api.anthropic.com`): `explained_by: call`;
 - an entry of the policy's `explains`: `explains`.
 

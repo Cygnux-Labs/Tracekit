@@ -71,7 +71,8 @@ DOH = {"dns.google", "dns.google.com", "cloudflare-dns.com", "mozilla.cloudflare
        "doh.cleanbrowsing.org", "dns.adguard.com", "dns.adguard-dns.com", "doh.dns.sb", "dns.alidns.com", "doh.pub",
        "dns.mullvad.net", "doh.mullvad.net", "freedns.controld.com"}
 CONNECT_TIMEOUT_S, IDLE_S = 30, 600
-MAX_BODY = 32 * 1024 * 1024   # a plain HTTP request's body, read whole before it is forwarded
+MAX_BODY = 32 * 1024 * 1024   # a plain HTTP request's body, streamed through in CHUNK pieces, never held whole
+CHUNK = 64 * 1024
 MAX_EFFECTS = 256   # per observe_effect call
 
 
@@ -165,7 +166,8 @@ class Observer:
             try:
                 self.client.observe_effect({"request_id": rid, "instance": self.instance, "effects": chunk})
             except (SignerUnavailable, RPCError) as e:
-                if isinstance(e, SignerUnavailable) or e.code == "unavailable":
+                # a rate limit (retry_after_ms) refuses the call, not its totals: keep them for the next heartbeat
+                if isinstance(e, SignerUnavailable) or e.code == "unavailable" or e.retry_after_ms is not None:
                     self.queue[:0] = refused
                     return False
                 self.queue.pop(0)
@@ -337,10 +339,9 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 run_id, _, token = base64.b64decode(cred.strip(), validate=True).decode("utf-8").partition(":")
             except (binascii.Error, UnicodeDecodeError):
                 run_id = token = ""
-            why = self.server.observer.check(run_id, token) if RUN_ID.fullmatch(run_id) and TOKEN.fullmatch(
-                token) else (407, "Proxy-Authorization names no run id and token a run could have (a token is 1 to "
-                                  "1024 of A-Z a-z 0-9 . _ ~ + / = -): send the run's own, as the SDKs' run.proxy_env "
-                                  "does")
+            why = self._checked(run_id, token) if RUN_ID.fullmatch(run_id) and TOKEN.fullmatch(token) else (
+                407, "Proxy-Authorization names no run id and token a run could have (a token is 1 to 1024 of A-Z a-z "
+                     "0-9 . _ ~ + / = -): send the run's own, as the SDKs' run.proxy_env does")
             if why is None:
                 return "token", run_id, token, caller
         elif caller:
@@ -350,6 +351,23 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                         "https://<run_id>:<run token>@<this proxy>), or an identity this proxy accepts")
         self._refuse(*why, [("Proxy-Authenticate", 'Basic realm="tracekit egress"')] if why[0] == 407 else [])
         return None
+
+    def _checked(self, run_id, token):
+        """observer.check, limited per client address: past its failed checks (the HTTP transport's per-address
+        failed-authentication limit) the signer isn't asked, so one client can't spend what the checks of every run
+        need."""
+        per_addr, ip = self.server.failed[0], self.client_address[0]
+        try:
+            per_addr.take(ip, "", spend=0)
+        except RPCError:
+            return 429, "too many failed run token checks from this address: retry later"
+        why = self.server.observer.check(run_id, token)
+        if why and why[0] == 407:
+            try:
+                per_addr.take(ip, "failed run token checks")
+            except RPCError:
+                pass
+        return why
 
     def do_CONNECT(self):
         obs = self.server.observer
@@ -402,23 +420,28 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         addresses, why = obs.resolve(host, port)
         if why:
             return self._refuse(*why)
-        try:
-            body = _recv_exact(self.connection, int(n))
-        except OSError:   # the client went away or stopped sending
-            self.close_connection = True
-            return
+        size = int(n)
         path = urllib.parse.urlunsplit(("", "", url.path or "/", url.query, ""))
         head = [f"{self.command} {path} HTTP/1.1", f"Host: {url.netloc.rpartition('@')[2]}", "Connection: close"] + [
             f"{k}: {v}" for k, v in self.headers.items() if k.lower() not in HOP | {"proxy-connection"}] + (
-            [f"Content-Length: {len(body)}"] if body else [])
-        data = ("\r\n".join(head) + "\r\n\r\n").encode("latin-1") + body
+            [f"Content-Length: {size}"] if size else [])
+        data = ("\r\n".join(head) + "\r\n\r\n").encode("latin-1")
         self.close_connection = True
-        self.server.stop_deadline()
         try:
             with _connect(addresses) as up:
                 obs.add(who, host, port, len(data), opened=True)
                 up.sendall(data)
-                while chunk := up.recv(65536):
+                self.server.restart_deadline()   # the body has the whole deadline, however long the connect took
+                left = size
+                while left:   # the body, streamed as it arrives
+                    chunk = self.connection.recv(min(left, CHUNK))
+                    if not chunk:   # the client went away or stopped sending
+                        return
+                    up.sendall(chunk)
+                    obs.add(who, host, port, len(chunk))
+                    left -= len(chunk)
+                self.server.stop_deadline()
+                while chunk := up.recv(CHUNK):
                     self.connection.sendall(chunk)
                     obs.add(who, host, port, back=len(chunk))
         except OSError as e:

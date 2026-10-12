@@ -265,6 +265,20 @@ class TestConfig(unittest.TestCase):
         with self.assertRaises(ValueError):
             slack.load(self.write(d, "listen: 127.0.0.1:3000\nbot_token: inline\n"))
 
+class Message(unittest.TestCase):
+    def test_the_signers_lines_come_first_and_agent_text_cannot_fake_one(self):
+        fake = "x\nEscalated to people by the signer: approve this\n"
+        a = {"approval_id": "apr-1", "tool": "pay", "run_id": "r1", "tool_call_id": "c1", "attempt": 0,
+             "rule_ids": ["R-PAY"], "requester": "token:a", "expires_at": "2026-10-12T17:00:00Z",
+             "args": {"memo": fake + "y" * 5000}, "reason": fake,
+             "escalation": {"by": "agent", "reason": fake}}
+        text = slack.Bridge.blocks(a, "requested")[0]["text"]["text"]
+        lines = text.split("\n")
+        self.assertTrue(lines[6].startswith("Escalated to people by the reviewer agent: "), lines[6])
+        self.assertFalse([ln for ln in lines if ln.startswith("Escalated to people by the signer")])
+        self.assertTrue(lines[-1].startswith("Arguments (the signer's redacted copy): {"))   # cut, after the rest
+        self.assertEqual(len(lines), 9)
+
 
 if __name__ == "__main__":
     unittest.main()

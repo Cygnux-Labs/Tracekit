@@ -147,7 +147,8 @@ def explained(rec, host, explains, labels):
     if host in rec.get("hosts", {}) or host in rec.get("providers", {}):
         return "call"
     # lean: scans the run's decisions for each observed host; index tool names and labels if runs make ~10k calls
-    called = [(d["name"], d.get("rules", ())) for d in rec["l2"].values() if d["decision"] != "deny"]
+    called = [(d["name"], d.get("rules", ())) for d in rec["l2"].values()
+              if d["decision"] in ("allow", "flag") or d.get("approved")]   # an ask explains once approved
     for x in explains:
         if any(fnmatch.fnmatchcase(host, h) for h in x["hosts"]) and any(
                 fnmatch.fnmatchcase(name, x["tool"]) if "tool" in x else x["label"] in {labels.get(r) for r in rules}
