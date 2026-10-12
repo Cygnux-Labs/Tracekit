@@ -749,7 +749,8 @@ export function instrument(agent?: string, opts: ClientOptions = {}): Promise<In
         // handles is theirs, so the run stays as it is (beforeExit still closes it); else close, then the default action
         if (!process.listenerCount(sig)) void end().finally(() => process.kill(process.pid, sig));
       });
-    // lean: process.exit() and an uncaught exception leave the run open until the signer's idle_s (no async on exit)
+    // lean: process.exit() and an uncaught exception leave the run open until the signer's idle_s (no async on exit);
+    // close it synchronously from an exit hook if open runs pile up
     return { run, ai: tracekitAI(run), agents: new TracekitAgents(run) };
   }, (e) => {
     instrumented = null;

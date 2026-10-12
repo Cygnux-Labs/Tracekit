@@ -14,7 +14,6 @@ collected first. Malformed input raises WireError, never anything else (a Recurs
 
 Field numbers follow opentelemetry/proto/collector/trace/v1/trace_service.proto and
 opentelemetry/proto/trace/v1/trace.proto (stable since OTLP 1.0)."""
-import gzip
 import json
 import struct
 import zlib
@@ -59,10 +58,6 @@ def decompress(body, encoding):
             except zlib.error:
                 pass
         raise WireError(f"body is not valid {enc}")
-
-
-def gzip_bytes(b):
-    return gzip.compress(b)
 
 
 # ---------------------------------------------------------------- protobuf wire format

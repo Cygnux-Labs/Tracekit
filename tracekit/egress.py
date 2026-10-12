@@ -85,7 +85,8 @@ class Observer:
     def __init__(self, client, allow=()):
         self.client, self.allow = client, set(allow)
         self.totals, self.lock = {}, threading.Lock()
-        # lean: unsent totals wait in memory while the signer is unreachable (one per host, port and minute)
+        # lean: unsent totals wait in memory while the signer is unreachable (one per host, port and minute); spool
+        # them to disk if outages outlast the observer's memory
         self.queue = []   # [(request_id, effects)] not yet acknowledged, oldest first
         self.instance = uuid.uuid4().hex   # this process, in every call: the signer sees a restart
 

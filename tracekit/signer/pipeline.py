@@ -712,7 +712,8 @@ class RecordLog:
                 if cseq == max(run["streams"].get(stream, -1), run["tails"].get(stream, -1)) + 1:
                     # the signer saw this value and refused it (the refusal is its record): not a gap at close. Only
                     # the next value: one that skipped others leaves them to a later client_counter_gap.
-                    # lean: kept in the run's state and snapshots, not in a record: a replay from records forgets it
+                    # lean: kept in the run's state and snapshots, not in a record: a replay from records forgets it;
+                    # record it if restarts without a snapshot become common
                     e.keep = lambda t: t.set(run["tails"], stream, cseq)
             raise
         if rid is not None:

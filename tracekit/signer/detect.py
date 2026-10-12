@@ -176,7 +176,8 @@ class Detector:
             if not self.counts:
                 view = None
         elif typ == "approval.request" and run:   # the approval is of the decision it names: the call's latest
-            # lean: an ask never sent for approval keeps its entry until the call is decided again or the run ends
+            # lean: an ask never sent for approval keeps its entry until the call is decided again or the run ends;
+            # expire entries if long runs accumulate them
             k = f"call\0{e.get('tool_call_id')}"
             p = run["pending"].get(k)
             if p and p[0] == d["decision_id"]:

@@ -122,3 +122,4 @@ runs it on a page with a planted instruction. How it works: [fork replay](../why
   [witnesses](../witnesses.md). Pin them in the trust config and the report reads `Assurance: witnessed`.
 - **Your own policy**: the dev signer uses the coding pack plus two demo rules (`tracekit/policy2/packs/dev.yaml`); a
   configured signer takes `policy:` in `signer.yaml`.
+- **Reference**: [the LangChain integration](../integrations/langchain.md), with every option and what it doesn't cover.

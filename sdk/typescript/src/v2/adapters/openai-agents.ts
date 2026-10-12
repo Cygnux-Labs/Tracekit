@@ -109,7 +109,8 @@ export class TracekitAgents {
         const why = await this.gate.admit(toolCall.callId, name(toolCall.name), toolCall.arguments, { waitMs });
         return { behavior: why === null ? { type: "allow" } : { type: "rejectContent", message: why } };
       } }],
-      // lean: a call the MCP server fails reaches no output guardrail: the signer records it decided, not completed
+      // lean: a call the MCP server fails reaches no output guardrail: the signer records it decided, not completed;
+      // complete it from the SDK's tool-error event once the SDK exposes one
       toolOutputGuardrails: [{ type: "tool_output", name: "tracekit", run: async ({ toolCall, output }: any) => {
         await this.gate.complete(toolCall.callId, "ok", this.gate.result(toolCall.callId, output));
         return { behavior: { type: "allow" } };
