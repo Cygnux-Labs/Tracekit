@@ -4,6 +4,10 @@ Tracekit for TypeScript and JavaScript agents: every tool call is decided by the
 recorded after, and model responses become signed evidence. The client talks to the signer directly; it needs no Python
 at runtime (the same-user dev signer is started with Python when none is running).
 
+```sh
+npm install @cygnux/tracekit@next     # the 1.2 release candidate; Node 18 or newer
+```
+
 ## Signer client (`@cygnux/tracekit`)
 
 A native client of the v2 signer RPC with no runtime dependencies (Node ≥ 18 built-ins only, no Python bridge); also

@@ -8,7 +8,7 @@ with any object that implements the signer RPC (`tracekit.signer.rpc_schema.Sign
 ## Install
 
 ```bash
-pip install tracekit-ai "openai-agents>=0.23.1,<0.24"
+pip install --pre tracekit-ai "openai-agents>=0.23.1,<0.24"
 ```
 
 Python 3.10 or newer (the SDK's own requirement).

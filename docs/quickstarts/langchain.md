@@ -7,7 +7,7 @@ means](../quickstart-v2.md#what-dev-assurance-means)).
 ## 1. Install
 
 ```sh
-pip install tracekit-ai 'langchain>=1.4,<1.5' 'langgraph>=1.2,<1.3'
+pip install --pre tracekit-ai 'langchain>=1.4,<1.5' 'langgraph>=1.2,<1.3'
 ```
 
 ## 2. One line in your agent
