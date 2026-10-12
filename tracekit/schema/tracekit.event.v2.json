@@ -2531,6 +2531,12 @@
               }
             }
           }
+        },
+        "paired_by_args": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "description": "format 1.2: calls reconciled by pairing a decide with the model's tool use of the same turn by their arguments, the adapter having had no tool-call id"
         }
       }
     },

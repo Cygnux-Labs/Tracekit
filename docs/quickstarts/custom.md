@@ -30,7 +30,9 @@ with Client().run(agent="my-agent") as run:      # one run; starts the dev signe
 
 Pass the model's raw arguments string as `args` when you have it: the signer records which form it saw. `decide`
 doesn't raise when the signer can't be reached: the run's fail mode answers, with `"unavailable": True` (an open fail
-mode lets the call run unrecorded, with a warning). `complete` never raises either: the call already ran, so a result
+mode lets the call run unrecorded, with a warning). Since 1.2, `decide` returns the run's fail-mode decision with
+`unavailable: True` instead of raising `SignerUnavailable`: a loop that caught that exception to block the call now
+gets `{"decision": "deny", ...}` and blocks by the decision. `complete` never raises either: the call already ran, so a result
 the signer can't take is a warning, and the signer records the call as decided and not completed. To record
 the OpenAI, Anthropic or Google Gen AI calls made inside the `with` block into its run as well, add `from tracekit
 import autotrace; autotrace.instrument(None)` before it.

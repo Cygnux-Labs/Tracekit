@@ -14,6 +14,13 @@ decide with neither an L3 tool use nor a provider one → fabricated; each id in
 nor an L3 tool use → result_without_call. A run with no L3 record gets none of these: its coverage says L3 is absent. The internal args
 digests live in the run's `digests`, which no snapshot holds.
 
+A framework that hands its hooks no tool-call id (CrewAI, an MCP session under mcp-agent) decides each call under an id
+of the adapter's own. A tool use with no decide of its id and a decide with no tool use of its id are paired when both
+belong to the same model turn (the decide follows the model exchange that asked for the call, before the next one
+that asks for any), their internal args digests are equal (so are the tool and its arguments), and no other unpaired
+tool use or decide of that turn has that digest: they count as reconciled, and run.final's `paired_by_args` says how
+many were. Never across turns, never when ambiguous, never without both digests (after a restart).
+
 L3 from the LLM gateway (source gateway, tier T2) takes precedence over agent-reported L3 for the same tool use id. With
 `gateway_mandatory` (signer.yaml) only gateway L3 counts, provider-run tool uses included, and a run with none still
 has its decides checked: each decide the gateway did not see is fabricated, whatever the agent reported. A tool the
@@ -30,7 +37,7 @@ LAYERS = {"state.write": "L1", "policy.decision": "L2", "tool.result": "L2", "mo
 
 
 def new():
-    return {"layers": {}, "l2": {}, "l3": {}, "sent": {}}
+    return {"layers": {}, "l2": {}, "l3": {}, "sent": {}, "turn": 0}
 
 
 def _sub(put, rec, k):
@@ -63,23 +70,26 @@ def observe(put, run, e, digests=None, handoff=lambda tool: False):
     if e["type"] == "policy.decision":
         tcid = e["tool_call_id"]
         put(rec["l2"], tcid, {"name": e["data"]["tool"], "coerced": e.get("args_source") == "coerced",
-                              "decision": e["data"]["decision"]})
+                              "decision": e["data"]["decision"], "turn": rec.get("turn")})
         put(run["digests"], "l2:" + tcid, digests.get(tcid))
     elif e["type"] == "model.exchange":
         gw = e["source"] == "gateway"
+        if "turn" in rec and any(t["executed_by"] != "provider" for t in e["data"].get("tool_uses", ())):
+            put(rec, "turn", rec["turn"] + 1)
         for t in e["data"].get("tool_uses", ()):
             if t["executed_by"] == "provider":
                 if gw or not rec.get("provider", {}).get(t["id"], {}).get("gw"):
                     put(_sub(put, rec, "provider"), t["id"], {"gw": gw})
             elif gw or not rec["l3"].get(t["id"], {}).get("gw"):
                 put(rec["l3"], t["id"], {"name": t["name"], "coerced": t.get("args_source") == "coerced",
-                                         "unparseable": t.get("args_unparseable", False), "gw": gw})
+                                         "unparseable": t.get("args_unparseable", False), "gw": gw,
+                                         "turn": rec.get("turn")})
                 put(run["digests"], "l3:" + t["id"], digests.get(t["id"]))
         for tcid in e["data"].get("tool_results_sent", ()):
             put(rec["sent"], tcid, True)
             u = rec["l3"].get(tcid)
             if gw and u and u["gw"] and tcid not in rec["l2"] and tcid not in rec.get("live", {}) and tcid not in {
-                    x[1] for x in now} and not handoff(u["name"]):
+                    x[1] for x in now} and not handoff(u["name"]) and tcid not in paired(run, False):
                 now.append(("hook_missing", tcid, ["L2", "L3"], f"the model asked for {u['name'][:200]}; its result "
                             "went back to the model with no decide: the call ran with no hook or adapter gating it, or "
                             "one refused it before deciding (then the result is that refusal); check the agent's hooks "
@@ -98,6 +108,19 @@ def counted(rec, mandatory, k="l3"):
     return {t: u for t, u in rec.get(k, {}).items() if u.get("gw") or not mandatory}
 
 
+def paired(run, mandatory):
+    """{tool use id: decide id} of the run's calls paired by arguments (module docstring)."""
+    rec, digests, l3 = run["rec"], run["digests"], counted(run["rec"], mandatory)
+    provider, by = counted(rec, mandatory, "provider"), {}
+    for side, (k, lone) in enumerate((("l3", {t: u for t, u in l3.items() if t not in rec["l2"]}),
+                                      ("l2", {t: d for t, d in rec["l2"].items() if t not in l3 and t not in provider}))):
+        for tcid, x in lone.items():
+            digest = digests.get(f"{k}:{tcid}")
+            if digest and x.get("turn") is not None:
+                by.setdefault((x["turn"], digest), ([], []))[side].append(tcid)
+    return {uses[0]: decides[0] for uses, decides in by.values() if len(uses) == 1 and len(decides) == 1}
+
+
 def _found(run, mandatory, handoff=lambda tool: False, structured=lambda tool: False):
     """[(kind, tool_call_id, layers, detail)] of the run's discrepancies; `handoff(tool)`: the policy's handoffs;
     `structured(tool)`: its structured_output, which are never compared with L3."""
@@ -105,9 +128,10 @@ def _found(run, mandatory, handoff=lambda tool: False, structured=lambda tool: F
     provider = counted(rec, mandatory, "provider")
     if "L3" not in rec["layers"] and not mandatory:
         return out
+    pairs = paired(run, mandatory)
     for tcid, u in l3.items():
         d = rec["l2"].get(tcid)
-        if d is None and not handoff(u["name"]) and not structured(u["name"]):
+        if d is None and tcid not in pairs and not handoff(u["name"]) and not structured(u["name"]):
             out.append(("hook_missing", tcid, ["L2", "L3"],
                         f"the model asked for {u['name'][:200]}; no decide{_hint(u['name'])}"))
         if u["unparseable"]:
@@ -121,7 +145,7 @@ def _found(run, mandatory, handoff=lambda tool: False, structured=lambda tool: F
         elif not (u["unparseable"] or d["coerced"] or u["coerced"]) and a and b and a != b:
             out.append(("args_mismatch", tcid, ["L2", "L3"], "decided other arguments than the model asked for"))
     for tcid, d in rec["l2"].items():
-        if tcid not in l3 and tcid not in provider and not structured(d["name"]):
+        if tcid not in l3 and tcid not in provider and tcid not in pairs.values() and not structured(d["name"]):
             out.append(("fabricated", tcid, ["L2", "L3"], f"a decide for {d['name'][:200]} the model never asked for"
                         if tcid not in rec["l3"] else   # gateway_mandatory: only the agent reported the model asking
                         f"a decide for {d['name'][:200]} that no gateway exchange asked for: the agent reported the "
@@ -162,5 +186,7 @@ def finish(tx, run, mandatory=False, handoff=lambda tool: False, structured=lamb
         tx.emit(run, "reconcile." + kind, {"layers": layers, "detail": detail}, source="signer", tool_call_id=tcid)
         unreconciled[kind] = unreconciled.get(kind, 0) + 1
     flagged = {tcid for _, tcid, _, _ in found} | set(live)
+    pairs = paired(run, mandatory) if "L3" in rec["layers"] or mandatory else {}
     return {"layers": sorted(rec["layers"]), "unreconciled": unreconciled,
-            "reconciled": sum(t in rec["l2"] and t not in flagged for t in counted(rec, mandatory))}
+            "reconciled": sum(t in rec["l2"] and t not in flagged for t in counted(rec, mandatory)) + len(pairs),
+            **({"paired_by_args": len(pairs)} if pairs else {})}

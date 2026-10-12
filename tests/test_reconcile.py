@@ -136,6 +136,29 @@ class TestReconcile(Reconcile):
         self.assertEqual(found, [])
         self.assertEqual(final["data"]["coverage"], {"layers": ["L2", "L3"], "reconciled": 1, "unreconciled": {}})
 
+    def test_a_call_decided_under_an_id_of_its_own_pairs_by_arguments_in_its_turn_only(self):
+        paired, ambiguous, later, other = runs = [self.register() for _ in range(4)]
+        self.model(paired, [use("call_1", args={"path": "a"}), use("call_2", args={"path": "b"})])
+        self.run_call(paired, "crewai-1", args={"path": "a"})
+        self.run_call(paired, "crewai-2", args={"path": "b"})
+        self.model(ambiguous, [use("call_1"), use("call_2")])   # two of the same call: which is which is unknown
+        self.run_call(ambiguous, "crewai-1")
+        self.run_call(ambiguous, "crewai-2")
+        self.model(later, [use("call_1")])
+        self.model(later, [use("call_2", "write_file")])   # the next turn
+        self.run_call(later, "crewai-1")
+        self.model(other, [use("call_1", args={"path": "a"})])
+        self.run_call(other, "crewai-1", args={"path": "b"})
+        (found, final), *rest = self.final(*runs)
+        self.assertEqual((found, final["data"]["coverage"]["reconciled"], final["data"]["paired_by_args"]), ([], 2, 2))
+        self.assertEqual([sorted(f) for f, _ in rest], [
+            [("reconcile.fabricated", "crewai-1"), ("reconcile.fabricated", "crewai-2"),
+             ("reconcile.hook_missing", "call_1"), ("reconcile.hook_missing", "call_2")],
+            [("reconcile.fabricated", "crewai-1"), ("reconcile.hook_missing", "call_1"),
+             ("reconcile.hook_missing", "call_2")],
+            [("reconcile.fabricated", "crewai-1"), ("reconcile.hook_missing", "call_1")]])
+        self.assertNotIn("paired_by_args", rest[0][1]["data"])
+
     def test_late_l3_inside_grace_is_matched(self):
         run = self.register()
         self.run_call(run, "tc-1")
@@ -223,6 +246,19 @@ class TestCoverageLine(Reconcile):
         self.assertEqual((code, "coverage" in rep.warnings), (0, True))   # --strict exits 3 on it
         self.assertIn("[WARN] coverage — layers L2+L3; 1 call(s) reconciled; unreconciled: fabricated 1", text)
         self.assertIn("reconcile.fabricated tc-2", text)
+
+    def test_calls_paired_by_arguments_are_named(self):
+        run = self.register()
+        self.model(run, [use("call_1")])
+        self.run_call(run, "crewai-1")
+        self.final(run)
+        line = "[PASS] coverage — layers L2+L3; 1 call(s) reconciled (1 paired by arguments: no tool-call id)"
+        self.assertIn(line, self.verify(run)[2])
+        import test_ts_verifier as tv
+        if not tv.SKIP:
+            out = tv.ts_verify(os.path.join(self.dir, f"{run['run_id']}.tkb"), os.path.join(self.dir, "trust.json"))
+            self.assertIn("1 call(s) reconciled (1 paired by arguments: no tool-call id)",
+                          next(c["detail"] for c in out["checks"] if c["check"] == "coverage"))
 
     def test_run_without_l3_says_so(self):
         run = self.register()

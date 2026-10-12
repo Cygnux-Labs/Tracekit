@@ -523,6 +523,8 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
                   + f"{len(mismatched)} disagree with the signer", mismatched[:20], warn=True)
     finals = [rs[-1]["event"]["data"]["coverage"] for rs in runs.values()
               if rs[-1]["event"].get("type") == "run.final" and "coverage" in rs[-1]["event"]["data"]]
+    paired = sum(rs[-1]["event"]["data"].get("paired_by_args", 0) for rs in runs.values()
+                 if rs[-1]["event"].get("type") == "run.final")
     unreconciled = {}   # from the signed reconcile.* records themselves, not run.final's summary of them
     for r in every:
         if str(r["event"].get("type")).startswith("reconcile."):
@@ -532,7 +534,8 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
         layers = sorted({x for c in finals for x in c["layers"]})
         rep.check("coverage", not unreconciled,
                   f"layers {'+'.join(layers) or 'none'}" + ("" if "L3" in layers else " (L3 absent)")
-                  + f"; {sum(c['reconciled'] for c in finals)} call(s) reconciled; unreconciled: "
+                  + f"; {sum(c['reconciled'] for c in finals)} call(s) reconciled"
+                  + (f" ({paired} paired by arguments: no tool-call id)" if paired else "") + "; unreconciled: "
                   + (", ".join(f"{k} {n}" for k, n in sorted(unreconciled.items())) or "none"),
                   [f"seq {r['event']['seq']}: {r['event']['type']} {str(r['event'].get('tool_call_id'))[:200]}: "
                    f"{str(r['event']['data'].get('detail'))[:200]}" for r in every

@@ -1277,10 +1277,12 @@ class SignerService:
         coverage = reconcile.finish(tx, run, self.gateway_mandatory, self.policy.is_handoff,
                                     self.policy.is_structured_output)
         provider = len(reconcile.counted(run["rec"], self.gateway_mandatory, "provider")) if run.get("rec") else 0
+        paired = coverage and coverage.pop("paired_by_args", 0)
         tx.set(run, "final", True)
         tx.emit(run, "run.final", {"head_run_seq": run["run_seq"] - 1, "head_hash": run["head"],
                                    **({"coverage": coverage} if coverage else {}),
-                                   **({"provider_executed": provider} if provider else {})}, source="signer")
+                                   **({"provider_executed": provider} if provider else {}),
+                                   **({"paired_by_args": paired} if paired else {})}, source="signer")
         tx.set(self.log.runs, key, final_run(run))   # its calls, decisions and arguments go
         tx.pop(self.log.live, key)
         for aid in aids:   # all ended now: nothing can use them

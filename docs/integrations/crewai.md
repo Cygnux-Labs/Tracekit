@@ -45,7 +45,9 @@ register_after_tool_call_hook(after)
 ## Not covered
 
 - CrewAI's hooks carry no tool-call id, so each call gets one of its own (`crewai-<hex>`). Under autotrace or the LLM
-  gateway, the model's own call ids differ, so the reconciler can't pair them by id.
+  gateway the reconciler pairs it with the model's tool use of the same turn by its arguments (`paired_by_args` on
+  `run.final`). Two calls of the same tool with the same arguments in one turn can't be told apart: both are reported
+  (`reconcile.hook_missing` and `reconcile.fabricated`).
 - Delegation between agents (`delegate_work_to_coworker`, `ask_question_to_coworker`) is decided like any tool: give
   those tools a class in your policy to gate them.
 - A tool that runs other than through CrewAI's tool execution (a tool calling another tool directly in Python) is not

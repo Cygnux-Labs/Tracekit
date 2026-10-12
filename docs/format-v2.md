@@ -177,8 +177,9 @@ tenant's registry (§7), so a run-set proves it; the verifier counts it with the
 result back with no decide, not only before `run.final`. A `model.exchange` tool use with `executed_by: provider`
 carries an `args_commitment` when the provider returned its input; `run.final` carries `provider_executed`, the number
 of such tool uses, which no decide covers and which are never `reconcile.fabricated` (with `gateway_mandatory`, only
-those the gateway reported). A bundle with any of these kinds, fields or `run.child` needs `verifier_min_version`
-1.2.0.
+those the gateway reported), and `paired_by_args`, the number of calls reconciled by pairing a decide with a tool use
+of the same model turn by their arguments when the adapter had no tool-call id (never across turns, never when two
+could match). A bundle with any of these kinds, fields or `run.child` needs `verifier_min_version` 1.2.0.
 
 ## 4. Records and the signature message
 
@@ -413,7 +414,7 @@ what it added: record types, data fields per record type, and enum values per (r
 | Version | Record types | Data fields | Enum values |
 |---|---|---|---|
 | 1.1.0 | `input.observed`, `content.accessed`, `content.erased`, `why.finding` | `policy.decision`: `provenance`, `provenance_state`; `run.registered`: `replay_of` | — |
-| 1.2.0 | `run.child`, `approval.escalated`, `approval.revoked`, `approval.suggested`, `approval.agents`, `incident.opened`, `incident.updated`, `incident.capped` | `run.registered`: `parent_run`, `session`; `capture.gap`: `run_id`; `run.final`: `provider_executed`; `policy.decision`: `via`, `caller`, `detect`; `approval.request`: `agent`, `via`; `tool.result`, `input.observed`: `via`; `approval`: `approver_kind`, `asserted`, `spent`, `not_before`, `consume_by`; `approval.expired`: `reason` | `capture.gap` `kind`: `decided_not_completed`, `late_activity`, `concurrent_run`, `tailer_redelegated`, `reask_after_reject`, `held_call_unresolved` |
+| 1.2.0 | `run.child`, `approval.escalated`, `approval.revoked`, `approval.suggested`, `approval.agents`, `incident.opened`, `incident.updated`, `incident.capped` | `run.registered`: `parent_run`, `session`; `capture.gap`: `run_id`; `run.final`: `provider_executed`, `paired_by_args`; `policy.decision`: `via`, `caller`, `detect`; `approval.request`: `agent`, `via`; `tool.result`, `input.observed`: `via`; `approval`: `approver_kind`, `asserted`, `spent`, `not_before`, `consume_by`; `approval.expired`: `reason` | `capture.gap` `kind`: `decided_not_completed`, `late_activity`, `concurrent_run`, `tailer_redelegated`, `reask_after_reject`, `held_call_unresolved` |
 
 Every v2 definition is closed (`additionalProperties: false`), so an older verifier would fail a record that uses a
 newer entry; the version the manifest declares makes it report `UNVERIFIABLE (needs tracekit >= x)` instead, never
