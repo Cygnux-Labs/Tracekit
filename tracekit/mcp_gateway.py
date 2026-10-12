@@ -98,7 +98,12 @@ class Upstreams:
             ready.result(UPSTREAM_TIMEOUT_S)
 
     def _run(self, coro, timeout=UPSTREAM_TIMEOUT_S):
-        return asyncio.run_coroutine_threadsafe(coro, self.loop).result(timeout)
+        fut = asyncio.run_coroutine_threadsafe(coro, self.loop)
+        try:
+            return fut.result(timeout)
+        except concurrent.futures.TimeoutError:
+            fut.cancel()   # else the call keeps running (and holding its buffers) after its answer was given up
+            raise
 
     def call(self, name, method, *a):
         return self._run(getattr(self.clients[name], method)(*a))

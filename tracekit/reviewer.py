@@ -35,6 +35,7 @@ import urllib.request
 
 from tracekit import __version__, yamlmini
 from tracekit.client import no_redirect_opener, remote_url_error
+from tracekit.sdk.client import SignerUnavailable
 from tracekit.signer.rpc_schema import RPCError
 
 DEFAULT_MODEL = "claude-opus-5-5"
@@ -155,19 +156,24 @@ class Reviewer:
         return True
 
     def poll(self):
-        listed = set()
+        listed, complete = set(), True
         for tenant, agent in self.replicas:
             page = {"next_cursor": None}
-            while True:
-                page = agent.approval_list({"state": "requested", "for": "agent",
-                                            **({"cursor": page["next_cursor"]} if page["next_cursor"] else {})})
-                for x in page["approvals"]:
-                    listed.add(x["approval_id"])
-                    if x["approval_id"] not in self.seen and self.review(tenant, agent, x["approval_id"]):
-                        self.seen.add(x["approval_id"])
-                if page["next_cursor"] is None:
-                    break
-        self.seen &= listed
+            try:   # a replica that can't be reached doesn't stop the others' approvals
+                while True:
+                    page = agent.approval_list({"state": "requested", "for": "agent",
+                                                **({"cursor": page["next_cursor"]} if page["next_cursor"] else {})})
+                    for x in page["approvals"]:
+                        listed.add(x["approval_id"])
+                        if x["approval_id"] not in self.seen and self.review(tenant, agent, x["approval_id"]):
+                            self.seen.add(x["approval_id"])
+                    if page["next_cursor"] is None:
+                        break
+            except (SignerUnavailable, RPCError) as e:
+                log.warning("tracekit reviewer: replica %s could not be listed: %s", tenant, e)
+                complete = False
+        if complete:   # only a full listing says which answered approvals are gone
+            self.seen &= listed
 
 
 def records(store=None, bundle=None):

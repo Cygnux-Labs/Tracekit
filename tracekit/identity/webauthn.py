@@ -52,7 +52,7 @@ def verify(spki_der, count, rp_id, origin, expected, client_data_json, authentic
     `count` is the last signCount seen for this credential."""
     try:
         client = json.loads(client_data_json)
-    except (UnicodeDecodeError, ValueError):
+    except (UnicodeDecodeError, ValueError, RecursionError):
         raise ValueError("clientDataJSON is not JSON") from None
     if not isinstance(client, dict) or client.get("type") != "webauthn.get":
         raise ValueError("clientDataJSON type is not webauthn.get")

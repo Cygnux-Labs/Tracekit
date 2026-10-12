@@ -299,10 +299,38 @@ class TestOperators(Case):
                 new = s.s.log.runs[("default", s.register()["run_id"])]
                 self.assertEqual(new.get(state), [iid] if state == "held" else iid)
 
+    def test_a_run_without_an_attested_principal_inherits_every_hold_of_its_owner(self):
+        s = self.signer()
+        run = s.register()
+        iid = s.as_(OP, "run_hold", {"run_id": run["run_id"]})["incident_id"]
+        s.call("close_run", run)
+        cool = s.s.log.contain["cooldown"]
+        [key] = list(cool)
+        cool[key + "alice"] = cool.pop(key)   # the held run was alice's (an attested principal)
+        new = s.s.log.runs[("default", s.register()["run_id"])]   # the next run sends no principal_token
+        self.assertEqual(new.get("held"), [iid])
+
     def test_an_identity_granted_register_run_and_operator_calls_refuses_to_start(self):
         with self.assertRaisesRegex(ValueError, "uid:1 both register_run and containment's operator calls"):
             svc.SignerService(os.path.join(self.signer().dir, "other"), policy=e17.engine(HOLD),
                               authorize={"uid:1": ["register_run", "decide", "run_resume"]})
+
+    def test_an_identity_whose_keys_together_grant_register_run_can_not_operate(self):
+        s = self.signer()
+        s.s.authorize.update({"oidc:corp/*": ["register_run"], "group:sre": sorted(svc.OPERATOR)})
+        bob = CallerIdentity("oidc", "corp/u-bob", True, {"person": "corp/bob", "groups": ["sre"]})
+        self.refused(lambda: s.as_(bob, "response_pause", {}), why="is also granted register_run")
+        s.s.authorize["oidc:corp/*"] = ["approval_decide"]
+        s.as_(bob, "incident_list", {})
+
+    def test_resolved_holds_leave_no_cooldown_behind(self):
+        s = self.signer()
+        for _ in range(20):
+            run = s.register()
+            iid = s.as_(OP, "run_hold", {"run_id": run["run_id"]})["incident_id"]
+            s.as_(GLASS, "incident_resolve", {"incident_id": iid, "reason": "on call, case 7"})
+            s.call("close_run", run)
+        self.assertEqual(s.s.log.contain["cooldown"], {})
 
     def test_operator_calls_are_never_defaults(self):
         self.assertLessEqual(svc.OPERATOR, svc.NEVER_DEFAULT)
@@ -330,6 +358,16 @@ class TestSuspension(Case):
                          ["enforced", "lifted"])
         self.assertEqual([e["data"]["state"] for e in a.events() if e["type"] == "identity.suspension"],
                          ["suspended", "lifted"])
+
+    def test_a_suspended_operator_is_refused_and_only_break_glass_lifts_it(self):
+        s = self.signer()
+        s.as_(GLASS, "suspend", {"identity": f"uid:{OP.subject}"})
+        self.refused(lambda: s.as_(OP, "response_pause", {}), why="is suspended")
+        self.refused(lambda: s.as_(OP, "unsuspend", {"identity": f"uid:{OP.subject}"}), why="is suspended")
+        s.as_(GLASS, "suspend", {"identity": f"uid:{GLASS.subject}"})
+        s.as_(GLASS, "unsuspend", {"identity": f"uid:{GLASS.subject}"})   # break-glass is never locked out
+        s.as_(GLASS, "unsuspend", {"identity": f"uid:{OP.subject}"})
+        s.as_(OP, "incident_list", {})
 
     def test_an_entry_reaches_only_its_tenant(self):
         s = self.signer()
@@ -486,6 +524,19 @@ class TestVerifier(Case):
         code, line = self.check(*bundle(s, run))
         self.assertEqual((code, line["status"]), (1, "fail"))
         self.assertIn("enforces hold on this run, which no run.held or run.quarantined follows", line["problems"][0])
+
+    def test_an_enforced_incident_recorded_without_its_response_fails(self):
+        for change, why in (({"action": None}, "records no response (hold) and no reason"),   # actions: []
+                            ({"mode": "shadow"}, "does not follow from the run's records")):
+            with self.subTest(change):
+                s = self.signer()
+                run = s.register()
+                for r in s.s.log.detector.respond.values():   # a signer that answers otherwise than its policy says
+                    r.update(change)
+                s.hold(run)
+                code, line = self.check(*bundle(s, run))
+                self.assertEqual((code, line["status"]), (1, "fail"), line)
+                self.assertIn(why, line["problems"][0])
 
     def test_a_held_call_asked_under_a_later_hold_verifies(self):
         s = self.signer()

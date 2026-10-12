@@ -13,6 +13,7 @@ proxy/hook mismatches and approvals. Content that the ledger holds only as a has
     tracekit observe [--home /var/lib/tracekit] [--port 7777]
 """
 import argparse
+import collections
 import datetime as _dt
 import hashlib
 import hmac
@@ -59,6 +60,23 @@ def _show(c):
     return c
 
 
+MAX_RUNS_KEPT = 50_000   # runs whose names, cwd and subagents the translator remembers
+
+
+class _Bounded(collections.OrderedDict):
+    """A dict that keeps its newest `cap` keys: per-run state of a long-running viewer can't grow with every run."""
+
+    def __init__(self, cap):
+        super().__init__()
+        self.cap = cap
+
+    def __setitem__(self, k, v):
+        super().__setitem__(k, v)
+        self.move_to_end(k)
+        while len(self) > self.cap:
+            self.popitem(last=False)
+
+
 class Translator:
     """v0.2 events -> v0.1-shaped records for terminal.html. Stateful: joins tool.call with its
     policy.decision, which v0.2 records as two events."""
@@ -66,11 +84,12 @@ class Translator:
     def __init__(self, prices=None):
         self.prices = prices  # usage.Prices from --prices: adds cost to model calls (Tracekit ships no prices)
         self.pending = {}   # tool_use_id -> (tool.call event, record meta)
-        self.cwd = {}       # run_id -> cwd
-        self.agent_names = {}
-        self.child_meta = {}
-        self.spawn_calls = {}
-        self.seen_agents = set()
+        # per run, the newest MAX_RUNS_KEPT kept (as many as the feed keeps records): a run past that shows defaults
+        self.cwd = _Bounded(MAX_RUNS_KEPT)          # run_id -> cwd
+        self.agent_names = _Bounded(MAX_RUNS_KEPT)  # run_id -> agent name
+        self.child_meta = _Bounded(MAX_RUNS_KEPT)   # (run_id, child agent id) -> its spawn's meta
+        self.spawn_calls = _Bounded(MAX_RUNS_KEPT)  # (run_id, tool_use_id) -> child agent id
+        self.seen_agents = _Bounded(MAX_RUNS_KEPT)  # (run_id, agent id) -> True
         self.n = 0
         self.max_pending = 10000  # calls that never got a result must not accumulate forever
 
@@ -118,7 +137,7 @@ class Translator:
         agent_id = e.get("agent_id")
         agent_key = (e["run_id"], agent_id)
         if agent_id not in (None, "main", "tracekitd") and agent_key not in self.seen_agents:
-            self.seen_agents.add(agent_key)
+            self.seen_agents[agent_key] = True
             out.append(self._base(e, rec, "SubagentStart"))
         if t == "run.start":
             self.cwd[e["run_id"]] = d.get("cwd") or ""
@@ -171,7 +190,7 @@ class Translator:
             if child_id:
                 child_key = (e["run_id"], child_id)
                 if child_key not in self.seen_agents:
-                    self.seen_agents.add(child_key)
+                    self.seen_agents[child_key] = True
                     start = {**self._base(e, rec, "SubagentStart"), "agent_id": child_id,
                              "parent_id": (self.child_meta.get(child_key) or {}).get("parent_id")}
                     start["agent_type"] = (self.child_meta.get(child_key) or {}).get("agent_type", "subagent")
@@ -472,10 +491,10 @@ def make_handler(feed, token, allowed_hosts=None, secure=False, login=None, appr
                 nonce = secrets.token_urlsafe(18)
                 return self._send(200, _page(nonce=nonce), "text/html", nonce=nonce)
             if u.path == "/api/snapshot":
-                with feed.lock:
+                with feed.lock:   # copied under the lock, written after it: a client that stops reading holds nothing
                     body = {"next": feed.base + len(feed.records), "dropped": feed.base,
                             "records": [r for r in feed.records if scope is ALL or r.get("tenant") == scope]}
-                    return self._send(200, json.dumps(body, ensure_ascii=False))
+                return self._send(200, json.dumps(body, ensure_ascii=False))
             if u.path == "/api/verify":
                 n, problems, head = feed.verify() if scope is ALL else feed.verify(scope)
                 return self._send(200, json.dumps({"records": n, "ok": not problems, "problems": problems, "head": head}))

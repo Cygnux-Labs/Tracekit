@@ -11,6 +11,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 import zipfile
 from unittest import mock
@@ -475,11 +476,38 @@ class TestVerifyV2(Case):
         _, out = self.honest()
         self.assert_fails(self.mutate(out, edit=lambda files, m: files.update({"policies/x.json": b"{}"})), "manifest")
 
+    def test_a_run_of_tiny_lines_is_refused_before_it_is_parsed(self):
+        _, out = self.honest()
+
+        def tiny(files, manifest):
+            name = next(n for n in files if n.startswith("runs/"))
+            files[name] = b"1\n" * (v2.MAX_LINES + 1)   # 0.5 MB of lines no signed record could be
+        bad = self.mutate(out, edit=tiny)
+        started = time.monotonic()
+        rep, code = self.verify(bad)
+        self.assertLess(time.monotonic() - started, 5)
+        self.assertIn("more lines than the bundle limits", str(rep.checks))
+        import test_ts_verifier as tv
+        if not tv.SKIP:
+            ts = tv.ts_verify(bad, self.trust)
+            self.assertEqual((ts["exit_code"], ts["integrity"]), (code, rep.integrity))
+            self.assertIn("more lines than the bundle limits", json.dumps(ts["checks"]))
+
+    def test_a_seq_written_as_a_float_fails_the_same_checks_in_both_verifiers(self):
+        _, out = self.honest()
+        bad = self.mutate(out, edit_run=lambda rs: rs[0]["event"].update(seq=float(rs[0]["event"]["seq"])))
+        rep, code = self.verify(bad)
+        self.assertEqual((code, rep.failures), (1, ["signatures"]))
+        import test_ts_verifier as tv
+        if not tv.SKIP:
+            ts = tv.ts_verify(bad, self.trust)
+            self.assertEqual([c["check"] for c in ts["checks"] if c["status"] == "fail"], rep.failures)
+
     def test_newer_bundle_is_unverifiable(self):
         _, out = self.honest()
         rep, code = self.verify(self.mutate(out, edit=lambda f, m: m.update(verifier_min_version="99.0")))
         self.assertEqual((code, rep.integrity), (2, "UNVERIFIABLE (needs tracekit >= 99.0)"))
-        for bad in ("99.0\x1b[2J", "1.2.3.4", "v1", "", 4):
+        for bad in ("99.0\x1b[2J", "1.2.3.4", "v1", "", 4, "\u0661.\u0660.\u0660", "\uff11.0"):   # ASCII digits only
             with self.subTest(bad):
                 rep, code = self.verify(self.mutate(out, edit=lambda f, m: m.update(verifier_min_version=bad)))
                 self.assertEqual((code, rep.integrity), (2, "UNUSABLE BUNDLE"))
@@ -874,6 +902,7 @@ ENTRIES = {
     "capture.gap.kind=held_call_unresolved": [registered(), ("capture.gap", {
         "kind": "held_call_unresolved", "tool_use_id": "t1", "reason": "no result"}, "run-a")],
     "approval.request.via": [registered(), ("approval.request", dict(APPROVAL, via=VIA), "run-a")],
+    "approval.request.passkey": [registered(), ("approval.request", dict(APPROVAL, passkey=True), "run-a")],
     "tool.result.via": [registered(), ("tool.result", {"tool_use_id": "t1", "ok": True, "output": OUTPUT, "via": VIA},
                                        "run-a")],
     "input.observed.via": [registered(), ("input.observed", dict(OBSERVED, via=VIA), "run-a")],

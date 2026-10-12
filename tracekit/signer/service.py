@@ -57,7 +57,7 @@ signer.yaml:
                                              # executor and the MCP gateway (the coverage matrix's enforced;
                                              # docs/egress.md#posture)
     observe_grace_s: 120                     # how long a closing run an egress observer covers waits for its last reports
-    fail_modes: {default: closed, read: open}   # tool class -> fail mode, recorded and returned by register_run
+    fail_modes: {default: closed, fs: open}     # tool class -> fail mode, recorded and returned by register_run
     grace_s: 5                               # reconciliation window between run.closing and run.final
     gateway_wait_s: 600                      # past grace_s, how long a closing run waits for the results of calls a
                                              # gateway holds (each one still open then: a held_call_unresolved gap)
@@ -792,12 +792,15 @@ class SignerService:
         # before the startup checks, so their records go out too; then the containment's own follow-up
         self.log.observers += [w.put for w in self._webhooks] + [self._after_write]
         self.policy, self.isolation = policy, isolation
-        self.log.handoff = lambda tool: self.policy.is_handoff(tool)
+        # neither a handoff nor a structured-output tool is a missing decide, live or at run.final
+        self.log.handoff = lambda tool: self.policy.is_handoff(tool) or self.policy.is_structured_output(tool)
         self.identity = identity or _process_identity()
         self.tenant, self.tenants, self.authorize = tenant, dict(tenants or {}), authorize
         self.multi_tenant_apps, self.migrators, self.analyzers = set(multi_tenant_apps), set(migrators), set(analyzers)
-        # run key -> monotonic time of its tailer's last heartbeat; (*run key, observer) -> its observer's
-        self._beats, self._beats_lock = {}, threading.Lock()
+        # run key -> monotonic time of its tailer's last heartbeat (a restart's open runs were tailed until now);
+        # (*run key, observer) -> its observer's
+        self._beats = {k: time.monotonic() for k in self.log.live if self.log.runs[k].get("tailed")}
+        self._beats_lock = threading.Lock()
         # (tenant, observer) -> (monotonic time of its last observe_effect, its process `instance`), under _beats_lock
         self._observers = {}
         self._gateways, self.gateway_mandatory = {k: True for k in gateways}, bool(gateway_mandatory)
@@ -818,6 +821,11 @@ class SignerService:
         self.ttl_s, self.agent_consume_s, self.agent_timeout_s = (
             (approvals or {}).get(k, d) for k, d in (("ttl_s", APPROVAL_TTL_S), ("agent_consume_s", AGENT_CONSUME_S),
                                                      ("agent_timeout_s", AGENT_TIMEOUT_S)))
+        veto = max((r["approval"]["agent"].get("veto_s", 0) for _, r, *_ in policy.rules
+                    if "agent" in (r.get("approval") or {})), default=0)
+        if veto >= self.ttl_s:
+            raise ValueError(f"an approval.agent veto_s of {veto} s is not under approvals.ttl_s ({self.ttl_s} s): "
+                             "every agent approval would expire before it may run")
         self._swept = self._noted = time.monotonic()
         self._args_dir = os.path.join(data_dir, "approvals")   # approval_id -> the encrypted args of a live approval
         # lean: passkeys live in this signer's data_dir; one store shared by replicas once a central signer has several
@@ -999,7 +1007,7 @@ class SignerService:
                 raise RPCError("forbidden", f"{subject(identity)[:256]} is an agent approver: it may call "
                                             f"{', '.join(sorted(AGENT_METHODS))} only")
             self._grant(identity, CONTENT_READ if method == "content_get" else method)
-            if method not in OPERATOR:   # an operator lifts suspensions, so none stops its calls
+            if method not in OPERATOR or not self._in(self._break_glass, identity):   # break-glass can always unsuspend
                 self._check_suspended(identity)
             errs = rpc_schema.validate(REQUESTS[method], req)
             if errs:
@@ -1388,12 +1396,19 @@ class SignerService:
         silent (`now`: a monotonic time); returns the ids of the approvals that expired with it."""
         consumed = {(a["tool_call_id"], a["attempt"]): a["decision_id"] for a in map(self.log.approvals.get, aids)
                     if a["state"] == "consumed"}
-        for c in self._held_open(key, run):
+        held = self._held_open(key, run)
+        for c in held[:DECIDED_GAPS_MAX]:
             tx.emit(run, "capture.gap", {
                 "kind": "held_call_unresolved", "tool_use_id": c["tool_call_id"],
                 "reason": f"{c['via'][:256]} decided {c['tool_call_id'][:128]} for {str(c.get('caller'))[:256]} and "
                           "recorded no result before the run ended: it may have run"},
                     source="signer", tool_call_id=c["tool_call_id"], attempt=c["attempt"])
+        if len(held) > DECIDED_GAPS_MAX:
+            n = len(held) - DECIDED_GAPS_MAX
+            tx.emit(run, "capture.gap", {"kind": "held_call_unresolved", "missed_events": n,
+                                         "reason": f"{n} more calls a gateway decided recorded no result before the "
+                                                   f"run ended (the first {DECIDED_GAPS_MAX} have a gap each): they "
+                                                   "may have run"}, source="signer")
         expired = [self._expire(tx, run, aid, "run_final") for aid in aids   # nothing consumes them once it is final
                    if self.log.approvals[aid]["state"] in LIVE]
 
@@ -1597,8 +1612,9 @@ class SignerService:
         if gw is None:
             self._check_harness(identity, key)
             if key in self._beats and self._tailer(identity):   # any call of a watched run's tailer shows it alive
-                with self._beats_lock:
-                    self._beats[key] = time.monotonic()
+                with self._beats_lock:   # checked again here: a sweep that made the run final has dropped its beat
+                    if key in self._beats and not self.log.runs[key]["final"]:
+                        self._beats[key] = time.monotonic()
         return key
 
     def _covering(self, key):
@@ -1675,7 +1691,7 @@ class SignerService:
                 "it was escalated: people answer it now" if a["escalated"] else
                 "the policy changed since it was requested: people answer it"
                 if a["policy_hash"] != self.policy.policy_hash else
-                "an agent did not approve this call in this run: people answer it"
+                "an agent or a person did not approve this call in this run: people answer it"
                 if any(k in self.log.runs[a["run_key"]].get("person_only", {}) for k in person_only_keys(a)) else None)
 
     def _agent_mode(self, a):
@@ -1701,6 +1717,7 @@ class SignerService:
             raise RPCError("forbidden", f"{subject(them)[:256]} is an agent approver: no bridge acts for it")
         if self._tenant_of(them) != mine and subject(identity) not in self.multi_tenant_apps:
             raise RPCError("forbidden", f"{subject(identity)[:256]} acts for people of tenant {mine[:64]!r} only")
+        self._check_suspended(them)
         return them
 
     def _passkey(self, identity, aid, a, assertion):
@@ -1831,11 +1848,11 @@ class SignerService:
 
     def _capped(self, key, run, tool, tcid, agent):
         """Why the signer's state (on the writer) makes an eligible call of run `key` a person's to answer, or None:
-        an agent said no to the same call in this run, the run's or the tenant's agent reviews are used up, or agent
-        approvals were switched off since the decision."""
+        an agent or a person said no to the same call in this run, the run's or the tenant's agent reviews are used up,
+        or agent approvals were switched off since the decision."""
         if any(k in run.get("person_only", {}) for k in person_only_keys({"tool": tool, "tool_call_id": tcid,
                                                                           "agent": agent})):
-            return "reask_after_reject: an agent did not approve this call in this run; people answer it"
+            return "reask_after_reject: an agent or a person did not approve this call in this run; people answer it"
         if run.get("agent_reviews", 0) >= AGENT_REVIEWS_PER_RUN:
             return f"the run has had {AGENT_REVIEWS_PER_RUN} agent reviews; people answer the rest"
         since = time.time() - AGENT_REVIEWS_WINDOW_S
@@ -2027,9 +2044,9 @@ class SignerService:
 
     def _open_calls(self, key, run):
         """The calls of `run` (`key`) that may be running: allowed, or approved and consumed, and not completed."""
-        def consumed(c):
-            aid = self.log.approval_index.get((*key, c["tool_call_id"], c["attempt"]))
-            return self.log.approvals.get(aid, {}).get("state") == "consumed"
+        def consumed(c):   # this decision's own approval: a retry decided again after a consume never ran
+            a = self.log.approvals.get(self.log.approval_index.get((*key, c["tool_call_id"], c["attempt"])), {})
+            return a.get("state") == "consumed" and a.get("decision_id") == c["decision_id"]
         return [c for c in run["decisions"].values() if c and (c["decision"] in ("allow", "flag") or consumed(c))]
 
     def _in_flight(self, key, run, skip=None):
@@ -2111,9 +2128,9 @@ class SignerService:
                 f"run {run['run_id'][:128]} is held by incident {h}: each call waits for a person's approval; a person "
                 f"ends the hold (tracekit signer incidents resume {run['run_id'][:128]}, or resolve each incident)")
 
-    def _check_suspended(self, identity):
-        """RPCError forbidden when the suspension list names one of the identity's keys in the identity's tenant. A
-        changed list first gets this signer's identity.suspension records (_enforce)."""
+    def _check_suspended(self, identity, tenant=None):
+        """RPCError forbidden when the suspension list names one of the identity's keys in its tenant (`tenant`, else
+        the identity's). A changed list first gets this signer's identity.suspension records (_enforce)."""
         entries, changed = self._suspensions.load()
         if changed:
             try:
@@ -2121,7 +2138,7 @@ class SignerService:
             except Exception:
                 self._suspensions.forget()   # read and recorded again by the next call
                 raise
-        mine = entries.get(self._tenant_of(identity), {})
+        mine = entries.get(tenant or self._tenant_of(identity), {})
         hit = next((x for k in keys(identity) if (x := lookup(mine, k)) is not None), None)
         if hit is not None:
             raise RPCError("forbidden", f"{subject(identity)[:256]} is suspended (by {str(hit.get('by'))[:256]} at "
@@ -2162,8 +2179,15 @@ class SignerService:
             self.log.storage.iter_run(r["event"]["tenant"], c["run_id"]), c["run_seq"], c["run_seq"] + 1)]
 
     def _operator(self, identity):
-        """The tenant an operator call acts in, the caller's. An identity that owns open runs is an agent's: refused,
-        whatever it is granted."""
+        """The tenant an operator call acts in, the caller's. An identity that owns open runs, or that its keys together
+        also grant register_run (the startup check sees each `authorize` entry alone), is an agent's: refused."""
+        try:
+            self._grant(identity, "register_run")
+        except RPCError:
+            pass
+        else:
+            raise RPCError("forbidden", f"{subject(identity)[:256]} is also granted register_run: containment is "
+                                        "operated by an identity that runs no agent")
         if self.log.open_runs.get(owner(identity)):
             raise RPCError("forbidden", f"{subject(identity)[:256]} owns open runs: containment is operated by an "
                                         "identity that runs no agent")
@@ -2444,8 +2468,12 @@ class SignerService:
             now = _iso(time.time())
             had = [("quarantined", up["quarantined"], "the parent run")] if up and up.get("quarantined") else \
                 [("held", i, "the parent run") for i in (up or {}).get("held") or ()]
-            had += [(kind, i, f"its owner and principal (until {until})") for i, (until, kind) in
-                    (self.log.contain["cooldown"].get(cooldown_key(tenant, run)) or {}).items() if until > now]
+            # a run with no attested principal inherits every principal's of its owner: dropping it gains nothing
+            key, cool = cooldown_key(tenant, run), self.log.contain["cooldown"]
+            mine = {i: v for k in ([key] if run["people"][1] else [k for k in cool if k.startswith(key)])
+                    for i, v in (cool.get(k) or {}).items()}
+            had += [(kind, i, f"its owner and principal (until {until})") for i, (until, kind) in mine.items()
+                    if until > now]
             for kind, iid, whose in [h for h in had if h[0] == "quarantined"][:1] or had:
                 self._contain(tx, run, kind, iid, {"kind": "run", "id": run_id[:256]}, "signer",
                               f"inherits incident {iid} from {whose}", inherited=True)
@@ -2529,7 +2557,8 @@ class SignerService:
                 if mismatch:
                     gaps.append(("class_mismatch", f"class hint {hint!r} disagrees with the policy's class "
                                                    f"{self.policy.tool_class(tool)!r}; the stricter decision applies"))
-                # lean: the deny set lives in memory, so a flip across a signer restart goes unflagged
+                # lean: the deny set lives in memory, so a flip across a signer restart goes unflagged; keep it in the
+                # run's snapshot if runs often span restarts
                 if verdict == "deny":
                     tx.set(run["denied"], digest, True)
                 elif verdict != "ask" and digest in run["denied"]:
@@ -2572,7 +2601,11 @@ class SignerService:
             if isinstance(host, str) and d["decision"] != "deny" and run.get("rec") is not None:   # explains its traffic
                 # lean: hosts are memory and snapshot state; after a restart with no snapshot since, the run's earlier
                 # http calls no longer explain an observed host (an unexplained_effect warning)
-                tx.set(reconcile.sub(tx.set, run["rec"], "hosts"), host.lower().rstrip("."), True)
+                h = host.lower().rstrip(".")
+                if d["decision"] in ("allow", "flag"):
+                    tx.set(reconcile.sub(tx.set, run["rec"], "hosts"), h, True)
+                else:   # an ask explains its host once its approval is consumed: asking alone allows nothing
+                    tx.set(reconcile.sub(tx.set, run["rec"], "asked_hosts"), tcid, h)
             for kind, reason in gaps:
                 tx.emit(run, "capture.gap", {"kind": kind, "reason": reason, "tool_use_id": tcid}, source="signer",
                         tool_call_id=tcid)
@@ -2873,8 +2906,8 @@ class SignerService:
             tx.emit(run, "approval.request", data, request_id=req["request_id"], tool_call_id=tcid, attempt=attempt, **top)
             if reask:
                 tx.emit(run, "capture.gap", {"kind": "reask_after_reject", "tool_use_id": tcid, "reason": (
-                    f"{tcid} asks again for a call an agent did not approve in this run (approval {aid}): people "
-                    "answer it")}, source="signer", tool_call_id=tcid)
+                    f"{tcid} asks again for a call an agent or a person did not approve in this run (approval {aid}): "
+                    "people answer it")}, source="signer", tool_call_id=tcid)
             return {"approval_id": aid, "state": "requested", "expires_at": expires_at}
         try:
             return self.log.submit(identity, "approval_request", req, fn, key)
@@ -2894,6 +2927,8 @@ class SignerService:
             raise RPCError("invalid_request", "groups are user groups of the approver's own team")
         if sub in self._agents:
             raise RPCError("forbidden", f"{sub} is an agent approver: no bridge acts for it")
+        scheme, _, rest = sub.partition(":")
+        self._check_suspended(CallerIdentity(scheme, rest, False, {"groups": groups}), self._tenant_of(identity))
         return self._answer(identity, req, sub, sub, groups)
 
     def _answer(self, identity, req, sub, own, groups=None, bridge=None):
@@ -2989,12 +3024,16 @@ class SignerService:
         a = self._visible(identity, aid)
         run = self.log.runs[a["run_key"]]
         if sub in (a["requester"], run["owner"]) or person(identity) and \
-                person(identity) == run.get("people", (None, None))[1]:
+                person(identity) in (a.get("requester_person"), *run.get("people", (None, None))):
             raise RPCError("forbidden", f"{sub[:256]} may not answer its own run's approval")
         rules = self._agent_rules(a["agent"]["rules"])
         shadow = any(r["approval"]["agent"]["mode"] == "shadow" for r in rules)
         veto_s = max((r["approval"]["agent"].get("veto_s", 0) for r in rules), default=0)
-        spend = (self._unseal(aid) or {}).get("spend", {}) if decision == "approve" else {}
+        copy = self._unseal(aid) if decision == "approve" else {}
+        if copy is None:   # its sum budget's spend is in the copy: an approval without one can't be counted
+            raise RPCError("approval_not_pending",
+                           f"{aid}: the signer's copy of its arguments is gone; people answer it")
+        spend = copy.get("spend", {})
         self.quotas.take_event(identity)
         data = {"tool_use_id": a["tool_call_id"], "approval_id": aid, "decision": decision, "approver": sub,
                 "approver_identity": _recorded(identity), "channel": "rpc", "approver_kind": "agent"}
@@ -3151,7 +3190,9 @@ class SignerService:
         key, tcid, attempt, hint = self._authorize(identity, req, gw), req["tool_call_id"], req.get("attempt", 0), \
             req.get("approval_id_hint")
         holder = _holder(gw, req)
-        self.quotas.take_event(gw or identity)
+        held = (self.log.runs[key].get("calls", {}).get(tcid) or {}) if gw else {}
+        if not (held and (held.get("via"), held.get("caller")) == holder):   # a gateway's consume of its own call:
+            self.quotas.take_event(gw or identity)                         # its decide paid, as for its result
         args, digest = self._args(req)
         bound = self.log.approval_index.get((*key, tcid, attempt))
         # read before the writer runs: the copy is deleted once the approval is consumed
@@ -3197,6 +3238,12 @@ class SignerService:
                     out["args"] = None   # filled in below: the request_id cache keeps no arguments
                 tx.set(a, "state", "consumed")
                 tx.emit(run, "approval.consumed", {"approval_id": aid}, source="signer", **top)
+                rec = run.get("rec")
+                if rec is not None:   # an approved call explains what it was decided for (reconcile.explained)
+                    if tcid in rec["l2"]:
+                        tx.set(rec["l2"][tcid], "approved", True)
+                    if tcid in rec.get("asked_hosts", {}):
+                        tx.set(reconcile.sub(tx.set, rec, "hosts"), rec["asked_hosts"][tcid], True)
                 return out
             data = {"tool_use_id": tcid, "rule_ids": [why[0]], "reason": why[1]}
             if a is not None:
@@ -3222,6 +3269,8 @@ class SignerService:
     def _approval_list(self, identity, req):
         identity = self._on_behalf(identity, req)
         agent_view = self._is_agent(identity)
+        if agent_view and "run_id" in req:   # an agent never learns which run an approval belongs to
+            raise RPCError("forbidden", "an agent approver lists approvals without a run_id")
         # copied on the writer, so only committed states are listed
         items = iter(self.log.write(lambda tx: [
             (aid, {**a, "run_closing": a["state"] == "requested" and self.log.runs[a["run_key"]]["closed"]})
@@ -3280,11 +3329,13 @@ class SignerService:
             run = run or self.log.runs[key]
             into = self.log.signer_run(tx, key[0]) if run["final"] else run
             streams, writers, tails = (run.get(k, {}) for k in ("streams", "writers", "tails"))   # {}: final before 1.2
+            wrote = False
             for s in req.get("last_client_seq", ()):
                 stream, end = s["stream"], s["client_seq"]
                 last = max(streams.get(stream, -1), tails.get(stream, -1))
-                # only the closer's own streams, or one that never reached the signer
-                if writers.get(stream, None if stream in streams else who) != who or end <= last:
+                # only the closer's own streams, one that never reached the signer, or one whose writer a restart
+                # forgot (writers are not in the records): a gap then rather than none
+                if writers.get(stream, who) != who or end <= last:
                     continue
                 tx.emit(into, "capture.gap", {
                     "kind": "client_counter_gap", "missed_events": end - last,
@@ -3293,22 +3344,25 @@ class SignerService:
                               f"{last + 1}..{end} had not reached the signer then: the client stopped or lost them "
                               "before they were sent; read its log for what they were"},
                         source="signer", stream=stream)
+                wrote = True
                 if into is run:   # the counter stays: values that still arrive are taken as usual, with no new gap
                     tx.set(tails, stream, end)
-            if gw:
+            if run["closed"] and not gw and not wrote:
+                raise RPCError("run_closed", key[1])
+            if gw or run["closed"]:   # a run the signer closed meanwhile (idle, grace) still gets the client's gaps
                 return {"run_id": req["run_id"], "state": "closing" if run["closed"] else "open",
                         "run_seq": run["run_seq"] - 1}
             return {"run_id": req["run_id"], "state": "closing",
                     "run_seq": tx.closing(run, "close_run", request_id=req["request_id"])}
-        # a gateway's report is not a write to the run: no run check, and it takes no activity
-        return self.log.submit(identity, "close_run", req, fn, None if gw else key)
+        # not a write to the run but its end: no run check (a closed run's gaps are still taken), no activity
+        return self.log.submit(identity, "close_run", req, fn)
 
     def _tailer_heartbeat(self, identity, req):
         key = self._authorize(identity, req)
         self.quotas.take_event(identity)
-        if self.log.runs[key]["final"]:
-            raise RPCError("run_closed", req["run_id"])
-        with self._beats_lock:
+        with self._beats_lock:   # final checked under the lock: a sweep drops a final run's beat under it
+            if self.log.runs[key]["final"]:
+                raise RPCError("run_closed", req["run_id"])
             self._beats[key] = time.monotonic()
         return {}
 
@@ -3368,7 +3422,12 @@ class SignerService:
         obs, tenant = subject(identity), self._tenant_of(identity)
         if len(obs) > 256:   # each record names it in full
             raise RPCError("forbidden", f"{obs[:64]}...: an observer's identity is at most 256 characters")
-        self.quotas.take_event(identity)
+        if "check" in req:   # before anything is charged: a made-up token must not spend the observer's events
+            why = self._attributed(tenant, req["check"])[2]
+            if why:
+                raise RPCError("run_token_invalid", why)
+        if req["effects"] or "check" not in req:   # one token check per proxied connection costs no event
+            self.quotas.take_event(identity)
         now = time.monotonic()
         with self._beats_lock:
             before = self._observers.get((tenant, obs))
@@ -3383,10 +3442,6 @@ class SignerService:
         if restarted:
             self.log.write(lambda tx: [self._observer_lost(tx, self.log.runs[k[:2]], obs) for k in restarted
                                        if not self.log.runs[k[:2]]["final"]])
-        if "check" in req:
-            why = self._attributed(tenant, req["check"])[2]
-            if why:
-                raise RPCError("run_token_invalid", why)
         if not req["effects"]:
             return {"recorded": 0}
         labels = {r["id"]: r["label"] for _, r, *_ in self.policy.rules if "label" in r}
@@ -3725,6 +3780,7 @@ class SignerService:
         RPCError forbidden unless `authorize` grants it otlp_import."""
         try:
             self._grant(identity, OTLP_IMPORT)
+            self._check_suspended(identity)
         except RPCError as e:
             self._refused(identity, e)
             raise

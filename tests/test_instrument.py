@@ -2,6 +2,8 @@
 each installed framework, against a dev signer it starts, then `tracekit last`. tests/test_quickstart.py runs the same
 agents from the built wheel in a fresh venv."""
 import asyncio
+import contextlib
+import gc
 import json
 import os
 import shutil
@@ -11,6 +13,7 @@ import tempfile
 import types
 import unittest
 import warnings
+import weakref
 from importlib import metadata
 from unittest import mock
 
@@ -180,6 +183,26 @@ class TestInstrument(unittest.TestCase):
         self.assertIsNot(seen[0], seen[1])
         self.assertEqual((seen[0].stream, seen[0]._seq), (seen[1].stream, seen[1]._seq))
 
+    def test_mcp_sessions_are_freed_once_dropped(self):
+        if not installed(AGENTS["mcp"][0]):
+            self.skipTest("mcp not installed")
+        from mcp import ClientSession
+
+        async def call_tool(gate, *a, **kw):
+            pass
+        run = mock.Mock(registered={"run_id": "r", "run_token": "t"})
+        with mock.patch.object(ClientSession, "call_tool", ClientSession.call_tool), \
+                mock.patch("tracekit.integrations.mcp.TracekitSession.call_tool", call_tool):
+            autowire._mcp(run)
+            refs = []
+            for _ in range(50):   # a session per request, as a server opens them
+                s = object.__new__(ClientSession)
+                asyncio.run(s.call_tool("t", {}))
+                refs.append(weakref.ref(s))
+                del s
+            gc.collect()
+        self.assertEqual([r for r in refs if r() is not None], [])
+
     def test_browser_use_tools_are_gated_on_one_stream(self):
         """Every Tools built after instrument() (an Agent builds one) has its actions decided, all on one signer stream
         (a run allows 64)."""
@@ -227,6 +250,31 @@ class TestInstrument(unittest.TestCase):
             for s in (named, unnamed):
                 asyncio.run(s.call_tool("t", {}))
         self.assertEqual(seen, ["github", None])
+
+    def test_exit_leaves_a_run_open_while_approvals_of_it_wait(self):
+        class Run:
+            run_id, closed = "r", False
+
+            def __init__(self, listing):
+                self.listing = listing
+
+            def call(self, method, **fields):
+                return self.listing(fields["state"])
+
+            def close(self, reason=None):
+                self.closed = True
+
+        def no_grant(state):
+            raise RPCError("forbidden", "approval_list")
+
+        for listing, closed in ((lambda s: {"approvals": []}, True),
+                                (lambda s: {"approvals": [{"approval_id": "a"}] if s == "approved" else []}, False),
+                                (lambda s: {"approvals": [{"approval_id": "a"}] if s == "requested" else []}, False),
+                                (no_grant, True)):   # a listing that fails waits for nothing
+            run = Run(listing)
+            with self.assertLogs("tracekit", "WARNING") if not closed else contextlib.nullcontext():
+                autowire._close(run)
+            self.assertEqual(run.closed, closed)
 
     def test_release(self):
         for v, want in (("0.23.1", (0, 23, 1)), ("1.2.14", (1, 2, 14)), ("2.3.0rc1", (2, 3, 0)), ("1.4.dev0", (1, 4))):

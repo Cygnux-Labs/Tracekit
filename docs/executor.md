@@ -80,7 +80,7 @@ from tracekit.integrations import executor_tools as ex
 actions = ex.actions("https://executor.internal:8090", run, headers={"authorization": f"Bearer {token}"})
 agent = Agent(name="ops", tools=[ex.openai_agents(a) for a in actions])          # OpenAI Agents
 tools = [ex.langchain(a) for a in actions]                                         # LangChain
-options = ClaudeAgentOptions(mcp_servers={"executor": ex.claude_agent_sdk(actions)})  # Claude Agent SDK
+options = ClaudeAgentOptions(mcp_servers={ex.SERVER: ex.claude_agent_sdk(actions)})  # the key the hooks skip
 ```
 
 ```ts
@@ -92,7 +92,8 @@ generateText({ tools: Object.fromEntries(actions.map((a) => [a.name, vercelTool(
 
 `run` is the agent's `register_run` response (Python) or `RunHandle` (TypeScript). A refusal reaches the model as the
 tool's error. The Tracekit adapters leave these tools alone (each is marked; the Claude Agent SDK hooks skip the tools
-of the server named `tracekit-executor`, the helper's default), so they can sit next to gated tools of your own: the
+of the server registered under the key `tracekit-executor` in `mcp_servers`, `ex.SERVER`: the SDK names its tools by
+that key, not by the server's own name), so they can sit next to gated tools of your own: the
 executor decides and records them. TypeScript has no Claude Agent SDK helper (its `tool()` takes only a zod shape):
 write a `tool()` per action with its zod shape whose handler returns `action.call(args)`, and keep the Tracekit hooks
 off it (name its server `tracekit-executor`).

@@ -241,6 +241,25 @@ class TestCli(unittest.TestCase):
         self.assertEqual(env, {"TRACEKIT_SIGNER": "https://signer.example:8443", "TRACEKIT_SIGNER_TOKEN_FILE": token,
                                "TRACEKIT_SIGNER_CA": token})
 
+    def test_a_later_init_and_uninstall_drop_the_remote_signer(self):
+        """A re-init without --ca kept the old CA pinned, and uninstall left the remote's env in settings.json."""
+        token = os.path.join(self.d, "token")
+        with open(token, "w") as f:
+            f.write("tk2_a.secret")
+        cwd = os.getcwd()
+        os.chdir(self.d)
+        self.addCleanup(os.chdir, cwd)
+        settings = os.path.join(self.d, ".claude", "settings.json")
+        with contextlib.redirect_stdout(io.StringIO()):
+            for ca in (["--ca", token], []):
+                self.assertEqual(cli.main(["init", "--remote", "https://signer.example:8443", "--v2", "--token-file",
+                                           token, "--project", *ca]), 0)
+            with open(settings) as f:
+                self.assertNotIn("TRACEKIT_SIGNER_CA", json.load(f)["env"])
+            self.assertEqual(cli.main(["uninstall", "--project"]), 0)
+        with open(settings) as f:
+            self.assertNotIn("env", json.load(f))
+
 
 if __name__ == "__main__":
     unittest.main()

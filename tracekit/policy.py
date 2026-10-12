@@ -277,7 +277,3 @@ def evaluate(pol, tool, ti, cwd=None):
                 flags.append("out_of_scope_write"); rule_ids.append("TK-SCOPE")
     decision = "deny" if deny else ("ask" if ask else ("flag" if flags else "allow"))
     return {"decision": decision, "rule_ids": rule_ids, "reasons": reasons, "flags": sorted(set(flags))}
-
-
-def rule_index(pol):
-    return {r["id"]: (sec, r) for sec in SECTIONS for r in pol.get(sec) or []}

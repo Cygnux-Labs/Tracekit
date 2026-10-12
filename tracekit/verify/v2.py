@@ -88,7 +88,8 @@ the range, and every bundled run of the tenant the range's run leaves name (the 
 above size 0. Anything else is `run-set: INCOMPLETE` (FAILED). Tenant-level gaps in the range (signer capture.gap
 and trace.tamper leaves: witness failures, clock skew, rollbacks) are counted by kind on the run-set line and warned. Every key.retire leaf in the range must be among the key
 records, so a withheld retirement fails `keys`; without a range from size 0 that reaches every bundled record, that is
-unproven (a `keys` warning and an assurance note). The log tail after the checkpoint is reported
+unproven: an assurance note, and a `keys` warning only when the bundle's own key records show a rotation (a bundle
+that withholds a retirement and the next key's epoch reads as one key: docs/limits.md). The log tail after the checkpoint is reported
 unproven (a warning) unless a log.closed in the range is the checkpoint's last record.
 
 Certified record keys (docs/issuer.md): a signer.epoch key with `cert` is declared only when its certificate is signed
@@ -142,11 +143,12 @@ MAX_ENTRIES = 10_000
 MAX_ENTRY = 64 << 20
 MAX_TOTAL = 512 << 20
 MAX_LINE = 1 << 20
+MAX_LINES = MAX_ENTRY // 256   # per JSON lines file: no signed record is shorter than 256 bytes
 CLASSES = ("public", "customer", "tracekit", "operator")
 MATRIX = ("model_calls", "tool_calls", "network", "processes", "services")
 COVERED = ("none", "reported", "observed", "enforced")   # weakest first
 _NAME = re.compile(r"[A-Za-z0-9_-][A-Za-z0-9._-]*(/[A-Za-z0-9._-]+)*")
-_VERSION = re.compile(r"\d{1,9}(\.\d{1,9}){0,2}")
+_VERSION = re.compile(r"[0-9]{1,9}(\.[0-9]{1,9}){0,2}")
 _CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
 _EOCD, _CEN, _LOC = struct.Struct("<IHHHHIIH"), struct.Struct("<IHHHHHHIIIHHHHHII"), struct.Struct("<IHHHHHIIIHH")
 
@@ -272,6 +274,8 @@ def load_trust(path):
 def _jsonl(data):
     if data and not data.endswith(b"\n"):
         raise ValueError("a JSON lines file must end in a newline")
+    if data.count(b"\n") > MAX_LINES:   # counted before any is parsed: a run of tiny lines costs no memory
+        raise ValueError("more lines than the bundle limits")
     lines = data.split(b"\n")[:-1]
     if any(len(line) > MAX_LINE for line in lines):
         raise ValueError("line longer than the bundle limits")
@@ -279,7 +283,7 @@ def _jsonl(data):
 
 
 def _version(v):
-    return tuple(int(x) for x in re.findall(r"\d+", v)[:3])
+    return tuple(int(x) for x in re.findall(r"[0-9]+", v)[:3])
 
 
 def verify(path, trust_path, v1_ledger=None, v1_key=None, monitor_reports=(), revocations=()):
@@ -367,6 +371,7 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
 
     def included(record):
         seq = record["event"]["seq"]
+        seq = int(seq) if isinstance(seq, float) and seq.is_integer() else seq   # as JSON reads it, and the TS verifier
         path = proofs["inclusion"].get(str(seq))
         return path is not None and verify_inclusion(seq, size, leaf_hash(bytes.fromhex(record["hash"][7:])),
                                                      [base64.b64decode(p, validate=True) for p in path], root)
@@ -563,8 +568,9 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
                   + f"; {sum(c['reconciled'] for c in finals)} call(s) reconciled"
                   + (f" ({paired} paired by arguments: no tool-call id)" if paired else "") + "; unreconciled: "
                   + (", ".join(f"{k} {n}" for k, n in sorted(unreconciled.items())) or "none"),
-                  [f"seq {r['event']['seq']}: {r['event']['type']} {str(r['event'].get('tool_call_id'))[:200]}: "
-                   f"{str(r['event']['data'].get('detail'))[:200]}" for r in every
+                  [f"seq {r['event']['seq']}: {r['event']['type']}"
+                   + (f" {str(r['event']['tool_call_id'])[:200]}" if "tool_call_id" in r["event"] else "")
+                   + f": {str(r['event']['data'].get('detail'))[:200]}" for r in every
                    if str(r["event"].get("type")).startswith("reconcile.")][:20], warn=True)
     matrices = [rs[-1]["event"]["data"]["matrix"] for rs in runs.values()
                 if rs[-1]["event"].get("type") == "run.final" and "matrix" in rs[-1]["event"]["data"]]
@@ -782,11 +788,15 @@ def _incidents(rep, runs, policies):
             for e in events:
                 if any(e is x for x in mine):
                     d = e["data"]
-                    hit = next((x for x in expected if (x["trigger"], x["rule_ids"], x["cites"]) ==
-                                (d["trigger"], d["rule_ids"], d["cites"])), None)
+                    hit = next((x for x in expected if (x["trigger"], x["rule_ids"], x["cites"], x["mode"]) ==
+                                (d["trigger"], d["rule_ids"], d["cites"], d.get("mode"))), None)
                     if hit:
                         expected.remove(hit)
                         checked += 1
+                        if hit["mode"] == "enforce" and hit["would"] and not d.get("actions") and "reason" not in d:
+                            problems.append(f"seq {e['seq']}: incident {d['incident_id']} ({d['trigger']}) is enforced "
+                                            f"under policy {det.engine.policy_hash[:80]} but records no response "
+                                            f"({', '.join(hit['would'])}) and no reason")
                     else:
                         problems.append(f"seq {e['seq']}: incident {d['incident_id']} ({d['trigger']}) does not follow "
                                         f"from the run's records under policy {det.engine.policy_hash[:80]}")

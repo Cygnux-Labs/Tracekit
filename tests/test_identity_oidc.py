@@ -404,5 +404,22 @@ class TestViewerLoginState(unittest.TestCase):
         self.assertIsNone(self.verifier(state))
 
 
+class DeepJson(unittest.TestCase):
+    """A JWT or clientDataJSON nested deeper than the JSON parser goes is malformed, never an uncaught error."""
+
+    def test_deep_nesting_is_refused_cleanly(self):
+        deep = base64.urlsafe_b64encode(b"[" * 100_000).rstrip(b"=").decode()
+        token = f"{deep}.{deep}.c2ln"
+
+        class Refused(Exception):
+            pass
+        with self.assertRaises(Refused):
+            k8s_sa.verify_jwt(token, lambda kid: None, ["RS256"], "iss", "aud", time.time(), Refused)
+        self.assertIsNone(oidc.OidcAuthenticator.__new__(oidc.OidcAuthenticator)._issuer(token))
+        from tracekit.identity import webauthn
+        with self.assertRaisesRegex(ValueError, "not JSON"):
+            webauthn.verify(b"", 0, "rp", "https://rp", b"", b"[" * 100_000, b"", b"")
+
+
 if __name__ == "__main__":
     unittest.main()

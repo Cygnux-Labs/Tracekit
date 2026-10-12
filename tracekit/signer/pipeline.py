@@ -11,7 +11,6 @@ after RECOVER_S reopens the storage, rebuilds the run state from it and writes a
 """
 import base64
 import copy
-import datetime
 import hashlib
 import json
 import logging
@@ -28,7 +27,9 @@ from tracekit.format import registry
 from tracekit.format.records import RecordError, RecordSigner, verify_record
 from tracekit.schema import V2
 from tracekit.signer import detect, reconcile
+from tracekit.signer.detect import epoch
 from tracekit.signer.rpc_schema import RPCError
+from tracekit.signer.runtoken import subject
 from tracekit.storage.base import ZERO_HASH, StorageCorrupt, registry_tree
 
 BATCH = 512
@@ -98,10 +99,6 @@ APPROVAL_ENDS = {"approval.consumed": "consumed", "approval.expired": "expired",
                  "approval.revoked": "rejected"}
 
 
-def epoch(ts):
-    return datetime.datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
-
-
 def person_only_keys(a):
     """The keys a call whose agent answer said no is a person's to answer by, in its run, from then on: the same tool
     with the same arguments (`args_key`), and the same tool call id in any attempt."""
@@ -160,8 +157,8 @@ def agent_state(set_, log, run, e):
         set_(a, "escalation", {k: d[k] for k in ("by", "reason") if k in d})
     if typ == "approval":   # who answered, for the bridges
         set_(a, "answered", {"by": d["approver"], "kind": d.get("approver_kind", "person")})
-    if typ in ("approval.escalated", "approval.revoked") or typ == "approval" and d.get("approver_kind") == "agent" \
-            and d["decision"] != "approve":   # a person's veto sticks as an agent's reject does
+    if typ in ("approval.escalated", "approval.revoked") or typ == "approval" and d["decision"] != "approve":
+        # anyone's reject sticks: a person's veto as much as an agent's
         set_(run, "person_only", {**run.get("person_only", {}), **{k: True for k in person_only_keys(a)}})
 
 
@@ -174,7 +171,7 @@ def cooldown_key(tenant, run):
     return f"{tenant}\0{run['owner']}\0{run['people'][1] or ''}"
 
 
-def contain_state(set_, log, run, e):
+def contain_state(set_, log, run, e, pop=lambda d, k: d.pop(k, None)):
     """Follow record `e` of `run` in the containment state (SignerService._respond), `log.contain`: each incident
     ({tenant, run_id, run_seq, ts, trigger, rule_ids, scope, mode, actions, state: open|resolved, runs: the runs it held
     or quarantined}), the holds new runs inherit by cooldown_key ({incident id: [until ts, held|quarantined]}, an
@@ -196,16 +193,18 @@ def contain_state(set_, log, run, e):
             set_(run, "held", [*(run.get("held") or ()), d["incident_id"]])
         if inc is not None:
             set_(inc, "runs", inc["runs"] + [e["run_id"]])
-        if d.get("inherit_until"):
+        if d.get("inherit_until"):   # the key's expired holds go as a new one comes
             k = cooldown_key(e["tenant"], run)
-            set_(c["cooldown"], k, {**(c["cooldown"].get(k) or {}), d["incident_id"]: [d["inherit_until"], kind]})
+            live = {i: x for i, x in (c["cooldown"].get(k) or {}).items() if x[0] > e["ts"]}
+            set_(c["cooldown"], k, {**live, d["incident_id"]: [d["inherit_until"], kind]})
     elif typ == "run.resumed":
         set_(run, "held", [x for x in run.get("held") or () if x != d["incident_id"]] or None)
     elif typ == "incident.resolved" and inc is not None:
         set_(inc, "state", "resolved")
         for k, v in list(c["cooldown"].items()):
             if d["incident_id"] in v:
-                set_(c["cooldown"], k, {i: x for i, x in v.items() if i != d["incident_id"]})
+                rest = {i: x for i, x in v.items() if i != d["incident_id"] and x[0] > e["ts"]}
+                set_(c["cooldown"], k, rest) if rest else pop(c["cooldown"], k)
     elif typ == "incident.response":
         set_(c["paused"], e["tenant"], not d["enabled"])
     elif typ == "identity.suspension":
@@ -227,10 +226,6 @@ def salt_label(e):
     if e["type"] in ("model.exchange", "state.write"):
         return f"{e['type']}:{e['tenant']}:{e['run_id']}:{e['request_id']}"
     return None
-
-
-def subject(identity):
-    return f"{identity.scheme}:{identity.subject}"
 
 
 def writer(identity, req):
@@ -303,7 +298,7 @@ class Tx:
         self.set(run, "head", r["hash"])
         found = reconcile.observe(self.set, run, e, digests, log.handoff)
         agent_state(self.set, log, run, e)
-        contain_state(self.set, log, run, e)
+        contain_state(self.set, log, run, e, self.pop)
         for t, d in incidents:   # first, as detect.backtest feeds them; an enforced incident is the responder's to write
             if t == "incident.opened" and d["mode"] == "enforce" and log.respond:
                 log.respond(self, run, e, d)
@@ -503,6 +498,9 @@ class RecordLog:
             run["run_seq"], run["head"], prev = e["run_seq"] + 1, r["hash"], r["hash"]
             if "client_seq" in e:
                 run["streams"][e["stream"]] = max(e["client_seq"], run["streams"].get(e["stream"], -1))
+            elif e["type"] == "capture.gap" and e["data"].get("kind") == "client_counter_gap" and "stream" in e:
+                # what a gap already covers, so values still arriving after a restart are no second gap
+                run["tails"][e["stream"]] = last_seq(run, e["stream"]) + e["data"].get("missed_events", 0)
             for tenant, leaf in self.leaves(r, tenants):
                 leaves.setdefault(tenant, []).append(leaf)
             closed = closed or e["type"] == "log.closed"
@@ -712,7 +710,8 @@ class RecordLog:
                 if cseq == max(run["streams"].get(stream, -1), run["tails"].get(stream, -1)) + 1:
                     # the signer saw this value and refused it (the refusal is its record): not a gap at close. Only
                     # the next value: one that skipped others leaves them to a later client_counter_gap.
-                    # lean: kept in the run's state and snapshots, not in a record: a replay from records forgets it
+                    # lean: kept in the run's state and snapshots, not in a record: a replay from records forgets it;
+                    # record it if restarts without a snapshot become common
                     e.keep = lambda t: t.set(run["tails"], stream, cseq)
             raise
         if rid is not None:

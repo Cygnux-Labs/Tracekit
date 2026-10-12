@@ -24,10 +24,20 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from tracekit import bundle, install, peercred, policy, privacy, yamlmini  # noqa: E402
-from tracekit.core import read_json, read_text, write_bytes, write_json, write_text  # noqa: E402
+from tracekit.core import read_json, read_text, write_json  # noqa: E402
 from factories import make_signer, wait_for  # noqa: E402
 
 _SAVED_POLICY = None
+
+
+def write_text(path, text):
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(text)
+
+
+def write_bytes(path, data):
+    with open(path, "wb") as f:
+        f.write(data)
 
 
 def setUpModule():

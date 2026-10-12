@@ -8,6 +8,7 @@ Tracekit can sign and witness it).
 """
 from __future__ import annotations
 
+import calendar
 import fnmatch
 import hashlib
 import json
@@ -166,6 +167,14 @@ _STRINGS = ("source", "model", "tool", "to")
 _REFS = ("ref", "output", "args_ref", "result_ref")
 
 
+def ts_seconds(ts: Any) -> float:
+    """Seconds since the epoch of a TS timestamp (a fraction of any length, or none); ValueError for anything else."""
+    if not (isinstance(ts, str) and TS.fullmatch(ts)):
+        raise ValueError(f"not a log timestamp: {str(ts)[:40]!r}")
+    whole, _, frac = ts[:-1].partition(".")
+    return calendar.timegm(time.strptime(whole, "%Y-%m-%dT%H:%M:%S")) + float("0." + (frac or "0"))
+
+
 def event_problem(ev: Any) -> Optional[str]:
     """Why an event from outside (ingest, an import) is not one the analysis can read, else None: the common fields
     (id, agent, ts, type, seq), the type's own fields and their types, refs as content hashes, token counts as
@@ -178,7 +187,9 @@ def event_problem(ev: Any) -> Optional[str]:
     for k in ("id", "agent"):
         if not isinstance(ev.get(k), str) or not 0 < len(ev[k]) <= 256:
             return f"{k} must be a non-empty string"
-    if not isinstance(ev.get("ts"), str) or not TS.fullmatch(ev["ts"]):
+    try:
+        ts_seconds(ev.get("ts"))
+    except ValueError:
         return "ts must be a UTC timestamp (YYYY-MM-DDTHH:MM:SS[.ffffff]Z)"
     if type(ev.get("seq")) is not int:
         return "seq must be an integer"
@@ -193,8 +204,11 @@ def event_problem(ev: Any) -> Optional[str]:
         return "refs must be sha256:<64 hex> strings"
     ctx = ev.get("context", [])
     if not isinstance(ctx, list) or not all(isinstance(c, dict) and isinstance(c.get("ref"), str)
-                                            and REF.fullmatch(c["ref"]) for c in ctx):
-        return "context must be a list of {ref: sha256:<64 hex>, ...}"
+                                            and REF.fullmatch(c["ref"]) and isinstance(c.get("kind"), str)
+                                            and "source" in c and isinstance(c["source"] or "", str)
+                                            and c.get("trust") in TRUST_LEVELS
+                                            and isinstance(c.get("from_event") or "", str) for c in ctx):
+        return "context must be a list of {ref: sha256:<64 hex>, kind, source, trust[, from_event]}"
     usage = ev.get("usage")
     if usage is not None and not (isinstance(usage, dict) and all(type(v) is int and v >= 0 for k, v in usage.items()
                                                                   if k.endswith("tokens"))):
@@ -441,6 +455,10 @@ class Runtime:
             self.path = os.path.join(out_dir, self.run_id)
             os.makedirs(os.path.join(self.path, "blobs"), exist_ok=True)
             open(os.path.join(self.path, "events.jsonl"), "w").close()
+            try:
+                os.remove(os.path.join(self.path, "tests.jsonl"))   # the tests of the run this one replaces
+            except FileNotFoundError:
+                pass
         self._emit("run", "run.start", program=program, seed=seed, interventions=self.interventions,
                    models=sorted(self.models), tools=sorted(self.tools), meta=meta or {},
                    sensitive_tools=sorted(self.sensitive_tools), untrusted_tools=sorted(self.untrusted_tools),

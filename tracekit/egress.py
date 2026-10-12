@@ -58,7 +58,7 @@ from tracekit.proxy import HOP
 from tracekit.sdk.client import Client, SignerUnavailable
 from tracekit.signer.rpc_schema import RPCError
 from tracekit.signer.service import HEARTBEAT_S, TAILER_LOST_S
-from tracekit.transport import http as transport
+from tracekit.transport import http as transport, loopback
 
 KEYS = {"http", "listen", "signer", "allow"}
 HOST = re.compile(r"[a-z0-9._:-]{1,253}")   # what observe_effect takes as a host
@@ -71,8 +71,10 @@ DOH = {"dns.google", "dns.google.com", "cloudflare-dns.com", "mozilla.cloudflare
        "doh.cleanbrowsing.org", "dns.adguard.com", "dns.adguard-dns.com", "doh.dns.sb", "dns.alidns.com", "doh.pub",
        "dns.mullvad.net", "doh.mullvad.net", "freedns.controld.com"}
 CONNECT_TIMEOUT_S, IDLE_S = 30, 600
-MAX_BODY = 32 * 1024 * 1024   # a plain HTTP request's body, read whole before it is forwarded
+MAX_BODY = 32 * 1024 * 1024   # a plain HTTP request's body, streamed through in CHUNK pieces, never held whole
+CHUNK = 64 * 1024
 MAX_EFFECTS = 256   # per observe_effect call
+MAX_REFUSED = 10_000   # totals the signer refused, kept to send again; past it the oldest are dropped (and counted)
 
 
 def _iso(t):
@@ -85,7 +87,8 @@ class Observer:
     def __init__(self, client, allow=()):
         self.client, self.allow = client, set(allow)
         self.totals, self.lock = {}, threading.Lock()
-        # lean: unsent totals wait in memory while the signer is unreachable (one per host, port and minute)
+        # lean: unsent totals wait in memory while the signer is unreachable (one per host, port and minute); spool
+        # them to disk if outages outlast the observer's memory
         self.queue = []   # [(request_id, effects)] not yet acknowledged, oldest first
         self.instance = uuid.uuid4().hex   # this process, in every call: the signer sees a restart
 
@@ -116,7 +119,7 @@ class Observer:
         except OSError as e:
             return None, (502, f"{host} could not be resolved: {e}")
         for ip, _ in addresses:
-            if host not in self.allow and not ipaddress.ip_address(ip.partition("%")[0]).is_global:
+            if host not in self.allow and not _public(ip):
                 return None, (403, f"{host} resolves to {ip}, a loopback, private or link-local address: add it to "
                                    "allow in egress.yaml if agents may reach it, or to NO_PROXY in the agent's "
                                    "environment for an internal service it reaches directly")
@@ -165,7 +168,8 @@ class Observer:
             try:
                 self.client.observe_effect({"request_id": rid, "instance": self.instance, "effects": chunk})
             except (SignerUnavailable, RPCError) as e:
-                if isinstance(e, SignerUnavailable) or e.code == "unavailable":
+                # a rate limit (retry_after_ms) refuses the call, not its totals: keep them for the next heartbeat
+                if isinstance(e, SignerUnavailable) or e.code == "unavailable" or e.retry_after_ms is not None:
                     self.queue[:0] = refused
                     return False
                 self.queue.pop(0)
@@ -173,12 +177,18 @@ class Observer:
                     half = len(chunk) // 2
                     self.queue[:0] = [("eg-" + uuid.uuid4().hex, c) for c in (chunk[:half], chunk[half:])]
                     continue
-                print(f"tracekit egress: the signer refused {len(chunk)} observation(s) ({e.code}: {e.message}); sent "
-                      "again with the next heartbeat" + ("; grant this observer observe_effect in signer.yaml authorize"
-                                                         if e.code == "forbidden" else ""), file=sys.stderr)
+                why = e
                 refused += [(rid, chunk)] if chunk else []
                 continue
             self.queue.pop(0)
+        if refused:   # one line per heartbeat, not one per total
+            print(f"tracekit egress: the signer refused {len(refused)} observation(s) ({why.code}: {why.message}); sent "
+                  "again with the next heartbeat" + ("; grant this observer observe_effect in signer.yaml authorize"
+                                                     if why.code == "forbidden" else ""), file=sys.stderr)
+        if len(refused) > MAX_REFUSED:   # a refusal that never changes must not grow without end
+            print(f"tracekit egress: dropped the {len(refused) - MAX_REFUSED} oldest refused observation(s), past "
+                  f"{MAX_REFUSED} kept", file=sys.stderr)
+            refused = refused[-MAX_REFUSED:]
         self.queue = refused
         return True
 
@@ -256,6 +266,20 @@ def _connect(addresses):
     raise err
 
 
+NAT64 = ipaddress.ip_network("64:ff9b::/96")
+
+
+def _public(ip):
+    """Whether address `ip` is public; an IPv4-mapped or NAT64 (64:ff9b::/96) address by the IPv4 address it carries,
+    which on an IPv6-only network with DNS64 is where it really goes."""
+    a = ipaddress.ip_address(ip.partition("%")[0])
+    if a.version == 6 and a.ipv4_mapped:
+        a = a.ipv4_mapped
+    elif a in NAT64:
+        a = ipaddress.IPv4Address(int(a) & 0xFFFFFFFF)
+    return a.is_global
+
+
 def _recv_exact(sock, n):
     data = bytearray()
     while len(data) < n:
@@ -312,7 +336,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
     def _identity(self, auth):
         """scheme:subject of the identity the authenticators accept for this connection (`auth`: a bearer
         Proxy-Authorization, sent to them as Authorization), else None."""
-        if not self.server.authenticators:
+        presented = auth or (isinstance(self.connection, ssl.SSLSocket) and self.connection.getpeercert())
+        if not (self.server.authenticators and presented):   # no credential is no failed authentication
             return None
         conn = types.SimpleNamespace(headers={"Authorization": auth} if auth else {}, connection=self.connection,
                                      client_address=self.client_address)
@@ -337,10 +362,9 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 run_id, _, token = base64.b64decode(cred.strip(), validate=True).decode("utf-8").partition(":")
             except (binascii.Error, UnicodeDecodeError):
                 run_id = token = ""
-            why = self.server.observer.check(run_id, token) if RUN_ID.fullmatch(run_id) and TOKEN.fullmatch(
-                token) else (407, "Proxy-Authorization names no run id and token a run could have (a token is 1 to "
-                                  "1024 of A-Z a-z 0-9 . _ ~ + / = -): send the run's own, as the SDKs' run.proxy_env "
-                                  "does")
+            why = self._checked(run_id, token) if RUN_ID.fullmatch(run_id) and TOKEN.fullmatch(token) else (
+                407, "Proxy-Authorization names no run id and token a run could have (a token is 1 to 1024 of A-Z a-z "
+                     "0-9 . _ ~ + / = -): send the run's own, as the SDKs' run.proxy_env does")
             if why is None:
                 return "token", run_id, token, caller
         elif caller:
@@ -350,6 +374,23 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                         "https://<run_id>:<run token>@<this proxy>), or an identity this proxy accepts")
         self._refuse(*why, [("Proxy-Authenticate", 'Basic realm="tracekit egress"')] if why[0] == 407 else [])
         return None
+
+    def _checked(self, run_id, token):
+        """observer.check, limited per client address: past its failed checks (the HTTP transport's per-address
+        failed-authentication limit) the signer isn't asked, so one client can't spend what the checks of every run
+        need."""
+        per_addr, ip = self.server.failed[0], self.client_address[0]
+        try:
+            per_addr.take(ip, "", spend=0)
+        except RPCError:
+            return 429, "too many failed run token checks from this address: retry later"
+        why = self.server.observer.check(run_id, token)
+        if why and why[0] == 407:
+            try:
+                per_addr.take(ip, "failed run token checks")
+            except RPCError:
+                pass
+        return why
 
     def do_CONNECT(self):
         obs = self.server.observer
@@ -402,23 +443,28 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         addresses, why = obs.resolve(host, port)
         if why:
             return self._refuse(*why)
-        try:
-            body = _recv_exact(self.connection, int(n))
-        except OSError:   # the client went away or stopped sending
-            self.close_connection = True
-            return
+        size = int(n)
         path = urllib.parse.urlunsplit(("", "", url.path or "/", url.query, ""))
         head = [f"{self.command} {path} HTTP/1.1", f"Host: {url.netloc.rpartition('@')[2]}", "Connection: close"] + [
             f"{k}: {v}" for k, v in self.headers.items() if k.lower() not in HOP | {"proxy-connection"}] + (
-            [f"Content-Length: {len(body)}"] if body else [])
-        data = ("\r\n".join(head) + "\r\n\r\n").encode("latin-1") + body
+            [f"Content-Length: {size}"] if size else [])
+        data = ("\r\n".join(head) + "\r\n\r\n").encode("latin-1")
         self.close_connection = True
-        self.server.stop_deadline()
         try:
             with _connect(addresses) as up:
                 obs.add(who, host, port, len(data), opened=True)
                 up.sendall(data)
-                while chunk := up.recv(65536):
+                self.server.restart_deadline()   # the body has the whole deadline, however long the connect took
+                left = size
+                while left:   # the body, streamed as it arrives
+                    chunk = self.connection.recv(min(left, CHUNK))
+                    if not chunk:   # the client went away or stopped sending
+                        return
+                    up.sendall(chunk)
+                    obs.add(who, host, port, len(chunk))
+                    left -= len(chunk)
+                self.server.stop_deadline()
+                while chunk := up.recv(CHUNK):
                     self.connection.sendall(chunk)
                     obs.add(who, host, port, back=len(chunk))
         except OSError as e:
@@ -450,7 +496,7 @@ def serve(cfg, client=None):
         address, auths, tls = transport.configure(cfg["http"])
     else:
         host, _, port = str(cfg["listen"]).rpartition(":")
-        if not (port.isdigit() and transport._loopback(host)):
+        if not (port.isdigit() and loopback(host)):
             raise ValueError("listen: a loopback host:port (plain HTTP); anything else needs the http section")
         address, auths, tls = (host, int(port)), [], None
     srv = transport.HttpServer(address, auths, tls, None, handler=_Handler)

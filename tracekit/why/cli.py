@@ -15,7 +15,9 @@ from .replay import attribute, counterfactual, decision_test, diff_runs, load_sy
 
 
 def _p(*a):
-    print(*a, flush=True)
+    """Print, replacing what the console's encoding can't show (a Windows cp1252 console and the arrow in edge labels)."""
+    enc = getattr(sys.stdout, "encoding", None) or "utf-8"
+    print(" ".join(map(str, a)).encode(enc, "replace").decode(enc), flush=True)
 
 
 def _fmt_test(r):
@@ -625,7 +627,13 @@ def main(argv=None):
     p.add_argument("--json", action="store_true"); p.set_defaults(f=cmd_index)
 
     a = ap.parse_args(argv)
-    return a.f(a) or 0
+    try:
+        return a.f(a) or 0
+    except (OSError, ValueError, KeyError, ImportError) as e:   # a path, spec, target or System that isn't there
+        if os.environ.get("TRACEKIT_DEBUG") == "1":
+            raise
+        print(f"tracekit why {a.cmd}: {type(e).__name__}: {e}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

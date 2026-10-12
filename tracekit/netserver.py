@@ -11,6 +11,7 @@ event stream also leaves the request limits for limits of its own (to_stream), s
 requests their address may make."""
 import socket
 import threading
+import time
 from http.server import ThreadingHTTPServer
 
 TIMEOUT_S = 10.0
@@ -25,12 +26,16 @@ DRAIN_BYTES, DRAIN_S = 1 << 20, 0.5
 def drain(sock):
     """Before closing: read what the client already sent. A request answered without reading its body (a refused POST)
     leaves that body unread, and closing a socket with unread data resets the connection, so the client can lose the
-    answer (on Windows, always). Up to DRAIN_BYTES, waiting at most DRAIN_S for each read."""
+    answer (on Windows, always). Up to DRAIN_BYTES, for at most DRAIN_S in all: a client trickling bytes can't keep
+    its slot."""
     try:
         sock.shutdown(socket.SHUT_WR)   # the answer is complete: the client reads it, then closes its side
-        sock.settimeout(DRAIN_S)
-        left = DRAIN_BYTES
+        end, left = time.monotonic() + DRAIN_S, DRAIN_BYTES
         while left > 0:
+            wait = end - time.monotonic()
+            if wait <= 0:
+                return
+            sock.settimeout(wait)
             got = len(sock.recv(min(left, 65536)))
             if not got:
                 return

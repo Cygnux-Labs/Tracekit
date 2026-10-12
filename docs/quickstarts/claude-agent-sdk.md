@@ -84,3 +84,4 @@ quickstart](../quickstart-v2.md#export-and-verify-by-hand) explains every line.
   [witnesses](../witnesses.md). Pin them in the trust config and the report reads `Assurance: witnessed`.
 - **Your own policy**: the dev signer uses the coding pack plus two demo rules (`tracekit/policy2/packs/dev.yaml`); a
   configured signer takes `policy:` in `signer.yaml`.
+- **Reference**: [the Claude Agent SDK integration](../integrations/claude-agent-sdk.md), with every option and what it doesn't cover.

@@ -245,5 +245,25 @@ class SilentClient(unittest.TestCase):
         self.assertEqual(self.request(port, path=slack_approvals.PATH), 401)
 
 
+class Drain(unittest.TestCase):
+    def test_a_trickling_client_cannot_hold_the_drain(self):
+        a, b = socket.socketpair()
+        self.addCleanup(a.close)
+        self.addCleanup(b.close)
+        stop = threading.Event()
+        self.addCleanup(stop.set)
+
+        def trickle():
+            try:
+                while not stop.wait(0.1):
+                    b.sendall(b"x")
+            except OSError:
+                pass
+        threading.Thread(target=trickle, daemon=True).start()
+        t0 = time.monotonic()
+        netserver.drain(a)
+        self.assertLess(time.monotonic() - t0, netserver.DRAIN_S + 0.5)
+
+
 if __name__ == "__main__":
     unittest.main()

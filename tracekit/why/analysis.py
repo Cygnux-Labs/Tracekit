@@ -4,14 +4,15 @@ Everything here is derived from the log and the tests recorded against it. Nothi
 """
 from __future__ import annotations
 
-import json
 import os
 import re
 import sys
+from collections import deque
+from itertools import takewhile
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-from .core import UNFINISHED, Run, glob_escape, load_run, verify
-from .graph import Graph, build_graph, nodes_matching, target_hits
+from .core import UNFINISHED, Run, glob_escape, load_run, ts_seconds, verify
+from .graph import Graph, _text, build_graph, nodes_matching, target_hits
 
 _EMAIL = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
 _URL = re.compile(r"https?://[^\s\"'<>]+")
@@ -27,10 +28,6 @@ def _count(v: Any) -> int:
 def integrity(run: Run) -> List[str]:
     """verify()'s problems, less a missing run.end: the page shows a running run as running, not as broken."""
     return [p for p in verify(run) if not p.startswith(UNFINISHED)]
-
-
-def _txt(v: Any) -> str:
-    return v if isinstance(v, str) else json.dumps(v, sort_keys=True, ensure_ascii=False, default=str)
 
 
 def is_sensitive(run: Run, ev: Dict[str, Any]) -> Optional[str]:
@@ -70,35 +67,41 @@ def atoms(args: Any) -> List[str]:
     return uniq
 
 
-def arg_provenance(run: Run, g: Graph, action_ev: Dict[str, Any]) -> List[Dict[str, Any]]:
+def arg_provenance(run: Run, g: Graph, action_ev: Dict[str, Any], texts: Optional[List[Tuple]] = None
+                   ) -> List[Dict[str, Any]]:
     """For each argument value, which earlier inputs or tool results contained it verbatim.
     untrusted-only: only untrusted inputs carried it (the classic injection signature)
     trusted:        some trusted input (the task included) or tool result carried it
     generated:      no earlier source; the model produced it"""
-    return value_provenance(run, run.value(action_ev["args_ref"]), action_ev["seq"])
+    return value_provenance(run, run.value(action_ev["args_ref"]), action_ev["seq"], texts)
 
 
-def value_provenance(run: Run, args: Any, before_seq: int) -> List[Dict[str, Any]]:
-    """arg_provenance for argument values that need not be recorded yet: the live guard calls this
-    before a tool runs, with before_seq past the end of the log."""
-    rows = []
+def _texts(run: Run) -> List[Tuple]:
+    """(event, its text lowercased, trust, label) of each input and each result of a call that ran, in log order."""
     untrusted_refs = {e["ref"] for e in run.of_type("input") if e.get("trust") == "untrusted"}
     # a tool result is untrusted when its content was also recorded as untrusted input, or when the
     # action itself is marked untrusted (e.g. a subagent's answer after it read untrusted content).
     # Not every result downstream of untrusted content: a trusted tool's own output stays trusted.
-    hashed = (run.start.get("meta") or {}).get("content_capture") == "hashed"
     texts = []
     for ev in run.events:
-        if ev["seq"] >= before_seq:
-            break
         if ev["type"] == "input":
-            texts.append((ev, _txt(run.value(ev["ref"])).lower(), ev.get("trust", "trusted"),
+            texts.append((ev, _text(run.value(ev["ref"])).lower(), ev.get("trust", "trusted"),
                           "task" if ev.get("kind") == "task" else ev.get("source", "input")))
         elif ev["type"] == "action" and ev.get("status") != "blocked":
             # a tool result counts as untrusted if the same content was also recorded as untrusted input
             untrusted = ev["result_ref"] in untrusted_refs or ev.get("trust") == "untrusted"
-            texts.append((ev, _txt(run.value(ev["result_ref"])).lower(),
+            texts.append((ev, _text(run.value(ev["result_ref"])).lower(),
                           "untrusted" if untrusted else "trusted", ev["tool"]))
+    return texts
+
+
+def value_provenance(run: Run, args: Any, before_seq: int, texts: Optional[List[Tuple]] = None
+                     ) -> List[Dict[str, Any]]:
+    """arg_provenance for argument values that need not be recorded yet: the live guard calls this
+    before a tool runs, with before_seq past the end of the log. texts: _texts(run), read once for many calls."""
+    rows = []
+    hashed = (run.start.get("meta") or {}).get("content_capture") == "hashed"
+    texts = list(takewhile(lambda t: t[0]["seq"] < before_seq, _texts(run) if texts is None else texts))
     for a in atoms(args):
         if hashed and a.startswith("sha256:"):  # a hash placeholder, not a value
             rows.append({"value": a, "status": "hashed", "sources": []})
@@ -215,17 +218,23 @@ def _settled(t: Dict[str, Any]) -> str:
     return "ruled-out" if hi < m and lo > -m else "inconclusive"
 
 
+LINEAGE_CHAINS = 20   # every input's chain would grow with the cube of a long run; candidates lists every input
+
+
 def lineage(g: Graph, action_node: str) -> List[List[str]]:
-    """The observed chains from each untrusted input (or, if none, each input) to the action."""
-    anc = g.ancestors(action_node, ("observed",))
-    roots = [n for n in anc if g.nodes[n]["type"] == "input" and g.nodes[n].get("trust") == "untrusted"] or \
-            [n for n in anc if g.nodes[n]["type"] == "input"]
-    chains = []
-    for r in sorted(roots, key=lambda x: g.nodes[x]["seq"]):
-        parent = g.descendants([r], ("observed",))
-        if action_node in parent:
-            chains.append(Graph.path(parent, action_node))
-    return chains
+    """The observed chains to the action from the LINEAGE_CHAINS nearest untrusted inputs (or, if none, inputs):
+    shortest paths, all from one search back from the action."""
+    nxt: Dict[str, Optional[str]] = {action_node: None}   # each ancestor's next step towards the action
+    q = deque([action_node])
+    while q:
+        x = q.popleft()
+        for e in g.in_edges(x, ("observed",)):
+            if e["src"] not in nxt:
+                nxt[e["src"]] = x
+                q.append(e["src"])
+    roots = [n for n in nxt if g.nodes[n]["type"] == "input" and g.nodes[n].get("trust") == "untrusted"] or \
+            [n for n in nxt if g.nodes[n]["type"] == "input"]   # nearest first: nxt is in search order
+    return [Graph.path(nxt, r)[::-1] for r in sorted(roots[:LINEAGE_CHAINS], key=lambda x: g.nodes[x]["seq"])]
 
 
 # --------------------------------------------------------------------------- alerts
@@ -245,15 +254,17 @@ def alerts(run: Run, g: Graph) -> List[Dict[str, Any]]:
                         "detail": f"{c['kind']} of {c['agent']}: log seq {c['seq']} ({c['type']}). The why log's "
                                   "content was changed, or the record is about something else.",
                         "node": "ev:" + c["event"]})
+    texts = _texts(run)
     for nid, n in sorted(g.nodes.items(), key=lambda kv: kv[1]["seq"]):
         if n["type"] != "action":
             continue
         ev = n["event"]
         sens = is_sensitive(run, ev)
-        untrusted_up = [g.nodes[a]["label"] for a in g.ancestors(nid, ("observed",))
-                        if g.nodes[a]["type"] == "input" and g.nodes[a].get("trust") == "untrusted"]
-        prov = arg_provenance(run, g, ev)
+        prov = arg_provenance(run, g, ev, texts)
         bad = [p for p in prov if p["status"] == "untrusted-only"]
+        untrusted_up = [g.nodes[a]["label"] for a in g.ancestors(nid, ("observed",))
+                        if g.nodes[a]["type"] == "input" and g.nodes[a].get("trust") == "untrusted"] \
+            if sens and not bad and ev.get("status") != "blocked" else []   # read only by the review alert
         base = {"node": nid, "tool": ev["tool"], "agent": ev["agent"], "seq": ev["seq"],
                 "target": suggest_target(run, ev, prov), "sensitive": sens}
         if ev.get("status") == "blocked":
@@ -273,13 +284,13 @@ def alerts(run: Run, g: Graph) -> List[Dict[str, Any]]:
                         "detail": (ev.get("guard") or {}).get("reason", "")})
         elif ev.get("status") == "error":
             out.append({**base, "severity": "review", "title": f"{ev['tool']} failed",
-                        "detail": _txt(run.value(ev["result_ref"]))[:200]})
+                        "detail": _text(run.value(ev["result_ref"]))[:200]})
         if ev.get("mode") == "stub":
             out.append({**base, "severity": "info", "title": f"{ev['tool']} was stubbed in replay", "detail": ""})
     for ev in run.of_type("decision"):
         if ev.get("status") == "error":
             out.append({"severity": "review", "title": f"Model call failed ({ev['agent']})",
-                        "detail": _txt(run.value(ev["output"]))[:200], "node": "ev:" + ev["id"]})
+                        "detail": _text(run.value(ev["output"]))[:200], "node": "ev:" + ev["id"]})
     rank = {"high": 0, "review": 1, "info": 2}
     out.sort(key=lambda a: (rank[a["severity"]], a.get("seq", 0)))
     return out
@@ -288,7 +299,7 @@ def alerts(run: Run, g: Graph) -> List[Dict[str, Any]]:
 # --------------------------------------------------------------------------- timeline
 
 def _short(v: Any, n: int = 90) -> str:
-    s = _txt(v).replace("\n", " ")
+    s = _text(v).replace("\n", " ")
     return s if len(s) <= n else s[: n - 1] + "…"
 
 
@@ -296,8 +307,7 @@ def timeline(run: Run) -> List[Dict[str, Any]]:
     rows = []
     t0 = None
     for ev in run.events:
-        ts = ev["ts"]
-        sec = int(ts[11:13]) * 3600 + int(ts[14:16]) * 60 + float(ts[17:26])
+        sec = ts_seconds(ev["ts"])
         t0 = sec if t0 is None else t0
         t = ev["type"]
         if t == "run.start":
@@ -396,11 +406,11 @@ def investigation(run: Run) -> Dict[str, Any]:
     """Everything the investigation app needs for one run."""
     g = build_graph(run)
     al = alerts(run, g)
-    actions = {}
+    actions, texts = {}, _texts(run)
     for nid, n in g.nodes.items():
         if n["type"] == "action":
             ev = n["event"]
-            prov = arg_provenance(run, g, ev)
+            prov = arg_provenance(run, g, ev, texts)
             actions[nid] = {"provenance": prov, "candidates": candidates(run, g, nid),
                             "lineage": lineage(g, nid), "target": suggest_target(run, ev, prov),
                             "sensitive": is_sensitive(run, ev)}
@@ -435,7 +445,7 @@ def influence_graph(runs: Iterable[Tuple[Run, Graph]]) -> Dict[str, Any]:
                 e = edges.setdefault(ev["ref"] + "|" + tool, {"source": ev["ref"], "tool": tool, "reach_runs": 0,
                                                               "tests": []})
                 e["reach_runs"] += 1
-            spec = f"input:{ev['source']}"
+            spec = "input:" + glob_escape(ev["source"])
             for t in run.tests:
                 if t.get("scope", "run") == "run" and t["intervention"] == spec:
                     tool = t["target"].split(",")[0].split("=", 1)[-1]
@@ -446,14 +456,16 @@ def influence_graph(runs: Iterable[Tuple[Run, Graph]]) -> Dict[str, Any]:
                                        "ci": t["ci"], "verdict": t["verdict"], "n": t["n"]})
         for tool in {a["tool"] for a in run.of_type("action")}:
             outcomes.setdefault(tool, {"id": tool, "runs": 0})["runs"] += 1
+    by_source: Dict[str, List[Dict[str, Any]]] = {}
     for e in edges.values():
+        by_source.setdefault(e["source"], []).append(e)
         eff = [t["effect"] for t in e["tests"]]
         e["max_effect"] = max(eff) if eff else None
         e["confirmed"] = any(t["verdict"] == "causal" for t in e["tests"])
         e["ruled_out"] = bool(e["tests"]) and not e["confirmed"] and all(
             t["verdict"] != "causal" and _settled(t) == "ruled-out" for t in e["tests"])
     for s in sources.values():
-        es = [e for e in edges.values() if e["source"] == s["id"]]
+        es = by_source.get(s["id"], [])
         s["max_effect"] = max([e["max_effect"] for e in es if e["max_effect"] is not None], default=None)
         s["confirmed_tools"] = sorted({e["tool"] for e in es if e["confirmed"]})
     src = sorted(sources.values(), key=lambda s: (-(s["max_effect"] or 0), -s["cited_by"]))

@@ -148,7 +148,9 @@ def _otlp_receiver(cid, forward):
 
     def sink(ev, attach):
         run = ev["run_id"]
-        req = {"op": "append", "event": ev, "cseq": counters.pop(run, -1) + 1}
+        last = counters.pop(run, -1)
+        counters[run] = last   # kept, most recent last, until the signer takes this event: an outage loses no count
+        req = {"op": "append", "event": ev, "cseq": last + 1}
         if attach:
             req["attach"] = attach
         safe, err = sanitize(req, cid, getattr(_REQ, "addr", "?"), client.client_config().get("signer_isolation", "same-user"),
@@ -156,7 +158,8 @@ def _otlp_receiver(cid, forward):
         if err:
             return {"ok": False, "error": err}
         resp = forward(safe)
-        counters[run] = req["cseq"] if resp.get("ok") else req["cseq"] - 1
+        if resp.get("ok"):
+            counters[run] = req["cseq"]
         # lean: an evicted run that sends again restarts at cseq 0 and the signer records each later event as a counter
         # gap; fine for a gateway removed in 0.5
         while len(counters) > MAX_OTLP_RUNS:
@@ -215,9 +218,14 @@ def make_handler(home, forward=None):
             path = self.path.split("?")[0].rstrip("/")
             if path not in ("/v1/rpc", "/v1/traces"):
                 return self._send(404, {"ok": False, "error": "not found"})
-            cid = authenticate(load_tokens(home), self.headers.get("Authorization", ""))
+            tokens = load_tokens(home)
+            cid = authenticate(tokens, self.headers.get("Authorization", ""))
             if not cid:
                 return self._send(401, {"ok": False, "error": "unauthorized"})
+            with receivers_lock:   # a client whose token was removed keeps no state (its OTLP receiver: up to ~80 MB)
+                for gone in [c for c in set(receivers) | set(buckets) if c not in tokens]:
+                    receivers.pop(gone, None)
+                    buckets.pop(gone, None)
             if not buckets.setdefault(cid, _Bucket()).take():
                 return self._send(429, {"ok": False, "error": "rate limited", "retryable": True})
             if path == "/v1/traces":
@@ -239,6 +247,7 @@ def make_handler(home, forward=None):
                 return self._send(200, {k: v for k, v in forward(safe).items() if k in ("ok", "error", "retryable")})
             except client.SignerUnavailable as e:
                 return self._send(503, {"ok": False, "error": f"signer unavailable: {e}", "retryable": True})
+    H.receivers, H.buckets = receivers, buckets   # per client: what a removed client's next request prunes
     return H
 
 

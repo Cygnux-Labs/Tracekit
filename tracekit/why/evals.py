@@ -11,7 +11,7 @@ from __future__ import annotations
 import os
 from typing import Any, Dict, Iterable, List, Optional
 
-from .core import Run, load_run
+from .core import Run, glob_escape, load_run
 from .graph import Graph, build_graph, target_hits
 from .replay import System, counterfactual
 
@@ -39,8 +39,8 @@ def structure(run: Run, graph: Optional[Graph] = None) -> Dict[str, Any]:
     for nid in order:
         ins = g.in_edges(nid, ("observed",))
         best[nid], prev[nid] = 0, None
-        for e in ins:
-            if best.get(e["src"], 0) + 1 > best[nid]:
+        for e in ins:   # an edge from a later event (a hand-written from_event) is no step of a chain
+            if e["src"] in best and best[e["src"]] + 1 > best[nid]:
                 best[nid], prev[nid] = best[e["src"]] + 1, e["src"]
     actions = [n for n in order if g.nodes[n]["type"] == "action"]
     critical: List[str] = []
@@ -61,9 +61,9 @@ def candidate_interventions(run: Run) -> List[str]:
     specs: List[str] = []
     for ev in run.events:
         if ev["type"] == "message":
-            s = f"msg:{ev['agent']}->{ev['to']}"
+            s = f"msg:{glob_escape(ev['agent'])}->{glob_escape(ev['to'])}"
         elif ev["type"] == "input" and ev.get("kind") != "task":
-            s = f"input:{ev['source']}"
+            s = "input:" + glob_escape(ev["source"])
         else:
             continue
         if s not in specs:

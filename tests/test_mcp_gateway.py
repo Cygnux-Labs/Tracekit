@@ -89,6 +89,24 @@ def upstream():
 
 
 @unittest.skipUnless(HAVE_MCP, "mcp not installed")
+class UpstreamTimeout(unittest.TestCase):
+    def test_a_timed_out_upstream_call_is_cancelled(self):
+        import threading
+        ups = mcp_gateway.Upstreams.__new__(mcp_gateway.Upstreams)
+        ups.loop = asyncio.new_event_loop()
+        threading.Thread(target=ups.loop.run_forever, daemon=True).start()
+        self.addCleanup(ups.loop.call_soon_threadsafe, ups.loop.stop)
+        for _ in range(5):
+            with self.assertRaises(TimeoutError):
+                ups._run(asyncio.sleep(30), timeout=0.05)
+
+        async def pending():
+            await asyncio.sleep(0.05)   # let the cancellations land
+            return [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+        self.assertEqual(asyncio.run_coroutine_threadsafe(pending(), ups.loop).result(5), [])
+
+
+@unittest.skipUnless(HAVE_MCP, "mcp not installed")
 class McpGateway(unittest.TestCase):
     def setUp(self):
         RAN.clear()

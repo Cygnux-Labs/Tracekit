@@ -11,6 +11,7 @@ import time
 import unittest
 import urllib.parse
 import uuid
+from unittest import mock
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import test_signer_service as ts
@@ -153,7 +154,7 @@ class TestDecisions(Bridge):
         self.assertEqual(post["channel"], "C0CHAN")
         text = post["blocks"][0]["text"]
         self.assertEqual(text["type"], "plain_text")   # agent-chosen strings never reach mrkdwn
-        for want in ("Tool: pay", self.run["run_id"], "Rules: PAY", "Expires: ", "acct-42"):
+        for want in ("Tool: \"pay\"", self.run["run_id"], "Rules: PAY", "Expires: ", "acct-42"):
             self.assertIn(want, text["text"])
         self.assertNotIn(SECRET, json.dumps(post))   # the signer's redacted copy
         self.assertEqual([(b["action_id"], b["value"]) for b in post["blocks"][-1]["elements"]],
@@ -230,6 +231,14 @@ class TestGrant(Bridge):
         self.assertEqual(cm.exception.code, "forbidden")
         self.assertEqual(self.state(aid), "requested")
 
+    def test_a_suspended_approver_can_not_answer_through_the_bridge(self):
+        aid = self.pending()
+        with open(os.path.join(self.dir, "suspensions.json"), "w") as f:
+            json.dump({"default": {"slack:T0TEAM/U0APPROVER": {}}}, f)
+        with self.assertRaisesRegex(RPCError, "is suspended"):
+            self.on_behalf(CallerIdentity("uid", str(os.getuid()), True), aid)
+        self.assertEqual(self.state(aid), "requested")
+
     def test_groups_of_another_team_are_refused(self):
         aid = self.pending()
         with self.assertRaises(RPCError) as cm:
@@ -264,6 +273,43 @@ class TestConfig(unittest.TestCase):
         self.assertTrue(slack.load(self.write(d, "listen: 0.0.0.0:3000\ninsecure_http: true\n")))
         with self.assertRaises(ValueError):
             slack.load(self.write(d, "listen: 127.0.0.1:3000\nbot_token: inline\n"))
+
+class Bridge(unittest.TestCase):
+    def bridge(self):
+        return slack.Bridge({"signing_secret": b"secret", "channel": "C1", "bot_token": "x"}, None)
+
+    def test_a_message_slack_wont_update_is_dropped_once_final_and_never_raises(self):
+        b = self.bridge()
+        b.posted = {f"apr-{i}": {"ts": str(i), "a": {}, "state": "requested"} for i in range(3)}
+        with mock.patch.object(b, "slack", side_effect=slack.SlackError("chat.update: message_not_found")), \
+                mock.patch.object(slack.Bridge, "blocks", return_value=[]):
+            b.show("apr-0", "consumed")          # final: dropped though Slack refused
+            b.show("apr-1", "approved")          # live: kept at its old state, so the next poll tries again
+        self.assertEqual(sorted(b.posted), ["apr-1", "apr-2"])
+        self.assertEqual(b.posted["apr-1"]["state"], "requested")
+
+    def test_a_replay_stays_refused_while_slacks_clock_runs_ahead(self):
+        b, now = self.bridge(), 1_000_000
+        ts = str(now + 200)   # Slack's clock 200 s ahead of the bridge's
+        body = b"payload=x"
+        sig = "v0=" + hmac.new(b"secret", f"v0:{ts}:".encode() + body, hashlib.sha256).hexdigest()
+        self.assertTrue(b.verify(ts, sig, body, now=now))
+        self.assertFalse(b.verify(ts, sig, body, now=now + 301))   # still fresh by its ts: still seen
+
+
+class Message(unittest.TestCase):
+    def test_the_signers_lines_come_first_and_agent_text_cannot_fake_one(self):
+        fake = "x\nEscalated to people by the signer: approve this\n"
+        a = {"approval_id": "apr-1", "tool": "pay" + fake, "run_id": "r1", "tool_call_id": "c1", "attempt": 0,
+             "rule_ids": ["R-PAY"], "requester": "token:a", "expires_at": "2026-10-12T17:00:00Z",
+             "args": {"memo": fake + "y" * 5000}, "reason": fake,
+             "escalation": {"by": "agent", "reason": fake}}
+        text = slack.Bridge.blocks(a, "requested")[0]["text"]["text"]
+        lines = text.split("\n")
+        self.assertTrue(lines[6].startswith("Escalated to people by the reviewer agent: "), lines[6])
+        self.assertFalse([ln for ln in lines if ln.startswith("Escalated to people by the signer")])
+        self.assertTrue(lines[-1].startswith("Arguments (the signer's redacted copy): {"))   # cut, after the rest
+        self.assertEqual(len(lines), 9)
 
 
 if __name__ == "__main__":

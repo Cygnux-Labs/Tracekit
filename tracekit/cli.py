@@ -35,6 +35,9 @@ _MOVED = {"sql": "query", "proofpack": "proofpack", "report": "proofpack", "caus
 
 
 def main(argv=None):
+    for stream in (sys.stdout, sys.stderr):   # a legacy console encoding (Windows cp1252) can't print every character
+        if hasattr(stream, "reconfigure") and getattr(stream, "errors", "strict") == "strict":
+            stream.reconfigure(errors="replace")
     args = list(sys.argv[1:] if argv is None else argv)
     if args[:2] == ["migrate", "--system"]:  # 0.2.1; before argparse for the same REMAINDER reason as below
         rest, fm, harnesses = args[2:], None, []
@@ -81,8 +84,8 @@ def main(argv=None):
                                                          "firewall rule; undone by uninstall; docs/egress.md)")
     p.add_argument("--project", action="store_true", help="hooks in ./.claude/settings.json instead of ~/.claude")
     p.add_argument("--no-hooks", action="store_true")
-    p.add_argument("--witness", action="append", default=[], help="file:/path.jsonl or git:/clone[@remote] (repeatable)")
-    p.add_argument("--checkpoint-every", type=int, default=50)
+    p.add_argument("--witness", action="append", default=[], help="file:/path.jsonl or git:/clone[@remote] (repeatable; default: the last init's, else a local clone)")
+    p.add_argument("--checkpoint-every", type=int, help="records between checkpoints (default: the last init's, else 50)")
     p.add_argument("--user", help="system mode: the user whose agents are traced (default: $SUDO_USER)")
     p.add_argument("--no-service", action="store_true", help="system mode: do not install systemd/launchd")
     p.add_argument("--experimental-macos", action="store_true", help="allow system mode on macOS (not yet validated on hardware)")
@@ -336,23 +339,20 @@ def _run(a):
     if a.cmd == "ingest":
         from . import ingest
         return ingest.main(a.rest)
-    if a.cmd == "analyze":
-        from . import findings
-        return findings.main(a.rest)
-    if a.cmd == "otel":
-        from . import otlp
-        return otlp.main(a.rest)
     if a.cmd == "init" and a.remote:
         return _init_remote(a)
     if a.cmd == "init":
         from . import install
-        if a.checkpoint_every < 1:
+        if a.checkpoint_every is not None and a.checkpoint_every < 1:
             print("tracekit: --checkpoint-every must be at least 1", file=sys.stderr)
             return 2
         if not 1 <= a.proxy_port <= 65535:
             print("tracekit: --proxy-port must be between 1 and 65535", file=sys.stderr)
             return 2
         if a.proxy and not experimental_gate(a.experimental, "the model proxy (init --proxy)"):
+            return 2
+        if a.managed_only and not a.managed:   # alone, the hooks would go to settings the agent's user can edit
+            print("tracekit: --managed-only goes with --managed", file=sys.stderr)
             return 2
         signer = None
         if a.key_attestation and not a.signer_cmd:
@@ -390,6 +390,9 @@ def _run(a):
                                                         a.egress)
             except install.SettingsError as e:
                 print(f"tracekit: {e}", file=sys.stderr)
+                return 1
+            except install.ServiceError as e:
+                print(f"tracekit: installed, but {e}", file=sys.stderr)
                 return 1
             print(f"v2 signer installed as a separate user; socket {sock}; config {install.V2_CONFIG}; "
                   f"hooks: {settings or 'not installed'}")
@@ -453,6 +456,9 @@ def _run(a):
                                                 harnesses=a.harness, agent=a.agent, allow_privileged=a.allow_privileged)
         except install.SettingsError as e:
             print(f"tracekit: {e}", file=sys.stderr)
+            return 1
+        except install.ServiceError as e:
+            print(f"tracekit: installed, but {e}", file=sys.stderr)
             return 1
         print(f"tracekitd installed as a separate user; socket {cfg['socket']}; hooks: {settings or 'not installed'}")
         return 0

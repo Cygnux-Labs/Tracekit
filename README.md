@@ -253,18 +253,32 @@ report it.
 
 ## Docs
 
+- Seeing it work: [recorded demos](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/demos/README.md) of each
+  main use case, offline, with their bundles and verify reports
+- The tour: a [terminal video](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/demos/tracekit-tour.mp4) of every
+  demo running (3 min 44 s)
 - How it fits together: [architecture](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/architecture.md),
   [evidence format v2](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/format-v2.md)
 - Running it: [deployment](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/deploy.md),
+  [compose](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/deploy-compose.md),
+  [container](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/deploy-container.md),
+  [Kubernetes](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/deploy-kubernetes.md),
   [doctor](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/doctor.md),
   [witnesses](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/witnesses.md),
   [monitor](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/monitor.md),
   [viewer](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/viewer.md),
   [observability](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/observability.md),
-  [privacy](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/privacy.md)
+  [privacy](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/privacy.md),
+  [remote ingest](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/remote-ingest.md),
+  [record-key issuer](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/issuer.md)
 - Deciding calls: [policy reference](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/policy-v2.md),
   [approvals](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/approvals.md),
   [LLM gateway](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/gateway.md),
+  [tool executor](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/executor.md),
+  [MCP gateway](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/mcp-gateway.md),
+  [egress observer](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/egress.md),
+  [incidents](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/incidents.md),
+  [webhooks](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/webhooks.md),
   [OpenTelemetry](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/otel.md)
 - Checking evidence: [reading a verify report](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/verdicts.md),
   [auditor guide](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/auditor-guide.md),
@@ -272,12 +286,15 @@ report it.
   [technical report](https://github.com/Cygnux-Labs/Tracekit/blob/main/report/tracekit-v2.md),
   [FAQ and limits](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/faq.md),
   [known limits and trade-offs](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/limits.md),
+  [security checklist](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/security-checklist.md),
   [case study: two open-source agents](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/case-study-oss-agents.md)
 - Asking why an action happened: [tracekit why](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/why.md), [its architecture](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/why-architecture.md)
 - Releasing: [launch checklist for 1.0](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/launch-checklist.md)
 - The v1 laptop signer (`tracekitd`, `tracekit init --dev`, `tracekit demo`, `tracekit observe`) and its bundles keep
   working: [coding agents](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/coding-agents.md),
   [signing](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/signing.md),
+  [findings](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/findings.md),
+  [v1 adapters and integrations](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/integrations.md),
   [platforms](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/portability.md)
 
 ## Status

@@ -123,6 +123,14 @@ class Wire(unittest.TestCase):
         self.assertEqual(len(otlp_wire.decode(gzip.compress(raw), "application/json", "gzip")[0]), 4)
         self.assertEqual(len(otlp_wire.decode(zlib.compress(raw), "application/json", "deflate")[0]), 4)
 
+    def test_a_body_that_inflates_far_beyond_its_size_is_refused(self):
+        tiny = gzip.compress(b"{" + b" " * (2 << 20) + b"}")   # ~2 KB that inflates to 2 MiB
+        self.assertLess(len(tiny) * otlp_wire.MAX_RATIO, 2 << 20)
+        with self.assertRaisesRegex(otlp_wire.WireError, "times the compressed size"):
+            otlp_wire.decompress(tiny, "gzip")
+        ok = gzip.compress(json.dumps(payload(span("2222222222222222", "x", {}))).encode())
+        self.assertTrue(otlp_wire.decompress(ok, "gzip"))   # an ordinary request still inflates
+
     def test_hostile_input_is_refused_cleanly(self):
         bomb = gzip.compress(b"{" + b" " * (otlp_wire.MAX_DECODED + 10) + b"}")
         cases = [(bomb, "application/json", "gzip"), (b"\xff\xff\xff", "application/x-protobuf", None),
@@ -185,6 +193,19 @@ class Mapping(unittest.TestCase):
         for _, ev, _, _ in items:
             self.assertEqual(schema.validate(ev), [], ev)
         return [ev for _, ev, _, _ in items], skipped, items
+
+    def test_a_trace_with_no_agent_in_it_is_skipped(self):
+        evs, skipped, _ = self.plan(payload(span("3333333333333333", "GET /health", {"http.method": "GET"}, parent=None)))
+        self.assertEqual((evs, skipped), ([], 1))
+        m = mapper()   # a root that comes after its trace's agent spans still ends their run
+        doc = agent_trace()
+        spans = doc["resourceSpans"][0]["scopeSpans"][0]["spans"]
+        root = [x for x in spans if "parentSpanId" not in x]
+        doc["resourceSpans"][0]["scopeSpans"][0]["spans"] = [x for x in spans if "parentSpanId" in x]
+        for key, ev, _, update in self.plan(doc, m)[2]:
+            m.commit(key, ev, update)
+        doc["resourceSpans"][0]["scopeSpans"][0]["spans"] = root
+        self.assertEqual([e["type"] for e in self.plan(doc, m)[0]], ["run.end"])
 
     def test_agent_trace_becomes_one_signed_run(self):
         evs, skipped, items = self.plan(agent_trace())

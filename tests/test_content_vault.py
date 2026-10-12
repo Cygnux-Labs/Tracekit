@@ -273,6 +273,13 @@ class On(Vault):
             report = io.StringIO()
             v2.print_report(rep, code, report)
             self.assertIn("content vault — 1 access(es), 1 erasure(s)", report.getvalue())
+            import test_ts_verifier as tv
+            if not tv.SKIP:   # the TypeScript verifier reports the same lines
+                ts = tv.ts_verify(out, trust)
+                self.assertEqual([(c["check"], c["status"], c["detail"]) for c in ts["checks"]
+                                  if c["check"] == "content vault"],
+                                 [(c["check"], c["status"], c["detail"]) for c in rep.checks
+                                  if c["check"] == "content vault"])
         finally:
             store.close()
 

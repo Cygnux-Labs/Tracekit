@@ -18,7 +18,7 @@ import {
 } from "./primitives.js";
 import { Detector } from "./detect.js";
 import { same, validateEvent } from "./schema.js";
-import { readZip } from "./zip.js";
+import { MAX_ENTRY, readZip } from "./zip.js";
 
 export { MAX_ENTRIES, MAX_ENTRY, MAX_TOTAL, Unusable, readZip } from "./zip.js";
 export { StrictJSONError, canonicalize, strictParse, strictParseBytes } from "./jcs.js";
@@ -28,6 +28,7 @@ export const VERSION = "1.2.0";
 export const EXIT_OK = 0, EXIT_FAIL = 1, EXIT_BAD = 2, EXIT_WARN = 3;
 const FORMAT = "tracekit.bundle.v2";
 const MAX_LINE = 1 << 20;
+const MAX_LINES = MAX_ENTRY / 256;   // per JSON lines file: no signed record is shorter than 256 bytes
 const CLASSES = ["public", "customer", "tracekit", "operator"];
 const KEY_TYPES = ["signer.epoch", "key.retire"];
 const ZERO_HASH = "sha256:" + "0".repeat(64);
@@ -199,7 +200,11 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
     const data = file(name);
     if (data.length && data.at(-1) !== 0x0a) throw new Error("a JSON lines file must end in a newline");
     const lines: Uint8Array[] = [];
-    for (let i = 0, j; (j = data.indexOf(0x0a, i)) >= 0; i = j + 1) lines.push(data.subarray(i, j));
+    for (let i = 0, j; (j = data.indexOf(0x0a, i)) >= 0; i = j + 1) {
+      // checked before any is parsed: a run of tiny lines costs no memory
+      if (lines.length === MAX_LINES) throw new Error("more lines than the bundle limits");
+      lines.push(data.subarray(i, j));
+    }
     if (lines.some((l) => l.length > MAX_LINE)) throw new Error("line longer than the bundle limits");
     return lines.map((l) => strictParseBytes(l, floats) as J);
   };
@@ -404,8 +409,9 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
       + `; ${finals.reduce((n, c) => n + num(at(c, "reconciled")), 0)} call(s) reconciled`
       + (paired ? ` (${paired} paired by arguments: no tool-call id)` : "") + "; unreconciled: "
       + (unreconciled.map(([k, n]) => `${k} ${n}`).join(", ") || "none"),
-    reconciles.map((e) => `seq ${e.seq}: ${e.type} ${cut(str(get(e, "tool_call_id")), 200)}: `
-      + cut(str(get(at(e, "data"), "detail")), 200)).slice(0, 20), true);
+    reconciles.map((e) => `seq ${e.seq}: ${e.type}`
+      + (has(e, "tool_call_id") ? ` ${cut(str(e.tool_call_id), 200)}` : "")
+      + `: ${cut(str(get(at(e, "data"), "detail")), 200)}`).slice(0, 20), true);
   }
   // the coverage matrix: per action class its weakest status across the runs, the layers behind it; never "complete"
   const matrices = [...runs.values()].map((rs) => rs.at(-1).event)
@@ -424,6 +430,9 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
   if (lost.length)
     rep.check("observers", false, `${lost.length} egress observer(s) went silent while their run was open`, lost.slice(0, 20), true);
   checkIncidents(rep, runs, policies, floats);
+  const accessed = typed("content.accessed").length, erased = typed("content.erased").length;
+  if (accessed || erased)   // signer records of the content vault (docs/privacy.md): who read or erased retained content
+    rep.check("content vault", true, `${accessed} access(es), ${erased} erasure(s) of retained content, each signed by the signer`);
   // a tool call's tier is the weakest its records claim (untiered < T3, receipt only, < T1 < T2): each tier a record
   // names, and untiered for a decision or result that names none, so a call decided at T2 and completed elsewhere
   // isn't T2;
@@ -604,13 +613,16 @@ function checkIncidents(rep: Report, runs: Map<string, J[]>, policies: Map<strin
       else det = new Detector(strictParseBytes(data, floats));
       if (det) {
         const st = Detector.state(), expected: J[] = [], key = (d: J) => JSON.stringify([d.trigger, d.rule_ids,
-          d.cites.map((c: J) => [c.run_id, c.run_seq])]);
+          d.cites.map((c: J) => [c.run_id, c.run_seq]), d.mode]);
         for (const e of events) {
           if (mine.includes(e)) {
             const i = expected.findIndex((x) => key(x) === key(e.data));
             if (i >= 0) {
-              expected.splice(i, 1);
+              const [hit] = expected.splice(i, 1);
               checked++;
+              if (hit.mode === "enforce" && hit.would.length && !list(e.data.actions).length && !has(e.data, "reason"))
+                problems.push(`seq ${e.seq}: incident ${e.data.incident_id} (${e.data.trigger}) is enforced under policy `
+                  + `${cut(h, 80)} but records no response (${hit.would.join(", ")}) and no reason`);
             } else problems.push(`seq ${e.seq}: incident ${e.data.incident_id} (${e.data.trigger}) does not follow from the `
               + `run's records under policy ${cut(h, 80)}`);
           }

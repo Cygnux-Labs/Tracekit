@@ -2,6 +2,7 @@
 found in review.   python3 -m pytest tests/test_hardening.py -v"""
 import hashlib
 import http.client
+import http.server
 import io
 import json
 import os
@@ -436,6 +437,24 @@ class ObserverServer(unittest.TestCase):
         self.assertEqual(h["X-Content-Type-Options"], "nosniff")
         self.assertNotIn(b"googleapis", body)
         self.assertNotIn(b"__RAW_DATA__", body)
+
+    def test_a_snapshot_is_written_without_the_feed_lock(self):
+        feed = observe.Feed(self.path)
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), observe.make_handler(feed, None))
+        srv.daemon_threads = True
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.shutdown)
+        self.addCleanup(srv.server_close)
+        free, real = [], http.server.BaseHTTPRequestHandler.send_response
+
+        def send_response(handler, *a, **kw):   # a client that stops reading would block right here
+            probe = threading.Thread(target=lambda: free.append(feed.lock.acquire(timeout=1) and not feed.lock.release()))
+            probe.start()
+            probe.join()
+            return real(handler, *a, **kw)
+        with mock.patch.object(http.server.BaseHTTPRequestHandler, "send_response", send_response):
+            self.assertEqual(self.get(srv.server_address[1], "/api/snapshot")[0], 200)
+        self.assertEqual(free, [True])
 
     def test_dns_rebinding_host_is_refused(self):
         port = self.serve()

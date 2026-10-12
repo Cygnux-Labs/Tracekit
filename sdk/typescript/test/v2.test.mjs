@@ -9,7 +9,7 @@ import { createServer } from "node:net";
 import { join, resolve } from "node:path";
 import {
   Client, Incompatible, RPCError, RPC_VERSION, SignerUnavailable, StrictJSONError, argsDigest, canonicalize, currentRun,
-  defaultSigner, devRuntimeDir, strictParse, systemConfig, withRun,
+  defaultSigner, devRuntimeDir, instrument, strictParse, systemConfig, withRun,
 } from "../dist/v2/client.js";
 import { REQUESTS } from "../dist/v2/rpc_schema.js";
 import { validate } from "../dist/v2/validate.js";
@@ -385,4 +385,38 @@ test("HTTPS: an id with a central replica's route goes to that replica, others t
   assert.equal(routeUrl(base, { parent: { run_id: "tracekit-signer-3.y", run_token: "t" } }).hostname, "tracekit-signer-3.tk.svc");
   for (const id of ["abc", "other-2.abc", "tracekit-signer-x.abc", "tracekit-signer-2"])
     assert.equal(routeUrl(base, { run_id: id }), base, id);
+});
+
+test("fake: a long-lived run remembers no denied call, and at most 4096 others", async (t) => {
+  const { client } = await fake(t);
+  const run = await client.registerRun("a");
+  for (let i = 0; i < 20; i++) await run.decide(`d${i}`, "rm", {});   // denied: never completed
+  assert.equal(run.decided.size, 0);
+  for (let i = 0; i < 4100; i++) await run.decide(`a${i}`, "pay", {});   // asked, never approved
+  assert.equal(run.decided.size, 4096);
+});
+
+test("fake: a call refused as closed while its run closes registers no new run", async (t) => {
+  const { client, frames } = await fake(t, {
+    handle: (f) => f.method === "decide" ? sleep(100).then(() => ({ error: { code: "run_closed", message: "run-1" } })) : null,
+  });
+  const run = await client.registerRun("a");
+  run.renewAs = "a";   // as instrument()'s process run
+  const late = run.decide("t1", "Bash", {});
+  await run.close();
+  await assert.rejects(late, (e) => e instanceof RPCError && e.code === "run_closed");
+  assert.equal(frames.filter((f) => f.method === "register_run").length, 1);
+});
+
+test("instrument() rejects, never throws, when its client can't be built", async () => {
+  const before = process.env.TRACEKIT_SIGNER_CA;
+  process.env.TRACEKIT_SIGNER_CA = "/nonexistent/ca.pem";
+  try {
+    let threw = false, p;
+    try { p = instrument("a", { signer: "https://127.0.0.1:9" }); } catch { threw = true; }
+    assert.equal(threw, false);
+    await assert.rejects(p);
+  } finally {
+    if (before === undefined) delete process.env.TRACEKIT_SIGNER_CA; else process.env.TRACEKIT_SIGNER_CA = before;
+  }
 });

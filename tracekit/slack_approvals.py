@@ -88,7 +88,8 @@ class Bridge:
         self.cfg, self.signer = cfg, signer
         self.api = cfg.get("api_url", API).rstrip("/")
         self.posted = {}   # approval_id -> {"ts": message ts, "a": approval_get answer, "state": state shown}
-        self.seen = {}     # signature -> time: callbacks already answered
+        self.seen = {}     # signature -> its request ts: callbacks already answered
+        self.seen_lock = threading.Lock()
         self.members = {}  # user group id -> (fetched at, user ids)
         self.lock = threading.RLock()
 
@@ -111,27 +112,31 @@ class Bridge:
         want = "v0=" + hmac.new(self.cfg["signing_secret"], f"v0:{ts}:".encode() + body, hashlib.sha256).hexdigest()
         if not (sig or "").isascii() or not hmac.compare_digest(want, sig):
             return False
-        with self.lock:
+        with self.seen_lock:   # not self.lock: a click is never kept waiting on a Slack call
             # lean: prunes the whole cache per callback; a time-ordered deque if callbacks pass a few per second
-            self.seen = {k: t for k, t in self.seen.items() if now - t <= WINDOW_S}
+            # kept by the request's own ts, which is what freshness is judged by: a clock behind Slack's can't reopen it
+            self.seen = {k: t for k, t in self.seen.items() if abs(now - t) <= WINDOW_S}
             if sig in self.seen:
                 return False
-            self.seen[sig] = now
+            self.seen[sig] = int(ts)
         return True
 
     @staticmethod
     def blocks(a, state=None, user=None, answered=None):
-        args = a["args"] if isinstance(a["args"], str) or a["args"] is None else json.dumps(a["args"], indent=2)
-        lines = [f"Tool: {a['tool']}", f"Run: {a['run_id']}", f"Call: {a['tool_call_id']} attempt {a['attempt']}",
-                 f"Rules: {', '.join(a['rule_ids'])}", f"Requested by: {a['requester']}", f"Expires: {a['expires_at']}",
-                 "Arguments (the signer's redacted copy):", "(deleted)" if args is None else args]
-        if "reason" in a:
-            lines.append(f"Reason given by the agent (unverified): {a['reason']}")
+        def one(v):
+            """Agent-supplied text on one line, quoted: no newline in it can start a line that reads as the signer's."""
+            return json.dumps(v, ensure_ascii=False)
+        lines = [f"Tool: {one(a['tool'])}", f"Run: {a['run_id']}", f"Call: {a['tool_call_id']} attempt {a['attempt']}",
+                 f"Rules: {', '.join(a['rule_ids'])}", f"Requested by: {a['requester']}", f"Expires: {a['expires_at']}"]
         esc = a.get("escalation")
         if esc:
             lines.append("Escalated to people by " + (
-                f"the reviewer agent: {esc.get('reason', 'no reason given')} (model output, over arguments the "
+                f"the reviewer agent: {one(esc.get('reason', 'no reason given'))} (model output, over arguments the "
                 "requesting agent supplied)" if esc["by"] == "agent" else f"the signer: {esc.get('reason', '')}"))
+        # what the agent supplied comes last, so Slack's length cut can only shorten it, never the signer's lines
+        if "reason" in a:
+            lines.append(f"Reason given by the agent (unverified): {one(a['reason'])}")
+        lines.append("Arguments (the signer's redacted copy): " + ("(deleted)" if a["args"] is None else one(a["args"])))
         out = [{"type": "section", "text": {"type": "plain_text", "text": "\n".join(lines)[:2900]}},
                {"type": "context", "elements": [{"type": "plain_text", "text": a["approval_id"]}]}]
         if state == "requested":
@@ -148,15 +153,23 @@ class Bridge:
         return out
 
     def show(self, aid, state, user=None, answered=None):
-        with self.lock:
+        """Update the posted message of `aid` to `state`. Never raises: a message Slack won't update (deleted, its
+        channel archived) is logged, and a final state is dropped from `posted` either way, so it can't pile up."""
+        with self.lock:   # claim the change; Slack is called outside the lock
             p = self.posted.get(aid)
             if p is None or p["state"] == state:
                 return
-            self.slack("chat.update", channel=self.cfg["channel"], ts=p["ts"], text=f"Tracekit approval {state}",
-                       blocks=self.blocks(p["a"], state, user, answered))
-            p["state"] = state
+            before, p["state"] = p["state"], state
             if state not in LIVE:
                 del self.posted[aid]
+        try:
+            self.slack("chat.update", channel=self.cfg["channel"], ts=p["ts"], text=f"Tracekit approval {state}",
+                       blocks=self.blocks(p["a"], state, user, answered))
+        except (SlackError, OSError) as e:
+            log.warning("tracekit slack: the message of %s was not updated to %s: %s", aid, state, e)
+            with self.lock:
+                if state in LIVE and self.posted.get(aid) is p and p["state"] == state:
+                    p["state"] = before   # the next poll tries again
 
     def poll(self):
         """Post the approvals waiting for a person's answer that are not posted yet (never one an agent approver's
@@ -171,13 +184,17 @@ class Bridge:
         # message ids if duplicates after a restart matter
         for aid, x in live.items():
             if x["state"] == "requested" and aid not in self.posted and not x.get("agent"):
-                a = self.signer.approval_get({"approval_id": aid})
-                ts = self.slack("chat.postMessage", channel=self.cfg["channel"], text="Tracekit approval requested",
-                                blocks=self.blocks(a, "requested"))["ts"]
+                try:   # one approval that can't be posted doesn't hold back the others
+                    a = self.signer.approval_get({"approval_id": aid})
+                    ts = self.slack("chat.postMessage", channel=self.cfg["channel"], text="Tracekit approval requested",
+                                    blocks=self.blocks(a, "requested"))["ts"]
+                except (SlackError, OSError, RPCError) as e:
+                    log.warning("tracekit slack: %s was not posted (next poll tries again): %s", aid, e)
+                    continue
                 with self.lock:
                     self.posted.setdefault(aid, {"ts": ts, "a": a, "state": "requested"})
-        for aid in list(self.posted):   # gone from the list: its run ended, which expired it
-            x = live.get(aid, {"state": "expired"})
+        for aid in list(self.posted):   # gone from the list: its run ended (answered or not, it can't be answered now)
+            x = live.get(aid, {"state": "ended with its run"})
             self.show(aid, x["state"], answered=x.get("answered"))
 
     def in_groups(self, user):

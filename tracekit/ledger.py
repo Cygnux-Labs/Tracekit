@@ -100,7 +100,7 @@ class Ledger:
             self.close()
             raise RuntimeError(f"another tracekitd holds {path}") from e
         try:
-            self.seq, self.head, self.torn = -1, GENESIS, False
+            self.seq, self.head, self.torn, self._partial = -1, GENESIS, False, False
             for _, rec, _raw in read_records(path):
                 self.torn = not isinstance(rec, dict)  # only a torn *final* line means a crash since the last start
                 if self.torn:
@@ -145,7 +145,7 @@ class Ledger:
         event["seq"] = self.seq + 1
         event["prev_hash"] = self.head
         rec = make_record(event, self.keys)
-        data = (json.dumps(rec, ensure_ascii=False) + "\n").encode("utf-8")
+        data = (("\n" if self._partial else "") + json.dumps(rec, ensure_ascii=False) + "\n").encode("utf-8")
         size = os.fstat(self._fh.fileno()).st_size
         try:
             view = memoryview(data)
@@ -153,14 +153,15 @@ class Ledger:
                 n = self._fh.write(view)
                 view = view[n:]
             os.fsync(self._fh.fileno())
+            self._partial = False
         except OSError:
             # full disk / I/O error: roll back the partial line so the chain stays clean, and
             # leave seq/head unchanged; the caller reports the failure (E2)
             try:
                 self._fh.seek(0, os.SEEK_END)
                 os.ftruncate(self._fh.fileno(), size)
-            except OSError:
-                pass
+            except OSError:   # the partial line stays: the next record starts on a line of its own, as after a crash
+                self._partial = True
             raise
         self.seq, self.head = event["seq"], rec["hash"]
         return rec

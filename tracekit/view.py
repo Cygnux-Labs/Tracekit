@@ -172,13 +172,21 @@ class OidcLogin:
         sid = secrets.token_urlsafe(32)
         person = {"subject": identity.subject[:256], "person": identity.claims["person"],
                   "groups": identity.claims["groups"], "tenant": tenant}
+        self._keep(sid, {"tenant": observe.ALL if role == "operator-admin" else tenant, "role": role,
+                         "person": person, "csrf": secrets.token_urlsafe(32), "at": self.clock(),
+                         "until": self.clock() + SESSION_S})
+        return sid
+
+    def _keep(self, sid, session):
+        """Store a new session; past SESSIONS_MAX, expired sessions go first, then the oldest live ones."""
         with self._lock:
-            self._sessions[sid] = {"tenant": observe.ALL if role == "operator-admin" else tenant, "role": role,
-                                   "person": person, "csrf": secrets.token_urlsafe(32), "at": self.clock(),
-                                   "until": self.clock() + SESSION_S}
+            self._sessions[sid] = session
+            if len(self._sessions) > SESSIONS_MAX:
+                now = self.clock()
+                for k in [k for k, v in self._sessions.items() if v["until"] <= now]:
+                    del self._sessions[k]
             while len(self._sessions) > SESSIONS_MAX:
                 self._sessions.popitem(last=False)
-        return sid
 
     def session(self, sid):
         """Session `sid` ({tenant, role, person, csrf, until}), else None."""
@@ -291,9 +299,9 @@ class Translator(observe.Translator):
     def __init__(self, reasons=None):
         super().__init__()
         self.reasons = reasons or {}
-        # lean: approval_id -> (tool, rule ids) and shadow suggestions for the viewer's life, like agent_names; bound
-        # them once stores hold millions
-        self.requests, self.suggested = {}, {}
+        # approval_id -> (tool, rule ids), and shadow suggestions: the newest MAX_RUNS_KEPT each, like agent_names
+        self.requests, self.suggested = (observe._Bounded(observe.MAX_RUNS_KEPT),
+                                         observe._Bounded(observe.MAX_RUNS_KEPT))
         self.shadow = collections.defaultdict(lambda: [0, 0])   # rule id -> [person answers agreeing, compared]
 
     def _base(self, e, rec, event):
@@ -538,6 +546,8 @@ class StoreFeed:
         for k in vkeys:
             checkpoint.parse_vkey(k)
         self.records, self.base, self.lock = [], 0, threading.Condition()
+        # past it the oldest records leave the live view (base counts them), as observe.Feed's
+        self.max_records = int(os.environ.get("TRACEKIT_OBSERVE_MAX_RECORDS", "50000") or 50000)
         self.runs = {}   # (tenant, run_id) -> {"count": records verified, "shown": records translated, "failed": report}
         self.tr = Translator(policy_reasons([cfg["policy"]] if cfg.get("policy") else []))
         self.tmp = tempfile.mkdtemp(prefix="tk-view-")
@@ -582,6 +592,7 @@ class StoreFeed:
                         self.runs[key] = {"count": 0, "shown": 0, "failed": None}
                         self.records.append({**self.tr._base({"run_id": key[1]}, {}, "tk_run"), "tenant": key[0],
                                              "review": {"verdict": "pending", "agent": name, "label": OPERATOR_SIDE}})
+                        self._trim()
                         self.lock.notify_all()
         finally:
             r.close()
@@ -617,9 +628,16 @@ class StoreFeed:
             new[-1].update(signer=True, agent="signer")
         with self.lock:
             self.runs[key] = state
-            # lean: keeps every translated record in memory; bound it like observe.Feed once stores hold millions
             self.records.extend(dict(x, tenant=tenant) for x in new)
+            self._trim()
             self.lock.notify_all()
+
+    def _trim(self):
+        """Under self.lock: drop the oldest records past max_records, counted in base (what /api/snapshot calls dropped)."""
+        over = len(self.records) - self.max_records
+        if over > 0:
+            del self.records[:over]
+            self.base += over
 
     def verify(self, tenant=None):
         """For the page's chain badge: records verified, and the runs that failed (of `tenant`, else of all)."""

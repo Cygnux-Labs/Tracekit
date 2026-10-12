@@ -14,13 +14,14 @@ collected first. Malformed input raises WireError, never anything else (a Recurs
 
 Field numbers follow opentelemetry/proto/collector/trace/v1/trace_service.proto and
 opentelemetry/proto/trace/v1/trace.proto (stable since OTLP 1.0)."""
-import gzip
 import json
 import struct
 import zlib
 
 MAX_BODY = 4 * 1024 * 1024          # compressed or not, as received
 MAX_DECODED = 16 * 1024 * 1024      # after gzip/deflate
+MAX_RATIO, MIN_DECODED = 32, 1 << 20  # and at most 32 times the compressed body (at least 1 MiB): a tiny body that
+                                      # inflates to 16 MiB costs seconds of pure-Python decoding
 MAX_SPANS = 10_000                  # per request
 MAX_DEPTH = 16                      # AnyValue nesting
 MAX_STR = 256 * 1024                # one attribute string
@@ -41,11 +42,13 @@ def decompress(body, encoding):
     if enc not in ("gzip", "deflate"):
         raise WireError(f"unsupported Content-Encoding {encoding!r} (use gzip, deflate or none)")
     wbits = 16 + zlib.MAX_WBITS if enc == "gzip" else zlib.MAX_WBITS
+    cap = min(MAX_DECODED, max(MIN_DECODED, MAX_RATIO * len(body)))
     try:
         d = zlib.decompressobj(wbits)
-        out = d.decompress(body, MAX_DECODED + 1)
-        if len(out) > MAX_DECODED or d.unconsumed_tail:
-            raise WireError(f"decompressed body exceeds {MAX_DECODED} bytes")
+        out = d.decompress(body, cap + 1)
+        if len(out) > cap or d.unconsumed_tail:
+            raise WireError(f"decompressed body exceeds {cap} bytes ({MAX_RATIO} times the compressed size, at "
+                            f"most {MAX_DECODED})")
         if enc == "deflate" and not d.eof:  # some clients send raw deflate without the zlib header
             raise zlib.error("truncated")
         return out
@@ -53,19 +56,26 @@ def decompress(body, encoding):
         if enc == "deflate":
             try:
                 d = zlib.decompressobj(-zlib.MAX_WBITS)
-                out = d.decompress(body, MAX_DECODED + 1)
-                if len(out) <= MAX_DECODED and not d.unconsumed_tail:
+                out = d.decompress(body, cap + 1)
+                if len(out) <= cap and not d.unconsumed_tail:
                     return out
             except zlib.error:
                 pass
         raise WireError(f"body is not valid {enc}")
 
 
-def gzip_bytes(b):
-    return gzip.compress(b)
-
-
 # ---------------------------------------------------------------- protobuf wire format
+
+def varint(n):
+    """Protobuf's base-128 varint of a non-negative integer."""
+    out = bytearray()
+    while True:
+        b = n & 0x7F
+        n >>= 7
+        out.append(b | (0x80 if n else 0))
+        if not n:
+            return bytes(out)
+
 
 def _varint(buf, i):
     shift = result = 0
@@ -249,14 +259,6 @@ def encode_response_protobuf(rejected=0, message=""):
     if not rejected and not message:
         return b""
 
-    def varint(n):
-        out = bytearray()
-        while True:
-            b = n & 0x7F
-            n >>= 7
-            out.append(b | (0x80 if n else 0))
-            if not n:
-                return bytes(out)
     msg = message.encode("utf-8")[:4096]
     inner = (b"\x08" + varint(rejected) if rejected else b"") + (b"\x12" + varint(len(msg)) + msg if msg else b"")
     return b"\x0a" + varint(len(inner)) + inner

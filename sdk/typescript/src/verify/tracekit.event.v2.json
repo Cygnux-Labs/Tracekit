@@ -2912,6 +2912,10 @@
         "incident_id": {
           "$ref": "#/$defs/id",
           "description": "format 1.2: the call is held by this incident: only a person who is not the run's owner, principal or requester answers it"
+        },
+        "passkey": {
+          "const": true,
+          "description": "the approval needs a passkey (approval: {passkey: required})"
         }
       }
     },

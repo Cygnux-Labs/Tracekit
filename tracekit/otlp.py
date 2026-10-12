@@ -51,7 +51,7 @@ from . import client, policy, privacy
 from .observe import LOOPBACK_HOSTS, _host_only
 from .usage import from_otel
 from .core import GENESIS, SCHEMA_VERSION, jsonable, now_ts
-from .otlp_wire import MAX_BODY, WireError, decode, encode_response_protobuf
+from .otlp_wire import MAX_BODY, WireError, decode, encode_response_protobuf, varint
 
 LLM_OPS = {"chat", "text_completion", "generate_content", "completion"}
 TOOL_OPS = {"execute_tool"}
@@ -326,6 +326,9 @@ class Mapper:
             service = first["resource"].get("service.name")
             rid = run_id_for(service, tid)
             st = self.runs.get(rid) or {"started": False, "policy_hash": None, "ended": False}
+            if not st["started"] and all(k is None for k, _ in group):   # a web request's trace, no agent in it
+                skipped += len(group)
+                continue
             agent_names = [sp["attrs"].get("gen_ai.agent.name") for k, sp in group if sp["attrs"].get("gen_ai.agent.name")]
             if not st["started"]:
                 items.append(((tid, "run", "start"), self._base(rid, _ts(first["start_ns"]), _event_id(first["span_id"], "run.start"), "run.start", {
@@ -482,7 +485,7 @@ def handle_traces(receiver, body, content_type, content_encoding):
                 data = encode_response_protobuf(rejected, message)
             else:  # google.rpc.Status: code (1), message (2)
                 m = message.encode("utf-8")[:4096]
-                data = b"\x08" + bytes([3 if code == 400 else 14]) + (b"\x12" + _varint(len(m)) + m if m else b"")
+                data = b"\x08" + bytes([3 if code == 400 else 14]) + (b"\x12" + varint(len(m)) + m if m else b"")
         else:
             obj = ({"partialSuccess": {"rejectedSpans": str(rejected), "errorMessage": message}} if (rejected or message) else {}) \
                 if code == 200 else {"code": 3 if code == 400 else 14, "message": message}
@@ -500,16 +503,6 @@ def handle_traces(receiver, body, content_type, content_encoding):
     if res["retryable"]:
         return reply(503, message="; ".join(res["errors"])[:1000], extra={"Retry-After": "2"})
     return reply(200, rejected=res["rejected"], message="; ".join(res["errors"])[:1000])
-
-
-def _varint(n):
-    out = bytearray()
-    while True:
-        b = n & 0x7F
-        n >>= 7
-        out.append(b | (0x80 if n else 0))
-        if not n:
-            return bytes(out)
 
 
 def make_handler(receiver):

@@ -22,6 +22,7 @@ import json
 import secrets
 import zipfile
 
+from tracekit.format.canon import MAX_SAFE_INT
 from tracekit.policy2.compile import DETECT, SECTIONS, policy_hash
 from tracekit.policy2.engine import Engine
 
@@ -62,7 +63,7 @@ def run_entry(session, owner, principal):
             "minute": [0, 0, False]}
 
 
-def _t(ts):
+def epoch(ts):
     return datetime.datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
 
 
@@ -116,7 +117,7 @@ class Detector:
         reset it anyway (`_scope`), so this only frees memory."""
         # lean: idle session, owner and principal scopes stay in memory until the next snapshot (every
         # SNAPSHOT_RECORDS records); prune on a timer if a signer sees very many owners between snapshots
-        for k in [k for k, st in det["scopes"].items() if now - _t(st["t"]) > self.idle]:
+        for k in [k for k, st in det["scopes"].items() if now - epoch(st["t"]) > self.idle]:
             del det["scopes"][k]
 
     def _scope(self, tx, det, e, run, kind):
@@ -130,7 +131,7 @@ class Detector:
         val = (e["run_id"] if kind == "run" else run[kind])[:256]
         key = f"{kind}\0{e['tenant']}\0{val}"
         old = det["scopes"].get(key)
-        if old is None or _t(e["ts"]) - _t(old["t"]) > self.idle:
+        if old is None or epoch(e["ts"]) - epoch(old["t"]) > self.idle:
             tx.set(det["scopes"], key, {"seq": {}, "lim": {}, "den": None, "open": {}, "t": e["ts"]})
         st = det["scopes"][key]
         tx.set(st, "t", e["ts"])
@@ -141,7 +142,7 @@ class Detector:
         incident records to write right after it, in its run). `tx`: set(d, k, v) and pop(d, k), undoable on the
         writer, Plain elsewhere."""
         typ, d, rk = e["type"], e["data"], f"{e['tenant']}\0{e['run_id']}"
-        run, t, fired, view = det["runs"].get(rk), _t(e["ts"]), [], None
+        run, t, fired, view = det["runs"].get(rk), epoch(e["ts"]), [], None
         if typ == "run.registered":
             owner = "{scheme}:{subject}".format(**d["identity"])
             tx.set(det["runs"], rk, run_entry(d.get("session", e["run_id"]), owner,
@@ -163,11 +164,13 @@ class Detector:
             if run:   # an ask waits for its approval; a later decision of the call replaces one never asked for
                 k = f"call\0{e['tool_call_id']}"
                 if d["decision"] == "ask":
-                    tx.set(run["pending"], k, [d.get("decision_id"), sorted(names), unknown, inp.get("sums", {})])
+                    tx.set(run["pending"], k, [d.get("decision_id"), sorted(names), unknown, inp.get("sums", {}),
+                                               "rule_ids" in inp])
                 elif k in run["pending"]:
                     tx.pop(run["pending"], k)
-            if d["decision"] in ("allow", "flag"):
-                self._count(tx, det, e, run, (names, unknown, inp.get("sums", {})), cite, fired, view)
+            if d["decision"] in ("allow", "flag"):   # detect.rule_ids: a client's class hint read the call too
+                self._count(tx, det, e, run, (names, unknown, inp.get("sums", {}), "rule_ids" in inp), cite, fired,
+                            view)
             elif d["decision"] == "deny":
                 self._denied(tx, det, e, run, t, cite, fired)
             if (d["decision"] != "allow" and self._on("provenance") and set(d["rule_ids"]) & self.untrusted
@@ -176,7 +179,8 @@ class Detector:
             if not self.counts:
                 view = None
         elif typ == "approval.request" and run:   # the approval is of the decision it names: the call's latest
-            # lean: an ask never sent for approval keeps its entry until the call is decided again or the run ends
+            # lean: an ask never sent for approval keeps its entry until the call is decided again or the run ends;
+            # expire entries if long runs accumulate them
             k = f"call\0{e.get('tool_call_id')}"
             p = run["pending"].get(k)
             if p and p[0] == d["decision_id"]:
@@ -187,8 +191,9 @@ class Detector:
             if p:
                 tx.pop(run["pending"], d["approval_id"])
                 if typ == "approval.consumed":
-                    names, unknown, sums = p
-                    self._count(tx, det, e, run, (set(names), unknown, sums), [e["run_id"], e["run_seq"]], fired, None)
+                    names, unknown, sums, *hinted = p   # an entry from before `hinted` has none
+                    self._count(tx, det, e, run, (set(names), unknown, sums, any(hinted)), [e["run_id"], e["run_seq"]],
+                                fired, None)
         else:
             trigger = {"trace.tamper": "tamper", "refusal.summary": "refusal_burst",
                        "reconcile.unexplained_effect": "unexplained_effect"}.get(typ)
@@ -202,11 +207,13 @@ class Detector:
         return self.respond.get(trigger, {}).get("mode", "off") != "off"
 
     def _count(self, tx, det, e, run, call, cite, fired, view):
-        """Count an allowed call (names, unknown, sums) for every sequence step and limit it matches."""
-        names, unknown, sums = call
+        """Count an allowed call (names, unknown, sums, hinted) for every sequence step and limit it matches. `unless`
+        exempts only a call the policy's own reading names: a client's class hint (`hinted`) adds names to count, never
+        to exempt."""
+        names, unknown, sums, hinted = call
         own = set() if unknown else names - {"*"}   # the names that take a call through consecutive steps
         for s in self.sequences:
-            if not unknown and names & set(s.get("unless", ())):
+            if not unknown and not hinted and names & set(s.get("unless", ())):
                 continue
             steps, last = s["steps"], len(s["steps"]) - 1
             if not (unknown or names & set(steps)):
@@ -218,17 +225,17 @@ class Detector:
                 if not (unknown or steps[j] in names):
                     continue
                 prev = old[j - 1] if j else None
-                if j and (prev is None or _t(e["ts"]) - _t(prev[0]) > s["window"]):
+                if j and (prev is None or epoch(e["ts"]) - epoch(prev[0]) > s["window"]):
                     continue
                 start, cites = (prev[0], prev[1] + [cite]) if j else (e["ts"], [cite])
                 k, used = j, set()
                 while True:
                     reached = max(reached, k + 1)
                     if k == last:
-                        if done is None or _t(start) >= _t(done[0]):
+                        if done is None or epoch(start) >= epoch(done[0]):
                             done = [start, cites]
                         break
-                    if new[k] is None or _t(start) >= _t(new[k][0]):
+                    if new[k] is None or epoch(start) >= epoch(new[k][0]):
                         new[k] = [start, cites]
                     used.add(steps[k])
                     if steps[k] not in own or steps[k + 1] not in own or steps[k + 1] in used:
@@ -247,11 +254,12 @@ class Detector:
             start, val = st["lim"].get(lim["id"], (None, None))
             # lean: fixed windows, so a burst straddling two can reach 2x max unseen; keep per-second buckets if
             # limits must be exact
-            if start is None or _t(e["ts"]) - _t(start) > lim["window"]:
+            if start is None or epoch(e["ts"]) - epoch(start) > lim["window"]:
                 start, val = e["ts"], {} if "sum" in lim else 0
             if "sum" in lim:
                 amount, cur = sums[lim["id"]]
-                before, val = val.get(cur, 0), {**val, cur: val.get(cur, 0) + amount}
+                # saturated: a total past what a record can carry would refuse every later decide in the scope
+                before, val = val.get(cur, 0), {**val, cur: min(val.get(cur, 0) + amount, MAX_SAFE_INT)}
                 after = val[cur]
             else:
                 before, val = val, val + 1
@@ -271,7 +279,7 @@ class Detector:
         if not self._on("denied_calls") or d.get("nondeterministic") or ids & NOT_COUNTED and not ids & self.deny:
             return
         key, scope, st = self._scope(tx, det, e, run, r.get("scope", "run"))
-        if st["den"] is None or t - _t(st["den"][0]) > r["window"]:
+        if st["den"] is None or t - epoch(st["den"][0]) > r["window"]:
             tx.set(st, "den", [e["ts"], {}])
         seen, call = st["den"][1], f"{e['tool_call_id']}\0{e.get('attempt', 0)}"
         if call in seen or len(seen) > r["max"]:   # past max the incident is open: no need to remember more calls
@@ -300,7 +308,7 @@ class Detector:
             st, k = det["scopes"][key], f"{trigger}\0{rule}"
             if k in st["open"]:
                 inc, last = st["open"][k]
-                if t - _t(last) >= self.every.get(rule, UPDATE_S):
+                if t - epoch(last) >= self.every.get(rule, UPDATE_S):
                     tx.set(st["open"], k, [inc, e["ts"]])
                     out.append(("incident.updated", {"incident_id": inc, "cites": cites}))
                 continue

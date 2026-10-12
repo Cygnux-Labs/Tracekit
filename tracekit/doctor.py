@@ -81,7 +81,19 @@ def collect(config=None, issuer_key=None):
     if sc:
         return out
     from .signer.service import dev_data_dir
-    return v2_checks({"data_dir": dev_data_dir()}, "dev", settings=install.user_settings())
+    return v2_checks({"data_dir": dev_data_dir()}, "dev", settings=_dev_settings())
+
+
+def _dev_settings():
+    """The first settings file with a v2 hook: a user one (install.user_settings_all) or the project's in the working
+    directory; else the user one Claude Code reads."""
+    for p in (*install.user_settings_all(), os.path.join(os.getcwd(), ".claude", "settings.json")):
+        try:
+            if any(_hooks(p).values()):
+                return p
+        except (OSError, ValueError, AttributeError, TypeError):   # missing, or not a settings file: not this one
+            pass
+    return install.user_settings()
 
 
 def _user(name):

@@ -9,12 +9,15 @@ import os
 import random
 import shutil
 import tempfile
+import time
 import unittest
 
 from tracekit.why import System, build_graph, counterfactual, load_run, taint, target_hits, verify
-from tracekit.why.analysis import investigation
+from tracekit.why.analysis import LINEAGE_CHAINS, influence_graph, investigation, lineage
 from tracekit.why.cli import main as cli
-from tracekit.why.core import Ref, Tape, ablation_matches
+from tracekit.why.core import GENESIS, Ref, Runtime, Tape, ablation_matches, event_hash, referenced_refs
+from tracekit.why.server import IngestError, Store
+from tracekit.why.view import run_detail
 from tracekit.why.demo import EXFIL_TARGET, REFUND_TARGET, SYSTEM
 from tracekit.why.evals import influence_index, structure
 from tracekit.why.graph import parse_target
@@ -149,6 +152,133 @@ class Graph(Tmp):
     def test_target_spec_errors(self):
         with self.assertRaises(ValueError):
             parse_target("color=red")
+
+
+def full_history(steps, **kw):
+    """A run whose every model call sees everything before it (as import_v2 writes one): an untrusted page, a model
+    call, then a sensitive call, each step."""
+    rt = Runtime({"m": lambda ctx, **k: f"out {k['seed']}"}, {"send_email": lambda **a: "sent"}, task="t",
+                 signer=False, sensitive_tools=["send_email"], **kw)
+    a, hist = rt.agent("a"), [rt.task_ref]
+    for i in range(steps):
+        hist.append(a.observe(f"page {i}", source=f"web:{i}"))
+        d = a.decide(list(hist), model="m")
+        hist += [d, a.act("send_email", {"to": f"u{i}@example.com"}, decision=d)]
+    return rt.finish()
+
+
+def rechain(events):
+    prev = GENESIS
+    for ev in events:
+        ev["prev_hash"] = prev
+        ev["hash"] = prev = event_hash({k: v for k, v in ev.items() if k != "hash"})
+    return events
+
+
+class LongRuns(Tmp):
+    def test_lineage_is_the_nearest_inputs_shortest_chains(self):
+        """Lineage searched forward from every upstream input and kept every chain: opening a 200-call run whose
+        model calls see the whole history took 33 s and sent 24 MB."""
+        g = build_graph(full_history(30), infer=False)
+        last = max((n for n in g.nodes.values() if n["type"] == "action"), key=lambda n: n["seq"])["id"]
+        chains = lineage(g, last)
+        self.assertEqual(len(chains), LINEAGE_CHAINS)
+        self.assertTrue(all(len(c) == 3 and c[-1] == last and g.nodes[c[0]]["type"] == "input" for c in chains))
+        run = full_history(150)
+        start = time.monotonic()
+        run_detail(run)
+        self.assertLess(time.monotonic() - start, 4)   # 10 s before
+
+    def test_dense_contexts_build_their_graph_in_time(self):
+        """add_edge scanned the source's edges for a duplicate: cubic when every model call sees every input."""
+        rt = Runtime({"m": lambda ctx, **k: "x"}, signer=False)
+        a, seen = rt.agent("a"), []
+        for i in range(800):
+            seen.append(a.observe(f"r{i}", source=f"tool:{i}"))
+            a.decide(list(seen), model="m")
+        run = rt.finish()
+        start = time.monotonic()
+        g = build_graph(run, infer=False)
+        self.assertLess(time.monotonic() - start, 1.5)   # 3 s before
+        self.assertEqual(len(g.edges), 800 * 801 // 2)
+
+    def test_ingest_takes_only_what_the_detail_can_read(self):
+        """A timestamp without a fraction, or one past midnight, made the detail fail; so did a context item without
+        its source, and a from_event naming a later event."""
+        store = Store(os.path.join(self.tmp, "srv"))
+        run = full_history(2, run_id="night")
+        evs = json.loads(json.dumps(run.events))
+        for i, ev in enumerate(evs):
+            ev["ts"] = "2026-01-01T23:59:59Z" if i == 0 else f"2026-01-02T00:00:0{min(i, 9)}.5Z"
+        blobs = {r: run.blobs[r] for ev in evs for r in referenced_refs(ev)}
+        store.ingest({"events": rechain(evs), "blobs": blobs})
+        rows = store.detail("night")["timeline"]
+        self.assertEqual((rows[0]["t_ms"], rows[1]["t_ms"]), (0, 2500))
+        bad = json.loads(json.dumps(run.events))
+        dec = next(ev for ev in bad if ev["type"] == "decision")
+        dec["context"] = [{"ref": c["ref"]} for c in dec["context"]]
+        for ev in bad:
+            ev["run_id"] = "ctx"
+        with self.assertRaises(IngestError) as cm:
+            store.ingest({"events": rechain(bad), "blobs": blobs})
+        self.assertEqual(cm.exception.status, 422)
+        forward = json.loads(json.dumps(run.events))
+        dec = next(ev for ev in forward if ev["type"] == "decision")
+        dec["context"][0]["from_event"] = [ev for ev in forward if ev["type"] == "action"][-1]["id"]
+        self.assertTrue(investigation(load_run_from(run, forward))["summary"])
+        self.assertTrue(run_detail(load_run_from(run, forward))["critical_path"])
+
+    def test_recording_a_run_again_drops_the_old_runs_tests(self):
+        """Re-recording a run id kept tests.jsonl: the old tests failed verify and their edges joined the new run."""
+        for _ in range(2):
+            run = full_history(1, out_dir=self.tmp, run_id="again")
+            run.add_test({"intervention": "input:web:0", "target": "tool=send_email", "verdict": "causal"})
+        self.assertEqual((verify(load_run(run.path)), len(load_run(run.path).tests)), ([], 1))
+
+    def test_influence_links_tests_of_a_source_with_glob_characters(self):
+        """The influence graph compared tests to the unescaped label: notes[1].md never matched its own test."""
+        rt = Runtime({"m": lambda ctx, **k: "x"}, {"t": lambda **a: 1}, signer=False)
+        a = rt.agent("a")
+        a.act("t", {}, decision=a.decide([a.observe("text", source="notes[1].md")], model="m"))
+        run = rt.finish()
+        run.add_test({"intervention": "input:notes[[]1].md", "target": "tool=t", "effect": 1.0, "ci": [0.5, 1.0],
+                      "verdict": "causal", "n": 10})
+        (edge,) = influence_graph([(run, build_graph(run, infer=False))])["edges"]
+        self.assertTrue(edge["confirmed"])
+
+
+class StoreRequests(Tmp):
+    def test_bad_replay_requests_are_400s(self):
+        """n: 1e999 (an OverflowError) and a suspect that isn't a spec (a TypeError) were 500s."""
+        store = Store(os.path.join(self.tmp, "srv"), ["tracekit.why.demo:SYSTEM"])
+        SYSTEM.run(seed=0, out_dir=store.root, run_id="d", signer=False)
+        for body in ({"n": 1e999, "target": EXFIL_TARGET}, {"suspects": [1], "target": EXFIL_TARGET}):
+            with self.subTest(body=body), self.assertRaises(IngestError) as cm:
+                store.attribute("d", body)
+            self.assertEqual(cm.exception.status, 400)
+
+    def test_ingest_forgets_refused_new_runs_and_deleted_ones(self):
+        """A refused batch of a new run left its head in memory for good, and a run deleted from disk could never be
+        ingested again ("the run has ended")."""
+        store = Store(os.path.join(self.tmp, "srv"))
+        run = full_history(1, run_id="r")
+        blobs = {r: run.blobs[r] for ev in run.events for r in referenced_refs(ev)}
+        for i in range(50):
+            evs = json.loads(json.dumps(run.events[1:]))   # starts at seq 1: refused
+            for ev in evs:
+                ev["run_id"] = f"new-{i}"
+            with self.assertRaises(IngestError):
+                store.ingest({"events": evs, "blobs": blobs})
+        self.assertEqual(store._heads, {})
+        store.ingest({"events": run.events, "blobs": blobs})
+        store.scan(announce=False)
+        shutil.rmtree(os.path.join(store.root, "r"))
+        store.scan(announce=False)
+        self.assertEqual(store.ingest({"events": run.events, "blobs": blobs})["accepted"], len(run.events))
+
+
+def load_run_from(run, events):
+    return type(run)(run_id=run.run_id, events=events, blobs=run.blobs, path=None, tests=[])
 
 
 class Replay(Tmp):
@@ -334,6 +464,13 @@ class Cli(Tmp):
         self.assertIn(f"tracekit why serve {self.tmp}", out)   # the viewer is the one UI: no static report
         self.assertFalse(os.path.exists(os.path.join(self.tmp, "report.html")))
         self.assertEqual(self.cli(["verify", os.path.join(self.tmp, "demo-seed0")])[0], 0)
+
+    def test_the_demo_runs_on_a_console_that_cannot_print_every_character(self):
+        import subprocess
+        import sys
+        p = subprocess.run([sys.executable, "-m", "tracekit", "why", "demo", "--out", self.tmp, "--n", "2"],
+                           capture_output=True, env={**os.environ, "PYTHONIOENCODING": "cp1252"})   # Windows' console
+        self.assertEqual(p.returncode, 0, p.stderr.decode(errors="replace")[-400:])
 
     def test_attribute_on_the_demo(self):
         run = self.exfil_run()

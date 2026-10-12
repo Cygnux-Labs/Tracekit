@@ -1,4 +1,4 @@
-.PHONY: help install test quickstart test-contrib test-ts release-dry-run eval-scale lint build check demo eval eval-agents clean
+.PHONY: help install test quickstart test-contrib test-ts release-dry-run eval-scale lint build check demo demos eval eval-agents clean
 PY ?= python3
 
 help:
@@ -11,6 +11,7 @@ help:
 	@echo "make check     lint + test + build + twine check"
 	@echo "make release-dry-run  build every release artifact, SBOM and sum locally, publish nothing, and check them (needs the package index and npm)"
 	@echo "make demo      run the scripted end-to-end demo"
+	@echo "make demos     record the offline demos in docs/demos/ again (scripts/record_demos.py; --check checks them)"
 	@echo "make eval      offline evaluations E1 (integrity), E2 (overhead), E3 (policy gate), E4 (seeded faults, v1 and v2), E6 (findings), E17 (server policy corpora, detection), E18 (agent approvers), E19 (egress observation), on Linux E9 --quick (signer perf); rewrites eval/results/"
 	@echo "make eval-agents  E5: real Claude Code runs (needs the claude CLI; spends model usage)"
 	@echo "make eval-scale   E7: SQL index over a million-event ledger (contrib/query)"
@@ -52,6 +53,9 @@ release-dry-run:
 
 demo:
 	$(PY) -m tracekit demo
+
+demos:
+	$(PY) scripts/record_demos.py
 
 eval:
 	$(PY) eval/e1_integrity.py

@@ -12,29 +12,41 @@
 
 Tamper-evident tracing for AI agents: every tool call is recorded as an Ed25519-signed, hash-chained event by a signer
 the agent can't control, checkpointed to witnesses, gated by a policy engine, and exported as offline-verifiable `.tkb`
-bundles. Today's code (v0.3) targets laptop coding agents (Claude Code, Codex, Cursor, Gemini hooks) plus Python/TS SDKs;
-it is being rebuilt for server-hosted agents (signer service, evidence format v2, signer-side policy). [HIGH CONFIDENCE —
-read `tracekit/daemon.py`, `tracekit/ledger.py`, `tracekit/hook.py`, `tracekit/bundle.py`]
+bundles. Today's code (1.2) has two generations: the v1 laptop path (tracekitd, the
+JSONL ledger, Claude Code / Codex / Cursor / Gemini hooks) and the v2 signer service for server-hosted agents (evidence
+format v2 at 1.2, signer-side policy, detection and containment, custody through the executor and MCP gateway, egress
+observation), with Python and TypeScript SDKs and framework integrations. [HIGH CONFIDENCE — read
+`tracekit/signer/service.py`, `tracekit/signer/pipeline.py`, `tracekit/verify/v2.py`, `tracekit/daemon.py`,
+`tracekit/ledger.py`]
 
 ## Where things live
 
 | Path | Purpose | Confidence |
 |---|---|---|
-| `tracekit/daemon.py` | Signer daemon (tracekitd): socket, peer identity, run state, approvals, checkpoints | [HIGH CONFIDENCE] |
-| `tracekit/ledger.py` | Append-only JSONL ledger, file key, v1 record envelope | [HIGH CONFIDENCE] |
+| `tracekit/signer/` | v2 signer service: `service.py` (RPCs, approvals, containment, CLI `tracekit signer`), `pipeline.py` (single writer, run state), `reconcile.py`, `detect.py`, `rpc_schema.py` (frozen RPC contract) | [HIGH CONFIDENCE] |
+| `tracekit/schema/tracekit.event.v2.json`, `tracekit/bundle_v2.py` | v2 event schema (a copy in `sdk/typescript/src/verify/`), v2 bundle export and the VERSIONS gate | [HIGH CONFIDENCE] |
+| `tracekit/verify/` | Offline verifiers: `v2.py`, and `v1.py` re-exporting the v1 one (an independent TS verifier is in `sdk/typescript/src/verify/`) | [HIGH CONFIDENCE] |
+| `tracekit/policy2/` | v2 policy engine, compiler/lint and packs (`packs/*.yaml`) | [HIGH CONFIDENCE] |
+| `tracekit/sdk/`, `tracekit/autowire.py` | Python v2 client (`RunHandle`), dev-signer autospawn, `tracekit.instrument()` | [HIGH CONFIDENCE] |
+| `tracekit/integrations/` | v2 framework integrations (OpenAI Agents, LangChain/LangGraph, Claude Agent SDK, MCP, Browser Use, CrewAI, Claude Code and harness hooks) | [HIGH CONFIDENCE] |
+| `tracekit/gateway.py`, `tracekit/executor.py`, `tracekit/mcp_gateway.py`, `tracekit/egress.py` | LLM gateway, T2 tool executor, MCP gateway, egress observer | [HIGH CONFIDENCE] |
+| `tracekit/why/` | `tracekit why`: causal investigation and replay | [HIGH CONFIDENCE] |
+| `tracekit/storage/`, `tracekit/identity/`, `tracekit/transport/` | v2 storage (file, Postgres), caller identities (uid, token, mTLS, k8s service account, OIDC, WebAuthn), RPC transports | [HIGH CONFIDENCE] |
+| `tracekit/daemon.py` | v1 signer daemon (tracekitd): socket, peer identity, run state, approvals, checkpoints | [HIGH CONFIDENCE] |
+| `tracekit/ledger.py` | v1 append-only JSONL ledger, file key, v1 record envelope | [HIGH CONFIDENCE] |
 | `tracekit/core.py` | Canonical JSON, hashing, v1 signature message, scrub | [HIGH CONFIDENCE] |
 | `tracekit/schema/tracekit.event.v1.json` | Frozen v1 event schema (validated by `tracekit/schema.py`) | [HIGH CONFIDENCE] |
 | `tracekit/hook.py`, `tracekit/agent_hooks.py` | Claude Code / Codex / Cursor / Gemini hook capture | [HIGH CONFIDENCE] |
 | `tracekit/agent_sdk.py`, `tracekit/autotrace.py`, `tracekit/adapters/` | Python SDK, model-SDK autotrace, framework adapters | [HIGH CONFIDENCE] |
-| `tracekit/policy.py`, `tracekit/policy/` | Regex policy engine and its YAML rule packs | [HIGH CONFIDENCE] |
-| `tracekit/bundle.py` | Bundle export and the offline verifier | [HIGH CONFIDENCE] |
+| `tracekit/policy.py`, `tracekit/policy/` | v1 regex policy engine and its YAML rule packs | [HIGH CONFIDENCE] |
+| `tracekit/bundle.py` | v1 bundle export and the frozen v1 verifier (`tracekit/verify/v1.py` re-exports it; its `Report` is shared with v2) | [HIGH CONFIDENCE] |
 | `tracekit/install.py`, `tracekit/cli.py` | `tracekit init` (dev/system mode), CLI | [HIGH CONFIDENCE] |
 | `tracekit/witness.py`, `tracekit/witness_server.py`, `tracekit/rekor.py` | Checkpoint witnesses | [HIGH CONFIDENCE] |
 | `tracekit/otlp.py`, `tracekit/ingest.py`, `tracekit/proxy.py` | OTLP receiver, remote ingest, Anthropic proxy | [HIGH CONFIDENCE] |
-| `sdk/typescript/` | TS SDK (currently spawns `tracekit/bridge.py`) | [HIGH CONFIDENCE] |
+| `sdk/typescript/` | TS SDK: the v2 client speaks the signer RPC itself (`sdk/typescript/src/v2/`); only the legacy v1 API (`sdk/typescript/src/v1.ts`) spawns `tracekit.bridge`; the independent verifier is in `sdk/typescript/src/verify/` | [HIGH CONFIDENCE] |
 | `plugin/` | Claude Code plugin (laptop on-ramp) | [HIGH CONFIDENCE] |
-| `tests/` | pytest suite (real daemons, no `conftest.py` yet) | [HIGH CONFIDENCE] |
-| `eval/` | Experiments E1–E8; E8 (insider attacks) gates CI on Linux | [HIGH CONFIDENCE] |
+| `tests/` | pytest suite (real daemons); `tests/conftest.py` (markers, env isolation), `tests/factories.py` (shared builders), `tests/golden/` (frozen verifier corpus) | [HIGH CONFIDENCE] |
+| `eval/` | Experiments E1–E19 (`eval/e*.py`; no E7 or E13 script); E8 (insider attacks, v1 and v2) gates CI on Linux; CI also runs E9 and E15 | [HIGH CONFIDENCE] |
 | `docs/` | User docs; `docs/sample/` holds the shipped sample bundles | [HIGH CONFIDENCE] |
 | `paper/` | v0.1 paper — frozen artifact, don't update | [HIGH CONFIDENCE] |
 
@@ -54,10 +66,9 @@ There is no typecheck step.
 
 ## Paved paths
 
-- New tests: `tests/test_<area>.py`, `unittest` classes run by pytest; build events with the helpers in
-  `tests/test_hotfix_021.py` until shared factories exist. [HIGH CONFIDENCE]
+- New tests: `tests/test_<area>.py`, `unittest` classes run by pytest; build events, signers and bundles with the shared
+  builders in `tests/factories.py`. [HIGH CONFIDENCE]
 - Every change that touches the signer, ledger, verifier or policy gets a regression test that fails without it.
-- CHANGELOG entry under "Unreleased" for user-visible changes (`CHANGELOG.md`). [HIGH CONFIDENCE]
 
 ## Local traps
 
@@ -67,7 +78,8 @@ There is no typecheck step.
 - `tracekit/policy.py` (module) and `tracekit/policy/` (data dir) share a name; importing works only because the module wins.
 - Tests marked root-only and the harness-binding tests (Linux `/proc`) skip on a normal laptop; CI runs Linux as the
   merge gate, macOS/Windows are advisory. A green local run isn't proof for those paths.
-- `make test` takes ~2 minutes: many tests start a real signer daemon and spawn hook processes.
+- `make test` takes ~10–11 minutes (about 2,400 tests): many start a real signer daemon and spawn hook processes. Run
+  single files while iterating.
 - Rules in `tracekit/policy/default.yaml` match raw strings: quoted text that mentions a risky command can trip them.
 - `planning/` is local and gitignored — task specs must be copied into the issue, not referenced by path. <!-- agent-flow:ignore-refs -->
 

@@ -26,7 +26,6 @@ import concurrent.futures
 import contextlib
 import contextvars
 import http.client
-import ipaddress
 import json
 import os
 import queue
@@ -48,9 +47,11 @@ from tracekit.format.canon import StrictJSONError, canonical, event_hash, loads_
 from tracekit.signer import rpc_schema
 from tracekit.signer.quotas import MAX_LINE
 from tracekit.signer.rpc_schema import RPC_VERSION, RPCError
-from tracekit.transport import parse_frame, read_frame, tcp_dev, write_frame
+from tracekit.transport import loopback, parse_frame, read_frame, tcp_dev, write_frame
 
 CONNECT_TIMEOUT_S = 2
+KEEP_CALLS = 4096   # decided calls a RunHandle remembers for their `complete`, the oldest forgotten first
+KEEP_RUNS = 65536   # runs a Client keeps an event counter for, the least recently used forgotten first
 RETRIES = 3
 _EVENT_METHODS = {m for m, s in rpc_schema.REQUESTS.items() if "client_seq" in s["properties"]}
 _LONG_POLLS = {m for m, s in rpc_schema.REQUESTS.items() if "timeout_ms" in s["properties"]}
@@ -210,7 +211,7 @@ class _Https:
             raise _ConnectionLost(f"{type(e).__name__}: {e}") from None
 
     def rpc(self, req, body, timeout):
-        if self.plain and not _loopback(self.host):   # the token and the frames would cross the network in clear
+        if self.plain and not loopback(self.host):   # the token and the frames would cross the network in clear
             raise SignerUnavailable(f"{self.url}: plain http:// signers must be on a loopback address (127.0.0.1, "
                                     "::1); use https:// for any other")
         if self.hello is None:
@@ -244,13 +245,6 @@ class _Conn:
             self.sock.shutdown(socket.SHUT_RDWR)   # wakes the reader, which fails what is pending
         except OSError:
             pass
-
-
-def _loopback(host):
-    try:
-        return ipaddress.ip_address(host).is_loopback
-    except ValueError:
-        return False
 
 
 def _default_signer():
@@ -288,6 +282,9 @@ class Client:
         self._https = _Https(self.signer, token_file) if http else None
         self._lock = threading.Lock()
         self._pid = self._conn = None
+        # run_id -> its next client_seq, the least recently used first (a long poll answered run_closed may come
+        # before any event)
+        self._seqs = collections.OrderedDict()
         self._order = {}   # run_id -> the lock its event calls hold from taking their client_seq to their answer
         _clients.add(self)
 
@@ -374,7 +371,7 @@ class Client:
         if self._pid != os.getpid():   # new client, or a forked child: its own stream and connection
             # lean: one counter and order lock per run until it is closed or refused as closed; a run abandoned
             # without either keeps its entries for the client's life
-            self._pid, self._conn, self.stream, self._seqs = os.getpid(), None, _new_id(), {}
+            self._pid, self._conn, self.stream, self._seqs = os.getpid(), None, _new_id(), collections.OrderedDict()
         run_id = req.get("run_id")
         fresh = method in _EVENT_METHODS and "client_seq" not in req
         if fresh:
@@ -387,6 +384,11 @@ class Client:
         data = _encode(method, req)
         if fresh:
             self._seqs[run_id] = req["client_seq"] + 1
+            self._seqs.move_to_end(run_id)
+            # lean: a service serving many runs (an executor, an MCP gateway), forged run ids included, keeps
+            # KEEP_RUNS of them; a run idle while that many others were used restarts its count and reads as a gap
+            if len(self._seqs) > KEEP_RUNS:
+                self._order.pop(self._seqs.popitem(last=False)[0], None)
         connect()
         if method == "close_run":   # no events after close: drop the counter
             self._seqs.pop(run_id, None)
@@ -434,11 +436,15 @@ class Client:
 
     def _connect(self):
         conn = _Conn(*self._dial())
-        threading.Thread(target=self._read, args=(conn,), daemon=True, name="tracekit-client").start()
+        # the threads hold the client weakly: a Client dropped without close() is collected, and its connection with it
+        threading.Thread(target=Client._read, args=(weakref.ref(self), conn), daemon=True,
+                         name="tracekit-client").start()
         threading.Thread(target=conn.write, daemon=True, name="tracekit-client-write").start()
+        weakref.finalize(self, conn.drop)
         return conn
 
-    def _read(self, conn):
+    @staticmethod
+    def _read(ref, conn):
         try:
             while True:
                 frame = read_frame(conn.rfile)
@@ -447,9 +453,10 @@ class Client:
                 conn.pending.popleft().set_result(frame)
         except (OSError, RPCError, IndexError):   # IndexError: an answer nobody asked for
             pass
-        with self._lock:
-            if self._conn is conn:
-                self._conn = None
+        client = ref()
+        with client._lock if client else contextlib.nullcontext():
+            if client and client._conn is conn:
+                client._conn = None
             conn.out.put(None)   # the writer stops
             conn.sock.close()
             while conn.pending:
@@ -527,6 +534,16 @@ def _close_at_exit(run, failed):
         warnings.warn(f"tracekit: run {run.run_id} was not closed: {e}", stacklevel=3)
 
 
+def _class_of(tool):
+    """The class the default policy gives `tool`, for a fail mode while the signer is unreachable (as the adapters and
+    hooks do); None (the default fail mode) when it can't be read."""
+    try:
+        from tracekit.integrations.claude_code import _tool_class
+        return _tool_class(tool)
+    except Exception:   # an outage path never raises
+        return None
+
+
 class RunHandle:
     """A registered run. As a context manager it is the current run (`current_run`) and is closed on exit (see
     _close_at_exit)."""
@@ -560,14 +577,15 @@ class RunHandle:
 
     def decide(self, tool_call_id, tool, args, **fields):
         """`args` is the model's raw arguments string, or an already parsed value. Never raises SignerUnavailable:
-        while the signer can't be reached the run's fail mode for `tool_class_hint` decides, `{"decision": "allow" or
+        while the signer can't be reached the run's fail mode for `tool_class_hint` (else the tool's class in the
+        default policy) decides, `{"decision": "allow" or
         "deny", "unavailable": True, ...}` (as the TypeScript client), so a hook that blocks by return value blocks. A
         refusal raises RPCError."""
         try:
             d = self.call("decide", tool_call_id=tool_call_id, tool=tool, args=args,
                           **{"args_source": "raw" if isinstance(args, str) else "parsed", **fields})
         except SignerUnavailable as e:
-            ok = fail_open(self.registered.get("fail_modes"), fields.get("tool_class_hint"))
+            ok = fail_open(self.registered.get("fail_modes"), fields.get("tool_class_hint") or _class_of(tool))
             warnings.warn(f"tracekit: {tool} {'runs unrecorded (fail open)' if ok else 'is denied (fail closed)'}: {e}",
                           stacklevel=2)
             return {"decision": "allow" if ok else "deny", "rule_ids": [], "unavailable": True,
@@ -576,7 +594,15 @@ class RunHandle:
             digest = event_hash({"tool": tool, "args": loads_strict(args) if isinstance(args, str) else args})
         except (StrictJSONError, rfc8785.CanonicalizationError):
             return d   # the signer has no args digest to bind either; complete needs explicit fields
+        if d["decision"] == "deny":   # never completed: nothing for `complete` to name
+            return d
         self._decided[tool_call_id] = {"decision_id": d["decision_id"], "args_digest": digest}
+        # lean: a call refused after its decide (not approved, a refused consume) keeps its entry until KEEP_CALLS
+        # newer ones push it out; forget it there if adapters must hold none
+        while len(self._decided) > KEEP_CALLS:
+            old = next(iter(self._decided))
+            del self._decided[old]
+            self._untrusted.discard(old)
         if d.get("send_result"):
             self._untrusted.add(tool_call_id)
         return d

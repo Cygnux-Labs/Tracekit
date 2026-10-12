@@ -52,6 +52,55 @@ class Sanitize(unittest.TestCase):
         self.assertEqual(req["attach"], {"policy": {"a": 1}})
 
 
+class OtlpCounter(unittest.TestCase):
+    def test_an_outage_keeps_the_runs_counter(self):
+        sent, down = [], [False]
+
+        def forward(req):
+            if down[0]:
+                raise client.SignerUnavailable("down")
+            sent.append(req["cseq"])
+            return {"ok": True}
+        sink = ingest._otlp_receiver("bot", forward).sink
+        ev = {"run_id": "r1", "source": "sdk", "type": "tool.call", "data": {}}
+        for _ in range(4):
+            sink(dict(ev), None)
+        down[0] = True
+        with self.assertRaises(client.SignerUnavailable):
+            sink(dict(ev), None)
+        down[0] = False
+        sink(dict(ev), None)
+        self.assertEqual(sent, [0, 1, 2, 3, 4])   # not back to 0: that would read as a replay
+
+
+class RemovedClient(unittest.TestCase):
+    def test_a_removed_clients_state_is_dropped(self):
+        home = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, home, True)
+        a, b = ingest.add_token(home, "box-a"), ingest.add_token(home, "box-b")
+        handler = ingest.make_handler(home, forward=lambda req: {"ok": True})
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+
+        def post(token):
+            c = http.client.HTTPConnection("127.0.0.1", srv.server_address[1], timeout=10)
+            c.request("POST", "/v1/traces", b"{}", {"Authorization": "Bearer " + token,
+                                                    "Content-Type": "application/json"})
+            c.getresponse().read()
+            c.close()
+        post(a)
+        self.assertIn("box-a", handler.buckets)
+        tokens = ingest.load_tokens(home)
+        del tokens["box-a"]   # the operator removes box-a's token
+        with open(ingest._tokens_path(home), "w") as f:
+            json.dump(tokens, f)
+        post(b)
+        self.assertNotIn("box-a", handler.buckets)
+        self.assertNotIn("box-a", handler.receivers)
+
+
 class Tokens(unittest.TestCase):
     def test_token_is_stored_hashed_and_authenticates(self):
         d = tempfile.mkdtemp()

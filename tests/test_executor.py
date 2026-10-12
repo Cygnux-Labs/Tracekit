@@ -128,6 +128,41 @@ class Executor(unittest.TestCase):
         self.close()
         return [r["event"] for r in records(self.dir) if r["event"]["run_id"] == self.run["run_id"]]
 
+    def close_and_sweep(self):
+        """Close the run, end its grace window and the gateways' wait; (whether it was final after the grace window
+        alone, its held_call_unresolved gaps)."""
+        self.s.grace_s, self.s.gateway_wait_s = 0, 30
+        key = ("default", self.run["run_id"])
+        self.s.call(AGENT, "close_run", {"request_id": "cl", **self.run})
+        closing = self.s.log.runs[key]["closing_at"]
+        self.s.sweep(now=closing + 1)
+        final = self.s.log.runs[key]["final"]
+        self.s.sweep(now=closing + 31)
+        return final, [e.get("tool_call_id") for e in self.events() if e["type"] == "capture.gap"
+                       and e["data"].get("kind") == "held_call_unresolved"]
+
+    def test_a_retry_of_a_consumed_call_that_never_ran_is_not_held_open(self):
+        body = {"args": {"to": "acct-42", "cents": 1500}, "tool_call_id": "X"}
+        got = {}
+        t = threading.Thread(target=lambda: got.update(out=self.post("pay", body)))
+        t.start()
+        for _ in range(500):
+            aids = [a["approval_id"] for a in self.s.call(AGENT, "approval_list", {
+                "run_id": self.run["run_id"], "state": "requested"})["approvals"]]
+            if aids:
+                break
+            time.sleep(0.01)
+        self.s.call(AGENT, "approval_decide", {"request_id": "d", "approval_id": aids[0], "decision": "approve"})
+        t.join(20)
+        self.assertEqual(got["out"][0], 200)
+        self.assertEqual(self.post("pay", body)[0], 403)   # the same tool call again: decided again, never run
+        self.assertEqual(self.close_and_sweep(), (True, []))
+
+    def test_a_gateways_own_consume_is_not_charged_again(self):
+        self.s.quotas.limits = Limits(events_per_s=0.001, burst=3)
+        self.assertEqual(self.post("refund", {"args": PAID, "tool_call_id": "a"})[0], 200)
+        self.assertEqual(self.post("refund", {"args": PAID, "tool_call_id": "b"})[0], 200)   # its decide paid for it
+
     def test_an_allowed_action_runs_with_the_executors_credential_and_is_recorded_t2(self):
         status, out = self.post("refund", {"args": {"to": "acct-42", "cents": 5}, "tool_call_id": "call-1"})
         self.assertEqual((status, out["status"], out["result"]["paid"]), (200, 201, {"to": "acct-42", "cents": 5}))

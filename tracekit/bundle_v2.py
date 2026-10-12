@@ -58,7 +58,7 @@ VERSIONS = {
               "fields": {"run.registered": ["parent_run", "session", "posture"], "capture.gap": ["run_id"],
                          "run.final": ["provider_executed", "paired_by_args", "matrix"],
                          "policy.decision": ["via", "caller", "detect", "incident_id"],
-                         "approval.request": ["agent", "via", "incident_id"], "tool.result": ["via"],
+                         "approval.request": ["agent", "via", "incident_id", "passkey"], "tool.result": ["via"],
                          "input.observed": ["via"],
                          "approval": ["approver_kind", "asserted", "spent", "not_before", "consume_by", "incident_id"],
                          "approval.expired": ["reason"],

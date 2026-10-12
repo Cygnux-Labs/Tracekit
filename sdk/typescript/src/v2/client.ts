@@ -634,8 +634,9 @@ export class RunHandle {
       warn(`tracekit: ${tool} ${open ? "runs unrecorded (fail open)" : "is denied (fail closed)"}: ${e.message}`);
       return { decision: open ? "allow" : "deny", rule_ids: [], reason: `signer unavailable: ${e.message}`.slice(0, 1024), unavailable: true };
     }
-    try {
-      this.decided.set(toolCallId, { decision_id: d.decision_id, args_digest: argsDigest(tool, args) });
+    try {   // a denied call is never completed: nothing to remember; others are capped, as `at` is
+      if (d.decision !== "deny")
+        remember(this.decided, toolCallId, { decision_id: d.decision_id, args_digest: argsDigest(tool, args) });
     } catch {
       // the signer has no args digest to bind either; complete needs explicit fields
     }
@@ -682,6 +683,7 @@ export class RunHandle {
 
   async close(reason?: string): Promise<void> {
     if (!this.closed) {
+      this.renewAs = null;   // a call refused as closed while this one is in flight must not register a new run
       await this.call("close_run", reason ? { reason } : {});
       this.closed = true;
     }
@@ -739,7 +741,7 @@ async function leave(run: RunHandle): Promise<void> {
  * `agent` names the run (default: $TRACEKIT_AGENT, else the script's name). */
 export function instrument(agent?: string, opts: ClientOptions = {}): Promise<Instrumented> {
   const name = agent ?? process.env.TRACEKIT_AGENT ?? basename(process.argv[1] ?? "node", extname(process.argv[1] ?? ""));
-  instrumented ??= new Client(opts).registerRun(name).then((run) => {
+  instrumented ??= Promise.resolve().then(() => new Client(opts).registerRun(name)).then((run) => {
     run.renewAs = name;
     const end = once(() => leave(run));
     process.once("beforeExit", () => void end());
@@ -749,7 +751,8 @@ export function instrument(agent?: string, opts: ClientOptions = {}): Promise<In
         // handles is theirs, so the run stays as it is (beforeExit still closes it); else close, then the default action
         if (!process.listenerCount(sig)) void end().finally(() => process.kill(process.pid, sig));
       });
-    // lean: process.exit() and an uncaught exception leave the run open until the signer's idle_s (no async on exit)
+    // lean: process.exit() and an uncaught exception leave the run open until the signer's idle_s (no async on exit);
+    // close it synchronously from an exit hook if open runs pile up
     return { run, ai: tracekitAI(run), agents: new TracekitAgents(run) };
   }, (e) => {
     instrumented = null;

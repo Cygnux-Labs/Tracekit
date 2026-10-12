@@ -88,14 +88,13 @@ class Graph:
         self.edges: List[Dict[str, Any]] = []
         self._out: Dict[str, List[Dict[str, Any]]] = {}
         self._in: Dict[str, List[Dict[str, Any]]] = {}
+        self._keys: Set[tuple] = set()   # (src, dst, kind, evidence) of every edge
 
     # -- construction
     def add_edge(self, src: str, dst: str, kind: str, evidence: str, **extra: Any) -> None:
-        if src not in self.nodes or dst not in self.nodes or src == dst:
+        if src not in self.nodes or dst not in self.nodes or src == dst or (src, dst, kind, evidence) in self._keys:
             return
-        for e in self._out.get(src, []):
-            if e["dst"] == dst and e["kind"] == kind and e["evidence"] == evidence:
-                return
+        self._keys.add((src, dst, kind, evidence))
         e = {"src": src, "dst": dst, "kind": kind, "evidence": evidence, **extra}
         self.edges.append(e)
         self._out.setdefault(src, []).append(e)
@@ -145,9 +144,6 @@ class Graph:
             out.append(n)
             n = parent[n]
         return out[::-1]
-
-    def node_for_event(self, ev_id: str) -> str:
-        return "ev:" + ev_id
 
     def to_dict(self) -> Dict[str, Any]:
         return {"run_id": self.run.run_id, "nodes": list(self.nodes.values()), "edges": self.edges}
@@ -256,9 +252,8 @@ def _infer_edges(g: Graph, run: Run, threshold: float, min_shared: int) -> None:
                 continue
             if anc is None:
                 anc = g.ancestors(dst["id"], ("observed",))
-            if src["id"] in anc:
+            if src["id"] in anc:   # an observed path already links them
                 continue
-            # skip if any observed ancestor of dst already carries the same text (avoid duplicate inferred hops)
             g.add_edge(src["id"], dst["id"], "content-overlap", "inferred", score=round(score, 3), shared=shared)
 
 

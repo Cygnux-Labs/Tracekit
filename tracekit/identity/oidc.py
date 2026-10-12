@@ -118,7 +118,7 @@ class OidcAuthenticator:
         """The configured issuer the (unverified) iss of a JWT names, else None."""
         try:
             iss = json.loads(_unb64(token.split(".")[1])).get("iss")
-        except (ValueError, AttributeError):
+        except (ValueError, AttributeError, RecursionError):
             return None
         return self.issuers.get(iss) if isinstance(iss, str) else None
 

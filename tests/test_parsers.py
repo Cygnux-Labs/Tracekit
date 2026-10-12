@@ -76,6 +76,40 @@ class Vectors(unittest.TestCase):
         self.assertTrue({"raw", "parsed"} <= {t.get("args_source") for t in uses})
 
 
+class HostileStreams(unittest.TestCase):
+    def test_an_index_an_upstream_names_allocates_nothing_and_odd_types_dont_raise(self):
+        s = parsers.Stream("openai:chat")
+        for chunk in ({"choices": [{"index": 2_000_000, "delta": {}}]}, {"choices": [{"index": -1}]},
+                      {"choices": [{"index": "x"}]},
+                      {"choices": [{"index": 0, "delta": {"tool_calls": [{"index": 0, "function": {"arguments": 5}}]}}]}):
+            s.add(chunk)
+        self.assertLessEqual(len(s.acc.get("choices", [])), 1)
+        s.parse()
+        a = parsers.Stream("anthropic:messages")
+        for ev in ({"type": "content_block_start", "index": 10 ** 9, "content_block": {"type": "tool_use"}},
+                   {"type": "content_block_delta", "index": 0, "delta": {"partial_json": 5}}):
+            a.add(ev)
+        self.assertLessEqual(len(a.acc.get("content", [])), 1)
+
+    def test_streamed_arguments_accumulate_in_linear_time(self):
+        import time
+        piece = '"abcdefghijklmn",'
+        for kind, start, delta in (
+                ("openai:chat", {"choices": [{"index": 0, "delta": {"tool_calls": [
+                    {"index": 0, "id": "c1", "function": {"name": "w", "arguments": "["}}]}}]},
+                 lambda p: {"choices": [{"index": 0, "delta": {"tool_calls": [{"index": 0, "function": {"arguments": p}}]}}]}),
+                ("anthropic:messages", {"type": "content_block_start", "index": 0,
+                                        "content_block": {"type": "tool_use", "id": "t1", "name": "w", "input": {}}},
+                 lambda p: {"type": "content_block_delta", "index": 0, "delta": {"partial_json": p}})):
+            with self.subTest(kind):
+                s, t0 = parsers.Stream(kind), time.monotonic()
+                s.add(start)
+                for _ in range(200_000):   # ~3.4 MB of arguments in 17-byte pieces
+                    s.add(delta(piece))
+                s.parse()
+                self.assertLess(time.monotonic() - t0, 5)   # appended to a str in place: about a minute
+
+
 class Rules(unittest.TestCase):
     def test_provider_tools_carry_the_digest_of_the_input_the_provider_returned(self):
         t = parsers.tool_use("ws_1", "web_search", '{"q": 1}', "raw", executed_by="provider")

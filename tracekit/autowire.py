@@ -25,6 +25,7 @@ when no signer answers: no call could be recorded, and a run's fail mode is clos
 Don't also wire an adapter by hand in the same process: the call would be decided twice.
 """
 import atexit
+import collections
 import functools
 import logging
 import os
@@ -56,7 +57,9 @@ def _process_client(Client, RPCError, current_run, schemas):
 
         def start(self, agent):
             """Register the process run."""
-            self._calls, self._approvals, self._exchanges, self._numbers, self._next = {}, {}, {}, {}, {}
+            # OrderedDicts: dropping the oldest of a full dict stays O(1) (a dict's leading deleted slots don't)
+            self._calls, self._approvals, self._exchanges, self._numbers, self._next = (
+                collections.OrderedDict() for _ in range(5))
             self._made = 0
             self.process, self.agent = self.run(agent=agent), agent
             self.ids = {self.process.run_id}
@@ -152,7 +155,7 @@ def _keep(d, k, v):
     """Under _LOCK."""
     d[k] = v
     if len(d) > KEEP:
-        del d[next(iter(d))]
+        d.popitem(last=False)
 
 
 _LOCK = threading.RLock()   # re-entered when wiring imports a module that calls instrument() itself
@@ -248,7 +251,8 @@ def _mcp(run):
     @functools.wraps(call_tool)
     async def gated(self, *a, **kw):
         if self not in gates:   # every session shares one signer stream: a run allows 64 (quotas.streams_per_run)
-            g = gates[self] = TracekitSession(_Unpatched(self, call_tool), run.client, run.registered,
+            # the gate holds its session weakly: a strong one would keep every session (the dict's key) alive
+            g = gates[self] = TracekitSession(_Unpatched(weakref.proxy(self), call_tool), run.client, run.registered,
                                               server=servers.get(self))
             g.stream, g._seq, g._lock = stream.setdefault("s", (g.stream, g._seq, g._lock))
         return await gates[self].call_tool(*a, **kw)
@@ -324,10 +328,21 @@ def _release(version):
 
 
 def _close(run):
+    """Close the run at exit, unless approvals of it are still waiting (requested, or approved and not yet consumed):
+    then it stays open for another process to resume (a durable checkpointer) until the signer's idle timeout."""
     from . import autotrace
     try:
         autotrace.flush()
-        run.close("process exit")
+        try:
+            waiting = any(run.call("approval_list", state=state, limit=1)["approvals"] for state in ("requested",
+                                                                                                    "approved"))
+        except Exception:   # a listing that fails (no grant) waits for nothing
+            waiting = False
+        if waiting:
+            logging.getLogger("tracekit").warning("tracekit: run %s left open: approvals of it are waiting for a "
+                                                  "person or to be resumed", run.run_id)
+        else:
+            run.close("process exit")
     except Exception:   # exiting: nothing left to tell
         pass
 

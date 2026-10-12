@@ -14,7 +14,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import test_agent_approvers as aa
 import test_signer_service as ts
 from tracekit import reviewer, slack_approvals, view
-from tracekit.sdk.client import RunHandle
+from tracekit.sdk.client import RunHandle, SignerUnavailable
 from tracekit.signer.rpc_schema import REQUESTS, RESPONSES, RPCError, validate
 
 
@@ -106,6 +106,17 @@ class TestReviewer(Case):
                 self.assertEqual(self.state(aid)["state"], "requested")
                 rv.poll()
                 self.assertEqual(self.state(aid)["state"], "approved")
+
+    def test_an_unreachable_replica_does_not_stop_the_others(self):
+        class Down:
+            def approval_list(self, req):
+                raise SignerUnavailable("replica 0 is down")
+        aid, _ = self.ask(aa.OK | {"amount": 3}, tcid="tc-down")
+        rv = reviewer.Reviewer([("acme", Down()), ("acme", As(self, aa.AGENT))], Model(message()), "m-test")
+        rv.seen.add("apr-answered-earlier")
+        rv.poll()
+        self.assertEqual(self.state(aid)["state"], "approved")
+        self.assertIn("apr-answered-earlier", rv.seen)   # a partial listing forgets nothing
 
     def test_what_approval_review_calls_ineligible_is_never_approved(self):
         model = Model(message())
@@ -307,7 +318,7 @@ class TestSlack(unittest.TestCase):
         posted = {f["blocks"][1]["elements"][0]["text"]: f["blocks"][0]["text"]["text"] for m, f in sent
                   if m == "chat.postMessage"}
         self.assertEqual(set(posted), {"person-only", "escalated"})   # the agent-eligible one stays with the agent
-        self.assertIn("odd payee (model output, over arguments the requesting agent supplied)", posted["escalated"])
+        self.assertIn("\"odd payee\" (model output, over arguments the requesting agent supplied)", posted["escalated"])   # quoted: model text
         signer.approvals["person-only"].update(state="approved", answered={"by": "oidc:alice", "kind": "person"})
         bridge.poll()
         updates = [f["blocks"][-1]["elements"][0]["text"] for m, f in sent if m == "chat.update"]

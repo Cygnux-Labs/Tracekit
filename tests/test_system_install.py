@@ -15,7 +15,7 @@ from unittest import mock
 
 import pytest
 
-from tracekit import __version__, client, install
+from tracekit import __version__, cli, client, install
 from tracekit.ledger import Keys, Ledger
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -107,6 +107,70 @@ class SystemModeUsesOpt(unittest.TestCase):
         self.assertEqual(stat.S_IMODE(os.stat(os.path.join(home, "helper")).st_mode), 0o700)
         with open(os.path.join(units, "tracekitd.service")) as f:
             self.assertNotIn("CAP_", f.read())   # the helper reads /proc, not tracekitd
+
+    def test_macos_starts_the_signer_after_the_policy_pin(self):
+        """launchd started tracekitd before the pin was written, and a re-run's bootstrap left the running signer on
+        its old config: the daemon reads its config once."""
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        order = mock.Mock()
+        order.run.return_value = mock.Mock(returncode=0, stdout="", stderr="")
+        with mock.patch.object(install, "_require_system", return_value=True), \
+                mock.patch.object(install, "SYS_HOME", os.path.join(d, "home")), \
+                mock.patch.object(install, "LAUNCHD_DIR", d), \
+                mock.patch.object(install.pwd, "getpwnam", return_value=install.pwd.getpwuid(os.getuid())), \
+                mock.patch.object(install, "_privileges", return_value=[]), \
+                mock.patch.object(install, "_install_source", return_value=None), \
+                mock.patch.object(install, "_install_venv", return_value=POLICY), \
+                mock.patch.object(install.subprocess, "run", order.run), \
+                mock.patch.object(install, "_write_client_config"), \
+                mock.patch.object(install, "_write_system_client_config"), \
+                mock.patch.object(install, "_pin_policy", order.pin), \
+                mock.patch.object(install, "install_hooks"), \
+                contextlib.redirect_stdout(io.StringIO()):
+            install.init_system("agent", [])
+        calls = [c[0] if c[0] == "pin" else c[1][0][1] for c in order.mock_calls if c[0] in ("pin", "run")
+                 and (c[0] == "pin" or c[1][0][0] == "launchctl")]
+        self.assertEqual(calls, ["pin", "bootout", "bootstrap"])
+
+    def test_a_service_that_does_not_start_fails_init_after_everything_else(self):
+        """init printed "could not restart" and exited 0: a script saw success with no signer running."""
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        run = mock.Mock(side_effect=lambda cmd, **kw: mock.Mock(returncode=int(cmd[:2] == ["systemctl", "restart"]),
+                                                                 stdout="", stderr=""))
+        with as_root_on_linux(), \
+                mock.patch.object(install, "SYS_HOME", os.path.join(d, "home")), \
+                mock.patch.object(install, "SYSTEMD_DIR", d), \
+                mock.patch.object(install.pwd, "getpwnam", return_value=install.pwd.getpwuid(os.getuid())), \
+                mock.patch.object(install, "_privileges", return_value=[]), \
+                mock.patch.object(install, "harness_config", return_value={"harness_binding": "off"}), \
+                mock.patch.object(install, "_install_source", return_value=None), \
+                mock.patch.object(install, "_install_venv", return_value=POLICY), \
+                mock.patch.object(install.subprocess, "run", run), \
+                mock.patch.object(install, "_write_client_config"), \
+                mock.patch.object(install, "_write_system_client_config"), \
+                mock.patch.object(install, "_pin_policy"), \
+                mock.patch.object(install, "install_hooks") as hooks, \
+                contextlib.redirect_stdout(io.StringIO()):
+            with self.assertRaisesRegex(install.ServiceError, "could not restart tracekitd: see systemctl status "
+                                                              "tracekitd"):
+                install.init_system("agent", [])
+        hooks.assert_called_once()   # the rest of the install is in place
+        for argv, fn in ((["init", "--user", "agent"], "init_system"), (["init", "--v2", "--user", "agent"],
+                                                                       "init_system_v2")):
+            with self.subTest(argv=argv), \
+                    mock.patch.object(install, fn, side_effect=install.ServiceError("could not start x: see y")), \
+                    contextlib.redirect_stderr(io.StringIO()) as err:
+                self.assertEqual(cli.main(argv), 1)
+            self.assertIn("installed, but could not start x: see y", err.getvalue())
+
+    def test_managed_only_without_managed_is_refused(self):
+        """--managed-only alone was ignored: the hooks went to settings the agent's user can edit."""
+        with mock.patch.object(install, "init_system") as init, contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(cli.main(["init", "--user", "agent", "--managed-only"]), 2)
+        init.assert_not_called()
+        self.assertIn("--managed-only goes with --managed", err.getvalue())
 
     def test_source_is_checked_before_any_system_change(self):
         d = tempfile.mkdtemp()

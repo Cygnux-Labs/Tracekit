@@ -741,7 +741,8 @@ class Signer:
             self._rejection("rejected invalid event: " + "; ".join(errs[:5])[:900], run_id)
             return {"ok": False, "error": "schema: " + "; ".join(errs[:5])}
         attach = req.get("attach") or {}
-        st = self._run(run_id)
+        # kept only once the event is accepted (below): a flood of refused events must not fill runs and evict live ones
+        st = self.runs.get(run_id) or self._new_run()
         owner = st.get("agent_uid")
         if (peer_uid is not None and not peer_is_signer and owner is not None and peer_uid != owner
                 and not run_id.startswith(("findings:", "anchors:"))):
@@ -799,6 +800,7 @@ class Signer:
             self._internal("capture.gap", {"reason": "event after run.end", "kind": "after_run_end"}, run_id)
         if ev.get("transcript"):
             self._check_transcript(ev["transcript"], run_id)
+        self.runs[run_id] = st
         rec = self._append(ev)
         d = ev["data"]
         if ev["type"] == "tool.call" and ev["source"] == "hook":
@@ -813,9 +815,12 @@ class Signer:
         if ev["type"] == "run.end":
             st["ended"] = True
             self.sweep(run_end=run_id)
-        self._save_runs()
-        if ev["type"] == "run.end" or self.since_cp >= int(self.cfg.get("checkpoint_every", 50)):
-            self.checkpoint()
+        try:   # the event is in the ledger: a failure of what follows must not tell the client to send it again
+            self._save_runs()
+            if ev["type"] == "run.end" or self.since_cp >= int(self.cfg.get("checkpoint_every", 50)):
+                self.checkpoint()
+        except OSError:
+            self.write_errors += 1
         resp = {"ok": True, "seq": rec["event"]["seq"], "hash": rec["hash"], "kid": rec["kid"]}
         if ev.get("transcript"):
             t = self.transcripts.get(ev["transcript"]["path"])
