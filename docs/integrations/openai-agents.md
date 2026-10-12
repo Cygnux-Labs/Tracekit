@@ -33,7 +33,8 @@ result = await Runner.run(agent, "pay acct-42 $15", context={}, hooks=tk)
 - Wrap every tool with `tk.tool(...)`: a plain function, a `FunctionTool`, a `ShellTool` with a local executor, a
   `LocalShellTool` or an `ApplyPatchTool`. The signer's policy decides approvals, so a tool's own `needs_approval` is
   replaced.
-- The run context must be a dict (`context={}`, or your own dict): the approval hint is kept in it.
+- Any run context works. A dict context also carries each approval's id as a hint; with your own object (a dataclass,
+  a pydantic model) the signer finds the approval by the tool call id.
 - `hooks=tk` records each model response (below).
 
 A resumed run (another process, after a restart) builds `TracekitAgents` with the same `run_id` and `run_token`.

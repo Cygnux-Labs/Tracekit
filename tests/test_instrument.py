@@ -8,15 +8,19 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import types
 import unittest
 import warnings
 from importlib import metadata
 from unittest import mock
 
+from adapter_contract import OnReal
 from quickstart_agents import AGENTS, REFUSED
 
 from tracekit import autowire
-from tracekit.sdk.client import SignerUnavailable
+from tracekit.format.canon import event_hash
+from tracekit.sdk.client import AsyncClient, Client, SignerUnavailable, current_run
+from tracekit.signer.rpc_schema import REQUESTS, RPCError
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -182,3 +186,121 @@ class TestInstrument(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ProcessRun(OnReal, unittest.TestCase):
+    """The client instrument() wires every adapter with: new work follows the current run, a call's complete goes to
+    the run it was decided in, and a process run the signer closed is renewed, never refused for good."""
+
+    def setUp(self):
+        self.path = self.serve_signer()
+        self.client = autowire._process_client(Client, RPCError, current_run, REQUESTS)(self.path)
+        self.addCleanup(self.client.close)
+        self.process = self.client.start("server")
+        self.seq = 0
+
+    def event(self, method, call_id, **fields):
+        """An event as an adapter sends it: addressed to the process run, numbered by the adapter's own counter."""
+        self.seq += 1
+        req = {"run_id": self.process.run_id, "run_token": self.process.run_token, "stream": "adapter",
+               "client_seq": self.seq - 1, "tool_call_id": call_id, **fields}
+        return self.client.call(method, req)
+
+    def decide(self, call_id):
+        return self.event("decide", call_id, tool="read_file", args_source="parsed", args={})
+
+    def complete(self, call_id, d):
+        return self.event("complete", call_id, decision_id=d["decision_id"], status="ok",
+                          args_digest=event_hash({"tool": "read_file", "args": {}}))
+
+    def records(self, run, typ):
+        return [e["tool_call_id"] for e in self.events({"run_id": run.run_id}) if e["type"] == typ]
+
+    def gaps(self, run):
+        return [e for e in self.events({"run_id": run.run_id}) if e["type"] == "capture.gap"]
+
+    def test_new_work_follows_the_current_run_and_a_complete_its_decide(self):
+        d1 = self.decide("c1")
+        with self.client.run("conversation") as conversation:   # a server's run per conversation
+            d2 = self.decide("c2")
+            d3 = self.decide("c3")
+            self.complete("c2", d2)
+        self.complete("c3", d3)   # after the block: still to the run it was decided in, which takes it late
+        self.complete("c1", d1)
+        self.assertEqual((self.records(self.process, "policy.decision"), self.records(conversation, "policy.decision")),
+                         (["c1"], ["c2", "c3"]))
+        self.assertEqual((self.records(self.process, "tool.result"), self.records(conversation, "tool.result")),
+                         (["c1"], ["c2", "c3"]))
+        self.assertEqual((self.gaps(self.process), self.gaps(conversation)), ([], []))
+
+    def test_a_resent_event_keeps_its_number(self):
+        req = {"run_id": self.process.run_id, "run_token": self.process.run_token, "stream": "adapter",
+               "client_seq": 0, "request_id": "r-1", "tool_call_id": "c1", "tool": "read_file",
+               "args_source": "parsed", "args": {}}
+        first = self.client.call("decide", dict(req))
+        self.assertEqual(self.client.call("decide", dict(req)), first)   # not a conflict, not a second record
+        self.assertEqual(self.records(self.process, "policy.decision"), ["c1"])
+
+    def test_close_goes_to_the_run_it_names(self):
+        with self.client.run("conversation") as conversation:
+            self.process.close()
+            self.decide("c1")
+        self.assertEqual([e["type"] for e in self.events({"run_id": self.process.run_id})][-1], "run.closing")
+        self.assertEqual(self.records(conversation, "policy.decision"), ["c1"])
+
+    def test_a_process_run_the_signer_closed_is_renewed(self):
+        first = self.process.run_id
+        d1 = self.decide("c1")
+        self.client.close_run({"run_id": first, "run_token": self.process.run_token})   # as an idle close does
+        with self.assertLogs("tracekit", "WARNING") as logs:
+            self.decide("c2")
+        self.assertIn(f"closed run {first}", logs.output[0])
+        self.assertNotEqual(self.process.run_id, first)
+        self.assertEqual(self.records(self.process, "policy.decision"), ["c2"])
+        self.complete("c1", d1)   # the call decided before the renewal completes in the run it was decided in
+        self.assertEqual(self.records(types.SimpleNamespace(run_id=first), "tool.result"), ["c1"])
+        registered = self.events({"run_id": self.process.run_id})[0]["data"]
+        self.assertEqual(registered.get("parent_run"), first)   # linked to the run it replaces
+        self.decide("c3")   # an adapter still addressing the first run reaches the new one
+        self.assertEqual(self.records(self.process, "policy.decision"), ["c2", "c3"])
+        self.assertEqual(self.gaps(self.process), [])
+
+    def test_approval_list_reaches_the_current_run(self):
+        self.assertEqual(self.client.approval_list({"run_id": self.process.run_id})["approvals"], [])
+
+    def test_one_call_id_in_two_conversations_stays_in_each(self):
+        with self.client.run("a") as a:
+            d1 = self.decide("call_0")
+            with self.client.run("b") as b:
+                self.complete("call_0", self.decide("call_0"))   # the same id in another conversation
+            self.complete("call_0", d1)
+        self.assertEqual((self.records(a, "tool.result"), self.records(b, "tool.result")), (["call_0"], ["call_0"]))
+
+    def test_a_forgotten_call_completes_in_the_current_run(self):
+        with mock.patch.object(autowire, "KEEP", 2), self.client.run("a") as a:
+            ds = [self.decide(f"c{i}") for i in range(3)]   # pushes c0's entries out
+            self.complete("c0", ds[0])
+        self.assertEqual(self.records(a, "tool.result"), ["c0"])
+
+    def test_a_model_response_goes_to_the_run_of_its_request(self):
+        ev = {"run_id": self.process.run_id, "run_token": self.process.run_token, "provider": "p", "model": "m",
+              "exchange_id": "ex-1"}
+        self.client.call("model_event", {**ev, "phase": "request"})
+        with self.client.run("conversation") as conversation:   # e.g. a stream finished during the next request
+            self.client.call("model_event", {**ev, "phase": "response"})
+        self.assertEqual([e["data"]["phase"] for e in self.events({"run_id": self.process.run_id})
+                          if e["type"] == "model.exchange"], ["request", "response"])
+        self.assertEqual([e for e in self.events({"run_id": conversation.run_id}) if e["type"] == "model.exchange"], [])
+
+    def test_a_process_run_closed_on_purpose_is_not_renewed(self):
+        self.process.close()
+        with self.assertRaises(RPCError):
+            self.decide("c1")
+        self.assertEqual(self.client.ids, {self.process.run_id})
+
+    def test_an_async_handle_can_be_current(self):
+        async def go():
+            run = await AsyncClient(self.path).run("async")
+            with run.current():
+                return current_run.get() is run
+        self.assertTrue(asyncio.run(go()))

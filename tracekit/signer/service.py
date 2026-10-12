@@ -577,6 +577,7 @@ class SignerService:
         self._webhooks = [webhook.Sender(**w, dropped=self.metrics.webhook_dropped) for w in webhooks]
         self.log.observers += [w.put for w in self._webhooks]   # before the startup checks, so their records go out too
         self.policy, self.isolation = policy or load_policy(), isolation
+        self.log.handoff = lambda tool: self.policy.is_handoff(tool)
         self.identity = identity or _process_identity()
         self.tenant, self.tenants, self.authorize = tenant, dict(tenants or {}), authorize
         self.multi_tenant_apps, self.migrators, self.analyzers = set(multi_tenant_apps), set(migrators), set(analyzers)
@@ -1146,7 +1147,7 @@ class SignerService:
             tx.emit(run, "capture.gap", {"kind": "decided_not_completed", "missed_events": n,
                                          "reason": f"{n} more allowed or approved calls never completed"},
                     source="signer")
-        coverage = reconcile.finish(tx, run, self.gateway_mandatory)
+        coverage = reconcile.finish(tx, run, self.gateway_mandatory, self.policy.is_handoff)
         provider = len((run.get("rec") or {}).get("provider", ()))
         tx.set(run, "final", True)
         tx.emit(run, "run.final", {"head_run_seq": run["run_seq"] - 1, "head_hash": run["head"],

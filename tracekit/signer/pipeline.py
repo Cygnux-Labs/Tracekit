@@ -163,7 +163,7 @@ class Tx:
         self.set(log.head, "prev", r["hash"])
         self.set(run, "run_seq", e["run_seq"] + 1)
         self.set(run, "head", r["hash"])
-        for kind, tcid, layers, detail in reconcile.observe(self.set, run, e, digests):
+        for kind, tcid, layers, detail in reconcile.observe(self.set, run, e, digests, self.log.handoff):
             self.emit(run, "reconcile." + kind, {"layers": layers, "detail": detail}, source="signer", tool_call_id=tcid)
         return e["run_seq"]
 
@@ -216,6 +216,7 @@ class RecordLog:
         # run key -> [first, last, {method: count}] of writes refused because the run was final, until
         # SignerService.flush_refusals writes them as late_activity (memory only)
         self.late = {}
+        self.handoff = lambda tool: False   # the policy's handoffs (SignerService sets it): see reconcile.observe
         self.down, self._last_try = None, 0.0
         self._replay()
         if bridge and self.head["seq"]:

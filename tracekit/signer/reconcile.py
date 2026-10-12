@@ -38,11 +38,12 @@ def _sub(put, rec, k):
     return rec[k]
 
 
-def observe(put, run, e, digests=None):
+def observe(put, run, e, digests=None, handoff=lambda tool: False):
     """Index event `e` just written to `run`; `put(d, k, v)` sets d[k] (undoably on the writer). `digests`: the
     internal args digests the writer knew, by tool_call_id; none on replay, so a call that straddles a restart is
     compared by name only. Returns the discrepancies to write now, as `_found` gives them: a gateway request sending
-    back the result of a gateway tool use that has no decide is a hook_missing at once, not only at run.final."""
+    back the result of a gateway tool use that has no decide (and is not one of the policy's handoffs, `handoff(tool)`)
+    is a hook_missing at once, not only at run.final."""
     # lean: the digests of a run's calls are lost on a restart; keep them in the sealed approvals store if runs often
     # outlive a signer restart
     rec, layer = run.get("rec"), LAYERS.get(e["type"])
@@ -75,25 +76,32 @@ def observe(put, run, e, digests=None):
             put(rec["sent"], tcid, True)
             u = rec["l3"].get(tcid)
             if gw and u and u["gw"] and tcid not in rec["l2"] and tcid not in rec.get("live", {}) and tcid not in {
-                    x[1] for x in now}:
+                    x[1] for x in now} and not handoff(u["name"]):
                 now.append(("hook_missing", tcid, ["L2", "L3"], f"the model asked for {u['name'][:200]}; its result "
-                                                                "went back to the model with no decide"))
+                                                                f"went back to the model with no decide{_hint(u['name'])}"))
     return now
+
+
+def _hint(tool):
+    """What a hook_missing detail adds for a tool that looks like a handoff the policy does not name."""
+    return "; if it is a handoff to another agent, name it in the policy's handoffs:" if tool.startswith(
+        "transfer_to_") else ""
 
 
 def _l3(rec, mandatory):
     return {t: u for t, u in rec["l3"].items() if u.get("gw") or not mandatory}
 
 
-def _found(run, mandatory):
-    """[(kind, tool_call_id, layers, detail)] of the run's discrepancies."""
+def _found(run, mandatory, handoff=lambda tool: False):
+    """[(kind, tool_call_id, layers, detail)] of the run's discrepancies; `handoff(tool)`: the policy's handoffs."""
     rec, digests, out, l3 = run["rec"], run["digests"], [], _l3(run["rec"], mandatory)
     if "L3" not in rec["layers"] and not mandatory:
         return out
     for tcid, u in l3.items():
         d = rec["l2"].get(tcid)
-        if d is None:
-            out.append(("hook_missing", tcid, ["L2", "L3"], f"the model asked for {u['name'][:200]}; no decide"))
+        if d is None and not handoff(u["name"]):
+            out.append(("hook_missing", tcid, ["L2", "L3"],
+                        f"the model asked for {u['name'][:200]}; no decide{_hint(u['name'])}"))
         if u["unparseable"]:
             out.append(("args_unparseable", tcid, ["L3"], "the model's raw arguments failed strict parsing"))
         if d is None:
@@ -114,11 +122,11 @@ def _found(run, mandatory):
     return out
 
 
-def finish(tx, run, mandatory=False):
+def finish(tx, run, mandatory=False, handoff=lambda tool: False):
     """Write the run's reconcile.* records; returns the coverage for its run.final (None for a run restored from a
     snapshot written before reconciliation, which has no index, for an imported run, or for a `tracekit why` replay run,
     whose model exchanges have no decisions by design). `mandatory`:
-    gateway_mandatory."""
+    gateway_mandatory; `handoff`: as for _found."""
     if run.get("rec") is None:
         return None
     rec = run["rec"]
@@ -137,7 +145,7 @@ def finish(tx, run, mandatory=False):
             tx.emit(run, "capture.gap", {"kind": "decision_mismatch", "tool_use_id": tcid, "reason": reason},
                     source="signer", tool_call_id=tcid)
     live = rec.get("live", {})
-    found = [x for x in _found(run, mandatory) if x[0] != "hook_missing" or x[1] not in live]
+    found = [x for x in _found(run, mandatory, handoff) if x[0] != "hook_missing" or x[1] not in live]
     unreconciled = {"hook_missing": len(live)} if live else {}
     for kind, tcid, layers, detail in found:
         tx.emit(run, "reconcile." + kind, {"layers": layers, "detail": detail}, source="signer", tool_call_id=tcid)

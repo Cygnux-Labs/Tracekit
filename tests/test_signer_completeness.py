@@ -15,6 +15,7 @@ from tracekit import agent_hooks, gateway, parsers
 from tracekit.format.canon import event_hash
 from tracekit.identity.base import CallerIdentity
 from tracekit.integrations import claude_code, harness_hooks
+from tracekit.policy2.engine import Engine
 from tracekit.signer import service as svc
 from tracekit.signer.rpc_schema import RPCError
 
@@ -91,6 +92,21 @@ class TestLiveHookMissing(Completeness):
         es = self.final(run)
         self.assertEqual([e["tool_call_id"] for e in es if e["type"] == "reconcile.hook_missing"], ["hidden"])
         self.assertEqual(es[-1]["data"]["coverage"]["unreconciled"], {"hook_missing": 1})
+
+    def test_a_handoff_is_recorded_at_once_unless_the_policy_names_it(self):
+        handoff = [{"id": "h", "name": "transfer_to_refunds_agent", "executed_by": "client", "args_source": "parsed",
+                    "args_digest": event_hash({"tool": "transfer_to_refunds_agent", "args": {}})}]
+        for handoffs, want in (([], ["h"]), (["transfer_to_refunds_agent"], [])):
+            with self.subTest(handoffs=handoffs):
+                self.s.policy = Engine({**PAY_ASKS.policy, "handoffs": handoffs})   # the operator
+                run = self.register()
+                self.gw(run, 0, phase="response", tool_uses=handoff)
+                self.gw(run, 1, phase="request", tool_results_sent=["h"])
+                live = [r["event"] for r in records(self.dir) if r["event"]["run_id"] == run["run_id"]
+                        and r["event"]["type"] == "reconcile.hook_missing"]
+                self.assertEqual([e["tool_call_id"] for e in live], want)
+                if live:
+                    self.assertIn("name it in the policy's handoffs:", live[0]["data"]["detail"])
 
 
 class TestTrailingCounterGaps(Completeness):
