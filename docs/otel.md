@@ -130,6 +130,9 @@ authorize: {"mtls:spiffe://acme/collector": [otlp_import]}
   `tier: T3`, with the span id in `span_id`. Arguments, results and messages are redacted and kept only as commitments
   (`hmac-sha256:`), as for the RPC. Other spans are counted and skipped. Imported runs are not reconciled.
 - **Meaning.** T3 proves receipt at the time of the record, nothing about completeness or truth; nothing is gated.
+  An imported run is not linked to the run that gated the same calls: a framework's span for a call Tracekit denied
+  (PydanticAI's `execute_tool`, when your hook returns the refusal) reads as a tool call that succeeded. Read the gated
+  run for what was allowed; the import is what the framework said it did.
 - **Retries write nothing twice.** A (span id, record type) is written once per run, and the set is part of the run's
   state, so it survives restarts and snapshots: a re-sent batch writes nothing, and no second `run.registered` appears.
 - **Lifecycle.** An imported run closes like any other: after `idle_s` without spans, `run.closing{idle_timeout}`, then

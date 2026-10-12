@@ -9,11 +9,15 @@ __version__ = "1.2.0rc1"
 
 def __getattr__(name):
     """`tracekit.instrument()`: one line wires the v2 signer into this process's agent (tracekit.autowire).
-    `tracekit.init()` / `tracekit.shutdown()`: v1 model-call tracing (tracekit.autotrace). Imported lazily so
+    `tracekit.init()` / `tracekit.shutdown()`: v1 model-call tracing (tracekit.autotrace). `tracekit.Refused`: the
+    exception a Tracekit refusal raises (tracekit.sdk.client.Refused). Imported lazily so
     `import tracekit` stays cheap for the hook and the verifier."""
     if name == "instrument":
         from .autowire import instrument
         return instrument
+    if name == "Refused":
+        from .sdk.client import Refused
+        return Refused
     if name in ("init", "shutdown", "uninstrument"):
         from . import autotrace
         return getattr(autotrace, name)

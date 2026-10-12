@@ -18,6 +18,10 @@ class SignerUnavailable(Exception):
     pass
 
 
+class ReplyLost(SignerUnavailable):
+    """The request went out whole but no answer came back (a timeout, a reset): the signer may have written it."""
+
+
 def client_dir():
     d = os.environ.get("TRACEKIT_CLIENT_HOME") or os.path.join(os.path.expanduser("~"), ".tracekit-client")
     os.makedirs(os.path.join(d, "runs"), exist_ok=True)
@@ -218,6 +222,7 @@ def _rpc(req, timeout=5.0, config=None):
             raise SignerUnavailable("this Python build has no Unix sockets; initialize Tracekit in dev mode to use TCP")
         address = endpoint
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    sent = False
     try:
         s.settimeout(timeout)
         for attempt in range(40):  # a full accept queue shows up as EAGAIN (Unix sockets): wait briefly and retry
@@ -229,15 +234,18 @@ def _rpc(req, timeout=5.0, config=None):
                     raise
                 time.sleep(0.02 + 0.01 * attempt)
         s.sendall((json.dumps(request, ensure_ascii=False) + "\n").encode("utf-8"))
+        sent = True
         buf = b""
         while not buf.endswith(b"\n"):
             chunk = s.recv(65536)
             if not chunk:
                 break
             buf += chunk
+        if not buf.strip():
+            raise ReplyLost("no reply from signer")
         return _reply(buf)
     except (OSError, ValueError) as e:
-        raise SignerUnavailable(str(e)) from e
+        raise (ReplyLost if sent else SignerUnavailable)(str(e)) from e
     finally:
         s.close()
 
@@ -304,6 +312,11 @@ def send(event, attach=None, stream="hook"):
                 raise SignerUnavailable(resp.get("error", "signer could not write"))
             rl.save()
             return resp
+        except ReplyLost:
+            # the signer may have written it: keep its counter value. Resending it would read as a replay ("went
+            # backwards"); if it was lost, the signer sees the next value jump and records that gap itself
+            rl.save()
+            raise
         except SignerUnavailable:
             rl.state["cseq"] -= 1  # the signer never saw this counter value
             g = rl.state.get("gap") or {"from_ts": event.get("ts") or now_ts(), "missed": 0}

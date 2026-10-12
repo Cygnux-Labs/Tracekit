@@ -750,6 +750,8 @@ class Agent:
             else:
                 tcid, aid = "why-" + secrets.token_hex(12), None
                 d = run.decide(tcid, tool, args)
+                if d.get("unavailable"):   # no fail mode here: a replay never runs a call the signer didn't decide
+                    raise SignerUnavailable(d["reason"])
         except (RPCError, SignerUnavailable) as e:
             return {"blocked": {"error": f"blocked: the signer did not decide this call ({e}); it did not run. "
                                          "Check that the signer is up and the run still open, then retry"}}
@@ -808,12 +810,13 @@ class Agent:
         outcome = {"error": "not run: no tool registered"} if stub else {"result": result}
         try:
             try:
-                seq = run.complete(tcid, "error" if stub else status, **ids, **outcome)["run_seq"]
+                seq = run.call("complete", tool_call_id=tcid, status="error" if stub else status, **ids,
+                               **outcome)["run_seq"]
             except RPCError as e:
                 if stub or e.code not in ("invalid_request", "quota_exceeded"):
                     raise
                 outcome = {"error": f"result not recordable: {e.message}"[:4096]}
-                seq = run.complete(tcid, "error", **ids, **outcome)["run_seq"]
+                seq = run.call("complete", tool_call_id=tcid, status="error", **ids, **outcome)["run_seq"]
         except (RPCError, SignerUnavailable) as e:
             warnings.warn(f"tracekit why: the signer did not record the outcome of {tcid}: {e}", stacklevel=3)
             return cite

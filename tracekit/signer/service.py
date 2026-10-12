@@ -1435,12 +1435,14 @@ class SignerService:
         coverage = reconcile.finish(tx, run, self.gateway_mandatory, self.policy.is_handoff,
                                     self.policy.is_structured_output)
         provider = len(reconcile.counted(run["rec"], self.gateway_mandatory, "provider")) if run.get("rec") else 0
+        paired = coverage and coverage.pop("paired_by_args", 0)
         tx.set(run, "final", True)
         tx.emit(run, "run.final", {"head_run_seq": run["run_seq"] - 1, "head_hash": run["head"],
                                    **({"coverage": coverage,
                                        "matrix": reconcile.matrix(run["rec"], self.posture or {}, observed)}
                                       if coverage else {}),
-                                   **({"provider_executed": provider} if provider else {})}, source="signer")
+                                   **({"provider_executed": provider} if provider else {}),
+                                   **({"paired_by_args": paired} if paired else {})}, source="signer")
         tx.set(self.log.runs, key, final_run(run))   # its calls, decisions and arguments go
         tx.pop(self.log.live, key)
         for aid in aids:   # all ended now: nothing can use them
@@ -1771,20 +1773,21 @@ class SignerService:
     def _evaluate(self, tool, args, hint, untrusted=None):
         """(policy decision, hint disagreed, the rule ids of both readings). A class hint that disagrees with the
         policy's class gets the stricter of the two decisions; detection sees the rules of both, so a mismatch can't
-        hide a step."""
-        d = self.policy.decide(tool, args, untrusted=untrusted)
+        hide a step. A tool the policy maps whose own reading is at least as strict as the hint's (an MCP adapter's
+        generic `mcp` against the deployment's `sql`) is no disagreement worth a gap."""
+        d, cls = self.policy.decide(tool, args, untrusted=untrusted), self.policy.tool_class(tool)
         if tool.startswith("mcp:") and "/" in tool:
             # an MCP tool is also checked under its bare name (the name the model may know it by), in its own class if
             # the policy maps it, else the MCP call's: a rule on that name can't be dodged by naming the call an MCP one
-            bare, cls = tool.split("/", 1)[1], self.policy.tool_class(tool)
+            bare = tool.split("/", 1)[1]
             b = self.policy.decide(bare, args, None if self.policy.tool_class(bare) != "unknown" else cls, untrusted)
             d = {**max(d, b, key=lambda x: STRICTNESS.index(x["verdict"])),
                  "rule_ids": list(dict.fromkeys(d["rule_ids"] + b["rule_ids"]))}
-        if hint is None or hint == self.policy.tool_class(tool):
+        if hint is None or hint == cls:
             return d, False, d["rule_ids"]
         h = self.policy.decide(tool, args, hint if hint in policy_compile.CLASSES else "unknown", untrusted)
-        return (max(d, h, key=lambda x: STRICTNESS.index(x["verdict"])), True,
-                list(dict.fromkeys(d["rule_ids"] + h["rule_ids"])))
+        strict = max(d, h, key=lambda x: STRICTNESS.index(x["verdict"]))   # d on a tie
+        return strict, cls == "unknown" or strict is not d, list(dict.fromkeys(d["rule_ids"] + h["rule_ids"]))
 
     def _agent_rules(self, ids):
         """The rules among rule ids `ids` with approval.agent."""

@@ -32,7 +32,7 @@ from claude_agent_sdk import HookMatcher
 from tracekit.format.canon import event_hash
 from tracekit.integrations.executor_tools import SERVER
 from tracekit.signer import rpc_schema
-from tracekit.sdk.client import SignerUnavailable, fail_open, result_field
+from tracekit.sdk.client import SignerUnavailable, fail_open, named_rules, result_field
 from tracekit.signer.rpc_schema import RPCError
 
 BLOCKED = "Tool call blocked by policy: "
@@ -97,7 +97,7 @@ def tracekit_hooks(signer, run):
             return _deny(f"signer error ({type(e).__name__}: {e})")
         try:
             if d["decision"] == "deny":
-                return _deny(", ".join(d["rule_ids"]) or "deny")
+                return _deny(named_rules(d["rule_ids"]) or "deny")
             aid = None
             if d["decision"] == "ask":
                 aid = (await rpc("approval_request", tool_call_id=tid))["approval_id"]
@@ -111,7 +111,7 @@ def tracekit_hooks(signer, run):
             c = await rpc("approval_consume", tool_call_id=tid, tool=tool, args_source="parsed", args=args,
                           **({"approval_id_hint": aid} if aid else {}))
             if not c["ok"]:
-                return _deny(", ".join(c["rule_ids"]) + (f": {c['reason']}" if c.get("reason") else ""))
+                return _deny(named_rules(c["rule_ids"]) + (f": {c['reason']}" if c.get("reason") else ""))
         except Exception as e:   # no fail mode once decided: a refusal or an approval that can't be had blocks
             return _deny(f"signer error ({type(e).__name__}: {e})")
         args = c.get("args", args)   # T2: the signer's copy is what runs

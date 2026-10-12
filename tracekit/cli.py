@@ -315,7 +315,7 @@ def _init_remote_v2(a, url):
             print(f"tracekit: cannot read {env[k]}", file=sys.stderr)
             return 2
     hooks = None if a.no_hooks or a.agent != "claude" else (
-        os.path.join(os.getcwd(), ".claude", "settings.json") if a.project else os.path.expanduser("~/.claude/settings.json"))
+        os.path.join(os.getcwd(), ".claude", "settings.json") if a.project else install.user_settings())
     try:
         if hooks:
             install.install_hooks(hooks, module=install.V2_HOOK, signer=env)
@@ -420,7 +420,7 @@ def _run(a):
         if a.dev:
             home = a.home or os.path.expanduser("~/.tracekit-signer")
             hooks = None if a.no_hooks else (os.path.join(os.getcwd(), ".claude", "settings.json") if a.project
-                                            else os.path.expanduser("~/.claude/settings.json"))
+                                            else install.user_settings())
             if a.v2:
                 if not _signer_extra():
                     return 2
