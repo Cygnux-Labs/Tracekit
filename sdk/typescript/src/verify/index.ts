@@ -18,7 +18,7 @@ import {
 } from "./primitives.js";
 import { Detector } from "./detect.js";
 import { same, validateEvent } from "./schema.js";
-import { readZip } from "./zip.js";
+import { MAX_ENTRY, readZip } from "./zip.js";
 
 export { MAX_ENTRIES, MAX_ENTRY, MAX_TOTAL, Unusable, readZip } from "./zip.js";
 export { StrictJSONError, canonicalize, strictParse, strictParseBytes } from "./jcs.js";
@@ -28,6 +28,7 @@ export const VERSION = "1.2.0";
 export const EXIT_OK = 0, EXIT_FAIL = 1, EXIT_BAD = 2, EXIT_WARN = 3;
 const FORMAT = "tracekit.bundle.v2";
 const MAX_LINE = 1 << 20;
+const MAX_LINES = MAX_ENTRY / 256;   // per JSON lines file: no signed record is shorter than 256 bytes
 const CLASSES = ["public", "customer", "tracekit", "operator"];
 const KEY_TYPES = ["signer.epoch", "key.retire"];
 const ZERO_HASH = "sha256:" + "0".repeat(64);
@@ -199,7 +200,11 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
     const data = file(name);
     if (data.length && data.at(-1) !== 0x0a) throw new Error("a JSON lines file must end in a newline");
     const lines: Uint8Array[] = [];
-    for (let i = 0, j; (j = data.indexOf(0x0a, i)) >= 0; i = j + 1) lines.push(data.subarray(i, j));
+    for (let i = 0, j; (j = data.indexOf(0x0a, i)) >= 0; i = j + 1) {
+      // checked before any is parsed: a run of tiny lines costs no memory
+      if (lines.length === MAX_LINES) throw new Error("more lines than the bundle limits");
+      lines.push(data.subarray(i, j));
+    }
     if (lines.some((l) => l.length > MAX_LINE)) throw new Error("line longer than the bundle limits");
     return lines.map((l) => strictParseBytes(l, floats) as J);
   };
@@ -425,6 +430,9 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
   if (lost.length)
     rep.check("observers", false, `${lost.length} egress observer(s) went silent while their run was open`, lost.slice(0, 20), true);
   checkIncidents(rep, runs, policies, floats);
+  const accessed = typed("content.accessed").length, erased = typed("content.erased").length;
+  if (accessed || erased)   // signer records of the content vault (docs/privacy.md): who read or erased retained content
+    rep.check("content vault", true, `${accessed} access(es), ${erased} erasure(s) of retained content, each signed by the signer`);
   // a tool call's tier is the weakest its records claim (untiered < T3, receipt only, < T1 < T2): each tier a record
   // names, and untiered for a decision or result that names none, so a call decided at T2 and completed elsewhere
   // isn't T2;

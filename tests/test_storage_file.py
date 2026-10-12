@@ -108,6 +108,19 @@ class TestFileStorage(FileCase):
         self.assertEqual((s.checkpoint_at(tree, 1), s.checkpoint_at(tree, 4), s.checkpoint_latest(tree)),
                          (notes[0], None, (3, notes[2])))
 
+    def test_a_snapshot_past_the_logs_end_is_removed_and_two_good_ones_kept(self):
+        s = FileStorage(self.root, snapshot_key=b"k" * 32)
+        self.addCleanup(s.close)
+        c = Chain()
+        s.append_batch(c.batch(1))
+        s.snapshot_put({})
+        with open(os.path.join(self.root, file_storage.SNAPSHOTS, "999999.json"), "wb") as f:
+            f.write(b"not a snapshot")
+        for _ in range(3):
+            s.append_batch(c.batch(1))
+            s.snapshot_put({})
+        self.assertEqual([n for n, _ in file_storage._snapshots(self.root)], [4, 3])
+
     def test_tile_outliving_lost_log_lines_is_rewritten(self):
         s = self.open()
         s.append_batch(Chain().batch(300))
@@ -165,6 +178,19 @@ class TestFileStorage(FileCase):
                 s.append_batch(c.batch(1))
         with self.assertRaises(StorageUnavailable):
             s.append_batch(c.batch(1))
+
+    def test_a_failed_tile_write_leaves_no_line_on_disk_or_in_the_index(self):
+        s = self.open()
+        self.addCleanup(s.close)
+        c = Chain()
+        s.append_batch(c.batch(255))
+        size, state = os.path.getsize(self.log), s.tail_state()
+        with mock.patch.object(s.tree.store, "put", side_effect=OSError(errno.ENOSPC, "full")):
+            with self.assertRaises(StorageUnavailable):
+                s.append_batch(c.batch(2))   # the lines are written, then leaf 256 fills a tile that can't be stored
+        self.assertEqual((os.path.getsize(self.log), len(s.log.offsets), s.tail_state()), (size, 256, state))
+        s.close()
+        self.assertEqual(self.open().tree.size, 255)
 
     def test_a_failed_batch_leaves_no_line_on_disk(self):
         s = self.open(ACK_ON_FSYNC)

@@ -315,6 +315,23 @@ class TestOperators(Case):
             svc.SignerService(os.path.join(self.signer().dir, "other"), policy=e17.engine(HOLD),
                               authorize={"uid:1": ["register_run", "decide", "run_resume"]})
 
+    def test_an_identity_whose_keys_together_grant_register_run_can_not_operate(self):
+        s = self.signer()
+        s.s.authorize.update({"oidc:corp/*": ["register_run"], "group:sre": sorted(svc.OPERATOR)})
+        bob = CallerIdentity("oidc", "corp/u-bob", True, {"person": "corp/bob", "groups": ["sre"]})
+        self.refused(lambda: s.as_(bob, "response_pause", {}), why="is also granted register_run")
+        s.s.authorize["oidc:corp/*"] = ["approval_decide"]
+        s.as_(bob, "incident_list", {})
+
+    def test_resolved_holds_leave_no_cooldown_behind(self):
+        s = self.signer()
+        for _ in range(20):
+            run = s.register()
+            iid = s.as_(OP, "run_hold", {"run_id": run["run_id"]})["incident_id"]
+            s.as_(GLASS, "incident_resolve", {"incident_id": iid, "reason": "on call, case 7"})
+            s.call("close_run", run)
+        self.assertEqual(s.s.log.contain["cooldown"], {})
+
     def test_operator_calls_are_never_defaults(self):
         self.assertLessEqual(svc.OPERATOR, svc.NEVER_DEFAULT)
 

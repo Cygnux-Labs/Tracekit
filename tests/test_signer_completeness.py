@@ -594,3 +594,24 @@ class TestProviderTools(Completeness):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BeatRace(unittest.TestCase):
+    def test_a_heartbeat_racing_the_sweep_that_ends_its_run_leaves_no_beat(self):
+        key, run = ("default", "r1"), {"final": False}
+        beats = {key: 0.0}
+
+        class Sweep:
+            """The lock a heartbeat takes, with the sweep that makes the run final (and drops its beat) just before."""
+            def __enter__(self):
+                run["final"] = True
+                beats.pop(key, None)
+
+            def __exit__(self, *exc):
+                return False
+
+        signer = mock.Mock(_beats=beats, _beats_lock=Sweep(), log=mock.Mock(runs={key: run}))
+        signer._authorize.return_value = key
+        with self.assertRaises(RPCError):
+            svc.SignerService._tailer_heartbeat(signer, ME, {"run_id": "r1"})
+        self.assertEqual(beats, {})
