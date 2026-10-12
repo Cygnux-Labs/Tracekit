@@ -1,0 +1,10 @@
+{
+  "logs": [
+    "tracekit.local/03ed775211ddd7eed68062a41cb615b9+70cfc631+AetYt11odVtshY2NBK7iApPU6owEjtMpl+SeDoSzUKZg"
+  ],
+  "witnesses": [],
+  "algs": [
+    "ed25519"
+  ],
+  "witnesses_required": 0
+}

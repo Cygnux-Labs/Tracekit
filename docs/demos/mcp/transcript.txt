@@ -1,0 +1,24 @@
+$ python examples/v2/mcp/agent.py --scripted
+list_files: README.md  src/
+tracekit_demo_denied: error: Tool call blocked by policy: TK-DEMO-DENY, TK-F006
+tracekit_demo_ask: ran once approved
+approved: apr-2ca4008eb886901475d69028b0add3b2 (self-approved: dev mode only)
+
+$ tracekit verify c4975e394b192855ae624f30486dc911.tkb --trust trust.json
+[PASS] manifest — every file is listed with its SHA-256 and nothing else is in the bundle
+[PASS] checkpoint — tracekit.local/03ed775211ddd7eed68062a41cb615b9 at tree size 12, signed by its pinned log key
+[PASS] witness quorum — 0 pinned cosignature(s), 0 required
+[PASS] keys — 1 record key(s) from 1 key record(s)
+[PASS] signatures — 11 record(s), keys valid at their position
+[PASS] run chain — run 'c4975e394b192855ae624f30486dc911' of tenant 'default', contiguous from run_seq 0
+[PASS] inclusion — first and last records of 1 run(s) are in the checkpointed tree of size 12
+[PASS] coverage — layers L2 (L3 absent); 0 call(s) reconciled; unreconciled: none
+[PASS] coverage matrix — model calls not covered, tool calls reported (adapter), network not covered, processes not covered, services not covered
+[PASS] tiers — 3 tool call(s): T1 0, T2 0, T3 0, untiered 3
+[PASS] args source — 3 record(s): raw 0, parsed 3, coerced 0
+[PASS] isolation — signer-reported: same-user 1 run(s)
+[PASS] fail-open classes — none
+[PASS] key assurance — asserted: the log declares its record keys; none is attested
+
+Integrity: VERIFIED.
+Assurance: dev; records ed25519; checkpoint Ed25519 only (tracekit.local/03ed775211ddd7eed68062a41cb615b9); no witness cosignature; approvals: self; key retirements not proven complete.

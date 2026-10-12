@@ -563,8 +563,9 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
                   + f"; {sum(c['reconciled'] for c in finals)} call(s) reconciled"
                   + (f" ({paired} paired by arguments: no tool-call id)" if paired else "") + "; unreconciled: "
                   + (", ".join(f"{k} {n}" for k, n in sorted(unreconciled.items())) or "none"),
-                  [f"seq {r['event']['seq']}: {r['event']['type']} {str(r['event'].get('tool_call_id'))[:200]}: "
-                   f"{str(r['event']['data'].get('detail'))[:200]}" for r in every
+                  [f"seq {r['event']['seq']}: {r['event']['type']}"
+                   + (f" {str(r['event']['tool_call_id'])[:200]}" if "tool_call_id" in r["event"] else "")
+                   + f": {str(r['event']['data'].get('detail'))[:200]}" for r in every
                    if str(r["event"].get("type")).startswith("reconcile.")][:20], warn=True)
     matrices = [rs[-1]["event"]["data"]["matrix"] for rs in runs.values()
                 if rs[-1]["event"].get("type") == "run.final" and "matrix" in rs[-1]["event"]["data"]]
