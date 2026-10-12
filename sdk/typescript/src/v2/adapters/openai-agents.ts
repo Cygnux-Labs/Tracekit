@@ -33,8 +33,13 @@ export class TracekitAgents {
   readonly gate: Gate;
   private decided = new Map<string, Decision>();   // call id -> its decision, from needsApproval to the guardrail
 
-  constructor(readonly run: RunHandle) {
+  constructor(run: RunHandle) {
     this.gate = new Gate(run);
+  }
+
+  /** The current run (withRun) while one is set, else the run the adapter was built with. */
+  get run(): RunHandle {
+    return this.gate.run;
   }
 
   /** `build({...options})` (the SDK's `tool`), gated by the signer. */
@@ -63,7 +68,7 @@ export class TracekitAgents {
     if (d.decision !== "ask") return false;   // a deny is refused by the guardrail, before the call runs
     let approval_id;
     try {
-      ({ approval_id } = await this.run.approvalRequest(callId, { attempt: this.gate.attempt(callId) }));
+      ({ approval_id } = await this.gate.runOf(callId).approvalRequest(callId, { attempt: this.gate.attempt(callId) }));
     } catch {
       return false;   // no approval to wait for: the guardrail's approval_consume refuses the call
     }
@@ -76,6 +81,24 @@ export class TracekitAgents {
     const id = toolCall.callId, hint = context?.context?.tracekit?.approvals?.[id];
     const why = await this.gate.admit(id, tool, toolCall.arguments, { d: take(this.decided, id), hint: typeof hint === "string" ? hint : undefined });
     return { behavior: why === null ? { type: "allow" } : { type: "rejectContent", message: why } };
+  }
+
+  /** For a local MCP server (`new MCPServerStdio({ ..., ...tk.mcp("filesystem") })`, SSE or streamable HTTP alike):
+   * its `toolInputGuardrails` decide each call as `mcp:<server>/<tool>` and hold an `ask` until a person decides (up
+   * to `waitMs`), its `toolOutputGuardrails` complete the call with the server's output. */
+  mcp(server: string, { waitMs = 300_000 } = {}) {
+    const name = (tool: string) => `mcp:${server.replace(/[^A-Za-z0-9_.-]+/g, "_") || "unknown"}/${tool}`;
+    return {
+      toolInputGuardrails: [{ type: "tool_input", name: "tracekit", run: async ({ toolCall }: any) => {
+        const why = await this.gate.admit(toolCall.callId, name(toolCall.name), toolCall.arguments, { waitMs });
+        return { behavior: why === null ? { type: "allow" } : { type: "rejectContent", message: why } };
+      } }],
+      // lean: a call the MCP server fails reaches no output guardrail: the signer records it decided, not completed
+      toolOutputGuardrails: [{ type: "tool_output", name: "tracekit", run: async ({ toolCall, output }: any) => {
+        await this.gate.complete(toolCall.callId, "ok", this.gate.result(toolCall.callId, output));
+        return { behavior: { type: "allow" } };
+      } }],
+    };
   }
 
   /** Approve or reject the paused calls of a RunState as the signer's approvers decided; returns the calls still
