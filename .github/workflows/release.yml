@@ -1,5 +1,5 @@
 name: Release
-# Tag a version (git tag v0.4.0 && git push origin v0.4.0). PyPI and npm use trusted publishing: no token is stored.
+# Tag a version (git tag v0.4.0 && git push origin v0.4.0). PyPI uses trusted publishing: no token is stored (npm is paused).
 # docs/RELEASING.md has the procedure and the one-time setup.
 on:
   push:
@@ -146,59 +146,62 @@ jobs:
       - run: mkdir dist && cp release/*.whl release/*.tar.gz dist/
       - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
 
-  npm:
-    # the signer packages bundle the release's own tracekit-ai wheel (checked against SHA256SUMS); they go up after
-    # PyPI and before @cygnux/tracekit, which depends on them
-    needs: pypi
-    runs-on: ubuntu-latest
-    environment: npm
-    permissions:
-      contents: read
-      id-token: write
-      attestations: write
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.12"
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: "24"
-          registry-url: https://registry.npmjs.org
-      - run: npm install -g npm@12.2.0   # trusted publishing needs npm >= 11.5.1
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: release
-          path: release/
-      - run: python scripts/build-signer-bundles.py
-      - name: Pack the signer packages into the release
-        run: |
-          for d in build/npm/tracekit-signer-*; do npm pack "./$d" --pack-destination release/; done
-          cd release && rm SHA256SUMS && sha256sum * > SHA256SUMS
-      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
-        with:
-          subject-path: |
-            release/cygnux-tracekit-signer-*.tgz
-            release/SHA256SUMS
-      - name: Publish (platform packages first)
-        run: |
-          case "${GITHUB_REF_NAME#v}" in *[a-z]*) dist=next ;; *) dist=latest ;; esac   # pre-releases never become latest
-          for f in release/cygnux-tracekit-signer-*.tgz; do npm publish "$f" --provenance --access public --tag "$dist"; done
-          npm publish release/cygnux-tracekit-[0-9]*.tgz --provenance --access public --tag "$dist"
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: release-final
-          path: release/
+  # npm is paused (owner, 2026-10-13): no npm org or trusted publisher yet, so the TypeScript SDK installs from a
+  # checkout or from the .tgz on the GitHub release. To turn it back on: uncomment this job, set github-release's
+  # `needs` back to npm and its artifact to release-final (docs/RELEASING.md#npm-paused).
+  # npm:
+  #   # the signer packages bundle the release's own tracekit-ai wheel (checked against SHA256SUMS); they go up after
+  #   # PyPI and before @cygnux/tracekit, which depends on them
+  #   needs: pypi
+  #   runs-on: ubuntu-latest
+  #   environment: npm
+  #   permissions:
+  #     contents: read
+  #     id-token: write
+  #     attestations: write
+  #   steps:
+  #     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+  #     - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+  #       with:
+  #         python-version: "3.12"
+  #     - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+  #       with:
+  #         node-version: "24"
+  #         registry-url: https://registry.npmjs.org
+  #     - run: npm install -g npm@12.2.0   # trusted publishing needs npm >= 11.5.1
+  #     - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+  #       with:
+  #         name: release
+  #         path: release/
+  #     - run: python scripts/build-signer-bundles.py
+  #     - name: Pack the signer packages into the release
+  #       run: |
+  #         for d in build/npm/tracekit-signer-*; do npm pack "./$d" --pack-destination release/; done
+  #         cd release && rm SHA256SUMS && sha256sum * > SHA256SUMS
+  #     - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+  #       with:
+  #         subject-path: |
+  #           release/cygnux-tracekit-signer-*.tgz
+  #           release/SHA256SUMS
+  #     - name: Publish (platform packages first)
+  #       run: |
+  #         case "${GITHUB_REF_NAME#v}" in *[a-z]*) dist=next ;; *) dist=latest ;; esac   # pre-releases never become latest
+  #         for f in release/cygnux-tracekit-signer-*.tgz; do npm publish "$f" --provenance --access public --tag "$dist"; done
+  #         npm publish release/cygnux-tracekit-[0-9]*.tgz --provenance --access public --tag "$dist"
+  #     - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+  #       with:
+  #         name: release-final
+  #         path: release/
 
   github-release:
-    needs: npm
+    needs: pypi
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          name: release-final
+          name: release
           path: release/
       - run: gh release create "${GITHUB_REF_NAME}" release/* --repo "${GITHUB_REPOSITORY}" --verify-tag --title "${GITHUB_REF_NAME}"
         env:

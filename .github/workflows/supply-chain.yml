@@ -9,6 +9,10 @@ on:
 permissions:
   contents: read
 
+concurrency:   # a new push to a pull request cancels its older run; runs on main always finish
+  group: supply-chain-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   codeql:
     runs-on: ubuntu-latest
@@ -57,6 +61,7 @@ jobs:
 
   coverage:
     # reported, not gated
+    if: github.event_name != 'pull_request'   # from main and the weekly run, not every pull request
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
