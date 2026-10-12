@@ -261,6 +261,7 @@ class Outbox:
                 batch = [r for r in records if r["event"]["type"] in INCIDENT][:BATCH]
                 status = post(self.url, self._body(batch), self.secret) if batch else 200
             except Exception:   # storage down, or a record this mapping does not know: try again later
+                self.failed.inc("error")
                 records, status = [], 0
             if not records:
                 self.wake.wait(POLL_S)

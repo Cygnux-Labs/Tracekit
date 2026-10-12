@@ -455,7 +455,7 @@ const RECOMPUTED = ["sequence", "limit", "denied_calls", "provenance", "executed
 async function checkIncidents(rep: Report, runs: Map<string, J[]>, files: Map<string, Uint8Array>, floats: Floats) {
   const byRun = new Map<J, J[]>([...runs.values()].map((rs) => [get(rs[0].event, "run_id"), rs.map((r) => r.event)]));
   if (![...byRun.values()].some((es) => es.some((e) => CONTAINMENT.includes(get(e, "type"))))) return;
-  const problems: string[] = [], pointers = new Set<string>(), opened = new Set<string>();
+  const problems: string[] = [], pointers = new Set<string>(), opened = new Set<string>(), unbundled = new Set<string>();
   let checked = 0;
   for (const es of byRun.values()) for (const e of es) if (e.type === "incident.opened") opened.add(e.data.incident_id);
   for (const [rid, events] of byRun) {
@@ -484,9 +484,8 @@ async function checkIncidents(rep: Report, runs: Map<string, J[]>, files: Map<st
     let det: Detector | null = null;
     if (mine.length && hashes.size === 1) {
       const h = str([...hashes][0]), data = files.get(`policies/${h.slice(7)}.json`);
-      if (!data || "sha256:" + await sha256hex(data) !== h)
-        problems.push(`policy ${cut(h, 80)} is not in the bundle: its incidents can't be recomputed (export the run with the `
-          + "signer's config, which bundles the policies its records cite)");
+      if (!data) unbundled.add(cut(h, 80));
+      else if ("sha256:" + await sha256hex(data) !== h) problems.push(`policy ${cut(h, 80)} in the bundle does not hash to its name`);
       else det = new Detector(strictParseBytes(data, floats));
       if (det) {
         const st = Detector.state(), expected: J[] = [], key = (d: J) => JSON.stringify([d.trigger, d.rule_ids,
@@ -508,7 +507,12 @@ async function checkIncidents(rep: Report, runs: Map<string, J[]>, files: Map<st
   }
   const n = opened.size + [...pointers].filter((p) => !opened.has(p)).length;
   rep.check("incidents", !problems.length, `${n} incident(s): ${checked} checked against the bundle, ${n - checked} `
-    + "signer-asserted (operator, cross-run, or under several policies)", problems.slice(0, 20));
+    + "signer-asserted (operator, cross-run, under several policies, or under a policy not in the bundle)",
+    problems.slice(0, 20));
+  if (unbundled.size)
+    rep.check("incident policies", false, `${unbundled.size} cited policy(ies) not in the bundle: their incidents are `
+      + "signer-asserted, not recomputed (export the run with the signer's config, which bundles the policies its "
+      + "records cite)", [...unbundled].sort().slice(0, 20), true);
 }
 
 /** The problems of one run's records with the holds and quarantines they record (verify/v2.py's _honoured). */
@@ -536,7 +540,7 @@ function honoured(events: J[], pointers: Set<string>): string[] {
       && !Object.hasOwn(d.approver_identity ?? {}, "person") || (d.incident_id ?? null) !== asked.get(d.approval_id)))
       problems.push(`${where}: a held call approved by other than a person, or without its incident id`);
     else if (t === "approval.consumed") {
-      if (quarantined || held && !asked.get(d.approval_id))
+      if (quarantined || held && (asked.get(d.approval_id) ?? null) !== held)
         problems.push(`${where}: an approval consumed while the run is ${state()} by incident ${on}`);
       else if (asked.get(d.approval_id)) consumed.add(e.tool_call_id ?? null);
     } else if (t === "tool.result" && on && !flight.has(d.decision_id) && (quarantined || !consumed.has(e.tool_call_id ?? null)))

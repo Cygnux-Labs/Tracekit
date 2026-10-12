@@ -70,7 +70,7 @@ redacted and never leave in a webhook.
 
 **Suspension list.** `suspensions:` in signer.yaml names a JSON file every replica reads on each call (default
 `<data_dir>/suspensions.json`): `{identity or prefix: {tenant, by, at, reason?, incident_id?}}`. A suspended identity's
-calls (register_run and every per-run call, any identity scheme, also as `person:` or `group:`) are refused. Each
+calls (register_run and every per-run call, any identity scheme, also as `person:` or `group:`) are refused, in the entry's tenant only: an operator's `token:*` reaches only their own tenant's tokens. Each
 replica writes its own `identity.suspension{state: enforced}` the first time it sees an entry, and `lifted` when it is
 gone. No token is revoked: revoke it yourself if the identity is lost.
 
@@ -83,7 +83,8 @@ trigger; an incident of scope `run` citing only its run is recomputed from the r
 `detector_unavailable` incident cites a decision whose detection state was unavailable; and every response was
 honoured: no allow after a hold without a person's approval carrying the incident id, only denies after a quarantine,
 no result after a hold but of a call in flight then or approved by a person for it. Incidents of other scopes, operator
-incidents and runs decided under several policies are counted signer-asserted; a `run.held` of an incident opened in
+incidents, runs decided under several policies and runs whose policy is not in the bundle (an `incident policies`
+warning: export with the signer's config) are counted signer-asserted; a `run.held` of an incident opened in
 another run is its pointer in this one.
 
 ## Metrics

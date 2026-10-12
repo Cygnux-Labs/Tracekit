@@ -45,7 +45,7 @@ types, gap kinds, RPC error codes, verdicts); past 64 distinct values a label is
 | `tracekit_signer_quarantined_runs` | gauge | | Runs quarantined, not yet final. |
 | `tracekit_signer_suspended_identities` | gauge | | Suspension list entries this signer enforces. |
 | `tracekit_signer_detector_unavailable` | gauge | | 1 while the detector can't vouch for decisions (a restart that lost its state), else 0. |
-| `tracekit_signer_incident_outbox_failures_total` | counter | `reason` | Incident webhook posts that failed: `retry` (sent again later), `refused` (a 4xx, skipped). |
+| `tracekit_signer_incident_outbox_failures_total` | counter | `reason` | Incident webhook posts that failed: `retry` (sent again later), `refused` (a 4xx, skipped), `error` (the log could not be read or a record not mapped: tried again after a second; a rising count means delivery is stalled). |
 | `tracekit_signer_webhook_dropped_total` | counter | `reason` | Events a [webhook](webhooks.md) did not deliver: `queue_full` (more than 10000 waiting), `failed` (refused, or still failing after 5 tries), `shutdown` (still queued when the signer stopped). |
 
 `witness` values are the names of the witnesses in signer.yaml. The metrics port also serves `GET /logs/v0`, the

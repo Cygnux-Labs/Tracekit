@@ -281,6 +281,21 @@ class TestSuspension(Case):
         self.assertEqual([e["data"]["state"] for e in a.events() if e["type"] == "identity.suspension"],
                          ["suspended", "lifted"])
 
+    def test_an_entry_reaches_only_its_tenant(self):
+        s = self.signer()
+        s.s.tenants["uid:999999"] = "acme"
+        s.s.authorize["uid:999999"] = sorted(svc.OPERATOR)
+        acme_op = CallerIdentity("uid", "999999", True)
+        s.as_(OP, "suspend", {"identity": "token:*"})
+        s.s._check_suspended(CallerIdentity("token", "bob", True, {"tenant": "acme"}))
+        self.refused(lambda: s.s._check_suspended(CallerIdentity("token", "carl", True)), why="is suspended")
+        s.as_(acme_op, "suspend", {"identity": "oidc:dana"})
+        self.refused(lambda: s.s._check_suspended(CallerIdentity("oidc", "dana", True, {"tenant": "acme"})),
+                     why="is suspended")
+        s.s._check_suspended(CallerIdentity("oidc", "dana", True))
+        self.refused(lambda: s.as_(OP, "suspend", {"identity": "uid:999999"}),
+                     why="is not an identity of tenant")
+
     def test_an_unreadable_list_refuses(self):
         s = self.signer()
         with open(os.path.join(s.dir, "suspensions.json"), "w") as f:
@@ -359,17 +374,32 @@ class TestVerifier(Case):
         self.assertEqual((code, line["status"]), (1, "fail"))
         self.assertIn("does not follow from the run's records", line["problems"][0])
 
-    def test_a_missing_policy_fails(self):
+    def test_a_missing_policy_is_signer_asserted_and_a_wrong_one_fails(self):
         s = self.signer()
         run = s.register()
         s.hold(run)
         path, trust = bundle(s, run)
-        os.rename(os.path.join(s.dir, "policies"), os.path.join(s.dir, "gone"))
-        export(s.s.log.storage, "default", run["run_id"], s.s.log.storage.checkpoint_latest()[1], path,
-               policy_dir=os.path.join(s.dir, "policies"))
+        note = s.s.log.storage.checkpoint_latest()[1]
+        export(s.s.log.storage, "default", run["run_id"], note, path)
+        code, line = self.check(path, trust)
+        self.assertEqual(line["status"], "pass", line)
+        self.assertIn("0 checked against the bundle, 1 signer-asserted", line["detail"])
+        rep, _ = v2.verify(path, trust)
+        self.assertEqual([c["status"] for c in rep.checks if c["check"] == "incident policies"], ["warn"])
+        pol = os.path.join(s.dir, "policies")
+        for name in os.listdir(pol):
+            with open(os.path.join(pol, name), "ab") as f:
+                f.write(b" ")
+        export(s.s.log.storage, "default", run["run_id"], note, path, policy_dir=pol)
         code, line = self.check(path, trust)
         self.assertEqual((code, line["status"]), (1, "fail"))
-        self.assertIn("is not in the bundle", line["problems"][0])
+        self.assertIn("does not hash to its name", line["problems"][0])
+
+    def test_a_consume_under_a_later_hold_fails(self):
+        ev = [("run.held", {"incident_id": "inc-1"}), ("approval.request", {"approval_id": "a", "incident_id": "inc-1"}),
+              ("run.resumed", {}), ("run.held", {"incident_id": "inc-2"}), ("approval.consumed", {"approval_id": "a"})]
+        problems = v2._honoured([{"type": t, "data": d, "seq": i} for i, (t, d) in enumerate(ev)], set())
+        self.assertIn("an approval consumed while the run is held by incident inc-2", problems[0])
 
     def test_a_cross_run_pointer_is_signer_asserted(self):
         s = self.signer()
@@ -383,6 +413,16 @@ class TestVerifier(Case):
 
 
 class TestView(Case):
+    def test_check_passes_an_honest_run_with_an_incident(self):
+        s = self.signer()
+        run = s.register()
+        s.hold(run)
+        _, trust = bundle(s, run)
+        rep, code, _ = view.check(s.s.log.storage, "default", run["run_id"], s.s.log.storage.checkpoint_latest()[1],
+                                  trust, os.path.join(s.dir, "v.tkb"))
+        self.assertEqual([c["status"] for c in rep.checks if c["check"] == "incidents"], ["pass"])
+        self.assertEqual(rep.integrity, "VERIFIED")
+
     def test_review_lists_incidents_and_the_timeline_marks_them(self):
         s = self.signer()
         run = s.register()

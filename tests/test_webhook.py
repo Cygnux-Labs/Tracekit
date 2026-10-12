@@ -215,6 +215,17 @@ class TestIncidentOutbox(Case):
         again = self.bodies(lambda e: e["message"] == "incident.opened")
         self.assertNotEqual(again[0]["finding_info_list"][0]["uid"], info["uid"])
 
+    def test_a_record_it_cant_map_is_counted(self):
+        hook = [{"url": self.url, "events": ["incident"], "secret": KEY}]
+        with mock.patch.object(webhook, "ocsf_incident", side_effect=KeyError("x")), \
+                mock.patch.object(webhook, "POLL_S", 0.01):
+            s = self.signer(ts.tmpdir(self), hook)
+            self.incident(s)
+            deadline = time.monotonic() + 5
+            while 'reason="error"' not in s.metrics.render() and time.monotonic() < deadline:
+                time.sleep(0.02)
+        self.assertIn('tracekit_signer_incident_outbox_failures_total{reason="error"}', s.metrics.render())
+
     def test_notify_without_a_subscriber_refuses_to_start(self):
         with self.assertRaisesRegex(ValueError, "no webhook subscribes to incident events"):
             self.signer(ts.tmpdir(self), [{"url": self.url, "events": ["deny"], "secret": KEY}])

@@ -54,8 +54,9 @@ effort: the signed log, not the webhook, is the evidence.
 signer's log (`<data_dir>/outbox-<id>.json`) that moves past a batch only once the endpoint answered 2xx, so an outage
 or a restart resends rather than loses. Receivers deduplicate by incident id and record uid. A failed post is retried
 with backoff from 0.5 s to 30 s for as long as it takes (`tracekit_signer_incident_outbox_failures_total{reason="retry"}`);
-a 4xx other than 408 or 429 skips the batch (`reason="refused"`). A new webhook starts at the log's end. Operator notes
-never leave: `reason` is not in any event.
+a 4xx other than 408 or 429 skips the batch (`reason="refused"`); a log it can't read or a record it can't map is
+tried again every second (`reason="error"`: a rising count means delivery is stalled). A new webhook starts at the
+log's end. Operator notes never leave: `reason` is not in any event.
 
 A Slack webhook gets one message per batch, a line per record (incident id, trigger, rules, scope, run, actions, and
 the tools of the records it cites), every value escaped so that a tool name or principal can't mention, link or format.

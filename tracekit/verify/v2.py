@@ -595,13 +595,16 @@ FIRES = ("policy.decision", "approval.consumed", "capture.gap", "trace.tamper", 
 RECOMPUTED = ("sequence", "limit", "denied_calls", "provenance", "executed_against_policy", "class_mismatch")
 
 
-def _detector(files, h, problems):
-    """A detect.Detector of the bundled compiled policy whose policy_hash is `h`, or None (a problem says why)."""
+def _detector(files, h, problems, unbundled):
+    """A detect.Detector of the bundled compiled policy whose policy_hash is `h`, or None: `h` goes to `unbundled`
+    when the bundle lacks the policy (its incidents stay signer-asserted), to `problems` when its bytes don't match."""
     from tracekit.signer import detect
     data = files.get(f"policies/{str(h)[7:]}.json")
-    if data is None or "sha256:" + hashlib.sha256(data).hexdigest() != h:
-        problems.append(f"policy {str(h)[:80]} is not in the bundle: its incidents can't be recomputed (export the run "
-                        "with the signer's config, which bundles the policies its records cite)")
+    if data is None:
+        unbundled.add(str(h)[:80])
+        return None
+    if "sha256:" + hashlib.sha256(data).hexdigest() != h:
+        problems.append(f"policy {str(h)[:80]} in the bundle does not hash to its name")
         return None
     return detect.Detector(detect.Rules(loads_strict(data)))
 
@@ -613,7 +616,7 @@ def _incidents(rep, runs, files):
     by_run = {rs[0]["event"].get("run_id"): [r["event"] for r in rs] for rs in runs.values()}
     if not any(e.get("type") in CONTAINMENT for es in by_run.values() for e in es):
         return
-    problems, checked, pointers = [], 0, set()
+    problems, checked, pointers, unbundled = [], 0, set(), set()
     opened = {e["data"]["incident_id"]: e for es in by_run.values() for e in es if e["type"] == "incident.opened"}
     for rid, events in by_run.items():
         mine = []
@@ -641,7 +644,7 @@ def _incidents(rep, runs, files):
                     all(c["run_id"] == rid for c in d["cites"]):
                 mine.append(e)
         hashes = {e["data"].get("policy_hash") for e in events if e["type"] == "policy.decision"}
-        det = mine and len(hashes) == 1 and _detector(files, next(iter(hashes)), problems)
+        det = mine and len(hashes) == 1 and _detector(files, next(iter(hashes)), problems, unbundled)
         if det:
             st, expected = detect.new(det.engine.policy_hash), []
             for e in events:
@@ -659,8 +662,12 @@ def _incidents(rep, runs, files):
         problems += _honoured(events, pointers)
     n = len(opened) + len(pointers - opened.keys())
     rep.check("incidents", not problems, f"{n} incident(s): {checked} checked against the bundle, {n - checked} "
-                                         "signer-asserted (operator, cross-run, or under several policies)",
-              problems[:20])
+                                         "signer-asserted (operator, cross-run, under several policies, or under "
+                                         "a policy not in the bundle)", problems[:20])
+    if unbundled:
+        rep.check("incident policies", False, f"{len(unbundled)} cited policy(ies) not in the bundle: their incidents "
+                  "are signer-asserted, not recomputed (export the run with the signer's config, which bundles the "
+                  "policies its records cite)", sorted(unbundled)[:20], warn=True)
 
 
 def _honoured(events, pointers):
@@ -693,7 +700,7 @@ def _honoured(events, pointers):
                 "person" not in d.get("approver_identity", {}) or d.get("incident_id") != asked[d["approval_id"]]):
             problems.append(f"{where}: a held call approved by other than a person, or without its incident id")
         elif t == "approval.consumed":
-            if quarantined or held and not asked.get(d["approval_id"]):
+            if quarantined or held and asked.get(d["approval_id"]) != held:
                 problems.append(f"{where}: an approval consumed while the run is "
                                 f"{'quarantined' if quarantined else 'held'} by incident {on}")
             elif asked.get(d["approval_id"]):

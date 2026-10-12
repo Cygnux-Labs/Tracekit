@@ -467,7 +467,8 @@ line and verdict is in [verdicts](verdicts.md).
    compiled policy (canonical JSON, so its SHA-256 is its `policy_hash`) of every `policy_hash` the records cite.
    **Incidents** (with containment records): a record an incident cites must, when its run is in the bundle, exist
    and be one that fires a trigger; an incident of scope `run` citing only its own run is recomputed from that run's
-   records under the bundled policy of the run's one `policy_hash` (missing: a failure), and must follow from them;
+   records under the bundled policy of the run's one `policy_hash` (not in the bundle: signer-asserted, with an `incident policies`
+   warning; bytes that don't hash to the name: a failure), and must follow from them;
    a `detector_unavailable` incident must cite a decision whose `detect.state` is `unavailable`; the rest are counted
    signer-asserted. Each response must have been honoured: while held, no allow and no ask without the incident id;
    while quarantined, only deny; a held call approved only by a person (never `approver_kind: agent`, never

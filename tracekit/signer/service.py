@@ -1937,8 +1937,8 @@ class SignerService:
                 f"ends the hold (tracekit signer incidents resume {run['run_id'][:128]}, or resolve {h})")
 
     def _check_suspended(self, identity):
-        """RPCError forbidden when the suspension list names one of the identity's keys. A changed list first gets
-        this signer's identity.suspension records (_enforce)."""
+        """RPCError forbidden when the suspension list names one of the identity's keys in the identity's tenant. A
+        changed list first gets this signer's identity.suspension records (_enforce)."""
         entries, changed = self._suspensions.load()
         if changed:
             try:
@@ -1946,7 +1946,9 @@ class SignerService:
             except Exception:
                 self._suspensions.forget()   # read and recorded again by the next call
                 raise
-        hit = next((x for k in keys(identity) if (x := lookup(entries, k))), None)
+        tenant = self._tenant_of(identity)
+        mine = {k: x for k, x in entries.items() if x["tenant"] == tenant}
+        hit = next((x for k in keys(identity) if (x := lookup(mine, k))), None)
         if hit:
             raise RPCError("forbidden", f"{subject(identity)[:256]} is suspended (by {str(hit.get('by'))[:256]} at "
                                         f"{str(hit.get('at'))[:40]}): its calls are refused until an operator lifts "
@@ -2151,9 +2153,8 @@ class SignerService:
         """Add an identity of the caller's tenant to the shared suspension list (or lift it): every replica refuses
         its calls once it reads the list, each writing its own `enforced` record. No token is revoked."""
         tenant, target, method = self._operator(identity), req["identity"], "unsuspend" if lift else "suspend"
-        # lean: a token identity's tenant is its token store entry's, which the signer only reads on authentication:
-        # here it counts in the default tenant
-        if self._tenant_of(CallerIdentity(*target.split(":", 1), True)) != tenant:
+        # the entry applies only to identities of `tenant` (_check_suspended); refuse a target `tenants` maps elsewhere
+        if lookup(self.tenants, target, tenant) != tenant:
             raise RPCError("forbidden", f"{target[:256]} is not an identity of tenant {tenant[:64]!r}")
         by, reason = subject(identity)[:256], req.get("reason") and privacy.redact_text(req["reason"])[0]
         self.quotas.take_event(identity)
