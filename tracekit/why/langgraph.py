@@ -162,7 +162,8 @@ class _Fork:
         # nodes whose steps add served tool results: ToolNodes, and subgraphs with one
         tool_steps = {name for name, n in graph.nodes.items() if _tool_node(n.bound) is not None or (
             isinstance(n.bound, Pregel) and any(_tool_node(m.bound) for _, m in _nodes(n.bound)))}
-        self.tool_names = {t for _, n in _nodes(graph) if _tool_node(n.bound) for t in _tool_node(n.bound).tools_by_name}
+        self.tool_names = {t for _, n in _nodes(graph) if _tool_node(n.bound) is not None
+                           for t in _tool_node(n.bound).tools_by_name}
         conf = dict(thread_config["configurable"], **({"checkpoint_id": checkpoint_id} if checkpoint_id else {}))
         steps, s = [], graph.get_state({"configurable": conf})
         self.recorded = s.values.get("messages") if s is not None and s.config else None

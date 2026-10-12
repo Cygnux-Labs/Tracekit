@@ -12,8 +12,9 @@ signer's `approval_consume` agrees, so an approval is checked by the signer, nev
 a T2 executor runs the arguments the consume returns. `ask` needs a checkpointer: without one the call is denied.
 
 A signer that cannot be reached when a call is decided: the call runs unrecorded if register_run's `fail_modes` say
-`open` for the tool's class (as the signer's default policy classes it), else it is refused. Any other failure to decide or approve (a refusal, a run the signer closed after its idle
-timeout: register a new run for a long-idle agent) refuses the call. A failure to record the outcome warns and leaves
+`open` for the tool's class (as the signer's default policy classes it), else it is refused. Any other failure to
+decide or approve (a refusal, a run the signer closed after its idle timeout: register a new run for a long-idle agent)
+refuses the call. A failure to record the outcome warns and leaves
 the tool's result as it was. Put TracekitMiddleware last in `middleware=`: a middleware after it could hand the tool a
 call other than the one decided.
 A graph built on `ToolNode` without `create_agent` uses `tracekit_tool_node(tools, signer, run)`, the same gate.

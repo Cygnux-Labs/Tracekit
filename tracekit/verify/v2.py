@@ -506,8 +506,9 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
         rep.check("gaps", False, f"{len(alarms)} signed gap, tamper or mismatch record(s): "
                   + ", ".join(f"{k} {n}" for k, n in sorted(collections.Counter(map(kind, alarms)).items())),
                   [f"seq {e['seq']}: {kind(e)}: " + (
-                      f"approval {str(e['data'].get('approval_id'))[:200]} of call {str(e['data'].get('tool_use_id'))[:200]}"
-                      ": the arguments differ from the approved ones" if e["type"] == "approval.binding_mismatch" else
+                      f"approval {str(e['data'].get('approval_id'))[:200]} of call "
+                      f"{str(e['data'].get('tool_use_id'))[:200]}: the arguments differ from the approved ones"
+                      if e["type"] == "approval.binding_mismatch" else
                       str(e["data"].get("reason", e["data"].get("path")))[:200]) for e in alarms][:20], warn=True)
     external = [r["event"]["data"] for r in every if r["event"].get("type") == "policy.external"]
     mismatched = [f"seq {r['event']['seq']}: {str(r['event']['data'].get('reason'))[:200]}" for r in every

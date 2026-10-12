@@ -100,9 +100,9 @@ class Engine:
         return any(u == cls if u in CLASSES else fnmatch.fnmatchcase(tool, u) for u in self.policy.get("untrusted", ()))
 
     def decide(self, tool, args, cls=None, untrusted=None):
-        """Return {verdict, rule_ids, policy_hash, engine[, nondeterministic][, oversize]} for one tool call (`oversize`:
-        the subjects TK-OVERSIZE stands for, named by their rule and field). `cls` overrides the
-        class the policy maps the tool to. `untrusted(subject, field)`: the hits of the subject's values that only
+        """Return {verdict, rule_ids, policy_hash, engine[, nondeterministic][, oversize]} for one tool call
+        (`oversize`: the subjects TK-OVERSIZE stands for, named by their rule and field). `cls` overrides the class the
+        policy maps the tool to. `untrusted(subject, field)`: the hits of the subject's values that only
         untrusted content brought into the run (`field`: the rule's); a `from: untrusted` rule matches a subject only
         when there is one (never without `untrusted`), and matches each element of a list field (payees, recipients)
         on its own."""
@@ -196,8 +196,8 @@ class Engine:
     def _targets(cls, args, fields, parsed):
         """shell: each command's argv without its data words (shell.data_words), the redirection targets, assignments
         and heredoc programs; fs: the paths; http and browser: the URL; email: the attachments; mcp, app and unknown
-        tools: the whole call. Each URL is also matched as scheme://canonical-host/ (classes.url_target), so a host in decimal,
-        hex, octal or IPv6 form reads as the address it is."""
+        tools: the whole call. Each URL is also matched as scheme://canonical-host/ (classes.url_target), so a host in
+        decimal, hex, octal or IPv6 form reads as the address it is."""
         if cls == "shell":
             words = [[a for i, a in enumerate(c["argv"]) if i not in shell.data_words(c["argv"])] for c in parsed[0]]
             urls = [u for w in [a for ws in words for a in ws] + parsed[2]

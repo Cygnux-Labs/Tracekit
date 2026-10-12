@@ -10,8 +10,8 @@ The signer is the Unix socket in `$TRACEKIT_SIGNER`, `tcp://host:port` with `$TR
 transport), or an `https://host:port` URL (each call is one POST /v2/rpc; `$TRACEKIT_SIGNER_TOKEN_FILE` names a bearer
 token file, re-read per call so a rotated service-account token is picked up; `$TRACEKIT_SIGNER_CERT`/`_KEY` a client
 certificate for mTLS; `$TRACEKIT_SIGNER_CA` pins the signer's CA), or `http://` on a loopback address, which the
-signer's `insecure_loopback` listener serves. In system mode (`tracekit init --v2`) the signer is
-the one the root-owned /etc/tracekit/client.json names. Without either, a same-user dev signer is found or started
+signer's `insecure_loopback` listener serves. In system mode (`tracekit init --v2`) the signer is the one the
+root-owned /etc/tracekit/client.json names. Without either, a same-user dev signer is found or started
 (tracekit/sdk/autospawn.py). Requests go out in order on one connection and the signer answers them in order, so any
 number of threads can have calls in flight; a call that may block (`approval_wait`) gets a connection of its own so it
 holds up no one. Every request is validated against the RPC contract, and its size against the signer's frame limit,
@@ -189,16 +189,16 @@ class _Https:
             raise SignerUnavailable(f"no answer from the signer within {timeout:g}s") from None
         except ssl.SSLCertVerificationError as e:   # not a lost connection: no retry would verify
             conn.close()
-            raise SignerUnavailable(f"the TLS certificate of the signer at {self.url} did not verify ({e.verify_message})"
-                                    "; set TRACEKIT_SIGNER_CA to the CA that issued it") from None
+            raise SignerUnavailable(f"the TLS certificate of the signer at {self.url} did not verify "
+                                    f"({e.verify_message}); set TRACEKIT_SIGNER_CA to the CA that issued it") from None
         except (OSError, http.client.HTTPException, RPCError) as e:
             conn.close()
             raise _ConnectionLost(f"{type(e).__name__}: {e}") from None
 
     def rpc(self, req, body, timeout):
         if self.plain and not _loopback(self.host):   # the token and the frames would cross the network in clear
-            raise SignerUnavailable(f"{self.url}: plain http:// signers must be on a loopback address (127.0.0.1, ::1); "
-                                    "use https:// for any other")
+            raise SignerUnavailable(f"{self.url}: plain http:// signers must be on a loopback address (127.0.0.1, "
+                                    "::1); use https:// for any other")
         if self.hello is None:
             hello = self.post(_encode("hello", {}), timeout)
             if "error" in hello:
@@ -320,8 +320,8 @@ class Client:
                             self._order.pop(req.get("run_id"), None)
                     raise RPCError(e.get("code"), e.get("message", ""), e.get("retry_after_ms"))
                 return reply
-            raise SignerUnavailable(f"lost the connection to the signer {RETRIES} times" + (f" (last: {lost})" if str(lost)
-                                                                                          else ""))
+            last = f" (last: {lost})" if str(lost) else ""
+            raise SignerUnavailable(f"lost the connection to the signer {RETRIES} times{last}")
 
     def close(self):
         with self._lock:
@@ -481,8 +481,8 @@ def _close_at_exit(run, failed):
     try:
         run.close()
     except SignerUnavailable as e:
-        warnings.warn(f"tracekit: run {run.run_id} was not closed: the signer can't be reached ({e}); it closes the run "
-                      "after its idle timeout", stacklevel=3)
+        warnings.warn(f"tracekit: run {run.run_id} was not closed: the signer can't be reached ({e}); it closes the "
+                      "run after its idle timeout", stacklevel=3)
     except Exception as e:
         if not failed:
             raise
