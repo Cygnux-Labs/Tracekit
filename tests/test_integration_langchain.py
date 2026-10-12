@@ -113,7 +113,8 @@ def tool_graph(node):
 
 ERROR_HANDLING = {"default": {}, "True": {"handle_tool_errors": True}, "a string": {"handle_tool_errors": "failed"},
                   "a callable": {"handle_tool_errors": lambda e: f"Error: {e!r}"},
-                  "a tuple": {"handle_tool_errors": (ValueError,)}, "a type": {"handle_tool_errors": ValueError}}
+                  "a tuple": {"handle_tool_errors": (ValueError,)}, "a type": {"handle_tool_errors": ValueError},
+                  "str, a type that isn't an exception": {"handle_tool_errors": str}}
 
 
 @unittest.skipUnless(HAVE_LC, "langchain>=1 / langgraph-checkpoint-sqlite not installed")
@@ -172,6 +173,10 @@ class ErrorHandling(unittest.TestCase):
             with self.subTest(wired=how):
                 out = tool_graph(node()).invoke(prompt("fail", why="boom"), THREAD)
                 self.assertIn("ValueError('boom')", tool_message(out).content)
+        for how, node in self.nodes(handle_tool_errors=str):   # a callable that is a type: ToolNode calls it
+            with self.subTest(wired=how, handler=str):
+                self.assertEqual(tool_message(tool_graph(node()).invoke(prompt("fail", why="boom"), THREAD)).content,
+                                 "boom")
         for how, node in self.nodes():
             with self.subTest(wired=how, fallbacks=True):
                 fallback = node().with_fallbacks([RunnableLambda(handle_tool_error)], exception_key="error")
@@ -240,6 +245,17 @@ class Failures(ac.OnReal, unittest.TestCase):
         self.assertEqual(tool_message(agent.invoke(prompt("terminal", commands="ls"))).content, "ran")
         self.assertIn("signer unavailable", tool_message(agent.invoke(prompt("echo", text="hi"))).content)
         self.assertEqual(ac.RAN, ["terminal"])
+
+    def test_an_outage_reads_the_default_policy_once(self):
+        """The fail mode's class comes from the shipped default policy, compiled once, not on every refused call."""
+        from tracekit.integrations.claude_code import _tool_class
+        from tracekit.signer import service
+        _tool_class.cache_clear()
+        with mock.patch.object(service, "load_policy", wraps=service.load_policy) as load:
+            agent = self.agent(Down(), fail_modes={"default": "closed"})
+            for _ in range(3):
+                self.assertIn("signer unavailable", tool_message(agent.invoke(prompt("echo", text="hi"))).content)
+        self.assertEqual(load.call_count, 1)
 
     def test_closed_run_refuses_the_call(self):
         self.client.close_run(dict(self.run))

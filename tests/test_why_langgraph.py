@@ -182,6 +182,35 @@ class Branches(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "ran outside a ToolNode"):
             fork_replay(graph, CONF, None, "fetch0", "tool=send", n=3)
 
+    def test_a_tool_no_toolnode_has_run_from_a_node_stops_the_replay(self):
+        @tool
+        def wire(to: str) -> str:
+            """Wire money."""
+            self.real.append(to)
+            return "wired"
+        hidden = ToolNode([wire])   # run from a function node: fork replay can't serve it
+
+        def model(state):
+            res = _results(state)
+            if not res:
+                return _call("fetch", 0, url="u")
+            return _call("wire", 1, to="x") if len(res) == 1 and "do it" in res[0].content else {
+                "messages": [AIMessage("done")]}
+
+        g = StateGraph(MessagesState)
+        g.add_node("model", model)
+        g.add_node("tools", ToolNode(self.tools))
+        g.add_node("act", lambda state: hidden.invoke(state))
+        g.add_edge(START, "model")
+        g.add_conditional_edges("model", lambda state: "act" if state["messages"][-1].tool_calls and state[
+            "messages"][-1].tool_calls[0]["name"] == "wire" else tools_condition(state), ["tools", "act", END])
+        g.add_edge("tools", "model")
+        g.add_edge("act", "model")
+        graph = self.record(g.compile(checkpointer=InMemorySaver()))
+        with self.assertRaisesRegex(RuntimeError, "wire1 ran outside a ToolNode .* goes in routing="):
+            fork_replay(graph, CONF, None, "fetch0", "tool=wire", n=2)
+        self.assertEqual(self.real, ["x"])   # it ran once, in the first branch, and stopped the replay
+
     def test_other_threads_of_the_same_graph_run_their_real_tools(self):
         node, live = ToolNode(self.tools), {}
 
@@ -451,7 +480,10 @@ class Tutorial(unittest.TestCase):
                            ("with_fallbacks", lambda: ToolNode(self.tools).with_fallbacks(
                                [RunnableLambda(self.handle_tool_error)], exception_key="error"))):
             with self.subTest(name):
-                r = attribute_thread(self.graph(node()), CONF, "tool=send", n=4, n_max=4)
+                graph = self.graph(node())
+                with self.assertRaisesRegex(RuntimeError, "ran outside a ToolNode"):   # unnamed, a routing call too
+                    attribute_thread(graph, CONF, "tool=send", n=4, n_max=4)
+                r = attribute_thread(graph, CONF, "tool=send", n=4, n_max=4, routing=["ToWorker", "CompleteOrEscalate"])
                 self.assertEqual((r["suspects"], [c["intervention"] for c in r["causes"]]), (["fetch1"], ["fetch1"]))
                 self.assertEqual((r["fork"]["as_node"], self.real), ("tools", []))
 

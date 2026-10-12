@@ -49,7 +49,8 @@ class TracekitSession(HeldCalls):
         tool, args, call_id = f"mcp:{_UNSAFE.sub('_', server or '') or 'unknown'}/{name}", arguments or {}, uuid.uuid4().hex
         why, d, args = await self._gate(call_id, tool, args)
         if why is not None:
-            return CallToolResult(content=[TextContent(type="text", text=BLOCKED + why)], is_error=True)
+            # isError: mcp 1.x's field name, and mcp 2.x's alias of is_error (1.x ignores is_error=)
+            return CallToolResult(content=[TextContent(type="text", text=BLOCKED + why)], isError=True)
         if d is None:   # the signer unreachable and the run fails open: the call runs unrecorded
             return await self._session.call_tool(name, arguments, *a, **kw)
         req = {"tool_call_id": call_id, "decision_id": d["decision_id"],
@@ -59,7 +60,8 @@ class TracekitSession(HeldCalls):
         except Exception as e:
             await self._complete(call_id, req, status="error", error=f"{type(e).__name__}: {e}"[:4096])
             raise
-        await self._complete(call_id, req, status="error" if getattr(out, "is_error", False) else "ok",
+        failed = getattr(out, "is_error", getattr(out, "isError", False))   # mcp 2.x, mcp 1.x
+        await self._complete(call_id, req, status="error" if failed else "ok",
                              result=result_field(d.get("send_result"),
                                                  out.model_dump(mode="json", by_alias=True, exclude_none=True)))
         return out

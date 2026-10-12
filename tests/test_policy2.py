@@ -188,7 +188,7 @@ class Handoffs(unittest.TestCase):
 
 class AppTools(unittest.TestCase):
     """A deployment of the server pack (unknown_tools: ask) names its own business tools: class app is known, so not
-    held as unknown, and rules still reach it by name; mapping a tool to unknown is a lint error."""
+    held as unknown, and rules still reach it by name; mapping a tool to unknown is a warning."""
 
     def setUp(self):
         self.d = tempfile.mkdtemp()
@@ -211,11 +211,13 @@ class AppTools(unittest.TestCase):
         self.assertEqual(e.decide("book_hotel", {"id": 1})["rule_ids"], ["TK-UNKNOWN-TOOL"])   # still unmapped
         self.assertEqual(e.decide("search_flights", {"q": "AKIA" + "A" * 16})["verdict"], "deny")   # TK-S002, every tool
 
-    def test_mapping_a_tool_to_unknown_is_a_lint_error(self):
-        errs = self.build({"search_flights": "unknown"})[1]
-        self.assertEqual(len(errs), 1, errs)
-        self.assertIn("tool 'search_flights' maps to class 'unknown'", errs[0])
-        self.assertIn("class app", errs[0])
+    def test_mapping_a_tool_to_unknown_is_a_warning_so_a_1_1_policy_still_loads(self):
+        pol, errs = self.build({"search_flights": "unknown"})
+        self.assertEqual(errs, [])
+        [w] = pc.warnings(pol)
+        self.assertIn("tool 'search_flights' maps to class 'unknown'", w)
+        self.assertIn("class app", w)
+        self.assertEqual(Engine(pol).decide("search_flights", {"from": "BSL"})["rule_ids"], ["TK-UNKNOWN-TOOL"])
 
 
 class Engines(unittest.TestCase):

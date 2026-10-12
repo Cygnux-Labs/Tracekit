@@ -8,6 +8,9 @@ import asyncio
 import threading
 import time
 import unittest
+from unittest import mock
+
+import pydantic
 
 import adapter_contract as ac
 from tracekit.sdk.client import Client
@@ -182,6 +185,32 @@ class SignerFailures(unittest.TestCase):
         with self.assertWarns(UserWarning):
             out, calls = self.call(_Signer(complete=RPCError("unavailable", "storage down")))
         self.assertEqual((out.is_error, out.content[0].text, calls), (False, "done", 1))
+
+    def test_mcp_1_results_say_is_error_as_isError(self):
+        """mcp 1.x's CallToolResult has only `isError` and ignores `is_error=`: a refusal sets isError, and a server's
+        isError result completes as an error."""
+        from tracekit.signer.rpc_schema import RPCError
+
+        class Result(pydantic.BaseModel):   # mcp 1.x's shape: camelCase fields, unknown arguments ignored
+            content: list
+            isError: bool = False
+
+        class Failing(_Mcp1Session):
+            async def call_tool(self, name, arguments=None):
+                self.calls += 1
+                return Result(content=[], isError=True)
+        sent = []
+
+        class Seen(_Signer):
+            def __getattr__(self, method):
+                call = super().__getattr__(method)
+                return lambda req: sent.append((method, req)) or call(req)
+        with mock.patch("tracekit.integrations.mcp.CallToolResult", Result):
+            out = asyncio.run(TracekitSession(_Mcp1Session(), _Signer(decide=RPCError("run_closed", "closed")),
+                                              self.RUN, server="s").call_tool("x", {}))
+            self.assertIs(out.isError, True)
+            asyncio.run(TracekitSession(Failing(), Seen(), self.RUN, server="s").call_tool("x", {}))
+        self.assertEqual([r["status"] for m, r in sent if m == "complete"], ["error"])
 
     def test_an_mcp_1_session_is_named_by_the_caller_else_unknown(self):
         signer = _Signer()

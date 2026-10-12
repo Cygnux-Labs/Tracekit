@@ -9,9 +9,9 @@ Each branch runs on its own copy of the graph: a fresh in-memory checkpointer ho
 scratch thread id, an empty scratch store if the graph has one, no node cache, and copies of every ToolNode (in
 subgraphs added as nodes too, and inside `.with_fallbacks()`) that serve each call from the thread's own tool results
 (same tool, same canonical args, in order) or a stub. No real tool runs, and the user's graph, thread, store, cache and
-ToolNodes are never touched. A branch whose new results for a ToolNode's tools did not all come from that serving
-stops with an error; a result for a call no ToolNode has (a routing schema a node of the app answers, as in LangGraph's
-customer-support tutorial) is the app's own message. Model nodes run again; a node
+ToolNodes are never touched. A branch with a new tool result that did not come from that serving stops with an error,
+unless the call is one `routing` names: a routing schema a node of the app answers itself (as in LangGraph's
+customer-support tutorial). Model nodes run again; a node
 that wants paired seeds reads `config["configurable"]["tracekit_seed"]`. With `log`, each test is appended to
 `<log>/langgraph-<thread>/tests.jsonl`, the why log's tests file.
 """
@@ -157,13 +157,12 @@ class _Fork:
     """A System for counterfactual(): each run() is one branch of the thread, forked where the suspects entered."""
 
     def __init__(self, graph: Any, thread_config: Dict[str, Any], checkpoint_id: Optional[str],
-                 log: Optional[str] = None):
+                 log: Optional[str] = None, routing: Sequence[str] = ()):
         _check(graph)
+        self.routing = set(routing)
         # nodes whose steps add served tool results: ToolNodes, and subgraphs with one
         tool_steps = {name for name, n in graph.nodes.items() if _tool_node(n.bound) is not None or (
             isinstance(n.bound, Pregel) and any(_tool_node(m.bound) for _, m in _nodes(n.bound)))}
-        self.tool_names = {t for _, n in _nodes(graph) if _tool_node(n.bound) is not None
-                           for t in _tool_node(n.bound).tools_by_name}
         conf = dict(thread_config["configurable"], **({"checkpoint_id": checkpoint_id} if checkpoint_id else {}))
         steps, s = [], graph.get_state({"configurable": conf})
         self.recorded = s.values.get("messages") if s is not None and s.config else None
@@ -285,11 +284,12 @@ class _Fork:
         new = [m for m in out["messages"] if m.id not in before]
         names = {tc["id"]: tc["name"] for m in out["messages"] if isinstance(m, AIMessage) for tc in m.tool_calls}
         ran = [m.tool_call_id for m in new if isinstance(m, ToolMessage) and m.tool_call_id not in served
-               and names.get(m.tool_call_id, m.name) in self.tool_names | {None}]
+               and names.get(m.tool_call_id, m.name) not in self.routing]
         if ran:
             raise RuntimeError(f"tool call {', '.join(ran)} ran outside a ToolNode fork replay can serve (a real tool "
                                "may have run); fork replay serves ToolNodes that are nodes of the graph or of its "
-                               "subgraph nodes; stopping")
+                               "subgraph nodes; a call a node of the app answers itself (a routing schema) goes in "
+                               "routing= (--routing); stopping")
         events = _actions(new, served)
         del branch, scratch, out, cfg   # each branch holds a copy of the thread's state: free it before the next one
         gc.collect()   # its graph copy is cyclic; without a collection, branches pile up until the collector runs
@@ -298,11 +298,12 @@ class _Fork:
 
 def fork_replay(graph: Any, thread_config: Dict[str, Any], checkpoint_id: Optional[str], intervention: str,
                 target: str, *, n: int = 30, n_max: Optional[int] = None,
-                min_effect: float = MIN_EFFECT, log: Optional[str] = None) -> Dict[str, Any]:
+                min_effect: float = MIN_EFFECT, log: Optional[str] = None, routing: Sequence[str] = ()) -> Dict[str, Any]:
     """Does removing the message `intervention` (a message id or tool_call_id) change how often `target` happens in
     the rest of the thread? `checkpoint_id` picks the recorded checkpoint to start from (None: the thread's latest).
-    Same verdicts and intervals as tracekit.why's counterfactual. `log`: the why log folder the test is appended to."""
-    fork = _Fork(graph, thread_config, checkpoint_id, log).fork_at([intervention])
+    Same verdicts and intervals as tracekit.why's counterfactual. `log`: the why log folder the test is appended to.
+    `routing`: names of calls a node of the app answers itself (routing schemas), not a ToolNode."""
+    fork = _Fork(graph, thread_config, checkpoint_id, log, routing).fork_at([intervention])
     return counterfactual(fork.thread, intervention, target, n=n, n_max=n_max, system=fork, use_tape=False,
                           min_effect=min_effect)
 
@@ -310,10 +311,11 @@ def fork_replay(graph: Any, thread_config: Dict[str, Any], checkpoint_id: Option
 def attribute_thread(graph: Any, thread_config: Dict[str, Any], target: str, suspects: Optional[Sequence[str]] = None,
                      *, checkpoint_id: Optional[str] = None, n: int = 10, n_max: int = 40,
                      min_effect: float = MIN_EFFECT, size_roles: bool = True,
-                     log: Optional[str] = None) -> Dict[str, Any]:
+                     log: Optional[str] = None, routing: Sequence[str] = ()) -> Dict[str, Any]:
     """tracekit.why's attribute() over fork replay. Default suspects: every ToolNode result before the first tool call
-    that matches `target`. Every test forks where the earliest suspect entered, so all share one unaltered arm."""
-    fork = _Fork(graph, thread_config, checkpoint_id, log)
+    that matches `target`. Every test forks where the earliest suspect entered, so all share one unaltered arm.
+    `routing`: as for fork_replay."""
+    fork = _Fork(graph, thread_config, checkpoint_id, log, routing)
     suspects = fork.suspects_before(target) if suspects is None else list(suspects)
     if not suspects:
         raise ValueError("no suspects: no tool result came before the action; pass suspects explicitly")

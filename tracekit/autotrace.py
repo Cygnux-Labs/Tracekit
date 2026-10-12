@@ -264,6 +264,7 @@ class _RunExchange:
         try:
             self._send("response", self.unsent[0], self.unsent[1], **self.unsent[2])
         except SignerUnavailable:
+            self.kwargs = self.parsed = self.stream = None   # the request, its response and chunks: not resent
             _UNSENT.append(self)
             _note_failure("the signer can't be reached: the response is sent again at the next model call or exit, "
                           "after a signed gap for the try that failed")

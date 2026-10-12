@@ -44,6 +44,7 @@ from langgraph.prebuilt.tool_node import _handle_tool_error, _infer_handled_type
 from langgraph.types import interrupt
 
 from tracekit.format.canon import event_hash
+from tracekit.integrations.claude_code import _tool_class
 from tracekit.integrations.executor_tools import EXECUTOR
 from tracekit.sdk.client import SignerUnavailable, fail_open, result_field
 from tracekit.signer.rpc_schema import RPCError
@@ -76,7 +77,6 @@ class TracekitMiddleware(AgentMiddleware):
         try:   # LangChain hands over JSON-decoded args, never the model's raw string
             d = self._event("decide", call, tool=call["name"], args_source="parsed", args=call["args"])
         except SignerUnavailable as e:   # the run's fail mode for the tool's class
-            from tracekit.integrations.claude_code import _tool_class
             open_ = fail_open(self.fail_modes, _tool_class(call["name"]))
             return (None if open_ else self._refusal(call, f"signer unavailable: {e}")), None
         except RPCError as e:
@@ -177,11 +177,12 @@ def _executor(request):
 def pausing(flag):
     """A ToolNode `handle_tool_errors` that handles the exceptions `flag` handles, as `flag` does, but re-raises a pause
     (GraphBubbleUp: the gate's approval interrupt), which ToolNode turns into an error message for any `flag` but its
-    default."""
+    default. Which exceptions those are is read as ToolNode reads it, here, when the node is built: a handler whose
+    annotation names no exception type fails now, not at the tool's first error."""
     if not flag:
         return flag
-    types = (flag if isinstance(flag, tuple) else (flag,) if isinstance(flag, type) else
-             _infer_handled_types(flag) if callable(flag) else (Exception,))
+    types = ((flag,) if isinstance(flag, type) and issubclass(flag, Exception) else flag if isinstance(flag, tuple) else
+             _infer_handled_types(flag) if callable(flag) and not isinstance(flag, type) else (Exception,))
 
     def handle(e):
         if isinstance(e, GraphBubbleUp):

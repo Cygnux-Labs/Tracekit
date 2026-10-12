@@ -249,6 +249,8 @@ class Recording:
             self.client.signer = "/nonexistent/tracekit.sock"
             return 200, OPENAI_CHAT, False
         self.assertEqual(openai_client(outage).chat.completions.create(model="m1", messages=[]).id, "c1")
+        # kept for the next flush: what the response record needs, not the request or the response itself
+        self.assertEqual([(ex.kwargs, ex.parsed, ex.stream) for ex in autotrace._UNSENT], [(None, None, None)])
         self.client.signer = signer
         self.assertIsNone(self.one()[1])
         # back: the next call sends the missed response first

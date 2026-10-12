@@ -209,9 +209,6 @@ def _lint(pol, path):
     for tool, cls in tools.items():
         if cls not in CLASSES:
             errors.append(f"{path}: tool {tool!r} has unknown class {cls!r}")
-        elif cls == "unknown":   # what every unmapped tool is: it would still be decided by unknown_tools
-            errors.append(f"{path}: tool {tool!r} maps to class 'unknown', which unknown_tools decides like any "
-                          "unmapped tool: map an application's own tool to class app (known, no class fields)")
     if pol.get("unknown_tools", "allow") not in SECTIONS + ("allow",):
         errors.append(f"{path}: unknown_tools must be allow, flag, ask or deny")
     for sec in SECTIONS:
@@ -397,8 +394,10 @@ def _lint_agent(rule):
 
 
 def warnings(pol):
-    """What lint lets through but a person should know: an agent approver on a money-moving rule (class payment, or a
-    tool the policy maps to payment) without executor t2 binds the approval, not what runs."""
+    """What lint lets through but a person should know: a tool mapped to class unknown (what every unmapped tool is, so
+    unknown_tools still decides it; a 1.1 policy may do it, so it isn't an error), and an agent approver on a
+    money-moving rule (class payment, or a tool the policy maps to payment) without executor t2 binds the approval, not
+    what runs."""
     payments = [t for t, c in pol.get("tools", {}).items() if c == "payment"]
 
     def money(r):
@@ -408,8 +407,11 @@ def warnings(pol):
             return "class" not in r and "tool" in r and any(re.fullmatch(r["tool"], t) for t in payments)
         except re.error:
             return False
-    return [f"ask rule {r['id']}: approval.agent on a payment tool without executor t2: the agent's approval binds the "
-            "arguments the agent reported, not what its process runs; add executor: t2"
-            for r in pol.get("ask", []) if isinstance(r, dict) and isinstance(r.get("approval"), dict)
-            and "agent" in r["approval"] and money(r) and r["approval"].get("executor") != "t2"]
+    return [f"tool {t!r} maps to class 'unknown', which unknown_tools decides like any unmapped tool: map an "
+            "application's own tool to class app (known, no class fields)"
+            for t, c in pol.get("tools", {}).items() if c == "unknown"] + [
+        f"ask rule {r['id']}: approval.agent on a payment tool without executor t2: the agent's approval binds the "
+        "arguments the agent reported, not what its process runs; add executor: t2"
+        for r in pol.get("ask", []) if isinstance(r, dict) and isinstance(r.get("approval"), dict)
+        and "agent" in r["approval"] and money(r) and r["approval"].get("executor") != "t2"]
 
