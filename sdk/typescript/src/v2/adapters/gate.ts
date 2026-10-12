@@ -17,7 +17,8 @@ const MAX_RESULT = 1 << 19;    // bytes of a result sent itself (half the signer
 
 /** Sets m[k]; drops the oldest entry past MAX_OPEN_CALLS. */
 export function keep<K, V>(m: Map<K, V>, k: K, v: V): void {
-  // lean: an entry for a call that never reaches its next hook (a run abandoned mid-call) stays until pushed out
+  // lean: an entry for a call that never reaches its next hook (a run abandoned mid-call) stays until pushed out;
+  // drop a run's entries when it closes if long-lived processes hold many
   m.delete(k);
   m.set(k, v);
   if (m.size > MAX_OPEN_CALLS) m.delete(m.keys().next().value as K);

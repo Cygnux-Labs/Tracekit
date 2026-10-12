@@ -32,7 +32,6 @@ otlp_wire.MAX_BODY) from the same authenticators: the caller is authenticated be
 401 without a credential this signer accepts, 429 past the failed-authentication limit and 403 without the otlp_import
 grant.
 """
-import ipaddress
 import json
 import os
 import ssl
@@ -46,7 +45,7 @@ from tracekit.netserver import Server
 from tracekit.otlp_wire import MAX_BODY as OTLP_MAX_BODY
 from tracekit.signer.quotas import MAX_LINE, Limits, Quotas
 from tracekit.signer.rpc_schema import RPCError
-from tracekit.transport import READ_TIMEOUT_S, parse_frame
+from tracekit.transport import READ_TIMEOUT_S, loopback, parse_frame
 
 PATH = "/v2/rpc"
 OTLP_PATH = "/v1/traces"
@@ -85,7 +84,7 @@ def configure(cfg, oidc=None):
             for path in cfg["client_ca"].values():
                 tls.load_verify_locations(path)
             tls.verify_mode = ssl.CERT_OPTIONAL   # a presented certificate must verify; mtls refuses a missing one
-    elif cfg.get("cert") or cfg.get("key") or cfg.get("insecure_loopback") is not True or not _loopback(host):
+    elif cfg.get("cert") or cfg.get("key") or cfg.get("insecure_loopback") is not True or not loopback(host):
         raise ValueError("http: needs cert and key (plain HTTP only with insecure_loopback on a loopback address)")
     if oidc is None and cfg.get("oidc") is not None:
         oidc = OidcAuthenticator(cfg["oidc"])
@@ -125,13 +124,6 @@ def resolve(cfg, base):
             section["ca"] = os.path.join(base, section["ca"])
     if isinstance(cfg, dict) and isinstance(cfg.get("client_ca"), dict):
         cfg["client_ca"] = {td: os.path.join(base, p) if isinstance(p, str) else p for td, p in cfg["client_ca"].items()}
-
-
-def _loopback(host):
-    try:
-        return ipaddress.ip_address(host).is_loopback
-    except ValueError:
-        return False
 
 
 class _Handler(BaseHTTPRequestHandler):

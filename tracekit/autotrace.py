@@ -196,7 +196,8 @@ class _RunExchange:
     def _send(self, phase, model, out, **fields):
         # lean: async calls record through the sync client, holding the event loop for one local round trip; use
         # AsyncClient's thread hop if that shows up in latency
-        sent = out["tool_results_sent"][-MAX_RESULTS_SENT:]   # lean: the newest results only, in very long histories
+        # lean: the newest results only, in very long histories; send them in parts if reconciliation misses old ones
+        sent = out["tool_results_sent"][-MAX_RESULTS_SENT:]
         self.run.call("model_event", provider=self.provider, model=str(model or "")[:128], phase=phase,
                       exchange_id=self.id, streamed=self.streamed, **({"tool_results_sent": sent} if sent else {}),
                       **fields)

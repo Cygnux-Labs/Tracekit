@@ -90,7 +90,7 @@ export function tracekitAI(run: RunHandle) {
             if (p?.type === "finish") finish = p;
             c.enqueue(p);
           },
-          // lean: a stream the caller abandons is not recorded
+          // lean: a stream the caller abandons is not recorded; record it on cancel() if abandoned streams matter
           flush: () => recordResponse(at, model.provider, model.modelId, () => ({ streamed: true,
             stop_reason: stop(finish?.finishReason), usage: usage(finish?.usage), tool_uses: toolUses(calls) })),
         })) };

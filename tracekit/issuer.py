@@ -35,6 +35,7 @@ import urllib.request
 from tracekit import crypto, merkle, yamlmini
 from tracekit.client import remote_url_error
 from tracekit.format import cert, checkpoint
+from tracekit.format.checkpoint import _b64
 from tracekit.format.canon import canonical, loads_strict
 from tracekit.format.records import RecordSigner, verify_record
 from tracekit.locking import lock_file
@@ -49,10 +50,6 @@ TIMEOUT_S = 30.0
 KEYS = {"data_dir", "http", "name", "origin", "ca_key", "log_key", "witnesses", "identities"}
 REQUEST = {"method", "spki", "log_id", "tenants", "ttl_s", "pop"}
 SIGNER_KEYS = {"url", "vkey", "issuance_log_vkey", "tenants", "ttl_s", "cert", "key", "ca", "token_file"}
-
-
-def _b64(data):
-    return base64.b64encode(data).decode("ascii")
 
 
 class Issuer:

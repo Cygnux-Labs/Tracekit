@@ -70,7 +70,8 @@ type Store = { append(key: Key, entries: unknown[]): Promise<void>; load(key: Ke
  * transcript's digest, from the digest it had when this process last saw it. A transcript changed in the store
  * between two writes (seen on `load`, when a session resumes) makes the signer record a `state_tamper` gap. */
 export function tracekitSessionStore<S extends Store>(store: S, run: RunHandle): S {
-  // lean: a new stream per process, so each process that resumes the run opens one (the signer allows 64 per run)
+  // lean: a new stream per process, so each process that resumes the run opens one (the signer allows 64 per run);
+  // reuse one per run if resumes run into that cap
   const stream = "claude-agent-sdk-" + randomUUID().replaceAll("-", "");
   let seq = 0, queue = Promise.resolve();
   // lean: one digest per transcript for the store's life; prune at session end if one process serves many

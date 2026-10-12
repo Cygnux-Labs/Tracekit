@@ -136,7 +136,8 @@ class Investigation:
                 x = ex.setdefault(e["data"]["exchange_id"], {"seq": e["run_seq"], "model": e["data"]["model"]})
                 x[e["data"]["phase"]] = content.get(e["run_seq"])
                 x["kind"] = _kind(e["data"], x.get("request"))
-        # lean: subagent runs are not linked in v2 records, so a subagent tool is served from the tape, never replayed
+        # lean: subagent runs are not linked in v2 records, so a subagent tool is served from the tape, never replayed;
+        # replay it once v2 records link a subagent run to its parent
         self.exchanges = [x for x in ex.values() if isinstance(x.get("request"), dict)]
         if max_cost is not None:
             unpriced = sorted({x["model"] for x in self.exchanges if prices is None or prices.rate(x["model"]) is None})

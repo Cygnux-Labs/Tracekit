@@ -14,7 +14,6 @@ collected first. Malformed input raises WireError, never anything else (a Recurs
 
 Field numbers follow opentelemetry/proto/collector/trace/v1/trace_service.proto and
 opentelemetry/proto/trace/v1/trace.proto (stable since OTLP 1.0)."""
-import gzip
 import json
 import struct
 import zlib
@@ -61,11 +60,18 @@ def decompress(body, encoding):
         raise WireError(f"body is not valid {enc}")
 
 
-def gzip_bytes(b):
-    return gzip.compress(b)
-
-
 # ---------------------------------------------------------------- protobuf wire format
+
+def varint(n):
+    """Protobuf's base-128 varint of a non-negative integer."""
+    out = bytearray()
+    while True:
+        b = n & 0x7F
+        n >>= 7
+        out.append(b | (0x80 if n else 0))
+        if not n:
+            return bytes(out)
+
 
 def _varint(buf, i):
     shift = result = 0
@@ -249,14 +255,6 @@ def encode_response_protobuf(rejected=0, message=""):
     if not rejected and not message:
         return b""
 
-    def varint(n):
-        out = bytearray()
-        while True:
-            b = n & 0x7F
-            n >>= 7
-            out.append(b | (0x80 if n else 0))
-            if not n:
-                return bytes(out)
     msg = message.encode("utf-8")[:4096]
     inner = (b"\x08" + varint(rejected) if rejected else b"") + (b"\x12" + varint(len(msg)) + msg if msg else b"")
     return b"\x0a" + varint(len(inner)) + inner

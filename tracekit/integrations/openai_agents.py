@@ -55,7 +55,8 @@ MAX_OPEN_CALLS = 4096   # per-call entries kept between the SDK's hooks for one 
 
 def _keep(d, k, v):
     """Sets d[k]; drops the oldest entry past MAX_OPEN_CALLS."""
-    # lean: an entry for a call that never reaches its next hook (a run abandoned mid-call) stays until pushed out
+    # lean: an entry for a call that never reaches its next hook (a run abandoned mid-call) stays until pushed out;
+    # drop a run's entries when it closes if long-lived processes hold many
     d[k] = v
     if len(d) > MAX_OPEN_CALLS:
         d.pop(next(iter(d)))
@@ -263,7 +264,8 @@ class TracekitAgents(RunHooks):
         try:
             out = parsers.parse("openai:responses", {"output": response.output, "usage": response.usage})
             model = agent.model if isinstance(agent.model, str) else getattr(agent.model, "model", None)
-            fields = {"usage": out["usage"], "tool_uses": out["tool_uses"][:128]}   # lean: the RPC's cap, as autotrace
+            # lean: the RPC's cap, as autotrace; send the rest in a second model_event if responses ever carry more
+            fields = {"usage": out["usage"], "tool_uses": out["tool_uses"][:128]}
             await self._rpc("model_event", provider="openai", phase="response", model=str(model or "")[:128],
                             content_digest=event_hash([i.model_dump(mode="json") for i in response.output]),
                             **{k: v for k, v in fields.items() if v})

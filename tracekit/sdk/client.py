@@ -26,7 +26,6 @@ import concurrent.futures
 import contextlib
 import contextvars
 import http.client
-import ipaddress
 import json
 import os
 import queue
@@ -48,7 +47,7 @@ from tracekit.format.canon import StrictJSONError, canonical, event_hash, loads_
 from tracekit.signer import rpc_schema
 from tracekit.signer.quotas import MAX_LINE
 from tracekit.signer.rpc_schema import RPC_VERSION, RPCError
-from tracekit.transport import parse_frame, read_frame, tcp_dev, write_frame
+from tracekit.transport import loopback, parse_frame, read_frame, tcp_dev, write_frame
 
 CONNECT_TIMEOUT_S = 2
 RETRIES = 3
@@ -210,7 +209,7 @@ class _Https:
             raise _ConnectionLost(f"{type(e).__name__}: {e}") from None
 
     def rpc(self, req, body, timeout):
-        if self.plain and not _loopback(self.host):   # the token and the frames would cross the network in clear
+        if self.plain and not loopback(self.host):   # the token and the frames would cross the network in clear
             raise SignerUnavailable(f"{self.url}: plain http:// signers must be on a loopback address (127.0.0.1, "
                                     "::1); use https:// for any other")
         if self.hello is None:
@@ -244,13 +243,6 @@ class _Conn:
             self.sock.shutdown(socket.SHUT_RDWR)   # wakes the reader, which fails what is pending
         except OSError:
             pass
-
-
-def _loopback(host):
-    try:
-        return ipaddress.ip_address(host).is_loopback
-    except ValueError:
-        return False
 
 
 def _default_signer():

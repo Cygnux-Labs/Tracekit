@@ -62,7 +62,7 @@ def run_entry(session, owner, principal):
             "minute": [0, 0, False]}
 
 
-def _t(ts):
+def epoch(ts):
     return datetime.datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
 
 
@@ -116,7 +116,7 @@ class Detector:
         reset it anyway (`_scope`), so this only frees memory."""
         # lean: idle session, owner and principal scopes stay in memory until the next snapshot (every
         # SNAPSHOT_RECORDS records); prune on a timer if a signer sees very many owners between snapshots
-        for k in [k for k, st in det["scopes"].items() if now - _t(st["t"]) > self.idle]:
+        for k in [k for k, st in det["scopes"].items() if now - epoch(st["t"]) > self.idle]:
             del det["scopes"][k]
 
     def _scope(self, tx, det, e, run, kind):
@@ -130,7 +130,7 @@ class Detector:
         val = (e["run_id"] if kind == "run" else run[kind])[:256]
         key = f"{kind}\0{e['tenant']}\0{val}"
         old = det["scopes"].get(key)
-        if old is None or _t(e["ts"]) - _t(old["t"]) > self.idle:
+        if old is None or epoch(e["ts"]) - epoch(old["t"]) > self.idle:
             tx.set(det["scopes"], key, {"seq": {}, "lim": {}, "den": None, "open": {}, "t": e["ts"]})
         st = det["scopes"][key]
         tx.set(st, "t", e["ts"])
@@ -141,7 +141,7 @@ class Detector:
         incident records to write right after it, in its run). `tx`: set(d, k, v) and pop(d, k), undoable on the
         writer, Plain elsewhere."""
         typ, d, rk = e["type"], e["data"], f"{e['tenant']}\0{e['run_id']}"
-        run, t, fired, view = det["runs"].get(rk), _t(e["ts"]), [], None
+        run, t, fired, view = det["runs"].get(rk), epoch(e["ts"]), [], None
         if typ == "run.registered":
             owner = "{scheme}:{subject}".format(**d["identity"])
             tx.set(det["runs"], rk, run_entry(d.get("session", e["run_id"]), owner,
@@ -176,7 +176,8 @@ class Detector:
             if not self.counts:
                 view = None
         elif typ == "approval.request" and run:   # the approval is of the decision it names: the call's latest
-            # lean: an ask never sent for approval keeps its entry until the call is decided again or the run ends
+            # lean: an ask never sent for approval keeps its entry until the call is decided again or the run ends;
+            # expire entries if long runs accumulate them
             k = f"call\0{e.get('tool_call_id')}"
             p = run["pending"].get(k)
             if p and p[0] == d["decision_id"]:
@@ -218,17 +219,17 @@ class Detector:
                 if not (unknown or steps[j] in names):
                     continue
                 prev = old[j - 1] if j else None
-                if j and (prev is None or _t(e["ts"]) - _t(prev[0]) > s["window"]):
+                if j and (prev is None or epoch(e["ts"]) - epoch(prev[0]) > s["window"]):
                     continue
                 start, cites = (prev[0], prev[1] + [cite]) if j else (e["ts"], [cite])
                 k, used = j, set()
                 while True:
                     reached = max(reached, k + 1)
                     if k == last:
-                        if done is None or _t(start) >= _t(done[0]):
+                        if done is None or epoch(start) >= epoch(done[0]):
                             done = [start, cites]
                         break
-                    if new[k] is None or _t(start) >= _t(new[k][0]):
+                    if new[k] is None or epoch(start) >= epoch(new[k][0]):
                         new[k] = [start, cites]
                     used.add(steps[k])
                     if steps[k] not in own or steps[k + 1] not in own or steps[k + 1] in used:
@@ -247,7 +248,7 @@ class Detector:
             start, val = st["lim"].get(lim["id"], (None, None))
             # lean: fixed windows, so a burst straddling two can reach 2x max unseen; keep per-second buckets if
             # limits must be exact
-            if start is None or _t(e["ts"]) - _t(start) > lim["window"]:
+            if start is None or epoch(e["ts"]) - epoch(start) > lim["window"]:
                 start, val = e["ts"], {} if "sum" in lim else 0
             if "sum" in lim:
                 amount, cur = sums[lim["id"]]
@@ -271,7 +272,7 @@ class Detector:
         if not self._on("denied_calls") or d.get("nondeterministic") or ids & NOT_COUNTED and not ids & self.deny:
             return
         key, scope, st = self._scope(tx, det, e, run, r.get("scope", "run"))
-        if st["den"] is None or t - _t(st["den"][0]) > r["window"]:
+        if st["den"] is None or t - epoch(st["den"][0]) > r["window"]:
             tx.set(st, "den", [e["ts"], {}])
         seen, call = st["den"][1], f"{e['tool_call_id']}\0{e.get('attempt', 0)}"
         if call in seen or len(seen) > r["max"]:   # past max the incident is open: no need to remember more calls
@@ -300,7 +301,7 @@ class Detector:
             st, k = det["scopes"][key], f"{trigger}\0{rule}"
             if k in st["open"]:
                 inc, last = st["open"][k]
-                if t - _t(last) >= self.every.get(rule, UPDATE_S):
+                if t - epoch(last) >= self.every.get(rule, UPDATE_S):
                     tx.set(st["open"], k, [inc, e["ts"]])
                     out.append(("incident.updated", {"incident_id": inc, "cites": cites}))
                 continue

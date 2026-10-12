@@ -2529,7 +2529,8 @@ class SignerService:
                 if mismatch:
                     gaps.append(("class_mismatch", f"class hint {hint!r} disagrees with the policy's class "
                                                    f"{self.policy.tool_class(tool)!r}; the stricter decision applies"))
-                # lean: the deny set lives in memory, so a flip across a signer restart goes unflagged
+                # lean: the deny set lives in memory, so a flip across a signer restart goes unflagged; keep it in the
+                # run's snapshot if runs often span restarts
                 if verdict == "deny":
                     tx.set(run["denied"], digest, True)
                 elif verdict != "ask" and digest in run["denied"]:

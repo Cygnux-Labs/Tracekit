@@ -58,7 +58,7 @@ from tracekit.proxy import HOP
 from tracekit.sdk.client import Client, SignerUnavailable
 from tracekit.signer.rpc_schema import RPCError
 from tracekit.signer.service import HEARTBEAT_S, TAILER_LOST_S
-from tracekit.transport import http as transport
+from tracekit.transport import http as transport, loopback
 
 KEYS = {"http", "listen", "signer", "allow"}
 HOST = re.compile(r"[a-z0-9._:-]{1,253}")   # what observe_effect takes as a host
@@ -85,7 +85,8 @@ class Observer:
     def __init__(self, client, allow=()):
         self.client, self.allow = client, set(allow)
         self.totals, self.lock = {}, threading.Lock()
-        # lean: unsent totals wait in memory while the signer is unreachable (one per host, port and minute)
+        # lean: unsent totals wait in memory while the signer is unreachable (one per host, port and minute); spool
+        # them to disk if outages outlast the observer's memory
         self.queue = []   # [(request_id, effects)] not yet acknowledged, oldest first
         self.instance = uuid.uuid4().hex   # this process, in every call: the signer sees a restart
 
@@ -450,7 +451,7 @@ def serve(cfg, client=None):
         address, auths, tls = transport.configure(cfg["http"])
     else:
         host, _, port = str(cfg["listen"]).rpartition(":")
-        if not (port.isdigit() and transport._loopback(host)):
+        if not (port.isdigit() and loopback(host)):
             raise ValueError("listen: a loopback host:port (plain HTTP); anything else needs the http section")
         address, auths, tls = (host, int(port)), [], None
     srv = transport.HttpServer(address, auths, tls, None, handler=_Handler)

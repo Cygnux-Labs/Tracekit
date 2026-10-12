@@ -25,7 +25,7 @@ def _unb64(s):
     return base64.urlsafe_b64decode(s + "=" * (-len(s) % 4))
 
 
-def _sub(identity):
+def subject(identity):
     return f"{identity.scheme}:{identity.subject}"
 
 
@@ -37,7 +37,7 @@ class RunTokens:
         return hmac.new(self.secret, _DOMAIN + payload, hashlib.sha256).digest()
 
     def issue(self, tenant, run_id, identity):
-        payload = json.dumps({"tenant": tenant, "run_id": run_id, "sub": _sub(identity)},
+        payload = json.dumps({"tenant": tenant, "run_id": run_id, "sub": subject(identity)},
                              separators=(",", ":"), sort_keys=True).encode()
         return _b64(payload) + "." + _b64(self._mac(payload))
 
@@ -55,5 +55,5 @@ class RunTokens:
     def verify(self, token, tenant, run_id, identity):
         """Refuses a token that is malformed, tampered, or issued for another run or identity."""
         claims = self.claims(token)
-        if (claims["tenant"], claims["run_id"], claims["sub"]) != (tenant, run_id, _sub(identity)):
+        if (claims["tenant"], claims["run_id"], claims["sub"]) != (tenant, run_id, subject(identity)):
             raise RPCError("run_token_invalid", "run token belongs to another run or identity")
