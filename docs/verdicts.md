@@ -59,7 +59,8 @@ with its class, time and algorithms (ECDSA P-256 entry, RFC 3161 time); `earlies
 non-`operator` witness or anchor vouches the checkpoint existed; `capped by the run-set's registry notes (<level>)`
 when a run-set's registry notes, judged by the same rule from their own cosignatures, earn a lower level than the
 checkpoint (the level shown is then theirs); `approvals: self` when a run holds a self-approval; and `key retirements
-not proven complete` (see `keys`).
+not proven complete` when no run-set from registry size 0 reaches the bundle's last record, so a withheld `key.retire`
+would not show (a `keys` warning too when the bundle's key records show a retired key).
 
 The level describes who vouches for the checkpoint, not how the signer was isolated: a same-user dev signer whose
 checkpoints a public witness cosigns verifies as `witnessed`. A witness proves the log was not rolled back or forked
@@ -92,7 +93,9 @@ is `witnessed` plus a fresh, conflict-free report of a monitor your trust config
 
 | Line | Means | Does not mean |
 |---|---|---|
-| `keys` (second line) `retirements not proven complete` | no run-set from registry size 0 reaches the bundle's last record, so a withheld `key.retire` would not show | that a key was retired |
+| `keys` (second line) `retirements not proven complete` | the bundle's key records show a retired key (a `key.retire`, or more than one record key), and no run-set from registry size 0 reaches the bundle's last record, so another withheld `key.retire` would not show. With one key never retired, only the assurance line says so | that a key was retired |
+| `gaps` | the runs hold signer-written records a person should read: a `capture.gap` of a kind listed under [signed gaps](#signed-gaps) as a warning, an `approval.binding_mismatch` (a consume with other arguments than the approved ones, e.g. a checkpoint edited between pause and resume) or a `trace.tamper`; counted by kind, each listed with its reason | that the agent did something wrong: a gap can be an outage |
+| `fail-open classes` | the run declares tool classes that run when the signer is down (`fail_modes`), so calls the agent classed as one of those may have run unrecorded (the class is the agent's own reading of the tool, [FAQ](faq.md#what-happens-when-the-signer-is-down)). An outage the client recovered from is a `client_counter_gap` (`gaps`); one it never recovered from leaves no record | that any call ran unrecorded |
 | `tenant-level gaps` | the run-set range holds signer gaps that concern every tenant (witness failures, clock skew, startup without a witness, rollbacks), counted by kind | that the runs in the range lost records |
 | `log tail` | records after the checkpoint are unproven: the range has no `log.closed` at the checkpoint's last record | that records were hidden |
 | `policy` | a tool call ran against a deny, or an `ask` with no consumed approval, and the signer recorded it as `capture.gap{executed_against_policy}` | that the call did harm |
@@ -112,7 +115,7 @@ is `witnessed` plus a fresh, conflict-free report of a monitor your trust config
 | `tiers` (each call decided and completed by one capture path) | tool calls by evidence tier: `T1` adapter, `T2` gateway or executor, `T3` import; `untiered` when no record names one. A call whose records disagree counts at the weakest (untiered < T3 < T1 < T2), its decision or result naming none counting as untiered | T3 (OTLP import) proves receipt only |
 | `args source` | records by `args_source`: `raw` (the exact bytes the model produced), `parsed`, `coerced` (after the framework changed them) | coerced arguments can't be matched to the model's call byte for byte |
 | `isolation` | the `signer_isolation` the signer measured for each run: `same-user`, `separate-user`, `remote`, `unknown` | `signer-reported`: the signer's own measurement of its caller, never the client's claim |
-| `fail-open classes` | tool classes the signer's config lets run when the signer is down | calls of these classes may have run unrecorded during an outage |
+| `fail-open classes` (`none`) | no tool class runs when the signer is down | every call needed the signer |
 | `key assurance` | `asserted`: the log declares its own record keys; `certified: n of m` when a pinned [issuer](issuer.md) certifies them | with `asserted`, trust in the keys is trust in the pinned log key |
 
 ## Approvals in the report
@@ -123,7 +126,20 @@ see [approvals](approvals.md).
 
 ## Signed gaps
 
-Gaps inside a run (`capture.gap` with kinds such as `client_counter_gap`, `signer_unavailable`, `decision_flip`,
-`class_mismatch`) are signed records of the run, visible in the bundle; only `executed_against_policy`, `decision_mismatch` and the
-reconciliation kinds have report lines of their own, and `observer_lost` its `observers` line. Tenant-level gaps,
-and `effect_outside_run` (an observation no open run held), show on the run-set line.
+Gaps inside a run (`capture.gap`, written by the signer only) are signed records of the run, visible in the bundle.
+Every kind is a warning except the informational ones below, which say nothing against the run's own records:
+
+| Kind | Report line |
+|---|---|
+| `executed_against_policy` | `policy` (warning) |
+| `held_call_unresolved` | `held calls` (warning) |
+| `decision_mismatch` | `external decisions` (warning) |
+| `observer_lost` | `observers` (warning) |
+| `state_tamper`, `client_counter_gap`, `signer_unavailable`, `tailer_lost`, `decision_flip`, `class_mismatch`, `log_closed`, `quota_refused`, `identity_refused`, `policy_timeout`, `retry_conflict`, `run_abandoned`, `rollback`, `key_revoked`, and any kind not listed here | `gaps` (warning), with `approval.binding_mismatch` and `trace.tamper` records |
+| `witness_late`, `witness_failed`, `degraded_unanchored`, `clock_skew` | informational: the witness and checkpoint lines judge cosignatures themselves |
+| `format_upgrade`, `key_retired` | informational: the format bridge and `keys` lines check them |
+| `args_coerced` | informational: `args source` counts coerced arguments |
+| `approval_expired` | informational: an approval no one answered in time is not a missing record |
+
+Tenant-level gaps, `effect_outside_run` (an observation no open run held) among them, show on the run-set line
+(`tenant-level gaps`, a warning). Reconciliation records (`reconcile.*`) are on the `coverage` line.

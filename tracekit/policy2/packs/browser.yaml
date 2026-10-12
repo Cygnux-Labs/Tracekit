@@ -4,7 +4,7 @@
 # To allow a host TK-B002 or TK-B003 denies, or to set the domains typing is allowed on (TK-B011), extend this pack and redefine
 # the rule with the same id: a rule in the extending file replaces the parent's.
 
-version: '2026.10-browser-3'
+version: '2026.10-browser-4'
 description: browser agents (Browser Use)
 unknown_tools: ask
 
@@ -13,6 +13,12 @@ tools:
 
 # a page's content is untrusted
 untrusted: [browser]
+
+# Browser Use asks the model for its actions as structured output, not tool calls: reconciliation expects no tool use
+# for an action. With an Anthropic model the output comes as one forced tool call, AgentOutput, which this pack doesn't
+# name (any tool of that name would then run with no decide): a deployment under gateway_mandatory names it in its own
+# policy (docs/integrations/browser-use.md)
+structured_output: ['browser_use:*']
 
 deny:
   - id: TK-B001
@@ -51,9 +57,15 @@ ask:
     unless: '^https://([A-Za-z0-9.-]*\.)?example\.com\.?(:[0-9]+)?([/?#]|$)'
     reason: typing on a site outside the allowlist
     rationale: Typed text (credentials, personal data, messages) is what a browser agent can leak or send.
+  - id: TK-B012
+    tool: '^browser_use:evaluate$'
+    pattern: '^'
+    reason: running the agent's own JavaScript in the page
+    rationale: Page JavaScript can do whatever a click, typing or a navigation can (submit a form, send data anywhere), out of reach of the rules on those actions; a person checks it.
   - id: TK-P003
-    # data sent (a method other than GET or HEAD, a body, or typing and uploads in a browser) to a host that only
-    # untrusted content (`untrusted` tools' results, observed untrusted input) brought into the run
+    # data sent (a method other than GET or HEAD, a body; in a browser, typing, an upload or a navigation with a query
+    # string) to a host that only untrusted content (`untrusted` tools' results, observed untrusted input) brought into
+    # the run
     field: sends_to
     pattern: '.'
     from: untrusted

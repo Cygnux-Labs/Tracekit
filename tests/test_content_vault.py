@@ -48,7 +48,7 @@ class Vault(unittest.TestCase):
     def req(self, **kw):
         self.n += 1
         return {"request_id": f"rq-{id(self.s)}-{self.n}", "run_id": self.run["run_id"],
-                "run_token": self.run["run_token"], "stream": "s", "client_seq": self.n, **kw}
+                "run_token": self.run["run_token"], "stream": "s", "client_seq": self.n - 1, **kw}   # from 0
 
     def tool(self, args, result, tool="Bash", tcid="t1"):
         d = self.s.decide(self.req(tool_call_id=tcid, tool=tool, args_source="parsed", args=args))

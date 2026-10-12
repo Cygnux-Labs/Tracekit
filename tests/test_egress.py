@@ -214,6 +214,7 @@ class TestVerifier(Observed):
                          "network not covered, processes not covered, services not covered")
         self.assertNotIn("complete", checks["coverage matrix"]["detail"])
         self.assertEqual((checks["coverage"]["status"], checks["observers"]["status"]), ("warn", "warn"))
+        self.assertNotIn("observer_lost", checks.get("gaps", {}).get("detail", ""))   # on its own line only
         self.assertIn("unexplained_effect 1", checks["coverage"]["detail"])
         self.assertTrue(rep.warnings)   # what --strict exits 3 on
 

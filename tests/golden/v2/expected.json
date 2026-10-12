@@ -43,10 +43,6 @@
             "pass"
           ],
           [
-            "keys",
-            "warn"
-          ],
-          [
             "signatures",
             "pass"
           ],
@@ -76,7 +72,7 @@
           ],
           [
             "fail-open classes",
-            "pass"
+            "warn"
           ],
           [
             "key assurance",
@@ -124,10 +120,6 @@
             "pass"
           ],
           [
-            "keys",
-            "warn"
-          ],
-          [
             "signatures",
             "pass"
           ],
@@ -157,7 +149,7 @@
           ],
           [
             "fail-open classes",
-            "pass"
+            "warn"
           ],
           [
             "key assurance",
@@ -201,10 +193,6 @@
             "pass"
           ],
           [
-            "keys",
-            "warn"
-          ],
-          [
             "signatures",
             "pass"
           ],
@@ -230,7 +218,7 @@
           ],
           [
             "fail-open classes",
-            "pass"
+            "warn"
           ],
           [
             "key assurance",
@@ -274,10 +262,6 @@
             "pass"
           ],
           [
-            "keys",
-            "warn"
-          ],
-          [
             "signatures",
             "pass"
           ],
@@ -307,7 +291,7 @@
           ],
           [
             "fail-open classes",
-            "pass"
+            "warn"
           ],
           [
             "key assurance",
@@ -392,7 +376,7 @@
           ],
           [
             "fail-open classes",
-            "pass"
+            "warn"
           ],
           [
             "key assurance",

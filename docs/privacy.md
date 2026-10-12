@@ -100,7 +100,8 @@ With the v2 signer service (`tracekit signer serve`), the signer redacts itself,
   record it came from, never the value; an `input.observed` record holds only a commitment to the content, like a
   result. For a tool the policy lists as untrusted, `decide` answers `send_result` and the adapters send the result
   itself instead of its digest: the signer redacts it and commits to it like any result, and keeps nothing of it in
-  clear.
+  clear. For any other tool the adapters send the result's digest (`sha256:…`), so the record's `output.size` is the
+  size of that digest as the signer received it, not of the result.
 
 ## The content vault
 

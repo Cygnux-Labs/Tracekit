@@ -46,7 +46,7 @@ from tracekit.sdk.client import Client
 
 client = Client()
 run = client.register_run({"agent": {"name": "my-agent"}})
-session = TracekitSession(session, client, run)    # an initialized ClientSession
+session = TracekitSession(session, client, run)    # an initialized ClientSession; mcp 1.x: add server="<name>"
 result = await session.call_tool("create_issue", {"title": "..."})   # recorded as mcp:<server>/create_issue
 ```
 

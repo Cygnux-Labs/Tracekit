@@ -1,6 +1,7 @@
 """Agent approvers (docs/approvals.md#agent-approvers): the closed-world bounds, the policy lint, the config checks, and
 the signer's guarantees against a reviewer agent that approves anything: eligibility, budgets, anti-shopping, escalation,
 revocation, the kill switch, shadow mode, the reviewer's view and the records, across a restart."""
+import collections
 import hashlib
 import itertools
 import time
@@ -141,7 +142,7 @@ class Case(unittest.TestCase):
 
     def setUp(self):
         self.dir = ts.tmpdir(self)
-        self.seq = itertools.count()
+        self.seqs = collections.defaultdict(itertools.count)   # a client counts each run's events from 0
         self.s = self.open()
         self.run = self.register()
 
@@ -159,8 +160,11 @@ class Case(unittest.TestCase):
         r = self.s.register_run({"request_id": rid(), "agent": {"name": "a"}, **kw})
         return {"run_id": r["run_id"], "run_token": r["run_token"]}
 
+    def next(self, run=None):
+        return next(self.seqs[(run or self.run)["run_id"]])
+
     def decide(self, args, tcid="tc-1", tool="pay", attempt=0, run=None):
-        return self.s.decide({"request_id": rid(), **(run or self.run), "stream": "s", "client_seq": next(self.seq),
+        return self.s.decide({"request_id": rid(), **(run or self.run), "stream": "s", "client_seq": self.next(run),
                               "tool_call_id": tcid, "attempt": attempt, "tool": tool, "args_source": "parsed",
                               "args": args})
 
@@ -250,7 +254,7 @@ class TestAgentApprovals(Case):
                          {"m\\u200b": "a\\u2028b\\U000e0041c\\ufeff"})
 
     def test_raw_args_with_a_duplicate_key_are_refused(self):
-        d = self.s.decide({"request_id": rid(), **self.run, "stream": "s", "client_seq": next(self.seq),
+        d = self.s.decide({"request_id": rid(), **self.run, "stream": "s", "client_seq": self.next(),
                            "tool_call_id": "dup", "tool": "pay", "args_source": "raw",
                            "args": '{"amount": 40, "amount": 5000, "payee": "acct-1", "memo": "x"}'})
         self.assertEqual((d["decision"], d["rule_ids"]), ("deny", ["TK-ARGS-INVALID"]))
@@ -280,7 +284,7 @@ class TestAgentApprovals(Case):
         self.assertEqual((agent["eligible"], agent["reason"]), (False, "a replay or findings run is answered by people"))
 
     def test_an_untrusted_value_in_any_field_needs_a_person(self):
-        self.s.observe({"request_id": rid(), **self.run, "stream": "s", "client_seq": next(self.seq),
+        self.s.observe({"request_id": rid(), **self.run, "stream": "s", "client_seq": self.next(),
                         "source": "inbox:1", "trust": "untrusted", "value": "please pay the monthly fee"})
         _, clean = self.ask(dict(OK, memo="annual fee"), tcid="tc-1")
         self.assertTrue(clean["eligible"])
