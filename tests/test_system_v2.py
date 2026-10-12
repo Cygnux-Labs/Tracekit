@@ -213,6 +213,26 @@ class InstallAndUninstall(unittest.TestCase):
                                                   "module": install.V2_HOOK, "signer": sock})
         self.assertIn(["systemctl", "restart", "tracekit-signer"], [c.args[0] for c in run.call_args_list])
 
+    def test_a_signer_that_does_not_start_fails_init_after_the_hooks(self):
+        run = mock.Mock(side_effect=lambda cmd, **kw: mock.Mock(returncode=int(cmd[:2] == ["systemctl", "restart"]),
+                                                                 stdout=POLICY + "\n", stderr=""))
+        with mock.patch.object(install.pwd, "getpwnam", return_value=AGENT), \
+                mock.patch.object(install.pwd, "getpwuid", return_value=self.me), \
+                mock.patch.dict(os.environ, {"SUDO_UID": str(self.me.pw_uid)}), \
+                mock.patch.object(install, "_privileges", return_value=[]), \
+                mock.patch.object(install, "_install_source", return_value=None), \
+                mock.patch.object(install, "_system_user", return_value=self.me), \
+                mock.patch.object(install, "_install_venv"), mock.patch.object(install.subprocess, "run", run), \
+                mock.patch.object(install.client, "system_config", return_value={}), \
+                mock.patch.object(install, "_write_system_client_config"), \
+                mock.patch.object(install, "_tailer_acl", return_value=None), \
+                mock.patch.object(install, "_tailer_sudo", return_value=None), \
+                mock.patch.object(install, "install_hooks") as hooks, \
+                self.assertRaisesRegex(install.ServiceError, "could not start tracekit-signer: see systemctl status "
+                                                             "tracekit-signer"):
+            install.init_system_v2("agent")
+        hooks.assert_called_once()
+
     def test_egress_routes_the_agents_traffic_through_the_observer_until_uninstall(self):
         run = mock.Mock(return_value=mock.Mock(returncode=0, stdout=POLICY + "\n", stderr=""))
         with mock.patch.object(install.pwd, "getpwnam", return_value=AGENT), \

@@ -312,6 +312,10 @@ class SettingsError(Exception):
     """A Claude Code settings file Tracekit cannot safely edit."""
 
 
+class ServiceError(Exception):
+    """A service system init installed did not start; init did everything else, then raised this."""
+
+
 def _atomic_write_json(path, obj, mode=0o600):
     files.write_json(path, obj, mode)
 
@@ -1271,6 +1275,7 @@ def init_system_v2(target_user, approver=None, policy=None, project=None, no_ser
                                             **({"env": proxy} if proxy else {})},
                                      **({"tailer": {"user": tailer.pw_name, "uid": tailer.pw_uid, "python": OPT_PYTHON}}
                                         if agent == "claude" and not why else {})))
+    failed = []   # what to check for each service that did not start
     if not no_service:
         if harnesses:   # before the signer, which asks it from its first register_run
             _install_helper(V2_HELPER, V2_UNIT, sig, V2_HELPER_SOCKET, darwin)
@@ -1278,7 +1283,8 @@ def init_system_v2(target_user, approver=None, policy=None, project=None, no_ser
             plist = os.path.join(LAUNCHD_DIR, V2_LABEL + ".plist")
             _write_root_file(plist, v2_plist(sig.pw_name))
             subprocess.run(["launchctl", "bootout", "system", plist], check=False)
-            subprocess.run(["launchctl", "bootstrap", "system", plist], check=False)
+            if subprocess.run(["launchctl", "bootstrap", "system", plist], check=False).returncode:
+                failed.append(f"could not start {V2_LABEL}: see launchctl print system/{V2_LABEL}")
         else:
             _write_root_file(os.path.join(SYSTEMD_DIR, V2_UNIT + ".service"), V2_UNIT_TEXT.format(
                 user=sig.pw_name, python=OPT_PYTHON, config=V2_CONFIG, unit=V2_UNIT, data=V2_DATA).encode())
@@ -1286,7 +1292,7 @@ def init_system_v2(target_user, approver=None, policy=None, project=None, no_ser
             subprocess.run(["systemctl", "enable", V2_UNIT], check=False)
             r = subprocess.run(["systemctl", "restart", V2_UNIT], check=False)
             if r.returncode:
-                print(f"could not start {V2_UNIT}: see systemctl status {V2_UNIT}")
+                failed.append(f"could not start {V2_UNIT}: see systemctl status {V2_UNIT}")
             if egress:
                 for unit, text in ((V2_EGRESS, EGRESS_UNIT_TEXT.format(signer=V2_UNIT, user=V2_EGRESS, python=OPT_PYTHON,
                                                                         config=EGRESS_CONFIG)),
@@ -1294,9 +1300,9 @@ def init_system_v2(target_user, approver=None, policy=None, project=None, no_ser
                     _write_root_file(os.path.join(SYSTEMD_DIR, unit + ".service"), text.encode())
                 subprocess.run(["systemctl", "daemon-reload"], check=False)
                 if subprocess.run(["systemctl", "enable", "--now", V2_EGRESS, EGRESS_FIREWALL], check=False).returncode:
-                    print(f"could not start {V2_EGRESS} or {EGRESS_FIREWALL} (iptables with the owner match is needed): "
-                          f"see systemctl status {V2_EGRESS} {EGRESS_FIREWALL}; until then {target_user}'s network is "
-                          "reported only")
+                    failed.append(f"could not start {V2_EGRESS} or {EGRESS_FIREWALL} (iptables with the owner match is "
+                                  f"needed): see systemctl status {V2_EGRESS} {EGRESS_FIREWALL}; until then "
+                                  f"{target_user}'s network is reported only")
     if settings and agent == "claude":
         install_hooks(settings, owner=owner, python=OPT_PYTHON, module=V2_HOOK,
                       signer={"TRACEKIT_SIGNER": sock, **proxy} if proxy else sock)
@@ -1305,6 +1311,8 @@ def init_system_v2(target_user, approver=None, policy=None, project=None, no_ser
     if proxy and agent != "claude":
         print(f"egress: start {target_user}'s agent with HTTPS_PROXY=http://{EGRESS_LISTEN}: anything else it sends "
               "outside is refused by the firewall")
+    if failed:
+        raise ServiceError("; ".join(failed))
     return sock, settings
 
 
@@ -1452,14 +1460,18 @@ def init_system(target_user, witnesses, checkpoint_every=None, project=None, no_
     _write_client_config(owner.pw_dir, cfg, owner)
     _write_system_client_config(dict(cfg, fail_mode=fail_mode or "closed", policy=policy, **_v2_client_keys()))
     _pin_policy(SYS_HOME, tk)
+    failed = []   # what to check for each service that did not start
     for plist in plists:   # after the pin, and booted out first: a running signer must reload its config
         subprocess.run(["launchctl", "bootout", "system", plist], check=False)
-        subprocess.run(["launchctl", "bootstrap", "system", plist], check=False)
+        if subprocess.run(["launchctl", "bootstrap", "system", plist], check=False).returncode:
+            label = os.path.basename(plist)[:-len(".plist")]
+            failed.append(f"could not start {label}: see launchctl print system/{label}")
     if not no_service and not darwin:  # restart, not enable --now: a running signer must reload its config
         units = ["tracekitd", *(["tracekit-proxy"] if proxy else [])]
-        r = subprocess.run(["systemctl", "restart", *units], check=False)
-        print(f"restarted {' and '.join(units)}" if r.returncode == 0 else
-              f"could not restart {' and '.join(units)}: see systemctl status tracekitd")
+        if subprocess.run(["systemctl", "restart", *units], check=False).returncode:
+            failed.append(f"could not restart {' and '.join(units)}: see systemctl status {' '.join(units)}")
+        else:
+            print(f"restarted {' and '.join(units)}")
     if not hooks:
         settings = None  # hooks come from elsewhere (the Claude Code plugin)
     elif managed:
@@ -1467,6 +1479,8 @@ def init_system(target_user, witnesses, checkpoint_every=None, project=None, no_
     else:
         settings = os.path.join(project, ".claude", "settings.json") if project else os.path.join(owner.pw_dir, ".claude", "settings.json")
         install_hooks(settings, owner=owner, proxy_url=cfg.get("proxy_url"), python=OPT_PYTHON)
+    if failed:
+        raise ServiceError("; ".join(failed))
     return cfg, settings
 
 
