@@ -50,10 +50,13 @@ compiled policy the bundle carries for the run's policy_hash (policies/<hex>.jso
 that does not follow from them fails `incidents`, as does a missing policy; a detector_unavailable incident cites a
 decision whose detection state was unavailable. Others (operator incidents, other scopes, cites in other runs, a run
 under several policies) are counted signer-asserted; a run.held of an incident opened in another run is its pointer.
-Each response must have been honoured: no allow and no ask without the incident id while held, only deny while
-quarantined, a held call approved only by a person (never an agent, never self-approved) with the incident id, no
-consume under a hold but of such an approval and none under a quarantine, and no tool.result while held or quarantined
-but of a call in flight when the response took effect or, held, one consumed with such an approval.
+Each response must have been honoured: an enforced hold or quarantine of scope run in its own run is followed by its
+run.held or run.quarantined before the run's next decision (unless the run is quarantined already); a run may be held by
+several incidents, each until its run.resumed; no allow and no ask without the id of an incident holding the run while
+held, only deny while quarantined, a held call approved only by a person (never an agent, never self-approved) with
+the incident id, no consume under a hold but of an approval asked under an incident still holding the run and none
+under a quarantine, and no tool.result while held or quarantined but of a call in flight when the response took effect
+or, held, one consumed with such an approval.
 Coverage: a run.final that carries `coverage` (the capture layers that reported, calls reconciled, reconcile.* records
 by kind) gives a `coverage` line; unreconciled calls make it a warning, so `--strict` exits 3 on them.
 
@@ -673,26 +676,37 @@ def _incidents(rep, runs, files):
 def _honoured(events, pointers):
     """The problems of one run's records with the holds and quarantines they record; adds the incident ids of its
     run.held and run.quarantined records to `pointers`."""
-    problems, held, quarantined, flight, asked, consumed = [], None, None, set(), {}, set()
+    problems, held, quarantined, flight, asked, consumed, due = [], [], None, set(), {}, set(), {}
     for e in events:
         t, d, where = e["type"], e["data"], f"seq {e['seq']}"
-        on = quarantined or held
-        if t in ("run.held", "run.quarantined"):
+        on = quarantined or " and ".join(held)
+        if t == "policy.decision" and due and not quarantined:   # an enforced response is written before the next call
+            problems += [f"seq {seq}: incident {i} enforces {a} on this run, which no run.held or run.quarantined "
+                         "follows" for i, (seq, a) in due.items()]
+            due.clear()
+        if t == "incident.opened" and d["scope"] == {"kind": "run", "id": e["run_id"][:256]} and \
+                {"hold", "quarantine"} & set(d["actions"]):
+            due[d["incident_id"]] = (e["seq"], "quarantine" if "quarantine" in d["actions"] else "hold")
+        elif t in ("run.held", "run.quarantined"):
             pointers.add(d["incident_id"])
+            due.pop(d["incident_id"], None)
             flight |= {x["decision_id"] for x in d.get("in_flight", ())}
             if t == "run.quarantined":
-                quarantined, held = d["incident_id"], None
-            elif not quarantined:
-                held = d["incident_id"]
+                quarantined, held = d["incident_id"], []
+            elif not quarantined and d["incident_id"] not in held:
+                held.append(d["incident_id"])
         elif t == "run.resumed":
-            held = None
+            held = [i for i in held if i != d["incident_id"]]
+            if sorted(d.get("held_by", held)) != sorted(held):
+                problems.append(f"{where}: run.resumed says {' and '.join(d['held_by']) or 'no incident'} still "
+                                f"holds the run, its records {' and '.join(held) or 'none'}")
         elif t == "policy.decision" and on and (d["decision"] != "deny" if quarantined else d["decision"] != "deny" and (
-                d["decision"] != "ask" or d.get("incident_id") != held)):
+                d["decision"] != "ask" or d.get("incident_id") not in held)):
             problems.append(f"{where}: {d['decision']} while the run is {'quarantined' if quarantined else 'held'} by "
                             f"incident {on}")
         elif t == "approval.request":
             asked[d["approval_id"]] = d.get("incident_id")
-            if quarantined or held and d.get("incident_id") != held:
+            if quarantined or held and d.get("incident_id") not in held:
                 problems.append(f"{where}: an approval asked while the run is {'quarantined' if quarantined else 'held'}"
                                 f" by incident {on}, not as its held call")
         elif t == "approval" and asked.get(d.get("approval_id")) and d["decision"] == "approve" and (
@@ -700,7 +714,7 @@ def _honoured(events, pointers):
                 "person" not in d.get("approver_identity", {}) or d.get("incident_id") != asked[d["approval_id"]]):
             problems.append(f"{where}: a held call approved by other than a person, or without its incident id")
         elif t == "approval.consumed":
-            if quarantined or held and asked.get(d["approval_id"]) != held:
+            if quarantined or held and asked.get(d["approval_id"]) not in held:
                 problems.append(f"{where}: an approval consumed while the run is "
                                 f"{'quarantined' if quarantined else 'held'} by incident {on}")
             elif asked.get(d["approval_id"]):
@@ -709,6 +723,9 @@ def _honoured(events, pointers):
                 quarantined or e.get("tool_call_id") not in consumed):
             problems.append(f"{where}: a result while the run is {'quarantined' if quarantined else 'held'} by incident "
                             f"{on}, of a call neither in flight then nor approved by a person for it")
+    if not quarantined:
+        problems += [f"seq {seq}: incident {i} enforces {a} on this run, which no run.held or run.quarantined follows"
+                     for i, (seq, a) in due.items()]
     return problems
 
 

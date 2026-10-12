@@ -115,8 +115,8 @@ class TestLint(unittest.TestCase):
             "scope must be one of": {"sequences": [{**seq, "scope": "tenant"}]},
             "cooldown_s must be whole seconds": {"respond": [{"trigger": "Q", "mode": "enforce", "action": "hold",
                                                               "cooldown_s": -1}]},
-            "suspend: true is only for executed_against_policy": {"respond": [{
-                "trigger": "Q", "mode": "enforce", "action": "hold", "suspend": True}]},
+            "suspend is an operator's action, never a trigger's": {"respond": [{
+                "trigger": "executed_against_policy", "mode": "enforce", "action": "quarantine", "suspend": True}]},
         }
         for want, change in cases.items():
             with self.subTest(want):

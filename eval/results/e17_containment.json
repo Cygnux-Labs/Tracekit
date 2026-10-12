@@ -1,7 +1,7 @@
 {
   "agent_cannot_operate": {
     "default": 10,
-    "granted": 10,
+    "granted_starts": false,
     "ok": true
   },
   "approval_before_hold": {
@@ -18,12 +18,13 @@
     "held_run_capped": true,
     "ok": true
   },
-  "injected_ticket_cannot_suspend": {
+  "no_trigger_suspends": {
     "ok": true,
     "refused_at_load": [
       "denied_calls",
       "provenance",
-      "Q"
+      "Q",
+      "executed_against_policy"
     ]
   },
   "quarantine_stops_gateway": {

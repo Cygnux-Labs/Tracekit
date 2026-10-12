@@ -3900,13 +3900,12 @@
         },
         "actions": {
           "type": "array",
-          "maxItems": 4,
+          "maxItems": 3,
           "items": {
             "enum": [
               "notify",
               "hold",
-              "quarantine",
-              "suspend"
+              "quarantine"
             ]
           }
         },
@@ -4125,9 +4124,10 @@
       "required": [
         "incident_id",
         "by",
-        "person"
+        "person",
+        "held_by"
       ],
-      "description": "format 1.2: a person ended the run's hold (run_resume, or incident_resolve of its incident)",
+      "description": "format 1.2: a person ended the hold of one incident on the run (run_resume, which ends each, or incident_resolve of that incident); held_by: the incidents that still hold it",
       "properties": {
         "incident_id": {
           "$ref": "#/$defs/id"
@@ -4146,6 +4146,13 @@
         },
         "break_glass": {
           "const": true
+        },
+        "held_by": {
+          "type": "array",
+          "maxItems": 1024,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
         }
       }
     },
@@ -4299,7 +4306,7 @@
         "state",
         "by"
       ],
-      "description": "format 1.2: an identity of the tenant is suspended (written by the signer that changed the shared list), enforced (each signer that starts enforcing an entry) or lifted",
+      "description": "format 1.2: an identity of the tenant is suspended by an operator (written by the signer that changed the shared list), enforced (each signer that starts enforcing an entry) or lifted",
       "properties": {
         "identity": {
           "type": "string",
@@ -4319,9 +4326,6 @@
         "reason": {
           "type": "string",
           "maxLength": 1024
-        },
-        "incident_id": {
-          "$ref": "#/$defs/id"
         }
       }
     }

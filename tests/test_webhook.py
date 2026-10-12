@@ -226,6 +226,18 @@ class TestIncidentOutbox(Case):
                 time.sleep(0.02)
         self.assertIn('tracekit_signer_incident_outbox_failures_total{reason="error"}', s.metrics.render())
 
+    def test_an_unreadable_cursor_starts_from_the_log_start(self):
+        d = ts.tmpdir(self)
+        for name, text, want in (("absent", None, 42), ("corrupt", "{not json", 0), ("wrong", '{"cursor": "x"}', 0)):
+            path = os.path.join(d, name)
+            if text is not None:
+                with open(path, "w") as f:
+                    f.write(text)
+            with self.subTest(name), mock.patch.object(webhook, "POLL_S", 0.01):
+                box = webhook.Outbox(self.url, KEY, "ocsf", path, lambda lo, hi: [], lambda r: [], 42, mock.Mock())
+                box.close()
+                self.assertEqual(box.cursor, want)
+
     def test_notify_without_a_subscriber_refuses_to_start(self):
         with self.assertRaisesRegex(ValueError, "no webhook subscribes to incident events"):
             self.signer(ts.tmpdir(self), [{"url": self.url, "events": ["deny"], "secret": KEY}])

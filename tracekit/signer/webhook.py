@@ -19,6 +19,7 @@ Slack messages. Operator notes (`reason`) never leave.
 import hashlib
 import hmac
 import json
+import logging
 import os
 import queue
 import threading
@@ -228,7 +229,8 @@ class Outbox:
     """Delivers the incident records of the log to one webhook at least once (receivers dedupe by incident id and
     record uid): a cursor over the record log, kept in `path`, that moves past a batch only once the endpoint took it.
     `read(lo, hi)`: the records with lo <= seq < hi written so far; `related(record)`: the records it cites; `start`:
-    where a new cursor starts (the log's size: earlier records are not sent). `failed`: a metrics Counter by reason."""
+    where a new cursor starts (the log's size: earlier records are not sent; an unreadable cursor starts again at 0).
+    `failed`: a metrics Counter by reason."""
 
     def __init__(self, url, secret, fmt, path, read, related, start, failed):
         self.url, self.secret, self.fmt, self.path, self.read, self.related = url, secret, fmt, path, read, related
@@ -236,8 +238,14 @@ class Outbox:
         try:
             with open(path, encoding="utf-8") as f:
                 self.cursor = json.load(f)["cursor"]
-        except (OSError, ValueError, KeyError, TypeError):
+            if type(self.cursor) is not int or self.cursor < 0:
+                raise ValueError(f"cursor {self.cursor!r}")
+        except FileNotFoundError:
             self.cursor = start
+        except (OSError, ValueError, KeyError, TypeError) as e:   # resend from the log's start: receivers dedupe
+            logging.getLogger(__name__).warning("tracekit signer: the outbox cursor %s is unreadable (%s): resending "
+                                                "incident records from the start of the log", path, e)
+            self.cursor = 0
         self._stop, self.wake = threading.Event(), threading.Event()
         self._thread = threading.Thread(target=self._loop, name="tracekit-signer-outbox", daemon=True)
         self._thread.start()

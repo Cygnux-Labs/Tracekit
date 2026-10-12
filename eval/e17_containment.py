@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """E17 part 2: does containment (docs/incidents.md) hold where an agent, or content it reads, would try to undo it?
 Offline: an in-process signer per scenario, nothing executed. Scenarios: the agent's own identity calls every operator
-RPC, granted or not; a policy that would let an injected ticket suspend a shared identity; a held run's approvals and
+RPC, and a config granting them to it; a policy that would let any trigger suspend an identity; a held run's approvals and
 waits next to a healthy run of the same identity; a hold across a restart, a snapshot and a crash, and a storage
 recovery; an approval granted before the hold consumed after it; a quarantine against the gateway's model loop; a held
 run closed and registered again; a bundle whose signer let a call through after a hold, through both verifiers.
@@ -78,26 +78,31 @@ def refused(f, code="forbidden", why=""):
 
 
 def agent_cannot_operate():
-    out = {}
-    for granted in (False, True):   # unconfigured (defaults), then granted every operator call outright
-        s = Signer(authorize={f"uid:{ME.subject}": sorted(svc.DEFAULT_GRANTS | svc.OPERATOR)} if granted else None)
-        s.register()   # the agent's own open run
-        why = "owns open runs" if granted else "is not authorized"
-        out["granted" if granted else "default"] = sum(refused(lambda: s.s.call(ME, m, {
-            **req, **({"request_id": "x"} if "request_id" in REQUESTS[m]["properties"] else {})}), why=why)
-            for m, req in OPERATOR_CALLS.items())
-        s.close()
-    return out == {"default": len(OPERATOR_CALLS), "granted": len(OPERATOR_CALLS)}, out
+    s = Signer()   # unconfigured: the agent's identity has the defaults
+    s.register()   # the agent's own open run
+    default = sum(refused(lambda: s.s.call(ME, m, {
+        **req, **({"request_id": "x"} if "request_id" in REQUESTS[m]["properties"] else {})}), why="is not authorized")
+        for m, req in OPERATOR_CALLS.items())
+    s.close()
+    d = tempfile.mkdtemp()
+    try:   # granted every operator call outright next to register_run: the signer doesn't start
+        svc.SignerService(d, policy=e17.engine(HOLD),
+                          authorize={f"uid:{ME.subject}": sorted(svc.DEFAULT_GRANTS | svc.OPERATOR)}).close()
+        starts = True
+    except ValueError as e:
+        starts = "both register_run and containment's operator calls" not in str(e)
+    finally:
+        shutil.rmtree(d, True)
+    out = {"default": default, "granted_starts": starts}
+    return out == {"default": len(OPERATOR_CALLS), "granted_starts": False}, out
 
 
-def injected_ticket_cannot_suspend():
-    steerable = [t for t in ("denied_calls", "provenance", "Q") if any(
-        "suspend: true is only for" in x for x in e17_lint({"trigger": t, "mode": "enforce", "action": "hold",
-                                                            "suspend": True, **({"max": 2, "window": 60} if
-                                                                                t == "denied_calls" else {})}))]
-    ok_trigger = not e17_lint({"trigger": "executed_against_policy", "mode": "enforce", "action": "quarantine",
-                               "suspend": True})
-    return steerable == ["denied_calls", "provenance", "Q"] and ok_trigger, {"refused_at_load": steerable}
+def no_trigger_suspends():
+    triggers = ("denied_calls", "provenance", "Q", "executed_against_policy")
+    refused_ = [t for t in triggers if any("suspend is an operator's action" in x for x in e17_lint({
+        "trigger": t, "mode": "enforce", "action": "quarantine" if t == "executed_against_policy" else "hold",
+        "suspend": True, **({"max": 2, "window": 60} if t == "denied_calls" else {})}))]
+    return refused_ == list(triggers), {"refused_at_load": refused_}
 
 
 def e17_lint(entry):
@@ -229,7 +234,7 @@ def _ts_verify(bundle, trust):
     return [out["exit_code"], next((c["status"] for c in out["checks"] if c["check"] == "incidents"), None)]
 
 
-SCENARIOS = {f.__name__: f for f in (agent_cannot_operate, injected_ticket_cannot_suspend, held_runs_dont_starve,
+SCENARIOS = {f.__name__: f for f in (agent_cannot_operate, no_trigger_suspends, held_runs_dont_starve,
                                      restarts, approval_before_hold, quarantine_stops_gateway, reregistered_inherits,
                                      verifier_catches_allow_after_hold)}
 

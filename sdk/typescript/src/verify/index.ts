@@ -518,35 +518,51 @@ async function checkIncidents(rep: Report, runs: Map<string, J[]>, files: Map<st
 /** The problems of one run's records with the holds and quarantines they record (verify/v2.py's _honoured). */
 function honoured(events: J[], pointers: Set<string>): string[] {
   const problems: string[] = [], flight = new Set<string>(), asked = new Map<string, J>(), consumed = new Set<J>();
-  let held: J = null, quarantined: J = null;
+  const due = new Map<string, [J, string]>();
+  let held: J[] = [], quarantined: J = null;
   const state = () => quarantined ? "quarantined" : "held";
+  const unfollowed = () => [...due].map(([i, [seq, a]]) => `seq ${seq}: incident ${i} enforces ${a} on this run, which `
+    + "no run.held or run.quarantined follows");
   for (const e of events) {
-    const t = e.type, d = e.data, where = `seq ${e.seq}`, on = quarantined || held;
-    if (t === "run.held" || t === "run.quarantined") {
+    const t = e.type, d = e.data, where = `seq ${e.seq}`, on = quarantined || held.join(" and ");
+    if (t === "policy.decision" && due.size && !quarantined) {   // an enforced response is written before the next call
+      problems.push(...unfollowed());
+      due.clear();
+    }
+    if (t === "incident.opened" && d.scope.kind === "run" && d.scope.id === str(e.run_id).slice(0, 256)
+      && Object.keys(d.scope).length === 2 && d.actions.some((a: J) => a === "hold" || a === "quarantine"))
+      due.set(d.incident_id, [e.seq, d.actions.includes("quarantine") ? "quarantine" : "hold"]);
+    else if (t === "run.held" || t === "run.quarantined") {
       pointers.add(d.incident_id);
+      due.delete(d.incident_id);
       for (const x of d.in_flight ?? []) flight.add(x.decision_id);
-      if (t === "run.quarantined") [quarantined, held] = [d.incident_id, null];
-      else if (!quarantined) held = d.incident_id;
-    } else if (t === "run.resumed") held = null;
-    else if (t === "policy.decision" && on && (quarantined ? d.decision !== "deny"
-      : d.decision !== "deny" && (d.decision !== "ask" || (d.incident_id ?? null) !== held)))
+      if (t === "run.quarantined") [quarantined, held] = [d.incident_id, []];
+      else if (!quarantined && !held.includes(d.incident_id)) held.push(d.incident_id);
+    } else if (t === "run.resumed") {
+      held = held.filter((i) => i !== d.incident_id);
+      if (JSON.stringify([...(d.held_by ?? held)].sort()) !== JSON.stringify([...held].sort()))
+        problems.push(`${where}: run.resumed says ${d.held_by.join(" and ") || "no incident"} still holds the run, its `
+          + `records ${held.join(" and ") || "none"}`);
+    } else if (t === "policy.decision" && on && (quarantined ? d.decision !== "deny"
+      : d.decision !== "deny" && (d.decision !== "ask" || !held.includes(d.incident_id ?? null))))
       problems.push(`${where}: ${d.decision} while the run is ${state()} by incident ${on}`);
     else if (t === "approval.request") {
       asked.set(d.approval_id, d.incident_id ?? null);
-      if (quarantined || held && (d.incident_id ?? null) !== held)
+      if (quarantined || held.length && !held.includes(d.incident_id ?? null))
         problems.push(`${where}: an approval asked while the run is ${state()} by incident ${on}, not as its held call`);
     } else if (t === "approval" && asked.get(d.approval_id ?? null) && d.decision === "approve" && (
       d.approver_kind === "agent" || d.self_approved || !Object.hasOwn(d, "person")
       && !Object.hasOwn(d.approver_identity ?? {}, "person") || (d.incident_id ?? null) !== asked.get(d.approval_id)))
       problems.push(`${where}: a held call approved by other than a person, or without its incident id`);
     else if (t === "approval.consumed") {
-      if (quarantined || held && (asked.get(d.approval_id) ?? null) !== held)
+      if (quarantined || held.length && !held.includes(asked.get(d.approval_id) ?? null))
         problems.push(`${where}: an approval consumed while the run is ${state()} by incident ${on}`);
       else if (asked.get(d.approval_id)) consumed.add(e.tool_call_id ?? null);
     } else if (t === "tool.result" && on && !flight.has(d.decision_id) && (quarantined || !consumed.has(e.tool_call_id ?? null)))
       problems.push(`${where}: a result while the run is ${state()} by incident ${on}, of a call neither in flight then nor `
         + "approved by a person for it");
   }
+  if (!quarantined) problems.push(...unfollowed());
   return problems;
 }
 

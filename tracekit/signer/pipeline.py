@@ -150,9 +150,10 @@ def cooldown_key(tenant, run):
 def contain_state(set_, log, run, e):
     """Follow record `e` of `run` in the containment state (SignerService._respond), `log.contain`: each incident
     ({tenant, run_id, run_seq, ts, trigger, rule_ids, scope, mode, actions, state: open|resolved, runs: the runs it held
-    or quarantined}), the holds new runs inherit by cooldown_key ([until ts, incident id, held|quarantined], None once
-    resolved), the tenants whose response engine is paused and the suspension entries this signer enforces; and the
-    run's `held` and `quarantined` incident ids and `quarantine_denies`. `set_`: as agent_state's."""
+    or quarantined}), the holds new runs inherit by cooldown_key ({incident id: [until ts, held|quarantined]}, an
+    incident leaving once resolved), the tenants whose response engine is paused and the suspension entries this signer
+    enforces; and the run's `held` (the incident ids holding it, in order, or None), `quarantined` incident id and
+    `quarantine_denies`. `set_`: as agent_state's."""
     c, typ, d = log.contain, e["type"], e["data"]
     inc = c["incidents"].get(d.get("incident_id"))
     if typ == "incident.opened":
@@ -161,20 +162,23 @@ def contain_state(set_, log, run, e):
                                                 **{k: d[k] for k in ("trigger", "rule_ids", "scope", "mode", "actions")}})
     elif typ in ("run.held", "run.quarantined"):
         kind = "held" if typ == "run.held" else "quarantined"
-        set_(run, kind, d["incident_id"])
         if kind == "quarantined":
+            set_(run, "quarantined", d["incident_id"])
             set_(run, "held", None)
+        else:
+            set_(run, "held", [*(run.get("held") or ()), d["incident_id"]])
         if inc is not None:
             set_(inc, "runs", inc["runs"] + [e["run_id"]])
         if d.get("inherit_until"):
-            set_(c["cooldown"], cooldown_key(e["tenant"], run), [d["inherit_until"], d["incident_id"], kind])
+            k = cooldown_key(e["tenant"], run)
+            set_(c["cooldown"], k, {**(c["cooldown"].get(k) or {}), d["incident_id"]: [d["inherit_until"], kind]})
     elif typ == "run.resumed":
-        set_(run, "held", None)
+        set_(run, "held", [x for x in run.get("held") or () if x != d["incident_id"]] or None)
     elif typ == "incident.resolved" and inc is not None:
         set_(inc, "state", "resolved")
         for k, v in list(c["cooldown"].items()):
-            if v and v[1] == d["incident_id"]:
-                set_(c["cooldown"], k, None)
+            if d["incident_id"] in v:
+                set_(c["cooldown"], k, {i: x for i, x in v.items() if i != d["incident_id"]})
     elif typ == "incident.response":
         set_(c["paused"], e["tenant"], not d["enabled"])
     elif typ == "identity.suspension":

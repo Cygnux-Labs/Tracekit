@@ -62,6 +62,18 @@ class Signer(e17c.Signer):
         return self.call("approval_request", {**run, "tool_call_id": tcid})["approval_id"]
 
 
+TWO_HOLDS = {**HOLD, "respond": HOLD["respond"] + [{"trigger": "denied_calls", "max": 2, "window": 600, "mode": "enforce",
+                                                     "action": "hold"}]}
+
+
+def two_holds(s, run):
+    """Hold `run` by Q, then by denied_calls too; their incident ids."""
+    s.hold(run)
+    for i in range(4):
+        s.decide(run, ("read_file", {"path": f"/forbidden/{i}"}))
+    return [i["incident_id"] for i in s.incidents(run)]
+
+
 class Case(unittest.TestCase):
     def signer(self, pol=HOLD, **approvals):
         s = Signer(pol, **approvals)
@@ -174,6 +186,29 @@ class TestHold(Case):
         self.assertEqual(s.state(child), "held")
         self.assertTrue([e for e in s.events(child) if e["type"] == "run.held"][0]["data"]["inherited"])
 
+    def test_a_run_held_by_two_incidents_stays_held_until_both_end(self):
+        s = self.signer(TWO_HOLDS)
+        run = s.register()
+        first, second = two_holds(s, run)
+        self.assertEqual([e["data"]["incident_id"] for e in s.events(run) if e["type"] == "run.held"], [first, second])
+        s.as_(OP, "incident_resolve", {"incident_id": first})
+        self.assertEqual(s.events(run)[-1]["data"]["held_by"], [second])
+        out = s.decide(run, e17.EGRESS)
+        self.assertEqual((out["decision"], out["incident_id"]), ("ask", second))
+        self.assertEqual(s.as_(OP, "incident_show", {"incident_id": second})["runs"],
+                         [{"run_id": run["run_id"], "state": "held"}])
+        s.as_(OP, "incident_resolve", {"incident_id": second})
+        self.assertEqual(s.decide(run, e17.EGRESS)["decision"], "allow")
+
+    def test_resume_ends_every_hold(self):
+        s = self.signer(TWO_HOLDS)
+        run = s.register()
+        both = two_holds(s, run)
+        s.as_(OP, "run_resume", {"run_id": run["run_id"]})
+        self.assertEqual([(e["data"]["incident_id"], e["data"]["held_by"]) for e in s.events(run)
+                          if e["type"] == "run.resumed"], [(both[0], [both[1]]), (both[1], [])])
+        self.assertEqual(s.decide(run, e17.EGRESS)["decision"], "allow")
+
     def test_metrics(self):
         s = self.signer()
         s.hold(s.register())
@@ -254,6 +289,21 @@ class TestOperators(Case):
         for e in s.events():
             self.assertEqual(validate(e), [], e["type"])
 
+    def test_an_operator_response_passes_to_the_owners_next_run(self):
+        for method, state in (("run_hold", "held"), ("run_quarantine", "quarantined")):
+            with self.subTest(method):
+                s = self.signer()
+                run = s.register()
+                iid = s.as_(OP, method, {"run_id": run["run_id"]})["incident_id"]
+                s.call("close_run", run)
+                new = s.s.log.runs[("default", s.register()["run_id"])]
+                self.assertEqual(new.get(state), [iid] if state == "held" else iid)
+
+    def test_an_identity_granted_register_run_and_operator_calls_refuses_to_start(self):
+        with self.assertRaisesRegex(ValueError, "uid:1 both register_run and containment's operator calls"):
+            svc.SignerService(os.path.join(self.signer().dir, "other"), policy=e17.engine(HOLD),
+                              authorize={"uid:1": ["register_run", "decide", "run_resume"]})
+
     def test_operator_calls_are_never_defaults(self):
         self.assertLessEqual(svc.OPERATOR, svc.NEVER_DEFAULT)
 
@@ -308,23 +358,26 @@ class TestSuspension(Case):
         self.refused(lambda: s.s._check_suspended(CallerIdentity("token", "carl", True)), why="is suspended")
         s.s._check_suspended(CallerIdentity("token", "bob", True, {"tenant": "acme"}))
 
+    def test_a_suspended_approver_can_not_answer(self):
+        s = self.signer()
+        run = s.register()
+        s.decide(run, PAY, tcid="p")
+        aid = s.call("approval_request", {**run, "tool_call_id": "p"})["approval_id"]
+        s.as_(OP, "suspend", {"identity": f"uid:{OTHER.subject}"})
+        self.refused(lambda: s.as_(OTHER, "approval_decide", {"approval_id": aid, "decision": "approve"}),
+                     why="is suspended")
+
+    def test_an_empty_entry_suspends(self):
+        s = self.signer()
+        with open(os.path.join(s.dir, "suspensions.json"), "w") as f:
+            json.dump({"default": {f"uid:{ME.subject}": {}}}, f)
+        self.refused(lambda: s.register(), why="is suspended")
+
     def test_an_unreadable_list_refuses(self):
         s = self.signer()
         with open(os.path.join(s.dir, "suspensions.json"), "w") as f:
             f.write("{not json")
         self.refused(lambda: s.register(), "unavailable", "unreadable")
-
-    def test_respond_suspends_the_owner_on_executed_against_policy(self):
-        pol = {**HOLD, "respond": [{"trigger": "executed_against_policy", "mode": "enforce", "action": "quarantine",
-                                    "suspend": True}]}
-        s = self.signer(pol)
-        run = s.register()
-        # what `complete` writes for a call that ran after a deny
-        s.s.log.write(lambda tx: tx.emit(s.s.log.runs[("default", run["run_id"])], "capture.gap", {
-            "kind": "executed_against_policy", "reason": "tc-0 ran after a deny decision"}, source="signer"))
-        inc = s.incidents(run)[0]
-        self.assertEqual(inc["actions"], ["quarantine", "suspend"])
-        self.refused(lambda: s.register(), why="is suspended")
 
     def test_notify_needs_a_webhook(self):
         pol = {**HOLD, "respond": [{"trigger": "Q", "mode": "enforce", "action": "notify"}]}
@@ -409,9 +462,44 @@ class TestVerifier(Case):
 
     def test_a_consume_under_a_later_hold_fails(self):
         ev = [("run.held", {"incident_id": "inc-1"}), ("approval.request", {"approval_id": "a", "incident_id": "inc-1"}),
-              ("run.resumed", {}), ("run.held", {"incident_id": "inc-2"}), ("approval.consumed", {"approval_id": "a"})]
+              ("run.resumed", {"incident_id": "inc-1", "held_by": []}), ("run.held", {"incident_id": "inc-2"}),
+              ("approval.consumed", {"approval_id": "a"})]
         problems = v2._honoured([{"type": t, "data": d, "seq": i} for i, (t, d) in enumerate(ev)], set())
         self.assertIn("an approval consumed while the run is held by incident inc-2", problems[0])
+
+    def test_a_run_held_by_two_incidents_verifies(self):
+        s = self.signer(TWO_HOLDS)
+        run = s.register()
+        first, _ = two_holds(s, run)
+        s.as_(OP, "incident_resolve", {"incident_id": first})
+        s.decide(run, e17.EGRESS)
+        code, line = self.check(*bundle(s, run))
+        self.assertEqual((code, line["status"]), (0, "pass"), line)
+
+    def test_an_enforced_hold_no_run_held_follows_fails(self):
+        s = self.signer()
+        run = s.register()
+        with mock.patch.object(svc.SignerService, "_contain"):
+            s.hold(run)
+        s.decide(run, e17.EGRESS)
+        code, line = self.check(*bundle(s, run))
+        self.assertEqual((code, line["status"]), (1, "fail"))
+        self.assertIn("enforces hold on this run, which no run.held or run.quarantined follows", line["problems"][0])
+
+    def test_a_held_call_asked_under_a_later_hold_verifies(self):
+        s = self.signer()
+        run = s.register()
+        s.hold(run)
+        s.decide(run, PAY, tcid="p")   # held under the first incident
+        s.as_(OP, "run_resume", {"run_id": run["run_id"]})
+        second = s.as_(OP, "run_hold", {"run_id": run["run_id"]})["incident_id"]
+        aid = s.call("approval_request", {**run, "tool_call_id": "p"})["approval_id"]
+        self.assertEqual([e["data"]["incident_id"] for e in s.events(run) if e["type"] == "approval.request"], [second])
+        s.as_(OP, "approval_decide", {"approval_id": aid, "decision": "approve"})
+        self.assertTrue(s.call("approval_consume", {**run, "tool_call_id": "p", "tool": "pay", "args_source": "parsed",
+                                                    "args": PAY[1]})["ok"])
+        code, line = self.check(*bundle(s, run))
+        self.assertEqual((code, line["status"]), (0, "pass"), line)
 
     def test_a_cross_run_pointer_is_signer_asserted(self):
         s = self.signer()
