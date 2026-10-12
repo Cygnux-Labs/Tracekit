@@ -508,7 +508,8 @@ class FileStorage(_Records, Storage):
                 _sync(log.fd, True)
             _mkdir(d)
             _write_new(os.path.join(d, f"{self.tree.size}.json"), _mac(self.snapshot_key, data) + b"\n" + data)
-            for _, path in _snapshots(self.root)[2:]:
+            snaps = _snapshots(self.root)   # one past this log's end covers records it hasn't: never valid, so it goes
+            for path in [p for n, p in snaps if n > self.tree.size] + [p for n, p in snaps if n <= self.tree.size][2:]:
                 os.unlink(path)
 
     def append_batch(self, records):
@@ -517,9 +518,23 @@ class FileStorage(_Records, Storage):
                 if r["event"]["seq"] != self.tree.size + i:
                     raise ValueError(f"seq {r['event']['seq']} does not continue the log at {self.tree.size + i}")
             lines = [json.dumps(r, separators=(",", ":"), ensure_ascii=False).encode("utf-8") + b"\n" for r in records]
+            n, size, edge, prev = len(self.log.offsets), self.tree.size, [list(e) for e in self.tree.edge], self.prev
+            runs = {k: self.runs.get(k) and dict(self.runs[k], seqs=len(self.runs[k]["seqs"]))
+                    for k in {(r["event"]["tenant"], r["event"]["run_id"]) for r in records}}
             self.log.append(lines, self.full)
-            for r in records:
-                self._index(r)
+            try:
+                for r in records:
+                    self._index(r)
+            except BaseException:   # a tile write failed: the batch was refused, so none of it stays in the log
+                os.ftruncate(self.log.fd, self.log.offsets[n - 1])
+                del self.log.offsets[n:]
+                self.tree, self.prev = Tree(self.tile_store(RECORDS), size, edge), prev
+                for k, was in runs.items():
+                    if was is None:
+                        self.runs.pop(k, None)
+                    else:
+                        self.runs[k] = dict(was, seqs=self.runs[k]["seqs"][:was["seqs"]])
+                raise
 
     def tail_state(self):
         return {"seq": self.tree.size - 1 if self.tree.size else None, "prev_hash": self.prev,

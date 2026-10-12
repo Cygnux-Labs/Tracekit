@@ -171,7 +171,7 @@ def cooldown_key(tenant, run):
     return f"{tenant}\0{run['owner']}\0{run['people'][1] or ''}"
 
 
-def contain_state(set_, log, run, e):
+def contain_state(set_, log, run, e, pop=lambda d, k: d.pop(k, None)):
     """Follow record `e` of `run` in the containment state (SignerService._respond), `log.contain`: each incident
     ({tenant, run_id, run_seq, ts, trigger, rule_ids, scope, mode, actions, state: open|resolved, runs: the runs it held
     or quarantined}), the holds new runs inherit by cooldown_key ({incident id: [until ts, held|quarantined]}, an
@@ -193,16 +193,18 @@ def contain_state(set_, log, run, e):
             set_(run, "held", [*(run.get("held") or ()), d["incident_id"]])
         if inc is not None:
             set_(inc, "runs", inc["runs"] + [e["run_id"]])
-        if d.get("inherit_until"):
+        if d.get("inherit_until"):   # the key's expired holds go as a new one comes
             k = cooldown_key(e["tenant"], run)
-            set_(c["cooldown"], k, {**(c["cooldown"].get(k) or {}), d["incident_id"]: [d["inherit_until"], kind]})
+            live = {i: x for i, x in (c["cooldown"].get(k) or {}).items() if x[0] > e["ts"]}
+            set_(c["cooldown"], k, {**live, d["incident_id"]: [d["inherit_until"], kind]})
     elif typ == "run.resumed":
         set_(run, "held", [x for x in run.get("held") or () if x != d["incident_id"]] or None)
     elif typ == "incident.resolved" and inc is not None:
         set_(inc, "state", "resolved")
         for k, v in list(c["cooldown"].items()):
             if d["incident_id"] in v:
-                set_(c["cooldown"], k, {i: x for i, x in v.items() if i != d["incident_id"]})
+                rest = {i: x for i, x in v.items() if i != d["incident_id"] and x[0] > e["ts"]}
+                set_(c["cooldown"], k, rest) if rest else pop(c["cooldown"], k)
     elif typ == "incident.response":
         set_(c["paused"], e["tenant"], not d["enabled"])
     elif typ == "identity.suspension":
@@ -296,7 +298,7 @@ class Tx:
         self.set(run, "head", r["hash"])
         found = reconcile.observe(self.set, run, e, digests, log.handoff)
         agent_state(self.set, log, run, e)
-        contain_state(self.set, log, run, e)
+        contain_state(self.set, log, run, e, self.pop)
         for t, d in incidents:   # first, as detect.backtest feeds them; an enforced incident is the responder's to write
             if t == "incident.opened" and d["mode"] == "enforce" and log.respond:
                 log.respond(self, run, e, d)

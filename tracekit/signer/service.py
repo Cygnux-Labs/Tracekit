@@ -1612,8 +1612,9 @@ class SignerService:
         if gw is None:
             self._check_harness(identity, key)
             if key in self._beats and self._tailer(identity):   # any call of a watched run's tailer shows it alive
-                with self._beats_lock:
-                    self._beats[key] = time.monotonic()
+                with self._beats_lock:   # checked again here: a sweep that made the run final has dropped its beat
+                    if key in self._beats and not self.log.runs[key]["final"]:
+                        self._beats[key] = time.monotonic()
         return key
 
     def _covering(self, key):
@@ -2178,8 +2179,15 @@ class SignerService:
             self.log.storage.iter_run(r["event"]["tenant"], c["run_id"]), c["run_seq"], c["run_seq"] + 1)]
 
     def _operator(self, identity):
-        """The tenant an operator call acts in, the caller's. An identity that owns open runs is an agent's: refused,
-        whatever it is granted."""
+        """The tenant an operator call acts in, the caller's. An identity that owns open runs, or that its keys together
+        also grant register_run (the startup check sees each `authorize` entry alone), is an agent's: refused."""
+        try:
+            self._grant(identity, "register_run")
+        except RPCError:
+            pass
+        else:
+            raise RPCError("forbidden", f"{subject(identity)[:256]} is also granted register_run: containment is "
+                                        "operated by an identity that runs no agent")
         if self.log.open_runs.get(owner(identity)):
             raise RPCError("forbidden", f"{subject(identity)[:256]} owns open runs: containment is operated by an "
                                         "identity that runs no agent")
@@ -3352,9 +3360,9 @@ class SignerService:
     def _tailer_heartbeat(self, identity, req):
         key = self._authorize(identity, req)
         self.quotas.take_event(identity)
-        if self.log.runs[key]["final"]:
-            raise RPCError("run_closed", req["run_id"])
-        with self._beats_lock:
+        with self._beats_lock:   # final checked under the lock: a sweep drops a final run's beat under it
+            if self.log.runs[key]["final"]:
+                raise RPCError("run_closed", req["run_id"])
             self._beats[key] = time.monotonic()
         return {}
 
