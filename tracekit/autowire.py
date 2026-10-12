@@ -67,6 +67,12 @@ def _process_client(Client, RPCError, current_run, schemas):
 
         def call(self, method, req=None):
             req, p = dict(req or {}), self.process
+            if method == "close_run":   # the adapters' streams it renumbered end where it numbered them
+                with _LOCK:
+                    ends = [{"stream": name, "client_seq": n - 1} for (rid, _), (name, n) in getattr(self, "_next", {}).items()
+                            if rid == req.get("run_id") and n > 0]
+                if ends:
+                    req["last_client_seq"] = [*req.get("last_client_seq", ()), *ends][:64]
             if p is None or req.get("run_id") not in self.ids:
                 return super().call(method, req)
             cur = self._current()

@@ -8,7 +8,7 @@
  * `open`, else it is refused. Any other failure to decide or approve (a refusal, a run the signer closed after its idle
  * timeout) refuses the call. A failure to record an outcome warns and changes nothing the framework sees.
  */
-import type { Decision, Frame, RunHandle } from "../client.js";
+import { currentRun, type Decision, type Frame, type RunHandle } from "../client.js";
 import { argsDigest, canonicalize, digest } from "../jcs.js";
 
 export const BLOCKED = "Tool call blocked by policy: ";
@@ -47,8 +47,19 @@ export class Gate {
   private passed = new Map<string, boolean>();    // tool_call_id -> let through (false: unrecorded, fail open)
   private send = new Map<string, boolean>();      // tool_call_id -> its decision said send_result (an untrusted tool)
   private t2 = new Map<string, [string, unknown]>();   // tool_call_id -> (tool, the signer's copy of the arguments)
+  private runs = new Map<string, RunHandle>();          // tool_call_id -> the run it was decided in
 
-  constructor(readonly run: RunHandle) {}
+  constructor(private readonly base: RunHandle) {}
+
+  /** The current run (withRun) while one is set, else the run the adapter was built with. */
+  get run(): RunHandle {
+    return currentRun() ?? this.base;
+  }
+
+  /** The run the call was decided in. */
+  runOf(id: string): RunHandle {
+    return this.runs.get(id) ?? this.run;
+  }
 
   attempt(id: string): number {
     return this.attempts.get(id) ?? 0;
@@ -56,7 +67,9 @@ export class Gate {
 
   /** The signer's decision for the call's next attempt; a refusal rejects (RPCError). */
   decide(id: string, tool: string, args: unknown): Promise<Decision> {
-    return this.run.decide(id, tool, args, { attempt: this.attempt(id) });
+    const run = this.run;
+    keep(this.runs, id, run);
+    return run.decide(id, tool, args, { attempt: this.attempt(id) });
   }
 
   /** Null when the call may run now, else the refusal the model gets instead of its result. `d` is the decision made
@@ -78,14 +91,14 @@ export class Gate {
     keep(this.send, id, d.send_result === true);
     try {
       if (d.decision === "ask" && waitMs !== undefined) {
-        hint = (await this.run.approvalRequest(id, { attempt })).approval_id as string;
+        hint = (await this.runOf(id).approvalRequest(id, { attempt })).approval_id as string;
         let state = "requested";
         for (const end = Date.now() + waitMs; state === "requested" && Date.now() < end;)
-          state = (await this.run.approvalWait(hint, Math.min(end - Date.now(), 300_000))).state;
+          state = (await this.runOf(id).approvalWait(hint, Math.min(end - Date.now(), 300_000))).state;
         if (state !== "approved") return refusal(d.rule_ids, `not approved: ${state}`);
       }
       // every call, allowed or approved: nothing the framework saved vouches that no approval is needed
-      const c = await this.run.call("approval_consume", { tool_call_id: id, attempt, tool, args,
+      const c = await this.runOf(id).call("approval_consume", { tool_call_id: id, attempt, tool, args,
         args_source: typeof args === "string" ? "raw" : "parsed", ...(hint ? { approval_id_hint: hint } : {}) });
       if (!c.ok) return refusal(c.rule_ids, c.reason);
       if ("args" in c) keep(this.t2, id, [tool, c.args]);
@@ -109,7 +122,7 @@ export class Gate {
     if (recorded === undefined) return;
     const attempt = this.attempt(id);
     keep(this.attempts, id, attempt + 1);
-    if (recorded) await this.run.complete(id, status, { attempt, ...(t2 ? { args_digest: argsDigest(...t2) } : {}), ...fields });
+    if (recorded) await (take(this.runs, id) ?? this.run).complete(id, status, { attempt, ...(t2 ? { args_digest: argsDigest(...t2) } : {}), ...fields });
   }
 
   /** Runs `fn` for a call admit() let through and completes it; its result or exception reaches the caller unchanged. */

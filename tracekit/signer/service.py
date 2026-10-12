@@ -1566,6 +1566,13 @@ class SignerService:
         policy's class gets the stricter of the two decisions; detection sees the rules of both, so a mismatch can't
         hide a step."""
         d = self.policy.decide(tool, args, untrusted=untrusted)
+        if tool.startswith("mcp:") and "/" in tool:
+            # an MCP tool is also checked under its bare name (the name the model may know it by), in its own class if
+            # the policy maps it, else the MCP call's: a rule on that name can't be dodged by naming the call an MCP one
+            bare, cls = tool.split("/", 1)[1], self.policy.tool_class(tool)
+            b = self.policy.decide(bare, args, None if self.policy.tool_class(bare) != "unknown" else cls, untrusted)
+            d = {**max(d, b, key=lambda x: STRICTNESS.index(x["verdict"])),
+                 "rule_ids": list(dict.fromkeys(d["rule_ids"] + b["rule_ids"]))}
         if hint is None or hint == self.policy.tool_class(tool):
             return d, False, d["rule_ids"]
         h = self.policy.decide(tool, args, hint if hint in policy_compile.CLASSES else "unknown", untrusted)
@@ -1973,8 +1980,11 @@ class SignerService:
                     call["agent"] = agent
             tx.set(run["calls"], tcid, call)
             tx.set(run["decisions"], did, call)
+            names = reconcile.model_names(tool)   # an MCP call: its digest under each name the model may have used
             seq = tx.event(run, req, "policy.decision", dict(data, decision=verdict, rule_ids=rule_ids, **big),
-                           digests={tcid: digest}, tool_call_id=tcid, attempt=attempt, args_source=req["args_source"],
+                           digests={tcid: digest if digest is None or len(names) == 1 else {
+                               n: event_hash({"tool": n, "args": args}) for n in names}},
+                           tool_call_id=tcid, attempt=attempt, args_source=req["args_source"],
                            **top)
             written.append(seq)
             for kind, reason in gaps:
@@ -2591,7 +2601,9 @@ class SignerService:
         identity = self._on_behalf(identity, req)
         agent_view = self._is_agent(identity)
         # copied on the writer, so only committed states are listed
-        items = iter(self.log.write(lambda tx: [(aid, dict(a)) for aid, a in self.log.approvals.items()]))
+        items = iter(self.log.write(lambda tx: [
+            (aid, {**a, "run_closing": a["state"] == "requested" and self.log.runs[a["run_key"]]["closed"]})
+            for aid, a in self.log.approvals.items()]))
         page, cursor = [], req.get("cursor")
         # lean: every page scans the approvals from the first; index them by tenant once a signer holds ~100k
         if cursor is not None:
@@ -2605,7 +2617,7 @@ class SignerService:
                     req.get("escalated") in (None, bool(a.get("escalated"))) and self._may_see(identity, a):
                 if len(page) == req.get("limit", LIST_PAGE):
                     return {"approvals": page, "next_cursor": page[-1]["approval_id"]}
-                s = self._summary(aid, a)
+                s = {**self._summary(aid, a), **({"run_closing": True} if a["run_closing"] else {})}
                 page.append({k: v for k, v in s.items() if k not in ("run_id", "tool_call_id", "attempt", "requester",
                                                                      "passkey")} if agent_view else s)
         return {"approvals": page, "next_cursor": None}
