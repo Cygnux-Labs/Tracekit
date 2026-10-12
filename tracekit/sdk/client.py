@@ -454,8 +454,23 @@ for _name in rpc_schema.REQUESTS.keys() - {"register_run"}:
     setattr(Client, _name, _rpc_method(_name))
 
 
+def _close_at_exit(run, failed):
+    """Close `run` as its `with` block ends. A signer that can't be reached only warns: it closes the run itself after
+    its idle timeout. Nothing masks the exception the block raised (`failed`)."""
+    try:
+        run.close()
+    except SignerUnavailable as e:
+        warnings.warn(f"tracekit: run {run.run_id} was not closed: the signer can't be reached ({e}); it closes the run "
+                      "after its idle timeout", stacklevel=3)
+    except Exception as e:
+        if not failed:
+            raise
+        warnings.warn(f"tracekit: run {run.run_id} was not closed: {e}", stacklevel=3)
+
+
 class RunHandle:
-    """A registered run. As a context manager it is the current run (`current_run`) and is closed on exit."""
+    """A registered run. As a context manager it is the current run (`current_run`) and is closed on exit (see
+    _close_at_exit)."""
 
     def __init__(self, client, registered):
         self.client, self.registered = client, registered
@@ -507,7 +522,7 @@ class RunHandle:
 
     def __exit__(self, *exc):
         current_run.reset(self._ctx)
-        self.close()
+        _close_at_exit(self, exc[0] is not None)
 
     @contextlib.contextmanager
     def current(self):
@@ -553,7 +568,7 @@ class AsyncRunHandle(_Async):
 
     async def __aexit__(self, *exc):
         current_run.reset(self._ctx)
-        await self.close()
+        await asyncio.to_thread(_close_at_exit, self._sync, exc[0] is not None)
 
     @contextlib.contextmanager
     def current(self):
