@@ -53,6 +53,8 @@ tools:                          # tool name or glob (fnmatch) -> class
   'mcp__*': mcp
   transfer_funds: payment
 untrusted: [http, mcp, WebFetch]   # tool classes and tool name globs whose results are untrusted content (Provenance)
+handoffs: [transfer_to_refunds_agent]   # tool names the framework runs as handoffs to another agent; no pack names
+                                        # any: exact names, as your agents' handoff tools are called
 deny:  [<rule>, ...]
 ask:   [<rule>, ...]
 flag:  [<rule>, ...]

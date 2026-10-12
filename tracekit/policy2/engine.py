@@ -81,6 +81,11 @@ class Engine:
             "enum" not in b or any(type(e) is typ and e == v for e in b["enum"])) and (
             "pattern" not in b or bool(self._match(self._bounds[(rid, name)], _text(v), True, deadline)))
 
+    def is_handoff(self, tool):
+        """Whether the policy's `handoffs:` names `tool` as one the framework runs as a handoff to another agent: never
+        gated, so the model asking for one is not a missing decide."""
+        return any(fnmatch.fnmatchcase(tool, h) for h in self.policy.get("handoffs", ()))
+
     def tool_class(self, tool):
         tools = self.policy.get("tools", {})
         if tool in tools:

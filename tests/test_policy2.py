@@ -146,6 +146,32 @@ def corpus_policy():
             "ask": rules[len(PATTERNS):-1], "deny": rules[-1:]}
 
 
+class Handoffs(unittest.TestCase):
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.d, True)
+
+    def build(self, name, text):
+        with open(os.path.join(self.d, name), "w") as f:
+            f.write(text)
+        return pc.build(os.path.join(self.d, name))
+
+    def test_declared_default_merged_and_refused(self):
+        base, errs = self.build("base.yaml", "version: b\nhandoffs: ['route_*']\n")
+        self.assertEqual(errs, [])
+        self.assertTrue(Engine(base).is_handoff("route_to_refunds"))
+        self.assertFalse(Engine(base).is_handoff("transfer_to_refunds"))
+        self.assertFalse(Engine(self.build("none.yaml", "version: n\n")[0]).is_handoff("transfer_to_refunds"))
+        for pack in ("dev.yaml", "server.yaml"):   # the default policies name none: a tool's name is the app's choice
+            built = pc.build(os.path.join(os.path.dirname(pc.__file__), "packs", pack))[0]
+            self.assertFalse(Engine(built).is_handoff("transfer_to_refunds"), pack)
+        child, _ = self.build("child.yaml", "version: c\nextends: base.yaml\nhandoffs: ['go_*']\n")
+        self.assertEqual(child["handoffs"], ["route_*", "go_*"])
+        self.assertIn("handoffs must list tool name globs", "\n".join(self.build("bad.yaml", "version: x\nhandoffs: 3\n")[1]))
+        for loose in ("'*'", "'*_*'", "'[a-z]*'", "'??'"):
+            self.assertIn("too loose", "\n".join(self.build("all.yaml", f"version: a\nhandoffs: [{loose}]\n")[1]), loose)
+
+
 class Engines(unittest.TestCase):
     def setUp(self):
         self.regex = Engine(corpus_policy(), "regex")
