@@ -63,7 +63,6 @@ MAX_N = 1024   # pairs per test: a finding names two replay runs per pair
 MAX_K = 1024   # the surrogate's samples
 # a 1x1 PNG: what a removed screenshot becomes, so a computer_call_output keeps its shape
 BLANK_PNG = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
-ANTHROPIC_CLIENT_TOOLS = ("custom", "bash_", "text_editor_", "computer_", "memory_")   # typed tools the client runs
 SERVER_HELD = ("previous_response_id", "conversation")   # OpenAI Responses: context the provider holds
 ASSUMPTIONS = ["no code between model calls rewrote the history the model was sent",
                "tools are deterministic: a recorded result is what the tool would return again"]
@@ -308,15 +307,7 @@ class Investigation:
 def unreplayable(kind: str, req: Dict[str, Any], resp: Any = None) -> Optional[str]:
     """Why request `req` (with its recorded response `resp`) can't be replayed, or None: it lets the provider run a tool
     itself (a replay would run it again), or continues context the provider holds (a removal can't reach it)."""
-    tools = [t for t in req.get("tools") or [] if isinstance(t, dict)]
-    if kind == "anthropic:messages":
-        names = [str(t.get("name") or t["type"]) for t in tools
-                 if "type" in t and not str(t["type"]).startswith(ANTHROPIC_CLIENT_TOOLS)]
-        names += [k for k in ("mcp_servers", "container") if req.get(k)]
-    else:
-        names = [":".join(str(v) for v in (t.get("type"), t.get("server_label")) if v) for t in tools
-                 if t.get("type", "function") not in ("function", "custom")]
-        names += ["web_search_options"] * ("web_search_options" in req)
+    names = parsers.provider_tools(kind, req)
     if isinstance(resp, dict):
         names += [u["name"] for u in parsers.parse(kind, resp, req)["tool_uses"] if u["executed_by"] == "provider"]
     if names:

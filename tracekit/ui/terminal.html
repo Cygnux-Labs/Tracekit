@@ -1845,7 +1845,7 @@
       if (r.decisions) {
         const t0 = Date.parse(r.first_ts) / 1000, t1 = Date.parse(r.last_ts) / 1000, c = r.coverage, gaps = Object.entries(r.gaps || {});
         left += line(null, "RECORDS", `${r.records} · ${fmtT(t0)} → ${fmtT(t1)} (${fmtDur(t1 - t0)}) · ${r.state}`)
-          + line(null, "COVERAGE", c ? `${c.layers.join("+") || "no layers"} · reconciled ${c.reconciled}` + Object.entries(c.unreconciled).map(([k, n]) => ` · unreconciled ${k} ${n}`).join("") : "not final yet: run.final records it");
+          + line(null, "COVERAGE", c ? `${c.layers.join("+") || "no layers"} · reconciled ${c.reconciled}` + Object.entries(c.unreconciled).map(([k, n]) => ` · unreconciled ${k} ${n}`).join("") + (c.provider_executed ? ` · provider-run tools ${c.provider_executed}` : "") : "not final yet: run.final records it");
         right = `<div class="sec">POLICY · CLICK A LINE FOR ITS FIRST RECORD</div><dl class="kv">` + line(f.allow, "ALLOWED", d.allow || 0) + line(f.flag, "FLAGGED", d.flag || 0, d.flag ? "s-flag" : "") + line(f.deny, "DENIED", d.deny || 0, d.deny ? "s-deny" : "") + line(f.ask, "HELD", d.ask || 0, d.ask ? "s-flag" : "");
         for (const a of r.approvals) right += line(a.seq, a.decision === "approve" ? "→ APPROVED" : "→ " + String(a.decision).toUpperCase(), `${a.tool_use_id} by ${a.approver}` + (a.via ? ` vouched for by ${a.via}` : "") + (a.self_approved ? " · SELF-APPROVED" : " · not self-approved") + (a.break_glass ? " · BREAK-GLASS" : ""), a.self_approved || a.break_glass || a.decision !== "approve" ? "s-deny" : "s-ok");
         right += (gaps.length ? gaps.map(([k, n]) => line(f["gap:" + k], "GAP", `${k} ×${n}`, "s-err")).join("") : line(null, "GAPS", "none signed")) + `</dl>`;

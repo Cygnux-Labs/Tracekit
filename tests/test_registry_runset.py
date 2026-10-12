@@ -90,6 +90,18 @@ def _dump(records):
 
 
 class TestRunSet(RunSet):
+    def test_writes_after_run_final_are_in_the_tenants_run_set(self):
+        a = self.register()
+        self.finish(a)
+        for seq in (0, 1):   # a client learns from the first that its run ended: the second counts
+            with self.assertRaises(RPCError):
+                self.call("state_write", {**a, "stream": "s", "client_seq": seq, "key": "k",
+                                          "value_digest": "sha256:" + "0" * 64})
+        self.s.flush_refusals()
+        code, rep, line = self.check(self.export(), "run-set")
+        self.assertEqual((code, rep.integrity), (0, "VERIFIED"), rep.checks)
+        self.assertIn("tenant-level gaps: late_activity 1", line["detail"])
+
     def test_honest_run_set_is_complete_and_holds_one_tenant(self):
         out, runs = self.honest()
         code, rep, line = self.check(out, "run-set")

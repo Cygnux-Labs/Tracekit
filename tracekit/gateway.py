@@ -11,6 +11,10 @@ gateway.yaml:
     api_key_header: authorization          # sent as `Bearer <key>`; or x-api-key (Anthropic), sent as is
     signer: https://signer.internal:8443   # the gateway's own identity: $TRACEKIT_SIGNER_* (tracekit.sdk.client)
     max_body: 33554432                     # request and non-streamed response bodies; 413 / 502 beyond
+    provider_tools: {deny: [code_execution, mcp_servers, code_interpreter]}   # tools the provider runs itself
+                                           # (as parsers.provider_tools names them; `mcp` covers every mcp:<label>):
+                                           # a request declaring a denied one, or with `allow`, one not listed, is
+                                           # refused (403): they run mid-response, where no decide can hold them
 
 Every request carries an identity the authenticators accept and its run, `X-Tracekit-Run: <run_id>.<run token>` or
 that value as `Authorization: Bearer` (then the identity must come from a client certificate). No identity or run: 401.
@@ -20,10 +24,15 @@ run, identity or tenant: 403. Nothing is attributed by address or name. Relative
 For each exchange: model_event phase request (with the tool results it sends back) before forwarding; the response
 streams through, parsed by tracekit.parsers; model_event phase response (tool uses with args digests, usage, stop
 reason, error) is recorded before the chunk with the stream's terminal event, or before any of a non-streamed
-response. An upstream error, a broken stream or one that ends before its terminal event is recorded with an error and
+response. Tools the provider ran itself are recorded with the digest of their input where the provider returns it
+(`executed_by: provider`, tracekit.parsers). An upstream error, a broken stream or one that ends before its terminal
+event is recorded with an error and
 ends, for the client, in an error (an SSE error event and a cut connection once the headers went out), never a clean
 end. Signer unreachable: the run's fail mode for class `model`, as the signer last answered it for this run, token and
-identity (closed when it has not): closed answers 503. A signer refusal is an error whatever the fail mode.
+identity (closed when it has not): closed answers 503. A signer refusal is an error whatever the fail mode. When the
+gateway drops a run from memory (MAX_RUNS) or stops (SIGTERM, Ctrl-C), it tells the signer where the run's stream
+ended if its last exchanges never got there (close_run `last_client_seq`; the gateway's identity needs the close_run
+grant, and a refusal is logged on stderr), so the signer writes their client_counter_gap.
 
 When the signer's `status` says its content vault is on (signer.yaml `content.retain`; the gateway's identity needs the
 `status` grant), each model_event also carries the exchange's `body`: the request as sent, the response as received
@@ -38,6 +47,7 @@ import http.client
 import http.server
 import json
 import os
+import signal
 import sys
 import threading
 import types
@@ -59,7 +69,7 @@ KINDS = {"/v1/chat/completions": "openai:chat", "/v1/responses": "openai:respons
 TERMINAL = {"response.completed", "response.incomplete", "message_stop"}   # chat completions: data: [DONE]
 FAILED = {"error", "response.failed"}
 DROP = HOP | {"authorization", "x-api-key", "x-tracekit-run", "cookie"}   # never forwarded: the client's credentials
-KEYS = {"http", "upstream", "api_key_file", "api_key_header", "signer", "max_body"}
+KEYS = {"http", "upstream", "api_key_file", "api_key_header", "signer", "max_body", "provider_tools"}
 MAX_BODY = 32 * 1024 * 1024
 MAX_RUNS = 10_000   # runs remembered (stream, counter, fail modes), least recently used dropped first
 UPSTREAM_TIMEOUT_S = 600
@@ -74,8 +84,10 @@ OPEN = urllib.request.build_opener(_NoRedirect).open
 
 
 class Gateway:
-    def __init__(self, upstream, api_key, api_key_header="authorization", client=None, max_body=MAX_BODY):
+    def __init__(self, upstream, api_key, api_key_header="authorization", client=None, max_body=MAX_BODY,
+                 provider_tools=None):
         self.upstream, self.max_body, self.client = upstream.rstrip("/"), max_body, client
+        self.provider_tools = provider_tools or {}
         self.auth = (api_key_header, "Bearer " + api_key if api_key_header == "authorization" else api_key)
         self.runs, self.lock = collections.OrderedDict(), threading.Lock()
         self._vault = None   # the largest body the signer's content vault takes; 0: it keeps none
@@ -83,11 +95,51 @@ class Gateway:
     def _run(self, key):
         with self.lock:
             run = self.runs.pop(key, None) or types.SimpleNamespace(
-                stream="gx-" + uuid.uuid4().hex, seq=0, modes=None, lock=threading.Lock())
+                stream="gx-" + uuid.uuid4().hex, seq=0, acked=-1, modes=None, lock=threading.Lock())
             self.runs[key] = run
-            if len(self.runs) > MAX_RUNS:
-                self.runs.popitem(last=False)
-            return run
+            evicted = self.runs.popitem(last=False) if len(self.runs) > MAX_RUNS else None
+        if evicted:
+            self.end(*evicted)
+        return run
+
+    def end(self, key, run):
+        """Tell the signer where run `key`'s stream ended when its last exchanges never reached it (close_run
+        `last_client_seq`, as a gateway: the run stays as it is), so it writes their client_counter_gap."""
+        # lean: sent when the run is evicted or the gateway stops (a run already final gets the gap in its tenant's
+        # signer run); report on a timer if gateways often lose the signer for long
+        with run.lock:
+            if run.seq - 1 <= run.acked:
+                return
+            run_id, token, caller = key
+            try:
+                self.client.close_run({"run_id": run_id, "run_token": token, "caller": caller,
+                                       "last_client_seq": [{"stream": run.stream, "client_seq": run.seq - 1}]})
+                run.acked = run.seq - 1
+            except SignerUnavailable:
+                pass
+            except RPCError as e:
+                print(f"tracekit gateway: the signer refused the end of run {run_id}'s stream ({e.code}: {e.message}), "
+                      "so exchanges it never got leave no gap"
+                      + ("; grant this gateway close_run next to model_event in signer.yaml authorize"
+                         if e.code == "forbidden" else ""), file=sys.stderr)
+
+    def close(self):
+        """End the streams of every run whose last exchanges the signer did not get (the gateway is stopping)."""
+        with self.lock:
+            runs = list(self.runs.items())
+        for key, run in runs:
+            self.end(key, run)
+
+    def refused_tools(self, kind, req):
+        """The provider-run tools `req` declares that provider_tools does not allow (OpenAI tool types the client runs
+        are none); an entry names a tool or a type (`mcp` covers `mcp:<server_label>`)."""
+        allow, deny = self.provider_tools.get("allow"), self.provider_tools.get("deny", ())
+
+        def listed(n, names):
+            return n in names or n.split(":", 1)[0] in names
+        return [n for n in parsers.provider_tools(kind, req)
+                if not (kind.startswith("openai:") and n in parsers.OPENAI_CLIENT_TOOLS)
+                and (listed(n, deny) or allow is not None and not listed(n, allow))]
 
     def record(self, key, xid, **fields):
         """model_event for run `key` = (run_id, token, caller): True once recorded, False when the signer can't be
@@ -107,7 +159,7 @@ class Gateway:
                 if e.code == "unavailable":
                     return False
                 raise
-            run.modes = out.get("fail_modes")
+            run.modes, run.acked = out.get("fail_modes"), seq
         return True
 
     def fail_open(self, key):
@@ -241,6 +293,11 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         if got is None:
             return
         (key, req, body), xid = got, "gx-" + uuid.uuid4().hex
+        refused = gw.refused_tools(kind, req)
+        if refused:
+            return self._error(403, f"provider tool(s) {', '.join(sorted(set(refused)))[:256]} not allowed by this "
+                                    "gateway's provider_tools: the provider runs them mid-response, where no policy can "
+                                    "hold them; remove them from the request's tools", close=False)
         base = {"provider": kind.split(":")[0], "model": str(req.get("model") or "")[:128],
                 "streamed": req.get("stream") is True}
         sent = parsers.parse(kind, None, req)["tool_results_sent"][-MAX_RESULTS_SENT:]
@@ -371,6 +428,10 @@ def load_config(path):
         raise ValueError(f"{path}: api_key_header is authorization or x-api-key")
     if not (isinstance(cfg.get("max_body", MAX_BODY), int) and cfg.get("max_body", MAX_BODY) > 0):
         raise ValueError(f"{path}: max_body is a positive integer")
+    pt = cfg.get("provider_tools", {})
+    if not (isinstance(pt, dict) and set(pt) <= {"allow", "deny"} and all(
+            isinstance(v, list) and all(isinstance(n, str) for n in v) for v in pt.values())):
+        raise ValueError(f"{path}: provider_tools takes allow and deny, lists of tool names")
     base = os.path.dirname(os.path.abspath(path))
     cfg["api_key_file"] = os.path.join(base, cfg["api_key_file"])
     transport.resolve(cfg["http"], base)
@@ -383,7 +444,7 @@ def serve(cfg, client=None):
         key = f.read().strip()
     srv = transport.HttpServer(*transport.configure(cfg["http"]), None, handler=_Handler)
     srv.gateway = Gateway(cfg["upstream"], key, cfg.get("api_key_header", "authorization"),
-                          client or Client(cfg["signer"]), cfg.get("max_body", MAX_BODY))
+                          client or Client(cfg["signer"]), cfg.get("max_body", MAX_BODY), cfg.get("provider_tools"))
     return srv
 
 
@@ -399,12 +460,14 @@ def main(argv=None):
         return 2
     host, port = srv.server_address[:2]
     print(f"tracekit gateway: {host}:{port} -> {srv.gateway.upstream}", flush=True)
+    signal.signal(signal.SIGTERM, signal.default_int_handler)   # systemd, docker, k8s: stop as on Ctrl-C, reporting
     try:
         srv.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
         srv.server_close()
+        srv.gateway.close()
     return 0
 
 

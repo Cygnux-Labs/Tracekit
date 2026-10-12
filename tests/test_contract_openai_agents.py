@@ -13,6 +13,7 @@ import unittest
 from unittest import mock
 
 import adapter_contract as ac
+from tracekit.format.canon import event_hash
 from tracekit.sdk.client import Client, SignerUnavailable
 
 try:
@@ -274,7 +275,11 @@ class TestOtherTools(ac.OnReal, unittest.TestCase):
                                          action={"type": "search", "query": "q"})
         self.go(call, lambda: None)
         [first, *_] = [e["data"] for e in self.events(self.run_) if e["type"] == "model.exchange"]
-        self.assertEqual(first["tool_uses"], [{"id": "ws_1", "name": "web_search", "executed_by": "provider"}])
+        # its input as the provider returned it, committed to: the commitment opens to the search action
+        digest = event_hash({"tool": "web_search", "args": {"type": "search", "query": "q"}})
+        self.assertEqual(first["tool_uses"], [{"id": "ws_1", "name": "web_search", "executed_by": "provider",
+                                               "args_source": "parsed", "args_commitment": self.service._commit(
+                                                   f"model.exchange:{first['salt_id']}", digest)}])
 
 
 if __name__ == "__main__":

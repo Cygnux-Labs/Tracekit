@@ -231,6 +231,7 @@ class ProcessRun(OnReal, unittest.TestCase):
                          (["c1"], ["c2", "c3"]))
         self.assertEqual((self.records(self.process, "tool.result"), self.records(conversation, "tool.result")),
                          (["c1"], ["c2", "c3"]))
+        # no gap: conversations overlap the process run by design (no harness process binds them)
         self.assertEqual((self.gaps(self.process), self.gaps(conversation)), ([], []))
 
     def test_a_resent_event_keeps_its_number(self):
