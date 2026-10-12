@@ -1,0 +1,20 @@
+$ tracekit verify run.tkb --trust trust.json
+[PASS] manifest — every file is listed with its SHA-256 and nothing else is in the bundle
+[PASS] checkpoint — tracekit.local/6826710591a55c91cf18ed6d68d0087a at tree size 8, signed by its pinned log key
+[PASS] witness quorum — 0 pinned cosignature(s), 0 required
+[PASS] keys — 1 record key(s) from 1 key record(s)
+[PASS] signatures — 7 record(s), keys valid at their position
+[PASS] run chain — run '03fb5d2084c703fbc8441576c9364580' of tenant 'default', contiguous from run_seq 0
+[PASS] inclusion — first and last records of 1 run(s) are in the checkpointed tree of size 8
+[WARN] gaps — 1 signed gap, tamper or mismatch record(s): decided_not_completed 1
+        seq 6: decided_not_completed: call-2 (Bash) was allowed and never completed: no result reached the signer (the agent stopped or was interrupted, its post-call hook did not run, or a client dropped the result); read the harness's t
+[PASS] coverage — layers L2 (L3 absent); 0 call(s) reconciled; unreconciled: none
+[PASS] coverage matrix — model calls not covered, tool calls reported (adapter), network not covered, processes not covered, services not covered
+[PASS] tiers — 2 tool call(s): T1 0, T2 0, T3 0, untiered 2
+[PASS] args source — 2 record(s): raw 0, parsed 2, coerced 0
+[PASS] isolation — signer-reported: same-user 1 run(s)
+[PASS] fail-open classes — none
+[PASS] key assurance — asserted: the log declares its record keys; none is attested
+
+Integrity: VERIFIED.
+Assurance: dev; records ed25519; checkpoint Ed25519 only (tracekit.local/6826710591a55c91cf18ed6d68d0087a); no witness cosignature; key retirements not proven complete.

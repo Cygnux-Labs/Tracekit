@@ -361,6 +361,15 @@ class TestShopping(Case):
                 with self.assertRaisesRegex(RPCError, "unknown_approval"):   # not the agent's to see, let alone answer
                     self.answer(AGENT, aid)
 
+    def test_a_persons_reject_sticks_when_the_call_is_asked_again(self):
+        aid, _ = self.ask()
+        self.assertEqual(self.answer(ALICE, aid, "reject")["state"], "rejected")
+        aid, agent = self.ask(attempt=1)   # the same call again: no reviewer may now say yes to it
+        self.assertEqual((agent["eligible"], agent["reason"].split(":")[0]), (False, "reask_after_reject"))
+        self.refused("unknown_approval", AGENT, "approval_decide", {"request_id": rid(), "approval_id": aid,
+                                                                    "decision": "approve"})
+        self.assertEqual(self.consume(attempt=1)["rule_ids"], ["TK-APPROVAL-REQUESTED"])
+
     def test_abandoning_after_escalation_does_not_reset_it(self):
         aid, _ = self.ask()
         self.answer(AGENT, aid, "escalate")

@@ -404,8 +404,9 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
       + `; ${finals.reduce((n, c) => n + num(at(c, "reconciled")), 0)} call(s) reconciled`
       + (paired ? ` (${paired} paired by arguments: no tool-call id)` : "") + "; unreconciled: "
       + (unreconciled.map(([k, n]) => `${k} ${n}`).join(", ") || "none"),
-    reconciles.map((e) => `seq ${e.seq}: ${e.type} ${cut(str(get(e, "tool_call_id")), 200)}: `
-      + cut(str(get(at(e, "data"), "detail")), 200)).slice(0, 20), true);
+    reconciles.map((e) => `seq ${e.seq}: ${e.type}`
+      + (has(e, "tool_call_id") ? ` ${cut(str(e.tool_call_id), 200)}` : "")
+      + `: ${cut(str(get(at(e, "data"), "detail")), 200)}`).slice(0, 20), true);
   }
   // the coverage matrix: per action class its weakest status across the runs, the layers behind it; never "complete"
   const matrices = [...runs.values()].map((rs) => rs.at(-1).event)

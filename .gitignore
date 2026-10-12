@@ -13,6 +13,7 @@ build/
 dist/
 *.tkb
 !docs/sample/*.tkb
+!docs/demos/*/run.tkb
 !tests/golden/v1/*.tkb
 .pytest_cache/
 .venv/
