@@ -67,6 +67,14 @@ class TestImport(Signer):
             self.assertEqual(cm.exception.code, "forbidden")
         self.assertEqual(self.events("run.registered"), [])
 
+    def test_a_suspended_identity_can_not_import(self):
+        s = self.open()
+        with open(os.path.join(self.dir, "suspensions.json"), "w") as f:
+            json.dump({"acme": {"token:http": {}}}, f)
+        with self.assertRaisesRegex(RPCError, "is suspended"):
+            self.post(s, json.dumps(agent_trace()).encode())
+        self.assertEqual(self.events("run.registered"), [])
+
     def test_runs_are_keyed_by_tenant_and_trace_id_not_service_name(self):
         s = self.open()
         other = "6" * 32

@@ -226,7 +226,8 @@ export class Detector {
         nRun.set(trigger, (nRun.get(trigger) ?? 0) + 1);
         nTen++;
         nMine++;
-        out.push(["incident.opened", { trigger, rule_ids: ruleIds, scope, cites: cited, mode: r.mode }]);
+        out.push(["incident.opened", { trigger, rule_ids: ruleIds, scope, cites: cited, mode: r.mode,
+          would: r.action ? [r.action] : [] }]);
       }
     }
     return out;

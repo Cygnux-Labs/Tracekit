@@ -2,6 +2,7 @@
 each installed framework, against a dev signer it starts, then `tracekit last`. tests/test_quickstart.py runs the same
 agents from the built wheel in a fresh venv."""
 import asyncio
+import contextlib
 import json
 import os
 import shutil
@@ -227,6 +228,31 @@ class TestInstrument(unittest.TestCase):
             for s in (named, unnamed):
                 asyncio.run(s.call_tool("t", {}))
         self.assertEqual(seen, ["github", None])
+
+    def test_exit_leaves_a_run_open_while_approvals_of_it_wait(self):
+        class Run:
+            run_id, closed = "r", False
+
+            def __init__(self, listing):
+                self.listing = listing
+
+            def call(self, method, **fields):
+                return self.listing(fields["state"])
+
+            def close(self, reason=None):
+                self.closed = True
+
+        def no_grant(state):
+            raise RPCError("forbidden", "approval_list")
+
+        for listing, closed in ((lambda s: {"approvals": []}, True),
+                                (lambda s: {"approvals": [{"approval_id": "a"}] if s == "approved" else []}, False),
+                                (lambda s: {"approvals": [{"approval_id": "a"}] if s == "requested" else []}, False),
+                                (no_grant, True)):   # a listing that fails waits for nothing
+            run = Run(listing)
+            with self.assertLogs("tracekit", "WARNING") if not closed else contextlib.nullcontext():
+                autowire._close(run)
+            self.assertEqual(run.closed, closed)
 
     def test_release(self):
         for v, want in (("0.23.1", (0, 23, 1)), ("1.2.14", (1, 2, 14)), ("2.3.0rc1", (2, 3, 0)), ("1.4.dev0", (1, 4))):

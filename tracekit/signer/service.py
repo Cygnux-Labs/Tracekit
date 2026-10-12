@@ -999,7 +999,7 @@ class SignerService:
                 raise RPCError("forbidden", f"{subject(identity)[:256]} is an agent approver: it may call "
                                             f"{', '.join(sorted(AGENT_METHODS))} only")
             self._grant(identity, CONTENT_READ if method == "content_get" else method)
-            if method not in OPERATOR:   # an operator lifts suspensions, so none stops its calls
+            if method not in OPERATOR or not self._in(self._break_glass, identity):   # break-glass can always unsuspend
                 self._check_suspended(identity)
             errs = rpc_schema.validate(REQUESTS[method], req)
             if errs:
@@ -1701,6 +1701,7 @@ class SignerService:
             raise RPCError("forbidden", f"{subject(them)[:256]} is an agent approver: no bridge acts for it")
         if self._tenant_of(them) != mine and subject(identity) not in self.multi_tenant_apps:
             raise RPCError("forbidden", f"{subject(identity)[:256]} acts for people of tenant {mine[:64]!r} only")
+        self._check_suspended(them)
         return them
 
     def _passkey(self, identity, aid, a, assertion):
@@ -2111,9 +2112,9 @@ class SignerService:
                 f"run {run['run_id'][:128]} is held by incident {h}: each call waits for a person's approval; a person "
                 f"ends the hold (tracekit signer incidents resume {run['run_id'][:128]}, or resolve each incident)")
 
-    def _check_suspended(self, identity):
-        """RPCError forbidden when the suspension list names one of the identity's keys in the identity's tenant. A
-        changed list first gets this signer's identity.suspension records (_enforce)."""
+    def _check_suspended(self, identity, tenant=None):
+        """RPCError forbidden when the suspension list names one of the identity's keys in its tenant (`tenant`, else
+        the identity's). A changed list first gets this signer's identity.suspension records (_enforce)."""
         entries, changed = self._suspensions.load()
         if changed:
             try:
@@ -2121,7 +2122,7 @@ class SignerService:
             except Exception:
                 self._suspensions.forget()   # read and recorded again by the next call
                 raise
-        mine = entries.get(self._tenant_of(identity), {})
+        mine = entries.get(tenant or self._tenant_of(identity), {})
         hit = next((x for k in keys(identity) if (x := lookup(mine, k)) is not None), None)
         if hit is not None:
             raise RPCError("forbidden", f"{subject(identity)[:256]} is suspended (by {str(hit.get('by'))[:256]} at "
@@ -2444,8 +2445,12 @@ class SignerService:
             now = _iso(time.time())
             had = [("quarantined", up["quarantined"], "the parent run")] if up and up.get("quarantined") else \
                 [("held", i, "the parent run") for i in (up or {}).get("held") or ()]
-            had += [(kind, i, f"its owner and principal (until {until})") for i, (until, kind) in
-                    (self.log.contain["cooldown"].get(cooldown_key(tenant, run)) or {}).items() if until > now]
+            # a run with no attested principal inherits every principal's of its owner: dropping it gains nothing
+            key, cool = cooldown_key(tenant, run), self.log.contain["cooldown"]
+            mine = {i: v for k in ([key] if run["people"][1] else [k for k in cool if k.startswith(key)])
+                    for i, v in (cool.get(k) or {}).items()}
+            had += [(kind, i, f"its owner and principal (until {until})") for i, (until, kind) in mine.items()
+                    if until > now]
             for kind, iid, whose in [h for h in had if h[0] == "quarantined"][:1] or had:
                 self._contain(tx, run, kind, iid, {"kind": "run", "id": run_id[:256]}, "signer",
                               f"inherits incident {iid} from {whose}", inherited=True)
@@ -2894,6 +2899,8 @@ class SignerService:
             raise RPCError("invalid_request", "groups are user groups of the approver's own team")
         if sub in self._agents:
             raise RPCError("forbidden", f"{sub} is an agent approver: no bridge acts for it")
+        scheme, _, rest = sub.partition(":")
+        self._check_suspended(CallerIdentity(scheme, rest, False, {"groups": groups}), self._tenant_of(identity))
         return self._answer(identity, req, sub, sub, groups)
 
     def _answer(self, identity, req, sub, own, groups=None, bridge=None):
@@ -3725,6 +3732,7 @@ class SignerService:
         RPCError forbidden unless `authorize` grants it otlp_import."""
         try:
             self._grant(identity, OTLP_IMPORT)
+            self._check_suspended(identity)
         except RPCError as e:
             self._refused(identity, e)
             raise

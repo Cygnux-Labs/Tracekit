@@ -230,6 +230,14 @@ class TestGrant(Bridge):
         self.assertEqual(cm.exception.code, "forbidden")
         self.assertEqual(self.state(aid), "requested")
 
+    def test_a_suspended_approver_can_not_answer_through_the_bridge(self):
+        aid = self.pending()
+        with open(os.path.join(self.dir, "suspensions.json"), "w") as f:
+            json.dump({"default": {"slack:T0TEAM/U0APPROVER": {}}}, f)
+        with self.assertRaisesRegex(RPCError, "is suspended"):
+            self.on_behalf(CallerIdentity("uid", str(os.getuid()), True), aid)
+        self.assertEqual(self.state(aid), "requested")
+
     def test_groups_of_another_team_are_refused(self):
         aid = self.pending()
         with self.assertRaises(RPCError) as cm:
