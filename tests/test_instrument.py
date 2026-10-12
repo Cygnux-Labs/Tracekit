@@ -204,6 +204,30 @@ class TestInstrument(unittest.TestCase):
         self.assertEqual([d["tool"] for d in decides], ["browser_use:navigate"] * 2)
         self.assertEqual(len({d["stream"] for d in decides}), 1)
 
+    def test_an_mcp_1_session_is_named_by_its_initialize_result(self):
+        if not installed(AGENTS["mcp"][0]):
+            self.skipTest("mcp not installed")
+
+        class ClientSession:   # mcp 1.x: no server_info
+            async def initialize(self):
+                return types.SimpleNamespace(serverInfo=types.SimpleNamespace(name="github"))
+
+            async def call_tool(self, name, arguments=None):
+                pass
+        seen = []
+
+        async def call_tool(gate, *a, **kw):
+            seen.append(gate._server)
+        run = mock.Mock(registered={"run_id": "r", "run_token": "t"})
+        with mock.patch("mcp.ClientSession", ClientSession), \
+                mock.patch("tracekit.integrations.mcp.TracekitSession.call_tool", call_tool):
+            autowire._mcp(run)
+            named, unnamed = ClientSession(), ClientSession()
+            asyncio.run(named.initialize())
+            for s in (named, unnamed):
+                asyncio.run(s.call_tool("t", {}))
+        self.assertEqual(seen, ["github", None])
+
     def test_release(self):
         for v, want in (("0.23.1", (0, 23, 1)), ("1.2.14", (1, 2, 14)), ("2.3.0rc1", (2, 3, 0)), ("1.4.dev0", (1, 4))):
             self.assertEqual(autowire._release(v), want)

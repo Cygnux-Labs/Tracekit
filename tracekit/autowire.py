@@ -236,15 +236,26 @@ def _mcp(run):
 
     from .integrations.mcp import TracekitSession
     call_tool = ClientSession.call_tool
-    gates, stream = weakref.WeakKeyDictionary(), {}
+    gates, stream, servers = weakref.WeakKeyDictionary(), {}, weakref.WeakKeyDictionary()
 
     @functools.wraps(call_tool)
     async def gated(self, *a, **kw):
         if self not in gates:   # every session shares one signer stream: a run allows 64 (quotas.streams_per_run)
-            g = gates[self] = TracekitSession(_Unpatched(self, call_tool), run.client, run.registered)
+            g = gates[self] = TracekitSession(_Unpatched(self, call_tool), run.client, run.registered,
+                                              server=servers.get(self))
             g.stream, g._seq, g._lock = stream.setdefault("s", (g.stream, g._seq, g._lock))
         return await gates[self].call_tool(*a, **kw)
     ClientSession.call_tool = gated
+    if hasattr(ClientSession, "server_info"):
+        return
+    initialize = ClientSession.initialize   # mcp 1.x: only initialize()'s result names the server
+
+    @functools.wraps(initialize)
+    async def named(self, *a, **kw):
+        out = await initialize(self, *a, **kw)
+        servers[self] = out.serverInfo.name
+        return out
+    ClientSession.initialize = named
 
 
 def _browser_use(run):

@@ -123,8 +123,8 @@ class TestOnRealSigner(MCPContract, ac.OnReal, unittest.TestCase):
         self.assertIn("class hint 'mcp'", gap["reason"])   # the contract policy has no tools map
 
 
-class _StubSession:
-    server_info = type("Info", (), {"name": "stub"})()
+class _Mcp1Session:
+    """An mcp 1.x ClientSession: it doesn't keep the server's name."""
 
     def __init__(self):
         self.calls = 0
@@ -135,14 +135,19 @@ class _StubSession:
         return CallToolResult(content=[TextContent(type="text", text="done")], is_error=False)
 
 
+class _StubSession(_Mcp1Session):
+    server_info = type("Info", (), {"name": "stub"})()
+
+
 class _Signer:
     """A signer that fails the way it is told: `decide` and `complete` raise `errors[method]` when set."""
 
     def __init__(self, **errors):
-        self.errors = errors
+        self.errors, self.tools = errors, []
 
     def __getattr__(self, method):
         def call(req):
+            self.tools += [req["tool"]] if method == "decide" else []
             if method in self.errors:
                 raise self.errors[method]
             return {"decide": {"decision": "allow", "decision_id": "dec-1", "rule_ids": []},
@@ -177,3 +182,11 @@ class SignerFailures(unittest.TestCase):
         with self.assertWarns(UserWarning):
             out, calls = self.call(_Signer(complete=RPCError("unavailable", "storage down")))
         self.assertEqual((out.is_error, out.content[0].text, calls), (False, "done", 1))
+
+    def test_an_mcp_1_session_is_named_by_the_caller_else_unknown(self):
+        signer = _Signer()
+        asyncio.run(TracekitSession(_Mcp1Session(), signer, self.RUN, server="git hub").call_tool("x", {}))
+        with self.assertWarns(UserWarning) as cm:
+            asyncio.run(TracekitSession(_Mcp1Session(), signer, self.RUN).call_tool("x", {}))
+        self.assertEqual(signer.tools, ["mcp:git_hub/x", "mcp:unknown/x"])
+        self.assertIn("server=", str(cm.warning))

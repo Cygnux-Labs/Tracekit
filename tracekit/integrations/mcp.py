@@ -6,7 +6,9 @@ to the server and recorded after.
     session = TracekitSession(session, signer, run)   # an initialized ClientSession
     result = await session.call_tool("create_issue", {"title": "..."})   # recorded as mcp:<server>/create_issue
 
-The server name comes from the session's initialize result. `deny` returns a CallToolResult with `isError: true` and
+The server name comes from the session's initialize result (mcp 2: the session's server_info). An mcp 1.x session
+doesn't keep it: pass `server=` (instrument() takes it from the initialize() calls made after it). With no name the
+calls are recorded as mcp:unknown/<tool>, with a warning. `deny` returns a CallToolResult with `isError: true` and
 the refusal as its text, and the run goes on. `ask` requests an approval and waits up to `approval_wait_s` for a person
 to decide in the signer; with `approval_wait_s=0` the call is refused instead. Every call that is not denied is sent
 only after the signer's `approval_consume` agrees, with the arguments it returns for an approval with a T2 executor. A result with `isError: true` completes as an error; an exception
@@ -14,6 +16,7 @@ from the session propagates unchanged and completes as an error. Only calls made
 """
 import re
 import uuid
+import warnings
 
 from mcp.types import CallToolResult, TextContent
 
@@ -28,16 +31,21 @@ _UNSAFE = re.compile(r"[^A-Za-z0-9_.-]+")
 class TracekitSession(HeldCalls):
     CLASS = "mcp"
 
-    def __init__(self, session, signer, run, approval_wait_s=300):
-        """`signer` is any `SignerAPI`; `run` is its `register_run` response (`run_id`, `run_token`, `fail_modes`)."""
+    def __init__(self, session, signer, run, approval_wait_s=300, server=None):
+        """`signer` is any `SignerAPI`; `run` is its `register_run` response (`run_id`, `run_token`, `fail_modes`);
+        `server`: the server's name, else the session's server_info."""
         super().__init__(signer, run, approval_wait_s)
-        self._session = session
+        self._session, self._server = session, server
 
     def __getattr__(self, name):
         return getattr(self._session, name)
 
     async def call_tool(self, name, arguments=None, *a, **kw):
-        server = getattr(self._session.server_info, "name", None)
+        server = self._server or getattr(getattr(self._session, "server_info", None), "name", None)
+        if not server:
+            warnings.warn("MCP: the session doesn't name its server, so its calls are recorded as mcp:unknown/<tool>: "
+                          "pass TracekitSession(..., server=<name>), or call tracekit.instrument() before the "
+                          "session's initialize() (mcp 1.x)", stacklevel=2)
         tool, args, call_id = f"mcp:{_UNSAFE.sub('_', server or '') or 'unknown'}/{name}", arguments or {}, uuid.uuid4().hex
         why, d, args = await self._gate(call_id, tool, args)
         if why is not None:
