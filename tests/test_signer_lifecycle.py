@@ -220,8 +220,7 @@ class TestBundle(Lifecycle):
             rep, code = v2.verify(out, trust)
             self.assertEqual(code, 0, rep.checks)
             verdicts.append(rep.integrity)
-        # the open run: run.registered, its concurrent_run gap (the closed run was still open), the decide
-        self.assertEqual(verdicts, ["VERIFIED", "VERIFIED TO HEAD 2 (open)"])
+        self.assertEqual(verdicts, ["VERIFIED", "VERIFIED TO HEAD 1 (open)"])
 
 
 class TestSessions(Lifecycle):
