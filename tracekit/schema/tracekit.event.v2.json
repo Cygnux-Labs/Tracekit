@@ -111,6 +111,10 @@
         "approval.refused",
         "approval.binding_mismatch",
         "approval.abandoned",
+        "approval.escalated",
+        "approval.revoked",
+        "approval.suggested",
+        "approval.agents",
         "input.observed",
         "state.write",
         "signer.epoch",
@@ -635,6 +639,70 @@
         "properties": {
           "data": {
             "$ref": "#/$defs/approval_abandoned"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "approval.escalated"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/approval_escalated"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "approval.revoked"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/approval_revoked"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "approval.suggested"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/approval_suggested"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "approval.agents"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/approval_agents"
           }
         }
       }
@@ -1515,6 +1583,55 @@
             }
           },
           "description": "the WebAuthn credential whose assertion over the approval's binding digest the signer verified"
+        },
+        "approver_kind": {
+          "const": "agent",
+          "description": "format 1.2: an agent approver (approvals.agents) answered; absent for people"
+        },
+        "asserted": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "attested"
+          ],
+          "properties": {
+            "model": {
+              "type": "string",
+              "maxLength": 128
+            },
+            "version": {
+              "type": "string",
+              "maxLength": 64
+            },
+            "prompt_hash": {
+              "$ref": "#/$defs/hash"
+            },
+            "attested": {
+              "const": false
+            }
+          },
+          "description": "format 1.2: what the agent approver says it runs; its own word, never checked"
+        },
+        "spent": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": -9007199254740991,
+            "maximum": 9007199254740991
+          },
+          "description": "format 1.2: rule id -> the argument value this agent approval takes from the rule's sum budget"
+        },
+        "not_before": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{6}Z$",
+          "maxLength": 4096,
+          "description": "format 1.2: an agent's approval is consumed from then on (after the rule's veto_s), so people may revoke it first"
+        },
+        "consume_by": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{6}Z$",
+          "maxLength": 4096,
+          "description": "format 1.2: an agent's approval is consumed before then (approvals.agent_consume_s), or never"
         }
       }
     },
@@ -1710,6 +1827,7 @@
             "approval_expired",
             "executed_against_policy",
             "decision_mismatch",
+            "reask_after_reject",
             "held_call_unresolved"
           ],
           "description": "Gap and tamper kinds (signer-written only)."
@@ -2358,6 +2476,46 @@
           ],
           "description": "t2: approval_consume returns the approved arguments and its caller runs exactly those"
         },
+        "agent": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "eligible",
+            "reason",
+            "rules",
+            "conditions_hash",
+            "args_key"
+          ],
+          "description": "format 1.2: whether an agent approver may answer this approval, computed by the signer from the call's arguments and the run",
+          "properties": {
+            "eligible": {
+              "type": "boolean"
+            },
+            "reason": {
+              "type": "string",
+              "maxLength": 1024
+            },
+            "rules": {
+              "type": "array",
+              "maxItems": 32,
+              "items": {
+                "type": "string",
+                "maxLength": 64
+              },
+              "description": "the rules it asked by with approval.agent"
+            },
+            "conditions_hash": {
+              "$ref": "#/$defs/hash",
+              "description": "sha256 of JCS of those rules' approval.agent sections"
+            },
+            "args_key": {
+              "type": "string",
+              "pattern": "^hmac-sha256:[0-9a-f]{64}$",
+              "maxLength": 76,
+              "description": "an HMAC of the call's arguments under a key of this run: the same in this run for the same arguments, so a call an agent said no to is a person's to answer when asked again"
+            }
+          }
+        },
         "via": {
           "type": "string",
           "maxLength": 256,
@@ -2386,6 +2544,14 @@
       "properties": {
         "approval_id": {
           "$ref": "#/$defs/id"
+        },
+        "reason": {
+          "enum": [
+            "ttl",
+            "run_final",
+            "consume_window"
+          ],
+          "description": "format 1.2, on approvals an agent may answer: approvals.ttl_s passed, the run ended, or an agent's approval was not consumed within approvals.agent_consume_s"
         }
       }
     },
@@ -2470,6 +2636,198 @@
         }
       },
       "description": "the adapter will never resume the paused call; the approval ends at once"
+    },
+    "approval_escalated": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "approval_id",
+        "by"
+      ],
+      "properties": {
+        "approval_id": {
+          "$ref": "#/$defs/id"
+        },
+        "by": {
+          "enum": [
+            "agent",
+            "signer"
+          ]
+        },
+        "reason": {
+          "type": "string",
+          "maxLength": 1024
+        },
+        "approver_identity": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "scheme",
+            "subject",
+            "attested"
+          ],
+          "properties": {
+            "scheme": {
+              "type": "string",
+              "maxLength": 32
+            },
+            "subject": {
+              "type": "string",
+              "maxLength": 256
+            },
+            "attested": {
+              "type": "boolean"
+            },
+            "person": {
+              "type": "string",
+              "maxLength": 256,
+              "description": "an OIDC identity's stable person id"
+            }
+          },
+          "description": "the approver as the signer's transport established it"
+        }
+      },
+      "description": "format 1.2: only people answer this approval from now on: an agent approver handed it over, or the signer did (no agent answered within agent_timeout_s, a budget ran out)"
+    },
+    "approval_revoked": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "approval_id",
+        "by"
+      ],
+      "properties": {
+        "approval_id": {
+          "$ref": "#/$defs/id"
+        },
+        "by": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "reason": {
+          "type": "string",
+          "maxLength": 1024
+        }
+      },
+      "description": "format 1.2: a person (or the kill switch, by signer) vetoed an agent's approval before it was consumed"
+    },
+    "approval_suggested": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tool_use_id",
+        "approval_id",
+        "decision",
+        "approver",
+        "approver_identity",
+        "channel",
+        "approver_kind"
+      ],
+      "properties": {
+        "tool_use_id": {
+          "$ref": "#/$defs/id"
+        },
+        "approval_id": {
+          "$ref": "#/$defs/id"
+        },
+        "decision": {
+          "enum": [
+            "approve",
+            "reject",
+            "escalate"
+          ]
+        },
+        "approver": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "approver_identity": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "scheme",
+            "subject",
+            "attested"
+          ],
+          "properties": {
+            "scheme": {
+              "type": "string",
+              "maxLength": 32
+            },
+            "subject": {
+              "type": "string",
+              "maxLength": 256
+            },
+            "attested": {
+              "type": "boolean"
+            },
+            "person": {
+              "type": "string",
+              "maxLength": 256,
+              "description": "an OIDC identity's stable person id"
+            }
+          },
+          "description": "the approver as the signer's transport established it"
+        },
+        "channel": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "approver_kind": {
+          "const": "agent"
+        },
+        "asserted": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "attested"
+          ],
+          "properties": {
+            "model": {
+              "type": "string",
+              "maxLength": 128
+            },
+            "version": {
+              "type": "string",
+              "maxLength": 64
+            },
+            "prompt_hash": {
+              "$ref": "#/$defs/hash"
+            },
+            "attested": {
+              "const": false
+            }
+          },
+          "description": "format 1.2: what the agent approver says it runs; its own word, never checked"
+        },
+        "reason": {
+          "type": "string",
+          "maxLength": 1024
+        }
+      },
+      "description": "format 1.2: a shadow-mode agent approver's answer, recorded only: it changes nothing"
+    },
+    "approval_agents": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "enabled",
+        "by"
+      ],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "by": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "reason": {
+          "type": "string",
+          "maxLength": 1024
+        }
+      },
+      "description": "format 1.2: the operator's kill switch for agent approvals (in the signer run); switching off revokes every agent approval not consumed yet"
     },
     "input_observed": {
       "type": "object",

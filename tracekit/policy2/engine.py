@@ -8,9 +8,13 @@ import re
 import time
 
 from . import classes, shell
-from .compile import CLASSES, SECTIONS, canonical, policy_hash, translate
+from .compile import BOUND_TYPES, CLASSES, SECTIONS, canonical, policy_hash, translate
 
 MAX_SUBJECT = 64 * 1024     # bytes of UTF-8; a longer subject is never cut or windowed: TK-OVERSIZE in its rule's section
+AGENT_ARGS_MAX = 16 * 1024  # bytes of a call's arguments (as canonical JSON) an agent approval may cover
+# arguments the class extractors read as one field: a call carrying two of a group is a person's to answer
+ALIASES = (classes.SHELL_KEYS, classes.PATH_KEYS, classes.PAYEE_KEYS, classes.RECIPIENT_KEYS,
+           ("amount", "amount_cents"), ("sql", "query", "statement"), ("db", "database"))
 _URL = re.compile(r"(?i)\b(?:https?|wss?|ftp):[^\s'\"<>`]*")
 _BARE_ADDRESS = re.compile(r"[0-9][0-9A-Za-z.]*(:[0-9]*)?([/?#]|$)")   # curl 2852039166/latest
 REGEX_TIMEOUT_S = 1.0       # fallback engine only: the time all matches of one decision share; a match that runs out
@@ -46,6 +50,36 @@ class Engine:
         self.rules = [(sec, r, compile_(r["tool"]) if "tool" in r else None, compile_(r["pattern"]),
                        compile_(r["unless"]) if "unless" in r else None)
                       for sec in SECTIONS for r in self.policy.get(sec, [])]
+        # an ask rule's approval.agent patterns: (rule id, argument name) -> compiled
+        self._bounds = {(r["id"], name): compile_(b["pattern"]) for _, r, *_ in self.rules
+                        for name, b in (r.get("approval") or {}).get("agent", {}).get("allow", {}).get("fields", {}).items()
+                        if "pattern" in b}
+
+    def bounds(self, rule, args, deadline):
+        """[(condition, passed)] of ask rule `rule`'s approval.agent bounds over a call's `args`: a closed world, not
+        decide's search. Every argument is one the bounds name, and each one they name is there; a value has exactly
+        the field's JSON type (the string "100", 1e2, 99.9 and true are no integer); a list passes when it has
+        elements and every one does; no two alias arguments (amount and amount_cents) at once; the arguments fit in
+        AGENT_ARGS_MAX. A pattern matches the whole value; TimeoutError past `deadline` (time.monotonic())."""
+        fields = rule["approval"]["agent"]["allow"]["fields"]
+        if not isinstance(args, dict):
+            return [("the arguments are an object", False)]
+        out = [(f"the arguments fit in {AGENT_ARGS_MAX} bytes",
+                len(canonical(args).encode("utf-8", "surrogatepass")) <= AGENT_ARGS_MAX),
+               ("every argument is one the bounds name", set(args) <= set(fields)),
+               ("no two alias arguments", not any(len(set(g) & set(args)) > 1 for g in ALIASES))]
+        for name, b in fields.items():
+            v = args.get(name)
+            ok = v != [] and all(self._within(rule["id"], name, b, x, deadline) for x in (v if isinstance(v, list)
+                                                                                           else [v]))
+            out.append((f"{name}: {canonical(b)}", ok))
+        return out
+
+    def _within(self, rid, name, b, v, deadline):
+        typ = BOUND_TYPES[b["type"]]
+        return type(v) is typ and (typ is not int or b.get("min", v) <= v <= b.get("max", v)) and (
+            "enum" not in b or any(type(e) is typ and e == v for e in b["enum"])) and (
+            "pattern" not in b or bool(self._match(self._bounds[(rid, name)], _text(v), True, deadline)))
 
     def is_handoff(self, tool):
         """Whether the policy's `handoffs:` names `tool` as one the framework runs as a handoff to another agent: never

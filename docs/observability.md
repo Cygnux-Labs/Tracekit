@@ -38,6 +38,8 @@ types, gap kinds, RPC error codes, verdicts); past 64 distinct values a label is
 | `tracekit_signer_log_key_failures_total` | counter | | Checkpoint notes the log key (file or KMS) failed to sign; the note is retried next round, and a long outage writes a signed gap. |
 | `tracekit_signer_loop_errors_total` | counter | `loop` | Unexpected errors of a background loop (`ticker`, `checkpointer`, `publisher`), which logs it and carries on. Any increase is a bug to report. |
 | `tracekit_signer_otel_export_dropped_total` | counter | `reason` | Runs the OTLP exporter (`otel_out`) did not deliver: `queue_full` (more than 1000 runs waiting), `failed` (the endpoint was unreachable or refused), `shutdown` (still queued when the signer stopped). |
+| `tracekit_signer_agent_approvals_total` | counter | `decision` | Answers of [agent approvers](approvals.md#agent-approvers), `approve` or `reject` (escalations and shadow-mode suggestions: `tracekit_signer_records_total{type="approval.escalated"\|"approval.suggested"}`). |
+| `tracekit_signer_agent_budget_spent_total` | counter | `rule` | What agent approvals took from each rule's `sum` budget. |
 | `tracekit_signer_webhook_dropped_total` | counter | `reason` | Events a [webhook](webhooks.md) did not deliver: `queue_full` (more than 10000 waiting), `failed` (refused, or still failing after 5 tries), `shutdown` (still queued when the signer stopped). |
 
 `witness` values are the names of the witnesses in signer.yaml. The metrics port also serves `GET /logs/v0`, the

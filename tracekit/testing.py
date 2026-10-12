@@ -284,7 +284,7 @@ class FakeSigner:
                    if req.get("run_id") in (None, a["run_id"]) and self._may_see(a)]
             start = 0 if req.get("cursor") is None else ids.index(req["cursor"]) + 1 if req["cursor"] in ids else len(ids)
             page, more = ids[start:start + req.get("limit", 100)], ids[start + req.get("limit", 100):]
-            keys = rpc_schema.RESPONSES["approval_list"]["properties"]["approvals"]["items"]["required"]
+            keys = rpc_schema._SUMMARY["required"]
             return {"approvals": [{"approval_id": aid, **{k: self._approvals[aid][k] for k in keys if k != "approval_id"}}
                                   for aid in page], "next_cursor": page[-1] if more else None}
         return self._call("approval_list", req, handle)
