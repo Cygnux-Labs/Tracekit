@@ -50,16 +50,22 @@ def _node():
         "needs the TypeScript build (make test-ts)"
 
 
+_BUILT = []
+
+
 def _build():
-    """Compile the TypeScript (a compile error fails the tests that need it, not the whole suite's collection)."""
-    if os.path.exists(TSC):
+    """Compile the TypeScript once per session (a compile error fails the tests that need it, not the whole suite's
+    collection)."""
+    if os.path.exists(TSC) and not _BUILT:
         subprocess.run(["node", TSC, "-p", TS], check=True)
+        _BUILT.append(True)
 
 
 SKIP = _node()
 
 
 def ts_verify(bundle, trust):
+    _build()   # other test files call this before this file's classes run: never against a stale dist
     p = subprocess.run(["node", CLI, "verify", bundle, "--trust", trust, "--json"], capture_output=True, text=True)
     out = json.loads(p.stdout)
     assert out["exit_code"] == p.returncode, p
