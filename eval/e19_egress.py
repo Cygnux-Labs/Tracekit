@@ -6,7 +6,8 @@ in process, the hosts on loopback.
                      reconcile.unexplained_effect, and run.final's coverage counts it
   E19.2 explained    the same run under a policy whose explains lists that host for the shell tool: explained, none
   E19.3 refused      through the proxy: a tunnel whose TLS server name is not its CONNECT host is closed before it
-                     reaches the host; a DNS-over-HTTPS endpoint and a raw IP are refused (403)
+                     reaches the host; a DNS-over-HTTPS endpoint, a raw IP and a name resolving to loopback are
+                     refused (403)
   E19.4 killed       the observer stops its heartbeats: a signed observer_lost gap, and network is not observed
   E19.5 late         an observation after run.final: a capture.gap{effect_outside_run} in the tenant's signer run,
                      naming the run, which a run-set shows
@@ -17,6 +18,8 @@ in process, the hosts on loopback.
 Writes eval/results/e19_egress.json; exit 0 when every case holds.
 """
 import base64
+import contextlib
+import ipaddress
 import json
 import os
 import shutil
@@ -29,6 +32,7 @@ import threading
 import time
 import types
 import uuid
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _stack import ROOT, write_results  # noqa: E402
@@ -140,10 +144,16 @@ def refused(d):
     out = {}
     try:
         for name, authority, hello in (("sni mismatch", f"localhost:{port}", client_hello("evil.example")),
-                                       ("doh", "dns.google:443", None), ("raw ip", f"127.0.0.1:{port}", None)):
+                                       ("doh", "dns.google:443", None), ("raw ip", f"127.0.0.1:{port}", None),
+                                       ("internal", f"localhost:{port}", None)):
             s = socket.create_connection(srv.server_address[:2], 5)
-            s.sendall(f"CONNECT {authority} HTTP/1.1\r\nProxy-Authorization: Basic {auth}\r\n\r\n".encode())
-            status = s.recv(4096).split(b"\r\n", 1)[0].decode()
+            # the stand-in host is on loopback: public for the SNI case, as it is (refused) for `internal`
+            with contextlib.ExitStack() as stack:
+                for cls in (ipaddress.IPv4Address, ipaddress.IPv6Address) if hello else ():
+                    stack.enter_context(mock.patch.object(cls, "is_global", new_callable=mock.PropertyMock,
+                                                          return_value=True))
+                s.sendall(f"CONNECT {authority} HTTP/1.1\r\nProxy-Authorization: Basic {auth}\r\n\r\n".encode())
+                status = s.recv(4096).split(b"\r\n", 1)[0].decode()
             if hello:
                 s.sendall(hello)
                 status += " / then " + ("closed" if s.recv(4096) == b"" else "open")
@@ -154,8 +164,8 @@ def refused(d):
         srv.shutdown()
         srv.server_close()
         host.close()
-    return {"caught": not reached and out["sni mismatch"].endswith("closed")
-            and out["doh"].startswith("HTTP/1.1 403") and out["raw ip"].startswith("HTTP/1.1 403"), **out}
+    return {"caught": not reached and out["sni mismatch"] == "HTTP/1.1 200 Connection established / then closed"
+            and all(out[k].startswith("HTTP/1.1 403") for k in ("doh", "raw ip", "internal")), **out}
 
 
 def killed(d):

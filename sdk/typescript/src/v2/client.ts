@@ -353,10 +353,12 @@ export class Client {
   /** Register a run (`agent` is a name or {name, version}, `parent` the handle of the run starting it, such as a
    * sub-agent's parent: the signer records the link); the handle holds its run token. */
   async registerRun(agent: string | { name: string; version?: string }, fields: Frame = {}, parent?: RunHandle): Promise<RunHandle> {
-    return new RunHandle(this, await this.call("register_run", {
+    const run = await this.call("register_run", {
       agent: typeof agent === "string" ? { name: agent } : agent, ...fields,
       ...(parent ? { parent: { run_id: parent.runId, run_token: parent.runToken } } : {}),
-    }));
+    });
+    useEgress(run);
+    return new RunHandle(this, run);
   }
 
   /** `request_id`, `stream` and `client_seq` are filled in when missing. */
@@ -520,6 +522,18 @@ function startDevSigner(): Promise<void> {
     execFile(cmd[0], [...cmd.slice(1), "up", "--json"], { timeout: 30_000, env: signerEnv(cmd) }, (err, _out, stderr) =>
       err ? reject(new SignerUnavailable(`no dev signer, and \`${cmd.join(" ")} up\` failed: ${stderr.trim() || err.message}`)) : resolve());
   });
+}
+
+/** With $TRACEKIT_EGRESS_PROXY (an egress observer, docs/egress.md), point this process's children's HTTP(S)_PROXY
+ * at it with the run's id and token as credentials, so their connections are attributed to the run. */
+function useEgress(run: Frame): void {
+  const proxy = process.env.TRACEKIT_EGRESS_PROXY;
+  if (!proxy) return;
+  const u = new URL(proxy);
+  u.username = encodeURIComponent(run.run_id);
+  u.password = encodeURIComponent(run.run_token);
+  // lean: one process-wide setting, the latest run's; concurrent runs in one process need a proxy per client
+  for (const k of ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"]) process.env[k] = u.href;
 }
 
 /** Whether a call of `toolClass` may run while the signer cannot be reached: its entry in register_run's

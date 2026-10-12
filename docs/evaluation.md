@@ -276,7 +276,7 @@ form (5 calls per phase instead of 20). Results: `eval/results/e14_outage.json`.
 |---|---|---|
 | E19.1 | a shell call that curls a host no call, gateway or `explains` entry covers | one signed `reconcile.unexplained_effect`; `run.final`'s coverage counts it |
 | E19.2 | the same run under a policy whose `explains` lists the host for the shell tool | `explained_by: explains`, no unexplained effect |
-| E19.3 | through the proxy: a ClientHello naming another server, a DNS-over-HTTPS endpoint, a raw IP | the tunnel closed before reaching the host; 403; 403 |
+| E19.3 | through the proxy: a ClientHello naming another server, a DNS-over-HTTPS endpoint, a raw IP, a name resolving to loopback | the tunnel closed before reaching the host; 403; 403; 403 |
 | E19.4 | the observer stops its heartbeats | one `observer_lost` gap; network not observed |
 | E19.5 | an observation after `run.final` | `capture.gap{effect_outside_run}` in the tenant's signer run, naming the run |
 | E19.6 | a gateway-mandatory run behind the observer; a plain run | model calls, tool calls and network enforced; tool calls reported, the rest not covered |

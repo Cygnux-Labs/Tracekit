@@ -42,7 +42,10 @@ The signer refuses an observation from an identity that owns the run it is about
 Each request through the proxy is attributed to a run:
 
 - **by token**: `Proxy-Authorization: Basic base64(<run_id>:<run token>)`, which clients send when
-  `HTTPS_PROXY=https://<run_id>:<run token>@egress:3128` is set for the agent's processes. When the connection also
+  `HTTPS_PROXY=https://<run_id>:<run token>@egress:3128` is set for the agent's processes. With
+  `TRACEKIT_EGRESS_PROXY=https://egress:3128` in its environment, the Python and TypeScript SDKs set it (and
+  `HTTP_PROXY`) on every `register_run`, so commands the agent starts are attributed to its run; set `NO_PROXY` for the
+  signer and custody services it reaches directly. When the connection also
   presents a client certificate, that identity goes with it as `client`: a gateway's or the executor's connection for
   a run is then explained by it.
 - **by identity**: the identity the authenticators accept (a client certificate, or `Proxy-Authorization: Bearer
@@ -60,6 +63,9 @@ so a [run-set](format-v2.md#7-registry-logs-and-run-sets) shows it. Nothing an o
   anything reaches the host, and the proxy says so on stderr.
 - a raw IP address and the public DNS-over-HTTPS endpoints (`dns.google`, `cloudflare-dns.com`, ...): 403, with what
   to do. List one in `allow` to let agents reach it; an allowed host needs no SNI, so any protocol passes.
+- a host name that resolves to a loopback, private or link-local address (cluster services, cloud metadata): 403,
+  naming the address, unless `allow` lists it. The proxy connects to the addresses it checked.
+- a host name `observe_effect` would not take (other characters than `a-z 0-9 . _ : -`, or over 253): 400.
 
 Plain HTTP requests in absolute form (`GET http://host/path`) are forwarded with `Connection: close`; a body needs a
 `Content-Length`.

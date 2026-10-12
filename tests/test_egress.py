@@ -2,6 +2,8 @@
 against the run's calls, the gateways and the policy's explains; observer heartbeats on the tailer machinery; late and
 unattributed effects; the coverage matrix in run.final and the verifier; the proxy's SNI, IP and DoH refusals."""
 import base64
+import http.client
+import ipaddress
 import json
 import math
 import os
@@ -11,6 +13,7 @@ import threading
 import time
 import types
 import unittest
+import urllib.request
 from unittest import mock
 
 from test_signer_lifecycle import Lifecycle
@@ -21,6 +24,7 @@ from tracekit.format.canon import event_hash
 from tracekit.identity.base import CallerIdentity
 from tracekit.policy2 import compile as policy_compile
 from tracekit.policy2.engine import Engine
+from tracekit.sdk import client as sdk_client
 from tracekit.sdk.client import SignerUnavailable
 from tracekit.signer import service as svc
 from tracekit.signer.rpc_schema import RPCError
@@ -35,6 +39,14 @@ POLICY = {"tools": {"fetch": "http", "Bash": "shell"},
           "explains": [{"label": "package-install", "hosts": ["*.pythonhosted.org", "pypi.org"]},
                        {"tool": "fetch", "hosts": ["cdn.example.net"]}],
           "respond": [{"trigger": "unexplained_effect", "mode": "shadow", "action": "notify"}]}
+
+
+def public(test, yes=True):
+    """Treat every address as public (or none) for `test`: the test hosts are on loopback."""
+    for cls in (ipaddress.IPv4Address, ipaddress.IPv6Address):
+        p = mock.patch.object(cls, "is_global", new_callable=mock.PropertyMock, return_value=yes)
+        p.start()
+        test.addCleanup(p.stop)
 
 
 def effect(host, port=443, **kw):
@@ -305,6 +317,7 @@ class Upstream:
 
 class TestProxy(unittest.TestCase):
     def setUp(self):
+        public(self)
         self.sent = []
         self.client = types.SimpleNamespace(observe_effect=self.sent.append)
         self.srv = egress.serve({"listen": "127.0.0.1:0", "signer": "unused", "allow": ["127.0.0.2"]}, self.client)
@@ -397,6 +410,45 @@ class TestProxy(unittest.TestCase):
         self.assertTrue(self.up.got[0].startswith(b"GET /x?y=1 HTTP/1.1\r\n"))
         self.assertNotIn(b"Proxy-Authorization", self.up.got[0])
 
+    def test_a_host_observe_effect_would_not_take_is_400_and_queues_nothing(self):
+        self.srv.observer.add(("token", "run-1", "tok.mac", None), "a.example", 443, 5, 6, True)
+        for url in ("http://a!b.example/", f"http://{'a' * 254}/"):
+            s = socket.create_connection(self.srv.server_address[:2], 5)
+            s.sendall(f"GET {url} HTTP/1.1\r\nProxy-Authorization: {self.auth}\r\n\r\n".encode())
+            self.assertTrue(self.read(s).startswith(b"HTTP/1.1 400"))
+        s, status = self.connect(f"{'a' * 254}:443")
+        self.assertTrue(status.startswith("HTTP/1.1 400"), status)
+        self.srv.observer.flush(math.inf)
+        self.assertEqual([e["host"] for r in self.sent for e in r["effects"]], ["a.example"])
+
+    def test_a_name_resolving_to_a_non_public_address_is_refused_unless_allowed(self):
+        public(self, False)
+        s, status = self.connect(f"localhost:{self.up.port}")
+        self.assertTrue(status.startswith("HTTP/1.1 403"), status)
+        self.assertIn("loopback, private or link-local address: add it to allow", self.read(s).decode())
+        s = socket.create_connection(self.srv.server_address[:2], 5)
+        s.sendall(f"GET http://localhost:{self.up.port}/ HTTP/1.1\r\nProxy-Authorization: {self.auth}\r\n\r\n"
+                  .encode())
+        self.assertTrue(self.read(s).startswith(b"HTTP/1.1 403"))
+        self.assertEqual(self.up.got, [])
+        self.srv.observer.allow.add("localhost")
+        s, status = self.connect(f"localhost:{self.up.port}")
+        self.assertEqual(status, "HTTP/1.1 200 Connection established")
+
+    def test_an_sdk_run_attributes_its_processes_traffic_by_token(self):
+        proxy = f"http://{self.srv.server_address[0]}:{self.srv.server_address[1]}"
+        with mock.patch.dict(os.environ, {"TRACEKIT_EGRESS_PROXY": proxy}):
+            for k in ("NO_PROXY", "no_proxy"):
+                os.environ.pop(k, None)
+            sdk_client._use_egress({"run_id": "run-2", "run_token": "t/k+n=.m"})
+            self.assertEqual(os.environ["HTTPS_PROXY"], os.environ["http_proxy"])
+            with self.assertRaises(http.client.BadStatusLine):   # through the proxy from the env; `pong` isn't HTTP
+                urllib.request.urlopen(f"http://localhost:{self.up.port}/", timeout=5)
+        self.assertTrue(self.up.got[0].startswith(b"GET / HTTP/1.1\r\n"))
+        self.srv.observer.flush(math.inf)
+        (e,) = self.sent[-1]["effects"]
+        self.assertEqual((e["run_id"], e["run_token"], e["host"]), ("run-2", "t/k+n=.m", "localhost"))
+
     def test_totals_the_signer_did_not_take_are_sent_again(self):
         self.srv.observer.add(("token", "run-1", "tok.mac", None), "a.example", 443, 5, 6, True)
         self.client.observe_effect = mock.Mock(side_effect=SignerUnavailable("down"))
@@ -410,6 +462,7 @@ class TestProxy(unittest.TestCase):
 
 class TestEndToEnd(Observed):
     def test_the_proxy_reports_to_the_signer(self):
+        public(self)
         up = Upstream()
         self.addCleanup(up.sock.close)
         client = types.SimpleNamespace(observe_effect=lambda req: self.s.call(OBSERVER, "observe_effect", req))

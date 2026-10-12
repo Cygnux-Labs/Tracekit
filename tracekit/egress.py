@@ -11,7 +11,8 @@ egress.yaml:
                                            # from /proc)
     signer: https://signer.internal:8443   # the observer's own identity: $TRACEKIT_SIGNER_* (tracekit.sdk.client),
                                            # granted observe_effect in signer.yaml authorize
-    allow: [10.0.0.7, doh.internal]        # raw IPs and DNS-over-HTTPS endpoints the agents may reach anyway
+    allow: [10.0.0.7, doh.internal]        # raw IPs, DNS-over-HTTPS endpoints and internal hosts the agents may
+                                           # reach anyway
 
 Attribution, per request: `Proxy-Authorization: Basic base64(<run_id>:<run token>)` (HTTPS_PROXY=
 https://<run_id>:<run token>@egress:3128) is attribution by token, with the client certificate's identity, if there is
@@ -21,8 +22,9 @@ loopback client's socket, is attribution by identity: the signer gives it that i
 Relative paths are from the config file.
 
 CONNECT host:port: the TLS ClientHello's SNI must be the host, else the tunnel is closed before anything reaches it;
-a raw IP address or a DNS-over-HTTPS endpoint is refused (403) unless `allow` lists it, and an allowed host needs no
-SNI (any protocol). Plain HTTP requests in absolute form (GET http://host/path) are forwarded with Connection: close.
+a raw IP address, a DNS-over-HTTPS endpoint or a name that resolves to a loopback, private or link-local address is
+refused (403) unless `allow` lists it (the proxy connects to the address it checked), and an allowed host needs no
+SNI (any protocol). A host name observe_effect would not take (HOST) is refused (400). Plain HTTP requests in absolute form (GET http://host/path) are forwarded with Connection: close.
 Per (attribution, host, port, minute): bytes each way, connections opened, first and last activity. Each minute's
 totals go to the signer (observe_effect) at the first heartbeat (every HEARTBEAT_S) after the minute ends, and a
 heartbeat goes out with nothing to report too, so the signer knows the observer is alive. Totals the signer can't take
@@ -56,8 +58,7 @@ from tracekit.signer.service import HEARTBEAT_S, TAILER_LOST_S
 from tracekit.transport import http as transport
 
 KEYS = {"http", "listen", "signer", "allow"}
-# lean: the agent's app (or system mode's settings) sets HTTPS_PROXY with the run token; the adapters, executor and
-# gateways don't set it for the processes and requests they make yet: wire it in when custody services sit behind it
+HOST = re.compile(r"[a-z0-9._:-]{1,253}")   # what observe_effect takes as a host
 RUN_ID = re.compile(r"[A-Za-z0-9._:-]{1,128}")
 # lean: the public DNS-over-HTTPS endpoints by name; DoH on any other host is HTTPS to it, recorded as such
 DOH = {"dns.google", "dns.google.com", "cloudflare-dns.com", "mozilla.cloudflare-dns.com", "one.one.one.one",
@@ -97,6 +98,24 @@ class Observer:
             return (f"{host} is a DNS-over-HTTPS endpoint, which would hide the hosts resolved through it: use the "
                     "system resolver (or add it to allow in egress.yaml)")
         return None
+
+    def resolve(self, host, port):
+        """([address], None) to connect to for host:port, or (None, (status, why not)). A host `allow` doesn't list
+        must resolve to public addresses only: the proxy would otherwise open the agents' way to what only it can
+        reach."""
+        why = self.refused(host)
+        if why:
+            return None, (403, why)
+        try:
+            addresses = [a[4][:2] for a in socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)]
+        except OSError as e:
+            return None, (502, f"{host} could not be resolved: {e}")
+        for ip, _ in addresses:
+            if host not in self.allow and not ipaddress.ip_address(ip.partition("%")[0]).is_global:
+                return None, (403, f"{host} resolves to {ip}, a loopback, private or link-local address: add it to "
+                                   "allow in egress.yaml if agents may reach it, or to NO_PROXY in the agent's "
+                                   "environment for an internal service it reaches directly")
+        return addresses, None
 
     def add(self, who, host, port, out=0, back=0, opened=False):
         now = time.time()
@@ -148,8 +167,7 @@ def _target(authority):
     host, _, port = authority.rpartition(":")
     host = host[1:-1] if host.startswith("[") and host.endswith("]") else host
     host = host.lower().rstrip(".")
-    if not (host and port.isascii() and port.isdigit() and 0 < int(port) < 65536 and re.fullmatch(r"[a-z0-9._:-]+",
-                                                                                                    host)):
+    if not (port.isascii() and port.isdigit() and 0 < int(port) < 65536 and HOST.fullmatch(host)):
         return None, None
     return host, int(port)
 
@@ -190,6 +208,16 @@ def _peer_uid(client, server_port):
             if r[1].endswith(want[0]) and r[2].endswith(want[1]):
                 return int(r[7])
     return None
+
+
+def _connect(addresses):
+    """A connection to the first of `addresses` that answers."""
+    for a in addresses:
+        try:
+            return socket.create_connection(a, CONNECT_TIMEOUT_S)
+        except OSError as e:
+            err = e
+    raise err
 
 
 def _recv_exact(sock, n):
@@ -291,9 +319,9 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         who = self._who()
         if who is None:
             return
-        why = obs.refused(host)
+        addresses, why = obs.resolve(host, port)
         if why:
-            return self._refuse(403, why)
+            return self._refuse(*why)
         self.send_response(200, "Connection established")
         self.end_headers()
         self.wfile.flush()
@@ -308,7 +336,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                     print(f"tracekit egress: closed a tunnel to {host}:{port} before it reached it: its TLS server name "
                           f"is {_sni(hello)!r}, not {host!r}; clients must connect to the host they name", file=sys.stderr)
                     return
-            with socket.create_connection((host, port), CONNECT_TIMEOUT_S) as up:
+            with _connect(addresses) as up:
                 obs.add(who, host, port, len(hello), opened=True)
                 up.sendall(hello)
                 _relay(self.connection, up, lambda out, back: obs.add(who, host, port, out, back))
@@ -321,14 +349,14 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             host, port = (url.hostname or "").lower().rstrip("."), url.port or 80
         except ValueError:
             host = ""
-        if url.scheme != "http" or not host:
+        if url.scheme != "http" or not HOST.fullmatch(host):
             return self._refuse(400, "send http:// requests in absolute form, and CONNECT for https://")
         who = self._who()
         if who is None:
             return
-        why = obs.refused(host)
+        addresses, why = obs.resolve(host, port)
         if why:
-            return self._refuse(403, why)
+            return self._refuse(*why)
         n = self.headers.get("content-length", "0")
         if "transfer-encoding" in self.headers or not (n.isascii() and n.isdigit()):
             return self._refuse(411, "send the request body with a Content-Length")
@@ -343,7 +371,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         self.close_connection = True
         self.server.stop_deadline()
         try:
-            with socket.create_connection((host, port), CONNECT_TIMEOUT_S) as up:
+            with _connect(addresses) as up:
                 obs.add(who, host, port, len(data), opened=True)
                 up.sendall(data)
                 while chunk := up.recv(65536):

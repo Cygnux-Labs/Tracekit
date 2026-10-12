@@ -67,6 +67,19 @@ class _ConnectionLost(Exception):
     pass
 
 
+def _use_egress(run):
+    """With $TRACEKIT_EGRESS_PROXY (an egress observer, docs/egress.md), point this process's and its children's
+    HTTP(S)_PROXY at it with the run's id and token as credentials, so their connections are attributed to the run."""
+    proxy = os.environ.get("TRACEKIT_EGRESS_PROXY")
+    if not proxy:
+        return
+    u = urllib.parse.urlsplit(proxy)
+    cred = urllib.parse.quote(run["run_id"], safe="") + ":" + urllib.parse.quote(run["run_token"], safe="")
+    # lean: one process-wide setting, the latest run's; concurrent runs in one process need a proxy per client
+    for k in ("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"):
+        os.environ[k] = u._replace(netloc=cred + "@" + u.netloc.rpartition("@")[2]).geturl()
+
+
 def _new_id():
     return uuid.uuid4().hex
 
@@ -299,6 +312,8 @@ class Client:
                             self._seqs.pop(req.get("run_id"), None)
                             self._order.pop(req.get("run_id"), None)
                     raise RPCError(e.get("code"), e.get("message", ""), e.get("retry_after_ms"))
+                if method == "register_run":
+                    _use_egress(reply)
                 return reply
             raise SignerUnavailable(f"lost the connection to the signer {RETRIES} times")
 
