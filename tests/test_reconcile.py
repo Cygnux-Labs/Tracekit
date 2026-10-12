@@ -100,15 +100,21 @@ class TestReconcile(Reconcile):
                                [("reconcile.args_mismatch", "tc-1"), ("reconcile.args_mismatch", "tc-2")],
                                [("reconcile.args_unparseable", "tc-1")], [("reconcile.result_without_call", "tc-0")]])
 
-    def test_an_mcp_call_matches_the_model_s_name_for_its_tool(self):
-        asked = ["read_text_file", "filesystem_read_text_file", "mcp__filesystem__read_text_file", "fs.read_text_file",
-                 "fs/read_text_file", "delete_file", "read_text_file_x"]
+    def test_an_mcp_call_matches_only_the_names_a_framework_shows_the_model(self):
+        cases = [("mcp:filesystem/read_text_file", "read_text_file", {}),
+                 ("mcp:filesystem/read_text_file", "mcp__filesystem__read_text_file", {}),
+                 ("mcp:filesystem/read_text_file", "mcp_filesystem__read_text_file", {}),
+                 ("mcp:filesystem/read_text_file", "filesystem_read_text_file", {}),   # no server_tool suffix match
+                 ("mcp:filesystem/read_text_file", "fs.read_text_file", {}),
+                 ("mcp:filesystem/read_text_file", "read_text_file_x", {}),
+                 ("mcp:x/account", "delete_account", {}),   # a renamed call can't hide behind a suffix
+                 ("mcp:filesystem/read_text_file", "read_text_file", {"path": "/etc/passwd"})]   # other arguments
         run = self.register()
-        self.model(run, [use(f"tc-{i}", name) for i, name in enumerate(asked)])
-        for i in range(len(asked)):
-            self.run_call(run, f"tc-{i}", "mcp:filesystem/read_text_file")
+        self.model(run, [use(f"tc-{i}", asked) for i, (_, asked, _) in enumerate(cases)])
+        for i, (decided, _, args) in enumerate(cases):
+            self.run_call(run, f"tc-{i}", decided, args)
         [(found, _)] = self.final(run)
-        self.assertEqual(found, [("reconcile.args_mismatch", "tc-5"), ("reconcile.args_mismatch", "tc-6")])
+        self.assertEqual(found, [("reconcile.args_mismatch", f"tc-{i}") for i in range(3, 8)])
 
     def test_coerced_and_provider_executed_are_not_flagged_and_final_states_coverage(self):
         run = self.register()

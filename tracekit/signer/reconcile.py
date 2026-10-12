@@ -85,13 +85,20 @@ def observe(put, run, e, digests=None, handoff=lambda tool: False):
     return now
 
 
-def _same_tool(decided, asked):
-    """Whether the decided tool is the one the model asked for: the same name, or a decided `mcp:<server>/<tool>` for
-    the model's `<tool>` as is or under a framework's prefix (`fs_<tool>`, `mcp__fs__<tool>`, `fs.<tool>`, `fs/<tool>`)."""
-    if decided == asked or not decided.startswith("mcp:") or "/" not in decided:
-        return decided == asked
-    tool = decided.split("/", 1)[1]
-    return asked == tool or asked.endswith(("_" + tool, "." + tool, "/" + tool))
+# What a framework shows the model for the tool `t` of MCP server `s`, decided as `mcp:<s>/<t>`. Each form holds the
+# whole tool name; a server-prefixed form holds the decided server too.
+MCP_NAMES = ("{t}",              # OpenAI Agents JS, the Vercel AI SDK, the mcp Python client
+             "mcp__{s}__{t}",    # Claude Code
+             "mcp_{s}__{t}")     # OpenAI Agents JS with mcpConfig.includeServerInToolNames
+
+
+def model_names(tool):
+    """The names the model may have asked for decided `tool`: the name itself, and for `mcp:<server>/<tool>` the
+    MCP_NAMES forms."""
+    if not tool.startswith("mcp:") or "/" not in tool:
+        return (tool,)
+    server, name = tool[4:].split("/", 1)
+    return (tool,) + tuple(f.format(s=server, t=name) for f in MCP_NAMES)
 
 
 def _hint(tool):
@@ -121,12 +128,12 @@ def _found(run, mandatory, handoff=lambda tool: False):
         if d is None:
             continue
         a, b = digests.get("l2:" + tcid), digests.get("l3:" + tcid)
-        if not _same_tool(d["name"], u["name"]):
+        if isinstance(a, dict):   # an MCP call: the signer's digest under each name the model may have used
+            a = a.get(u["name"])
+        if u["name"] not in model_names(d["name"]):
             out.append(("args_mismatch", tcid, ["L2", "L3"], f"decided {d['name'][:200]}, the model asked for "
                                                              f"{u['name'][:200]}"))
-        # lean: the digests hash the tool name too, so an MCP call matched by its tool name part is not compared by
-        # arguments; compare args-only digests once clients send them
-        elif d["name"] == u["name"] and not (u["unparseable"] or d["coerced"] or u["coerced"]) and a and b and a != b:
+        elif not (u["unparseable"] or d["coerced"] or u["coerced"]) and a and b and a != b:
             out.append(("args_mismatch", tcid, ["L2", "L3"], "decided other arguments than the model asked for"))
     for tcid, d in rec["l2"].items():
         if tcid not in l3 and tcid not in provider:

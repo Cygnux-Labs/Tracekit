@@ -341,9 +341,10 @@ class Client:
         fresh = method in _EVENT_METHODS and "client_seq" not in req
         if fresh:
             req.update(stream=self.stream, client_seq=self._seqs.get(run_id, 0))
-        if method == "close_run" and run_id in self._seqs and "last_client_seq" not in req:
+        if method == "close_run" and run_id in self._seqs:
             # the last client_seq this stream used: one the signer never received becomes its client_counter_gap
-            req["last_client_seq"] = [{"stream": self.stream, "client_seq": self._seqs[run_id] - 1}]
+            req["last_client_seq"] = [*req.get("last_client_seq", ()),
+                                      {"stream": self.stream, "client_seq": self._seqs[run_id] - 1}][-64:]
         _validate(method, req)
         data = _encode(method, req)
         if fresh:

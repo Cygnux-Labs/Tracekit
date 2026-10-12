@@ -1969,8 +1969,11 @@ class SignerService:
                     call["agent"] = agent
             tx.set(run["calls"], tcid, call)
             tx.set(run["decisions"], did, call)
+            names = reconcile.model_names(tool)   # an MCP call: its digest under each name the model may have used
             seq = tx.event(run, req, "policy.decision", dict(data, decision=verdict, rule_ids=rule_ids),
-                           digests={tcid: digest}, tool_call_id=tcid, attempt=attempt, args_source=req["args_source"],
+                           digests={tcid: digest if digest is None or len(names) == 1 else {
+                               n: event_hash({"tool": n, "args": args}) for n in names}},
+                           tool_call_id=tcid, attempt=attempt, args_source=req["args_source"],
                            **top)
             written.append(seq)
             for kind, reason in gaps:

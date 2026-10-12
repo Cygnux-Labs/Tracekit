@@ -266,6 +266,20 @@ class ProcessRun(OnReal, unittest.TestCase):
         self.assertEqual(self.records(self.process, "policy.decision"), ["c2", "c3"])
         self.assertEqual(self.gaps(self.process), [])
 
+    def test_close_ends_the_adapter_streams_it_renumbered(self):
+        d1 = self.decide("c1")
+        sent = Client.call
+
+        def down(client, method, req=None):
+            if method == "complete":
+                raise SignerUnavailable("the signer is down")
+            return sent(client, method, req)
+        with mock.patch.object(Client, "call", down), self.assertRaises(SignerUnavailable):
+            self.complete("c1", d1)   # numbered by the adapter and renumbered, never received
+        self.process.close()
+        gaps = [g["data"] for g in self.gaps(self.process) if g["data"]["kind"] == "client_counter_gap"]
+        self.assertEqual([g["missed_events"] for g in gaps], [1])
+
     def test_approval_list_reaches_the_current_run(self):
         self.assertEqual(self.client.approval_list({"run_id": self.process.run_id})["approvals"], [])
 
