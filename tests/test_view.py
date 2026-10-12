@@ -14,6 +14,8 @@ import unittest
 import urllib.request
 from unittest import mock
 
+import pytest
+
 import test_signer_service as ts
 from factories import wait_for
 from test_observe_render import XSS, script_of, unescaped
@@ -285,6 +287,7 @@ class View(unittest.TestCase):
             self.assertEqual(cli.main(["last"]), 1)
         self.assertEqual((exported, err.getvalue()), (["r1"], ""))
 
+    @pytest.mark.unverified_bundles
     def test_tampered_record_shows_only_the_failure(self):
         run_id = self.finished_run()
         self.service.close()

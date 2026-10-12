@@ -9,6 +9,8 @@ import unittest
 import zipfile
 from unittest import mock
 
+import pytest
+
 from factories import wait_for
 from storage_contract import Chain
 from test_signer_service import ME, tmpdir
@@ -184,6 +186,7 @@ class ExportWithoutSigner(unittest.TestCase):
         with open(self.cfg, "w") as f:
             json.dump({"data_dir": ".", "socket": "nobody.sock", "tenant": "acme"}, f)
 
+    @pytest.mark.unverified_bundles
     def test_note_newer_than_the_first_reader_still_exports(self):
         store, chain, key = FileStorage(os.path.join(self.dir, "store")), Chain(), crypto.generate()[0]
         self.addCleanup(store.close)

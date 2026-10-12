@@ -7,6 +7,8 @@ import threading
 import unittest
 from unittest import mock
 
+import pytest
+
 from test_bundle_v2 import KEY1, KEY2, LOG_SECRET, ORIGIN, WIT_SECRET, WITNESS, Log, cosign, pub, spki
 from test_otlp import agent_trace
 from test_signer_service import ME, tmpdir
@@ -185,6 +187,7 @@ class HttpIssuer(unittest.TestCase):
         with self.assertRaisesRegex(RPCError, "forbidden: tenants"):
             issuer.certify({**self.cfg, "tenants": ["other"]}, "0" * 32)
 
+    @pytest.mark.unverified_bundles
     def test_signer_rotates_certified_keys_and_the_bundle_verifies(self):
         self.s = self.open()
         self.s.rotate_key()
@@ -228,6 +231,7 @@ class HttpIssuer(unittest.TestCase):
         self.assertIn("revocations", rep.warnings)
 
 
+@pytest.mark.unverified_bundles
 class CertifiedKeys(unittest.TestCase):
     """Bundles of test_bundle_v2.Log logs whose key is certified."""
 

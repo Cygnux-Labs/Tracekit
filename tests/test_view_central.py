@@ -10,6 +10,8 @@ import unittest
 from http.server import ThreadingHTTPServer
 from unittest import mock
 
+import pytest
+
 import test_storage_postgres as pg
 from factories import wait_for
 from test_e13_approvals import Sessions
@@ -154,6 +156,7 @@ class CentralViewer(unittest.TestCase):
             run = json.loads(self.get(a1 + "&from=1", self.acme)[2])
         self.assertEqual((run["records"], run["next"]), (records[1:3], 3))
 
+    @pytest.mark.unverified_bundles
     def test_every_verdict_is_labelled_and_a_failed_run_shows_no_records(self):
         status, _, body = self.get("/api/runs", self.admin)
         runs = json.loads(body)["runs"]
