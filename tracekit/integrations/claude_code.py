@@ -1,8 +1,12 @@
 """Claude Code hook on the v2 signer RPC: a thin client. The signer decides with its policy packs, signs and stores;
 this process holds no key, evaluates no policy and writes no ledger.
 
-    python -I -m tracekit.integrations.claude_code   (wired by `tracekit init --dev --v2`, or as root by
-                                                      `tracekit init --v2 --user AGENT`: system mode)
+    python -I -m tracekit.integrations.claude_code EVENT   (wired by `tracekit init --dev --v2`, or as root by
+                                                            `tracekit init --v2 --user AGENT`: system mode)
+
+EVENT is the hook event `tracekit init` configured this command for (PreToolUse, PostToolUse, ...): a payload that is
+not a JSON object still blocks a PreToolUse call (on a PostToolUse, its call is completed as an error later, below).
+Without it (hooks installed before 1.2) the event comes from the payload alone.
 
 Each hook is a new process, so the run of a Claude Code session (id, token, fail modes, and the one event stream and
 next client_seq all its hooks share) and the decision binding of a tool call are kept in the runtime dir between hooks.
@@ -10,7 +14,9 @@ Exit 0 lets the call proceed, exit 2 blocks it (reason on stderr). An approval w
 consume returns: the hook prints them as `updatedInput` (Claude Code only; the other harnesses run the arguments the
 signer consumed, which it checked against the approved ones). The signer unreachable: the run's fail mode for the
 tool's class, from register_run (closed before a run is registered). A signer refusal, a failure while a call waits for
-its approval, or any other error: blocked.
+its approval, or any other error: blocked. A call allowed here that gets no PostToolUse (declined in the harness's own
+permission prompt, interrupted, or an unreadable payload) is completed as an error at SessionEnd; one that is never
+completed is the signer's decided_not_completed gap.
 
 Each run of a session gets one transcript tailer (tracekit.tailer) on the transcript SessionStart names: it records the
 model's tool uses and the user's prompts (as commitments) from the transcript, which no hook payload carries.
@@ -44,6 +50,9 @@ from tracekit.signer.rpc_schema import RPCError
 
 AGENT = "claude-code"
 TOOL_EVENTS = ("PreToolUse", "PostToolUse", "PostToolUseFailure")
+# the error a call that got no PostToolUse is completed with (_unfinished)
+NO_POST = ("no PostToolUse came by the end of the session: declined (the harness's permission prompt, another hook), "
+           "interrupted, or its payload was unreadable")
 APPROVAL_WAIT_S = 540   # a PreToolUse hook, approval wait included, answers within this: below its timeout (install.HOOK_TIMEOUT)
 
 
@@ -69,23 +78,29 @@ def _load(path):
 def _run(client, sid, register=True, send=None, transcript=None, **fields):
     """(the session's run, registered on its first event; with `send`, the signer's reply to that event call, sent with
     the session's stream and next client_seq under the session lock so parallel hooks reach the signer in client_seq
-    order, and sent again on a new run when the signer has closed the stored one (idle)). `transcript` (SessionStart):
-    kept in the session state; each run of the session gets a tailer on it."""
+    order, and sent again on a new run when the signer has closed the stored one (idle); without `register`, the stored
+    run is marked ended instead, and the session's next event that registers starts the new one). `transcript`
+    (SessionStart): kept in the session state; each run of the session gets a tailer on it."""
     path = _state(sid)
     with open(path[:-len(".json")] + ".lock", "a") as lk:   # parallel tool calls must not register two runs
         lock_file(lk)
         st = _load(path)
-        if register and st is None:
-            st = _register(client, path)
+        if register and (st is None or st.get("ended")):
+            st = _register(client, path, st and st.get("transcript"))
         if st and transcript:
             st["transcript"] = transcript
         _tail(client, path, st)
         if not (st and send):
             return st and RunHandle(client, st), None
+        if st.get("ended"):   # the signer said so already: asking again would only count as a late write
+            raise RPCError("run_closed", f"run {st['run_id']} ended")
         try:
             return _send(client, path, st, send, fields)
         except RPCError as e:
-            if not register or e.code not in ("run_closed", "unknown_run"):
+            if e.code not in ("run_closed", "unknown_run"):
+                raise
+            if not register:   # the session's next event registers a new run instead of trying this one again
+                files.write_json(path, dict(st, ended=True))
                 raise
             st = _register(client, path, st.get("transcript"))
             _tail(client, path, st)
@@ -115,9 +130,7 @@ def _tail(client, path, st):
     handle = {"run_id": st["run_id"], "run_token": st["run_token"], "path": st["transcript"]}
     sc = system_config() or {}
     t = sc.get("tailer")
-    # lean: a tailer that dies or is killed (the agent's uid can signal it, through sudo too) leaves no gap; have the
-    # signer expect a final report from each delegated tailer at run.final if that matters
-    argv = None
+    argv = None   # a tailer that dies or is killed stops its heartbeats: the signer writes the tailer_lost gap
     if t:
         # this tailer cannot see SessionEnd (the session state is the agent's): it exits once a call finds the run
         # final, or with a tailer_lost after tailer.IDLE_TAILER_S without a new line
@@ -181,7 +194,7 @@ def _pre(client, p, sid, tid):
     if "args" in c and AGENT == "claude-code":   # T2: the signer's copy is what runs
         args = c["args"]
         print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "updatedInput": args}}))
-    files.write_json(_state(sid, tid), {"run_id": run.run_id, "decision_id": d["decision_id"],
+    files.write_json(_state(sid, tid), {"run_id": run.run_id, "tool_call_id": tid, "decision_id": d["decision_id"],
                                         "args_digest": event_hash({"tool": tool, "args": args}),
                                         "send_result": d.get("send_result", False)})
     return 0
@@ -207,6 +220,26 @@ def _post(client, p, sid, tid):
          args_digest=call["args_digest"], status="ok" if ok else "error", result=value)
     os.remove(path)
     return 0
+
+
+def _unfinished(client, sid):
+    """Complete the session's calls that never got their PostToolUse (declined in the harness's own permission prompt
+    or by another hook, interrupted, or a payload this hook couldn't read) as errors at SessionEnd, when none can still
+    be running, so the signer doesn't write a decided_not_completed gap for each."""
+    for path in glob.glob(glob.escape(_state(sid)[:-len(".json")]) + ".*.json"):
+        call, st = _load(path), _load(_state(sid))
+        if call and st and call.get("run_id") == st["run_id"] and "tool_call_id" in call:
+            try:
+                _run(client, sid, register=False, send="complete", tool_call_id=call["tool_call_id"],
+                     decision_id=call["decision_id"], args_digest=call["args_digest"], status="error", error=NO_POST)
+            except SignerUnavailable:   # the next of these events tries again
+                return
+            except RPCError:   # its run ended, or its PostToolUse came meanwhile
+                pass
+        try:
+            os.remove(path)
+        except FileNotFoundError:   # its PostToolUse removed it
+            pass
 
 
 def _prune():
@@ -239,7 +272,8 @@ def _handle(client, p, name, sid, tid):
         return _pre(client, p, sid, tid)
     if name in TOOL_EVENTS:
         return _post(client, p, sid, tid)
-    if name == "SessionEnd":
+    if name == "SessionEnd":   # not at Stop: a background subagent's call may still be running then
+        _unfinished(client, sid)
         run, _ = _run(client, sid, register=False)
         try:
             if run:
@@ -258,13 +292,19 @@ def _handle(client, p, name, sid, tid):
     return 0
 
 
-def _entry():
+def _entry(event=None):
+    """`event`: the hook event from the command line, or None."""
     raw = sys.stdin.read()
     try:
         p = json.loads(raw) if raw.strip() else {}
     except ValueError:
-        p = {}
-    return handle(p if isinstance(p, dict) else {})
+        p = None
+    if not isinstance(p, dict) and event:
+        pre = event == "PreToolUse"
+        print(f"[tracekit] the {event} hook payload is not a JSON object; "
+              + ("tool call blocked" if pre else "event not recorded"), file=sys.stderr)
+        return 2 if pre else 0
+    return handle(dict(p, hook_event_name=event) if event else p if isinstance(p, dict) else {})
 
 
 def handle(p):
@@ -302,4 +342,4 @@ def handle(p):
 
 
 if __name__ == "__main__":
-    sys.exit(_entry())
+    sys.exit(_entry(*sys.argv[1:2]))

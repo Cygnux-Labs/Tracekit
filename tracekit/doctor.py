@@ -349,10 +349,15 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
             missing = [ev for ev, hs in hooks.items() if not hs]
             add("D-HOOKS-PRESENT", not missing, f"no v2 hook for {', '.join(missing)} in {settings}" if missing else
                 f"v2 hooks in {settings}", hook_fix, bad=sev)
-            cmds = [h.get("command") or "" for hs in hooks.values() for h in hs]
+            cmds = [(ev, h.get("command") or "") for ev, hs in hooks.items() for h in hs]
+            unnamed = sorted({ev for ev, c in cmds if not re.search(rf"\b{ev}\b", c)})
+            add("D-HOOKS-EVENT", not unnamed, f"the {', '.join(unnamed)} hook command(s) do not name their event "
+                "(installed before 1.2): a PreToolUse payload the hook cannot read lets the call through unrecorded"
+                if unnamed else "each hook command names its event", hook_fix, bad=WARN)
             if prod and opt and cmds:
                 python = os.path.join(opt, "bin", "python")
-                stray = [c for c in cmds if c != install._hook_command(install.V2_HOOK, python=python)]
+                stray = [c for ev, c in cmds if c not in (install._hook_command(install.V2_HOOK, args=a, python=python)
+                                                          for a in ((ev,), ()))]   # a pre-1.2 one is D-HOOKS-EVENT's
                 add("D-HOOKS-VENV", not stray, f"{len(stray)} hooks run another Python than {python}" if stray else
                     f"hooks run {python}", REINIT)
             pre = [t if type(t) in (int, float) else 0 for t in (h.get("timeout", 60) for h in hooks["PreToolUse"])]

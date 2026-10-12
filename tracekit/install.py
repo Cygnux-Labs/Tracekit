@@ -105,7 +105,7 @@ V2_UNIT, V2_LABEL = "tracekit-signer", "dev.tracekit.signer"
 # starts it through sudo, and the signer lets its uid make only the calls of TAILER_METHODS
 V2_TAILER, V2_TAILER_DARWIN = "tracekit-tailer", "_tracekit_tailer"
 TAILER_SUDOERS = "/etc/sudoers.d/tracekit-tailer"
-TAILER_METHODS = ["model_event", "state_write", "tailer_lost", "status"]
+TAILER_METHODS = ["model_event", "state_write", "tailer_lost", "tailer_heartbeat", "status"]
 V2_RUN = {"linux": "/run/tracekit-signer", "darwin": "/Library/Application Support/tracekit-signer"}   # the socket's dir
 V2_UNIT_TEXT = """[Unit]
 Description=Tracekit v2 signer
@@ -339,7 +339,8 @@ def _install_hooks_at(d, settings_path, uninstall, proxy_url, extra, mode, pytho
             elif uninstall or v != new:
                 replaced.add(v)
         if not uninstall:
-            e = {"hooks": [{"type": "command", "command": _hook_command(module, python=python), "timeout": HOOK_TIMEOUT.get(ev, 30)}]}
+            cmd = _hook_command(module, args=(ev,) if module == V2_HOOK else (), python=python)   # v2: names its event
+            e = {"hooks": [{"type": "command", "command": cmd, "timeout": HOOK_TIMEOUT.get(ev, 30)}]}
             groups.append({"matcher": "*", **e} if ev in TOOL_EVENTS else e)
         if groups:
             hooks[ev] = groups

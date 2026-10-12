@@ -421,7 +421,7 @@ class Executor(unittest.TestCase):
                 "observe": {**event, "source": "mail", "trust": "untrusted", "value": "hi"},
                 "model_event": {**event, "provider": "openai", "model": "m", "phase": "request"},
                 "approval_request": {"request_id": "x", **self.run, "tool_call_id": "c"},
-                "approval_wait": {**self.run, "approval_id": "apr-1"}}
+                "approval_wait": {**self.run, "approval_id": "apr-1"}, "close_run": {"request_id": "x", **self.run}}
         self.assertEqual(set(reqs), {m for m, r in REQUESTS.items() if "caller" in r["properties"]})
         for method, req in reqs.items():
             with self.subTest(method):

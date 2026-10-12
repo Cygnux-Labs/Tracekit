@@ -169,6 +169,19 @@ class HookV2(unittest.TestCase):
         rep, code = v2.verify(out, trust)
         self.assertEqual((code, rep.integrity), (0, "VERIFIED"), rep.checks)
 
+    def test_a_call_that_gets_no_post_tool_use_completes_as_an_error_at_session_end(self):
+        # declined in the harness's own prompt, or interrupted; at Stop a background sub-agent's call may still run
+        self.assertEqual(self.pre("ls"), (0, ""))
+        for event in ("Stop", "UserPromptSubmit"):
+            self.assertEqual(self.hook(event), (0, ""))
+        run = self.run_handle()
+        self.assertEqual(run.call("read")["events"][-1]["type"], "policy.decision")
+        self.assertEqual(self.hook("SessionEnd", reason="exit"), (0, ""))
+        types = [e["type"] for e in run.call("read")["events"]]
+        self.assertEqual(types[-3:], ["policy.decision", "tool.result", "run.closing"])
+        result = run.call("read")["events"][-2]["data"]
+        self.assertEqual((result["ok"], result["tool_use_id"]), (False, "t1"))
+
     def test_closed_run_continues_in_a_new_one(self):
         self.pre("ls")
         old = self.run_handle()
@@ -237,7 +250,7 @@ class InitV2(unittest.TestCase):
             hooks = json.load(f)["hooks"]
         self.assertEqual(set(hooks), set(install.TOOL_EVENTS + install.OTHER_EVENTS))
         cmd = hooks["PreToolUse"][0]["hooks"][0]["command"]
-        self.assertEqual(cmd, HOOK)
+        self.assertEqual(cmd, install._hook_command(install.V2_HOOK, args=("PreToolUse",)))
         self.assertIn(" -I ", cmd)
         self.assertTrue(os.path.isabs(shlex.split(cmd)[0]), cmd)
         self.assertTrue(all(install._is_ours(g) for gs in hooks.values() for g in gs))
