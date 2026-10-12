@@ -15,7 +15,7 @@ from tracekit.bundle_v2 import export
 from tracekit.format import checkpoint
 from tracekit.format.canon import event_hash
 from tracekit.policy2.engine import Engine
-from tracekit.signer import service as svc
+from tracekit.signer import reconcile, service as svc
 from tracekit.signer.rpc_schema import RPCError
 from tracekit.storage.file import FileStorage
 from tracekit.verify import v2
@@ -57,6 +57,21 @@ class Reconcile(Lifecycle):
             es = [r["event"] for r in records(self.dir) if r["event"]["run_id"] == run["run_id"]]
             out.append(([(e["type"], e["tool_call_id"]) for e in es if e["type"].startswith("reconcile.")], es[-1]))
         return out
+
+
+class Wording(unittest.TestCase):
+    def test_under_gateway_mandatory_a_decide_the_agent_reported_is_called_a_call_around_the_gateway(self):
+        run = {"rec": reconcile.new(), "digests": {}}
+        put = lambda d, k, v: d.__setitem__(k, v)
+        reconcile.observe(put, run, {"type": "policy.decision", "tool_call_id": "tc-1", "args_source": "parsed",
+                                     "data": {"tool": "cancel_ticket", "decision": "allow"}})
+        reconcile.observe(put, run, {"type": "model.exchange", "source": "sdk", "data": {"tool_uses": [use(
+            "tc-1", "cancel_ticket")]}})
+        self.assertEqual(reconcile._found(run, mandatory=False), [])
+        [(kind, tcid, _, detail)] = reconcile._found(run, mandatory=True)
+        self.assertEqual((kind, tcid), ("fabricated", "tc-1"))
+        self.assertIn("no gateway exchange asked for: the agent reported the model asking for it", detail)
+        self.assertNotIn("never asked", detail)
 
 
 class TestReconcile(Reconcile):

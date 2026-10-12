@@ -90,7 +90,10 @@ def _found(run, mandatory, handoff=lambda tool: False):
             out.append(("args_mismatch", tcid, ["L2", "L3"], "decided other arguments than the model asked for"))
     for tcid, d in rec["l2"].items():
         if tcid not in l3:
-            out.append(("fabricated", tcid, ["L2", "L3"], f"a decide for {d['name'][:200]} the model never asked for"))
+            out.append(("fabricated", tcid, ["L2", "L3"], f"a decide for {d['name'][:200]} the model never asked for"
+                        if tcid not in rec["l3"] else   # gateway_mandatory: only the agent reported the model asking
+                        f"a decide for {d['name'][:200]} that no gateway exchange asked for: the agent reported the "
+                        "model asking for it, from a model call that went around the gateway"))
     for tcid in rec["sent"]:
         if tcid not in rec["l2"] and tcid not in l3:
             out.append(("result_without_call", tcid, ["L2", "L3"], "a result sent to the model for a call no layer "
