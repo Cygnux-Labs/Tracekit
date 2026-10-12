@@ -2584,7 +2584,9 @@ class SignerService:
         identity = self._on_behalf(identity, req)
         agent_view = self._is_agent(identity)
         # copied on the writer, so only committed states are listed
-        items = iter(self.log.write(lambda tx: [(aid, dict(a)) for aid, a in self.log.approvals.items()]))
+        items = iter(self.log.write(lambda tx: [
+            (aid, {**a, "run_closing": a["state"] == "requested" and self.log.runs[a["run_key"]]["closed"]})
+            for aid, a in self.log.approvals.items()]))
         page, cursor = [], req.get("cursor")
         # lean: every page scans the approvals from the first; index them by tenant once a signer holds ~100k
         if cursor is not None:
@@ -2598,7 +2600,7 @@ class SignerService:
                     req.get("escalated") in (None, bool(a.get("escalated"))) and self._may_see(identity, a):
                 if len(page) == req.get("limit", LIST_PAGE):
                     return {"approvals": page, "next_cursor": page[-1]["approval_id"]}
-                s = self._summary(aid, a)
+                s = {**self._summary(aid, a), **({"run_closing": True} if a["run_closing"] else {})}
                 page.append({k: v for k, v in s.items() if k not in ("run_id", "tool_call_id", "attempt", "requester",
                                                                      "passkey")} if agent_view else s)
         return {"approvals": page, "next_cursor": None}

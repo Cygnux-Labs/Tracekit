@@ -100,6 +100,16 @@ class TestReconcile(Reconcile):
                                [("reconcile.args_mismatch", "tc-1"), ("reconcile.args_mismatch", "tc-2")],
                                [("reconcile.args_unparseable", "tc-1")], [("reconcile.result_without_call", "tc-0")]])
 
+    def test_an_mcp_call_matches_the_model_s_name_for_its_tool(self):
+        asked = ["read_text_file", "filesystem_read_text_file", "mcp__filesystem__read_text_file", "fs.read_text_file",
+                 "fs/read_text_file", "delete_file", "read_text_file_x"]
+        run = self.register()
+        self.model(run, [use(f"tc-{i}", name) for i, name in enumerate(asked)])
+        for i in range(len(asked)):
+            self.run_call(run, f"tc-{i}", "mcp:filesystem/read_text_file")
+        [(found, _)] = self.final(run)
+        self.assertEqual(found, [("reconcile.args_mismatch", "tc-5"), ("reconcile.args_mismatch", "tc-6")])
+
     def test_coerced_and_provider_executed_are_not_flagged_and_final_states_coverage(self):
         run = self.register()
         self.model(run, [use("tc-1", args={"n": "1"}), {"id": "ws-1", "name": "web_search", "executed_by": "provider"}])

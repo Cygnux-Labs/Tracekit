@@ -85,6 +85,15 @@ def observe(put, run, e, digests=None, handoff=lambda tool: False):
     return now
 
 
+def _same_tool(decided, asked):
+    """Whether the decided tool is the one the model asked for: the same name, or a decided `mcp:<server>/<tool>` for
+    the model's `<tool>` as is or under a framework's prefix (`fs_<tool>`, `mcp__fs__<tool>`, `fs.<tool>`, `fs/<tool>`)."""
+    if decided == asked or not decided.startswith("mcp:") or "/" not in decided:
+        return decided == asked
+    tool = decided.split("/", 1)[1]
+    return asked == tool or asked.endswith(("_" + tool, "." + tool, "/" + tool))
+
+
 def _hint(tool):
     """What a hook_missing detail adds for a tool that looks like a handoff the policy does not name."""
     return "; if it is a handoff to another agent, name it in the policy's handoffs:" if tool.startswith(
@@ -112,10 +121,12 @@ def _found(run, mandatory, handoff=lambda tool: False):
         if d is None:
             continue
         a, b = digests.get("l2:" + tcid), digests.get("l3:" + tcid)
-        if d["name"] != u["name"]:
+        if not _same_tool(d["name"], u["name"]):
             out.append(("args_mismatch", tcid, ["L2", "L3"], f"decided {d['name'][:200]}, the model asked for "
                                                              f"{u['name'][:200]}"))
-        elif not (u["unparseable"] or d["coerced"] or u["coerced"]) and a and b and a != b:
+        # lean: the digests hash the tool name too, so an MCP call matched by its tool name part is not compared by
+        # arguments; compare args-only digests once clients send them
+        elif d["name"] == u["name"] and not (u["unparseable"] or d["coerced"] or u["coerced"]) and a and b and a != b:
             out.append(("args_mismatch", tcid, ["L2", "L3"], "decided other arguments than the model asked for"))
     for tcid, d in rec["l2"].items():
         if tcid not in l3 and tcid not in provider:
