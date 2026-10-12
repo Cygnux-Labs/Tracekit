@@ -591,10 +591,16 @@ def _run(a):
         if a.action == "backtest":
             from .policy2.engine import Engine
             from .signer import detect
-            found = detect.backtest(Engine(pol), a.store, a.bundle)
+            found, other = detect.backtest(Engine(pol), a.store, a.bundle)
+            if other:
+                print(f"tracekit: warning: {other} decision(s) were made under another policy: the backtest reads the "
+                      "rule ids they recorded, so rules and labels this policy adds or changes are not applied to them "
+                      "(arguments are not stored); run the policy in shadow on new runs to measure those",
+                      file=sys.stderr)
             for typ, tenant, run_id, d in found:
                 what = {"incident.opened": f"{d.get('trigger')} {','.join(d.get('rule_ids', ()))} scope "
-                                           f"{d.get('scope', {}).get('kind')}", "incident.capped": f"{d.get('cap')} cap"}
+                                           f"{d.get('scope', {}).get('kind')}",
+                        "incident.capped": f"{d.get('cap')} cap ({d.get('trigger')})"}
                 print(f"{typ:18} {tenant}/{run_id} {what.get(typ, '')}".rstrip())
             opened = sum(t == "incident.opened" for t, *_ in found)
             print(f"{opened} incident(s) would open" + ("" if detect.Detector.of(Engine(pol)) else

@@ -21,12 +21,16 @@ RULE_KEYS = {"id", "class", "tool", "field", "pattern", "unless", "reason", "rat
 APPROVAL = {"executor": ("t1", "t2"), "passkey": ("required",)}
 SCOPES = ("run", "session", "owner", "principal")
 MAX_WINDOW = 86400   # seconds
+MAX_STEPS = 64       # an incident cites at most 64 records: one per step
+MAX_DETECT = 1024    # sequences and limits together: a decision's `detect` lists at most 1024
+MAX_DENIED = 1000    # denied_calls `max`: the calls a scope remembers in its window
 TRIGGERS = ("executed_against_policy", "denied_calls", "provenance", "class_mismatch", "refusal_burst", "tamper")
 NOTIFY_ONLY = ("class_mismatch", "refusal_burst", "tamper")   # never enforced, whatever `respond` says
 MODES, ACTIONS = ("off", "shadow", "enforce"), ("notify", "hold", "quarantine")
 SEQ_KEYS = {"id", "steps", "scope", "window", "unless"}
 LIMIT_KEYS = {"id", "match", "count", "sum", "max", "window", "scope"}
-RESPOND_KEYS = {"trigger", "mode", "action", "max", "window", "scope"}
+RESPOND_KEYS = {"trigger", "mode", "action"}
+RESPOND_MORE = {"denied_calls": {"max", "window", "scope"}, "refusal_burst": {"max"}}   # the triggers that read more
 # every class also has `target`: what the call acts on (engine.Engine._targets), so one rule without a class can match it
 CLASSES = {"shell": {"command", "argv", "line"}, "fs": {"path", "op", "content_digest"},
            "http": {"method", "url", "host", "internal", "sends_to"}, "sql": {"statement", "code", "verb", "db"},
@@ -239,6 +243,8 @@ def _lint_detect(pol, path):
     if (pol.get("sequences") or pol.get("limits")) and pol.get("unknown_tools", "allow") == "allow":
         errors.append(f"{path}: sequences and limits need unknown_tools flag, ask or deny: an unmapped tool's calls "
                       "would count for nothing")
+    if len(pol.get("sequences", [])) + len(pol.get("limits", [])) > MAX_DETECT:
+        errors.append(f"{path}: at most {MAX_DETECT} sequences and limits together")
 
     def name(where, n):
         if not isinstance(n, str):
@@ -273,8 +279,8 @@ def _lint_detect(pol, path):
             common(where, x, keys, ("steps", "window") if sec == "sequences" else ("match", "max", "window"))
             if sec == "sequences":
                 steps, unless = x.get("steps"), x.get("unless", [])
-                if not isinstance(steps, list) or not steps:
-                    errors.append(f"{where}: steps must be a non-empty list")
+                if not isinstance(steps, list) or not steps or len(steps) > MAX_STEPS:
+                    errors.append(f"{where}: steps must be a list of 1 to {MAX_STEPS} rule ids or labels")
                 for n in steps if isinstance(steps, list) else []:
                     name(f"{where}: step", n)
                 if not isinstance(unless, list) or not all(isinstance(n, str) and n in known for n in unless):
@@ -288,6 +294,9 @@ def _lint_detect(pol, path):
             elif s is not None and not (isinstance(s, dict) and set(s) == {"field", "currency_field"}
                                         and all(isinstance(v, str) for v in s.values())):
                 errors.append(f"{where}: sum must be {{field, currency_field}}: argument names, in minor units")
+            elif s is not None and x.get("match") == "*":
+                errors.append(f"{where}: a sum limit must match a rule id or label, not *: every other call would be "
+                              "held for an amount it doesn't have")
     triggers = set()
     for x in pol.get("respond", []):
         if not isinstance(x, dict) or not isinstance(x.get("trigger"), str):
@@ -297,14 +306,20 @@ def _lint_detect(pol, path):
         if t in triggers:
             errors.append(f"{where}: duplicate trigger")
         triggers.add(t)
-        common(where, x, RESPOND_KEYS, ("mode", "action") + (("max",) if t in ("denied_calls", "refusal_burst") else ()))
+        more, extra = RESPOND_MORE.get(t, set()), set().union(*RESPOND_MORE.values())
+        common(where, x, RESPOND_KEYS | extra, ("mode", "action") + (("max",) if "max" in more else ()))
+        errors.extend(f"{where}: {t} doesn't read {k!r}: only denied_calls takes max, window and scope, and "
+                      "refusal_burst max" for k in sorted(set(x) & extra - more))
         if t not in ids and t not in TRIGGERS:
             errors.append(f"{where}: trigger must be a sequence or limit id or one of {', '.join(TRIGGERS)}")
         if x.get("mode") not in MODES or x.get("action") not in ACTIONS:
             errors.append(f"{where}: mode must be {'|'.join(MODES)} and action {'|'.join(ACTIONS)}")
-        if t in NOTIFY_ONLY and x.get("action") != "notify":
-            errors.append(f"{where}: {t} is notify-only: it is never enforced")
+        if t in NOTIFY_ONLY and (x.get("action") != "notify" or x.get("mode") == "enforce"):
+            errors.append(f"{where}: {t} is notify-only: it is never enforced; use mode shadow (or off) and action "
+                          "notify")
         if t == "denied_calls" and "window" not in x:
             errors.append(f"{where}: needs window")
+        if t == "denied_calls" and _int(x.get("max"), MAX_DENIED + 1, 2 ** 53):
+            errors.append(f"{where}: max must be at most {MAX_DENIED}")
     return errors
 

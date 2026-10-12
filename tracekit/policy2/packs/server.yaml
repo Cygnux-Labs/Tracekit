@@ -62,10 +62,12 @@ ask:
     rationale: An MCP tool that takes a command (exec in a pod or container, a remote shell) runs it outside the shell rules; a person checks it.
 
 # Detection (signer/detect.py), all in shadow: incidents are recorded, nothing is held. The labels come from
-# coding.yaml (secrets_access, destructive, egress). Thresholds: docs/policy-v2.md#choosing-thresholds.
+# coding.yaml: secrets_access (TK-F005), destructive (TK-F003), egress (TK-F012 a URL, TK-F013 a network command).
+# Thresholds: docs/policy-v2.md#choosing-thresholds.
 sequences:
   - id: TK-Q001
-    # a secret read, then any URL, within ten minutes of the same session (subagents included, via parent_run).
+    # a secret read, then egress (a URL or a network command), within ten minutes of the same session (subagents
+    # included, via parent_run); one command that does both counts as both.
     # Notify only: data that leaves through a host untrusted content named is TK-P003's (provenance)
     steps: [secrets_access, egress]
     scope: session
@@ -89,5 +91,7 @@ limits:
 
 respond:
   - {trigger: TK-Q001, mode: shadow, action: notify}
+  # a call that ran after a deny or an unapproved ask: it never counts as a step, so it is recorded on its own
+  - {trigger: executed_against_policy, mode: shadow, action: notify}
   - {trigger: TK-L001, mode: shadow, action: hold}
   - {trigger: TK-L002, mode: shadow, action: hold}

@@ -12,8 +12,8 @@
   "detector_cost": {
     "ok": true,
     "state_keys_after_50_and_400_calls": [
-      566,
-      566
+      625,
+      625
     ]
   },
   "get_query_egress": {

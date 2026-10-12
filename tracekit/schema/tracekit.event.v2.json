@@ -3333,7 +3333,9 @@
             ],
             "properties": {
               "run_id": {
-                "$ref": "#/$defs/id"
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
               },
               "run_seq": {
                 "type": "integer",
@@ -3372,7 +3374,7 @@
         "incident_id",
         "cites"
       ],
-      "description": "format 1.2: another match of an open incident",
+      "description": "format 1.2: another match of an open incident (at most one per window of its trigger), written in the run whose record matched",
       "properties": {
         "incident_id": {
           "$ref": "#/$defs/id"
@@ -3389,7 +3391,9 @@
             ],
             "properties": {
               "run_id": {
-                "$ref": "#/$defs/id"
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
               },
               "run_seq": {
                 "type": "integer",
@@ -3406,15 +3410,29 @@
       "required": [
         "cap",
         "max",
+        "trigger",
         "reason"
       ],
-      "description": "format 1.2: the run's or the tenant's per-minute incident cap was reached; the incidents after it are not written",
+      "description": "format 1.2: a cap on opened incidents was reached: the run's per trigger (cap run), or per minute the tenant's or one run's share of it (cap tenant); the incidents after it are not written",
       "properties": {
         "cap": {
           "enum": [
             "run",
             "tenant"
           ]
+        },
+        "trigger": {
+          "enum": [
+            "sequence",
+            "limit",
+            "executed_against_policy",
+            "denied_calls",
+            "provenance",
+            "class_mismatch",
+            "refusal_burst",
+            "tamper"
+          ],
+          "description": "the trigger of the first incident not written"
         },
         "max": {
           "type": "integer",

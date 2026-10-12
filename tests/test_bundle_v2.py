@@ -628,7 +628,8 @@ ENTRIES = {
     "incident.opened": [registered(), ("incident.opened", INCIDENT, "run-a")],
     "incident.updated": [registered(), ("incident.updated", {"incident_id": "inc-1", "cites": [
         {"run_id": "run-a", "run_seq": 0}]}, "run-a")],
-    "incident.capped": [registered(), ("incident.capped", {"cap": "run", "max": 100, "reason": "cap"}, "run-a")],
+    "incident.capped": [registered(), ("incident.capped", {"cap": "run", "max": 100, "trigger": "sequence",
+                                                           "reason": "cap"}, "run-a")],
 }
 
 

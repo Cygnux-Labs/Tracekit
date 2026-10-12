@@ -122,8 +122,9 @@ arguments whose values only untrusted content brought into the run, the kind of 
 Detection (format 1.2, [policy](policy-v2.md#detection-sequences-limits-and-respond)): under a policy with sequences
 or limits, `policy.decision` carries `detect{sequences: [{id, step}], limits: [{id, count, window_start}], state,
 rule_ids?, sums?}`. Signer records in the run whose record fired them: `incident.opened{incident_id, trigger, rule_ids,
-scope: {kind, id}, cites: [{run_id, run_seq}], mode, actions, would}`, `incident.updated{incident_id, cites}` and
-`incident.capped{cap, max, reason}`.
+scope: {kind, id}, cites: [{run_id, run_seq}], mode, actions, would}`, `incident.updated{incident_id, cites}` (another
+match, at most once per window; for a session, owner or principal scope possibly in another run of that scope than
+the one that opened it) and `incident.capped{cap, max, trigger, reason}`.
 
 Content vault (format 1.1, [privacy](privacy.md#the-content-vault)): `content.accessed{principal, run_id, seqs,
 purpose}` records that the signer returned the retained content of records `seqs` (run_seqs) of run `run_id` to

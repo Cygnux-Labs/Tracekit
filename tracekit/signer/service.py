@@ -1589,14 +1589,20 @@ class SignerService:
             memo, gaps = run["calls"].get(tcid), []
             data = {"tool_use_id": tcid, "tool": tool, "decision_id": did, "policy_hash": self.policy.policy_hash,
                     "engine": self.policy.engine, "nonce": secrets.token_hex(16), "expires_at": expires_at, **prov}
+            counts = self.log.detector and self.log.detector.counts
             if digest is None:
                 verdict, rule_ids = "deny", ["TK-ARGS-INVALID"]
             elif memo and memo["attempt"] == attempt and memo["decision"] in ("deny", "ask") and self._same(memo, digest):
+                # the memo's decision as it was recorded: a retry keeps both readings' rule ids and nondeterminism
                 verdict, rule_ids = memo["decision"], memo["rule_ids"]
+                if counts and memo.get("detect_ids"):
+                    data["detect"] = {"rule_ids": memo["detect_ids"]}
+                if memo.get("nondeterministic"):
+                    data["nondeterministic"] = True
             else:
                 d, mismatch, both = ruled
                 verdict, rule_ids = d["verdict"], d["rule_ids"]
-                if self.log.detector and self.log.detector.counts and both != rule_ids:
+                if counts and both != rule_ids:
                     data["detect"] = {"rule_ids": both}
                 if d.get("nondeterministic"):
                     data["nondeterministic"] = True
@@ -1615,7 +1621,9 @@ class SignerService:
             if commitment:
                 data["args_commitment"] = commitment
             call = {"tool_call_id": tcid, "attempt": attempt, "decision": verdict, "rule_ids": rule_ids,
-                    "decision_id": did, "commitment": commitment, "dotenv": _dotenv(args), "tool": tool}
+                    "decision_id": did, "commitment": commitment, "dotenv": _dotenv(args), "tool": tool,
+                    "nondeterministic": bool(data.get("nondeterministic")),
+                    "detect_ids": data.get("detect", {}).get("rule_ids")}
             if verdict == "ask":   # the signer's copy, for the approval request (memory only: decide again after a restart)
                 call["pending"] = {"tool": tool, "args_source": req["args_source"], "args": req["args"]}
             tx.set(run["calls"], tcid, call)
