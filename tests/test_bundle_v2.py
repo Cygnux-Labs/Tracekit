@@ -19,6 +19,7 @@ from factories import rewrite_bundle
 from tracekit import cli, crypto
 from tracekit.bundle_v2 import VERIFIER_MIN_VERSION, VERSIONS, export
 from tracekit.format import checkpoint
+from tracekit.format.canon import canonical
 from tracekit.format.checkpoint import COSIGNATURE, ED25519, NoteError
 from tracekit.format.records import make_record
 from tracekit.storage.base import ZERO_HASH
@@ -797,6 +798,13 @@ class TestVersionTable(Case):
                 with self.subTest(name):
                     self.assertIn(name, ENTRIES, "add records that use it to ENTRIES")
                     self.assert_gated(version, *ENTRIES[name])
+
+    def test_shipped_rows_are_frozen(self):
+        # a row is frozen once its version's first release candidate ships: later additions go in a new row, so a
+        # verifier of that version never meets a field its own version claims to know
+        shipped = {"1.1.0": "2e5a668bf93c0e4b3fca960f9824e2c5858d5539109511d636bd7635e648061e"}
+        for version, digest in shipped.items():
+            self.assertEqual(hashlib.sha256(canonical(VERSIONS[version])).hexdigest(), digest, version)
 
 
 if __name__ == "__main__":

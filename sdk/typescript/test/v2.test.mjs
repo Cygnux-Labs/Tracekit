@@ -241,6 +241,18 @@ test("fake: the fail mode of the tool class applies only while the signer is unr
   assert.deepEqual(back.frames.filter((f) => f.method === "decide").map((f) => f.client_seq), [2]);
 });
 
+test("fake: close_run names the last client_seq used, even one lost while the signer was down", async (t) => {
+  const { client, stop, path } = await fake(t);
+  const run = await client.registerRun("a");
+  await run.decide("t1", "Bash", {});
+  await stop();
+  assert.equal(await run.complete("t1"), null);   // client_seq 1, never received
+  const back = await fake(t, { path });
+  await run.close();
+  const close = back.frames.find((f) => f.method === "close_run");
+  assert.deepEqual(close.last_client_seq, [{ stream: client.stream, client_seq: 1 }]);
+});
+
 test("fake: a refusal is never fail-open", async (t) => {
   const { client } = await fake(t, { failModes: { default: "open" }, handle: (f) => f.method === "decide" && { error: { code: "forbidden", message: "no" } } });
   const run = await client.registerRun("a");

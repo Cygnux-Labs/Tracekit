@@ -855,7 +855,8 @@ def _approvals(a):
                 page = c.approval_list({"cursor": page["next_cursor"]} if page["next_cursor"] else {})
                 for x in page["approvals"]:
                     shown += 1
-                    print(f"{x['approval_id']}  {x['state']}  run={x['run_id']}  tool={json.dumps(x['tool'])}  "
+                    state = x["state"] + (" (run closing: expires with it)" if x.get("run_closing") else "")
+                    print(f"{x['approval_id']}  {state}  run={x['run_id']}  tool={json.dumps(x['tool'])}  "
                           f"rules={','.join(x['rule_ids'])}  expires {x['expires_at']}")
                 if page["next_cursor"] is None:
                     break

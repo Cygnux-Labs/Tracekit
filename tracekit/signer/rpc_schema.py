@@ -131,11 +131,13 @@ _SUMMARY = _obj(["approval_id", "state", "run_id", "tool_call_id", "attempt", "t
                 rule_ids=RULE_IDS, policy_hash=DIGEST, requester=_str(256), expires_at=_str(40),
                 passkey={"const": True},   # approving needs a passkey assertion
                 escalated={"const": True},   # an agent or the signer handed it to people: only people answer it
-                agent={"const": True})   # an agent approver may answer it
+                agent={"const": True},   # an agent approver may answer it
+                run_closing={"const": True})   # still requested, but its run is closing: no answer can be acted on
 # what approval_list shows an agent approver: nothing from the run or the requesting agent
 _AGENT_SUMMARY = _obj(["approval_id", "state", "tool", "rule_ids", "policy_hash", "expires_at"],
                       **{k: _SUMMARY["properties"][k] for k in ("approval_id", "state", "tool", "rule_ids",
-                                                                "policy_hash", "expires_at", "escalated", "agent")})
+                                                                "policy_hash", "expires_at", "escalated", "agent",
+                                                                "run_closing")})
 
 REQUESTS = {
     "register_run": _obj(["request_id", "agent"], request_id=ID, run_id=ID,

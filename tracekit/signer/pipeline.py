@@ -700,7 +700,17 @@ class RecordLog:
                         tx.set(run["writers"], req["stream"], writer(identity, req))
                 elif req["client_seq"] <= last:
                     raise RPCError("client_seq_reused", f"{req['stream']}/{req['client_seq']}")
-        out = fn(tx, run)
+        try:
+            out = fn(tx, run)
+        except RPCError as e:
+            if run is not None and "client_seq" in req:
+                stream, cseq = req["stream"], req["client_seq"]
+                if cseq == max(run["streams"].get(stream, -1), run["tails"].get(stream, -1)) + 1:
+                    # the signer saw this value and refused it (the refusal is its record): not a gap at close. Only
+                    # the next value: one that skipped others leaves them to a later client_counter_gap.
+                    # lean: kept in the run's state and snapshots, not in a record: a replay from records forgets it
+                    e.keep = lambda t: t.set(run["tails"], stream, cseq)
+            raise
         if rid is not None:
             tx.set(self.done, rid, (digest, copy.deepcopy(out)))
         return out
@@ -743,6 +753,8 @@ class RecordLog:
                 done.append((fut, fn(tx)))
             except Exception as e:   # a refusal, or a bug in one handler: either way the item leaves nothing
                 tx.rollback(mark)
+                if hasattr(e, "keep"):   # but what a refusal says the signer saw (_item)
+                    e.keep(tx)
                 fut.set_exception(e)
         if tx.records:
             try:

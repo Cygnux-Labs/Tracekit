@@ -431,6 +431,16 @@ class FakeSigners(unittest.TestCase):
         self.assertEqual(c.decide({**EVENT, "tool_call_id": "c2", "args": {}})["tool_call_id"], "c2")
         self.assertEqual(seen, [None, 0])
 
+    def test_close_run_names_the_last_client_seq_used_even_one_the_signer_never_saw(self):
+        c, frames = Client(self.path, timeout=2), []
+        with self.assertRaises(client.SignerUnavailable):   # no signer yet: client_seq 0 is used up, never received
+            c.decide({**EVENT, "tool_call_id": "lost", "args": {}})
+        self.serve(lambda frame: frames.append(frame) or {"ok": True})
+        c.close_run({"run_id": "r1", "run_token": "t"})
+        c.close_run({"run_id": "r2", "run_token": "t"})   # a run with no events names none
+        self.assertEqual([f.get("last_client_seq") for f in frames],
+                         [[{"stream": c.stream, "client_seq": 0}], None])
+
     def test_a_request_over_the_frame_limit_is_refused_before_it_is_sent(self):
         seen = []
         self.serve(lambda frame: seen.append(frame["client_seq"]) or {"ok": True})

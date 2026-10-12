@@ -422,7 +422,8 @@ A bundle has one zip layout, so every reader sees the same entries; anything els
 `tracekit.bundle_v2` writes this layout (Python's `zipfile` writing a seekable file).
 
 `verifier_min_version` is the newest version in the version table (`VERSIONS` in `tracekit/bundle_v2.py`) whose
-entries a bundled record uses, else `1.0.0`. Each version lists
+entries a bundled record uses, else `1.0.0`. A row is frozen once its version's first release candidate ships
+(`test_shipped_rows_are_frozen`): an addition after that goes in a new row. Each version lists
 what it added: record types, data fields per record type, and enum values per (record type, field), gap and tamper
 `kind`s among them:
 

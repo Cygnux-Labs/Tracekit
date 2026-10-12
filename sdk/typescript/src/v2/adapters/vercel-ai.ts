@@ -42,11 +42,33 @@ export function tracekitAI(run: RunHandle) {
   const executors = new Set<string>();               // the names of tool executor tools tk.tools() was given
   const raw = new Map<string, string>();             // toolCallId -> the model's arguments string
   const decided = new Map<string, Decision>();       // toolCallId -> its decision, from toolApproval to execute
+  const named = new Map<string, string>();           // tool name -> the name it is decided as (mcp:<server>/<tool>)
   const seen = (p: any) => {
     if (p?.type === "tool-call" && !p.providerExecuted && typeof p.input === "string") keep(raw, p.toolCallId, p.input);
   };
   const toolUses = (parts: any[]) => parts.filter((p) => p?.type === "tool-call")
     .map((p) => toolUse(p.toolCallId, p.toolName, p.input, !!p.providerExecuted)).slice(0, 128);
+
+  /** For `toolApproval:` on generateText, streamText and ToolLoopAgent. */
+  const toolApproval = async ({ toolCall, tools }: any) => {
+    if (tools?.[toolCall.toolName]?.[EXECUTOR] || executors.has(toolCall.toolName)) return "not-applicable" as const;
+    const id = toolCall.toolCallId;
+    let d;
+    try {
+      d = await gate.decide(id, named.get(toolCall.toolName) ?? toolCall.toolName, raw.get(id) ?? toolCall.input);
+    } catch (e) {
+      return { type: "denied" as const, reason: BLOCKED + `signer refused the call: ${failure(e)}` };
+    }
+    if (d.decision === "deny") return { type: "denied" as const, reason: d.unavailable ? BLOCKED + d.reason : refusal(d.rule_ids) };
+    keep(decided, id, d);
+    if (d.decision !== "ask") return "not-applicable" as const;   // execute consumes
+    try {
+      await gate.runOf(id).approvalRequest(id, { attempt: gate.attempt(id) });
+    } catch {
+      return "not-applicable" as const;   // no approval to wait for: execute's approval_consume refuses the call
+    }
+    return { type: "user-approval" as const, reason: d.rule_ids.join(", ") };
+  };
 
   return {
     middleware: {
@@ -54,12 +76,12 @@ export function tracekitAI(run: RunHandle) {
       async wrapGenerate({ doGenerate, model }: any) {
         const r = await doGenerate();
         (r.content ?? []).forEach(seen);
-        await recordResponse(run, model.provider, model.modelId, () => ({ content_digest: digest(r.content ?? []),
+        await recordResponse(gate.run, model.provider, model.modelId, () => ({ content_digest: digest(r.content ?? []),
           stop_reason: stop(r.finishReason), usage: usage(r.usage), tool_uses: toolUses(r.content ?? []) }));
         return r;
       },
       async wrapStream({ doStream, model }: any) {
-        const r = await doStream(), calls: any[] = [];
+        const r = await doStream(), calls: any[] = [], at = gate.run;   // the run current when the stream began
         let finish: any;
         return { ...r, stream: r.stream.pipeThrough(new TransformStream({
           transform(p: any, c) {
@@ -69,41 +91,44 @@ export function tracekitAI(run: RunHandle) {
             c.enqueue(p);
           },
           // lean: a stream the caller abandons is not recorded
-          flush: () => recordResponse(run, model.provider, model.modelId, () => ({ streamed: true,
+          flush: () => recordResponse(at, model.provider, model.modelId, () => ({ streamed: true,
             stop_reason: stop(finish?.finishReason), usage: usage(finish?.usage), tool_uses: toolUses(calls) })),
         })) };
       },
     },
 
-    /** For `toolApproval:` on generateText, streamText and ToolLoopAgent. */
-    async toolApproval({ toolCall, tools }: any) {
-      if (tools?.[toolCall.toolName]?.[EXECUTOR] || executors.has(toolCall.toolName)) return "not-applicable" as const;
-      const id = toolCall.toolCallId;
-      let d;
-      try {
-        d = await gate.decide(id, toolCall.toolName, raw.get(id) ?? toolCall.input);
-      } catch (e) {
-        return { type: "denied" as const, reason: BLOCKED + `signer refused the call: ${failure(e)}` };
-      }
-      if (d.decision === "deny") return { type: "denied" as const, reason: d.unavailable ? BLOCKED + d.reason : refusal(d.rule_ids) };
-      keep(decided, id, d);
-      if (d.decision !== "ask") return "not-applicable" as const;   // execute consumes
-      try {
-        await run.approvalRequest(id, { attempt: gate.attempt(id) });
-      } catch {
-        return "not-applicable" as const;   // no approval to wait for: execute's approval_consume refuses the call
-      }
-      return { type: "user-approval" as const, reason: d.rule_ids.join(", ") };
+    toolApproval,
+
+    /** `toolApproval` that also asks the app's own (a function, or one per tool name): the signer's policy first; the
+     * app's answer applies only to a call the policy allows. A call the app denies is completed as refused. */
+    toolApprovalWith(app: any) {
+      return async (opts: any) => {
+        const mine = await toolApproval(opts);
+        if (mine !== "not-applicable") return mine;
+        const { toolCall } = opts, id = toolCall.toolCallId;
+        const own = typeof app === "function" ? app : app?.[toolCall.toolName];
+        const theirs = typeof own === "function"
+          ? await (typeof app === "function" ? own(opts) : own(toolCall.input, { toolCallId: id, messages: opts.messages }))
+          : own;
+        if (theirs === "denied" || theirs?.type === "denied") {
+          take(decided, id);
+          await gate.runOf(id).complete(id, "error", { attempt: gate.attempt(id), error: "refused by the app's toolApproval" });
+        }
+        return theirs ?? mine;
+      };
     },
 
-    /** `tools` with each `execute` gated by the signer. */
-    tools<T extends Record<string, any>>(tools: T): T {
+    /** `tools` with each `execute` gated by the signer. With `mcp` (the server's name: `tools(await mcp.tools(),
+     * { mcp: "filesystem" })`) each is decided as `mcp:<server>/<tool>`. */
+    tools<T extends Record<string, any>>(tools: T, { mcp }: { mcp?: string } = {}): T {
+      const as = (name: string) => mcp === undefined ? name : `mcp:${mcp.replace(/[^A-Za-z0-9_.-]+/g, "_") || "unknown"}/${name}`;
+      if (mcp !== undefined) for (const name of Object.keys(tools)) named.set(name, as(name));
       return Object.fromEntries(Object.entries(tools).map(([name, t]) => [name, !t?.execute ? t
         : t[EXECUTOR] ? (executors.add(name), t) : {
         ...t,
         async execute(input: unknown, opts: any) {
           const id = opts?.toolCallId;
-          const why = await gate.admit(id, name, take(raw, id) ?? input, { d: take(decided, id) });
+          const why = await gate.admit(id, as(name), take(raw, id) ?? input, { d: take(decided, id) });
           if (why !== null) throw new Error(why);
           return gate.execute(id, () => t.execute(gate.input(id, input), opts));
         },
@@ -112,7 +137,7 @@ export function tracekitAI(run: RunHandle) {
 
     /** `tool-approval-response` parts for the `tool-approval-request` parts the signer's approvers decided. */
     async approvalResponses(parts: any[]): Promise<Frame[]> {
-      const states = await approvalStates(run);
+      const states = await approvalStates(gate.run);
       return parts.filter((p) => p?.type === "tool-approval-request").flatMap((p) => {
         const s = states.get(p.toolCall?.toolCallId ?? p.toolCallId);
         if (s === "approved") return [{ type: "tool-approval-response", approvalId: p.approvalId, approved: true }];
