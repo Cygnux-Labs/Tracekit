@@ -530,6 +530,25 @@ describe("claude-agent-sdk session store", () => {
   });
 });
 
+describe("the app's own input guardrails (OpenAI Agents)", () => {
+  it("a call they refuse after the signer decided it is completed as refused, not left open", async (t) => {
+    const frames = [], signer = await fakeSigner({ override: (f) => (frames.push(f), null) });
+    const client = new Client({ signer: signer.path });
+    t.after(() => (client.close(), signer.stop()));
+    const tk = new TracekitAgents(await client.registerRun("a"));
+    const only = (city) => ({ name: "japan-only", run: async ({ toolCall }) =>
+      ({ behavior: JSON.parse(toolCall.arguments).city === city ? { type: "allow" } : { type: "rejectContent", message: "Japan only" } }) });
+    const tool = tk.tool((o) => o, { name: "echo", execute: async () => "ok", inputGuardrails: [only("Tokyo")] });
+    for (const [id, city] of [["g1", "Tokyo"], ["g2", "Paris"]]) {
+      const toolCall = { callId: id, name: "echo", arguments: JSON.stringify({ city }) };
+      assert.equal(await tool.needsApproval({ context: {} }, { city }, id), false);   // decided: allowed
+      await tool.inputGuardrails[0].run({ context: { context: {} }, toolCall });
+    }
+    const completes = frames.filter((f) => f.method === "complete").map((f) => [f.tool_call_id, f.status]);
+    assert.deepEqual(completes, [["g2", "error"]]);   // g1 goes on to Tracekit's guardrail and runs; g2 is closed
+  });
+});
+
 describe("local MCP servers (OpenAI Agents)", () => {
   it("each call is decided as mcp:<server>/<tool> in the input guardrail and completed in the output guardrail", async (t) => {
     const frames = [], signer = await fakeSigner({ override: (f) => (frames.push(f), null) });
@@ -542,7 +561,9 @@ describe("local MCP servers (OpenAI Agents)", () => {
     const denied = (await g.toolInputGuardrails[0].run(call("m2", "wipe"))).behavior;
     assert.deepEqual([denied.type, denied.message], ["rejectContent", "Tool call blocked by policy: R-WIPE"]);
     const sent = (m) => frames.filter((f) => f.method === m).map((f) => [f.tool_call_id, f.tool]);
-    assert.deepEqual(sent("decide"), [["m1", "mcp:file_system/read_text_file"], ["m2", "mcp:file_system/wipe"]]);
+    await g.toolInputGuardrails[0].run(call("m3", "mcp_file_system__read_text_file"));   // includeServerInToolNames
+    assert.deepEqual(sent("decide"), [["m1", "mcp:file_system/read_text_file"], ["m2", "mcp:file_system/wipe"],
+      ["m3", "mcp:file_system/read_text_file"]]);
     assert.deepEqual(sent("complete").map(([id]) => id), ["m1"]);
   });
 });
@@ -633,6 +654,7 @@ describe("instrument", () => {
     const results = (id) => frames.filter((f) => f.method === "complete" && f.run_id === id).map((f) => f.tool_call_id);
     assert.deepEqual([results(first), results(run.runId)], [["c1"], ["c2"]]);
 
+
     const app = await client.registerRun("srv");
     app.renewAs = "srv";
     await app.close();   // closed by the app: never renewed
@@ -640,25 +662,63 @@ describe("instrument", () => {
     await assert.rejects(app.decide("c3", "echo", {}), (e) => e.code === "run_closed");
   });
 
+  it("renews at most once per call: a signer that refuses the new run too gets its refusal back", async (t) => {
+    let registered = 0;
+    const signer = await fakeSigner({ override: (f) => f.method === "register_run" ? (registered++, null)
+      : f.method === "decide" && { error: { code: "unknown_run", message: f.run_id } } });
+    const client = new Client({ signer: signer.path });
+    t.after(() => (client.close(), signer.stop()));
+    const run = await client.registerRun("srv");
+    run.renewAs = "srv";
+    await assert.rejects(run.decide("c1", "echo", {}), (e) => e.code === "unknown_run");
+    assert.equal(registered, 2);   // the run, and one renewal
+  });
+
   // A process that instrument()s, does `body`, then ends as `body` leaves it. -> [its frames' methods, exit signal].
-  async function child(body) {
-    const frames = [], signer = await fakeSigner({ override: (f) => (frames.push(f.method), null) });
+  async function child(body, refuse = () => null) {
+    const frames = [], signer = await fakeSigner({ override: (f) => (frames.push(f.method), refuse(f)) });
     const code = `import { instrument } from ${JSON.stringify(resolve(import.meta.dirname, "../dist/v2/client.js"))};
       const tk = await instrument("child", { signer: ${JSON.stringify(signer.path)} }); ${body}`;
-    const p = spawn(process.execPath, ["--input-type=module", "-e", code], { stdio: "ignore" });
-    const signal = await new Promise((r) => p.on("exit", (_, sig) => r(sig)));
+    let out = "";
+    const p = spawn(process.execPath, ["--input-type=module", "-e", code], { stdio: ["ignore", "pipe", "ignore"] });
+    p.stdout.on("data", (d) => (out += d));
+    const [code_, signal] = await new Promise((r) => p.on("exit", (c, sig) => r([c, sig])));
     await signer.stop();
-    return [frames.filter((m) => m !== "hello"), signal];
+    return [frames.filter((m) => m !== "hello"), signal, code_, out.trim()];
   }
 
   it("closes its run as the process ends, or on SIGTERM (then the signal's default action still happens)", async () => {
-    assert.deepEqual(await child(`await tk.run.decide("c1", "echo", {});`), [["register_run", "decide", "approval_list", "close_run"], null]);
+    assert.deepEqual((await child(`await tk.run.decide("c1", "echo", {});`)).slice(0, 2), [["register_run", "decide", "approval_list", "approval_list", "close_run"], null]);
     const [frames, signal] = await child(`setTimeout(() => {}, 10000); process.kill(process.pid, "SIGTERM");`);
     assert.deepEqual([frames.at(-1), signal], ["close_run", "SIGTERM"]);
   });
 
+  it("leaves a signal the app handles to the app: its graceful shutdown runs, a REPL keeps its run", async () => {
+    const [, signal, code, out] = await child(`process.once("SIGTERM", () => setTimeout(() => (console.log("graceful done"), process.exit(0)), 100));
+      await tk.run.decide("c1", "echo", {}); setTimeout(() => {}, 10000); process.kill(process.pid, "SIGTERM");`);
+    assert.deepEqual([signal, code, out], [null, 0, "graceful done"]);
+    const [frames, , , repl] = await child(`process.on("SIGINT", () => {});   // Ctrl-C cancels a step, the app goes on
+      process.kill(process.pid, "SIGINT"); await new Promise((r) => setTimeout(r, 100));
+      console.log((await tk.run.decide("c2", "echo", {})).decision); process.removeAllListeners("SIGINT");`);
+    assert.equal(repl, "allow");
+    assert.equal(frames.filter((m) => m === "close_run").length, 1);   // at beforeExit only
+  });
+
+  it("closes its run at exit even when it may not list approvals", async () => {
+    const [frames] = await child(`await tk.run.decide("c1", "echo", {});`,
+      (f) => f.method === "approval_list" && { error: { code: "forbidden", message: "not granted" } });
+    assert.equal(frames.at(-1), "close_run");
+  });
+
+  it("leaves its run open while an approved call waits to be resumed", async () => {
+    const [frames] = await child(`await tk.run.decide("c1", "echo", {});`,
+      (f) => f.method === "approval_list" && { approvals: f.state === "approved" ? [{ approval_id: "apr-1", state: "approved" }] : [] });
+    assert.ok(!frames.includes("close_run"));
+  });
+
   it("leaves its run open when approvals of it wait for a person, for another process to resume", async () => {
     const [frames] = await child(`await tk.run.decide("p1", "pay", {}); await tk.run.approvalRequest("p1");`);
-    assert.deepEqual(frames, ["register_run", "decide", "approval_request", "approval_list"]);
+    assert.deepEqual(frames.slice(0, 3), ["register_run", "decide", "approval_request"]);
+    assert.ok(!frames.includes("close_run"));
   });
 });

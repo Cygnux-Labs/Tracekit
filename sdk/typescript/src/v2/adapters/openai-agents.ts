@@ -49,7 +49,11 @@ export class TracekitAgents {
       ...options,
       name,
       needsApproval: (ctx: any, input: unknown, callId?: string) => this.ask(ctx, callId, name, input),
-      inputGuardrails: [...(options.inputGuardrails ?? []), { name: "tracekit", run: (data: any) => this.guard(data, name) }],
+      inputGuardrails: [...(options.inputGuardrails ?? []).map((g: any) => ({ ...g, run: async (data: any) => {
+        const out = await g.run(data);
+        if (["rejectContent", "throwException"].includes(out?.behavior?.type)) await this.refused(data.toolCall.callId);
+        return out;
+      } })), { name: "tracekit", run: (data: any) => this.guard(data, name) }],
       execute: (input: unknown, ctx?: unknown, details?: any) =>
         this.gate.execute(details?.toolCall?.callId, () => options.execute(this.gate.input(details?.toolCall?.callId, input), ctx, details)),
     });
@@ -77,6 +81,14 @@ export class TracekitAgents {
     return true;
   }
 
+  /** A call decided in needsApproval that the app's own guardrail refused: complete its decision as refused, so it
+   * isn't left decided and never completed. */
+  private async refused(callId: string): Promise<void> {
+    const d = take(this.decided, callId);
+    if (d && d.decision !== "deny")
+      await this.gate.runOf(callId).complete(callId, "error", { attempt: this.gate.attempt(callId), error: "refused by the app's guardrail" });
+  }
+
   private async guard({ context, toolCall }: any, tool: string) {
     const id = toolCall.callId, hint = context?.context?.tracekit?.approvals?.[id];
     const why = await this.gate.admit(id, tool, toolCall.arguments, { d: take(this.decided, id), hint: typeof hint === "string" ? hint : undefined });
@@ -87,7 +99,11 @@ export class TracekitAgents {
    * its `toolInputGuardrails` decide each call as `mcp:<server>/<tool>` and hold an `ask` until a person decides (up
    * to `waitMs`), its `toolOutputGuardrails` complete the call with the server's output. */
   mcp(server: string, { waitMs = 300_000 } = {}) {
-    const name = (tool: string) => `mcp:${server.replace(/[^A-Za-z0-9_.-]+/g, "_") || "unknown"}/${tool}`;
+    // with the Agent's mcpConfig.includeServerInToolNames the model sees mcp_<server>__<tool>, the server name made
+    // safe as agents-core makes it; `server` must then be the MCP server's own `name`
+    const shown = `mcp_${server.replace(/[^A-Za-z0-9_-]/g, "_").replace(/^[_-]+|[_-]+$/g, "") || "server"}__`;
+    const name = (tool: string) => `mcp:${server.replace(/[^A-Za-z0-9_.-]+/g, "_") || "unknown"}/${
+      tool.startsWith(shown) ? tool.slice(shown.length) : tool}`;
     return {
       toolInputGuardrails: [{ type: "tool_input", name: "tracekit", run: async ({ toolCall }: any) => {
         const why = await this.gate.admit(toolCall.callId, name(toolCall.name), toolCall.arguments, { waitMs });

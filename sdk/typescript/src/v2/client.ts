@@ -577,15 +577,15 @@ export class RunHandle {
    * new work refused because the signer closed a renewable run goes to a new run (renewAs). */
   async call(method: string, fields: Frame = {}): Promise<Frame> {
     const key = BY_CALL.has(method) ? fields.tool_call_id : method === "approval_wait" || method === "approval_abandon" ? fields.approval_id : undefined;
-    const run = (key !== undefined && this.at.get(key)) || { run_id: this.runId, run_token: this.runToken };
-    let out;
+    let run = (key !== undefined && this.at.get(key)) || { run_id: this.runId, run_token: this.runToken }, out;
     try {
       out = await this.client.call(method, { ...run, ...fields });
     } catch (e) {
       if (!(e instanceof RPCError) || !["run_closed", "unknown_run"].includes(e.code) || !NEW_WORK.has(method)
         || this.renewAs === null || this.closed) throw e;
       await this.renew(run.run_id, e);
-      return this.call(method, fields);
+      run = { run_id: this.runId, run_token: this.runToken };
+      out = await this.client.call(method, { ...run, ...fields });   // once: what the new run answers is the answer
     }
     if (method === "decide") remember(this.at, fields.tool_call_id, run);
     if (method === "approval_request" && out.approval_id) remember(this.at, out.approval_id, run);
@@ -703,14 +703,16 @@ const once = (fn: () => Promise<void>) => {
   return () => (p ??= fn());
 };
 
-/** Closes `run` as the process exits, unless approvals of it are still waiting for a person: then it stays open for
- * another process to resume (`new RunHandle(client, { run_id, run_token })`) until the signer closes it after idle_s.
- * Never rejects; waits at most LEAVE_MS. */
+/** Closes `run` as the process exits, unless approvals of it are still waiting (requested, or approved and not yet
+ * consumed): then it stays open for another process to resume (`new RunHandle(client, { run_id, run_token })`) until
+ * the signer closes it after idle_s. Never rejects; waits at most LEAVE_MS. */
 async function leave(run: RunHandle): Promise<void> {
   const work = (async () => {
-    const { approvals } = await run.client.call("approval_list", { run_id: run.runId });
-    if (approvals.some((a: Frame) => a.state === "requested"))
-      warn(`tracekit: run ${run.runId} left open: approvals of it are waiting for a person`);
+    const open = (state: string) => run.client.call("approval_list", { run_id: run.runId, state, limit: 1 })
+      .then((r) => r.approvals.length > 0);
+    // requested, or approved and not yet consumed; a listing that fails (no grant) waits for nothing
+    if (await Promise.all([open("requested"), open("approved")]).then((w) => w.some(Boolean), () => false))
+      warn(`tracekit: run ${run.runId} left open: approvals of it are waiting for a person or to be resumed`);
     else await run.close();
     await run.client.close();
   })().catch(() => {});
@@ -729,9 +731,11 @@ export function instrument(agent?: string, opts: ClientOptions = {}): Promise<In
     const end = once(() => leave(run));
     process.once("beforeExit", () => void end());
     for (const sig of ["SIGINT", "SIGTERM"] as const)
-      process.once(sig, () => void end().finally(() => {   // the default action, unless the app handles the signal
-        if (!process.listenerCount(sig)) process.kill(process.pid, sig);
-      }));
+      process.prependOnceListener(sig, () => {
+        // run first and decide before anything is awaited: a signal another listener (the app's, a library's)
+        // handles is theirs, so the run stays as it is (beforeExit still closes it); else close, then the default action
+        if (!process.listenerCount(sig)) void end().finally(() => process.kill(process.pid, sig));
+      });
     // lean: process.exit() and an uncaught exception leave the run open until the signer's idle_s (no async on exit)
     return { run, ai: tracekitAI(run), agents: new TracekitAgents(run) };
   }, (e) => {

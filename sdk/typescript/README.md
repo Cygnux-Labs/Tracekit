@@ -101,9 +101,10 @@ and streams (`messages.stream()`, `streamText`) work as without Tracekit. Offlin
   `withRun(run, () => runner.run(...))`: every adapter decides the calls made inside it in that run (its complete and
   approvals follow the call), and uses the run it was built with otherwise. `instrument()`'s own run is replaced by a
   new one (a warning, linked as `parent_run` while the old one is closing) when the signer closed it after it was idle.
-- **Exit.** `instrument()` closes its run on `beforeExit`, SIGINT and SIGTERM (the signal's default action still runs
-  unless your app handles it), but leaves a run open while approvals of it wait for a person. To approve and resume
-  in another process, keep the run's `runId` and `runToken` with the framework's saved state and re-attach:
+- **Exit.** `instrument()` closes its run on `beforeExit`, and on SIGINT or SIGTERM when nothing else handles the
+  signal (then the signal's default action runs). A signal your app or a library handles is left to it (`@openai/agents`
+  exits on SIGINT/SIGTERM): close the run in your own handler (`await tk.run.close()`) before you exit. A run stays
+  open while approvals of it wait for a person or, approved, to be resumed. To approve and resume in another process, keep the run's `runId` and `runToken` with the framework's saved state and re-attach:
   `new RunHandle(new Client(), { run_id, run_token })`. `process.exit()` skips all of this: close first.
 - **The LLM gateway.** Point the provider at it with the run in a header, e.g. OpenAI Agents
   `setDefaultOpenAIClient(new OpenAI({ baseURL, apiKey: <gateway token>, defaultHeaders: { "X-Tracekit-Run":
@@ -133,8 +134,11 @@ as a hint (`context.tracekit.approvals`); the signer checks it. Leave `toolExecu
 with it on, the guardrail runs before the interruption and every `ask` is refused at once.
 
 A local MCP server (`MCPServerStdio`, SSE, streamable HTTP) is gated through its tool guardrails:
-`new MCPServerStdio({ ..., ...tk.mcp("filesystem") })` decides each call as `mcp:filesystem/<tool>`, holds an `ask`
-in the guardrail until a person decides, and completes the call with the server's output. Without it, local MCP calls
+`new MCPServerStdio({ name: "filesystem", ..., ...tk.mcp("filesystem") })` decides each call as
+`mcp:filesystem/<tool>`, holds an `ask` in the guardrail until a person decides, and completes the call with the
+server's output. Pass the server's own `name`: with `mcpConfig.includeServerInToolNames` the model's
+`mcp_<server>__<tool>` is turned back into `mcp:<server>/<tool>` from it. A call your own input guardrails refuse is
+recorded as refused. Without it, local MCP calls
 are not gated. A sub-agent used as a tool (`agent.asTool()`) is not gated either, and its model responses are not in
 the outer `rawResponses`: gate its own tools with `tk.tool`, and record its responses (`customOutputExtractor` gets
 the nested result) or run the LLM gateway. Also not gated, listed as uncovered: hosted tools (web and file search,
@@ -164,7 +168,8 @@ are not gated; they appear in the recorded model responses.
 MCP tools (`@ai-sdk/mcp`): `tk.tools(await client.tools(), { mcp: "filesystem" })` decides each as
 `mcp:filesystem/<tool>`. Your own `toolApproval` (a function, or one per tool name) composes with the signer's:
 `toolApproval: tk.toolApprovalWith(mine)` asks the policy first, and your answer applies only to a call the policy
-allows (a call you deny is recorded as refused); `tk.toolApproval` alone replaces yours.
+allows (a call you deny is recorded as refused; one you answer `user-approval` and then deny in your own UI stays
+decided and not completed); `tk.toolApproval` alone replaces yours.
 
 **Claude Agent SDK** (`@cygnux/tracekit/v2/claude-agent-sdk`)
 
