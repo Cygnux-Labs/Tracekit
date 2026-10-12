@@ -2,6 +2,153 @@
 
 All notable changes to Tracekit. Versions follow [PEP 440](https://peps.python.org/pep-0440/).
 
+## 1.2.0rc1 (2026-10-12) — control
+
+1.1 records why an agent acted. 1.2 lets the signer act on what it sees, for agents running on servers:
+- tool calls run with credentials the agent never holds (T2);
+- the signer detects risky sequences across calls and contains the runs that trip them;
+- reviewer agents may answer routine approvals inside bounds the policy sets;
+- the signer records, signed, what was decided but never reported.
+
+It also has fixes from running Tracekit inside eight real agent projects: OpenAI's customer-service demo, LangGraph,
+Browser Use, mcp-agent, OpenAI Agents JS, the Vercel AI SDK, PydanticAI and CrewAI. v1 bundles and 1.0/1.1 bundles
+keep verifying. Every limit of the new features is in [docs/limits.md](docs/limits.md).
+
+1.1.0rc1 was never published; this release candidate includes everything listed under it below.
+
+### Upgrade notes
+- **Signer RPC version 16** (1.1 spoke 15). A 1.2 signer still serves 1.1 (version 15) clients unchanged, so upgrade
+  the signer first, then its clients.
+- **Bundles with 1.2 records need a 1.2 verifier** (`verifier_min_version: 1.2.0`). These are completeness gaps
+  (`decided_not_completed`, `late_activity`, `concurrent_run`, ...), `run.child`, incidents and agent approvals,
+  `run.final`'s `provider_executed`, and `paired_by_args` (#218). Older verifiers report such a bundle
+  `UNVERIFIABLE (needs tracekit >= 1.2.0)`, never `FAILED`. Bundles with none of these stay readable by 1.1.
+- **`verify` warns on more**: every signed gap that isn't informational, and fail-open tool classes. `verify --strict`
+  exits 3 on them, so a CI gate that passed on 1.1 may now stop. Read the warning: it names the gap.
+- **Policies**: map your application's own tools to the new class `app` (mapping a tool to `unknown` is now a policy
+  warning; a 1.1 policy still loads). Name handoff tools in `handoffs:` and structured-output tools in
+  `structured_output:`. No shipped pack names any handoff, so `transfer_to_*` calls reconcile as `hook_missing` until
+  you name them.
+- **Python custom loops** (#218): `RunHandle.decide` no longer raises `SignerUnavailable`; see Behaviour
+  changes. A loop that caught that exception to block now blocks by `d["decision"]`.
+- **Containment operators** (#213): the signer refuses to start when one `authorize` entry grants both
+  `register_run` and an operator call. Give operators an identity of their own.
+- **Long-running servers**: open a run per conversation and make it current per request (`with conversation.current():`
+  in Python, `withRun()` in TypeScript), as [the quickstart](docs/quickstart-v2.md#a-server-a-run-per-conversation)
+  shows.
+
+### Behaviour changes
+- **Python `RunHandle.decide` no longer raises `SignerUnavailable`** (#218). While the signer can't be
+  reached, it returns the run's fail-mode decision with `unavailable: True` and a warning, as the TypeScript client
+  does. A refusal still raises `RPCError`.
+- **Python `RunHandle.complete` never raises** (#218). The call already ran, so a result the signer can't
+  take is a warning (it returns None), and the signer records the call as decided and not completed.
+- Tracekit's model-call refusals raise `tracekit.Refused`, a `PermissionError` (#218).
+- Mapping a tool to `unknown` in a policy is a warning (#212).
+- `verify` (Python and TypeScript) warns on non-informational gap kinds and fail-open classes; `--strict` exits 3
+  (#212).
+- LangGraph: a Tracekit `ask` pauses the graph whatever the ToolNode's `handle_tool_errors` is, and through
+  `.with_fallbacks()` (#212).
+- `instrument()` (Python) renews its process run after the signer closes it for idleness, and sends work to the current
+  run while one is set (#206). It no longer patches OpenAI Agents' `Runner` (#206). TypeScript does the same, at most
+  once per call (#214).
+- TypeScript: a run with pending or approved-but-unconsumed approvals stays open at exit, so another process can
+  approve and resume it. SIGINT/SIGTERM close the run only when nothing else handles the signal (#214).
+- Browser pack: `browser_use:evaluate` asks; a navigation with a query string counts as sending data to its host;
+  `send_keys` and `select_dropdown` count as typing (#212).
+- `tool_results_sent` counts only results since the model's last turn (#206).
+- Refusal texts the model sees leave out `TK-UNKNOWN-TOOL`; the signed `rule_ids` are unchanged (#218).
+- `tracekit init`, `uninstall` and `doctor` use `$CLAUDE_CONFIG_DIR/settings.json` when it is set (#218).
+- Containment (#213): no trigger suspends an identity. Suspension is an operator's call, and lint refuses
+  `suspend:` in `respond`.
+
+### Added
+- **Custody (T2)** (#209): `tracekit executor` runs registered actions with credentials the agent never holds;
+  `tracekit mcp-gateway` proxies MCP servers whose credentials stay in it. Adapters honour `executor: t2`. Calls a
+  gateway holds are bound to it and its caller, recorded with `via`, and resolved or signed `held_call_unresolved` when
+  the run closes. Helm and compose services and an opt-in egress NetworkPolicy ship too.
+- **Completeness** (#210): signed gaps for calls allowed or approved that never completed (`decided_not_completed`),
+  for writes after `run.final` (`late_activity`), for a second run in one bound harness process (`concurrent_run`) and
+  for a killed tailer (heartbeats). There is also a live `reconcile.hook_missing` when the gateway sees a result go
+  back with no decide. Inputs of provider-executed tools are committed, and the gateway gets a `provider_tools`
+  allow/deny.
+- **Detection** (#207): `sequences:` and `limits:` in the policy, over rule ids and labels, scoped to a run, session,
+  owner or attested principal. They are recorded as `incident.opened` / `incident.updated` (shadow unless a
+  `respond:` rule enforces), with `tracekit policy backtest` and shadow-mode rules in the shipped packs.
+- **Containment** (#213): enforced `hold` (each call asks a person, never an agent or self-approval) and
+  `quarantine` (deny, then refuse; the gateway stops the model loop). New runs of the same owner and principal
+  inherit them for a cooldown. Operator calls (`tracekit signer incidents list|show|resolve|hold|quarantine|resume|
+  pause|unpause|suspend|unsuspend`), a shared suspension list, a durable incident outbox (OCSF 2005, Slack), and
+  verifier checks that each response was honoured.
+- **Agent approvers** (#208): a reviewer agent may answer approvals inside typed bounds the policy sets
+  (`approval.agent`), with budgets and a veto delay; people answer everything else. The reference reviewer
+  (`tracekit reviewer`), bridges, viewer desk and verifier checks (#211).
+- **Run sessions** (#203): `register_run`'s `parent` links a child run to its parent (`parent_run`, `session`), and
+  detection scopes by session.
+- **Format 1.2 gate** (#203): one version table sets each bundle's `verifier_min_version`; shipped rows are frozen by a
+  test (#214).
+- **CrewAI** (#218): `tracekit.instrument()` wires CrewAI's tool hooks, which block by return value, never
+  by raising ([CrewAI](docs/integrations/crewai.md)).
+- **Pairing without call ids** (#218): a call decided under an adapter's own id is reconciled with the
+  model's tool use of the same turn by its arguments, when unambiguous (`run.final.paired_by_args`).
+- **Policy**: class `app` for an application's own tools; `handoffs:`; `structured_output:` (#206, #212).
+- **MCP**: mcp 1.x sessions are named from `initialize()` (or `TracekitSession(..., server=)`) (#212). TypeScript
+  gates local MCP servers (agents-js) and `@ai-sdk/mcp` tools as `mcp:<server>/<tool>` (#214).
+- `instrument()` wires Browser Use (#212).
+- **Egress observation and the coverage matrix** (#215): `tracekit egress`, a forward/CONNECT proxy outside the
+  agent (no TLS interception) that checks each run's token, records `effect.observed` and flags
+  `reconcile.unexplained_effect`; `run.final` and both verifiers report per action class whether it was enforced,
+  observed, reported or not covered.
+- **Recorded demos** of the main use cases in [docs/demos](docs/demos/README.md) (`make demos` regenerates and
+  checks them), and a case study of Tracekit on real open-source agents
+  ([docs/case-study-oss-agents.md](docs/case-study-oss-agents.md)).
+
+### Fixed
+- **A denied tool ran in CrewAI while the signer was down.** CrewAI runs a tool when a hook raises, and Python's
+  `decide` raised. Fixed by the fail-mode `decide` and the CrewAI integration (#218).
+- **An event lost in an outage at the very end of a run left no signed gap.** `close_run` now names each stream's last
+  `client_seq` (#214).
+- Python `complete` raised after the tool ran when the signer was down, and crashed the agent (#218).
+- Streamed OpenAI responses (`with_streaming_response` + `parse()`) were recorded empty, so every tool call
+  reconciled as `fabricated` (#206).
+- OpenAI Agents: `ask` raised TypeError with an app's own run context (#206).
+- Long-running servers were refused every call after the process run's idle close: Python (#206), TypeScript (#214).
+- mcp 1.x: `instrument()` broke every MCP call, and MCP error results were signed `ok` (#212).
+- Reconciliation: an MCP call matches the names frameworks show the model (bare tool, `mcp__<server>__<tool>`,
+  `mcp_<server>__<tool>`) and is compared by signer-computed digests (#214). No `class_mismatch` gap when the policy's
+  own mapping is at least as strict as an adapter's generic hint (#218).
+- A model response missed in an outage is sent at the next call after a signed gap. Leaving a `with client.run()`
+  block never hides the block's own exception (#212).
+- The policy YAML subset reads flow lists split over lines (#218).
+- A tool result with a lone surrogate no longer crashes the adapter after the action ran (#218).
+- Python `run.call("approval_list")` works, and every Python client `call` takes keywords (#218).
+- The TypeScript gate follows `currentRun()` / `withRun()`, and a call an app's own guardrail refuses is completed as
+  an error (#214).
+- CI: three intermittent failures (#205).
+
+### Security
+- Agent approvers: a person's reject now sticks: an agent can't approve the same call by asking again (deep review).
+- Bundles with a passkey-approved call verify: the schema now admits `approval.request`'s `passkey` (gated as 1.2;
+  this also affected the unpublished 1.1.0rc1 commit) (deep review).
+- Browser Use: secrets from `sensitive_data` are masked in every encoded form (percent-encoding at any depth, HTML
+  references, JSON and `\u` escapes) before anything reaches the signer (#212).
+- Browser Use: every page the agent reads is observed as untrusted before its next action, and an unobservable page
+  refuses the action unless `browser` fails open. A `client_counter_gap` makes the run's provenance index partial
+  (#212).
+- An MCP tool is also checked under its bare name, the stricter verdict applying, so relabelling a tool as MCP gains
+  nothing (#214).
+- Calls a gateway or executor holds can't be completed, consumed or abandoned by the agent (#209).
+- The LangChain adapter uses plain `http://` only to an IP-literal loopback signer (#212).
+- Containment hardening from an independent review (#213): several holds per run, cooldowns for operator holds,
+  suspension checked on every call, and verifiers that check an enforced response was recorded.
+
+### Not in this release
+- Linking an OpenTelemetry-imported run to the run that gated the same calls (docs say how to read them apart).
+- A server-name map for MCP under mcp-agent: its calls stay unpaired (`reconcile.hook_missing` + `fabricated`), as
+  [limits](docs/limits.md) says.
+- A policy key marking MCP servers trusted, a delegation class for CrewAI coworker tools, a Python approval-states
+  helper.
+
 ## 1.1.0rc1 (2026-10-11) — the why
 
 The first 1.1 release candidate. 1.0 records what an agent did, provably; 1.1 adds why it did it, also provably:
