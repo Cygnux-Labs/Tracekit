@@ -43,11 +43,14 @@ It exports the most recent finished run, pins the dev signer's key, verifies the
 ## Approvals: wire it by hand
 
 ```python
+from tracekit.autotrace import init as record_model_calls
 from tracekit.integrations.langchain import TracekitCheckpointer, TracekitMiddleware, tracekit_tool_node
 from tracekit.sdk.client import Client
 
 client = Client()
-run = client.register_run({"agent": {"name": "my-agent"}})
+handle = client.run("my-agent")   # registers the run
+run = handle.registered
+record_model_calls(run=handle)    # model calls through the OpenAI, Anthropic and Google Gen AI SDKs, into this run
 # a graph of your own: its ToolNode, gated
 graph.add_node("tools", tracekit_tool_node(tools, client, run))
 app = graph.compile(checkpointer=TracekitCheckpointer(InMemorySaver(), client, run))
@@ -55,6 +58,9 @@ app = graph.compile(checkpointer=TracekitCheckpointer(InMemorySaver(), client, r
 agent = create_agent(model, tools, checkpointer=InMemorySaver(),
                      middleware=[TracekitMiddleware(client, run["run_id"], run["run_token"], run.get("fail_modes"))])
 ```
+
+The gate and the checkpointer record tool calls and checkpoints only; without the `record_model_calls(run=handle)` line the
+run holds no model calls, and verify reports `(L3 absent)`. `handle.close()` ends the run.
 
 An ask needs a checkpointer: the graph pauses with `interrupt()` and resumes with `Command(resume={"approval_id":
 ...})`. Without one the call is denied. The pause gets through the node's `handle_tool_errors` (any setting) and
@@ -65,6 +71,20 @@ exceptions around the node ends the pause: the call doesn't run and its approval
 
 An offline run of all this (a mock model, no API key), with an approval: `python examples/v2/langchain/agent.py
 --scripted` from a checkout.
+
+## Routing between assistants (handoffs)
+
+A graph whose assistants hand over with tool schemas that no ToolNode runs, as LangGraph's customer-support tutorial
+does (`ToFlightBookingAssistant`, `ToBookCarRental`, `CompleteOrEscalate`: a conditional edge sends each to a node that
+answers it), never has those calls decided, so each one the model asks for is a `reconcile.hook_missing` in the report.
+Name them in your policy's `handoffs:` ([policy](../policy-v2.md#file-format)), by their exact names:
+
+```yaml
+handoffs: [ToFlightBookingAssistant, ToBookCarRental, ToHotelBookingAssistant, ToBookExcursion, CompleteOrEscalate]
+```
+
+A tool a node calls from its own code, outside any ToolNode (the tutorial's `user_info` node fetching the passenger's
+flights), is neither gated nor recorded: put it in a ToolNode to have it decided.
 
 ## Read the verify report
 

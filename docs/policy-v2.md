@@ -54,8 +54,9 @@ tools:                          # tool name or glob (fnmatch) -> class
   transfer_funds: payment
   search_flights: app           # an application's own tool: known (unknown_tools leaves it alone), no class fields
 untrusted: [http, mcp, WebFetch]   # tool classes and tool name globs whose results are untrusted content (Provenance)
-handoffs: [transfer_to_refunds_agent]   # tool names the framework runs as handoffs to another agent; no pack names
-                                        # any: exact names, as your agents' handoff tools are called
+handoffs: [transfer_to_refunds_agent]   # tool names the framework runs as handoffs to another agent (OpenAI Agents'
+                                        # transfer_to_*, LangGraph routing schemas such as CompleteOrEscalate); no
+                                        # pack names any: exact names, as your agents' handoff tools are called
 deny:  [<rule>, ...]
 ask:   [<rule>, ...]
 flag:  [<rule>, ...]
