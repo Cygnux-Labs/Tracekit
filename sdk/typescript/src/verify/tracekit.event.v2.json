@@ -1356,6 +1356,11 @@
           "type": "string",
           "maxLength": 256,
           "description": "format 1.2: the gateway or tool executor (its identity, scheme:subject) that wrote this record for the run's client (source gateway, tier T2); the signer takes the call's later steps from it only"
+        },
+        "caller": {
+          "type": "string",
+          "maxLength": 256,
+          "description": "format 1.2, with via: the client (scheme:subject) the gateway or tool executor decided the call for"
         }
       }
     },
@@ -1704,7 +1709,8 @@
             "identity_refused",
             "approval_expired",
             "executed_against_policy",
-            "decision_mismatch"
+            "decision_mismatch",
+            "held_call_unresolved"
           ],
           "description": "Gap and tamper kinds (signer-written only)."
         },

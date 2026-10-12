@@ -38,7 +38,8 @@ A pinned monitor's report of conflicts for the origin, or of another root at the
 A run with any self-approval (dev mode: the approver was the requester) is reported `approvals: self`, assurance dev.
 Approvals answered under the break-glass role are listed, as a warning.
 A tool call that ran against a deny, or an ask with no consumed approval, is signed by the signer as a capture.gap
-`executed_against_policy`; each is a `policy` warning.
+`executed_against_policy`; each is a `policy` warning. A call a gateway or executor decided whose run ended without its
+result is a capture.gap `held_call_unresolved`; each is a `held calls` warning.
 External decisions: policy.external records (other systems' decisions, imported at tier T3) are counted by system and
 by whether the signer verified the system's signature; each signer-written capture.gap `decision_mismatch` (the
 import disagreed with the signer's decision or tool, or named a call the signer never decided) makes the
@@ -483,6 +484,11 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
     if against:
         rep.check("policy", False, f"{len(against)} tool call(s) ran against a deny or an unapproved ask", against[:20],
                   warn=True)
+    unresolved = [f"seq {r['event']['seq']}: {str(r['event']['data'].get('reason'))[:200]}" for r in every
+                  if r["event"].get("type") == "capture.gap" and r["event"]["data"].get("kind") == "held_call_unresolved"]
+    if unresolved:   # the signer's word that a call a gateway held ended its run without a result
+        rep.check("held calls", False, f"{len(unresolved)} tool call(s) a gateway or executor decided have no result",
+                  unresolved[:20], warn=True)
     external = [r["event"]["data"] for r in every if r["event"].get("type") == "policy.external"]
     mismatched = [f"seq {r['event']['seq']}: {str(r['event']['data'].get('reason'))[:200]}" for r in every
                   if r["event"].get("type") == "capture.gap" and r["event"]["data"].get("kind") == "decision_mismatch"]
@@ -515,10 +521,11 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
     if vault:   # signer records of the content vault (docs/privacy.md): who read or erased retained content
         rep.check("content vault", True, f"{vault['content.accessed']} access(es), {vault['content.erased']} erasure(s) "
                                          "of retained content, each signed by the signer")
-    # a tool call's tier is the weakest its records claim (untiered < T1 < T2 < T3): each tier a record names, and
-    # untiered for a decision or result that names none, so a call decided at T2 and completed elsewhere isn't T2;
+    # a tool call's tier is the weakest its records claim (untiered < T3, receipt only, < T1 < T2): each tier a record
+    # names, and untiered for a decision or result that names none, so a call decided at T2 and completed elsewhere
+    # isn't T2;
     # paths: the (source, tier)s of its decisions and results, which differ only when another layer answered for it
-    order, tiers, claims, paths = (None, "T1", "T2", "T3"), {}, {}, {}
+    order, tiers, claims, paths = (None, "T3", "T1", "T2"), {}, {}, {}
     for r in every:
         e = r["event"]
         if e.get("tool_call_id") is None:

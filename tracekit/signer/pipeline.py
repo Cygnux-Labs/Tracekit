@@ -52,8 +52,8 @@ def new_run(tenant, run_id):
 
 
 FINAL_KEYS = ("tenant", "run_id", "run_seq", "head", "closed", "final", "owner", "source")
-# a call as replay has it; `via`: the gateway that decided it for the run's client (SignerService._hold)
-CALL_KEYS = ("tool_call_id", "attempt", "decision", "rule_ids", "decision_id", "commitment", "via")
+# a call as replay has it; `via`, `caller`: the gateway that decided it and the client it named (SignerService._hold)
+CALL_KEYS = ("tool_call_id", "attempt", "decision", "rule_ids", "decision_id", "commitment", "via", "caller")
 TENANT_GAPS = ("witness_failed", "witness_late", "clock_skew", "degraded_unanchored")
 
 
@@ -342,7 +342,8 @@ class RecordLog:
                 d = e["data"]
                 call = {"tool_call_id": e["tool_call_id"], "attempt": e.get("attempt", 0), "decision": d["decision"],
                         "rule_ids": d["rule_ids"], "decision_id": d.get("decision_id"),
-                        "commitment": d.get("args_commitment"), "tool": d.get("tool"), "via": d.get("via")}
+                        "commitment": d.get("args_commitment"), "tool": d.get("tool"), "via": d.get("via"),
+                        "caller": d.get("caller")}
                 run["calls"][e["tool_call_id"]] = call
                 if call["decision_id"]:
                     run["decisions"][call["decision_id"]] = call

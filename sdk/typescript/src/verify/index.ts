@@ -357,6 +357,9 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
   const against = gaps("executed_against_policy");
   if (against.length)
     rep.check("policy", false, `${against.length} tool call(s) ran against a deny or an unapproved ask`, against.slice(0, 20), true);
+  const unresolved = gaps("held_call_unresolved");   // the signer's word that a held call ended its run without a result
+  if (unresolved.length)
+    rep.check("held calls", false, `${unresolved.length} tool call(s) a gateway or executor decided have no result`, unresolved.slice(0, 20), true);
   const external = typed("policy.external").map((e) => at(e, "data")), mismatched = gaps("decision_mismatch");
   if (external.length || mismatched.length) {
     const systems = count(external.map((d) => cut(str(at(d, "system")), 64)));
@@ -377,10 +380,11 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
     reconciles.map((e) => `seq ${e.seq}: ${e.type} ${cut(str(get(e, "tool_call_id")), 200)}: `
       + cut(str(get(at(e, "data"), "detail")), 200)).slice(0, 20), true);
   }
-  // a tool call's tier is the weakest its records claim (untiered < T1 < T2 < T3): each tier a record names, and
-  // untiered for a decision or result that names none, so a call decided at T2 and completed elsewhere isn't T2;
+  // a tool call's tier is the weakest its records claim (untiered < T3, receipt only, < T1 < T2): each tier a record
+  // names, and untiered for a decision or result that names none, so a call decided at T2 and completed elsewhere
+  // isn't T2;
   // paths: the (source, tier)s of its decisions and results, which differ only when another layer answered for it
-  const order: J[] = [null, "T1", "T2", "T3"];
+  const order: J[] = [null, "T3", "T1", "T2"];
   const tiers = new Map<string, J>(), claims = new Map<string, J>(), paths = new Map<string, Set<string>>();
   for (const e of events) {
     if (get(e, "tool_call_id") === null) continue;

@@ -99,12 +99,13 @@ def trust_config(witnesses_required=1, algs=("ed25519",)):
 
 
 def tiers_bundle(log, out):
-    """Export to `out` a run of three calls: decided and completed by a gateway (T2); decided by it and completed by
-    the run's client, which the signer refuses; decided in process, with another system's view of it imported (T3)."""
+    """Export to `out` a run of four calls: decided and completed by a gateway (T2); decided by it and completed by
+    the run's client, which the signer refuses; decided by it, its result imported (T3); decided in process, with
+    another system's view of it imported (T3); and a signer gap for a call a gateway held that got no result."""
     log.epoch(KEY1)
     log.register()
     gw = {"source": "gateway", "tier": "T2"}
-    for tcid, result in (("t2", gw), ("hijacked", {"source": "sdk"})):
+    for tcid, result in (("t2", gw), ("hijacked", {"source": "sdk"}), ("imported", {"source": "import", "tier": "T3"})):
         log.add("policy.decision", {"tool_use_id": tcid, "decision": "allow", "rule_ids": [], "via": "uid:10012"},
                 tool_call_id=tcid, **gw)
         log.add("tool.result", {"tool_use_id": tcid, "ok": True, "output": OUTPUT}, tool_call_id=tcid, **result)
@@ -114,6 +115,9 @@ def tiers_bundle(log, out):
                                 "record": {"hash": "hmac-sha256:" + "0" * 64, "size": 2},
                                 "identity": {"scheme": "token", "subject": "opa", "attested": True}},
             tool_call_id="t1", source="import", tier="T3")
+    log.add("capture.gap", {"kind": "held_call_unresolved", "tool_use_id": "t9",
+                            "reason": "uid:10012 decided t9 for token:agent and recorded no result before the run ended"},
+            tool_call_id="t9")
     log.final()
     export(log.store, "acme", "run-a", log.note(), out)
     return out
@@ -309,9 +313,11 @@ class TestVerifyV2(Case):
     def test_a_call_counts_at_its_weakest_tier_and_a_split_capture_path_warns(self):
         rep, code = self.verify(tiers_bundle(self.log(), os.path.join(self.d, "tiers.tkb")))
         [line] = [c for c in rep.checks if c["check"] == "tiers"]
-        self.assertEqual((code, line["status"], line["detail"]), (0, "warn", "3 tool call(s): T1 0, T2 1, T3 0, untiered 2"
-                                                                  "; 1 decided and completed by different capture paths"))
-        self.assertEqual(line["problems"], ["run-a hijacked: gateway T2, sdk untiered"])
+        self.assertEqual((code, line["status"], line["detail"]), (0, "warn", "5 tool call(s): T1 0, T2 1, T3 1, untiered 3"
+                                                                  "; 2 decided and completed by different capture paths"))
+        self.assertEqual(line["problems"], ["run-a hijacked: gateway T2, sdk untiered", "run-a imported: gateway T2, import T3"])
+        [held] = [c for c in rep.checks if c["check"] == "held calls"]
+        self.assertEqual((held["status"], held["detail"]), ("warn", "1 tool call(s) a gateway or executor decided have no result"))
 
     def test_principals_are_reported_attested_or_app_asserted(self):
         for attested, word in ((True, "attested"), (False, "app-asserted")):
@@ -661,6 +667,9 @@ ENTRIES = {
     "run.registered.parent_run": [registered(parent_run="run-p", session="run-p")],
     "run.registered.session": [registered(parent_run="run-p", session="run-root")],
     "policy.decision.via": [registered(), decision(via=VIA)],
+    "policy.decision.caller": [registered(), decision(via=VIA, caller="token:agent")],
+    "capture.gap.kind=held_call_unresolved": [registered(), ("capture.gap", {
+        "kind": "held_call_unresolved", "tool_use_id": "t1", "reason": "no result"}, "run-a")],
     "approval.request.via": [registered(), ("approval.request", dict(APPROVAL, via=VIA), "run-a")],
     "tool.result.via": [registered(), ("tool.result", {"tool_use_id": "t1", "ok": True, "output": OUTPUT, "via": VIA},
                                        "run-a")],
