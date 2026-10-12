@@ -171,6 +171,54 @@ class Handoffs(unittest.TestCase):
         for loose in ("'*'", "'*_*'", "'[a-z]*'", "'??'"):
             self.assertIn("too loose", "\n".join(self.build("all.yaml", f"version: a\nhandoffs: [{loose}]\n")[1]), loose)
 
+    def test_structured_output_declared_merged_and_refused(self):
+        """structured_output: the operator names the tools a framework asks for in the model's structured output (no
+        tool use id to reconcile with); the agent can't."""
+        base, errs = self.build("base.yaml", "version: b\nstructured_output: ['browser_use:*']\n")
+        self.assertEqual(errs, [])
+        self.assertTrue(Engine(base).is_structured_output("browser_use:click"))
+        self.assertFalse(Engine(base).is_structured_output("read_file"))
+        self.assertFalse(Engine(self.build("none.yaml", "version: n\n")[0]).is_structured_output("browser_use:click"))
+        child, _ = self.build("child.yaml", "version: c\nextends: base.yaml\nstructured_output: [AgentOutput]\n")
+        self.assertEqual(child["structured_output"], ["browser_use:*", "AgentOutput"])   # a child can't drop a name
+        self.assertIn("structured_output must list tool name globs",
+                      "\n".join(self.build("bad.yaml", "version: x\nstructured_output: 3\n")[1]))
+        self.assertIn("too loose", "\n".join(self.build("all.yaml", "version: a\nstructured_output: ['*']\n")[1]))
+
+
+class AppTools(unittest.TestCase):
+    """A deployment of the server pack (unknown_tools: ask) names its own business tools: class app is known, so not
+    held as unknown, and rules still reach it by name; mapping a tool to unknown is a warning."""
+
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.d, True)
+        shutil.copytree(os.path.join(os.path.dirname(pc.__file__), "packs"), os.path.join(self.d, "packs"))
+
+    def build(self, tools):
+        path = os.path.join(self.d, "policy.yaml")
+        with open(path, "w") as f:
+            f.write("extends: packs/server.yaml\ntools:\n" + "".join(f"  {t}: {c}\n" for t, c in tools.items())
+                    + "ask:\n  - {id: APP-A001, tool: cancel_ticket, pattern: '^'}\n")
+        return pc.build(path)
+
+    def test_app_tools_are_known_and_rules_reach_them_by_name(self):
+        pol, errs = self.build({"search_flights": "app", "cancel_ticket": "app"})
+        self.assertEqual(errs, [])
+        e = Engine(pol)
+        self.assertEqual(e.decide("search_flights", {"from": "BSL"})["verdict"], "allow")
+        self.assertEqual(e.decide("cancel_ticket", {"ticket_no": "1"})["rule_ids"], ["APP-A001"])
+        self.assertEqual(e.decide("book_hotel", {"id": 1})["rule_ids"], ["TK-UNKNOWN-TOOL"])   # still unmapped
+        self.assertEqual(e.decide("search_flights", {"q": "AKIA" + "A" * 16})["verdict"], "deny")   # TK-S002, every tool
+
+    def test_mapping_a_tool_to_unknown_is_a_warning_so_a_1_1_policy_still_loads(self):
+        pol, errs = self.build({"search_flights": "unknown"})
+        self.assertEqual(errs, [])
+        [w] = pc.warnings(pol)
+        self.assertIn("tool 'search_flights' maps to class 'unknown'", w)
+        self.assertIn("class app", w)
+        self.assertEqual(Engine(pol).decide("search_flights", {"from": "BSL"})["rule_ids"], ["TK-UNKNOWN-TOOL"])
+
 
 class Engines(unittest.TestCase):
     def setUp(self):
@@ -213,6 +261,14 @@ class Engines(unittest.TestCase):
         self.assertEqual((d["verdict"], d["rule_ids"]), ("deny", ["TK-OVERSIZE"]))
         d = self.regex.decide("Write", {"file_path": "é" * (MAX_SUBJECT // 2 + 1)})
         self.assertEqual((d["verdict"], d["rule_ids"]), ("deny", ["TK-OVERSIZE"]))
+
+    def test_oversize_names_the_subjects(self):
+        self.assertEqual(self.regex.decide("Bash", {"command": "x" * (MAX_SUBJECT + 1)})["oversize"][0], "the shell command")
+        pol = {"tools": {"Write": "fs"}, "deny": [{"id": "R", "pattern": "x"}, {"id": "P", "class": "fs", "field": "path",
+                                                                              "pattern": "^/etc"}]}
+        d = Engine(pol, "regex").decide("Write", {"file_path": "/p", "content": "x" * (MAX_SUBJECT + 1)})
+        self.assertEqual((d["rule_ids"], d["oversize"]), (["TK-OVERSIZE"], ["R's subject (the whole arguments)"]))
+        self.assertNotIn("oversize", Engine(pol, "regex").decide("Write", {"file_path": "/p"}))
 
     def test_fallback_timeout_denies_and_is_marked(self):
         pol = {"tools": {"Bash": "shell"}, "flag": [{"id": "S", "class": "shell", "field": "command", "pattern": "a.*b.*c"}]}

@@ -8,6 +8,9 @@ import asyncio
 import threading
 import time
 import unittest
+from unittest import mock
+
+import pydantic
 
 import adapter_contract as ac
 from tracekit.sdk.client import Client
@@ -100,8 +103,10 @@ class MCPContract(ac.Contract):
         self.d.kw["approval_wait_s"] = 0
         self.refused(self.d.call("pay", ac.PAY), "cannot wait")
         self.d.kw["approval_wait_s"] = 0.2
-        self.paused()
-        self.refused(self.d.resume(), "approval requested")
+        aid = self.paused()
+        self.refused(self.d.resume(), "no one approved the call within 0.2 s, so it did not run and its approval was "
+                                      "withdrawn")
+        self.assertEqual(self.client.approval_get({"approval_id": aid})["state"], "expired")
 
 
 @unittest.skipUnless(HAVE_MCP, "mcp not installed")
@@ -121,8 +126,8 @@ class TestOnRealSigner(MCPContract, ac.OnReal, unittest.TestCase):
         self.assertIn("class hint 'mcp'", gap["reason"])   # the contract policy has no tools map
 
 
-class _StubSession:
-    server_info = type("Info", (), {"name": "stub"})()
+class _Mcp1Session:
+    """An mcp 1.x ClientSession: it doesn't keep the server's name."""
 
     def __init__(self):
         self.calls = 0
@@ -133,14 +138,19 @@ class _StubSession:
         return CallToolResult(content=[TextContent(type="text", text="done")], is_error=False)
 
 
+class _StubSession(_Mcp1Session):
+    server_info = type("Info", (), {"name": "stub"})()
+
+
 class _Signer:
     """A signer that fails the way it is told: `decide` and `complete` raise `errors[method]` when set."""
 
     def __init__(self, **errors):
-        self.errors = errors
+        self.errors, self.tools = errors, []
 
     def __getattr__(self, method):
         def call(req):
+            self.tools += [req["tool"]] if method == "decide" else []
             if method in self.errors:
                 raise self.errors[method]
             return {"decide": {"decision": "allow", "decision_id": "dec-1", "rule_ids": []},
@@ -175,3 +185,37 @@ class SignerFailures(unittest.TestCase):
         with self.assertWarns(UserWarning):
             out, calls = self.call(_Signer(complete=RPCError("unavailable", "storage down")))
         self.assertEqual((out.is_error, out.content[0].text, calls), (False, "done", 1))
+
+    def test_mcp_1_results_say_is_error_as_isError(self):
+        """mcp 1.x's CallToolResult has only `isError` and ignores `is_error=`: a refusal sets isError, and a server's
+        isError result completes as an error."""
+        from tracekit.signer.rpc_schema import RPCError
+
+        class Result(pydantic.BaseModel):   # mcp 1.x's shape: camelCase fields, unknown arguments ignored
+            content: list
+            isError: bool = False
+
+        class Failing(_Mcp1Session):
+            async def call_tool(self, name, arguments=None):
+                self.calls += 1
+                return Result(content=[], isError=True)
+        sent = []
+
+        class Seen(_Signer):
+            def __getattr__(self, method):
+                call = super().__getattr__(method)
+                return lambda req: sent.append((method, req)) or call(req)
+        with mock.patch("tracekit.integrations.mcp.CallToolResult", Result):
+            out = asyncio.run(TracekitSession(_Mcp1Session(), _Signer(decide=RPCError("run_closed", "closed")),
+                                              self.RUN, server="s").call_tool("x", {}))
+            self.assertIs(out.isError, True)
+            asyncio.run(TracekitSession(Failing(), Seen(), self.RUN, server="s").call_tool("x", {}))
+        self.assertEqual([r["status"] for m, r in sent if m == "complete"], ["error"])
+
+    def test_an_mcp_1_session_is_named_by_the_caller_else_unknown(self):
+        signer = _Signer()
+        asyncio.run(TracekitSession(_Mcp1Session(), signer, self.RUN, server="git hub").call_tool("x", {}))
+        with self.assertWarns(UserWarning) as cm:
+            asyncio.run(TracekitSession(_Mcp1Session(), signer, self.RUN).call_tool("x", {}))
+        self.assertEqual(signer.tools, ["mcp:git_hub/x", "mcp:unknown/x"])
+        self.assertIn("server=", str(cm.warning))

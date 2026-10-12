@@ -9,8 +9,9 @@
 The signer is the Unix socket in `$TRACEKIT_SIGNER`, `tcp://host:port` with `$TRACEKIT_SIGNER_TOKEN` (the dev
 transport), or an `https://host:port` URL (each call is one POST /v2/rpc; `$TRACEKIT_SIGNER_TOKEN_FILE` names a bearer
 token file, re-read per call so a rotated service-account token is picked up; `$TRACEKIT_SIGNER_CERT`/`_KEY` a client
-certificate for mTLS; `$TRACEKIT_SIGNER_CA` pins the signer's CA). In system mode (`tracekit init --v2`) the signer is
-the one the root-owned /etc/tracekit/client.json names. Without either, a same-user dev signer is found or started
+certificate for mTLS; `$TRACEKIT_SIGNER_CA` pins the signer's CA), or `http://` on a loopback address, which the
+signer's `insecure_loopback` listener serves. In system mode (`tracekit init --v2`) the signer is the one the
+root-owned /etc/tracekit/client.json names. Without either, a same-user dev signer is found or started
 (tracekit/sdk/autospawn.py). Requests go out in order on one connection and the signer answers them in order, so any
 number of threads can have calls in flight; a call that may block (`approval_wait`) gets a connection of its own so it
 holds up no one. Every request is validated against the RPC contract, and its size against the signer's frame limit,
@@ -25,6 +26,7 @@ import concurrent.futures
 import contextlib
 import contextvars
 import http.client
+import ipaddress
 import json
 import os
 import queue
@@ -64,7 +66,7 @@ class Incompatible(Exception):
 
 
 class _ConnectionLost(Exception):
-    pass
+    """The request may not have arrived; its message says why."""
 
 
 def _new_id():
@@ -72,9 +74,15 @@ def _new_id():
 
 
 def _encode(method, req):
-    """The frame of `req` as sent; invalid_request when it is not JSON, quota_exceeded over the signer's frame limit."""
+    """The frame of `req` as sent; invalid_request when it is not JSON, quota_exceeded over the signer's frame limit.
+    Arguments a frame can't carry (a lone surrogate) go as raw text with it escaped, which the signer decides as
+    TK-ARGS-INVALID in a signed record."""
     try:
         data = json.dumps({"method": method, **req}, separators=(",", ":"), ensure_ascii=False).encode()
+    except UnicodeEncodeError as e:
+        if req.get("args_source") not in ("parsed", "coerced"):
+            raise RPCError("invalid_request", f"the {method} request is not JSON: {e}") from None
+        return _encode(method, {**req, "args_source": "raw", "args": json.dumps(req["args"], separators=(",", ":"))})
     except (TypeError, ValueError) as e:
         raise RPCError("invalid_request", f"the {method} request is not JSON: {e}") from None
     if len(data) > MAX_LINE:
@@ -133,25 +141,27 @@ def _check(hello, where):
 
 
 class _Https:
-    """POST /v2/rpc to an HTTPS signer: one kept-alive connection per thread and host, the bearer token re-read per
-    call."""
+    """POST /v2/rpc to an HTTPS signer, or a plain HTTP one on a loopback address: one kept-alive connection per thread
+    and host, the bearer token re-read per call."""
 
     def __init__(self, url):
         u = urllib.parse.urlsplit(url)
-        self.host, self.port = u.hostname, u.port or 443
-        self.ctx = ssl.create_default_context(cafile=os.environ.get("TRACEKIT_SIGNER_CA"))
-        if os.environ.get("TRACEKIT_SIGNER_CERT"):
+        self.url, self.plain = f"{u.scheme}://{u.netloc}", u.scheme == "http"
+        self.host, self.port = u.hostname, u.port or (80 if self.plain else 443)
+        self.ctx = None if self.plain else ssl.create_default_context(cafile=os.environ.get("TRACEKIT_SIGNER_CA"))
+        if os.environ.get("TRACEKIT_SIGNER_CERT") and not self.plain:
             self.ctx.load_cert_chain(os.environ["TRACEKIT_SIGNER_CERT"], os.environ.get("TRACEKIT_SIGNER_KEY"))
         self.token_file, self.pid, self.hello = os.environ.get("TRACEKIT_SIGNER_TOKEN_FILE"), None, None
         self.conns = weakref.WeakSet()   # every thread's, for close()
 
     def _host(self, req):
         """The host of the run or approval `req` names. A central signer's replica (docs/deploy-kubernetes.md) prefixes
-        its ids with its route, `<service>-<n>.`: such an id goes to host `<service>-<n>` in the signer's domain."""
+        its ids with its route, `<service>-<n>.`: such an id goes to host `<service>-<n>` in the signer's domain. Plain
+        http stays on its loopback address: the ids are the caller's, and a route would name a host off it."""
         first, _, rest = self.host.partition(".")
         route, dot, _ = (req.get("run_id") or req.get("approval_id") or req.get("analyzes")
                          or req.get("parent", {}).get("run_id") or "").partition(".")
-        if not (dot and re.fullmatch(re.escape(first) + r"-[0-9]+", route)):
+        if self.plain or not (dot and re.fullmatch(re.escape(first) + r"-[0-9]+", route)):
             return self.host
         return f"{route}.{rest}" if rest else route
 
@@ -172,7 +182,8 @@ class _Https:
             self.local.conns = {}
         conn = self.local.conns.get(host)
         if conn is None:
-            conn = self.local.conns[host] = http.client.HTTPSConnection(host, self.port, context=self.ctx)
+            conn = self.local.conns[host] = (http.client.HTTPConnection(host, self.port) if self.plain else
+                                             http.client.HTTPSConnection(host, self.port, context=self.ctx))
             self.conns.add(conn)
         conn.timeout = timeout
         if conn.sock:
@@ -183,17 +194,24 @@ class _Https:
         except socket.timeout:
             conn.close()   # reopened by the next request
             raise SignerUnavailable(f"no answer from the signer within {timeout:g}s") from None
-        except (OSError, http.client.HTTPException, RPCError):
+        except ssl.SSLCertVerificationError as e:   # not a lost connection: no retry would verify
             conn.close()
-            raise _ConnectionLost() from None
+            raise SignerUnavailable(f"the TLS certificate of the signer at {self.url} did not verify "
+                                    f"({e.verify_message}); set TRACEKIT_SIGNER_CA to the CA that issued it") from None
+        except (OSError, http.client.HTTPException, RPCError) as e:
+            conn.close()
+            raise _ConnectionLost(f"{type(e).__name__}: {e}") from None
 
     def rpc(self, req, body, timeout):
+        if self.plain and not _loopback(self.host):   # the token and the frames would cross the network in clear
+            raise SignerUnavailable(f"{self.url}: plain http:// signers must be on a loopback address (127.0.0.1, "
+                                    "::1); use https:// for any other")
         if self.hello is None:
             hello = self.post(_encode("hello", {}), timeout)
             if "error" in hello:
                 e = hello["error"]
                 raise RPCError(e.get("code"), e.get("message", ""))
-            _check(hello, f"https://{self.host}:{self.port}")
+            _check(hello, self.url)
             self.hello = hello
         return self.post(body, timeout, self._host(req))
 
@@ -219,6 +237,13 @@ class _Conn:
             self.sock.shutdown(socket.SHUT_RDWR)   # wakes the reader, which fails what is pending
         except OSError:
             pass
+
+
+def _loopback(host):
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 def _default_signer():
@@ -251,7 +276,7 @@ class Client:
     def __init__(self, signer=None, timeout=30.0):
         self.signer = signer or _default_signer()
         self.timeout, self.hello = timeout, None
-        self._https = _Https(self.signer) if (self.signer or "").startswith("https://") else None
+        self._https = _Https(self.signer) if (self.signer or "").startswith(("https://", "http://")) else None
         self._lock = threading.Lock()
         self._pid = self._conn = None
         self._order = {}   # run_id -> the lock its event calls hold from taking their client_seq to their answer
@@ -274,6 +299,7 @@ class Client:
             req.setdefault("request_id", _new_id())
         timeout = self.timeout + req.get("timeout_ms", 0) / 1000
         deadline = time.monotonic() + timeout   # for the whole call: its turn, every retry
+        lost = None
         with self._turn(method, req, deadline):
             for _ in range(RETRIES):
                 left = max(deadline - time.monotonic(), 0.001)
@@ -287,7 +313,8 @@ class Client:
                         reply = self._poll(method, req, left)
                     else:
                         reply = self._send(method, req).result(left)
-                except _ConnectionLost:
+                except _ConnectionLost as e:
+                    lost = e
                     continue
                 except concurrent.futures.TimeoutError:
                     self.close()
@@ -300,7 +327,8 @@ class Client:
                             self._order.pop(req.get("run_id"), None)
                     raise RPCError(e.get("code"), e.get("message", ""), e.get("retry_after_ms"))
                 return reply
-            raise SignerUnavailable(f"lost the connection to the signer {RETRIES} times")
+            last = f" (last: {lost})" if str(lost) else ""
+            raise SignerUnavailable(f"lost the connection to the signer {RETRIES} times{last}")
 
     def close(self):
         with self._lock:
@@ -454,8 +482,23 @@ for _name in rpc_schema.REQUESTS.keys() - {"register_run"}:
     setattr(Client, _name, _rpc_method(_name))
 
 
+def _close_at_exit(run, failed):
+    """Close `run` as its `with` block ends. A signer that can't be reached only warns: it closes the run itself after
+    its idle timeout. Nothing masks the exception the block raised (`failed`)."""
+    try:
+        run.close()
+    except SignerUnavailable as e:
+        warnings.warn(f"tracekit: run {run.run_id} was not closed: the signer can't be reached ({e}); it closes the "
+                      "run after its idle timeout", stacklevel=3)
+    except Exception as e:
+        if not failed:
+            raise
+        warnings.warn(f"tracekit: run {run.run_id} was not closed: {e}", stacklevel=3)
+
+
 class RunHandle:
-    """A registered run. As a context manager it is the current run (`current_run`) and is closed on exit."""
+    """A registered run. As a context manager it is the current run (`current_run`) and is closed on exit (see
+    _close_at_exit)."""
 
     def __init__(self, client, registered):
         self.client, self.registered = client, registered
@@ -507,7 +550,7 @@ class RunHandle:
 
     def __exit__(self, *exc):
         current_run.reset(self._ctx)
-        self.close()
+        _close_at_exit(self, exc[0] is not None)
 
     @contextlib.contextmanager
     def current(self):
@@ -553,7 +596,7 @@ class AsyncRunHandle(_Async):
 
     async def __aexit__(self, *exc):
         current_run.reset(self._ctx)
-        await self.close()
+        await asyncio.to_thread(_close_at_exit, self._sync, exc[0] is not None)
 
     @contextlib.contextmanager
     def current(self):

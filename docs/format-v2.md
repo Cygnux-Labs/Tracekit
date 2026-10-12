@@ -475,9 +475,9 @@ line and verdict is in [verdicts](verdicts.md).
 8. **Format bridge** (with `--v1-ledger`/`--v1-key`, §12).
 9. **Policy snapshots.** Each `policies/` file is named by its own SHA-256.
 10. **Verdict.** Any failed line: `FAILED`, exit 1. Otherwise `VERIFIED`, `VERIFIED TO HEAD n (open)` for one open
-    run, or `VERIFIED (k run(s) open)`. Then the informational lines (policy, coverage, tiers, args source, isolation,
-    fail-open classes, key assurance, break-glass approvals) and the assurance level. Exit 0, or 3 with `--strict`
-    when any line is a warning.
+    run, or `VERIFIED (k run(s) open)`. Then the informational lines (policy, gaps, coverage, tiers, args source,
+    isolation, fail-open classes, key assurance, break-glass approvals) and the assurance level. Exit 0, or 3 with
+    `--strict` when any line is a warning ([verdicts](verdicts.md#signed-gaps) lists the gap kinds that warn).
 
 A malformed bundle never crashes the verifier: anything unexpected is a failed `bundle structure` line.
 
