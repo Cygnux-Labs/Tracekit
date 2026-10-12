@@ -509,6 +509,16 @@ class RunHandle:
         current_run.reset(self._ctx)
         self.close()
 
+    @contextlib.contextmanager
+    def current(self):
+        """This run as the current run inside the block, without closing it: a run per conversation that a server keeps
+        open across requests (`with conversation.current(): ...` in each)."""
+        token = current_run.set(self)
+        try:
+            yield self
+        finally:
+            current_run.reset(token)
+
 
 class _Async:
     # lean: each awaited call holds a worker thread while it waits (the default executor caps how many are in flight);
@@ -544,3 +554,12 @@ class AsyncRunHandle(_Async):
     async def __aexit__(self, *exc):
         current_run.reset(self._ctx)
         await self.close()
+
+    @contextlib.contextmanager
+    def current(self):
+        """As RunHandle.current: this run current inside the block, not closed after it."""
+        token = current_run.set(self)
+        try:
+            yield self
+        finally:
+            current_run.reset(token)

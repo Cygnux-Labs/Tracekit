@@ -8,9 +8,10 @@
 
 `deny` gives the model a refusal as the tool output and the run goes on. `ask` interrupts the run; once a person has
 decided in the signer, `await tk.apply_decisions(state)` approves or rejects the paused calls and the app resumes with
-`Runner.run(agent, state, hooks=tk)`. The RunState JSON is not authenticated, so it carries the approval id only as a
-hint in `context["tracekit"]["approvals"]`: every call that is not denied runs only after the signer's
-`approval_consume` agrees, and the SDK does not call `needs_approval` again on resume. The run context must be a dict.
+`Runner.run(agent, state, hooks=tk)`. The RunState JSON is not authenticated, so a dict run context carries the
+approval id only as a hint in `context["tracekit"]["approvals"]` (any other context carries none: the signer finds the
+approval by the call id): every call that is not denied runs only after the signer's `approval_consume` agrees, and the
+SDK does not call `needs_approval` again on resume.
 An approval with a T2 executor runs a FunctionTool with the arguments the consume returns.
 
 Gated: FunctionTools (a tool input guardrail consumes on the model's raw arguments string), ShellTool with a local
@@ -92,7 +93,7 @@ class TracekitAgents(RunHooks):
         return await self._rpc("decide", tool_call_id=call_id, tool=tool, args_source=_source(args), args=args)
 
     async def _ask(self, ctx, call_id, tool, args):
-        """needs_approval: decide; on ask open an approval and keep its id in the run context as a hint."""
+        """needs_approval: decide; on ask open an approval and keep its id in a dict run context as a hint."""
         try:
             d = await self._decide(call_id, tool, args)
         except (RPCError, SignerUnavailable):
@@ -100,13 +101,12 @@ class TracekitAgents(RunHooks):
         _keep(self._decided, call_id, d)
         if d["decision"] != "ask":
             return False   # a deny is refused by the gate, before the call runs
-        if not isinstance(ctx.context, dict):
-            raise TypeError("TracekitAgents needs a dict run context: Runner.run(agent, input, context={})")
         try:
             apr = await self._rpc("approval_request", tool_call_id=call_id)
         except (RPCError, SignerUnavailable):
             return False   # no approval to wait for: the gate's approval_consume refuses the call
-        ctx.context.setdefault("tracekit", {}).setdefault("approvals", {})[call_id] = apr["approval_id"]
+        if isinstance(ctx.context, dict):   # an app's own context object (a dataclass, a pydantic model) gets no hint
+            ctx.context.setdefault("tracekit", {}).setdefault("approvals", {})[call_id] = apr["approval_id"]
         return True
 
     async def _gate(self, ctx, call_id, tool, args, can_wait=True):
