@@ -1,4 +1,5 @@
 """`tracekit view`: the v2 signer's runs, each verified by verify.v2, served with the observer's page and security."""
+import collections
 import contextlib
 import http.client
 import io
@@ -695,6 +696,50 @@ class WhyPage(WhyServer):
                 self.assertEqual(self.request("POST", "/api/why/runs/r/attribute", JSON, bad_body)[0], 400)
         self.assertEqual(self.request("POST", "/api/why/runs/r/tests", JSON, body)[0], 200)
         self.assertEqual(self.request("POST", "/api/why/runs/no-such/tests", JSON, body)[0], 404)
+
+
+class BoundedState(unittest.TestCase):
+    """What a long-running viewer keeps per run, approval or session stays bounded however many it sees."""
+
+    def test_the_translators_per_run_and_per_approval_maps_are_bounded(self):
+        from tracekit import observe
+        cap = 100
+        with mock.patch.object(observe, "MAX_RUNS_KEPT", cap):
+            t1, t2 = observe.Translator(), view.Translator()
+            for i in range(cap * 10):
+                run = f"run-{i}"
+                t1.feed({"hash": "h", "event": {"run_id": run, "type": "run.start", "ts": "2026-10-12T00:00:00Z",
+                                                "agent_id": f"child-{i}", "data": {"cwd": "/w", "agent": {"name": "a"}}}})
+                for typ, data in (("run.registered", {"agent": {"name": "a"}}),
+                                  ("approval.request", {"approval_id": f"apr-{i}", "binding": {"tool": "pay"}}),
+                                  ("approval.suggested", {"approval_id": f"apr-{i}", "decision": "approve"})):
+                    t2.feed({"hash": "h", "event": {"run_id": run, "type": typ, "ts": "2026-10-12T00:00:00Z",
+                                                    "seq": i, "run_seq": 0, "data": data}})
+        for name in ("cwd", "agent_names", "seen_agents"):
+            self.assertLessEqual(len(getattr(t1, name)), cap, name)
+        for name in ("agent_names", "requests", "suggested"):
+            self.assertLessEqual(len(getattr(t2, name)), cap, name)
+
+    def test_the_store_feed_keeps_its_newest_records(self):
+        import types
+        feed = types.SimpleNamespace(records=[], base=0, max_records=100)
+        for i in range(1000):
+            feed.records.append({"seq": i})
+            view.StoreFeed._trim(feed)
+        self.assertEqual((len(feed.records), feed.base, feed.records[0]["seq"]), (100, 900, 900))
+
+    def test_expired_sessions_are_evicted_before_live_ones(self):
+        login = view.OidcLogin.__new__(view.OidcLogin)
+        login._lock, login._sessions, now = threading.Lock(), collections.OrderedDict(), [1000.0]
+        login.clock = lambda: now[0]
+        with mock.patch.object(view, "SESSIONS_MAX", 4):
+            login._keep("live", {"until": 5000})
+            for i in range(3):
+                login._keep(f"old-{i}", {"until": 1500})
+            now[0] = 2000   # the three old ones have expired
+            login._keep("new", {"until": 9000})
+            login._keep("newer", {"until": 9000})
+        self.assertEqual(list(login._sessions), ["live", "new", "newer"])
 
 
 if __name__ == "__main__":
