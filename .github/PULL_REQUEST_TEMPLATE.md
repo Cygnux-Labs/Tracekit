@@ -1,10 +1,11 @@
 ## What and why
 
 ## Checklist
-- [ ] `make check` passes (lint, tests, build)
+- [ ] `make check` passes (lint, tests, build); `make test-ts` too if `sdk/typescript/` changed
 - [ ] a regression test covers the change
-- [ ] `CHANGELOG.md` updated
-- [ ] docs updated if behaviour or a security claim changed (`docs/threat-model-laptop.md`)
+- [ ] user-visible changes are described above (release notes are written at release time; don't edit `CHANGELOG.md`)
+- [ ] docs updated if behaviour or a security claim changed (`docs/threat-model-laptop.md`,
+      `docs/threat-model-server.md`)
 - [ ] every commit is signed off (`git commit -s`, see `CONTRIBUTING.md`)
 
 ## Security invariants
@@ -15,7 +16,7 @@
 - [ ] no verification code is shipped inside a bundle
 
 ## Evidence format
-- [ ] this change does not touch the v1 evidence format (`core.sig_message`, `ledger.make_record`, the v1
-      schema, how the verifier treats existing bundles)
-- [ ] or, if it does: the issue explicitly asks for it, existing bundles (including `docs/sample/`) still
-      verify, and the change is described under "Unreleased" in `CHANGELOG.md`
+- [ ] this change does not touch the frozen formats: v1 (`core.sig_message`, `ledger.make_record`, the v1 schema, how
+      the verifier treats existing bundles) or the published v2 format
+- [ ] or, if it does: the issue explicitly asks for it, existing bundles (including `docs/sample/` and
+      `tests/fixtures/`) still verify, and the change is called out above

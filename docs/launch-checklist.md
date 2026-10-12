@@ -26,7 +26,7 @@ The CI `test` job installs `.[dev]` only: no `psycopg`, and no `initdb` on `PATH
 
 | Item | Proved by | How to run | State |
 |---|---|---|---|
-| Signed release with SBOM and provenance | [RELEASING.md](RELEASING.md) (target `release.yml` and `supply-chain.yml`); `scripts/release/build.py`. The `release.yml` on `main` builds and publishes to PyPI without attestations, SBOMs, npm or the image | `make release-dry-run` | owner action (apply the target workflows; create the `release`, `pypi` and `npm` environments) |
+| Signed release with SBOM and provenance | [RELEASING.md](RELEASING.md) (`release.yml`, `supply-chain.yml`); `scripts/release/build.py`. 1.0.0 shipped to PyPI with provenance and SBOMs; its npm job failed | `make release-dry-run` | PyPI: done. npm: owner action (fix the `npm` environment or token, then publish) |
 | `verify-release.sh` | `scripts/release/verify-release.sh`; `tests/test_release.py` (offline `--dry-run` checks: sums, SBOM, unlisted files) | `python -m pytest tests/test_release.py`; `TRACEKIT_RELEASE=1` adds the reproducible build and a full dry run | `--dry-run`: done. Attestation checks: owner action (need a release from the target workflow) |
 | Security checklist | [security-checklist.md](security-checklist.md); `tests/test_security_checklist.py` (every HTTP handler listed and probed) | `python -m pytest tests/test_security_checklist.py` | done |
 | Threat models | [threat-model-laptop.md](threat-model-laptop.md), [threat-model-server.md](threat-model-server.md); links checked by `tests/test_docs.py` | `python -m pytest tests/test_docs.py` | done |
