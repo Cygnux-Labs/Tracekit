@@ -2,9 +2,10 @@
 
 Frozen: a change to any schema here is a new RPC_VERSION. Version 16 (all of Tracekit 1.2) adds register_run's optional
 `parent`, close_run's optional `last_client_seq` (and a gateway's `caller`), `tailer_heartbeat`, args digests on tool uses
-the provider ran, and agent approvers (approval_review, approval_revoke, approval_agents, approval_decide's `escalate`
-and `asserted`, approval_list's filters); a signer serves RPC_MIN..RPC_VERSION (its `hello` `proto`), so a version 15
-client keeps working unchanged.
+the provider ran, agent approvers (approval_review, approval_revoke, approval_agents, approval_decide's `escalate` and
+`asserted`, approval_list's filters) and containment's operator calls (incident_list, incident_show, incident_resolve,
+run_hold, run_quarantine, run_resume, response_pause, response_resume, suspend, unsuspend; decide's `incident_id`); a
+signer serves RPC_MIN..RPC_VERSION (its `hello` `proto`), so a version 15 client keeps working unchanged.
 The caller's identity comes from the transport (peer credentials, token, mTLS), never from a request field. Calls that change state carry `request_id`, scoped to that
 identity: a retry with the same id and payload gets the original response, the same id with another payload is refused
 with `conflict`, and the same id from another identity is a different request.
@@ -39,6 +40,7 @@ ERROR_CODES = [
     "args_mismatch",        # complete with arguments other than the decided ones
     "unknown_approval",
     "approval_not_pending",
+    "unknown_incident",     # an operator call naming an incident its tenant does not have
 ]
 
 # end of string in both Python and ECMAScript (Python's `$` also matches before a trailing newline)
@@ -241,9 +243,31 @@ REQUESTS = {
     "content_erase": _obj(["request_id", "run_id"], request_id=ID, run_id=ID, reason=REASON),
     # a `tracekit why` finding about the run a findings run (register_run `analyzes`) analyses: a why.finding record
     "why_finding": _obj(_RUN_REQ + ["finding"], **_RUN, finding=FINDING),
+    # containment (docs/incidents.md): operator calls, `authorize` grants and never defaults, each in the caller's tenant
+    "incident_list": _obj([], state={"enum": ["open", "resolved"]}, cursor=ID,
+                          limit={"type": "integer", "minimum": 1, "maximum": 1000}),
+    "incident_show": _obj(["incident_id"], incident_id=ID),
+    # a person who is not the incident's runs' owner, principal or requester; break-glass with a reason
+    "incident_resolve": _obj(["request_id", "incident_id"], request_id=ID, incident_id=ID, reason=REASON),
+    **{m: _obj(["request_id", "run_id"], request_id=ID, run_id=ID, reason=REASON)
+       for m in ("run_hold", "run_quarantine", "run_resume")},
+    # pause the tenant's response engine on this signer (detection keeps recording), or resume it
+    **{m: _obj(["request_id"], request_id=ID, reason=REASON) for m in ("response_pause", "response_resume")},
+    # the shared suspension list: `identity` (scheme:subject, or a prefix ending in :* or /*) is refused every call
+    **{m: _obj(["request_id", "identity"], request_id=ID, identity=IDENTITY, reason=REASON)
+       for m in ("suspend", "unsuspend")},
 }
 
 _FAIL_MODES = {"type": "object", "additionalProperties": {"enum": ["open", "closed"]}}
+_INCIDENT = _obj(["incident_id", "run_id", "ts", "trigger", "rule_ids", "scope", "mode", "actions", "state", "runs"],
+                 incident_id=ID, run_id=ID, ts=_str(40), trigger=_str(64),
+                 rule_ids={"type": "array", "maxItems": 1024, "items": _str(256)},
+                 scope=_obj(["kind", "id"], kind={"enum": ["run", "session", "owner", "principal"]}, id=_str(256)),
+                 mode={"enum": ["shadow", "enforce"]}, actions={"type": "array", "maxItems": 4, "items": _str(16)},
+                 state={"enum": ["open", "resolved"]},
+                 # each run the incident held or quarantined, as it stands now
+                 runs={"type": "array", "maxItems": 4096, "items": _obj(
+                     ["run_id", "state"], run_id=ID, state={"enum": ["held", "quarantined", "resumed", "final"]})})
 RESPONSES = {
     "register_run": _obj(["run_id", "run_token", "tenant", "tenant_attested", "principal_attested"],
                          run_id=ID, run_token=TOKEN, tenant=ID, tenant_attested={"type": "boolean"},
@@ -254,7 +278,8 @@ RESPONSES = {
                    rule_ids=RULE_IDS, reason=REASON, run_seq=SEQ, expires_at=_str(40),
                    # the policy lists the tool as untrusted: `complete` should carry the result itself (the signer
                    # redacts it, commits to it and indexes its values for provenance), not a digest of it
-                   send_result={"const": True}),
+                   send_result={"const": True},
+                   incident_id=ID),   # the call is held (ask: a person answers) or quarantined (deny) by this incident
     "complete": _SEQ_ONLY,
     "observe": _SEQ_ONLY,
     "state_write": _SEQ_ONLY,
@@ -322,6 +347,16 @@ RESPONSES = {
         oneOf=[{"required": ["content", "salt"]}, {"required": ["content", "redacted"]}, {"required": ["state"]}])}),
     "content_erase": _SEQ_ONLY,   # of the content.erased record, in the tenant's signer run (tracekit/signer)
     "why_finding": _SEQ_ONLY,
+    "incident_list": _obj(["incidents", "next_cursor"], incidents={"type": "array", "maxItems": 1000, "items": _INCIDENT},
+                          next_cursor={"oneOf": [ID, {"type": "null"}]}),
+    "incident_show": _INCIDENT,
+    "incident_resolve": _obj(["incident_id", "resumed"], incident_id=ID,
+                             resumed={"type": "array", "maxItems": 4096, "items": ID}),
+    **{m: _obj(["run_id", "incident_id", "state"], run_id=ID, incident_id=ID,
+               state={"enum": ["held", "quarantined", "resumed"]}) for m in ("run_hold", "run_quarantine", "run_resume")},
+    **{m: _obj(["enabled"], enabled={"type": "boolean"}) for m in ("response_pause", "response_resume")},
+    **{m: _obj(["identity", "state"], identity=IDENTITY, state={"enum": ["suspended", "lifted"]})
+       for m in ("suspend", "unsuspend")},
 }
 
 ERROR = _obj(["error"], error=_obj(["code", "message"], code={"enum": ERROR_CODES}, message=REASON,
@@ -380,3 +415,13 @@ class SignerAPI(Protocol):
     def content_get(self, req: dict) -> dict: ...
     def content_erase(self, req: dict) -> dict: ...
     def why_finding(self, req: dict) -> dict: ...
+    def incident_list(self, req: dict) -> dict: ...
+    def incident_show(self, req: dict) -> dict: ...
+    def incident_resolve(self, req: dict) -> dict: ...
+    def run_hold(self, req: dict) -> dict: ...
+    def run_quarantine(self, req: dict) -> dict: ...
+    def run_resume(self, req: dict) -> dict: ...
+    def response_pause(self, req: dict) -> dict: ...
+    def response_resume(self, req: dict) -> dict: ...
+    def suspend(self, req: dict) -> dict: ...
+    def unsuspend(self, req: dict) -> dict: ...

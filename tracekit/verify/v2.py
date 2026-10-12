@@ -44,6 +44,19 @@ External decisions: policy.external records (other systems' decisions, imported 
 by whether the signer verified the system's signature; each signer-written capture.gap `decision_mismatch` (the
 import disagreed with the signer's decision or tool, or named a call the signer never decided) makes the
 `external decisions` line a warning.
+Incidents (docs/incidents.md): every record an incident cites that is in the bundle exists and is one that fires a
+trigger; an incident of scope run whose cites are all in its run is recomputed from the run's records under the
+compiled policy the bundle carries for the run's policy_hash (policies/<hex>.json, whose SHA-256 is that hash): one
+that does not follow from them fails `incidents`, as does a missing policy; a detector_unavailable incident cites a
+decision whose detection state was unavailable. Others (operator incidents, other scopes, cites in other runs, a run
+under several policies) are counted signer-asserted; a run.held of an incident opened in another run is its pointer.
+Each response must have been honoured: an enforced hold or quarantine of scope run in its own run is followed by its
+run.held or run.quarantined before the run's next decision (unless the run is quarantined already); a run may be held by
+several incidents, each until its run.resumed; no allow and no ask without the id of an incident holding the run while
+held, only deny while quarantined, a held call approved only by a person (never an agent, never self-approved) with
+the incident id, no consume under a hold but of an approval asked under an incident still holding the run and none
+under a quarantine, and no tool.result while held or quarantined but of a call in flight when the response took effect
+or, held, one consumed with such an approval.
 Coverage: a run.final that carries `coverage` (the capture layers that reported, calls reconciled, reconcile.* records
 by kind) gives a `coverage` line; unreconciled calls make it a warning, so `--strict` exits 3 on them.
 Gaps: every other signer-written capture.gap in a run (unless its kind is in INFO_GAPS), approval.binding_mismatch and
@@ -538,6 +551,7 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
                    f"{str(r['event']['data'].get('detail'))[:200]}" for r in every
                    if str(r["event"].get("type")).startswith("reconcile.")][:20], warn=True)
     _findings(rep, runs)
+    _incidents(rep, runs, files)
     vault = collections.Counter(r["event"]["type"] for r in every if r["event"].get("type") in ("content.accessed",
                                                                                               "content.erased"))
     if vault:   # signer records of the content vault (docs/privacy.md): who read or erased retained content
@@ -602,6 +616,142 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
                   [f"seq {e['seq']}: {e['data']['decision']} {e['data'].get('approval_id')} by "
                    f"{e['data']['approver'][:256]}: {str(e['data'].get('reason'))[:200]!r}" for e in glass][:20],
                   warn=True)
+
+
+CONTAINMENT = ("incident.opened", "incident.updated", "run.held", "run.quarantined", "run.resumed")
+FIRES = ("policy.decision", "approval.consumed", "capture.gap", "trace.tamper", "refusal.summary")
+RECOMPUTED = ("sequence", "limit", "denied_calls", "provenance", "executed_against_policy", "class_mismatch")
+
+
+def _detector(files, h, problems, unbundled):
+    """A detect.Detector of the bundled compiled policy whose policy_hash is `h`, or None: `h` goes to `unbundled`
+    when the bundle lacks the policy (its incidents stay signer-asserted), to `problems` when its bytes don't match."""
+    from tracekit.signer import detect
+    data = files.get(f"policies/{str(h)[7:]}.json")
+    if data is None:
+        unbundled.add(str(h)[:80])
+        return None
+    if "sha256:" + hashlib.sha256(data).hexdigest() != h:
+        problems.append(f"policy {str(h)[:80]} in the bundle does not hash to its name")
+        return None
+    return detect.Detector(detect.Rules(loads_strict(data)))
+
+
+def _incidents(rep, runs, files):
+    """The `incidents` line: cited records, incidents recomputed from their run, responses honoured (module
+    docstring)."""
+    from tracekit.signer import detect
+    by_run = {rs[0]["event"].get("run_id"): [r["event"] for r in rs] for rs in runs.values()}
+    if not any(e.get("type") in CONTAINMENT for es in by_run.values() for e in es):
+        return
+    problems, checked, pointers, unbundled = [], 0, set(), set()
+    opened = {e["data"]["incident_id"]: e for es in by_run.values() for e in es if e["type"] == "incident.opened"}
+    for rid, events in by_run.items():
+        mine = []
+        for e in events:
+            d = e["data"]
+            if e["type"] not in ("incident.opened", "incident.updated"):
+                continue
+            for c in d["cites"]:
+                cited = by_run.get(c["run_id"])
+                if cited is not None and (c["run_seq"] >= len(cited) or cited[c["run_seq"]]["type"] not in FIRES):
+                    problems.append(f"seq {e['seq']}: incident {d['incident_id']} cites {c['run_id'][:128]} run_seq "
+                                    f"{c['run_seq']}, which is not a record that fires a trigger")
+            if e["type"] == "incident.updated":
+                continue
+            if d["trigger"] == "detector_unavailable":
+                c = d["cites"][0] if len(d["cites"]) == 1 else {}
+                cited = by_run.get(c.get("run_id"), [])
+                ok = c.get("run_seq", len(cited)) < len(cited) and cited[c["run_seq"]]["type"] == "policy.decision" \
+                    and cited[c["run_seq"]]["data"].get("detect", {}).get("state") == "unavailable"
+                checked += ok
+                if not ok:
+                    problems.append(f"seq {e['seq']}: incident {d['incident_id']} (detector_unavailable) cites no "
+                                    "decision whose detection state was unavailable")
+            elif d["scope"]["kind"] == "run" and d["trigger"] in RECOMPUTED and \
+                    all(c["run_id"] == rid for c in d["cites"]):
+                mine.append(e)
+        hashes = {e["data"].get("policy_hash") for e in events if e["type"] == "policy.decision"}
+        det = mine and len(hashes) == 1 and _detector(files, next(iter(hashes)), problems, unbundled)
+        if det:
+            st, expected = detect.new(det.engine.policy_hash), []
+            for e in events:
+                if any(e is x for x in mine):
+                    d = e["data"]
+                    hit = next((x for x in expected if (x["trigger"], x["rule_ids"], x["cites"]) ==
+                                (d["trigger"], d["rule_ids"], d["cites"])), None)
+                    if hit:
+                        expected.remove(hit)
+                        checked += 1
+                    else:
+                        problems.append(f"seq {e['seq']}: incident {d['incident_id']} ({d['trigger']}) does not follow "
+                                        f"from the run's records under policy {det.engine.policy_hash[:80]}")
+                expected += [d for t, d in det.observe(detect.Plain, st, e)[1] if t == "incident.opened"]
+        problems += _honoured(events, pointers)
+    n = len(opened) + len(pointers - opened.keys())
+    rep.check("incidents", not problems, f"{n} incident(s): {checked} checked against the bundle, {n - checked} "
+                                         "signer-asserted (operator, cross-run, under several policies, or under "
+                                         "a policy not in the bundle)", problems[:20])
+    if unbundled:
+        rep.check("incident policies", False, f"{len(unbundled)} cited policy(ies) not in the bundle: their incidents "
+                  "are signer-asserted, not recomputed (export the run with the signer's config, which bundles the "
+                  "policies its records cite)", sorted(unbundled)[:20], warn=True)
+
+
+def _honoured(events, pointers):
+    """The problems of one run's records with the holds and quarantines they record; adds the incident ids of its
+    run.held and run.quarantined records to `pointers`."""
+    problems, held, quarantined, flight, asked, consumed, due = [], [], None, set(), {}, set(), {}
+    for e in events:
+        t, d, where = e["type"], e["data"], f"seq {e['seq']}"
+        on = quarantined or " and ".join(held)
+        if t == "policy.decision" and due and not quarantined:   # an enforced response is written before the next call
+            problems += [f"seq {seq}: incident {i} enforces {a} on this run, which no run.held or run.quarantined "
+                         "follows" for i, (seq, a) in due.items()]
+            due.clear()
+        if t == "incident.opened" and d["scope"] == {"kind": "run", "id": e["run_id"][:256]} and \
+                {"hold", "quarantine"} & set(d["actions"]):
+            due[d["incident_id"]] = (e["seq"], "quarantine" if "quarantine" in d["actions"] else "hold")
+        elif t in ("run.held", "run.quarantined"):
+            pointers.add(d["incident_id"])
+            due.pop(d["incident_id"], None)
+            flight |= {x["decision_id"] for x in d.get("in_flight", ())}
+            if t == "run.quarantined":
+                quarantined, held = d["incident_id"], []
+            elif not quarantined and d["incident_id"] not in held:
+                held.append(d["incident_id"])
+        elif t == "run.resumed":
+            held = [i for i in held if i != d["incident_id"]]
+            if sorted(d.get("held_by", held)) != sorted(held):
+                problems.append(f"{where}: run.resumed says {' and '.join(d['held_by']) or 'no incident'} still "
+                                f"holds the run, its records {' and '.join(held) or 'none'}")
+        elif t == "policy.decision" and on and (d["decision"] != "deny" if quarantined else d["decision"] != "deny" and (
+                d["decision"] != "ask" or d.get("incident_id") not in held)):
+            problems.append(f"{where}: {d['decision']} while the run is {'quarantined' if quarantined else 'held'} by "
+                            f"incident {on}")
+        elif t == "approval.request":
+            asked[d["approval_id"]] = d.get("incident_id")
+            if quarantined or held and d.get("incident_id") not in held:
+                problems.append(f"{where}: an approval asked while the run is {'quarantined' if quarantined else 'held'}"
+                                f" by incident {on}, not as its held call")
+        elif t == "approval" and asked.get(d.get("approval_id")) and d["decision"] == "approve" and (
+                d.get("approver_kind") == "agent" or d.get("self_approved") or "person" not in d and
+                "person" not in d.get("approver_identity", {}) or d.get("incident_id") != asked[d["approval_id"]]):
+            problems.append(f"{where}: a held call approved by other than a person, or without its incident id")
+        elif t == "approval.consumed":
+            if quarantined or held and asked.get(d["approval_id"]) not in held:
+                problems.append(f"{where}: an approval consumed while the run is "
+                                f"{'quarantined' if quarantined else 'held'} by incident {on}")
+            elif asked.get(d["approval_id"]):
+                consumed.add(e.get("tool_call_id"))
+        elif t == "tool.result" and on and d.get("decision_id") not in flight and (
+                quarantined or e.get("tool_call_id") not in consumed):
+            problems.append(f"{where}: a result while the run is {'quarantined' if quarantined else 'held'} by incident "
+                            f"{on}, of a call neither in flight then nor approved by a person for it")
+    if not quarantined:
+        problems += [f"seq {seq}: incident {i} enforces {a} on this run, which no run.held or run.quarantined follows"
+                     for i, (seq, a) in due.items()]
+    return problems
 
 
 def _about(records):

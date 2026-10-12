@@ -715,7 +715,10 @@ FINDING = {"target": "tool=pay", "intervention": "i", "n": 0, "p_with": 0, "p_wi
            "interval": [-1, 1], "verdict": "inconclusive", "replay_runs": [], "models": [], "rung": 1, "off_tape": 0,
            "investigation": "i", "looks": 1, "family": 1, "min_effect": 0.2, "applied": True, "stopped": "budget"}
 INCIDENT = {"incident_id": "inc-1", "trigger": "sequence", "rule_ids": ["Q"], "scope": {"kind": "run", "id": "run-a"},
-            "cites": [{"run_id": "run-a", "run_seq": 0}], "mode": "shadow", "actions": [], "would": ["notify"]}
+            "cites": [{"run_id": "run-a", "run_seq": 1}], "mode": "shadow", "actions": [], "would": ["notify"]}
+FIRED = decision(detect={"sequences": [{"id": "Q", "step": 1}], "limits": [], "state": "complete"})   # run_seq 1
+HELD = ("run.held", {"incident_id": "inc-1", "scope": {"kind": "run", "id": "run-a"}, "by": "signer", "reason": "r"},
+        "run-a")
 # per VERSIONS entry ("type" or "type.field"), records that use it
 ENTRIES = {
     "input.observed": [registered(), ("input.observed", OBSERVED, "run-a")],
@@ -739,9 +742,22 @@ ENTRIES = {
     "run.child": [registered(), ("run.child", {"run_id": "run-x"}, "run-a")],
     "policy.decision.detect": [registered(), decision(detect={"sequences": [{"id": "Q", "step": 1}], "limits": [],
                                                               "state": "complete"})],
-    "incident.opened": [registered(), ("incident.opened", INCIDENT, "run-a")],
-    "incident.updated": [registered(), ("incident.updated", {"incident_id": "inc-1", "cites": [
-        {"run_id": "run-a", "run_seq": 0}]}, "run-a")],
+    "incident.opened": [registered(), FIRED, ("incident.opened", INCIDENT, "run-a")],
+    "incident.updated": [registered(), FIRED, ("incident.updated", {"incident_id": "inc-1", "cites": [
+        {"run_id": "run-a", "run_seq": 1}]}, "run-a")],
+    "run.held": [registered(), HELD],
+    "run.quarantined": [registered(), ("run.quarantined", dict(HELD[1]), "run-a")],
+    "run.resumed": [registered(), HELD, ("run.resumed", {"incident_id": "inc-1", "by": "uid:1", "person": "ana",
+                                                         "held_by": []}, "run-a")],
+    "incident.resolved": [registered(), ("incident.resolved", {"incident_id": "inc-1", "by": "uid:1", "person": "ana"},
+                                         "run-a")],
+    "incident.response": [registered(), ("incident.response", {"enabled": False, "by": "uid:1"}, "run-a")],
+    "identity.suspension": [registered(), ("identity.suspension", {"identity": "token:svc", "state": "enforced",
+                                                                    "by": "signer"}, "run-a")],
+    "policy.decision.incident_id": [registered(), decision(incident_id="inc-1")],
+    "approval.request.incident_id": [registered(), ("approval.request", dict(APPROVAL, incident_id="inc-1"), "run-a")],
+    "approval.incident_id": [registered(), answered(incident_id="inc-1")],
+    "run.closing.reason=quarantine": [registered(), ("run.closing", {"reason": "quarantine"}, "run-a")],
     "incident.capped": [registered(), ("incident.capped", {"cap": "run", "max": 100, "trigger": "sequence",
                                                            "reason": "cap"}, "run-a")],
     "approval.escalated": [registered(), ("approval.escalated", {"approval_id": "apr-1", "by": "signer",

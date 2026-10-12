@@ -67,6 +67,7 @@ eval:
 	$(PY) eval/e16_doctor.py
 	$(PY) eval/e17_policy_corpus.py
 	$(PY) eval/e17_detection.py
+	$(PY) eval/e17_containment.py
 	$(PY) eval/e18_agent_approvers.py
 	if [ "$$(uname)" = Linux ]; then $(PY) eval/e9_signer_perf.py --quick; fi
 

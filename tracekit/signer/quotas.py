@@ -63,9 +63,9 @@ class Quotas:
             raise RPCError("quota_exceeded", f"{name} limit {getattr(self.limits, name)}", retry_after_ms=COUNT_RETRY_MS)
 
     @contextlib.contextmanager
-    def wait_slot(self, identity):
-        """Hold one of the identity's concurrent_waits slots for the duration of an approval_wait."""
-        key = (identity.scheme, identity.subject)
+    def wait_slot(self, key):
+        """Hold one of `key`'s concurrent_waits slots (an identity's (scheme, subject), or a held run's) for the
+        duration of an approval_wait."""
         with self._lock:
             n = self._waits.get(key, 0)
             if n >= self.limits.concurrent_waits:
