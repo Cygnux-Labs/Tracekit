@@ -6,7 +6,7 @@ holds the actions' credentials and decides, runs and records each call in the si
     actions = ex.actions("https://executor.internal:8090", run, headers={"authorization": "Bearer ..."})
     tools = [ex.openai_agents(a) for a in actions]               # agents.FunctionTool
     tools = [ex.langchain(a) for a in actions]                   # langchain_core StructuredTool
-    server = ex.claude_agent_sdk(actions)                        # ClaudeAgentOptions(mcp_servers={"executor": server})
+    server = ex.claude_agent_sdk(actions)                        # ClaudeAgentOptions(mcp_servers={ex.SERVER: server})
 
 `headers` authenticate the agent to the executor (its `http.authenticators`: a bearer token, a service-account
 token); `context` is an ssl.SSLContext for its CA and a client certificate. The Tracekit adapters leave these tools to

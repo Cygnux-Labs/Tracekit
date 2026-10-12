@@ -15,6 +15,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import gc
 import threading
 import time
 import unittest
@@ -66,6 +67,19 @@ class DevSigner(unittest.TestCase):
         first, second = self.python(SAY_PID), self.python(SAY_PID)
         self.assertEqual(first.returncode, 0, first.stderr)
         self.assertEqual(first.stdout, second.stdout)
+
+    def test_a_client_dropped_without_close_leaves_no_threads_or_connections(self):
+        Client().status()   # the dev signer is up
+        gc.collect()
+        before = threading.active_count()
+        for i in range(30):   # the documented `with Client().run(...)`, once per conversation
+            with Client().run(agent="a") as run:
+                run.decide(f"c{i}", "Bash", {"command": "ls"})
+        gc.collect()
+        deadline = time.monotonic() + 5
+        while threading.active_count() > before + 2 and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertLessEqual(threading.active_count(), before + 2)
 
     def test_recovers_after_sigkill(self):
         c = Client()

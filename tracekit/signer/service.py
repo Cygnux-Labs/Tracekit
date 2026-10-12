@@ -57,7 +57,7 @@ signer.yaml:
                                              # executor and the MCP gateway (the coverage matrix's enforced;
                                              # docs/egress.md#posture)
     observe_grace_s: 120                     # how long a closing run an egress observer covers waits for its last reports
-    fail_modes: {default: closed, read: open}   # tool class -> fail mode, recorded and returned by register_run
+    fail_modes: {default: closed, fs: open}     # tool class -> fail mode, recorded and returned by register_run
     grace_s: 5                               # reconciliation window between run.closing and run.final
     gateway_wait_s: 600                      # past grace_s, how long a closing run waits for the results of calls a
                                              # gateway holds (each one still open then: a held_call_unresolved gap)

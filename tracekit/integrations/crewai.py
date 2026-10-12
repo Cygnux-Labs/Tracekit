@@ -47,6 +47,8 @@ def hooks(run):
                 state = run.call("approval_wait", approval_id=aid, timeout_ms=WAIT_MS)["state"]
                 if state != "approved":
                     st["blocked"] = f"Tool call held by Tracekit policy ({why}) and not approved: {state}"
+                    if state == "requested":   # unanswered: withdrawn, so no one approves a call that is gone
+                        run.call("approval_abandon", approval_id=aid, reason="no answer within the hook's wait")
                     return False
             c = run.approval_consume(st["id"], tool, args, approval_id_hint=aid)
             if not c["ok"]:

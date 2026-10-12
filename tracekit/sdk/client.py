@@ -50,6 +50,8 @@ from tracekit.signer.rpc_schema import RPC_VERSION, RPCError
 from tracekit.transport import loopback, parse_frame, read_frame, tcp_dev, write_frame
 
 CONNECT_TIMEOUT_S = 2
+KEEP_CALLS = 4096   # decided calls a RunHandle remembers for their `complete`, the oldest forgotten first
+KEEP_RUNS = 65536   # runs a Client keeps an event counter for, the least recently used forgotten first
 RETRIES = 3
 _EVENT_METHODS = {m for m, s in rpc_schema.REQUESTS.items() if "client_seq" in s["properties"]}
 _LONG_POLLS = {m for m, s in rpc_schema.REQUESTS.items() if "timeout_ms" in s["properties"]}
@@ -280,6 +282,9 @@ class Client:
         self._https = _Https(self.signer, token_file) if http else None
         self._lock = threading.Lock()
         self._pid = self._conn = None
+        # run_id -> its next client_seq, the least recently used first (a long poll answered run_closed may come
+        # before any event)
+        self._seqs = collections.OrderedDict()
         self._order = {}   # run_id -> the lock its event calls hold from taking their client_seq to their answer
         _clients.add(self)
 
@@ -366,7 +371,7 @@ class Client:
         if self._pid != os.getpid():   # new client, or a forked child: its own stream and connection
             # lean: one counter and order lock per run until it is closed or refused as closed; a run abandoned
             # without either keeps its entries for the client's life
-            self._pid, self._conn, self.stream, self._seqs = os.getpid(), None, _new_id(), {}
+            self._pid, self._conn, self.stream, self._seqs = os.getpid(), None, _new_id(), collections.OrderedDict()
         run_id = req.get("run_id")
         fresh = method in _EVENT_METHODS and "client_seq" not in req
         if fresh:
@@ -379,6 +384,11 @@ class Client:
         data = _encode(method, req)
         if fresh:
             self._seqs[run_id] = req["client_seq"] + 1
+            self._seqs.move_to_end(run_id)
+            # lean: a service serving many runs (an executor, an MCP gateway), forged run ids included, keeps
+            # KEEP_RUNS of them; a run idle while that many others were used restarts its count and reads as a gap
+            if len(self._seqs) > KEEP_RUNS:
+                self._order.pop(self._seqs.popitem(last=False)[0], None)
         connect()
         if method == "close_run":   # no events after close: drop the counter
             self._seqs.pop(run_id, None)
@@ -426,11 +436,15 @@ class Client:
 
     def _connect(self):
         conn = _Conn(*self._dial())
-        threading.Thread(target=self._read, args=(conn,), daemon=True, name="tracekit-client").start()
+        # the threads hold the client weakly: a Client dropped without close() is collected, and its connection with it
+        threading.Thread(target=Client._read, args=(weakref.ref(self), conn), daemon=True,
+                         name="tracekit-client").start()
         threading.Thread(target=conn.write, daemon=True, name="tracekit-client-write").start()
+        weakref.finalize(self, conn.drop)
         return conn
 
-    def _read(self, conn):
+    @staticmethod
+    def _read(ref, conn):
         try:
             while True:
                 frame = read_frame(conn.rfile)
@@ -439,9 +453,10 @@ class Client:
                 conn.pending.popleft().set_result(frame)
         except (OSError, RPCError, IndexError):   # IndexError: an answer nobody asked for
             pass
-        with self._lock:
-            if self._conn is conn:
-                self._conn = None
+        client = ref()
+        with client._lock if client else contextlib.nullcontext():
+            if client and client._conn is conn:
+                client._conn = None
             conn.out.put(None)   # the writer stops
             conn.sock.close()
             while conn.pending:
@@ -568,7 +583,15 @@ class RunHandle:
             digest = event_hash({"tool": tool, "args": loads_strict(args) if isinstance(args, str) else args})
         except (StrictJSONError, rfc8785.CanonicalizationError):
             return d   # the signer has no args digest to bind either; complete needs explicit fields
+        if d["decision"] == "deny":   # never completed: nothing for `complete` to name
+            return d
         self._decided[tool_call_id] = {"decision_id": d["decision_id"], "args_digest": digest}
+        # lean: a call refused after its decide (not approved, a refused consume) keeps its entry until KEEP_CALLS
+        # newer ones push it out; forget it there if adapters must hold none
+        while len(self._decided) > KEEP_CALLS:
+            old = next(iter(self._decided))
+            del self._decided[old]
+            self._untrusted.discard(old)
         if d.get("send_result"):
             self._untrusted.add(tool_call_id)
         return d

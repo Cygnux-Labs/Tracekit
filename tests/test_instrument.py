@@ -3,6 +3,7 @@ each installed framework, against a dev signer it starts, then `tracekit last`. 
 agents from the built wheel in a fresh venv."""
 import asyncio
 import contextlib
+import gc
 import json
 import os
 import shutil
@@ -12,6 +13,7 @@ import tempfile
 import types
 import unittest
 import warnings
+import weakref
 from importlib import metadata
 from unittest import mock
 
@@ -180,6 +182,26 @@ class TestInstrument(unittest.TestCase):
         self.assertIs(seen[0], seen[2])
         self.assertIsNot(seen[0], seen[1])
         self.assertEqual((seen[0].stream, seen[0]._seq), (seen[1].stream, seen[1]._seq))
+
+    def test_mcp_sessions_are_freed_once_dropped(self):
+        if not installed(AGENTS["mcp"][0]):
+            self.skipTest("mcp not installed")
+        from mcp import ClientSession
+
+        async def call_tool(gate, *a, **kw):
+            pass
+        run = mock.Mock(registered={"run_id": "r", "run_token": "t"})
+        with mock.patch.object(ClientSession, "call_tool", ClientSession.call_tool), \
+                mock.patch("tracekit.integrations.mcp.TracekitSession.call_tool", call_tool):
+            autowire._mcp(run)
+            refs = []
+            for _ in range(50):   # a session per request, as a server opens them
+                s = object.__new__(ClientSession)
+                asyncio.run(s.call_tool("t", {}))
+                refs.append(weakref.ref(s))
+                del s
+            gc.collect()
+        self.assertEqual([r for r in refs if r() is not None], [])
 
     def test_browser_use_tools_are_gated_on_one_stream(self):
         """Every Tools built after instrument() (an Agent builds one) has its actions decided, all on one signer stream
