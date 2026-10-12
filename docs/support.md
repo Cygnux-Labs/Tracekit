@@ -42,6 +42,6 @@ experimental.
 | Harness binding and the transcript tailer | [quickstart](quickstart-v2.md#system-mode-linux-macos-experimental) |
 | Codex CLI, Cursor and Gemini CLI hooks (checked against recorded hook payloads, not the live tools) | [coding agents](coding-agents.md) |
 | CrewAI (tested against a stand-in, not the real library) and Browser Use (its real-library contract runs nightly only) | [CrewAI](integrations/crewai.md), [Browser Use](integrations/browser-use.md) |
-| The TypeScript SDK client and its Vercel AI SDK integration (its first npm release is 1.2.0rc1) | [TypeScript SDK](../sdk/typescript/README.md) |
+| The TypeScript SDK client and its Vercel AI SDK integration (not on npm yet: installed from the release's `.tgz`) | [TypeScript SDK](../sdk/typescript/README.md) |
 | `contrib/` packages | [contrib](../contrib) |
 | The v1 signer path: `tracekitd`, `tracekit init` without `--v2`, `tracekit observe`, v1 adapters. Verifying v1 bundles stays stable. | [coding agents](coding-agents.md), [signing](signing.md) |
