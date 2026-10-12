@@ -8,7 +8,8 @@ signer; else $TRACEKIT_SIGNER), closes it when the process exits, and wires ever
 
 * OpenAI Agents SDK: the tools of every Agent built from now on are gated (TracekitAgents.tool);
 * LangGraph and LangChain: every ToolNode built from now on (create_agent builds one) gates its calls with
-  TracekitMiddleware, innermost, after any middleware's own wrap_tool_call;
+  TracekitMiddleware, innermost, after any middleware's own wrap_tool_call; its `ask` pauses whatever the node's
+  `handle_tool_errors`, and through `.with_fallbacks()`;
 * Claude Agent SDK: every ClaudeAgentOptions built from now on gets the PreToolUse and PostToolUse hooks
   (tracekit_hooks);
 * MCP client: every ClientSession.call_tool goes through TracekitSession;
@@ -178,7 +179,7 @@ def _openai_agents(run):
 def _langgraph(run):
     from langgraph.prebuilt.tool_node import ToolNode
 
-    from .integrations.langchain import TracekitMiddleware
+    from .integrations.langchain import TracekitMiddleware, pausing, with_fallbacks
     gate = TracekitMiddleware(run.client, run.run_id, run.run_token, run.registered.get("fail_modes"))
     init = ToolNode.__init__
 
@@ -191,8 +192,11 @@ def _langgraph(run):
             # no async wrapper of its own: ToolNode runs the sync one, gate included, for async calls too
             awrap_tool_call = (gate.awrap_tool_call if w is None else None) if aw is None else (
                 lambda req, h: aw(req, lambda r: gate.awrap_tool_call(r, h)))
+            if "handle_tool_errors" in kw:   # an ask pauses whatever the node's error handling
+                kw["handle_tool_errors"] = pausing(kw["handle_tool_errors"])
         init(self, tools, *a, wrap_tool_call=wrap_tool_call, awrap_tool_call=awrap_tool_call, **kw)
     ToolNode.__init__ = gated
+    ToolNode.with_fallbacks = with_fallbacks   # and through the fallbacks the node is wrapped in
 
 
 def _claude_agent_sdk(run):

@@ -17,6 +17,9 @@ timeout: register a new run for a long-idle agent) refuses the call. A failure t
 the tool's result as it was. Put TracekitMiddleware last in `middleware=`: a middleware after it could hand the tool a
 call other than the one decided.
 A graph built on `ToolNode` without `create_agent` uses `tracekit_tool_node(tools, signer, run)`, the same gate.
+Its `ask` pauses whatever the node's `handle_tool_errors`, and through `.with_fallbacks()`: neither hands the pause to
+the error handling or the fallbacks. Any other wrapper that catches the interrupt (GraphInterrupt) swallows the pause:
+the call does not run and its approval expires.
 `TracekitCheckpointer(saver, signer, run)` commits every checkpoint the saver writes to the signer (L1).
 """
 import asyncio
@@ -26,14 +29,17 @@ import itertools
 import threading
 import uuid
 import warnings
+from typing import Union
 
 from langchain.agents.middleware import AgentMiddleware
 from langchain_core.messages import ToolMessage
+from langchain_core.runnables.fallbacks import RunnableWithFallbacks
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.constants import CONFIG_KEY_CHECKPOINTER
 from langgraph.errors import GraphBubbleUp
 from langgraph.prebuilt import ToolNode
+from langgraph.prebuilt.tool_node import _handle_tool_error, _infer_handled_types
 from langgraph.types import interrupt
 
 from tracekit.format.canon import event_hash
@@ -165,11 +171,75 @@ def _executor(request):
     return bool((getattr(request.tool, "metadata", None) or {}).get(EXECUTOR))
 
 
+def pausing(flag):
+    """A ToolNode `handle_tool_errors` that handles the exceptions `flag` handles, as `flag` does, but re-raises a pause
+    (GraphBubbleUp: the gate's approval interrupt), which ToolNode turns into an error message for any `flag` but its
+    default."""
+    if not flag:
+        return flag
+    types = (flag if isinstance(flag, tuple) else (flag,) if isinstance(flag, type) else
+             _infer_handled_types(flag) if callable(flag) else (Exception,))
+
+    def handle(e):
+        if isinstance(e, GraphBubbleUp):
+            raise e
+        return _handle_tool_error(e, flag=flag)
+    handle.__annotations__ = {"e": Union[types]}   # ToolNode reads what a handler handles from its annotation
+    return handle
+
+
+class _Fallbacks(RunnableWithFallbacks):
+    """`with_fallbacks` of a gated ToolNode: a pause the node raises (GraphBubbleUp) reaches LangGraph, which
+    RunnableWithFallbacks would hand to the fallbacks as an error."""
+
+    @property
+    def runnables(self):   # one generator per invocation: `paused` is that invocation's
+        paused = []
+        yield _Pausing(self.runnable, paused)
+        if not paused:
+            yield from self.fallbacks
+
+
+class _Pausing:
+    """The node, noting a pause it raises. LangGraph runs a node with invoke or ainvoke."""
+
+    def __init__(self, node, paused):
+        self.node, self.paused = node, paused
+
+    def __getattr__(self, name):   # lean: batch and stream run the fallbacks on a pause too; LangGraph never uses them
+        return getattr(self.node, name)
+
+    def invoke(self, *a, **kw):
+        try:
+            return self.node.invoke(*a, **kw)
+        except GraphBubbleUp as e:
+            self.paused.append(e)
+            raise
+
+    async def ainvoke(self, *a, **kw):
+        try:
+            return await self.node.ainvoke(*a, **kw)
+        except GraphBubbleUp as e:
+            self.paused.append(e)
+            raise
+
+
+def with_fallbacks(self, fallbacks, **kw):
+    """Runnable.with_fallbacks for a gated ToolNode (_Fallbacks)."""
+    return _Fallbacks(runnable=self, fallbacks=fallbacks, **kw)
+
+
+class _GatedToolNode(ToolNode):
+    with_fallbacks = with_fallbacks
+
+
 def tracekit_tool_node(tools, signer, run, **kw):
     """A `ToolNode` for graphs built without `create_agent`, every call through the `TracekitMiddleware` gate. `run` is
     the signer's `register_run` response; `kw` goes to ToolNode."""
     gate = TracekitMiddleware(signer, run["run_id"], run["run_token"], run.get("fail_modes"))
-    return ToolNode(tools, wrap_tool_call=gate.wrap_tool_call, awrap_tool_call=gate.awrap_tool_call, **kw)
+    if "handle_tool_errors" in kw:
+        kw["handle_tool_errors"] = pausing(kw["handle_tool_errors"])
+    return _GatedToolNode(tools, wrap_tool_call=gate.wrap_tool_call, awrap_tool_call=gate.awrap_tool_call, **kw)
 
 
 _SERDE = JsonPlusSerializer()

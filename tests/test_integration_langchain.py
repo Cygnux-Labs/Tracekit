@@ -1,7 +1,10 @@
 """tracekit.integrations.langchain beyond the adapter contract (tests/test_contract_langchain.py): the result
-commitment, `ask` without a checkpointer, and an interrupt raised inside a tool."""
+commitment, `ask` without a checkpointer, an interrupt raised inside a tool, and an `ask` under each ToolNode error
+handling."""
+import asyncio
 import json
 import time
+import types
 import unittest
 from unittest import mock
 
@@ -13,13 +16,17 @@ try:
     from langchain.agents import create_agent
     from langchain.agents.middleware import wrap_tool_call
     from langchain_core.messages import HumanMessage, ToolMessage
+    from langchain_core.runnables import RunnableLambda
     from langchain_core.tools import tool
     from langgraph.checkpoint.memory import InMemorySaver
+    from langgraph.graph import START, MessagesState, StateGraph
+    from langgraph.prebuilt import ToolNode, tools_condition
     from langgraph.types import Command, interrupt
 
     from test_contract_langchain import TOOLS, StubModel
+    from tracekit import autowire
     from tracekit.format.canon import event_hash
-    from tracekit.integrations.langchain import TracekitMiddleware
+    from tracekit.integrations.langchain import TracekitMiddleware, tracekit_tool_node
 except ImportError:   # optional: the dev extra installs them
     HAVE_LC = False
 else:
@@ -85,6 +92,91 @@ class Middleware(unittest.TestCase):
         a.invoke(prompt("echo", text="hi"))
         [r] = self.recorded("tool.result")
         self.assertEqual(r["status"], "error")
+
+
+def handle_tool_error(state):
+    """The fallback of LangGraph's customer-support tutorial: `ToolNode(tools).with_fallbacks([RunnableLambda(
+    handle_tool_error)], exception_key="error")`."""
+    return {"messages": [ToolMessage(f"Error: {state.get('error')!r}\n please fix your mistakes.", tool_call_id=c["id"])
+                         for c in state["messages"][-1].tool_calls]}
+
+
+def tool_graph(node):
+    g = StateGraph(MessagesState)
+    g.add_node("model", lambda state: {"messages": [StubModel().invoke(state["messages"])]})
+    g.add_node("tools", node)
+    g.add_edge(START, "model")
+    g.add_conditional_edges("model", tools_condition)
+    g.add_edge("tools", "model")
+    return g.compile(checkpointer=InMemorySaver())
+
+
+ERROR_HANDLING = {"default": {}, "True": {"handle_tool_errors": True}, "a string": {"handle_tool_errors": "failed"},
+                  "a callable": {"handle_tool_errors": lambda e: f"Error: {e!r}"},
+                  "a tuple": {"handle_tool_errors": (ValueError,)}, "a type": {"handle_tool_errors": ValueError}}
+
+
+@unittest.skipUnless(HAVE_LC, "langchain>=1 / langgraph-checkpoint-sqlite not installed")
+class ErrorHandling(unittest.TestCase):
+    """An `ask` pauses the graph whatever the ToolNode's handle_tool_errors and inside with_fallbacks, wired by hand
+    or by instrument(); the tool's own errors are handled as configured."""
+
+    def setUp(self):
+        for name in ("__init__", "with_fallbacks"):   # instrument() patches ToolNode for the process
+            patcher = mock.patch.object(ToolNode, name, getattr(ToolNode, name))
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.wired = ToolNode.__init__
+
+    def nodes(self, **kw):
+        """(how, a function building the gated node): by hand, and a plain ToolNode as instrument() wires it, each on a
+        signer of its own"""
+        for how in ("by hand", "instrument()"):
+            ac.RAN.clear()
+            ToolNode.__init__ = self.wired
+            self.signer = FakeSigner(ac._rule)
+            self.run = self.signer.register_run({"request_id": "reg", "agent": {"name": "test"}})
+            if how == "by hand":
+                yield how, lambda: tracekit_tool_node(TOOLS, self.signer, self.run, **kw)
+            else:
+                autowire._langgraph(types.SimpleNamespace(client=self.signer, registered=self.run, **{
+                    k: self.run[k] for k in ("run_id", "run_token")}))
+                yield how, lambda: ToolNode(TOOLS, **kw)
+
+    def pause_and_approve(self, graph, mode="sync"):
+        run = graph.invoke if mode == "sync" else lambda v, c: asyncio.run(graph.ainvoke(v, c))
+        out = run(prompt("pay", to="a", cents=1), THREAD)
+        self.assertIn("__interrupt__", out, [m.content for m in out["messages"]])
+        self.assertEqual(ac.RAN, [])
+        aid = out["__interrupt__"][0].value["tracekit"]["approval_id"]
+        self.signer.approval_decide({"request_id": "ok-" + aid, "approval_id": aid, "decision": "approve"})
+        out = run(Command(resume={"approval_id": aid}), THREAD)
+        self.assertEqual((tool_message(out).content, ac.RAN), ("paid 1", ["pay"]))
+
+    def test_an_ask_pauses_under_every_handle_tool_errors(self):
+        for setting, kw in ERROR_HANDLING.items():
+            for mode in ("sync", "async"):
+                for how, node in self.nodes(**kw):
+                    with self.subTest(setting=setting, wired=how, mode=mode):
+                        self.pause_and_approve(tool_graph(node()), mode)
+
+    def test_an_ask_pauses_through_with_fallbacks(self):   # the tutorial's create_tool_node_with_fallback
+        for mode in ("sync", "async"):
+            for how, node in self.nodes():
+                with self.subTest(wired=how, mode=mode):
+                    fallback = node().with_fallbacks([RunnableLambda(handle_tool_error)], exception_key="error")
+                    self.pause_and_approve(tool_graph(fallback), mode)
+
+    def test_the_tools_own_errors_are_handled_as_configured(self):
+        for how, node in self.nodes(handle_tool_errors=True):
+            with self.subTest(wired=how):
+                out = tool_graph(node()).invoke(prompt("fail", why="boom"), THREAD)
+                self.assertIn("ValueError('boom')", tool_message(out).content)
+        for how, node in self.nodes():
+            with self.subTest(wired=how, fallbacks=True):
+                fallback = node().with_fallbacks([RunnableLambda(handle_tool_error)], exception_key="error")
+                out = tool_graph(fallback).invoke(prompt("fail", why="boom"), THREAD)
+                self.assertIn("please fix your mistakes", tool_message(out).content)
 
 
 class Jittery:

@@ -28,7 +28,8 @@ print(agent.invoke({"messages": [("user", "tidy up")]})["messages"][-1].content)
 
 Every `ToolNode` built after `instrument()` gates its calls, the one `create_agent` builds included, after any
 middleware's own `wrap_tool_call`. An `ask` pauses the graph with `interrupt()`, which needs a checkpointer; without one
-the call is denied. For approvals and the checkpointer commitments, wire the adapter by hand (below).
+the call is denied. The pause gets through the node's `handle_tool_errors`, whatever it is set to, and through
+`.with_fallbacks()`. For approvals and the checkpointer commitments, wire the adapter by hand (below).
 
 ## 3. See it verified
 
@@ -56,7 +57,11 @@ agent = create_agent(model, tools, checkpointer=InMemorySaver(),
 ```
 
 An ask needs a checkpointer: the graph pauses with `interrupt()` and resumes with `Command(resume={"approval_id":
-...})`. Without one the call is denied.
+...})`. Without one the call is denied. The pause gets through the node's `handle_tool_errors` (any setting) and
+through `.with_fallbacks()`, as LangGraph's customer-support tutorial wraps its ToolNodes
+(`tracekit_tool_node(tools, client, run).with_fallbacks([...], exception_key="error")`). Code of your own that catches
+exceptions around the node ends the pause: the call doesn't run and its approval expires
+([limits](../limits.md#approvals)).
 
 An offline run of all this (a mock model, no API key), with an approval: `python examples/v2/langchain/agent.py
 --scripted` from a checkout.
