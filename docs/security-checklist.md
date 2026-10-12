@@ -13,6 +13,7 @@ named here no longer exists.
 | `tracekit/gateway.py:_Handler` | `tracekit gateway serve` (LLM gateway) | API |
 | `tracekit/executor.py:_Executor` | `tracekit executor serve` (`GET /v1/actions`, `POST /v1/actions/<name>`: actions run with credentials the agent never holds) | API |
 | `tracekit/mcp_gateway.py:_McpGateway` | `tracekit mcp-gateway serve` (`POST /mcp`: MCP over streamable HTTP to the configured upstream servers) | API |
+| `tracekit/egress.py:_Handler` | `tracekit egress serve` (egress observer: `CONNECT host:port` and absolute-form `http://` requests, forwarded to the outside; no TLS interception) | API, proxy |
 | `tracekit/signer/metrics.py:Handler` | signer `/metrics`, `/logs/v0` and tlog tiles | API, public data |
 | `tracekit/otlp.py:H` | `tracekit otel serve` (loopback OTLP receiver) | API |
 | `tracekit/ingest.py:H` | `tracekit ingest serve` (remote ingest) | API |

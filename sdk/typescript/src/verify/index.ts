@@ -31,6 +31,8 @@ const MAX_LINE = 1 << 20;
 const CLASSES = ["public", "customer", "tracekit", "operator"];
 const KEY_TYPES = ["signer.epoch", "key.retire"];
 const ZERO_HASH = "sha256:" + "0".repeat(64);
+const MATRIX = ["model_calls", "tool_calls", "network", "processes", "services"];
+const COVERED = ["none", "reported", "observed", "enforced"];   // weakest first
 
 export type Check = { check: string; status: "pass" | "warn" | "fail"; detail: string; problems: string[] };
 
@@ -369,7 +371,8 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
     rep.check("held calls", false, `${unresolved.length} tool call(s) a gateway or executor decided have no result`, unresolved.slice(0, 20), true);
   // capture.gap kinds that say nothing against a run's own records, and those warned on lines of their own
   const info = ["witness_late", "witness_failed", "degraded_unanchored", "clock_skew", "format_upgrade", "key_retired",
-    "args_coerced", "approval_expired", "executed_against_policy", "held_call_unresolved", "decision_mismatch"];
+    "args_coerced", "approval_expired", "executed_against_policy", "held_call_unresolved", "decision_mismatch",
+    "observer_lost"];
   const alarms = events.filter((e) => ["approval.binding_mismatch", "trace.tamper"].includes(get(e, "type"))
     || get(e, "type") === "capture.gap" && !info.includes(get(at(e, "data"), "kind")));
   if (alarms.length) {
@@ -401,6 +404,22 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
     reconciles.map((e) => `seq ${e.seq}: ${e.type} ${cut(str(get(e, "tool_call_id")), 200)}: `
       + cut(str(get(at(e, "data"), "detail")), 200)).slice(0, 20), true);
   }
+  // the coverage matrix: per action class its weakest status across the runs, the layers behind it; never "complete"
+  const matrices = [...runs.values()].map((rs) => rs.at(-1).event)
+    .filter((e) => get(e, "type") === "run.final" && has(at(e, "data"), "matrix")).map((e) => e.data.matrix);
+  if (matrices.length)
+    rep.check("coverage matrix", true, (matrices.length > 1 ? `weakest of ${matrices.length} runs: ` : "")
+      + MATRIX.map((k) => {
+        const cs = matrices.map((m) => at(m, k));
+        const status = cs.map((c) => str(at(c, "status"))).reduce((a, b) => COVERED.indexOf(b) < COVERED.indexOf(a) ? b : a);
+        const layers = [...new Set(cs.flatMap((c) => list(at(c, "layers")).map(str)))].sort()
+          .concat(cs.some((c) => get(c, "asserted") === true) ? ["asserted"] : []);
+        return `${k.replace("_", " ")} ` + (status === "none" ? "not covered"
+          : status + (layers.length ? ` (${layers.join(", ")})` : ""));
+      }).join(", "));
+  const lost = gaps("observer_lost");
+  if (lost.length)
+    rep.check("observers", false, `${lost.length} egress observer(s) went silent while their run was open`, lost.slice(0, 20), true);
   checkIncidents(rep, runs, policies, floats);
   // a tool call's tier is the weakest its records claim (untiered < T3, receipt only, < T1 < T2): each tier a record
   // names, and untiered for a decision or result that names none, so a call decided at T2 and completed elsewhere
@@ -540,7 +559,8 @@ function approvals(rep: Report, runs: Map<string, J[]>, policies: Map<string, Ui
 }
 
 const CONTAINMENT = ["incident.opened", "incident.updated", "run.held", "run.quarantined", "run.resumed"];
-const FIRES = ["policy.decision", "approval.consumed", "capture.gap", "trace.tamper", "refusal.summary"];
+const FIRES = ["policy.decision", "approval.consumed", "capture.gap", "trace.tamper", "refusal.summary",
+  "reconcile.unexplained_effect"];
 const RECOMPUTED = ["sequence", "limit", "denied_calls", "provenance", "executed_against_policy", "class_mismatch"];
 
 /** The `incidents` line, as verify/v2.py's _incidents: cited records, incidents recomputed from their run under the

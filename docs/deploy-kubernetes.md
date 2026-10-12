@@ -177,7 +177,13 @@ volumes:
 
 Custody holds only if the agents can't reach the APIs around these services. `agentEgress.enabled` adds a
 NetworkPolicy for the agent pods (`agentEgress.podSelector`, in `agentEgress.namespace`) that lets them reach only the
-signers, the enabled custody services, the egress proxy (`agentEgress.egressProxy`) and DNS:
+signers, the enabled custody services, the egress proxy (`agentEgress.egressProxy`) and DNS. `egress.enabled` runs
+the chart's own [egress observer](egress.md) as `<release>-egress` on 3128, which the policy then allows too: the
+agents' outside traffic goes through it and each run records the hosts it reached. Clients name their run with its
+[`proxy_env`](egress.md#attribution) (`TRACEKIT_EGRESS_PROXY=https://<release>-egress.<namespace>.svc:3128`, with
+`NO_PROXY=.svc,.cluster.local`); a plain `HTTPS_PROXY` without a run token is refused (407), since the observer
+knows a networked client only by what it sends. Grant its identity `observe_effect` and set
+`posture: {network: enforced}` in signer.config:
 
 ```yaml
 agentEgress:

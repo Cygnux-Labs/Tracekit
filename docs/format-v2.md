@@ -183,6 +183,20 @@ and then never heard about. All are `capture.gap` records with `source: signer`.
 | `client_counter_gap` | also at `close_run` with `last_client_seq`: the values of a stream the closing identity wrote (or that never reached the signer) not received by then (the reason names that identity; values up to there that arrive later are recorded with no second gap). A gateway's report about a run already final goes in the tenant's run `tracekit/signer` | `missed_events`, top-level `stream`; in `tracekit/signer`, `run_id`: the run |
 | `tailer_lost` | also when a transcript tailer (an identity a run was delegated to with the `tailer_heartbeat` grant) makes no call for 90 s while its run is open, counted from the delegation | — |
 | `tailer_redelegated` | in the run, when a second tailer token is delegated for it | — |
+| `observer_lost` | in each open run an egress observer covers, when it makes no `observe_effect` call for 90 s, or another process of it (`instance`) takes over | — |
+| `effect_outside_run` | in the tenant's run `tracekit/signer`: an egress observation no open run holds (after its `run.final` and `observe_grace_s`, a token the signer didn't issue for that run, an identity with no open run) | `run_id`: the run the client named or it was attributed to, when there is one |
+
+Effects (format 1.2, [egress](egress.md)): an egress observer outside the agent reports the hosts each run reached
+(`observe_effect`, its own identity's never-default grant); the signer writes `effect.observed{observer, kind: net,
+host, port, bytes_out, bytes_in, connections, first_ts, last_ts, attribution: token|identity, explained_by?:
+call|explains}` (`source: signer`, one per host, port and minute) in the run, and for a host no recorded http or model
+call nor the policy's `explains` covers, once per host and run,
+`reconcile.unexplained_effect{layers: [L6], observer, kind, host, port, detail}`, counted in `run.final`'s
+`coverage.unreconciled`. `run.registered` carries the deployment's `posture{network: enforced|open, tool_calls:
+enforced|open, gateway_mandatory, attested: false}` when signer.yaml sets `posture` or `gateway_mandatory`.
+`run.final` carries `matrix`: per action class (`model_calls`, `tool_calls`, `network`, `processes`, `services`)
+`{status: enforced|observed|reported|none, layers, asserted?}`, from the sources of the run's records, the posture and
+the observers that covered the run throughout.
 
 A run bound to a harness process that registers with `parent` writes a `run.child` record (`source: signer`,
 `data: {run_id}`: the child) in its parent run.
@@ -431,7 +445,7 @@ what it added: record types, data fields per record type, and enum values per (r
 | Version | Record types | Data fields | Enum values |
 |---|---|---|---|
 | 1.1.0 | `input.observed`, `content.accessed`, `content.erased`, `why.finding` | `policy.decision`: `provenance`, `provenance_state`; `run.registered`: `replay_of` | — |
-| 1.2.0 | `run.child`, `approval.escalated`, `approval.revoked`, `approval.suggested`, `approval.agents`, `incident.opened`, `incident.updated`, `incident.capped`, `run.held`, `run.resumed`, `run.quarantined`, `incident.resolved`, `incident.response`, `identity.suspension` | `run.registered`: `parent_run`, `session`; `capture.gap`: `run_id`; `run.final`: `provider_executed`; `policy.decision`: `via`, `caller`, `detect`, `incident_id`; `approval.request`: `agent`, `via`, `incident_id`; `tool.result`, `input.observed`: `via`; `approval`: `approver_kind`, `asserted`, `spent`, `not_before`, `consume_by`, `incident_id`; `approval.expired`: `reason` | `capture.gap` `kind`: `decided_not_completed`, `late_activity`, `concurrent_run`, `tailer_redelegated`, `reask_after_reject`, `held_call_unresolved`; `run.closing` `reason`: `quarantine` |
+| 1.2.0 | `run.child`, `approval.escalated`, `approval.revoked`, `approval.suggested`, `approval.agents`, `incident.opened`, `incident.updated`, `incident.capped`, `run.held`, `run.resumed`, `run.quarantined`, `incident.resolved`, `incident.response`, `identity.suspension`, `effect.observed` | `run.registered`: `parent_run`, `session`, `posture`; `capture.gap`: `run_id`; `run.final`: `provider_executed`, `matrix`; `policy.decision`: `via`, `caller`, `detect`, `incident_id`; `approval.request`: `agent`, `via`, `incident_id`; `tool.result`, `input.observed`: `via`; `approval`: `approver_kind`, `asserted`, `spent`, `not_before`, `consume_by`, `incident_id`; `approval.expired`: `reason`; `reconcile.unexplained_effect`: `observer`, `kind`, `host`, `port` | `capture.gap` `kind`: `decided_not_completed`, `late_activity`, `concurrent_run`, `tailer_redelegated`, `reask_after_reject`, `held_call_unresolved`, `observer_lost`, `effect_outside_run`; `run.closing` `reason`: `quarantine` |
 
 Every v2 definition is closed (`additionalProperties: false`), so an older verifier would fail a record that uses a
 newer entry; the version the manifest declares makes it report `UNVERIFIABLE (needs tracekit >= x)` instead, never
