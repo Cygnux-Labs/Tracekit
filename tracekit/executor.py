@@ -240,8 +240,11 @@ def cut(x, values):
 
 def read_secret(path, header):
     """The value file `path` holds, stripped; one a header can carry (one line of printable ASCII) when `header`."""
-    with open(path, encoding="utf-8") as f:
-        value = f.read().strip()
+    try:
+        with open(path, encoding="utf-8") as f:
+            value = f.read().strip()
+    except UnicodeDecodeError:
+        raise ValueError(f"{path}: not UTF-8 text") from None
     if header and not HEADER_VALUE.fullmatch(value):
         raise ValueError(f"{path}: a header value is one line of printable ASCII; this one has a line break, a control "
                          "character or a non-ASCII character")
