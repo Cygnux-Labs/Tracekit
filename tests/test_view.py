@@ -521,6 +521,26 @@ class WhyData(WhyServer):
         self.assertEqual((c["status"], c["test"]["n"] >= 20), ("confirmed", True))
         self.assertGreater(c["test"]["p_with"], c["test"]["p_without"])
 
+    def test_every_node_carries_what_its_node_detail_shows(self):
+        """Clicking a GRAPH node opens NODE (Causeway's drawer): what each type saw, did or held, its links, its record."""
+        run = SYSTEM.run(seed=0, out_dir=self.store.root, run_id="nodes")
+        d = self.get(f"/api/why/runs/{run.run_id}")
+        ids = {n["id"] for n in d["nodes"]}
+        by_type = {n["type"]: n for n in d["nodes"]}
+        self.assertEqual(set(by_type), {"input", "decision", "action", "message"})
+        for n in d["nodes"]:
+            self.assertTrue(n["hash"] and n["prev"] and n["ts"] and n["label"], n)
+        dec, act = by_type["decision"], by_type["action"]
+        self.assertTrue(dec["model"] and dec["output"] and dec["context"])
+        self.assertTrue(all(c["node"] is None or c["node"] in ids for c in dec["context"]))   # WHAT IT SAW links
+        self.assertIn("args", act)
+        self.assertIsInstance(act["result"], str)
+        self.assertTrue(by_type["input"]["content"] and by_type["message"]["to"])
+        self.assertTrue(all(e["src"] in ids and e["dst"] in ids for e in d["edges"]))   # CAME FROM / LED TO links
+        status, page = self.request("GET", "/", AUTH)[::2]
+        self.assertEqual(status, 200)
+        self.assertIn(b'data-wtab="node"', page)
+
     def test_workspace_has_every_alert_and_the_signed_call_each_why_event_cites(self):
         run = self.exfil()
         acts = run.of_type("action")

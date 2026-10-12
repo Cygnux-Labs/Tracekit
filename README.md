@@ -159,6 +159,15 @@ Per framework, with a 10-line example each:
 `dev` assurance means; [limits](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/limits.md) lists what this path
 doesn't cover.
 
+### See it
+
+`tracekit view --dev` opens the one viewer on your runs: each run verified, every call with its decision, and (with
+why logs) why a call happened, down to clicking any node of the run's graph.
+
+![tracekit view: the planner's model call clicked in the run graph, with what it saw, produced and led to](https://raw.githubusercontent.com/Cygnux-Labs/Tracekit/main/docs/viewer/graph-node.png)
+
+A screenshot tour of every panel: [viewer tour](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/viewer.md#tour).
+
 No agent at hand? Each demo runs in a temp dir and needs no API key. `--server` shows calls allowed, denied and
 approved, a witness cosignature, and a tampered copy failing verification. `--why` shows a held email whose cause is
 found by replay and cited by its signed record. `init --dev --v2` wires Claude Code's hooks to a dev signer:
