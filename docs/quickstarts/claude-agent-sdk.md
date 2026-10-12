@@ -18,7 +18,7 @@ import anyio
 from claude_agent_sdk import ClaudeAgentOptions, query
 
 async def main():
-    async for message in query(prompt="tidy up this repo", options=ClaudeAgentOptions()):
+    async for message in query(prompt="Use the Bash tool to list the files in this repo.", options=ClaudeAgentOptions()):
         print(message)
 
 anyio.run(main)
@@ -48,7 +48,7 @@ from tracekit.sdk.client import Client
 client = Client()
 run = client.register_run({"agent": {"name": "my-agent"}})
 options = ClaudeAgentOptions(hooks=tracekit_hooks(client, run))
-async for message in query(prompt="tidy up", options=options):
+async for message in query(prompt="Use the Bash tool to list the files here.", options=options):
     ...
 ```
 

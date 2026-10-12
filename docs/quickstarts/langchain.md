@@ -23,7 +23,7 @@ def bash(command: str) -> str:
     return f"ran {command}"
 
 agent = create_agent("openai:gpt-5", [bash])
-print(agent.invoke({"messages": [("user", "tidy up")]})["messages"][-1].content)
+print(agent.invoke({"messages": [("user", "Use the bash tool to list the files here.")]})["messages"][-1].content)
 ```
 
 Every `ToolNode` built after `instrument()` gates its calls, the one `create_agent` builds included, after any
