@@ -71,8 +71,8 @@ The store (`tracekit/storage/`: files with fsync, or Postgres) holds the records
 ## Bundles and the verifier
 
 `tracekit export --v2` (`tracekit/bundle_v2.py`) writes one run, or a tenant's run-set, as a `.tkb`: the records,
-inclusion proofs into a checkpoint, its Rekor and timestamp anchors, and the policy snapshots that decided the calls. It holds no
-verification code.
+inclusion proofs into a checkpoint, its Rekor and timestamp anchors, and the policy snapshots its agent approvals and
+incidents are checked against. It holds no verification code.
 
 `tracekit verify` (`tracekit/verify/v2.py`) checks it offline against a **trust config** the verifier brings: the
 pinned log keys, witnesses and their quorum, and optionally a monitor. Nothing in the bundle is trusted for that. The

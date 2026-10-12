@@ -159,4 +159,12 @@ content: {retain: true, retention_days: 30, max_record_bytes: 1048576}   # defau
   sent, so they learn how often and how much each log grows. The public witness stores per origin the key, the latest
   size and root and the last time it cosigned, and the client address only in memory, for its rate limits.
 - A bundle contains the selected runs' events (per the table above); records from other runs are **elided** to `seq`, `hash`, `prev_hash`, `sig`.
+- A v2 bundle holds snapshots of the policies the run's records cite, and only where a verifier checks against one:
+  the policy (its rules, patterns, agent bounds and detection rules) an agent's approval was decided under, and the
+  one policy a run with an incident was decided under (the verifiers recompute its incidents from it), each once as
+  `policies/<policy_hash>.json`, copied from the signer's `<data_dir>/policies`. A run with neither carries no policy.
 - `--otel` adds `otel.json` with the same fields as spans; nothing more.
+- The [reference reviewer](approvals.md#the-reference-reviewer) (`tracekit reviewer`, off unless you run it) sends a
+  model provider, through your LLM gateway, the `approval_review` view of each approval it answers: the tool, the rules'
+  reason and rationale, the bounds and budget left, and the signer's **redacted** copy of the tenant's arguments. It
+  serves only the tenants its config lists; leave a tenant out when its arguments must not reach a model provider.

@@ -1659,13 +1659,30 @@ class SignerService:
             raise RPCError("unknown_approval", approval_id)
         return a
 
-    @staticmethod
-    def _summary(approval_id, a):
+    def _summary(self, approval_id, a):
         return {"approval_id": approval_id, "state": a["state"], "run_id": a["run_key"][1],
                 **{k: a[k] for k in ("tool_call_id", "attempt", "tool", "rule_ids", "policy_hash", "requester",
                                      "expires_at")}, **({"passkey": True} if a.get("passkey") else {}),
                 **({"escalated": True} if a.get("escalated") else {}),
-                **({"agent": True} if (a.get("agent") or {}).get("eligible") else {})}
+                **({"agent": True} if self._agent_mode(a) == "enforce" else {}),
+                **{k: a[k] for k in ("answered", "escalation") if a.get(k)}}
+
+    def _agent_refusal(self, a):
+        """Why an agent's answer to approval `a` is refused now (people answer it), or None."""
+        return ("agent approvals are switched off: people answer it" if self.log.agent["off"] else
+                "it was escalated: people answer it now" if a["escalated"] else
+                "the policy changed since it was requested: people answer it"
+                if a["policy_hash"] != self.policy.policy_hash else
+                "an agent did not approve this call in this run: people answer it"
+                if any(k in self.log.runs[a["run_key"]].get("person_only", {}) for k in person_only_keys(a)) else None)
+
+    def _agent_mode(self, a):
+        """How an agent's answer to approval `a` counts now: "enforce" (it decides), "shadow" (an approval.suggested;
+        people decide) or None (only people answer it)."""
+        if not (a.get("agent") or {}).get("eligible") or self._agent_refusal(a):
+            return None
+        return "shadow" if any(r["approval"]["agent"]["mode"] == "shadow"
+                               for r in self._agent_rules(a["agent"]["rules"])) else "enforce"
 
     def _on_behalf(self, identity, req):
         """The person a bridge acts for (`on_behalf`, for an identity granted approval_decide_on_behalf), else `identity`.
@@ -2988,12 +3005,7 @@ class SignerService:
             a, now = self.log.approvals[aid], time.time()
             if a["state"] != "requested" or a["expires_at"] <= _iso(now):
                 raise RPCError("approval_not_pending", a["state"] if a["state"] != "requested" else "expired")
-            why = ("it was escalated: people answer it now" if a["escalated"] else
-                   "agent approvals are switched off: people answer it" if self.log.agent["off"] else
-                   "the policy changed since it was requested: people answer it"
-                   if a["policy_hash"] != self.policy.policy_hash else
-                   "an agent did not approve this call in this run: people answer it"
-                   if any(k in run.get("person_only", {}) for k in person_only_keys(a)) else None)
+            why = self._agent_refusal(a)
             if why:
                 raise RPCError("forbidden", why)
             if shadow:
@@ -3080,7 +3092,8 @@ class SignerService:
 
     def _approval_agents(self, identity, req):
         """The operator's kill switch: switch agent approvals off (every agent approval not consumed yet is revoked,
-        and people answer every approval from then on) or on again; a signed `approval.agents`."""
+        every pending one an agent could answer is escalated, and people answer every approval from then on) or on
+        again; a signed `approval.agents`."""
         by = subject(identity)[:256]
         self.quotas.take_event(identity)
 
@@ -3091,6 +3104,10 @@ class SignerService:
                     if a.get("kind") == "agent" and a["state"] == "approved":
                         self._revoke(tx, self.log.runs[a["run_key"]], aid, "signer", "agent approvals switched off")
                         revoked.append(aid)
+                    elif a["state"] == "requested" and (a.get("agent") or {}).get("eligible") and not a["escalated"]:
+                        tx.emit(self.log.runs[a["run_key"]], "approval.escalated", {
+                            "approval_id": aid, "by": "signer", "reason": "agent approvals switched off"},
+                                source="signer", tool_call_id=a["tool_call_id"])
             tx.emit(self.log.signer_run(tx), "approval.agents", {
                 "enabled": req["enabled"], "by": by, **({"reason": privacy.redact_text(req["reason"])[0]}
                                                         if "reason" in req else {})}, source="signer",
@@ -3212,16 +3229,17 @@ class SignerService:
             for aid, _ in items:
                 if aid == cursor:
                     break
-        for aid, a in items:
-            agent = bool((a.get("agent") or {}).get("eligible")) and not a.get("escalated")
+        for aid, a in items:   # for: agent, those an agent may still answer (shadow too); person, those it can't decide
             if req.get("run_id") in (None, a["run_key"][1]) and req.get("state") in (None, a["state"]) and \
-                    req.get("for") in (None, "agent" if agent else "person") and \
-                    req.get("escalated") in (None, bool(a.get("escalated"))) and self._may_see(identity, a):
+                    req.get("escalated") in (None, bool(a.get("escalated"))) and self._may_see(identity, a) and (
+                    "for" not in req or req["for"] == "agent" and self._agent_mode(a) is not None
+                    or req["for"] == "person" and self._agent_mode(a) != "enforce"):
                 if len(page) == req.get("limit", LIST_PAGE):
                     return {"approvals": page, "next_cursor": page[-1]["approval_id"]}
                 s = {**self._summary(aid, a), **({"run_closing": True} if a["run_closing"] else {})}
                 page.append({k: v for k, v in s.items() if k not in ("run_id", "tool_call_id", "attempt", "requester",
-                                                                     "passkey")} if agent_view else s)
+                                                                     "passkey", "answered", "escalation")}
+                            if agent_view else s)
         return {"approvals": page, "next_cursor": None}
 
     def _approval_abandon(self, identity, req):

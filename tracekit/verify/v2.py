@@ -46,8 +46,8 @@ import disagreed with the signer's decision or tool, or named a call the signer 
 `external decisions` line a warning.
 Incidents (docs/incidents.md): every record an incident cites that is in the bundle exists and is one that fires a
 trigger; an incident of scope run whose cites are all in its run is recomputed from the run's records under the
-compiled policy the bundle carries for the run's policy_hash (policies/<hex>.json, whose SHA-256 is that hash): one
-that does not follow from them fails `incidents`, as does a missing policy; a detector_unavailable incident cites a
+compiled policy the bundle carries for the run's policy_hash: one that does not follow from them fails `incidents`
+(without that policy they are signer-asserted, an `incident policies` warning); a detector_unavailable incident cites a
 decision whose detection state was unavailable. Others (operator incidents, other scopes, cites in other runs, a run
 under several policies) are counted signer-asserted; a run.held of an incident opened in another run is its pointer.
 Each response must have been honoured: an enforced hold or quarantine of scope run in its own run is followed by its
@@ -57,6 +57,8 @@ held, only deny while quarantined, a held call approved only by a person (never 
 the incident id, no consume under a hold but of an approval asked under an incident still holding the run and none
 under a quarantine, and no tool.result while held or quarantined but of a call in flight when the response took effect
 or, held, one consumed with such an approval.
+Policy snapshots: a policies/ file not named by the SHA-256 of its bytes fails `policy snapshot`; the others are the
+one set of snapshots, by policy_hash, that both the incidents and the agent-approval checks read.
 Coverage: a run.final that carries `coverage` (the capture layers that reported, calls reconciled, reconcile.* records
 by kind) gives a `coverage` line; unreconciled calls and unexplained effects make it a warning, so `--strict` exits 3
 on them. Its `matrix` gives the `coverage matrix` line: per action class (model calls, tool calls, network, processes,
@@ -496,8 +498,12 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
               f"{len(runs)} run(s), each contiguous from run_seq 0", chain)
     rep.check("inclusion", not outside, f"first and last records of {len(runs)} run(s) are in the checkpointed tree "
                                         f"of size {size}", outside)
+    policies = {}   # policy_hash -> the bundled snapshot named by it: the one set _incidents and _approvals read
     for p in sorted(n for n in files if n.startswith("policies/")):
-        rep.check("policy snapshot", p == f"policies/{hashlib.sha256(files[p]).hexdigest()}.json", p)
+        h = "sha256:" + hashlib.sha256(files[p]).hexdigest()
+        rep.check("policy snapshot", p == f"policies/{h[7:]}.json", p)
+        if p == f"policies/{h[7:]}.json":
+            policies[h] = files[p]
 
     still_open = [rs for rs in runs.values() if rs[-1]["event"].get("type") != "run.final"]
     rep.integrity = ("VERIFIED" if not still_open else
@@ -568,7 +574,7 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
         rep.check("observers", False, f"{len(lost)} egress observer(s) went silent while their run was open", lost[:20],
                   warn=True)
     _findings(rep, runs)
-    _incidents(rep, runs, files)
+    _incidents(rep, runs, policies)
     vault = collections.Counter(r["event"]["type"] for r in every if r["event"].get("type") in ("content.accessed",
                                                                                               "content.erased"))
     if vault:   # signer records of the content vault (docs/privacy.md): who read or erased retained content
@@ -626,6 +632,7 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
     rep.assurance = (_assurance(origin, cosigs, witnesses, trust, {r["alg"] for r in every + key_records}, self_approved,
                                 anchors, monitored, reg_cosigs)
                      + ("; key retirements not proven complete" if proven_to < relied else ""))
+    _approvals(rep, runs, policies)
     glass = [r["event"] for r in every if r["event"].get("type") == "approval"
              and r["event"]["data"].get("break_glass") is True]
     if glass:
@@ -633,6 +640,77 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
                   [f"seq {e['seq']}: {e['data']['decision']} {e['data'].get('approval_id')} by "
                    f"{e['data']['approver'][:256]}: {str(e['data'].get('reason'))[:200]!r}" for e in glass][:20],
                   warn=True)
+
+
+def _approvals(rep, runs, policies):
+    """Approvals by people and by agents, each on a line of its own. An agent's approval fails the line unless its run
+    holds the approval.request and policy.decision it answered, the signer called the request agent-eligible
+    (agent.eligible) and no approval.escalated or approval.revoked of it comes first, the decision has no provenance and
+    a complete provenance_state (or none: the signer leaves it out then), its approval needs no passkey, and the agent
+    is neither the requester nor the run's owner; with the policy snapshot of the decision's policy_hash in `policies`
+    (the bundle's, each named by its SHA-256), every rule the call was held by is an ask rule that permits agents and
+    needs no passkey (else a warning: bounds unchecked). Argument bounds are never checkable offline: the records hold
+    the arguments as salted commitments."""
+    people, agents, problems, unchecked = 0, 0, [], []
+    for rs in runs.values():
+        events = [r["event"] for r in rs]
+        ident = (events[0]["data"].get("identity") or {}) if events[0].get("type") == "run.registered" else {}
+        owner = f"{ident.get('scheme')}:{str(ident.get('subject'))[:256]}"
+        asked = {e["data"].get("approval_id"): e["data"] for e in events if e.get("type") == "approval.request"}
+        decided = {e["data"].get("decision_id"): e["data"] for e in events
+                   if e.get("type") == "policy.decision" and "decision_id" in e["data"]}
+        to_people = set()   # approval ids escalated or revoked so far: only people answer them
+        for e in events:
+            d = e["data"]
+            if e.get("type") in ("approval.escalated", "approval.revoked"):
+                to_people.add(d.get("approval_id"))
+            if e.get("type") != "approval" or d.get("decision") != "approve":
+                continue
+            if d.get("approver_kind") != "agent":
+                people += 1
+                continue
+            agents += 1
+            where = f"seq {e['seq']}: {str(d.get('approval_id'))[:128]}"
+            req = asked.get(d.get("approval_id")) or {}
+            dec = decided.get(req.get("decision_id"))
+            if dec is None:
+                problems.append(f"{where}: its approval.request and policy.decision are not in the run")
+                continue
+            ai = d.get("approver_identity") or {}
+            if (req.get("agent") or {}).get("eligible") is not True:
+                problems.append(f"{where}: the signer did not route its approval.request to agents (agent.eligible)")
+            if d.get("approval_id") in to_people:
+                problems.append(f"{where}: it was escalated or revoked before the agent approved it")
+            if dec.get("provenance") or dec.get("provenance_state", "complete") != "complete":
+                problems.append(f"{where}: the decision's arguments carry provenance or it is incomplete")
+            if req.get("passkey") is True:
+                problems.append(f"{where}: a rule of the call needs a passkey")
+            if d.get("approver") == req.get("requester") or f"{ai.get('scheme')}:{str(ai.get('subject'))[:256]}" == owner:
+                problems.append(f"{where}: the agent is the requester or the run's owner")
+            snap = policies.get(dec.get("policy_hash"))
+            if snap is None:
+                unchecked.append(f"{where}: no policy snapshot of {str(dec.get('policy_hash'))[:80]}; export the run "
+                                 "with the signer's config, which bundles the policies its records cite")
+                continue
+            try:
+                pol = loads_strict(snap)
+                asks = {r["id"]: r for r in pol.get("ask", [])}
+                flags = {r["id"] for r in pol.get("flag", [])}
+            except (ValueError, TypeError, KeyError, AttributeError):
+                problems.append(f"{where}: the policy snapshot is not a policy")
+                continue
+            for rid in dec.get("rule_ids") or []:
+                approval = (asks.get(rid) or {}).get("approval") or {}
+                if rid not in flags and (not isinstance(approval, dict) or "agent" not in approval
+                                         or approval.get("passkey") == "required"):
+                    problems.append(f"{where}: rule {str(rid)[:64]} does not permit agents")
+    if agents:   # a bundle without agent approvals keeps the report it always had
+        rep.check("approvals by people", True, f"{people} approval(s) answered by people")
+        rep.check("approvals by agents", not problems and not unchecked,
+                  f"{agents} approval(s) answered by agents (model output); argument bounds are not checkable offline "
+                  "(salted commitments): audit one with `tracekit signer reveal`"
+                  + (f"; agent approval bounds unchecked for {len(unchecked)}" if unchecked else ""),
+                  (problems or unchecked)[:20], warn=not problems)
 
 
 def _coverage(matrices, k):
@@ -650,21 +728,17 @@ FIRES = ("policy.decision", "approval.consumed", "capture.gap", "trace.tamper", 
 RECOMPUTED = ("sequence", "limit", "denied_calls", "provenance", "executed_against_policy", "class_mismatch")
 
 
-def _detector(files, h, problems, unbundled):
+def _detector(policies, h, unbundled):
     """A detect.Detector of the bundled compiled policy whose policy_hash is `h`, or None: `h` goes to `unbundled`
-    when the bundle lacks the policy (its incidents stay signer-asserted), to `problems` when its bytes don't match."""
+    when `policies` lacks it (its incidents stay signer-asserted)."""
     from tracekit.signer import detect
-    data = files.get(f"policies/{str(h)[7:]}.json")
-    if data is None:
+    if h not in policies:
         unbundled.add(str(h)[:80])
         return None
-    if "sha256:" + hashlib.sha256(data).hexdigest() != h:
-        problems.append(f"policy {str(h)[:80]} in the bundle does not hash to its name")
-        return None
-    return detect.Detector(detect.Rules(loads_strict(data)))
+    return detect.Detector(detect.Rules(loads_strict(policies[h])))
 
 
-def _incidents(rep, runs, files):
+def _incidents(rep, runs, policies):
     """The `incidents` line: cited records, incidents recomputed from their run, responses honoured (module
     docstring)."""
     from tracekit.signer import detect
@@ -699,7 +773,7 @@ def _incidents(rep, runs, files):
                     all(c["run_id"] == rid for c in d["cites"]):
                 mine.append(e)
         hashes = {e["data"].get("policy_hash") for e in events if e["type"] == "policy.decision"}
-        det = mine and len(hashes) == 1 and _detector(files, next(iter(hashes)), problems, unbundled)
+        det = mine and len(hashes) == 1 and _detector(policies, next(iter(hashes)), unbundled)
         if det:
             st, expected = detect.new(det.engine.policy_hash), []
             for e in events:

@@ -29,7 +29,8 @@ _DELEGATED = {"observe": "observe", "analyze": "findings", "otel": "otlp", "cost
               "public-witness": "public_witness_server",
              "deploy": "deploy.compose",
               "signer": "signer.service", "view": "view", "monitor": "monitor", "gateway": "gateway",
-              "egress": "egress", "executor": "executor", "mcp-gateway": "mcp_gateway", "issuer": "issuer", "why": "why.cli"}  # subcommands with their own parsers
+              "egress": "egress", "executor": "executor", "mcp-gateway": "mcp_gateway", "issuer": "issuer",
+              "why": "why.cli", "reviewer": "reviewer"}  # subcommands with their own parsers
 _MOVED = {"sql": "query", "proofpack": "proofpack", "report": "proofpack", "causeway": "causeway"}  # now separate packages under contrib/
 
 
@@ -147,6 +148,9 @@ def main(argv=None):
     p = sub.add_parser("gateway", help="LLM gateway for the v2 signer: `gateway serve --config gateway.yaml`", add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
     p = sub.add_parser("egress", help="egress observer for the v2 signer: `egress serve --config egress.yaml`",
+                       add_help=False)
+    p.add_argument("rest", nargs=argparse.REMAINDER)
+    p = sub.add_parser("reviewer", help="the reference agent approver: `reviewer serve|eval --config reviewer.yaml`",
                        add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
     p = sub.add_parser("executor", help="tool executor for the v2 signer: `executor serve --config executor.yaml`",

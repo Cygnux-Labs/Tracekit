@@ -402,7 +402,8 @@ proofs/records.json       {"checkpoint": "checkpoints/<size>.note", "tree_size":
 checkpoints/<size>.note   the record-tree note the proofs are against
 rekor/<size>.json         its Rekor v2 TransparencyLogEntry, when anchored
 tsa/<size>.tsr            its RFC 3161 timestamp response, when anchored
-policies/<sha256>.json    policy snapshots, named by the SHA-256 of their bytes
+policies/<sha256>.json    the compiled policies a verifier checks the records against, named by the SHA-256 of
+                          their bytes (their policy_hash)
 ```
 
 A run-set bundle adds:
@@ -504,12 +505,15 @@ line and verdict is in [verdicts](verdicts.md).
    `key.retire` leaf in the range must be among the key records. A `log.closed` in the range must be
    the checkpoint's last record, or later records were added after the log closed.
 8. **Format bridge** (with `--v1-ledger`/`--v1-key`, §12).
-9. **Policy snapshots.** Each `policies/` file is named by its own SHA-256. `tracekit export --v2` bundles the
-   compiled policy (canonical JSON, so its SHA-256 is its `policy_hash`) of every `policy_hash` the records cite.
+9. **Policy snapshots.** Each `policies/` file is named by its own SHA-256 (else `policy snapshot` fails and neither
+   check below reads it). `tracekit export --v2` bundles, from the signer's `<data_dir>/policies`, the compiled policy
+   (canonical JSON, so its SHA-256 is its `policy_hash`) of each `policy_hash` a verifier checks against, once: the
+   one the `policy.decision` an agent's approval answered cites (`approvals by agents` checks its rules permit agents;
+   without it, a warning) and the one policy a run with an `incident.opened` was decided under. No other is bundled.
    **Incidents** (with containment records): a record an incident cites must, when its run is in the bundle, exist
    and be one that fires a trigger; an incident of scope `run` citing only its own run is recomputed from that run's
-   records under the bundled policy of the run's one `policy_hash` (not in the bundle: signer-asserted, with an `incident policies`
-   warning; bytes that don't hash to the name: a failure), and must follow from them;
+   records under the bundled policy of the run's one `policy_hash` (not in the bundle: signer-asserted, with an
+   `incident policies` warning), and must follow from them;
    a `detector_unavailable` incident must cite a decision whose `detect.state` is `unavailable`; the rest are counted
    signer-asserted. Each response must have been honoured: while held, no allow and no ask without the incident id;
    while quarantined, only deny; a held call approved only by a person (never `approver_kind: agent`, never

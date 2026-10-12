@@ -6,6 +6,7 @@ import json
 import os
 import threading
 import unittest
+import zipfile
 from unittest import mock
 
 from factories import wait_for
@@ -206,6 +207,9 @@ class ExportWithoutSigner(unittest.TestCase):
             code, stdout, err = run_cli("export", "--v2", "--run", "run-1", "--config", self.cfg, "-o", out)
         self.assertEqual((code, err), (0, ""))
         self.assertEqual(json.loads(stdout)["tree_size"], 5)
+        # a policy goes in only when cited_policies names it: an agent approval's decision or a run's incident (none)
+        with zipfile.ZipFile(out) as z:
+            self.assertFalse([n for n in z.namelist() if n.startswith("policies/")])
 
     def test_no_covering_note_and_no_signer_is_a_clear_error(self):
         store = FileStorage(os.path.join(self.dir, "store"))
