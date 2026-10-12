@@ -24,7 +24,10 @@ policy means the same on every signer: duplicate keys, anchors, aliases and merg
 Each matching rule adds its id to the decision; the strictest section wins: **deny > ask > flag > allow**. `flag`
 lets the call run and marks it; `ask` holds it for an [approval](approvals.md). The signed `policy.decision` carries
 the verdict, every matching rule id, `policy_hash`, `engine` (`re2@<version>` or `regex@<version>`), a fresh
-`decision_id` and the `args_commitment`.
+`decision_id` and the `args_commitment`. The `decide` RPC answers `allow` for a flagged call, with the flag rule's id
+in `rule_ids`: its `decision` says what the client does (run, refuse or hold the call), and is `allow`, `deny` or
+`ask` for every client since RPC version 15. A signer can't tell which version a client speaks, and an older client
+would refuse a value it doesn't know, so the flag is in the signed record only.
 
 Rule ids the signer adds itself:
 

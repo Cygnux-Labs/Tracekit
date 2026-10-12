@@ -76,6 +76,7 @@ Each row says what the limit is, why it is so, what to do about it, and where th
 
 | Limit | Why it is so | What to do | Details |
 |---|---|---|---|
+| The `decide` RPC answers `allow` for a flagged call; only the signed `policy.decision` says `flag`. | `decision` tells the client what to do, and clients since RPC 15 know only `allow`, `deny` and `ask`; the signer can't tell a client's version. | Read a flag from the record, or from the flag rule's id in the response's `rule_ids`. | [policy](policy-v2.md#decisions) |
 | Policy rules are tripwires that make attempts visible, not the protection itself. | They match strings; a rewording a rule doesn't anticipate isn't matched. The protection is the signer's isolation, its storage and the witnesses. | Rely on isolation and witnesses; read E3's misses. | [policy](policy-v2.md#packs-shipped), [evaluation](evaluation.md#e3-policy-gate) |
 | Shell variables are not expanded and encodings are not decoded. | Static parsing can't know runtime values. | Opaque commands ask (`TK-SHELL-PARSE`); keep them held. | [policy](policy-v2.md#what-a-rule-matches-the-subject) |
 | A relative path, or one with `..`, is unverifiable; rules match its certain suffix. | A symlink could redirect it. | Write path rules that also work on suffixes. | [policy](policy-v2.md#what-a-rule-matches-the-subject) |
