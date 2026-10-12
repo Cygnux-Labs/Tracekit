@@ -170,6 +170,30 @@ investigation with findings is named by one (`findings`, FAILED otherwise). Repl
 finding are a `replay runs` warning. In any other bundle (a findings run alone, a run-set) a finding whose replay runs
 are absent is not counted (`findings counted`, a warning). A bundle with either needs `verifier_min_version` 1.1.0.
 
+Completeness (format 1.2, [limits](limits.md#signer-and-capture)): gaps for what the signer saw decided or reported
+and then never heard about. All are `capture.gap` records with `source: signer`.
+
+| `kind` | Where, when | Fields |
+|---|---|---|
+| `decided_not_completed` | in the run, at `run.final`: each open decision that let its call run (allowed, or asked with the call's approval consumed) and has no `complete`, unless a later decision of the call completed (for the decision a consumed approval names: with the approved arguments); a call a gateway or executor holds (`via`) gets `held_call_unresolved` instead; at most 100, then one counting the rest | `tool_use_id`, top-level `tool_call_id` and `attempt`; the last one `missed_events` |
+| `concurrent_run` | in the newer run, for a run bound to a harness process: another run of the same owner, tenant and harness process, in another session, was open when it registered, and both have recorded an event since | `run_id`: the other run |
+| `late_activity` | in the tenant's run `tracekit/signer`, with the refusal summaries: writes refused because their run was final (not a `close_run`, nor each identity's and stream's first one) | `run_id`: that run; `missed_events`: how many; `from_ts`, `to_ts` |
+| `client_counter_gap` | also at `close_run` with `last_client_seq`: the values of a stream the closing identity wrote (or that never reached the signer) not received by then (the reason names that identity; values up to there that arrive later are recorded with no second gap). A gateway's report about a run already final goes in the tenant's run `tracekit/signer` | `missed_events`, top-level `stream`; in `tracekit/signer`, `run_id`: the run |
+| `tailer_lost` | also when a transcript tailer (an identity a run was delegated to with the `tailer_heartbeat` grant) makes no call for 90 s while its run is open, counted from the delegation | — |
+| `tailer_redelegated` | in the run, when a second tailer token is delegated for it | — |
+
+A run bound to a harness process that registers with `parent` writes a `run.child` record (`source: signer`,
+`data: {run_id}`: the child) in its parent run.
+
+A gap in a tenant's run `tracekit/signer` (`late_activity`, a gateway's `client_counter_gap`) has a leaf in that
+tenant's registry (§7), so a run-set proves it; the verifier counts it with the tenant-level gaps. A
+`reconcile.hook_missing` for a tool use the LLM gateway reported is written as soon as a gateway request sends its
+result back with no decide, not only before `run.final`. A `model.exchange` tool use with `executed_by: provider`
+carries an `args_commitment` when the provider returned its input; `run.final` carries `provider_executed`, the number
+of such tool uses, which no decide covers and which are never `reconcile.fabricated` (with `gateway_mandatory`, only
+those the gateway reported). A bundle with any of these kinds, fields or `run.child` needs `verifier_min_version`
+1.2.0.
+
 ## 4. Records and the signature message
 
 A record is one line of JSON:
@@ -403,7 +427,7 @@ what it added: record types, data fields per record type, and enum values per (r
 | Version | Record types | Data fields | Enum values |
 |---|---|---|---|
 | 1.1.0 | `input.observed`, `content.accessed`, `content.erased`, `why.finding` | `policy.decision`: `provenance`, `provenance_state`; `run.registered`: `replay_of` | — |
-| 1.2.0 | `approval.escalated`, `approval.revoked`, `approval.suggested`, `approval.agents`, `incident.opened`, `incident.updated`, `incident.capped`, `run.held`, `run.resumed`, `run.quarantined`, `incident.resolved`, `incident.response`, `identity.suspension` | `run.registered`: `parent_run`, `session`; `policy.decision`: `via`, `caller`, `detect`, `incident_id`; `approval.request`: `agent`, `via`, `incident_id`; `tool.result`, `input.observed`: `via`; `approval`: `approver_kind`, `asserted`, `spent`, `not_before`, `consume_by`, `incident_id`; `approval.expired`: `reason` | `capture.gap` `kind`: `reask_after_reject`, `held_call_unresolved`; `run.closing` `reason`: `quarantine` |
+| 1.2.0 | `run.child`, `approval.escalated`, `approval.revoked`, `approval.suggested`, `approval.agents`, `incident.opened`, `incident.updated`, `incident.capped`, `run.held`, `run.resumed`, `run.quarantined`, `incident.resolved`, `incident.response`, `identity.suspension` | `run.registered`: `parent_run`, `session`; `capture.gap`: `run_id`; `run.final`: `provider_executed`; `policy.decision`: `via`, `caller`, `detect`, `incident_id`; `approval.request`: `agent`, `via`, `incident_id`; `tool.result`, `input.observed`: `via`; `approval`: `approver_kind`, `asserted`, `spent`, `not_before`, `consume_by`, `incident_id`; `approval.expired`: `reason` | `capture.gap` `kind`: `decided_not_completed`, `late_activity`, `concurrent_run`, `tailer_redelegated`, `reask_after_reject`, `held_call_unresolved`; `run.closing` `reason`: `quarantine` |
 
 Every v2 definition is closed (`additionalProperties: false`), so an older verifier would fail a record that uses a
 newer entry; the version the manifest declares makes it report `UNVERIFIABLE (needs tracekit >= x)` instead, never

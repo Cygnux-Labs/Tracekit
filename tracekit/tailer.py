@@ -6,7 +6,8 @@
 Dev mode: a detached process of the agent's own user, which exits once the hook's session state (`until`) is gone
 (SessionEnd). System mode (`tracekit init --v2`): run through sudo as the tracekit-tailer user, which reads the agent's
 ~/.claude/projects through an ACL and nothing of the signer's. It calls the signer as its own uid with a token the hook
-delegated (`delegate_run`), and signer.yaml lets that uid call only model_event, state_write, tailer_lost and status.
+delegated (`delegate_run`), and signer.yaml lets that uid call only model_event, state_write, tailer_lost,
+tailer_heartbeat and status.
 
 The transcript is opened once, with O_NOFOLLOW, and must be a regular file of the agent's uid (the root-owned system
 config names the agent; dev mode: our own uid); the fd is kept. On every wake (inotify on the transcript's directory on
@@ -18,6 +19,9 @@ the message id; each tool use with the digest of its arguments; the tool results
 prompt becomes a model_event request carrying only the prompt's digest, which the signer publishes as a salted
 commitment. It exits once the signer says the run is over, or (dev mode) once `until` is gone. A transcript that never
 appears or cannot be reached, and a tailer that stops after IDLE_TAILER_S without a new line, are a tailer_lost too.
+Every HEARTBEAT_S it sends `tailer_heartbeat` (another refusal, e.g. a quota, is tried again at the next); a tailer that
+is killed stops them, and the signer writes the tailer_lost gap itself (a signer that does not know the call, or a token
+not granted it, just gets none).
 The session's subagents' transcripts (<session>/subagents/agent-*.jsonl, next to the session's) are followed the same
 way, with the same checks, from the wake they appear on.
 """
@@ -36,7 +40,7 @@ from tracekit.format.canon import event_hash
 from tracekit.hook import transcript_entries
 from tracekit.sdk.client import Client, RunHandle, SignerUnavailable
 from tracekit.signer.rpc_schema import RPCError
-from tracekit.signer.service import IDLE_S
+from tracekit.signer.service import HEARTBEAT_S, IDLE_S
 
 POLL_S = 1.0
 # lean: twice the signer's default run idle timeout, so a quiet run has closed before the tailer gives up on it; ask the
@@ -194,10 +198,25 @@ def _follow(run, t, uid):
     return t.off > start
 
 
+def _heartbeat(run):
+    """tailer_heartbeat; -> when it was sent (or tried: a signer that can't take it now gets the next), or None when
+    this token is not granted heartbeats or the signer doesn't know them (stop sending)."""
+    try:
+        run.call("tailer_heartbeat")
+    except SignerUnavailable:
+        pass
+    except RPCError as e:
+        if e.code in ENDED:
+            raise
+        if e.code in ("forbidden", "invalid_request"):   # not granted, or a signer before 1.2 (unknown method)
+            return None
+    return time.monotonic()
+
+
 def tail(run, path, uid, until=None, wait=None):
     """Follow `path`, and its subagents' transcripts, for `run` until the run ends, `until` is gone, or a transcript is
     lost (reported)."""
-    wait, grew = wait or _waiter(path), time.monotonic()
+    wait, grew, beat = wait or _waiter(path), time.monotonic(), -HEARTBEAT_S
     # lean: keeps one file open per subagent transcript; close quiet ones and reopen them by (dev, inode) if sessions
     # run more subagents than the tailer's file limit
     main = cur = _Transcript(path)
@@ -218,6 +237,8 @@ def tail(run, path, uid, until=None, wait=None):
                 raise Lost(f"no new transcript line for {IDLE_TAILER_S:.0f}s: the tailer stopped")
             if gone:
                 return
+            if beat is not None and time.monotonic() - beat >= HEARTBEAT_S:
+                beat = _heartbeat(run)
             wait()
     except Lost as e:
         name = "" if cur is main else f"subagent transcript {os.path.basename(cur.path)}: "

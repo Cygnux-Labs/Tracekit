@@ -8,6 +8,7 @@ import os
 import unittest
 
 from tracekit import parsers
+from tracekit.format.canon import event_hash
 from tracekit.signer import rpc_schema
 
 VECTORS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vectors", "parsers")
@@ -76,9 +77,13 @@ class Vectors(unittest.TestCase):
 
 
 class Rules(unittest.TestCase):
-    def test_provider_tools_carry_no_arguments(self):
+    def test_provider_tools_carry_the_digest_of_the_input_the_provider_returned(self):
         t = parsers.tool_use("ws_1", "web_search", '{"q": 1}', "raw", executed_by="provider")
-        self.assertEqual(t, {"id": "ws_1", "name": "web_search", "executed_by": "provider"})
+        self.assertEqual(t, {"id": "ws_1", "name": "web_search", "executed_by": "provider", "args_source": "raw",
+                             "args_digest": event_hash({"tool": "web_search", "args": {"q": 1}})})
+        bare = {"id": "ws_1", "name": "web_search", "executed_by": "provider"}
+        for args in (None, '{"q": '):   # no input returned, or one that does not parse: no digest
+            self.assertEqual(parsers.tool_use("ws_1", "web_search", args, "raw", executed_by="provider"), bare)
 
     def test_unparseable_raw_strings(self):
         for raw in ('{"a": ', '{"a": 1, "a": 2}', '{"n": NaN}', '{"id": 9007199254740993}', "", None):

@@ -53,6 +53,10 @@ class E16(unittest.TestCase):
                 got = {r["id"]: r["status"] for r in e16.run_case(bad(shape))}
                 self.assertIn(want, got)
 
+    def test_hooks_installed_before_1_2_only_need_init_again(self):
+        got = {r["id"]: r["status"] for r in e16.run_case(e16._unnamed)}
+        self.assertEqual((got["D-HOOKS-EVENT"], got["D-HOOKS-VENV"]), ("warn", "ok"))
+
     def test_data_dir_of_the_agents_user_fails_the_boundary(self):
         def agent_is_me(L):
             L.kw["agent"] = types.SimpleNamespace(**dict(vars(e16.AGENT), pw_uid=os.getuid()))

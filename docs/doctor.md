@@ -51,6 +51,7 @@ skipped with the reason) and checks that doctor flags each one. It also checks t
 | `D-UNIT-HARDENING` | `tracekit-signer.service` (or the launchd plist) | a hardening directive that init writes is missing: the detail gives the score and lists the missing directives (warn) | re-run init to rewrite the service file |
 | `D-HARNESS-HELPER` | `tracekit-harness-helper.service` (or its launchd plist), when signer.yaml has `harness_binding` | the file is missing, or its capability bounding set is anything but `CAP_SYS_PTRACE CAP_DAC_READ_SEARCH` | re-run init with `--harness` |
 | `D-HOOKS-PRESENT` | the agent's Claude Code settings | a tool event (PreToolUse, PostToolUse, PostToolUseFailure) has no v2 hook | re-run init |
+| `D-HOOKS-EVENT` | the Claude Code hook commands (Codex, Cursor and Gemini CLI hooks aren't checked: re-run `tracekit init --agent NAME` after upgrading) | a hook command doesn't name its event (installed before 1.2), so a PreToolUse payload the hook can't read lets the call through unrecorded (warn) | re-run init |
 | `D-HOOKS-VENV` | the hook commands | a hook runs a Python other than the root-owned venv's | re-run init |
 | `D-HOOKS-TIMEOUT` | the PreToolUse hook's timeout | it's below the hook's approval wait (540 s), so Claude Code would kill a call that's waiting for approval | set it to 600 (re-run init) |
 | `D-SIGNER-ENV` | `env.TRACEKIT_SIGNER` in the agent's settings | it names a socket other than the system one, so the hook refuses it and blocks every call | remove it |

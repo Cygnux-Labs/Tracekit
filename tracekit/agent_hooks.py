@@ -286,7 +286,10 @@ def install(harness, project=None, uninstall=False, v2=False, python=None, path=
     if not isinstance(hooks, dict):
         raise SettingsError(f"'hooks' in {path} must be an object; Tracekit did not change it.")
     new, removed = "v2" if v2 else "v1", set()
-    cmd = _hook_command(V2_MODULE if v2 else "tracekit.agent_hooks", "entry", (harness,), python)
+
+    def cmd(ev):   # the v2 hook names its event, so it can block a pre-tool payload it cannot read
+        return _hook_command(V2_MODULE if v2 else "tracekit.agent_hooks", "entry", (harness, ev) if v2 else (harness,),
+                             python)
 
     def ours(cmds):
         vs = {_version(c) for c in cmds} - {None}
@@ -306,7 +309,7 @@ def install(harness, project=None, uninstall=False, v2=False, python=None, path=
         for ev, timeout in events.items():
             lst = [h for h in entries(ev) if not (isinstance(h, dict) and ours([h.get("command")]))]
             if not uninstall:
-                lst.append({"command": cmd, "type": "command", "timeout": timeout, "failClosed": closed})
+                lst.append({"command": cmd(ev), "type": "command", "timeout": timeout, "failClosed": closed})
             if lst:
                 hooks[ev] = lst
             else:
@@ -319,7 +322,7 @@ def install(harness, project=None, uninstall=False, v2=False, python=None, path=
             groups = [g for g in entries(ev) if not (isinstance(g, dict) and ours(
                 [h.get("command") for h in g.get("hooks", []) if isinstance(h, dict)]))]
             if not uninstall:
-                h = {"type": "command", "command": cmd}
+                h = {"type": "command", "command": cmd(ev)}
                 if harness == "gemini":
                     h.update(name="tracekit", timeout=600_000 if ev == "BeforeTool" else 30_000)  # ms; holds wait for approval
                 else:

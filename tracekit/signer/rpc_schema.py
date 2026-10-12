@@ -1,7 +1,8 @@
 """The signer RPC contract, version 16: one JSON Schema per request and response, the error shape, and `SignerAPI`.
 
 Frozen: a change to any schema here is a new RPC_VERSION. Version 16 (all of Tracekit 1.2) adds register_run's optional
-`parent`, agent approvers (approval_review, approval_revoke, approval_agents, approval_decide's `escalate` and
+`parent`, close_run's optional `last_client_seq` (and a gateway's `caller`), `tailer_heartbeat`, args digests on tool uses
+the provider ran, agent approvers (approval_review, approval_revoke, approval_agents, approval_decide's `escalate` and
 `asserted`, approval_list's filters) and containment's operator calls (incident_list, incident_show, incident_resolve,
 run_hold, run_quarantine, run_resume, response_pause, response_resume, suspend, unsuspend; decide's `incident_id`); a
 signer serves RPC_MIN..RPC_VERSION (its `hello` `proto`), so a version 15 client keeps working unchanged.
@@ -93,13 +94,16 @@ _consume = _obj(_RUN_REQ + ["tool_call_id", "tool", "args_source", "args"], **_R
                 approval_id_hint=ID)   # from the framework's saved state: checked against the signer's index, never trusted
 _consume.update(_RAW)
 # a tool the model asked for: one the client runs has its args digest, or args_unparseable when the raw string failed
-# strict parsing; one the provider runs itself has neither
+# strict parsing; one the provider runs itself has its args digest where the provider returned its input
 _TOOL_USE = dict(_obj(["id", "name", "executed_by"], id=ID, name=_str(256, minLength=1),
                       executed_by={"enum": ["client", "provider"]}, args_source={"enum": ["raw", "parsed", "coerced"]},
                       args_digest=DIGEST, args_unparseable={"const": True},
                       id_synthetic={"const": True}),   # the provider gave no id
                  oneOf=[{"additionalProperties": False,
                          "properties": {"id": {}, "name": {}, "executed_by": {"const": "provider"}, "id_synthetic": {}}},
+                        {"required": ["args_source", "args_digest"], "additionalProperties": False,
+                         "properties": {"id": {}, "name": {}, "executed_by": {"const": "provider"}, "id_synthetic": {},
+                                        "args_source": {}, "args_digest": {}}},
                         {"required": ["args_source", "args_digest"], "properties": {"executed_by": {"const": "client"}}},
                         {"required": ["args_source", "args_unparseable"],
                          "properties": {"executed_by": {"const": "client"}}}])
@@ -198,13 +202,20 @@ REQUESTS = {
     "approval_agents": _obj(["request_id", "enabled"], request_id=ID, enabled={"type": "boolean"}, reason=REASON),
     # the adapter will never resume this paused call: the approval ends at once and a later consume is refused
     "approval_abandon": _obj(_RUN_REQ + ["approval_id"], **_RUN, approval_id=ID, reason=REASON),
-    "close_run": _obj(_RUN_REQ, **_RUN, reason=_str(256)),
+    # last_client_seq: the last client_seq each of the caller's streams sent; a value the signer never received becomes
+    # a client_counter_gap. From a `gateways` identity with `caller` (as model_event): ends the gateway's stream only,
+    # the run stays as it is, and a run already final takes it too (the gap goes in the tenant's signer run)
+    "close_run": _obj(_RUN_REQ, **_RUN, reason=_str(256), caller=IDENTITY, last_client_seq={
+        "type": "array", "maxItems": 64, "items": _obj(["stream", "client_seq"], stream=ID, client_seq=SEQ)}),
     # a token for this run that `identity` (scheme:subject, e.g. a transcript tailer's uid) presents instead of the
     # owner; what it may call is that identity's `authorize` entry
     "delegate_run": _obj(["run_id", "run_token", "identity"], run_id=ID, run_token=TOKEN,
                          identity=IDENTITY),
     # the transcript tailer lost the transcript at `offset` (bytes read): the signer writes the tailer_lost gap
     "tailer_lost": _obj(_RUN_REQ + ["reason", "offset"], **_RUN, reason=REASON, offset=SEQ),
+    # the transcript tailer is alive (every service.HEARTBEAT_S); once they stop while the run is open, the signer writes
+    # the tailer_lost gap
+    "tailer_heartbeat": _obj(["run_id", "run_token"], run_id=ID, run_token=TOKEN),
     "status": _obj([]),
     "read": _obj(["run_id", "run_token"], run_id=ID, run_token=TOKEN, from_seq=SEQ,
                  limit={"type": "integer", "minimum": 1, "maximum": 1000}),
@@ -308,9 +319,11 @@ RESPONSES = {
     "approval_revoke": _obj(["approval_id", "state"], approval_id=ID, state=APPROVAL_STATE),
     "approval_agents": _obj(["enabled", "revoked"], enabled={"type": "boolean"},
                             revoked={"type": "array", "maxItems": 100000, "items": ID}),   # the agent approvals revoked
-    "close_run": _obj(["run_id", "state", "run_seq"], run_id=ID, state={"const": "closing"}, run_seq=SEQ),
+    # open: a gateway's close_run, which ends its stream only
+    "close_run": _obj(["run_id", "state", "run_seq"], run_id=ID, state={"enum": ["closing", "open"]}, run_seq=SEQ),
     "delegate_run": _obj(["run_token"], run_token=TOKEN),
     "tailer_lost": _SEQ_ONLY,
+    "tailer_heartbeat": _obj([]),
     "status": _obj(["rpc_version", "signer", "identity"], rpc_version={"const": RPC_VERSION},
                    signer=_obj(["name", "version"], name=_str(128), version=_str(64)),
                    identity=_obj(["scheme", "subject", "attested"], scheme=_str(32), subject=_str(256),
@@ -391,6 +404,7 @@ class SignerAPI(Protocol):
     def close_run(self, req: dict) -> dict: ...
     def delegate_run(self, req: dict) -> dict: ...
     def tailer_lost(self, req: dict) -> dict: ...
+    def tailer_heartbeat(self, req: dict) -> dict: ...
     def status(self, req: dict) -> dict: ...
     def read(self, req: dict) -> dict: ...
     def checkpoint_nudge(self, req: dict) -> dict: ...

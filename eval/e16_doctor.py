@@ -177,6 +177,14 @@ def _timeout(L):
     json.dump(s, open(L.settings, "w"))
 
 
+def _unnamed(L):
+    s = json.load(open(L.settings))
+    for ev, groups in s["hooks"].items():
+        for h in groups[0]["hooks"]:
+            h["command"] = h["command"].replace(f" {ev};", ";")
+    json.dump(s, open(L.settings, "w"))
+
+
 def _mounts(kind):
     return lambda L: L.patches.append(mock.patch.object(doctor, "_mounts", return_value=[(L.top, kind)]))
 
@@ -204,6 +212,7 @@ CASES = [
      lambda L: install.install_hooks(L.settings, uninstall=True, signer=L.sock)),
     ("hooks run another Python", "D-HOOKS-VENV", lambda L: L.hooks(python="/usr/bin/python3")),
     ("PreToolUse timeout below the approval wait", "D-HOOKS-TIMEOUT", _timeout),
+    ("hooks installed before 1.2 (no event argument)", "D-HOOKS-EVENT", _unnamed),
     ("TRACEKIT_SIGNER elsewhere", "D-SIGNER-ENV", lambda L: L.hooks(env={"TRACEKIT_SIGNER": L.path("decoy.sock")})),
     ("policy does not compile", "D-POLICY-ENGINE", lambda L: L.write("etc/policy.json", b'{"bogus": 1}')),
     ("ack-on-write", "D-DURABILITY", lambda L: L.signer_yaml(durability="ack-on-write")),

@@ -66,7 +66,8 @@ class TestDecisionImport(Reconcile):
         self.assertEqual([e["data"].get("reason") for e in imported],
                          ["a forbid policy matched", "piping a download into a shell needs a person", None,
                           "deletes outside the workspace's build rules"])
-        gaps = [(e["data"]["kind"], e["tool_call_id"], e["data"]["reason"]) for e in es if e["type"] == "capture.gap"]
+        gaps = [(e["data"]["kind"], e["tool_call_id"], e["data"]["reason"]) for e in es if e["type"] == "capture.gap"
+                and e["data"]["kind"] != "decided_not_completed"]   # the calls are decided here, never completed
         self.assertEqual(gaps, [("decision_mismatch", "tc-1", "aws-agentcore-policy decided deny; the signer decided allow"),
                                 ("decision_mismatch", "call-ms-1", "vscode-agent-hooks decided ask; the signer decided allow"),
                                 ("decision_mismatch", "tc-4", "github-copilot-hooks decided deny; the signer decided allow")])
