@@ -100,7 +100,8 @@ class Engine:
         return any(u == cls if u in CLASSES else fnmatch.fnmatchcase(tool, u) for u in self.policy.get("untrusted", ()))
 
     def decide(self, tool, args, cls=None, untrusted=None):
-        """Return {verdict, rule_ids, policy_hash, engine[, nondeterministic]} for one tool call. `cls` overrides the
+        """Return {verdict, rule_ids, policy_hash, engine[, nondeterministic][, oversize]} for one tool call (`oversize`:
+        the subjects TK-OVERSIZE stands for, named by their rule and field). `cls` overrides the
         class the policy maps the tool to. `untrusted(subject, field)`: the hits of the subject's values that only
         untrusted content brought into the run (`field`: the rule's); a `from: untrusted` rule matches a subject only
         when there is one (never without `untrusted`), and matches each element of a list field (payees, recipients)
@@ -114,11 +115,12 @@ class Engine:
         if cls == "sql" and fields.get("statement") is not None and not fields.get("code"):
             hits["ask"].append("TK-SQL-PARSE")   # no dialect reads it: an unclosed literal or comment, or not text
         nondeterministic, deadline = False, time.monotonic() + REGEX_TIMEOUT_S
-        parsed = [], [], []
+        parsed, oversize = ([], [], []), []
         if cls == "shell":
             command = fields.get("command", "")
             if len(_text(command if isinstance(command, str) else canonical(command)).encode()) > MAX_SUBJECT:
                 hits["deny"].append("TK-OVERSIZE")
+                oversize.append("the shell command")
             else:
                 try:
                     parsed = _shell(args)
@@ -137,6 +139,8 @@ class Engine:
                     subject = _text(subject)
                     if len(subject.encode("utf-8")) > MAX_SUBJECT:
                         hits[sec].append("TK-OVERSIZE")   # the rule's own verdict: a flag rule cannot block a large call
+                        field = rule.get("field") or ("argv" if cls == "shell" else "the whole arguments")
+                        oversize.append(f"{rule['id']}'s subject ({field})")
                         break
                     # `unless`: an exemption checked against the same subject (use it only where the subject is one
                     # target, e.g. a file path; in a whole command it could exempt a different target)
@@ -154,6 +158,8 @@ class Engine:
                "policy_hash": self.policy_hash, "engine": self.engine}
         if nondeterministic:
             out["nondeterministic"] = True
+        if oversize:
+            out["oversize"] = oversize
         return out
 
     @staticmethod

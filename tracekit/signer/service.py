@@ -1806,6 +1806,9 @@ class SignerService:
         commitment = self._commit(did, digest) if digest else None
         # lean: expires_at is signed but `complete` does not enforce it; enforce once executors check it before running
         expires_at = _iso(time.time() + DECISION_TTL_S)
+        # rule_ids say only TK-OVERSIZE: name the subjects it stands for
+        big = {"reasons": [(f"TK-OVERSIZE: over {engine.MAX_SUBJECT // 1024} KiB, so never matched: "
+                            + ", ".join(ruled[0]["oversize"]))[:4096]]} if ruled and ruled[0].get("oversize") else {}
         written = []   # the record's run_seq, once this call (not a retry the request_id cache answers) wrote it
 
         def fn(tx, run):
@@ -1843,7 +1846,7 @@ class SignerService:
                     call["agent"] = agent
             tx.set(run["calls"], tcid, call)
             tx.set(run["decisions"], did, call)
-            seq = tx.event(run, req, "policy.decision", dict(data, decision=verdict, rule_ids=rule_ids),
+            seq = tx.event(run, req, "policy.decision", dict(data, decision=verdict, rule_ids=rule_ids, **big),
                            digests={tcid: digest}, tool_call_id=tcid, attempt=attempt, args_source=req["args_source"],
                            **top)
             written.append(seq)
@@ -1851,7 +1854,7 @@ class SignerService:
                 tx.emit(run, "capture.gap", {"kind": kind, "reason": reason, "tool_use_id": tcid}, source="signer",
                         tool_call_id=tcid)
             out = {"decision": "allow" if verdict == "flag" else verdict, "decision_id": did, "rule_ids": rule_ids,
-                   "run_seq": seq, "expires_at": expires_at}
+                   "run_seq": seq, "expires_at": expires_at, **({"reason": big["reasons"][0][:1024]} if big else {})}
             if self.policy.untrusted_results(tool):   # the result itself, for the provenance index
                 out["send_result"] = True
             return out

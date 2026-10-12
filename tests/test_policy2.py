@@ -246,6 +246,14 @@ class Engines(unittest.TestCase):
         d = self.regex.decide("Write", {"file_path": "é" * (MAX_SUBJECT // 2 + 1)})
         self.assertEqual((d["verdict"], d["rule_ids"]), ("deny", ["TK-OVERSIZE"]))
 
+    def test_oversize_names_the_subjects(self):
+        self.assertEqual(self.regex.decide("Bash", {"command": "x" * (MAX_SUBJECT + 1)})["oversize"][0], "the shell command")
+        pol = {"tools": {"Write": "fs"}, "deny": [{"id": "R", "pattern": "x"}, {"id": "P", "class": "fs", "field": "path",
+                                                                              "pattern": "^/etc"}]}
+        d = Engine(pol, "regex").decide("Write", {"file_path": "/p", "content": "x" * (MAX_SUBJECT + 1)})
+        self.assertEqual((d["rule_ids"], d["oversize"]), (["TK-OVERSIZE"], ["R's subject (the whole arguments)"]))
+        self.assertNotIn("oversize", Engine(pol, "regex").decide("Write", {"file_path": "/p"}))
+
     def test_fallback_timeout_denies_and_is_marked(self):
         pol = {"tools": {"Bash": "shell"}, "flag": [{"id": "S", "class": "shell", "field": "command", "pattern": "a.*b.*c"}]}
         with mock.patch.object(engine, "REGEX_TIMEOUT_S", 1e-9):
