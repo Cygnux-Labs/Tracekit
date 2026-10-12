@@ -59,8 +59,9 @@ class Engine:
         """[(condition, passed)] of ask rule `rule`'s approval.agent bounds over a call's `args`: a closed world, not
         decide's search. Every argument is one the bounds name, and each one they name is there; a value has exactly
         the field's JSON type (the string "100", 1e2, 99.9 and true are no integer); a list passes when it has
-        elements and every one does; no two alias arguments (amount and amount_cents) at once; the arguments fit in
-        AGENT_ARGS_MAX. A pattern matches the whole value; TimeoutError past `deadline` (time.monotonic())."""
+        elements and every one does, and an integer list's total is within `max`; no two alias arguments (amount and
+        amount_cents) at once; the arguments fit in AGENT_ARGS_MAX. A pattern matches the whole value; TimeoutError
+        past `deadline` (time.monotonic())."""
         fields = rule["approval"]["agent"]["allow"]["fields"]
         if not isinstance(args, dict):
             return [("the arguments are an object", False)]
@@ -72,6 +73,8 @@ class Engine:
             v = args.get(name)
             ok = v != [] and all(self._within(rule["id"], name, b, x, deadline) for x in (v if isinstance(v, list)
                                                                                            else [v]))
+            if ok and isinstance(v, list) and "max" in b:   # a list of amounts is bounded by its total, not each
+                ok = sum(v) <= b["max"]
             out.append((f"{name}: {canonical(b)}", ok))
         return out
 

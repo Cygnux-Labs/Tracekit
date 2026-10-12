@@ -109,10 +109,12 @@ export class Detector {
       const names = this.names(ids), unknown = this.toolClass(d.tool) === "unknown";
       if (run) {
         const k = `call\0${e.tool_call_id}`;
-        if (d.decision === "ask") run.pending.set(k, [d.decision_id ?? null, [...names], unknown, inp.sums ?? {}]);
+        if (d.decision === "ask") run.pending.set(k, [d.decision_id ?? null, [...names], unknown, inp.sums ?? {},
+          Object.hasOwn(inp, "rule_ids")]);
         else run.pending.delete(k);
       }
-      if (d.decision === "allow" || d.decision === "flag") this.count(det, e, run, names, unknown, inp.sums ?? {}, cite, fired);
+      if (d.decision === "allow" || d.decision === "flag")   // detect.rule_ids: a client's class hint read it too
+        this.count(det, e, run, names, unknown, inp.sums ?? {}, Object.hasOwn(inp, "rule_ids"), cite, fired);
       else if (d.decision === "deny") this.denied(det, e, run, t, cite, fired);
       if (d.decision !== "allow" && this.on("provenance") && d.rule_ids.some((i: string) => this.untrusted.has(i))
           && (Array.isArray(d.provenance) ? d.provenance.length : d.provenance) && d.provenance_state === "complete")
@@ -127,7 +129,8 @@ export class Detector {
       const p = run.pending.get(d.approval_id);
       if (p) {
         run.pending.delete(d.approval_id);
-        if (typ === "approval.consumed") this.count(det, e, run, new Set(p[0]), p[1], p[2], [e.run_id, e.run_seq], fired);
+        if (typ === "approval.consumed")
+          this.count(det, e, run, new Set(p[0]), p[1], p[2], Boolean(p[3]), [e.run_id, e.run_seq], fired);
       }
     } else {
       let trigger: string | undefined = ({ "trace.tamper": "tamper", "refusal.summary": "refusal_burst" } as J)[typ];
@@ -138,11 +141,13 @@ export class Detector {
     return this.incidents(det, e, run, t, fired);
   }
 
-  count(det: J, e: J, run: J, names: Set<string>, unknown: boolean, sums: J, cite: [string, number], fired: Fired[]) {
+  /** As detect.py's _count: `unless` exempts only a call the policy's own reading names, never one a hint added. */
+  count(det: J, e: J, run: J, names: Set<string>, unknown: boolean, sums: J, hinted: boolean, cite: [string, number],
+        fired: Fired[]) {
     const own = unknown ? new Set<string>() : new Set([...names].filter((n) => n !== "*"));
     const at = ts(e.ts);
     for (const s of this.sequences) {
-      if (!unknown && (s.unless ?? []).some((n: string) => names.has(n))) continue;
+      if (!unknown && !hinted && (s.unless ?? []).some((n: string) => names.has(n))) continue;
       const steps: string[] = s.steps, last = steps.length - 1;
       if (!(unknown || steps.some((n) => names.has(n)))) continue;
       const [key, scope, st] = this.scope(det, e, run, s.scope ?? "run");
@@ -175,7 +180,7 @@ export class Detector {
       if (Object.hasOwn(lim, "sum")) {
         const [amount, cur] = sums[lim.id];
         before = val[cur] ?? 0;
-        val = { ...val, [cur]: before + amount };
+        val = { ...val, [cur]: Math.min(before + amount, Number.MAX_SAFE_INTEGER) };   // saturated, as detect.py
         after = val[cur];
       } else [before, val, after] = [val, val + 1, val + 1];
       st.lim.set(lim.id, [start, val]);

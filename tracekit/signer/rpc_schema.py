@@ -6,7 +6,8 @@ the provider ran, agent approvers (approval_review, approval_revoke, approval_ag
 `asserted`, approval_list's filters), containment's operator calls (incident_list, incident_show, incident_resolve,
 run_hold, run_quarantine, run_resume, response_pause, response_resume, suspend, unsuspend; decide's `incident_id`) and
 `observe_effect`; a signer serves RPC_MIN..RPC_VERSION (its `hello` `proto`), so a version 15 client keeps working
-unchanged.
+unchanged. Its responses may carry the optional fields version 16 added (an approval's `run_closing`, `escalated`,
+`agent`; `status.rpc_version` is the signer's highest): a client ignores fields it doesn't know.
 The caller's identity comes from the transport (peer credentials, token, mTLS), never from a request field. Calls that change state carry `request_id`, scoped to that
 identity: a retry with the same id and payload gets the original response, the same id with another payload is refused
 with `conflict`, and the same id from another identity is a different request.
