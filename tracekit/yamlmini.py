@@ -3,7 +3,8 @@ tests check both give the same result for the shipped policies).
 
 Supported: block mappings and lists (indentation), `- key: value` list items, comments,
 single-quoted (backslashes literal, '' for a quote) and double-quoted (JSON escapes) strings,
-plain scalars (true/false/null/~, ints, floats, strings), flow lists `[a, 'b']` and flow mappings `{a: 1, b: [c]}`.
+plain scalars (true/false/null/~, ints, floats, strings), flow lists `[a, 'b']` and flow mappings `{a: 1, b: [c]}`,
+also split over lines.
 Not supported (rejected, not guessed): anchors, tags, block scalars (| >), multi-doc.
 """
 import json
@@ -125,15 +126,40 @@ def _split_key(text, lineno):
     return m.group(1), m.group(3)
 
 
+def _unclosed(text, lineno):
+    """Whether the flow list or mapping that `text`'s value starts goes on past the line."""
+    kv = None if text.startswith("- ") else _split_key(text, lineno)
+    v = (kv[1] if kv else text[2:] if text.startswith("- ") else text).strip()
+    if v[:1] not in ("[", "{"):
+        return False
+    depth, q = 0, None
+    for c in v:
+        if q:
+            q = None if c == q else q
+        elif c in "'\"":
+            q = c
+        else:
+            depth += (c in "[{") - (c in "]}")
+    return depth > 0
+
+
 def loads(text):
-    lines = []
+    lines, open_ = [], None   # open_: a line whose flow list or mapping the next lines continue
     for n, raw in enumerate(text.splitlines(), 1):
-        if "\t" in raw[:len(raw) - len(raw.lstrip())]:
+        if "\t" in raw[:len(raw) - len(raw.lstrip())] and open_ is None:
             raise YAMLError(f"line {n}: tabs are not allowed for indentation")
         s = _strip_comment(raw)
-        if s.strip() in ("", "---"):
+        if open_ is not None:
+            ind, s, n = open_[0], open_[1] + " " + s.strip(), open_[2]
+        elif s.strip() in ("", "---"):
             continue
-        lines.append((len(s) - len(s.lstrip()), s.strip(), n))
+        else:
+            ind, s = len(s) - len(s.lstrip()), s.strip()
+        open_ = (ind, s, n) if _unclosed(s, n) else None
+        if open_ is None:
+            lines.append((ind, s, n))
+    if open_ is not None:
+        raise YAMLError(f"line {open_[2]}: unterminated flow list")
     if not lines:
         return None
     val, i = _block(lines, 0, lines[0][0])

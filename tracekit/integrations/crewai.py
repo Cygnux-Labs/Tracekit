@@ -12,7 +12,7 @@ import contextvars
 import uuid
 import warnings
 
-from tracekit.sdk.client import result_field
+from tracekit.sdk.client import named_rules, result_field
 
 ERROR = "Error executing tool:"
 WAIT_MS = 300000   # lean: one wait of the signer's cap (5 minutes) for an `ask`; loop to a deadline if people need longer
@@ -29,7 +29,7 @@ def hooks(run):
         try:
             tool, args = ctx.tool_name, dict(ctx.tool_input or {})
             d = run.decide(st["id"], tool, args)
-            why = ", ".join(d["rule_ids"]) or d.get("reason") or d["decision"]
+            why = named_rules(d["rule_ids"]) or d.get("reason") or d["decision"]
             if d.get("unavailable"):   # the run's fail mode decided: nothing to consume or complete
                 if d["decision"] == "allow":
                     return None

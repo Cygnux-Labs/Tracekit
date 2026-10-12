@@ -133,7 +133,9 @@ def _found(run, mandatory, handoff=lambda tool: False, structured=lambda tool: F
         d = rec["l2"].get(tcid)
         if d is None and tcid not in pairs and not handoff(u["name"]) and not structured(u["name"]):
             out.append(("hook_missing", tcid, ["L2", "L3"],
-                        f"the model asked for {u['name'][:200]}; no decide{_hint(u['name'])}"))
+                        f"the model asked for {u['name'][:200]}; no decide: it ran with no hook or adapter gating it, "
+                        "or the framework turned it down before any hook (arguments that failed its validation) and "
+                        f"asked the model again{_hint(u['name'])}"))
         if u["unparseable"]:
             out.append(("args_unparseable", tcid, ["L3"], "the model's raw arguments failed strict parsing"))
         if d is None:

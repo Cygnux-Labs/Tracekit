@@ -88,6 +88,8 @@ class TestReconcile(Reconcile):
         details = [r["event"]["data"]["detail"] for r in records(self.dir) if r["event"]["type"] == "reconcile.hook_missing"]
         self.assertIn("name it in the policy's handoffs:", details[0])   # what to do, for the handoff only
         self.assertNotIn("handoffs", details[1])
+        self.assertIn("or the framework turned it down before any hook (arguments that failed its validation)",
+                      details[1])   # not only "ran ungated": PydanticAI re-asks after failed validation, undecided
 
     def test_a_handoff_the_policy_names_is_not_a_missing_decide(self):
         self.s.policy = Engine({**self.s.policy.policy, "handoffs": ["transfer_to_refunds_agent"]})   # the operator

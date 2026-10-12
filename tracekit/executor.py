@@ -55,7 +55,7 @@ from tracekit import yamlmini
 from tracekit.client import remote_url_error
 from tracekit.format.canon import event_hash
 from tracekit.gateway import OPEN, _Handler
-from tracekit.sdk.client import Client, SignerUnavailable, result_field
+from tracekit.sdk.client import Client, SignerUnavailable, named_rules, result_field
 from tracekit.signer import rpc_schema
 from tracekit.signer.rpc_schema import RPCError
 from tracekit.transport import http as transport
@@ -89,7 +89,7 @@ class Custody:
         try:
             d = self.client.decide(call)
             if d["decision"] == "deny":
-                return (403, "denied by policy: " + (", ".join(d["rule_ids"]) or "deny")), None, None
+                return (403, "denied by policy: " + (named_rules(d["rule_ids"]) or "deny")), None, None
             hint = {}
             if d["decision"] == "ask":
                 hint = {"approval_id_hint": self.client.approval_request({**base, "tool_call_id": tcid})["approval_id"]}
@@ -105,7 +105,7 @@ class Custody:
         except RPCError as e:
             return (503 if e.code == "unavailable" else 403, f"the signer refused the call: {e}"), None, None
         if not c["ok"]:
-            return (403, ", ".join(c["rule_ids"]) + (f": {c['reason']}" if c.get("reason") else "")), None, None
+            return (403, named_rules(c["rule_ids"]) + (f": {c['reason']}" if c.get("reason") else "")), None, None
         return None, d, c.get("args", args)
 
     def complete(self, key, tcid, d, tool, args, status, **outcome):

@@ -2,10 +2,11 @@
 before hook raises, so every refusal must come back as False, and nothing may raise into the crew (dogfood CR-1)."""
 import types
 import unittest
+import warnings
 from unittest import mock
 
 from tracekit.integrations import crewai
-from tracekit.sdk.client import Client, RunHandle, SignerUnavailable
+from tracekit.sdk.client import Client, RunHandle, SignerUnavailable, result_field
 from tracekit.signer.rpc_schema import RPCError
 
 
@@ -65,6 +66,10 @@ class Hooks(unittest.TestCase):
         r.approval_consume.assert_not_called()
         r.complete.assert_not_called()
 
+    def test_the_refusal_names_the_rules_but_not_the_unknown_tool_flag(self):
+        self.assertEqual(hook(run("deny", ["CR-D001", "TK-UNKNOWN-TOOL"]))[1],
+                         "Tool call blocked by Tracekit policy: CR-D001")
+
     def test_a_tool_error_is_recorded_as_an_error(self):
         r = run()
         hook(r, "Error executing tool: boom")
@@ -89,6 +94,32 @@ class RunHandleOutage(unittest.TestCase):
         with mock.patch.object(Client, "call", side_effect=RPCError("run_closed", "r")), \
                 self.assertWarnsRegex(UserWarning, "run_closed"):
             self.assertIsNone(self.handle({}).complete("c1"))
+
+    def test_a_method_without_a_run_token_gets_none_and_calls_take_keywords(self):
+        with mock.patch.object(Client, "_turn", side_effect=RuntimeError("sent")) as sent:
+            for f in (lambda: self.handle({}).call("approval_list", state="requested"),
+                      lambda: Client(signer="/nonexistent/tracekit.sock").call("approval_list", run_id="r")):
+                with self.assertRaisesRegex(RuntimeError, "sent"):
+                    f()
+        self.assertEqual([c.args[1] for c in sent.call_args_list],
+                         [{"run_id": "r", "state": "requested"}, {"run_id": "r"}])
+
+    def test_a_result_with_a_lone_surrogate_is_recorded_escaped(self):
+        self.assertEqual(result_field(True, ["a\ud800"]), '["a\\ud800"]')
+        self.assertTrue(result_field(False, "a\ud800").startswith("sha256:"))
+
+    def test_completing_an_untrusted_tool_without_its_result_warns(self):
+        answers = {"decide": {"decision": "allow", "decision_id": "dec-1", "rule_ids": [], "run_seq": 1,
+                              "send_result": True}, "complete": {"run_seq": 2}}
+        with mock.patch.object(Client, "call", side_effect=lambda m, req=None, **f: answers[m]):
+            h = self.handle({})
+            h.decide("c1", "fetch", {})
+            with self.assertWarnsRegex(UserWarning, "completed without its result"):
+                h.complete("c1")
+            h.decide("c2", "fetch", {})
+            with warnings.catch_warnings():
+                warnings.simplefilter("error")
+                h.complete("c2", result="page text")
 
     def test_a_refusal_still_raises_from_decide(self):
         with mock.patch.object(Client, "call", side_effect=RPCError("forbidden", "no")), self.assertRaises(RPCError):

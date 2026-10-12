@@ -66,8 +66,8 @@ def _process_client(Client, RPCError, current_run, schemas):
             cur = current_run.get()
             return cur if cur is not None and cur.run_id not in self.ids else self.process
 
-        def call(self, method, req=None):
-            req, p = dict(req or {}), self.process
+        def call(self, method, req=None, **fields):
+            req, p = {**(req or {}), **fields}, self.process
             if p is None or req.get("run_id") not in self.ids:
                 return super().call(method, req)
             cur = self._current()

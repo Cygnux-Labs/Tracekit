@@ -331,3 +331,17 @@ class SystemV2Install(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ClaudeConfigDir(unittest.TestCase):
+    def test_hooks_go_to_and_are_found_in_claude_config_dir(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        with mock.patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": d}):
+            path = install.user_settings()
+            self.assertEqual(path, os.path.join(d, "settings.json"))
+            install.install_hooks(path)
+            self.assertIn(path, [h["settings"] for h in install._installed_hooks()])
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("CLAUDE_CONFIG_DIR", None)
+            self.assertEqual(install.user_settings(), os.path.expanduser("~/.claude/settings.json"))

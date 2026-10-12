@@ -323,6 +323,13 @@ class SignerPolicy(unittest.TestCase):
         self.assertEqual(self.decide("Bash", {"command": "ls"}, tcid="tc-2", tool_class_hint="shell")["decision"], "allow")
         self.assertEqual(self.gaps(), ["class_mismatch"])
 
+    def test_a_generic_hint_on_a_tool_the_policy_maps_stricter_is_no_gap(self):
+        self.open(Engine({"tools": {"mcp:db/*": "sql"}, "deny": [{"id": "T-DROP", "class": "sql", "pattern": "drop"}]}))
+        self.assertEqual(self.decide("mcp:db/query", {"sql": "drop table t"}, tool_class_hint="mcp")["decision"], "deny")
+        self.assertEqual(self.decide("mcp:db/query", {"sql": "select 1"}, tcid="tc-2", tool_class_hint="mcp")["decision"],
+                         "allow")
+        self.assertEqual(self.gaps(), [])
+
     # --- the signed decision ---
 
     def test_decision_record_is_signed_and_bound_to_the_policy(self):

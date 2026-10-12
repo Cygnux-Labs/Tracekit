@@ -81,7 +81,7 @@ def collect(config=None, issuer_key=None):
     if sc:
         return out
     from .signer.service import dev_data_dir
-    return v2_checks({"data_dir": dev_data_dir()}, "dev", settings=os.path.expanduser(os.path.join("~", ".claude", "settings.json")))
+    return v2_checks({"data_dir": dev_data_dir()}, "dev", settings=install.user_settings())
 
 
 def _user(name):

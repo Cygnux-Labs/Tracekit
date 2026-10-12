@@ -1566,13 +1566,14 @@ class SignerService:
     def _evaluate(self, tool, args, hint, untrusted=None):
         """(policy decision, hint disagreed, the rule ids of both readings). A class hint that disagrees with the
         policy's class gets the stricter of the two decisions; detection sees the rules of both, so a mismatch can't
-        hide a step."""
-        d = self.policy.decide(tool, args, untrusted=untrusted)
-        if hint is None or hint == self.policy.tool_class(tool):
+        hide a step. A tool the policy maps whose own reading is at least as strict as the hint's (an MCP adapter's
+        generic `mcp` against the deployment's `sql`) is no disagreement worth a gap."""
+        d, cls = self.policy.decide(tool, args, untrusted=untrusted), self.policy.tool_class(tool)
+        if hint is None or hint == cls:
             return d, False, d["rule_ids"]
         h = self.policy.decide(tool, args, hint if hint in policy_compile.CLASSES else "unknown", untrusted)
-        return (max(d, h, key=lambda x: STRICTNESS.index(x["verdict"])), True,
-                list(dict.fromkeys(d["rule_ids"] + h["rule_ids"])))
+        strict = max(d, h, key=lambda x: STRICTNESS.index(x["verdict"]))   # d on a tie
+        return strict, cls == "unknown" or strict is not d, list(dict.fromkeys(d["rule_ids"] + h["rule_ids"]))
 
     def _agent_rules(self, ids):
         """The rules among rule ids `ids` with approval.agent."""

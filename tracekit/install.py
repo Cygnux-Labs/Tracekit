@@ -286,6 +286,12 @@ def _backup(path, data):
         files.close(d)
 
 
+def user_settings():
+    """Claude Code's user settings file: in $CLAUDE_CONFIG_DIR when set (Claude Code's own setting for another config
+    dir), else ~/.claude."""
+    return os.path.join(os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude"), "settings.json")
+
+
 def install_hooks(settings_path, uninstall=False, owner=None, proxy_url=None, extra=None, mode=0o600, python=None,
                   module="tracekit.hook", signer=None):
     """Add (or remove) Tracekit's hooks in a Claude Code settings file. Idempotent; backs up the
@@ -1405,7 +1411,7 @@ def _installed_hooks():
     """Tracekit's hooks (events, v1/v2) in the user, project and managed Claude Code settings files that exist."""
     hooks = []
     seen = set()
-    for p in (os.path.expanduser("~/.claude/settings.json"), os.path.join(os.getcwd(), ".claude", "settings.json")):
+    for p in (user_settings(), os.path.join(os.getcwd(), ".claude", "settings.json")):
         if os.path.realpath(p) in seen:  # cwd is the home directory: one file, listed once
             continue
         seen.add(os.path.realpath(p))
@@ -1427,7 +1433,7 @@ def _installed_hooks():
 
 
 def uninstall(project=None):
-    settings = os.path.join(project, ".claude", "settings.json") if project else os.path.expanduser("~/.claude/settings.json")
+    settings = os.path.join(project, ".claude", "settings.json") if project else user_settings()
     if os.path.exists(settings):
         install_hooks(settings, uninstall=True)
     cfg = client.client_config()

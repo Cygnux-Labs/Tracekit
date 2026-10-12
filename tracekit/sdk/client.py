@@ -299,8 +299,9 @@ class Client:
         return self.call("register_run", {**(req or {}), **(
             {"parent": {"run_id": parent.run_id, "run_token": parent.run_token}} if parent else {})})
 
-    def call(self, method, req=None):
-        req = dict(req or {})
+    def call(self, method, req=None, **fields):
+        """`req` as a dict, or its fields as keywords (as RunHandle.call takes them)."""
+        req = {**(req or {}), **fields}
         if "request_id" in rpc_schema.REQUESTS[method]["properties"]:
             req.setdefault("request_id", _new_id())
         timeout = self.timeout + req.get("timeout_ms", 0) / 1000
@@ -464,10 +465,21 @@ def sendable(out):
         return False
 
 
+def named_rules(rule_ids):
+    """The rule ids a refusal names to the model: TK-UNKNOWN-TOOL only flags a tool the policy doesn't name, it never
+    refuses one."""
+    return ", ".join(r for r in rule_ids if r != "TK-UNKNOWN-TOOL")
+
+
 def result_field(send, out):
     """What `complete` carries as a tool's `result`: the result itself when `send` (the decision's `send_result`: an
     untrusted tool, whose result the signer redacts, commits to and indexes for provenance) and it is sendable, else
-    its digest (for an untrusted tool, the signer then marks the run's index partial)."""
+    its digest (for an untrusted tool, the signer then marks the run's index partial). A result JSON can't carry as
+    UTF-8 (a lone surrogate) is taken as its JSON text, escaped."""
+    try:
+        json.dumps(out, ensure_ascii=False).encode()
+    except UnicodeEncodeError:
+        out = json.dumps(out)
     return out if send and sendable(out) else event_hash(out)
 
 
@@ -511,10 +523,13 @@ class RunHandle:
         self.run_id, self.run_token = registered["run_id"], registered["run_token"]
         self.closed = False
         self._decided = {}   # tool_call_id -> the decision_id and args_digest its `complete` must name
+        self._untrusted = set()   # tool_call_ids whose decision asked for the result itself (send_result)
 
     def call(self, method, **fields):
-        """Any per-run RPC (`state_write`, `approval_wait`, `read`, ...) with this run's id and token."""
-        return self.client.call(method, {"run_id": self.run_id, "run_token": self.run_token, **fields})
+        """Any per-run RPC (`state_write`, `approval_wait`, `read`, `approval_list`, ...) with this run's id, and its
+        token where the method takes one."""
+        token = {"run_token": self.run_token} if "run_token" in rpc_schema.REQUESTS[method]["properties"] else {}
+        return self.client.call(method, {"run_id": self.run_id, **token, **fields})
 
     def decide(self, tool_call_id, tool, args, **fields):
         """`args` is the model's raw arguments string, or an already parsed value. Never raises SignerUnavailable:
@@ -535,12 +550,20 @@ class RunHandle:
         except (StrictJSONError, rfc8785.CanonicalizationError):
             return d   # the signer has no args digest to bind either; complete needs explicit fields
         self._decided[tool_call_id] = {"decision_id": d["decision_id"], "args_digest": digest}
+        if d.get("send_result"):
+            self._untrusted.add(tool_call_id)
         return d
 
     def complete(self, tool_call_id, status="ok", **fields):
         """Defaults decision_id and args_digest to those of the last `decide` for this tool call. Never raises: the
         call already ran, so a result the signer can't take is a warning (None), and the signer records the call as
-        decided and not completed when the run closes."""
+        decided and not completed when the run closes. A tool the policy marks untrusted should send its `result`
+        (result_field): without it the run's provenance index goes partial, so a warning says so."""
+        if tool_call_id in self._untrusted and "result" not in fields and status == "ok":
+            warnings.warn(f"tracekit: {tool_call_id} completed without its result, which the policy reads for "
+                          "provenance (an untrusted tool): pass result=result_field(d.get('send_result'), result)",
+                          stacklevel=2)
+        self._untrusted.discard(tool_call_id)
         try:
             return self.call("complete", tool_call_id=tool_call_id, status=status,
                              **{**self._decided.pop(tool_call_id, {}), **fields})
