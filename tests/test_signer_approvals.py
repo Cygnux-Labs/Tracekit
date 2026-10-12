@@ -340,6 +340,28 @@ class TestCli(unittest.TestCase):
         self.assertIn("approval_not_pending", again.stderr)
 
 
+    def test_a_refusal_and_an_empty_list_say_how_to_get_further(self):
+        d = ts.tmpdir(self)
+        cfg = {"data_dir": d, "socket": os.path.join(d, "s.sock")}   # a configured signer without an approvals section
+        service = svc.open_service(cfg, policy=ts.PAY_ASKS)
+        self.addCleanup(service.close)
+        for srv in svc.serve(cfg, service):
+            self.addCleanup(srv.server_close)
+            self.addCleanup(srv.shutdown)
+        listed = tracekit("approvals", "--signer", cfg["socket"], "list")
+        self.assertIn(f"no approvals uid:{os.getuid()} may see", listed.stdout)
+        self.assertIn("approvals.approvers", listed.stdout)
+        client = Client(cfg["socket"])
+        self.addCleanup(client.close)
+        run = client.run(agent="a")
+        run.decide("tc-1", "pay", PAY)
+        aid = run.call("approval_request", tool_call_id="tc-1")["approval_id"]
+        out = tracekit("approvals", "--signer", cfg["socket"], "approve", aid)
+        self.assertEqual(out.returncode, 1)
+        self.assertIn("may not answer its own run's approval", out.stderr)
+        self.assertIn("approvals.approvers lists, or set approvals: {self_approval: allow}", out.stderr)
+
+
 @unittest.skipUnless(os.name == "posix", "POSIX paths, signals and shells; DevSignerOverTcp (test_signer_dev.py) runs everywhere")
 class TestCliDevSigner(unittest.TestCase):
     def test_approve_round_trip_with_the_dev_signer(self):

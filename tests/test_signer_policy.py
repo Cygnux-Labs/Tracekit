@@ -345,6 +345,16 @@ class SignerPolicy(unittest.TestCase):
         self.assertEqual(res["decision_id"], d["decision_id"])
         self.assertEqual(svc.fsck(self.dir), [])
 
+    def test_an_oversize_denial_names_the_subject(self):
+        self.open(svc.load_policy(os.path.join(PACKS, "server.yaml")))
+        d = self.decide("book_hotel", {"ticket_no": "1" * (64 * 1024 + 1)})
+        self.assertEqual(d["decision"], "deny")
+        self.assertIn("TK-OVERSIZE", d["rule_ids"])
+        self.assertIn("TK-S002's subject (the whole arguments)", d["reason"])
+        [rec] = [e["data"] for e in self.events() if e["type"] == "policy.decision"]
+        self.assertEqual(rec["reasons"], [d["reason"]])
+        self.assertTrue(d["reason"].startswith("TK-OVERSIZE: over 64 KiB, so never matched: "), d["reason"])
+
     def test_every_decide_gets_a_fresh_decision_id_consumed_once(self):
         args = {"command": "ls"}
         first, second = self.decide("Bash", args), self.decide("Bash", args)

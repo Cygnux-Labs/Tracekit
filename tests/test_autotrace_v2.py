@@ -240,6 +240,27 @@ class Recording:
         c.chat.completions.create(model="m", messages=[], stream=True).close()
         self.assertIn("abandoned", self.exchanges()[0][1]["error"])
 
+    def test_a_response_the_signer_missed_is_sent_at_the_next_call_after_a_gap(self):
+        self.addCleanup(autotrace._UNSENT.clear)
+        signer = self.client.signer
+
+        def outage(r):   # the signer goes away while the model answers
+            self.client.close()
+            self.client.signer = "/nonexistent/tracekit.sock"
+            return 200, OPENAI_CHAT, False
+        self.assertEqual(openai_client(outage).chat.completions.create(model="m1", messages=[]).id, "c1")
+        # kept for the next flush: what the response record needs, not the request or the response itself
+        self.assertEqual([(ex.kwargs, ex.parsed, ex.stream) for ex in autotrace._UNSENT], [(None, None, None)])
+        self.client.signer = signer
+        self.assertIsNone(self.one()[1])
+        # back: the next call sends the missed response first
+        openai_client(lambda r: (200, OPENAI_CHAT, False)).chat.completions.create(model="m2", messages=[])
+        self.assertEqual([(req["model"], resp and resp["stop_reason"]) for req, resp in self.exchanges()],
+                         [("m1", "tool_calls"), ("m2", "tool_calls")])
+        kinds = [e["data"].get("kind") or e["data"].get("phase") for e in self.events(
+            {"run_id": self.run.run_id, "run_token": self.run.run_token}) if e["type"] != "run.registered"]
+        self.assertEqual(kinds[:3], ["request", "client_counter_gap", "response"])
+
     def test_runs_in_two_threads_do_not_mix(self):
         c, runs, errors = openai_client(lambda r: (200, OPENAI_CHAT, False)), {}, []
 
@@ -296,6 +317,14 @@ class FailMode(unittest.TestCase):
 
     def test_closed_refuses_before_sending(self):
         self.assertEqual(self.call({"default": "closed"}), (None, []))
+
+    def test_the_refusal_says_what_happened_and_what_to_do(self):
+        run = RunHandle(Client(signer="/nonexistent/tracekit.sock"), {"run_id": "r", "run_token": "t"})
+        autotrace.init(run=run)
+        self.addCleanup(autotrace.uninstrument)
+        with self.assertRaisesRegex(PermissionError, r"signer can't be reached .*fail mode for model calls is closed.*"
+                                                     r"tracekit doctor.*fail_modes: \{model: open\}"):
+            openai_client(lambda r: (200, OPENAI_CHAT, False)).chat.completions.create(model="m", messages=[])
 
     def test_model_class_overrides_default(self):
         self.assertEqual(self.call({"default": "closed", "model": "open"}), ("c1", [1]))

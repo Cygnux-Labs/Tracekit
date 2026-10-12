@@ -435,6 +435,28 @@ class TestMandatory(Gateway):
         self.decide(0, "tc-y")
         self.assertEqual(self.final(), [("reconcile.fabricated", "tc-y")])
 
+    def test_a_tool_named_agent_output_needs_a_decide_under_the_server_pack(self):
+        """The packs don't name Browser Use's output tool structured_output: else any agent could call a tool of its own
+        AgentOutput and run it with no decide, unseen."""
+        self.s.policy = svc.load_policy(os.path.join(os.path.dirname(svc.DEFAULT_POLICY), "server.yaml"))
+        self.assertFalse(self.s.policy.is_structured_output("AgentOutput"))
+        self.up.reply = ("json", dict(COMPLETION, choices=[{"index": 0, "finish_reason": "tool_calls", "message": {
+            "role": "assistant", "tool_calls": [dict(CALL, function={"name": "AgentOutput", "arguments": "{}"})]}}]))
+        self.assertEqual(self.post()[0], 200)
+        self.assertEqual(self.final(), [("reconcile.hook_missing", "call_1")])
+
+    def test_browser_use_actions_are_not_fabricated_under_the_browser_pack(self):
+        """Browser Use's actions come in the model's structured output, which carries no tool use: the browser pack
+        names them structured_output, so the gateway's exchanges without tool uses don't make them fabricated."""
+        self.s.policy = svc.load_policy(os.path.join(os.path.dirname(svc.DEFAULT_POLICY), "browser.yaml"))
+        self.up.reply = ("json", dict(COMPLETION, choices=[{"index": 0, "finish_reason": "stop", "message": {
+            "role": "assistant", "content": '{"action": [{"click": {"index": 3}}]}'}}]))
+        self.assertEqual(self.post()[0], 200)
+        self.s.call(AGENT, "decide", {"request_id": uuid.uuid4().hex, **self.run, "stream": "agent", "client_seq": 0,
+                                      "tool_call_id": "bu-1", "tool": "browser_use:click", "args_source": "parsed",
+                                      "args": {"index": 3, "page_url": "https://shop.example/"}})
+        self.assertEqual(self.final(), [])
+
 
 if __name__ == "__main__":
     unittest.main()

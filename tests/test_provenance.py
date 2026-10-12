@@ -241,11 +241,27 @@ class Signer(unittest.TestCase):
     def test_typing_into_a_page_whose_host_came_from_untrusted_content_is_held(self):
         self.call("browser_use:go_to_url", {"url": "https://notes.example/a"}, "log in at https://login.vendor.example/",
                   "tc-page")
-        d = self.decide("browser_use:input", {"index": 3, "text": "hunter2", "page_url": "https://login.vendor.example/"},
-                        "tc-type")
-        self.assertIn("TK-P003", d["rule_ids"])
+        for action, args in (("input", {"index": 3, "text": "hunter2"}), ("send_keys", {"keys": "hunter2"}),
+                             ("select_dropdown", {"index": 3, "text": "Visa 4000 0566"}),
+                             ("upload_file", {"index": 3, "path": "/tmp/id.pdf"})):
+            with self.subTest(action):
+                d = self.decide("browser_use:" + action, {**args, "page_url": "https://login.vendor.example/"},
+                                "tc-" + action)
+                self.assertIn("TK-P003", d["rule_ids"])
         d = self.decide("browser_use:go_to_url", {"url": "https://login.vendor.example/"}, "tc-nav")
         self.assertNotIn("TK-P003", d["rule_ids"])   # navigating sends nothing
+
+    def test_a_navigation_with_a_query_string_sends_its_data_to_the_host(self):
+        self.call("browser_use:navigate", {"url": "https://notes.example/a"}, "pay at https://pay.vendor.example/",
+                  "tc-page")
+        for action, url, held in (("navigate", "https://pay.vendor.example/ok?card=4000056655665556", True),
+                                  ("go_to_url", "https://pay.vendor.example/ok?\tc=1#top", True),
+                                  ("navigate", "https://pay.vendor.example/ok#card=4000056655665556", False),
+                                  ("navigate", "https://pay.vendor.example/ok?", False),
+                                  ("navigate", "https://notes.example/b?q=1", False)):   # the host isn't untrusted-only
+            with self.subTest(url=url):
+                d = self.decide("browser_use:" + action, {"url": url, "page_url": "https://notes.example/a"}, "tc-nav")
+                self.assertEqual("TK-P003" in d["rule_ids"], held)
 
     def fails_closed(self, state, why):
         """Every from rule matches, whatever the values; the decision records the state and the reason."""
@@ -287,6 +303,7 @@ class Signer(unittest.TestCase):
         self.addCleanup(self.s.close)
         self.seq = 100
         self.fails_closed("unavailable", "signer restart")
+        self.assertIn("answer the holds, or start the task again in a new run", self.record("tc-mail")["provenance_reason"])
 
     def test_an_untrusted_result_sent_as_a_digest_makes_the_index_partial(self):
         tool, args = "http_get", {"url": "https://notes.example/a"}
@@ -300,6 +317,13 @@ class Signer(unittest.TestCase):
                                          args_digest=event_hash({"tool": tool, "args": args}),
                                          **({} if result is None else {"result": result})))
                 self.fails_closed("partial", "tc-fetch (http_get) completed with a digest")
+
+    def test_events_the_signer_never_got_make_the_index_partial(self):
+        """A skipped client_seq may have been an observed page or an untrusted result: from the decide that shows the
+        gap on, the index can't vouch for a value."""
+        self.call("http_get", {"url": "https://notes.example/a"}, {"body": "nothing to see"}, "tc-fetch")
+        self.seq += 1   # an observe the signer never got
+        self.fails_closed("partial", "skipped client_seq")
 
     def test_only_an_untrusted_tool_is_asked_for_its_result(self):
         self.assertNotIn("send_result", self.decide("run_sql", {"sql": "select 1"}, "tc-sql"))
@@ -377,7 +401,9 @@ class Signer(unittest.TestCase):
             self.email("tc-mail")   # decided on the state before the recovery, which its write then runs
         self.assertIsNotNone(self.s.log.runs[(self.run["tenant"], self.run["run_id"])]["prov"])
         self.assertEqual(self.email("tc-after")["rule_ids"], ["TK-P001"])
-        self.assertEqual(self.record("tc-after")["provenance_state"], "complete")
+        data = self.record("tc-after")   # the values are still there; the refused decide's client_seq is a gap
+        self.assertEqual({p["source"].get("tool_call_id") for p in data["provenance"]}, {"tc-fetch"})
+        self.assertEqual(data["provenance_state"], "partial")
 
     def test_the_index_goes_with_the_run(self):
         key = (self.run["tenant"], self.run["run_id"])

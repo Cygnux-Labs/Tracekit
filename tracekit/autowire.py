@@ -8,10 +8,12 @@ signer; else $TRACEKIT_SIGNER), closes it when the process exits, and wires ever
 
 * OpenAI Agents SDK: the tools of every Agent built from now on are gated (TracekitAgents.tool);
 * LangGraph and LangChain: every ToolNode built from now on (create_agent builds one) gates its calls with
-  TracekitMiddleware, innermost, after any middleware's own wrap_tool_call;
+  TracekitMiddleware, innermost, after any middleware's own wrap_tool_call; its `ask` pauses whatever the node's
+  `handle_tool_errors`, and through `.with_fallbacks()`;
 * Claude Agent SDK: every ClaudeAgentOptions built from now on gets the PreToolUse and PostToolUse hooks
   (tracekit_hooks);
 * MCP client: every ClientSession.call_tool goes through TracekitSession;
+* Browser Use: the actions of every Tools built from now on (an Agent builds one) are gated (trace_tools);
 * the Anthropic, OpenAI and Google Gen AI clients: every model call (tracekit.autotrace).
 
 Idempotent: a second call returns the same run. Calls addressed to its run go to the current run while one is
@@ -184,7 +186,7 @@ def _openai_agents(run):
 def _langgraph(run):
     from langgraph.prebuilt.tool_node import ToolNode
 
-    from .integrations.langchain import TracekitMiddleware
+    from .integrations.langchain import TracekitMiddleware, pausing, with_fallbacks
     gate = TracekitMiddleware(run.client, run.run_id, run.run_token, run.registered.get("fail_modes"))
     init = ToolNode.__init__
 
@@ -197,8 +199,11 @@ def _langgraph(run):
             # no async wrapper of its own: ToolNode runs the sync one, gate included, for async calls too
             awrap_tool_call = (gate.awrap_tool_call if w is None else None) if aw is None else (
                 lambda req, h: aw(req, lambda r: gate.awrap_tool_call(r, h)))
+            if "handle_tool_errors" in kw:   # an ask pauses whatever the node's error handling
+                kw["handle_tool_errors"] = pausing(kw["handle_tool_errors"])
         init(self, tools, *a, wrap_tool_call=wrap_tool_call, awrap_tool_call=awrap_tool_call, **kw)
     ToolNode.__init__ = gated
+    ToolNode.with_fallbacks = with_fallbacks   # and through the fallbacks the node is wrapped in
 
 
 def _claude_agent_sdk(run):
@@ -237,25 +242,54 @@ def _mcp(run):
 
     from .integrations.mcp import TracekitSession
     call_tool = ClientSession.call_tool
-    gates, stream = weakref.WeakKeyDictionary(), {}
+    gates, stream, servers = weakref.WeakKeyDictionary(), {}, weakref.WeakKeyDictionary()
 
     @functools.wraps(call_tool)
     async def gated(self, *a, **kw):
         if self not in gates:   # every session shares one signer stream: a run allows 64 (quotas.streams_per_run)
-            g = gates[self] = TracekitSession(_Unpatched(self, call_tool), run.client, run.registered)
+            g = gates[self] = TracekitSession(_Unpatched(self, call_tool), run.client, run.registered,
+                                              server=servers.get(self))
             g.stream, g._seq, g._lock = stream.setdefault("s", (g.stream, g._seq, g._lock))
         return await gates[self].call_tool(*a, **kw)
     ClientSession.call_tool = gated
+    if hasattr(ClientSession, "server_info"):
+        return
+    initialize = ClientSession.initialize   # mcp 1.x: only initialize()'s result names the server
+
+    @functools.wraps(initialize)
+    async def named(self, *a, **kw):
+        out = await initialize(self, *a, **kw)
+        servers[self] = out.serverInfo.name
+        return out
+    ClientSession.initialize = named
 
 
-# name, distribution, tested versions [lo, hi), the pip requirement, its quickstart, wire(run)
+def _browser_use(run):
+    from browser_use import Tools
+
+    from .integrations import browser_use
+    init = Tools.__init__
+    # every Tools shares one signer stream: a run allows 64 (quotas.streams_per_run)
+    actions = browser_use._actions(run.client, run.registered)
+
+    @functools.wraps(init)
+    def gated(self, *a, **kw):
+        init(self, *a, **kw)
+        browser_use._wrap(self, actions)
+    Tools.__init__ = gated
+
+
+# name, distribution, tested versions [lo, hi), the pip requirement, its page under docs/, wire(run)
 FRAMEWORKS = (
-    ("OpenAI Agents SDK", "openai-agents", (0, 23, 1), (0, 24), "openai-agents>=0.23.1,<0.24", "openai-agents",
-     _openai_agents),
-    ("LangGraph", "langgraph", (1, 2), (1, 3), "langchain>=1.4,<1.5 langgraph>=1.2,<1.3", "langchain", _langgraph),
-    ("Claude Agent SDK", "claude-agent-sdk", (0, 2, 165), (0, 3), "claude-agent-sdk>=0.2.165,<0.3", "claude-agent-sdk",
-     _claude_agent_sdk),
-    ("MCP client", "mcp", (2, 3), (2, 4), "mcp>=2.3,<2.4", "mcp", _mcp),
+    ("OpenAI Agents SDK", "openai-agents", (0, 23, 1), (0, 24), "openai-agents>=0.23.1,<0.24",
+     "quickstarts/openai-agents", _openai_agents),
+    ("LangGraph", "langgraph", (1, 2), (1, 3), "langchain>=1.4,<1.5 langgraph>=1.2,<1.3", "quickstarts/langchain",
+     _langgraph),
+    ("Claude Agent SDK", "claude-agent-sdk", (0, 2, 165), (0, 3), "claude-agent-sdk>=0.2.165,<0.3",
+     "quickstarts/claude-agent-sdk", _claude_agent_sdk),
+    ("MCP client", "mcp", (2, 3), (2, 4), "mcp>=2.3,<2.4", "quickstarts/mcp", _mcp),
+    ("Browser Use", "browser-use", (0, 13, 11), (0, 14), "browser-use>=0.13.11,<0.14", "integrations/browser-use",
+     _browser_use),
 )
 
 
@@ -303,8 +337,8 @@ def instrument(agent=None):
         found = [(f, v) for f in FRAMEWORKS if (v := _version(f[1]))]
         if not found and not any(map(_version, MODEL_SDKS)):
             warnings.warn("tracekit.instrument(): none of the frameworks or model SDKs it wires is installed (OpenAI "
-                          "Agents SDK, LangGraph, Claude Agent SDK, MCP, OpenAI, Anthropic, Google Gen AI); nothing "
-                          "is recorded. Record calls yourself: docs/quickstarts/custom.md", stacklevel=2)
+                          "Agents SDK, LangGraph, Claude Agent SDK, MCP, Browser Use, OpenAI, Anthropic, Google Gen "
+                          "AI); nothing is recorded. Record calls yourself: docs/quickstarts/custom.md", stacklevel=2)
             return None
         script = sys.argv[0] if sys.argv and sys.argv[0] not in ("", "-c") else "python"
         name = agent or os.environ.get("TRACEKIT_AGENT") or os.path.splitext(os.path.basename(script))[0]
@@ -324,7 +358,7 @@ def instrument(agent=None):
             except Exception as e:
                 warnings.warn(f"tracekit.instrument(): {label} {version} not wired ({type(e).__name__}: {e}). "
                               f"Tracekit is tested with {req}: install those, or wire it by hand "
-                              f"(docs/quickstarts/{page}.md)", stacklevel=2)
+                              f"(docs/{page}.md)", stacklevel=2)
                 continue
             if not lo <= _release(version) < hi:
                 warnings.warn(f"tracekit.instrument(): {label} {version} is wired but untested; Tracekit is tested "
