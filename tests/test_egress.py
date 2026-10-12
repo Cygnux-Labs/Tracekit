@@ -2,18 +2,19 @@
 against the run's calls, the gateways and the policy's explains; observer heartbeats on the tailer machinery; late and
 unattributed effects; the coverage matrix in run.final and the verifier; the proxy's SNI, IP and DoH refusals."""
 import base64
-import http.client
+import concurrent.futures
 import ipaddress
 import json
 import math
 import os
 import socket
 import ssl
+import subprocess
+import sys
 import threading
 import time
 import types
 import unittest
-import urllib.request
 from unittest import mock
 
 from test_signer_lifecycle import Lifecycle
@@ -435,19 +436,26 @@ class TestProxy(unittest.TestCase):
         s, status = self.connect(f"localhost:{self.up.port}")
         self.assertEqual(status, "HTTP/1.1 200 Connection established")
 
-    def test_an_sdk_run_attributes_its_processes_traffic_by_token(self):
+    def test_an_sdk_run_gives_its_token_to_the_commands_it_starts_and_leaves_this_process_alone(self):
         proxy = f"http://{self.srv.server_address[0]}:{self.srv.server_address[1]}"
-        with mock.patch.dict(os.environ, {"TRACEKIT_EGRESS_PROXY": proxy}):
-            for k in ("NO_PROXY", "no_proxy"):
-                os.environ.pop(k, None)
-            sdk_client._use_egress({"run_id": "run-2", "run_token": "t/k+n=.m"})
-            self.assertEqual(os.environ["HTTPS_PROXY"], os.environ["http_proxy"])
-            with self.assertRaises(http.client.BadStatusLine):   # through the proxy from the env; `pong` isn't HTTP
-                urllib.request.urlopen(f"http://localhost:{self.up.port}/", timeout=5)
+        reply = concurrent.futures.Future()
+        reply.set_result({"run_id": "run-2", "run_token": "t/k+n=.m"})
+        with mock.patch.dict(os.environ, {"TRACEKIT_EGRESS_PROXY": proxy}), \
+                mock.patch.object(sdk_client.Client, "_send", return_value=reply):
+            before = dict(os.environ)
+            run = sdk_client.Client("unused.sock").run("a")
+            self.assertEqual(dict(os.environ), before)   # the app's own connections and Tracekit's stay direct
+            self.assertEqual(run.proxy_env["HTTPS_PROXY"], run.proxy_env["http_proxy"])
+            env = {k: v for k, v in {**os.environ, **run.proxy_env}.items() if k.lower() != "no_proxy"}
+        get = f"import urllib.request; urllib.request.urlopen('http://localhost:{self.up.port}/', timeout=5)"
+        r = subprocess.run([sys.executable, "-c", get], env=env, capture_output=True, text=True, timeout=60)
+        self.assertIn("BadStatusLine", r.stderr)   # through the proxy from its env; `pong` isn't HTTP
         self.assertTrue(self.up.got[0].startswith(b"GET / HTTP/1.1\r\n"))
         self.srv.observer.flush(math.inf)
         (e,) = self.sent[-1]["effects"]
         self.assertEqual((e["run_id"], e["run_token"], e["host"]), ("run-2", "t/k+n=.m", "localhost"))
+        with mock.patch.dict(os.environ, clear=True):
+            self.assertEqual(run.proxy_env, {})
 
     def test_totals_the_signer_did_not_take_are_sent_again(self):
         self.srv.observer.add(("token", "run-1", "tok.mac", None), "a.example", 443, 5, 6, True)

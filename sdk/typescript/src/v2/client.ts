@@ -353,12 +353,10 @@ export class Client {
   /** Register a run (`agent` is a name or {name, version}, `parent` the handle of the run starting it, such as a
    * sub-agent's parent: the signer records the link); the handle holds its run token. */
   async registerRun(agent: string | { name: string; version?: string }, fields: Frame = {}, parent?: RunHandle): Promise<RunHandle> {
-    const run = await this.call("register_run", {
+    return new RunHandle(this, await this.call("register_run", {
       agent: typeof agent === "string" ? { name: agent } : agent, ...fields,
       ...(parent ? { parent: { run_id: parent.runId, run_token: parent.runToken } } : {}),
-    });
-    useEgress(run);
-    return new RunHandle(this, run);
+    }));
   }
 
   /** `request_id`, `stream` and `client_seq` are filled in when missing. */
@@ -524,18 +522,6 @@ function startDevSigner(): Promise<void> {
   });
 }
 
-/** With $TRACEKIT_EGRESS_PROXY (an egress observer, docs/egress.md), point this process's children's HTTP(S)_PROXY
- * at it with the run's id and token as credentials, so their connections are attributed to the run. */
-function useEgress(run: Frame): void {
-  const proxy = process.env.TRACEKIT_EGRESS_PROXY;
-  if (!proxy) return;
-  const u = new URL(proxy);
-  u.username = encodeURIComponent(run.run_id);
-  u.password = encodeURIComponent(run.run_token);
-  // lean: one process-wide setting, the latest run's; concurrent runs in one process need a proxy per client
-  for (const k of ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"]) process.env[k] = u.href;
-}
-
 /** Whether a call of `toolClass` may run while the signer cannot be reached: its entry in register_run's
  * `fail_modes`, else their `default`, else closed. A refusal from the signer is never a reason to fail open. */
 export function failOpen(failModes: Record<string, string> | undefined, toolClass?: string): boolean {
@@ -565,6 +551,19 @@ export class RunHandle {
     this.runId = registered.run_id;
     this.runToken = registered.run_token;
     this.failModes = registered.fail_modes;
+  }
+
+  /** With $TRACEKIT_EGRESS_PROXY set (an egress observer, docs/egress.md#attribution): HTTPS_PROXY and HTTP_PROXY,
+   * both cases, naming it with this run's id and token as credentials, for the commands the run starts
+   * (`spawn(cmd, args, { env: { ...process.env, ...run.proxyEnv } })`) or an HTTP client's proxy, so the observer
+   * attributes their connections to this run. {} without it. This process's own environment is left as it is. */
+  get proxyEnv(): Record<string, string> {
+    const proxy = process.env.TRACEKIT_EGRESS_PROXY;
+    if (!proxy) return {};
+    const u = new URL(proxy);
+    u.username = encodeURIComponent(this.runId);
+    u.password = encodeURIComponent(this.runToken);
+    return Object.fromEntries(["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"].map((k) => [k, u.href]));
   }
 
   /** Any per-run RPC with this run's id and token. */

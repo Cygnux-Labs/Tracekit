@@ -1,5 +1,6 @@
 import os
 import sys
+import urllib.request
 from unittest import mock
 
 import pytest
@@ -21,6 +22,7 @@ MARKERS = {
 
 # settings a developer's shell may carry that would change what the signer, hook or client does under test
 SHELL_ENV = ("TRACEKIT_POLICY", "TRACEKIT_SOCKET", "TRACEKIT_CLIENT_HOME")
+PROXIES = urllib.request.getproxies()
 
 
 def pytest_configure(config):
@@ -47,6 +49,13 @@ def _no_shell_env():
 
 @pytest.fixture(autouse=True)
 def _isolated_env():
-    """Whatever a test does to os.environ is undone after it."""
+    """Whatever a test does to os.environ is undone after it. urlopen's shared opener keeps the proxies it read when it
+    was built, which no restore undoes: built under a test's proxy settings, it would send every later urlopen there."""
     with mock.patch.dict(os.environ):
         yield
+    leaked = [h.proxies for h in getattr(urllib.request._opener, "handlers", ())
+              if isinstance(h, urllib.request.ProxyHandler) and h.proxies != PROXIES]
+    if leaked:
+        urllib.request.install_opener(None)
+        pytest.fail(f"urlopen ran under this test's proxy settings {leaked}: give it an opener of its own "
+                    "(urllib.request.build_opener) or run it in a child process")

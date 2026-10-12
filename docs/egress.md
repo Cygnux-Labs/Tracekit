@@ -41,17 +41,25 @@ The signer refuses an observation from an identity that owns the run it is about
 
 Each request through the proxy is attributed to a run:
 
-- **by token**: `Proxy-Authorization: Basic base64(<run_id>:<run token>)`, which clients send when
-  `HTTPS_PROXY=https://<run_id>:<run token>@egress:3128` is set for the agent's processes. With
-  `TRACEKIT_EGRESS_PROXY=https://egress:3128` in its environment, the Python and TypeScript SDKs set it (and
-  `HTTP_PROXY`) on every `register_run`, so commands the agent starts are attributed to its run; set `NO_PROXY` for the
-  signer and custody services it reaches directly. When the connection also
-  presents a client certificate, that identity goes with it as `client`: a gateway's or the executor's connection for
-  a run is then explained by it.
+- **by token**: `Proxy-Authorization: Basic base64(<run_id>:<run token>)`, which clients send when their proxy is
+  `https://<run_id>:<run token>@egress:3128`. With `TRACEKIT_EGRESS_PROXY=https://egress:3128` in the agent's
+  environment, a Python or TypeScript SDK run's `proxy_env` (`proxyEnv`) holds `HTTPS_PROXY` and `HTTP_PROXY` with its
+  credentials: give it to the commands the run starts (`subprocess.run(cmd, env={**os.environ, **run.proxy_env})`)
+  or to an HTTP client as its proxy. The SDKs never change the process's own environment, so the agent's other
+  connections go where they went before. When the connection also presents a client certificate, that identity goes
+  with it as `client`: a gateway's or the executor's connection for a run is then explained by it.
 - **by identity**: the identity the authenticators accept (a client certificate, or `Proxy-Authorization: Bearer
   <token>`), or on Linux the uid that owns a loopback client's socket. The signer gives the observation to that
   identity's latest open run (`attribution: identity` in the record).
 - neither: the proxy answers 407 with what to send.
+
+To send the agent process's own traffic through the observer too, the deployment sets `HTTPS_PROXY` (and
+`HTTP_PROXY`) for it, without a run token: attributed by identity. Tracekit's own clients (the SDKs' signer
+connections, the Python executor tools) never use a proxy, but other clients in the agent that honour `HTTPS_PROXY`
+(a model SDK pointed at the LLM gateway, an MCP client) would send requests for the cluster's own services to the
+observer, which refuses them as private addresses (403). List the signers and custody services in `NO_PROXY`:
+`.svc,.cluster.local` on Kubernetes, the service names (`signer,gateway,executor,mcp-gateway`) in compose. A run's
+`proxy_env` merged over `os.environ` keeps that `NO_PROXY` for its commands.
 
 An observation whose token the signer did not issue, is for another run or tenant, or whose identity has no open run,
 goes into the tenant's signer run as a `capture.gap{kind: effect_outside_run}` naming the host, the traffic and why,

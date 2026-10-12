@@ -140,8 +140,9 @@ mcpGateway:
 # The egress observer (docs/egress.md), on 3128: a CONNECT proxy for the agents' outside traffic, which records each
 # run's hosts as the signer identity k8s_sa:system:serviceaccount:<namespace>:<release>-egress: grant it
 # observe_effect in signer.config `authorize`. config is its egress.yaml without http and signer (allow); agents set
-# HTTPS_PROXY=https://<run_id>:<run token>@<release>-egress.<namespace>.svc:3128 (the SDKs do it per run with
-# TRACEKIT_EGRESS_PROXY=https://<release>-egress.<namespace>.svc:3128). No secretName: it holds none.
+# HTTPS_PROXY=https://<release>-egress.<namespace>.svc:3128 with NO_PROXY=.svc,.cluster.local, and their runs'
+# commands get their own credentials from the SDKs' run.proxy_env with TRACEKIT_EGRESS_PROXY set to that URL.
+# No secretName: it holds none.
 egress:
   enabled: false
   config: {}
