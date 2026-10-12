@@ -388,6 +388,9 @@ def _run(a):
             except install.SettingsError as e:
                 print(f"tracekit: {e}", file=sys.stderr)
                 return 1
+            except install.ServiceError as e:
+                print(f"tracekit: installed, but {e}", file=sys.stderr)
+                return 1
             print(f"v2 signer installed as a separate user; socket {sock}; config {install.V2_CONFIG}; "
                   f"hooks: {settings or 'not installed'}")
             return 0
@@ -450,6 +453,9 @@ def _run(a):
                                                 harnesses=a.harness, agent=a.agent, allow_privileged=a.allow_privileged)
         except install.SettingsError as e:
             print(f"tracekit: {e}", file=sys.stderr)
+            return 1
+        except install.ServiceError as e:
+            print(f"tracekit: installed, but {e}", file=sys.stderr)
             return 1
         print(f"tracekitd installed as a separate user; socket {cfg['socket']}; hooks: {settings or 'not installed'}")
         return 0

@@ -49,10 +49,18 @@ class Signer:
     is its policy's YAML (`extends: packs/server.yaml` reaches the shipped packs). The person at this terminal (your
     uid, the approver alice) reaches it on a Unix socket, which the tracekit commands here use ($TRACEKIT_SIGNER).
     Each name in `tokens` ({name: methods it may call}) is the identity token:<name> on loopback HTTP; `reviewers`
-    names the agent approvers among them. POSIX only: the person is a uid."""
+    names the agent approvers among them. POSIX only: the person is a uid. Leaves no process or temp dir behind,
+    also when it fails to start or is interrupted."""
 
     def __init__(self, policy, tokens, reviewers=(), **config):
-        self.dir = tempfile.mkdtemp(prefix="tk-")
+        self.dir, self.proc = tempfile.mkdtemp(prefix="tk-"), None
+        try:
+            self._start(policy, tokens, reviewers, config)
+        except BaseException:   # SystemExit and KeyboardInterrupt too: no __exit__ runs for a with that never began
+            self.__exit__()
+            raise
+
+    def _start(self, policy, tokens, reviewers, config):
         shutil.copytree(PACKS, os.path.join(self.dir, "packs"))
         with open(os.path.join(self.dir, "policy.yaml"), "w") as f:
             f.write(policy)
@@ -89,8 +97,9 @@ class Signer:
         return self
 
     def __exit__(self, *exc):
-        self.proc.terminate()
-        self.proc.wait()
+        if self.proc is not None:
+            self.proc.terminate()
+            self.proc.wait()
         shutil.rmtree(self.dir, True)
 
 

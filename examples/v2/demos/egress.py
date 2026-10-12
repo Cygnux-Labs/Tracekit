@@ -48,20 +48,24 @@ with Signer(POLICY, {"egress": ["observe_effect"]}, observe_grace_s=1, authorize
     proxy = subprocess.Popen([sys.executable, "-m", "tracekit", "egress", "serve", "--config", config],
                              stdout=subprocess.PIPE, text=True,
                              env={**os.environ, "TRACEKIT_SIGNER_TOKEN_FILE": signer.token("egress")})
-    os.environ["TRACEKIT_EGRESS_PROXY"] = "http://" + proxy.stdout.readline().split()[-1]   # its address
-    time.sleep(1)   # lean: a second for its first heartbeat, which covers the runs after it; poll if hosts miss it
-    with Client(os.environ["TRACEKIT_SIGNER"]).run(agent="coding-agent") as run:   # the Unix socket
-        args = {"command": "./install.sh"}
-        d = run.decide("call-1", "Bash", args)
-        print(f"Bash {args['command']!r}: {d['decision']} {' '.join(d['rule_ids'])}".rstrip())
-        env = {k: v for k, v in os.environ.items() if k.lower() != "no_proxy"}   # localhost goes through it too
-        out = subprocess.run([sys.executable, "-c", INSTALL, url], env={**env, **run.proxy_env}, capture_output=True,
-                             text=True)
-        print(f"  the script fetched {url}: {out.stdout.strip() or out.stderr.strip()}")
-        run.complete("call-1")
-        proxy.terminate()   # on SIGTERM the observer reports every total it holds
+    try:
+        os.environ["TRACEKIT_EGRESS_PROXY"] = "http://" + proxy.stdout.readline().split()[-1]   # its address
+        time.sleep(1)   # lean: a second for its first heartbeat, which covers the runs after it; poll if hosts miss it
+        with Client(os.environ["TRACEKIT_SIGNER"]).run(agent="coding-agent") as run:   # the Unix socket
+            args = {"command": "./install.sh"}
+            d = run.decide("call-1", "Bash", args)
+            print(f"Bash {args['command']!r}: {d['decision']} {' '.join(d['rule_ids'])}".rstrip())
+            env = {k: v for k, v in os.environ.items() if k.lower() != "no_proxy"}   # localhost goes through it too
+            out = subprocess.run([sys.executable, "-c", INSTALL, url], env={**env, **run.proxy_env},
+                                 capture_output=True, text=True)
+            print(f"  the script fetched {url}: {out.stdout.strip() or out.stderr.strip()}")
+            run.complete("call-1")
+            proxy.terminate()   # on SIGTERM the observer reports every total it holds
+            proxy.wait()
+        code = export_and_verify(run.run_id, signer.config)
+    finally:   # an error or ^C on the way: no observer left running (terminating it again is a no-op)
+        proxy.terminate()
         proxy.wait()
-    code = export_and_verify(run.run_id, signer.config)
 print("\nwhat the observer saw and the signer made of it:")
 show(f"{run.run_id}.tkb", "policy.decision", "effect.observed", "reconcile.unexplained_effect", "incident.opened")
 sys.exit(code)
