@@ -121,17 +121,20 @@ class Bridge:
 
     @staticmethod
     def blocks(a, state=None, user=None, answered=None):
-        args = a["args"] if isinstance(a["args"], str) or a["args"] is None else json.dumps(a["args"], indent=2)
+        def one(v):
+            """Agent-supplied text on one line, quoted: no newline in it can start a line that reads as the signer's."""
+            return json.dumps(v, ensure_ascii=False)
         lines = [f"Tool: {a['tool']}", f"Run: {a['run_id']}", f"Call: {a['tool_call_id']} attempt {a['attempt']}",
-                 f"Rules: {', '.join(a['rule_ids'])}", f"Requested by: {a['requester']}", f"Expires: {a['expires_at']}",
-                 "Arguments (the signer's redacted copy):", "(deleted)" if args is None else args]
-        if "reason" in a:
-            lines.append(f"Reason given by the agent (unverified): {a['reason']}")
+                 f"Rules: {', '.join(a['rule_ids'])}", f"Requested by: {a['requester']}", f"Expires: {a['expires_at']}"]
         esc = a.get("escalation")
         if esc:
             lines.append("Escalated to people by " + (
-                f"the reviewer agent: {esc.get('reason', 'no reason given')} (model output, over arguments the "
+                f"the reviewer agent: {one(esc.get('reason', 'no reason given'))} (model output, over arguments the "
                 "requesting agent supplied)" if esc["by"] == "agent" else f"the signer: {esc.get('reason', '')}"))
+        # what the agent supplied comes last, so Slack's length cut can only shorten it, never the signer's lines
+        if "reason" in a:
+            lines.append(f"Reason given by the agent (unverified): {one(a['reason'])}")
+        lines.append("Arguments (the signer's redacted copy): " + ("(deleted)" if a["args"] is None else one(a["args"])))
         out = [{"type": "section", "text": {"type": "plain_text", "text": "\n".join(lines)[:2900]}},
                {"type": "context", "elements": [{"type": "plain_text", "text": a["approval_id"]}]}]
         if state == "requested":

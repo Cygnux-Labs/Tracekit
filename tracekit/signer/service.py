@@ -2588,7 +2588,11 @@ class SignerService:
             if isinstance(host, str) and d["decision"] != "deny" and run.get("rec") is not None:   # explains its traffic
                 # lean: hosts are memory and snapshot state; after a restart with no snapshot since, the run's earlier
                 # http calls no longer explain an observed host (an unexplained_effect warning)
-                tx.set(reconcile.sub(tx.set, run["rec"], "hosts"), host.lower().rstrip("."), True)
+                h = host.lower().rstrip(".")
+                if d["decision"] in ("allow", "flag"):
+                    tx.set(reconcile.sub(tx.set, run["rec"], "hosts"), h, True)
+                else:   # an ask explains its host once its approval is consumed: asking alone allows nothing
+                    tx.set(reconcile.sub(tx.set, run["rec"], "asked_hosts"), tcid, h)
             for kind, reason in gaps:
                 tx.emit(run, "capture.gap", {"kind": kind, "reason": reason, "tool_use_id": tcid}, source="signer",
                         tool_call_id=tcid)
@@ -3219,6 +3223,12 @@ class SignerService:
                     out["args"] = None   # filled in below: the request_id cache keeps no arguments
                 tx.set(a, "state", "consumed")
                 tx.emit(run, "approval.consumed", {"approval_id": aid}, source="signer", **top)
+                rec = run.get("rec")
+                if rec is not None:   # an approved call explains what it was decided for (reconcile.explained)
+                    if tcid in rec["l2"]:
+                        tx.set(rec["l2"][tcid], "approved", True)
+                    if tcid in rec.get("asked_hosts", {}):
+                        tx.set(reconcile.sub(tx.set, rec, "hosts"), rec["asked_hosts"][tcid], True)
                 return out
             data = {"tool_use_id": tcid, "rule_ids": [why[0]], "reason": why[1]}
             if a is not None:
@@ -3397,7 +3407,12 @@ class SignerService:
         obs, tenant = subject(identity), self._tenant_of(identity)
         if len(obs) > 256:   # each record names it in full
             raise RPCError("forbidden", f"{obs[:64]}...: an observer's identity is at most 256 characters")
-        self.quotas.take_event(identity)
+        if "check" in req:   # before anything is charged: a made-up token must not spend the observer's events
+            why = self._attributed(tenant, req["check"])[2]
+            if why:
+                raise RPCError("run_token_invalid", why)
+        if req["effects"] or "check" not in req:   # one token check per proxied connection costs no event
+            self.quotas.take_event(identity)
         now = time.monotonic()
         with self._beats_lock:
             before = self._observers.get((tenant, obs))
@@ -3412,10 +3427,6 @@ class SignerService:
         if restarted:
             self.log.write(lambda tx: [self._observer_lost(tx, self.log.runs[k[:2]], obs) for k in restarted
                                        if not self.log.runs[k[:2]]["final"]])
-        if "check" in req:
-            why = self._attributed(tenant, req["check"])[2]
-            if why:
-                raise RPCError("run_token_invalid", why)
         if not req["effects"]:
             return {"recorded": 0}
         labels = {r["id"]: r["label"] for _, r, *_ in self.policy.rules if "label" in r}

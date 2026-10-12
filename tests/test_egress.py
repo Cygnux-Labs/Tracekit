@@ -27,7 +27,7 @@ from tracekit.policy2 import compile as policy_compile
 from tracekit.policy2.engine import Engine
 from tracekit.sdk import client as sdk_client
 from tracekit.sdk.client import SignerUnavailable
-from tracekit.signer import service as svc
+from tracekit.signer import reconcile, service as svc
 from tracekit.signer.rpc_schema import RPCError
 from tracekit.verify import v2
 
@@ -159,6 +159,19 @@ class TestReconciliation(Observed):
             self.assertEqual(cm.exception.code, "run_token_invalid")
             self.assertIn("not one this signer issued for that run", cm.exception.message)
 
+    def test_a_token_check_spends_no_event_and_a_made_up_one_is_refused_first(self):
+        run = self.covered()
+        empty = RPCError("quota_exceeded", "event rate limit", retry_after_ms=1000)
+        with mock.patch.object(self.s.quotas, "take_event", side_effect=empty) as take:
+            self.assertEqual(self.observe(check=run), {"recorded": 0})   # with the observer's bucket empty
+            for _ in range(50):   # made-up tokens: refused, and nothing spent
+                with self.assertRaises(RPCError) as cm:
+                    self.observe(check={"run_id": run["run_id"], "run_token": "made.up"})
+                self.assertEqual(cm.exception.code, "run_token_invalid")
+            take.assert_not_called()
+            with self.assertRaises(RPCError):   # a heartbeat or effects still spend it
+                self.observe()
+
     def test_after_run_final_an_effect_goes_in_the_tenants_signer_run(self):
         run = self.covered()
         self.call("close_run", run)
@@ -183,6 +196,33 @@ class TestReconciliation(Observed):
         mine = self.register()
         self.refused("forbidden", "observe_effect", {"instance": "i", "effects": [effect("x.example", **mine)]})
         self.assertIn("observe_effect", svc.NEVER_DEFAULT)
+
+
+class AskedOnly(Observed):
+    """A call only asked for (an approval never granted) explains no traffic to its host."""
+
+    def open(self):
+        super().open()
+        self.s.close()
+        policy = {**POLICY, "ask": [{"id": "ASK", "tool": "fetch", "pattern": "asked"}]}
+        self.s = svc.SignerService(self.dir, policy=Engine(policy), grace_s=0, idle_s=3600, observe_grace_s=60,
+                                   authorize={"mtls:spiffe://acme/egress": ["observe_effect"],
+                                              f"uid:{ME.subject}": sorted(svc.DEFAULT_GRANTS)})
+
+    def test_a_host_only_asked_for_is_unexplained(self):
+        run = self.covered()
+        d = self.call("decide", self.ev(run, 0, tool_call_id="t1", tool="fetch", args_source="parsed",
+                                        args={"url": "https://asked.example/"}))
+        self.assertEqual(d["decision"], "ask")
+        self.observe(effect("asked.example", **run))
+        self.assertEqual(len(self.typed(self.final(run), "reconcile.unexplained_effect")), 1)
+
+    def test_an_ask_explains_through_explains_only_once_approved(self):
+        rec = {"l2": {"t1": {"name": "fetch", "decision": "ask", "rules": ["ASK"]}}}
+        explains = [{"tool": "fetch", "hosts": ["cdn.example.net"]}]
+        self.assertIsNone(reconcile.explained(rec, "cdn.example.net", explains, {}))
+        rec["l2"]["t1"]["approved"] = True
+        self.assertEqual(reconcile.explained(rec, "cdn.example.net", explains, {}), "explains")
 
 
 class TestHeartbeats(Observed):
@@ -526,6 +566,32 @@ class TestProxy(unittest.TestCase):
         calls = [c[0][0] for c in self.client.observe_effect.call_args_list]
         self.assertEqual([(c["request_id"], c["effects"][0]["host"]) for c in calls], [(rid, "a.example")] * 2)
 
+    def test_a_rate_limited_heartbeat_is_a_failure_and_its_totals_are_kept(self):
+        self.srv.observer.add(("token", "run-1", "tok.mac", None), "a.example", 443, 5, 6, True)
+        limited = RPCError("quota_exceeded", "event rate limit", retry_after_ms=500)
+        self.client.observe_effect = mock.Mock(side_effect=[limited, None])
+        self.assertFalse(self.srv.observer.flush(math.inf))
+        self.assertTrue(self.srv.observer.flush(math.inf))
+        calls = [c[0][0] for c in self.client.observe_effect.call_args_list]
+        self.assertEqual(calls[0], calls[1])   # the same totals, the same request id
+
+    def test_failed_token_checks_are_limited_per_address_before_the_signer_is_asked(self):
+        asked = []
+
+        def observe_effect(req):
+            asked.append(req)
+            raise RPCError("run_token_invalid", "not one this signer issued for that run")
+        self.client.observe_effect = observe_effect
+        made_up = "Basic " + base64.b64encode(b"run-1:made.up").decode()
+        statuses = []
+        for _ in range(30):
+            s, status = self.connect(f"localhost:{self.up.port}", made_up)
+            statuses.append(status.split()[1])
+            s.close()
+        self.assertIn("429", statuses)
+        self.assertLess(len(asked), 30)   # past the limit the signer isn't asked
+        self.assertEqual(set(statuses[len(asked):]), {"429"})
+
     def test_a_refused_total_is_split_out_and_never_dropped(self):
         for h in ("a.example", "refused.example", "c.example"):
             self.srv.observer.add(("token", "run-1", "tok.mac", None), h, 443, 1, 1, True)
@@ -602,6 +668,29 @@ class TestProxy(unittest.TestCase):
             time.sleep(0.001)
         self.assertTrue(self.read(s).startswith(b"HTTP/1.1 204"))
         self.assertEqual(got, [body])
+
+    def test_a_plain_http_body_is_streamed_not_held_whole(self):
+        up, early, got = socket.create_server(("127.0.0.1", 0)), threading.Event(), []
+        self.addCleanup(up.close)
+
+        def serve():
+            c, _ = up.accept()
+            with c, c.makefile("rb") as f:
+                head = b""
+                while not head.endswith(b"\r\n\r\n"):
+                    head += f.readline()
+                got.append(f.read(1000))
+                early.set()   # the head and the first bytes, before the client sent the rest
+                got.append(f.read(1000))
+                c.sendall(b"HTTP/1.1 204 No Content\r\n\r\n")
+        threading.Thread(target=serve, daemon=True).start()
+        s = socket.create_connection(self.srv.server_address[:2], 5)
+        s.sendall(f"POST http://localhost:{up.getsockname()[1]}/u HTTP/1.1\r\nContent-Length: 2000\r\n"
+                  f"Proxy-Authorization: {self.auth}\r\n\r\n".encode() + b"a" * 1000)
+        self.assertTrue(early.wait(5), "the proxy held the body back until all of it had arrived")
+        s.sendall(b"b" * 1000)
+        self.assertTrue(self.read(s).startswith(b"HTTP/1.1 204"))
+        self.assertEqual(got, [b"a" * 1000, b"b" * 1000])
 
     @unittest.skipUnless(sys.byteorder == "little", "the rows below are a little-endian machine's")
     def test_the_peer_uid_is_the_established_socket_with_both_addresses(self):
