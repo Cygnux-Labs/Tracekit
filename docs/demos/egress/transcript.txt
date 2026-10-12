@@ -1,0 +1,31 @@
+$ python examples/v2/demos/egress.py
+Bash './install.sh': allow
+  the script fetched http://localhost:58447/pkg: installed 1 package
+
+$ tracekit verify c3715e5b59cd0c012b52f1e33c9c1254.tkb --trust trust.json
+[PASS] manifest — every file is listed with its SHA-256 and nothing else is in the bundle
+[PASS] checkpoint — tracekit.local/aea65ab41e662a9689d6460e5445e317 at tree size 9, signed by its pinned log key
+[PASS] witness quorum — 0 pinned cosignature(s), 0 required
+[PASS] keys — 1 record key(s) from 1 key record(s)
+[PASS] signatures — 8 record(s), keys valid at their position
+[PASS] run chain — run 'c3715e5b59cd0c012b52f1e33c9c1254' of tenant 'default', contiguous from run_seq 0
+[PASS] inclusion — first and last records of 1 run(s) are in the checkpointed tree of size 9
+[PASS] policy snapshot — policies/bbdc62caf5212a7a1a99a6a02b4f9acf10a2935eecbb068ea1e9eb8d981b25a3.json
+[WARN] coverage — layers L2 (L3 absent); 0 call(s) reconciled; unreconciled: unexplained_effect 1
+        seq 5: reconcile.unexplained_effect: the run reached localhost:58447 and no http or model call to it nor explains entry of the policy covers it: if one of the run's tools needs it (a CDN, a package index), add it to the policy's explains
+[PASS] coverage matrix — model calls not covered, tool calls reported (adapter), network observed (egress), processes not covered, services not covered
+[PASS] incidents — 1 incident(s): 0 checked against the bundle, 1 signer-asserted (operator, cross-run, under several policies, or under a policy not in the bundle)
+[PASS] tiers — 1 tool call(s): T1 0, T2 0, T3 0, untiered 1
+[PASS] args source — 1 record(s): raw 0, parsed 1, coerced 0
+[PASS] isolation — signer-reported: same-user 1 run(s)
+[PASS] fail-open classes — none
+[PASS] key assurance — asserted: the log declares its record keys; none is attested
+
+Integrity: VERIFIED.
+Assurance: dev; records ed25519; checkpoint Ed25519 only (tracekit.local/aea65ab41e662a9689d6460e5445e317); no witness cosignature; key retirements not proven complete.
+
+what the observer saw and the signer made of it:
+  #1 policy.decision {"decision": "allow", "rule_ids": [], "tool": "Bash", "tool_use_id": "call-1"}
+  #3 effect.observed {"attribution": "token", "bytes_in": 133, "bytes_out": 95, "connections": 1, "first_ts": "2026-10-12T09:56:09.844787Z", "host": "localhost", "kind": "net", "last_ts": "2026-10-12T09:56:09.845397Z", "observer": "token:egress", "port": 58447}
+  #4 reconcile.unexplained_effect {"detail": "the run reached localhost:58447 and no http or model call to it nor explains entry of the policy covers it: if one of the run's tools needs it (a CDN, a package index), add it to the policy's explains; else find which call opened it", "host": "localhost", "kind": "net", "layers": ["L6"], "observer": "token:egress", "port": 58447}
+  #5 incident.opened {"actions": [], "cites": [{"run_id": "c3715e5b59cd0c012b52f1e33c9c1254", "run_seq": 4}], "incident_id": "inc-d12be839b01698fd3d87583a9d91ee68", "mode": "shadow", "rule_ids": [], "scope": {"id": "c3715e5b59cd0c012b52f1e33c9c1254", "kind": "run"}, "trigger": "unexplained_effect", "would": ["notify"]}

@@ -1811,11 +1811,11 @@ class SignerService:
 
     def _capped(self, key, run, tool, tcid, agent):
         """Why the signer's state (on the writer) makes an eligible call of run `key` a person's to answer, or None:
-        an agent said no to the same call in this run, the run's or the tenant's agent reviews are used up, or agent
-        approvals were switched off since the decision."""
+        an agent or a person said no to the same call in this run, the run's or the tenant's agent reviews are used up,
+        or agent approvals were switched off since the decision."""
         if any(k in run.get("person_only", {}) for k in person_only_keys({"tool": tool, "tool_call_id": tcid,
                                                                           "agent": agent})):
-            return "reask_after_reject: an agent did not approve this call in this run; people answer it"
+            return "reask_after_reject: an agent or a person did not approve this call in this run; people answer it"
         if run.get("agent_reviews", 0) >= AGENT_REVIEWS_PER_RUN:
             return f"the run has had {AGENT_REVIEWS_PER_RUN} agent reviews; people answer the rest"
         since = time.time() - AGENT_REVIEWS_WINDOW_S
@@ -2853,8 +2853,8 @@ class SignerService:
             tx.emit(run, "approval.request", data, request_id=req["request_id"], tool_call_id=tcid, attempt=attempt, **top)
             if reask:
                 tx.emit(run, "capture.gap", {"kind": "reask_after_reject", "tool_use_id": tcid, "reason": (
-                    f"{tcid} asks again for a call an agent did not approve in this run (approval {aid}): people "
-                    "answer it")}, source="signer", tool_call_id=tcid)
+                    f"{tcid} asks again for a call an agent or a person did not approve in this run (approval {aid}): "
+                    "people answer it")}, source="signer", tool_call_id=tcid)
             return {"approval_id": aid, "state": "requested", "expires_at": expires_at}
         try:
             return self.log.submit(identity, "approval_request", req, fn, key)
@@ -2992,7 +2992,7 @@ class SignerService:
                    "agent approvals are switched off: people answer it" if self.log.agent["off"] else
                    "the policy changed since it was requested: people answer it"
                    if a["policy_hash"] != self.policy.policy_hash else
-                   "an agent did not approve this call in this run: people answer it"
+                   "an agent or a person did not approve this call in this run: people answer it"
                    if any(k in run.get("person_only", {}) for k in person_only_keys(a)) else None)
             if why:
                 raise RPCError("forbidden", why)

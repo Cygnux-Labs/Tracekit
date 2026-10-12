@@ -253,6 +253,8 @@ report it.
 
 ## Docs
 
+- Seeing it work: [recorded demos](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/demos/README.md) of each
+  main use case, offline, with their bundles and verify reports
 - How it fits together: [architecture](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/architecture.md),
   [evidence format v2](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/format-v2.md)
 - Running it: [deployment](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/deploy.md),

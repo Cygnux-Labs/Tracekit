@@ -251,6 +251,8 @@ class TestVerifier(Observed):
         self.assertEqual((checks["coverage"]["status"], checks["observers"]["status"]), ("warn", "warn"))
         self.assertNotIn("observer_lost", checks.get("gaps", {}).get("detail", ""))   # on its own line only
         self.assertIn("unexplained_effect 1", checks["coverage"]["detail"])
+        self.assertRegex(checks["coverage"]["problems"][0],   # a host's record names no call: no "None" in its place
+                         r"^seq \d+: reconcile\.unexplained_effect: the run reached unlisted\.example:443 ")
         self.assertTrue(rep.warnings)   # what --strict exits 3 on
 
 

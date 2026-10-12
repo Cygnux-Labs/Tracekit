@@ -195,6 +195,8 @@ class Agreement(unittest.TestCase):
                                   if c["check"] == "coverage matrix"])
         self.assertIn("tool calls reported (adapter), network not covered", matrix[0]["detail"])
         _, rep = self.agree(self.bundles["egress"], self.trusts["dev"])
+        self.assertEqual([c["problems"] for c in ts_verify(self.bundles["egress"], self.trusts["dev"])["checks"]
+                          if c["check"] == "coverage"], [c["problems"] for c in rep.checks if c["check"] == "coverage"])
         self.assertEqual({c["check"]: c["status"] for c in rep.checks if c["check"] in ("coverage", "observers")},
                          {"coverage": "warn", "observers": "warn"})
         with zipfile.ZipFile(self.bundles["gap"]) as z:
