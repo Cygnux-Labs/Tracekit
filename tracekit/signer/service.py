@@ -1136,7 +1136,8 @@ class SignerService:
                     source="signer", tool_call_id=c["tool_call_id"], attempt=c["attempt"])
         expired = [self._expire(tx, run, aid) for aid in aids   # nothing can consume them once the run is final
                    if self.log.approvals[aid]["state"] in LIVE]
-        coverage = reconcile.finish(tx, run, self.gateway_mandatory, self.policy.is_handoff)
+        coverage = reconcile.finish(tx, run, self.gateway_mandatory, self.policy.is_handoff,
+                                    self.policy.is_structured_output)
         tx.set(run, "final", True)
         tx.emit(run, "run.final", {"head_run_seq": run["run_seq"] - 1, "head_hash": run["head"],
                                    **({"coverage": coverage} if coverage else {})}, source="signer")
@@ -1418,7 +1419,9 @@ class SignerService:
         # see that batch's values for that moment; read on the writer if that ever matters
         idx = prov["index"] if prov else {}
         st = ({"state": prov["state"], "reason": prov.get("reason")} if prov else
-              {"state": "unavailable", "reason": "the index lives in memory and was lost in a signer restart"})
+              {"state": "unavailable", "reason": "the index lives in memory and was lost in a signer restart, so from: "
+                                                 "untrusted rules hold every call they match for the rest of this run: "
+                                                 "answer the holds, or start the task again in a new run"})
         deadline, entries = time.monotonic() + PROVENANCE_S, []
 
         def timeout():

@@ -30,7 +30,7 @@ Rule ids the signer adds itself:
 
 | Id | Verdict | When |
 |---|---|---|
-| `TK-ARGS-INVALID` | deny | the raw arguments are not strict JSON ([format v2](format-v2.md#1-canonical-json)) |
+| `TK-ARGS-INVALID` | deny | the raw arguments are not strict JSON ([format v2](format-v2.md#1-canonical-json)); the Python client sends parsed arguments a frame can't carry (a lone surrogate) as raw text, so they get this signed deny too |
 | `TK-OVERSIZE` | the rule's section | a rule's subject is over 64 KiB of UTF-8; it is never cut or windowed, and the rule's own section decides (a flag rule flags, a deny rule denies; a shell command over 64 KiB denies) |
 | `TK-SHELL-PARSE` | ask | a shell command can't be parsed, or what it runs can't be read from the line |
 | `TK-SQL-PARSE` | ask | no SQL dialect can read the statement (an unclosed literal or comment), or it is not text |
@@ -55,14 +55,16 @@ tools:                          # tool name or glob (fnmatch) -> class
 untrusted: [http, mcp, WebFetch]   # tool classes and tool name globs whose results are untrusted content (Provenance)
 handoffs: [transfer_to_refunds_agent]   # tool names the framework runs as handoffs to another agent; no pack names
                                         # any: exact names, as your agents' handoff tools are called
+structured_output: ['browser_use:*']    # tool names the model asks for in its structured output, not as tool calls:
+                                        # reconciliation doesn't compare them with tool uses (browser.yaml names these)
 deny:  [<rule>, ...]
 ask:   [<rule>, ...]
 flag:  [<rule>, ...]
 ```
 
-`extends` merges the parent's `tools` under the child's, joins every `untrusted` list, keeps the parent's other
-top-level keys unless the child sets them, and keeps the parent's rules except those whose id the child redefines. A
-list of parents is merged in order (a later parent's top-level keys and tools win; the same rule id in two parents is a
+`extends` merges the parent's `tools` under the child's, joins every `untrusted`, `handoffs` and `structured_output`
+list (a child can't remove a name its parent declares), keeps the parent's other top-level keys unless the child sets
+them, and keeps the parent's rules except those whose id the child redefines. A list of parents is merged in order (a later parent's top-level keys and tools win; the same rule id in two parents is a
 duplicate-id error, unless both carry the identical rule, which is kept once), and the compiled
 `extends` is the list of their hashes. An absolute path, `~` or a loop is an error.
 
@@ -100,7 +102,7 @@ class's fields from the raw arguments (`policy2/classes.py`):
 | `payment` | `amount`, `currency`, `payee`, `new_payee`, `payees` | `amount`/`amount_cents`, `currency`, `payee`/`to`/`recipient` (`new_payee` is not extracted yet); `payees`: every one of `payee`, `to`, `recipient`, `destination`, `account`, `account_number`, `iban` |
 | `email` | `to`, `domains`, `attachments`, `recipients` | `to` (string or list), `attachments`; `recipients`: every one of `to`, `cc`, `bcc`, `recipients` |
 | `mcp` | `server`, `tool`, `args` | the tool name (`mcp__server__tool` or `mcp:server/tool`) and the arguments |
-| `browser` | `action`, `url`, `scheme`, `host`, `internal`, `sends_to` | `action`, `url`; `scheme`, `host` and `internal` as below; `sends_to`: the host of `page_url` for `input` and `upload_file` |
+| `browser` | `action`, `url`, `scheme`, `host`, `internal`, `sends_to` | `action`, `url`; `scheme`, `host` and `internal` as below; `sends_to`: the host of `page_url` for `input` and `upload_file`, and the URL's host for a `navigate` or `go_to_url` whose URL has a query string |
 | `unknown` | — | — |
 
 Every class also has `target`: what the call acts on rather than what it carries (below).
@@ -210,7 +212,7 @@ the text (1 MiB in well under a second), and a decision reads them only while it
 | Pack | Section | Rules |
 |---|---|---|
 | `server-comms.yaml` | ask | `TK-P001` an email recipient (`to`, `cc`, `bcc`, `recipients`) that is untrusted-only · `TK-P002` a payee or account (`payee`, `to`, `recipient`, `destination`, `account`, `account_number`, `iban`) that is untrusted-only |
-| `server-net.yaml`, `browser.yaml` | ask | `TK-P003` data sent (a method other than GET or HEAD, or a body; in a browser, typing or an upload) to a host that is untrusted-only |
+| `server-net.yaml`, `browser.yaml` | ask | `TK-P003` data sent (a method other than GET or HEAD, or a body; in a browser, typing, an upload or a navigation with a query string) to a host that is untrusted-only |
 
 Limits ([all of Tracekit's](limits.md)): it matches values verbatim, and only what came in through untrusted tools and observed inputs: a page the
 agent fetches with a tool the policy doesn't list as untrusted (`curl` in a shell) is not indexed, so list such tools
@@ -242,7 +244,7 @@ such a subject the two engines can decide differently; install `google-re2` on t
 |---|---|---|
 | `coding.yaml` | coding agents on a laptop | shell, file and harness self-protection rules; `unknown_tools: flag`; maps the shell, file, web and MCP tools of Claude Code, Codex, Cursor, Gemini CLI, OpenAI Agents and LangChain |
 | `dev.yaml` | the signer's default | `coding.yaml` plus `TK-DEMO-DENY` (denies the tool `tracekit_demo_denied`, so a deny is easy to see) |
-| `browser.yaml` | browser agents (Browser Use) | local file and internal-network navigation (addresses and names) denied; uploads and typing outside an allowlist, and typing to a host from untrusted content, ask |
+| `browser.yaml` | browser agents (Browser Use) | local file and internal-network navigation (addresses and names) denied; uploads, typing outside an allowlist, the agent's own page JavaScript (`evaluate`), and typing or a navigation with a query string to a host from untrusted content, ask; Browser Use's actions are `structured_output` |
 | `server.yaml` | server-hosted agents | `extends: [coding, browser, server-data, server-net, server-cloud, server-comms]` plus rules for every tool; `unknown_tools: ask`: an unmapped tool waits for a person |
 | `server-data.yaml` | SQL tools | destructive and privilege-changing SQL, SQL that reaches the server's shell or files |
 | `server-net.yaml` | HTTP tools | internal addresses; a body sent outside the egress allowlist |

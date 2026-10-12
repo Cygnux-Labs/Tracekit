@@ -210,7 +210,7 @@ class FakeSigner:
                 "rule_ids": call["rule_ids"], "policy_hash": POLICY_HASH, "requester": self.identity,
                 "expires_at": expires_at, "state": "requested",
                 **({"reason": privacy.redact(req["reason"], dotenv)[0]} if "reason" in req else {}),
-                "executor": "t2" if self.t2 & set(call["rule_ids"]) else "t1"}
+                "executor": "t2" if self.t2 & set(call["rule_ids"]) else "t1", "exec_args": call["args"]}
             a["binding_digest"] = event_hash({"v": 1, "approval_id": approval_id, "nonce": self._id("nonce"),
                                               **{k: a[k] for k in ("run_id", "tool_call_id", "attempt", "tool",
                                                                    "args_digest", "args_source", "policy_hash",
@@ -265,8 +265,9 @@ class FakeSigner:
                 a["state"] = "consumed"
                 self._append(run, "approval.consumed", {"approval_id": aid})
                 out = {"ok": True, "rule_ids": ["TK-APPROVED"], "approval_id": aid}
-                if a["executor"] == "t2":
-                    out["args"] = loads_strict(a["args"]) if a["args_source"] == "raw" else copy.deepcopy(a["args"])
+                if a["executor"] == "t2":   # the real arguments, never the approver's redacted copy
+                    x = a["exec_args"]
+                    out["args"] = loads_strict(x) if a["args_source"] == "raw" else copy.deepcopy(x)
                 return out
             self._append(run, "approval.refused", {"tool_call_id": req["tool_call_id"], "rule_ids": [code]})
             return {"ok": False, "rule_ids": [code], **({"approval_id": aid} if a else {})}
@@ -275,7 +276,8 @@ class FakeSigner:
     def approval_get(self, req):
         def handle(req):
             a = self._visible(req["approval_id"])
-            return {"approval_id": req["approval_id"], **{k: v for k, v in a.items() if k not in ("args_digest", "executor")}}
+            return {"approval_id": req["approval_id"], **{k: v for k, v in a.items()
+                                                          if k not in ("args_digest", "executor", "exec_args")}}
         return self._call("approval_get", req, handle)
 
     def approval_list(self, req):

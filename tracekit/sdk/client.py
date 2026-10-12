@@ -72,9 +72,15 @@ def _new_id():
 
 
 def _encode(method, req):
-    """The frame of `req` as sent; invalid_request when it is not JSON, quota_exceeded over the signer's frame limit."""
+    """The frame of `req` as sent; invalid_request when it is not JSON, quota_exceeded over the signer's frame limit.
+    Arguments a frame can't carry (a lone surrogate) go as raw text with it escaped, which the signer decides as
+    TK-ARGS-INVALID in a signed record."""
     try:
         data = json.dumps({"method": method, **req}, separators=(",", ":"), ensure_ascii=False).encode()
+    except UnicodeEncodeError as e:
+        if req.get("args_source") not in ("parsed", "coerced"):
+            raise RPCError("invalid_request", f"the {method} request is not JSON: {e}") from None
+        return _encode(method, {**req, "args_source": "raw", "args": json.dumps(req["args"], separators=(",", ":"))})
     except (TypeError, ValueError) as e:
         raise RPCError("invalid_request", f"the {method} request is not JSON: {e}") from None
     if len(data) > MAX_LINE:

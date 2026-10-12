@@ -52,6 +52,12 @@ class Engine:
         gated, so the model asking for one is not a missing decide."""
         return any(fnmatch.fnmatchcase(tool, h) for h in self.policy.get("handoffs", ()))
 
+    def is_structured_output(self, tool):
+        """Whether the policy's `structured_output:` names `tool` as one the model asks for in its structured output
+        rather than as a tool call (Browser Use's actions), or as the tool call that carries that output: reconciliation
+        expects no tool use for its decides and no decide for its tool uses."""
+        return any(fnmatch.fnmatchcase(tool, h) for h in self.policy.get("structured_output", ()))
+
     def tool_class(self, tool):
         tools = self.policy.get("tools", {})
         if tool in tools:

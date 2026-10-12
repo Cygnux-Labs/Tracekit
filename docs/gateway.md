@@ -113,3 +113,10 @@ Gateway tool uses are L3 and take precedence over agent-reported L3 (autotrace) 
 `gateway_mandatory: true`, only gateway L3 counts: a decide the gateway never saw is `reconcile.fabricated` and a
 gateway tool use with no decide is `reconcile.hook_missing`, whatever the agent reported. Use it when every model call
 must go through the gateway.
+
+A framework that asks the model for its actions as structured output rather than tool calls (Browser Use) leaves the
+gateway no tool use to match: name those tools in the policy's `structured_output:` and reconciliation compares them
+with nothing, in either direction ([policy](policy-v2.md#file-format)). The browser pack names Browser Use's actions
+(`browser_use:*`) and the output tool it uses with Anthropic models (`AgentOutput`). Such a tool gets no L3
+cross-check: its decides show what the signer allowed, not that the model asked for it. Only the operator's policy can
+name them; nothing the agent sends at run time can.

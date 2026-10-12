@@ -171,6 +171,20 @@ class Handoffs(unittest.TestCase):
         for loose in ("'*'", "'*_*'", "'[a-z]*'", "'??'"):
             self.assertIn("too loose", "\n".join(self.build("all.yaml", f"version: a\nhandoffs: [{loose}]\n")[1]), loose)
 
+    def test_structured_output_declared_merged_and_refused(self):
+        """structured_output: the operator names the tools a framework asks for in the model's structured output (no
+        tool use id to reconcile with); the agent can't."""
+        base, errs = self.build("base.yaml", "version: b\nstructured_output: ['browser_use:*']\n")
+        self.assertEqual(errs, [])
+        self.assertTrue(Engine(base).is_structured_output("browser_use:click"))
+        self.assertFalse(Engine(base).is_structured_output("read_file"))
+        self.assertFalse(Engine(self.build("none.yaml", "version: n\n")[0]).is_structured_output("browser_use:click"))
+        child, _ = self.build("child.yaml", "version: c\nextends: base.yaml\nstructured_output: [AgentOutput]\n")
+        self.assertEqual(child["structured_output"], ["browser_use:*", "AgentOutput"])   # a child can't drop a name
+        self.assertIn("structured_output must list tool name globs",
+                      "\n".join(self.build("bad.yaml", "version: x\nstructured_output: 3\n")[1]))
+        self.assertIn("too loose", "\n".join(self.build("all.yaml", "version: a\nstructured_output: ['*']\n")[1]))
+
 
 class Engines(unittest.TestCase):
     def setUp(self):

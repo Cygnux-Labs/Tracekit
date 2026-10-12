@@ -42,8 +42,17 @@ class RedactionRuntimeTests(unittest.TestCase):
                     privacy.redact_text(s)
                     self.assertLess(time.perf_counter() - t, BOUND)
 
+    def test_a_url_with_a_port_and_an_address_in_its_path_or_query_is_kept(self):
+        """What an approver must see: the recipient in a compose page's URL is not a connection string's password."""
+        for url in ("http://mail.test:8765/mail/compose.html?to=maria.gomez@example.org",
+                    "https://x.example:443/users/maria@example.org", "http://h.example:8080?to=a@b.example"):
+            with self.subTest(url=url):
+                self.assertEqual(privacy.redact_text(f"open {url} now"), (f"open {url} now", False))
+
     def test_realistic_connection_strings_still_redacted(self):
-        for url in ("postgres://user:pass@host:5432/db", "mongodb+srv://u:p@h/x", "redis://:p@h:6379"):
+        for url in ("postgres://user:pass@host:5432/db", "mongodb+srv://u:p@h/x", "redis://:p@h:6379",
+                    # agent-flow:allow-secret (fake credentials: redaction fixtures)
+                    "redis://u:12345678@cache:6379", "mongodb://u:pa/ss@h/db", "mysql://root:8080x/y@db/app"):
             with self.subTest(url=url):
                 out, hit = privacy.redact_text(f"connect {url} now")
                 self.assertTrue(hit)
