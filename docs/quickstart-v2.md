@@ -52,9 +52,7 @@ async def respond(conversation_id, message):
 Close a conversation's run (`conversations.pop(cid).close()`) when it ends; the signer closes one left idle for its
 `idle_s` (an hour by default). A stateless request can use `with run.client.run(...) as r:`, which closes it at the end
 of the block. Calls made outside any such block go to the process run; if the signer closed it after it was idle, the
-next call registers a new process run and logs a warning, instead of being refused. The conversations' runs are open
-alongside the process run and each other, so list the server's identity in signer.yaml `multi_run_apps`; otherwise
-each new one gets a `concurrent_run` gap ([limits](limits.md)).
+next call registers a new process run and logs a warning, instead of being refused.
 
 ### When a call needs a person (`ask`)
 

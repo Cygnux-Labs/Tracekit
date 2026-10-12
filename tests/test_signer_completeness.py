@@ -20,14 +20,13 @@ from tracekit.signer import service as svc
 from tracekit.signer.rpc_schema import RPCError
 
 GATEWAY = CallerIdentity("mtls", "spiffe://acme/gateway", True)
-FLEET = CallerIdentity("uid", "999004", True)
 TAILER = CallerIdentity("uid", "999005", True)
 
 
 class Completeness(Lifecycle):
     def open(self):
         self.s = svc.SignerService(self.dir, policy=PAY_ASKS, fail_modes=FAIL_MODES, grace_s=60, idle_s=3600,
-                                   gateways=["mtls:spiffe://acme/*"], multi_run_apps=["uid:999004"],
+                                   gateways=["mtls:spiffe://acme/*"],
                                    authorize={"mtls:spiffe://acme/*": ["model_event", "close_run"],
                                               "uid:999005": ["tailer_heartbeat"]})
         self.closed = False
@@ -178,22 +177,25 @@ class TestLateActivity(Completeness):
 
 
 class TestConcurrentRun(Completeness):
-    def test_overlapping_runs_of_one_owner_are_a_gap_in_the_newer(self):
-        first = self.register()
-        second = self.register()
-        self.call("close_run", second)
-        child = self.call("register_run", {"agent": {"name": "a"}, "parent": first})   # first's session
-        other = self.register(OTHER)   # another owner
-        gaps = {r["run_id"]: self.gaps(self.events(r["run_id"]), "concurrent_run")
-                for r in (first, second, child, other)}
-        self.assertEqual([g["data"]["run_id"] for g in gaps[second["run_id"]]], [first["run_id"]])
-        self.assertEqual([gaps[r["run_id"]] for r in (first, child, other)], [[], [], []])
-        self.assertIn("multi_run_apps", gaps[second["run_id"]][0]["data"]["reason"])
+    def bound(self, pid, method="register_run", **req):
+        """`method` as called from inside harness process `pid` (the harness helper's answer, patched)."""
+        h = {"name": "claude", "exe": "/usr/bin/claude", "pid": pid, "start_time": 1}
+        with mock.patch.object(self.s, "_harnesses", ["claude"]), \
+                mock.patch.object(self.s, "_chain", lambda identity: [{"pid": 1}, h]), \
+                mock.patch.object(svc.harness_helper, "match", lambda procs, harnesses: (h, None)):
+            return self.call(method, req if method != "register_run" else {"agent": {"name": "a"}, **req})
 
-    def test_off_for_multi_run_apps(self):
-        self.register(FLEET)
-        run = self.register(FLEET)
-        self.assertEqual(self.gaps(self.events(run["run_id"]), "concurrent_run"), [])
+    def test_overlapping_runs_of_one_harness_process_are_a_gap_in_the_newer(self):
+        first = self.bound(100)
+        second = self.bound(100)
+        elsewhere = self.bound(200)   # another harness process: two Claude Code windows side by side
+        self.bound(100, "close_run", **{k: second[k] for k in ("run_id", "run_token")})
+        child = self.bound(100, parent={k: first[k] for k in ("run_id", "run_token")})   # first's session
+        unbound = [self.register(), self.register()]   # an SDK or a server: several runs at once by design
+        gaps = {r["run_id"]: self.gaps(self.events(r["run_id"]), "concurrent_run")
+                for r in (first, second, elsewhere, child, *unbound)}
+        self.assertEqual([g["data"]["run_id"] for g in gaps[second["run_id"]]], [first["run_id"]])
+        self.assertEqual([gaps[r["run_id"]] for r in (first, elsewhere, child, *unbound)], [[]] * 5)
 
 
 class TestTailerHeartbeat(Completeness):

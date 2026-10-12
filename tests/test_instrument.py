@@ -231,9 +231,8 @@ class ProcessRun(OnReal, unittest.TestCase):
                          (["c1"], ["c2", "c3"]))
         self.assertEqual((self.records(self.process, "tool.result"), self.records(conversation, "tool.result")),
                          (["c1"], ["c2", "c3"]))
-        # no counter gap; the conversation overlaps the process run of the same owner, which is not in multi_run_apps
-        self.assertEqual((self.gaps(self.process), [g["data"]["kind"] for g in self.gaps(conversation)]),
-                         ([], ["concurrent_run"]))
+        # no gap: conversations overlap the process run by design (no harness process binds them)
+        self.assertEqual((self.gaps(self.process), self.gaps(conversation)), ([], []))
 
     def test_a_resent_event_keeps_its_number(self):
         req = {"run_id": self.process.run_id, "run_token": self.process.run_token, "stream": "adapter",

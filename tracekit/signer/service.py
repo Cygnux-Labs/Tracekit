@@ -40,8 +40,6 @@ signer.yaml:
                                              # methods; uid and token:dev default to all, the rest to none
     multi_tenant_apps: ["uid:1002"]          # may assert a tenant per run (recorded as not attested), or a
                                              # bridge's on_behalf person's tenant
-    multi_run_apps: ["k8s_sa:system:serviceaccount:acme:*"]   # owners that run several runs at once by design: no
-                                             # concurrent_run gap for them (below)
     migrators: ["uid:1003"]                  # may register `migrated` runs
     analyzers: ["uid:1004"]                  # may register findings runs, each bound to the run it analyses, and
                                              # `tracekit why` replay runs of it (replay_of)
@@ -116,8 +114,9 @@ accepted → the run's reconcile.* records (tracekit.signer.reconcile) → run.f
 
 Completeness (docs/limits.md): at run.final each latest decide of a call that was allowed, or asked and its approval
 consumed, with no `complete` is a signed `capture.gap{decided_not_completed}` (DECIDED_GAPS_MAX per run, then one with
-the rest counted). A run registered while another of the same owner and tenant (and harness process) is open, in
-another session (`parent`), gets a `capture.gap{concurrent_run}` naming it, unless the owner is in multi_run_apps.
+the rest counted). A run bound to a harness process, registered while another run of the same owner, tenant and
+harness process is open in another session (`parent`), gets a `capture.gap{concurrent_run}` naming it: one harness
+process drives one session at a time. Unbound runs (SDKs, servers) run several at once by design.
 close_run's `last_client_seq` turns each stream's values not received by then into a client_counter_gap naming the
 caller. A tailer that sent `tailer_heartbeat` (an `authorize` grant only: system mode's tailer uid) and stops for
 TAILER_LOST_S while its run is open gets a tailer_lost gap. Writes refused because their run is final are counted per
@@ -297,7 +296,7 @@ CONFIG_KEYS = {"data_dir", "socket", "socket_mode", "tcp_endpoint", "http", "dur
                "fail_modes", "grace_s", "idle_s", "origin", "metrics", "witnesses", "contact", "approvals",
                "lock_timeout_s", "fsck_every_s", "clock_skew_s", "anchors", "otlp", "otel_out", "storage", "gateways",
                "gateway_mandatory", "log_key", "harness_binding", "record_key", "route", "view", "decision_keys",
-               "webhook", "content", "multi_run_apps"}
+               "webhook", "content"}
 APPROVAL_KEYS = {"self_approval", "approvers", "break_glass", "persons", "webauthn"}
 OTLP_IMPORT = "otlp_import"   # an `authorize` grant, never a default: OTLP/HTTP import (otlp config section)
 ON_BEHALF = "approval_decide_on_behalf"   # an `authorize` grant, never a default: a bridge answers for its people
@@ -461,14 +460,13 @@ class SignerService:
                  fsck_every_s=FSCK_S, clock_skew_s=CLOCK_SKEW_S, rekor=None, otlp=None, otel_out=None,
                  storage_config=None, gateways=(), gateway_mandatory=False, log_key=None, slh_dsa_file=None,
                  harness_binding=None, record_key=None, route=None, oidc=None, decision_keys=None, webhooks=(),
-                 content=None, multi_run_apps=()):
+                 content=None):
         """`identity` answers the in-process SignerAPI calls (default: this process's uid); transports call
         handle_frame with the identity they established. `policy` is a policy2 Engine (default: load_policy()).
         `open_storage()` defaults to the store `storage_config` (the `storage` config section) names, else file storage
         in data_dir/store. `origin` names the log in its checkpoints, `contact` its operator in the logs list.
         `witnesses` cosign its notes (see the module docstring).
-        `multi_tenant_apps`, `migrators` and `analyzers` are identities ("scheme:subject"), `multi_run_apps` identities
-        or prefixes; `tenants` and `authorize` map identities or prefixes (`...:*`, `.../*`) to a tenant and to the methods they may call.
+        `multi_tenant_apps`, `migrators` and `analyzers` are identities ("scheme:subject"); `tenants` and `authorize` map identities or prefixes (`...:*`, `.../*`) to a tenant and to the methods they may call.
         `isolation` fixes the signer_isolation label of every run (a dev signer: same-user). `bridge`: see RecordLog.
         `approvals`: who answers approvals (the `approvals` config section); None for the dev signer's rules.
         `lock_timeout_s`, `fsck_every_s` (0: no background check) and `clock_skew_s`: see the config keys.
@@ -581,7 +579,6 @@ class SignerService:
         self.identity = identity or _process_identity()
         self.tenant, self.tenants, self.authorize = tenant, dict(tenants or {}), authorize
         self.multi_tenant_apps, self.migrators, self.analyzers = set(multi_tenant_apps), set(migrators), set(analyzers)
-        self._multi_run = {k: True for k in multi_run_apps}
         self._beats, self._beats_lock = {}, threading.Lock()   # run key -> monotonic time of its tailer's last heartbeat
         self._gateways, self.gateway_mandatory = {k: True for k in gateways}, bool(gateway_mandatory)
         self.fail_modes, self.grace_s, self.idle_s = fail_modes, grace_s, idle_s
@@ -1625,23 +1622,21 @@ class SignerService:
             if harness:
                 data["harness"] = dict(harness, attested=True)
             tx.emit(run, "run.registered", data, request_id=req["request_id"], **top)
-            other = n and not req.keys() & {"analyzes", "replay_of", "source"} and not lookup(
-                self._multi_run, sub, False) and self._overlapping(tenant, run_id, own, run.get("harness"),
-                                                                   run.get("session", run_id))
+            other = harness and n and not req.keys() & {"analyzes", "replay_of", "source"} and self._overlapping(
+                tenant, run_id, own, run["harness"], run.get("session", run_id))
             if other:
                 tx.emit(run, "capture.gap", {
                     "kind": "concurrent_run", "run_id": other,
-                    "reason": f"run {other} of the same owner{' and harness process' if harness else ''} is still open "
-                              "and in another session: one of the two may not be what it says. A sub-agent's run "
-                              "passes `parent`; owners that run several runs at once by design go in signer.yaml "
-                              "multi_run_apps"}, source="signer")
+                    "reason": f"run {other} of the same owner and harness process is still open and in another "
+                              "session: one of the two may not be what it says. A sub-agent's run passes `parent`"},
+                        source="signer")
             return out
         return self.log.submit(identity, "register_run", req, fn)
 
     def _overlapping(self, tenant, run_id, own, harness, session):
-        """An open run of `own` in `tenant` (with `harness`, the same harness process) and another session than run
-        `run_id`'s, or None (on the writer)."""
-        # lean: scans the open runs; index them by owner if an owner not in multi_run_apps keeps thousands open
+        """An open run of `own` in `tenant`, of the same harness process, in another session than run `run_id`'s, or
+        None (on the writer)."""
+        # lean: scans the open runs; index them by owner and harness if one harness process keeps thousands open
         for key in self.log.live:
             r = self.log.runs[key]
             if (key[0] == tenant and key[1] != run_id and r["owner"] == own and not r["closed"]
@@ -2695,7 +2690,7 @@ def open_service(cfg, **kw):
                          gateway_mandatory=cfg.get("gateway_mandatory") is True,
                          harness_binding=cfg.get("harness_binding"), record_key=cfg.get("record_key"),
                          route=cfg.get("route"), decision_keys=cfg.get("decision_keys"), webhooks=cfg.get("webhook", ()),
-                         content=cfg.get("content"), multi_run_apps=cfg.get("multi_run_apps", ()), **kw)
+                         content=cfg.get("content"), **kw)
 
 
 def _oidc(cfg):
