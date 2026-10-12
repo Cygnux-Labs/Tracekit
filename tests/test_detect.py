@@ -463,6 +463,26 @@ def e17_digest(tool, args):
     return event_hash({"tool": tool, "args": args})
 
 
+class TestDeepReview(Case):
+    def test_a_sum_past_what_a_record_carries_saturates_and_later_calls_are_still_decided(self):
+        s = self.signer(PAY)
+        run = s.register()
+        for cents in (2 ** 53 - 1, 2 ** 53 - 1, 5):
+            self.assertEqual(s.decide(run, ("pay", {"cents": cents, "currency": "USD"}))["decision"], "allow")
+        self.assertEqual(s.events(run)[-1]["data"]["detect"]["limits"][0]["count"], 2 ** 53 - 1)
+
+    def test_a_class_hint_never_exempts_a_call_from_a_sequence(self):
+        pol = {**POLICY, "tools": {**POLICY["tools"], "browse": "browser"},
+               "flag": POLICY["flag"] + [{"id": "T-INTERNAL", "class": "browser", "field": "url", "pattern": "^",
+                                          "label": "allowlisted"}],
+               "sequences": [{**POLICY["sequences"][0], "unless": ["allowlisted"]}]}
+        s = self.signer(pol)
+        run = s.register()
+        s.decide(run, SECRET)
+        s.decide(run, EGRESS, hint="browser")   # the agent's hint reads the call as allowlisted too
+        self.assertEqual([i["rule_ids"] for i in s.incidents(run)], [["Q"]])
+
+
 class TestCost(Case):
     def test_ack_seconds_does_not_grow_with_the_run(self):
         s = self.signer()

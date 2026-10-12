@@ -57,11 +57,12 @@ class HeldCalls:
             request = asyncio.ensure_future(self._rpc("approval_request", tool_call_id=call_id))
             try:
                 hint = (await asyncio.shield(request))["approval_id"]   # a cancel lets it finish, to withdraw it
-                state, deadline = "requested", time.monotonic() + self.wait_s
+                state, deadline, escalated = "requested", time.monotonic() + self.wait_s, False
                 while state == "requested" and deadline > time.monotonic():
                     left_ms = int(min(deadline - time.monotonic(), 300) * 1000)
-                    state = (await asyncio.to_thread(self.signer.approval_wait, {**self.run, "approval_id": hint,
-                                                                                 "timeout_ms": left_ms}))["state"]
+                    w = await asyncio.to_thread(self.signer.approval_wait, {**self.run, "approval_id": hint,
+                                                                            "timeout_ms": left_ms})
+                    state, escalated = w["state"], w.get("escalated", False)
             except (RPCError, SignerUnavailable) as e:   # once the policy asked, no fail mode applies
                 state = f"{type(e).__name__}: {e}"
             except asyncio.CancelledError:   # the framework stopped waiting (its own timeout): so does the approval
@@ -72,6 +73,10 @@ class HeldCalls:
                         pass
                 await self._abandon(hint, "the caller stopped waiting for the approval")
                 raise
+            if state == "requested" and escalated:   # people answer it: left for them, as a retry then runs
+                return (f"{', '.join(d['rule_ids'])}: an agent approver escalated the call to people and no one "
+                        f"answered within {self.wait_s:g} s, so it did not run; once a person approves it, try "
+                        "again"), d, args
             if state == "requested":
                 await self._abandon(hint, f"no answer within the caller's {self.wait_s:g} s wait")
                 return (f"{', '.join(d['rule_ids'])}: no one approved the call within {self.wait_s:g} s, so it did not "

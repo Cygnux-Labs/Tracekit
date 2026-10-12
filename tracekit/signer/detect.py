@@ -21,6 +21,7 @@ import json
 import secrets
 import zipfile
 
+from tracekit.format.canon import MAX_SAFE_INT
 from tracekit.policy2.compile import DETECT, SECTIONS
 
 RUN_CAP = 100      # incidents a run opens per trigger; the next one is an incident.capped summary instead
@@ -152,11 +153,13 @@ class Detector:
             if run:   # an ask waits for its approval; a later decision of the call replaces one never asked for
                 k = f"call\0{e['tool_call_id']}"
                 if d["decision"] == "ask":
-                    tx.set(run["pending"], k, [d.get("decision_id"), sorted(names), unknown, inp.get("sums", {})])
+                    tx.set(run["pending"], k, [d.get("decision_id"), sorted(names), unknown, inp.get("sums", {}),
+                                               "rule_ids" in inp])
                 elif k in run["pending"]:
                     tx.pop(run["pending"], k)
-            if d["decision"] in ("allow", "flag"):
-                self._count(tx, det, e, run, (names, unknown, inp.get("sums", {})), cite, fired, view)
+            if d["decision"] in ("allow", "flag"):   # detect.rule_ids: a client's class hint read the call too
+                self._count(tx, det, e, run, (names, unknown, inp.get("sums", {}), "rule_ids" in inp), cite, fired,
+                            view)
             elif d["decision"] == "deny":
                 self._denied(tx, det, e, run, t, cite, fired)
             if (d["decision"] != "allow" and self._on("provenance") and set(d["rule_ids"]) & self.untrusted
@@ -176,8 +179,9 @@ class Detector:
             if p:
                 tx.pop(run["pending"], d["approval_id"])
                 if typ == "approval.consumed":
-                    names, unknown, sums = p
-                    self._count(tx, det, e, run, (set(names), unknown, sums), [e["run_id"], e["run_seq"]], fired, None)
+                    names, unknown, sums, *hinted = p   # an entry from before `hinted` has none
+                    self._count(tx, det, e, run, (set(names), unknown, sums, any(hinted)), [e["run_id"], e["run_seq"]],
+                                fired, None)
         else:
             trigger = {"trace.tamper": "tamper", "refusal.summary": "refusal_burst"}.get(typ)
             if typ == "capture.gap" and d.get("kind") in ("executed_against_policy", "class_mismatch"):
@@ -190,11 +194,13 @@ class Detector:
         return self.respond.get(trigger, {}).get("mode", "off") != "off"
 
     def _count(self, tx, det, e, run, call, cite, fired, view):
-        """Count an allowed call (names, unknown, sums) for every sequence step and limit it matches."""
-        names, unknown, sums = call
+        """Count an allowed call (names, unknown, sums, hinted) for every sequence step and limit it matches. `unless`
+        exempts only a call the policy's own reading names: a client's class hint (`hinted`) adds names to count, never
+        to exempt."""
+        names, unknown, sums, hinted = call
         own = set() if unknown else names - {"*"}   # the names that take a call through consecutive steps
         for s in self.sequences:
-            if not unknown and names & set(s.get("unless", ())):
+            if not unknown and not hinted and names & set(s.get("unless", ())):
                 continue
             steps, last = s["steps"], len(s["steps"]) - 1
             if not (unknown or names & set(steps)):
@@ -239,7 +245,8 @@ class Detector:
                 start, val = e["ts"], {} if "sum" in lim else 0
             if "sum" in lim:
                 amount, cur = sums[lim["id"]]
-                before, val = val.get(cur, 0), {**val, cur: val.get(cur, 0) + amount}
+                # saturated: a total past what a record can carry would refuse every later decide in the scope
+                before, val = val.get(cur, 0), {**val, cur: min(val.get(cur, 0) + amount, MAX_SAFE_INT)}
                 after = val[cur]
             else:
                 before, val = val, val + 1

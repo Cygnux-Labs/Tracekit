@@ -183,6 +183,16 @@ class TestLiveHookMissing(Completeness):
                     self.assertIn("name it in the policy's handoffs:", live[0]["data"]["detail"])
 
 
+    def test_a_structured_output_tool_is_not_recorded_at_once(self):
+        self.s.policy = Engine({**PAY_ASKS.policy, "structured_output": ["AgentOutput"]})
+        run = self.register()
+        self.gw(run, 0, phase="response", tool_uses=[{"id": "o", "name": "AgentOutput", "executed_by": "client",
+                                                      "args_source": "parsed", "args_digest": event_hash(
+                                                          {"tool": "AgentOutput", "args": {}})}])
+        self.gw(run, 1, phase="request", tool_results_sent=["o"])
+        self.assertEqual([e for e in self.final(run) if e["type"].startswith("reconcile.")], [])
+
+
 class TestTrailingCounterGaps(Completeness):
     def test_close_run_names_the_last_client_seq_of_each_stream(self):
         run = self.register()
@@ -206,6 +216,36 @@ class TestTrailingCounterGaps(Completeness):
         self.s.sweep(time.monotonic() + 61)
         gaps = self.gaps(self.events(run["run_id"]), "client_counter_gap")
         self.assertEqual([g["data"]["missed_events"] for g in gaps], [3])   # 2..4
+
+    def test_a_run_the_signer_closed_still_takes_the_clients_trailing_gap(self):
+        run = self.register()
+        self.decide(run, 0)
+        self.call("close_run", run)   # the signer closed it meanwhile (idle, grace): the client's close comes after
+        self.refused("run_closed", "close_run", run)   # nothing to add: refused as before
+        self.call("close_run", {**run, "last_client_seq": [{"stream": "s", "client_seq": 5}]})
+        self.s.sweep(time.monotonic() + 61)
+        self.assertEqual([g["data"]["missed_events"] for g in self.gaps(self.events(run["run_id"]),
+                                                                         "client_counter_gap")], [5])
+
+    def test_after_a_restart_the_trailing_gap_is_still_written_and_not_twice(self):
+        run = self.register()
+        self.decide(run, 0)
+        self.decide(run, 1, "tc-2")
+        self.call("close_run", {**run, "last_client_seq": [{"stream": "s", "client_seq": 3}]})   # one gap: 2..3
+        self.restart()   # the stream's writer is forgotten; its tail is rebuilt from that gap
+        self.call("state_write", self.ev(run, 3, key="k", value_digest="sha256:" + "0" * 64))   # covered: no 2nd gap
+        self.s.sweep(time.monotonic() + 61)
+        self.assertEqual([g["data"]["missed_events"] for g in self.gaps(self.events(run["run_id"]),
+                                                                         "client_counter_gap")], [2])
+
+    def test_a_restart_does_not_hide_a_trailing_gap(self):
+        run = self.register()
+        self.decide(run, 0)
+        self.restart()
+        self.call("close_run", {**run, "last_client_seq": [{"stream": "s", "client_seq": 4}]})
+        self.s.sweep(time.monotonic() + 61)
+        self.assertEqual([g["data"]["missed_events"] for g in self.gaps(self.events(run["run_id"]),
+                                                                         "client_counter_gap")], [4])
 
     def test_a_gateway_ends_its_stream_without_closing_the_run(self):
         run = self.register()
@@ -410,6 +450,14 @@ class TestTailerHeartbeat(Completeness):
         (again,) = self.gaps(es, "tailer_redelegated")
         self.assertIn(f"uid:{ME.subject} took a second transcript tailer token", again["data"]["reason"])
         self.assertEqual(self.gaps(self.events(other["run_id"]), "tailer_lost"), [])
+
+    def test_a_tailer_killed_across_a_clean_restart_is_still_a_gap(self):
+        run = self.register()
+        self.s.call(TAILER, "tailer_heartbeat", self.tailer(run))
+        self.close()   # with its snapshot: the run's `tailed` stays
+        self.open()
+        self.s.sweep(time.monotonic() + svc.TAILER_LOST_S + 1)
+        self.assertEqual(len(self.gaps(self.events(run["run_id"]), "tailer_lost")), 1)
 
     def test_a_loss_the_tailer_reported_is_not_written_again(self):
         run = self.register()

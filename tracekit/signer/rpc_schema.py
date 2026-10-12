@@ -4,7 +4,9 @@ Frozen: a change to any schema here is a new RPC_VERSION. Version 16 (all of Tra
 `parent`, close_run's optional `last_client_seq` (and a gateway's `caller`), `tailer_heartbeat`, args digests on tool uses
 the provider ran, and agent approvers (approval_review, approval_revoke, approval_agents, approval_decide's `escalate`
 and `asserted`, approval_list's filters); a signer serves RPC_MIN..RPC_VERSION (its `hello` `proto`), so a version 15
-client keeps working unchanged.
+client keeps working unchanged. Its responses may carry the optional fields version 16 added (an approval's
+`run_closing`, `escalated`, `agent`; `status.rpc_version` is the signer's highest): a client ignores fields it doesn't
+know.
 The caller's identity comes from the transport (peer credentials, token, mTLS), never from a request field. Calls that change state carry `request_id`, scoped to that
 identity: a retry with the same id and payload gets the original response, the same id with another payload is refused
 with `conflict`, and the same id from another identity is a different request.

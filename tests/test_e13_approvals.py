@@ -25,6 +25,7 @@ from tracekit.policy2.engine import Engine
 from tracekit.signer import service as svc
 from tracekit.signer.rpc_schema import RPCError
 from tracekit.storage.base import StorageUnavailable
+from tracekit.verify import v2
 from test_signer_approvals import tracekit
 
 PAY = {"to": "acct-42", "cents": 1500}
@@ -387,6 +388,24 @@ class TestWeb(Signer):
         self.assertTrue(self.consume(tool="wire")["ok"])
         [rec] = self.records("approval")
         self.assertEqual(rec["passkey"], {"credential_id": b64url(auth.id), "user_verified": True})
+
+    def test_an_honest_passkey_approval_bundle_verifies_in_both_verifiers(self):
+        auth = self.register()
+        aid = self.pending("wire")
+        self.approve(aid, passkey=self.assertion(aid, auth))
+        self.assertTrue(self.consume(tool="wire")["ok"])
+        self.s.close_run({"request_id": "close", **self.run})
+        self.s.sweep(time.monotonic() + 3600)
+        self.s.checkpoint()
+        out, trust = os.path.join(self.dir, "pk.tkb"), os.path.join(self.dir, "trust.json")
+        export(self.s.log.storage, "default", self.run["run_id"], self.s.log.storage.checkpoint_latest()[1], out)
+        with open(trust, "w") as f:
+            json.dump({"logs": [self.s.vkey], "algs": ["ed25519"]}, f)
+        rep, code = v2.verify(out, trust)
+        self.assertEqual((code, rep.integrity), (0, "VERIFIED"), rep.failures)   # the request's `passkey` is gated 1.2
+        import test_ts_verifier as tv
+        if not tv.SKIP:
+            self.assertEqual(tv.ts_verify(out, trust)["exit_code"], 0)
 
     def test_replayed_assertion_is_refused(self):
         auth = self.register()

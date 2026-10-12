@@ -261,7 +261,8 @@ ask:
 
 The bounds are a closed world, checked by the signer on the arguments it decided: every argument must be named, and
 every named one present and not null; a value has exactly its JSON type (the string `"100"`, `1e2`, `99.9` and `true`
-are no integer); a list passes only when it has elements and each one does; two arguments the class reads as one
+are no integer); a list passes only when it has elements and each one does, and an integer list only when its total
+is within `max` too; two arguments the class reads as one
 (`amount` and `amount_cents`, `payee` and `to`) fail; so do arguments over 16 KiB and a pattern that runs out of time.
 
 **The floor: people answer** unless every rule the call was held by (flags aside) has `approval.agent` and its bounds
@@ -275,10 +276,10 @@ rule has `approval.agent`, so person-only bundles stay readable by a 1.1 verifie
 requesting identity (never an app-asserted principal). An approval under a `sum` budget records what it took
 (`spent`). An answer that would exceed a budget is escalated to people instead.
 
-**Anti-shopping.** Once an agent rejects or escalates a call (or the adapter abandons it after an escalation), the same
-tool with the same arguments, or the same tool call id in any attempt, is a person's to answer for the rest of the
-run; asking again writes a signed `capture.gap{reask_after_reject}`. A run gets at most 10 agent reviews and a tenant
-1000 an hour; past them, people answer.
+**Anti-shopping.** Once a person or an agent rejects a call, or an agent escalates it (or the adapter abandons it
+after an escalation), the same tool with the same arguments, or the same tool call id in any attempt, is a person's to
+answer for the rest of the run; asking again writes a signed `capture.gap{reask_after_reject}`. A run gets at most 10
+agent reviews and a tenant 1000 an hour; past them, people answer.
 
 **What the reviewer sees.** `approval_review {approval_id}`: the tool, the rule ids with the policy's `reason` and
 `rationale`, each bound and whether it passed, the budget left, the signer's redacted copy of the arguments with control

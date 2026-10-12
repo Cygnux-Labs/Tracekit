@@ -276,8 +276,11 @@ def _handle(client, p, name, sid, tid):
         _unfinished(client, sid)
         run, _ = _run(client, sid, register=False)
         try:
-            if run:
-                run.close(str(p.get("reason") or "session end")[:256])
+            if run:   # each hook is a process of its own: the session's stream and counter are in its state
+                st = run.registered
+                last = [{"stream": st["stream"], "client_seq": st["seq"] - 1}] if st.get("seq") else []
+                run.call("close_run", reason=str(p.get("reason") or "session end")[:256],
+                         **({"last_client_seq": last} if last else {}))
         except RPCError as e:
             if e.code not in ("run_closed", "unknown_run"):   # closed already (idle): only the state is left
                 raise

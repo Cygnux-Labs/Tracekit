@@ -767,6 +767,7 @@ ENTRIES = {
     "capture.gap.kind=held_call_unresolved": [registered(), ("capture.gap", {
         "kind": "held_call_unresolved", "tool_use_id": "t1", "reason": "no result"}, "run-a")],
     "approval.request.via": [registered(), ("approval.request", dict(APPROVAL, via=VIA), "run-a")],
+    "approval.request.passkey": [registered(), ("approval.request", dict(APPROVAL, passkey=True), "run-a")],
     "tool.result.via": [registered(), ("tool.result", {"tool_use_id": "t1", "ok": True, "output": OUTPUT, "via": VIA},
                                        "run-a")],
     "input.observed.via": [registered(), ("input.observed", dict(OBSERVED, via=VIA), "run-a")],

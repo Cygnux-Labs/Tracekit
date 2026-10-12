@@ -71,6 +71,8 @@ class TestBounds(unittest.TestCase):
         self.assertTrue(bounds(dict(OK, payee=["acct-1", "acct-2"]), FIELDS))
         self.assertFalse(bounds(dict(OK, payee=["acct-1", "acct-3"]), FIELDS))   # one bad element
         self.assertFalse(bounds(dict(OK, payee=[]), FIELDS))
+        self.assertTrue(bounds(dict(OK, amount=[60, 40]), FIELDS))
+        self.assertFalse(bounds(dict(OK, amount=[100] * 50), FIELDS))   # each within max, the total 50 times over it
         self.assertFalse(bounds(dict(OK, to="acct-1"), fields))                  # payee and to: one field, twice
 
     def test_a_pattern_out_of_time_raises(self):
@@ -215,6 +217,7 @@ class TestAgentApprovals(Case):
         self.assertEqual([(a["approval_id"], a.get("agent")) for a in listed], [(aid, True)])
         self.assertEqual(validate(RESPONSES["approval_list"], {"approvals": listed, "next_cursor": None}), [])
         self.assertFalse({"run_id", "tool_call_id", "attempt", "requester"} & set(listed[0]))   # nothing of the run
+        self.refused("forbidden", AGENT, "approval_list", {"run_id": self.run["run_id"]})   # nor which run it is
         out = self.answer(AGENT, aid, asserted={"model": "m-1", "version": "7"})
         self.assertEqual((out["state"], out["self_approved"]), ("approved", False))
         self.assertEqual(self.consume()["args"], OK)   # executor t2: the approved copy
@@ -344,6 +347,16 @@ class TestShopping(Case):
         gaps = [e for e in self.events() if e["type"] == "capture.gap" and e["data"]["kind"] == "reask_after_reject"]
         self.assertEqual(len(gaps), 2)
 
+    def test_after_a_persons_reject_the_same_call_is_a_persons(self):
+        aid, _ = self.ask()
+        self.assertEqual(self.answer(ALICE, aid, "reject")["state"], "rejected")
+        for tcid, attempt in (("tc-1", 1), ("tc-2", 0)):   # the next attempt; a new tool call id, the same arguments
+            with self.subTest(tcid=tcid, attempt=attempt):
+                aid, agent = self.ask(OK, tcid, attempt=attempt)
+                self.assertEqual((agent["eligible"], agent["reason"].split(":")[0]), (False, "reask_after_reject"))
+                with self.assertRaisesRegex(RPCError, "unknown_approval"):   # not the agent's to see, let alone answer
+                    self.answer(AGENT, aid)
+
     def test_abandoning_after_escalation_does_not_reset_it(self):
         aid, _ = self.ask()
         self.answer(AGENT, aid, "escalate")
@@ -366,6 +379,28 @@ class TestShopping(Case):
         self.assertIn("agent reviews", agent["reason"])
 
 
+class TestVetoUnderTtl(Case):
+    agent = {"veto_s": svc.APPROVAL_TTL_S}
+
+    def setUp(self):
+        self.dir = ts.tmpdir(self)
+
+    def test_a_veto_as_long_as_an_approval_lives_refuses_to_start(self):
+        with self.assertRaisesRegex(ValueError, "veto_s of 3600 s is not under approvals.ttl_s"):
+            self.open()
+
+
+class TestAgentPerson(Case):
+    def test_an_agent_whose_person_requested_the_call_may_not_answer_it(self):
+        bot = CallerIdentity("oidc", "bot", True, {"person": "alice"})   # an OIDC agent identity carrying a person
+        self.s._agents = {*self.s._agents, "oidc:bot"}
+        self.s.authorize["oidc:bot"] = sorted(svc.AGENT_METHODS)
+        aid, _ = self.ask()
+        self.s.log.approvals[aid]["requester_person"] = "alice"
+        self.assertIn("may not answer its own run's approval", self.refused(
+            "forbidden", bot, "approval_decide", {"request_id": rid(), "approval_id": aid, "decision": "approve"}))
+
+
 class TestBudget(Case):
     agent = {"budget": {"count": 2, "sum": {"field": "amount", "max": 70}, "window": 3600, "scope": "tenant"}}
 
@@ -384,6 +419,12 @@ class TestBudget(Case):
         self.assertFalse(self.ask(dict(OK, amount=1), "tc-4")[1]["eligible"])   # count used up
         spent = [e["data"]["spent"] for e in self.events() if e["type"] == "approval"]
         self.assertEqual(spent, [{"PAY": 30}, {"PAY": 40}])
+
+    def test_an_approval_whose_copy_is_gone_is_not_an_agents_to_approve(self):
+        aid, _ = self.ask(dict(OK, amount=60), "tc-1")
+        self.s._drop_args(aid)   # its sum spend can't be read: approving it would not count against the budget
+        with self.assertRaisesRegex(RPCError, "approval_not_pending.*copy of its arguments is gone"):
+            self.answer(AGENT, aid)
 
     def test_an_answer_past_the_budget_is_escalated_on_the_writer(self):
         a1, _ = self.ask(dict(OK, amount=40), "tc-1")

@@ -156,8 +156,8 @@ def agent_state(set_, log, run, e):
             set_(log.agent["uses"], d["approval_id"], dict(use, approved=epoch(e["ts"]), spent=d.get("spent", {})))
     elif typ == "approval.escalated":
         set_(a, "escalated", True)
-    if typ in ("approval.escalated", "approval.revoked") or typ == "approval" and d.get("approver_kind") == "agent" \
-            and d["decision"] != "approve":   # a person's veto sticks as an agent's reject does
+    if typ in ("approval.escalated", "approval.revoked") or typ == "approval" and d["decision"] != "approve":
+        # anyone's reject sticks: a person's veto as much as an agent's
         set_(run, "person_only", {**run.get("person_only", {}), **{k: True for k in person_only_keys(a)}})
 
 
@@ -440,6 +440,9 @@ class RecordLog:
             run["run_seq"], run["head"], prev = e["run_seq"] + 1, r["hash"], r["hash"]
             if "client_seq" in e:
                 run["streams"][e["stream"]] = max(e["client_seq"], run["streams"].get(e["stream"], -1))
+            elif e["type"] == "capture.gap" and e["data"].get("kind") == "client_counter_gap" and "stream" in e:
+                # what a gap already covers, so values still arriving after a restart are no second gap
+                run["tails"][e["stream"]] = last_seq(run, e["stream"]) + e["data"].get("missed_events", 0)
             for tenant, leaf in self.leaves(r, tenants):
                 leaves.setdefault(tenant, []).append(leaf)
             closed = closed or e["type"] == "log.closed"

@@ -2707,6 +2707,10 @@
           "type": "string",
           "maxLength": 256,
           "description": "format 1.2: the gateway or tool executor (its identity, scheme:subject) that wrote this record for the run's client (source gateway, tier T2); the signer takes the call's later steps from it only"
+        },
+        "passkey": {
+          "const": true,
+          "description": "the approval needs a passkey (approval: {passkey: required})"
         }
       }
     },
