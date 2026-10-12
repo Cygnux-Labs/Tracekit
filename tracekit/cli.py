@@ -59,7 +59,7 @@ def main(argv=None):
     if args and args[0] in _DELEGATED:  # before argparse: REMAINDER would not pass a leading --option through
         import importlib
         return importlib.import_module(f".{_DELEGATED[args[0]]}", __package__).main(args[1:])
-    ap = argparse.ArgumentParser(prog="tracekit", description="Signed, checkpointed evidence of what coding agents did.")
+    ap = argparse.ArgumentParser(prog="tracekit", description="Tamper-evident records of what AI agents did.")
     ap.add_argument("--version", action="version", version=f"tracekit {__version__}")
     sub = ap.add_subparsers(dest="cmd", required=True, metavar="command")
 

@@ -30,10 +30,9 @@ Fixes land on `main` and in the next 1.x release; 0.x and the 1.0 release candid
 
 ## Verifying a release
 
-From the first release made with the attested release workflow (see the status note in
-[docs/RELEASING.md](docs/RELEASING.md)), every PyPI file, npm package and signer image carries SLSA build provenance from
-this repository's release workflow, plus SBOMs and `SHA256SUMS`; the image is also cosign-signed. Earlier releases
-(1.0.0rc2 and before) have neither.
+From 1.0.0 on, every PyPI file, npm package and signer image carries SLSA build provenance from this repository's
+release workflow, plus SBOMs and `SHA256SUMS`; the image is also cosign-signed. Earlier releases (1.0.0rc2 and before)
+carry only `SHA256SUMS`.
 [docs/RELEASING.md](docs/RELEASING.md#verifying-a-release) shows how to check a download with
 `scripts/release/verify-release.sh`.
 
@@ -41,8 +40,9 @@ this repository's release workflow, plus SBOMs and `SHA256SUMS`; the image is al
 
 Tracekit proves what its capture path recorded and that the record has not changed since it was signed
 and checkpointed. It does not prove intent, complete coverage, or that a reported tool result is real.
-The full claim-by-claim analysis is in [docs/threat-model-laptop.md](docs/threat-model-laptop.md); the threat model has
-not yet had an external review, so findings against it are especially welcome.
+The full claim-by-claim analysis is in the threat models for [laptops](docs/threat-model-laptop.md) and
+[servers](docs/threat-model-server.md); they have not yet had an external review, so findings against them are
+especially welcome.
 
 In scope: bypasses of the signer, ledger, witness, bundle verification, policy gate, approval flow,
 observer server and redaction; anything an agent-controlled process can do to make a bundle verify that

@@ -1,8 +1,8 @@
 # Releasing
 
-> **Status:** this is the target release process. It applies once the owner has added `release.yml` and
-> `supply-chain.yml` (below) to `.github/workflows/`; until then releases are built and published by the current
-> release workflow without attestations or SBOMs, and `verify-release.sh` can check only `SHA256SUMS`.
+> **Status:** 1.0.0 was the first release made this way (its PyPI files carry provenance and SBOMs); its npm job
+> failed, so `@cygnux/tracekit` is not on npm yet. Earlier releases (1.0.0rc2 and before) carry only `SHA256SUMS`, so
+> `verify-release.sh` can check only the sums for them.
 
 A release is one tag. From it the release workflow builds the PyPI files, the npm packages and the multi-arch signer
 image, attests each one (SLSA build provenance through GitHub artifact attestations), publishes them after approval,

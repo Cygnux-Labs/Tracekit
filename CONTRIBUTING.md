@@ -62,5 +62,5 @@ Signed-off-by: Your Name <you@example.com>
 ```
 
 `git commit -s` adds it, using your `user.name` and `user.email`. A CI check fails a pull request from a fork if
-any commit lacks a sign-off; branches pushed to this repository by its maintainers are not checked. To fix older commits on your branch, run `git rebase --signoff main` and push the
-branch again.
+any commit lacks a sign-off; branches pushed to this repository by its maintainers are not checked. To fix older
+commits on your branch, run `git rebase --signoff main` and push the branch again.

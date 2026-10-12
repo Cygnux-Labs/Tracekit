@@ -19,6 +19,7 @@ dist/
 .venv/
 venv/
 .DS_Store
+*.pid
 _claude_snapshots/
 
 # local planning notes (not committed)
