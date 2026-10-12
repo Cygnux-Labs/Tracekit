@@ -13,8 +13,8 @@ next client_seq all its hooks share) and the decision binding of a tool call are
 Exit 0 lets the call proceed, exit 2 blocks it (reason on stderr). The signer unreachable: the run's fail mode for the
 tool's class, from register_run (closed before a run is registered). A signer refusal, a failure while a call waits for
 its approval, or any other error: blocked. A call allowed here that gets no PostToolUse (declined in the harness's own
-permission prompt, interrupted, or an unreadable payload) is completed as an error at the session's next Stop,
-UserPromptSubmit or SessionEnd; one that is never completed is the signer's decided_not_completed gap.
+permission prompt, interrupted, or an unreadable payload) is completed as an error at SessionEnd; one that is never
+completed is the signer's decided_not_completed gap.
 
 Each run of a session gets one transcript tailer (tracekit.tailer) on the transcript SessionStart names: it records the
 model's tool uses and the user's prompts (as commitments) from the transcript, which no hook payload carries.
@@ -48,8 +48,8 @@ from tracekit.signer.rpc_schema import RPCError
 AGENT = "claude-code"
 TOOL_EVENTS = ("PreToolUse", "PostToolUse", "PostToolUseFailure")
 # the error a call that got no PostToolUse is completed with (_unfinished)
-NO_POST = ("no PostToolUse came: declined (the harness's permission prompt, another hook), interrupted, or its payload "
-           "was unreadable")
+NO_POST = ("no PostToolUse came by the end of the session: declined (the harness's permission prompt, another hook), "
+           "interrupted, or its payload was unreadable")
 APPROVAL_WAIT_S = 540   # a PreToolUse hook, approval wait included, answers within this: below its timeout (install.HOOK_TIMEOUT)
 
 
@@ -218,11 +218,8 @@ def _post(client, p, sid, tid):
 
 def _unfinished(client, sid):
     """Complete the session's calls that never got their PostToolUse (declined in the harness's own permission prompt
-    or by another hook, interrupted, or a payload this hook couldn't read) as errors, so the signer doesn't write a
-    decided_not_completed gap for each: at Stop, UserPromptSubmit and SessionEnd, when none of the session's calls is
-    running."""
-    # lean: a call a background subagent still runs at the main agent's Stop is completed as an error too, and its own
-    # PostToolUse then finds no decision; skip calls younger than the turn if harnesses report background calls
+    or by another hook, interrupted, or a payload this hook couldn't read) as errors at SessionEnd, when none can still
+    be running, so the signer doesn't write a decided_not_completed gap for each."""
     for path in glob.glob(glob.escape(_state(sid)[:-len(".json")]) + ".*.json"):
         call, st = _load(path), _load(_state(sid))
         if call and st and call.get("run_id") == st["run_id"] and "tool_call_id" in call:
@@ -268,9 +265,8 @@ def _handle(client, p, name, sid, tid):
         return _pre(client, p, sid, tid)
     if name in TOOL_EVENTS:
         return _post(client, p, sid, tid)
-    if name in ("Stop", "UserPromptSubmit", "SessionEnd"):
+    if name == "SessionEnd":   # not at Stop: a background subagent's call may still be running then
         _unfinished(client, sid)
-    if name == "SessionEnd":
         run, _ = _run(client, sid, register=False)
         try:
             if run:

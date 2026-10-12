@@ -169,16 +169,18 @@ class HookV2(unittest.TestCase):
         rep, code = v2.verify(out, trust)
         self.assertEqual((code, rep.integrity), (0, "VERIFIED"), rep.checks)
 
-    def test_a_call_that_gets_no_post_tool_use_completes_as_an_error(self):
-        # declined in the harness's own prompt, or interrupted: then the turn ends, or the user writes again
-        for tid, event in (("t1", "Stop"), ("t2", "UserPromptSubmit")):
-            with self.subTest(event):
-                self.assertEqual(self.pre("ls", tid=tid), (0, ""))
-                self.assertEqual(self.hook(event), (0, ""))
-                evs = self.events()
-                self.assertEqual((evs[-1]["type"], evs[-1]["data"]["ok"]), ("tool.result", False))
-                self.assertEqual(evs[-1]["data"]["decision_id"], evs[-2]["data"]["decision_id"])
-                self.assertFalse(os.path.exists(claude_code._state("s1", tid)))
+    def test_a_call_that_gets_no_post_tool_use_completes_as_an_error_at_session_end(self):
+        # declined in the harness's own prompt, or interrupted; at Stop a background sub-agent's call may still run
+        self.assertEqual(self.pre("ls"), (0, ""))
+        for event in ("Stop", "UserPromptSubmit"):
+            self.assertEqual(self.hook(event), (0, ""))
+        run = self.run_handle()
+        self.assertEqual(run.call("read")["events"][-1]["type"], "policy.decision")
+        self.assertEqual(self.hook("SessionEnd", reason="exit"), (0, ""))
+        types = [e["type"] for e in run.call("read")["events"]]
+        self.assertEqual(types[-3:], ["policy.decision", "tool.result", "run.closing"])
+        result = run.call("read")["events"][-2]["data"]
+        self.assertEqual((result["ok"], result["tool_use_id"]), (False, "t1"))
 
     def test_closed_run_continues_in_a_new_one(self):
         self.pre("ls")

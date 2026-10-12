@@ -63,8 +63,8 @@ Without anything else installed, the signer turns what it saw and then never hea
 
 - a call the policy allowed, or whose approval was consumed, and that never completed (`decided_not_completed`, at the
   end of the run). A call you decline in the harness's own permission prompt runs no post-call hook, nor does one you
-  interrupt: the hook completes such calls as errors ("no PostToolUse came") at the session's next Stop, prompt
-  (UserPromptSubmit, Cursor's beforeSubmitPrompt, Gemini CLI's BeforeAgent) or end, so they get no gap;
+  interrupt: the hook completes such calls as errors ("no PostToolUse came") when the session ends, so they get no
+  gap (a session that never ends, such as a killed harness, leaves them as gaps);
 - with harness binding (Linux system mode), a second run started from inside the same harness process while another
   session's run is open there, once both have recorded events since (`concurrent_run`; an older session left open and
   idle gets none). Two harness windows side by side are separate processes and get none. A sub-agent's run started
