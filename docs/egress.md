@@ -122,8 +122,9 @@ explains:
 
 Each entry names one `tool` (a glob over tool names) or one `label` (a rule's label; flag rules give labels to
 allowed calls) and the hosts (globs) that tool's own dependencies reach: CDNs, redirects, package indexes. After its
-last wildcard a host glob needs a dot and a domain of two or more labels that one owner holds: `*.pythonhosted.org`,
-not `*.com`, `*.co.uk` or `*pypi.org` (lint errors). Anything else is `reconcile.unexplained_effect`, a
+last wildcard a host glob needs a dot and two or more labels: `*.pythonhosted.org`, not `*.com` or `*pypi.org` (lint
+errors). A glob over a public suffix (`*.co.uk`) passes and explains every host under it: write the narrowest host you
+mean. Anything else is `reconcile.unexplained_effect`, a
 detection trigger (`respond: [{trigger: unexplained_effect, ...}]`); the server pack notifies on it in shadow mode
 until your `explains` list is tuned.
 

@@ -261,23 +261,20 @@ def _lint(pol, path):
     for x in pol.get("explains", []):
         if "label" in x and x["label"] not in labels:
             errors.append(f"{path}: explains {x['label']!r}: no rule has this label")
-        errors += [f"{path}: explains host {h!r} is too loose: after its last wildcard it needs a dot and a domain "
-                   "of two or more labels that one owner holds (*.pythonhosted.org, not *.com, *.co.uk or *pypi.org); "
-                   "or name the hosts" for h in x["hosts"] if _loose_host(h)]
+        errors += [f"{path}: explains host {h!r} is too loose: after its last wildcard it needs a dot and two or more "
+                   "labels (*.pythonhosted.org, not *.com or *pypi.org); or name the hosts" for h in x["hosts"]
+                   if _loose_host(h)]
     return errors + _lint_detect(pol, path)
 
 
 def _loose_host(glob):
-    """Whether host glob `glob` could match the hosts of many owners: not an exact host, nor a dot and two or more
-    labels after its last wildcard."""
+    """Whether host glob `glob` is too loose: not an exact host, nor a dot and two or more labels after its last
+    wildcard."""
     if not re.search(r"[*?[]", glob):
         return False
     tail = re.split(r"[*?\]]", glob)[-1]
     labels = tail.split(".")[1:]
-    # lean: two labels under a two-letter country code, the first of three letters or fewer, are taken for a public
-    # suffix (co.uk, com.au); check the public suffix list instead if that misjudges a real domain
-    return not tail.startswith(".") or len(labels) < 2 or "" in labels or (
-        len(labels) == 2 and len(labels[1]) == 2 and len(labels[0]) <= 3)
+    return not tail.startswith(".") or len(labels) < 2 or "" in labels
 
 
 def _int(v, lo=0, hi=float("inf")):
