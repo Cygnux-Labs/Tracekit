@@ -319,7 +319,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         def done(err, parsed=None, content=None, size=0):
             """Record the response (`content`: as received, `size` bytes); whether the client may have it."""
             if content is None and stream.seen:
-                content = stream.acc.get("final", stream.acc)
+                content = stream.content()
                 size = len(json.dumps(content, separators=(",", ":"), ensure_ascii=False).encode("utf-8", "surrogatepass"))
             out = parsed or stream.parse(req)
             fields = {"stop_reason": out["finish"] and str(out["finish"])[:100], "usage": out["usage"],
@@ -401,6 +401,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                     self.wfile.flush()
         except (http.client.HTTPException, OSError) as e:
             err = f"stream broke: {e}"
+        except Exception as e:   # an event the parser can't take: recorded as an error, never a clean end
+            err = f"the upstream stream could not be read: {type(e).__name__}: {str(e)[:200]}"
         err = err or sse.error or (None if sse.done else "upstream stream ended before its terminal event")
         if not done(err):
             err = "the response could not be recorded and the run's fail mode is closed"

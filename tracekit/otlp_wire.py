@@ -20,6 +20,8 @@ import zlib
 
 MAX_BODY = 4 * 1024 * 1024          # compressed or not, as received
 MAX_DECODED = 16 * 1024 * 1024      # after gzip/deflate
+MAX_RATIO, MIN_DECODED = 32, 1 << 20  # and at most 32 times the compressed body (at least 1 MiB): a tiny body that
+                                      # inflates to 16 MiB costs seconds of pure-Python decoding
 MAX_SPANS = 10_000                  # per request
 MAX_DEPTH = 16                      # AnyValue nesting
 MAX_STR = 256 * 1024                # one attribute string
@@ -40,11 +42,13 @@ def decompress(body, encoding):
     if enc not in ("gzip", "deflate"):
         raise WireError(f"unsupported Content-Encoding {encoding!r} (use gzip, deflate or none)")
     wbits = 16 + zlib.MAX_WBITS if enc == "gzip" else zlib.MAX_WBITS
+    cap = min(MAX_DECODED, max(MIN_DECODED, MAX_RATIO * len(body)))
     try:
         d = zlib.decompressobj(wbits)
-        out = d.decompress(body, MAX_DECODED + 1)
-        if len(out) > MAX_DECODED or d.unconsumed_tail:
-            raise WireError(f"decompressed body exceeds {MAX_DECODED} bytes")
+        out = d.decompress(body, cap + 1)
+        if len(out) > cap or d.unconsumed_tail:
+            raise WireError(f"decompressed body exceeds {cap} bytes ({MAX_RATIO} times the compressed size, at "
+                            f"most {MAX_DECODED})")
         if enc == "deflate" and not d.eof:  # some clients send raw deflate without the zlib header
             raise zlib.error("truncated")
         return out
@@ -52,8 +56,8 @@ def decompress(body, encoding):
         if enc == "deflate":
             try:
                 d = zlib.decompressobj(-zlib.MAX_WBITS)
-                out = d.decompress(body, MAX_DECODED + 1)
-                if len(out) <= MAX_DECODED and not d.unconsumed_tail:
+                out = d.decompress(body, cap + 1)
+                if len(out) <= cap and not d.unconsumed_tail:
                     return out
             except zlib.error:
                 pass

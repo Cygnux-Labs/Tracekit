@@ -123,6 +123,14 @@ class Wire(unittest.TestCase):
         self.assertEqual(len(otlp_wire.decode(gzip.compress(raw), "application/json", "gzip")[0]), 4)
         self.assertEqual(len(otlp_wire.decode(zlib.compress(raw), "application/json", "deflate")[0]), 4)
 
+    def test_a_body_that_inflates_far_beyond_its_size_is_refused(self):
+        tiny = gzip.compress(b"{" + b" " * (2 << 20) + b"}")   # ~2 KB that inflates to 2 MiB
+        self.assertLess(len(tiny) * otlp_wire.MAX_RATIO, 2 << 20)
+        with self.assertRaisesRegex(otlp_wire.WireError, "times the compressed size"):
+            otlp_wire.decompress(tiny, "gzip")
+        ok = gzip.compress(json.dumps(payload(span("2222222222222222", "x", {}))).encode())
+        self.assertTrue(otlp_wire.decompress(ok, "gzip"))   # an ordinary request still inflates
+
     def test_hostile_input_is_refused_cleanly(self):
         bomb = gzip.compress(b"{" + b" " * (otlp_wire.MAX_DECODED + 10) + b"}")
         cases = [(bomb, "application/json", "gzip"), (b"\xff\xff\xff", "application/x-protobuf", None),

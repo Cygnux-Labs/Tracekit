@@ -98,10 +98,37 @@ def openai_chat(resp, request=None):
                 _usage.from_openai(_get(resp, "usage")), uses, sent)
 
 
+MAX_INDEX = 1024   # a streamed choice, tool call or content block index an upstream may name
+
+
 def _at(items, i):
+    """items[i], made on first use; an index that isn't a small non-negative integer gets a scratch dict (ignored), so
+    one upstream event can't allocate millions of entries."""
+    if not (type(i) is int and 0 <= i < MAX_INDEX):
+        return {}
     while len(items) <= i:
         items.append({})
     return items[i]
+
+
+def _append(d, field, piece):
+    """Collect streamed text for d[field] (joined once by Stream.parse): appending to a str in a dict copies it whole
+    every time, quadratic in a long argument."""
+    if isinstance(piece, str):
+        d.setdefault("\0" + field, []).append(piece)
+
+
+def _joined(node):
+    """Turn every collected piece list back into its field."""
+    if isinstance(node, list):
+        for x in node:
+            _joined(x)
+    elif isinstance(node, dict):
+        for k in [k for k in node if isinstance(k, str) and k.startswith("\0")]:
+            field = k[1:]
+            node[field] = (node[field] if isinstance(node.get(field), str) else "") + "".join(node.pop(k))
+        for v in node.values():
+            _joined(v)
 
 
 def _openai_chat_chunk(acc, chunk):
@@ -122,7 +149,7 @@ def _openai_chat_chunk(acc, chunk):
                     part = call.setdefault(k, {field: ""})
                     if _get(tc, k, "name"):
                         part["name"] = _get(tc, k, "name")
-                    part[field] += _get(tc, k, field, default="")
+                    _append(part, field, _get(tc, k, field, default=""))
 
 
 # ------------------------------------------------------------------ OpenAI Responses
@@ -208,7 +235,9 @@ def _anthropic_event(acc, ev):
             {k: _get(b, k) for k in ("type", "id", "name", "input")})
     elif typ == "content_block_delta" and _get(ev, "delta", "partial_json"):
         b = _at(acc.setdefault("content", []), _get(ev, "index", default=0))
-        b["input"] = (b["input"] if isinstance(b.get("input"), str) else "") + _get(ev, "delta", "partial_json")
+        if not isinstance(b.get("input"), str):
+            b["input"] = ""
+        _append(b, "input", _get(ev, "delta", "partial_json"))
     elif typ == "message_delta":
         acc["stop_reason"] = _get(ev, "delta", "stop_reason") or acc.get("stop_reason")
         usage = _get(ev, "usage")
@@ -294,5 +323,10 @@ class Stream:
         self.seen = True
         PARSERS[self.kind][1](self.acc, chunk)
 
+    def content(self):
+        """The response accumulated so far, as one JSON value."""
+        _joined(self.acc)
+        return self.acc.get("final", self.acc)
+
     def parse(self, request=None):
-        return parse(self.kind, self.acc.get("final", self.acc), request)
+        return parse(self.kind, self.content(), request)

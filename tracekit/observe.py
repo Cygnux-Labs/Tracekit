@@ -472,10 +472,10 @@ def make_handler(feed, token, allowed_hosts=None, secure=False, login=None, appr
                 nonce = secrets.token_urlsafe(18)
                 return self._send(200, _page(nonce=nonce), "text/html", nonce=nonce)
             if u.path == "/api/snapshot":
-                with feed.lock:
+                with feed.lock:   # copied under the lock, written after it: a client that stops reading holds nothing
                     body = {"next": feed.base + len(feed.records), "dropped": feed.base,
                             "records": [r for r in feed.records if scope is ALL or r.get("tenant") == scope]}
-                    return self._send(200, json.dumps(body, ensure_ascii=False))
+                return self._send(200, json.dumps(body, ensure_ascii=False))
             if u.path == "/api/verify":
                 n, problems, head = feed.verify() if scope is ALL else feed.verify(scope)
                 return self._send(200, json.dumps({"records": n, "ok": not problems, "problems": problems, "head": head}))
