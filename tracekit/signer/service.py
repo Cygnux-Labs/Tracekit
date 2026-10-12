@@ -530,8 +530,8 @@ def _person_like(p, persons):
 
 
 class Suspensions:
-    """The operator-managed suspension list a central signer's replicas share: a JSON file {identity or prefix (`:*`,
-    `/*`): {tenant, by, at, reason?, incident_id?}}, read again whenever it changes (TokenStore's model). Unreadable:
+    """The operator-managed suspension list a central signer's replicas share: a JSON file {tenant: {identity or prefix
+    (`:*`, `/*`): {by, at, reason?, incident_id?}}}, read again whenever it changes (TokenStore's model). Unreadable:
     calls are refused (`unavailable`), never let through."""
 
     def __init__(self, path):
@@ -544,8 +544,8 @@ class Suspensions:
             return {}
         except (OSError, ValueError) as e:
             raise RPCError("unavailable", f"the suspension list is unreadable: {e}") from None
-        if not isinstance(data, dict) or not all(isinstance(v, dict) and isinstance(v.get("tenant"), str)
-                                                 for v in data.values()):
+        if not isinstance(data, dict) or not all(isinstance(t, dict) and all(isinstance(v, dict) for v in t.values())
+                                                 for t in data.values()):
             raise RPCError("unavailable", f"{self.path} is not a suspension list")
         return data
 
@@ -569,18 +569,21 @@ class Suspensions:
         with self._lock:
             self._stamp = None
 
-    def change(self, identity, entry):
-        """Add (or with `entry` None, lift) the suspension of `identity`; whether the list changed."""
+    def change(self, tenant, identity, entry):
+        """Add (or with `entry` None, lift) the suspension of `identity` in `tenant`; whether the list changed."""
         # lean: read-modify-write under a per-process lock; two replicas changing the list at the same instant can lose
         # one change (the record of it stays): keep the list in Postgres if operators race
         with self._lock:
             data = self._read()
-            if (identity in data) == (entry is not None):
+            mine = data.setdefault(tenant, {})
+            if (identity in mine) == (entry is not None):
                 return False
             if entry is None:
-                del data[identity]
+                del mine[identity]
+                if not mine:
+                    del data[tenant]
             else:
-                data[identity] = entry
+                mine[identity] = entry
             files.write_json(self.path, data)
             return True
 
@@ -1897,8 +1900,8 @@ class SignerService:
             # lean: the list is written on the writer and stays changed if this batch is rolled back; each replica's
             # `enforced` record still shows it
             try:
-                self._suspensions.change(run["owner"], {"tenant": tenant, "by": "signer", "at": _iso(time.time()),
-                                                        "incident_id": inc["incident_id"]})
+                self._suspensions.change(tenant, run["owner"], {"by": "signer", "at": _iso(time.time()),
+                                                                "incident_id": inc["incident_id"]})
                 actions.append("suspend")
             except (OSError, RPCError) as x:
                 why = f"the suspension list could not be written ({x}): the run's owner is not suspended"
@@ -1946,8 +1949,7 @@ class SignerService:
             except Exception:
                 self._suspensions.forget()   # read and recorded again by the next call
                 raise
-        tenant = self._tenant_of(identity)
-        mine = {k: x for k, x in entries.items() if x["tenant"] == tenant}
+        mine = entries.get(self._tenant_of(identity), {})
         hit = next((x for k in keys(identity) if (x := lookup(mine, k))), None)
         if hit:
             raise RPCError("forbidden", f"{subject(identity)[:256]} is suspended (by {str(hit.get('by'))[:256]} at "
@@ -1958,11 +1960,12 @@ class SignerService:
         """identity.suspension records for the suspension list's entries this signer starts (`enforced`) or stops
         (`lifted`) enforcing."""
         on = self.log.contain["enforcing"]
-        for ident, x in sorted(entries.items()):
-            if not on.get(f"{x['tenant']}\0{ident[:256]}"):
-                tx.emit(self.log.signer_run(tx, x["tenant"]), "identity.suspension",
-                        {"identity": ident[:256], "state": "enforced", "by": "signer"}, source="signer")
-        mine = {f"{x['tenant']}\0{ident[:256]}" for ident, x in entries.items()}
+        mine = {f"{tenant}\0{ident[:256]}" for tenant, ids in entries.items() for ident in ids}
+        for k in sorted(mine):
+            if not on.get(k):
+                tenant, ident = k.split("\0", 1)
+                tx.emit(self.log.signer_run(tx, tenant), "identity.suspension",
+                        {"identity": ident, "state": "enforced", "by": "signer"}, source="signer")
         for k, v in list(on.items()):
             if v and k not in mine:
                 tenant, ident = k.split("\0", 1)
@@ -2158,8 +2161,8 @@ class SignerService:
             raise RPCError("forbidden", f"{target[:256]} is not an identity of tenant {tenant[:64]!r}")
         by, reason = subject(identity)[:256], req.get("reason") and privacy.redact_text(req["reason"])[0]
         self.quotas.take_event(identity)
-        changed = self._suspensions.change(target, None if lift else {
-            "tenant": tenant, "by": by, "at": _iso(time.time()), **({"reason": reason} if reason else {})})
+        changed = self._suspensions.change(tenant, target, None if lift else {
+            "by": by, "at": _iso(time.time()), **({"reason": reason} if reason else {})})
         if not changed and (identity.scheme, identity.subject, req["request_id"]) not in self.log.done:   # not a retry
             raise RPCError("invalid_request", f"{target[:256]} is {'not suspended' if lift else 'suspended already'}")
 

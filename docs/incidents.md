@@ -69,8 +69,9 @@ concerns. Resolving is not undoing: it ends holds, never a quarantine, and recor
 redacted and never leave in a webhook.
 
 **Suspension list.** `suspensions:` in signer.yaml names a JSON file every replica reads on each call (default
-`<data_dir>/suspensions.json`): `{identity or prefix: {tenant, by, at, reason?, incident_id?}}`. A suspended identity's
-calls (register_run and every per-run call, any identity scheme, also as `person:` or `group:`) are refused, in the entry's tenant only: an operator's `token:*` reaches only their own tenant's tokens. Each
+`<data_dir>/suspensions.json`): `{tenant: {identity or prefix: {by, at, reason?, incident_id?}}}`. A suspended identity's
+calls (register_run and every per-run call, any identity scheme, also as `person:` or `group:`) are refused, in the entry's tenant only: an operator's `token:*` reaches only their own tenant's tokens, and an operator can suspend
+or lift only their own tenant's entries. Each
 replica writes its own `identity.suspension{state: enforced}` the first time it sees an entry, and `lifted` when it is
 gone. No token is revoked: revoke it yourself if the identity is lost.
 

@@ -296,6 +296,18 @@ class TestSuspension(Case):
         self.refused(lambda: s.as_(OP, "suspend", {"identity": "uid:999999"}),
                      why="is not an identity of tenant")
 
+    def test_an_operator_changes_only_their_own_tenants_entries(self):
+        s = self.signer()
+        s.s.tenants["uid:999999"] = "acme"
+        s.s.authorize["uid:999999"] = sorted(svc.OPERATOR)
+        acme_op = CallerIdentity("uid", "999999", True)
+        s.as_(OP, "suspend", {"identity": "token:*"})
+        self.refused(lambda: s.as_(acme_op, "unsuspend", {"identity": "token:*"}), "invalid_request", "not suspended")
+        s.as_(acme_op, "suspend", {"identity": "token:*"})   # acme's own entry, next to the default tenant's
+        s.as_(acme_op, "unsuspend", {"identity": "token:*"})
+        self.refused(lambda: s.s._check_suspended(CallerIdentity("token", "carl", True)), why="is suspended")
+        s.s._check_suspended(CallerIdentity("token", "bob", True, {"tenant": "acme"}))
+
     def test_an_unreadable_list_refuses(self):
         s = self.signer()
         with open(os.path.join(s.dir, "suspensions.json"), "w") as f:
