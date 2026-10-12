@@ -12,25 +12,25 @@ An action is recorded as `browser_use:<action>` with its params and the URL of t
 Browser Use's `<secret>name</secret>` placeholders (a value in the params, the page URL, a result or the page's text,
 written out or percent-, HTML- or JSON-encoded, is put back to its placeholder), and each secret the action types is
 added as `typed_secrets: {name: [sha256 of the value]}`, so the signed args commitment lets an auditor who holds the
-value and the record's revealed salt confirm what was typed. Before an action is decided, what the model read of the
-page this step (Browser Use's browser state: URL, title, tabs and the page's text) is observed as untrusted content, so
-the hosts it names are in the run's provenance index. `deny` skips the action and hands the agent an ActionResult with
-the refusal as its error, and the run goes on. `ask` waits for a person (HeldCalls) up to `approval_wait_s`, which ends
-before Browser Use's own action timeout; an approval with a T2 executor runs the params of the signer's copy.
+value and the record's revealed salt confirm what was typed. Before an action is decided, every browser state Browser
+Use made since the session's last action (what the model read of the page: URL, title, tabs and the page's text) is
+observed as untrusted content, so the hosts it names are in the run's provenance index; one that can't be observed
+refuses the action unless the run's fail mode for `browser` is open. `deny` skips the action and hands the agent an
+ActionResult with the refusal as its error, and the run goes on. `ask` waits for a person (HeldCalls) up to
+`approval_wait_s`, which ends before Browser Use's own action timeout; an approval with a T2 executor runs the params of
+the signer's copy.
 """
 import asyncio
 import functools
 import hashlib
-import html
-import json
 import re
 import uuid
 import warnings
-from html.entities import codepoint2name
+from html.entities import html5
 
 from tracekit.format.canon import event_hash
 from tracekit.integrations.held import HeldCalls
-from tracekit.sdk.client import SignerUnavailable, result_field
+from tracekit.sdk.client import SignerUnavailable, fail_open, result_field
 from tracekit.signer.rpc_schema import RPCError
 
 BLOCKED = "Action blocked by policy: "
@@ -39,6 +39,11 @@ PAGE_URL_S = 2   # how long reading the page's URL may take before the action is
 # lean: what the model read past this many characters of a page's text is not observed (Browser Use shows the model
 # 40,000 by default); observe in parts if pages that long carry what provenance must see
 PAGE_TEXT = 100_000
+_NAMES = {}   # a character -> the HTML5 character reference names that write it (`amp;`, `AMP`, ...)
+for _name, _ch in html5.items():
+    if len(_ch) == 1:
+        _NAMES.setdefault(_ch, []).append(_name)
+_JSON = {'"': '\\"', "\\": "\\\\", "/": "\\/", "\b": "\\b", "\f": "\\f", "\n": "\\n", "\r": "\\r", "\t": "\\t"}
 
 
 def _action_timeout_s():
@@ -47,7 +52,9 @@ def _action_timeout_s():
     try:
         from browser_use.tools.service import _DEFAULT_ACTION_TIMEOUT_S
         return float(_DEFAULT_ACTION_TIMEOUT_S)
-    except (ImportError, TypeError, ValueError):   # lean: a Browser Use without it: 0.13's default
+    except (ImportError, TypeError, ValueError):
+        # lean: a Browser Use without it gets 0.13's default; read the timeout from wherever a release that moves it
+        # keeps it
         return 180.0
 
 
@@ -85,20 +92,31 @@ def _secrets(sensitive_data):
     return sorted(((v, n) for v, n in pairs if isinstance(v, str) and v), key=lambda p: -len(p[0]))
 
 
+def _percent(data):
+    return "".join(f"%(?:25)*(?i:{b:02x})" for b in data)
+
+
 @functools.lru_cache(maxsize=256)
 def _written(value):
-    """`value` as it may be written in a URL, a page or JSON: each character as itself, percent-encoded (either hex
-    case, or encoded twice), a space also as `+`, an HTML character reference or a JSON escape."""
+    """`value` as it may be written in a URL, a page or JSON: each character as itself; percent-encoded (UTF-8, or
+    Latin-1 below U+0100; either hex case; encoded again any number of times), a space also as `+`; as an HTML
+    character reference (decimal or hex, with or without its `;`, or any HTML5 name); or as a JSON escape (`\\/`, `\\"`,
+    or `\\u` and each UTF-16 unit in either hex case). No two forms of a character match the same text (a text that
+    almost matches would otherwise be retried in every combination of them), and the longest is tried first."""
+    # lean: a run of backslashes in a secret still backtracks in every split of `\\\\` (JSON's backslash) into two
+    # characters, exponentially past about 20 in a row; mask such a secret in parts if one has that many
     out = []
     for ch in value:
-        forms = {re.escape(ch), "".join(f"%(?:25)?(?i:{b:02x})" for b in ch.encode("utf-8", "surrogatepass")),
-                 f"&#0*{ord(ch)};", f"&#(?i:x0*{ord(ch):x});"}
-        forms |= {f"(?i:{re.escape(e)})" for e in (html.escape(ch), json.dumps(ch)[1:-1]) if e != ch}
-        if ord(ch) in codepoint2name:
-            forms.add(f"&{codepoint2name[ord(ch)]};")
+        units = ch.encode("utf-16-be", "surrogatepass")
+        forms = {re.escape(ch), _percent(ch.encode("utf-8", "surrogatepass")), f"&#0*{ord(ch)};?",
+                 f"&#[xX]0*(?i:{ord(ch):x});?",
+                 "".join(f"\\\\u(?i:{units[i]:02x}{units[i + 1]:02x})" for i in range(0, len(units), 2))}
+        forms |= {re.escape("&" + n) for n in _NAMES.get(ch, ())} | {re.escape(e) for e in [_JSON.get(ch)] if e}
+        if 0x80 <= ord(ch) < 0x100:
+            forms.add(_percent([ord(ch)]))
         if ch == " ":
             forms.add(r"\+")
-        out.append("(?:" + "|".join(sorted(forms)) + ")")
+        out.append("(?:" + "|".join(sorted(forms, key=lambda f: (-len(f), f))) + ")")
     return re.compile("".join(out))
 
 
@@ -142,35 +160,54 @@ def _page(state):
                                      "tabs": [getattr(t, "url", "") for t in getattr(state, "tabs", None) or ()]}
 
 
+def _pages(session):
+    """The pages of the browser states Browser Use made for `session` and no action has observed yet, oldest first. At
+    the session's first action its get_browser_state_summary, which makes the state each agent step reads (and those
+    an action asks for), is wrapped to queue the page of every state it makes."""
+    made = getattr(session, "get_browser_state_summary", None)
+    pages = getattr(made, "tracekit_pages", None)
+    if made is None or pages is not None:
+        return pages or []
+    # lean: the state the step read before this first action is Browser Use 0.13's private cache, which a focus change
+    # (a tab closing) clears first; wrap the session when it is made if that first step matters
+    pages = [p for p in [_page(getattr(session, "_cached_browser_state_summary", None))] if p]
+
+    async def make(*a, **kw):
+        state = await made(*a, **kw)
+        page = _page(state)
+        if page is not None and page not in pages[-1:]:   # `navigate` reads the page the next step reads again
+            pages.append(page)
+        return state
+    make.tracekit_pages = pages
+    object.__setattr__(session, "get_browser_state_summary", make)   # BrowserSession, a pydantic model, forbids extras
+    return pages
+
+
+def _blocked(why):
+    from browser_use.agent.views import ActionResult
+    return ActionResult(error=BLOCKED + why)
+
+
 class _Actions(HeldCalls):
     CLASS = "browser"
 
-    def __init__(self, *a, **kw):
-        super().__init__(*a, **kw)
-        self._read = {}   # id(browser session) -> the browser state last observed for it
-
-    async def _observe_page(self, session, secrets):
-        """Observe, as untrusted, the browser state the agent's step read (Browser Use caches it on the session), once
-        per state."""
-        # lean: Browser Use 0.13's private cache; asking the session for its state would rebuild the element indices
-        # the step's next actions refer to
-        state = getattr(session, "_cached_browser_state_summary", None)
-        if state is None or self._read.get(id(session)) is state:
-            return
-        page = _page(state)
-        if page is not None:
-            await self._rpc("observe", source="browser_use:page", trust="untrusted", value=_mask(page, secrets))
-        self._read[id(session)] = state
-
     async def gate(self, execute, action, params, *a, **kw):
         secrets, session = _secrets(kw.get("sensitive_data")), kw.get("browser_session", a[0] if a else None)
+        # what the agent read since the last action, before anything it decided from it runs. An observe that fails
+        # has spent its client_seq: the signer's gap for it makes the run's provenance index partial, so from:
+        # untrusted rules hold every send from then on, and no page needs a second try
+        pages = _pages(session)
         try:
-            await self._observe_page(session, secrets)
-        except SignerUnavailable:   # the decide meets the same signer and applies the run's fail mode
-            pass
-        except RPCError as e:   # the page would be missing from the provenance index: no action on it runs
-            from browser_use.agent.views import ActionResult
-            return ActionResult(error=f"{BLOCKED}the signer refused the page's content: {e}")
+            while pages:
+                page = _mask(pages.pop(0), secrets)
+                await self._rpc("observe", source="browser_use:page", trust="untrusted", value=page)
+        except SignerUnavailable as e:
+            pages.clear()
+            if not fail_open(self.fail_modes, self.CLASS):
+                return _blocked(f"signer unavailable, so the page the agent read was not observed: {e}")
+        except RPCError as e:
+            pages.clear()
+            return _blocked(f"the signer refused the page's content: {e}")
         args = _mask({**(params or {}), "page_url": await _page_url(session)}, secrets)
         # Registry._replace_sensitive_data fills a <secret>name</secret> placeholder, and a param that is exactly a name
         typed = {n for s in _strings(args) for n in _PLACEHOLDER.findall(s) + [s]}
@@ -183,8 +220,7 @@ class _Actions(HeldCalls):
         tool, call_id = f"browser_use:{action}", uuid.uuid4().hex
         why, d, run = await self._gate(call_id, tool, args)
         if why is not None:
-            from browser_use.agent.views import ActionResult
-            return ActionResult(error=BLOCKED + why)
+            return _blocked(why)
         if d is None:   # the signer unreachable and the run fails open: the action runs unrecorded
             return await execute(action, params, *a, **kw)
         if run != args:   # the signer's copy (T2) differs from what was sent: its params, placeholders and all, run

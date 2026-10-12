@@ -448,7 +448,8 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
     return Object.entries(modes).filter(([, m]) => m === "open").map(([c]) => cut(c, 64));
   }))].sort();
   rep.check("fail-open classes", !failOpen.length, failOpen.join(", ") || "none",
-    failOpen.length ? ["calls of these classes may have run unrecorded while the signer was down"] : [], true);
+    failOpen.length ? ["calls the agent classed as one of these may have run unrecorded while the signer was down"] : [],
+    true);
   rep.check("key assurance", true, "asserted: the log declares its record keys; none is attested");
   const algs = new Set([...every, ...keyRecords].map((r) => text(at(r, "alg"))));
   rep.assurance = await assurance(origin, cosigs, witnesses, trust, algs, selfApproved, regCosigs)

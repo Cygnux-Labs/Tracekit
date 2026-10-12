@@ -54,8 +54,9 @@ class HeldCalls:
         if d["decision"] == "ask":
             if self.wait_s <= 0:
                 return f"{', '.join(d['rule_ids'])}: approval required, and this caller cannot wait for one", d, args
+            request = asyncio.ensure_future(self._rpc("approval_request", tool_call_id=call_id))
             try:
-                hint = (await self._rpc("approval_request", tool_call_id=call_id))["approval_id"]
+                hint = (await asyncio.shield(request))["approval_id"]   # a cancel lets it finish, to withdraw it
                 state, deadline = "requested", time.monotonic() + self.wait_s
                 while state == "requested" and deadline > time.monotonic():
                     left_ms = int(min(deadline - time.monotonic(), 300) * 1000)
@@ -64,6 +65,11 @@ class HeldCalls:
             except (RPCError, SignerUnavailable) as e:   # once the policy asked, no fail mode applies
                 state = f"{type(e).__name__}: {e}"
             except asyncio.CancelledError:   # the framework stopped waiting (its own timeout): so does the approval
+                if hint is None:   # cancelled while the approval was being opened
+                    try:
+                        hint = (await request)["approval_id"]
+                    except (RPCError, SignerUnavailable):   # none was opened
+                        pass
                 await self._abandon(hint, "the caller stopped waiting for the approval")
                 raise
             if state == "requested":

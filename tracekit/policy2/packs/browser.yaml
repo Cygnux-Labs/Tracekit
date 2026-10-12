@@ -14,9 +14,11 @@ tools:
 # a page's content is untrusted
 untrusted: [browser]
 
-# Browser Use asks the model for its actions as structured output, not tool calls (with an Anthropic model, as one
-# forced tool call, AgentOutput): reconciliation expects no tool use for an action, and no decide for AgentOutput
-structured_output: ['browser_use:*', AgentOutput]
+# Browser Use asks the model for its actions as structured output, not tool calls: reconciliation expects no tool use
+# for an action. With an Anthropic model the output comes as one forced tool call, AgentOutput, which this pack doesn't
+# name (any tool of that name would then run with no decide): a deployment under gateway_mandatory names it in its own
+# policy (docs/integrations/browser-use.md)
+structured_output: ['browser_use:*']
 
 deny:
   - id: TK-B001

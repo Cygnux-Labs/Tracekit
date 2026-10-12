@@ -156,11 +156,12 @@ class _Https:
 
     def _host(self, req):
         """The host of the run or approval `req` names. A central signer's replica (docs/deploy-kubernetes.md) prefixes
-        its ids with its route, `<service>-<n>.`: such an id goes to host `<service>-<n>` in the signer's domain."""
+        its ids with its route, `<service>-<n>.`: such an id goes to host `<service>-<n>` in the signer's domain. Plain
+        http stays on its loopback address: the ids are the caller's, and a route would name a host off it."""
         first, _, rest = self.host.partition(".")
         route, dot, _ = (req.get("run_id") or req.get("approval_id") or req.get("analyzes")
                          or req.get("parent", {}).get("run_id") or "").partition(".")
-        if not (dot and re.fullmatch(re.escape(first) + r"-[0-9]+", route)):
+        if self.plain or not (dot and re.fullmatch(re.escape(first) + r"-[0-9]+", route)):
             return self.host
         return f"{route}.{rest}" if rest else route
 

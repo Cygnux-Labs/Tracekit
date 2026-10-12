@@ -14,7 +14,8 @@ from tracekit.format.canon import event_hash
 SHELL_KEYS = ("command", "cmd", "commands")
 PATH_KEYS = ("file_path", "notebook_path", "path")
 BODY_KEYS = ("body", "data", "json", "files", "form", "content")   # an http call with one of these sends data
-TYPING = ("input", "upload_file")   # Browser Use actions that send data to the page they run on
+# Browser Use actions that send data to the page they run on
+TYPING = ("input", "upload_file", "send_keys", "select_dropdown")
 NAVIGATE = ("navigate", "go_to_url")   # Browser Use actions that load a URL: a query string in it is data sent to its host
 RECIPIENT_KEYS = ("to", "cc", "bcc", "recipients")
 PAYEE_KEYS = ("payee", "to", "recipient", "destination", "account", "account_number", "iban")

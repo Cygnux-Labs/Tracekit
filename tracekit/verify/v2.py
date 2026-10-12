@@ -48,7 +48,8 @@ Coverage: a run.final that carries `coverage` (the capture layers that reported,
 by kind) gives a `coverage` line; unreconciled calls make it a warning, so `--strict` exits 3 on them.
 Gaps: every other signer-written capture.gap in a run (unless its kind is in INFO_GAPS), approval.binding_mismatch and
 trace.tamper record is counted by kind on a `gaps` warning; a run that declares a fail-open class makes `fail-open
-classes` a warning (its calls of that class may have run unrecorded while the signer was down).
+classes` a warning (calls the agent classed as one of them may have run unrecorded while the signer was down: the
+class is the agent's own reading of the tool).
 
 Findings (tracekit why): a bundle may hold one run with its findings runs (run.registered `analyzes` it) and replay
 runs (`replay_of` it). Each why.finding's replay runs must be in the bundle as replay runs of the analysed run in the
@@ -585,7 +586,8 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
         rep.check("harness", True, "signer-attested: " + ", ".join(bound[:20]) + (", ..." if len(bound) > 20 else ""))
     fail_open = sorted({str(c)[:64] for d in registered for c, m in (d.get("fail_modes") or {}).items() if m == "open"})
     rep.check("fail-open classes", not fail_open, ", ".join(fail_open) or "none",
-              ["calls of these classes may have run unrecorded while the signer was down"] if fail_open else [],
+              ["calls the agent classed as one of these may have run unrecorded while the signer was down"]
+              if fail_open else [],
               warn=True)
     rep.check("key assurance", True, f"certified: {len(issued)} of {len(timeline)} record key(s) by pinned issuer(s) "
                                      f"{', '.join(sorted(set(issued.values())))}" if issued else

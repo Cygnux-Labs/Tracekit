@@ -67,13 +67,15 @@ def redact_text(s):
 _PW_STOP = re.compile(r"[\s@]")
 _HOST_END = re.compile(r"\s|\Z")
 _PORT = re.compile(r"[0-9]{1,5}[/?#]")   # host:port/path: a URL with no password, its path free to hold an "@"
+_WEB = ("http", "https", "ws", "wss")   # schemes whose URLs carry addresses in a path or query, not a password
 
 
 def _redact_connections(prefix, s):
     """Redact scheme://user:password@host. The password runs to the first whitespace or "@" after the
     prefix; every prefix inside one such run shares that end, so it is found once per run and the
-    scan stays linear however many prefixes the input repeats. A port and a path after the prefix
-    (http://host:8080/compose?to=a@b.example) are a URL, not a password."""
+    scan stays linear however many prefixes the input repeats. In a web URL a port and a path after the prefix
+    (http://host:8080/compose?to=a@b.example) are a URL, not a password; any other scheme's are a password
+    (postgres://app:2024#Spring@db)."""
     out, last, n, pos, stop = [], 0, 0, 0, -1
     while True:
         m = prefix.search(s, pos)
@@ -82,7 +84,8 @@ def _redact_connections(prefix, s):
         if m.end() > stop:
             st = _PW_STOP.search(s, m.end())
             stop = st.start() if st else len(s)
-        if stop > m.end() and s.startswith("@", stop) and not _PORT.match(s, m.end(), stop):
+        web = _PORT.match(s, m.end(), stop) and m.group().partition(":")[0].lower() in _WEB
+        if stop > m.end() and s.startswith("@", stop) and not web:
             end = _HOST_END.search(s, stop + 1).start()
             if end > stop + 1:
                 out += [s[last:m.start()], "[REDACTED:connection_string]"]

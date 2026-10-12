@@ -340,7 +340,9 @@ class TestVerifyV2(Case):
                                                   "approval.binding_mismatch 1, client_counter_gap 1, state_tamper 1")
         self.assertEqual(lines["gaps"]["problems"][2], "seq 4: approval.binding_mismatch: approval apr-1 of call tc-1: "
                                                        "the arguments differ from the approved ones")
-        self.assertEqual(lines["fail-open classes"]["detail"], "browser")
+        self.assertEqual((lines["fail-open classes"]["detail"], lines["fail-open classes"]["problems"]),
+                         ("browser", ["calls the agent classed as one of these may have run unrecorded while the signer "
+                                      "was down"]))
         self.assertEqual(self.cli(out, "--trust", self.trust, "--strict")[0], 3)
 
     def test_a_call_counts_at_its_weakest_tier_and_a_split_capture_path_warns(self):

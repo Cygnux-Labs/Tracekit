@@ -103,6 +103,24 @@ def person_only_keys(a):
                                                      if (a.get("agent") or {}).get("args_key") else [])
 
 
+LOST = ": the signer never got those events, and an input observed or a tool's result in them is not in the index"
+
+
+def skipped(run, req):
+    """The client_counter_gap reason of client event `req` when it skips client_seq values of its stream, else None."""
+    last = run["streams"].get(req["stream"], -1)
+    if req["client_seq"] > last + 1:
+        return f"stream {req['stream']} skipped client_seq {last + 1}..{req['client_seq'] - 1}"
+    return None
+
+
+def degrade(tx, prov, state, reason):
+    """Set a run's provenance index `state` (partial, truncated) with its `reason`, unless it is degraded already."""
+    if prov is not None and prov["state"] == "complete":
+        tx.set(prov, "state", state)
+        tx.set(prov, "reason", reason[:256])
+
+
 def agent_state(set_, log, run, e):
     """Follow record `e` of `run` in the agent-approval state that budgets, review caps and the person-only set are
     counted from: `log.agent` {off: the kill switch, uses: approval id -> {requested, tenant, requester, rules,
@@ -222,13 +240,14 @@ class Tx:
         return e["run_seq"]
 
     def event(self, run, req, typ, data, digests=None, **top):
-        """A client event call: skipped client_seq values first become a signer-written gap."""
-        stream, cseq = req["stream"], req["client_seq"]
-        last = run["streams"].get(stream, -1)
-        if cseq > last + 1:
-            self.emit(run, "capture.gap", {"kind": "client_counter_gap", "missed_events": cseq - last - 1,
-                                           "reason": f"stream {stream} skipped client_seq {last + 1}..{cseq - 1}"},
+        """A client event call: skipped client_seq values first become a signer-written gap, and make the run's
+        provenance index partial."""
+        stream, cseq, gap = req["stream"], req["client_seq"], skipped(run, req)
+        if gap:
+            self.emit(run, "capture.gap", {"kind": "client_counter_gap", "reason": gap,
+                                           "missed_events": cseq - run["streams"].get(stream, -1) - 1},
                       source="signer", stream=stream)
+            degrade(self, run.get("prov"), "partial", gap + LOST)
         self.set(run["streams"], stream, cseq)
         return self.emit(run, typ, data, digests=digests, request_id=req["request_id"], stream=stream, client_seq=cseq,
                          **top)

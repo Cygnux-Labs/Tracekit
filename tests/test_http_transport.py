@@ -13,7 +13,7 @@ from cryptography import x509
 from test_identity_k8s import AUD, Jwks, claims, jwt
 from test_identity_mtls import Pki, echo, post, serve, tmpdir
 from tracekit.identity.base import CallerIdentity
-from tracekit.sdk.client import Client, SignerUnavailable
+from tracekit.sdk.client import Client, SignerUnavailable, _Https
 from tracekit.signer import service as svc
 from tracekit.signer.quotas import MAX_LINE
 from tracekit.signer.rpc_schema import REQUESTS, RPCError
@@ -146,6 +146,13 @@ class TestClientUrls(unittest.TestCase):
         self.assertEqual(self.subject(self.client(f"http://127.0.0.1:{port}")), "http")
         with self.assertRaisesRegex(SignerUnavailable, "must be on a loopback address"):
             self.client("http://192.0.2.1:8080").status({})
+
+    def test_plain_http_never_leaves_its_loopback_address(self):
+        """A run id's replica route (`127-5.`) would name host 127-5.0.0.1 off loopback, the token in clear."""
+        h = _Https("http://127.0.0.1:8080")
+        self.assertEqual([h._host({"run_id": "127-5.ab"}), h._host({"approval_id": "127-0.ab"})],
+                         ["127.0.0.1", "127.0.0.1"])
+        self.assertEqual(_Https("https://127.0.0.1:8443")._host({"run_id": "127-5.ab"}), "127-5.0.0.1")   # TLS: routed
 
     def test_a_certificate_that_does_not_verify_is_named(self):
         pki = Pki(self.d)
