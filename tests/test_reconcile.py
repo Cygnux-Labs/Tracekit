@@ -15,7 +15,7 @@ from tracekit.bundle_v2 import export
 from tracekit.format import checkpoint
 from tracekit.format.canon import event_hash
 from tracekit.policy2.engine import Engine
-from tracekit.signer import service as svc
+from tracekit.signer import reconcile, service as svc
 from tracekit.signer.rpc_schema import RPCError
 from tracekit.storage.file import FileStorage
 from tracekit.verify import v2
@@ -59,6 +59,21 @@ class Reconcile(Lifecycle):
         return out
 
 
+class Wording(unittest.TestCase):
+    def test_under_gateway_mandatory_a_decide_the_agent_reported_is_called_a_call_around_the_gateway(self):
+        run = {"rec": reconcile.new(), "digests": {}}
+        put = lambda d, k, v: d.__setitem__(k, v)
+        reconcile.observe(put, run, {"type": "policy.decision", "tool_call_id": "tc-1", "args_source": "parsed",
+                                     "data": {"tool": "cancel_ticket", "decision": "allow"}})
+        reconcile.observe(put, run, {"type": "model.exchange", "source": "sdk", "data": {"tool_uses": [use(
+            "tc-1", "cancel_ticket")]}})
+        self.assertEqual(reconcile._found(run, mandatory=False), [])
+        [(kind, tcid, _, detail)] = reconcile._found(run, mandatory=True)
+        self.assertEqual((kind, tcid), ("fabricated", "tc-1"))
+        self.assertIn("no gateway exchange asked for: the agent reported the model asking for it", detail)
+        self.assertNotIn("never asked", detail)
+
+
 class TestReconcile(Reconcile):
     def handoff_run(self):
         run = self.register()
@@ -78,6 +93,19 @@ class TestReconcile(Reconcile):
         self.s.policy = Engine({**self.s.policy.policy, "handoffs": ["transfer_to_refunds_agent"]})   # the operator
         [(found, _)] = self.final(self.handoff_run())
         self.assertEqual(found, [("reconcile.hook_missing", "tc-2")])
+
+    def test_calls_in_the_models_structured_output_are_not_compared_with_its_tool_uses(self):
+        """Browser Use asks for its actions as structured output (here through the forced AgentOutput tool call):
+        neither the decides nor the output tool reconcile against L3 once the policy names them (unnamed, the same run
+        is a hook_missing and a fabricated: test_each_kind)."""
+        self.s.policy = Engine({**self.s.policy.policy, "structured_output": ["browser_use:*", "AgentOutput"]})
+        run = self.register()
+        self.model(run, [use("tc-out", "AgentOutput")])
+        self.run_call(run, "tc-1", "browser_use:click", {"index": 3})
+        self.run_call(run, "tc-2", "read_file")   # any other tool still is
+        [(found, final)] = self.final(run)
+        self.assertEqual(found, [("reconcile.fabricated", "tc-2")])
+        self.assertEqual(final["data"]["coverage"]["layers"], ["L2", "L3"])
 
     def test_each_kind(self):
         runs = [self.register() for _ in range(5)]
@@ -99,6 +127,22 @@ class TestReconcile(Reconcile):
         self.assertEqual(got, [[("reconcile.hook_missing", "tc-2")], [("reconcile.fabricated", "tc-2")],
                                [("reconcile.args_mismatch", "tc-1"), ("reconcile.args_mismatch", "tc-2")],
                                [("reconcile.args_unparseable", "tc-1")], [("reconcile.result_without_call", "tc-0")]])
+
+    def test_an_mcp_call_matches_only_the_names_a_framework_shows_the_model(self):
+        cases = [("mcp:filesystem/read_text_file", "read_text_file", {}),
+                 ("mcp:filesystem/read_text_file", "mcp__filesystem__read_text_file", {}),
+                 ("mcp:filesystem/read_text_file", "mcp_filesystem__read_text_file", {}),
+                 ("mcp:filesystem/read_text_file", "filesystem_read_text_file", {}),   # no server_tool suffix match
+                 ("mcp:filesystem/read_text_file", "fs.read_text_file", {}),
+                 ("mcp:filesystem/read_text_file", "read_text_file_x", {}),
+                 ("mcp:x/account", "delete_account", {}),   # a renamed call can't hide behind a suffix
+                 ("mcp:filesystem/read_text_file", "read_text_file", {"path": "/etc/passwd"})]   # other arguments
+        run = self.register()
+        self.model(run, [use(f"tc-{i}", asked) for i, (_, asked, _) in enumerate(cases)])
+        for i, (decided, _, args) in enumerate(cases):
+            self.run_call(run, f"tc-{i}", decided, args)
+        [(found, _)] = self.final(run)
+        self.assertEqual(found, [("reconcile.args_mismatch", f"tc-{i}") for i in range(3, 8)])
 
     def test_coerced_and_provider_executed_are_not_flagged_and_final_states_coverage(self):
         run = self.register()

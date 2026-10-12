@@ -43,12 +43,15 @@ from . import client, parsers, privacy
 from . import usage as _usage
 from .core import jsonable
 from .parsers import _get
-from .sdk.client import AsyncRunHandle, RunHandle, current_run, fail_open
+from .sdk.client import AsyncRunHandle, RunHandle, SignerUnavailable, current_run, fail_open
 from .signer.rpc_schema import MAX_RESULTS_SENT
 
 MAX_TEXT = 1024 * 1024   # streamed text kept for the (hashed) response content
 _STATE = {"tracer": None, "patched": [], "lock": threading.RLock()}
 _LATE = collections.deque()   # exchanges of garbage-collected streams, recorded on the next flush (never from __del__)
+# v2 responses the signer could not be reached for, sent again on the next flush (their first try spent a client_seq,
+# so the signer writes a client_counter_gap before each); lean: the newest 1024; a longer outage drops the oldest
+_UNSENT = collections.deque(maxlen=1024)
 
 
 # ------------------------------------------------------------------ helpers
@@ -207,10 +210,17 @@ class _RunExchange:
         try:
             self._send("request", self.model, parsers.parse(self.kind, None, self.kwargs))
         except Exception as e:
-            if self._fail_closed():
-                raise PermissionError(f"Tracekit: request not recorded and the run's fail mode is closed; model call "
-                                      f"refused: {e}") from e
-            _note_failure()
+            if not self._fail_closed():
+                _note_failure()
+            elif isinstance(e, SignerUnavailable):
+                raise PermissionError(
+                    f"Tracekit: the signer can't be reached ({e}), and this run's fail mode for model calls is closed, "
+                    "so the model call was refused before it was sent. Start the signer again (`tracekit doctor` says "
+                    "what is wrong) and retry the call; to let model calls run unrecorded during an outage, set "
+                    "fail_modes: {model: open} in signer.yaml") from e
+            else:
+                raise PermissionError(f"Tracekit: the signer refused to record the request ({e}), and this run's fail "
+                                      "mode for model calls is closed, so the model call was refused") from e
 
     def response(self, resp):
         self.parsed = parsers.parse(self.kind, resp, self.kwargs)
@@ -244,19 +254,35 @@ class _RunExchange:
             fields = {"stop_reason": out["finish"] and str(out["finish"])[:100], "usage": out["usage"],
                       "tool_uses": out["tool_uses"][:128],   # lean: the RPC's cap; v1 caps the same way
                       "error": error and str(error)[:1024]}
-            self._send("response", out["model"] or self.model, out, **{k: v for k, v in fields.items() if v})
+            self.unsent = (out["model"] or self.model, out, {k: v for k, v in fields.items() if v})
+            self.resend()
         except Exception:
             _note_failure()
+
+    def resend(self):
+        """Send the response; whether the signer could be reached. One it could not is kept for the next flush."""
+        try:
+            self._send("response", self.unsent[0], self.unsent[1], **self.unsent[2])
+        except SignerUnavailable:
+            self.kwargs = self.parsed = self.stream = None   # the request, its response and chunks: not resent
+            _UNSENT.append(self)
+            _note_failure("the signer can't be reached: the response is sent again at the next model call or exit, "
+                          "after a signed gap for the try that failed")
+            return False
+        except Exception:
+            _note_failure()
+        return True
 
 
 _FAILURES = {"n": 0, "warned": False}
 
 
-def _note_failure():
+def _note_failure(why=None):
     _FAILURES["n"] += 1
     if not _FAILURES["warned"]:
         _FAILURES["warned"] = True
-        print("[tracekit] could not record a model call; the call itself was not affected", file=sys.stderr, flush=True)
+        print("[tracekit] could not record a model call; the call itself was not affected"
+              + (f" ({why})" if why else ""), file=sys.stderr, flush=True)
 
 
 # ------------------------------------------------------------------ provider extraction
@@ -656,13 +682,21 @@ PROVIDERS = ("openai", "anthropic", "gemini")
 
 
 def flush():
-    """Record the streams that were garbage-collected before they finished."""
+    """Record the streams that were garbage-collected before they finished, and the v2 responses the signer could not
+    be reached for (oldest first, until it still can't be)."""
     while _LATE:
         try:
             ex = _LATE.popleft()
         except IndexError:
             return
         ex.finish(abandoned=True)
+    for _ in range(len(_UNSENT)):
+        try:
+            ex = _UNSENT.popleft()
+        except IndexError:
+            return
+        if not ex.resend():   # kept again, last: try no more until the next flush
+            return
 
 
 atexit.register(flush)

@@ -15,8 +15,8 @@ from ..policy import PolicyError, _sre_c, _sre_p, check_regex
 
 SECTIONS = ("deny", "ask", "flag")
 DETECT = ("sequences", "limits", "respond")   # signer-side detection (signer/detect.py), merged by id like rules
-TOP_KEYS = {"version", "description", "extends", "tools", "untrusted", "handoffs", "unknown_tools", *SECTIONS,
-            *DETECT}
+TOP_KEYS = {"version", "description", "extends", "tools", "untrusted", "handoffs", "structured_output", "unknown_tools",
+            *SECTIONS, *DETECT}
 RULE_KEYS = {"id", "class", "tool", "field", "pattern", "unless", "reason", "rationale", "label", "approval", "from"}
 # an ask rule's `approval`: executor t2 runs only the signer's copy; passkey required: approving needs a passkey;
 # agent: a reviewer agent may answer calls within its bounds (_lint_agent)
@@ -31,7 +31,7 @@ NOTIFY_ONLY = ("class_mismatch", "refusal_burst", "tamper")   # never enforced, 
 MODES, ACTIONS = ("off", "shadow", "enforce"), ("notify", "hold", "quarantine")
 SEQ_KEYS = {"id", "steps", "scope", "window", "unless"}
 LIMIT_KEYS = {"id", "match", "count", "sum", "max", "window", "scope"}
-RESPOND_KEYS = {"trigger", "mode", "action"}
+RESPOND_KEYS = {"trigger", "mode", "action", "cooldown_s", "suspend"}   # `suspend` only to refuse it by name
 RESPOND_MORE = {"denied_calls": {"max", "window", "scope"}, "refusal_burst": {"max"}}   # the triggers that read more
 AGENT_KEYS, BOUND_KEYS, BUDGET_KEYS = {"mode", "allow", "budget", "veto_s"}, {"type", "min", "max", "enum", "pattern"}, \
     {"count", "sum", "window", "scope"}
@@ -42,7 +42,7 @@ CLASSES = {"shell": {"command", "argv", "line"}, "fs": {"path", "op", "content_d
            "http": {"method", "url", "host", "internal", "sends_to"}, "sql": {"statement", "code", "verb", "db"},
            "payment": {"amount", "currency", "payee", "new_payee", "payees"},
            "email": {"to", "domains", "attachments", "recipients"}, "mcp": {"server", "tool", "args"},
-           "browser": {"action", "url", "scheme", "host", "internal", "sends_to"}, "unknown": set()}
+           "browser": {"action", "url", "scheme", "host", "internal", "sends_to"}, "app": set(), "unknown": set()}
 for _fields in CLASSES.values():
     _fields.add("target")
 MAX_REPEAT = 1000   # RE2's limit for {n,m}
@@ -154,12 +154,13 @@ def build(path, seen=()):
     if not (isinstance(pol.get("untrusted", []), list) and all(isinstance(u, str) for u in pol.get("untrusted", []))):
         errors.append(f"{path}: untrusted must list tool classes and tool name globs")
         pol["untrusted"] = []
-    if not (isinstance(pol.get("handoffs", []), list) and all(isinstance(h, str) for h in pol.get("handoffs", []))):
-        errors.append(f"{path}: handoffs must list tool name globs")
-        pol["handoffs"] = []
-    for h in pol.get("handoffs", []):
-        if len(re.sub(r"\[[^]]*\]|[*?]", "", h)) < 3:   # a glob this loose makes any tool a handoff
-            errors.append(f"{path}: handoffs entry {h!r} is too loose: name your agents' handoff tools exactly")
+    for key in ("handoffs", "structured_output"):   # tool names reconciliation reads in its own way
+        if not (isinstance(pol.get(key, []), list) and all(isinstance(h, str) for h in pol.get(key, []))):
+            errors.append(f"{path}: {key} must list tool name globs")
+            pol[key] = []
+        for h in pol.get(key, []):
+            if len(re.sub(r"\[[^]]*\]|[*?]", "", h)) < 3:   # a glob this loose names any tool
+                errors.append(f"{path}: {key} entry {h!r} is too loose: name the tools exactly")
     base = pol.pop("extends", None)
     parents = []
     for b in base if isinstance(base, list) else [] if base is None else [base]:
@@ -179,8 +180,9 @@ def build(path, seen=()):
         untrusted = list(dict.fromkeys(u for p in parents + [pol] for u in p.get("untrusted", [])))
         if untrusted:
             merged["untrusted"] = untrusted
-        if any("handoffs" in p for p in parents + [pol]):
-            merged["handoffs"] = list(dict.fromkeys(h for p in parents + [pol] for h in p.get("handoffs", [])))
+        for key in ("handoffs", "structured_output"):
+            if any(key in p for p in parents + [pol]):
+                merged[key] = list(dict.fromkeys(h for p in parents + [pol] for h in p.get(key, [])))
         for sec in SECTIONS:
             rules = [r for p in parents for r in p.get(sec, []) if isinstance(r, dict) and r.get("id") not in own]
             # a rule two parents both carry (TK-P003 in server-net and browser) is kept once
@@ -339,6 +341,12 @@ def _lint_detect(pol, path):
             errors.append(f"{where}: needs window")
         if t == "denied_calls" and _int(x.get("max"), MAX_DENIED + 1, 2 ** 53):
             errors.append(f"{where}: max must be at most {MAX_DENIED}")
+        if "cooldown_s" in x and not _int(x["cooldown_s"], 0, MAX_WINDOW):
+            errors.append(f"{where}: cooldown_s must be whole seconds from 0 to {MAX_WINDOW}")
+        if "suspend" in x:
+            errors.append(f"{where}: suspend is an operator's action, never a trigger's: content the agent reads can "
+                          "steer every trigger, and the run's owner may be an identity other runs share (tracekit "
+                          "signer incidents suspend)")
     return errors
 
 
@@ -392,8 +400,10 @@ def _lint_agent(rule):
 
 
 def warnings(pol):
-    """What lint lets through but a person should know: an agent approver on a money-moving rule (class payment, or a
-    tool the policy maps to payment) without executor t2 binds the approval, not what runs."""
+    """What lint lets through but a person should know: a tool mapped to class unknown (what every unmapped tool is, so
+    unknown_tools still decides it; a 1.1 policy may do it, so it isn't an error), and an agent approver on a
+    money-moving rule (class payment, or a tool the policy maps to payment) without executor t2 binds the approval, not
+    what runs."""
     payments = [t for t, c in pol.get("tools", {}).items() if c == "payment"]
 
     def money(r):
@@ -403,8 +413,11 @@ def warnings(pol):
             return "class" not in r and "tool" in r and any(re.fullmatch(r["tool"], t) for t in payments)
         except re.error:
             return False
-    return [f"ask rule {r['id']}: approval.agent on a payment tool without executor t2: the agent's approval binds the "
-            "arguments the agent reported, not what its process runs; add executor: t2"
-            for r in pol.get("ask", []) if isinstance(r, dict) and isinstance(r.get("approval"), dict)
-            and "agent" in r["approval"] and money(r) and r["approval"].get("executor") != "t2"]
+    return [f"tool {t!r} maps to class 'unknown', which unknown_tools decides like any unmapped tool: map an "
+            "application's own tool to class app (known, no class fields)"
+            for t, c in pol.get("tools", {}).items() if c == "unknown"] + [
+        f"ask rule {r['id']}: approval.agent on a payment tool without executor t2: the agent's approval binds the "
+        "arguments the agent reported, not what its process runs; add executor: t2"
+        for r in pol.get("ask", []) if isinstance(r, dict) and isinstance(r.get("approval"), dict)
+        and "agent" in r["approval"] and money(r) and r["approval"].get("executor") != "t2"]
 

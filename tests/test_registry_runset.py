@@ -192,14 +192,15 @@ class TestRunSet(RunSet):
         self.assertEqual((code, line["status"]), (1, "fail"), rep.checks)
         self.assertIn("key.retire withheld", str(line["problems"]))
 
-        # a per-run bundle without a run-set cannot tell, and says so
+        # a per-run bundle without a run-set cannot tell, and says so: a warning where its key records show a
+        # retirement, the assurance line where they show one key never retired
         st, single = self.s.log.storage, os.path.join(self.dir, "one.tkb")
         export(st, "acme", a["run_id"], st.checkpoint_latest()[1], single)
-        for path in (single, self.mutate(single, withhold)):
+        for path, warnings in ((single, ["keys"]), (self.mutate(single, withhold), [])):
             code, rep, _ = self.check(path, "keys")
-            self.assertEqual((code, rep.warnings), (0, ["keys"]), rep.checks)
-            self.assertIn({"check": "keys", "status": "warn", "detail": "retirements not proven complete"},
-                          [{k: c[k] for k in ("check", "status", "detail")} for c in rep.checks])
+            self.assertEqual((code, rep.warnings), (0, warnings), rep.checks)
+            self.assertEqual(bool(warnings), {"check": "keys", "status": "warn", "detail": "retirements not proven complete"}
+                             in [{k: c[k] for k in ("check", "status", "detail")} for c in rep.checks])
             self.assertTrue(rep.assurance.endswith("; key retirements not proven complete"), rep.assurance)
 
     def test_empty_range_is_incomplete(self):
@@ -262,7 +263,8 @@ class TestRunSet(RunSet):
         code, rep, line = self.check(out, "run-set")
         self.assertEqual((code, line["detail"]), (0, "COMPLETE, registry 2..6 of tenant 'acme' (2 runs registered, 2 final, 0 open)"),
                          rep.checks)
-        self.assertIn("keys", rep.warnings)   # the range starts after registry size 0: retirements before it unseen
+        # the range starts after registry size 0: retirements before it unseen (one key: noted, not warned)
+        self.assertTrue(rep.assurance.endswith("; key retirements not proven complete"), rep.assurance)
 
         def bad_proof(files, manifest):
             rs = json.loads(files["registry/run-set.json"])
@@ -369,7 +371,7 @@ class TestLogClosed(RunSet):
         code, stdout, err = run_cli("export", "--v2", "--run-set", "--config", cfg, "-o", out)
         self.assertEqual((code, err), (0, ""))
         code, rep, line = self.check(out, "log tail")
-        self.assertEqual((code, rep.warnings, line["status"]), (0, [], "pass"), rep.checks)
+        self.assertEqual((code, rep.warnings, line["status"]), (0, ["gaps"], "pass"), rep.checks)   # the run cut off
 
 
 if __name__ == "__main__":

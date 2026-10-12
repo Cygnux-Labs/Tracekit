@@ -193,6 +193,20 @@ class TestTrailingCounterGaps(Completeness):
         gaps = self.gaps(self.events(run["run_id"]), "client_counter_gap")
         self.assertEqual([(g["stream"], g["data"]["missed_events"]) for g in gaps], [("s", 3), ("other", 1)])
 
+    def test_a_refused_event_is_no_gap_but_hides_none(self):
+        run = self.register()
+        self.decide(run, 0)
+        bad = self.ev(run, 1, tool_call_id="tc-1", decision_id="dec-none", status="ok",
+                      args_digest="sha256:" + "0" * 64)
+        for seq in (1, 3):   # 1: the next value, seen and refused; 3: skips 2, so it covers nothing
+            with self.assertRaises(RPCError):
+                self.call("complete", {**bad, "client_seq": seq})
+        self.decide(run, 5, "tc-2")
+        self.call("close_run", {**run, "last_client_seq": [{"stream": "s", "client_seq": 5}]})
+        self.s.sweep(time.monotonic() + 61)
+        gaps = self.gaps(self.events(run["run_id"]), "client_counter_gap")
+        self.assertEqual([g["data"]["missed_events"] for g in gaps], [3])   # 2..4
+
     def test_a_gateway_ends_its_stream_without_closing_the_run(self):
         run = self.register()
         out = self.call("close_run", {**run, "caller": f"uid:{ME.subject}",

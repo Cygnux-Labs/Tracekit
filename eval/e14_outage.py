@@ -195,7 +195,7 @@ def partition(d, samples, n):
     token = os.path.join(d, "bearer")
     with open(token, "w") as f:
         f.write(uuid.uuid4().hex * 2)
-    s = svc.SignerService(data, fail_modes=FAIL_MODES, authorize={"token:http": sorted(REQUESTS)})
+    s = svc.SignerService(data, fail_modes=FAIL_MODES, authorize={"token:http": sorted(REQUESTS.keys() - svc.OPERATOR)})
     _, auths, tls = tk_http.configure({"listen": "127.0.0.1:0", "cert": cert, "key": key, "authenticators": ["token"],
                                        "token_file": token})
     srv = tk_http.HttpServer(("127.0.0.1", 0), auths, tls, answering_hello(s.handle_frame, hello()))

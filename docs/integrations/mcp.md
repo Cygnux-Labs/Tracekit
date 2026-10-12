@@ -48,8 +48,10 @@ recorded as a `capture.gap` and the stricter decision applies.
   `Tool call blocked by policy: <rule ids>`, and the run goes on.
 - **ask**: the adapter opens an approval in the signer and holds the call while it waits, up to `approval_wait_s`
   seconds (default 300), for a person to decide (CLI, web). Approved, the call is sent; rejected, expired or still
-  undecided at the deadline, it is refused as for a deny. `TracekitSession(session, signer, run, approval_wait_s=0)`
-  is for a caller that cannot wait: an `ask` is then refused without opening an approval.
+  undecided at the deadline, it is refused as for a deny, and an undecided approval is withdrawn
+  (`approval.abandoned`), as it is when the caller cancels the waiting `call_tool`.
+  `TracekitSession(session, signer, run, approval_wait_s=0)` is for a caller that cannot wait: an `ask` is then refused
+  without opening an approval.
 
 Every call that is not denied is sent only after the signer's `approval_consume` agrees for this exact call and these
 exact arguments. A result with `isError: true` is returned unchanged; an exception from the session (a protocol error,
@@ -60,3 +62,7 @@ a lost connection) propagates unchanged. Both are recorded as `error`.
 - MCP calls carry no call id, so every `call_tool` is a call of its own (attempt 0); a retry is a new decision.
 - There is no saved state: a call waiting for an approval does not survive the process.
 - Servers the agent reaches without this session (another client, a hosted MCP tool of a model provider) are not seen.
+- The server's name in `mcp:<server>/<tool>` is the one the server gives. An mcp 1.x session doesn't keep it:
+  `instrument()` takes it from the session's `initialize()` when that runs after `instrument()`; by hand, pass
+  `TracekitSession(session, client, run, server="github")`. Without a name the calls are recorded as `mcp:unknown/<tool>`,
+  with a warning, and rules written for the server's name don't match them.

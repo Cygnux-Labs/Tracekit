@@ -132,6 +132,22 @@ scope: {kind, id}, cites: [{run_id, run_seq}], mode, actions, would}`, `incident
 match, at most once per window; for a session, owner or principal scope possibly in another run of that scope than
 the one that opened it) and `incident.capped{cap, max, trigger, reason}`.
 
+Containment (format 1.2, [incidents](incidents.md)): an enforced `incident.opened` (`mode: enforce`) lists the
+`actions` taken (`hold`, `quarantine`, `notify`; none while paused, with `reason`) and `in_flight`: the
+calls `{run_id, tool_call_id, decision_id}` allowed (or approved and consumed) and not completed then. Triggers
+`operator` (an operator's run_hold or run_quarantine) and `detector_unavailable` (the detector could not vouch for the
+cited decision) join the detection's. In each run the response reaches: `run.held{incident_id, scope, by, reason,
+in_flight?, inherited?, inherit_until?}` or `run.quarantined{...the same}`, after an `approval.expired{reason: hold |
+quarantine}` for each of its live approvals; `run.resumed{incident_id, by, person, reason?, break_glass?,
+held_by}` ends that incident's hold; a run held by several incidents (a `run.held` each) stays held by those `held_by`
+names.
+A held run's calls are `policy.decision{decision: ask, rule_ids: [..., TK-HOLD], incident_id}`, their approvals carry
+`incident_id` (`approval.request` and the person's `approval`); a quarantined run's are `decision: deny, rule_ids:
+[TK-QUARANTINE]` and it closes with `run.closing{reason: quarantine}`. The call whose decision fired a hold gets a
+second, signer-written decision right after the response. In the tenant's signer run: `incident.resolved{incident_id,
+by, person, reason?, break_glass?, resumed}`, `incident.response{enabled, by, reason?}` and
+`identity.suspension{identity, state: suspended | enforced | lifted, by, reason?}`.
+
 Content vault (format 1.1, [privacy](privacy.md#the-content-vault)): `content.accessed{principal, run_id, seqs,
 purpose}` records that the signer returned the retained content of records `seqs` (run_seqs) of run `run_id` to
 `principal`, for `purpose`; `content.erased{run_id, reason, by}` records that it deleted that run's retained content.
@@ -372,7 +388,8 @@ proofs/records.json       {"checkpoint": "checkpoints/<size>.note", "tree_size":
 checkpoints/<size>.note   the record-tree note the proofs are against
 rekor/<size>.json         its Rekor v2 TransparencyLogEntry, when anchored
 tsa/<size>.tsr            its RFC 3161 timestamp response, when anchored
-policies/<sha256>.json    policy snapshots, named by the SHA-256 of their bytes
+policies/<sha256>.json    the compiled policies a verifier checks the records against, named by the SHA-256 of
+                          their bytes (their policy_hash)
 ```
 
 A run-set bundle adds:
@@ -406,14 +423,15 @@ A bundle has one zip layout, so every reader sees the same entries; anything els
 `tracekit.bundle_v2` writes this layout (Python's `zipfile` writing a seekable file).
 
 `verifier_min_version` is the newest version in the version table (`VERSIONS` in `tracekit/bundle_v2.py`) whose
-entries a bundled record uses, else `1.0.0`. Each version lists
+entries a bundled record uses, else `1.0.0`. A row is frozen once its version's first release candidate ships
+(`test_shipped_rows_are_frozen`): an addition after that goes in a new row. Each version lists
 what it added: record types, data fields per record type, and enum values per (record type, field), gap and tamper
 `kind`s among them:
 
 | Version | Record types | Data fields | Enum values |
 |---|---|---|---|
 | 1.1.0 | `input.observed`, `content.accessed`, `content.erased`, `why.finding` | `policy.decision`: `provenance`, `provenance_state`; `run.registered`: `replay_of` | — |
-| 1.2.0 | `run.child`, `approval.escalated`, `approval.revoked`, `approval.suggested`, `approval.agents`, `incident.opened`, `incident.updated`, `incident.capped` | `run.registered`: `parent_run`, `session`; `capture.gap`: `run_id`; `run.final`: `provider_executed`; `policy.decision`: `via`, `caller`, `detect`; `approval.request`: `agent`, `via`; `tool.result`, `input.observed`: `via`; `approval`: `approver_kind`, `asserted`, `spent`, `not_before`, `consume_by`; `approval.expired`: `reason` | `capture.gap` `kind`: `decided_not_completed`, `late_activity`, `concurrent_run`, `tailer_redelegated`, `reask_after_reject`, `held_call_unresolved` |
+| 1.2.0 | `run.child`, `approval.escalated`, `approval.revoked`, `approval.suggested`, `approval.agents`, `incident.opened`, `incident.updated`, `incident.capped`, `run.held`, `run.resumed`, `run.quarantined`, `incident.resolved`, `incident.response`, `identity.suspension` | `run.registered`: `parent_run`, `session`; `capture.gap`: `run_id`; `run.final`: `provider_executed`; `policy.decision`: `via`, `caller`, `detect`, `incident_id`; `approval.request`: `agent`, `via`, `incident_id`; `tool.result`, `input.observed`: `via`; `approval`: `approver_kind`, `asserted`, `spent`, `not_before`, `consume_by`, `incident_id`; `approval.expired`: `reason` | `capture.gap` `kind`: `decided_not_completed`, `late_activity`, `concurrent_run`, `tailer_redelegated`, `reask_after_reject`, `held_call_unresolved`; `run.closing` `reason`: `quarantine` |
 
 Every v2 definition is closed (`additionalProperties: false`), so an older verifier would fail a record that uses a
 newer entry; the version the manifest declares makes it report `UNVERIFIABLE (needs tracekit >= x)` instead, never
@@ -473,11 +491,25 @@ line and verdict is in [verdicts](verdicts.md).
    `key.retire` leaf in the range must be among the key records. A `log.closed` in the range must be
    the checkpoint's last record, or later records were added after the log closed.
 8. **Format bridge** (with `--v1-ledger`/`--v1-key`, §12).
-9. **Policy snapshots.** Each `policies/` file is named by its own SHA-256.
+9. **Policy snapshots.** Each `policies/` file is named by its own SHA-256 (else `policy snapshot` fails and neither
+   check below reads it). `tracekit export --v2` bundles, from the signer's `<data_dir>/policies`, the compiled policy
+   (canonical JSON, so its SHA-256 is its `policy_hash`) of each `policy_hash` a verifier checks against, once: the
+   one the `policy.decision` an agent's approval answered cites (`approvals by agents` checks its rules permit agents;
+   without it, a warning) and the one policy a run with an `incident.opened` was decided under. No other is bundled.
+   **Incidents** (with containment records): a record an incident cites must, when its run is in the bundle, exist
+   and be one that fires a trigger; an incident of scope `run` citing only its own run is recomputed from that run's
+   records under the bundled policy of the run's one `policy_hash` (not in the bundle: signer-asserted, with an
+   `incident policies` warning), and must follow from them;
+   a `detector_unavailable` incident must cite a decision whose `detect.state` is `unavailable`; the rest are counted
+   signer-asserted. Each response must have been honoured: while held, no allow and no ask without the incident id;
+   while quarantined, only deny; a held call approved only by a person (never `approver_kind: agent`, never
+   self-approved) with the incident id; no consume under a hold but of such an approval, none under a quarantine; no
+   `tool.result` while held or quarantined but of a call `in_flight` then or (held) consumed with such an approval
+   (`incidents`).
 10. **Verdict.** Any failed line: `FAILED`, exit 1. Otherwise `VERIFIED`, `VERIFIED TO HEAD n (open)` for one open
-    run, or `VERIFIED (k run(s) open)`. Then the informational lines (policy, coverage, tiers, args source, isolation,
-    fail-open classes, key assurance, break-glass approvals) and the assurance level. Exit 0, or 3 with `--strict`
-    when any line is a warning.
+    run, or `VERIFIED (k run(s) open)`. Then the informational lines (policy, gaps, coverage, tiers, args source,
+    isolation, fail-open classes, key assurance, break-glass approvals) and the assurance level. Exit 0, or 3 with
+    `--strict` when any line is a warning ([verdicts](verdicts.md#signed-gaps) lists the gap kinds that warn).
 
 A malformed bundle never crashes the verifier: anything unexpected is a failed `bundle structure` line.
 

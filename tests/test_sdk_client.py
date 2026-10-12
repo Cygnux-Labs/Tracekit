@@ -23,7 +23,8 @@ from unittest import mock
 from tracekit import __version__, cli
 from tracekit.signer.rpc_schema import RPC_VERSION  # noqa: E402
 from tracekit.sdk import autospawn, client
-from tracekit.sdk.client import AsyncClient, Client, Incompatible, current_run
+from tracekit.sdk.client import AsyncClient, AsyncRunHandle, Client, Incompatible, RunHandle, current_run
+from tracekit.signer.rpc_schema import RPCError
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FAKE_ARGV = [sys.executable, "-m", "tracekit.testing"]
@@ -348,6 +349,37 @@ HELLO = {"proto": [RPC_VERSION, RPC_VERSION], "version": __version__, "pid": os.
 EVENT = {"run_id": "r1", "run_token": "t", "tool": "Bash", "args_source": "parsed"}
 
 
+class RunExit(unittest.TestCase):
+    """The end of a `with` block of a run: a signer that can't be reached warns (it closes the run after its idle
+    timeout), and the block's own exception is never masked."""
+
+    def handle(self):
+        return RunHandle(Client(signer="/nonexistent/tracekit.sock"), {"run_id": "r", "run_token": "t"})
+
+    def test_an_unreachable_signer_warns(self):
+        with self.assertWarnsRegex(UserWarning, "run r was not closed: the signer can't be reached .* idle timeout"):
+            with self.handle():
+                pass
+
+    def test_the_blocks_exception_is_never_masked(self):
+        for refusal in (None, RPCError("run_closed", "r")):
+            patch = mock.patch.object(Client, "call", side_effect=refusal) if refusal else contextlib.nullcontext()
+            with self.subTest(refusal=refusal), patch, self.assertWarns(UserWarning), self.assertRaises(KeyError):
+                with self.handle():
+                    raise KeyError("the app's own")
+
+        async def go():
+            async with AsyncRunHandle(self.handle()):
+                raise KeyError("the app's own")
+        with self.assertWarns(UserWarning), self.assertRaises(KeyError):
+            asyncio.run(go())
+
+    def test_a_refusal_without_an_exception_still_raises(self):
+        with mock.patch.object(Client, "call", side_effect=RPCError("forbidden", "no")), self.assertRaises(RPCError):
+            with self.handle():
+                pass
+
+
 @unittest.skipUnless(os.name == "posix", "Unix sockets")
 class FakeSigners(unittest.TestCase):
     def setUp(self):
@@ -398,6 +430,16 @@ class FakeSigners(unittest.TestCase):
         self.assertEqual(c.status(), {"method": "status", "tool_call_id": None})
         self.assertEqual(c.decide({**EVENT, "tool_call_id": "c2", "args": {}})["tool_call_id"], "c2")
         self.assertEqual(seen, [None, 0])
+
+    def test_close_run_names_the_last_client_seq_used_even_one_the_signer_never_saw(self):
+        c, frames = Client(self.path, timeout=2), []
+        with self.assertRaises(client.SignerUnavailable):   # no signer yet: client_seq 0 is used up, never received
+            c.decide({**EVENT, "tool_call_id": "lost", "args": {}})
+        self.serve(lambda frame: frames.append(frame) or {"ok": True})
+        c.close_run({"run_id": "r1", "run_token": "t"})
+        c.close_run({"run_id": "r2", "run_token": "t"})   # a run with no events names none
+        self.assertEqual([f.get("last_client_seq") for f in frames],
+                         [[{"stream": c.stream, "client_seq": 0}], None])
 
     def test_a_request_over_the_frame_limit_is_refused_before_it_is_sent(self):
         seen = []

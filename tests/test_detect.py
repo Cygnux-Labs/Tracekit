@@ -113,6 +113,10 @@ class TestLint(unittest.TestCase):
             "trigger must be a sequence or limit id": {"respond": [{"trigger": "nope", "mode": "shadow",
                                                                    "action": "notify"}]},
             "scope must be one of": {"sequences": [{**seq, "scope": "tenant"}]},
+            "cooldown_s must be whole seconds": {"respond": [{"trigger": "Q", "mode": "enforce", "action": "hold",
+                                                              "cooldown_s": -1}]},
+            "suspend is an operator's action, never a trigger's": {"respond": [{
+                "trigger": "executed_against_policy", "mode": "enforce", "action": "quarantine", "suspend": True}]},
         }
         for want, change in cases.items():
             with self.subTest(want):
@@ -292,7 +296,9 @@ class TestDecisions(Case):
         s.call("complete", {**run, "stream": "s", "client_seq": 1, "tool_call_id": "tc-0", "decision_id": d["decision_id"],
                             "status": "ok", "result": "x", "args_digest": e17_digest("read_file", {"path": "/forbidden"})})
         [i] = s.incidents(run)
-        self.assertEqual((i["trigger"], i["mode"], i["would"]), ("executed_against_policy", "shadow", ["quarantine"]))
+        self.assertEqual((i["trigger"], i["mode"], i["would"], i["actions"]),
+                         ("executed_against_policy", "enforce", ["quarantine"], ["quarantine"]))
+        self.assertEqual(s.s.log.runs[("default", run["run_id"])]["quarantined"], i["incident_id"])   # enforced
 
     def test_state_lost_in_a_restart_is_unavailable(self):
         s = self.signer({k: v for k, v in POLICY.items() if k not in pc.DETECT})

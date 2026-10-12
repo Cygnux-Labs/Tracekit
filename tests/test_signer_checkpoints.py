@@ -207,7 +207,7 @@ class ExportWithoutSigner(unittest.TestCase):
             code, stdout, err = run_cli("export", "--v2", "--run", "run-1", "--config", self.cfg, "-o", out)
         self.assertEqual((code, err), (0, ""))
         self.assertEqual(json.loads(stdout)["tree_size"], 5)
-        # the signer's policy goes in only when an agent approval's decision cites it (none here)
+        # a policy goes in only when cited_policies names it: an agent approval's decision or a run's incident (none)
         with zipfile.ZipFile(out) as z:
             self.assertFalse([n for n in z.namelist() if n.startswith("policies/")])
 

@@ -29,6 +29,7 @@ neither read it nor use it. The agent never holds the signing keys, assigns sequ
 signer decides), or answers its own approvals (signer.yaml names a different approver uid). Its own uid can still use
 its run token, from any process it runs.
 """
+import functools
 import glob
 import hashlib
 import json
@@ -259,6 +260,7 @@ def _prune():
             pass
 
 
+@functools.lru_cache(maxsize=256)
 def _tool_class(tool):
     # lean: the class in the dev signer's default policy; a signer with another policy may class the tool otherwise
     from tracekit.signer.service import load_policy

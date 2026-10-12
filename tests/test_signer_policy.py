@@ -345,6 +345,16 @@ class SignerPolicy(unittest.TestCase):
         self.assertEqual(res["decision_id"], d["decision_id"])
         self.assertEqual(svc.fsck(self.dir), [])
 
+    def test_an_oversize_denial_names_the_subject(self):
+        self.open(svc.load_policy(os.path.join(PACKS, "server.yaml")))
+        d = self.decide("book_hotel", {"ticket_no": "1" * (64 * 1024 + 1)})
+        self.assertEqual(d["decision"], "deny")
+        self.assertIn("TK-OVERSIZE", d["rule_ids"])
+        self.assertIn("TK-S002's subject (the whole arguments)", d["reason"])
+        [rec] = [e["data"] for e in self.events() if e["type"] == "policy.decision"]
+        self.assertEqual(rec["reasons"], [d["reason"]])
+        self.assertTrue(d["reason"].startswith("TK-OVERSIZE: over 64 KiB, so never matched: "), d["reason"])
+
     def test_every_decide_gets_a_fresh_decision_id_consumed_once(self):
         args = {"command": "ls"}
         first, second = self.decide("Bash", args), self.decide("Bash", args)
@@ -367,6 +377,15 @@ class SignerPolicy(unittest.TestCase):
         self.refused("args_mismatch", self.complete, d, "Bash", {"command": "id"})
         self.complete(d, "Bash", {"command": "ls"})
         self.refused("unknown_decision", self.complete, d, "Bash", {"command": "ls"})
+
+    def test_an_mcp_tool_is_also_checked_under_its_bare_name(self):
+        self.open(Engine({"deny": [{"id": "APP-D1", "tool": "delete_account", "pattern": "^"}],
+                          "ask": [{"id": "MCP-A1", "tool": "mcp:fs/write_file", "pattern": "^"}]}))
+        d = self.decide("mcp:x/delete_account", {"id": "ACC-1"})   # an app tool relabelled as an MCP call
+        self.assertEqual((d["decision"], d["rule_ids"]), ("deny", ["APP-D1"]))
+        self.assertEqual(self.decide("mcp:fs/read_file", {}, tcid="tc-2")["decision"], "allow")   # no bare-name rule
+        d = self.decide("mcp:fs/write_file", {}, tcid="tc-3")   # its own MCP rule, as before
+        self.assertEqual((d["decision"], d["rule_ids"]), ("ask", ["MCP-A1"]))
 
     # --- memoisation ---
 

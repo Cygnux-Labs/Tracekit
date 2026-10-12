@@ -261,6 +261,18 @@ class Agreement(unittest.TestCase):
                 _, rep = self.agree(b.agent_bundle(log, os.path.join(self.d, f"{name}.tkb"), **kw), trust)
                 self.assertEqual(next((c["status"] for c in rep.checks if c["check"] == "approvals by agents"), None), want)
 
+    def test_signed_gaps_and_fail_open_classes(self):
+        import test_bundle_v2 as b
+        log = b.Log(os.path.join(self.d, f"gaps-{uuid.uuid4().hex}"))
+        self.addCleanup(log.store.close)
+        bundle, trust = b.gaps_bundle(log, os.path.join(self.d, "gaps.tkb")), os.path.join(self.d, "gaps-trust.json")
+        with open(trust, "w") as f:
+            json.dump(b.trust_config(), f)
+        _, rep = self.agree(bundle, trust)
+        warned = [c for c in rep.checks if c["status"] == "warn"]
+        self.assertEqual([c for c in ts_verify(bundle, trust)["checks"] if c["status"] == "warn"], warned)
+        self.assertEqual([c["check"] for c in warned], ["gaps", "fail-open classes"])
+
     def test_golden_corpus(self):
         """Both verifiers agree on every golden bundle, and on each negative one give its recorded verdict."""
         golden = os.path.join(TESTS, "golden")

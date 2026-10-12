@@ -100,7 +100,8 @@ With the v2 signer service (`tracekit signer serve`), the signer redacts itself,
   record it came from, never the value; an `input.observed` record holds only a commitment to the content, like a
   result. For a tool the policy lists as untrusted, `decide` answers `send_result` and the adapters send the result
   itself instead of its digest: the signer redacts it and commits to it like any result, and keeps nothing of it in
-  clear.
+  clear. For any other tool the adapters send the result's digest (`sha256:…`), so the record's `output.size` is the
+  size of that digest as the signer received it, not of the result.
 
 ## The content vault
 
@@ -159,8 +160,9 @@ content: {retain: true, retention_days: 30, max_record_bytes: 1048576}   # defau
   size and root and the last time it cosigned, and the client address only in memory, for its rate limits.
 - A bundle contains the selected runs' events (per the table above); records from other runs are **elided** to `seq`, `hash`, `prev_hash`, `sig`.
 - A v2 bundle holds snapshots of the policies the run's records cite, and only where a verifier checks against one:
-  the policy (its rules, patterns and agent bounds) an agent's approval was decided under, as
-  `policies/<policy_hash>.json`. A run without an agent approval carries no policy.
+  the policy (its rules, patterns, agent bounds and detection rules) an agent's approval was decided under, and the
+  one policy a run with an incident was decided under (the verifiers recompute its incidents from it), each once as
+  `policies/<policy_hash>.json`, copied from the signer's `<data_dir>/policies`. A run with neither carries no policy.
 - `--otel` adds `otel.json` with the same fields as spans; nothing more.
 - The [reference reviewer](approvals.md#the-reference-reviewer) (`tracekit reviewer`, off unless you run it) sends a
   model provider, through your LLM gateway, the `approval_review` view of each approval it answers: the tool, the rules'

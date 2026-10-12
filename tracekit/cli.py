@@ -660,10 +660,8 @@ def _export_v2(a, show=print):
     from .bundle_v2 import about as about_run
     from .bundle_v2 import export
     from .format import registry
-    from .policy2 import compile as policy_compile
     from .sdk.client import Client, Incompatible, SignerUnavailable
     from .signer.rpc_schema import RPCError
-    from .signer.service import DEFAULT_POLICY
     from .signer.service import reader as open_reader
     from .signer.service import signer_config
     from .storage.base import StorageCorrupt, StorageUnavailable, registry_tree
@@ -692,8 +690,8 @@ def _export_v2(a, show=print):
             reg = reader.checkpoint_latest(registry_tree(tenant))
             if note is None or reg is None:
                 raise ValueError(f"no registry checkpoint of tenant {tenant!r} in the store yet")
-            print(json.dumps(export(reader, tenant, a.run, note[1], a.out, run_set=(0, reg[0]), tenant_salt=tsalt),
-                             indent=2))
+            print(json.dumps(export(reader, tenant, a.run, note[1], a.out, run_set=(0, reg[0]), tenant_salt=tsalt,
+                                    policy_dir=os.path.join(cfg["data_dir"], "policies")), indent=2))
             return 0
         run = reader.runs.get((tenant, a.run))
         if run is None:
@@ -730,10 +728,8 @@ def _export_v2(a, show=print):
             if note is None:
                 raise ValueError(f"the signer wrote no checkpoint covering run {a.run!r} within {NUDGE_WAIT_S:g}s")
         reopen()   # opened after the note: holds its records
-        # the signer's current policy: the bundle holds it when an agent approval's decision cites it (cited_policies)
-        pol, errors = policy_compile.build(cfg.get("policy") or DEFAULT_POLICY)
         info = export(reader, tenant, a.run, note[1], a.out, with_runs=about,
-                      policies=[] if errors else [policy_compile.canonical(pol).encode("utf-8")])
+                      policy_dir=os.path.join(cfg["data_dir"], "policies"))
         if a.otel or a.otel_endpoint:
             info["otel"] = _otel_v2(a, info["bundle"])
     except (OSError, ValueError, SignerUnavailable, StorageCorrupt, StorageUnavailable) as e:
@@ -863,12 +859,19 @@ def _approvals(a):
                 page = c.approval_list({"cursor": page["next_cursor"]} if page["next_cursor"] else {})
                 for x in page["approvals"]:
                     shown += 1
-                    print(f"{x['approval_id']}  {x['state']}  run={x['run_id']}  tool={json.dumps(x['tool'])}  "
+                    state = x["state"] + (" (run closing: expires with it)" if x.get("run_closing") else "")
+                    print(f"{x['approval_id']}  {state}  run={x['run_id']}  tool={json.dumps(x['tool'])}  "
                           f"rules={','.join(x['rule_ids'])}  expires {x['expires_at']}")
                 if page["next_cursor"] is None:
                     break
             if not shown:
-                print("no approvals")
+                try:
+                    me = "{scheme}:{subject}".format(**c.status({})["identity"])
+                except (RPCError, SignerUnavailable):
+                    me = "this identity"
+                print(f"no approvals {me} may see: the signer lists an approval only to its run's owner and to those "
+                      "who may answer it (with an approvals section in signer.yaml, the identities approvals.approvers "
+                      "lists)")
         elif a.action == "show":
             x = c.approval_get({"approval_id": a.approval_id})
             args = loads_strict(x["args"]) if x["args_source"] == "raw" and x["args"] is not None else x["args"]

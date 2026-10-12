@@ -24,17 +24,20 @@ policy means the same on every signer: duplicate keys, anchors, aliases and merg
 Each matching rule adds its id to the decision; the strictest section wins: **deny > ask > flag > allow**. `flag`
 lets the call run and marks it; `ask` holds it for an [approval](approvals.md). The signed `policy.decision` carries
 the verdict, every matching rule id, `policy_hash`, `engine` (`re2@<version>` or `regex@<version>`), a fresh
-`decision_id` and the `args_commitment`.
+`decision_id` and the `args_commitment`. The `decide` RPC answers `allow` for a flagged call, with the flag rule's id
+in `rule_ids`: its `decision` says what the client does (run, refuse or hold the call), and is `allow`, `deny` or
+`ask` for every client since RPC version 15. A signer can't tell which version a client speaks, and an older client
+would refuse a value it doesn't know, so the flag is in the signed record only.
 
 Rule ids the signer adds itself:
 
 | Id | Verdict | When |
 |---|---|---|
-| `TK-ARGS-INVALID` | deny | the raw arguments are not strict JSON ([format v2](format-v2.md#1-canonical-json)) |
-| `TK-OVERSIZE` | the rule's section | a rule's subject is over 64 KiB of UTF-8; it is never cut or windowed, and the rule's own section decides (a flag rule flags, a deny rule denies; a shell command over 64 KiB denies) |
+| `TK-ARGS-INVALID` | deny | the raw arguments are not strict JSON ([format v2](format-v2.md#1-canonical-json)); the Python client sends parsed arguments a frame can't carry (a lone surrogate) as raw text, so they get this signed deny too |
+| `TK-OVERSIZE` | the rule's section | a rule's subject is over 64 KiB of UTF-8; it is never cut or windowed, and the rule's own section decides (a flag rule flags, a deny rule denies; a shell command over 64 KiB denies). The decision's `reasons` (and the `decide` response's `reason`) name each such subject by its rule and field: `TK-S002's subject (the whole arguments)` |
 | `TK-SHELL-PARSE` | ask | a shell command can't be parsed, or what it runs can't be read from the line |
 | `TK-SQL-PARSE` | ask | no SQL dialect can read the statement (an unclosed literal or comment), or it is not text |
-| `TK-UNKNOWN-TOOL` | `unknown_tools` | the tool maps to no class and `unknown_tools` is `flag`, `ask` or `deny` |
+| `TK-UNKNOWN-TOOL` | `unknown_tools` | the tool maps to no class and `unknown_tools` is `flag`, `ask` or `deny` (map an application's own tools to `app`) |
 
 Each `decide` gets a new `decision_id`, consumed once by `complete` with the same arguments; `complete` with other
 arguments is refused. Only deny and ask are remembered per `(tool_call_id, attempt)`. An allow after a deny for the
@@ -52,23 +55,28 @@ tools:                          # tool name or glob (fnmatch) -> class
   Bash: shell
   'mcp__*': mcp
   transfer_funds: payment
+  search_flights: app           # an application's own tool: known (unknown_tools leaves it alone), no class fields
 untrusted: [http, mcp, WebFetch]   # tool classes and tool name globs whose results are untrusted content (Provenance)
-handoffs: [transfer_to_refunds_agent]   # tool names the framework runs as handoffs to another agent; no pack names
-                                        # any: exact names, as your agents' handoff tools are called
+handoffs: [transfer_to_refunds_agent]   # tool names the framework runs as handoffs to another agent (OpenAI Agents'
+                                        # transfer_to_*, LangGraph routing schemas such as CompleteOrEscalate); no
+                                        # pack names any: exact names, as your agents' handoff tools are called
+structured_output: ['browser_use:*']    # tool names the model asks for in its structured output, not as tool calls:
+                                        # reconciliation doesn't compare them with tool uses (browser.yaml names these)
 deny:  [<rule>, ...]
 ask:   [<rule>, ...]
 flag:  [<rule>, ...]
 sequences: [<sequence>, ...]    # detection (below): steps across calls
 limits:    [<limit>, ...]       # detection: counts and sums in a window
-respond:   [<respond>, ...]     # detection: what each trigger does (shadow only in 1.2)
+respond:   [<respond>, ...]     # detection: what each trigger does (shadow, or enforced: docs/incidents.md)
 ```
 
-`extends` merges the parent's `tools` under the child's, joins every `untrusted` list, keeps the parent's other
-top-level keys unless the child sets them, and keeps the parent's rules except those whose id the child redefines. A
-list of parents is merged in order (a later parent's top-level keys and tools win; the same rule id in two parents is a
-duplicate-id error, unless both carry the identical rule, which is kept once). `sequences`, `limits` and `respond` merge
-the same way, by id (`respond` by trigger): a deployment that adds a sequence keeps the pack's. The compiled
-`extends` is the list of their hashes. An absolute path, `~` or a loop is an error.
+`extends` merges the parent's `tools` under the child's, joins every `untrusted`, `handoffs` and `structured_output`
+list (a child can't remove a name its parent declares), keeps the parent's other top-level keys unless the child sets
+them, and keeps the parent's rules except those whose id the child redefines. A list of parents is merged in order (a
+later parent's top-level keys and tools win; the same rule id in two parents is a duplicate-id error, unless both carry
+the identical rule, which is kept once). `sequences`, `limits` and `respond` merge the same way, by id (`respond` by
+trigger): a deployment that adds a sequence keeps the pack's. The compiled `extends` is the list of their hashes. An
+absolute path, `~` or a loop is an error.
 
 **Rule fields:**
 
@@ -85,7 +93,8 @@ the same way, by id (`respond` by trigger): a deployment that adds a sequence ke
 | `approval` | no | on an `ask` rule only: `executor: t1` (default) or `t2` ([approvals](approvals.md#tiers-t1-and-t2-executors)), and/or `passkey: required` ([approvals](approvals.md#web-approvals-and-passkeys)), and/or `agent` (below) |
 
 Lint also rejects unknown keys, a `field` the rule's class doesn't have, and a class rule no tool maps to ("can never
-fire").
+fire"). It warns (`tracekit policy lint`, which loads the policy all the same) on a tool mapped to `unknown`: that is
+what an unmapped tool already is, so `unknown_tools` still decides it. Map an application's own tools to `app`.
 
 ### Agent approvers (`approval.agent`)
 
@@ -108,6 +117,10 @@ and no `approvals.agents`.
 
 ## Classes and fields
 
+An MCP tool (`mcp:<server>/<tool>`) is also checked under its bare name `<tool>`, in that name's own class if `tools:`
+maps it, else the MCP call's; the stricter decision applies, with both readings' rule ids. A rule on an app tool's name
+holds when the same call is labelled an MCP one.
+
 The signer maps the tool to a class (`tools`: exact name first, then the most specific matching glob, the one with
 the most characters other than `*` and `?`, so `mcp:postgres/*` wins over `mcp:*/*`; else `unknown`) and extracts the
 class's fields from the raw arguments (`policy2/classes.py`):
@@ -121,7 +134,8 @@ class's fields from the raw arguments (`policy2/classes.py`):
 | `payment` | `amount`, `currency`, `payee`, `new_payee`, `payees` | `amount`/`amount_cents`, `currency`, `payee`/`to`/`recipient` (`new_payee` is not extracted yet); `payees`: every one of `payee`, `to`, `recipient`, `destination`, `account`, `account_number`, `iban` |
 | `email` | `to`, `domains`, `attachments`, `recipients` | `to` (string or list), `attachments`; `recipients`: every one of `to`, `cc`, `bcc`, `recipients` |
 | `mcp` | `server`, `tool`, `args` | the tool name (`mcp__server__tool` or `mcp:server/tool`) and the arguments |
-| `browser` | `action`, `url`, `scheme`, `host`, `internal`, `sends_to` | `action`, `url`; `scheme`, `host` and `internal` as below; `sends_to`: the host of `page_url` for `input` and `upload_file` |
+| `browser` | `action`, `url`, `scheme`, `host`, `internal`, `sends_to` | `action`, `url`; `scheme`, `host` and `internal` as below; `sends_to`: the host of `page_url` for `input` and `upload_file`, and the URL's host for a `navigate` or `go_to_url` whose URL has a query string |
+| `app` | — | — (an application's own tool: known, so `unknown_tools` doesn't apply; rules reach it by `tool` name, `field: target` or a raw argument `field`) |
 | `unknown` | — | — |
 
 Every class also has `target`: what the call acts on rather than what it carries (below).
@@ -150,7 +164,7 @@ Every class also has `target`: what the call acts on rather than what it carries
 | `class: shell`, `field: line` | the raw command line and each line the parser normalised (quotes and escapes resolved, redirections kept) |
 | `class: fs`, `field: path` | the normalised path, and with a `..` also the lexically normalised one; each also casefolded |
 | `class: sql`, `field: code` | each dialect's reading of the statement (`code` above) |
-| `field: target` (any class, or no class) | shell: each command's argv without its data words (a `git commit`/`tag`/`merge` message, the pattern `grep`, `rg` or `git grep` searches for), its redirection targets and `VAR=` assignments, and a program an interpreter reads from a heredoc or herestring (a command it can't parse: the raw command); fs: the paths; http and browser: the URL; email: the attachments; mcp and unknown tools: the whole arguments. Each URL in a target is also matched as `scheme://canonical-host/` |
+| `field: target` (any class, or no class) | shell: each command's argv without its data words (a `git commit`/`tag`/`merge` message, the pattern `grep`, `rg` or `git grep` searches for), its redirection targets and `VAR=` assignments, and a program an interpreter reads from a heredoc or herestring (a command it can't parse: the raw command); fs: the paths; http and browser: the URL; email: the attachments; mcp, app and unknown tools: the whole arguments. Each URL in a target is also matched as `scheme://canonical-host/` |
 | another class field | the extracted field |
 | a `field` that is no class field | the raw argument of that name |
 | no `field` (not shell) | the whole arguments as compact sorted JSON (so Write content, WebFetch URLs and MCP arguments are scanned) |
@@ -218,7 +232,7 @@ up as the host it is. A decision records `provenance` (up to 16 arguments whose 
 
 | State | When |
 |---|---|
-| `partial` | an untrusted tool's call completed with a digest, a `{hash, size}` reference or no result (an adapter that ignores `send_result`) |
+| `partial` | an untrusted tool's call completed with a digest, a `{hash, size}` reference or no result (an adapter that ignores `send_result`), or a client's events skipped a `client_seq` (`client_counter_gap`: an observe or a result the signer never got), from the decision that reveals the gap on |
 | `truncated` | a result or untrusted observed input carried more values than are read (4096 values, 1 MiB of text), or the run's index reached 20000 values |
 | `unavailable` | the signer restarted: the index lives in memory only (a storage outage the signer recovers from keeps it) |
 | `timeout` | reading this call's values took past the decision's deadline (1 s) |
@@ -231,7 +245,7 @@ the text (1 MiB in well under a second), and a decision reads them only while it
 | Pack | Section | Rules |
 |---|---|---|
 | `server-comms.yaml` | ask | `TK-P001` an email recipient (`to`, `cc`, `bcc`, `recipients`) that is untrusted-only · `TK-P002` a payee or account (`payee`, `to`, `recipient`, `destination`, `account`, `account_number`, `iban`) that is untrusted-only |
-| `server-net.yaml`, `browser.yaml` | ask | `TK-P003` data sent (a method other than GET or HEAD, or a body; in a browser, typing or an upload) to a host that is untrusted-only |
+| `server-net.yaml`, `browser.yaml` | ask | `TK-P003` data sent (a method other than GET or HEAD, or a body; in a browser, typing, an upload or a navigation with a query string) to a host that is untrusted-only |
 
 Limits ([all of Tracekit's](limits.md)): it matches values verbatim, and only what came in through untrusted tools and observed inputs: a page the
 agent fetches with a tool the policy doesn't list as untrusted (`curl` in a shell) is not indexed, so list such tools
@@ -264,6 +278,7 @@ limits:
 respond:
   - {trigger: TK-L002, mode: shadow, action: hold}   # mode off|shadow|enforce, action notify|hold|quarantine
   - {trigger: denied_calls, mode: shadow, action: notify, max: 5, window: 300, scope: run}
+  - {trigger: executed_against_policy, mode: enforce, action: quarantine, cooldown_s: 3600}
 ```
 
 **What counts.** A call's names are its rule ids from both class readings (the policy's and the client's hint, so a
@@ -327,8 +342,20 @@ matches are an `incident.updated {incident_id, cites}` at most once per window o
 without one), written in the run whose record matched, which for a `session`, `owner` or `principal` scope can be
 another run than the one that opened it. Only opened incidents count toward the caps: 100 per run and trigger, 60 per
 tenant a minute, of which one run may open 20; past a cap one `incident.capped {cap, max, trigger, reason}` is written
-instead. In 1.2 every incident is in **shadow**: `mode: shadow`, no `actions`, `would` the configured action; holds and
-quarantines come later.
+instead. An incident carries its trigger's `respond` mode. In **shadow** it has no `actions` and `would` names the
+configured action. In **enforce** the signer acts in the same writer step as the record that fired it and lists what it
+did in `actions`:
+
+| `action` | What the signer does ([incidents](incidents.md)) |
+|---|---|
+| `notify` | Nothing more than delivering the incident to every webhook subscribed to `incident` events, at least once (the signer refuses to start without one). |
+| `hold` | Every live run the incident's scope reaches is held: its live approvals expire, and each further call is an `ask` (rule `TK-HOLD`, with the `incident_id`) that only a person answers: never an agent approver, never the run's owner, principal or requester, whatever `self_approval` says. The call that fired the hold is decided again, held. With no person approver configured, a hold is a quarantine. |
+| `quarantine` | Every live run the scope reaches is quarantined, for good: each further call is denied (`TK-QUARANTINE`; past 100 such denies, refused unrecorded), approvals are refused, a gateway forwards no further model request of it, and it closes with reason `quarantine`. |
+
+`cooldown_s` (default 3600, at most 86400): for that long, a new run of the same owner and attested principal (and any
+child run of a held one) starts held or quarantined too. No trigger suspends an identity: that is an operator's call
+(`tracekit signer incidents suspend`), and lint refuses `suspend:` in `respond`. Operators resolve incidents, hold, quarantine and resume runs, pause the response engine and suspend identities
+with `tracekit signer incidents` ([incidents](incidents.md)).
 
 **Backtest.** `tracekit policy backtest --policy P --store DIR` (a signer's `data_dir/store`, read-only, safe while it
 runs) or `--bundle B...` runs the policy's detection over recorded runs and prints the incidents it would open. It
@@ -370,7 +397,7 @@ such a subject the two engines can decide differently; install `google-re2` on t
 |---|---|---|
 | `coding.yaml` | coding agents on a laptop | shell, file and harness self-protection rules; `unknown_tools: flag`; maps the shell, file, web and MCP tools of Claude Code, Codex, Cursor, Gemini CLI, OpenAI Agents and LangChain |
 | `dev.yaml` | the signer's default | `coding.yaml` plus `TK-DEMO-DENY` (denies the tool `tracekit_demo_denied`, so a deny is easy to see) |
-| `browser.yaml` | browser agents (Browser Use) | local file and internal-network navigation (addresses and names) denied; uploads and typing outside an allowlist, and typing to a host from untrusted content, ask |
+| `browser.yaml` | browser agents (Browser Use) | local file and internal-network navigation (addresses and names) denied; uploads, typing outside an allowlist, the agent's own page JavaScript (`evaluate`), and typing or a navigation with a query string to a host from untrusted content, ask; Browser Use's actions are `structured_output` |
 | `server.yaml` | server-hosted agents | `extends: [coding, browser, server-data, server-net, server-cloud, server-comms]` plus rules for every tool; `unknown_tools: ask`: an unmapped tool waits for a person; detection in shadow: `TK-Q001` a secret read then egress (notify), `TK-L001` a runaway loop and `TK-L002` a delete burst (limits), `executed_against_policy` (notify) |
 | `server-data.yaml` | SQL tools | destructive and privilege-changing SQL, SQL that reaches the server's shell or files |
 | `server-net.yaml` | HTTP tools | internal addresses; a body sent outside the egress allowlist |
@@ -384,8 +411,9 @@ such a subject the two engines can decide differently; install `google-re2` on t
 | deny | `TK-D001` privilege escalation · `TK-D002` running a downloaded script · `TK-D003` force push · `TK-D004` recursive delete of root or home · `TK-D010` writing a credentials file from the shell · `TK-D011` sending credential files off the machine · `TK-D006` uploading a secrets file · `TK-D008` modifying the harness's transcripts · `TK-D005` writing a credentials file · `TK-D009` writing the harness's transcripts · `TK-D007` touching Tracekit's own files or signer · `TK-D013` writing Tracekit's files, signer state or policy |
 | flag | `TK-F001` network commands · `TK-F002` web requests · `TK-F003` destructive commands · `TK-F004` side effects (push, publish, install, apply) · `TK-F005` secrets access · `TK-F006` MCP tools · `TK-F007` / `TK-F008` background processes · `TK-F009` harness config · `TK-F010` shell function or alias shadowing · `TK-F011` environment tampering · `TK-F012` egress (any URL a call acts on) · `TK-F013` egress (a network command) |
 
-A deployment extends `server.yaml` (or composes only the packs it needs), maps its own tool names under `tools`, and
-redefines a rule by id to change it: TK-N002's egress allowlist and TK-B011's typing allowlist name `example.com` until
+A deployment extends `server.yaml` (or composes only the packs it needs), maps its own tool names under `tools` (a
+business tool no class fits, such as `book_hotel`, to `app`, so it isn't held as unknown), and redefines a rule by id
+to change it: TK-N002's egress allowlist and TK-B011's typing allowlist name `example.com` until
 it does. Cloud APIs are covered as CLI commands on a shell tool and as MCP tools; other cloud-SDK-shaped tools need a
 mapping and rules of their own.
 

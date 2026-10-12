@@ -19,6 +19,7 @@ from factories import rewrite_bundle
 from tracekit import cli, crypto
 from tracekit.bundle_v2 import VERIFIER_MIN_VERSION, VERSIONS, export
 from tracekit.format import checkpoint
+from tracekit.format.canon import canonical
 from tracekit.format.checkpoint import COSIGNATURE, ED25519, NoteError
 from tracekit.format.records import make_record
 from tracekit.storage.base import ZERO_HASH
@@ -118,6 +119,26 @@ def tiers_bundle(log, out):
     log.add("capture.gap", {"kind": "held_call_unresolved", "tool_use_id": "t9",
                             "reason": "uid:10012 decided t9 for token:agent and recorded no result before the run ended"},
             tool_call_id="t9")
+    log.final()
+    export(log.store, "acme", "run-a", log.note(), out)
+    return out
+
+
+def gaps_bundle(log, out):
+    """Export to `out` a run that declares a fail-open class and holds signer records a person must read: a checkpoint
+    edited between pause and resume (state_tamper) and the refused consume it caused (approval.binding_mismatch), calls
+    the client numbered that never arrived (client_counter_gap: a fail-open class ran while the signer was down), and
+    an informational gap (approval_expired)."""
+    log.epoch(KEY1)
+    log.add("run.registered", {"agent": {"name": "agent"}, "identity": {"scheme": "uid", "subject": "1", "attested": True},
+                               "fail_modes": {"default": "closed", "browser": "open"}})
+    log.add("capture.gap", {"kind": "client_counter_gap", "missed_events": 2, "reason": "stream s skipped client_seq 1..2"},
+            stream="s")
+    log.add("capture.gap", {"kind": "state_tamper", "reason": "state langgraph:t changed between writes"})
+    log.add("approval.binding_mismatch", {"approval_id": "apr-1", "tool_use_id": "tc-1", "salt_id": "a" * 32,
+                                          "approved_commitment": "hmac-sha256:" + "1" * 64,
+                                          "args_commitment": "hmac-sha256:" + "2" * 64}, tool_call_id="tc-1")
+    log.add("capture.gap", {"kind": "approval_expired", "reason": "approval apr-2 expired"})
     log.final()
     export(log.store, "acme", "run-a", log.note(), out)
     return out
@@ -262,7 +283,7 @@ class TestVerifyV2(Case):
         self.assertEqual(rep.assurance, f"witnessed; records ed25519; checkpoint Ed25519 only ({ORIGIN}); cosigned "
                                         f"ed25519 by {WITNESS} (customer) at 2025-10-09T08:53:20Z; earliest independent "
                                         "anchor 2025-10-09T08:53:20Z; key retirements not proven complete")
-        self.assertEqual(rep.warnings, ["keys"])   # one run, no run-set: a withheld key.retire would not show
+        self.assertEqual(rep.warnings, [])   # one key never retired: the assurance line notes it, no warning
         with zipfile.ZipFile(out) as z:
             names = set(z.namelist())
         self.assertFalse({n for n in names if n.endswith((".html", ".py", ".js"))})
@@ -311,8 +332,23 @@ class TestVerifyV2(Case):
                 "harness": "signer-attested: run-a claude",
                 "fail-open classes": "read",
                 "key assurance": "asserted: the log declares its record keys; none is attested"}
-        details = {c["check"]: c["detail"] for c in rep.checks if c["status"] == "pass"}
+        details = {c["check"]: c["detail"] for c in rep.checks if c["status"] == "pass" or c["check"] == "fail-open classes"}
         self.assertEqual({k: details.get(k) for k in want}, want)
+        self.assertEqual(rep.warnings, ["fail-open classes"])   # read calls may have run unrecorded in an outage
+
+    def test_signed_gaps_tampering_and_fail_open_classes_warn(self):
+        out = gaps_bundle(self.log(), os.path.join(self.d, "gaps.tkb"))
+        rep, code = self.verify(out)
+        self.assertEqual((code, rep.integrity, rep.warnings), (0, "VERIFIED", ["gaps", "fail-open classes"]), rep.checks)
+        lines = {c["check"]: c for c in rep.checks}
+        self.assertEqual(lines["gaps"]["detail"], "3 signed gap, tamper or mismatch record(s): "
+                                                  "approval.binding_mismatch 1, client_counter_gap 1, state_tamper 1")
+        self.assertEqual(lines["gaps"]["problems"][2], "seq 4: approval.binding_mismatch: approval apr-1 of call tc-1: "
+                                                       "the arguments differ from the approved ones")
+        self.assertEqual((lines["fail-open classes"]["detail"], lines["fail-open classes"]["problems"]),
+                         ("browser", ["calls the agent classed as one of these may have run unrecorded while the signer "
+                                      "was down"]))
+        self.assertEqual(self.cli(out, "--trust", self.trust, "--strict")[0], 3)
 
     def test_a_call_counts_at_its_weakest_tier_and_a_split_capture_path_warns(self):
         rep, code = self.verify(tiers_bundle(self.log(), os.path.join(self.d, "tiers.tkb")))
@@ -469,7 +505,7 @@ class TestVerifyV2(Case):
         self.assertEqual(code, 0)
         self.assertIn("Integrity: VERIFIED.\nAssurance: witnessed;", stdout)
         self.assertEqual(self.cli(out)[0], 2)
-        self.assertEqual(self.cli(out, "--trust", self.trust, "--strict")[0], 3)   # the keys warning
+        self.assertEqual(self.cli(out, "--trust", self.trust, "--strict")[0], 0)   # no warning
 
     def test_cli_refuses_flags_of_the_other_format(self):
         _, out = self.honest()
@@ -673,9 +709,10 @@ ELIGIBLE = {"eligible": True, "reason": "within the bounds of R1", "rules": ["R1
 
 
 def agent_bundle(log, out, policy=AGENT_POLICY, snapshot=True, decided=None, request=None, answer=None, before=()):
-    """Export to `out` a run whose ask an agent approved, with the snapshot of `policy` (or none); `decided`, `request`
-    and `answer` override fields of the policy.decision, approval.request and approval records, and `before` ((type,
-    data) pairs) are recorded between the request and the approval; a `request` field None leaves it out."""
+    """Export to `out` a run whose ask an agent approved, the signer's policy_dir holding the snapshot of `policy` (or
+    none); `decided`, `request` and `answer` override fields of the policy.decision, approval.request and approval
+    records, and `before` ((type, data) pairs) are recorded between the request and the approval; a `request` field
+    None leaves it out."""
     snap = json.dumps(policy, sort_keys=True, separators=(",", ":")).encode()
     h = "sha256:" + hashlib.sha256(snap).hexdigest()
     log.epoch(KEY1)
@@ -688,7 +725,12 @@ def agent_bundle(log, out, policy=AGENT_POLICY, snapshot=True, decided=None, req
         log.add(type_, data, tool_call_id="t1")
     log.add(*answered(**{"approver_kind": "agent", **(answer or {})})[:2], tool_call_id="t1")
     log.final()
-    export(log.store, "acme", "run-a", log.note(), out, policies=[snap] if snapshot else [])
+    pol = out + ".policies"   # the signer's policy_dir
+    os.makedirs(pol)
+    if snapshot:
+        with open(os.path.join(pol, h[7:] + ".json"), "wb") as f:
+            f.write(snap)
+    export(log.store, "acme", "run-a", log.note(), out, policy_dir=pol)
     return out
 
 
@@ -758,7 +800,10 @@ FINDING = {"target": "tool=pay", "intervention": "i", "n": 0, "p_with": 0, "p_wi
            "interval": [-1, 1], "verdict": "inconclusive", "replay_runs": [], "models": [], "rung": 1, "off_tape": 0,
            "investigation": "i", "looks": 1, "family": 1, "min_effect": 0.2, "applied": True, "stopped": "budget"}
 INCIDENT = {"incident_id": "inc-1", "trigger": "sequence", "rule_ids": ["Q"], "scope": {"kind": "run", "id": "run-a"},
-            "cites": [{"run_id": "run-a", "run_seq": 0}], "mode": "shadow", "actions": [], "would": ["notify"]}
+            "cites": [{"run_id": "run-a", "run_seq": 1}], "mode": "shadow", "actions": [], "would": ["notify"]}
+FIRED = decision(detect={"sequences": [{"id": "Q", "step": 1}], "limits": [], "state": "complete"})   # run_seq 1
+HELD = ("run.held", {"incident_id": "inc-1", "scope": {"kind": "run", "id": "run-a"}, "by": "signer", "reason": "r"},
+        "run-a")
 # per VERSIONS entry ("type" or "type.field"), records that use it
 ENTRIES = {
     "input.observed": [registered(), ("input.observed", OBSERVED, "run-a")],
@@ -782,9 +827,22 @@ ENTRIES = {
     "run.child": [registered(), ("run.child", {"run_id": "run-x"}, "run-a")],
     "policy.decision.detect": [registered(), decision(detect={"sequences": [{"id": "Q", "step": 1}], "limits": [],
                                                               "state": "complete"})],
-    "incident.opened": [registered(), ("incident.opened", INCIDENT, "run-a")],
-    "incident.updated": [registered(), ("incident.updated", {"incident_id": "inc-1", "cites": [
-        {"run_id": "run-a", "run_seq": 0}]}, "run-a")],
+    "incident.opened": [registered(), FIRED, ("incident.opened", INCIDENT, "run-a")],
+    "incident.updated": [registered(), FIRED, ("incident.updated", {"incident_id": "inc-1", "cites": [
+        {"run_id": "run-a", "run_seq": 1}]}, "run-a")],
+    "run.held": [registered(), HELD],
+    "run.quarantined": [registered(), ("run.quarantined", dict(HELD[1]), "run-a")],
+    "run.resumed": [registered(), HELD, ("run.resumed", {"incident_id": "inc-1", "by": "uid:1", "person": "ana",
+                                                         "held_by": []}, "run-a")],
+    "incident.resolved": [registered(), ("incident.resolved", {"incident_id": "inc-1", "by": "uid:1", "person": "ana"},
+                                         "run-a")],
+    "incident.response": [registered(), ("incident.response", {"enabled": False, "by": "uid:1"}, "run-a")],
+    "identity.suspension": [registered(), ("identity.suspension", {"identity": "token:svc", "state": "enforced",
+                                                                    "by": "signer"}, "run-a")],
+    "policy.decision.incident_id": [registered(), decision(incident_id="inc-1")],
+    "approval.request.incident_id": [registered(), ("approval.request", dict(APPROVAL, incident_id="inc-1"), "run-a")],
+    "approval.incident_id": [registered(), answered(incident_id="inc-1")],
+    "run.closing.reason=quarantine": [registered(), ("run.closing", {"reason": "quarantine"}, "run-a")],
     "incident.capped": [registered(), ("incident.capped", {"cap": "run", "max": 100, "trigger": "sequence",
                                                            "reason": "cap"}, "run-a")],
     "approval.escalated": [registered(), ("approval.escalated", {"approval_id": "apr-1", "by": "signer",
@@ -825,6 +883,13 @@ class TestVersionTable(Case):
                 with self.subTest(name):
                     self.assertIn(name, ENTRIES, "add records that use it to ENTRIES")
                     self.assert_gated(version, *ENTRIES[name])
+
+    def test_shipped_rows_are_frozen(self):
+        # a row is frozen once its version's first release candidate ships: later additions go in a new row, so a
+        # verifier of that version never meets a field its own version claims to know
+        shipped = {"1.1.0": "2e5a668bf93c0e4b3fca960f9824e2c5858d5539109511d636bd7635e648061e"}
+        for version, digest in shipped.items():
+            self.assertEqual(hashlib.sha256(canonical(VERSIONS[version])).hexdigest(), digest, version)
 
 
 if __name__ == "__main__":

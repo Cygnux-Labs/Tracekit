@@ -97,17 +97,21 @@ approvals:
     "mtls:spiffe://acme/ops/alice": alice
 ```
 
-- With an `approvals` section, only an approver whose identity maps to the run's tenant (`tenants`) may answer. The
+- A signer started from `signer.yaml` (`tracekit signer serve --config`) follows these rules, with or without an
+  `approvals` section: only an approver whose identity maps to the run's tenant (`tenants`) may answer. The
   requester, the run's owner and its principal (`register_run`'s `principal`) may not, unless
-  `self_approval: allow`. Identities `persons` maps to the same person id count as that one person, so Alice can't
+  `self_approval: allow` (refused with "may not answer its own run's approval"). Without the section nobody is an
+  approver, so only break-glass identities can answer: list approvers, or set `self_approval: allow` for a
+  single-user setup (assurance stays `dev`). Identities `persons` maps to the same person id count as that one person, so Alice can't
   approve from Slack what her own agent asked for. The `approval` record carries the approver's `person`.
 - **Break-glass** identities may answer any approval, of any tenant, and must give a reason. The `approval` record
   carries `break_glass: true`; the verify report lists every such answer as a warning.
-- **Without** an `approvals` section (the dev signer), any identity of the run's tenant may answer, including the
-  requester. Such an answer is recorded `self_approved: true`, the report says `approvals: self`, and assurance is
-  capped at `dev`.
+- The **dev signer** (`tracekit up`, or started by the SDK; it has no config) lets any identity of the run's tenant
+  answer, including the requester. Such an answer is recorded `self_approved: true`, the report says `approvals:
+  self`, and assurance is capped at `dev`. A signer started with `self_approval: allow` records a self-approval the
+  same way.
 - Approvals are listed and shown only to the run's owner and to those who may answer them; another tenant never sees
-  them.
+  them. `tracekit approvals list` names the identity it asked as when it shows none.
 - OIDC identities are compared by person id, and a run's attested principal never answers its run's approvals
   ([identity.md](identity.md)).
 

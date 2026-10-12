@@ -86,7 +86,7 @@ class Executor(unittest.TestCase):
     def setUp(self):
         self.dir = tmpdir(self)
         self.s = svc.SignerService(self.dir, policy=POLICY, gateways=["mtls:spiffe://acme/*"],
-                                   authorize={"token:http": sorted(REQUESTS.keys() - {"content_get"}),
+                                   authorize={"token:http": sorted(REQUESTS.keys() - {"content_get"} - svc.OPERATOR),
                                               "mtls:spiffe://acme/executor": ["decide", "complete", "approval_request",
                                                                               "approval_wait", "approval_consume"]})
         self.closed = False
@@ -267,12 +267,18 @@ class Executor(unittest.TestCase):
     def test_a_header_file_with_a_line_break_or_control_character_is_refused_at_start(self):
         for value in ("Bearer a\nb", "Bearer a\rb", "Bearer a\x00b", "Bearer é"):
             with self.subTest(repr(value)):
-                with open(os.path.join(self.dir, "pay.header"), "w") as f:
+                with open(os.path.join(self.dir, "pay.header"), "w", encoding="utf-8") as f:
                     f.write(value)
                 with self.assertRaises(ValueError) as e:
                     executor.serve(executor.load_config(self.cfg), self.signer)
                 self.assertIn("pay.header: a header value is one line of printable ASCII", str(e.exception))
                 self.assertNotIn(value, str(e.exception))
+        with open(os.path.join(self.dir, "pay.header"), "wb") as f:
+            f.write("Bearer sécret".encode("latin-1"))
+        with self.assertRaises(ValueError) as e:
+            executor.serve(executor.load_config(self.cfg), self.signer)
+        self.assertIn("pay.header: not UTF-8 text", str(e.exception))
+        self.assertNotIn("cret", str(e.exception))
 
     def test_a_request_not_sent_and_a_response_not_read_are_told_apart(self):
         recorded, complete = [], self.signer.complete

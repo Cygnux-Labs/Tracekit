@@ -1,7 +1,8 @@
 # Deploying the signer
 
 One signer program, `tracekit signer serve`, runs in every mode. The agent's code doesn't change between modes:
-`TRACEKIT_SIGNER` points it at the signer (a socket path or an `https://` URL), and without it the client starts a
+`TRACEKIT_SIGNER` points it at the signer (a socket path, an `https://` URL, or `http://` on a loopback address for
+the `insecure_loopback` listener), and without it the client starts a
 dev signer of its own. What changes is **who can reach the signer's keys and store**, and that decides what a bundle
 can prove.
 
