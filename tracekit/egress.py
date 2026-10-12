@@ -354,14 +354,14 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         who = self._who()
         if who is None:
             return
-        addresses, why = obs.resolve(host, port)
-        if why:
-            return self._refuse(*why)
         n = self.headers.get("content-length", "0")
         if "transfer-encoding" in self.headers or not (n.isascii() and n.isdigit()):
             return self._refuse(411, "send the request body with a Content-Length")
         if int(n) > MAX_BODY:
             return self._refuse(413, f"request body over {MAX_BODY} bytes: send large uploads over https (CONNECT)")
+        addresses, why = obs.resolve(host, port)
+        if why:
+            return self._refuse(*why)
         body = self.rfile.read(int(n))
         path = urllib.parse.urlunsplit(("", "", url.path or "/", url.query, ""))
         head = [f"{self.command} {path} HTTP/1.1", f"Host: {url.netloc.rpartition('@')[2]}", "Connection: close"] + [
