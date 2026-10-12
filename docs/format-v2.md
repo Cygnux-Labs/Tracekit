@@ -105,9 +105,15 @@ caller descends from), `run.closing`, the run's `reconcile.*` records, then `run
 coverage}`. A run started by another run of the same tenant (a sub-agent's: `register_run` `parent`, whose run token
 the caller presents, for a parent that is not final) has `parent_run` (that run) and `session` (the root of its chain of
 parents) in its `run.registered` (format 1.2); a run without them is the root of its own session, whose id is its
-`run_id`. Key records: `signer.epoch{keys: [{kid, alg, spki, cert?}], bridge?}` (`cert`: the key's issuance entry from a
-record-key issuer, [issuer.md](issuer.md)) and `key.retire{kid, last_seq}`. The log's
-last record, if it is ever closed: `log.closed{final_seq}`.
+`run_id`. A tool call the [tool executor](executor.md) or the [MCP gateway](mcp-gateway.md) decided, ran or received
+for the run's client is recorded `source: gateway`, tier `T2`, its `policy.decision`, `approval.request`, `tool.result`
+and `input.observed` naming that service's signer identity (`scheme:subject`) in `via`, and its `policy.decision` the
+client it decided the call for in `caller` (format 1.2); the signer takes such a call's approval request, consume and
+completion from that service, for that client, alone. A run that ends with such a call allowed (or approved and
+consumed) and no result, after waiting `gateway_wait_s` for it, gets a signer `capture.gap{kind:
+held_call_unresolved}` for it. Key records: `signer.epoch{keys:
+[{kid, alg, spki, cert?}], bridge?}` (`cert`: the key's issuance entry from a record-key issuer, [issuer.md](issuer.md))
+and `key.retire{kid, last_seq}`. The log's last record, if it is ever closed: `log.closed{final_seq}`.
 
 Provenance (format 1.1, [policy](policy-v2.md#provenance-untrusted-and-from-untrusted)): `input.observed{source,
 trust, output: {hash, size, redacted}, redaction, salt_id}` records content that entered the run through the
@@ -118,6 +124,13 @@ with nothing untrusted in its arguments needs no 1.1 verifier), `provenance_reas
 256 characters) and `provenance`: at most 16 `{field, kind, source: {run_seq, tool?, tool_call_id?}}`, the top-level
 arguments whose values only untrusted content brought into the run, the kind of value (`email`, `url`, `host`, `path`,
 `digits`, `string`) and the record that brought it — never the value.
+
+Detection (format 1.2, [policy](policy-v2.md#detection-sequences-limits-and-respond)): under a policy with sequences
+or limits, `policy.decision` carries `detect{sequences: [{id, step}], limits: [{id, count, window_start}], state,
+rule_ids?, sums?}`. Signer records in the run whose record fired them: `incident.opened{incident_id, trigger, rule_ids,
+scope: {kind, id}, cites: [{run_id, run_seq}], mode, actions, would}`, `incident.updated{incident_id, cites}` (another
+match, at most once per window; for a session, owner or principal scope possibly in another run of that scope than
+the one that opened it) and `incident.capped{cap, max, trigger, reason}`.
 
 Content vault (format 1.1, [privacy](privacy.md#the-content-vault)): `content.accessed{principal, run_id, seqs,
 purpose}` records that the signer returned the retained content of records `seqs` (run_seqs) of run `run_id` to
@@ -148,7 +161,7 @@ and then never heard about. All are `capture.gap` records with `source: signer`.
 
 | `kind` | Where, when | Fields |
 |---|---|---|
-| `decided_not_completed` | in the run, at `run.final`: each open decision that let its call run (allowed, or asked with the call's approval consumed) and has no `complete`, unless a later decision of the call completed (for the decision a consumed approval names: with the approved arguments); at most 100, then one counting the rest | `tool_use_id`, top-level `tool_call_id` and `attempt`; the last one `missed_events` |
+| `decided_not_completed` | in the run, at `run.final`: each open decision that let its call run (allowed, or asked with the call's approval consumed) and has no `complete`, unless a later decision of the call completed (for the decision a consumed approval names: with the approved arguments); a call a gateway or executor holds (`via`) gets `held_call_unresolved` instead; at most 100, then one counting the rest | `tool_use_id`, top-level `tool_call_id` and `attempt`; the last one `missed_events` |
 | `concurrent_run` | in the newer run, for a run bound to a harness process: another run of the same owner, tenant and harness process, in another session, was open when it registered, and both have recorded an event since | `run_id`: the other run |
 | `late_activity` | in the tenant's run `tracekit/signer`, with the refusal summaries: writes refused because their run was final (not a `close_run`, nor each identity's and stream's first one) | `run_id`: that run; `missed_events`: how many; `from_ts`, `to_ts` |
 | `client_counter_gap` | also at `close_run` with `last_client_seq`: the values of a stream the closing identity wrote (or that never reached the signer) not received by then (the reason names that identity; values up to there that arrive later are recorded with no second gap). A gateway's report about a run already final goes in the tenant's run `tracekit/signer` | `missed_events`, top-level `stream`; in `tracekit/signer`, `run_id`: the run |
@@ -400,7 +413,7 @@ what it added: record types, data fields per record type, and enum values per (r
 | Version | Record types | Data fields | Enum values |
 |---|---|---|---|
 | 1.1.0 | `input.observed`, `content.accessed`, `content.erased`, `why.finding` | `policy.decision`: `provenance`, `provenance_state`; `run.registered`: `replay_of` | — |
-| 1.2.0 | — | `run.registered`: `parent_run`, `session` | — |
+| 1.2.0 | `run.child`, `approval.escalated`, `approval.revoked`, `approval.suggested`, `approval.agents`, `incident.opened`, `incident.updated`, `incident.capped` | `run.registered`: `parent_run`, `session`; `capture.gap`: `run_id`; `run.final`: `provider_executed`; `policy.decision`: `via`, `caller`, `detect`; `approval.request`: `agent`, `via`; `tool.result`, `input.observed`: `via`; `approval`: `approver_kind`, `asserted`, `spent`, `not_before`, `consume_by`; `approval.expired`: `reason` | `capture.gap` `kind`: `decided_not_completed`, `late_activity`, `concurrent_run`, `tailer_redelegated`, `reask_after_reject`, `held_call_unresolved` |
 
 Every v2 definition is closed (`additionalProperties: false`), so an older verifier would fail a record that uses a
 newer entry; the version the manifest declares makes it report `UNVERIFIABLE (needs tracekit >= x)` instead, never

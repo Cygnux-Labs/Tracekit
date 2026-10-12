@@ -10,8 +10,10 @@ The gate is the PreToolUse hook, not `can_use_tool`: the CLI skips `can_use_tool
 allow rules approve, while PreToolUse runs for every call. `deny` blocks the call with the reason, which the model
 gets as the tool's error result, and the session goes on. `ask` holds the call in the hook until a person decides in
 the signer, for at most APPROVAL_WAIT_S, below the hook's own timeout (HOOK_TIMEOUT_S, set on the matcher); a call not
-approved by then is blocked. Every call that is not denied runs only after the signer's `approval_consume` agrees.
-PostToolUse and PostToolUseFailure complete the call against its decision; SessionEnd closes the run.
+approved by then is blocked. Every call that is not denied runs only after the signer's `approval_consume` agrees; an
+approval with a T2 executor runs the arguments it returns (the hook's `updatedInput`).
+PostToolUse and PostToolUseFailure complete the call against its decision; SessionEnd closes the run. The tools of
+the tool executor's server (executor_tools.claude_agent_sdk, named `tracekit-executor`) are left to the executor.
 
 A signer that cannot be reached when a call is decided: the call runs unrecorded if register_run's `fail_modes` say
 `open`, else it is blocked. Any other failure to decide or approve (a refusal, a run the signer closed after its idle
@@ -28,6 +30,7 @@ import rfc8785
 from claude_agent_sdk import HookMatcher
 
 from tracekit.format.canon import event_hash
+from tracekit.integrations.executor_tools import SERVER
 from tracekit.signer import rpc_schema
 from tracekit.sdk.client import SignerUnavailable, fail_open, result_field
 from tracekit.signer.rpc_schema import RPCError
@@ -84,6 +87,8 @@ def tracekit_hooks(signer, run):
         tid, tool, args = inp.get("tool_use_id") or tool_use_id, inp.get("tool_name") or "?", inp.get("tool_input")
         if not tid:   # never defaulted: a result could not be bound to its decision
             return _deny("the hook got no tool_use_id")
+        if tool.startswith(f"mcp__{SERVER}__"):   # a tool executor's action: the executor decides and records it (T2)
+            return {}
         try:
             d = await rpc("decide", tool_call_id=tid, tool=tool, args_source="parsed", args=args)
         except SignerUnavailable as e:
@@ -109,10 +114,11 @@ def tracekit_hooks(signer, run):
                 return _deny(", ".join(c["rule_ids"]) + (f": {c['reason']}" if c.get("reason") else ""))
         except Exception as e:   # no fail mode once decided: a refusal or an approval that can't be had blocks
             return _deny(f"signer error ({type(e).__name__}: {e})")
+        args = c.get("args", args)   # T2: the signer's copy is what runs
         calls[tid] = d["decision_id"], event_hash({"tool": tool, "args": args}), d.get("send_result")
         if len(calls) > MAX_OPEN_CALLS:   # lean: the oldest call never got its PostToolUse; dropped, not recorded
             calls.pop(next(iter(calls)))
-        return {}
+        return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "updatedInput": args}} if "args" in c else {}
 
     async def post(inp, tool_use_id, ctx):
         call = calls.pop(inp.get("tool_use_id") or tool_use_id, None)

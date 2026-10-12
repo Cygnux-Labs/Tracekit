@@ -12,6 +12,7 @@ import time
 import unittest
 from unittest import mock
 
+from test_detect import EGRESS, SECRET, engine as detecting
 from test_signer_lifecycle import FAIL_MODES, Lifecycle
 from test_signer_service import ME, OTHER, PAY_ASKS, records
 from tracekit import agent_hooks, gateway, parsers
@@ -117,6 +118,31 @@ class TestDecidedNotCompleted(Completeness):
         self.assertEqual([g.get("tool_call_id") for g in gaps], ["tc-0", "tc-1", None])
         self.assertEqual(gaps[-1]["data"]["missed_events"], 3)
         self.assertIn("read the run's decisions with no tool.result", gaps[-1]["data"]["reason"])
+
+    def test_a_call_a_gateway_holds_is_one_gap_next_to_detection(self):
+        """In one run under a detecting policy: a call a gateway decided and never completed is held_call_unresolved
+        only, the client's own is decided_not_completed only, and the sequence the two calls make opens an incident."""
+        self.close()
+        self.s = svc.SignerService(self.dir, policy=detecting(), grace_s=60, gateways=["mtls:spiffe://acme/*"],
+                                   authorize={"mtls:spiffe://acme/*": ["decide"]})
+        self.closed = False
+        run = self.register()
+        args = {"tool": SECRET[0], "args_source": "parsed", "args": SECRET[1]}
+        self.call("decide", {**run, "stream": "gx", "client_seq": 0, "tool_call_id": "held", "caller": f"uid:{ME.subject}",
+                             **args}, GATEWAY)
+        self.call("decide", self.ev(run, 0, tool_call_id="lost", tool=EGRESS[0], args_source="parsed", args=EGRESS[1]))
+        d = self.call("decide", self.ev(run, 1, tool_call_id="done", tool="read_file", args_source="parsed",
+                                        args={"path": "a"}))
+        self.call("complete", self.ev(run, 2, tool_call_id="done", decision_id=d["decision_id"], status="ok",
+                                      args_digest=event_hash({"tool": "read_file", "args": {"path": "a"}})))
+        self.call("close_run", run)
+        self.s.sweep(time.monotonic() + 61 + svc.GATEWAY_WAIT_S)
+        events = self.events(run["run_id"])
+        self.assertEqual([g["tool_call_id"] for g in self.gaps(events, "held_call_unresolved")], ["held"])
+        self.assertEqual([g["tool_call_id"] for g in self.gaps(events, "decided_not_completed")], ["lost"])
+        incidents = [e["data"] for e in events if e["type"] == "incident.opened"]
+        self.assertEqual([(i["trigger"], i["rule_ids"]) for i in incidents], [("sequence", ["Q"])])
+        self.assertEqual(events[-1]["type"], "run.final")
 
 
 class TestLiveHookMissing(Completeness):

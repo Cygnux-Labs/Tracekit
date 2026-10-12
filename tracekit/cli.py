@@ -29,7 +29,7 @@ _DELEGATED = {"observe": "observe", "analyze": "findings", "otel": "otlp", "cost
               "public-witness": "public_witness_server",
              "deploy": "deploy.compose",
               "signer": "signer.service", "view": "view", "monitor": "monitor", "gateway": "gateway",
-              "issuer": "issuer", "why": "why.cli"}  # subcommands with their own parsers
+              "executor": "executor", "mcp-gateway": "mcp_gateway", "issuer": "issuer", "why": "why.cli"}  # subcommands with their own parsers
 _MOVED = {"sql": "query", "proofpack": "proofpack", "report": "proofpack", "causeway": "causeway"}  # now separate packages under contrib/
 
 
@@ -143,6 +143,12 @@ def main(argv=None):
     p.add_argument("rest", nargs=argparse.REMAINDER)
     p = sub.add_parser("gateway", help="LLM gateway for the v2 signer: `gateway serve --config gateway.yaml`", add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
+    p = sub.add_parser("executor", help="tool executor for the v2 signer: `executor serve --config executor.yaml`",
+                       add_help=False)
+    p.add_argument("rest", nargs=argparse.REMAINDER)
+    p = sub.add_parser("mcp-gateway", help="MCP gateway for the v2 signer: `mcp-gateway serve --config mcp-gateway.yaml`",
+                       add_help=False)
+    p.add_argument("rest", nargs=argparse.REMAINDER)
     p = sub.add_parser("issuer", help="record-key issuer for v2 signers: `issuer serve|revoke|vkey --config issuer.yaml`",
                        add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
@@ -222,9 +228,15 @@ def main(argv=None):
                    help="format v2: record-key revocations, JSON lines (an issuer's issuance.jsonl)")
     p.add_argument("--json", action="store_true")
 
-    p = sub.add_parser("policy", help="policy v2: `policy compile FILE` prints canonical JSON and its hash; `policy lint FILE`")
-    p.add_argument("action", choices=("compile", "lint"))
-    p.add_argument("file")
+    p = sub.add_parser("policy", help="policy v2: `policy compile FILE` prints canonical JSON and its hash; `policy lint "
+                                      "FILE`; `policy backtest --policy P (--store DIR | --bundle B...)` prints the "
+                                      "incidents its detection would open")
+    p.add_argument("action", choices=("compile", "lint", "backtest"))
+    p.add_argument("file", nargs="?")
+    p.add_argument("--policy", help="backtest: the policy file")
+    src = p.add_mutually_exclusive_group()
+    src.add_argument("--store", help="backtest: a signer's store directory (data_dir/store)")
+    src.add_argument("--bundle", nargs="+", default=[], help="backtest: v2 bundles (.tkb)")
 
     p = sub.add_parser("migrate", help="read or convert a v0.1 ledger; `migrate --system` upgrades a 0.2.0 system install")
     p.add_argument("rest", nargs=argparse.REMAINDER)
@@ -572,11 +584,36 @@ def _run(a):
         return code
     if a.cmd == "policy":
         from .policy2 import compile as policy_compile
-        pol, errors = policy_compile.build(a.file)
+        if not (a.policy and (a.store or a.bundle) and not a.file if a.action == "backtest"
+                else a.file and not (a.policy or a.store or a.bundle)):
+            print("tracekit: `policy compile|lint FILE`, or `policy backtest --policy P (--store DIR | --bundle B...)`",
+                  file=sys.stderr)
+            return 2
+        pol, errors = policy_compile.build(a.policy or a.file)
         for e in errors:
             print(e, file=sys.stderr)
         if errors:
             return 1
+        for w in policy_compile.warnings(pol):
+            print(f"warning: {w}", file=sys.stderr)
+        if a.action == "backtest":
+            from .policy2.engine import Engine
+            from .signer import detect
+            found, other = detect.backtest(Engine(pol), a.store, a.bundle)
+            if other:
+                print(f"tracekit: warning: {other} decision(s) were made under another policy: the backtest reads the "
+                      "rule ids they recorded, so rules and labels this policy adds or changes are not applied to them "
+                      "(arguments are not stored); run the policy in shadow on new runs to measure those",
+                      file=sys.stderr)
+            for typ, tenant, run_id, d in found:
+                what = {"incident.opened": f"{d.get('trigger')} {','.join(d.get('rule_ids', ()))} scope "
+                                           f"{d.get('scope', {}).get('kind')}",
+                        "incident.capped": f"{d.get('cap')} cap ({d.get('trigger')})"}
+                print(f"{typ:18} {tenant}/{run_id} {what.get(typ, '')}".rstrip())
+            opened = sum(t == "incident.opened" for t, *_ in found)
+            print(f"{opened} incident(s) would open" + ("" if detect.Detector.of(Engine(pol)) else
+                                                         ": the policy has no sequences, limits or respond triggers"))
+            return 0
         if a.action == "compile":
             print(policy_compile.canonical(pol))
             print(f"policy_hash: {policy_compile.policy_hash(pol)}", file=sys.stderr)

@@ -19,6 +19,7 @@ import queue
 import secrets
 import threading
 import time
+import types
 from collections import OrderedDict, deque
 from concurrent.futures import Future
 
@@ -26,7 +27,7 @@ from tracekit.core import now_ts
 from tracekit.format import registry
 from tracekit.format.records import RecordError, RecordSigner, verify_record
 from tracekit.schema import V2
-from tracekit.signer import reconcile
+from tracekit.signer import detect, reconcile
 from tracekit.signer.rpc_schema import RPCError
 from tracekit.storage.base import ZERO_HASH, StorageCorrupt, registry_tree
 
@@ -57,7 +58,9 @@ def new_run(tenant, run_id):
 # the streams: a gateway's close_run may still name one (SignerService._close_run)
 FINAL_KEYS = ("tenant", "run_id", "run_seq", "head", "closed", "final", "owner", "source", "streams", "writers",
               "tails")
-CALL_KEYS = ("tool_call_id", "attempt", "decision", "rule_ids", "decision_id", "commitment")   # a call as replay has it
+# a call as replay has it; `via`, `caller`: the gateway that decided it and the client it named (SignerService._hold)
+CALL_KEYS = ("tool_call_id", "attempt", "decision", "rule_ids", "decision_id", "commitment", "nondeterministic",
+             "detect_ids", "via", "caller")
 TENANT_GAPS = ("witness_failed", "witness_late", "clock_skew", "degraded_unanchored")
 
 
@@ -73,21 +76,66 @@ def _monotonic(t):
 
 def since(ts):
     """The monotonic time at which a record with wall-clock `ts` was written (never in the future)."""
-    return _monotonic(datetime.datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp())
+    return _monotonic(epoch(ts))
 
 
-def approval(tenant, run_id, data):
-    """The signer's state for the approval an `approval.request` record (`data`) opened."""
+def approval(tenant, run_id, data, ts):
+    """The signer's state for the approval an `approval.request` record (`data`, written at `ts`) opened. `agent`: the
+    record's agent eligibility; `escalated`: only people answer it now; an agent's approval adds `kind` agent and the
+    times it may be consumed between (`not_before`, `consume_by`)."""
     b = data["binding"]
     return {"run_key": (tenant, run_id), "tool_call_id": b["tool_call_id"], "attempt": b["attempt"], "tool": b["tool"],
             "args_source": b["args_source"], "decision_id": data["decision_id"], "commitment": b["args_commitment"],
             "rule_ids": data["rule_ids"], "policy_hash": data["policy_hash"], "requester": data["requester"],
             "expires_at": data["expires_at"], "binding_digest": data["binding_digest"], "state": "requested",
             "executor": data.get("executor", "t1"), "passkey": data.get("passkey", False),
-            "requester_person": data.get("requester_person"), "label": salt_label({"type": "approval.request", "data": data})}
+            "requester_person": data.get("requester_person"), "label": salt_label({"type": "approval.request", "data": data}),
+            "agent": data.get("agent"), "escalated": False, "requested_at": ts}
 
 
-APPROVAL_ENDS = {"approval.consumed": "consumed", "approval.expired": "expired", "approval.abandoned": "expired"}
+APPROVAL_ENDS = {"approval.consumed": "consumed", "approval.expired": "expired", "approval.abandoned": "expired",
+                 "approval.revoked": "rejected"}
+
+
+def epoch(ts):
+    return datetime.datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
+
+
+def person_only_keys(a):
+    """The keys a call whose agent answer said no is a person's to answer by, in its run, from then on: the same tool
+    with the same arguments (`args_key`), and the same tool call id in any attempt."""
+    return [f"c:{a['tool']}:{a['tool_call_id']}"] + ([f"d:{a['tool']}:{a['agent']['args_key']}"]
+                                                     if (a.get("agent") or {}).get("args_key") else [])
+
+
+def agent_state(set_, log, run, e):
+    """Follow record `e` of `run` in the agent-approval state that budgets, review caps and the person-only set are
+    counted from: `log.agent` {off: the kill switch, uses: approval id -> {requested, tenant, requester, rules,
+    approved, spent}} and the run's `person_only` and `agent_reviews`. `set_(d, k, v)`: the writer's undoable set, or a
+    plain one on replay. Called after the record's own state change."""
+    typ, d = e["type"], e["data"]
+    a = log.approvals.get(d.get("approval_id"))
+    if typ == "approval.agents":
+        set_(log.agent, "off", not d["enabled"])
+    elif typ == "approval.request" and (d.get("agent") or {}).get("eligible"):
+        set_(run, "agent_reviews", run.get("agent_reviews", 0) + 1)
+        set_(log.agent["uses"], d["approval_id"], {"requested": epoch(e["ts"]), "tenant": e["tenant"],
+                                                   "requester": d["requester"], "rules": d["agent"]["rules"],
+                                                   "approved": None, "spent": {}})
+    elif a is None:
+        return
+    elif typ == "approval" and d.get("approver_kind") == "agent" and d["decision"] == "approve":
+        for k in ("not_before", "consume_by"):
+            set_(a, k, d[k])
+        set_(a, "kind", "agent")
+        use = log.agent["uses"].get(d["approval_id"])
+        if use is not None:
+            set_(log.agent["uses"], d["approval_id"], dict(use, approved=epoch(e["ts"]), spent=d.get("spent", {})))
+    elif typ == "approval.escalated":
+        set_(a, "escalated", True)
+    if typ in ("approval.escalated", "approval.revoked") or typ == "approval" and d.get("approver_kind") == "agent" \
+            and d["decision"] != "approve":   # a person's veto sticks as an agent's reject does
+        set_(run, "person_only", {**run.get("person_only", {}), **{k: True for k in person_only_keys(a)}})
 
 
 def salt_label(e):
@@ -155,7 +203,8 @@ class Tx:
 
     def emit(self, run, typ, data, source=None, digests=None, **top):
         """Sign one event into `run` (source: the run's unless given) and feed it to the run's reconcile index
-        (`digests`: see reconcile.observe); returns its run_seq. Nothing follows log.closed."""
+        (`digests`: see reconcile.observe) and the detector, whose incident records follow it; returns its run_seq.
+        Nothing follows log.closed."""
         log = self.log
         if log.head["closed"]:
             raise RPCError("unavailable", "the log is closed (log.closed): it takes no more records")
@@ -167,13 +216,20 @@ class Tx:
              "ts": now_ts(), "run_id": run["run_id"], "agent_id": "main", "parent_id": None, "source": source or run["source"],
              "type": typ, "data": data, "tenant": run["tenant"], "log_id": log.log_id, "run_seq": run["run_seq"],
              "run_prev_hash": run["head"], **top}
+        view, incidents = log.detector.observe(self, log.det, e) if log.detector else (None, ())
+        if view is not None:
+            e["data"] = {**data, "detect": view}
         r = log.sign(e)
         self.records.append(r)
         self.set(log.head, "seq", e["seq"] + 1)
         self.set(log.head, "prev", r["hash"])
         self.set(run, "run_seq", e["run_seq"] + 1)
         self.set(run, "head", r["hash"])
-        for kind, tcid, layers, detail in reconcile.observe(self.set, run, e, digests, self.log.handoff):
+        found = reconcile.observe(self.set, run, e, digests, log.handoff)
+        agent_state(self.set, log, run, e)
+        for t, d in incidents:   # first, as detect.backtest feeds them: right after the record that fired them
+            self.emit(run, t, d, source="signer")
+        for kind, tcid, layers, detail in found:
             self.emit(run, "reconcile." + kind, {"layers": layers, "detail": detail}, source="signer", tool_call_id=tcid)
         return e["run_seq"]
 
@@ -234,13 +290,14 @@ class Tx:
 
 
 class RecordLog:
-    def __init__(self, storage, open_storage, sign, quotas, salt, metrics, bridge=None, certify=None):
+    def __init__(self, storage, open_storage, sign, quotas, salt, metrics, bridge=None, certify=None, detector=None):
         """`storage` is open (and holds its lock); `open_storage()` reopens it after a disk error. `sign` is a
         format.records.RecordSigner; `salt` the secret the registry's per-tenant salts derive from; `metrics` a
         signer.metrics.SignerMetrics. `bridge`: the v1 ledger this log continues (signer.epoch `bridge`), refused
         unless the log is empty or already starts with it. `certify(log_id)` -> (RecordSigner, issuance entry): a
         fresh certified record key (tracekit.issuer.certify), taken instead of `sign` once the log is replayed; its
-        signer.epoch retires the key before it."""
+        signer.epoch retires the key before it. `detector`: a detect.Detector, or None when the policy detects nothing."""
+        self.detector = detector
         self.storage, self.open_storage, self.sign, self.quotas, self.salt = storage, open_storage, sign, quotas, salt
         self.metrics = metrics
         self.observers = []   # f(records), called on the writer once storage has taken a batch: must not block
@@ -275,8 +332,8 @@ class RecordLog:
         for run in self.runs.values():
             r = {k: v for k, v in run.items() if k not in ("denied", "digests", "prov")}
             if "calls" in r:
-                r["calls"] = {t: {k: c[k] for k in CALL_KEYS} for t, c in run["calls"].items()}
-                r["decisions"] = {d: c and {k: c[k] for k in CALL_KEYS} for d, c in run["decisions"].items()}
+                r["calls"] = {t: {k: c.get(k) for k in CALL_KEYS} for t, c in run["calls"].items()}
+                r["decisions"] = {d: c and {k: c.get(k) for k in CALL_KEYS} for d, c in run["decisions"].items()}
             for k in ("active", "closing_at"):
                 if r.get(k) is not None:
                     r[k] += wall
@@ -285,7 +342,7 @@ class RecordLog:
                 "open_runs": self.open_runs, "approvals": self.approvals, "index": [[*k, a] for k, a in
                                                                                    self.approval_index.items()],
                 "registry": {t: size for t, (size, _) in self.storage.tail_state()["registry"].items()},
-                "keys": self.keys}
+                "keys": self.keys, "agent": self.agent, **({"detect": self.det} if self.detector else {})}
 
     def snapshot(self):
         """Have the storage snapshot its indexes and the run state, unless a write is in flight or the storage is
@@ -294,6 +351,8 @@ class RecordLog:
         # write it off it once snapshots take more than a few hundred ms
         def fn(tx):
             if not tx.records and not self.down:
+                if self.detector:
+                    self.detector.prune(self.det, time.time())
                 self.storage.snapshot_put(self._state())
         self.write(fn)
 
@@ -306,12 +365,19 @@ class RecordLog:
         size = tail["tree_size"]
         runs, prev, leaves, approvals, index, tenants, closed = {}, ZERO_HASH, {}, {}, {}, set(), False
         open_runs, by_run, start, base, keys = {}, {}, 0, {}, []   # owner -> runs not closing; run key -> its approval ids
+        agent = {"off": False, "uses": {}}
+        policy = self.detector and self.detector.engine.policy_hash
+        det = detect.new(policy)
 
         def spkis():   # the keys replayed records verify under: certified keys the log declared, else the file key
             return [base64.b64decode(k) for _, k in keys] if self.certify else [self.sign.spki]
         if s.snapshot:
             st, start, prev = s.snapshot["state"], s.snapshot["size"], s.snapshot["hash"]
             keys = st.get("keys", [])
+            # a snapshot written without detection, or under another policy, can't say what came before it
+            det = st.get("detect")
+            if not det or det.get("policy") != policy:
+                det = detect.new(policy, self.detector and time.time() + self.detector.window)
             try:
                 verify_record(next(s.iter_range(start - 1, start)), spkis(), {RecordSigner.alg})
             except RecordError as x:
@@ -326,6 +392,7 @@ class RecordLog:
                     r.setdefault("tails", {})
                 runs[(r["tenant"], r["run_id"])] = r
             approvals = {aid: dict(a, run_key=tuple(a["run_key"])) for aid, a in st["approvals"].items()}
+            agent = st.get("agent", agent)
             index = {tuple(k[:4]): k[4] for k in st["index"]}
             for aid, a in approvals.items():
                 by_run.setdefault(a["run_key"], []).append(aid)
@@ -352,6 +419,8 @@ class RecordLog:
             for tenant, leaf in self.leaves(r, tenants):
                 leaves.setdefault(tenant, []).append(leaf)
             closed = closed or e["type"] == "log.closed"
+            if self.detector:
+                self.detector.observe(detect.Plain, det, e)
             if not run["final"]:
                 run["active"] = since(e["ts"])
                 reconcile.observe(dict.__setitem__, run, e)
@@ -365,6 +434,8 @@ class RecordLog:
                 run["harness"] = (h["pid"], h["start_time"]) if h else None   # the process its owner's calls come from
                 if "session" in e["data"]:
                     run["session"] = e["data"]["session"]
+                if {"replay_of", "analyzes"} & e["data"].keys():
+                    run["replay"] = True
                 open_runs[run["owner"]] = open_runs.get(run["owner"], 0) + 1
                 if e["source"] == "import":   # not reconciled: no layer gates or reports its calls
                     run["rec"], run["spans"] = None, {}
@@ -384,7 +455,9 @@ class RecordLog:
                 d = e["data"]
                 call = {"tool_call_id": e["tool_call_id"], "attempt": e.get("attempt", 0), "decision": d["decision"],
                         "rule_ids": d["rule_ids"], "decision_id": d.get("decision_id"),
-                        "commitment": d.get("args_commitment"), "tool": d.get("tool")}
+                        "commitment": d.get("args_commitment"), "tool": d.get("tool"), "via": d.get("via"),
+                        "caller": d.get("caller"), "nondeterministic": bool(d.get("nondeterministic")),
+                        "detect_ids": d.get("detect", {}).get("rule_ids")}
                 run["calls"][e["tool_call_id"]] = call
                 if call["decision_id"]:
                     run["decisions"][call["decision_id"]] = call
@@ -397,7 +470,7 @@ class RecordLog:
                     # lean: by call and attempt; the writer also checks the arguments against the approval's
                     run["decisions"].pop(approvals[aid]["decision_id"], None)
             elif e["type"] == "approval.request":
-                a = approvals[e["data"]["approval_id"]] = approval(e["tenant"], e["run_id"], e["data"])
+                a = approvals[e["data"]["approval_id"]] = approval(e["tenant"], e["run_id"], e["data"], e["ts"])
                 index[(e["tenant"], e["run_id"], a["tool_call_id"], a["attempt"])] = e["data"]["approval_id"]
                 by_run.setdefault(a["run_key"], []).append(e["data"]["approval_id"])
             elif e["type"] == "approval":
@@ -405,8 +478,16 @@ class RecordLog:
                                                                  else "rejected")
             elif e["type"] in APPROVAL_ENDS:
                 approvals[e["data"]["approval_id"]]["state"] = APPROVAL_ENDS[e["type"]]
+            if not run["final"]:
+                agent_state(dict.__setitem__, types.SimpleNamespace(approvals=approvals, agent=agent), run, e)
         self.log_id = self.log_id or secrets.token_hex(16)
+        self.agent = agent
         self.runs, self.head, self.tenants, self.keys = runs, {"seq": size, "prev": prev, "closed": closed}, tenants, keys
+        for (tenant, run_id), r in runs.items():   # open runs a fresh detection state never saw registered
+            k = f"{tenant}\0{run_id}"
+            if self.detector and not r["final"] and r["owner"] and k not in det["runs"]:
+                det["runs"][k] = detect.run_entry(r.get("session", run_id), r["owner"], r["people"][1])
+        self.det = det
         # lean: final runs stay in `runs` as final_run stubs, so tokens, run_exists and late writes answer from memory;
         # look them up in storage instead once a signer holds millions of runs
         self.live = {k: True for k, r in runs.items() if not r["final"] and k[1] != SIGNER_RUN[1]}   # the runs sweep visits

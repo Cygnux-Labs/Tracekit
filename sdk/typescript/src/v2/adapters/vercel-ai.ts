@@ -17,13 +17,16 @@
  * and becomes `user-approval`. `tk.approvalResponses(parts)` turns the `tool-approval-request` parts the signer's
  * approvers decided into `tool-approval-response` parts to resume with. `tk.tools(tools)` wraps each tool's `execute`:
  * every call, allowed or approved, runs only after the signer's `approval_consume` agrees, so an approval response the
- * client forged or replayed runs nothing; `experimental_toolApprovalSecret` (the SDK's HMAC over its approval
+ * client forged or replayed runs nothing, and an approval with a T2 executor runs the signer's copy of the arguments;
+ * `experimental_toolApprovalSecret` (the SDK's HMAC over its approval
  * requests) can be set as well and does not replace this. Without `tk.toolApproval` an `ask` is refused.
  *
- * Tools without `execute` and provider-executed tools are not gated; they are recorded in the model responses.
+ * Tools without `execute` and provider-executed tools are not gated; they are recorded in the model responses. A tool
+ * executor's tools (`vercelTool`, marked EXECUTOR) are left to the executor, which decides and records them (T2).
  */
 import type { Decision, Frame, RunHandle } from "../client.js";
 import { digest } from "../jcs.js";
+import { EXECUTOR } from "../executor.js";
 import { BLOCKED, Gate, approvalStates, defined, failure, keep, recordResponse, refusal, take, toolUse } from "./gate.js";
 
 /** LanguageModelV3/V4 usage as the signer's usage buckets (input_tokens without cache reads). */
@@ -36,6 +39,7 @@ const stop = (fr: any) => (typeof fr === "string" ? fr : fr?.unified);
 
 export function tracekitAI(run: RunHandle) {
   const gate = new Gate(run);
+  const executors = new Set<string>();               // the names of tool executor tools tk.tools() was given
   const raw = new Map<string, string>();             // toolCallId -> the model's arguments string
   const decided = new Map<string, Decision>();       // toolCallId -> its decision, from toolApproval to execute
   const seen = (p: any) => {
@@ -72,7 +76,8 @@ export function tracekitAI(run: RunHandle) {
     },
 
     /** For `toolApproval:` on generateText, streamText and ToolLoopAgent. */
-    async toolApproval({ toolCall }: any) {
+    async toolApproval({ toolCall, tools }: any) {
+      if (tools?.[toolCall.toolName]?.[EXECUTOR] || executors.has(toolCall.toolName)) return "not-applicable" as const;
       const id = toolCall.toolCallId;
       let d;
       try {
@@ -93,13 +98,14 @@ export function tracekitAI(run: RunHandle) {
 
     /** `tools` with each `execute` gated by the signer. */
     tools<T extends Record<string, any>>(tools: T): T {
-      return Object.fromEntries(Object.entries(tools).map(([name, t]) => [name, !t?.execute ? t : {
+      return Object.fromEntries(Object.entries(tools).map(([name, t]) => [name, !t?.execute ? t
+        : t[EXECUTOR] ? (executors.add(name), t) : {
         ...t,
         async execute(input: unknown, opts: any) {
           const id = opts?.toolCallId;
           const why = await gate.admit(id, name, take(raw, id) ?? input, { d: take(decided, id) });
           if (why !== null) throw new Error(why);
-          return gate.execute(id, () => t.execute(input, opts));
+          return gate.execute(id, () => t.execute(gate.input(id, input), opts));
         },
       }])) as T;
     },

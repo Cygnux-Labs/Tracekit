@@ -230,6 +230,18 @@ class Agreement(unittest.TestCase):
                     out.writestr(i.filename, data)
             self.assertEqual(self.agree(bad, self.trusts["witnessed"])[0], 1)
 
+    def test_tiers_of_calls_whose_records_disagree(self):
+        import test_bundle_v2 as b   # a synthetic log: a T2 decision completed by the client, which the signer refuses
+        log = b.Log(os.path.join(self.d, f"tiers-{uuid.uuid4().hex}"))
+        self.addCleanup(log.store.close)
+        bundle, trust = b.tiers_bundle(log, os.path.join(self.d, "tiers.tkb")), os.path.join(self.d, "tiers-trust.json")
+        with open(trust, "w") as f:
+            json.dump(b.trust_config(), f)
+        _, rep = self.agree(bundle, trust)
+        [want] = [c for c in rep.checks if c["check"] == "tiers"]
+        self.assertEqual([c for c in ts_verify(bundle, trust)["checks"] if c["check"] == "tiers"], [want])
+        self.assertEqual(want["status"], "warn")
+
     def test_golden_corpus(self):
         """Both verifiers agree on every golden bundle, and on each negative one give its recorded verdict."""
         golden = os.path.join(TESTS, "golden")

@@ -311,10 +311,16 @@ class SignedRuntime(unittest.TestCase):
         self.assertEqual(a.act("Bash", {"command": 'echo "held'}).value, {"stdout": "ok"})
         self.assertEqual(RAN, ['echo "held'])
         a.act("Bash", {"command": 'echo "never retried'})
+        a.act("Bash", {"command": 'echo "escalated'})
         run_id = rt._tk("a").run_id
+        [esc] = [aid for aid, x in self.service.log.approvals.items()
+                 if x["run_key"][1] == run_id and x["state"] == "requested"][1:]
+        self.service.log.approvals[esc]["escalated"] = True   # escalated by the signer while held
         out = os.path.dirname(rt.finish().path)
         states = {x["approval_id"]: x["state"] for x in self.client.approval_list({"run_id": run_id})["approvals"]}
-        self.assertEqual(sorted(states.values()), ["consumed", "expired"])   # finish abandons the one still held
+        # finish abandons the one still held, but not the escalated one: people answer it
+        self.assertEqual(sorted(states.values()), ["consumed", "expired", "requested"])
+        self.assertEqual(states[esc], "requested")
         merged = load_run(import_v2.import_records({run_id: self.records()[run_id]}, out)[0])
         self.assertEqual(merged.start["meta"]["evidence_alerts"], [])
 

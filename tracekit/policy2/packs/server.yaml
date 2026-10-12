@@ -9,7 +9,7 @@
 # grep searches for). Each URL is also matched as scheme://canonical-host/, so any notation of an address counts.
 
 extends: [coding.yaml, browser.yaml, server-data.yaml, server-net.yaml, server-cloud.yaml, server-comms.yaml]
-version: '2026.10-server-4'
+version: '2026.10-server-5'
 description: server-hosted agents (coding, browser and server packs; unmapped tools ask)
 unknown_tools: ask
 
@@ -60,3 +60,38 @@ ask:
     pattern: '"(command|cmd|script|shell_command)":["\[]'
     reason: a command through an MCP tool
     rationale: An MCP tool that takes a command (exec in a pod or container, a remote shell) runs it outside the shell rules; a person checks it.
+
+# Detection (signer/detect.py), all in shadow: incidents are recorded, nothing is held. The labels come from
+# coding.yaml: secrets_access (TK-F005), destructive (TK-F003), egress (TK-F012 a URL, TK-F013 a network command).
+# Thresholds: docs/policy-v2.md#choosing-thresholds.
+sequences:
+  - id: TK-Q001
+    # a secret read, then egress (a URL or a network command), within ten minutes of the same session (subagents
+    # included, via parent_run); one command that does both counts as both.
+    # Notify only: data that leaves through a host untrusted content named is TK-P003's (provenance)
+    steps: [secrets_access, egress]
+    scope: session
+    window: 600
+
+limits:
+  - id: TK-L001
+    # a runaway loop: more calls in one minute of a session than an agent makes working
+    match: '*'
+    count: true
+    max: 300
+    window: 60
+    scope: session
+  - id: TK-L002
+    # a delete burst: rm, mv, chmod, dd, truncate and the like
+    match: destructive
+    count: true
+    max: 30
+    window: 60
+    scope: session
+
+respond:
+  - {trigger: TK-Q001, mode: shadow, action: notify}
+  # a call that ran after a deny or an unapproved ask: it never counts as a step, so it is recorded on its own
+  - {trigger: executed_against_policy, mode: shadow, action: notify}
+  - {trigger: TK-L001, mode: shadow, action: hold}
+  - {trigger: TK-L002, mode: shadow, action: hold}

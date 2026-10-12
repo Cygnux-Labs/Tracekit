@@ -19,9 +19,11 @@ docker compose logs viewer                            # the viewer's URL with it
 | `witness` | omniwitness built from a pinned commit (`deploy/compose/witness/Dockerfile`), uid 10002 | the signer's `/logs/v0` |
 | `viewer` | `tracekit view` as a SELECT-only role, published on 127.0.0.1 only | Postgres |
 | `agent` | an example agent, uid 1000, profile `agent` | only the signer's socket (`signer-run` volume, read-only) |
+| `gateway`, `executor`, `mcp-gateway` | the [custody services](executor.md#compose), uids 10011-10013, profile `custody`, each with its config and secrets in `custody/<service>/` | the signer's socket (read-only), the agent network, the internet (`egress`) |
 
-Every network but the viewer's is `internal` (no route out). The agent's network has nothing else on it: the agent
-reaches the signer only through the Unix socket in the `signer-run` volume, which no other service mounts, and its
+Every network but the viewer's and `egress` is `internal` (no route out). On the agent's network only the custody
+services are there with it: the agent reaches the signer only through the Unix socket in the `signer-run` volume, which
+only the custody services mount besides the signer, and its
 identity is its peer uid (`tenants: {"uid:1000": default}` in signer.yaml). Replace the `agent` service with yours: same
 volume mounted read-only (`:ro`: it can connect to the socket but not unlink or replace it), same kind of network, a
 uid that is not 10001 or root, no secrets.

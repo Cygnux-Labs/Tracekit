@@ -1,0 +1,136 @@
+{{- /* The custody services (docs/gateway.md, docs/executor.md, docs/mcp-gateway.md): each holds credentials the agents
+never get, from a Secret mounted only in its own pod, and records for the agents' runs as a signer `gateways` identity,
+k8s_sa:system:serviceaccount:<namespace>:<release>-<name>. Each takes the agents' tokens of its own audience,
+<audience>-<name>, never the signers': a token one receives can't be replayed at the signers. */ -}}
+{{- range $s := list (dict "key" "gateway" "name" "gateway" "port" 8080 "set" (dict "api_key_file" "/etc/tracekit/secrets/api_key"))
+                     (dict "key" "executor" "name" "executor" "port" 8090 "set" dict)
+                     (dict "key" "mcpGateway" "name" "mcp-gateway" "port" 8091 "set" dict) }}
+{{- $v := index $.Values $s.key }}
+{{- if $v.enabled }}
+{{- $name := printf "%s-%s" $.Release.Name $s.name }}
+{{- $cfg := merge (dict "signer" (printf "https://%s.%s.svc:8443" $.Release.Name $.Release.Namespace)
+      "http" (dict "listen" (printf "0.0.0.0:%d" (int $s.port)) "cert" "/etc/tracekit/tls/tls.crt" "key" "/etc/tracekit/tls/tls.key"
+                   "authenticators" (list "k8s_sa")
+                   "k8s_sa" (dict "audience" (printf "%s-%s" $.Values.audience $s.name) "tokenreview" "https://kubernetes.default.svc"
+                                  "token_file" "/var/run/secrets/kubernetes.io/serviceaccount/token"
+                                  "ca" "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt")))
+      $s.set (deepCopy $v.config) }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $name }}
+  labels: {{- include "tc.labels" (dict "root" $ "component" $s.name) | nindent 4 }}
+data:
+  {{ $s.name }}.yaml: |
+    {{- range $k, $val := $cfg }}
+    {{ $k }}: {{ toJson $val }}
+    {{- end }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}
+  labels: {{- include "tc.labels" (dict "root" $ "component" $s.name) | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  labels: {{- include "tc.labels" (dict "root" $ "component" $s.name) | nindent 4 }}
+spec:
+  replicas: {{ $v.replicas }}
+  selector:
+    matchLabels: {{- include "tc.labels" (dict "root" $ "component" $s.name) | nindent 6 }}
+  template:
+    metadata:
+      labels: {{- include "tc.labels" (dict "root" $ "component" $s.name) | nindent 8 }}
+      annotations:
+        checksum/config: {{ toJson $cfg | sha256sum }}
+    spec:
+      serviceAccountName: {{ $name }}
+      automountServiceAccountToken: true   # TokenReview of the agents' tokens
+      securityContext:
+        fsGroup: {{ int $.Values.signer.uid }}
+      containers:
+        - name: {{ $s.name }}
+          image: {{ $v.image | default $.Values.signer.image }}
+          command: [tracekit, {{ $s.name }}, serve, --config, /etc/tracekit/custody/{{ $s.name }}.yaml]
+          env:
+            - {name: TRACEKIT_SIGNER_TOKEN_FILE, value: /var/run/secrets/tracekit/token}
+            - {name: TRACEKIT_SIGNER_CA, value: /etc/tracekit/signer-ca/ca.crt}
+          securityContext:
+            runAsUser: {{ int $.Values.signer.uid }}
+            runAsGroup: {{ int $.Values.signer.uid }}
+            {{- include "tc.hardened" $ | nindent 12 }}
+          resources: {{- toYaml $v.resources | nindent 12 }}
+          ports: [{name: https, containerPort: {{ $s.port }}}]
+          volumeMounts:
+            - {name: tmp, mountPath: /tmp}
+            - {name: config, mountPath: /etc/tracekit/custody, readOnly: true}
+            - {name: secrets, mountPath: /etc/tracekit/secrets, readOnly: true}
+            - {name: tls, mountPath: /etc/tracekit/tls, readOnly: true}
+            - {name: signer-ca, mountPath: /etc/tracekit/signer-ca, readOnly: true}
+            - {name: signer-token, mountPath: /var/run/secrets/tracekit, readOnly: true}
+      volumes:
+        - {name: tmp, emptyDir: {}}
+        - {name: config, configMap: {name: {{ $name }}}}
+        - {name: secrets, secret: {secretName: {{ required (printf "%s.secretName is required" $s.key) $v.secretName }}, defaultMode: 0440}}
+        - {name: tls, secret: {secretName: {{ required (printf "%s.tlsSecretName is required" $s.key) $v.tlsSecretName }}, defaultMode: 0440}}
+        - {name: signer-ca, secret: {secretName: {{ required "tls.secretName is required" $.Values.tls.secretName }}, items: [{key: ca.crt, path: ca.crt}]}}
+        - name: signer-token
+          projected: {sources: [{serviceAccountToken: {audience: {{ $.Values.audience }}, expirationSeconds: 3600, path: token}}]}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels: {{- include "tc.labels" (dict "root" $ "component" $s.name) | nindent 4 }}
+spec:
+  selector: {{- include "tc.labels" (dict "root" $ "component" $s.name) | nindent 4 }}
+  ports: [{name: https, port: {{ $s.port }}, targetPort: https}]
+{{- end }}
+{{- end }}
+{{- with .Values.agentEgress }}
+{{- if .enabled }}
+{{- if not .podSelector }}
+{{- fail "agentEgress.podSelector is required: the agent pods' labels" }}
+{{- end }}
+---
+# Agent pods reach only the signers, the custody services, the egress proxy and DNS: a call that needs a credential
+# goes through a service that records it. Enforced only by a CNI that enforces egress policies.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ $.Release.Name }}-agent-egress
+  namespace: {{ .namespace | default $.Release.Namespace }}
+  labels: {{- include "tc.labels" (dict "root" $ "component" "agent-egress") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels: {{- toYaml .podSelector | nindent 6 }}
+  policyTypes: [Egress]
+  egress:
+    {{- range $c := list (dict "component" "signer" "port" 8443) (dict "component" "gateway" "port" 8080 "on" $.Values.gateway.enabled)
+                         (dict "component" "executor" "port" 8090 "on" $.Values.executor.enabled)
+                         (dict "component" "mcp-gateway" "port" 8091 "on" $.Values.mcpGateway.enabled) }}
+    {{- if or (eq $c.component "signer") $c.on }}
+    - to:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: {{ $.Release.Namespace }}}}
+          podSelector:
+            matchLabels: {{- include "tc.labels" (dict "root" $ "component" $c.component) | nindent 14 }}
+      ports: [{port: {{ $c.port }}, protocol: TCP}]
+    {{- end }}
+    {{- end }}
+    {{- with .egressProxy.podSelector }}
+    - to:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: {{ $.Values.agentEgress.egressProxy.namespace | default $.Release.Namespace }}}}
+          podSelector:
+            matchLabels: {{- toYaml . | nindent 14 }}
+      ports: [{port: {{ $.Values.agentEgress.egressProxy.port }}, protocol: TCP}]
+    {{- end }}
+    - to:
+        - namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: kube-system}}
+          podSelector: {matchLabels: {k8s-app: kube-dns}}
+      ports: [{port: 53, protocol: UDP}, {port: 53, protocol: TCP}]
+{{- end }}
+{{- end }}

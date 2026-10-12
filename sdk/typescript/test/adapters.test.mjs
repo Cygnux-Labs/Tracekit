@@ -1,7 +1,7 @@
 // The adapter contract (04-design §7.3, tests/adapter_contract.py in TypeScript) for the v2 adapters, each driven
 // through a small stand-in for its framework's hook or middleware interface, against an in-test fake signer and, when
 // Python with the signer extra is there, the real signer.   npm test
-// The policy: "pay" asks (R-PAY), "wipe" is denied (R-WIPE), everything else is allowed; "echo"'s results are untrusted.
+// The policy: "pay" asks (R-PAY, with a T2 executor), "wipe" is denied (R-WIPE), everything else is allowed; "echo"'s results are untrusted.
 import { after, before, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
@@ -40,7 +40,7 @@ async function fakeSigner({ failModes = { default: "closed" }, override = () => 
       case "decide": {
         const tool = f.tool.split("/").pop();
         const [decision, rule_ids] = tool === "pay" ? ["ask", ["R-PAY"]] : tool === "wipe" ? ["deny", ["R-WIPE"]] : ["allow", []];
-        const d = { run_id: f.run_id, decision_id: id("dec"), tool_call_id: f.tool_call_id, attempt: f.attempt ?? 0, decision, rule_ids, digest: argsDigest(f.tool, f.args) };
+        const d = { run_id: f.run_id, decision_id: id("dec"), tool_call_id: f.tool_call_id, attempt: f.attempt ?? 0, decision, rule_ids, digest: argsDigest(f.tool, f.args), args: f.args };
         decisions.set(d.decision_id, d);
         return { ...emit(f.run_id, "policy.decision", d), decision, rule_ids, decision_id: d.decision_id,
           ...(tool.endsWith("echo") ? { send_result: true } : {}) };   // echo's results are untrusted
@@ -73,7 +73,7 @@ async function fakeSigner({ failModes = { default: "closed" }, override = () => 
         if (a.digest !== digest) return no("TK-APPROVAL-MISMATCH");
         a.state = "consumed";
         emit(f.run_id, "approval.consumed", { tool_call_id: f.tool_call_id, attempt: a.attempt });
-        return { ok: true };
+        return { ok: true, args: typeof a.args === "string" ? JSON.parse(a.args) : a.args };   // T2: the signer's copy
       }
       case "complete": {
         const d = decisions.get(f.decision_id);
@@ -315,6 +315,7 @@ class ClaudeDriver {
     if (pre?.permissionDecision === "deny") {
       o = outcome({ seen: pre.permissionDecisionReason, isError: true });
     } else {
+      call = { ...call, tool_input: pre?.updatedInput ?? call.tool_input };   // the CLI runs the hook's updatedInput
       try {
         o = outcome({ seen: TOOLS[call.tool_name](call.tool_input) });
       } catch (e) {
@@ -422,6 +423,17 @@ function contract(name, Driver, serve, skip) {
       await decideApproval(await paused());
       assert.deepEqual(await d.resume(), outcome({ ran: ["pay"], seen: "paid 1500" }));
       assert.equal((await recorded("approval.consumed")).length, 1);
+      await bound();
+    });
+
+    it("T2: the agent changed the arguments after the approval: the signer's copy runs and completes", async (t) => {
+      await setup(t);
+      // the signer decides, approves and consumes `approved` while the framework holds PAY
+      const call = client.call, approved = { ...PAY, cents: 7 };
+      client.call = (m, f) => call.call(client, m, ["decide", "approval_consume"].includes(m) && f.tool.split("/").pop() === "pay"
+        ? { ...f, args: typeof f.args === "string" ? JSON.stringify(approved) : approved } : f);
+      await decideApproval(await paused());
+      assert.deepEqual(await d.resume(), outcome({ ran: ["pay"], seen: "paid 7" }));
       await bound();
     });
 

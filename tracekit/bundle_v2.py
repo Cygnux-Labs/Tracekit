@@ -50,10 +50,15 @@ VERSIONS = {
     "1.1.0": {"types": ["input.observed", "content.accessed", "content.erased", "why.finding"],
               "fields": {"policy.decision": ["provenance", "provenance_state"], "run.registered": ["replay_of"]},
               "values": {}},
-    "1.2.0": {"types": ["run.child"], "fields": {"run.registered": ["parent_run", "session"], "capture.gap": ["run_id"],
-                                                 "run.final": ["provider_executed"]},
+    "1.2.0": {"types": ["run.child", "approval.escalated", "approval.revoked", "approval.suggested", "approval.agents",
+                        "incident.opened", "incident.updated", "incident.capped"],
+              "fields": {"run.registered": ["parent_run", "session"], "capture.gap": ["run_id"],
+                         "run.final": ["provider_executed"], "policy.decision": ["via", "caller", "detect"],
+                         "approval.request": ["agent", "via"], "tool.result": ["via"], "input.observed": ["via"],
+                         "approval": ["approver_kind", "asserted", "spent", "not_before", "consume_by"],
+                         "approval.expired": ["reason"]},
               "values": {"capture.gap": {"kind": ["decided_not_completed", "late_activity", "concurrent_run",
-                                                  "tailer_redelegated"]}}},
+                                                  "tailer_redelegated", "reask_after_reject", "held_call_unresolved"]}}},
 }
 KEY_TYPES = ("signer.epoch", "key.retire")
 
