@@ -5,16 +5,21 @@ All notable changes to Tracekit. Versions follow [PEP 440](https://peps.python.o
 ## 1.2.0rc1 (2026-10-12) — control
 
 1.1 records why an agent acted. 1.2 lets the signer act on what it sees, for agents running on servers:
-- tool calls run with credentials the agent never holds (T2);
-- the signer detects risky sequences across calls and contains the runs that trip them;
-- reviewer agents may answer routine approvals inside bounds the policy sets;
-- the signer records, signed, what was decided but never reported.
+- tool calls run with credentials the agent never holds ([executor](docs/executor.md),
+  [MCP gateway](docs/mcp-gateway.md));
+- the signer detects risky sequences across calls and contains the runs that trip them
+  ([incidents](docs/incidents.md));
+- reviewer agents may answer routine approvals inside bounds the policy sets
+  ([agent approvers](docs/approvals.md#agent-approvers));
+- a call that was allowed but never reported back becomes a signed gap, and an
+  [egress observer](docs/egress.md) records network effects from outside the agent.
 
 It also has fixes from running Tracekit inside eight real agent projects: OpenAI's customer-service demo, LangGraph,
 Browser Use, mcp-agent, OpenAI Agents JS, the Vercel AI SDK, PydanticAI and CrewAI. v1 bundles and 1.0/1.1 bundles
 keep verifying. Every limit of the new features is in [docs/limits.md](docs/limits.md).
 
-1.1.0rc1 was never published; this release candidate includes everything listed under it below.
+1.1.0rc1 was never published, and neither was 1.0.1 on PyPI; this release candidate includes everything listed under
+both below.
 
 ### Upgrade notes
 - **Signer RPC version 16.** A 1.2 signer serves RPC 15 and 16. Coming from 1.0 (RPC 12), upgrade the signer and its
@@ -70,7 +75,7 @@ keep verifying. Every limit of the new features is in [docs/limits.md](docs/limi
   `approvals.agents`, a configurable `approvals.ttl_s`, `agent_consume_s` and `agent_timeout_s`; the signer refuses to
   start when an agent approver's `veto_s` isn't shorter than `approvals.ttl_s`. `tracekit init --v2 --egress` routes
   an agent user's traffic through the egress observer (Linux system mode).
-- **Custody (T2)** (#209): `tracekit executor` runs registered actions with credentials the agent never holds;
+- **Custody, tier T2** (#209): `tracekit executor` runs registered actions with credentials the agent never holds;
   `tracekit mcp-gateway` proxies MCP servers whose credentials stay in it. Adapters honour an ask rule's `approval: {executor: t2}`. Calls a
   gateway holds are bound to it and its caller, recorded with `via`, and resolved or signed `held_call_unresolved` when
   the run closes. Helm and compose services and an opt-in egress NetworkPolicy ship too.
@@ -116,7 +121,7 @@ keep verifying. Every limit of the new features is in [docs/limits.md](docs/limi
 - Python `RunHandle.approval_consume` never raises (it returns `{"ok": False, "reason": ...}`), and result fields never
   raise on values that aren't plain JSON (#218).
 - Claude Code's SessionEnd names the session's last `client_seq`, and a run the signer already closed still takes a
-  client's trailing gap (deep review).
+  client's trailing gap (pre-release review).
 - **A denied tool ran in CrewAI while the signer was down.** CrewAI runs a tool when a hook raises, and Python's
   `decide` raised. Fixed by the fail-mode `decide` and the CrewAI integration (#218).
 - **An event lost in an outage at the very end of a run left no signed gap.** `close_run` now names each stream's last
@@ -137,13 +142,13 @@ keep verifying. Every limit of the new features is in [docs/limits.md](docs/limi
 - Python `run.call("approval_list")` works, and every Python client `call` takes keywords (#218).
 - The TypeScript gate follows `currentRun()` / `withRun()`, and a call an app's own guardrail refuses is completed as
   an error (#214).
-- CI: three intermittent failures (#205).
+- CI: three intermittent test failures (#205).
 
 ### Security
-- A client's tool class hint can never exempt a call through a rule's `unless` (deep review).
-- Agent approvers: a person's reject now sticks: an agent can't approve the same call by asking again (deep review).
+- A client's tool class hint can never exempt a call through a rule's `unless` (pre-release review).
+- Agent approvers: a person's reject now sticks: an agent can't approve the same call by asking again (pre-release review).
 - Bundles with a passkey-approved call verify: the schema now admits `approval.request`'s `passkey` (gated as 1.2;
-  this also affected the unpublished 1.1.0rc1 commit) (deep review).
+  this also affected the unpublished 1.1.0rc1 commit) (pre-release review).
 - Browser Use: secrets from `sensitive_data` are masked in every encoded form (percent-encoding at any depth, HTML
   references, JSON and `\u` escapes) before anything reaches the signer (#212).
 - Browser Use: every page the agent reads is observed as untrusted before its next action, and an unobservable page

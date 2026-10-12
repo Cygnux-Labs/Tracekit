@@ -9,7 +9,7 @@ including `tracekit.testing.FakeSigner`.
 ## Install
 
 ```bash
-pip install tracekit-ai "claude-agent-sdk>=0.2.165,<0.3"
+pip install --pre tracekit-ai "claude-agent-sdk>=0.2.165,<0.3"
 ```
 
 Python 3.10 or newer (the SDK's own requirement).

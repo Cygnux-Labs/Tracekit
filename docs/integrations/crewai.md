@@ -7,7 +7,7 @@ outcome.
 ## Install
 
 ```bash
-pip install tracekit-ai "crewai>=1.15.27,<1.16"
+pip install --pre tracekit-ai "crewai>=1.15.27,<1.16"
 ```
 
 Tested with CrewAI 1.15.27.

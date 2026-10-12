@@ -40,6 +40,19 @@ customer. Tracekit keeps that record outside the agent's control, and lets anyon
 - A held call runs only after an approver says yes. The approval is bound to the exact arguments and used once.
 - Approvers answer from the command line, from a web page with OIDC sign-in and passkeys, or from Slack
   ([approvals](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/approvals.md)).
+- A reviewer agent may answer routine approvals inside bounds the policy sets, with budgets and a veto delay; people
+  answer everything else ([agent approvers](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/approvals.md#agent-approvers)).
+
+**Contain** (1.2, release candidate)
+- The policy names risky sequences of calls and limits on them. When one trips, the signer opens a signed incident
+  and can hold or quarantine the run; new runs of the same owner and principal inherit that for a cooldown
+  ([incidents](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/incidents.md)).
+- Tool calls can run with credentials the agent never holds, through the signer's
+  [tool executor](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/executor.md) or
+  [MCP gateway](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/mcp-gateway.md).
+- An [egress observer](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/egress.md) outside the agent records the
+  network effects it sees and flags ones no recorded call explains. Each finished run reports, per action class,
+  whether it was enforced, observed, only reported, or not covered.
 
 **Prove**
 - `tracekit verify` checks a bundle offline against keys you pinned.
@@ -53,7 +66,7 @@ customer. Tracekit keeps that record outside the agent's control, and lets anyon
 - `tracekit view` shows runs with their verdicts, blocked and held calls, approvals, gaps, a replay of each run, and a
   run review ([viewer](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/viewer.md)).
 
-**Explain** (1.1, release candidate)
+**Explain** (1.2, release candidate)
 - Where each argument came from: the signer tracks values that entered a run through untrusted content (a fetched page,
   an email, a ticket) and can hold a call whose recipient, payee or host came only from there
   ([provenance](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/policy-v2.md#provenance-untrusted-and-from-untrusted)).
@@ -115,8 +128,11 @@ Three steps, with the agent you already have (OpenAI Agents SDK, LangGraph / Lan
 client, or plain OpenAI / Anthropic / Google Gen AI calls):
 
 ```sh
-pip install tracekit-ai
+pip install --pre tracekit-ai
 ```
+
+`--pre` gets 1.2.0rc1 once it is tagged; a plain `pip install tracekit-ai` gets 1.0.0, which lacks the 1.1 and 1.2
+features below.
 
 ```python
 import tracekit; tracekit.instrument()     # the first line of your agent; then run it as usual
@@ -143,17 +159,20 @@ Per framework, with a 10-line example each:
 `dev` assurance means; [limits](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/limits.md) lists what this path
 doesn't cover.
 
-No agent at hand? From a checkout, `python examples/v2/langchain/agent.py --scripted` runs a LangGraph agent with a
-mock model whose calls are allowed, denied and held for an approval. Without one, the same loop in a temp dir (with a
-witness cosignature and a tampered copy that fails), and Claude Code's hooks wired to a dev signer:
+No agent at hand? Each demo runs in a temp dir and needs no API key. `--server` shows calls allowed, denied and
+approved, a witness cosignature, and a tampered copy failing verification. `--why` shows a held email whose cause is
+found by replay and cited by its signed record. `init --dev --v2` wires Claude Code's hooks to a dev signer:
 
 ```sh
 tracekit demo --server                # exit 0
-tracekit demo --why                   # exit 0: a held email, its cause found by replay and cited by its signed record
+tracekit demo --why                   # exit 0
 tracekit init --dev --v2
 ```
 
-Or check the shipped sample bundles (v1) with the verifier alone (`pip install --no-deps tracekit-ai` is enough):
+From a checkout, `python examples/v2/langchain/agent.py --scripted` runs a LangGraph agent with a mock model.
+
+Or, from a checkout, check the shipped sample bundles (v1) with the verifier alone (`pip install --no-deps
+tracekit-ai` is enough):
 
 ```sh
 tracekit verify docs/sample/demo-run.tkb --key docs/sample/signer.pub            # exit 0
@@ -162,8 +181,10 @@ tracekit verify docs/sample/demo-run-tampered.tkb --key docs/sample/signer.pub  
 
 ## What you need
 
-- **Python 3.9 to 3.13**, and `pip install tracekit-ai`. The framework integrations need Python 3.10 or
-  newer. For the TypeScript SDK, Node 18 or newer and `@cygnux/tracekit`.
+- **Python 3.9 to 3.13**, and `pip install --pre tracekit-ai`. The framework integrations need Python 3.10 or
+  newer. For the TypeScript SDK, Node 18 or newer and `npm install @cygnux/tracekit@next`: the
+  first npm release ships with 1.2.0rc1 under the `next` tag. If npm says not found, build it from a checkout
+  ([TypeScript SDK](https://github.com/Cygnux-Labs/Tracekit/blob/main/sdk/typescript/README.md#install)).
 - **An OS.** Dev mode runs on macOS, Linux and Windows. A signer under its own OS user runs on Linux (macOS is
   experimental). Containers and Kubernetes run on Linux
   ([platforms](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/portability.md)).
@@ -299,8 +320,9 @@ report it.
 
 ## Status
 
-1.0 is the first stable release, and 1.x is the supported line
-([SECURITY.md](https://github.com/Cygnux-Labs/Tracekit/blob/main/SECURITY.md)).
+This is 1.2.0rc1, a release candidate. 1.0 is the first stable release, and 1.x is the supported line
+([SECURITY.md](https://github.com/Cygnux-Labs/Tracekit/blob/main/SECURITY.md)). What changed in each release:
+[CHANGELOG.md](https://github.com/Cygnux-Labs/Tracekit/blob/main/CHANGELOG.md).
 
 - **Stable:** evidence format v2 and its verifier. 1.x verifiers verify every 1.0 bundle. v1 bundles and the v1
   verifier are unchanged.

@@ -1,6 +1,6 @@
 # Quickstart: the v2 signer
 
-The v2 signer is still a preview. It records every tool call your agent makes as a signed event, decides each call
+The v2 signer records every tool call your agent makes as a signed event, decides each call
 against a policy before it runs, and exports a run as a bundle that anyone can verify offline. This page runs it on
 your own machine (macOS, Linux or Windows) as a **dev** signer, which runs as your own user. Three steps, under two
 minutes; `make quickstart` runs them on a clean venv from the built wheel for each framework
@@ -9,10 +9,11 @@ minutes; `make quickstart` runs them on a clean venv from the built wheel for ea
 ## 1. Install
 
 ```sh
-pip install tracekit-ai
+pip install --pre tracekit-ai
 ```
 
-That is all the dev signer needs (`tracekit-ai[signer]` still works and installs the same). Auditors who only verify
+`--pre` gets 1.2.0rc1 once it is tagged; without it pip installs 1.0.0, which this page doesn't describe. That is
+all the dev signer needs (`tracekit-ai[signer]` still works and installs the same). Auditors who only verify
 bundles can take the verifier alone, which runs on the standard library: `pip install --no-deps tracekit-ai`.
 
 ## 2. One line in your agent
