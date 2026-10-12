@@ -2017,7 +2017,7 @@
         },
         "run_id": {
           "$ref": "#/$defs/id",
-          "description": "format 1.2: the other run the gap is about (late_activity: the final run that was written to; concurrent_run: the open run this one overlaps; client_counter_gap in a tenant's signer run: the final run whose stream it is; effect_outside_run: the run the effect was attributed to)"
+          "description": "format 1.2: the other run the gap is about (late_activity: the final run that was written to; concurrent_run: the open run this one overlaps; client_counter_gap in a tenant's signer run: the final run whose stream it is; effect_outside_run: the run the client named, its token valid or not, or the effect was attributed to)"
         },
         "tool_use_id": {
           "type": [
@@ -2441,12 +2441,19 @@
           "additionalProperties": false,
           "required": [
             "network",
+            "tool_calls",
             "gateway_mandatory",
             "attested"
           ],
-          "description": "format 1.2: the deployment's posture as the operator asserts it in signer.yaml: whether the agent's network is enforced through the egress proxy and whether the LLM gateway is the agent's only way to its model; never attested",
+          "description": "format 1.2: the deployment's posture as the operator asserts it in signer.yaml: whether the agent's network is enforced through the egress proxy, whether it acts only through the executor and the MCP gateway, and whether the LLM gateway is its only way to its model (gateway_mandatory); never attested",
           "properties": {
             "network": {
+              "enum": [
+                "enforced",
+                "open"
+              ]
+            },
+            "tool_calls": {
               "enum": [
                 "enforced",
                 "open"
@@ -4023,10 +4030,9 @@
         "explained_by": {
           "enum": [
             "call",
-            "gateway",
             "explains"
           ],
-          "description": "what explains the host: a recorded http call to it, a gateway or executor that made the connection for the run, or the policy's explains; absent: unexplained (a reconcile.unexplained_effect follows)"
+          "description": "what explains the host: a recorded http or model call to it, or the policy's explains; absent: unexplained (a reconcile.unexplained_effect follows)"
         }
       }
     },

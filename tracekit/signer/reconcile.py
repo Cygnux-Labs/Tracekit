@@ -22,9 +22,8 @@ which carries no tool use id.
 
 Effects (an egress observer's effect.observed, written by SignerService._observe_effect): a host is explained by an
 http or browser call to it the run decided (not denied; `hosts`, which the decide sets, memory and snapshot only) or a
-model call to its provider's API host (PROVIDER_HOSTS), by
-the gateway or executor that made the connection for the run, or by an entry of the policy's `explains` whose hosts
-match it, for a tool the run called or a rule label its decisions carry (`explained`). A host nothing explains is one
+model call to its provider's API host (PROVIDER_HOSTS), or by an entry of the policy's `explains` whose hosts match
+it, for a tool the run called or a rule label its decisions carry (`explained`). A host nothing explains is one
 reconcile.unexplained_effect, written at once (`effects`), and counted in run.final's coverage. `matrix` is run.final's
 coverage per action class, from the sources of the run's records (`models`, `tools`), the deployment's posture and
 the observers that covered the run throughout.
@@ -134,9 +133,10 @@ def matrix(rec, posture, observed):
         return {"status": status, "layers": sorted(layers), **({"asserted": True} if asserted else {})}
     models, tools, gw = rec.get("models", {}), rec.get("tools", {}), posture.get("gateway_mandatory", False)
     enforced = posture.get("network") == "enforced"
+    custody = posture.get("tool_calls") == "enforced" and set(tools) == {"gateway"}   # every decision a gateway's
     return {"model_calls": cls("enforced" if gw else "observed", models, gw) if "gateway" in models else
             cls("reported" if models else "none", models),
-            "tool_calls": cls(("enforced" if set(tools) == {"gateway"} else "reported") if tools else "none", tools),
+            "tool_calls": cls("enforced", tools, True) if custody else cls("reported" if tools else "none", tools),
             "network": cls("enforced" if enforced else "observed", ["egress"], enforced) if observed else
             cls("reported", tools) if rec.get("hosts") else cls("none", ()),
             "processes": cls("none", ()), "services": cls("none", ())}

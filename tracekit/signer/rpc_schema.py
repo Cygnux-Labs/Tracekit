@@ -216,15 +216,16 @@ REQUESTS = {
     # the tailer_lost gap
     "tailer_heartbeat": _obj(["run_id", "run_token"], run_id=ID, run_token=TOKEN),
     # an egress observer's network effects (tracekit.egress; an `authorize` grant, never a default), each attributed
-    # by the run token the client presented (run_id, run_token) or by the identity the observer authenticated
-    # (`caller`); `client`: that identity when it came with a run token. Every call is the observer's heartbeat too
-    "observe_effect": _obj(["request_id", "effects"], request_id=ID, effects={
+    # by the run token the client presented (run_id, run_token) or by the identity the observer authenticated for the
+    # connection (`caller`), which also goes with a token. Every call is the heartbeat of the observer's process
+    # `instance`; `check`: refused with run_token_invalid unless the signer issued that token for that run
+    "observe_effect": _obj(["request_id", "instance", "effects"], request_id=ID, instance=ID, effects={
         "type": "array", "maxItems": 256, "items": _obj(
             ["kind", "host", "port", "bytes_out", "bytes_in", "connections", "first_ts", "last_ts"], run_id=ID,
-            run_token=TOKEN, caller=IDENTITY, client=IDENTITY, kind={"const": "net"},
+            run_token=TOKEN, caller=IDENTITY, kind={"const": "net"},
             host=_str(253, minLength=1, pattern=r"^[a-z0-9._:-]+" + _END),
             port={"type": "integer", "minimum": 1, "maximum": 65535}, bytes_out=SEQ, bytes_in=SEQ, connections=SEQ,
-            first_ts=TS, last_ts=TS)}),
+            first_ts=TS, last_ts=TS)}, check=_obj(["run_id", "run_token"], run_id=ID, run_token=TOKEN)),
     "status": _obj([]),
     "read": _obj(["run_id", "run_token"], run_id=ID, run_token=TOKEN, from_seq=SEQ,
                  limit={"type": "integer", "minimum": 1, "maximum": 1000}),

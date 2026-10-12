@@ -56,18 +56,19 @@ def effect(host, port=443, **kw):
 
 
 class Observed(Lifecycle):
-    posture = None
+    posture, mandatory = None, False
 
     def open(self):
         self.s = svc.SignerService(self.dir, policy=Engine(POLICY), grace_s=0, idle_s=3600, observe_grace_s=60,
                                    gateways=["mtls:spiffe://acme/gateway"], posture=self.posture,
+                                   gateway_mandatory=self.mandatory,
                                    authorize={"mtls:spiffe://acme/egress": ["observe_effect"],
                                               "mtls:spiffe://acme/gateway": ["model_event", "decide", "complete"],
                                               f"uid:{ME.subject}": sorted(svc.DEFAULT_GRANTS)})
         self.closed = False
 
-    def observe(self, *effects, who=OBSERVER):
-        return self.call("observe_effect", {"effects": list(effects)}, who)
+    def observe(self, *effects, who=OBSERVER, instance="obs-1", **kw):
+        return self.call("observe_effect", {"instance": instance, "effects": list(effects), **kw}, who)
 
     def covered(self):
         """A run registered while the observer is alive, so it covers it."""
@@ -96,13 +97,11 @@ class TestReconciliation(Observed):
                                     args={"url": "https://api.example.com/v1"}))
         self.call("model_event", self.ev(run, 3, provider="anthropic", model="m", phase="request"))   # its API host
         self.observe(*(effect(h, **run) for h in ("api.example.com", "unlisted.example", "unlisted.example",
-                                                  "files.pythonhosted.org", "cdn.example.net", "api.anthropic.com")),
-                     effect("upstream.example", **run, client="mtls:spiffe://acme/gateway"))
+                                                  "files.pythonhosted.org", "cdn.example.net", "api.anthropic.com")))
         es = self.final(run)
         by = {e["data"]["host"]: e["data"].get("explained_by") for e in self.typed(es, "effect.observed")}
         self.assertEqual(by, {"api.example.com": "call", "unlisted.example": None, "files.pythonhosted.org": "explains",
-                              "cdn.example.net": "explains", "upstream.example": "gateway",
-                              "api.anthropic.com": "call"})
+                              "cdn.example.net": "explains", "api.anthropic.com": "call"})
         (u,) = self.typed(es, "reconcile.unexplained_effect")   # once per host, though seen twice
         self.assertEqual({k: u["data"][k] for k in ("layers", "observer", "kind", "host", "port")},
                          {"layers": ["L6"], "observer": "mtls:spiffe://acme/egress", "kind": "net",
@@ -134,9 +133,31 @@ class TestReconciliation(Observed):
                    if e["data"]["kind"] == "effect_outside_run"]
         self.assertEqual(len(outside), 3)
         reasons = " | ".join(d["reason"] for d in outside)
-        for why in (f"uid:{OTHER.subject} has no open run", "not one this signer issued", "for another run or tenant",
+        for why in (f"uid:{OTHER.subject} has no open run", "not one this signer issued for that run",
                     "b.example:443 (10 bytes out, 20 in, 1 connection(s)"):
             self.assertIn(why, reasons)
+        # a token that fails names its run all the same: a run-set shows the gap against it
+        self.assertEqual(sorted(d.get("run_id", "") for d in outside), sorted(["", newer["run_id"], older["run_id"]]))
+
+    def test_a_token_that_fails_or_is_anothers_falls_back_to_the_connections_identity(self):
+        mine, theirs = self.covered(), self.register(OTHER)
+        me, other = f"uid:{ME.subject}", f"uid:{OTHER.subject}"
+        self.observe(effect("made-up.example", run_id=mine["run_id"], run_token="x", caller=me),
+                     effect("borrowed.example", **mine, caller=other),   # ME's token on OTHER's connection
+                     effect("own.example", **mine, caller=me))
+        by = {e["data"]["host"]: (e["data"]["attribution"], e["run_id"]) for e in
+              self.typed(self.events(mine["run_id"]) + self.events(theirs["run_id"]), "effect.observed")}
+        self.assertEqual(by, {"made-up.example": ("identity", mine["run_id"]), "own.example": ("token", mine["run_id"]),
+                              "borrowed.example": ("identity", theirs["run_id"])})
+
+    def test_check_refuses_a_token_the_signer_did_not_issue_for_that_run(self):
+        run, other = self.covered(), self.register()
+        self.assertEqual(self.observe(check=run), {"recorded": 0})
+        for bad in ({"run_id": run["run_id"], "run_token": "x"}, {**other, "run_id": run["run_id"]}):
+            with self.subTest(bad), self.assertRaises(RPCError) as cm:
+                self.observe(check=bad)
+            self.assertEqual(cm.exception.code, "run_token_invalid")
+            self.assertIn("not one this signer issued for that run", cm.exception.message)
 
     def test_after_run_final_an_effect_goes_in_the_tenants_signer_run(self):
         run = self.covered()
@@ -160,7 +181,7 @@ class TestReconciliation(Observed):
             "register_run", "observe_effect"]})
         self.closed = False
         mine = self.register()
-        self.refused("forbidden", "observe_effect", {"effects": [effect("x.example", **mine)]})
+        self.refused("forbidden", "observe_effect", {"instance": "i", "effects": [effect("x.example", **mine)]})
         self.assertIn("observe_effect", svc.NEVER_DEFAULT)
 
 
@@ -174,6 +195,20 @@ class TestHeartbeats(Observed):
         (lost,) = self.gaps(es, "observer_lost")
         self.assertIn("no observe_effect from egress observer mtls:spiffe://acme/egress", lost["reason"])
         self.assertEqual(self.typed(es, "run.final")[0]["data"]["matrix"]["network"], {"status": "none", "layers": []})
+
+    def test_a_restarted_observer_is_a_gap_in_each_run_it_covered(self):
+        run = self.covered()
+        self.observe(effect("a.example", **run))
+        self.observe(instance="obs-2")   # a new process: what the old one had not reported is gone
+        later = self.register()   # the new process covers it from its start
+        self.call("close_run", later)
+        es = self.final(run)
+        (lost,) = self.gaps(es, "observer_lost")
+        self.assertIn("egress observer mtls:spiffe://acme/egress restarted while the run was open", lost["reason"])
+        self.assertEqual(self.typed(es, "run.final")[0]["data"]["matrix"]["network"]["status"], "none")
+        later = self.events(later["run_id"])
+        self.assertEqual((self.gaps(later, "observer_lost"),
+                          self.typed(later, "run.final")[0]["data"]["matrix"]["network"]["status"]), ([], "observed"))
 
     def test_heartbeats_keep_it_covered_and_a_run_registered_before_it_is_not(self):
         before = self.register()
@@ -220,9 +255,9 @@ class TestVerifier(Observed):
 
 
 class TestMatrix(Observed):
-    posture = {"network": "enforced", "gateway_mandatory": True}
+    posture, mandatory = {"network": "enforced", "tool_calls": "enforced"}, True
 
-    def test_a_gateway_mandatory_egress_run_and_a_plain_run(self):
+    def gateway_run(self):
         run = self.covered()
         self.call("model_event", self.ev(run, 0, stream="gw", provider="openai", model="m", phase="request",
                                          caller=f"uid:{ME.subject}"), GATEWAY)
@@ -232,11 +267,16 @@ class TestMatrix(Observed):
         self.call("complete", self.ev(run, 2, stream="gw", tool_call_id="t1", decision_id=d["decision_id"], status="ok",
                                       args_digest=event_hash({"tool": "fetch", "args": args}),
                                       caller=f"uid:{ME.subject}"), GATEWAY)
+        return run
+
+    def test_a_gateway_mandatory_egress_run_and_a_plain_run(self):
+        run = self.gateway_run()
         reg = self.typed(self.final(run), "run.registered")[0]["data"]
-        self.assertEqual(reg["posture"], {"network": "enforced", "gateway_mandatory": True, "attested": False})
+        self.assertEqual(reg["posture"], {"network": "enforced", "tool_calls": "enforced", "gateway_mandatory": True,
+                                          "attested": False})
         matrix = self.typed(self.events(run["run_id"]), "run.final")[0]["data"]["matrix"]
         self.assertEqual(matrix, {"model_calls": {"status": "enforced", "layers": ["gateway"], "asserted": True},
-                                  "tool_calls": {"status": "enforced", "layers": ["gateway"]},
+                                  "tool_calls": {"status": "enforced", "layers": ["gateway"], "asserted": True},
                                   "network": {"status": "enforced", "layers": ["egress"], "asserted": True},
                                   "processes": {"status": "none", "layers": []},
                                   "services": {"status": "none", "layers": []}})
@@ -248,8 +288,18 @@ class TestMatrix(Observed):
                          {"model_calls": ("none", []), "tool_calls": ("reported", ["adapter"]),
                           "network": ("none", []), "processes": ("none", []), "services": ("none", [])})
 
+    def test_tool_calls_through_a_gateway_are_reported_unless_posture_asserts_more(self):
+        self.close()
+        self.posture = {"network": "enforced"}
+        self.open()
+        run = self.gateway_run()
+        es = self.final(run)
+        self.assertEqual(self.typed(es, "run.registered")[0]["data"]["posture"]["tool_calls"], "open")
+        self.assertEqual(self.typed(es, "run.final")[0]["data"]["matrix"]["tool_calls"],
+                         {"status": "reported", "layers": ["gateway"]})
+
     def test_posture_is_validated(self):
-        for bad in ({"network": "closed"}, {"gateway_mandatory": "yes"}, {"egress": True}):
+        for bad in ({"network": "closed"}, {"tool_calls": True}, {"gateway_mandatory": True}, {"egress": True}):
             with self.subTest(bad), self.assertRaises(ValueError):
                 svc.SignerService(self.dir + "-bad", posture=bad)
 
@@ -275,6 +325,13 @@ class TestExplainsLint(unittest.TestCase):
                           ([{"tool": "x", "hosts": ["*.*"]}], "too loose")):
             with self.subTest(bad):
                 self.assertIn(want, " ".join(self.lint(bad)))
+
+    def test_a_host_glob_needs_a_domain_one_owner_holds_after_its_last_wildcard(self):
+        for h in ("*.com", "*.co.uk", "*pypi.org", "*", "pypi.*", "*.com.au"):
+            with self.subTest(h):
+                self.assertIn("is too loose", " ".join(self.lint([{"tool": "x", "hosts": [h]}])))
+        self.assertEqual(self.lint([{"tool": "x", "hosts": ["*.pythonhosted.org", "pypi.org", "files?.example.com",
+                                                            "*.github.io", "*.bbc.co.uk"]}]), [])
 
 
 def client_hello(name):
@@ -465,8 +522,97 @@ class TestProxy(unittest.TestCase):
         rid = self.client.observe_effect.call_args[0][0]["request_id"]
         self.client.observe_effect = mock.Mock(side_effect=[RPCError("forbidden", "no grant"), None])
         self.assertTrue(self.srv.observer.flush(math.inf))
-        first = self.client.observe_effect.call_args_list[0][0][0]
-        self.assertEqual((first["request_id"], first["effects"][0]["host"]), (rid, "a.example"))   # the same request
+        self.assertTrue(self.srv.observer.flush(math.inf))   # refused: sent again with the next heartbeat
+        calls = [c[0][0] for c in self.client.observe_effect.call_args_list]
+        self.assertEqual([(c["request_id"], c["effects"][0]["host"]) for c in calls], [(rid, "a.example")] * 2)
+
+    def test_a_refused_total_is_split_out_and_never_dropped(self):
+        for h in ("a.example", "refused.example", "c.example"):
+            self.srv.observer.add(("token", "run-1", "tok.mac", None), h, 443, 1, 1, True)
+
+        def observe_effect(req):
+            if any(e["host"] == "refused.example" for e in req["effects"]):
+                raise RPCError("quota_exceeded", "too large")
+            self.sent.append(req)
+        self.client.observe_effect = observe_effect
+        self.assertTrue(self.srv.observer.flush(math.inf))
+        self.assertEqual(sorted(e["host"] for r in self.sent for e in r["effects"]), ["a.example", "c.example"])
+        self.client.observe_effect = self.sent.append
+        self.srv.observer.flush(math.inf)
+        self.assertEqual([e["host"] for e in self.sent[-1]["effects"]], ["refused.example"])
+        self.assertEqual({r["instance"] for r in self.sent}, {self.srv.observer.instance})
+
+    def test_a_run_token_the_signer_did_not_issue_is_refused_before_anything_opens(self):
+        def observe_effect(req):
+            if req.get("check", {}).get("run_token") == "made.up":
+                raise RPCError("run_token_invalid", "not one this signer issued for that run")
+            self.sent.append(req)
+        self.client.observe_effect = observe_effect
+        made_up = "Basic " + base64.b64encode(b"run-1:made.up").decode()
+        s, status = self.connect(f"localhost:{self.up.port}", made_up)
+        self.assertTrue(status.startswith("HTTP/1.1 407"), status)
+        self.assertIn("not one this signer issued for that run: send the run token", self.read(s).decode())
+        s = socket.create_connection(self.srv.server_address[:2], 5)
+        s.sendall(f"GET http://localhost:{self.up.port}/ HTTP/1.1\r\nProxy-Authorization: {made_up}\r\n\r\n".encode())
+        self.assertTrue(self.read(s).startswith(b"HTTP/1.1 407"))
+        for token in ("tok mac", "t\u00f6k", "t" * 1025):   # no token a run could have: the signer isn't asked
+            s, status = self.connect(f"localhost:{self.up.port}",
+                                     "Basic " + base64.b64encode(f"run-1:{token}".encode()).decode())
+            self.assertTrue(status.startswith("HTTP/1.1 407"), status)
+            self.assertIn("names no run id and token a run could have", self.read(s).decode())
+        self.assertEqual((self.up.got, self.sent), ([], []))
+        self.client.observe_effect = mock.Mock(side_effect=SignerUnavailable("down"))
+        s, status = self.connect(f"localhost:{self.up.port}")
+        self.assertTrue(status.startswith("HTTP/1.1 503"), status)
+        self.assertIn("could not be reached to check the run token", self.read(s).decode())
+        self.client.observe_effect = self.sent.append
+        s, status = self.connect(f"localhost:{self.up.port}")
+        self.assertEqual(status, "HTTP/1.1 200 Connection established")
+        self.assertEqual((self.sent[-1]["check"], self.sent[-1]["effects"]),
+                         ({"run_id": "run-1", "run_token": "tok.mac"}, []))
+        s.close()
+
+    def test_every_form_of_an_ip_address_is_refused(self):
+        for host in ("134744072", "0x08080808", "8.8.2056", "010.010.010.010", "::ffff:8.8.8.8"):
+            with self.subTest(host):
+                self.assertIn("is an IP address", self.srv.observer.refused(host) or "")
+        self.assertIsNone(self.srv.observer.refused("a.example"))
+        s, status = self.connect("134744072:443")
+        self.assertTrue(status.startswith("HTTP/1.1 403"), status)
+
+    def test_a_plain_http_body_is_forwarded_whole(self):
+        got, up = [], socket.create_server(("127.0.0.1", 0))
+        self.addCleanup(up.close)
+
+        def serve():
+            c, _ = up.accept()
+            with c, c.makefile("rb") as f:
+                head = b""
+                while not head.endswith(b"\r\n\r\n"):
+                    head += f.readline()
+                got.append(f.read(int(head.lower().split(b"content-length: ")[1].split(b"\r\n")[0])))
+                c.sendall(b"HTTP/1.1 204 No Content\r\n\r\n")
+        threading.Thread(target=serve, daemon=True).start()
+        body = os.urandom(300_000)
+        s = socket.create_connection(self.srv.server_address[:2], 5)
+        s.sendall(f"POST http://localhost:{up.getsockname()[1]}/u HTTP/1.1\r\nContent-Length: {len(body)}\r\n"
+                  f"Proxy-Authorization: {self.auth}\r\n\r\n".encode())
+        for i in range(0, len(body), 16384):   # as a client sends a large body: in pieces, over time
+            s.sendall(body[i:i + 16384])
+            time.sleep(0.001)
+        self.assertTrue(self.read(s).startswith(b"HTTP/1.1 204"))
+        self.assertEqual(got, [body])
+
+    @unittest.skipUnless(sys.byteorder == "little", "the rows below are a little-endian machine's")
+    def test_the_peer_uid_is_the_established_socket_with_both_addresses(self):
+        rows = ["  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode",
+                # the same ports from another address; the right addresses not established; the agent's socket
+                "   0: 0200007F:D431 0100007F:0C38 01 00000000:00000000 00:00000000 00000000     0        0 1",
+                "   1: 0100007F:D431 0100007F:0C38 06 00000000:00000000 00:00000000 00000000     0        0 2",
+                "   2: 0100007F:D431 0100007F:0C38 01 00000000:00000000 00:00000000 00000000  1234        0 3"]
+        with mock.patch("tracekit.egress.open", mock.mock_open(read_data="\n".join(rows)), create=True):
+            self.assertEqual(egress._peer_uid(("127.0.0.1", 54321), ("127.0.0.1", 3128)), 1234)
+            self.assertIsNone(egress._peer_uid(("127.0.0.1", 54321), ("127.0.0.1", 3129)))
 
 
 class TestEndToEnd(Observed):
@@ -481,6 +627,11 @@ class TestEndToEnd(Observed):
         self.addCleanup(srv.shutdown)
         srv.observer.flush()
         run = self.register()
+        s = socket.create_connection(srv.server_address[:2], 5)
+        made_up = base64.b64encode(f"{run['run_id']}:made.up".encode()).decode()
+        s.sendall(f"CONNECT localhost:{up.port} HTTP/1.1\r\nProxy-Authorization: Basic {made_up}\r\n\r\n".encode())
+        self.assertTrue(s.recv(65536).startswith(b"HTTP/1.1 407"))
+        self.assertEqual(up.got, [])
         s = socket.create_connection(srv.server_address[:2], 5)
         auth = base64.b64encode(f"{run['run_id']}:{run['run_token']}".encode()).decode()
         s.sendall(f"CONNECT localhost:{up.port} HTTP/1.1\r\nProxy-Authorization: Basic {auth}\r\n\r\n".encode())

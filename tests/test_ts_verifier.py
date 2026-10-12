@@ -148,10 +148,10 @@ class Agreement(unittest.TestCase):
     def observed_run(s):
         """A run an egress observer covered: an unexplained host, then the observer went silent."""
         obs = CallerIdentity("mtls", "spiffe://acme/egress", True)
-        s.call(obs, "observe_effect", {"request_id": uuid.uuid4().hex, "effects": []})
+        s.call(obs, "observe_effect", {"request_id": uuid.uuid4().hex, "instance": "i", "effects": []})
         r = s.call(ME, "register_run", {"request_id": uuid.uuid4().hex, "agent": {"name": "agreement"}})
         ts = "2026-10-12T10:00:00.000000Z"
-        s.call(obs, "observe_effect", {"request_id": uuid.uuid4().hex, "effects": [{
+        s.call(obs, "observe_effect", {"request_id": uuid.uuid4().hex, "instance": "i", "effects": [{
             "caller": f"uid:{ME.subject}", "kind": "net", "host": "unlisted.example", "port": 443, "bytes_out": 1,
             "bytes_in": 2, "connections": 1, "first_ts": ts, "last_ts": ts}]})
         s.sweep(time.monotonic() + svc.TAILER_LOST_S + 1)

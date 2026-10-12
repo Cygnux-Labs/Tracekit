@@ -775,8 +775,8 @@ ENTRIES = {
                                        "run-a")],
     "input.observed.via": [registered(), ("input.observed", dict(OBSERVED, via=VIA), "run-a")],
     "effect.observed": [registered(), ("effect.observed", EFFECT, "run-a")],
-    "run.registered.posture": [registered(posture={"network": "enforced", "gateway_mandatory": True,
-                                                   "attested": False})],
+    "run.registered.posture": [registered(posture={"network": "enforced", "tool_calls": "open",
+                                                   "gateway_mandatory": True, "attested": False})],
     "run.final.matrix": [registered(), ("run.final", {"matrix": MATRIX}, "run-a")],
     **{f"reconcile.unexplained_effect.{f}": [registered(), ("reconcile.unexplained_effect", UNEXPLAINED, "run-a")]
        for f in ("observer", "kind", "host", "port")},

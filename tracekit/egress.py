@@ -15,10 +15,11 @@ egress.yaml:
                                            # reach anyway
 
 Attribution, per request: `Proxy-Authorization: Basic base64(<run_id>:<run token>)` (HTTPS_PROXY=
-https://<run_id>:<run token>@egress:3128) is attribution by token, with the client certificate's identity, if there is
-one, as `client` (a gateway's or executor's connection for a run is explained by it); else the identity the
-authenticators accept (a client certificate, or `Proxy-Authorization: Bearer <token>`), or on Linux the uid that owns a
-loopback client's socket, is attribution by identity: the signer gives it that identity's latest open run. Else 407.
+https://<run_id>:<run token>@egress:3128) is attribution by token once the signer confirms it issued that token for
+that run (else 407; 503 while it can't be asked); else the identity the authenticators accept (a client certificate,
+or `Proxy-Authorization: Bearer <token>`), or on Linux the uid that owns a loopback client's socket, is attribution by
+identity: the signer gives it that identity's latest open run. Else 407. That identity, when there is one, goes with a
+token too (`caller`): the signer attributes by it instead when the token was issued to another identity.
 Relative paths are from the config file.
 
 CONNECT host:port: the TLS ClientHello's SNI must be the host, else the tunnel is closed before anything reaches it;
@@ -28,7 +29,9 @@ SNI (any protocol). A host name observe_effect would not take (HOST) is refused 
 Per (attribution, host, port, minute): bytes each way, connections opened, first and last activity. Each minute's
 totals go to the signer (observe_effect) at the first heartbeat (every HEARTBEAT_S) after the minute ends, and a
 heartbeat goes out with nothing to report too, so the signer knows the observer is alive. Totals the signer can't take
-now wait for the next heartbeat; on SIGTERM every total is sent, the current minute's included.
+now wait for the next heartbeat, as does each one it refuses (a refused call is split until the refused totals are on
+their own); on SIGTERM every total is sent, the current minute's included. Each call names this process (`instance`),
+so the signer sees a restart.
 """
 import argparse
 import base64
@@ -60,6 +63,7 @@ from tracekit.transport import http as transport
 KEYS = {"http", "listen", "signer", "allow"}
 HOST = re.compile(r"[a-z0-9._:-]{1,253}")   # what observe_effect takes as a host
 RUN_ID = re.compile(r"[A-Za-z0-9._:-]{1,128}")
+TOKEN = re.compile(r"[A-Za-z0-9._~+/=-]{1,1024}")   # a run token: no escapes, so 256 totals fit one signer frame
 # lean: the public DNS-over-HTTPS endpoints by name; DoH on any other host is HTTPS to it, recorded as such
 DOH = {"dns.google", "dns.google.com", "cloudflare-dns.com", "mozilla.cloudflare-dns.com", "one.one.one.one",
        "1dot1dot1dot1.cloudflare-dns.com", "security.cloudflare-dns.com", "family.cloudflare-dns.com", "dns.quad9.net",
@@ -83,16 +87,17 @@ class Observer:
         self.totals, self.lock = {}, threading.Lock()
         # lean: unsent totals wait in memory while the signer is unreachable (one per host, port and minute)
         self.queue = []   # [(request_id, effects)] not yet acknowledged, oldest first
+        self.instance = uuid.uuid4().hex   # this process, in every call: the signer sees a restart
 
     def refused(self, host):
         """Why the agents may not reach `host`, or None."""
         if host in self.allow:
             return None
-        try:
-            ipaddress.ip_address(host)
+        try:   # any form the resolver reads as an address: 8.8.8.8, 134744072, 0x08080808, 8.8.2056, ::1
+            socket.inet_pton(socket.AF_INET6, host) if ":" in host else socket.inet_aton(host)
             return (f"{host} is an IP address: name the host, so the observer can record and check it (or add it to "
                     "allow in egress.yaml)")
-        except ValueError:
+        except OSError:
             pass
         if host in DOH:
             return (f"{host} is a DNS-over-HTTPS endpoint, which would hide the hosts resolved through it: use the "
@@ -127,9 +132,25 @@ class Observer:
             t["connections"] += opened
             t["last"] = now
 
+    def check(self, run_id, token):
+        """None when the signer issued `token` for run `run_id` of this observer's tenant, else (status, why not)."""
+        # lean: one signer round trip per connection that names a run; cache checked tokens if it shows in latency
+        try:
+            self.client.observe_effect({"request_id": "eg-" + uuid.uuid4().hex, "instance": self.instance,
+                                        "effects": [], "check": {"run_id": run_id, "run_token": token}})
+        except RPCError as e:
+            if e.code == "run_token_invalid":
+                return 407, (f"{e.message}: send the run token register_run returned for run {run_id} (the SDKs' "
+                             "run.proxy_env)")
+            return 503, f"the signer could not check the run token ({e}): retry"
+        except SignerUnavailable as e:
+            return 503, f"the signer could not be reached to check the run token ({e}): retry"
+        return None
+
     def flush(self, now=None):
         """Send the totals of every minute that ended before `now` (time.time(); math.inf: all), or a heartbeat with
-        none. False when the signer could not be reached (they are sent with the next one)."""
+        none. False when the signer could not be reached (they are sent with the next one). A call the signer refuses
+        is split until each total it refuses is on its own; those are sent again with the next one, never dropped."""
         now = time.time() if now is None else now
         with self.lock:
             done = [k for k in self.totals if (k[3] + 1) * 60 <= now]
@@ -138,25 +159,33 @@ class Observer:
                        for i in range(0, len(effects), MAX_EFFECTS)]
         if not self.queue:
             self.queue.append(("eg-" + uuid.uuid4().hex, []))
+        refused = []
         while self.queue:
             rid, chunk = self.queue[0]
             try:
-                self.client.observe_effect({"request_id": rid, "effects": chunk})
-            except SignerUnavailable:
-                return False
-            except RPCError as e:
-                if e.code == "unavailable":
+                self.client.observe_effect({"request_id": rid, "instance": self.instance, "effects": chunk})
+            except (SignerUnavailable, RPCError) as e:
+                if isinstance(e, SignerUnavailable) or e.code == "unavailable":
+                    self.queue[:0] = refused
                     return False
-                print(f"tracekit egress: the signer refused {len(chunk)} observation(s) ({e.code}: {e.message})"
-                      + ("; grant this observer observe_effect in signer.yaml authorize" if e.code == "forbidden"
-                         else ""), file=sys.stderr)
+                self.queue.pop(0)
+                if len(chunk) > 1:
+                    half = len(chunk) // 2
+                    self.queue[:0] = [("eg-" + uuid.uuid4().hex, c) for c in (chunk[:half], chunk[half:])]
+                    continue
+                print(f"tracekit egress: the signer refused {len(chunk)} observation(s) ({e.code}: {e.message}); sent "
+                      "again with the next heartbeat" + ("; grant this observer observe_effect in signer.yaml authorize"
+                                                         if e.code == "forbidden" else ""), file=sys.stderr)
+                refused += [(rid, chunk)] if chunk else []
+                continue
             self.queue.pop(0)
+        self.queue = refused
         return True
 
 
 def _effect(k, t):
     who, host, port, _ = k
-    att = ({"run_id": who[1], "run_token": who[2], **({"client": who[3]} if who[3] else {})} if who[0] == "token"
+    att = ({"run_id": who[1], "run_token": who[2], **({"caller": who[3]} if who[3] else {})} if who[0] == "token"
            else {"caller": who[1]})
     return {**att, "kind": "net", "host": host, "port": port, "bytes_out": t["bytes_out"], "bytes_in": t["bytes_in"],
             "connections": t["connections"], "first_ts": _iso(t["first"]), "last_ts": _iso(t["last"])}
@@ -194,10 +223,17 @@ def _sni(record):
     return None
 
 
-def _peer_uid(client, server_port):
-    """On Linux, the uid owning the loopback socket at `client` (address, port) connected to `server_port`, or None."""
-    # lean: matched by the two ports among loopback sockets in /proc/net/tcp{,6}; Linux system mode only
-    want = (f":{client[1]:04X}", f":{server_port:04X}")
+def _proc(address):
+    """(host, port) as /proc/net/tcp{,6} shows it: each 32-bit word of the address in host byte order, then the port."""
+    raw = socket.inet_pton(socket.AF_INET6 if ":" in address[0] else socket.AF_INET, address[0])
+    return "".join(f"{int.from_bytes(raw[i:i + 4], sys.byteorder):08X}" for i in range(0, len(raw), 4)) + \
+        f":{address[1]:04X}"
+
+
+def _peer_uid(client, server):
+    """On Linux, the uid owning the established socket at `client` (address, port) connected to `server`, or None."""
+    # lean: Linux only (/proc/net/tcp{,6}); elsewhere a client sends a run token or an identity the proxy accepts
+    want = (_proc(client), _proc(server), "01")   # local, remote, ESTABLISHED
     for path in ("/proc/net/tcp", "/proc/net/tcp6"):
         try:
             with open(path, encoding="ascii") as f:
@@ -205,7 +241,7 @@ def _peer_uid(client, server_port):
         except OSError:
             continue
         for r in rows:
-            if r[1].endswith(want[0]) and r[2].endswith(want[1]):
+            if tuple(r[1:4]) == want:
                 return int(r[7])
     return None
 
@@ -221,13 +257,13 @@ def _connect(addresses):
 
 
 def _recv_exact(sock, n):
-    data = b""
+    data = bytearray()
     while len(data) < n:
-        chunk = sock.recv(n - len(data))
+        chunk = sock.recv(min(n - len(data), 1 << 20))
         if not chunk:
             raise ConnectionError("closed")
         data += chunk
-    return data
+    return bytes(data)
 
 
 def _relay(a, b, count):
@@ -287,28 +323,32 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         return f"{i.scheme}:{i.subject}"
 
     def _who(self):
-        """The attribution of this request, or None once it is refused (407)."""
+        """The attribution of this request, or None once it is refused (407, or 503 when the signer can't check its
+        run token): ("token", run_id, token, the connection's identity or None) or ("identity", identity)."""
         auth = self.headers.get("Proxy-Authorization", "")
         scheme, _, cred = auth.partition(" ")
+        caller = self._identity(auth if scheme.lower() == "bearer" else "")
+        if caller is None and ipaddress.ip_address(self.client_address[0]).is_loopback:
+            uid = _peer_uid(self.client_address, self.connection.getsockname())
+            caller = None if uid is None else f"uid:{uid}"
+        caller = caller if caller and len(caller) <= 256 else None
         if scheme.lower() == "basic":
             try:
                 run_id, _, token = base64.b64decode(cred.strip(), validate=True).decode("utf-8").partition(":")
             except (binascii.Error, UnicodeDecodeError):
                 run_id = token = ""
-            if RUN_ID.fullmatch(run_id) and 0 < len(token) <= 1024:
-                cert = isinstance(self.connection, ssl.SSLSocket) and self.connection.getpeercert()
-                client = self._identity("") if cert else None
-                return "token", run_id, token, client if client and len(client) <= 256 else None
+            why = self.server.observer.check(run_id, token) if RUN_ID.fullmatch(run_id) and TOKEN.fullmatch(
+                token) else (407, "Proxy-Authorization names no run id and token a run could have (a token is 1 to "
+                                  "1024 of A-Z a-z 0-9 . _ ~ + / = -): send the run's own, as the SDKs' run.proxy_env "
+                                  "does")
+            if why is None:
+                return "token", run_id, token, caller
+        elif caller:
+            return "identity", caller
         else:
-            who = self._identity(auth if scheme.lower() == "bearer" else "")
-            if who is None and ipaddress.ip_address(self.client_address[0]).is_loopback:
-                uid = _peer_uid(self.client_address, self.server.server_address[1])
-                who = None if uid is None else f"uid:{uid}"
-            if who and len(who) <= 256:
-                return "identity", who
-        self._refuse(407, "no run: send Proxy-Authorization: Basic base64(<run_id>:<run token>) (HTTPS_PROXY="
-                          "https://<run_id>:<run token>@<this proxy>), or an identity this proxy accepts",
-                     [("Proxy-Authenticate", 'Basic realm="tracekit egress"')])
+            why = 407, ("no run: send Proxy-Authorization: Basic base64(<run_id>:<run token>) (HTTPS_PROXY="
+                        "https://<run_id>:<run token>@<this proxy>), or an identity this proxy accepts")
+        self._refuse(*why, [("Proxy-Authenticate", 'Basic realm="tracekit egress"')] if why[0] == 407 else [])
         return None
 
     def do_CONNECT(self):
@@ -362,7 +402,11 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         addresses, why = obs.resolve(host, port)
         if why:
             return self._refuse(*why)
-        body = self.rfile.read(int(n))
+        try:
+            body = _recv_exact(self.connection, int(n))
+        except OSError:   # the client went away or stopped sending
+            self.close_connection = True
+            return
         path = urllib.parse.urlunsplit(("", "", url.path or "/", url.query, ""))
         head = [f"{self.command} {path} HTTP/1.1", f"Host: {url.netloc.rpartition('@')[2]}", "Connection: close"] + [
             f"{k}: {v}" for k, v in self.headers.items() if k.lower() not in HOP | {"proxy-connection"}] + (

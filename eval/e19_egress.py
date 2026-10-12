@@ -2,7 +2,7 @@
 """E19: what an egress observer outside the agent catches (docs/egress.md). Offline: v2 signers and the egress proxy
 in process, the hosts on loopback.
 
-  E19.1 unexplained  a shell call that curls a host no call, gateway or explains entry covers: one signed
+  E19.1 unexplained  a shell call that curls a host no http or model call nor explains entry covers: one signed
                      reconcile.unexplained_effect, and run.final's coverage counts it
   E19.2 explained    the same run under a policy whose explains lists that host for the shell tool: explained, none
   E19.3 refused      through the proxy: a tunnel whose TLS server name is not its CONNECT host is closed before it
@@ -11,7 +11,8 @@ in process, the hosts on loopback.
   E19.4 killed       the observer stops its heartbeats: a signed observer_lost gap, and network is not observed
   E19.5 late         an observation after run.final: a capture.gap{effect_outside_run} in the tenant's signer run,
                      naming the run, which a run-set shows
-  E19.6 matrix       a gateway-mandatory run behind the egress observer: model calls, tool calls and network enforced;
+  E19.6 matrix       a gateway-mandatory run behind the egress observer, posture network and tool_calls enforced:
+                     model calls, tool calls and network enforced;
                      a plain run (T1): tool calls reported, the rest not covered
   E19.7 parity       the Python and TypeScript verifiers agree on E19.1's bundle (skipped without the TypeScript build)
 
@@ -64,7 +65,7 @@ class Signer:
         return self.s.call(who, method, {"request_id": uuid.uuid4().hex, **req})
 
     def observe(self, *effects):
-        return self.call(OBSERVER, "observe_effect", effects=list(effects))
+        return self.call(OBSERVER, "observe_effect", instance="e19", effects=list(effects))
 
     def run(self):
         self.observe()   # alive when the run registers: it covers the run
@@ -137,7 +138,8 @@ def refused(d):
         except OSError:   # closed at the end: nothing reached it
             pass
     threading.Thread(target=accept, daemon=True).start()
-    srv = egress.serve({"listen": "127.0.0.1:0", "signer": "unused"}, types.SimpleNamespace(observe_effect=print))
+    srv = egress.serve({"listen": "127.0.0.1:0", "signer": "unused"},
+                       types.SimpleNamespace(observe_effect=lambda req: None))
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     auth = base64.b64encode(b"run-1:t.m").decode()
     port = host.getsockname()[1]
@@ -197,7 +199,7 @@ def late(d):
 
 
 def matrix(d):
-    s = Signer(os.path.join(d, "a"), posture={"network": "enforced", "gateway_mandatory": True})
+    s = Signer(os.path.join(d, "a"), posture={"network": "enforced", "tool_calls": "enforced"}, gateway_mandatory=True)
     caller = f"uid:{AGENT.subject}"
     try:
         run = s.run()

@@ -96,6 +96,6 @@ respond:
   - {trigger: executed_against_policy, mode: shadow, action: notify}
   - {trigger: TK-L001, mode: shadow, action: hold}
   - {trigger: TK-L002, mode: shadow, action: hold}
-  # a host an egress observer saw a run reach that no call, gateway or explains entry covers (docs/egress.md): notify
-  # only until the deployment's explains list is tuned
+  # a host an egress observer saw a run reach that no http or model call nor explains entry covers (docs/egress.md):
+  # notify only until the deployment's explains list is tuned
   - {trigger: unexplained_effect, mode: shadow, action: notify}

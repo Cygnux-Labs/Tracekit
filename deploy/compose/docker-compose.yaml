@@ -112,8 +112,8 @@ services:
     # The egress observer (docs/egress.md): the agent's way to the outside, through which it records each run's hosts
     # as its own uid (signer.yaml `authorize`: observe_effect). ./custody/egress/egress.yaml: listen on the agent
     # network (http, with a certificate) and `signer: /run/tracekit-signer/signer.sock`; the agent sets
-    # HTTPS_PROXY=https://egress:3128 with NO_PROXY=signer,gateway,executor,mcp-gateway, and its runs' commands
-    # get their own credentials from the SDKs' run.proxy_env with TRACEKIT_EGRESS_PROXY=https://egress:3128
+    # TRACEKIT_EGRESS_PROXY=https://egress:3128 with NO_PROXY=signer,gateway,executor,mcp-gateway and gives its runs'
+    # commands and HTTP clients the SDKs' run.proxy_env (a request without a run token or an identity: 407)
     <<: *custody
     user: "10014:10014"
     entrypoint: [tracekit, egress, serve, --config, /etc/tracekit/custody/egress.yaml]
