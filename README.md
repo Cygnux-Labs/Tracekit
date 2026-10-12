@@ -153,7 +153,8 @@ tracekit demo --why                   # exit 0: a held email, its cause found by
 tracekit init --dev --v2
 ```
 
-Or check the shipped sample bundles (v1) with the verifier alone (`pip install --no-deps tracekit-ai` is enough):
+Or, from a checkout, check the shipped sample bundles (v1) with the verifier alone (`pip install --no-deps
+tracekit-ai` is enough):
 
 ```sh
 tracekit verify docs/sample/demo-run.tkb --key docs/sample/signer.pub            # exit 0

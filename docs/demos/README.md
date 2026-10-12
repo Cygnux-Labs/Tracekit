@@ -31,7 +31,7 @@ Check a saved bundle yourself, offline, with nothing but the verifier:
 cd docs/demos/containment && tracekit verify run.tkb --trust trust.json
 ```
 
-Run a demo yourself: the command is in its README (from a checkout, after `pip install -e .`). The demos that start a
+Run a demo yourself: the command is in its README (from a checkout, after `pip install -e .`, which needs pip 21.3 or newer). The demos that start a
 signer from their own `signer.yaml` (prompt injection, agent approvers, containment, egress) need macOS or Linux: you
 reach that signer as your uid on a Unix socket.
 
