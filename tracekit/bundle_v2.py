@@ -11,7 +11,8 @@
     checkpoints/<size>.note     the C2SP checkpoint note the proofs are against
     rekor/<size>.json           its Rekor v2 TransparencyLogEntry, when the signer anchored that note
     tsa/<size>.tsr              and the RFC 3161 timestamp response of the anchor
-    policies/<sha256>.json      policy snapshots, named by the SHA-256 of their bytes
+    policies/<sha256>.json      snapshots of the policies the run's records cite (cited_policies), named by the
+                                SHA-256 of their bytes (the policy_hash)
 
 A run-set bundle (export(..., run_set=(a, b))) proves which runs of one tenant were registered and finalised between
 two checkpoints of the tenant's registry log (tracekit.format.registry). It adds:
@@ -128,12 +129,24 @@ def about(storage, tenant, run_id):
     return out
 
 
+def cited_policies(events):
+    """The policy_hashes the records cite whose snapshot a verifier checks against: the policy.decision of each approval
+    an agent gave (the verifiers check that its rules permit agents)."""
+    agent = {e["data"].get("approval_id") for e in events if e["type"] == "approval"
+             and e["data"].get("approver_kind") == "agent" and e["data"].get("decision") == "approve"}
+    asked = {e["data"].get("decision_id") for e in events if e["type"] == "approval.request"
+             and e["data"].get("approval_id") in agent}
+    return {e["data"]["policy_hash"] for e in events if e["type"] == "policy.decision"
+            and e["data"].get("decision_id") in asked and "policy_hash" in e["data"]}
+
+
 def export(storage, tenant, run_id, note, out_path, policies=(), run_set=None, tenant_salt=None, with_runs=()):
     """Write the bundle of run (tenant, run_id) from a store or its reader (FileReader, PostgresReader). `note` is a
     checkpoint of the store's record tree: a run's records after it are left out (a run still being written verifies to
-    its head). `policies` are policy snapshots (bytes). `run_set`: (a, b), two checkpointed sizes of the tenant's
-    registry tree (a may be 0), with `tenant_salt` (format.registry.tenant_salt) adds the run-set a..b; `run_id` may
-    then be None. `with_runs`: also these runs of the tenant (`about`: the run's findings and replay runs)."""
+    its head). `policies` are policy snapshots (bytes): the bundle holds those cited_policies names. `run_set`: (a, b),
+    two checkpointed sizes of the tenant's registry tree (a may be 0), with `tenant_salt` (format.registry.tenant_salt)
+    adds the run-set a..b; `run_id` may then be None. `with_runs`: also these runs of the tenant (`about`: the run's
+    findings and replay runs)."""
     origin, size = note.split("\n", 2)[:2]
     size = int(size)
     if not 0 < size <= storage.tree.size or not note.startswith(
@@ -168,13 +181,14 @@ def export(storage, tenant, run_id, note, out_path, policies=(), run_set=None, t
         "proofs/records.json": json.dumps({
             "checkpoint": f"checkpoints/{size}.note", "tree_size": size,
             "inclusion": {str(s): _b64(storage.tree.inclusion_proof(s, size)) for s in sorted(seqs)}}).encode("utf-8"),
-        **{f"policies/{hashlib.sha256(p).hexdigest()}.json": p for p in policies},
     })
     anchor = next((x for x in storage.anchors() if x["size"] == size), None)
     if anchor:
         files[f"rekor/{size}.json"] = json.dumps(anchor["rekor"]).encode("utf-8")
         files[f"tsa/{size}.tsr"] = base64.b64decode(anchor["tsa"])
     events = [r["event"] for r in [*pointed, *(r for rs in runs.values() for r in rs)]]
+    snaps = {"sha256:" + hashlib.sha256(p).hexdigest(): p for p in policies}
+    files.update({f"policies/{h[7:]}.json": snaps[h] for h in sorted(cited_policies(events)) if h in snaps})
     manifest = {"format": FORMAT, "verifier_min_version": needs(events),
                 "files": {n: hashlib.sha256(b).hexdigest() for n, b in files.items()}}
     tmp = out_path + ".tmp"

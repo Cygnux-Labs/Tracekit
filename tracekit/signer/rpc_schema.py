@@ -129,7 +129,7 @@ _SUMMARY = _obj(["approval_id", "state", "run_id", "tool_call_id", "attempt", "t
                 rule_ids=RULE_IDS, policy_hash=DIGEST, requester=_str(256), expires_at=_str(40),
                 passkey={"const": True},   # approving needs a passkey assertion
                 escalated={"const": True},   # an agent or the signer handed it to people: only people answer it
-                agent={"const": True},   # an agent approver may answer it
+                agent={"const": True},   # an agent approver's answer (enforce mode) can still decide it
                 # who answered (an agent's answer is model output) and, once escalated, by whom and why
                 answered=_obj(["by", "kind"], by=_str(256), kind={"enum": ["person", "agent"]}),
                 escalation=_obj(["by"], by={"enum": ["agent", "signer"]}, reason=REASON))

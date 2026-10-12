@@ -54,7 +54,8 @@ function fail(e) { $("error").textContent = vis(e.message || e); }
 // an agent's answer is model output; an agent may answer only within the policy's bounds, people answer the rest
 const answeredBy = a => !a.answered ? "" : a.answered.kind === "agent" ? "agent " + a.answered.by + " (model output)"
   : a.answered.by;
-const kinds = {person: a => !a.agent || a.escalated, agent: a => a.agent && !a.escalated, escalated: a => a.escalated};
+// a.agent: an agent approver's answer can still decide it; people answer every other one
+const kinds = {person: a => !a.agent, agent: a => a.agent, escalated: a => a.escalated};
 
 async function list() {
   const page = await api("/api/approvals"), rows = $("list"), keep = kinds[$("filter").value] || (() => true);

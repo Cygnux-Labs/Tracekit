@@ -446,10 +446,12 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
 }
 
 /** Approvals by people and by agents, each on a line of its own. An agent's approval fails the line unless its run holds
- * the approval.request and policy.decision it answered, the decision has no provenance and a complete provenance_state,
- * its approval needs no passkey, and the agent is neither the requester nor the run's owner; with the policy snapshot of
- * the decision's policy_hash in the bundle, every rule the call was held by is an ask rule that permits agents and
- * needs no passkey (else a warning: bounds unchecked). Argument bounds are never checkable offline (salted commitments). */
+ * the approval.request and policy.decision it answered, the signer called the request agent-eligible (agent.eligible)
+ * and no approval.escalated or approval.revoked of it comes first, the decision has no provenance and a complete
+ * provenance_state, its approval needs no passkey, and the agent is neither the requester nor the run's owner; with the
+ * policy snapshot of the decision's policy_hash in the bundle, every rule the call was held by is an ask rule that
+ * permits agents and needs no passkey (else a warning: bounds unchecked). Argument bounds are never checkable offline
+ * (salted commitments). */
 function approvals(rep: Report, runs: Map<string, J[]>, files: Map<string, Uint8Array>, floats: Floats) {
   let people = 0, agents = 0;
   const problems: string[] = [], unchecked: string[] = [];
@@ -462,8 +464,10 @@ function approvals(rep: Report, runs: Map<string, J[]>, files: Map<string, Uint8
       if (e.type === "approval.request") asked.set(get(e.data, "approval_id"), e.data);
       if (e.type === "policy.decision" && has(e.data, "decision_id")) decided.set(e.data.decision_id, e.data);
     }
+    const toPeople = new Set<J>();   // approval ids escalated or revoked so far: only people answer them
     for (const e of events) {
       const d = e.data;
+      if (e.type === "approval.escalated" || e.type === "approval.revoked") toPeople.add(get(d, "approval_id"));
       if (e.type !== "approval" || get(d, "decision") !== "approve") continue;
       if (get(d, "approver_kind") !== "agent") { people++; continue; }
       agents++;
@@ -472,6 +476,10 @@ function approvals(rep: Report, runs: Map<string, J[]>, files: Map<string, Uint8
       const dec = decided.get(get(req, "decision_id"));
       if (dec === undefined) { problems.push(`${where}: its approval.request and policy.decision are not in the run`); continue; }
       const ai = get(d, "approver_identity") ?? {};
+      if (get(get(req, "agent") ?? {}, "eligible") !== true)
+        problems.push(`${where}: the signer did not route its approval.request to agents (agent.eligible)`);
+      if (toPeople.has(get(d, "approval_id")))
+        problems.push(`${where}: it was escalated or revoked before the agent approved it`);
       if (truthy(get(dec, "provenance")) || get(dec, "provenance_state") !== "complete")
         problems.push(`${where}: the decision's arguments carry provenance or it is incomplete`);
       if (get(req, "passkey") === true) problems.push(`${where}: a rule of the call needs a passkey`);

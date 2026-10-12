@@ -34,13 +34,14 @@ import time
 import urllib.request
 
 from tracekit import __version__, yamlmini
-from tracekit.client import no_redirect_opener
+from tracekit.client import no_redirect_opener, remote_url_error
 from tracekit.signer.rpc_schema import RPCError
 
 DEFAULT_MODEL = "claude-opus-5-5"
 POLL_S, TIMEOUT_S, MAX_REASON = 5.0, 120.0, 500
 KEYS = {"signer", "gateway", "model", "poll_s", "timeout_s", "tenants"}
 DECISIONS = ("approve", "reject", "escalate")
+TRANSIENT = ("unavailable", "quota_exceeded")   # the signer can't write now or rate-limits: tried again next poll
 PROMPT = """You review one tool call that an AI agent asked to run and that a policy held for approval.
 The user message is a JSON view prepared by the Tracekit signer: the tool, the policy rules that held the call with
 their reason and rationale, each bound on the arguments and whether it passed, the budget left, and the arguments.
@@ -69,6 +70,9 @@ def load(path):
     if not all(isinstance(s, str) and s.startswith("https://") for s in cfg["signer"]):
         raise ValueError(f"{path}: signer: an https:// URL (or a list of them). An agent approver is never a uid: the "
                          "Unix socket and the dev transport are refused; give it its own identity (approvals.agents)")
+    err = remote_url_error(cfg["gateway"]) if isinstance(cfg["gateway"], str) else "not a URL"
+    if err:
+        raise ValueError(f"{path}: gateway: {err}: the reviewer sends its run tokens there")
     base = os.path.dirname(os.path.abspath(path))
     for t in cfg["tenants"].values():
         for k in t:
@@ -95,6 +99,8 @@ def judge(ask, tenant, view, eligible):
     try:
         return answer(ask(tenant, view))
     except Exception as e:   # error, timeout, refusal, malformed output: people decide
+        log.warning("tracekit reviewer: no usable model answer for %s, escalated (%s: %s): check the gateway URL, run "
+                    "token and model", view.get("approval_id"), type(e).__name__, e)
         return "escalate", f"no usable model answer ({type(e).__name__}): people answer it"
 
 
@@ -132,19 +138,21 @@ class Reviewer:
         self.seen = set()   # approvals answered; a shadow-mode one stays listed
 
     def review(self, tenant, agent, aid):
+        """Answer approval `aid`; False when a transient signer error (TRANSIENT) leaves it for the next poll."""
         try:
             view = agent.approval_review({"approval_id": aid})
-        except RPCError as e:   # answered, expired or escalated meanwhile
+        except RPCError as e:   # answered, expired or escalated meanwhile, or transient
             log.info("tracekit reviewer: %s: %s", aid, e)
-            return None
+            return e.code not in TRANSIENT
         ok = bool(view["conditions"]) and all(c["passed"] for c in view["conditions"])
         decision, reason = judge(self.ask, tenant, view, ok)
         try:
-            return agent.approval_decide({"approval_id": aid, "decision": decision, "reason": reason,
-                                          "asserted": self.asserted})
+            agent.approval_decide({"approval_id": aid, "decision": decision, "reason": reason,
+                                   "asserted": self.asserted})
         except RPCError as e:
             log.warning("tracekit reviewer: the signer refused the answer to %s: %s", aid, e)
-            return None
+            return e.code not in TRANSIENT
+        return True
 
     def poll(self):
         listed = set()
@@ -155,8 +163,7 @@ class Reviewer:
                                             **({"cursor": page["next_cursor"]} if page["next_cursor"] else {})})
                 for x in page["approvals"]:
                     listed.add(x["approval_id"])
-                    if x["approval_id"] not in self.seen:
-                        self.review(tenant, agent, x["approval_id"])
+                    if x["approval_id"] not in self.seen and self.review(tenant, agent, x["approval_id"]):
                         self.seen.add(x["approval_id"])
                 if page["next_cursor"] is None:
                     break

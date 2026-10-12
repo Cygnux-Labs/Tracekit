@@ -582,11 +582,12 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
 
 def _approvals(rep, runs, files):
     """Approvals by people and by agents, each on a line of its own. An agent's approval fails the line unless its run
-    holds the approval.request and policy.decision it answered, the decision has no provenance and a complete
-    provenance_state, its approval needs no passkey, and the agent is neither the requester nor the run's owner; with
-    the policy snapshot of the decision's policy_hash in the bundle, every rule the call was held by is an ask rule
-    that permits agents and needs no passkey (else a warning: bounds unchecked). Argument bounds are never checkable
-    offline: the records hold the arguments as salted commitments."""
+    holds the approval.request and policy.decision it answered, the signer called the request agent-eligible
+    (agent.eligible) and no approval.escalated or approval.revoked of it comes first, the decision has no provenance and
+    a complete provenance_state, its approval needs no passkey, and the agent is neither the requester nor the run's
+    owner; with the policy snapshot of the decision's policy_hash in the bundle, every rule the call was held by is an
+    ask rule that permits agents and needs no passkey (else a warning: bounds unchecked). Argument bounds are never
+    checkable offline: the records hold the arguments as salted commitments."""
     people, agents, problems, unchecked = 0, 0, [], []
     for rs in runs.values():
         events = [r["event"] for r in rs]
@@ -595,8 +596,11 @@ def _approvals(rep, runs, files):
         asked = {e["data"].get("approval_id"): e["data"] for e in events if e.get("type") == "approval.request"}
         decided = {e["data"].get("decision_id"): e["data"] for e in events
                    if e.get("type") == "policy.decision" and "decision_id" in e["data"]}
+        to_people = set()   # approval ids escalated or revoked so far: only people answer them
         for e in events:
             d = e["data"]
+            if e.get("type") in ("approval.escalated", "approval.revoked"):
+                to_people.add(d.get("approval_id"))
             if e.get("type") != "approval" or d.get("decision") != "approve":
                 continue
             if d.get("approver_kind") != "agent":
@@ -610,6 +614,10 @@ def _approvals(rep, runs, files):
                 problems.append(f"{where}: its approval.request and policy.decision are not in the run")
                 continue
             ai = d.get("approver_identity") or {}
+            if (req.get("agent") or {}).get("eligible") is not True:
+                problems.append(f"{where}: the signer did not route its approval.request to agents (agent.eligible)")
+            if d.get("approval_id") in to_people:
+                problems.append(f"{where}: it was escalated or revoked before the agent approved it")
             if dec.get("provenance") or dec.get("provenance_state") != "complete":
                 problems.append(f"{where}: the decision's arguments carry provenance or it is incomplete")
             if req.get("passkey") is True:

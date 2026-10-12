@@ -252,7 +252,8 @@ class Agreement(unittest.TestCase):
                               ("provenance", {"decided": {"provenance_state": "partial"}}, "fail"),
                               ("passkey", {"request": {"passkey": True}}, "fail"),
                               ("the run's owner", {"answer": {"approver_identity": dict(b.AGENT, subject="svc")}}, "fail"),
-                              ("a person-only rule", {"policy": {"ask": [{"id": "R1", "pattern": "^"}]}}, "fail")):
+                              ("a person-only rule", {"policy": {"ask": [{"id": "R1", "pattern": "^"}]}}, "fail"),
+                              *((why, kw, "fail") for why, kw in b.AGENT_ROUTING)):
             with self.subTest(why):
                 name = f"agent-{uuid.uuid4().hex}"
                 log = b.Log(os.path.join(self.d, name))

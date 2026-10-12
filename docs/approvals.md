@@ -281,7 +281,8 @@ run; asking again writes a signed `capture.gap{reask_after_reject}`. A run gets 
 and bidirectional-override characters escaped (`\u202e`), the arguments redaction changed, the expiry and a
 `view_digest` (SHA-256 of JCS of the rest). Never the requesting agent's reason, the run id, the tool call id or where
 a value came from. Agents can't call `approval_get`, and their `approval_list` leaves out the run id, tool call id,
-attempt and requester. `approval_list` takes `state`, `for: agent|person` and `escalated`.
+attempt and requester. `approval_list` takes `state`, `escalated` and `for`: `agent` lists what an agent may still
+answer (shadow mode included), `person` what an agent's answer can't decide.
 
 **Answers.** `approval_decide` with `approve`, `reject` or `escalate` (agents only), optionally `asserted: {model,
 version, prompt_hash}` (recorded `attested: false`). The `approval` record carries `approver_kind: agent`; an approval
@@ -294,8 +295,9 @@ record and changes nothing: compare suggestions with what people decide before y
 
 **Revocation and the kill switch.** A person revokes an agent's approval that is not consumed yet with
 `approval_revoke` (`approval.revoked`; the call never runs). `approval_agents {enabled: false}` (an `authorize` grant,
-never a default) writes a signed `approval.agents`, revokes every agent approval not consumed yet and sends every
-approval to people until it is switched on again.
+never a default) writes a signed `approval.agents`, revokes every agent approval not consumed yet, escalates every
+pending one agents could answer (`approval.escalated` by the signer, so it stays with people after agents are switched
+on again) and sends every new approval to people until then.
 
 **Adapters** keep waiting while an approval is `requested`, escalated or not, until their own deadline; none abandons
 an escalated approval (`tracekit why` leaves it to expire with its run).
@@ -304,11 +306,14 @@ Metrics: `tracekit_signer_agent_approvals_total{decision}`, `tracekit_signer_age
 `tracekit_signer_records_total{type="approval.escalated"|"approval.suggested"}`.
 
 **What people see.** `approval_list` and `approval_get` show people `answered: {by, kind}` (`kind: agent` is model
-output) and, once escalated, `escalation: {by: agent|signer, reason}`; an agent sees neither. The Slack bridge posts
-only approvals people answer (person-only, or escalated); an agent-eligible one stays with the agent until it is
-escalated. Its messages name who answered (`approved by agent <identity> (model output)`) and show an agent's escalation
-reason labelled as model output over arguments the requesting agent supplied. The viewer's approval desk filters for
-people, with an agent approver, or escalated; a person revokes an agent's approval not consumed yet from it. The
+output) and, once escalated, `escalation: {by: agent|signer, reason}`; an agent sees neither. Their `agent: true` means
+an agent's answer can still decide the approval: it is agent-eligible, not escalated, agent approvals are on, the
+policy is the one it was requested under, no agent said no to the same call, and no rule of it is in shadow mode. The
+Slack bridge posts every approval without it (person-only, escalated, shadow mode, agents switched off) and leaves the
+rest with the agent until it is escalated, at the latest after `agent_timeout_s`. Its messages name who answered and
+show an agent's escalation reason labelled as model output over arguments the requesting agent supplied. The viewer's
+approval desk filters for people, with an agent approver (`agent: true`), or escalated; a person revokes an agent's
+approval not consumed yet from it. The
 timeline labels agent approvals (`AGENT APPROVED`), shadow suggestions (`AGENT SUGGESTED`), escalations and
 revocations, and a person's answer to a call an agent answered in shadow mode shows whether they agreed and the
 agreement rate per rule so far. Verifiers count approvals by people and by agents on separate lines
@@ -320,9 +325,11 @@ agreement rate per rule so far. Verifiers count approvals by people and by agent
 on every signer replica it is given, and for each approval reads `approval_review` and makes one model call through
 the [LLM gateway](gateway.md), with no batching and no memory across approvals. Its fixed system prompt treats the
 view as data and asks for `{decision: approve|reject|escalate, reason}` (500 characters at most). An error, a timeout,
-a refusal or a malformed answer escalates, and so does a view in which a condition did not pass: it never asks the
-model about those. It takes the conditions from `approval_review` (it has no allowlist of its own) and sends
-`asserted: {model, version, prompt_hash}`. The signer checks every answer again.
+a refusal or a malformed answer escalates (and logs a warning: check the gateway URL, run token and model), and so does
+a view in which a condition did not pass: it never asks the model about those. When the signer answers `unavailable`
+or `quota_exceeded`, it tries that approval again at the next poll. It takes the conditions from `approval_review` (it
+has no allowlist of its own) and sends `asserted: {model, version, prompt_hash}`. The signer checks every answer
+again.
 
 ```yaml
 # reviewer.yaml (relative paths are from this file)
@@ -341,7 +348,8 @@ tracekit reviewer serve --config reviewer.yaml
 
 Per tenant, `token_file` is the bearer token of the identity listed in that tenant's `approvals.agents` (with the
 `authorize` entry above); the reviewer refuses a Unix socket or `tcp://` signer, since an agent approver is never a
-uid. `run_token_file` is an ordinary identity that registers the reviewer's runs and calls the gateway (signer.yaml
+uid, and a `gateway` other than https (plain http only to localhost, 127.0.0.1 or ::1), since it sends the run token
+there. `run_token_file` is an ordinary identity that registers the reviewer's runs and calls the gateway (signer.yaml
 `gateways` lists the gateway as usual). Each review is a run of its own, agent `tracekit-reviewer`, whose first record
 links it to the approval id and the view's digest, followed by the gateway's `model_event` records of the exchange.
 The reviewer sends the redacted arguments of the tenants it serves to the model provider

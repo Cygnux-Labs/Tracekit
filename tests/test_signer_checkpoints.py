@@ -207,9 +207,9 @@ class ExportWithoutSigner(unittest.TestCase):
             code, stdout, err = run_cli("export", "--v2", "--run", "run-1", "--config", self.cfg, "-o", out)
         self.assertEqual((code, err), (0, ""))
         self.assertEqual(json.loads(stdout)["tree_size"], 5)
-        # the signer's policy goes in, named by its policy_hash, for the verifiers' agent-approval checks
+        # the signer's policy goes in only when an agent approval's decision cites it (none here)
         with zipfile.ZipFile(out) as z:
-            self.assertIn(f"policies/{svc.load_policy().policy_hash[7:]}.json", z.namelist())
+            self.assertFalse([n for n in z.namelist() if n.startswith("policies/")])
 
     def test_no_covering_note_and_no_signer_is_a_clear_error(self):
         store = FileStorage(os.path.join(self.dir, "store"))

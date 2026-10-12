@@ -730,7 +730,7 @@ def _export_v2(a, show=print):
             if note is None:
                 raise ValueError(f"the signer wrote no checkpoint covering run {a.run!r} within {NUDGE_WAIT_S:g}s")
         reopen()   # opened after the note: holds its records
-        # the signer's current policy, named by its policy_hash: the verifier checks agent approvals' bounds against it
+        # the signer's current policy: the bundle holds it when an agent approval's decision cites it (cited_policies)
         pol, errors = policy_compile.build(cfg.get("policy") or DEFAULT_POLICY)
         info = export(reader, tenant, a.run, note[1], a.out, with_runs=about,
                       policies=[] if errors else [policy_compile.canonical(pol).encode("utf-8")])

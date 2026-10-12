@@ -152,7 +152,7 @@ class Case(unittest.TestCase):
         if close:
             log.final()
         out = os.path.join(self.d, "a.tkb")
-        export(log.store, "acme", "run-a", log.note(), out, policies=[b'{"version":"1"}'])
+        export(log.store, "acme", "run-a", log.note(), out)
         return log, out
 
     def verify(self, path, trust=None):
@@ -668,20 +668,36 @@ AGENT_POLICY = {"ask": [{"id": "R1", "pattern": "^", "approval": {"agent": {
     "mode": "enforce", "allow": {"fields": {"amount": {"type": "integer"}}}}}}], "flag": [{"id": "F1", "pattern": "^"}]}
 
 
-def agent_bundle(log, out, policy=AGENT_POLICY, snapshot=True, decided=None, request=None, answer=None):
+ELIGIBLE = {"eligible": True, "reason": "within the bounds of R1", "rules": ["R1"],
+            "conditions_hash": "sha256:" + "0" * 64, "args_key": "hmac-sha256:" + "0" * 64}
+
+
+def agent_bundle(log, out, policy=AGENT_POLICY, snapshot=True, decided=None, request=None, answer=None, before=()):
     """Export to `out` a run whose ask an agent approved, with the snapshot of `policy` (or none); `decided`, `request`
-    and `answer` override fields of the policy.decision, approval.request and approval records."""
+    and `answer` override fields of the policy.decision, approval.request and approval records, and `before` ((type,
+    data) pairs) are recorded between the request and the approval; a `request` field None leaves it out."""
     snap = json.dumps(policy, sort_keys=True, separators=(",", ":")).encode()
     h = "sha256:" + hashlib.sha256(snap).hexdigest()
     log.epoch(KEY1)
     log.register()
     log.add("policy.decision", {"tool_use_id": "t1", "decision": "ask", "rule_ids": ["R1", "F1"], "decision_id": "dec-1",
                                 "policy_hash": h, "provenance_state": "complete", **(decided or {})}, tool_call_id="t1")
-    log.add(*asked(policy_hash=h, **(request or {}))[:2], tool_call_id="t1")
+    req = {"agent": ELIGIBLE, **(request or {})}
+    log.add(*asked(policy_hash=h, **{k: v for k, v in req.items() if v is not None})[:2], tool_call_id="t1")
+    for type_, data in before:
+        log.add(type_, data, tool_call_id="t1")
     log.add(*answered(**{"approver_kind": "agent", **(answer or {})})[:2], tool_call_id="t1")
     log.final()
     export(log.store, "acme", "run-a", log.note(), out, policies=[snap] if snapshot else [])
     return out
+
+
+# an agent approval of a call the signer did not leave to agents (person-only, escalated or revoked first)
+AGENT_ROUTING = (("not agent-eligible", {"request": {"agent": dict(ELIGIBLE, eligible=False)}}),
+                 ("no agent field", {"request": {"agent": None}}),
+                 ("escalated first", {"before": [("approval.escalated", {"approval_id": "apr-1", "by": "signer",
+                                                                         "reason": "no agent answered"})]}),
+                 ("revoked first", {"before": [("approval.revoked", {"approval_id": "apr-1", "by": "oidc:alice"})]}))
 
 
 class TestAgentApprovals(Case):
@@ -698,6 +714,14 @@ class TestAgentApprovals(Case):
         code, lines = self.lines(answer={"approver_kind": "person"})   # without agent approvals, the report as before
         self.assertFalse({"approvals by people", "approvals by agents"} & set(lines))
 
+    def test_a_bundle_holds_only_the_snapshots_its_agent_approvals_cite(self):
+        for kw, want in (({}, True), ({"answer": {"approver_kind": "person"}}, False),
+                         ({"answer": {"decision": "reject"}}, False)):
+            with self.subTest(kw):
+                name = f"cited-{len(os.listdir(self.d))}"
+                out = agent_bundle(self.log(name), os.path.join(self.d, f"{name}.tkb"), **kw)
+                self.assertEqual(any(n.startswith("policies/") for n in v2.read_zip(out)), want)
+
     def test_without_the_snapshot_the_bounds_are_unchecked(self):
         code, lines = self.lines(snapshot=False)
         self.assertEqual((code, lines["approvals by agents"]["status"]), (0, "warn"))
@@ -712,7 +736,8 @@ class TestAgentApprovals(Case):
                         ("requester", {"answer": {"approver": "uid:1"}}),
                         ("run owner", {"answer": {"approver_identity": dict(AGENT, subject="svc")}}),
                         ("a rule without approval.agent", {"policy": person_rule}),
-                        ("a synthetic rule", {"decided": {"rule_ids": ["R1", "TK-UNKNOWN-TOOL"]}})):
+                        ("a synthetic rule", {"decided": {"rule_ids": ["R1", "TK-UNKNOWN-TOOL"]}}),
+                        *AGENT_ROUTING):
             with self.subTest(why):
                 code, lines = self.lines(**kw)
                 self.assertEqual((code, lines["approvals by agents"]["status"]), (1, "fail"), lines)
@@ -769,11 +794,9 @@ ENTRIES = {
         "tool_use_id": "t1", "approval_id": "apr-1", "decision": "approve", "approver": "token:reviewer",
         "approver_identity": AGENT, "channel": "rpc", "approver_kind": "agent"}, "run-a")],
     "approval.agents": [registered(), ("approval.agents", {"enabled": False, "by": "uid:0"}, "run-a")],
-    "approval.request.agent": [registered(), asked(agent={
-        "eligible": True, "reason": "within the bounds of R1", "rules": ["R1"],
-        "conditions_hash": "sha256:" + "0" * 64, "args_key": "hmac-sha256:" + "0" * 64})],
+    "approval.request.agent": [registered(), asked(agent=ELIGIBLE)],
     "approval.approver_kind": [registered(), decision(decision="ask", decision_id="dec-1",
-                                                      provenance_state="complete"), asked(), answered(
+                                                      provenance_state="complete"), asked(agent=ELIGIBLE), answered(
         approver_kind="agent")],
     "approval.asserted": [registered(), answered(asserted={"model": "m", "attested": False})],
     "approval.spent": [registered(), answered(spent={"R1": 100})],

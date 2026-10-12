@@ -4,6 +4,9 @@ approvals: the signer's approval summaries, the Slack bridge, the viewer's appro
 import itertools
 import json
 import os
+import re
+import shutil
+import subprocess
 import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -12,7 +15,7 @@ import test_agent_approvers as aa
 import test_signer_service as ts
 from tracekit import reviewer, slack_approvals, view
 from tracekit.sdk.client import RunHandle
-from tracekit.signer.rpc_schema import REQUESTS, RESPONSES, validate
+from tracekit.signer.rpc_schema import REQUESTS, RESPONSES, RPCError, validate
 
 
 class As:
@@ -80,8 +83,29 @@ class TestReviewer(Case):
                                     OSError("gateway unreachable"))):
             with self.subTest(answer=str(answer)[:60]):
                 aid, _ = self.ask(aa.OK | {"amount": 1 + i}, tcid=f"tc-{i}")
-                self.reviewer(Model(answer)).poll()
+                with self.assertLogs("tracekit.reviewer", "WARNING") as logs:
+                    self.reviewer(Model(answer)).poll()
                 self.assertEqual((self.state(aid)["state"], self.state(aid)["escalated"]), ("requested", True))
+                self.assertIn(aid, logs.output[0])
+                self.assertIn("check the gateway URL, run token and model", logs.output[0])
+
+    def test_a_transient_signer_error_is_tried_again_next_poll(self):
+        class Busy(As):   # the signer answers `method` once with `code`
+            def call(self, method, req):
+                if self.fail and method == self.fail[0]:
+                    code, self.fail = self.fail[1], None
+                    raise RPCError(code, "try again")
+                return super().call(method, req)
+        for i, fail in enumerate((("approval_review", "unavailable"), ("approval_decide", "quota_exceeded"))):
+            with self.subTest(fail=fail):
+                aid, _ = self.ask(aa.OK | {"amount": 1 + i}, tcid=f"tc-{i}")
+                agent = Busy(self, aa.AGENT)
+                agent.fail = fail
+                rv = self.reviewer(Model(message()), agent)
+                rv.poll()
+                self.assertEqual(self.state(aid)["state"], "requested")
+                rv.poll()
+                self.assertEqual(self.state(aid)["state"], "approved")
 
     def test_what_approval_review_calls_ineligible_is_never_approved(self):
         model = Model(message())
@@ -116,10 +140,23 @@ class TestReviewer(Case):
                 load(f"signer: {signer}\ngateway: https://gw\ntenants: {{acme: {{token_file: a, run_token_file: r}}}}\n")
         with self.assertRaisesRegex(ValueError, "tenants"):
             load("signer: https://s\ngateway: https://gw\n")
+        tenants = "tenants: {acme: {token_file: a, run_token_file: r}}\n"
+        for gateway in ("http://gw.internal:8080", "https://user@gw"):   # run tokens never go in the clear
+            with self.subTest(gateway), self.assertRaisesRegex(ValueError, "gateway: URL must"):
+                load(f"signer: https://s\ngateway: {gateway}\n{tenants}")
+        self.assertEqual(load(f"signer: https://s\ngateway: http://127.0.0.1:8080\n{tenants}")["gateway"],
+                         "http://127.0.0.1:8080")
 
 
 class TestShadow(Case):
     agent = {"mode": "shadow"}
+
+    def test_people_answer_it_and_the_reviewer_still_suggests(self):
+        aid, _ = self.ask()
+        [x] = self.s.call(aa.ALICE, "approval_list", {"for": "person"})["approvals"]
+        self.assertEqual((x["approval_id"], "agent" in x), (aid, False))
+        self.assertEqual([a["approval_id"] for a in self.s.call(aa.AGENT, "approval_list", {"for": "agent"})
+                          ["approvals"]], [aid])
 
     def test_a_shadow_suggestion_is_sent_once(self):
         self.ask()
@@ -206,6 +243,37 @@ class TestSummaries(Case):
                          {esc: {"by": "uid:990001", "kind": "person"}, ok: {"by": "token:reviewer", "kind": "agent"}})
 
 
+    def test_agent_marks_only_what_an_agent_answer_can_still_decide(self):
+        a1, _ = self.ask(tcid="tc-1")
+        a2, _ = self.ask(tcid="tc-2")   # the same arguments: people answer it once an agent rejects a1
+        a3, _ = self.ask(aa.OK | {"amount": 41}, tcid="tc-3")
+
+        def flags():
+            return {a["approval_id"]: "agent" in a for a in self.s.call(aa.ALICE, "approval_list", {
+                "state": "requested"})["approvals"]}
+
+        def people():
+            return [a["approval_id"] for a in self.s.call(aa.ALICE, "approval_list", {
+                "state": "requested", "for": "person"})["approvals"]]
+        self.assertEqual((flags(), people()), ({a1: True, a2: True, a3: True}, []))
+        self.answer(aa.AGENT, a1, "reject")
+        self.assertEqual((flags(), people()), ({a2: False, a3: True}, [a2]))
+        self.agent = {"veto_s": 1}   # a policy change
+        self.restart()
+        self.assertEqual((flags(), people()), ({a2: False, a3: False}, [a2, a3]))
+        self.assertEqual(self.s.call(aa.AGENT, "approval_list", {"for": "agent"})["approvals"], [])
+
+    def test_switching_agents_off_escalates_what_they_could_answer(self):
+        aid, _ = self.ask()
+        self.s.call(aa.OPS, "approval_agents", {"request_id": aa.rid(), "enabled": False})
+        self.s.call(aa.OPS, "approval_agents", {"request_id": aa.rid(), "enabled": True})   # it stays with people
+        [x] = self.s.call(aa.ALICE, "approval_list", {"for": "person"})["approvals"]
+        self.assertEqual((x["approval_id"], "agent" in x, x["escalation"]),
+                         (aid, False, {"by": "signer", "reason": "agent approvals switched off"}))
+        [esc] = [e["data"] for e in self.events() if e["type"] == "approval.escalated"]
+        self.assertEqual(esc, {"approval_id": aid, "by": "signer", "reason": "agent approvals switched off"})
+
+
 class FakeSigner:
     def __init__(self, approvals):
         self.approvals, self.calls = approvals, []
@@ -231,7 +299,7 @@ class TestSlack(unittest.TestCase):
     def test_posts_what_people_answer_and_labels_model_output(self):
         signer = FakeSigner({a["approval_id"]: a for a in (
             summary("with-agent", agent=True), summary("person-only"),
-            summary("escalated", agent=True, escalated=True, escalation={"by": "agent", "reason": "odd payee"}))})
+            summary("escalated", escalated=True, escalation={"by": "agent", "reason": "odd payee"}))})
         bridge = slack_approvals.Bridge({"channel": "C0", "bot_token": "x", "signing_secret": b"s"}, signer)
         sent = []
         bridge.slack = lambda method, **f: sent.append((method, f)) or {"ok": True, "ts": str(len(sent))}
@@ -241,11 +309,9 @@ class TestSlack(unittest.TestCase):
         self.assertEqual(set(posted), {"person-only", "escalated"})   # the agent-eligible one stays with the agent
         self.assertIn("odd payee (model output, over arguments the requesting agent supplied)", posted["escalated"])
         signer.approvals["person-only"].update(state="approved", answered={"by": "oidc:alice", "kind": "person"})
-        signer.approvals["escalated"].update(state="rejected", answered={"by": "token:reviewer", "kind": "agent"})
         bridge.poll()
-        updates = {f["ts"]: f["blocks"][-1]["elements"][0]["text"] for m, f in sent if m == "chat.update"}
-        self.assertEqual(sorted(updates.values()),
-                         ["approved by oidc:alice", "rejected by agent token:reviewer (model output)"])
+        updates = [f["blocks"][-1]["elements"][0]["text"] for m, f in sent if m == "chat.update"]
+        self.assertEqual(updates, ["approved by oidc:alice"])
 
 
 class TestViewer(unittest.TestCase):
@@ -295,6 +361,20 @@ class TestAgentLabels(Case):
         self.assertIn("AGENT APPROVAL REVOKED · pay", shown)
         self.assertIn("(model output, over arguments the requesting agent supplied) · “odd payee”",
                       shown["ESCALATED TO PEOPLE · pay"])
+
+    @unittest.skipUnless(shutil.which("node"), "needs node to run the viewer's lastAnswer()")
+    def test_the_viewer_shows_a_revoked_agent_approval_as_revoked(self):
+        aid, _ = self.ask()
+        self.answer(aa.AGENT, aid)
+        self.s.call(aa.ALICE, "approval_revoke", {"request_id": aa.rid(), "approval_id": aid})
+        tr = view.Translator()
+        call = {"approvals": [x for r in ts.records(self.dir) for x in tr.feed(r)
+                              if (x.get("v2") or {}).get("approval") and x["v2"]["tool_use_id"] == "tc-1"]}
+        with open(view.observe.UI, encoding="utf-8") as f:
+            helper = re.search(r"^\s*(const lastAnswer = .*;)$", f.read(), re.M).group(1)
+        out = subprocess.run(["node", "-e", f"{helper} process.stdout.write(String(lastAnswer({json.dumps(call)})))"],
+                             capture_output=True, text=True, check=True).stdout
+        self.assertEqual(out, "revoked")
 
 
 if __name__ == "__main__":

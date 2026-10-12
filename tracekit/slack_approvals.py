@@ -17,7 +17,8 @@ The signer authorizes the bridge's identity for approval_list, approval_get and 
 approver is `slack:<team>/<user>`, and the signer checks it (or one of `groups` the user is in) against its approvers
 and its self-approval rule. A callback is answered only with a valid v0 signature, a timestamp within WINDOW_S of now,
 and a signature not seen before. What the agent chose (tool, arguments, reason) is posted as plain text, never mrkdwn.
-An approval an agent approver may still answer is not posted; it is once escalated to people (docs/approvals.md).
+An approval an agent approver's answer can still decide (its summary's `agent`) is not posted; it is once people must
+answer it: escalated, in shadow mode, or with agent approvals switched off (docs/approvals.md).
 """
 import hashlib
 import hmac
@@ -142,9 +143,8 @@ class Bridge:
             out.append({"type": "context", "elements": [
                 {"type": "mrkdwn", "text": f"*{state}*" + (f" by <@{user}>" if user else "")}]})
         else:   # answered elsewhere: who the signer says answered, as plain text
-            out.append({"type": "context", "elements": [{"type": "plain_text", "text": (
-                f"{state} by agent {answered['by']} (model output)" if answered["kind"] == "agent"
-                else f"{state} by {answered['by']}")[:2900]}]})
+            out.append({"type": "context", "elements": [{"type": "plain_text",
+                                                         "text": f"{state} by {answered['by']}"[:2900]}]})
         return out
 
     def show(self, aid, state, user=None, answered=None):
@@ -159,8 +159,8 @@ class Bridge:
                 del self.posted[aid]
 
     def poll(self):
-        """Post the approvals waiting for a person's answer that are not posted yet (person-only or escalated, never one
-        an agent approver may still answer); update the posted ones whose state moved."""
+        """Post the approvals waiting for a person's answer that are not posted yet (never one an agent approver's
+        answer can still decide); update the posted ones whose state moved."""
         live, page = {}, {"next_cursor": None}
         while True:
             page = self.signer.approval_list({"cursor": page["next_cursor"]} if page["next_cursor"] else {})
@@ -170,7 +170,7 @@ class Bridge:
         # lean: what was posted is kept in memory, so a restart posts the pending approvals again; persist the
         # message ids if duplicates after a restart matter
         for aid, x in live.items():
-            if x["state"] == "requested" and aid not in self.posted and (x.get("escalated") or not x.get("agent")):
+            if x["state"] == "requested" and aid not in self.posted and not x.get("agent"):
                 a = self.signer.approval_get({"approval_id": aid})
                 ts = self.slack("chat.postMessage", channel=self.cfg["channel"], text="Tracekit approval requested",
                                 blocks=self.blocks(a, "requested"))["ts"]
