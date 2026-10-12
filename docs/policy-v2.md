@@ -64,9 +64,10 @@ flag:  [<rule>, ...]
 
 `extends` merges the parent's `tools` under the child's, joins every `untrusted`, `handoffs` and `structured_output`
 list (a child can't remove a name its parent declares), keeps the parent's other top-level keys unless the child sets
-them, and keeps the parent's rules except those whose id the child redefines. A list of parents is merged in order (a later parent's top-level keys and tools win; the same rule id in two parents is a
-duplicate-id error, unless both carry the identical rule, which is kept once), and the compiled
-`extends` is the list of their hashes. An absolute path, `~` or a loop is an error.
+them, and keeps the parent's rules except those whose id the child redefines. A list of parents is merged in order (a
+later parent's top-level keys and tools win; the same rule id in two parents is a duplicate-id error, unless both carry
+the identical rule, which is kept once), and the compiled `extends` is the list of their hashes. An absolute path, `~`
+or a loop is an error.
 
 **Rule fields:**
 

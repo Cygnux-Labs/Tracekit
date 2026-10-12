@@ -8,15 +8,15 @@ upload_file, evaluate, custom actions) is decided by the signer before it runs a
     agent = Agent(task=..., llm=..., tools=tools, sensitive_data={"https://*.shop.example": {"pw": "..."}})
 
 An action is recorded as `browser_use:<action>` with its params and the URL of the page it ran on (`page_url`) as args.
-`sensitive_data` values never reach the signer: the args keep Browser Use's `<secret>name</secret>` placeholders (a
-value in the params, the page URL, a result or the page's text, written out or percent-, HTML- or JSON-encoded, is put
-back to its placeholder), and each secret the action types is added as `typed_secrets: {name: [sha256 of the value]}`,
-so the signed args commitment lets an auditor who holds the value and the record's revealed salt confirm what was
-typed. Before an action is decided, what the model read of the page this step (Browser Use's browser state: URL, title,
-tabs and the page's text) is observed as untrusted content, so the hosts it names are in the run's provenance index.
-`deny` skips the action and hands the agent an ActionResult with the refusal as its error, and the run goes on. `ask`
-waits for a person (HeldCalls) up to `approval_wait_s`, which ends before Browser Use's own action timeout; an approval
-with a T2 executor runs the params of the signer's copy.
+`sensitive_data` values reach the signer in none of the forms a URL, a page or JSON writes them in: the args keep
+Browser Use's `<secret>name</secret>` placeholders (a value in the params, the page URL, a result or the page's text,
+written out or percent-, HTML- or JSON-encoded, is put back to its placeholder), and each secret the action types is
+added as `typed_secrets: {name: [sha256 of the value]}`, so the signed args commitment lets an auditor who holds the
+value and the record's revealed salt confirm what was typed. Before an action is decided, what the model read of the
+page this step (Browser Use's browser state: URL, title, tabs and the page's text) is observed as untrusted content, so
+the hosts it names are in the run's provenance index. `deny` skips the action and hands the agent an ActionResult with
+the refusal as its error, and the run goes on. `ask` waits for a person (HeldCalls) up to `approval_wait_s`, which ends
+before Browser Use's own action timeout; an approval with a T2 executor runs the params of the signer's copy.
 """
 import asyncio
 import functools
