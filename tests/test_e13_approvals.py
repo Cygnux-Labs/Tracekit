@@ -250,6 +250,15 @@ class TestExecutorAndListing(Signer):
             req = {"limit": 2, "cursor": page["next_cursor"]}
         self.assertEqual(pages, [aids[:2], aids[2:4], aids[4:]])
 
+    def test_list_labels_a_requested_approval_whose_run_is_closing(self):
+        aid = self.pending()
+        listed = lambda: [a.get("run_closing") for a in self.s.call(APPROVER, "approval_list", {})["approvals"]
+                          if a["approval_id"] == aid]
+        self.assertEqual(listed(), [None])
+        self.s.close_run({"request_id": "close", **self.run})
+        self.assertEqual(listed(), [True])   # still requested, but no answer can be acted on: it expires with the run
+        self.refused("run_closed", self.decide, aid)
+
     def test_concurrent_waits_are_capped_per_identity(self):
         self.cfg["limits"] = {"concurrent_waits": 1}
         self.restart()

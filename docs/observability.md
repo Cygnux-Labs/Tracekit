@@ -40,6 +40,12 @@ types, gap kinds, RPC error codes, verdicts); past 64 distinct values a label is
 | `tracekit_signer_otel_export_dropped_total` | counter | `reason` | Runs the OTLP exporter (`otel_out`) did not deliver: `queue_full` (more than 1000 runs waiting), `failed` (the endpoint was unreachable or refused), `shutdown` (still queued when the signer stopped). |
 | `tracekit_signer_agent_approvals_total` | counter | `decision` | Answers of [agent approvers](approvals.md#agent-approvers), `approve` or `reject` (escalations and shadow-mode suggestions: `tracekit_signer_records_total{type="approval.escalated"\|"approval.suggested"}`). |
 | `tracekit_signer_agent_budget_spent_total` | counter | `rule` | What agent approvals took from each rule's `sum` budget. |
+| `tracekit_signer_incidents_total` | counter | `trigger`, `action`, `mode` | Incidents opened ([incidents](incidents.md)): `action` the actions taken joined by `+` (`none` in shadow mode or while the response engine is paused). |
+| `tracekit_signer_held_runs` | gauge | | Runs held by an incident. |
+| `tracekit_signer_quarantined_runs` | gauge | | Runs quarantined, not yet final. |
+| `tracekit_signer_suspended_identities` | gauge | | Suspension list entries this signer enforces. |
+| `tracekit_signer_detector_unavailable` | gauge | | 1 while the detector can't vouch for decisions (a restart that lost its state), else 0. |
+| `tracekit_signer_incident_outbox_failures_total` | counter | `reason` | Incident webhook posts that failed: `retry` (sent again later), `refused` (a 4xx, skipped), `error` (the log could not be read or a record not mapped: tried again after a second; a rising count means delivery is stalled). |
 | `tracekit_signer_webhook_dropped_total` | counter | `reason` | Events a [webhook](webhooks.md) did not deliver: `queue_full` (more than 10000 waiting), `failed` (refused, or still failing after 5 tries), `shutdown` (still queued when the signer stopped). |
 
 `witness` values are the names of the witnesses in signer.yaml. The metrics port also serves `GET /logs/v0`, the

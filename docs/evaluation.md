@@ -267,6 +267,23 @@ Every store must pass `tracekit signer fsck`. Under the partition (measured on m
 at p50 and p99 over a 2 ms baseline); after it, the added latency was under 5 ms at p99. `make eval` runs the `--quick`
 form (5 calls per phase instead of 20). Results: `eval/results/e14_outage.json`.
 
+## E19: egress observation
+
+`eval/e19_egress.py` runs v2 signers and the egress proxy in process, offline, and checks what the
+[egress observer](egress.md) catches.
+
+| Case | Setup | Expected |
+|---|---|---|
+| E19.1 | a shell call that curls a host no http or model call nor `explains` entry covers | one signed `reconcile.unexplained_effect`; `run.final`'s coverage counts it |
+| E19.2 | the same run under a policy whose `explains` lists the host for the shell tool | `explained_by: explains`, no unexplained effect |
+| E19.3 | through the proxy: a ClientHello naming another server, a DNS-over-HTTPS endpoint, a raw IP, a name resolving to loopback | the tunnel closed before reaching the host; 403; 403; 403 |
+| E19.4 | the observer stops its heartbeats | one `observer_lost` gap; network not observed |
+| E19.5 | an observation after `run.final` | `capture.gap{effect_outside_run}` in the tenant's signer run, naming the run |
+| E19.6 | a gateway-mandatory run behind the observer, posture `network` and `tool_calls` enforced; a plain run | model calls, tool calls and network enforced; tool calls reported, the rest not covered |
+| E19.7 | E19.1's bundle through both verifiers | the same checks (skipped without the TypeScript build) |
+
+`make eval` runs it. Results: `eval/results/e19_egress.json`.
+
 ## What is not measured
 
 Signer throughput with a separate-user signer or over the remote gateway, durability across crashes beyond the

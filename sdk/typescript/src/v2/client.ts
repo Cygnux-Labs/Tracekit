@@ -391,6 +391,9 @@ export class Client {
     if ("request_id" in schema.properties) req.request_id ??= newId();
     let claim = "client_seq" in schema.properties && !("client_seq" in req);
     if (claim) Object.assign(req, { stream: this.stream, client_seq: this.seqs.get(req.run_id) ?? 0 });
+    const used = this.seqs.get(req.run_id);
+    // the last client_seq this stream used: one the signer never received becomes its client_counter_gap
+    if (method === "close_run" && used && !("last_client_seq" in req)) req.last_client_seq = [{ stream: this.stream, client_seq: used - 1 }];
     const errs = validate(schema, req);
     if (errs.length) throw new RPCError("invalid_request", errs.join("; "));
     try {
@@ -539,23 +542,84 @@ export interface Decision extends Frame {
   send_result?: true;
 }
 
+const NEW_WORK = new Set(["decide", "model_event", "observe", "state_write"]);   // to the current run
+const BY_CALL = new Set(["complete", "approval_request", "approval_consume"]);   // to the run the call was decided in
+const KEEP = 4096;   // tool calls and approvals whose run is remembered
+
+function remember<K, V>(m: Map<K, V>, k: K, v: V): void {
+  m.delete(k);
+  m.set(k, v);
+  if (m.size > KEEP) m.delete(m.keys().next().value as K);
+}
+
 /** A registered run. Its methods fill in run_id and run_token; `fields` adds optional request fields. */
 export class RunHandle {
-  readonly runId: string;
-  readonly runToken: string;
-  readonly failModes: Record<string, string> | undefined;
+  runId: string;
+  runToken: string;
+  failModes: Record<string, string> | undefined;
+  registered: Frame;
   closed = false;
+  /** The agent name instrument()'s process run renews itself as once the signer closed it after it was idle; null:
+   * never renewed (a run the app registered itself, or one it closed). */
+  renewAs: string | null = null;
   private decided = new Map<string, { decision_id: string; args_digest: string }>();
+  private at = new Map<string, { run_id: string; run_token: string }>();   // tool call or approval id -> its run
+  private renewing: Promise<void> | null = null;
 
-  constructor(readonly client: Client, readonly registered: Frame) {
+  constructor(readonly client: Client, registered: Frame) {
+    this.registered = registered;
     this.runId = registered.run_id;
     this.runToken = registered.run_token;
     this.failModes = registered.fail_modes;
   }
 
-  /** Any per-run RPC with this run's id and token. */
-  call(method: string, fields: Frame = {}): Promise<Frame> {
-    return this.client.call(method, { run_id: this.runId, run_token: this.runToken, ...fields });
+  /** With $TRACEKIT_EGRESS_PROXY set (an egress observer, docs/egress.md#attribution): HTTPS_PROXY and HTTP_PROXY,
+   * both cases, naming it with this run's id and token as credentials, for the commands the run starts
+   * (`spawn(cmd, args, { env: { ...process.env, ...run.proxyEnv } })`) or an HTTP client's proxy, so the observer
+   * attributes their connections to this run. {} without it. This process's own environment is left as it is. */
+  get proxyEnv(): Record<string, string> {
+    const proxy = process.env.TRACEKIT_EGRESS_PROXY;
+    if (!proxy) return {};
+    const u = new URL(proxy);
+    u.username = encodeURIComponent(this.runId);
+    u.password = encodeURIComponent(this.runToken);
+    return Object.fromEntries(["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"].map((k) => [k, u.href]));
+  }
+
+  /** Any per-run RPC with this run's id and token. A call's complete and approvals go to the run it was decided in;
+   * new work refused because the signer closed a renewable run goes to a new run (renewAs). */
+  async call(method: string, fields: Frame = {}): Promise<Frame> {
+    const key = BY_CALL.has(method) ? fields.tool_call_id : method === "approval_wait" || method === "approval_abandon" ? fields.approval_id : undefined;
+    let run = (key !== undefined && this.at.get(key)) || { run_id: this.runId, run_token: this.runToken }, out;
+    try {
+      out = await this.client.call(method, { ...run, ...fields });
+    } catch (e) {
+      if (!(e instanceof RPCError) || !["run_closed", "unknown_run"].includes(e.code) || !NEW_WORK.has(method)
+        || this.renewAs === null || this.closed) throw e;
+      await this.renew(run.run_id, e);
+      run = { run_id: this.runId, run_token: this.runToken };
+      out = await this.client.call(method, { ...run, ...fields });   // once: what the new run answers is the answer
+    }
+    if (method === "decide") remember(this.at, fields.tool_call_id, run);
+    if (method === "approval_request" && out.approval_id) remember(this.at, out.approval_id, run);
+    return out;
+  }
+
+  private renew(closed: string, e: RPCError): Promise<void> {
+    if (closed !== this.runId) return Promise.resolve();   // renewed already
+    this.renewing ??= (async () => {
+      const agent = { agent: { name: this.renewAs } };
+      let r;
+      try {   // linked to the closed run while it is still closing
+        r = await this.client.call("register_run", { ...agent, parent: { run_id: this.runId, run_token: this.runToken } });
+      } catch (err) {
+        if (!(err instanceof RPCError)) throw err;
+        r = await this.client.call("register_run", agent);
+      }
+      warn(`tracekit: the signer closed run ${this.runId} (${e.message}); recording in a new run ${r.run_id}. A server should open a run per conversation`);
+      [this.registered, this.runId, this.runToken, this.failModes] = [r, r.run_id, r.run_token, r.fail_modes];
+    })().finally(() => (this.renewing = null));
+    return this.renewing;
   }
 
   /** `args` is the model's raw arguments string, or an already parsed value. Only when the signer can't be reached
@@ -588,6 +652,8 @@ export class RunHandle {
     } catch (e) {
       warn(`tracekit: the result of ${toolCallId} was not recorded: ${(e as Error).message}`);
       return null;
+    } finally {
+      this.at.delete(toolCallId);
     }
   }
 
@@ -643,6 +709,28 @@ export interface Instrumented {
 }
 
 let instrumented: Promise<Instrumented> | null = null;
+const LEAVE_MS = 2000;   // the most an exiting process waits for the signer
+
+const once = (fn: () => Promise<void>) => {
+  let p: Promise<void> | null = null;
+  return () => (p ??= fn());
+};
+
+/** Closes `run` as the process exits, unless approvals of it are still waiting (requested, or approved and not yet
+ * consumed): then it stays open for another process to resume (`new RunHandle(client, { run_id, run_token })`) until
+ * the signer closes it after idle_s. Never rejects; waits at most LEAVE_MS. */
+async function leave(run: RunHandle): Promise<void> {
+  const work = (async () => {
+    const open = (state: string) => run.client.call("approval_list", { run_id: run.runId, state, limit: 1 })
+      .then((r) => r.approvals.length > 0);
+    // requested, or approved and not yet consumed; a listing that fails (no grant) waits for nothing
+    if (await Promise.all([open("requested"), open("approved")]).then((w) => w.some(Boolean), () => false))
+      warn(`tracekit: run ${run.runId} left open: approvals of it are waiting for a person or to be resumed`);
+    else await run.close();
+    await run.client.close();
+  })().catch(() => {});
+  await Promise.race([work, new Promise((r) => setTimeout(r, LEAVE_MS).unref())]);
+}
 
 /** One call: registers a run (with the same-user dev signer, started if none answers, unless a signer is configured as
  * described above), closes it when the process is about to exit, and returns it with the Vercel AI SDK and OpenAI
@@ -652,7 +740,16 @@ let instrumented: Promise<Instrumented> | null = null;
 export function instrument(agent?: string, opts: ClientOptions = {}): Promise<Instrumented> {
   const name = agent ?? process.env.TRACEKIT_AGENT ?? basename(process.argv[1] ?? "node", extname(process.argv[1] ?? ""));
   instrumented ??= new Client(opts).registerRun(name).then((run) => {
-    process.once("beforeExit", () => void run.close().catch(() => {}).then(() => run.client.close()));
+    run.renewAs = name;
+    const end = once(() => leave(run));
+    process.once("beforeExit", () => void end());
+    for (const sig of ["SIGINT", "SIGTERM"] as const)
+      process.prependOnceListener(sig, () => {
+        // run first and decide before anything is awaited: a signal another listener (the app's, a library's)
+        // handles is theirs, so the run stays as it is (beforeExit still closes it); else close, then the default action
+        if (!process.listenerCount(sig)) void end().finally(() => process.kill(process.pid, sig));
+      });
+    // lean: process.exit() and an uncaught exception leave the run open until the signer's idle_s (no async on exit)
     return { run, ai: tracekitAI(run), agents: new TracekitAgents(run) };
   }, (e) => {
     instrumented = null;

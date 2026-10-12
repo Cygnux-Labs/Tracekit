@@ -289,6 +289,27 @@ class Central(unittest.TestCase):
         self.assertEqual(owners["tls"], {("t", "tls"), ("t-gateway", "signer-ca"), ("t-executor", "signer-ca"),
                                          ("t-mcp-gateway", "signer-ca")})
 
+    @unittest.skipIf(os.name == "nt", "the chart's config names Linux container paths")
+    def test_the_egress_observer_holds_no_secret_and_is_the_agents_way_out(self):
+        from tracekit import egress
+        m = self.objects(*CUSTODY, "egress.enabled=true", "egress.tlsSecretName=et", "egress.config.allow={10.0.0.7}",
+                         "agentEgress.enabled=true", "agentEgress.podSelector.app=agent")
+        pod = m["Deployment", "t-egress"]["spec"]["template"]["spec"]
+        self.assertEqual(pod["containers"][0]["command"][:3], ["tracekit", "egress", "serve"])
+        self.assertNotIn("secrets", {v["name"] for v in pod["volumes"]})
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "egress.yaml")
+            with open(path, "w") as f:
+                f.write(m["ConfigMap", "t-egress"]["data"]["egress.yaml"])
+            cfg = egress.load_config(path)
+        self.assertEqual((cfg["signer"], cfg["allow"], cfg["http"]["k8s_sa"]["audience"]),
+                         ("https://t.ns.svc:8443", ["10.0.0.7"], "tracekit-signer-egress"))
+        np = m["NetworkPolicy", "t-agent-egress"]
+        self.assertIn(("egress", [3128]), [(r["to"][0]["podSelector"]["matchLabels"].get("app.kubernetes.io/component"),
+                                             [p["port"] for p in r["ports"]]) for r in np["spec"]["egress"]])
+        crb = m["ClusterRoleBinding", "ns-t-tokenreview"]
+        self.assertIn("t-egress", {s["name"] for s in crb["subjects"]})
+
     def test_agent_egress_policy_only_when_enabled(self):
         self.assertNotIn(("NetworkPolicy", "t-agent-egress"), self.objects(*CUSTODY))
         m = self.objects(*CUSTODY, "agentEgress.enabled=true", "agentEgress.namespace=agents",

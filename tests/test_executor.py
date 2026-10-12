@@ -86,7 +86,7 @@ class Executor(unittest.TestCase):
     def setUp(self):
         self.dir = tmpdir(self)
         self.s = svc.SignerService(self.dir, policy=POLICY, gateways=["mtls:spiffe://acme/*"],
-                                   authorize={"token:http": sorted(REQUESTS.keys() - {"content_get"}),
+                                   authorize={"token:http": sorted(REQUESTS.keys() - {"content_get"} - svc.OPERATOR),
                                               "mtls:spiffe://acme/executor": ["decide", "complete", "approval_request",
                                                                               "approval_wait", "approval_consume"]})
         self.closed = False

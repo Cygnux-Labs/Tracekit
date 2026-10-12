@@ -212,6 +212,22 @@ test("fake: decide, complete, deny and continue; requests are validated before t
   assert.equal(frames.filter((f) => f.method === "decide").length, 3);
 });
 
+test("fake: with TRACEKIT_EGRESS_PROXY, a run's id and token become its commands' proxy credentials, not the process's", async (t) => {
+  const { client } = await fake(t);
+  const saved = Object.fromEntries(["TRACEKIT_EGRESS_PROXY", "HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"]
+    .map((k) => [k, process.env[k]]));
+  t.after(() => { for (const [k, v] of Object.entries(saved)) v === undefined ? delete process.env[k] : (process.env[k] = v); });
+  delete process.env.TRACEKIT_EGRESS_PROXY;
+  assert.deepEqual((await client.registerRun("a")).proxyEnv, {});
+  process.env.TRACEKIT_EGRESS_PROXY = "https://egress:3128";
+  const before = { ...process.env };
+  const run = await client.registerRun("a");
+  assert.deepEqual(process.env, before);
+  const u = new URL(run.proxyEnv.HTTPS_PROXY);
+  assert.deepEqual([u.host, decodeURIComponent(u.username), decodeURIComponent(u.password), run.proxyEnv.http_proxy],
+    ["egress:3128", run.runId, run.runToken, u.href]);
+});
+
 test("fake: ask, then the approval wait holds up no other call", async (t) => {
   const { client, frames } = await fake(t);
   const run = await client.registerRun("a");
@@ -239,6 +255,18 @@ test("fake: the fail mode of the tool class applies only while the signer is unr
   const back = await fake(t, { path });   // the decides the signer never saw used up client_seq 0-1: its gap covers them
   await run.decide("t3", "Bash", {});
   assert.deepEqual(back.frames.filter((f) => f.method === "decide").map((f) => f.client_seq), [2]);
+});
+
+test("fake: close_run names the last client_seq used, even one lost while the signer was down", async (t) => {
+  const { client, stop, path } = await fake(t);
+  const run = await client.registerRun("a");
+  await run.decide("t1", "Bash", {});
+  await stop();
+  assert.equal(await run.complete("t1"), null);   // client_seq 1, never received
+  const back = await fake(t, { path });
+  await run.close();
+  const close = back.frames.find((f) => f.method === "close_run");
+  assert.deepEqual(close.last_client_seq, [{ stream: client.stream, client_seq: 1 }]);
 });
 
 test("fake: a refusal is never fail-open", async (t) => {

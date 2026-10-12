@@ -112,6 +112,10 @@ class InitRefusals(unittest.TestCase):
             self.assertIn("--policy: /home/agent/p.yaml is not owned by root",
                           self.init(approver="admin", policy="/home/agent/p.yaml"))
 
+    def test_egress_needs_linux(self):
+        with mock.patch.object(install, "_require_system", return_value=True):
+            self.assertIn("--egress needs Linux", self.init(approver="admin", egress=True))
+
     def test_needs_root(self):
         with mock.patch.object(install.sys, "platform", "linux"), mock.patch.object(install.os, "geteuid",
                                                                                     return_value=1001):
@@ -208,6 +212,48 @@ class InstallAndUninstall(unittest.TestCase):
         self.assertEqual(hooks.call_args.kwargs, {"owner": AGENT, "python": install.OPT_PYTHON,
                                                   "module": install.V2_HOOK, "signer": sock})
         self.assertIn(["systemctl", "restart", "tracekit-signer"], [c.args[0] for c in run.call_args_list])
+
+    def test_egress_routes_the_agents_traffic_through_the_observer_until_uninstall(self):
+        run = mock.Mock(return_value=mock.Mock(returncode=0, stdout=POLICY + "\n", stderr=""))
+        with mock.patch.object(install.pwd, "getpwnam", return_value=AGENT), \
+                mock.patch.object(install.pwd, "getpwuid", return_value=self.me), \
+                mock.patch.dict(os.environ, {"SUDO_UID": str(self.me.pw_uid)}), \
+                mock.patch.object(install, "_privileges", return_value=[]), \
+                mock.patch.object(install, "_install_source", return_value=None), \
+                mock.patch.object(install, "_system_user", return_value=self.me), \
+                mock.patch.object(install, "_install_venv"), mock.patch.object(install.subprocess, "run", run), \
+                mock.patch.object(install.client, "system_config", return_value={}), \
+                mock.patch.object(install, "_write_system_client_config") as sys_cfg, \
+                mock.patch.object(install, "_tailer_acl", return_value=None), \
+                mock.patch.object(install, "_tailer_sudo", return_value=None), \
+                mock.patch.object(install, "install_hooks") as hooks:
+            sock, _ = install.init_system_v2("agent", egress=True)
+        path = os.path.join(self.d, "check.yaml")
+        with open(path, "wb") as f:
+            f.write(self.written[install.V2_CONFIG])
+        cfg = service.load_config(path)
+        me = f"uid:{self.me.pw_uid}"
+        self.assertEqual((cfg["tenants"][me], cfg["authorize"][me][-1]), ("agent", "observe_effect"))
+        self.assertIn(f'listen: "{install.EGRESS_LISTEN}"', self.written[install.EGRESS_CONFIG].decode())
+        unit = self.written[os.path.join(self.d, install.V2_EGRESS + ".service")].decode()
+        self.assertIn(f"-m tracekit egress serve --config {install.EGRESS_CONFIG}", unit)
+        wall = self.written[os.path.join(self.d, install.EGRESS_FIREWALL + ".service")].decode()
+        self.assertIn(f"$$t -I OUTPUT -m owner --uid-owner {AGENT.pw_uid} -j TRACEKIT-EGRESS", wall)
+        self.assertIn("$$t -A TRACEKIT-EGRESS -o lo -j RETURN && $$t -A TRACEKIT-EGRESS -j REJECT", wall)
+        self.assertIn(["systemctl", "enable", "--now", install.V2_EGRESS, install.EGRESS_FIREWALL],
+                      [c.args[0] for c in run.call_args_list])
+        proxy = {"HTTPS_PROXY": "http://127.0.0.1:3128", "HTTP_PROXY": "http://127.0.0.1:3128"}
+        self.assertEqual(hooks.call_args.kwargs["signer"], {"TRACEKIT_SIGNER": sock, **proxy})
+        sc = sys_cfg.call_args.args[0]
+        self.assertEqual(sc["hooks"]["env"], proxy)
+        open(os.path.join(self.d, install.V2_EGRESS + ".service"), "w").close()
+        sc["hooks"]["settings"] = os.path.join(self.d, "settings.json")
+        open(sc["hooks"]["settings"], "w").close()
+        kept, _, hooks, cmds = self.uninstall(sc)
+        self.assertIn(["systemctl", "disable", "--now", install.V2_EGRESS, install.EGRESS_FIREWALL], cmds)
+        self.assertEqual(hooks.call_args.kwargs["signer"], {"TRACEKIT_SIGNER": sock, **proxy})
+        self.assertEqual(kept[-1], install.V2_EGRESS)
+        self.assertFalse(os.path.exists(os.path.join(self.d, install.V2_EGRESS + ".service")))
 
     def test_init_and_uninstall_wire_a_harness_hook(self):
         home = os.path.join(self.d, "home")

@@ -169,6 +169,93 @@ class TestSender(Case):
         self.srv.release.set()
 
 
+class TestIncidentOutbox(Case):
+    POLICY = {"tools": {"read_file": "fs", "http_get": "http"}, "unknown_tools": "ask",
+              "flag": [{"id": "S", "class": "fs", "field": "path", "pattern": "\\.env", "label": "secret"},
+                       {"id": "E", "field": "target", "pattern": "://", "label": "egress"}],
+              "sequences": [{"id": "Q", "steps": ["secret", "egress"], "window": 600}],
+              "respond": [{"trigger": "Q", "mode": "enforce", "action": "notify"}]}
+
+    def signer(self, d, hooks):
+        from tracekit.policy2 import compile as pc
+        path = os.path.join(d, "p.json")
+        with open(path, "w") as f:
+            json.dump(self.POLICY, f)
+        s = svc.SignerService(d, policy=Engine(pc.build(path)[0]), webhooks=hooks)
+        self.addCleanup(s.close)
+        return s
+
+    def incident(self, s, n=0):
+        run = s.register_run({"request_id": f"r{n}", "agent": {"name": "a"}})
+        r = {"run_id": run["run_id"], "run_token": run["run_token"], "stream": "s"}
+        for i, (tool, args) in enumerate((("read_file", {"path": "/app/.env"}), ("http_get", {"url": "https://x.example/"}))):
+            s.decide({"request_id": f"d{n}{i}", **r, "client_seq": i, "tool_call_id": f"t{i}", "tool": tool,
+                      "args_source": "parsed", "args": args})
+        return run["run_id"]
+
+    def test_incident_findings_at_least_once_across_a_restart(self):
+        d = ts.tmpdir(self)
+        hook = [{"url": self.url, "events": ["incident"], "secret": KEY}]
+        self.srv.statuses = [503]   # the first post fails: the cursor stays and the batch is sent again
+        with mock.patch.object(webhook, "BACKOFF_S", (0.01, 0.01)):
+            s = self.signer(d, hook)
+            run = self.incident(s)
+            got = self.bodies(lambda e: e["message"] == "incident.opened")
+        e = got[0]
+        self.assertEqual(ocsf_errors(e), [], e)
+        self.assertEqual((e["class_uid"], e["activity_id"], e["status_id"]), (2005, 1, 1))
+        info = e["finding_info_list"][0]
+        self.assertEqual(info["uid"], e["unmapped"]["tracekit"]["incident_id"])
+        self.assertEqual([x["type"] for x in info["related_events"]], ["incident.opened", "policy.decision",
+                                                                       "policy.decision"])
+        self.assertEqual(e["unmapped"]["tracekit"]["run_id"], run)
+        s.close()
+        s = self.signer(d, hook)   # restarted: resumes after what was delivered
+        self.incident(s, 1)
+        again = self.bodies(lambda e: e["message"] == "incident.opened")
+        self.assertNotEqual(again[0]["finding_info_list"][0]["uid"], info["uid"])
+
+    def test_a_record_it_cant_map_is_counted(self):
+        hook = [{"url": self.url, "events": ["incident"], "secret": KEY}]
+        with mock.patch.object(webhook, "ocsf_incident", side_effect=KeyError("x")), \
+                mock.patch.object(webhook, "POLL_S", 0.01):
+            s = self.signer(ts.tmpdir(self), hook)
+            self.incident(s)
+            deadline = time.monotonic() + 5
+            while 'reason="error"' not in s.metrics.render() and time.monotonic() < deadline:
+                time.sleep(0.02)
+        self.assertIn('tracekit_signer_incident_outbox_failures_total{reason="error"}', s.metrics.render())
+
+    def test_an_unreadable_cursor_starts_from_the_log_start(self):
+        d = ts.tmpdir(self)
+        for name, text, want in (("absent", None, 42), ("corrupt", "{not json", 0), ("wrong", '{"cursor": "x"}', 0)):
+            path = os.path.join(d, name)
+            if text is not None:
+                with open(path, "w") as f:
+                    f.write(text)
+            with self.subTest(name), mock.patch.object(webhook, "POLL_S", 0.01):
+                box = webhook.Outbox(self.url, KEY, "ocsf", path, lambda lo, hi: [], lambda r: [], 42, mock.Mock())
+                box.close()
+                self.assertEqual(box.cursor, want)
+
+    def test_notify_without_a_subscriber_refuses_to_start(self):
+        with self.assertRaisesRegex(ValueError, "no webhook subscribes to incident events"):
+            self.signer(ts.tmpdir(self), [{"url": self.url, "events": ["deny"], "secret": KEY}])
+
+    def test_slack_lines_escape_what_a_tool_or_principal_could_carry(self):
+        r = {"hash": "sha256:" + "0" * 64, "event": {
+            "id": "e", "ts": "2026-10-10T00:00:00.000000Z", "type": "incident.opened", "run_id": "r<@U1>", "tenant": "t",
+            "log_id": "l", "run_seq": 1, "seq": 1, "data": {"incident_id": "inc-1", "trigger": "sequence",
+                                                           "rule_ids": ["Q"], "actions": ["hold"],
+                                                           "scope": {"kind": "principal", "id": "<!channel>"}}}}
+        rel = [{"hash": "h", "event": {"type": "policy.decision", "data": {"tool": "x`<https://evil|click>&"}}}]
+        line = webhook.slack(r, rel)
+        self.assertNotIn("<", line[1:-1])
+        self.assertNotIn("`", line[1:-1])
+        self.assertIn("&lt;!channel&gt;", line)
+        self.assertIn("tools x'&lt;https://evil|click&gt;&amp;", line)
+
+
 class TestObserverFailure(unittest.TestCase):
     def test_a_failing_observer_never_fails_a_write(self):
         s = svc.SignerService(ts.tmpdir(self))
@@ -192,6 +279,14 @@ class TestConfig(unittest.TestCase):
                     dict(ok, events=["everything"]), {k: v for k, v in ok.items() if k != "secret_file"}, ok):
             with self.subTest(bad=bad), self.assertRaises(ValueError):
                 webhook.load(bad if bad is ok else [bad], d, "signer.yaml")
+        with open(os.path.join(d, "slack"), "w", encoding="utf-8") as f:
+            f.write("https://hooks.slack.com/services/T/B/x\n")
+        slack = {"format": "slack", "events": ["incident"], "secret_file": "slack"}
+        self.assertEqual(webhook.load([slack], d, "signer.yaml"), [
+            {"url": "https://hooks.slack.com/services/T/B/x", "events": ["incident"], "secret": None, "format": "slack"}])
+        for bad in (dict(slack, events=["deny"]), dict(slack, url="https://x.example"), dict(slack, secret_file="s")):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                webhook.load([bad], d, "signer.yaml")
 
 
 if __name__ == "__main__":

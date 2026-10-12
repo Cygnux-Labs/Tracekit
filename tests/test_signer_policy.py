@@ -385,6 +385,15 @@ class SignerPolicy(unittest.TestCase):
         self.complete(d, "Bash", {"command": "ls"})
         self.refused("unknown_decision", self.complete, d, "Bash", {"command": "ls"})
 
+    def test_an_mcp_tool_is_also_checked_under_its_bare_name(self):
+        self.open(Engine({"deny": [{"id": "APP-D1", "tool": "delete_account", "pattern": "^"}],
+                          "ask": [{"id": "MCP-A1", "tool": "mcp:fs/write_file", "pattern": "^"}]}))
+        d = self.decide("mcp:x/delete_account", {"id": "ACC-1"})   # an app tool relabelled as an MCP call
+        self.assertEqual((d["decision"], d["rule_ids"]), ("deny", ["APP-D1"]))
+        self.assertEqual(self.decide("mcp:fs/read_file", {}, tcid="tc-2")["decision"], "allow")   # no bare-name rule
+        d = self.decide("mcp:fs/write_file", {}, tcid="tc-3")   # its own MCP rule, as before
+        self.assertEqual((d["decision"], d["rule_ids"]), ("ask", ["MCP-A1"]))
+
     # --- memoisation ---
 
     def test_only_deny_and_ask_are_memoised(self):

@@ -13,22 +13,25 @@ name once; never through `*` or an unknown class). A sum limit reads the amount 
 `detect.sums`. Windows are fixed: one starts at the first call counted and runs `window` seconds of the records' `ts`
 (the signer's clock).
 
-Every incident is written in shadow mode (`incident.opened{mode: shadow}`, no actions, `would` the configured action).
-Only opened incidents count toward the caps; an open incident is updated at most once per window.
+An incident carries its trigger's `respond` mode, no actions, and `would` the configured action; the signer acts on
+`mode: enforce` ones before writing them (SignerService._respond fills `actions`). Only opened incidents count toward
+the caps; an open incident is updated at most once per window.
 """
 import datetime
 import json
 import secrets
 import zipfile
 
-from tracekit.policy2.compile import DETECT, SECTIONS
+from tracekit.policy2.compile import DETECT, SECTIONS, policy_hash
+from tracekit.policy2.engine import Engine
 
 RUN_CAP = 100      # incidents a run opens per trigger; the next one is an incident.capped summary instead
 TENANT_CAP = 60    # incidents a tenant opens per minute
 RUN_SHARE = 20     # of which one run may open
 IDLE_S = 3600      # a scope with no record for this long (or the longest window, if longer) starts over
 UPDATE_S = 60      # an open incident of a trigger without a window is updated at most once a minute
-NOT_COUNTED = {"TK-ARGS-INVALID", "TK-OVERSIZE"}   # denies that say nothing about the agent's intent
+# denies that say nothing about the agent's intent: invalid or oversized arguments, a quarantine's own denies
+NOT_COUNTED = {"TK-ARGS-INVALID", "TK-OVERSIZE", "TK-QUARANTINE"}
 SUM_UNREADABLE = "TK-LIMIT-SUM"   # a call a sum limit counts, without an amount and currency it can read: ask
 
 
@@ -36,6 +39,14 @@ class Plain:
     """Tx's set/pop on plain dicts, for replay and backtests."""
     set = staticmethod(dict.__setitem__)
     pop = staticmethod(dict.pop)
+
+
+class Rules:
+    """What a Detector reads of a compiled policy, without compiling its patterns: for verifiers."""
+    tool_class = Engine.tool_class
+
+    def __init__(self, policy):
+        self.policy, self.policy_hash = policy, policy_hash(policy)
 
 
 def new(policy_hash=None, until=None):
@@ -179,7 +190,8 @@ class Detector:
                     names, unknown, sums = p
                     self._count(tx, det, e, run, (set(names), unknown, sums), [e["run_id"], e["run_seq"]], fired, None)
         else:
-            trigger = {"trace.tamper": "tamper", "refusal.summary": "refusal_burst"}.get(typ)
+            trigger = {"trace.tamper": "tamper", "refusal.summary": "refusal_burst",
+                       "reconcile.unexplained_effect": "unexplained_effect"}.get(typ)
             if typ == "capture.gap" and d.get("kind") in ("executed_against_policy", "class_mismatch"):
                 trigger = d["kind"]
             if trigger and self._on(trigger) and (trigger != "refusal_burst" or d["count"] > self.respond[trigger]["max"]):
@@ -307,7 +319,7 @@ class Detector:
             else:
                 n_run[trigger], n_ten, n_mine = n_run.get(trigger, 0) + 1, n_ten + 1, n_mine + 1
                 out.append(("incident.opened", {"incident_id": "inc-" + secrets.token_hex(16), "trigger": trigger,
-                                                "rule_ids": rule_ids, "scope": scope, "cites": cites, "mode": "shadow",
+                                                "rule_ids": rule_ids, "scope": scope, "cites": cites, "mode": r["mode"],
                                                 "actions": [], "would": [r["action"]] if "action" in r else []}))
                 continue
             out.append(("incident.capped", {"cap": cap, "max": most, "trigger": trigger,

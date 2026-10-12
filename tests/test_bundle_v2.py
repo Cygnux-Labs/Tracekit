@@ -19,6 +19,7 @@ from factories import rewrite_bundle
 from tracekit import cli, crypto
 from tracekit.bundle_v2 import VERIFIER_MIN_VERSION, VERSIONS, export
 from tracekit.format import checkpoint
+from tracekit.format.canon import canonical
 from tracekit.format.checkpoint import COSIGNATURE, ED25519, NoteError
 from tracekit.format.records import make_record
 from tracekit.storage.base import ZERO_HASH
@@ -714,7 +715,15 @@ FINDING = {"target": "tool=pay", "intervention": "i", "n": 0, "p_with": 0, "p_wi
            "interval": [-1, 1], "verdict": "inconclusive", "replay_runs": [], "models": [], "rung": 1, "off_tape": 0,
            "investigation": "i", "looks": 1, "family": 1, "min_effect": 0.2, "applied": True, "stopped": "budget"}
 INCIDENT = {"incident_id": "inc-1", "trigger": "sequence", "rule_ids": ["Q"], "scope": {"kind": "run", "id": "run-a"},
-            "cites": [{"run_id": "run-a", "run_seq": 0}], "mode": "shadow", "actions": [], "would": ["notify"]}
+            "cites": [{"run_id": "run-a", "run_seq": 1}], "mode": "shadow", "actions": [], "would": ["notify"]}
+FIRED = decision(detect={"sequences": [{"id": "Q", "step": 1}], "limits": [], "state": "complete"})   # run_seq 1
+HELD = ("run.held", {"incident_id": "inc-1", "scope": {"kind": "run", "id": "run-a"}, "by": "signer", "reason": "r"},
+        "run-a")
+EFFECT = {"observer": "uid:7", "kind": "net", "host": "pypi.org", "port": 443, "bytes_out": 1, "bytes_in": 2,
+          "connections": 1, "first_ts": "2026-10-11T00:00:00.000000Z", "last_ts": "2026-10-11T00:00:00.000000Z",
+          "attribution": "token"}
+UNEXPLAINED = {"layers": ["L6"], "observer": "uid:7", "kind": "net", "host": "pypi.org", "port": 443}
+MATRIX = {k: {"status": "none", "layers": []} for k in ("model_calls", "tool_calls", "network", "processes", "services")}
 # per VERSIONS entry ("type" or "type.field"), records that use it
 ENTRIES = {
     "input.observed": [registered(), ("input.observed", OBSERVED, "run-a")],
@@ -739,9 +748,22 @@ ENTRIES = {
     "run.child": [registered(), ("run.child", {"run_id": "run-x"}, "run-a")],
     "policy.decision.detect": [registered(), decision(detect={"sequences": [{"id": "Q", "step": 1}], "limits": [],
                                                               "state": "complete"})],
-    "incident.opened": [registered(), ("incident.opened", INCIDENT, "run-a")],
-    "incident.updated": [registered(), ("incident.updated", {"incident_id": "inc-1", "cites": [
-        {"run_id": "run-a", "run_seq": 0}]}, "run-a")],
+    "incident.opened": [registered(), FIRED, ("incident.opened", INCIDENT, "run-a")],
+    "incident.updated": [registered(), FIRED, ("incident.updated", {"incident_id": "inc-1", "cites": [
+        {"run_id": "run-a", "run_seq": 1}]}, "run-a")],
+    "run.held": [registered(), HELD],
+    "run.quarantined": [registered(), ("run.quarantined", dict(HELD[1]), "run-a")],
+    "run.resumed": [registered(), HELD, ("run.resumed", {"incident_id": "inc-1", "by": "uid:1", "person": "ana",
+                                                         "held_by": []}, "run-a")],
+    "incident.resolved": [registered(), ("incident.resolved", {"incident_id": "inc-1", "by": "uid:1", "person": "ana"},
+                                         "run-a")],
+    "incident.response": [registered(), ("incident.response", {"enabled": False, "by": "uid:1"}, "run-a")],
+    "identity.suspension": [registered(), ("identity.suspension", {"identity": "token:svc", "state": "enforced",
+                                                                    "by": "signer"}, "run-a")],
+    "policy.decision.incident_id": [registered(), decision(incident_id="inc-1")],
+    "approval.request.incident_id": [registered(), ("approval.request", dict(APPROVAL, incident_id="inc-1"), "run-a")],
+    "approval.incident_id": [registered(), answered(incident_id="inc-1")],
+    "run.closing.reason=quarantine": [registered(), ("run.closing", {"reason": "quarantine"}, "run-a")],
     "incident.capped": [registered(), ("incident.capped", {"cap": "run", "max": 100, "trigger": "sequence",
                                                            "reason": "cap"}, "run-a")],
     "approval.escalated": [registered(), ("approval.escalated", {"approval_id": "apr-1", "by": "signer",
@@ -770,6 +792,14 @@ ENTRIES = {
     "tool.result.via": [registered(), ("tool.result", {"tool_use_id": "t1", "ok": True, "output": OUTPUT, "via": VIA},
                                        "run-a")],
     "input.observed.via": [registered(), ("input.observed", dict(OBSERVED, via=VIA), "run-a")],
+    "effect.observed": [registered(), ("effect.observed", EFFECT, "run-a")],
+    "run.registered.posture": [registered(posture={"network": "enforced", "tool_calls": "open",
+                                                   "gateway_mandatory": True, "attested": False})],
+    "run.final.matrix": [registered(), ("run.final", {"matrix": MATRIX}, "run-a")],
+    **{f"reconcile.unexplained_effect.{f}": [registered(), ("reconcile.unexplained_effect", UNEXPLAINED, "run-a")]
+       for f in ("observer", "kind", "host", "port")},
+    **{f"capture.gap.kind={k}": [registered(), ("capture.gap", {"kind": k, "reason": "r"}, "run-a")]
+       for k in ("observer_lost", "effect_outside_run")},
 }
 
 
@@ -782,6 +812,13 @@ class TestVersionTable(Case):
                 with self.subTest(name):
                     self.assertIn(name, ENTRIES, "add records that use it to ENTRIES")
                     self.assert_gated(version, *ENTRIES[name])
+
+    def test_shipped_rows_are_frozen(self):
+        # a row is frozen once its version's first release candidate ships: later additions go in a new row, so a
+        # verifier of that version never meets a field its own version claims to know
+        shipped = {"1.1.0": "2e5a668bf93c0e4b3fca960f9824e2c5858d5539109511d636bd7635e648061e"}
+        for version, digest in shipped.items():
+            self.assertEqual(hashlib.sha256(canonical(VERSIONS[version])).hexdigest(), digest, version)
 
 
 if __name__ == "__main__":

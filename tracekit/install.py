@@ -125,6 +125,42 @@ ReadWritePaths={data}
 [Install]
 WantedBy=multi-user.target
 """
+# the egress observer (`init --v2 --egress`, Linux): tracekit.egress as its own user on loopback, and a firewall unit
+# whose owner-match rule lets the agent's uid reach only loopback, so its outside traffic goes through the observer
+V2_EGRESS, EGRESS_FIREWALL = "tracekit-egress", "tracekit-egress-firewall"
+EGRESS_CONFIG, EGRESS_LISTEN = "/etc/tracekit/egress.yaml", "127.0.0.1:3128"
+EGRESS_UNIT_TEXT = """[Unit]
+Description=Tracekit egress observer
+After=network.target {signer}.service
+
+[Service]
+User={user}
+Group={user}
+ExecStart={python} -I -m tracekit egress serve --config {config}
+Restart=on-failure
+""" + HARDENING + """RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target
+"""
+# its own unit, so a stopped or crashed observer leaves the agent's traffic blocked, never unobserved ($$: systemd's $)
+FIREWALL_UNIT_TEXT = """[Unit]
+Description=Tracekit: {agent}'s outside traffic only through the egress observer
+Before=network-pre.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c 'for t in iptables ip6tables; do $$t -N TRACEKIT-EGRESS 2>/dev/null; $$t -F TRACEKIT-EGRESS && \
+$$t -A TRACEKIT-EGRESS -o lo -j RETURN && $$t -A TRACEKIT-EGRESS -j REJECT && \
+{{ $$t -C OUTPUT -m owner --uid-owner {uid} -j TRACEKIT-EGRESS 2>/dev/null || \
+$$t -I OUTPUT -m owner --uid-owner {uid} -j TRACEKIT-EGRESS; }} || exit 1; done'
+ExecStop=/bin/sh -c 'for t in iptables ip6tables; do $$t -D OUTPUT -m owner --uid-owner {uid} -j TRACEKIT-EGRESS; \
+$$t -F TRACEKIT-EGRESS; $$t -X TRACEKIT-EGRESS; done; true'
+
+[Install]
+WantedBy=multi-user.target
+"""
 # the harness helper (tracekit.harness_helper): one per signer, socket-activated, the only process that reads the agent's
 # /proc/<pid>/exe; its socket is in a directory only the signer's user can reach (V2_DATA; HELPER_DIR for v1)
 V2_HELPER, V1_HELPER = "tracekit-harness-helper", "tracekitd-harness-helper"
@@ -1047,11 +1083,12 @@ def _system_user(name, home, darwin):
     return pwd.getpwnam(name)
 
 
-def v2_signer_yaml(agent, approver_uid, policy, sock, tailer_uid, harnesses=(), public_witness=False):
+def v2_signer_yaml(agent, approver_uid, policy, sock, tailer_uid, harnesses=(), public_witness=False, egress_uid=None):
     """signer.yaml of v2 system mode. The agent's uid gets its own tenant (named after it), and so does the approver's,
     who alone may answer its approvals; every other local user lands in tenant `local`. The tailer's uid may make only
     the TAILER_METHODS calls. With harnesses (resolve_harness entries), the agent's runs must come from one of them.
-    public_witness: the public witness cosigns the logs (`witnesses: [public]`).
+    public_witness: the public witness cosigns the logs (`witnesses: [public]`). egress_uid: the egress observer's,
+    in the agent's tenant, granted observe_effect only.
     Scalars are JSON-quoted, which the built-in YAML subset reads back exactly."""
     q = json.dumps
     tenant, me, approver = q(agent.pw_name), q(f"uid:{agent.pw_uid}"), q(f"uid:{approver_uid}")
@@ -1062,8 +1099,10 @@ def v2_signer_yaml(agent, approver_uid, policy, sock, tailer_uid, harnesses=(), 
     return "\n".join([
         "# written by `tracekit init --v2`; re-run it to change this file", f"data_dir: {q(V2_DATA)}",
         f"socket: {q(sock)}", 'socket_mode: "0666"', 'tenant: "local"', "tenants:", f"  {me}: {tenant}",
-        f"  {approver}: {tenant}", "approvals:", '  self_approval: "deny"', "  approvers:", f"    - {approver}",
-        "authorize:", f"  {q(f'uid:{tailer_uid}')}: [{', '.join(TAILER_METHODS)}]", f"policy: {q(policy)}",
+        f"  {approver}: {tenant}", *([f"  {q(f'uid:{egress_uid}')}: {tenant}"] if egress_uid is not None else []),
+        "approvals:", '  self_approval: "deny"', "  approvers:", f"    - {approver}",
+        "authorize:", f"  {q(f'uid:{tailer_uid}')}: [{', '.join(TAILER_METHODS)}]",
+        *([f"  {q(f'uid:{egress_uid}')}: [observe_effect]"] if egress_uid is not None else []), f"policy: {q(policy)}",
         *binding, *(['witnesses: ["public"]'] if public_witness else []), ""])
 
 
@@ -1131,11 +1170,13 @@ def v2_plist(user):
 
 
 def init_system_v2(target_user, approver=None, policy=None, project=None, no_service=False, hooks=True,
-                   experimental_macos=False, allow_privileged=False, agent="claude", harnesses=(), public_witness=False):
+                   experimental_macos=False, allow_privileged=False, agent="claude", harnesses=(), public_witness=False,
+                   egress=False):
     """`sudo tracekit init --v2 --user AGENT`: the v2 signer service as its own user, from the root-owned venv, with
     the v2 hook of `agent` (Claude Code, or a harness of tracekit.agent_hooks) for AGENT. Approvals are answered only by `approver` (default: the admin who ran sudo), a
     different uid from the agent's. harnesses (`--harness [NAME=]PATH`): the agent's runs must come from one of them,
     which the harness helper attests. public_witness (`--public-witness`): the public witness cosigns the signer's logs.
+    egress (`--egress`, Linux): the agent's outside traffic only through a local egress observer (docs/egress.md).
     Returns (socket, settings path or None)."""
     if public_witness:
         from . import public_witness as pw
@@ -1144,6 +1185,9 @@ def init_system_v2(target_user, approver=None, policy=None, project=None, no_ser
         except ValueError as e:
             raise SystemExit(f"--public-witness: {e}") from None
     darwin = _require_system(experimental_macos)
+    if egress and darwin:
+        raise SystemExit("--egress needs Linux (an owner-match firewall rule); on macOS the agent's network is reported "
+                         "only")
     owner = _agent_user(target_user, allow_privileged)
     if approver:
         approver = pwd.getpwnam(approver)
@@ -1183,15 +1227,21 @@ def init_system_v2(target_user, approver=None, policy=None, project=None, no_ser
         print(f"transcript tailer: {why}. No tailer is set up, so each run of {target_user}'s sessions records a "
               "tailer_lost gap instead of their tool uses and prompts")
     sock = os.path.join(run_dir, "signer.sock")
+    observer = _system_user(V2_EGRESS, "/var/empty", darwin) if egress else None
     _write_root_file(V2_CONFIG, v2_signer_yaml(owner, approver.pw_uid, policy, sock, tailer.pw_uid, harnesses,
-                                                public_witness).encode())
+                                                public_witness, observer and observer.pw_uid).encode())
+    proxy = {"HTTPS_PROXY": f"http://{EGRESS_LISTEN}", "HTTP_PROXY": f"http://{EGRESS_LISTEN}"} if egress else {}
+    if egress:   # attribution by the agent's uid, read from /proc: no token in the proxy URL
+        _write_root_file(EGRESS_CONFIG, (f"# written by `tracekit init --v2 --egress`\nlisten: {json.dumps(EGRESS_LISTEN)}"
+                                         f"\nsigner: {json.dumps(sock)}\n").encode())
     from . import agent_hooks
     settings = None if not hooks else (os.path.join(project or owner.pw_dir, ".claude", "settings.json")
                                        if agent == "claude" else agent_hooks.config_path(agent, project or owner.pw_dir))
     sc = {k: v for k, v in (client.system_config() or {}).items() if k != "tailer"}   # v1 system mode keeps its keys
     # no `tailer` key: the hook has the signer record a tailer_lost gap for each run instead of starting one
     _write_system_client_config(dict(sc, mode="system", signer=sock, fail_mode=sc.get("fail_mode", "closed"),
-                                     hooks={"user": target_user, "settings": settings, "agent": agent},
+                                     hooks={"user": target_user, "settings": settings, "agent": agent,
+                                            **({"env": proxy} if proxy else {})},
                                      **({"tailer": {"user": tailer.pw_name, "uid": tailer.pw_uid, "python": OPT_PYTHON}}
                                         if agent == "claude" and not why else {})))
     if not no_service:
@@ -1210,10 +1260,24 @@ def init_system_v2(target_user, approver=None, policy=None, project=None, no_ser
             r = subprocess.run(["systemctl", "restart", V2_UNIT], check=False)
             if r.returncode:
                 print(f"could not start {V2_UNIT}: see systemctl status {V2_UNIT}")
+            if egress:
+                for unit, text in ((V2_EGRESS, EGRESS_UNIT_TEXT.format(signer=V2_UNIT, user=V2_EGRESS, python=OPT_PYTHON,
+                                                                        config=EGRESS_CONFIG)),
+                                   (EGRESS_FIREWALL, FIREWALL_UNIT_TEXT.format(agent=target_user, uid=owner.pw_uid))):
+                    _write_root_file(os.path.join(SYSTEMD_DIR, unit + ".service"), text.encode())
+                subprocess.run(["systemctl", "daemon-reload"], check=False)
+                if subprocess.run(["systemctl", "enable", "--now", V2_EGRESS, EGRESS_FIREWALL], check=False).returncode:
+                    print(f"could not start {V2_EGRESS} or {EGRESS_FIREWALL} (iptables with the owner match is needed): "
+                          f"see systemctl status {V2_EGRESS} {EGRESS_FIREWALL}; until then {target_user}'s network is "
+                          "reported only")
     if settings and agent == "claude":
-        install_hooks(settings, owner=owner, python=OPT_PYTHON, module=V2_HOOK, signer=sock)
+        install_hooks(settings, owner=owner, python=OPT_PYTHON, module=V2_HOOK,
+                      signer={"TRACEKIT_SIGNER": sock, **proxy} if proxy else sock)
     elif settings:
         files.as_user(owner, agent_hooks.install, agent, None, False, True, OPT_PYTHON, settings, errors=(SettingsError,))
+    if proxy and agent != "claude":
+        print(f"egress: start {target_user}'s agent with HTTPS_PROXY=http://{EGRESS_LISTEN}: anything else it sends "
+              "outside is refused by the firewall")
     return sock, settings
 
 
@@ -1230,12 +1294,14 @@ def uninstall_system_v2(purge=False):
         owner = None
     if h.get("settings") and os.path.exists(h["settings"]):
         if h.get("agent", "claude") == "claude":
-            install_hooks(h["settings"], uninstall=True, owner=owner, signer=sc.get("signer"))
+            install_hooks(h["settings"], uninstall=True, owner=owner, signer={
+                **({"TRACEKIT_SIGNER": sc["signer"]} if sc.get("signer") else {}), **h["env"]} if h.get("env") else
+                sc.get("signer"))
         else:
             from . import agent_hooks
             files.as_user(owner, agent_hooks.install, h["agent"], None, True, True, None, h["settings"],
                           errors=(SettingsError,))
-    users = [V2_USER_DARWIN, V2_TAILER_DARWIN] if darwin else [V2_USER, V2_TAILER]
+    users = [V2_USER_DARWIN, V2_TAILER_DARWIN] if darwin else [V2_USER, V2_TAILER] + ([V2_EGRESS] if h.get("env") else [])
     if owner and h.get("agent", "claude") == "claude":   # also when init kept no `tailer` key: the ACL may be set
         why = _tailer_acl(owner, users[1], darwin, grant=False)
         if why:
@@ -1247,7 +1313,10 @@ def uninstall_system_v2(purge=False):
         removed = [plist, V2_RUN["darwin"], helper]
     else:
         removed = [os.path.join(SYSTEMD_DIR, n) for n in (V2_UNIT + ".service", V2_HELPER + ".socket",
-                                                          V2_HELPER + ".service")]
+                                                          V2_HELPER + ".service", V2_EGRESS + ".service",
+                                                          EGRESS_FIREWALL + ".service")]
+        if os.path.exists(removed[3]):   # the firewall unit's stop removes the owner-match rule
+            subprocess.run(["systemctl", "disable", "--now", V2_EGRESS, EGRESS_FIREWALL], check=False)
     unit = not darwin and os.path.exists(removed[0])   # none after --no-service: nothing to stop
     if unit:
         subprocess.run(["systemctl", "disable", "--now", V2_UNIT], check=False)
@@ -1258,7 +1327,7 @@ def uninstall_system_v2(purge=False):
         _write_system_client_config(rest)
     else:
         removed += [client.SYSTEM_CONFIG, OPT]
-    removed += [V2_CONFIG, TAILER_SUDOERS]
+    removed += [V2_CONFIG, TAILER_SUDOERS, EGRESS_CONFIG]
     if purge:
         removed.append(V2_DATA)
     for p in removed:

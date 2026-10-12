@@ -376,6 +376,10 @@ class Client:
         fresh = method in _EVENT_METHODS and "client_seq" not in req
         if fresh:
             req.update(stream=self.stream, client_seq=self._seqs.get(run_id, 0))
+        if method == "close_run" and run_id in self._seqs:
+            # the last client_seq this stream used: one the signer never received becomes its client_counter_gap
+            req["last_client_seq"] = [*req.get("last_client_seq", ()),
+                                      {"stream": self.stream, "client_seq": self._seqs[run_id] - 1}][-64:]
         _validate(method, req)
         data = _encode(method, req)
         if fresh:
@@ -524,6 +528,20 @@ class RunHandle:
         self.closed = False
         self._decided = {}   # tool_call_id -> the decision_id and args_digest its `complete` must name
         self._untrusted = set()   # tool_call_ids whose decision asked for the result itself (send_result)
+
+    @property
+    def proxy_env(self):
+        """With $TRACEKIT_EGRESS_PROXY set (an egress observer, docs/egress.md#attribution): HTTPS_PROXY and HTTP_PROXY,
+        both cases, naming it with this run's id and token as credentials, for the commands the run starts
+        (`subprocess.run(cmd, env={**os.environ, **run.proxy_env})`) or an HTTP client's proxy, so the observer
+        attributes their connections to this run. {} without it. This process's own environment is left as it is."""
+        proxy = os.environ.get("TRACEKIT_EGRESS_PROXY")
+        if not proxy:
+            return {}
+        u = urllib.parse.urlsplit(proxy)
+        cred = urllib.parse.quote(self.run_id, safe="") + ":" + urllib.parse.quote(self.run_token, safe="")
+        url = u._replace(netloc=cred + "@" + u.netloc.rpartition("@")[2]).geturl()
+        return dict.fromkeys(("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"), url)
 
     def call(self, method, **fields):
         """Any per-run RPC (`state_write`, `approval_wait`, `read`, `approval_list`, ...) with this run's id, and its

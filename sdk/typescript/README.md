@@ -97,6 +97,22 @@ never lets the call run. Recording a finished call never throws and never change
 keeps no runtime dependencies. No adapter wraps a provider client, so the SDKs' own `APIPromise` (`.withResponse()`)
 and streams (`messages.stream()`, `streamText`) work as without Tracekit. Offline examples: `examples/v2_*.mjs`.
 
+- **A server: a run per conversation.** Register a run per conversation and make it current around each request with
+  `withRun(run, () => runner.run(...))`: every adapter decides the calls made inside it in that run (its complete and
+  approvals follow the call), and uses the run it was built with otherwise. `instrument()`'s own run is replaced by a
+  new one (a warning, linked as `parent_run` while the old one is closing) when the signer closed it after it was idle.
+- **Exit.** `instrument()` closes its run on `beforeExit`, and on SIGINT or SIGTERM when nothing else handles the
+  signal (then the signal's default action runs). A signal your app or a library handles is left to it (`@openai/agents`
+  exits on SIGINT/SIGTERM): close the run in your own handler (`await tk.run.close()`) before you exit. A run stays
+  open while approvals of it wait for a person or, approved, to be resumed. To approve and resume in another process, keep the run's `runId` and `runToken` with the framework's saved state and re-attach:
+  `new RunHandle(new Client(), { run_id, run_token })`. `process.exit()` skips all of this: close first.
+- **The LLM gateway.** Point the provider at it with the run in a header, e.g. OpenAI Agents
+  `setDefaultOpenAIClient(new OpenAI({ baseURL, apiKey: <gateway token>, defaultHeaders: { "X-Tracekit-Run":
+  `${run.runId}.${run.runToken}` } }))`, Vercel AI `createOpenAI({ baseURL, apiKey, headers })`. Register the run as
+  the identity the gateway relays (`TRACEKIT_SIGNER=https://…` with the same token), and grant that identity the RPCs
+  the adapters use, `approval_list` included ([limits](../../docs/limits.md#deployment)). The adapters' own model
+  events are then optional: the gateway records each exchange too.
+
 **OpenAI Agents SDK** (`@cygnux/tracekit/v2/openai-agents`)
 
 ```ts
@@ -114,9 +130,20 @@ await tk.recordResponses(result.rawResponses, "gpt-5");
 
 `tk.tool(tool, options)` builds the tool with the SDK's `tool()`: the signer's policy replaces `needsApproval`, and a
 tool input guardrail (after your own) gates the call on its raw arguments. The approval id travels in the RunState only
-as a hint (`context.tracekit.approvals`); the signer checks it. Leave `toolExecution.preApprovalInputGuardrails` off.
-Not gated, listed as uncovered: hosted tools (web and file search, code interpreter, hosted MCP, hosted shell), shell,
-apply_patch and computer tools, and handoffs. `recordResponses` records them (T3) in a signed model event per response.
+as a hint (`context.tracekit.approvals`); the signer checks it. Leave `toolExecution.preApprovalInputGuardrails` off:
+with it on, the guardrail runs before the interruption and every `ask` is refused at once.
+
+A local MCP server (`MCPServerStdio`, SSE, streamable HTTP) is gated through its tool guardrails:
+`new MCPServerStdio({ name: "filesystem", ..., ...tk.mcp("filesystem") })` decides each call as
+`mcp:filesystem/<tool>`, holds an `ask` in the guardrail until a person decides, and completes the call with the
+server's output. Pass the server's own `name`: with `mcpConfig.includeServerInToolNames` the model's
+`mcp_<server>__<tool>` is turned back into `mcp:<server>/<tool>` from it. A call your own input guardrails refuse is
+recorded as refused. Without it, local MCP calls
+are not gated. A sub-agent used as a tool (`agent.asTool()`) is not gated either, and its model responses are not in
+the outer `rawResponses`: gate its own tools with `tk.tool`, and record its responses (`customOutputExtractor` gets
+the nested result) or run the LLM gateway. Also not gated, listed as uncovered: hosted tools (web and file search,
+code interpreter, hosted MCP, hosted shell), shell, apply_patch and computer tools, and handoffs (name them in the
+policy's `handoffs:` so they reconcile). `recordResponses` records them (T3) in a signed model event per response.
 
 **Vercel AI SDK v7** (`@cygnux/tracekit/v2/vercel-ai`)
 
@@ -137,6 +164,12 @@ forged or replayed `tool-approval-response` runs nothing. `experimental_toolAppr
 approval requests) may be set too; it does not replace the signer's check. Spans from `@ai-sdk/otel` are telemetry, not
 evidence: the signed records are the middleware's and the adapter's. Tools without `execute` and provider-executed tools
 are not gated; they appear in the recorded model responses.
+
+MCP tools (`@ai-sdk/mcp`): `tk.tools(await client.tools(), { mcp: "filesystem" })` decides each as
+`mcp:filesystem/<tool>`. Your own `toolApproval` (a function, or one per tool name) composes with the signer's:
+`toolApproval: tk.toolApprovalWith(mine)` asks the policy first, and your answer applies only to a call the policy
+allows (a call you deny is recorded as refused; one you answer `user-approval` and then deny in your own UI stays
+decided and not completed); `tk.toolApproval` alone replaces yours.
 
 **Claude Agent SDK** (`@cygnux/tracekit/v2/claude-agent-sdk`)
 
