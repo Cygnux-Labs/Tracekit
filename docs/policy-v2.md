@@ -387,13 +387,16 @@ Patterns must mean the same to RE2 (`google-re2`, used when installed) and to th
 - groups other than `(?:` and `(?P<name>`, so no inline flags or comments;
 - nested sets and `[: :]` classes; a letter or digit escape other than `\d \D \w \W \s \S \b \B \A \n \t \r \f \v
   \xHH` (inside a set: `\d \D \w \W \s \n \t \r \f \v \xHH`), and non-ASCII escapes (escaped ASCII punctuation is fine);
-- a literal `{` that isn't escaped, a repeat without a lower bound, repeat counts above 1000;
-- super-linear shapes (nested repeats).
+- a literal `{` that isn't escaped, a repeat without a lower bound, repeat counts above 1000 (nested counts
+  multiplied: `(?:a{10}){101}` is 1010);
+- super-linear shapes (nested repeats);
+- an `unless` that matches every subject (`x|`, `.*`): its rule could never fire.
 
 `$` means end of text and `\s` excludes `\v`, as in RE2. The fallback engine backtracks, so a large subject can be
-slow where RE2 is linear: all matches of one decision share 1 s, and when it runs out the decision denies with the rule
-that was matching, leaves the remaining rules out and is marked `nondeterministic: true`. RE2 never times out, so on
-such a subject the two engines can decide differently; install `google-re2` on the signer.
+slow where RE2 is linear, and so can a short one under a repeat of overlapping alternatives (`secret(.|\s)*key`):
+all matches of one decision share 1 s, and when it runs out the decision denies with the rule that was matching,
+leaves the remaining rules out and is marked `nondeterministic: true`. RE2 never times out, so on such a subject the
+two engines can decide differently; install `google-re2` on the signer.
 
 ## Packs shipped
 

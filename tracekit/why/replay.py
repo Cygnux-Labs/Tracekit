@@ -576,7 +576,7 @@ def decision_test(run: Run, decision: Any, intervention: str, *, n: int = 30,
               "effect": round(eff, 4), "ci": [round(lo, 4), round(hi, 4)], "verdict": verdict,
               "noise": noise, "min_effect": min_effect,
               "n_needed": n_hint(n, lo, hi, min_effect) if verdict == "inconclusive" else None, "scope": "decision", "decision": ev["id"], "decision_seq": ev["seq"],
-              "method": "re-call one recorded model call with and without the item, paired seeds, Newcombe paired "
+              "method": "re-call one recorded model call with and without the item, paired seeds, Tango paired "
                         "95% CI"}
     if save:
         run.add_test(result)
@@ -604,9 +604,8 @@ def diff_runs(a: Run, b: Run) -> List[Dict[str, Any]]:
             k = (e["agent"], e["type"])
             i = counts.get(k, 0)
             counts[k] = i + 1
-            sig = e.get("output") or (e.get("tool"), e.get("args_ref")) or e.get("ref")
-            if e["type"] == "message":
-                sig = (e["to"], e["ref"])
+            sig = (e["to"], e["ref"]) if e["type"] == "message" else \
+                e.get("output") or (e.get("tool"), e.get("args_ref"))
             out[k + (i,)] = (e, sig)
         return out
 

@@ -81,8 +81,8 @@ def main(argv=None):
                                                          "firewall rule; undone by uninstall; docs/egress.md)")
     p.add_argument("--project", action="store_true", help="hooks in ./.claude/settings.json instead of ~/.claude")
     p.add_argument("--no-hooks", action="store_true")
-    p.add_argument("--witness", action="append", default=[], help="file:/path.jsonl or git:/clone[@remote] (repeatable)")
-    p.add_argument("--checkpoint-every", type=int, default=50)
+    p.add_argument("--witness", action="append", default=[], help="file:/path.jsonl or git:/clone[@remote] (repeatable; default: the last init's, else a local clone)")
+    p.add_argument("--checkpoint-every", type=int, help="records between checkpoints (default: the last init's, else 50)")
     p.add_argument("--user", help="system mode: the user whose agents are traced (default: $SUDO_USER)")
     p.add_argument("--no-service", action="store_true", help="system mode: do not install systemd/launchd")
     p.add_argument("--experimental-macos", action="store_true", help="allow system mode on macOS (not yet validated on hardware)")
@@ -336,23 +336,20 @@ def _run(a):
     if a.cmd == "ingest":
         from . import ingest
         return ingest.main(a.rest)
-    if a.cmd == "analyze":
-        from . import findings
-        return findings.main(a.rest)
-    if a.cmd == "otel":
-        from . import otlp
-        return otlp.main(a.rest)
     if a.cmd == "init" and a.remote:
         return _init_remote(a)
     if a.cmd == "init":
         from . import install
-        if a.checkpoint_every < 1:
+        if a.checkpoint_every is not None and a.checkpoint_every < 1:
             print("tracekit: --checkpoint-every must be at least 1", file=sys.stderr)
             return 2
         if not 1 <= a.proxy_port <= 65535:
             print("tracekit: --proxy-port must be between 1 and 65535", file=sys.stderr)
             return 2
         if a.proxy and not experimental_gate(a.experimental, "the model proxy (init --proxy)"):
+            return 2
+        if a.managed_only and not a.managed:   # alone, the hooks would go to settings the agent's user can edit
+            print("tracekit: --managed-only goes with --managed", file=sys.stderr)
             return 2
         signer = None
         if a.key_attestation and not a.signer_cmd:

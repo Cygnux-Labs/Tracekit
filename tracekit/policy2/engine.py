@@ -17,6 +17,10 @@ ALIASES = (classes.SHELL_KEYS, classes.PATH_KEYS, classes.PAYEE_KEYS, classes.RE
            ("amount", "amount_cents"), ("sql", "query", "statement"), ("db", "database"))
 _URL = re.compile(r"(?i)\b(?:https?|wss?|ftp):[^\s'\"<>`]*")
 _BARE_ADDRESS = re.compile(r"[0-9][0-9A-Za-z.]*(:[0-9]*)?([/?#]|$)")   # curl 2852039166/latest
+# ...when it reads as an IPv4 address outside 0.0.0.0/8, which no call reaches: not 1.txt, 2fa/ or head -n 50's 50.
+# lean: a dotted number (npm version 1.2.3) still reads as one; read bare words only in network commands if it flags
+# too much
+_BARE_TARGET = re.compile(r"http://[1-9][0-9]*(\.[0-9]+){3}/")
 REGEX_TIMEOUT_S = 1.0       # fallback engine only: the time all matches of one decision share; a match that runs out
                             # of it denies, marked nondeterministic
 
@@ -208,10 +212,13 @@ class Engine:
         tools: the whole call. Each URL is also matched as scheme://canonical-host/ (classes.url_target), so a host in
         decimal, hex, octal or IPv6 form reads as the address it is."""
         if cls == "shell":
-            words = [[a for i, a in enumerate(c["argv"]) if i not in shell.data_words(c["argv"])] for c in parsed[0]]
-            urls = [u for w in [a for ws in words for a in ws] + parsed[2]
-                    for u in _URL.findall(w) + (["http://" + w] if _BARE_ADDRESS.match(w) else [])]
-            return [" ".join(w) for w in words] + parsed[2] + [t for t in map(classes.url_target, urls) if t]
+            words = [[a for i, a in enumerate(c["argv"]) if i not in data] for c in parsed[0]
+                     for data in [shell.data_words(c["argv"])]]
+            found = [a for ws in words for a in ws] + parsed[2]
+            urls = [t for t in map(classes.url_target, (u for w in found for u in _URL.findall(w))) if t]
+            bare = [t for t in (classes.url_target("http://" + w) for w in found if _BARE_ADDRESS.match(w))
+                    if t and _BARE_TARGET.fullmatch(t)]
+            return [" ".join(w) for w in words] + parsed[2] + urls + bare
         if cls == "fs":
             return Engine._subjects(cls, "path", args, fields, parsed)
         if cls in ("http", "browser"):

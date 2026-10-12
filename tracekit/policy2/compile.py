@@ -102,19 +102,21 @@ def translate(pattern):
     return "".join(out)
 
 
-def _walk(items):
+def _walk(items, room=MAX_REPEAT):
+    """`room`: what RE2 still allows a nested repeat count (the product of nested counts is at most MAX_REPEAT)."""
     for op, av in items:
         if op not in _OPS or (op == _sre_c.AT and av not in _ATS):
             raise PolicyError("lookaround, backreferences, atomic groups, possessive repeats and \\Z are outside the RE2 subset")
         if op in (_sre_c.MAX_REPEAT, _sre_c.MIN_REPEAT):
-            if av[0] > MAX_REPEAT or (av[1] != _sre_c.MAXREPEAT and av[1] > MAX_REPEAT):
-                raise PolicyError(f"repeat counts above {MAX_REPEAT} are outside the RE2 subset")
-            _walk(av[2])
+            count = av[0] if av[1] == _sre_c.MAXREPEAT else av[1]
+            if count > room:
+                raise PolicyError(f"repeat counts above {MAX_REPEAT}, nested ones multiplied, are outside the RE2 subset")
+            _walk(av[2], room // max(count, 1))
         elif op == _sre_c.SUBPATTERN:
-            _walk(av[-1])
+            _walk(av[-1], room)
         elif op == _sre_c.BRANCH:
             for b in av[1]:
-                _walk(b)
+                _walk(b, room)
 
 
 def check_pattern(pattern):
@@ -248,6 +250,8 @@ def _lint(pol, path):
                 try:
                     if isinstance(r.get(key), str):
                         check_pattern(r[key])
+                        if key == "unless" and all(re.search(translate(r[key]), s, re.ASCII) for s in ("", "\0\n")):
+                            errors.append(f"{where}: can never fire: unless matches every subject")
                 except PolicyError as e:
                     errors.append(f"{where}: {key}: {e}")
             cls, field = r.get("class"), r.get("field")

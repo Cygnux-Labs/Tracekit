@@ -146,8 +146,10 @@ class Import(unittest.TestCase):
         with contextlib.redirect_stdout(out):
             self.assertEqual(main(["import", "--v1", home, "--run", "inj-1", "--out", runs, "--sensitive", "send_email"]), 0)
         self.assertIn("3 model calls (3 with exact context)", out.getvalue())
-        with self.assertRaises(FileExistsError):
-            main(["import", "--v1", home, "--run", "inj-1", "--out", runs])
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):   # a reason and exit 2, not a traceback
+            self.assertEqual(main(["import", "--v1", home, "--run", "inj-1", "--out", runs]), 2)
+        self.assertIn("FileExistsError", err.getvalue())
 
 
 class Signatures(unittest.TestCase):

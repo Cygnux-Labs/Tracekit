@@ -66,7 +66,7 @@ that citation joins the two.
   signer's index could not say. With a why log of the run, also the why analysis of each value: the task, a trusted
   input or result, an untrusted input or result, or written by the model.
 - **Detail · WHY** (the detail's second view, for the selected call): the verdict sentence, **how it got here** (the
-  observed path through agents, model calls and messages, from every untrusted input), **candidate causes** with their
+  observed path through agents, model calls and messages, from each of the 20 nearest untrusted inputs), **candidate causes** with their
   status (primary cause, contributing, confirmed, joint, inconclusive, no effect seen, ruled out, not tested), effect,
   95% interval and with → without rates, and **FIND THE CAUSE** / **RUN TEST**.
 - **Views** (header buttons; the run list and tape stay): **GRAPH**, the run's data flow (observed edges; tested causes
