@@ -51,7 +51,8 @@ function remoteUrlError(url: string): string | null {
 export async function executorActions(url: string, run: RunHandle, { headers = {}, fetch = globalThis.fetch }: Options = {}): Promise<Action[]> {
   const why = remoteUrlError(url);
   if (why) throw new Error(`${url.slice(0, 256)}: ${why}`);   // the run token and the credential never go in clear
-  const base = url.replace(/\/+$/, "");
+  let base = url;
+  while (base.endsWith("/")) base = base.slice(0, -1);
   // the agent's credential for the executor never follows a redirect
   const get = async (path: string, init: RequestInit = {}) => {
     const r = await fetch(base + path, { ...init, redirect: "manual", headers: { ...headers, ...(init.headers as Record<string, string>) } });
