@@ -26,6 +26,7 @@ upstreams:
   - name: linear
     url: https://mcp.linear.app/mcp                              # Streamable HTTP
     headers: {authorization: secrets/linear.header}             # header -> the file holding its value (one line)
+    settings: {x-team: platform}                                 # inline headers (url) or env (stdio): not secrets
 trusted: []                            # upstreams whose resources are recorded trusted: only ones whose content
                                        # neither the agent nor outsiders can write
 ```
@@ -64,12 +65,19 @@ answers each request with one JSON response and keeps no session; it serves `ini
 - **resources/read** and the prompt got: the content is recorded as an observed input (`input.observed`, source
   `mcp:<upstream>/resource` or `mcp:<upstream>/prompt`, tier T2), a resource `untrusted` unless its upstream is in
   `trusted`, so the signer's [provenance](policy-v2.md) index sees it. Content that can't be recorded isn't answered.
-- **tools/list**, **resources/list** and **prompts/list** pass through, renamed.
+- **tools/list**, **resources/list** and **prompts/list** pass through, renamed, each upstream's page recorded as an
+  untrusted observed input (`mcp:<upstream>/tools`, `/resources`, `/prompts`): the model reads the descriptions the
+  upstream wrote. A tool named `prompt:...` is neither listed nor called: it would be decided as a prompt.
+- An upstream that fails during a tools/call or prompts/get answers an error saying the call may have run, and the
+  call completes as an error.
 
 The upstreams' credentials never reach the agent or the signer: the agent's own headers are never forwarded, and each
-configured value (and, of a `<scheme> <credential>` header, the credential alone) is cut from the decoded strings of
-everything the gateway answers or records. Each of its records names the gateway in `via`, and the signer takes a
-call's approval request, consume and completion from the gateway alone (see the [executor](executor.md#what-is-recorded)).
+`env` and `headers` value is cut from the decoded string values of everything the gateway answers or records (never
+the JSON-RPC envelope), as the [executor](executor.md#what-is-recorded) cuts its headers: values of at least 8
+characters, in their escaped and encoded forms too. `settings` values aren't secrets and are never cut. Each of its
+records names the gateway in `via`, and the signer takes a call's approval request, consume and completion from the
+gateway, for the identity it decided the call for, alone; a run closed mid-call waits for the result, as for the
+[executor](executor.md#what-is-recorded).
 
 ## Limits
 
@@ -86,8 +94,8 @@ call's approval request, consume and completion from the gateway alone (see the 
 - A stdio upstream runs as the gateway's uid: it can read the other upstreams' secret files and the gateway's signer
   credential. Run one gateway, with its own identity and secrets, per stdio upstream you don't trust fully, and pin
   its command to an exact version.
-- The gateway remembers up to 10,000 listed resource URIs; past that it forgets them all, and a read answers
-  `unknown resource: list resources first`.
+- The gateway remembers up to 10,000 listed resource URIs, the least recently listed or read going first; a read of
+  one it forgot answers `unknown resource: list resources first`.
 - A credential an upstream encodes or transforms (base64, a hash) isn't recognised and cut; header values are one line
   of printable ASCII (the gateway refuses to start otherwise, naming the file).
 - One session per upstream, opened when the gateway starts, is shared by every agent and run: run one gateway per

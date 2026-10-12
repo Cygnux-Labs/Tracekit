@@ -98,6 +98,7 @@ is `witnessed` plus a fresh, conflict-free report of a monitor your trust config
 | `policy` | a tool call ran against a deny, or an `ask` with no consumed approval, and the signer recorded it as `capture.gap{executed_against_policy}` | that the call did harm |
 | `coverage` | the signer's reconciliation found calls it could not match across capture layers (`unreconciled: hook_missing 1, ...`) | that the agent hid a call; a layer may simply not have reported |
 | `break-glass approvals` | an approval was answered under the break-glass role, with its approver and reason | that the approval was wrong |
+| `held calls` | the signer wrote a `held_call_unresolved` gap: a call the executor or a gateway decided and may have run got no result before its run ended (after `gateway_wait_s`) | that the call ran, or did harm |
 | `tiers` (`decided and completed by different capture paths`) | a tool call's decision and result records name different `source` or `tier`, for example a call a gateway decided (T2) completed by the agent, which a current signer refuses; each such call is listed and counted at the weaker tier | which record is false, or that the call didn't run |
 | `external decisions` | another policy system's imported decision (`policy.external`) disagreed with the signer's for the same call (or named another tool, or a call the signer never decided), recorded as `capture.gap{decision_mismatch}`; the line also counts imports by system and by verified signature | that either decision was wrong: the signer's decision is the one that applied |
 
@@ -106,7 +107,7 @@ is `witnessed` plus a fresh, conflict-free report of a monitor your trust config
 | Line | Shows | Read it as |
 |---|---|---|
 | `coverage` (no unreconciled calls) | the capture layers that reported (`L1`–`L6`; `(L3 absent)` when no model calls were seen) and the number of calls reconciled | completeness is only as good as the layers listed |
-| `tiers` (each call decided and completed by one capture path) | tool calls by evidence tier: `T1` adapter, `T2` gateway or executor, `T3` import; `untiered` when no record names one. A call whose records disagree counts at the weakest (untiered < T1 < T2 < T3), its decision or result naming none counting as untiered | T3 (OTLP import) proves receipt only |
+| `tiers` (each call decided and completed by one capture path) | tool calls by evidence tier: `T1` adapter, `T2` gateway or executor, `T3` import; `untiered` when no record names one. A call whose records disagree counts at the weakest (untiered < T3 < T1 < T2), its decision or result naming none counting as untiered | T3 (OTLP import) proves receipt only |
 | `args source` | records by `args_source`: `raw` (the exact bytes the model produced), `parsed`, `coerced` (after the framework changed them) | coerced arguments can't be matched to the model's call byte for byte |
 | `isolation` | the `signer_isolation` the signer measured for each run: `same-user`, `separate-user`, `remote`, `unknown` | `signer-reported`: the signer's own measurement of its caller, never the client's claim |
 | `fail-open classes` | tool classes the signer's config lets run when the signer is down | calls of these classes may have run unrecorded during an outage |

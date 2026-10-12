@@ -107,8 +107,11 @@ the caller presents, for a parent that is not final) has `parent_run` (that run)
 parents) in its `run.registered` (format 1.2); a run without them is the root of its own session, whose id is its
 `run_id`. A tool call the [tool executor](executor.md) or the [MCP gateway](mcp-gateway.md) decided, ran or received
 for the run's client is recorded `source: gateway`, tier `T2`, its `policy.decision`, `approval.request`, `tool.result`
-and `input.observed` naming that service's signer identity (`scheme:subject`) in `via` (format 1.2); the signer takes
-such a call's approval request, consume and completion from that service alone. Key records: `signer.epoch{keys:
+and `input.observed` naming that service's signer identity (`scheme:subject`) in `via`, and its `policy.decision` the
+client it decided the call for in `caller` (format 1.2); the signer takes such a call's approval request, consume and
+completion from that service, for that client, alone. A run that ends with such a call allowed (or approved and
+consumed) and no result, after waiting `gateway_wait_s` for it, gets a signer `capture.gap{kind:
+held_call_unresolved}` for it. Key records: `signer.epoch{keys:
 [{kid, alg, spki, cert?}], bridge?}` (`cert`: the key's issuance entry from a record-key issuer, [issuer.md](issuer.md))
 and `key.retire{kid, last_seq}`. The log's last record, if it is ever closed: `log.closed{final_seq}`.
 
@@ -379,7 +382,7 @@ what it added: record types, data fields per record type, and enum values per (r
 | Version | Record types | Data fields | Enum values |
 |---|---|---|---|
 | 1.1.0 | `input.observed`, `content.accessed`, `content.erased`, `why.finding` | `policy.decision`: `provenance`, `provenance_state`; `run.registered`: `replay_of` | — |
-| 1.2.0 | — | `run.registered`: `parent_run`, `session`; `policy.decision`, `approval.request`, `tool.result`, `input.observed`: `via` | — |
+| 1.2.0 | — | `run.registered`: `parent_run`, `session`; `policy.decision`: `via`, `caller`; `approval.request`, `tool.result`, `input.observed`: `via` | `capture.gap` `kind`: `held_call_unresolved` |
 
 Every v2 definition is closed (`additionalProperties: false`), so an older verifier would fail a record that uses a
 newer entry; the version the manifest declares makes it report `UNVERIFIABLE (needs tracekit >= x)` instead, never

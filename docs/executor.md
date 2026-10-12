@@ -26,6 +26,7 @@ actions:
     method: POST                       # GET, POST, PUT, PATCH or DELETE
     url_template: https://api.github.com/repos/{owner}/{repo}/issues
     headers: {authorization: secrets/github.header}   # header -> the file holding its value ("Bearer ghp_...")
+    settings: {x-github-api-version: "2022-06-28"}   # headers given inline: not secrets, never cut from answers
     args:                              # JSON Schema of the arguments
       type: object
       required: [owner, repo, title]
@@ -38,7 +39,8 @@ path it must be one plain segment: letters, digits and `.`, `_`, `~`, `-`, not a
 400, since a slash, backslash or dot segment, even percent-encoded, can leave its segment once a proxy decodes the
 path). In the query (`?memo={memo}`) it is URL-quoted whole. The arguments go as the JSON body, except for GET and
 DELETE. Redirects are never followed: they would carry the credential elsewhere. Each `headers` file holds one line of
-printable ASCII (the executor refuses to start otherwise, naming the file).
+printable ASCII (the executor refuses to start otherwise, naming the file) and is a secret; a header that isn't (an API
+version, an accept type) goes in `settings`, inline.
 
 The executor reaches the signer as itself (`TRACEKIT_SIGNER_TOKEN_FILE` or `TRACEKIT_SIGNER_CERT`/`_KEY`, as for the
 Python client). In `signer.yaml`, list it under `gateways` and grant it the calls it makes for the agents:
@@ -89,9 +91,11 @@ generateText({ tools: Object.fromEntries(actions.map((a) => [a.name, vercelTool(
 ```
 
 `run` is the agent's `register_run` response (Python) or `RunHandle` (TypeScript). A refusal reaches the model as the
-tool's error. Don't wrap these tools in a Tracekit adapter as well: the executor already decides and records them, and
-a second decide would record the call twice. TypeScript has no Claude Agent SDK helper (its `tool()` takes only a zod
-shape): write a `tool()` per action with its zod shape whose handler returns `action.call(args)`.
+tool's error. The Tracekit adapters leave these tools alone (each is marked; the Claude Agent SDK hooks skip the tools
+of the server named `tracekit-executor`, the helper's default), so they can sit next to gated tools of your own: the
+executor decides and records them. TypeScript has no Claude Agent SDK helper (its `tool()` takes only a zod shape):
+write a `tool()` per action with its zod shape whose handler returns `action.call(args)`, and keep the Tracekit hooks
+off it (name its server `tracekit-executor`).
 
 ## What is recorded
 
@@ -100,15 +104,26 @@ on `ask`, `approval.request` and, once answered, the approval and its consume; t
 tier T2) with the API's response as its result, which the signer redacts and commits to. Each of the executor's
 records names it in `via` (its signer identity). An approval with a T2 executor (`approval: {executor: t2}`,
 [approvals](approvals.md#tiers-t1-and-t2-executors)) makes the consume return the signer's copy of the arguments, and
-that is what runs. The header values are cut from the response's decoded strings (so also from a JSON response that
-echoes one escaped) and from errors, before either is recorded or answered: each value and, of a
-`<scheme> <credential>` value, the credential alone.
+that is what runs. The `headers` values are cut from the response's decoded string values and from errors, before
+either is recorded or answered: each value of at least 8 characters and, of a `<scheme> <credential>` value, the
+credential alone, of a Basic credential its decoded user:password and password, each also JSON-escaped (with `\/`, or
+every character `\u`-escaped), percent-encoded and HTML-escaped. A shorter value, a `settings` value, and a credential
+the API returns otherwise encoded (base64, a hash) aren't cut.
 
-The call is the executor's: the signer takes its approval request, consume and completion from the executor alone, so
-the agent, though it holds the run token, can't record a result for it or ask for its approval in its own words
-(`forbidden`, counted in the signer's `refusal.summary` records). For the same reason the executor refuses a `tool_call_id` the agent
-already decided itself, and nobody can abandon the executor's approval: unanswered, it expires. A verifier counts a
-call whose decision and result came by different capture paths at the weaker tier and warns (`tiers`).
+The call is the executor's, for the identity it decided it for (its `policy.decision` names it in `caller`): the
+signer takes its approval request, consume and completion from the executor, for that identity, alone, so the agent,
+though it holds the run token, can't record a result for it or ask for its approval in its own words (`forbidden`,
+counted in the signer's `refusal.summary` records). For the same reason the executor refuses a `tool_call_id` the
+agent already decided itself, and nobody can abandon the executor's approval: unanswered, it expires. The Tracekit
+adapters leave the tools the client helpers build to the executor, so mixing them with gated tools of your own is
+fine. A verifier counts a call whose decision and result came by different capture paths at the weaker tier and warns
+(`tiers`).
+
+The executor's records count against its own event rate, not the agent's, and the result of a call it decided against
+none, so an agent can't spend the budget the record of its call needs. A run the agent closes while the executor is
+still running a call waits for the call's result, up to the signer's `gateway_wait_s` (default 600 s) past its grace
+window; if none comes, the signer writes a `held_call_unresolved` gap for the call before `run.final`, and the verifier
+warns (`held calls`).
 
 ## Compose
 
@@ -135,7 +150,7 @@ could connect as a custody service.
   least that long.
 - A result that can't be recorded (the signer went away after the action ran) still goes to the agent. The executor
   tries twice under one request id, then says on stderr which call and run it couldn't record and what to check; the
-  run then shows the call's `policy.decision` with no `tool.result` (a signed gap for it at run end is planned).
+  run ends with a `held_call_unresolved` gap for the call.
 - A call made without the model's tool-use id (the LangChain and Claude Agent SDK helpers, whose handlers don't get
   one) is decided under an id of the executor's: with an LLM gateway on the same run it reconciles as
   `reconcile.fabricated` plus `reconcile.hook_missing`. Read such a pair as one call through the executor; pass
