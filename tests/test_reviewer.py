@@ -307,7 +307,7 @@ class TestSlack(unittest.TestCase):
         posted = {f["blocks"][1]["elements"][0]["text"]: f["blocks"][0]["text"]["text"] for m, f in sent
                   if m == "chat.postMessage"}
         self.assertEqual(set(posted), {"person-only", "escalated"})   # the agent-eligible one stays with the agent
-        self.assertIn("odd payee (model output, over arguments the requesting agent supplied)", posted["escalated"])
+        self.assertIn("\"odd payee\" (model output, over arguments the requesting agent supplied)", posted["escalated"])   # quoted: model text
         signer.approvals["person-only"].update(state="approved", answered={"by": "oidc:alice", "kind": "person"})
         bridge.poll()
         updates = [f["blocks"][-1]["elements"][0]["text"] for m, f in sent if m == "chat.update"]
