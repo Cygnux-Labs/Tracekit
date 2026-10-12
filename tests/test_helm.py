@@ -131,6 +131,16 @@ FULL = ["tls.secretName=tls", "autoscaling.enabled=true", "autoscaling.maxReplic
         "viewer.tlsSecretName=vtls", "monitor.enabled=true", "monitor.logKeys={a+1+b,c+2+d,e+3+f}"]
 
 
+CUSTODY = ["tls.secretName=tls", "gateway.enabled=true", "gateway.secretName=gs", "gateway.tlsSecretName=gt",
+           "gateway.config.upstream=https://api.openai.com", "executor.enabled=true", "executor.secretName=xs",
+           "executor.tlsSecretName=xt", "executor.config.actions[0].name=pay", "executor.config.actions[0].method=POST",
+           "executor.config.actions[0].url_template=https://pay.example/v1/{to}",
+           "executor.config.actions[0].args.type=object", "executor.config.actions[0].args.required={to}",
+           "executor.config.actions[0].headers.authorization=/etc/tracekit/secrets/pay", "mcpGateway.enabled=true",
+           "mcpGateway.secretName=ms", "mcpGateway.tlsSecretName=mt", "mcpGateway.config.upstreams[0].name=gh",
+           "mcpGateway.config.upstreams[0].url=https://mcp.example/mcp"]
+
+
 def render_central(*sets):
     args = ["helm", "template", "t", CENTRAL, "--namespace", "ns"]
     for s in sets:
@@ -246,6 +256,53 @@ class Central(unittest.TestCase):
         [dsn] = [v for v in m["Deployment", "t-viewer"]["spec"]["template"]["spec"]["volumes"] if v["name"] == "dsn"]
         self.assertEqual([s["secret"]["name"] for s in dsn["projected"]["sources"]],
                          ["tracekit-log-read-0", "tracekit-log-read-1", "tracekit-log-read-2"])
+
+    @unittest.skipIf(os.name == "nt", "the chart's config names Linux container paths")
+    def test_custody_services_hold_their_own_secrets(self):
+        from tracekit import executor, gateway, mcp_gateway
+        m = self.objects(*CUSTODY)
+        crb = m["ClusterRoleBinding", "ns-t-tokenreview"]   # each checks the agents' tokens by TokenReview
+        self.assertEqual({s["name"] for s in crb["subjects"]}, {"t-signer", "t-gateway", "t-executor", "t-mcp-gateway"})
+        owners = {}
+        for (kind, name), d in m.items():
+            if kind in ("StatefulSet", "Deployment"):
+                for v in d["spec"]["template"]["spec"]["volumes"]:
+                    if "secret" in v:
+                        owners.setdefault(v["secret"]["secretName"], set()).add((name, v["name"]))
+        for name, load, secret in (("gateway", gateway.load_config, "gs"), ("executor", executor.load_config, "xs"),
+                                   ("mcp-gateway", mcp_gateway.load_config, "ms")):
+            self.assertEqual(owners[secret], {(f"t-{name}", "secrets")})   # mounted in its own pod only
+            pod = m["Deployment", f"t-{name}"]["spec"]["template"]["spec"]
+            self.assertEqual(pod["serviceAccountName"], f"t-{name}")
+            [ca] = [v for v in pod["volumes"] if v["name"] == "signer-ca"]
+            self.assertEqual(ca["secret"]["items"], [{"key": "ca.crt", "path": "ca.crt"}])   # not the signers' key
+            with tempfile.TemporaryDirectory() as d:
+                path = os.path.join(d, f"{name}.yaml")
+                with open(path, "w") as f:
+                    f.write(m["ConfigMap", f"t-{name}"]["data"][f"{name}.yaml"])
+                cfg = load(path)
+            self.assertEqual((cfg["signer"], cfg["http"]["authenticators"]), ("https://t.ns.svc:8443", ["k8s_sa"]))
+            # the agents' tokens for it are of its own audience: one it receives can't be replayed at the signers
+            self.assertEqual(cfg["http"]["k8s_sa"]["audience"], f"tracekit-signer-{name}")
+            [token] = [v for v in pod["volumes"] if v["name"] == "signer-token"]
+            self.assertEqual(token["projected"]["sources"][0]["serviceAccountToken"]["audience"], "tracekit-signer")
+        self.assertEqual(owners["tls"], {("t", "tls"), ("t-gateway", "signer-ca"), ("t-executor", "signer-ca"),
+                                         ("t-mcp-gateway", "signer-ca")})
+
+    def test_agent_egress_policy_only_when_enabled(self):
+        self.assertNotIn(("NetworkPolicy", "t-agent-egress"), self.objects(*CUSTODY))
+        m = self.objects(*CUSTODY, "agentEgress.enabled=true", "agentEgress.namespace=agents",
+                         "agentEgress.podSelector.app=agent", "agentEgress.egressProxy.podSelector.app=proxy")
+        np = m["NetworkPolicy", "t-agent-egress"]
+        self.assertEqual((np["metadata"]["namespace"], np["spec"]["podSelector"], np["spec"]["policyTypes"]),
+                         ("agents", {"matchLabels": {"app": "agent"}}, ["Egress"]))
+        to = [(r["to"][0]["podSelector"]["matchLabels"].get("app.kubernetes.io/component")
+               or r["to"][0]["podSelector"]["matchLabels"], [p["port"] for p in r["ports"]]) for r in np["spec"]["egress"]]
+        self.assertEqual(to, [("signer", [8443]), ("gateway", [8080]), ("executor", [8090]), ("mcp-gateway", [8091]),
+                              ({"app": "proxy"}, [3128]), ({"k8s-app": "kube-dns"}, [53, 53])])
+        p = render_central("tls.secretName=tls", "agentEgress.enabled=true")
+        self.assertNotEqual(p.returncode, 0)
+        self.assertIn("agentEgress.podSelector is required", p.stderr)
 
     def test_refusals(self):
         for sets, err in ((["tls.secretName=tls", "awsKms.region=r", "awsKms.keyIds={k0}"], "awsKms.keyIds needs a key"),

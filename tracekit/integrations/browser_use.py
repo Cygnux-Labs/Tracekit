@@ -12,7 +12,8 @@ An action is recorded as `browser_use:<action>` with its params and the URL of t
 literal value in the params or page URL is put back to its placeholder), and each secret the action types is added as
 `typed_secrets: {name: [sha256 of the value]}`, so the signed args commitment lets an auditor who holds the value and
 the record's revealed salt confirm what was typed. `deny` skips the action and hands the agent an ActionResult with
-the refusal as its error, and the run goes on. `ask` waits up to `approval_wait_s` for a person (HeldCalls).
+the refusal as its error, and the run goes on. `ask` waits up to `approval_wait_s` for a person (HeldCalls); an
+approval with a T2 executor runs the params of the signer's copy.
 """
 import hashlib
 import re
@@ -88,12 +89,14 @@ class _Actions(HeldCalls):
         if digests:
             args["typed_secrets"] = digests
         tool, call_id = f"browser_use:{action}", uuid.uuid4().hex
-        why, d = await self._gate(call_id, tool, args)
+        why, d, run = await self._gate(call_id, tool, args)
         if why is not None:
             from browser_use.agent.views import ActionResult
             return ActionResult(error=BLOCKED + why)
         if d is None:   # the signer unreachable and the run fails open: the action runs unrecorded
             return await execute(action, params, *a, **kw)
+        if run is not args:   # the signer's copy (T2): its params, placeholders and all, are what runs
+            args, params = run, {k: v for k, v in run.items() if k not in ("page_url", "typed_secrets")}
         req = {"tool_call_id": call_id, "decision_id": d["decision_id"],
                "args_digest": event_hash({"tool": tool, "args": args})}
         try:

@@ -84,7 +84,7 @@
         "import",
         "gateway"
       ],
-      "description": "Capture path. transcript = harness-reported, lower trust; import = received over OTLP, or another system's decision (decision_import) (tier T3): receipt only; gateway = model.exchange recorded by the LLM gateway (tier T2)."
+      "description": "Capture path. transcript = harness-reported, lower trust; import = received over OTLP, or another system's decision (decision_import) (tier T3): receipt only; gateway = model.exchange recorded by the LLM gateway, or a tool call (policy.decision, approval.request, tool.result) or an input (input.observed) the MCP gateway or a tool executor decided, ran or received for its client (tier T2)."
     },
     "type": {
       "enum": [
@@ -1419,6 +1419,16 @@
           "type": "string",
           "maxLength": 256,
           "description": "why provenance_state is not complete"
+        },
+        "via": {
+          "type": "string",
+          "maxLength": 256,
+          "description": "format 1.2: the gateway or tool executor (its identity, scheme:subject) that wrote this record for the run's client (source gateway, tier T2); the signer takes the call's later steps from it only"
+        },
+        "caller": {
+          "type": "string",
+          "maxLength": 256,
+          "description": "format 1.2, with via: the client (scheme:subject) the gateway or tool executor decided the call for"
         }
       }
     },
@@ -1660,6 +1670,11 @@
         "salt_id": {
           "$ref": "#/$defs/id",
           "description": "the signer's salt id for this record's commitments (salt label <type>:<salt_id>)"
+        },
+        "via": {
+          "type": "string",
+          "maxLength": 256,
+          "description": "format 1.2: the gateway or tool executor (its identity, scheme:subject) that wrote this record for the run's client (source gateway, tier T2); the signer takes the call's later steps from it only"
         }
       }
     },
@@ -1812,7 +1827,8 @@
             "approval_expired",
             "executed_against_policy",
             "decision_mismatch",
-            "reask_after_reject"
+            "reask_after_reject",
+            "held_call_unresolved"
           ],
           "description": "Gap and tamper kinds (signer-written only)."
         },
@@ -2499,6 +2515,11 @@
               "description": "an HMAC of the call's arguments under a key of this run: the same in this run for the same arguments, so a call an agent said no to is a person's to answer when asked again"
             }
           }
+        },
+        "via": {
+          "type": "string",
+          "maxLength": 256,
+          "description": "format 1.2: the gateway or tool executor (its identity, scheme:subject) that wrote this record for the run's client (source gateway, tier T2); the signer takes the call's later steps from it only"
         }
       }
     },
@@ -2841,6 +2862,11 @@
         "salt_id": {
           "$ref": "#/$defs/id",
           "description": "the signer's salt id for this record's commitments (salt label <type>:<salt_id>)"
+        },
+        "via": {
+          "type": "string",
+          "maxLength": 256,
+          "description": "format 1.2: the gateway or tool executor (its identity, scheme:subject) that wrote this record for the run's client (source gateway, tier T2); the signer takes the call's later steps from it only"
         }
       }
     },

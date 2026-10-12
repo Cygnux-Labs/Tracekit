@@ -29,7 +29,7 @@ _DELEGATED = {"observe": "observe", "analyze": "findings", "otel": "otlp", "cost
               "public-witness": "public_witness_server",
              "deploy": "deploy.compose",
               "signer": "signer.service", "view": "view", "monitor": "monitor", "gateway": "gateway",
-              "issuer": "issuer", "why": "why.cli"}  # subcommands with their own parsers
+              "executor": "executor", "mcp-gateway": "mcp_gateway", "issuer": "issuer", "why": "why.cli"}  # subcommands with their own parsers
 _MOVED = {"sql": "query", "proofpack": "proofpack", "report": "proofpack", "causeway": "causeway"}  # now separate packages under contrib/
 
 
@@ -142,6 +142,12 @@ def main(argv=None):
                        add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
     p = sub.add_parser("gateway", help="LLM gateway for the v2 signer: `gateway serve --config gateway.yaml`", add_help=False)
+    p.add_argument("rest", nargs=argparse.REMAINDER)
+    p = sub.add_parser("executor", help="tool executor for the v2 signer: `executor serve --config executor.yaml`",
+                       add_help=False)
+    p.add_argument("rest", nargs=argparse.REMAINDER)
+    p = sub.add_parser("mcp-gateway", help="MCP gateway for the v2 signer: `mcp-gateway serve --config mcp-gateway.yaml`",
+                       add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
     p = sub.add_parser("issuer", help="record-key issuer for v2 signers: `issuer serve|revoke|vkey --config issuer.yaml`",
                        add_help=False)

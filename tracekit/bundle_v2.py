@@ -51,10 +51,11 @@ VERSIONS = {
               "fields": {"policy.decision": ["provenance", "provenance_state"], "run.registered": ["replay_of"]},
               "values": {}},
     "1.2.0": {"types": ["approval.escalated", "approval.revoked", "approval.suggested", "approval.agents"],
-              "fields": {"run.registered": ["parent_run", "session"], "approval.request": ["agent"],
+              "fields": {"run.registered": ["parent_run", "session"], "policy.decision": ["via", "caller"],
+                         "approval.request": ["agent", "via"], "tool.result": ["via"], "input.observed": ["via"],
                          "approval": ["approver_kind", "asserted", "spent", "not_before", "consume_by"],
                          "approval.expired": ["reason"]},
-              "values": {"capture.gap": {"kind": ["reask_after_reject"]}}},
+              "values": {"capture.gap": {"kind": ["reask_after_reject", "held_call_unresolved"]}}},
 }
 KEY_TYPES = ("signer.epoch", "key.retire")
 
