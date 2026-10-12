@@ -32,7 +32,8 @@ and a held call's decide answers `ask` with `incident_id` and a `reason` naming 
 
 **Evasion.** For `cooldown_s` (default 3600; an operator's `run_hold` or `run_quarantine` uses the default) after a
 hold or quarantine, a new run of the same owner and attested principal starts held or quarantined
-(`run.held{inherited: true}`), as does a child run of a held one. Closing a held run does not resolve its incident.
+(`run.held{inherited: true}`), as does a child run of a held one. A new run of the owner with no attested principal
+inherits the holds of every principal of that owner, so leaving out `principal_token` gains nothing. Closing a held run does not resolve its incident.
 Suspension is an operator's action only: no trigger suspends an identity (the run's owner may be one every
 conversation of a server shares, and content the agent reads can steer every trigger), and lint refuses `suspend:` in
 `respond`.
@@ -73,7 +74,7 @@ redacted and never leave in a webhook.
 
 **Suspension list.** `suspensions:` in signer.yaml names a JSON file every replica reads on each call (default
 `<data_dir>/suspensions.json`): `{tenant: {identity or prefix: {by, at, reason?}}}`. A suspended identity's
-calls (every call but the operator calls, any identity scheme, also as `person:` or `group:`, and as a gateway's caller) are refused, in the entry's tenant only: an operator's `token:*` reaches only their own tenant's tokens, and an operator can suspend
+calls (every call, operator calls too except a break-glass identity's, any identity scheme, also as `person:` or `group:`, as a gateway's caller, as the person a bridge answers for, and OTLP import) are refused, in the entry's tenant only: an operator's `token:*` reaches only their own tenant's tokens, and an operator can suspend
 or lift only their own tenant's entries. Each
 replica writes its own `identity.suspension{state: enforced}` the first time it sees an entry, and `lifted` when it is
 gone. No token is revoked: revoke it yourself if the identity is lost.

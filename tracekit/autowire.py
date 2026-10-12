@@ -324,10 +324,21 @@ def _release(version):
 
 
 def _close(run):
+    """Close the run at exit, unless approvals of it are still waiting (requested, or approved and not yet consumed):
+    then it stays open for another process to resume (a durable checkpointer) until the signer's idle timeout."""
     from . import autotrace
     try:
         autotrace.flush()
-        run.close("process exit")
+        try:
+            waiting = any(run.call("approval_list", state=state, limit=1)["approvals"] for state in ("requested",
+                                                                                                    "approved"))
+        except Exception:   # a listing that fails (no grant) waits for nothing
+            waiting = False
+        if waiting:
+            logging.getLogger("tracekit").warning("tracekit: run %s left open: approvals of it are waiting for a "
+                                                  "person or to be resumed", run.run_id)
+        else:
+            run.close("process exit")
     except Exception:   # exiting: nothing left to tell
         pass
 

@@ -140,13 +140,18 @@ class TestReconcile(Reconcile):
                  ("mcp:filesystem/read_text_file", "fs.read_text_file", {}),
                  ("mcp:filesystem/read_text_file", "read_text_file_x", {}),
                  ("mcp:x/account", "delete_account", {}),   # a renamed call can't hide behind a suffix
-                 ("mcp:filesystem/read_text_file", "read_text_file", {"path": "/etc/passwd"})]   # other arguments
+                 ("mcp:filesystem/read_text_file", "read_text_file", {"path": "/etc/passwd"}),   # other arguments
+                 # another server's call can't be decided under a server or tool name that spells its prefixed form
+                 ("mcp:_prod/drop_table", "mcp__prod__drop_table", {}),
+                 ("mcp:prod_/drop_table", "mcp_prod___drop_table", {}),
+                 ("mcp:z/mcp__prod__drop_table", "mcp__prod__drop_table", {}),
+                 ("mcp:z/mcp_prod__drop_table", "mcp_prod__drop_table", {})]
         run = self.register()
         self.model(run, [use(f"tc-{i}", asked) for i, (_, asked, _) in enumerate(cases)])
         for i, (decided, _, args) in enumerate(cases):
             self.run_call(run, f"tc-{i}", decided, args)
         [(found, _)] = self.final(run)
-        self.assertEqual(found, [("reconcile.args_mismatch", f"tc-{i}") for i in range(3, 8)])
+        self.assertEqual(found, [("reconcile.args_mismatch", f"tc-{i}") for i in range(3, 12)])
 
     def test_coerced_and_provider_executed_are_not_flagged_and_final_states_coverage(self):
         run = self.register()

@@ -128,11 +128,17 @@ MCP_NAMES = ("{t}",              # OpenAI Agents JS, the Vercel AI SDK, the mcp 
 
 def model_names(tool):
     """The names the model may have asked for decided `tool`: the name itself, and for `mcp:<server>/<tool>` the
-    MCP_NAMES forms."""
+    MCP_NAMES forms that parse back to exactly that server and tool. A server or tool with an edge `_` or a `__` could
+    share the separator (`mcp:_prod/t` spells `mcp__prod__t`), and a tool named like a prefixed form
+    (`mcp:z/mcp__prod__t`) could stand for another server's tool: those get no alias."""
     if not tool.startswith("mcp:") or "/" not in tool:
         return (tool,)
     server, name = tool[4:].split("/", 1)
-    return (tool,) + tuple(f.format(s=server, t=name) for f in MCP_NAMES)
+    exact = lambda part: part and not (part.startswith("_") or part.endswith("_") or "__" in part)
+    forms = [] if name.startswith("mcp_") and "__" in name else ["{t}"]
+    if exact(server) and exact(name):
+        forms += MCP_NAMES[1:]
+    return (tool,) + tuple(f.format(s=server, t=name) for f in forms)
 
 
 def _hint(tool):

@@ -604,13 +604,16 @@ function checkIncidents(rep: Report, runs: Map<string, J[]>, policies: Map<strin
       else det = new Detector(strictParseBytes(data, floats));
       if (det) {
         const st = Detector.state(), expected: J[] = [], key = (d: J) => JSON.stringify([d.trigger, d.rule_ids,
-          d.cites.map((c: J) => [c.run_id, c.run_seq])]);
+          d.cites.map((c: J) => [c.run_id, c.run_seq]), d.mode]);
         for (const e of events) {
           if (mine.includes(e)) {
             const i = expected.findIndex((x) => key(x) === key(e.data));
             if (i >= 0) {
-              expected.splice(i, 1);
+              const [hit] = expected.splice(i, 1);
               checked++;
+              if (hit.mode === "enforce" && hit.would.length && !list(e.data.actions).length && !has(e.data, "reason"))
+                problems.push(`seq ${e.seq}: incident ${e.data.incident_id} (${e.data.trigger}) is enforced under policy `
+                  + `${cut(h, 80)} but records no response (${hit.would.join(", ")}) and no reason`);
             } else problems.push(`seq ${e.seq}: incident ${e.data.incident_id} (${e.data.trigger}) does not follow from the `
               + `run's records under policy ${cut(h, 80)}`);
           }

@@ -782,11 +782,15 @@ def _incidents(rep, runs, policies):
             for e in events:
                 if any(e is x for x in mine):
                     d = e["data"]
-                    hit = next((x for x in expected if (x["trigger"], x["rule_ids"], x["cites"]) ==
-                                (d["trigger"], d["rule_ids"], d["cites"])), None)
+                    hit = next((x for x in expected if (x["trigger"], x["rule_ids"], x["cites"], x["mode"]) ==
+                                (d["trigger"], d["rule_ids"], d["cites"], d.get("mode"))), None)
                     if hit:
                         expected.remove(hit)
                         checked += 1
+                        if hit["mode"] == "enforce" and hit["would"] and not d.get("actions") and "reason" not in d:
+                            problems.append(f"seq {e['seq']}: incident {d['incident_id']} ({d['trigger']}) is enforced "
+                                            f"under policy {det.engine.policy_hash[:80]} but records no response "
+                                            f"({', '.join(hit['would'])}) and no reason")
                     else:
                         problems.append(f"seq {e['seq']}: incident {d['incident_id']} ({d['trigger']}) does not follow "
                                         f"from the run's records under policy {det.engine.policy_hash[:80]}")

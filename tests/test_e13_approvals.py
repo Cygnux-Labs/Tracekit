@@ -539,6 +539,14 @@ class TestWeb(Signer):
                                                                  "on_behalf": alice, "decision": "approve"})["state"],
                          "approved")
 
+    def test_a_suspended_person_can_not_answer_through_a_bridge(self):
+        aid = self.pending("mail")
+        with open(os.path.join(self.dir, "suspensions.json"), "w") as f:
+            json.dump({"default": {"oidc:corp/u-alice": {}}}, f)
+        with self.assertRaisesRegex(RPCError, "is suspended"):
+            self.s.call(BRIDGE, "approval_decide", {"request_id": "web-1", "approval_id": aid, "on_behalf": ALICE,
+                                                    "decision": "approve"})
+
     def test_a_bridge_granted_through_a_group_sees_its_tenants_approvals(self):
         aid = self.pending("mail")
         bot = CallerIdentity("oidc", "corp/svc-bridge", True, {"person": "corp/bridge", "groups": ["corp/bridges"]})
