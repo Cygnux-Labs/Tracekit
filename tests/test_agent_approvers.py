@@ -475,5 +475,28 @@ class TestReview(Case):
         self.assertEqual(set(req["data"]["agent"]), {"eligible", "reason", "rules", "conditions_hash", "args_key"})
 
 
+class TestDetection(Case):
+    """Detection (signer/detect.py) over agent approvals: an agent-approved call counts once it is consumed."""
+    POLICY = dict(policy(), limits=[{"id": "L-PAY", "match": "PAY", "count": True, "max": 1, "window": 60}])
+
+    def open(self, **kw):
+        s = svc.SignerService(self.dir, policy=Engine(self.POLICY), approvals=APPROVALS, authorize=AUTHORIZE,
+                              analyzers=[f"uid:{ts.ME.subject}"], **kw)
+        self.addCleanup(s.close)
+        return s
+
+    def test_agent_approved_calls_open_an_incident(self):
+        self.assertEqual(policy_compile._lint(self.POLICY, "p.yaml"), [])   # agent bounds and a limit, both linted
+        for tcid in ("tc-1", "tc-2"):
+            aid, agent = self.ask(tcid=tcid)
+            self.assertTrue(agent["eligible"], agent)
+            self.answer(AGENT, aid)
+            self.assertEqual(self.consume(tcid=tcid)["args"], OK)
+        es = self.events()
+        [opened] = [e["data"] for e in es if e["type"] == "incident.opened"]
+        self.assertEqual((opened["trigger"], opened["rule_ids"]), ("limit", ["L-PAY"]))
+        self.assertEqual([e["data"]["approver_kind"] for e in es if e["type"] == "approval"], ["agent", "agent"])
+
+
 if __name__ == "__main__":
     unittest.main()

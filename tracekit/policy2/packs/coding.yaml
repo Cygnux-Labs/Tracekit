@@ -7,7 +7,7 @@
 # normalised one), with `\` as `/` and also casefolded (the agent's file system may ignore case). Rules stay tripwires: the
 # protection is the signer, its storage and the witnesses.
 
-version: '2026.10-v2-3'
+version: '2026.10-v2-4'
 description: coding agents on a laptop (Claude Code, Codex, Cursor, Gemini)
 # laptop: a tool the pack does not map is flagged, not held; server.yaml holds it for a person (ask)
 unknown_tools: flag
@@ -141,8 +141,12 @@ flag:
     pattern: '\b(git\s+(push|reset\s+--hard|clean)|npm\s+publish|pip3?\s+install|docker\s+run|terraform\s+apply|kubectl\s+(apply|delete))\b'
     label: side_effect
   - id: TK-F005
-    tool: Read|Bash|Grep
+    # what any call acts on (a command's argv and redirections, a file path, an MCP tool's arguments, a URL), so every
+    # shell, file and MCP tool counts, not only the coding agents' own; writes included. A target that is one env
+    # template path (no space: never a whole command) is exempt
+    field: target
     pattern: '\.env\b|id_rsa|\.ssh/|credentials|\.aws/|\.netrc'
+    unless: '^([^ ]*/)?\.[Ee][Nn][Vv]\.([Ee][Xx][Aa][Mm][Pp][Ll][Ee]|[Ss][Aa][Mm][Pp][Ll][Ee]|[Tt][Ee][Mm][Pp][Ll][Aa][Tt][Ee]|[Dd][Ii][Ss][Tt])$'
     label: secrets_access
   - id: TK-F006
     class: mcp
@@ -172,3 +176,14 @@ flag:
     field: command
     pattern: '\b(export\s+)?(PATH|LD_PRELOAD|LD_LIBRARY_PATH|BASH_ENV|ENV|PROMPT_COMMAND|PYTHONPATH|NODE_OPTIONS)=|\bunset\s+(ANTHROPIC_BASE_URL|HTTPS?_PROXY)\b|>>?\s*~?/?[^\s]*\.(bashrc|profile|zshrc|bash_profile)\b'
     label: env_tamper
+  - id: TK-F012
+    # any URL a call acts on: an http or browser call, a URL in a command's argv, an MCP tool's arguments. A GET with
+    # a query string sends data too, so egress is not only what TK-P003's sends_to reads
+    field: target
+    pattern: '\b([Hh][Tt][Tt][Pp][Ss]?|[Ww][Ss][Ss]?|[Ff][Tt][Pp])://'
+    label: egress
+  - id: TK-F013
+    # a network command, whatever it names: `curl host/?k=v` and `nslookup data.example` send data without a URL
+    class: shell
+    pattern: '^(curl|wget|ssh|scp|rsync|nc|ncat|telnet|ftp|dig|nslookup|host)( |$)'
+    label: egress

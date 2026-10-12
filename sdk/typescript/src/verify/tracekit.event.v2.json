@@ -130,7 +130,10 @@
         "policy.external",
         "content.accessed",
         "content.erased",
-        "why.finding"
+        "why.finding",
+        "incident.opened",
+        "incident.updated",
+        "incident.capped"
       ]
     },
     "data": {
@@ -962,6 +965,54 @@
           }
         }
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "incident.opened"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/incident_opened"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "incident.updated"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/incident_updated"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "incident.capped"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/incident_capped"
+          }
+        }
+      }
     }
   ],
   "$defs": {
@@ -1419,6 +1470,98 @@
           "type": "string",
           "maxLength": 256,
           "description": "why provenance_state is not complete"
+        },
+        "detect": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "sequences",
+            "limits",
+            "state"
+          ],
+          "description": "format 1.2: what the policy's sequences and limits saw of this call (signer/detect.py): the step each sequence it advanced reached, the count (a sum limit: the total of the call's currency) and window start of each limit it counted, and whether the detector's state is complete or was lost in a restart (unavailable)",
+          "properties": {
+            "rule_ids": {
+              "type": "array",
+              "maxItems": 1024,
+              "items": {
+                "type": "string",
+                "maxLength": 256
+              },
+              "description": "the rule ids of both class readings, when the client's class hint disagreed and they differ from rule_ids"
+            },
+            "sums": {
+              "type": "object",
+              "description": "per sum limit: [amount in minor units, currency] of this call",
+              "additionalProperties": {
+                "type": "array",
+                "minItems": 2,
+                "maxItems": 2,
+                "items": {
+                  "type": [
+                    "integer",
+                    "string"
+                  ],
+                  "maxLength": 16
+                }
+              }
+            },
+            "sequences": {
+              "type": "array",
+              "maxItems": 1024,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "id",
+                  "step"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "maxLength": 256
+                  },
+                  "step": {
+                    "type": "integer",
+                    "minimum": 1
+                  }
+                }
+              }
+            },
+            "limits": {
+              "type": "array",
+              "maxItems": 1024,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "id",
+                  "count",
+                  "window_start"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "maxLength": 256
+                  },
+                  "count": {
+                    "type": "integer"
+                  },
+                  "window_start": {
+                    "type": "string",
+                    "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{6}Z$",
+                    "maxLength": 27
+                  }
+                }
+              }
+            },
+            "state": {
+              "enum": [
+                "complete",
+                "unavailable"
+              ]
+            }
+          }
         },
         "via": {
           "type": "string",
@@ -3499,6 +3642,189 @@
               }
             }
           }
+        }
+      }
+    },
+    "incident_opened": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "incident_id",
+        "trigger",
+        "rule_ids",
+        "scope",
+        "cites",
+        "mode",
+        "actions",
+        "would"
+      ],
+      "description": "format 1.2: a trigger of the policy's detection fired (a sequence completed, a limit was exceeded, or a respond trigger); one open incident per scope, trigger and rule, later matches are incident.updated. Written in shadow mode: no action taken, `would` the configured one",
+      "properties": {
+        "incident_id": {
+          "$ref": "#/$defs/id"
+        },
+        "trigger": {
+          "enum": [
+            "sequence",
+            "limit",
+            "executed_against_policy",
+            "denied_calls",
+            "provenance",
+            "class_mismatch",
+            "refusal_burst",
+            "tamper"
+          ]
+        },
+        "rule_ids": {
+          "type": "array",
+          "maxItems": 1024,
+          "items": {
+            "type": "string",
+            "maxLength": 256
+          }
+        },
+        "scope": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "id"
+          ],
+          "properties": {
+            "kind": {
+              "enum": [
+                "run",
+                "session",
+                "owner",
+                "principal"
+              ]
+            },
+            "id": {
+              "type": "string",
+              "maxLength": 256
+            }
+          }
+        },
+        "cites": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "run_id",
+              "run_seq"
+            ],
+            "properties": {
+              "run_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "run_seq": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          },
+          "description": "the records that make up the match"
+        },
+        "mode": {
+          "enum": [
+            "shadow"
+          ]
+        },
+        "actions": {
+          "type": "array",
+          "maxItems": 0
+        },
+        "would": {
+          "type": "array",
+          "maxItems": 3,
+          "items": {
+            "enum": [
+              "notify",
+              "hold",
+              "quarantine"
+            ]
+          }
+        }
+      }
+    },
+    "incident_updated": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "incident_id",
+        "cites"
+      ],
+      "description": "format 1.2: another match of an open incident (at most one per window of its trigger), written in the run whose record matched",
+      "properties": {
+        "incident_id": {
+          "$ref": "#/$defs/id"
+        },
+        "cites": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "run_id",
+              "run_seq"
+            ],
+            "properties": {
+              "run_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "run_seq": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          }
+        }
+      }
+    },
+    "incident_capped": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "cap",
+        "max",
+        "trigger",
+        "reason"
+      ],
+      "description": "format 1.2: a cap on opened incidents was reached: the run's per trigger (cap run), or per minute the tenant's or one run's share of it (cap tenant); the incidents after it are not written",
+      "properties": {
+        "cap": {
+          "enum": [
+            "run",
+            "tenant"
+          ]
+        },
+        "trigger": {
+          "enum": [
+            "sequence",
+            "limit",
+            "executed_against_policy",
+            "denied_calls",
+            "provenance",
+            "class_mismatch",
+            "refusal_burst",
+            "tamper"
+          ],
+          "description": "the trigger of the first incident not written"
+        },
+        "max": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "reason": {
+          "type": "string",
+          "maxLength": 512
         }
       }
     }
