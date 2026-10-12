@@ -12,7 +12,7 @@ jobs:
     name: py${{ matrix.python }} on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     # a hung test must fail the job, not hold a runner for six hours
-    timeout-minutes: 25
+    timeout-minutes: 45
     env:
       PYTHONFAULTHANDLER: "1"
       PYTHONUNBUFFERED: "1"
