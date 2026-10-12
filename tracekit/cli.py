@@ -693,8 +693,8 @@ def _export_v2(a, show=print):
             reg = reader.checkpoint_latest(registry_tree(tenant))
             if note is None or reg is None:
                 raise ValueError(f"no registry checkpoint of tenant {tenant!r} in the store yet")
-            print(json.dumps(export(reader, tenant, a.run, note[1], a.out, run_set=(0, reg[0]), tenant_salt=tsalt),
-                             indent=2))
+            print(json.dumps(export(reader, tenant, a.run, note[1], a.out, run_set=(0, reg[0]), tenant_salt=tsalt,
+                                    policy_dir=os.path.join(cfg["data_dir"], "policies")), indent=2))
             return 0
         run = reader.runs.get((tenant, a.run))
         if run is None:
@@ -731,7 +731,8 @@ def _export_v2(a, show=print):
             if note is None:
                 raise ValueError(f"the signer wrote no checkpoint covering run {a.run!r} within {NUDGE_WAIT_S:g}s")
         reopen()   # opened after the note: holds its records
-        info = export(reader, tenant, a.run, note[1], a.out, with_runs=about)
+        info = export(reader, tenant, a.run, note[1], a.out, with_runs=about,
+                      policy_dir=os.path.join(cfg["data_dir"], "policies"))
         if a.otel or a.otel_endpoint:
             info["otel"] = _otel_v2(a, info["bundle"])
     except (OSError, ValueError, SignerUnavailable, StorageCorrupt, StorageUnavailable) as e:
@@ -861,7 +862,8 @@ def _approvals(a):
                 page = c.approval_list({"cursor": page["next_cursor"]} if page["next_cursor"] else {})
                 for x in page["approvals"]:
                     shown += 1
-                    print(f"{x['approval_id']}  {x['state']}  run={x['run_id']}  tool={json.dumps(x['tool'])}  "
+                    state = x["state"] + (" (run closing: expires with it)" if x.get("run_closing") else "")
+                    print(f"{x['approval_id']}  {state}  run={x['run_id']}  tool={json.dumps(x['tool'])}  "
                           f"rules={','.join(x['rule_ids'])}  expires {x['expires_at']}")
                 if page["next_cursor"] is None:
                     break

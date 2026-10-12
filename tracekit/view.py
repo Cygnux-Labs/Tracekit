@@ -400,6 +400,26 @@ class Translator(observe.Translator):
                          "ALERT")
         if t == "state.write":
             return alert("info", f"STATE WRITE · {d.get('store')}", f"key {d.get('key')}", "STATE")
+        if t == "incident.opened":   # containment (docs/incidents.md): read-only marks on the timeline
+            acts = "+".join(d.get("actions") or []) or ("would " + "+".join(d.get("would") or []) if d.get("would")
+                                                         else "recorded")
+            return alert("high" if d.get("actions") else "med",
+                         f"INCIDENT · {d.get('trigger')} {' '.join(d.get('rule_ids') or [])}".strip(),
+                         f"{d.get('incident_id')} · {d.get('mode')} · {acts}"
+                         + (f" · {d['reason']}" if d.get("reason") else ""), "ALERT", incident=d.get("incident_id"))
+        if t in ("run.held", "run.quarantined", "run.resumed"):
+            word = {"run.held": "RUN HELD", "run.quarantined": "RUN QUARANTINED", "run.resumed": "RUN RESUMED"}[t]
+            return alert("info" if t == "run.resumed" else "high", f"{word} · {d.get('incident_id')}",
+                         f"by {d.get('person') or d.get('by')}" + (f" · {d['reason']}" if d.get("reason") else "")
+                         + (" · inherited" if d.get("inherited") else ""), "HOLD", incident=d.get("incident_id"))
+        if t in ("incident.updated", "incident.capped", "incident.resolved", "incident.response",
+                 "identity.suspension"):
+            text = {"incident.updated": f"{d.get('incident_id')} matched again",
+                    "incident.capped": str(d.get("reason")),
+                    "incident.resolved": f"{d.get('incident_id')} by {d.get('person')}",
+                    "incident.response": f"response engine {'on' if d.get('enabled') else 'paused'} by {d.get('by')}",
+                    "identity.suspension": f"{d.get('identity')} {d.get('state')} by {d.get('by')}"}[t]
+            return alert("med", t.upper().replace(".", " · "), text, "ALERT", incident=d.get("incident_id"))
         if t == "run.child":
             return alert("info", "CHILD RUN", f"run {d.get('run_id')} registered from this run's harness process with "
                                               "this run as its parent", "SIGNER")
@@ -412,6 +432,7 @@ def review(records, rep, verdict):
     out = {"verdict": verdict, "integrity": rep.integrity, "assurance": rep.assurance.split(";")[0],
            "label": OPERATOR_SIDE, "agent": None, "records": len(records), "first_ts": None, "last_ts": None,
            "decisions": collections.Counter(), "approvals": [], "gaps": collections.Counter(), "coverage": None,
+           "incidents": [],
            "state": "open", "first": {}}
     for rec in records:
         e = rec["event"]
@@ -434,6 +455,17 @@ def review(records, rep, verdict):
         elif t == "capture.gap" or t.startswith("reconcile."):
             key = "gap:" + (d.get("kind") or t)
             out["gaps"][key[4:]] += 1
+        elif t == "incident.opened":
+            out["incidents"].append({"incident_id": d.get("incident_id"), "trigger": d.get("trigger"), "seq": e.get("seq"),
+                                     "rule_ids": d.get("rule_ids") or [], "mode": d.get("mode"),
+                                     "actions": d.get("actions") or [], "state": "open"})
+        elif t in ("run.held", "run.quarantined", "run.resumed"):
+            mine = [x for x in out["incidents"] if x["incident_id"] == d.get("incident_id")]
+            if not mine:   # the pointer of an incident opened in another run
+                mine = [{"incident_id": d.get("incident_id"), "trigger": "(another run)", "seq": e.get("seq"),
+                         "rule_ids": [], "mode": "enforce", "actions": [], "state": "open"}]
+                out["incidents"] += mine
+            mine[0]["state"] = t.split(".")[1]
         elif t == "run.final":
             cov = d.get("coverage") or {}
             out["coverage"] = {"layers": cov.get("layers") or [], "reconciled": cov.get("reconciled", 0),

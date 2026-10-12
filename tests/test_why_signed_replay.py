@@ -88,7 +88,7 @@ class As:
 class SignedReplay(unittest.TestCase):
     def setUp(self):
         self.dir = tmpdir(self)
-        grants = sorted(REQUESTS.keys() - {"content_get"}) + ["content_read"]
+        grants = sorted(REQUESTS.keys() - {"content_get"} - svc.OPERATOR) + ["content_read"]
         self.s = svc.SignerService(self.dir, gateways=["mtls:spiffe://acme/*"], analyzers=["token:http"],
                                    authorize={"token:http": grants, "mtls:spiffe://acme/gateway": ["model_event", "status"]},
                                    content={"retain": True}, grace_s=60, idle_s=600)

@@ -97,7 +97,7 @@ class McpGateway(unittest.TestCase):
                                                                      {"id": "R-LEAK", "tool": "^mcp:up/prompt:leak$",
                                                                       "pattern": "^"}]}),
                                    gateways=["mtls:spiffe://acme/*"],
-                                   authorize={"token:http": sorted(REQUESTS.keys() - {"content_get"}),
+                                   authorize={"token:http": sorted(REQUESTS.keys() - {"content_get"} - svc.OPERATOR),
                                               "mtls:spiffe://acme/mcp": ["decide", "complete", "approval_request",
                                                                          "approval_wait", "approval_consume", "observe"]})
         self.closed = False

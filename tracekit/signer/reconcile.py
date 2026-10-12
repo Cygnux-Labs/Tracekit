@@ -105,6 +105,22 @@ def observe(put, run, e, digests=None, handoff=lambda tool: False):
     return now
 
 
+# What a framework shows the model for the tool `t` of MCP server `s`, decided as `mcp:<s>/<t>`. Each form holds the
+# whole tool name; a server-prefixed form holds the decided server too.
+MCP_NAMES = ("{t}",              # OpenAI Agents JS, the Vercel AI SDK, the mcp Python client
+             "mcp__{s}__{t}",    # Claude Code
+             "mcp_{s}__{t}")     # OpenAI Agents JS with mcpConfig.includeServerInToolNames
+
+
+def model_names(tool):
+    """The names the model may have asked for decided `tool`: the name itself, and for `mcp:<server>/<tool>` the
+    MCP_NAMES forms."""
+    if not tool.startswith("mcp:") or "/" not in tool:
+        return (tool,)
+    server, name = tool[4:].split("/", 1)
+    return (tool,) + tuple(f.format(s=server, t=name) for f in MCP_NAMES)
+
+
 def _hint(tool):
     """What a hook_missing detail adds for a tool that looks like a handoff the policy does not name."""
     return "; if it is a handoff to another agent, name it in the policy's handoffs:" if tool.startswith(
@@ -164,7 +180,9 @@ def _found(run, mandatory, handoff=lambda tool: False, structured=lambda tool: F
         if d is None:
             continue
         a, b = digests.get("l2:" + tcid), digests.get("l3:" + tcid)
-        if d["name"] != u["name"]:
+        if isinstance(a, dict):   # an MCP call: the signer's digest under each name the model may have used
+            a = a.get(u["name"])
+        if u["name"] not in model_names(d["name"]):
             out.append(("args_mismatch", tcid, ["L2", "L3"], f"decided {d['name'][:200]}, the model asked for "
                                                              f"{u['name'][:200]}"))
         elif not (u["unparseable"] or d["coerced"] or u["coerced"]) and a and b and a != b:

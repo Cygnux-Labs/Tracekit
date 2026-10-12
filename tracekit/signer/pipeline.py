@@ -90,7 +90,7 @@ def approval(tenant, run_id, data, ts):
             "expires_at": data["expires_at"], "binding_digest": data["binding_digest"], "state": "requested",
             "executor": data.get("executor", "t1"), "passkey": data.get("passkey", False),
             "requester_person": data.get("requester_person"), "label": salt_label({"type": "approval.request", "data": data}),
-            "agent": data.get("agent"), "escalated": False, "requested_at": ts}
+            "agent": data.get("agent"), "escalated": False, "requested_at": ts, "incident_id": data.get("incident_id")}
 
 
 APPROVAL_ENDS = {"approval.consumed": "consumed", "approval.expired": "expired", "approval.abandoned": "expired",
@@ -159,6 +159,55 @@ def agent_state(set_, log, run, e):
     if typ in ("approval.escalated", "approval.revoked") or typ == "approval" and d.get("approver_kind") == "agent" \
             and d["decision"] != "approve":   # a person's veto sticks as an agent's reject does
         set_(run, "person_only", {**run.get("person_only", {}), **{k: True for k in person_only_keys(a)}})
+
+
+def new_contain():
+    return {"incidents": {}, "cooldown": {}, "paused": {}, "enforcing": {}}
+
+
+def cooldown_key(tenant, run):
+    """Who a run's held successors are: its tenant, owner and attested principal (evasion: a new run inherits a hold)."""
+    return f"{tenant}\0{run['owner']}\0{run['people'][1] or ''}"
+
+
+def contain_state(set_, log, run, e):
+    """Follow record `e` of `run` in the containment state (SignerService._respond), `log.contain`: each incident
+    ({tenant, run_id, run_seq, ts, trigger, rule_ids, scope, mode, actions, state: open|resolved, runs: the runs it held
+    or quarantined}), the holds new runs inherit by cooldown_key ({incident id: [until ts, held|quarantined]}, an
+    incident leaving once resolved), the tenants whose response engine is paused and the suspension entries this signer
+    enforces; and the run's `held` (the incident ids holding it, in order, or None), `quarantined` incident id and
+    `quarantine_denies`. `set_`: as agent_state's."""
+    c, typ, d = log.contain, e["type"], e["data"]
+    inc = c["incidents"].get(d.get("incident_id"))
+    if typ == "incident.opened":
+        set_(c["incidents"], d["incident_id"], {"tenant": e["tenant"], "run_id": e["run_id"], "run_seq": e["run_seq"],
+                                                "ts": e["ts"], "state": "open", "runs": [],
+                                                **{k: d[k] for k in ("trigger", "rule_ids", "scope", "mode", "actions")}})
+    elif typ in ("run.held", "run.quarantined"):
+        kind = "held" if typ == "run.held" else "quarantined"
+        if kind == "quarantined":
+            set_(run, "quarantined", d["incident_id"])
+            set_(run, "held", None)
+        else:
+            set_(run, "held", [*(run.get("held") or ()), d["incident_id"]])
+        if inc is not None:
+            set_(inc, "runs", inc["runs"] + [e["run_id"]])
+        if d.get("inherit_until"):
+            k = cooldown_key(e["tenant"], run)
+            set_(c["cooldown"], k, {**(c["cooldown"].get(k) or {}), d["incident_id"]: [d["inherit_until"], kind]})
+    elif typ == "run.resumed":
+        set_(run, "held", [x for x in run.get("held") or () if x != d["incident_id"]] or None)
+    elif typ == "incident.resolved" and inc is not None:
+        set_(inc, "state", "resolved")
+        for k, v in list(c["cooldown"].items()):
+            if d["incident_id"] in v:
+                set_(c["cooldown"], k, {i: x for i, x in v.items() if i != d["incident_id"]})
+    elif typ == "incident.response":
+        set_(c["paused"], e["tenant"], not d["enabled"])
+    elif typ == "identity.suspension":
+        set_(c["enforcing"], f"{e['tenant']}\0{d['identity']}", d["state"] != "lifted")
+    elif typ == "policy.decision" and "TK-QUARANTINE" in d["rule_ids"]:
+        set_(run, "quarantine_denies", run.get("quarantine_denies", 0) + 1)
 
 
 def salt_label(e):
@@ -250,8 +299,14 @@ class Tx:
         self.set(run, "head", r["hash"])
         found = reconcile.observe(self.set, run, e, digests, log.handoff)
         agent_state(self.set, log, run, e)
-        for t, d in incidents:   # first, as detect.backtest feeds them: right after the record that fired them
-            self.emit(run, t, d, source="signer")
+        contain_state(self.set, log, run, e)
+        for t, d in incidents:   # first, as detect.backtest feeds them; an enforced incident is the responder's to write
+            if t == "incident.opened" and d["mode"] == "enforce" and log.respond:
+                log.respond(self, run, e, d)
+            else:
+                self.emit(run, t, d, source="signer")
+        if view is not None and view["state"] == "unavailable" and log.respond:
+            log.respond(self, run, e, None)
         for kind, tcid, layers, detail in found:
             self.emit(run, "reconcile." + kind, {"layers": layers, "detail": detail}, source="signer", tool_call_id=tcid)
         return e["run_seq"]
@@ -296,6 +351,7 @@ class Tx:
                       "show; a sub-agent's run passes `parent`"}, source="signer")
 
     def closing(self, run, reason, **top):
+        reason = "quarantine" if run.get("quarantined") else reason
         self.set(run, "closed", True)
         n = self.log.open_runs[run["owner"]] - 1
         if n:
@@ -320,8 +376,10 @@ class RecordLog:
         signer.metrics.SignerMetrics. `bridge`: the v1 ledger this log continues (signer.epoch `bridge`), refused
         unless the log is empty or already starts with it. `certify(log_id)` -> (RecordSigner, issuance entry): a
         fresh certified record key (tracekit.issuer.certify), taken instead of `sign` once the log is replayed; its
-        signer.epoch retires the key before it. `detector`: a detect.Detector, or None when the policy detects nothing."""
-        self.detector = detector
+        signer.epoch retires the key before it. `detector`: a detect.Detector, or None when the policy detects nothing.
+        `respond(tx, run, e, incident)`, set by the service: writes an enforced incident.opened that record `e` fired
+        and acts on it, or (incident None) acts on a decision `e` whose detection state is unavailable."""
+        self.detector, self.respond = detector, None
         self.storage, self.open_storage, self.sign, self.quotas, self.salt = storage, open_storage, sign, quotas, salt
         self.metrics = metrics
         self.observers = []   # f(records), called on the writer once storage has taken a batch: must not block
@@ -366,7 +424,8 @@ class RecordLog:
                 "open_runs": self.open_runs, "approvals": self.approvals, "index": [[*k, a] for k, a in
                                                                                    self.approval_index.items()],
                 "registry": {t: size for t, (size, _) in self.storage.tail_state()["registry"].items()},
-                "keys": self.keys, "agent": self.agent, **({"detect": self.det} if self.detector else {})}
+                "keys": self.keys, "agent": self.agent, "contain": self.contain,
+                **({"detect": self.det} if self.detector else {})}
 
     def snapshot(self):
         """Have the storage snapshot its indexes and the run state, unless a write is in flight or the storage is
@@ -389,7 +448,7 @@ class RecordLog:
         size = tail["tree_size"]
         runs, prev, leaves, approvals, index, tenants, closed = {}, ZERO_HASH, {}, {}, {}, set(), False
         open_runs, by_run, start, base, keys = {}, {}, 0, {}, []   # owner -> runs not closing; run key -> its approval ids
-        agent = {"off": False, "uses": {}}
+        agent, contain = {"off": False, "uses": {}}, new_contain()
         policy = self.detector and self.detector.engine.policy_hash
         det = detect.new(policy)
 
@@ -416,7 +475,7 @@ class RecordLog:
                     r.setdefault("tails", {})
                 runs[(r["tenant"], r["run_id"])] = r
             approvals = {aid: dict(a, run_key=tuple(a["run_key"])) for aid, a in st["approvals"].items()}
-            agent = st.get("agent", agent)
+            agent, contain = st.get("agent", agent), st.get("contain", contain)
             index = {tuple(k[:4]): k[4] for k in st["index"]}
             for aid, a in approvals.items():
                 by_run.setdefault(a["run_key"], []).append(aid)
@@ -504,8 +563,9 @@ class RecordLog:
                 approvals[e["data"]["approval_id"]]["state"] = APPROVAL_ENDS[e["type"]]
             if not run["final"]:
                 agent_state(dict.__setitem__, types.SimpleNamespace(approvals=approvals, agent=agent), run, e)
+                contain_state(dict.__setitem__, types.SimpleNamespace(contain=contain), run, e)
         self.log_id = self.log_id or secrets.token_hex(16)
-        self.agent = agent
+        self.agent, self.contain = agent, contain
         self.runs, self.head, self.tenants, self.keys = runs, {"seq": size, "prev": prev, "closed": closed}, tenants, keys
         for (tenant, run_id), r in runs.items():   # open runs a fresh detection state never saw registered
             k = f"{tenant}\0{run_id}"
@@ -640,7 +700,17 @@ class RecordLog:
                         tx.set(run["writers"], req["stream"], writer(identity, req))
                 elif req["client_seq"] <= last:
                     raise RPCError("client_seq_reused", f"{req['stream']}/{req['client_seq']}")
-        out = fn(tx, run)
+        try:
+            out = fn(tx, run)
+        except RPCError as e:
+            if run is not None and "client_seq" in req:
+                stream, cseq = req["stream"], req["client_seq"]
+                if cseq == max(run["streams"].get(stream, -1), run["tails"].get(stream, -1)) + 1:
+                    # the signer saw this value and refused it (the refusal is its record): not a gap at close. Only
+                    # the next value: one that skipped others leaves them to a later client_counter_gap.
+                    # lean: kept in the run's state and snapshots, not in a record: a replay from records forgets it
+                    e.keep = lambda t: t.set(run["tails"], stream, cseq)
+            raise
         if rid is not None:
             tx.set(self.done, rid, (digest, copy.deepcopy(out)))
         return out
@@ -683,6 +753,8 @@ class RecordLog:
                 done.append((fut, fn(tx)))
             except Exception as e:   # a refusal, or a bug in one handler: either way the item leaves nothing
                 tx.rollback(mark)
+                if hasattr(e, "keep"):   # but what a refusal says the signer saw (_item)
+                    e.keep(tx)
                 fut.set_exception(e)
         if tx.records:
             try:

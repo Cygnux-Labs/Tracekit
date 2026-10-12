@@ -135,6 +135,12 @@
         "incident.opened",
         "incident.updated",
         "incident.capped",
+        "run.held",
+        "run.resumed",
+        "run.quarantined",
+        "incident.resolved",
+        "incident.response",
+        "identity.suspension",
         "effect.observed"
       ]
     },
@@ -1036,6 +1042,102 @@
       "if": {
         "properties": {
           "type": {
+            "const": "run.held"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/run_held"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "run.resumed"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/run_resumed"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "run.quarantined"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/run_quarantined"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "incident.resolved"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/incident_resolved"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "incident.response"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/incident_response"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "identity.suspension"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/identity_suspension"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
             "const": "effect.observed"
           }
         }
@@ -1606,6 +1708,10 @@
           "type": "string",
           "maxLength": 256,
           "description": "format 1.2, with via: the client (scheme:subject) the gateway or tool executor decided the call for"
+        },
+        "incident_id": {
+          "$ref": "#/$defs/id",
+          "description": "format 1.2: the incident whose hold (ask, TK-HOLD) or quarantine (deny, TK-QUARANTINE) decided the call"
         }
       }
     },
@@ -1809,6 +1915,10 @@
           "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{6}Z$",
           "maxLength": 4096,
           "description": "format 1.2: an agent's approval is consumed before then (approvals.agent_consume_s), or never"
+        },
+        "incident_id": {
+          "$ref": "#/$defs/id",
+          "description": "format 1.2: the answer to a call held by this incident, by the person `person`"
         }
       }
     },
@@ -2479,7 +2589,8 @@
         "reason": {
           "enum": [
             "close_run",
-            "idle_timeout"
+            "idle_timeout",
+            "quarantine"
           ]
         }
       }
@@ -2791,6 +2902,10 @@
           "type": "string",
           "maxLength": 256,
           "description": "format 1.2: the gateway or tool executor (its identity, scheme:subject) that wrote this record for the run's client (source gateway, tier T2); the signer takes the call's later steps from it only"
+        },
+        "incident_id": {
+          "$ref": "#/$defs/id",
+          "description": "format 1.2: the call is held by this incident: only a person who is not the run's owner, principal or requester answers it"
         }
       }
     },
@@ -2820,9 +2935,11 @@
           "enum": [
             "ttl",
             "run_final",
-            "consume_window"
+            "consume_window",
+            "hold",
+            "quarantine"
           ],
-          "description": "format 1.2, on approvals an agent may answer: approvals.ttl_s passed, the run ended, or an agent's approval was not consumed within approvals.agent_consume_s"
+          "description": "format 1.2, on approvals an agent may answer: approvals.ttl_s passed, the run ended, or an agent's approval was not consumed within approvals.agent_consume_s; on any approval: its run was held or quarantined (hold, quarantine)"
         }
       }
     },
@@ -3786,7 +3903,7 @@
         "actions",
         "would"
       ],
-      "description": "format 1.2: a trigger of the policy's detection fired (a sequence completed, a limit was exceeded, or a respond trigger); one open incident per scope, trigger and rule, later matches are incident.updated. Written in shadow mode: no action taken, `would` the configured one",
+      "description": "format 1.2: a trigger of the policy's detection fired (a sequence completed, a limit was exceeded, or a respond trigger), an operator held or quarantined a run (trigger operator), or the detector could not vouch for a decision under an enforced response (detector_unavailable); one open incident per scope, trigger and rule, later matches are incident.updated. mode shadow: no action taken, `would` the configured one; mode enforce: `actions` the ones taken (none while the response engine is paused: then `would` and `reason` say so)",
       "properties": {
         "incident_id": {
           "$ref": "#/$defs/id"
@@ -3801,6 +3918,8 @@
             "class_mismatch",
             "refusal_burst",
             "tamper",
+            "operator",
+            "detector_unavailable",
             "unexplained_effect"
           ]
         },
@@ -3860,14 +3979,11 @@
         },
         "mode": {
           "enum": [
-            "shadow"
+            "shadow",
+            "enforce"
           ]
         },
         "actions": {
-          "type": "array",
-          "maxItems": 0
-        },
-        "would": {
           "type": "array",
           "maxItems": 3,
           "items": {
@@ -3876,6 +3992,50 @@
               "hold",
               "quarantine"
             ]
+          }
+        },
+        "would": {
+          "type": "array",
+          "maxItems": 4,
+          "items": {
+            "enum": [
+              "notify",
+              "hold",
+              "quarantine",
+              "suspend"
+            ]
+          }
+        },
+        "reason": {
+          "type": "string",
+          "maxLength": 1024,
+          "description": "why the actions differ from the configured one (paused, no person approvers), or an operator's reason"
+        },
+        "in_flight": {
+          "type": "array",
+          "maxItems": 1024,
+          "description": "format 1.2: calls allowed (or approved and consumed) and not completed when the response took effect: they may complete after it",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "run_id",
+              "tool_call_id",
+              "decision_id"
+            ],
+            "properties": {
+              "run_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "tool_call_id": {
+                "$ref": "#/$defs/id"
+              },
+              "decision_id": {
+                "$ref": "#/$defs/id"
+              }
+            }
           }
         }
       }
@@ -3944,6 +4104,8 @@
             "class_mismatch",
             "refusal_burst",
             "tamper",
+            "operator",
+            "detector_unavailable",
             "unexplained_effect"
           ],
           "description": "the trigger of the first incident not written"
@@ -3955,6 +4117,301 @@
         "reason": {
           "type": "string",
           "maxLength": 512
+        }
+      }
+    },
+    "run_held": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "incident_id",
+        "scope",
+        "by",
+        "reason"
+      ],
+      "description": "format 1.2: the run is held: every further call is asked of a person (TK-HOLD) and its live approvals expired; written in each run the incident's scope reaches",
+      "properties": {
+        "incident_id": {
+          "$ref": "#/$defs/id"
+        },
+        "scope": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "id"
+          ],
+          "properties": {
+            "kind": {
+              "enum": [
+                "run",
+                "session",
+                "owner",
+                "principal"
+              ]
+            },
+            "id": {
+              "type": "string",
+              "maxLength": 256
+            }
+          }
+        },
+        "by": {
+          "type": "string",
+          "maxLength": 256,
+          "description": "signer, or the operator's identity"
+        },
+        "reason": {
+          "type": "string",
+          "maxLength": 1024
+        },
+        "in_flight": {
+          "type": "array",
+          "maxItems": 1024,
+          "description": "format 1.2: calls allowed (or approved and consumed) and not completed when the response took effect: they may complete after it",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "run_id",
+              "tool_call_id",
+              "decision_id"
+            ],
+            "properties": {
+              "run_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "tool_call_id": {
+                "$ref": "#/$defs/id"
+              },
+              "decision_id": {
+                "$ref": "#/$defs/id"
+              }
+            }
+          }
+        },
+        "inherited": {
+          "const": true,
+          "description": "a new run of a held owner and principal (or of a held parent run) took the hold over"
+        },
+        "inherit_until": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{6}Z$",
+          "maxLength": 27,
+          "description": "until when new runs of this run's owner and attested principal inherit the hold"
+        }
+      }
+    },
+    "run_resumed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "incident_id",
+        "by",
+        "person",
+        "held_by"
+      ],
+      "description": "format 1.2: a person ended the hold of one incident on the run (run_resume, which ends each, or incident_resolve of that incident); held_by: the incidents that still hold it",
+      "properties": {
+        "incident_id": {
+          "$ref": "#/$defs/id"
+        },
+        "by": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "person": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "reason": {
+          "type": "string",
+          "maxLength": 1024
+        },
+        "break_glass": {
+          "const": true
+        },
+        "held_by": {
+          "type": "array",
+          "maxItems": 1024,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        }
+      }
+    },
+    "run_quarantined": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "incident_id",
+        "scope",
+        "by",
+        "reason"
+      ],
+      "description": "format 1.2: the run is quarantined for good: decisions are deny (TK-QUARANTINE), approvals are refused, a gateway forwards no more model requests",
+      "properties": {
+        "incident_id": {
+          "$ref": "#/$defs/id"
+        },
+        "scope": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "id"
+          ],
+          "properties": {
+            "kind": {
+              "enum": [
+                "run",
+                "session",
+                "owner",
+                "principal"
+              ]
+            },
+            "id": {
+              "type": "string",
+              "maxLength": 256
+            }
+          }
+        },
+        "by": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "reason": {
+          "type": "string",
+          "maxLength": 1024
+        },
+        "in_flight": {
+          "type": "array",
+          "maxItems": 1024,
+          "description": "format 1.2: calls allowed (or approved and consumed) and not completed when the response took effect: they may complete after it",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "run_id",
+              "tool_call_id",
+              "decision_id"
+            ],
+            "properties": {
+              "run_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "tool_call_id": {
+                "$ref": "#/$defs/id"
+              },
+              "decision_id": {
+                "$ref": "#/$defs/id"
+              }
+            }
+          }
+        },
+        "inherited": {
+          "const": true
+        },
+        "inherit_until": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{6}Z$",
+          "maxLength": 27,
+          "description": "until when new runs of this run's owner and attested principal inherit the hold"
+        }
+      }
+    },
+    "incident_resolved": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "incident_id",
+        "by",
+        "person"
+      ],
+      "description": "format 1.2: a person resolved the incident (in the tenant's signer run): its held runs resume, quarantines stay",
+      "properties": {
+        "incident_id": {
+          "$ref": "#/$defs/id"
+        },
+        "by": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "person": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "reason": {
+          "type": "string",
+          "maxLength": 1024
+        },
+        "break_glass": {
+          "const": true
+        },
+        "resumed": {
+          "type": "array",
+          "maxItems": 4096,
+          "items": {
+            "type": "string",
+            "maxLength": 200
+          }
+        }
+      }
+    },
+    "incident_response": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "enabled",
+        "by"
+      ],
+      "description": "format 1.2: an operator paused (enabled false) or resumed the tenant's response engine; detection keeps recording",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "by": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "reason": {
+          "type": "string",
+          "maxLength": 1024
+        }
+      }
+    },
+    "identity_suspension": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "identity",
+        "state",
+        "by"
+      ],
+      "description": "format 1.2: an identity of the tenant is suspended by an operator (written by the signer that changed the shared list), enforced (each signer that starts enforcing an entry) or lifted",
+      "properties": {
+        "identity": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "state": {
+          "enum": [
+            "suspended",
+            "enforced",
+            "lifted"
+          ]
+        },
+        "by": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "reason": {
+          "type": "string",
+          "maxLength": 1024
         }
       }
     },

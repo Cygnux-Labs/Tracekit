@@ -74,7 +74,9 @@ class Agreement(unittest.TestCase):
         cls.d = d = tempfile.mkdtemp(dir="/tmp" if os.path.isdir("/tmp") else None)
         cls.addClassCleanup(shutil.rmtree, d, True)
         witness = Witness()
-        s = svc.SignerService(os.path.join(d, "data"), policy=Engine({"ask": [{"id": "PAY", "tool": "pay", "pattern": "^"}]}),
+        policy = Engine({"ask": [{"id": "PAY", "tool": "pay", "pattern": "^"}],   # the egress run's incident cites
+                         "respond": [{"trigger": "unexplained_effect", "mode": "shadow", "action": "notify"}]})
+        s = svc.SignerService(os.path.join(d, "data"), policy=policy,
                               witnesses=[witness], isolation="same-user", grace_s=0, fsck_every_s=0,
                               fail_modes={"default": "closed", "read": "open"}, observe_grace_s=0,
                               authorize={"mtls:spiffe://acme/egress": ["observe_effect"]})
