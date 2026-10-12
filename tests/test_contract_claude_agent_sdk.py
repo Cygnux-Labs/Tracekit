@@ -79,8 +79,9 @@ else:
             if pre.get("permissionDecision") == "deny":   # the model gets the reason as the tool's error result
                 o.update(seen=pre["permissionDecisionReason"], is_error=True)
             else:
+                call["tool_input"] = pre.get("updatedInput", c["args"])
                 try:
-                    o["seen"] = dict((f.__name__, f) for f in ac.TOOLS)[c["name"]](**c["args"])
+                    o["seen"] = dict((f.__name__, f) for f in ac.TOOLS)[c["name"]](**call["tool_input"])
                 except Exception as e:
                     o["raised"] = f"{type(e).__name__}: {e}"
                     await self.hook("PostToolUseFailure", **call, error=str(e))

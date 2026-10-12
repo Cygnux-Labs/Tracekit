@@ -1,5 +1,6 @@
 """The signer steps of an adapter that holds each call in the client until the signer lets it run (MCP, Browser Use):
-decide, wait for a person on `ask`, consume, complete.
+decide, wait for a person on `ask`, consume, complete. When the consume returns the signer's copy of the arguments (an
+approval with a T2 executor), the call runs those, not the ones the caller holds.
 
 A signer that cannot be reached when a call is decided: the call runs unrecorded if register_run's `fail_modes` say
 `open` for the adapter's class, else it is refused. Any other failure to decide or approve refuses the call. A failure
@@ -38,20 +39,20 @@ class HeldCalls:
         return await asyncio.to_thread(call)
 
     async def _gate(self, call_id, tool, args):
-        """(the refusal that replaces the call or None when it may run, the decision)"""
+        """(the refusal that replaces the call or None when it may run, the decision, the arguments to run)"""
         try:
             d = await self._rpc("decide", tool_call_id=call_id, tool=tool, tool_class_hint=self.CLASS,
                                 args_source="parsed", args=args)
         except SignerUnavailable as e:   # unreachable: the run's fail mode for this class
-            return (None if fail_open(self.fail_modes, self.CLASS) else f"signer unavailable: {e}"), None
+            return (None if fail_open(self.fail_modes, self.CLASS) else f"signer unavailable: {e}"), None, args
         except RPCError as e:   # a refusal (a run closed after its idle timeout: register a new run) never lets it run
-            return f"signer refused the call: {e}", None
+            return f"signer refused the call: {e}", None, args
         hint = None
         if d["decision"] == "deny":
-            return ", ".join(d["rule_ids"]) or "deny", d
+            return ", ".join(d["rule_ids"]) or "deny", d, args
         if d["decision"] == "ask":
             if self.wait_s <= 0:
-                return "approval required, and this caller cannot wait for one", d
+                return "approval required, and this caller cannot wait for one", d, args
             try:
                 hint = (await self._rpc("approval_request", tool_call_id=call_id))["approval_id"]
                 state, deadline = "requested", time.monotonic() + self.wait_s
@@ -62,7 +63,7 @@ class HeldCalls:
             except (RPCError, SignerUnavailable) as e:   # once the policy asked, no fail mode applies
                 state = f"{type(e).__name__}: {e}"
             if state != "approved":
-                return f"{', '.join(d['rule_ids'])}: approval {state}", d
+                return f"{', '.join(d['rule_ids'])}: approval {state}", d, args
         # every call, allowed or approved: approval_consume is the signer's last word before it runs
         try:
             c = await self._rpc("approval_consume", tool_call_id=call_id, tool=tool, args_source="parsed", args=args,
@@ -70,8 +71,8 @@ class HeldCalls:
         except (RPCError, SignerUnavailable) as e:
             c = {"ok": False, "rule_ids": [], "reason": str(e)}
         if not c["ok"]:
-            return ", ".join(c["rule_ids"]) + (f": {c['reason']}" if c.get("reason") else ""), d
-        return None, d
+            return ", ".join(c["rule_ids"]) + (f": {c['reason']}" if c.get("reason") else ""), d, args
+        return None, d, c.get("args", args)
 
     async def _complete(self, call_id, req, **outcome):
         """Record the outcome; a failure to record warns and leaves the call's result or exception as it was."""

@@ -52,7 +52,8 @@ def new_run(tenant, run_id):
 
 
 FINAL_KEYS = ("tenant", "run_id", "run_seq", "head", "closed", "final", "owner", "source")
-CALL_KEYS = ("tool_call_id", "attempt", "decision", "rule_ids", "decision_id", "commitment")   # a call as replay has it
+# a call as replay has it; `via`, `caller`: the gateway that decided it and the client it named (SignerService._hold)
+CALL_KEYS = ("tool_call_id", "attempt", "decision", "rule_ids", "decision_id", "commitment", "via", "caller")
 TENANT_GAPS = ("witness_failed", "witness_late", "clock_skew", "degraded_unanchored")
 
 
@@ -234,8 +235,8 @@ class RecordLog:
         for run in self.runs.values():
             r = {k: v for k, v in run.items() if k not in ("denied", "digests", "prov")}
             if "calls" in r:
-                r["calls"] = {t: {k: c[k] for k in CALL_KEYS} for t, c in run["calls"].items()}
-                r["decisions"] = {d: c and {k: c[k] for k in CALL_KEYS} for d, c in run["decisions"].items()}
+                r["calls"] = {t: {k: c.get(k) for k in CALL_KEYS} for t, c in run["calls"].items()}
+                r["decisions"] = {d: c and {k: c.get(k) for k in CALL_KEYS} for d, c in run["decisions"].items()}
             for k in ("active", "closing_at"):
                 if r.get(k) is not None:
                     r[k] += wall
@@ -341,7 +342,8 @@ class RecordLog:
                 d = e["data"]
                 call = {"tool_call_id": e["tool_call_id"], "attempt": e.get("attempt", 0), "decision": d["decision"],
                         "rule_ids": d["rule_ids"], "decision_id": d.get("decision_id"),
-                        "commitment": d.get("args_commitment"), "tool": d.get("tool")}
+                        "commitment": d.get("args_commitment"), "tool": d.get("tool"), "via": d.get("via"),
+                        "caller": d.get("caller")}
                 run["calls"][e["tool_call_id"]] = call
                 if call["decision_id"]:
                     run["decisions"][call["decision_id"]] = call

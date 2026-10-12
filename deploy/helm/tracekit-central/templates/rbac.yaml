@@ -19,6 +19,11 @@ subjects:
   {{- if .Values.issuer.enabled }}
   - {kind: ServiceAccount, name: {{ .Release.Name }}-issuer, namespace: {{ .Release.Namespace }}}
   {{- end }}
+  {{- range $k, $name := dict "gateway" "gateway" "executor" "executor" "mcpGateway" "mcp-gateway" }}
+  {{- if (index $.Values $k).enabled }}
+  - {kind: ServiceAccount, name: {{ $.Release.Name }}-{{ $name }}, namespace: {{ $.Release.Namespace }}}
+  {{- end }}
+  {{- end }}
 ---
 # The preStop scale-down check reads the StatefulSet's replicas
 apiVersion: rbac.authorization.k8s.io/v1

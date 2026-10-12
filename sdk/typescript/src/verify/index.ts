@@ -357,6 +357,9 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
   const against = gaps("executed_against_policy");
   if (against.length)
     rep.check("policy", false, `${against.length} tool call(s) ran against a deny or an unapproved ask`, against.slice(0, 20), true);
+  const unresolved = gaps("held_call_unresolved");   // the signer's word that a held call ended its run without a result
+  if (unresolved.length)
+    rep.check("held calls", false, `${unresolved.length} tool call(s) a gateway or executor decided have no result`, unresolved.slice(0, 20), true);
   const external = typed("policy.external").map((e) => at(e, "data")), mismatched = gaps("decision_mismatch");
   if (external.length || mismatched.length) {
     const systems = count(external.map((d) => cut(str(at(d, "system")), 64)));
@@ -377,16 +380,34 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
     reconciles.map((e) => `seq ${e.seq}: ${e.type} ${cut(str(get(e, "tool_call_id")), 200)}: `
       + cut(str(get(at(e, "data"), "detail")), 200)).slice(0, 20), true);
   }
-  const tiers = new Map<string, J>();   // (run, tool_call_id) -> the tier any of its records names
+  // a tool call's tier is the weakest its records claim (untiered < T3, receipt only, < T1 < T2): each tier a record
+  // names, and untiered for a decision or result that names none, so a call decided at T2 and completed elsewhere
+  // isn't T2;
+  // paths: the (source, tier)s of its decisions and results, which differ only when another layer answered for it
+  const order: J[] = [null, "T3", "T1", "T2"];
+  const tiers = new Map<string, J>(), claims = new Map<string, J>(), paths = new Map<string, Set<string>>();
   for (const e of events) {
     if (get(e, "tool_call_id") === null) continue;
     const k = JSON.stringify([get(e, "run_id"), e.tool_call_id]);
-    tiers.set(k, truthy(tiers.get(k)) ? tiers.get(k) : get(e, "tier"));
+    const decided = ["policy.decision", "tool.result"].includes(get(e, "type"));
+    const tier = order.includes(get(e, "tier")) ? get(e, "tier") : null;
+    tiers.set(k, null);
+    if (tier !== null || decided) {
+      const had = claims.has(k) ? claims.get(k) : tier;
+      claims.set(k, order.indexOf(had) <= order.indexOf(tier) ? had : tier);
+    }
+    if (decided) paths.set(k, (paths.get(k) ?? new Set()).add(`${cut(str(get(e, "source")), 64)} ${tier ?? "untiered"}`));
   }
+  for (const [k, t] of claims) tiers.set(k, t);
+  const split = [...paths].filter(([, p]) => p.size > 1).map(([k, p]) => {
+    const [run, tcid] = JSON.parse(k);
+    return `${cut(str(run), 200)} ${cut(str(tcid), 200)}: ${[...p].sort().join(", ")}`;
+  });
   if (tiers.size) {
     const n = (t: J) => [...tiers.values()].filter((x) => x === t).length;
-    rep.check("tiers", true, `${tiers.size} tool call(s): ` + ["T1", "T2", "T3"].map((t) => `${t} ${n(t)}`).join(", ")
-      + (n(null) ? `, untiered ${n(null)}` : ""));
+    rep.check("tiers", !split.length, `${tiers.size} tool call(s): ` + ["T1", "T2", "T3"].map((t) => `${t} ${n(t)}`).join(", ")
+      + (n(null) ? `, untiered ${n(null)}` : "") + (split.length ? `; ${split.length} decided and completed by different capture paths` : ""),
+    split.slice(0, 20), true);
   }
   const sources = events.filter((e) => has(e, "args_source")).map((e) => e.args_source);
   if (sources.length)

@@ -22,6 +22,7 @@ A driver has:
 - `SKIP`: {capability: why it does not apply} for "retry", "saved_state" (resume in a new process, S6 B-G),
   "modes" and "l1" (a state wrapper that commits the framework's saved state).
 """
+import json
 import os
 import re
 import shutil
@@ -96,11 +97,21 @@ def _serve(case, handle_frame):
     return path
 
 
+def _approved(case, frame):
+    """The frame the signer gets: with `case.approved` set, a decide or consume of `pay` carries those arguments, so the
+    signer decides, approves and consumes them while the framework holds the ones the adapter sent."""
+    a = getattr(case, "approved", None)
+    if a is None or frame.get("method") not in ("decide", "approval_consume") or re.split("[/:]", frame["tool"])[-1] != "pay":
+        return frame
+    return dict(frame, args=json.dumps(a) if frame["args_source"] == "raw" else a)
+
+
 class OnFake:
     def serve_signer(self):
         signer, mutex = FakeSigner(_rule, t2=["R-PAY"]), threading.Lock()
 
         def handle(identity, frame):
+            frame = _approved(self, frame)
             with mutex:
                 return getattr(signer, frame.pop("method"))(frame)
         return _serve(self, handle)
@@ -116,7 +127,7 @@ class OnReal:
                                                        "deny": [{"id": "R-WIPE", "tool": "^(.*[/:])?wipe$", "pattern": "^"}],
                                                        "untrusted": ["*echo"]}))
         self.addCleanup(s.close)
-        return _serve(self, s.handle_frame)
+        return _serve(self, lambda identity, frame: s.handle_frame(identity, _approved(self, frame)))
 
     def events(self, run):
         """The signed records: `read` leaves out the top-level fields, `attempt` among them."""
@@ -284,6 +295,15 @@ class Contract:
         out = execute(PAY)
         self.assertEqual((out["ok"], out["args"]), (True, PAY))
         self.refused(self.d.resume(), "TK-APPROVAL-CONSUMED")   # the agent's own resume runs nothing
+
+    def test_t2_the_approved_args_run_not_the_frameworks(self):
+        """The agent changed the call's arguments after the approval: the adapter runs the signer's copy (T2) and
+        completes the call for it."""
+        self.approved = dict(PAY, cents=7)
+        self.approve(self.paused())
+        out = self.d.resume()
+        self.assertEqual((out["ran"], out["seen"], out["is_error"]), (["pay"], "paid 7", False))
+        self.assert_bound()
 
     # --- modes and L1 ---
 

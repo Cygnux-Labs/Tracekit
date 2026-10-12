@@ -1,6 +1,8 @@
 /**
  * What every framework adapter does with a tool call (04-design §7.3), over one run: decide on the model's arguments,
  * have the signer consume an approval (or agree that none is needed), run the call, complete it against its decision.
+ * An approval with a T2 executor makes the consume return the signer's copy of the arguments: the call runs those
+ * (`input()`), not the framework's, and completes for them.
  *
  * A signer that cannot be reached when a call is decided: the call runs unrecorded if register_run's `fail_modes` say
  * `open`, else it is refused. Any other failure to decide or approve (a refusal, a run the signer closed after its idle
@@ -44,6 +46,7 @@ export class Gate {
   private attempts = new Map<string, number>();   // tool_call_id -> the attempt its next execution is
   private passed = new Map<string, boolean>();    // tool_call_id -> let through (false: unrecorded, fail open)
   private send = new Map<string, boolean>();      // tool_call_id -> its decision said send_result (an untrusted tool)
+  private t2 = new Map<string, [string, unknown]>();   // tool_call_id -> (tool, the signer's copy of the arguments)
 
   constructor(readonly run: RunHandle) {}
 
@@ -85,6 +88,7 @@ export class Gate {
       const c = await this.run.call("approval_consume", { tool_call_id: id, attempt, tool, args,
         args_source: typeof args === "string" ? "raw" : "parsed", ...(hint ? { approval_id_hint: hint } : {}) });
       if (!c.ok) return refusal(c.rule_ids, c.reason);
+      if ("args" in c) keep(this.t2, id, [tool, c.args]);
     } catch (e) {   // no fail mode once decided: a refusal or an approval that can't be had blocks
       return BLOCKED + `signer error: ${failure(e)}`;
     }
@@ -92,14 +96,20 @@ export class Gate {
     return null;
   }
 
+  /** The arguments a call admit() let through runs with: the signer's copy (T2), else `input`. */
+  input(id: string | undefined, input: unknown): unknown {
+    const t2 = id === undefined ? undefined : this.t2.get(id);
+    return t2 ? t2[1] : input;
+  }
+
   /** Records the outcome of a call admit() let through. Never rejects. */
   async complete(id: string, status: "ok" | "error", fields: Frame = {}): Promise<void> {
-    const recorded = take(this.passed, id);
+    const recorded = take(this.passed, id), t2 = take(this.t2, id);
     this.send.delete(id);
     if (recorded === undefined) return;
     const attempt = this.attempt(id);
     keep(this.attempts, id, attempt + 1);
-    if (recorded) await this.run.complete(id, status, { attempt, ...fields });
+    if (recorded) await this.run.complete(id, status, { attempt, ...(t2 ? { args_digest: argsDigest(...t2) } : {}), ...fields });
   }
 
   /** Runs `fn` for a call admit() let through and completes it; its result or exception reaches the caller unchanged. */

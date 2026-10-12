@@ -26,7 +26,9 @@ position only). A record after a run's run.final breaks the run chain.
 The assurance line names the algorithms each conclusion rests on (records; the checkpoint: "Ed25519 only" or
 "Ed25519 + SLH-DSA-SHA2-128s"; cosignatures; anchors) and the earliest independent anchor time (a cosignature or a
 TSA time of a witness or anchor not classed operator).
-Report lines (also in --json): tool calls by evidence tier (T1/T2/T3), records by args_source, the signer_isolation the
+Report lines (also in --json): tool calls by evidence tier (T1/T2/T3; a call whose records disagree counts as the
+weakest, and one whose decision and result came by different capture paths is a `tiers` warning), records by
+args_source, the signer_isolation the
 signer recorded per run, the harness it attested per run (when any run has one), the tool classes run.registered says
 fail open, and key assurance (asserted: the log declares its keys; this format has no key attestation).
 Monitor reports (`tracekit monitor`) come from the verifier's side, never the bundle: verify(..., monitor_reports=[path]).
@@ -36,7 +38,8 @@ A pinned monitor's report of conflicts for the origin, or of another root at the
 A run with any self-approval (dev mode: the approver was the requester) is reported `approvals: self`, assurance dev.
 Approvals answered under the break-glass role are listed, as a warning.
 A tool call that ran against a deny, or an ask with no consumed approval, is signed by the signer as a capture.gap
-`executed_against_policy`; each is a `policy` warning.
+`executed_against_policy`; each is a `policy` warning. A call a gateway or executor decided whose run ended without its
+result is a capture.gap `held_call_unresolved`; each is a `held calls` warning.
 External decisions: policy.external records (other systems' decisions, imported at tier T3) are counted by system and
 by whether the signer verified the system's signature; each signer-written capture.gap `decision_mismatch` (the
 import disagreed with the signer's decision or tool, or named a call the signer never decided) makes the
@@ -481,6 +484,11 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
     if against:
         rep.check("policy", False, f"{len(against)} tool call(s) ran against a deny or an unapproved ask", against[:20],
                   warn=True)
+    unresolved = [f"seq {r['event']['seq']}: {str(r['event']['data'].get('reason'))[:200]}" for r in every
+                  if r["event"].get("type") == "capture.gap" and r["event"]["data"].get("kind") == "held_call_unresolved"]
+    if unresolved:   # the signer's word that a call a gateway held ended its run without a result
+        rep.check("held calls", False, f"{len(unresolved)} tool call(s) a gateway or executor decided have no result",
+                  unresolved[:20], warn=True)
     external = [r["event"]["data"] for r in every if r["event"].get("type") == "policy.external"]
     mismatched = [f"seq {r['event']['seq']}: {str(r['event']['data'].get('reason'))[:200]}" for r in every
                   if r["event"].get("type") == "capture.gap" and r["event"]["data"].get("kind") == "decision_mismatch"]
@@ -513,15 +521,30 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
     if vault:   # signer records of the content vault (docs/privacy.md): who read or erased retained content
         rep.check("content vault", True, f"{vault['content.accessed']} access(es), {vault['content.erased']} erasure(s) "
                                          "of retained content, each signed by the signer")
-    tiers = {}   # (run, tool_call_id) -> the tier any of its records names
+    # a tool call's tier is the weakest its records claim (untiered < T3, receipt only, < T1 < T2): each tier a record
+    # names, and untiered for a decision or result that names none, so a call decided at T2 and completed elsewhere
+    # isn't T2;
+    # paths: the (source, tier)s of its decisions and results, which differ only when another layer answered for it
+    order, tiers, claims, paths = (None, "T3", "T1", "T2"), {}, {}, {}
     for r in every:
         e = r["event"]
-        if e.get("tool_call_id") is not None:
-            tiers[(e.get("run_id"), e["tool_call_id"])] = tiers.get((e.get("run_id"), e["tool_call_id"])) or e.get("tier")
+        if e.get("tool_call_id") is None:
+            continue
+        k, decided = (e.get("run_id"), e["tool_call_id"]), e.get("type") in ("policy.decision", "tool.result")
+        tier, tiers[k] = e.get("tier") if e.get("tier") in order else None, None
+        if tier is not None or decided:
+            claims[k] = min(claims.get(k, tier), tier, key=order.index)
+        if decided:
+            paths.setdefault(k, set()).add((str(e.get("source"))[:64], tier))
+    tiers.update(claims)
+    split = [f"{str(k[0])[:200]} {str(k[1])[:200]}: " + ", ".join(sorted(f"{s} {t or 'untiered'}" for s, t in p))
+             for k, p in paths.items() if len(p) > 1]
     if tiers:
         n = collections.Counter(tiers.values())
-        rep.check("tiers", True, f"{len(tiers)} tool call(s): " + ", ".join(f"{t} {n[t]}" for t in ("T1", "T2", "T3"))
-                  + (f", untiered {n[None]}" if n[None] else ""))
+        rep.check("tiers", not split, f"{len(tiers)} tool call(s): "
+                  + ", ".join(f"{t} {n[t]}" for t in ("T1", "T2", "T3")) + (f", untiered {n[None]}" if n[None] else "")
+                  + (f"; {len(split)} decided and completed by different capture paths" if split else ""),
+                  split[:20], warn=True)
     sources = collections.Counter(r["event"]["args_source"] for r in every if "args_source" in r["event"])
     if sources:
         rep.check("args source", True, f"{sum(sources.values())} record(s): "
