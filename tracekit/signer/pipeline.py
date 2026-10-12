@@ -11,7 +11,6 @@ after RECOVER_S reopens the storage, rebuilds the run state from it and writes a
 """
 import base64
 import copy
-import datetime
 import hashlib
 import json
 import logging
@@ -28,7 +27,9 @@ from tracekit.format import registry
 from tracekit.format.records import RecordError, RecordSigner, verify_record
 from tracekit.schema import V2
 from tracekit.signer import detect, reconcile
+from tracekit.signer.detect import epoch
 from tracekit.signer.rpc_schema import RPCError
+from tracekit.signer.runtoken import subject
 from tracekit.storage.base import ZERO_HASH, StorageCorrupt, registry_tree
 
 BATCH = 512
@@ -96,10 +97,6 @@ def approval(tenant, run_id, data, ts):
 
 APPROVAL_ENDS = {"approval.consumed": "consumed", "approval.expired": "expired", "approval.abandoned": "expired",
                  "approval.revoked": "rejected"}
-
-
-def epoch(ts):
-    return datetime.datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
 
 
 def person_only_keys(a):
@@ -227,10 +224,6 @@ def salt_label(e):
     if e["type"] in ("model.exchange", "state.write"):
         return f"{e['type']}:{e['tenant']}:{e['run_id']}:{e['request_id']}"
     return None
-
-
-def subject(identity):
-    return f"{identity.scheme}:{identity.subject}"
 
 
 def writer(identity, req):

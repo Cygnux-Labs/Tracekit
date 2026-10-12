@@ -9,7 +9,6 @@ The cryptography here (Merkle inclusion proofs, ECDSA signed entry timestamps, E
 tested offline against self-generated logs. It has not been exercised against the live Sigstore service
 from this build environment (network allowlist); treat the first real run as a validation step."""
 import base64
-import hashlib
 import json
 import os
 import urllib.error
@@ -17,20 +16,13 @@ import urllib.request
 
 from .client import no_redirect_opener, remote_url_error
 from .core import b64d, b64e, canon
+from .merkle import leaf_hash, node_hash
 
 MAX_ENTRIES = 5000
 _ED25519_SPKI_PREFIX = bytes.fromhex("302a300506032b6570032100")
 
 
 # ---------- RFC 6962 / RFC 9162 Merkle tree ----------
-def leaf_hash(data):
-    return hashlib.sha256(b"\x00" + data).digest()
-
-
-def node_hash(left, right):
-    return hashlib.sha256(b"\x01" + left + right).digest()
-
-
 def verify_inclusion(leaf_index, tree_size, leaf, proof, root):
     """RFC 9162 section 2.1.3.2. All hashes are raw bytes."""
     if leaf_index < 0 or tree_size <= 0 or leaf_index >= tree_size:

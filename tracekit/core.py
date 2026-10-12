@@ -176,16 +176,6 @@ def read_json(path):
         return json.load(f)
 
 
-def write_text(path, text, encoding="utf-8"):
-    with open(path, "w", encoding=encoding) as f:
-        f.write(text)
-
-
-def write_bytes(path, data):
-    with open(path, "wb") as f:
-        f.write(data)
-
-
 def write_json(path, obj, **kw):
     with open(path, "w", encoding="utf-8") as f:
         json.dump(obj, f, **kw)

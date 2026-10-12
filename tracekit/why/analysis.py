@@ -4,14 +4,13 @@ Everything here is derived from the log and the tests recorded against it. Nothi
 """
 from __future__ import annotations
 
-import json
 import os
 import re
 import sys
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from .core import UNFINISHED, Run, glob_escape, load_run, verify
-from .graph import Graph, build_graph, nodes_matching, target_hits
+from .graph import Graph, _text, build_graph, nodes_matching, target_hits
 
 _EMAIL = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
 _URL = re.compile(r"https?://[^\s\"'<>]+")
@@ -27,10 +26,6 @@ def _count(v: Any) -> int:
 def integrity(run: Run) -> List[str]:
     """verify()'s problems, less a missing run.end: the page shows a running run as running, not as broken."""
     return [p for p in verify(run) if not p.startswith(UNFINISHED)]
-
-
-def _txt(v: Any) -> str:
-    return v if isinstance(v, str) else json.dumps(v, sort_keys=True, ensure_ascii=False, default=str)
 
 
 def is_sensitive(run: Run, ev: Dict[str, Any]) -> Optional[str]:
@@ -92,12 +87,12 @@ def value_provenance(run: Run, args: Any, before_seq: int) -> List[Dict[str, Any
         if ev["seq"] >= before_seq:
             break
         if ev["type"] == "input":
-            texts.append((ev, _txt(run.value(ev["ref"])).lower(), ev.get("trust", "trusted"),
+            texts.append((ev, _text(run.value(ev["ref"])).lower(), ev.get("trust", "trusted"),
                           "task" if ev.get("kind") == "task" else ev.get("source", "input")))
         elif ev["type"] == "action" and ev.get("status") != "blocked":
             # a tool result counts as untrusted if the same content was also recorded as untrusted input
             untrusted = ev["result_ref"] in untrusted_refs or ev.get("trust") == "untrusted"
-            texts.append((ev, _txt(run.value(ev["result_ref"])).lower(),
+            texts.append((ev, _text(run.value(ev["result_ref"])).lower(),
                           "untrusted" if untrusted else "trusted", ev["tool"]))
     for a in atoms(args):
         if hashed and a.startswith("sha256:"):  # a hash placeholder, not a value
@@ -273,13 +268,13 @@ def alerts(run: Run, g: Graph) -> List[Dict[str, Any]]:
                         "detail": (ev.get("guard") or {}).get("reason", "")})
         elif ev.get("status") == "error":
             out.append({**base, "severity": "review", "title": f"{ev['tool']} failed",
-                        "detail": _txt(run.value(ev["result_ref"]))[:200]})
+                        "detail": _text(run.value(ev["result_ref"]))[:200]})
         if ev.get("mode") == "stub":
             out.append({**base, "severity": "info", "title": f"{ev['tool']} was stubbed in replay", "detail": ""})
     for ev in run.of_type("decision"):
         if ev.get("status") == "error":
             out.append({"severity": "review", "title": f"Model call failed ({ev['agent']})",
-                        "detail": _txt(run.value(ev["output"]))[:200], "node": "ev:" + ev["id"]})
+                        "detail": _text(run.value(ev["output"]))[:200], "node": "ev:" + ev["id"]})
     rank = {"high": 0, "review": 1, "info": 2}
     out.sort(key=lambda a: (rank[a["severity"]], a.get("seq", 0)))
     return out
@@ -288,7 +283,7 @@ def alerts(run: Run, g: Graph) -> List[Dict[str, Any]]:
 # --------------------------------------------------------------------------- timeline
 
 def _short(v: Any, n: int = 90) -> str:
-    s = _txt(v).replace("\n", " ")
+    s = _text(v).replace("\n", " ")
     return s if len(s) <= n else s[: n - 1] + "…"
 
 

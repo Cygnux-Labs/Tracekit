@@ -36,6 +36,7 @@ import urllib.request
 from tracekit import crypto, merkle
 from tracekit.anchor import rekor2
 from tracekit.format import checkpoint, registry
+from tracekit.format.checkpoint import _b64
 from tracekit.format.canon import canonical, event_hash, loads_strict
 from tracekit.merkle import tiles
 from tracekit.storage.base import ZERO_HASH
@@ -54,10 +55,6 @@ LEAFED = ("run.registered", "run.final")
 
 class MonitorError(Exception):
     """A poll that could not finish (unreachable, a bad note, entries that are not the checkpoint's tree)."""
-
-
-def _b64(b):
-    return base64.b64encode(b).decode("ascii")
 
 
 def _get(url):

@@ -3,6 +3,7 @@
 A frame is `{"method": ..., ...}`; the transport only reads `method`. The caller's identity is established again for
 every frame by the transport's authenticator, never taken from the frame's content.
 """
+import ipaddress
 import json
 import os
 
@@ -78,3 +79,11 @@ def serve(conn, rfile, authenticate, handle):
             write_frame(conn, out)
     except OSError:   # the read timeout, or the peer went away
         return
+
+
+def loopback(host):
+    """Whether `host` is a loopback IP address (a name never is: a resolver could point it elsewhere)."""
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
