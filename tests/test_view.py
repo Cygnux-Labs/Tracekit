@@ -102,14 +102,17 @@ class Translate(unittest.TestCase):
         self.assertNotIn("{", "".join(r.get("text", "") for r in rows))   # no record JSON in place of words
 
     def test_gaps_and_signer_records_in_words_and_the_signer_is_no_agent(self):
-        gap, final = self.feed(
+        gap, child, final = self.feed(
             v2rec(1, "capture.gap", {"kind": "client_counter_gap", "missed_events": 3, "reason": "stream s skipped"}),
-            v2rec(2, "run.final", {"head_run_seq": 1, "provider_executed": 2, "coverage": {
+            v2rec(2, "run.child", {"run_id": "run-c"}),
+            v2rec(3, "run.final", {"head_run_seq": 2, "provider_executed": 2, "coverage": {
                 "layers": ["L2"], "reconciled": 0, "unreconciled": {"hook_missing": 1}}}))
+        self.assertEqual((child["title"], child["text"]), ("CHILD RUN", "run run-c registered from this run's harness "
+                                                                        "process with this run as its parent"))
         self.assertEqual((gap["tape"], gap["title"], gap["text"], gap["v2"]["kind"]),
                          ("GAP", "GAP · client_counter_gap", "stream s skipped · 3 events missed",
                           "client_counter_gap"))
-        self.assertEqual(final["reason"], "final · head run_seq 1 · coverage L2 · reconciled 0 · unreconciled "
+        self.assertEqual(final["reason"], "final · head run_seq 2 · coverage L2 · reconciled 0 · unreconciled "
                                           "hook_missing 1 · provider-run tools 2")
         signer = view.SIGNER_RUN[1]
         epoch, refused = self.feed(

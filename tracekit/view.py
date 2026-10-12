@@ -398,6 +398,9 @@ class Translator(observe.Translator):
                          "ALERT")
         if t == "state.write":
             return alert("info", f"STATE WRITE · {d.get('store')}", f"key {d.get('key')}", "STATE")
+        if t == "run.child":
+            return alert("info", "CHILD RUN", f"run {d.get('run_id')} registered from this run's harness process with "
+                                              "this run as its parent", "SIGNER")
         return super().feed(rec) or alert("info", t, json.dumps(d, ensure_ascii=False)[:200], "ALERT")
 
 

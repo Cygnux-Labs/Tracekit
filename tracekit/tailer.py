@@ -19,8 +19,9 @@ the message id; each tool use with the digest of its arguments; the tool results
 prompt becomes a model_event request carrying only the prompt's digest, which the signer publishes as a salted
 commitment. It exits once the signer says the run is over, or (dev mode) once `until` is gone. A transcript that never
 appears or cannot be reached, and a tailer that stops after IDLE_TAILER_S without a new line, are a tailer_lost too.
-Every HEARTBEAT_S it sends `tailer_heartbeat`; a tailer that is killed stops them, and the signer writes the tailer_lost
-gap itself (a signer that does not know the call, or a token not granted it, just gets none).
+Every HEARTBEAT_S it sends `tailer_heartbeat` (another refusal, e.g. a quota, is tried again at the next); a tailer that
+is killed stops them, and the signer writes the tailer_lost gap itself (a signer that does not know the call, or a token
+not granted it, just gets none).
 The session's subagents' transcripts (<session>/subagents/agent-*.jsonl, next to the session's) are followed the same
 way, with the same checks, from the wake they appear on.
 """
@@ -198,7 +199,8 @@ def _follow(run, t, uid):
 
 
 def _heartbeat(run):
-    """tailer_heartbeat; -> when it was sent, or None when this signer or token has no heartbeats (stop sending)."""
+    """tailer_heartbeat; -> when it was sent (or tried: a signer that can't take it now gets the next), or None when
+    this token is not granted heartbeats or the signer doesn't know them (stop sending)."""
     try:
         run.call("tailer_heartbeat")
     except SignerUnavailable:
@@ -206,7 +208,8 @@ def _heartbeat(run):
     except RPCError as e:
         if e.code in ENDED:
             raise
-        return None
+        if e.code in ("forbidden", "invalid_request"):   # not granted, or a signer before 1.2 (unknown method)
+            return None
     return time.monotonic()
 
 

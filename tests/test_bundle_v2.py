@@ -634,6 +634,8 @@ ENTRIES = {
     "capture.gap.kind=decided_not_completed": [registered(), gap("decided_not_completed", tool_use_id="t1")],
     "capture.gap.kind=late_activity": [registered(), gap("late_activity", run_id="run-x", missed_events=3)],
     "capture.gap.kind=concurrent_run": [registered(), gap("concurrent_run")],
+    "capture.gap.kind=tailer_redelegated": [registered(), gap("tailer_redelegated")],
+    "run.child": [registered(), ("run.child", {"run_id": "run-x"}, "run-a")],
 }
 
 

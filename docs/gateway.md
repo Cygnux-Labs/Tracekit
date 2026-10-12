@@ -27,11 +27,12 @@ max_body: 33554432                     # bytes, for request bodies and non-strea
 ```
 
 The gateway reaches the signer as itself, with the `TRACEKIT_SIGNER_TOKEN_FILE` or `TRACEKIT_SIGNER_CERT`/`_KEY`
-environment variables of the Python client. In `signer.yaml`, list it and let it record model events:
+environment variables of the Python client. In `signer.yaml`, list it and let it record model events and say where a
+run's stream ended (`close_run`, see [what is recorded](#what-is-recorded)):
 
 ```yaml
 gateways: ["mtls:spiffe://acme.org/tracekit-gateway"]
-authorize: {"mtls:spiffe://acme.org/tracekit-gateway": [model_event]}
+authorize: {"mtls:spiffe://acme.org/tracekit-gateway": [model_event, close_run]}
 gateway_mandatory: true                # optional, see Reconciliation
 ```
 
@@ -39,8 +40,9 @@ Only an identity in `gateways` may record an exchange for another identity's run
 anyone else.
 
 To keep exchanges in the signer's [content vault](privacy.md#the-content-vault), turn the vault on in `signer.yaml`
-and also grant the gateway `status`: `[model_event, status]`. The gateway asks the signer's status once, and from then
-on each `model_event` carries the exchange's `body`. Restart the gateway after you turn the vault on or off.
+and also grant the gateway `status`: `[model_event, close_run, status]`. The gateway asks the signer's status once,
+and from then on each `model_event` carries the exchange's `body`. Restart the gateway after you turn the vault on or
+off.
 
 ## Calling it
 
@@ -94,9 +96,11 @@ closed by default): closed answers 503 and forwards nothing. Open forwards only 
 signer has already accepted through this gateway.
 Each run's records from one gateway share a stream and counter, so exchanges forwarded while the signer was
 down show as a signed `client_counter_gap` once a later exchange of that run is recorded. **(1.2)** When the gateway
-drops a run from memory (it keeps the last 10,000) or stops, it tells the signer where the stream of each run with
-unrecorded exchanges ended (`close_run` with `caller` and `last_client_seq`; the gateway's identity needs the
-`close_run` grant), so those become a gap too; the run stays as it is.
+drops a run from memory (it keeps the last 10,000) or stops (SIGTERM, as systemd, Docker and Kubernetes send, or
+Ctrl-C), it tells the signer where the stream of each run with unrecorded exchanges ended (`close_run` with `caller`
+and `last_client_seq`), so those become a gap too; the run stays as it is, and for a run already final the gap goes in
+the tenant's signer run, naming it. The gateway's identity needs the `close_run` grant next to `model_event`; without
+it the gateway logs the refusal on stderr, saying so.
 
 ### Provider-run tools (1.2)
 
@@ -113,10 +117,12 @@ provider_tools: {deny: [web_search_preview, code_interpreter, mcp_servers]}   # 
 ```
 
 Names are those `tracekit why` uses: an Anthropic typed tool the client doesn't run by its `name` (`web_search`,
-`code_execution`), `mcp_servers` and `container`; an OpenAI tool of a type other than `function` and `custom` by its
-type (`web_search_preview`, `code_interpreter`, `mcp:<server_label>`, also client-run types such as
-`computer_use_preview`: allow them by name if you use `allow`), and `web_search_options`. A refused request is answered
-403 `provider tool(s) ... not allowed by this gateway's provider_tools` and never reaches the provider or the signer.
+`code_execution`), `mcp_servers` and `container`; an OpenAI tool by its type (`web_search_preview`,
+`code_interpreter`, `mcp:<server_label>`; an entry `mcp` covers every server label), and `web_search_options`. The
+OpenAI types the client runs (`function`, `custom`, `local_shell`, `apply_patch`, `computer_use_preview`) are never
+refused; `shell` and `tool_search` count, since the provider may host them: with `allow`, list them if your client runs
+them. A refused request is answered 403 `provider tool(s) ... not allowed by this gateway's provider_tools` and never
+reaches the provider or the signer.
 
 ## Replay runs
 

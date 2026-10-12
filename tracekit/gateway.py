@@ -12,7 +12,7 @@ gateway.yaml:
     signer: https://signer.internal:8443   # the gateway's own identity: $TRACEKIT_SIGNER_* (tracekit.sdk.client)
     max_body: 33554432                     # request and non-streamed response bodies; 413 / 502 beyond
     provider_tools: {deny: [code_execution, mcp_servers, code_interpreter]}   # tools the provider runs itself
-                                           # (as parsers.provider_tools names them):
+                                           # (as parsers.provider_tools names them; `mcp` covers every mcp:<label>):
                                            # a request declaring a denied one, or with `allow`, one not listed, is
                                            # refused (403): they run mid-response, where no decide can hold them
 
@@ -29,7 +29,10 @@ response. Tools the provider ran itself are recorded with the digest of their in
 event is recorded with an error and
 ends, for the client, in an error (an SSE error event and a cut connection once the headers went out), never a clean
 end. Signer unreachable: the run's fail mode for class `model`, as the signer last answered it for this run, token and
-identity (closed when it has not): closed answers 503. A signer refusal is an error whatever the fail mode.
+identity (closed when it has not): closed answers 503. A signer refusal is an error whatever the fail mode. When the
+gateway drops a run from memory (MAX_RUNS) or stops (SIGTERM, Ctrl-C), it tells the signer where the run's stream
+ended if its last exchanges never got there (close_run `last_client_seq`; the gateway's identity needs the close_run
+grant, and a refusal is logged on stderr), so the signer writes their client_counter_gap.
 
 When the signer's `status` says its content vault is on (signer.yaml `content.retain`; the gateway's identity needs the
 `status` grant), each model_event also carries the exchange's `body`: the request as sent, the response as received
@@ -44,6 +47,7 @@ import http.client
 import http.server
 import json
 import os
+import signal
 import sys
 import threading
 import types
@@ -101,8 +105,8 @@ class Gateway:
     def end(self, key, run):
         """Tell the signer where run `key`'s stream ended when its last exchanges never reached it (close_run
         `last_client_seq`, as a gateway: the run stays as it is), so it writes their client_counter_gap."""
-        # lean: sent when the run is evicted or the gateway stops, so a run that goes final first keeps no gap (the
-        # signer counts the refused call as late activity); report on a timer if gateways often lose the signer
+        # lean: sent when the run is evicted or the gateway stops (a run already final gets the gap in its tenant's
+        # signer run); report on a timer if gateways often lose the signer for long
         with run.lock:
             if run.seq - 1 <= run.acked:
                 return
@@ -111,8 +115,13 @@ class Gateway:
                 self.client.close_run({"run_id": run_id, "run_token": token, "caller": caller,
                                        "last_client_seq": [{"stream": run.stream, "client_seq": run.seq - 1}]})
                 run.acked = run.seq - 1
-            except (SignerUnavailable, RPCError):
+            except SignerUnavailable:
                 pass
+            except RPCError as e:
+                print(f"tracekit gateway: the signer refused the end of run {run_id}'s stream ({e.code}: {e.message}), "
+                      "so exchanges it never got leave no gap"
+                      + ("; grant this gateway close_run next to model_event in signer.yaml authorize"
+                         if e.code == "forbidden" else ""), file=sys.stderr)
 
     def close(self):
         """End the streams of every run whose last exchanges the signer did not get (the gateway is stopping)."""
@@ -122,9 +131,15 @@ class Gateway:
             self.end(key, run)
 
     def refused_tools(self, kind, req):
-        """The provider-run tools `req` declares that provider_tools does not allow."""
+        """The provider-run tools `req` declares that provider_tools does not allow (OpenAI tool types the client runs
+        are none); an entry names a tool or a type (`mcp` covers `mcp:<server_label>`)."""
         allow, deny = self.provider_tools.get("allow"), self.provider_tools.get("deny", ())
-        return [n for n in parsers.provider_tools(kind, req) if n in deny or allow is not None and n not in allow]
+
+        def listed(n, names):
+            return n in names or n.split(":", 1)[0] in names
+        return [n for n in parsers.provider_tools(kind, req)
+                if not (kind.startswith("openai:") and n in parsers.OPENAI_CLIENT_TOOLS)
+                and (listed(n, deny) or allow is not None and not listed(n, allow))]
 
     def record(self, key, xid, **fields):
         """model_event for run `key` = (run_id, token, caller): True once recorded, False when the signer can't be
@@ -428,6 +443,7 @@ def main(argv=None):
         return 2
     host, port = srv.server_address[:2]
     print(f"tracekit gateway: {host}:{port} -> {srv.gateway.upstream}", flush=True)
+    signal.signal(signal.SIGTERM, signal.default_int_handler)   # systemd, docker, k8s: stop as on Ctrl-C, reporting
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

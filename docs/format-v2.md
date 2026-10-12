@@ -148,18 +148,24 @@ and then never heard about. All are `capture.gap` records with `source: signer`.
 
 | `kind` | Where, when | Fields |
 |---|---|---|
-| `decided_not_completed` | in the run, at `run.final`: each call whose latest decide was allowed (or asked, with its approval consumed) and has no `complete`; at most 100, then one counting the rest | `tool_use_id`, top-level `tool_call_id` and `attempt`; the last one `missed_events` |
-| `concurrent_run` | in the newer run, after its `run.registered`, for a run bound to a harness process: another run of the same owner, tenant and harness process is open, in another session | `run_id`: the open run |
-| `late_activity` | in the tenant's run `tracekit/signer`, with the refusal summaries: writes refused because their run was final | `run_id`: that run; `missed_events`: how many; `from_ts`, `to_ts` |
-| `client_counter_gap` | also at `close_run` with `last_client_seq`: the values of a stream the signer had not received by then (the reason names the identity that said where the stream ended; values that arrive later are still recorded after it) | `missed_events`, top-level `stream` |
-| `tailer_lost` | also when a transcript tailer's `tailer_heartbeat`s stop for 90 s while its run is open | — |
+| `decided_not_completed` | in the run, at `run.final`: each open decision that let its call run (allowed, or asked with the call's approval consumed) and has no `complete`, unless a later decision of the call completed (for the decision a consumed approval names: with the approved arguments); at most 100, then one counting the rest | `tool_use_id`, top-level `tool_call_id` and `attempt`; the last one `missed_events` |
+| `concurrent_run` | in the newer run, for a run bound to a harness process: another run of the same owner, tenant and harness process, in another session, was open when it registered, and both have recorded an event since | `run_id`: the other run |
+| `late_activity` | in the tenant's run `tracekit/signer`, with the refusal summaries: writes refused because their run was final (not a `close_run`, nor each identity's and stream's first one) | `run_id`: that run; `missed_events`: how many; `from_ts`, `to_ts` |
+| `client_counter_gap` | also at `close_run` with `last_client_seq`: the values of a stream the closing identity wrote (or that never reached the signer) not received by then (the reason names that identity; values up to there that arrive later are recorded with no second gap). A gateway's report about a run already final goes in the tenant's run `tracekit/signer` | `missed_events`, top-level `stream`; in `tracekit/signer`, `run_id`: the run |
+| `tailer_lost` | also when a transcript tailer (an identity a run was delegated to with the `tailer_heartbeat` grant) makes no call for 90 s while its run is open, counted from the delegation | — |
+| `tailer_redelegated` | in the run, when a second tailer token is delegated for it | — |
 
-A gap in a tenant's run `tracekit/signer` (`late_activity`) has a leaf in that tenant's registry (§7), so a run-set
-proves it; the verifier counts it with the tenant-level gaps. A `reconcile.hook_missing` for a tool use the LLM
-gateway reported is written as soon as a gateway request sends its result back with no decide, not only before
-`run.final`. A `model.exchange` tool use with `executed_by: provider` carries an `args_commitment` when the provider
-returned its input; `run.final` carries `provider_executed`, the number of such tool uses, which no decide covers and
-which are never `reconcile.fabricated`. A bundle with any of these kinds or fields needs `verifier_min_version` 1.2.0.
+A run bound to a harness process that registers with `parent` writes a `run.child` record (`source: signer`,
+`data: {run_id}`: the child) in its parent run.
+
+A gap in a tenant's run `tracekit/signer` (`late_activity`, a gateway's `client_counter_gap`) has a leaf in that
+tenant's registry (§7), so a run-set proves it; the verifier counts it with the tenant-level gaps. A
+`reconcile.hook_missing` for a tool use the LLM gateway reported is written as soon as a gateway request sends its
+result back with no decide, not only before `run.final`. A `model.exchange` tool use with `executed_by: provider`
+carries an `args_commitment` when the provider returned its input; `run.final` carries `provider_executed`, the number
+of such tool uses, which no decide covers and which are never `reconcile.fabricated` (with `gateway_mandatory`, only
+those the gateway reported). A bundle with any of these kinds, fields or `run.child` needs `verifier_min_version`
+1.2.0.
 
 ## 4. Records and the signature message
 

@@ -49,10 +49,12 @@ system mode). Unlike v1, a payload without a session or tool call id blocks the 
 hook: `... -m tracekit.integrations.claude_code PreToolUse`; Codex `PreToolUse`, Cursor `preToolUse`, Gemini CLI
 `BeforeTool`, and so on for every event). So a payload that can't be parsed at all is still known to be a pre-tool
 event: the call is blocked, with the reason on stderr. On any other event it is reported on stderr and not recorded;
-an allowed call whose post-tool payload was lost shows as `decided_not_completed` (below).
+an allowed call whose post-tool payload was lost is completed as an error at the session's next Stop, prompt or end
+(below).
 
 Hooks installed before 1.2 have no event argument and keep working as before: an unparseable payload passes,
-unrecorded. `tracekit doctor` warns `D-HOOKS-EVENT` for them; re-run `tracekit init` to rewrite them.
+unrecorded. `tracekit doctor` warns `D-HOOKS-EVENT` for Claude Code's; for Codex, Cursor and Gemini CLI it doesn't
+check, so re-run `tracekit init --agent NAME` after upgrading.
 
 ### What the signer records as a gap (1.2)
 
@@ -60,10 +62,15 @@ Without anything else installed, the signer turns what it saw and then never hea
 ([format](format-v2.md#3-events), [limits](limits.md#signer-and-capture)):
 
 - a call the policy allowed, or whose approval was consumed, and that never completed (`decided_not_completed`, at the
-  end of the run), including one you declined in the harness's own permission prompt, which runs no post-call hook;
-- with harness binding (Linux system mode), a second run started from inside the same harness process while its
-  session is open, not as a sub-agent run (`concurrent_run`); two harness windows side by side are separate processes
-  and get none;
-- in system mode, a transcript tailer that stops sending its heartbeat while the run is open, killed or crashed
-  (`tailer_lost`);
-- writes after the run ended (`late_activity`, in a run-set).
+  end of the run). A call you decline in the harness's own permission prompt runs no post-call hook, nor does one you
+  interrupt: the hook completes such calls as errors ("no PostToolUse came") at the session's next Stop, prompt
+  (UserPromptSubmit, Cursor's beforeSubmitPrompt, Gemini CLI's BeforeAgent) or end, so they get no gap;
+- with harness binding (Linux system mode), a second run started from inside the same harness process while another
+  session's run is open there, once both have recorded events since (`concurrent_run`; an older session left open and
+  idle gets none). Two harness windows side by side are separate processes and get none. A sub-agent's run started
+  with `parent` from a bound harness process is a `run.child` record in its parent;
+- in system mode, a transcript tailer that stops calling the signer while the run is open, killed, crashed or never
+  started, from the moment the hook took its token (`tailer_lost`), and a second tailer token for the same run
+  (`tailer_redelegated`);
+- writes after the run ended (`late_activity`, in a run-set), apart from each client's first one, from which it learns
+  that the run ended (an idle close) and moves to a new run.

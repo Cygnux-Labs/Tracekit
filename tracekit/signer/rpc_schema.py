@@ -182,7 +182,7 @@ REQUESTS = {
     "approval_abandon": _obj(_RUN_REQ + ["approval_id"], **_RUN, approval_id=ID, reason=REASON),
     # last_client_seq: the last client_seq each of the caller's streams sent; a value the signer never received becomes
     # a client_counter_gap. From a `gateways` identity with `caller` (as model_event): ends the gateway's stream only,
-    # the run stays as it is
+    # the run stays as it is, and a run already final takes it too (the gap goes in the tenant's signer run)
     "close_run": _obj(_RUN_REQ, **_RUN, reason=_str(256), caller=IDENTITY, last_client_seq={
         "type": "array", "maxItems": 64, "items": _obj(["stream", "client_seq"], stream=ID, client_seq=SEQ)}),
     # a token for this run that `identity` (scheme:subject, e.g. a transcript tailer's uid) presents instead of the

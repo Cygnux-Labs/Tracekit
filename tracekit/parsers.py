@@ -254,6 +254,10 @@ PARSERS = {"openai:chat": (openai_chat, _openai_chat_chunk), "openai:responses":
 
 
 ANTHROPIC_CLIENT_TOOLS = ("custom", "bash_", "text_editor_", "computer_", "memory_")   # typed tools the client runs
+# OpenAI tool types other than function and custom that the client runs (CLIENT_ITEMS): the gateway's provider_tools
+# never refuses them, though provider_tools() names them (tracekit why doesn't replay them); shell and tool_search may
+# be hosted, so they are not among them
+OPENAI_CLIENT_TOOLS = ("local_shell", "apply_patch", "computer_use_preview")
 
 
 def provider_tools(kind, req):
