@@ -1,5 +1,21 @@
 # Viewer
 
+`tracekit view` is Tracekit's one viewer: one command, one page, one server, whatever the runs come from.
+
+| Command | Shows |
+|---|---|
+| `tracekit view` (`--dev`, `--config signer.yaml`, `--data-dir DIR`) | the v2 signer's runs, each verified ([below](#laptop-viewer)) |
+| `tracekit view --dev --why DIR` | those runs with the why investigation of their why logs ([below](#why)) |
+| `tracekit view --why DIR` | why logs alone, each run's events on the tape |
+| `tracekit view --ledger [HOME]`, `tracekit view --bundle FILE` | the v1 ledger (`tracekitd`), or a v1 bundle once it verifies; loopback only |
+| `tracekit view --config signer.yaml` with `view.logs` | every log of a central deployment ([below](#central-viewer)) |
+
+The nav at the top of each page links the pages this server has: **LIVE** (the run list, tape and detail; with why
+logs, the header's DESK, GRAPH, AGENTS and INFLUENCE buttons switch to the investigation), **RUNS** (the central run
+pages) and **APPROVALS** (with OIDC login and `view.signer`, for approvers). `tracekit observe` and `tracekit why serve`
+still work as before and print one line pointing here. A single bundle's self-contained `replay.html` stays a file
+you open without a server.
+
 ## Laptop viewer
 
 ![tracekit view: three runs with their verdicts, the support agent's run selected, its blocked calls with rule reasons, the held refund approved by an ops approver, and the run review](demo/viewer.png)
@@ -52,12 +68,12 @@ The viewer is also the UI of [`tracekit why`](why.md): with why logs it investig
 is both signed evidence and a causal log.
 
 ```bash
-tracekit view --why runs --allow-program myapp.agents:SYSTEM
-tracekit why serve runs --allow-program myapp.agents:SYSTEM     # the same page on why logs alone, no signer store
+tracekit view --dev --why runs --allow-program myapp.agents:SYSTEM   # the dev signer's runs with their why logs
+tracekit view --why runs --allow-program myapp.agents:SYSTEM         # the same page on why logs alone, no signer store
 ```
 
 `--why DIR` names the why logs (default: `why/` in the signer's data dir, where the signer-backed why runtime writes
-them, when it exists). A tool call's why event cites the signed record it produced (`tracekit: {run_id, run_seq}`);
+them, when it exists). Without `--dev`, `--config` or `--data-dir` it shows the why logs alone. A tool call's why event cites the signed record it produced (`tracekit: {run_id, run_seq}`);
 that citation joins the two.
 
 - **Detail · where the arguments came from**: from the signed `provenance` of the call's decision (labelled

@@ -182,8 +182,8 @@ Intervals are computed at 95% (z = 1.96). The viewer's verdicts use each test's 
 
 ## Server and ingestion
 
-`tracekit why serve ROOT` is the viewer (`tracekit.view.server`, on `tracekit.netserver.Server`) on the why logs under
-ROOT: the same page, session, headers and limits ([viewer.md](viewer.md#why)). The event stream and the replay POSTs
+`tracekit view --why ROOT` (or its old name, `tracekit why serve ROOT`) is the viewer (`tracekit.view.server`, on
+`tracekit.netserver.Server`) on the why logs under ROOT: the same page, session, headers and limits ([viewer.md](viewer.md#why)). The event stream and the replay POSTs
 lift the connection deadline once their request is read.
 
 | Method | Path | Notes |

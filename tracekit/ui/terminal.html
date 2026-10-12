@@ -1026,6 +1026,20 @@
       width: 170px
     }
 
+    /* the viewer's nav (observe.make_handler fills it in): the pages this server has */
+    .nav a {
+      color: var(--muted);
+      border: 1px solid var(--line2);
+      padding: 0 6px;
+      text-decoration: none
+    }
+
+    .nav a.on {
+      color: #000;
+      background: var(--amber);
+      border-color: var(--amber)
+    }
+
     /* why logs (docs/viewer.md#why): a why view takes the lower panels' room; header, run list and tape stay */
     .views {
       display: flex;
@@ -1189,7 +1203,7 @@
   <noscript>Tracekit Observer needs JavaScript. For a terminal-only view of a bundle run <code>tracekit verify</code>.</noscript>
   <div id="app">
     <header class="top">
-      <span class="brand">TRACEKIT</span>
+      <span class="brand">TRACEKIT</span><!--__NAV__-->
       <label class="cmd" for="cmd"><span>▶</span><input id="cmd" autocomplete="off" spellcheck="false"
           placeholder="AGT api · TOOL BASH · FLAG · FILE .env · SEQ 12 · CLR · HELP"><kbd>GO</kbd></label>
       <div class="chips" id="chips"></div>
@@ -1954,7 +1968,7 @@
     let liveOk = false, liveErr = "";
     async function getJSON(path) {
       const r = await fetch(path, { credentials: "same-origin" });
-      if (r.status === 401) throw Object.assign(new Error("This observer needs a token: open the page with ?token=<TRACEKIT_OBSERVE_TOKEN>."), { fatal: true });
+      if (r.status === 401) throw Object.assign(new Error("This viewer needs a token: open the URL it printed (?token=…; TRACEKIT_VIEW_TOKEN, or TRACEKIT_OBSERVE_TOKEN for tracekit observe)."), { fatal: true });
       if (!r.ok) throw new Error(`observer answered HTTP ${r.status}`);
       return r.json();
     }

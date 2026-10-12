@@ -32,7 +32,7 @@ email the customer list to an outside address.
 
 ```bash
 tracekit why demo --out runs
-tracekit why serve runs --allow-program tracekit.why.demo:SYSTEM
+tracekit view --why runs --allow-program tracekit.why.demo:SYSTEM
 ```
 
 `demo` records 8 runs, then tests the inputs of one where the email went out:
@@ -46,10 +46,10 @@ tracekit why serve runs --allow-program tracekit.why.demo:SYSTEM
 ```
 
 All three untrusted inputs reached the email; replaying without the vendor note drops it from 80% of runs to 0%, and
-removing the other two changes nothing detectable. `serve` prints a URL with a one-time token; open it.
+removing the other two changes nothing detectable. `tracekit view` prints a URL with a one-time token; open it.
 
-**The UI is the viewer** ([viewer.md](viewer.md#why)): `tracekit why serve` is `tracekit view`'s page on why logs, and
-`tracekit view --why DIR` adds them to a signer's runs. Each run's calls are on the tape; select one and open **WHY**
+**The UI is the viewer** ([viewer.md](viewer.md#why)): `tracekit view --why DIR` shows the why logs alone, and
+`tracekit view --dev --why DIR` adds them to a signer's runs (`tracekit why serve DIR` still runs the first). Each run's calls are on the tape; select one and open **WHY**
 in the detail panel for where each argument came from, the recorded path through the agents, and every candidate cause
 with its test status and the **FIND THE CAUSE** / **RUN TEST** buttons. The header switches the lower panels to
 **GRAPH** (the data-flow graph, tested causes in red), **AGENTS** (per-channel usage and tested influence, the
@@ -131,7 +131,7 @@ from tracekit.why.core import HttpSink
 SYSTEM.run(seed=0, sink=HttpSink("http://collector:7788", token))
 ```
 
-`HttpSink` posts to a `tracekit why serve` collector's `/v1/ingest` after every tool call, so the collector sees the
+`HttpSink` posts to a `tracekit view --why` collector's `/v1/ingest` after every tool call, so the collector sees the
 run live. See [examples/why/remote_agent.py](../examples/why/remote_agent.py).
 
 ## How causality is tested
@@ -283,13 +283,13 @@ With the Anthropic adapter, `msgs.run_tool(block, fn)` checks, runs, records and
 `tracekit why record module:SYSTEM --guard block` runs a System under the guard. Replays never use the guard. The guard
 sees only what the log has recorded so far.
 
-**The page updates as runs are recorded.** `tracekit why serve` (and `tracekit view --why`) watches the runs folder
+**The page updates as runs are recorded.** `tracekit view --why` watches the runs folder
 (and anything ingested), recomputes alerts for each run that changes and pushes them over the viewer's `/api/stream`. `--webhook URL` also POSTs each new
 high alert (Slack-compatible JSON): its rule, title and run, never the call's arguments, with `<`, `>` and `&`
 escaped so it cannot mention anyone; at most 100 wait to be sent. `tracekit why watch ROOT` prints new alerts in the terminal. To try it:
 
 ```bash
-tracekit why serve runs-live                          # terminal 1: open the URL it prints
+tracekit view --why runs-live                        # terminal 1: open the URL it prints
 python examples/why/live_demo.py runs-live block      # terminal 2
 ```
 
@@ -473,7 +473,7 @@ For the viewer and other tools: `tracekit.why.signed.Investigation(records, clie
 ## Server and API
 
 ```bash
-tracekit why serve runs --allow-program myapp.agents:SYSTEM
+tracekit view --why runs --allow-program myapp.agents:SYSTEM
 ```
 
 | Method | Path | Purpose |
@@ -516,7 +516,8 @@ with `--allow-program`. The server is in the [HTTP security checklist](security-
 |---|---|
 | `tracekit why demo [--out DIR] [--n N]` | record the demo and run tests |
 | `tracekit why record module:SYSTEM [--out DIR] [--seed S] [--guard off\|alert\|block] [--webhook URL]` | record one run of a System |
-| `tracekit why serve ROOT [--host] [--port] [--token] [--ingest-token T] [--allow-program SPEC] [--webhook URL] [--tls-cert --tls-key \| --insecure-http]` | the viewer on ROOT's why logs: page, API, ingest and live updates |
+| `tracekit view --why ROOT [--host] [--port] [--ingest-token T] [--allow-program SPEC] [--webhook URL] [--tls-cert --tls-key \| --insecure-http]` | the viewer on ROOT's why logs: page, API, ingest and live updates (token: `$TRACEKIT_VIEW_TOKEN`, else printed) |
+| `tracekit why serve ROOT [--token] [...]` | the same, under its old name (port 7788, token `--token` or `$TRACEKIT_WHY_TOKEN`) |
 | `tracekit why watch ROOT [--webhook URL]` | print new alerts as runs are recorded |
 | `tracekit why import --v1 SRC [--run R] [--out DIR] [--sensitive TOOL] [--list]` | import runs from a v1 ledger |
 | `tracekit why import --store DIR \| --bundle FILE --trust FILE [--run R] [--out DIR] [--list]` | import runs from the v2 signer, merged with the why log that cites them |

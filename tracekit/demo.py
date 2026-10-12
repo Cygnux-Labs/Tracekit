@@ -124,7 +124,7 @@ def _send(env, payload, argv):
 
 def scripted(env, proj, agent="claude"):
     """A fixed sequence of hook payloads, shaped like Claude Code's. Not a model.
-    TRACEKIT_DEMO_PACE=<seconds> slows it down (for watching it in `tracekit observe`)."""
+    TRACEKIT_DEMO_PACE=<seconds> slows it down (for watching it in `tracekit view --ledger`)."""
     import time
     pace = float(os.environ.get("TRACEKIT_DEMO_PACE") or 0)
     transcript = os.path.join(os.path.dirname(proj), "transcript.jsonl")

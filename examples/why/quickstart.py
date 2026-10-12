@@ -1,7 +1,7 @@
 """Smallest useful tracekit why program: two agents, one untrusted web page, one sensitive tool.
 
     python examples/why/quickstart.py
-    tracekit why serve runs-quickstart      # then open the URL it prints
+    tracekit view --why runs-quickstart     # then open the URL it prints
 
 The model here is a stand-in so the example runs offline. Replace `toy_model` with a function
 that calls your LLM; the signature is fn(context_values, *, purpose, seed, params, agent) -> value.

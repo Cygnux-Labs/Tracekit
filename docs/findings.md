@@ -14,7 +14,7 @@ tracekit verify r.tkb                # [PASS] findings cite intact evidence
 tracekit-sql "SELECT rule, severity, title FROM findings WHERE run_id='R'"   # contrib/query
 ```
 
-Findings also appear live in `tracekit observe` (Alerts panel, tape entry `FINDING`).
+Findings also appear live in `tracekit view --ledger` (Alerts panel, tape entry `FINDING`).
 
 ## Detectors
 

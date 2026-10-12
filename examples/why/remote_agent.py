@@ -1,6 +1,7 @@
-"""Ship events from an agent process to a `tracekit why serve` collector.
+"""Ship events from an agent process to a `tracekit view --why` collector.
 
-    tracekit why serve runs-server --token dev-token --allow-program tracekit.why.demo:SYSTEM   # terminal 1
+    TRACEKIT_VIEW_TOKEN=dev-token tracekit view --why runs-server --port 7788 \
+        --allow-program tracekit.why.demo:SYSTEM                                            # terminal 1
     python examples/why/remote_agent.py                                                     # terminal 2
     open "http://127.0.0.1:7788/?token=dev-token"
 

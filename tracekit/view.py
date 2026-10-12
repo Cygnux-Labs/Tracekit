@@ -24,9 +24,13 @@ whoever can write that directory, the same user as the dev signer and this viewe
 With why logs (`--why DIR`, else WHY_DIR in the data dir when present) the page also investigates them
 (why.server.Store, docs/viewer.md#why): their alerts, the why provenance of each call's arguments, the WHY, GRAPH,
 AGENTS and INFLUENCE views; FIND THE CAUSE and RUN TEST replay only the programs passed with --allow-program.
+`--why DIR` with no store option (--dev, --config, --data-dir, --ledger, --bundle) shows the why logs alone, each run's
+events on the tape (what `tracekit why serve` runs). `--ledger [HOME]` and `--bundle FILE` show the v1 ledger, or a v1
+bundle once it verifies (what `tracekit observe` runs), on this server, token and nav, on loopback only.
 
-    tracekit view [--dev | --config signer.yaml | --data-dir DIR] [--log-vkey VKEY] [--host H] [--port N]
-                  [--tls-cert FILE --tls-key FILE | --insecure-http] [--why DIR] [--allow-program SPEC]
+    tracekit view [--dev | --config signer.yaml | --data-dir DIR | --ledger [HOME] | --bundle FILE] [--log-vkey VKEY]
+                  [--host H] [--port N] [--tls-cert FILE --tls-key FILE | --insecure-http] [--why DIR]
+                  [--allow-program SPEC] [--ingest-token TOKEN] [--webhook URL]
 """
 import argparse
 import atexit
@@ -841,11 +845,14 @@ def server(feed, host, port, token, tls=None, login=None, desk=None, runs=None, 
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(prog="tracekit view", description="laptop viewer for the v2 signer's runs (read-only)")
+    ap = argparse.ArgumentParser(prog="tracekit view", description="the viewer: the v2 signer's runs, why logs, the v1 ledger or a bundle (read-only)")
     g = ap.add_mutually_exclusive_group()
     g.add_argument("--dev", action="store_true", help="the same-user dev signer's data dir (the default)")
     g.add_argument("--config", help="signer.yaml: view its data_dir")
     g.add_argument("--data-dir", help="a signer data dir (holds store/ and log.vkey)")
+    g.add_argument("--ledger", nargs="?", const="", metavar="HOME",
+                   help="the v1 signer's ledger (tracekitd; HOME default: the client config's signer home)")
+    g.add_argument("--bundle", help="a v1 .tkb bundle, verified first (refused when it fails)")
     ap.add_argument("--log-vkey", help="pin this log vkey (`tracekit signer vkey`) instead of the one the store names")
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=7778)
@@ -859,8 +866,13 @@ def main(argv=None):
     ap.add_argument("--ingest-token", action="append", default=[], metavar="TOKEN",
                     help="a bearer token /v1/ingest takes for why logs, and nothing else (repeatable; default: the "
                          "viewer's token)")
+    ap.add_argument("--webhook", help="POST each new high why alert here as JSON (Slack-compatible)")
     a = ap.parse_args(argv)
     loopback = a.host in observe.LOOPBACK_HOSTS
+    if (a.ledger is not None or a.bundle) and not loopback:
+        print("tracekit view: --ledger and --bundle serve on loopback only, as `tracekit observe` did; reach the page "
+              "from another machine through an SSH tunnel", file=sys.stderr)
+        return 2
     if bool(a.tls_cert) != bool(a.tls_key):
         print("tracekit view: --tls-cert and --tls-key go together", file=sys.stderr)
         return 2
@@ -877,16 +889,25 @@ def main(argv=None):
         if a.tls_cert:
             tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
             tls.load_cert_chain(a.tls_cert, a.tls_key)
-        cfg = load_config(a.config) if a.config else {"data_dir": a.data_dir or dev_data_dir()}
+        v1 = a.ledger is not None or a.bundle
+        alone = a.why and not (v1 or a.dev or a.config or a.data_dir)   # why logs alone, as `tracekit why serve`
+        cfg = {} if v1 or alone else load_config(a.config) if a.config else {"data_dir": a.data_dir or dev_data_dir()}
         view = cfg.get("view") or {}
         login = view.get("oidc") and OidcLogin(view["oidc"], (cfg.get("http") or {}).get("oidc"))
         desk = login and view.get("signer") and ApprovalDesk(Client(view["signer"]),
                                                              (cfg.get("approvals") or {}).get("webauthn"))
         runs = view.get("logs") and Runs(view["logs"], a.log_vkey)
-        feed = None if runs else StoreFeed(cfg, a.log_vkey)
+        if v1:
+            ledger, code = observe.ledger_path(a.ledger, a.bundle, "tracekit view")
+            if ledger is None:
+                return code
+            feed = observe.Feed(ledger)
+        else:
+            feed = None if runs or alone else StoreFeed(cfg, a.log_vkey)
         why_dir = a.why or (cfg.get("data_dir") and os.path.join(cfg["data_dir"], WHY_DIR))
-        why = Store(why_dir, a.allow_program, out=feed, ingest_tokens=a.ingest_token) \
-            if feed and why_dir and (a.why or os.path.isdir(why_dir)) else None
+        why = Store(why_dir, a.allow_program, a.webhook, out=feed, tape=bool(alone), ingest_tokens=a.ingest_token) \
+            if (feed or alone) and why_dir and (a.why or os.path.isdir(why_dir)) else None
+        feed = why.out if alone else feed
         srv = server(feed, a.host, a.port, token, tls, login, desk, runs, why)
     except (OSError, ValueError, StorageUnavailable) as e:
         print(f"tracekit view: {e}", file=sys.stderr)
@@ -895,6 +916,7 @@ def main(argv=None):
     print(f"tracekit view on {scheme}://{a.host}:{srv.server_address[1]}/"
           + ("" if os.environ.get("TRACEKIT_VIEW_TOKEN") else f"?token={token}")
           + (f"  ({len(runs.logs)} Postgres logs, read-only)" if runs else
+             f"  (ledger: {feed.path}, read-only)" if v1 else f"  (why logs alone: {why.root})" if alone else
              f"  (store: {feed.store}, read-only; {feed.note})"), flush=True)
     if why:
         why.watch()
