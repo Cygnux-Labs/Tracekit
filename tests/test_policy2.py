@@ -345,6 +345,14 @@ class Engines(unittest.TestCase):
         self.assertEqual(self.regex.tool_class("mcp__s__t"), "mcp")
         self.assertEqual(self.regex.tool_class("Other"), "unknown")
 
+    def test_a_tool_is_classified_once(self):
+        e = Engine(corpus_policy(), "regex")
+        with mock.patch.object(engine.fnmatch, "fnmatchcase", wraps=engine.fnmatch.fnmatchcase) as glob:
+            self.assertEqual(e.tool_class("mcp__s__t"), "mcp")
+            scans = glob.call_count
+            self.assertEqual(e.tool_class("mcp__s__t"), "mcp")
+            self.assertEqual(glob.call_count, scans)
+
 
 def argvs(command):
     return [c["argv"] for c in shell.parse(command)]

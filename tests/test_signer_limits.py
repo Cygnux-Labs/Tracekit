@@ -1,5 +1,6 @@
 """Run capability tokens (tracekit/signer/runtoken.py) and quotas (tracekit/signer/quotas.py)."""
 import unittest
+from unittest import mock
 
 from tracekit.identity.base import CallerIdentity
 from tracekit.signer import rpc_schema
@@ -51,6 +52,16 @@ class RunToken(unittest.TestCase):
         self.refused(RunTokens(b"x" * 32).issue("acme", "run-1", ALICE))
         for bad in ("", "abc", "a.b.c", "é.é", None):
             self.refused(bad)
+
+    def test_a_token_is_checked_once_and_a_bad_one_every_time(self):
+        with mock.patch.object(self.tokens, "_mac", wraps=self.tokens._mac) as mac:
+            for _ in range(3):
+                self.tokens.verify(self.tok, "acme", "run-1", ALICE)
+            self.assertEqual(mac.call_count, 1)
+            payload, _ = self.tok.split(".")
+            for _ in range(2):
+                self.refused(payload + "." + _b64(b"\0" * 32))
+            self.assertEqual(mac.call_count, 3)
 
 
 class RateLimit(unittest.TestCase):
