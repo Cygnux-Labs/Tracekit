@@ -11,7 +11,8 @@
     checkpoints/<size>.note     the C2SP checkpoint note the proofs are against
     rekor/<size>.json           its Rekor v2 TransparencyLogEntry, when the signer anchored that note
     tsa/<size>.tsr              and the RFC 3161 timestamp response of the anchor
-    policies/<sha256>.json      policy snapshots, named by the SHA-256 of their bytes
+    policies/<sha256>.json      the compiled policies (canonical JSON, so each is named by its policy_hash) the records
+                                cite where a verifier checks against one (cited_policies), from the signer's policy_dir
 
 A run-set bundle (export(..., run_set=(a, b))) proves which runs of one tenant were registered and finalised between
 two checkpoints of the tenant's registry log (tracekit.format.registry). It adds:
@@ -51,15 +52,21 @@ VERSIONS = {
               "fields": {"policy.decision": ["provenance", "provenance_state"], "run.registered": ["replay_of"]},
               "values": {}},
     "1.2.0": {"types": ["run.child", "approval.escalated", "approval.revoked", "approval.suggested", "approval.agents",
-                        "incident.opened", "incident.updated", "incident.capped"],
-              "fields": {"run.registered": ["parent_run", "session"], "capture.gap": ["run_id"],
-                         "run.final": ["provider_executed"], "policy.decision": ["via", "caller", "detect"],
-                         "approval.request": ["agent", "via", "passkey"], "tool.result": ["via"],
+                        "incident.opened", "incident.updated", "incident.capped", "run.held", "run.resumed",
+                        "run.quarantined", "incident.resolved", "incident.response", "identity.suspension",
+                        "effect.observed"],
+              "fields": {"run.registered": ["parent_run", "session", "posture"], "capture.gap": ["run_id"],
+                         "run.final": ["provider_executed", "paired_by_args", "matrix"],
+                         "policy.decision": ["via", "caller", "detect", "incident_id"],
+                         "approval.request": ["agent", "via", "incident_id", "passkey"], "tool.result": ["via"],
                          "input.observed": ["via"],
-                         "approval": ["approver_kind", "asserted", "spent", "not_before", "consume_by"],
-                         "approval.expired": ["reason"]},
+                         "approval": ["approver_kind", "asserted", "spent", "not_before", "consume_by", "incident_id"],
+                         "approval.expired": ["reason"],
+                         "reconcile.unexplained_effect": ["observer", "kind", "host", "port"]},
               "values": {"capture.gap": {"kind": ["decided_not_completed", "late_activity", "concurrent_run",
-                                                  "tailer_redelegated", "reask_after_reject", "held_call_unresolved"]}}},
+                                                  "tailer_redelegated", "reask_after_reject", "held_call_unresolved",
+                                                  "observer_lost", "effect_outside_run"]},
+                         "run.closing": {"reason": ["quarantine"]}}},
 }
 KEY_TYPES = ("signer.epoch", "key.retire")
 
@@ -129,12 +136,31 @@ def about(storage, tenant, run_id):
     return out
 
 
-def export(storage, tenant, run_id, note, out_path, policies=(), run_set=None, tenant_salt=None, with_runs=()):
+def cited_policies(events):
+    """The policy_hashes whose snapshot a verifier checks the records against: the policy.decision's of each approval an
+    agent gave (its rules must permit agents), and the one policy each run with an incident.opened was decided under
+    (its incidents are recomputed under it; a run decided under several has them signer-asserted)."""
+    agent = {e["data"].get("approval_id") for e in events if e["type"] == "approval"
+             and e["data"].get("approver_kind") == "agent" and e["data"].get("decision") == "approve"}
+    asked = {e["data"].get("decision_id") for e in events if e["type"] == "approval.request"
+             and e["data"].get("approval_id") in agent}
+    ran = {}   # run_id -> the policy_hashes its decisions name
+    for e in events:
+        if e["type"] == "policy.decision":
+            ran.setdefault(e.get("run_id"), set()).add(e["data"].get("policy_hash"))
+    incidents = {e.get("run_id") for e in events if e["type"] == "incident.opened"}
+    return ({e["data"]["policy_hash"] for e in events if e["type"] == "policy.decision"
+             and e["data"].get("decision_id") in asked and "policy_hash" in e["data"]}
+            | {next(iter(hs)) for r, hs in ran.items() if r in incidents and len(hs) == 1}) - {None}
+
+
+def export(storage, tenant, run_id, note, out_path, run_set=None, tenant_salt=None, with_runs=(), policy_dir=None):
     """Write the bundle of run (tenant, run_id) from a store or its reader (FileReader, PostgresReader). `note` is a
     checkpoint of the store's record tree: a run's records after it are left out (a run still being written verifies to
-    its head). `policies` are policy snapshots (bytes). `run_set`: (a, b), two checkpointed sizes of the tenant's
-    registry tree (a may be 0), with `tenant_salt` (format.registry.tenant_salt) adds the run-set a..b; `run_id` may
-    then be None. `with_runs`: also these runs of the tenant (`about`: the run's findings and replay runs)."""
+    its head). `run_set`: (a, b), two checkpointed sizes of the tenant's registry tree (a may be 0), with `tenant_salt`
+    (format.registry.tenant_salt) adds the run-set a..b; `run_id` may then be None. `with_runs`: also these runs of the
+    tenant (`about`: the run's findings and replay runs). `policy_dir`: where the signer keeps its compiled policies
+    (<data_dir>/policies), to bundle those cited_policies names."""
     origin, size = note.split("\n", 2)[:2]
     size = int(size)
     if not 0 < size <= storage.tree.size or not note.startswith(
@@ -169,13 +195,18 @@ def export(storage, tenant, run_id, note, out_path, policies=(), run_set=None, t
         "proofs/records.json": json.dumps({
             "checkpoint": f"checkpoints/{size}.note", "tree_size": size,
             "inclusion": {str(s): _b64(storage.tree.inclusion_proof(s, size)) for s in sorted(seqs)}}).encode("utf-8"),
-        **{f"policies/{hashlib.sha256(p).hexdigest()}.json": p for p in policies},
     })
     anchor = next((x for x in storage.anchors() if x["size"] == size), None)
     if anchor:
         files[f"rekor/{size}.json"] = json.dumps(anchor["rekor"]).encode("utf-8")
         files[f"tsa/{size}.tsr"] = base64.b64decode(anchor["tsa"])
     events = [r["event"] for r in [*pointed, *(r for rs in runs.values() for r in rs)]]
+    for h in sorted(cited_policies(events) if policy_dir else ()):
+        try:
+            with open(os.path.join(policy_dir, h.removeprefix("sha256:") + ".json"), "rb") as f:
+                files[f"policies/{h.removeprefix('sha256:')}.json"] = f.read()
+        except (FileNotFoundError, ValueError):   # a policy this signer never ran: the verifier says so
+            pass
     manifest = {"format": FORMAT, "verifier_min_version": needs(events),
                 "files": {n: hashlib.sha256(b).hexdigest() for n, b in files.items()}}
     tmp = out_path + ".tmp"

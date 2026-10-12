@@ -173,7 +173,7 @@ class Case(unittest.TestCase):
         if close:
             log.final()
         out = os.path.join(self.d, "a.tkb")
-        export(log.store, "acme", "run-a", log.note(), out, policies=[b'{"version":"1"}'])
+        export(log.store, "acme", "run-a", log.note(), out)
         return log, out
 
     def verify(self, path, trust=None):
@@ -700,6 +700,91 @@ def asked(**data):
                                  "binding_digest": "sha256:" + "0" * 64, **data}, "run-a")
 
 
+AGENT_POLICY = {"ask": [{"id": "R1", "pattern": "^", "approval": {"agent": {
+    "mode": "enforce", "allow": {"fields": {"amount": {"type": "integer"}}}}}}], "flag": [{"id": "F1", "pattern": "^"}]}
+
+
+ELIGIBLE = {"eligible": True, "reason": "within the bounds of R1", "rules": ["R1"],
+            "conditions_hash": "sha256:" + "0" * 64, "args_key": "hmac-sha256:" + "0" * 64}
+
+
+def agent_bundle(log, out, policy=AGENT_POLICY, snapshot=True, decided=None, request=None, answer=None, before=()):
+    """Export to `out` a run whose ask an agent approved, the signer's policy_dir holding the snapshot of `policy` (or
+    none); `decided`, `request` and `answer` override fields of the policy.decision, approval.request and approval
+    records, and `before` ((type, data) pairs) are recorded between the request and the approval; a `request` field
+    None leaves it out."""
+    snap = json.dumps(policy, sort_keys=True, separators=(",", ":")).encode()
+    h = "sha256:" + hashlib.sha256(snap).hexdigest()
+    log.epoch(KEY1)
+    log.register()
+    log.add("policy.decision", {"tool_use_id": "t1", "decision": "ask", "rule_ids": ["R1", "F1"], "decision_id": "dec-1",
+                                "policy_hash": h, "provenance_state": "complete", **(decided or {})}, tool_call_id="t1")
+    req = {"agent": ELIGIBLE, **(request or {})}
+    log.add(*asked(policy_hash=h, **{k: v for k, v in req.items() if v is not None})[:2], tool_call_id="t1")
+    for type_, data in before:
+        log.add(type_, data, tool_call_id="t1")
+    log.add(*answered(**{"approver_kind": "agent", **(answer or {})})[:2], tool_call_id="t1")
+    log.final()
+    pol = out + ".policies"   # the signer's policy_dir
+    os.makedirs(pol)
+    if snapshot:
+        with open(os.path.join(pol, h[7:] + ".json"), "wb") as f:
+            f.write(snap)
+    export(log.store, "acme", "run-a", log.note(), out, policy_dir=pol)
+    return out
+
+
+# an agent approval of a call the signer did not leave to agents (person-only, escalated or revoked first)
+AGENT_ROUTING = (("not agent-eligible", {"request": {"agent": dict(ELIGIBLE, eligible=False)}}),
+                 ("no agent field", {"request": {"agent": None}}),
+                 ("escalated first", {"before": [("approval.escalated", {"approval_id": "apr-1", "by": "signer",
+                                                                         "reason": "no agent answered"})]}),
+                 ("revoked first", {"before": [("approval.revoked", {"approval_id": "apr-1", "by": "oidc:alice"})]}))
+
+
+class TestAgentApprovals(Case):
+    def lines(self, **kw):
+        name = f"agent-{len(os.listdir(self.d))}"
+        rep, code = self.verify(agent_bundle(self.log(name), os.path.join(self.d, f"{name}.tkb"), **kw))
+        return code, {c["check"]: c for c in rep.checks}
+
+    def test_people_and_agents_on_separate_lines(self):
+        code, lines = self.lines()
+        self.assertEqual((code, lines["approvals by agents"]["status"]), (0, "pass"))
+        self.assertIn("tracekit signer reveal", lines["approvals by agents"]["detail"])
+        self.assertEqual(lines["approvals by people"]["detail"], "0 approval(s) answered by people")
+        code, lines = self.lines(answer={"approver_kind": "person"})   # without agent approvals, the report as before
+        self.assertFalse({"approvals by people", "approvals by agents"} & set(lines))
+
+    def test_a_bundle_holds_only_the_snapshots_its_agent_approvals_cite(self):
+        for kw, want in (({}, True), ({"answer": {"approver_kind": "person"}}, False),
+                         ({"answer": {"decision": "reject"}}, False)):
+            with self.subTest(kw):
+                name = f"cited-{len(os.listdir(self.d))}"
+                out = agent_bundle(self.log(name), os.path.join(self.d, f"{name}.tkb"), **kw)
+                self.assertEqual(any(n.startswith("policies/") for n in v2.read_zip(out)), want)
+
+    def test_without_the_snapshot_the_bounds_are_unchecked(self):
+        code, lines = self.lines(snapshot=False)
+        self.assertEqual((code, lines["approvals by agents"]["status"]), (0, "warn"))
+        self.assertIn("agent approval bounds unchecked", lines["approvals by agents"]["detail"])
+
+    def test_what_an_agent_may_not_approve_fails(self):
+        person_rule = {"ask": [{"id": "R1", "pattern": "^"}], "flag": [{"id": "F1", "pattern": "^"}]}
+        for why, kw in (("provenance", {"decided": {"provenance": [{"field": "amount", "kind": "x",
+                                                                    "source": {"run_seq": 1}}]}}),
+                        ("incomplete provenance", {"decided": {"provenance_state": "partial"}}),
+                        ("passkey", {"request": {"passkey": True}}),
+                        ("requester", {"answer": {"approver": "uid:1"}}),
+                        ("run owner", {"answer": {"approver_identity": dict(AGENT, subject="svc")}}),
+                        ("a rule without approval.agent", {"policy": person_rule}),
+                        ("a synthetic rule", {"decided": {"rule_ids": ["R1", "TK-UNKNOWN-TOOL"]}}),
+                        *AGENT_ROUTING):
+            with self.subTest(why):
+                code, lines = self.lines(**kw)
+                self.assertEqual((code, lines["approvals by agents"]["status"]), (1, "fail"), lines)
+
+
 OUTPUT = {"hash": "hmac-sha256:" + "0" * 64, "size": 2, "redacted": False}
 OBSERVED = {"source": "inbox:1", "trust": "untrusted", "salt_id": "a" * 32, "output": OUTPUT,
             "redaction": {"rules": [], "count": 0, "client_claimed": False}}
@@ -715,7 +800,15 @@ FINDING = {"target": "tool=pay", "intervention": "i", "n": 0, "p_with": 0, "p_wi
            "interval": [-1, 1], "verdict": "inconclusive", "replay_runs": [], "models": [], "rung": 1, "off_tape": 0,
            "investigation": "i", "looks": 1, "family": 1, "min_effect": 0.2, "applied": True, "stopped": "budget"}
 INCIDENT = {"incident_id": "inc-1", "trigger": "sequence", "rule_ids": ["Q"], "scope": {"kind": "run", "id": "run-a"},
-            "cites": [{"run_id": "run-a", "run_seq": 0}], "mode": "shadow", "actions": [], "would": ["notify"]}
+            "cites": [{"run_id": "run-a", "run_seq": 1}], "mode": "shadow", "actions": [], "would": ["notify"]}
+FIRED = decision(detect={"sequences": [{"id": "Q", "step": 1}], "limits": [], "state": "complete"})   # run_seq 1
+HELD = ("run.held", {"incident_id": "inc-1", "scope": {"kind": "run", "id": "run-a"}, "by": "signer", "reason": "r"},
+        "run-a")
+EFFECT = {"observer": "uid:7", "kind": "net", "host": "pypi.org", "port": 443, "bytes_out": 1, "bytes_in": 2,
+          "connections": 1, "first_ts": "2026-10-11T00:00:00.000000Z", "last_ts": "2026-10-11T00:00:00.000000Z",
+          "attribution": "token"}
+UNEXPLAINED = {"layers": ["L6"], "observer": "uid:7", "kind": "net", "host": "pypi.org", "port": 443}
+MATRIX = {k: {"status": "none", "layers": []} for k in ("model_calls", "tool_calls", "network", "processes", "services")}
 # per VERSIONS entry ("type" or "type.field"), records that use it
 ENTRIES = {
     "input.observed": [registered(), ("input.observed", OBSERVED, "run-a")],
@@ -732,6 +825,7 @@ ENTRIES = {
     "run.registered.session": [registered(parent_run="run-p", session="run-root")],
     "capture.gap.run_id": [registered(), gap("concurrent_run", run_id="run-x")],
     "run.final.provider_executed": [registered(), ("run.final", {"provider_executed": 2}, "run-a")],
+    "run.final.paired_by_args": [registered(), ("run.final", {"paired_by_args": 1}, "run-a")],
     "capture.gap.kind=decided_not_completed": [registered(), gap("decided_not_completed", tool_use_id="t1")],
     "capture.gap.kind=late_activity": [registered(), gap("late_activity", run_id="run-x", missed_events=3)],
     "capture.gap.kind=concurrent_run": [registered(), gap("concurrent_run")],
@@ -739,9 +833,22 @@ ENTRIES = {
     "run.child": [registered(), ("run.child", {"run_id": "run-x"}, "run-a")],
     "policy.decision.detect": [registered(), decision(detect={"sequences": [{"id": "Q", "step": 1}], "limits": [],
                                                               "state": "complete"})],
-    "incident.opened": [registered(), ("incident.opened", INCIDENT, "run-a")],
-    "incident.updated": [registered(), ("incident.updated", {"incident_id": "inc-1", "cites": [
-        {"run_id": "run-a", "run_seq": 0}]}, "run-a")],
+    "incident.opened": [registered(), FIRED, ("incident.opened", INCIDENT, "run-a")],
+    "incident.updated": [registered(), FIRED, ("incident.updated", {"incident_id": "inc-1", "cites": [
+        {"run_id": "run-a", "run_seq": 1}]}, "run-a")],
+    "run.held": [registered(), HELD],
+    "run.quarantined": [registered(), ("run.quarantined", dict(HELD[1]), "run-a")],
+    "run.resumed": [registered(), HELD, ("run.resumed", {"incident_id": "inc-1", "by": "uid:1", "person": "ana",
+                                                         "held_by": []}, "run-a")],
+    "incident.resolved": [registered(), ("incident.resolved", {"incident_id": "inc-1", "by": "uid:1", "person": "ana"},
+                                         "run-a")],
+    "incident.response": [registered(), ("incident.response", {"enabled": False, "by": "uid:1"}, "run-a")],
+    "identity.suspension": [registered(), ("identity.suspension", {"identity": "token:svc", "state": "enforced",
+                                                                    "by": "signer"}, "run-a")],
+    "policy.decision.incident_id": [registered(), decision(incident_id="inc-1")],
+    "approval.request.incident_id": [registered(), ("approval.request", dict(APPROVAL, incident_id="inc-1"), "run-a")],
+    "approval.incident_id": [registered(), answered(incident_id="inc-1")],
+    "run.closing.reason=quarantine": [registered(), ("run.closing", {"reason": "quarantine"}, "run-a")],
     "incident.capped": [registered(), ("incident.capped", {"cap": "run", "max": 100, "trigger": "sequence",
                                                            "reason": "cap"}, "run-a")],
     "approval.escalated": [registered(), ("approval.escalated", {"approval_id": "apr-1", "by": "signer",
@@ -751,10 +858,10 @@ ENTRIES = {
         "tool_use_id": "t1", "approval_id": "apr-1", "decision": "approve", "approver": "token:reviewer",
         "approver_identity": AGENT, "channel": "rpc", "approver_kind": "agent"}, "run-a")],
     "approval.agents": [registered(), ("approval.agents", {"enabled": False, "by": "uid:0"}, "run-a")],
-    "approval.request.agent": [registered(), asked(agent={
-        "eligible": True, "reason": "within the bounds of R1", "rules": ["R1"],
-        "conditions_hash": "sha256:" + "0" * 64, "args_key": "hmac-sha256:" + "0" * 64})],
-    "approval.approver_kind": [registered(), answered(approver_kind="agent")],
+    "approval.request.agent": [registered(), asked(agent=ELIGIBLE)],
+    "approval.approver_kind": [registered(), decision(decision="ask", decision_id="dec-1",
+                                                      provenance_state="complete"), asked(agent=ELIGIBLE), answered(
+        approver_kind="agent")],
     "approval.asserted": [registered(), answered(asserted={"model": "m", "attested": False})],
     "approval.spent": [registered(), answered(spent={"R1": 100})],
     "approval.not_before": [registered(), answered(not_before=TS_)],
@@ -771,6 +878,14 @@ ENTRIES = {
     "tool.result.via": [registered(), ("tool.result", {"tool_use_id": "t1", "ok": True, "output": OUTPUT, "via": VIA},
                                        "run-a")],
     "input.observed.via": [registered(), ("input.observed", dict(OBSERVED, via=VIA), "run-a")],
+    "effect.observed": [registered(), ("effect.observed", EFFECT, "run-a")],
+    "run.registered.posture": [registered(posture={"network": "enforced", "tool_calls": "open",
+                                                   "gateway_mandatory": True, "attested": False})],
+    "run.final.matrix": [registered(), ("run.final", {"matrix": MATRIX}, "run-a")],
+    **{f"reconcile.unexplained_effect.{f}": [registered(), ("reconcile.unexplained_effect", UNEXPLAINED, "run-a")]
+       for f in ("observer", "kind", "host", "port")},
+    **{f"capture.gap.kind={k}": [registered(), ("capture.gap", {"kind": k, "reason": "r"}, "run-a")]
+       for k in ("observer_lost", "effect_outside_run")},
 }
 
 

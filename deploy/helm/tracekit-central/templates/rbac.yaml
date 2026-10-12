@@ -19,7 +19,7 @@ subjects:
   {{- if .Values.issuer.enabled }}
   - {kind: ServiceAccount, name: {{ .Release.Name }}-issuer, namespace: {{ .Release.Namespace }}}
   {{- end }}
-  {{- range $k, $name := dict "gateway" "gateway" "executor" "executor" "mcpGateway" "mcp-gateway" }}
+  {{- range $k, $name := dict "gateway" "gateway" "executor" "executor" "mcpGateway" "mcp-gateway" "egress" "egress" }}
   {{- if (index $.Values $k).enabled }}
   - {kind: ServiceAccount, name: {{ $.Release.Name }}-{{ $name }}, namespace: {{ $.Release.Namespace }}}
   {{- end }}

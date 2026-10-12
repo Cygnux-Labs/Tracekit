@@ -134,7 +134,14 @@
         "run.child",
         "incident.opened",
         "incident.updated",
-        "incident.capped"
+        "incident.capped",
+        "run.held",
+        "run.resumed",
+        "run.quarantined",
+        "incident.resolved",
+        "incident.response",
+        "identity.suspension",
+        "effect.observed"
       ]
     },
     "data": {
@@ -866,7 +873,7 @@
       "then": {
         "properties": {
           "data": {
-            "$ref": "#/$defs/reconcile"
+            "$ref": "#/$defs/reconcile_effect"
           }
         }
       }
@@ -1027,6 +1034,118 @@
         "properties": {
           "data": {
             "$ref": "#/$defs/incident_capped"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "run.held"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/run_held"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "run.resumed"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/run_resumed"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "run.quarantined"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/run_quarantined"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "incident.resolved"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/incident_resolved"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "incident.response"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/incident_response"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "identity.suspension"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/identity_suspension"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "effect.observed"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/effect_observed"
           }
         }
       }
@@ -1589,6 +1708,10 @@
           "type": "string",
           "maxLength": 256,
           "description": "format 1.2, with via: the client (scheme:subject) the gateway or tool executor decided the call for"
+        },
+        "incident_id": {
+          "$ref": "#/$defs/id",
+          "description": "format 1.2: the incident whose hold (ask, TK-HOLD) or quarantine (deny, TK-QUARANTINE) decided the call"
         }
       }
     },
@@ -1792,6 +1915,10 @@
           "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{6}Z$",
           "maxLength": 4096,
           "description": "format 1.2: an agent's approval is consumed before then (approvals.agent_consume_s), or never"
+        },
+        "incident_id": {
+          "$ref": "#/$defs/id",
+          "description": "format 1.2: the answer to a call held by this incident, by the person `person`"
         }
       }
     },
@@ -1992,13 +2119,15 @@
             "concurrent_run",
             "tailer_redelegated",
             "reask_after_reject",
-            "held_call_unresolved"
+            "held_call_unresolved",
+            "observer_lost",
+            "effect_outside_run"
           ],
           "description": "Gap and tamper kinds (signer-written only)."
         },
         "run_id": {
           "$ref": "#/$defs/id",
-          "description": "format 1.2: the other run the gap is about (late_activity: the final run that was written to; concurrent_run: the open run this one overlaps; client_counter_gap in a tenant's signer run: the final run whose stream it is)"
+          "description": "format 1.2: the other run the gap is about (late_activity: the final run that was written to; concurrent_run: the open run this one overlaps; client_counter_gap in a tenant's signer run: the final run whose stream it is; effect_outside_run: the run the client named, its token valid or not, or the effect was attributed to)"
         },
         "tool_use_id": {
           "type": [
@@ -2416,6 +2545,37 @@
             "none"
           ],
           "description": "an imported run (source import): what its records say about the calls beyond their receipt"
+        },
+        "posture": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "network",
+            "tool_calls",
+            "gateway_mandatory",
+            "attested"
+          ],
+          "description": "format 1.2: the deployment's posture as the operator asserts it in signer.yaml: whether the agent's network is enforced through the egress proxy, whether it acts only through the executor and the MCP gateway, and whether the LLM gateway is its only way to its model (gateway_mandatory); never attested",
+          "properties": {
+            "network": {
+              "enum": [
+                "enforced",
+                "open"
+              ]
+            },
+            "tool_calls": {
+              "enum": [
+                "enforced",
+                "open"
+              ]
+            },
+            "gateway_mandatory": {
+              "type": "boolean"
+            },
+            "attested": {
+              "const": false
+            }
+          }
         }
       }
     },
@@ -2429,7 +2589,8 @@
         "reason": {
           "enum": [
             "close_run",
-            "idle_timeout"
+            "idle_timeout",
+            "quarantine"
           ]
         }
       }
@@ -2527,8 +2688,48 @@
                   "type": "integer",
                   "minimum": 1,
                   "maximum": 9007199254740991
+                },
+                "unexplained_effect": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 9007199254740991
                 }
               }
+            }
+          }
+        },
+        "paired_by_args": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "description": "format 1.2: calls reconciled by pairing a decide with the model's tool use of the same turn by their arguments, the adapter having had no tool-call id"
+        },
+        "matrix": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "model_calls",
+            "tool_calls",
+            "network",
+            "processes",
+            "services"
+          ],
+          "description": "format 1.2: per action class, how the run was covered: enforced (custody: the only way to act records it), observed (an observer outside the agent saw it and it was reconciled), reported (only the agent's own process reported it) or none; and the layers behind it",
+          "properties": {
+            "model_calls": {
+              "$ref": "#/$defs/coverage_class"
+            },
+            "tool_calls": {
+              "$ref": "#/$defs/coverage_class"
+            },
+            "network": {
+              "$ref": "#/$defs/coverage_class"
+            },
+            "processes": {
+              "$ref": "#/$defs/coverage_class"
+            },
+            "services": {
+              "$ref": "#/$defs/coverage_class"
             }
           }
         }
@@ -2708,6 +2909,10 @@
           "maxLength": 256,
           "description": "format 1.2: the gateway or tool executor (its identity, scheme:subject) that wrote this record for the run's client (source gateway, tier T2); the signer takes the call's later steps from it only"
         },
+        "incident_id": {
+          "$ref": "#/$defs/id",
+          "description": "format 1.2: the call is held by this incident: only a person who is not the run's owner, principal or requester answers it"
+        },
         "passkey": {
           "const": true,
           "description": "the approval needs a passkey (approval: {passkey: required})"
@@ -2740,9 +2945,11 @@
           "enum": [
             "ttl",
             "run_final",
-            "consume_window"
+            "consume_window",
+            "hold",
+            "quarantine"
           ],
-          "description": "format 1.2, on approvals an agent may answer: approvals.ttl_s passed, the run ended, or an agent's approval was not consumed within approvals.agent_consume_s"
+          "description": "format 1.2, on approvals an agent may answer: approvals.ttl_s passed, the run ended, or an agent's approval was not consumed within approvals.agent_consume_s; on any approval: its run was held or quarantined (hold, quarantine)"
         }
       }
     },
@@ -3706,7 +3913,7 @@
         "actions",
         "would"
       ],
-      "description": "format 1.2: a trigger of the policy's detection fired (a sequence completed, a limit was exceeded, or a respond trigger); one open incident per scope, trigger and rule, later matches are incident.updated. Written in shadow mode: no action taken, `would` the configured one",
+      "description": "format 1.2: a trigger of the policy's detection fired (a sequence completed, a limit was exceeded, or a respond trigger), an operator held or quarantined a run (trigger operator), or the detector could not vouch for a decision under an enforced response (detector_unavailable); one open incident per scope, trigger and rule, later matches are incident.updated. mode shadow: no action taken, `would` the configured one; mode enforce: `actions` the ones taken (none while the response engine is paused: then `would` and `reason` say so)",
       "properties": {
         "incident_id": {
           "$ref": "#/$defs/id"
@@ -3720,7 +3927,10 @@
             "provenance",
             "class_mismatch",
             "refusal_burst",
-            "tamper"
+            "tamper",
+            "operator",
+            "detector_unavailable",
+            "unexplained_effect"
           ]
         },
         "rule_ids": {
@@ -3779,14 +3989,11 @@
         },
         "mode": {
           "enum": [
-            "shadow"
+            "shadow",
+            "enforce"
           ]
         },
         "actions": {
-          "type": "array",
-          "maxItems": 0
-        },
-        "would": {
           "type": "array",
           "maxItems": 3,
           "items": {
@@ -3795,6 +4002,50 @@
               "hold",
               "quarantine"
             ]
+          }
+        },
+        "would": {
+          "type": "array",
+          "maxItems": 4,
+          "items": {
+            "enum": [
+              "notify",
+              "hold",
+              "quarantine",
+              "suspend"
+            ]
+          }
+        },
+        "reason": {
+          "type": "string",
+          "maxLength": 1024,
+          "description": "why the actions differ from the configured one (paused, no person approvers), or an operator's reason"
+        },
+        "in_flight": {
+          "type": "array",
+          "maxItems": 1024,
+          "description": "format 1.2: calls allowed (or approved and consumed) and not completed when the response took effect: they may complete after it",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "run_id",
+              "tool_call_id",
+              "decision_id"
+            ],
+            "properties": {
+              "run_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "tool_call_id": {
+                "$ref": "#/$defs/id"
+              },
+              "decision_id": {
+                "$ref": "#/$defs/id"
+              }
+            }
           }
         }
       }
@@ -3862,7 +4113,10 @@
             "provenance",
             "class_mismatch",
             "refusal_burst",
-            "tamper"
+            "tamper",
+            "operator",
+            "detector_unavailable",
+            "unexplained_effect"
           ],
           "description": "the trigger of the first incident not written"
         },
@@ -3873,6 +4127,460 @@
         "reason": {
           "type": "string",
           "maxLength": 512
+        }
+      }
+    },
+    "run_held": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "incident_id",
+        "scope",
+        "by",
+        "reason"
+      ],
+      "description": "format 1.2: the run is held: every further call is asked of a person (TK-HOLD) and its live approvals expired; written in each run the incident's scope reaches",
+      "properties": {
+        "incident_id": {
+          "$ref": "#/$defs/id"
+        },
+        "scope": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "id"
+          ],
+          "properties": {
+            "kind": {
+              "enum": [
+                "run",
+                "session",
+                "owner",
+                "principal"
+              ]
+            },
+            "id": {
+              "type": "string",
+              "maxLength": 256
+            }
+          }
+        },
+        "by": {
+          "type": "string",
+          "maxLength": 256,
+          "description": "signer, or the operator's identity"
+        },
+        "reason": {
+          "type": "string",
+          "maxLength": 1024
+        },
+        "in_flight": {
+          "type": "array",
+          "maxItems": 1024,
+          "description": "format 1.2: calls allowed (or approved and consumed) and not completed when the response took effect: they may complete after it",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "run_id",
+              "tool_call_id",
+              "decision_id"
+            ],
+            "properties": {
+              "run_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "tool_call_id": {
+                "$ref": "#/$defs/id"
+              },
+              "decision_id": {
+                "$ref": "#/$defs/id"
+              }
+            }
+          }
+        },
+        "inherited": {
+          "const": true,
+          "description": "a new run of a held owner and principal (or of a held parent run) took the hold over"
+        },
+        "inherit_until": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{6}Z$",
+          "maxLength": 27,
+          "description": "until when new runs of this run's owner and attested principal inherit the hold"
+        }
+      }
+    },
+    "run_resumed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "incident_id",
+        "by",
+        "person",
+        "held_by"
+      ],
+      "description": "format 1.2: a person ended the hold of one incident on the run (run_resume, which ends each, or incident_resolve of that incident); held_by: the incidents that still hold it",
+      "properties": {
+        "incident_id": {
+          "$ref": "#/$defs/id"
+        },
+        "by": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "person": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "reason": {
+          "type": "string",
+          "maxLength": 1024
+        },
+        "break_glass": {
+          "const": true
+        },
+        "held_by": {
+          "type": "array",
+          "maxItems": 1024,
+          "items": {
+            "$ref": "#/$defs/id"
+          }
+        }
+      }
+    },
+    "run_quarantined": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "incident_id",
+        "scope",
+        "by",
+        "reason"
+      ],
+      "description": "format 1.2: the run is quarantined for good: decisions are deny (TK-QUARANTINE), approvals are refused, a gateway forwards no more model requests",
+      "properties": {
+        "incident_id": {
+          "$ref": "#/$defs/id"
+        },
+        "scope": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "id"
+          ],
+          "properties": {
+            "kind": {
+              "enum": [
+                "run",
+                "session",
+                "owner",
+                "principal"
+              ]
+            },
+            "id": {
+              "type": "string",
+              "maxLength": 256
+            }
+          }
+        },
+        "by": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "reason": {
+          "type": "string",
+          "maxLength": 1024
+        },
+        "in_flight": {
+          "type": "array",
+          "maxItems": 1024,
+          "description": "format 1.2: calls allowed (or approved and consumed) and not completed when the response took effect: they may complete after it",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "run_id",
+              "tool_call_id",
+              "decision_id"
+            ],
+            "properties": {
+              "run_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "tool_call_id": {
+                "$ref": "#/$defs/id"
+              },
+              "decision_id": {
+                "$ref": "#/$defs/id"
+              }
+            }
+          }
+        },
+        "inherited": {
+          "const": true
+        },
+        "inherit_until": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{6}Z$",
+          "maxLength": 27,
+          "description": "until when new runs of this run's owner and attested principal inherit the hold"
+        }
+      }
+    },
+    "incident_resolved": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "incident_id",
+        "by",
+        "person"
+      ],
+      "description": "format 1.2: a person resolved the incident (in the tenant's signer run): its held runs resume, quarantines stay",
+      "properties": {
+        "incident_id": {
+          "$ref": "#/$defs/id"
+        },
+        "by": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "person": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "reason": {
+          "type": "string",
+          "maxLength": 1024
+        },
+        "break_glass": {
+          "const": true
+        },
+        "resumed": {
+          "type": "array",
+          "maxItems": 4096,
+          "items": {
+            "type": "string",
+            "maxLength": 200
+          }
+        }
+      }
+    },
+    "incident_response": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "enabled",
+        "by"
+      ],
+      "description": "format 1.2: an operator paused (enabled false) or resumed the tenant's response engine; detection keeps recording",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "by": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "reason": {
+          "type": "string",
+          "maxLength": 1024
+        }
+      }
+    },
+    "identity_suspension": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "identity",
+        "state",
+        "by"
+      ],
+      "description": "format 1.2: an identity of the tenant is suspended by an operator (written by the signer that changed the shared list), enforced (each signer that starts enforcing an entry) or lifted",
+      "properties": {
+        "identity": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "state": {
+          "enum": [
+            "suspended",
+            "enforced",
+            "lifted"
+          ]
+        },
+        "by": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "reason": {
+          "type": "string",
+          "maxLength": 1024
+        }
+      }
+    },
+    "effect_observed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "observer",
+        "kind",
+        "host",
+        "port",
+        "bytes_out",
+        "bytes_in",
+        "connections",
+        "first_ts",
+        "last_ts",
+        "attribution"
+      ],
+      "description": "format 1.2: network traffic an egress observer outside the agent saw for the run (tracekit.egress), aggregated per host, port and minute; signer-written",
+      "properties": {
+        "observer": {
+          "type": "string",
+          "maxLength": 256,
+          "description": "the egress observer's signer identity (scheme:subject)"
+        },
+        "kind": {
+          "enum": [
+            "net"
+          ]
+        },
+        "host": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 253
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "bytes_out": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "bytes_in": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "connections": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "first_ts": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{6}Z$",
+          "maxLength": 27
+        },
+        "last_ts": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{6}Z$",
+          "maxLength": 27
+        },
+        "attribution": {
+          "enum": [
+            "token",
+            "identity"
+          ],
+          "description": "token: the client presented the run's token; identity: the observer authenticated the run's owner and the signer picked that owner's latest open run"
+        },
+        "explained_by": {
+          "enum": [
+            "call",
+            "explains"
+          ],
+          "description": "what explains the host: a recorded http or model call to it, or the policy's explains; absent: unexplained (a reconcile.unexplained_effect follows)"
+        }
+      }
+    },
+    "reconcile_effect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "layers",
+        "observer",
+        "kind",
+        "host"
+      ],
+      "description": "format 1.2: a host an observer saw the run reach that no record of the run explains",
+      "properties": {
+        "layers": {
+          "type": "array",
+          "maxItems": 6,
+          "items": {
+            "enum": [
+              "L1",
+              "L2",
+              "L3",
+              "L4",
+              "L5",
+              "L6"
+            ]
+          }
+        },
+        "detail": {
+          "type": "string",
+          "maxLength": 1024
+        },
+        "observer": {
+          "type": "string",
+          "maxLength": 256,
+          "description": "the egress observer's signer identity (scheme:subject)"
+        },
+        "kind": {
+          "enum": [
+            "net"
+          ]
+        },
+        "host": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 253
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        }
+      }
+    },
+    "coverage_class": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "layers"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "enforced",
+            "observed",
+            "reported",
+            "none"
+          ]
+        },
+        "layers": {
+          "type": "array",
+          "maxItems": 8,
+          "items": {
+            "type": "string",
+            "maxLength": 32
+          }
+        },
+        "asserted": {
+          "const": true,
+          "description": "the status rests on the operator's posture (signer.yaml), not on anything the signer measured"
         }
       }
     }

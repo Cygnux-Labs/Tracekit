@@ -43,6 +43,7 @@ import weakref
 import rfc8785
 
 from tracekit import __version__
+from tracekit.core import jsonable
 from tracekit.format.canon import StrictJSONError, canonical, event_hash, loads_strict
 from tracekit.signer import rpc_schema
 from tracekit.signer.quotas import MAX_LINE
@@ -59,6 +60,12 @@ current_run = contextvars.ContextVar("tracekit_current_run", default=None)   # s
 
 class SignerUnavailable(Exception):
     pass
+
+
+class Refused(PermissionError):
+    """Tracekit refused a call (a policy deny, an unapproved ask, a fail-closed outage). Frameworks that catch
+    exceptions around tools or model calls must let it through, or the refusal turns into an empty answer or a call
+    that runs anyway (docs/quickstarts/custom.md#frameworks-that-catch-exceptions)."""
 
 
 class Incompatible(Exception):
@@ -144,14 +151,14 @@ class _Https:
     """POST /v2/rpc to an HTTPS signer, or a plain HTTP one on a loopback address: one kept-alive connection per thread
     and host, the bearer token re-read per call."""
 
-    def __init__(self, url):
+    def __init__(self, url, token_file=None):
         u = urllib.parse.urlsplit(url)
         self.url, self.plain = f"{u.scheme}://{u.netloc}", u.scheme == "http"
         self.host, self.port = u.hostname, u.port or (80 if self.plain else 443)
         self.ctx = None if self.plain else ssl.create_default_context(cafile=os.environ.get("TRACEKIT_SIGNER_CA"))
         if os.environ.get("TRACEKIT_SIGNER_CERT") and not self.plain:
             self.ctx.load_cert_chain(os.environ["TRACEKIT_SIGNER_CERT"], os.environ.get("TRACEKIT_SIGNER_KEY"))
-        self.token_file, self.pid, self.hello = os.environ.get("TRACEKIT_SIGNER_TOKEN_FILE"), None, None
+        self.token_file, self.pid, self.hello = token_file or os.environ.get("TRACEKIT_SIGNER_TOKEN_FILE"), None, None
         self.conns = weakref.WeakSet()   # every thread's, for close()
 
     def _host(self, req):
@@ -271,12 +278,14 @@ if hasattr(os, "register_at_fork"):
 
 class Client:
     """Thread-safe. Methods named after the RPCs (`decide`, `status`, ...) take the request dict and return the
-    response dict, or raise RPCError; `request_id`, `stream` and `client_seq` are filled in when missing."""
+    response dict, or raise RPCError; `request_id`, `stream` and `client_seq` are filled in when missing. `token_file`:
+    an http(s) signer's bearer token file, in place of $TRACEKIT_SIGNER_TOKEN_FILE."""
 
-    def __init__(self, signer=None, timeout=30.0):
+    def __init__(self, signer=None, timeout=30.0, token_file=None):
         self.signer = signer or _default_signer()
         self.timeout, self.hello = timeout, None
-        self._https = _Https(self.signer) if (self.signer or "").startswith(("https://", "http://")) else None
+        http = (self.signer or "").startswith(("https://", "http://"))
+        self._https = _Https(self.signer, token_file) if http else None
         self._lock = threading.Lock()
         self._pid = self._conn = None
         self._order = {}   # run_id -> the lock its event calls hold from taking their client_seq to their answer
@@ -293,8 +302,9 @@ class Client:
         return self.call("register_run", {**(req or {}), **(
             {"parent": {"run_id": parent.run_id, "run_token": parent.run_token}} if parent else {})})
 
-    def call(self, method, req=None):
-        req = dict(req or {})
+    def call(self, method, req=None, **fields):
+        """`req` as a dict, or its fields as keywords (as RunHandle.call takes them)."""
+        req = {**(req or {}), **fields}
         if "request_id" in rpc_schema.REQUESTS[method]["properties"]:
             req.setdefault("request_id", _new_id())
         timeout = self.timeout + req.get("timeout_ms", 0) / 1000
@@ -462,11 +472,28 @@ def sendable(out):
         return False
 
 
+def named_rules(rule_ids):
+    """The rule ids a refusal names to the model: TK-UNKNOWN-TOOL only flags a tool the policy doesn't name, it never
+    refuses one."""
+    return ", ".join(r for r in rule_ids if r != "TK-UNKNOWN-TOOL")
+
+
 def result_field(send, out):
     """What `complete` carries as a tool's `result`: the result itself when `send` (the decision's `send_result`: an
     untrusted tool, whose result the signer redacts, commits to and indexes for provenance) and it is sendable, else
-    its digest (for an untrusted tool, the signer then marks the run's index partial)."""
-    return out if send and sendable(out) else event_hash(out)
+    its digest (for an untrusted tool, the signer then marks the run's index partial). A result JSON can't carry as
+    UTF-8 (a lone surrogate) is taken as its JSON text, escaped; one that isn't JSON (bytes, a datetime, a Decimal, a
+    set, an object) as its nearest JSON (tracekit.core.jsonable). Never raises: it runs after the tool did."""
+    try:
+        json.dumps(out, ensure_ascii=False).encode()
+    except UnicodeEncodeError:
+        out = json.dumps(out)
+    except (TypeError, ValueError):
+        out = jsonable(out)
+    try:
+        return out if send and sendable(out) else event_hash(out)
+    except (rfc8785.CanonicalizationError, ValueError):   # NaN, an integer past ±2^53: a digest of its JSON text
+        return event_hash(json.dumps(jsonable(out)))
 
 
 def _validate(method, req):
@@ -509,26 +536,67 @@ class RunHandle:
         self.run_id, self.run_token = registered["run_id"], registered["run_token"]
         self.closed = False
         self._decided = {}   # tool_call_id -> the decision_id and args_digest its `complete` must name
+        self._untrusted = set()   # tool_call_ids whose decision asked for the result itself (send_result)
+
+    @property
+    def proxy_env(self):
+        """With $TRACEKIT_EGRESS_PROXY set (an egress observer, docs/egress.md#attribution): HTTPS_PROXY and HTTP_PROXY,
+        both cases, naming it with this run's id and token as credentials, for the commands the run starts
+        (`subprocess.run(cmd, env={**os.environ, **run.proxy_env})`) or an HTTP client's proxy, so the observer
+        attributes their connections to this run. {} without it. This process's own environment is left as it is."""
+        proxy = os.environ.get("TRACEKIT_EGRESS_PROXY")
+        if not proxy:
+            return {}
+        u = urllib.parse.urlsplit(proxy)
+        cred = urllib.parse.quote(self.run_id, safe="") + ":" + urllib.parse.quote(self.run_token, safe="")
+        url = u._replace(netloc=cred + "@" + u.netloc.rpartition("@")[2]).geturl()
+        return dict.fromkeys(("HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"), url)
 
     def call(self, method, **fields):
-        """Any per-run RPC (`state_write`, `approval_wait`, `read`, ...) with this run's id and token."""
-        return self.client.call(method, {"run_id": self.run_id, "run_token": self.run_token, **fields})
+        """Any per-run RPC (`state_write`, `approval_wait`, `read`, `approval_list`, ...) with this run's id, and its
+        token where the method takes one."""
+        token = {"run_token": self.run_token} if "run_token" in rpc_schema.REQUESTS[method]["properties"] else {}
+        return self.client.call(method, {"run_id": self.run_id, **token, **fields})
 
     def decide(self, tool_call_id, tool, args, **fields):
-        """`args` is the model's raw arguments string, or an already parsed value."""
-        d = self.call("decide", tool_call_id=tool_call_id, tool=tool, args=args,
-                      **{"args_source": "raw" if isinstance(args, str) else "parsed", **fields})
+        """`args` is the model's raw arguments string, or an already parsed value. Never raises SignerUnavailable:
+        while the signer can't be reached the run's fail mode for `tool_class_hint` decides, `{"decision": "allow" or
+        "deny", "unavailable": True, ...}` (as the TypeScript client), so a hook that blocks by return value blocks. A
+        refusal raises RPCError."""
+        try:
+            d = self.call("decide", tool_call_id=tool_call_id, tool=tool, args=args,
+                          **{"args_source": "raw" if isinstance(args, str) else "parsed", **fields})
+        except SignerUnavailable as e:
+            ok = fail_open(self.registered.get("fail_modes"), fields.get("tool_class_hint"))
+            warnings.warn(f"tracekit: {tool} {'runs unrecorded (fail open)' if ok else 'is denied (fail closed)'}: {e}",
+                          stacklevel=2)
+            return {"decision": "allow" if ok else "deny", "rule_ids": [], "unavailable": True,
+                    "reason": f"signer unavailable: {e}"[:1024]}
         try:
             digest = event_hash({"tool": tool, "args": loads_strict(args) if isinstance(args, str) else args})
         except (StrictJSONError, rfc8785.CanonicalizationError):
             return d   # the signer has no args digest to bind either; complete needs explicit fields
         self._decided[tool_call_id] = {"decision_id": d["decision_id"], "args_digest": digest}
+        if d.get("send_result"):
+            self._untrusted.add(tool_call_id)
         return d
 
     def complete(self, tool_call_id, status="ok", **fields):
-        """Defaults decision_id and args_digest to those of the last `decide` for this tool call."""
-        return self.call("complete", tool_call_id=tool_call_id, status=status,
-                         **{**self._decided.pop(tool_call_id, {}), **fields})
+        """Defaults decision_id and args_digest to those of the last `decide` for this tool call. Never raises: the
+        call already ran, so a result the signer can't take is a warning (None), and the signer records the call as
+        decided and not completed when the run closes. A tool the policy marks untrusted should send its `result`
+        (result_field): without it the run's provenance index goes partial, so a warning says so."""
+        if tool_call_id in self._untrusted and "result" not in fields and status == "ok":
+            warnings.warn(f"tracekit: {tool_call_id} completed without its result, which the policy reads for "
+                          "provenance (an untrusted tool): pass result=result_field(d.get('send_result'), result)",
+                          stacklevel=2)
+        self._untrusted.discard(tool_call_id)
+        try:
+            return self.call("complete", tool_call_id=tool_call_id, status=status,
+                             **{**self._decided.pop(tool_call_id, {}), **fields})
+        except (SignerUnavailable, RPCError) as e:
+            warnings.warn(f"tracekit: the result of {tool_call_id} was not recorded: {e}", stacklevel=2)
+            return None
 
     def observe(self, value, source, trust="untrusted", **fields):
         """Record content that entered the run other than as a tool result (a mail, a ticket, a page the app fetched)
@@ -538,10 +606,16 @@ class RunHandle:
 
     def approval_consume(self, tool_call_id, tool, args, approval_id_hint=None, **fields):
         """Call right before running a call that was not denied: {"ok": True} when it may run now. `args` as for
-        `decide`; `approval_id_hint` is the approval id the framework saved, if any."""
+        `decide`; `approval_id_hint` is the approval id the framework saved, if any. Never raises: a signer that
+        can't be reached or refuses is {"ok": False, "reason": ...} (once decided there is no fail mode: the call
+        doesn't run), so a hook that blocks by return value blocks."""
         hint = {"approval_id_hint": approval_id_hint} if approval_id_hint else {}
-        return self.call("approval_consume", tool_call_id=tool_call_id, tool=tool, args=args,
-                         **{"args_source": "raw" if isinstance(args, str) else "parsed", **hint, **fields})
+        try:
+            return self.call("approval_consume", tool_call_id=tool_call_id, tool=tool, args=args,
+                             **{"args_source": "raw" if isinstance(args, str) else "parsed", **hint, **fields})
+        except (SignerUnavailable, RPCError) as e:
+            warnings.warn(f"tracekit: {tool} is blocked: approval_consume failed: {e}", stacklevel=2)
+            return {"ok": False, "rule_ids": [], "reason": f"approval_consume failed: {e}"[:1024]}
 
     def close(self, reason=None):
         if not self.closed:

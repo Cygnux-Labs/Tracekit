@@ -1426,6 +1426,8 @@
     function alert(sev, text, sub, ref, ts, agent) { S.alerts.push({ sev, text, sub, ref, ts, agent, i: S.alerts.length }); }
     // a v2 tool_call_id is the client's ("c1"), unique only within its run
     const tuid = r => (r.v2 ? r.session_id + "|" : "") + (r.tool_use_id ?? r.v2?.tool_use_id);
+    // a call's last answer: approve, reject, ... or revoked (a person vetoed an agent's approval: the call never runs)
+    const lastAnswer = a => a.approvals?.filter(x => /^approval(\.revoked)?$/.test(x.v2.type)).pop()?.v2.approval;
 
     function ingest(r) {
       S.recs.push(r);
@@ -1680,7 +1682,7 @@
         if (a) {
           tool = a.tool; text = a.target;
           if (a.child) text += `  → ${label(a.child)}`;
-          const ap = a.approvals?.filter(x => x.v2.type === "approval").pop()?.v2.approval;
+          const ap = lastAnswer(a);
           st = a.denied ? ["s-deny", "BLOCKED"] : a.error ? ["s-err", "FAILED"] : a.v2?.decision === "ask" ? (ap === "approve" ? ["s-ok", "APPROVED"] : ap ? ["s-deny", ap.toUpperCase()] : ["s-flag", "HELD"]) : a.post ? (a.flags.length ? ["s-flag", "⚑ OK"] : ["s-ok", "OK"]) : ["s-run", "RUNNING"];
           ms = a.ms != null ? a.ms : "";
         } else { text = rel(String(row.text || ""), row.rec?.cwd).replace(/\s+/g, " "); }
@@ -1810,7 +1812,7 @@
     const cols = (l, r) => `<div>` + l + `</div><div>` + r + `</div>`;  // the detail card's two columns
     function detailV2(sel) {
       if (sel.pre) {
-        const a = sel, v = a.v2 || {}, ap = a.approvals.filter(x => x.v2.type === "approval").pop()?.v2.approval;
+        const a = sel, v = a.v2 || {}, ap = lastAnswer(a);
         const out = a.denied ? ["s-deny", "BLOCKED"] : a.error ? ["s-err", "FAILED"] : v.decision === "ask" && ap !== "approve" ? ["s-flag", ap ? ap.toUpperCase() : "HELD"] : a.post ? ["s-ok", v.decision === "ask" ? "APPROVED · RAN" : "RAN"] : ["s-run", "NO RESULT YET"];
         const left = `<dl class="kv"><dt>CALL</dt><dd style="color:var(--cyan)">${esc(a.tool)}</dd><dt>RUN</dt><dd>${esc(label(a.agent))}</dd><dt>TIME</dt><dd>${esc(fmtT(a.start))}${a.ms != null ? ` · ${esc(a.ms)} ms` : ""}</dd>
       <dt>DECISION</dt><dd>${esc(String(v.decision).toUpperCase())} → <span class="${esc(out[0])}">${esc(out[1])}</span></dd><dt>RULES</dt><dd>` + rulesHtml(v.rules) + `</dd>` + verdictLine(a.pre.session_id) + `</dl>
@@ -1848,6 +1850,7 @@
           + line(null, "COVERAGE", c ? `${c.layers.join("+") || "no layers"} · reconciled ${c.reconciled}` + Object.entries(c.unreconciled).map(([k, n]) => ` · unreconciled ${k} ${n}`).join("") + (c.provider_executed ? ` · provider-run tools ${c.provider_executed}` : "") : "not final yet: run.final records it");
         right = `<div class="sec">POLICY · CLICK A LINE FOR ITS FIRST RECORD</div><dl class="kv">` + line(f.allow, "ALLOWED", d.allow || 0) + line(f.flag, "FLAGGED", d.flag || 0, d.flag ? "s-flag" : "") + line(f.deny, "DENIED", d.deny || 0, d.deny ? "s-deny" : "") + line(f.ask, "HELD", d.ask || 0, d.ask ? "s-flag" : "");
         for (const a of r.approvals) right += line(a.seq, a.decision === "approve" ? "→ APPROVED" : "→ " + String(a.decision).toUpperCase(), `${a.tool_use_id} by ${a.approver}` + (a.via ? ` vouched for by ${a.via}` : "") + (a.self_approved ? " · SELF-APPROVED" : " · not self-approved") + (a.break_glass ? " · BREAK-GLASS" : ""), a.self_approved || a.break_glass || a.decision !== "approve" ? "s-deny" : "s-ok");
+        for (const i of r.incidents || []) right += line(i.seq, "INCIDENT", `${i.trigger} ${i.rule_ids.join(" ")} · ${i.incident_id} · ${i.mode} · ${i.actions.join("+") || "no action"} · run ${i.state}`, i.actions.length ? "s-deny" : "s-flag");
         right += (gaps.length ? gaps.map(([k, n]) => line(f["gap:" + k], "GAP", `${k} ×${n}`, "s-err")).join("") : line(null, "GAPS", "none signed")) + `</dl>`;
       } else {
         left += line(null, "RECORDS", r.verdict === "failed" ? "none shown: a run that fails verification shows only its report" : "shown once a checkpoint covers the run");

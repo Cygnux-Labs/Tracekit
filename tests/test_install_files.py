@@ -329,5 +329,49 @@ class SystemV2Install(unittest.TestCase):
                 pwd.getpwnam(user)
 
 
+class ClaudeConfigDir(unittest.TestCase):
+    def test_hooks_go_to_and_are_found_in_claude_config_dir(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        with mock.patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": d}):
+            path = install.user_settings()
+            self.assertEqual(path, os.path.join(d, "settings.json"))
+            install.install_hooks(path)
+            self.assertIn(path, [h["settings"] for h in install._installed_hooks()])
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("CLAUDE_CONFIG_DIR", None)
+            self.assertEqual(install.user_settings(), os.path.expanduser("~/.claude/settings.json"))
+
+    def test_init_dev_records_where_it_put_the_hooks(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        settings = os.path.join(d, "cfg", "settings.json")
+        os.makedirs(os.path.dirname(settings))
+        with mock.patch.dict(os.environ, {"TRACEKIT_CLIENT_HOME": os.path.join(d, "client")}):
+            install.init_dev(os.path.join(d, "sig"), [], start=False, hooks_path=settings)
+        self.assertEqual(install.read_json(os.path.join(d, "client", "config.json"))["hooks_settings"], settings)
+
+    def test_hooks_are_found_and_removed_with_or_without_claude_config_dir(self):
+        for installed_with, removed_with in ((True, False), (False, True)):
+            with self.subTest(installed_with_env=installed_with):
+                home, cfg = tempfile.mkdtemp(), tempfile.mkdtemp()
+                self.addCleanup(shutil.rmtree, home, True)
+                self.addCleanup(shutil.rmtree, cfg, True)
+                os.makedirs(os.path.join(home, ".claude"))
+                env = lambda on: mock.patch.dict(os.environ, {"HOME": home, **({"CLAUDE_CONFIG_DIR": cfg} if on else {})})
+                with env(installed_with):
+                    if not installed_with:
+                        os.environ.pop("CLAUDE_CONFIG_DIR", None)
+                    path = install.user_settings()
+                    install.install_hooks(path)
+                recorded = {"hooks_settings": path}   # what `tracekit init` writes to the client config
+                with env(removed_with), mock.patch.object(install.client, "client_config", return_value=recorded):
+                    if not removed_with:
+                        os.environ.pop("CLAUDE_CONFIG_DIR", None)
+                    self.assertIn(path, [h["settings"] for h in install._installed_hooks()])
+                    install.uninstall()
+                    self.assertEqual(install._hook_summary(install.read_json(path)), install._hook_summary({}))
+
+
 if __name__ == "__main__":
     unittest.main()

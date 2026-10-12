@@ -17,6 +17,7 @@ that wants paired seeds reads `config["configurable"]["tracekit_seed"]`. With `l
 """
 from __future__ import annotations
 
+import contextlib
 import copy
 import gc
 import json
@@ -296,6 +297,21 @@ class _Fork:
         return _Thread(self.thread.run_id, events + ([{"type": "decision", "ablated": True}] if applied[0] else []))
 
 
+@contextlib.contextmanager
+def _trials_heap() -> Iterator[None]:
+    """Each branch's gc.collect() scans only what the trials allocate: the objects the process held before are frozen
+    (out of the collector's sight) for the trials and unfrozen after, so a branch's collection costs the same in a
+    large host process as in a small one. A host that froze objects itself keeps its freeze (and full collections)."""
+    if gc.get_freeze_count():
+        yield
+        return
+    gc.freeze()
+    try:
+        yield
+    finally:
+        gc.unfreeze()
+
+
 def fork_replay(graph: Any, thread_config: Dict[str, Any], checkpoint_id: Optional[str], intervention: str,
                 target: str, *, n: int = 30, n_max: Optional[int] = None,
                 min_effect: float = MIN_EFFECT, log: Optional[str] = None, routing: Sequence[str] = ()) -> Dict[str, Any]:
@@ -304,8 +320,9 @@ def fork_replay(graph: Any, thread_config: Dict[str, Any], checkpoint_id: Option
     Same verdicts and intervals as tracekit.why's counterfactual. `log`: the why log folder the test is appended to.
     `routing`: names of calls a node of the app answers itself (routing schemas), not a ToolNode."""
     fork = _Fork(graph, thread_config, checkpoint_id, log, routing).fork_at([intervention])
-    return counterfactual(fork.thread, intervention, target, n=n, n_max=n_max, system=fork, use_tape=False,
-                          min_effect=min_effect)
+    with _trials_heap():
+        return counterfactual(fork.thread, intervention, target, n=n, n_max=n_max, system=fork, use_tape=False,
+                              min_effect=min_effect)
 
 
 def attribute_thread(graph: Any, thread_config: Dict[str, Any], target: str, suspects: Optional[Sequence[str]] = None,
@@ -320,7 +337,8 @@ def attribute_thread(graph: Any, thread_config: Dict[str, Any], target: str, sus
     if not suspects:
         raise ValueError("no suspects: no tool result came before the action; pass suspects explicitly")
     fork.fork_at(suspects)
-    r = attribute(fork.thread, target, suspects, n=n, n_max=n_max, system=fork, min_effect=min_effect,
-                  size_roles=size_roles)
+    with _trials_heap():
+        r = attribute(fork.thread, target, suspects, n=n, n_max=n_max, system=fork, min_effect=min_effect,
+                      size_roles=size_roles)
     r.update(rung=3, fork=fork.thread.stamp["fork"])
     return r

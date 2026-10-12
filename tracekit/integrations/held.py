@@ -14,7 +14,7 @@ import time
 import uuid
 import warnings
 
-from tracekit.sdk.client import SignerUnavailable, fail_open
+from tracekit.sdk.client import SignerUnavailable, fail_open, named_rules
 from tracekit.signer.rpc_schema import RPCError
 
 
@@ -50,7 +50,7 @@ class HeldCalls:
             return f"signer refused the call: {e}", None, args
         hint = None
         if d["decision"] == "deny":
-            return ", ".join(d["rule_ids"]) or "deny", d, args
+            return named_rules(d["rule_ids"]) or "deny", d, args
         if d["decision"] == "ask":
             if self.wait_s <= 0:
                 return f"{', '.join(d['rule_ids'])}: approval required, and this caller cannot wait for one", d, args
@@ -90,7 +90,7 @@ class HeldCalls:
         except (RPCError, SignerUnavailable) as e:
             c = {"ok": False, "rule_ids": [], "reason": str(e)}
         if not c["ok"]:
-            return ", ".join(c["rule_ids"]) + (f": {c['reason']}" if c.get("reason") else ""), d, args
+            return named_rules(c["rule_ids"]) + (f": {c['reason']}" if c.get("reason") else ""), d, args
         return None, d, c.get("args", args)
 
     async def _abandon(self, approval_id, reason):

@@ -16,6 +16,7 @@ import {
   HYBRID, NoteError, SIGNER_LEAVES, b64decode, bytes, equal, keyAlg, leafHash, openNote, parseLeaf, parseVkey,
   registryOrigin, runHash, sha256hex, spkiKid, unhex, verifyConsistency, verifyInclusion, verifyV2, vkey,
 } from "./primitives.js";
+import { Detector } from "./detect.js";
 import { same, validateEvent } from "./schema.js";
 import { readZip } from "./zip.js";
 
@@ -30,6 +31,8 @@ const MAX_LINE = 1 << 20;
 const CLASSES = ["public", "customer", "tracekit", "operator"];
 const KEY_TYPES = ["signer.epoch", "key.retire"];
 const ZERO_HASH = "sha256:" + "0".repeat(64);
+const MATRIX = ["model_calls", "tool_calls", "network", "processes", "services"];
+const COVERED = ["none", "reported", "observed", "enforced"];   // weakest first
 
 export type Check = { check: string; status: "pass" | "warn" | "fail"; detail: string; problems: string[] };
 
@@ -345,8 +348,13 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
     + `${repr(get(only, "tenant"))}, contiguous from run_seq 0` : `${runs.size} run(s), each contiguous from run_seq 0`, chain);
   rep.check("inclusion", !outside.length, `first and last records of ${runs.size} run(s) are in the checkpointed tree of `
     + `size ${size}`, outside);
-  for (const p of [...files.keys()].filter((n) => n.startsWith("policies/")).sort())
-    rep.check("policy snapshot", p === `policies/${await sha256hex(file(p))}.json`, p);
+  // policy_hash -> the bundled snapshot named by it: the one set checkIncidents and approvals check against
+  const policies = new Map<string, Uint8Array>();
+  for (const p of [...files.keys()].filter((n) => n.startsWith("policies/")).sort()) {
+    const hex = await sha256hex(file(p));
+    rep.check("policy snapshot", p === `policies/${hex}.json`, p);
+    if (p === `policies/${hex}.json`) policies.set(`sha256:${hex}`, file(p));
+  }
 
   const open = [...runs.values()].filter((rs) => get(rs.at(-1).event, "type") !== "run.final");
   rep.integrity = !open.length ? "VERIFIED" : only ? `VERIFIED TO HEAD ${str(get(open[0].at(-1).event, "run_seq"))} (open)`
@@ -363,7 +371,8 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
     rep.check("held calls", false, `${unresolved.length} tool call(s) a gateway or executor decided have no result`, unresolved.slice(0, 20), true);
   // capture.gap kinds that say nothing against a run's own records, and those warned on lines of their own
   const info = ["witness_late", "witness_failed", "degraded_unanchored", "clock_skew", "format_upgrade", "key_retired",
-    "args_coerced", "approval_expired", "executed_against_policy", "held_call_unresolved", "decision_mismatch"];
+    "args_coerced", "approval_expired", "executed_against_policy", "held_call_unresolved", "decision_mismatch",
+    "observer_lost"];
   const alarms = events.filter((e) => ["approval.binding_mismatch", "trace.tamper"].includes(get(e, "type"))
     || get(e, "type") === "capture.gap" && !info.includes(get(at(e, "data"), "kind")));
   if (alarms.length) {
@@ -386,15 +395,35 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
   const finals = [...runs.values()].map((rs) => rs.at(-1).event)
     .filter((e) => get(e, "type") === "run.final" && has(at(e, "data"), "coverage")).map((e) => e.data.coverage);
   const reconciles = events.filter((e) => str(get(e, "type")).startsWith("reconcile."));
+  const paired = [...runs.values()].map((rs) => rs.at(-1).event).filter((e) => get(e, "type") === "run.final")
+    .reduce((n, e) => n + num(get(e.data, "paired_by_args", 0)), 0);
   if (finals.length || reconciles.length) {
     const unreconciled = count(reconciles.map((e) => e.type.slice("reconcile.".length)));
     const layers = [...new Set(finals.flatMap((c) => list(at(c, "layers"))))].sort();
     rep.check("coverage", !reconciles.length, `layers ${layers.join("+") || "none"}` + (layers.includes("L3") ? "" : " (L3 absent)")
-      + `; ${finals.reduce((n, c) => n + num(at(c, "reconciled")), 0)} call(s) reconciled; unreconciled: `
+      + `; ${finals.reduce((n, c) => n + num(at(c, "reconciled")), 0)} call(s) reconciled`
+      + (paired ? ` (${paired} paired by arguments: no tool-call id)` : "") + "; unreconciled: "
       + (unreconciled.map(([k, n]) => `${k} ${n}`).join(", ") || "none"),
     reconciles.map((e) => `seq ${e.seq}: ${e.type} ${cut(str(get(e, "tool_call_id")), 200)}: `
       + cut(str(get(at(e, "data"), "detail")), 200)).slice(0, 20), true);
   }
+  // the coverage matrix: per action class its weakest status across the runs, the layers behind it; never "complete"
+  const matrices = [...runs.values()].map((rs) => rs.at(-1).event)
+    .filter((e) => get(e, "type") === "run.final" && has(at(e, "data"), "matrix")).map((e) => e.data.matrix);
+  if (matrices.length)
+    rep.check("coverage matrix", true, (matrices.length > 1 ? `weakest of ${matrices.length} runs: ` : "")
+      + MATRIX.map((k) => {
+        const cs = matrices.map((m) => at(m, k));
+        const status = cs.map((c) => str(at(c, "status"))).reduce((a, b) => COVERED.indexOf(b) < COVERED.indexOf(a) ? b : a);
+        const layers = [...new Set(cs.flatMap((c) => list(at(c, "layers")).map(str)))].sort()
+          .concat(cs.some((c) => get(c, "asserted") === true) ? ["asserted"] : []);
+        return `${k.replace("_", " ")} ` + (status === "none" ? "not covered"
+          : status + (layers.length ? ` (${layers.join(", ")})` : ""));
+      }).join(", "));
+  const lost = gaps("observer_lost");
+  if (lost.length)
+    rep.check("observers", false, `${lost.length} egress observer(s) went silent while their run was open`, lost.slice(0, 20), true);
+  checkIncidents(rep, runs, policies, floats);
   // a tool call's tier is the weakest its records claim (untiered < T3, receipt only, < T1 < T2): each tier a record
   // names, and untiered for a decision or result that names none, so a call decided at T2 and completed elsewhere
   // isn't T2;
@@ -454,11 +483,202 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
   const algs = new Set([...every, ...keyRecords].map((r) => text(at(r, "alg"))));
   rep.assurance = await assurance(origin, cosigs, witnesses, trust, algs, selfApproved, regCosigs)
     + (provenTo < relied ? "; key retirements not proven complete" : "");
+  approvals(rep, runs, policies, floats);
   const glass = typed("approval").filter((e) => get(at(e, "data"), "break_glass") === true);
   if (glass.length)
     rep.check("break-glass approvals", false, `${glass.length} approval(s) answered under the break-glass role`,
       glass.map((e) => `seq ${e.seq}: ${str(at(e.data, "decision"))} ${str(get(e.data, "approval_id"))} by `
         + `${cut(text(at(e.data, "approver")), 256)}: ${repr(cut(str(get(e.data, "reason")), 200))}`).slice(0, 20), true);
+}
+
+/** Approvals by people and by agents, each on a line of its own. An agent's approval fails the line unless its run
+ * holds the approval.request and policy.decision it answered, the signer called the request agent-eligible
+ * (agent.eligible) and no approval.escalated or approval.revoked of it comes first, the decision has no provenance and
+ * a complete provenance_state (or none: the signer leaves it out then), its approval needs no passkey, and the agent is
+ * neither the requester nor the run's owner; with the policy snapshot of the decision's policy_hash in `policies` (the
+ * bundle's, each named by its SHA-256), every rule the call was held by is an ask rule that permits agents and needs no
+ * passkey (else a warning: bounds unchecked). Argument bounds are never checkable offline (salted commitments). */
+function approvals(rep: Report, runs: Map<string, J[]>, policies: Map<string, Uint8Array>, floats: Floats) {
+  let people = 0, agents = 0;
+  const problems: string[] = [], unchecked: string[] = [];
+  for (const rs of runs.values()) {
+    const events: J[] = rs.map((r) => r.event);
+    const ident = get(events[0], "type") === "run.registered" ? get(at(events[0], "data"), "identity") ?? {} : {};
+    const owner = `${str(get(ident, "scheme"))}:${cut(str(get(ident, "subject")), 256)}`;
+    const asked = new Map<J, J>(), decided = new Map<J, J>();
+    for (const e of events) {
+      if (e.type === "approval.request") asked.set(get(e.data, "approval_id"), e.data);
+      if (e.type === "policy.decision" && has(e.data, "decision_id")) decided.set(e.data.decision_id, e.data);
+    }
+    const toPeople = new Set<J>();   // approval ids escalated or revoked so far: only people answer them
+    for (const e of events) {
+      const d = e.data;
+      if (e.type === "approval.escalated" || e.type === "approval.revoked") toPeople.add(get(d, "approval_id"));
+      if (e.type !== "approval" || get(d, "decision") !== "approve") continue;
+      if (get(d, "approver_kind") !== "agent") { people++; continue; }
+      agents++;
+      const where = `seq ${e.seq}: ${cut(str(get(d, "approval_id")), 128)}`;
+      const req = asked.get(get(d, "approval_id")) ?? {};
+      const dec = decided.get(get(req, "decision_id"));
+      if (dec === undefined) { problems.push(`${where}: its approval.request and policy.decision are not in the run`); continue; }
+      const ai = get(d, "approver_identity") ?? {};
+      if (get(get(req, "agent") ?? {}, "eligible") !== true)
+        problems.push(`${where}: the signer did not route its approval.request to agents (agent.eligible)`);
+      if (toPeople.has(get(d, "approval_id")))
+        problems.push(`${where}: it was escalated or revoked before the agent approved it`);
+      if (truthy(get(dec, "provenance")) || get(dec, "provenance_state", "complete") !== "complete")
+        problems.push(`${where}: the decision's arguments carry provenance or it is incomplete`);
+      if (get(req, "passkey") === true) problems.push(`${where}: a rule of the call needs a passkey`);
+      if (get(d, "approver") === get(req, "requester") || `${str(get(ai, "scheme"))}:${cut(str(get(ai, "subject")), 256)}` === owner)
+        problems.push(`${where}: the agent is the requester or the run's owner`);
+      const hash = str(get(dec, "policy_hash")), snap = policies.get(hash);
+      if (snap === undefined) {
+        unchecked.push(`${where}: no policy snapshot of ${cut(hash, 80)}; export the run with the signer's config, which `
+          + "bundles the policies its records cite");
+        continue;
+      }
+      let asks: Map<J, J>, flags: Set<J>;
+      try {
+        const pol = strictParseBytes(snap, floats);
+        asks = new Map(list(get(pol, "ask", [])).map((r: J) => [at(r, "id"), r]));
+        flags = new Set(list(get(pol, "flag", [])).map((r: J) => at(r, "id")));
+      } catch {
+        problems.push(`${where}: the policy snapshot is not a policy`);
+        continue;
+      }
+      for (const rid of get(dec, "rule_ids") ?? []) {
+        const approval = get(asks.get(rid) ?? {}, "approval") ?? {};
+        if (!flags.has(rid) && (!isObj(approval) || !has(approval, "agent") || approval.passkey === "required"))
+          problems.push(`${where}: rule ${cut(str(rid), 64)} does not permit agents`);
+      }
+    }
+  }
+  if (!agents) return;   // a bundle without agent approvals keeps the report it always had
+  rep.check("approvals by people", true, `${people} approval(s) answered by people`);
+  rep.check("approvals by agents", !problems.length && !unchecked.length, `${agents} approval(s) answered by agents (model `
+      + "output); argument bounds are not checkable offline (salted commitments): audit one with `tracekit signer reveal`"
+      + (unchecked.length ? `; agent approval bounds unchecked for ${unchecked.length}` : ""),
+    (problems.length ? problems : unchecked).slice(0, 20), !problems.length);
+}
+
+const CONTAINMENT = ["incident.opened", "incident.updated", "run.held", "run.quarantined", "run.resumed"];
+const FIRES = ["policy.decision", "approval.consumed", "capture.gap", "trace.tamper", "refusal.summary",
+  "reconcile.unexplained_effect"];
+const RECOMPUTED = ["sequence", "limit", "denied_calls", "provenance", "executed_against_policy", "class_mismatch"];
+
+/** The `incidents` line, as verify/v2.py's _incidents: cited records, incidents recomputed from their run under the
+ * bundled compiled policy (`policies`, by policy_hash), responses honoured. */
+function checkIncidents(rep: Report, runs: Map<string, J[]>, policies: Map<string, Uint8Array>, floats: Floats) {
+  const byRun = new Map<J, J[]>([...runs.values()].map((rs) => [get(rs[0].event, "run_id"), rs.map((r) => r.event)]));
+  if (![...byRun.values()].some((es) => es.some((e) => CONTAINMENT.includes(get(e, "type"))))) return;
+  const problems: string[] = [], pointers = new Set<string>(), opened = new Set<string>(), unbundled = new Set<string>();
+  let checked = 0;
+  for (const es of byRun.values()) for (const e of es) if (e.type === "incident.opened") opened.add(e.data.incident_id);
+  for (const [rid, events] of byRun) {
+    const mine: J[] = [];
+    for (const e of events) {
+      const d = e.data;
+      if (!["incident.opened", "incident.updated"].includes(e.type)) continue;
+      for (const c of list(d.cites)) {
+        const cited = byRun.get(c.run_id);
+        if (cited && (c.run_seq >= cited.length || !FIRES.includes(cited[c.run_seq].type)))
+          problems.push(`seq ${e.seq}: incident ${d.incident_id} cites ${cut(c.run_id, 128)} run_seq ${c.run_seq}, which is `
+            + "not a record that fires a trigger");
+      }
+      if (e.type === "incident.updated") continue;
+      if (d.trigger === "detector_unavailable") {
+        const c = d.cites.length === 1 ? d.cites[0] : {}, cited = byRun.get(c.run_id) ?? [];
+        const ok = (c.run_seq ?? cited.length) < cited.length && cited[c.run_seq].type === "policy.decision"
+          && cited[c.run_seq].data.detect?.state === "unavailable";
+        if (ok) checked++;
+        else problems.push(`seq ${e.seq}: incident ${d.incident_id} (detector_unavailable) cites no decision whose detection `
+          + "state was unavailable");
+      } else if (d.scope.kind === "run" && RECOMPUTED.includes(d.trigger) && d.cites.every((c: J) => c.run_id === rid))
+        mine.push(e);
+    }
+    const hashes = new Set(events.filter((e) => e.type === "policy.decision").map((e) => get(e.data, "policy_hash")));
+    let det: Detector | null = null;
+    if (mine.length && hashes.size === 1) {
+      const h = str([...hashes][0]), data = policies.get(h);
+      if (!data) unbundled.add(cut(h, 80));
+      else det = new Detector(strictParseBytes(data, floats));
+      if (det) {
+        const st = Detector.state(), expected: J[] = [], key = (d: J) => JSON.stringify([d.trigger, d.rule_ids,
+          d.cites.map((c: J) => [c.run_id, c.run_seq])]);
+        for (const e of events) {
+          if (mine.includes(e)) {
+            const i = expected.findIndex((x) => key(x) === key(e.data));
+            if (i >= 0) {
+              expected.splice(i, 1);
+              checked++;
+            } else problems.push(`seq ${e.seq}: incident ${e.data.incident_id} (${e.data.trigger}) does not follow from the `
+              + `run's records under policy ${cut(h, 80)}`);
+          }
+          expected.push(...det.observe(st, e).filter(([t]) => t === "incident.opened").map(([, d]) => d));
+        }
+      }
+    }
+    problems.push(...honoured(events, pointers));
+  }
+  const n = opened.size + [...pointers].filter((p) => !opened.has(p)).length;
+  rep.check("incidents", !problems.length, `${n} incident(s): ${checked} checked against the bundle, ${n - checked} `
+    + "signer-asserted (operator, cross-run, under several policies, or under a policy not in the bundle)",
+    problems.slice(0, 20));
+  if (unbundled.size)
+    rep.check("incident policies", false, `${unbundled.size} cited policy(ies) not in the bundle: their incidents are `
+      + "signer-asserted, not recomputed (export the run with the signer's config, which bundles the policies its "
+      + "records cite)", [...unbundled].sort().slice(0, 20), true);
+}
+
+/** The problems of one run's records with the holds and quarantines they record (verify/v2.py's _honoured). */
+function honoured(events: J[], pointers: Set<string>): string[] {
+  const problems: string[] = [], flight = new Set<string>(), asked = new Map<string, J>(), consumed = new Set<J>();
+  const due = new Map<string, [J, string]>();
+  let held: J[] = [], quarantined: J = null;
+  const state = () => quarantined ? "quarantined" : "held";
+  const unfollowed = () => [...due].map(([i, [seq, a]]) => `seq ${seq}: incident ${i} enforces ${a} on this run, which `
+    + "no run.held or run.quarantined follows");
+  for (const e of events) {
+    const t = e.type, d = e.data, where = `seq ${e.seq}`, on = quarantined || held.join(" and ");
+    if (t === "policy.decision" && due.size && !quarantined) {   // an enforced response is written before the next call
+      problems.push(...unfollowed());
+      due.clear();
+    }
+    if (t === "incident.opened" && d.scope.kind === "run" && d.scope.id === str(e.run_id).slice(0, 256)
+      && Object.keys(d.scope).length === 2 && d.actions.some((a: J) => a === "hold" || a === "quarantine"))
+      due.set(d.incident_id, [e.seq, d.actions.includes("quarantine") ? "quarantine" : "hold"]);
+    else if (t === "run.held" || t === "run.quarantined") {
+      pointers.add(d.incident_id);
+      due.delete(d.incident_id);
+      for (const x of d.in_flight ?? []) flight.add(x.decision_id);
+      if (t === "run.quarantined") [quarantined, held] = [d.incident_id, []];
+      else if (!quarantined && !held.includes(d.incident_id)) held.push(d.incident_id);
+    } else if (t === "run.resumed") {
+      held = held.filter((i) => i !== d.incident_id);
+      if (JSON.stringify([...(d.held_by ?? held)].sort()) !== JSON.stringify([...held].sort()))
+        problems.push(`${where}: run.resumed says ${d.held_by.join(" and ") || "no incident"} still holds the run, its `
+          + `records ${held.join(" and ") || "none"}`);
+    } else if (t === "policy.decision" && on && (quarantined ? d.decision !== "deny"
+      : d.decision !== "deny" && (d.decision !== "ask" || !held.includes(d.incident_id ?? null))))
+      problems.push(`${where}: ${d.decision} while the run is ${state()} by incident ${on}`);
+    else if (t === "approval.request") {
+      asked.set(d.approval_id, d.incident_id ?? null);
+      if (quarantined || held.length && !held.includes(d.incident_id ?? null))
+        problems.push(`${where}: an approval asked while the run is ${state()} by incident ${on}, not as its held call`);
+    } else if (t === "approval" && asked.get(d.approval_id ?? null) && d.decision === "approve" && (
+      d.approver_kind === "agent" || d.self_approved || !Object.hasOwn(d, "person")
+      && !Object.hasOwn(d.approver_identity ?? {}, "person") || (d.incident_id ?? null) !== asked.get(d.approval_id)))
+      problems.push(`${where}: a held call approved by other than a person, or without its incident id`);
+    else if (t === "approval.consumed") {
+      if (quarantined || held.length && !held.includes(asked.get(d.approval_id) ?? null))
+        problems.push(`${where}: an approval consumed while the run is ${state()} by incident ${on}`);
+      else if (asked.get(d.approval_id)) consumed.add(e.tool_call_id ?? null);
+    } else if (t === "tool.result" && on && !flight.has(d.decision_id) && (quarantined || !consumed.has(e.tool_call_id ?? null)))
+      problems.push(`${where}: a result while the run is ${state()} by incident ${on}, of a call neither in flight then nor `
+        + "approved by a person for it");
+  }
+  if (!quarantined) problems.push(...unfollowed());
+  return problems;
 }
 
 /** §4: null when `r` is a v2 record signed by one of `keys` (SPKI DER) with an allowed algorithm that is the key's own,

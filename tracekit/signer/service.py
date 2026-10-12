@@ -12,6 +12,8 @@
     tracekit signer token list|revoke [NAME] --config signer.yaml
     tracekit signer content get --run R --seq N [N ...] --purpose P [--config signer.yaml]   # retained content (vault)
     tracekit signer content erase --run R [--reason TEXT] [--config signer.yaml]
+    tracekit signer incidents list|show|resolve|hold|quarantine|resume|pause|unpause|suspend|unsuspend [ID]
+                               [--signer URL ...] [--reason TEXT]   # containment's operator calls (docs/incidents.md)
 
 signer.yaml:
     data_dir: /var/lib/tracekit-signer      # keys/ and store/; relative paths are from the config file
@@ -49,6 +51,12 @@ signer.yaml:
                                              # recorded source gateway (tier T2, naming the gateway in `via`); a
                                              # call a gateway decided takes its later steps from it alone (_hold)
     gateway_mandatory: false                 # true: reconcile decides against gateway L3 only (tracekit.signer.reconcile)
+    posture: {network: enforced, tool_calls: enforced}   # the deployment as the operator asserts it (run.registered
+                                             # records it with gateway_mandatory, never attested): the agent reaches
+                                             # the outside only through the egress proxy, and acts only through the
+                                             # executor and the MCP gateway (the coverage matrix's enforced;
+                                             # docs/egress.md#posture)
+    observe_grace_s: 120                     # how long a closing run an egress observer covers waits for its last reports
     fail_modes: {default: closed, read: open}   # tool class -> fail mode, recorded and returned by register_run
     grace_s: 5                               # reconciliation window between run.closing and run.final
     gateway_wait_s: 600                      # past grace_s, how long a closing run waits for the results of calls a
@@ -83,8 +91,11 @@ signer.yaml:
            signer: https://signer.internal:8443,   # `tracekit view` OIDC login and approval pages (tracekit.view)
            logs: [log-0.dsn, log-1.dsn]}           # a central viewer: each log's DSN file, a SELECT-only role
                                              # (docs/viewer.md)
-    webhook: [{url: https://siem.example.org/tracekit, format: ocsf, events: [deny, approval, gap, tamper],
-               secret_file: webhook.secret}]  # OCSF events, HMAC-signed, off the writer (tracekit.signer.webhook)
+    webhook: [{url: https://siem.example.org/tracekit, format: ocsf, events: [deny, approval, gap, tamper, incident],
+               secret_file: webhook.secret}]  # OCSF events, HMAC-signed, off the writer (tracekit.signer.webhook);
+                                             # incident records at least once, also to Slack ({format: slack})
+    suspensions: /shared/suspensions.json    # the operator-managed suspension list, shared by replicas (default
+                                             # data_dir/suspensions.json); read again whenever it changes
     content: {retain: false, retention_days: 30, max_record_bytes: 1048576}   # the content vault (below)
     acknowledge_rollback: false
     lock_timeout_s: 10                    # wait this long for the storage lock, then exit naming its holder's pid
@@ -129,10 +140,14 @@ stream the closer wrote (or that never reached the signer) into a client_counter
 that arrive later are recorded with no new gap. A gateway's report about a final run goes in the tenant's signer run.
 A run's transcript tailer (delegate_run to an identity granted `tailer_heartbeat`: system mode's tailer uid) is
 watched from the delegation: TAILER_LOST_S with no call from it while the run is open is a tailer_lost gap, and a
-second tailer token for the run a `capture.gap{tailer_redelegated}`. Writes refused because their run is final are
-counted per run (not a close_run, nor each identity's and stream's first one: that is how a client learns its run
-ended) and written with the refusal summaries as a `capture.gap{late_activity}` in the tenant's signer run, which
-(unlike the run's own records) gets a leaf in the tenant's registry, so a run-set shows it.
+second tailer token for the run a `capture.gap{tailer_redelegated}`. An egress observer (tracekit.egress; an identity
+granted `observe_effect`, never the run's owner) is watched the same way: it covers each run of its tenant registered
+while it is alive, a silence of TAILER_LOST_S or a restart (a new `instance`) is an `observer_lost` gap in each open
+run it covers, and a covered run waits `observe_grace_s` after closing for its last reports (_observe_effect). Writes
+refused because their run is final are counted per run (not a close_run, nor each identity's and stream's first one:
+that is how a client learns its run ended) and written with the refusal summaries as a `capture.gap{late_activity}` in
+the tenant's signer run, which (unlike the run's own records) gets a leaf in the tenant's registry, so a run-set shows
+it.
 
 run.registered and run.final also get a leaf in the tenant's registry log (tracekit.format.registry), log.closed and
 key.retire one in every tenant's. Gap and tamper records are written by the signer only: no request can carry an event type, source,
@@ -191,6 +206,19 @@ Passkeys: an ask rule with `approval: {passkey: required}` is approved only with
 (tracekit.identity.webauthn) over its approval_id, binding digest and the decision, by the passkey the person
 registered through a bridge (`passkey_register`, kept in data_dir/passkeys.json), verified here against
 `approvals.webauthn`; the record carries the credential id and that the user was verified.
+
+Containment (docs/incidents.md): an incident of a `respond: {mode: enforce}` trigger acts in the writer item of the
+record that fired it (_respond): `hold` makes every further call of each live run its scope reaches an ask a person
+answers (TK-HOLD, carrying the incident id: never an agent, never self-approval) and expires their live approvals;
+`quarantine` denies them (TK-QUARANTINE, QUARANTINE_DENIES recorded, then refused), refuses consumes and a gateway's
+model requests, and closes the run with reason quarantine. A run may be held by several incidents at once: it stays
+held until a person resolves or resumes each. With no person approver configured a hold is a quarantine;
+paused (response_pause), nothing acts. The call that fired a hold is decided again, held. New runs of the same owner
+and attested principal (or of a held parent) inherit a hold for `cooldown_s`. A decision the detector can't vouch for
+(state unavailable) holds its run when the policy enforces holds. Operators (never-default grants, in their tenant)
+list, show and resolve incidents, hold, quarantine and resume runs, pause the response engine and suspend identities;
+a resolve or resume needs a person who is not the runs' owner, principal or requester. The state is rebuilt from the
+records (pipeline.contain_state). Incident records reach webhooks through a durable outbox (webhook.Outbox).
 
 Principal (04-design §2.2): register_run's `principal` is app-asserted (principal_attested: false); its
 `principal_token`, an end user's token that the `oidc` issuers (http.oidc) verify, records that user's person id with
@@ -266,12 +294,12 @@ from tracekit.identity.base import CallerIdentity
 from tracekit.identity import webauthn
 from tracekit.identity.oidc import keys, person
 from tracekit.locking import lock_file
-from tracekit.policy2 import compile as policy_compile, engine
+from tracekit.policy2 import classes, compile as policy_compile, engine
 from tracekit.policy2.engine import Engine
 from tracekit.signer import detect, logkey, metrics, reconcile, rpc_schema, webhook
 from tracekit.signer import otel as signer_otel
-from tracekit.signer.pipeline import (EXPIRED, LOST, RecordLog, approval, degrade, epoch, final_run, owner,
-                                      person_only_keys, salt_label, skipped, subject, writer)
+from tracekit.signer.pipeline import (EXPIRED, LOST, RecordLog, approval, cooldown_key, degrade, epoch, final_run,
+                                      owner, person_only_keys, salt_label, skipped, subject, writer)
 from tracekit.signer.quotas import MAX_LINE, Limits, Quotas
 from tracekit.signer.rpc_schema import REQUESTS, RPCError
 from tracekit.signer.runtoken import RunTokens
@@ -300,8 +328,9 @@ PROVENANCE_MAX, PROVENANCE_SHOWN = 20_000, 16   # index entries per run (then tr
 PROVENANCE_S = engine.REGEX_TIMEOUT_S   # reading a decision's argument values: the same budget as its policy match
 CLASSES = ("public", "customer", "tracekit", "operator")
 GRACE_S, IDLE_S = 5.0, 3600.0
-HEARTBEAT_S = 30.0   # how often a transcript tailer sends tailer_heartbeat
-TAILER_LOST_S = 3 * HEARTBEAT_S   # a tailer silent this long while its run is open is lost
+HEARTBEAT_S = 30.0   # how often a transcript tailer sends tailer_heartbeat, and an egress observer observe_effect
+TAILER_LOST_S = 3 * HEARTBEAT_S   # a tailer or observer silent this long while its run is open is lost
+OBSERVE_GRACE_S = 120.0   # an observer reports a minute's traffic once the minute ends, at its next heartbeat
 DECIDED_GAPS_MAX = 100   # decided_not_completed gaps per run, then one gap counting the rest
 GATEWAY_WAIT_S = 600.0   # the MCP gateway's upstream timeout, the longest of the shipped gateways
 FAIL_MODES = {"default": "closed"}
@@ -312,7 +341,7 @@ CONFIG_KEYS = {"data_dir", "socket", "socket_mode", "tcp_endpoint", "http", "dur
                "fail_modes", "grace_s", "idle_s", "origin", "metrics", "witnesses", "contact", "approvals",
                "lock_timeout_s", "fsck_every_s", "clock_skew_s", "anchors", "otlp", "otel_out", "storage", "gateways",
                "gateway_mandatory", "log_key", "harness_binding", "record_key", "route", "view", "decision_keys",
-               "webhook", "content", "gateway_wait_s"}
+               "webhook", "content", "gateway_wait_s", "suspensions", "posture", "observe_grace_s"}
 APPROVAL_KEYS = {"self_approval", "approvers", "break_glass", "persons", "webauthn", "agents", "ttl_s",
                  "agent_consume_s", "agent_timeout_s"}
 # agent approvers (docs/approvals.md#agent-approvers): what an identity in approvals.agents may call, given an authorize
@@ -337,13 +366,17 @@ DEFAULT_GRANTS = frozenset({
     "approval_decide", "approval_wait", "approval_consume", "approval_get", "approval_list", "approval_abandon",
     "approval_revoke", "close_run", "delegate_run", "tailer_lost", "status", "read", "checkpoint_nudge",
     "passkey_register", "why_finding"})
+OPERATOR = frozenset({"incident_list", "incident_show", "incident_resolve", "run_hold", "run_quarantine", "run_resume",
+                      "response_pause", "response_resume", "suspend", "unsuspend"})   # containment's operator calls
 # tailer_heartbeat: only an identity granted it (TAILER_METHODS), so the agent can't keep a killed tailer's
-# heartbeats going with its own token
+# heartbeats going with its own token; observe_effect: an egress observer's own identity, never an agent's
 NEVER_DEFAULT = frozenset({DECISION_IMPORT, ON_BEHALF, "content_get", "content_erase", "approval_review",
-                           "approval_agents", "tailer_heartbeat"})
+                           "approval_agents", "tailer_heartbeat", "observe_effect"}) | OPERATOR
 CONTENT = {"retain": False, "retention_days": 30, "max_record_bytes": 1 << 20}   # the `content` config section
 CONTENT_SWEEP_S = 3600.0
 ERASED = object()   # _data_key of a run whose content was erased
+QUARANTINE_DENIES = 100   # TK-QUARANTINE decisions a quarantined run records; later calls are refused unrecorded
+COOLDOWN_S = 3600   # respond.cooldown_s default: how long new runs of a held owner and principal inherit the hold
 
 
 def load_policy(path=DEFAULT_POLICY, backend=None):
@@ -526,6 +559,70 @@ def _process_identity():
     return CallerIdentity("uid", str(os.getuid()) if hasattr(os, "getuid") else "0", True)
 
 
+def _person_like(p, persons):
+    """Whether approver entry `p` names a person: mapped in `persons`, or an OIDC person or group."""
+    return p in persons or p.split(":")[0] in ("oidc", "person", "group")
+
+
+class Suspensions:
+    """The operator-managed suspension list a central signer's replicas share: a JSON file {tenant: {identity or prefix
+    (`:*`, `/*`): {by, at, reason?}}}, read again whenever it changes (TokenStore's model). Unreadable:
+    calls are refused (`unavailable`), never let through."""
+
+    def __init__(self, path):
+        self.path, self.entries, self._stamp, self._lock = path, {}, None, threading.Lock()
+
+    def _read(self):
+        try:
+            data = json.loads(pathlib.Path(self.path).read_bytes())
+        except FileNotFoundError:
+            return {}
+        except (OSError, ValueError) as e:
+            raise RPCError("unavailable", f"the suspension list is unreadable: {e}") from None
+        if not isinstance(data, dict) or not all(isinstance(t, dict) and all(isinstance(v, dict) for v in t.values())
+                                                 for t in data.values()):
+            raise RPCError("unavailable", f"{self.path} is not a suspension list")
+        return data
+
+    def load(self):
+        """(the entries, whether they changed since the last load)."""
+        try:
+            st = os.stat(self.path)
+            stamp = (st.st_mtime_ns, st.st_size, st.st_ino)
+        except FileNotFoundError:
+            stamp = None
+        except OSError as e:
+            raise RPCError("unavailable", f"the suspension list is unreadable: {e}") from None
+        with self._lock:
+            if stamp == self._stamp:
+                return self.entries, False
+            self.entries, self._stamp = self._read(), stamp
+            return self.entries, True
+
+    def forget(self):
+        """Read the list again on the next load, as if it changed."""
+        with self._lock:
+            self._stamp = None
+
+    def change(self, tenant, identity, entry):
+        """Add (or with `entry` None, lift) the suspension of `identity` in `tenant`; whether the list changed."""
+        # lean: read-modify-write under a per-process lock; two replicas changing the list at the same instant can lose
+        # one change (the record of it stays): keep the list in Postgres if operators race
+        with self._lock:
+            data = self._read()
+            mine = data.setdefault(tenant, {})
+            if (identity in mine) == (entry is not None):
+                return False
+            if entry is None:
+                del mine[identity]
+                if not mine:
+                    del data[tenant]
+            else:
+                mine[identity] = entry
+            files.write_json(self.path, data)
+            return True
+
+
 class SignerService:
     def __init__(self, data_dir, policy=None, identity=None, tenant="default", tenants=None, limits=Limits(),
                  durability=ACK_ON_WRITE, witnesses=(), acknowledge_rollback=False, open_storage=None, isolation=None,
@@ -534,7 +631,8 @@ class SignerService:
                  fsck_every_s=FSCK_S, clock_skew_s=CLOCK_SKEW_S, rekor=None, otlp=None, otel_out=None,
                  storage_config=None, gateways=(), gateway_mandatory=False, log_key=None, slh_dsa_file=None,
                  harness_binding=None, record_key=None, route=None, oidc=None, decision_keys=None, webhooks=(),
-                 content=None, gateway_wait_s=GATEWAY_WAIT_S):
+                 content=None, gateway_wait_s=GATEWAY_WAIT_S, suspensions=None, posture=None,
+                 observe_grace_s=OBSERVE_GRACE_S):
         """`identity` answers the in-process SignerAPI calls (default: this process's uid); transports call
         handle_frame with the identity they established. `policy` is a policy2 Engine (default: load_policy()).
         `open_storage()` defaults to the store `storage_config` (the `storage` config section) names, else file storage
@@ -555,8 +653,10 @@ class SignerService:
         once two thirds of its certificate's validity have passed (else the file key in keys/record.key).
         `route`: the prefix (before a dot) of this signer's run and approval ids, or None.
         `decision_keys`: external system -> its base64 Ed25519 public key (the `decision_keys` config section).
-        `webhooks`: webhook.Sender arguments ({url, events, secret}) of the `webhook` config section.
-        `content`: the `content` config section (the content vault; see the module docstring), or None (off)."""
+        `webhooks`: the `webhook` config section as webhook.load gives it ({url, events, secret, format?}).
+        `content`: the `content` config section (the content vault; see the module docstring), or None (off).
+        `suspensions`: the shared suspension list's path (default data_dir/suspensions.json).
+        `posture` ({network, tool_calls}) and `observe_grace_s`: see the config keys."""
         fail_modes = dict(fail_modes or FAIL_MODES)
         if not all(isinstance(k, str) and v in ("open", "closed") for k, v in fail_modes.items()):
             raise ValueError("fail_modes maps tool classes to open or closed")
@@ -574,6 +674,15 @@ class SignerService:
                              "(seconds)")
         self._agents = _agents(approvals or {}, dict(authorize or {}), set(multi_tenant_apps))
         policy = policy or load_policy()
+        respond = policy.policy.get("respond", [])
+        if any(r["mode"] == "enforce" and r["action"] == "notify" for r in respond) and \
+                not any("incident" in w["events"] for w in webhooks):
+            raise ValueError("the policy's respond notifies (action notify, mode enforce) but no webhook subscribes to "
+                             "incident events: add `incident` to a webhook's events (docs/webhooks.md)")
+        # a hold no person can answer is a quarantine (_respond)
+        self._people = any(_person_like(p, (approvals or {}).get("persons", {}))
+                           for p in (approvals or {}).get("approvers", ()))
+        self._fail_closed = any(r["mode"] == "enforce" and r["action"] in ("hold", "quarantine") for r in respond)
         if not self._agents and any("agent" in (r.get("approval") or {}) for _, r, *_ in policy.rules):
             raise ValueError("the policy lets agent approvers answer (approval.agent) but approvals.agents names none: "
                              "add the reviewer's identity there, or remove approval.agent from the policy")
@@ -610,6 +719,14 @@ class SignerService:
         if self._decision_keys is None or any(crypto.key_alg(v) != "ed25519" for v in self._decision_keys.values()):
             raise ValueError("decision_keys maps system names to base64 Ed25519 public keys")
         self.content = content_config(content)
+        if posture is not None and not (isinstance(posture, dict) and set(posture) <= {"network", "tool_calls"}
+                                        and all(v in ("enforced", "open") for v in posture.values())):
+            raise ValueError("posture takes network and tool_calls, each enforced or open (gateway_mandatory is a "
+                             "setting of its own)")
+        # recorded in each run.registered when the operator asserts anything
+        self.posture = {"network": "open", "tool_calls": "open", **(posture or {}), "gateway_mandatory": bool(
+            gateway_mandatory)} if posture is not None or gateway_mandatory else None
+        self.observe_grace_s = observe_grace_s
         self.metrics = metrics.SignerMetrics()
         self._prov_key = os.urandom(32)   # the provenance index's key: per process, as the index is
         authorize = dict(authorize or {})
@@ -617,6 +734,11 @@ class SignerService:
         if not all(isinstance(m, list) and set(m) <= grants for m in authorize.values()):
             raise ValueError(f"authorize maps identities to lists of methods out of {sorted(grants)} "
                              "(content_get is granted as content_read)")
+        both = sorted(k for k, m in authorize.items() if "register_run" in m and OPERATOR & set(m))
+        if both:
+            raise ValueError(f"authorize grants {', '.join(both)} both register_run and containment's operator calls: "
+                             "an agent's identity can't operate its own containment; give operators an identity of "
+                             "their own (docs/incidents.md)")
         keys = os.path.join(data_dir, "keys")
         if open_storage is None and storage_config:
             from tracekit.storage import postgres
@@ -656,17 +778,31 @@ class SignerService:
         except BaseException:
             storage.close()
             raise
-        self._webhooks = [webhook.Sender(**w, dropped=self.metrics.webhook_dropped) for w in webhooks]
-        self.log.observers += [w.put for w in self._webhooks]   # before the startup checks, so their records go out too
+        self.log.respond = self._respond
+        self._suspensions = Suspensions(suspensions or os.path.join(data_dir, "suspensions.json"))
+        start = storage.tail_state()["tree_size"]
+        self._webhooks = [webhook.Sender(w["url"], set(w["events"]) - {"incident"}, w["secret"],
+                                         dropped=self.metrics.webhook_dropped) for w in webhooks
+                          if set(w["events"]) - {"incident"}]
+        self._webhooks += [webhook.Outbox(
+            w["url"], w["secret"], w.get("format", "ocsf"),
+            os.path.join(data_dir, f"outbox-{hashlib.sha256(w['url'].encode()).hexdigest()[:16]}.json"),
+            lambda lo, hi: self.log.storage.iter_range(lo, hi), self._cited, start, self.metrics.outbox_failures)
+            for w in webhooks if "incident" in w["events"]]
+        # before the startup checks, so their records go out too; then the containment's own follow-up
+        self.log.observers += [w.put for w in self._webhooks] + [self._after_write]
         self.policy, self.isolation = policy, isolation
         # neither a handoff nor a structured-output tool is a missing decide, live or at run.final
         self.log.handoff = lambda tool: self.policy.is_handoff(tool) or self.policy.is_structured_output(tool)
         self.identity = identity or _process_identity()
         self.tenant, self.tenants, self.authorize = tenant, dict(tenants or {}), authorize
         self.multi_tenant_apps, self.migrators, self.analyzers = set(multi_tenant_apps), set(migrators), set(analyzers)
-        # run key -> monotonic time of its tailer's last heartbeat; a restart's open runs were tailed until now
+        # run key -> monotonic time of its tailer's last heartbeat (a restart's open runs were tailed until now);
+        # (*run key, observer) -> its observer's
         self._beats = {k: time.monotonic() for k in self.log.live if self.log.runs[k].get("tailed")}
         self._beats_lock = threading.Lock()
+        # (tenant, observer) -> (monotonic time of its last observe_effect, its process `instance`), under _beats_lock
+        self._observers = {}
         self._gateways, self.gateway_mandatory = {k: True for k in gateways}, bool(gateway_mandatory)
         self.gateway_wait_s = gateway_wait_s
         self.fail_modes, self.grace_s, self.idle_s = fail_modes, grace_s, idle_s
@@ -733,6 +869,14 @@ class SignerService:
                 files.close(d)
             _mkdir(self._args_dir)
             os.chmod(self._args_dir, 0o700)
+            # the compiled policy, named by its policy_hash, for `tracekit export --v2` to bundle (the verifier
+            # recomputes a run's incidents from it)
+            _mkdir(os.path.join(data_dir, "policies"))
+            try:
+                _write_new(os.path.join(data_dir, "policies", policy.policy_hash[len("sha256:"):] + ".json"),
+                           policy_compile.canonical(policy.policy).encode("utf-8"))
+            except FileExistsError:
+                pass
             for aid in os.listdir(self._args_dir):   # left by a crash, or by an approval_request that was rolled back
                 if self.log.approvals.get(aid, {}).get("state") not in LIVE:
                     self._drop_args(aid)
@@ -753,6 +897,17 @@ class SignerService:
                  lambda: sum(a["state"] == "requested" for a in list(self.log.approvals.values()))),
                 ("tracekit_signer_checkpoint_age_seconds", "Seconds since this signer last wrote a checkpoint note "
                  "(since start when it has written none).", lambda: time.monotonic() - self._noted)):
+            self.metrics.add(metrics.Gauge(name, help, fn))
+        for name, help, fn in (
+                ("tracekit_signer_held_runs", "Runs held by an incident (each call asked of a person).",
+                 lambda: sum(bool(r.get("held")) for r in list(self.log.runs.values()) if not r["final"])),
+                ("tracekit_signer_quarantined_runs", "Runs quarantined by an incident, not yet final.",
+                 lambda: sum(bool(r.get("quarantined")) for r in list(self.log.runs.values()) if not r["final"])),
+                ("tracekit_signer_suspended_identities", "Suspension list entries this signer enforces.",
+                 lambda: sum(list(self.log.contain["enforcing"].values()))),
+                ("tracekit_signer_detector_unavailable", "1 while the detector can't vouch for decisions (a restart "
+                 "without its state, until the longest window has passed), else 0.",
+                 lambda: int(bool(self.log.detector) and time.time() < self.log.det["until"]))):
             self.metrics.add(metrics.Gauge(name, help, fn))
         self.metrics.add(metrics.Gauge(
             "tracekit_signer_witness_lag_records", "Records in the latest record tree note that the witness has not "
@@ -852,6 +1007,8 @@ class SignerService:
                 raise RPCError("forbidden", f"{subject(identity)[:256]} is an agent approver: it may call "
                                             f"{', '.join(sorted(AGENT_METHODS))} only")
             self._grant(identity, CONTENT_READ if method == "content_get" else method)
+            if method not in OPERATOR:   # an operator lifts suspensions, so none stops its calls
+                self._check_suspended(identity)
             errs = rpc_schema.validate(REQUESTS[method], req)
             if errs:
                 raise RPCError("invalid_request", "; ".join(errs))
@@ -1221,27 +1378,22 @@ class SignerService:
         return mine
 
     def _expire(self, tx, run, aid, reason="ttl"):
-        """approval.expired; with why (`reason`) on an approval agents may answer, so a person-only one stays readable
-        by a 1.1 verifier."""
+        """approval.expired; with why (`reason`) on an approval agents may answer or for a hold or quarantine, so a
+        person-only one that expired otherwise stays readable by a 1.1 verifier."""
         a = self.log.approvals[aid]
         tx.set(a, "state", "expired")
-        tx.emit(run, "approval.expired", {"approval_id": aid, **({"reason": reason} if a.get("agent") else {})},
-                source="signer")
+        tx.emit(run, "approval.expired", {"approval_id": aid, **({"reason": reason} if a.get("agent") or reason in (
+            "hold", "quarantine") else {})}, source="signer")
         return aid
 
     def _held_open(self, key, run):
-        """The calls of `run` a gateway decided and may be running: allowed, or approved and consumed, and not
-        completed."""
-        def consumed(c):   # this decision's own approval: a retry decided again after a consume never ran
-            a = self.log.approvals.get(self.log.approval_index.get((*key, c["tool_call_id"], c["attempt"])), {})
-            return a.get("state") == "consumed" and a.get("decision_id") == c["decision_id"]
-        return [c for c in run["decisions"].values()
-                if c and c.get("via") and (c["decision"] in ("allow", "flag") or consumed(c))]
+        """The calls of `run` a gateway decided and may be running (_open_calls)."""
+        return [c for c in self._open_calls(key, run) if c.get("via")]
 
-    def _finish_run(self, tx, key, run, aids):
+    def _finish_run(self, tx, key, run, aids, now=None):
         """run.final for closing `run`, whose approvals are `aids`, after a gap for each call a gateway holds that has
-        no result and one for each other call decided to run that never completed; returns the ids of the approvals
-        that expired with it."""
+        no result, one for each other call decided to run that never completed and one for each observer that went
+        silent (`now`: a monotonic time); returns the ids of the approvals that expired with it."""
         consumed = {(a["tool_call_id"], a["attempt"]): a["decision_id"] for a in map(self.log.approvals.get, aids)
                     if a["state"] == "consumed"}
         held = self._held_open(key, run)
@@ -1289,13 +1441,23 @@ class SignerService:
                                                    "with no tool.result next to the harness's transcript or the "
                                                    "app's log for whether they ran"},
                     source="signer")
+        observed = False
+        for obs, at in self._covering(key).items():
+            if (time.monotonic() if now is None else now) - at < TAILER_LOST_S:
+                observed = True
+            else:
+                self._observer_lost(tx, run, obs, at, now)
         coverage = reconcile.finish(tx, run, self.gateway_mandatory, self.policy.is_handoff,
                                     self.policy.is_structured_output)
         provider = len(reconcile.counted(run["rec"], self.gateway_mandatory, "provider")) if run.get("rec") else 0
+        paired = coverage and coverage.pop("paired_by_args", 0)
         tx.set(run, "final", True)
         tx.emit(run, "run.final", {"head_run_seq": run["run_seq"] - 1, "head_hash": run["head"],
-                                   **({"coverage": coverage} if coverage else {}),
-                                   **({"provider_executed": provider} if provider else {})}, source="signer")
+                                   **({"coverage": coverage,
+                                       "matrix": reconcile.matrix(run["rec"], self.posture or {}, observed)}
+                                      if coverage else {}),
+                                   **({"provider_executed": provider} if provider else {}),
+                                   **({"paired_by_args": paired} if paired else {})}, source="signer")
         tx.set(self.log.runs, key, final_run(run))   # its calls, decisions and arguments go
         tx.pop(self.log.live, key)
         for aid in aids:   # all ended now: nothing can use them
@@ -1321,14 +1483,20 @@ class SignerService:
                     tx.pop(self.log.agent["uses"], aid)
             with self._beats_lock:
                 beats = dict(self._beats)
+            watched = {}   # run key -> {observer: its last heartbeat}
+            for k, at in beats.items():
+                if len(k) == 3:
+                    watched.setdefault(k[:2], {})[k[2]] = at
             for key in list(self.log.live):
                 run, live = self.log.runs[key], [aid for aid in mine.get(key, ())
                                                  if self.log.approvals[aid]["state"] in LIVE]
                 waited = t - run["closing_at"] if run["closed"] else -1
-                # a call a gateway holds may still complete: wait for it up to gateway_wait_s past the grace window
+                # a call a gateway holds may still complete: wait for it up to gateway_wait_s past the grace window;
+                # an observer's last reports, up to observe_grace_s
                 if waited >= self.grace_s and (waited >= self.grace_s + self.gateway_wait_s
-                                               or not self._held_open(key, run)):
-                    expired += self._finish_run(tx, key, run, mine.get(key, ()))
+                                               or not self._held_open(key, run)) and (
+                        waited >= self.observe_grace_s or key not in watched):
+                    expired += self._finish_run(tx, key, run, mine.get(key, ()), t)
                     finals.append(key)
                     continue
                 for aid in live:
@@ -1352,15 +1520,20 @@ class SignerService:
                             "transcript itself for it, and run `sudo tracekit doctor` to check the tailer"},
                             source="signer")
                     lost.append(key)
+                for obs, at in watched.get(key, {}).items():
+                    if t - at >= TAILER_LOST_S:
+                        self._observer_lost(tx, run, obs, at, t)
+                        lost.append((*key, obs))
                 if any(self.log.approvals[aid]["state"] == "requested" for aid in live):
                     tx.set(run, "active", run["active"] + paused)   # the idle clock pauses while an approval is pending
                 elif t - run["active"] >= self.idle_s:
                     tx.closing(run, "idle_timeout", source="signer")
             return expired
         expired = self.log.write(fn)
-        with self._beats_lock:   # a lost tailer's run expects no more heartbeats, a final run none at all
-            for key in lost + finals:
-                self._beats.pop(key, None)
+        with self._beats_lock:   # a lost tailer's or observer's run expects no more heartbeats, a final run none at all
+            done = set(finals)
+            for k in [k for k in self._beats if k in lost or k[:2] in done]:
+                self._beats.pop(k)
         if finals:
             self._nudged.set()
         for key in finals if self._exporter else ():
@@ -1443,6 +1616,25 @@ class SignerService:
                     self._beats[key] = time.monotonic()
         return key
 
+    def _covering(self, key):
+        """{observer: its last heartbeat} of the egress observers covering run `key`."""
+        # lean: scans the beat map; key it by run if a signer watches ~100k runs at once
+        with self._beats_lock:
+            return {k[2]: at for k, at in self._beats.items() if len(k) == 3 and k[:2] == key}
+
+    def _observer_lost(self, tx, run, obs, at=None, now=None):
+        """An observer_lost gap in `run`: observer `obs` silent since `at` (monotonic) until `now`, or restarted."""
+        t = time.monotonic() if now is None else now
+        why = (f"egress observer {obs[:256]} restarted while the run was open: what the old process had not reported "
+               "when it ended (up to a minute and a heartbeat of traffic if it was killed, none if it was stopped with "
+               "SIGTERM) is not in the run, so its coverage says network not observed; find why the egress proxy "
+               "(`tracekit egress serve`) restarted") if at is None else (
+            f"no observe_effect from egress observer {obs[:256]} for {t - at:.0f}s while the run was open: it stopped "
+            "or was killed, so the run's network traffic from then on was not observed and its coverage says network "
+            "not observed; check the egress proxy (`tracekit egress serve`) and that its identity has the "
+            "observe_effect grant")
+        tx.emit(run, "capture.gap", {"kind": "observer_lost", "reason": why}, source="signer")
+
     def _tailer(self, identity):
         """Whether `identity` is a transcript tailer's: granted tailer_heartbeat."""
         return any("tailer_heartbeat" in (lookup(self.authorize, k) or ()) for k in keys(identity))
@@ -1484,13 +1676,30 @@ class SignerService:
             raise RPCError("unknown_approval", approval_id)
         return a
 
-    @staticmethod
-    def _summary(approval_id, a):
+    def _summary(self, approval_id, a):
         return {"approval_id": approval_id, "state": a["state"], "run_id": a["run_key"][1],
                 **{k: a[k] for k in ("tool_call_id", "attempt", "tool", "rule_ids", "policy_hash", "requester",
                                      "expires_at")}, **({"passkey": True} if a.get("passkey") else {}),
                 **({"escalated": True} if a.get("escalated") else {}),
-                **({"agent": True} if (a.get("agent") or {}).get("eligible") else {})}
+                **({"agent": True} if self._agent_mode(a) == "enforce" else {}),
+                **{k: a[k] for k in ("answered", "escalation") if a.get(k)}}
+
+    def _agent_refusal(self, a):
+        """Why an agent's answer to approval `a` is refused now (people answer it), or None."""
+        return ("agent approvals are switched off: people answer it" if self.log.agent["off"] else
+                "it was escalated: people answer it now" if a["escalated"] else
+                "the policy changed since it was requested: people answer it"
+                if a["policy_hash"] != self.policy.policy_hash else
+                "an agent did not approve this call in this run: people answer it"
+                if any(k in self.log.runs[a["run_key"]].get("person_only", {}) for k in person_only_keys(a)) else None)
+
+    def _agent_mode(self, a):
+        """How an agent's answer to approval `a` counts now: "enforce" (it decides), "shadow" (an approval.suggested;
+        people decide) or None (only people answer it)."""
+        if not (a.get("agent") or {}).get("eligible") or self._agent_refusal(a):
+            return None
+        return "shadow" if any(r["approval"]["agent"]["mode"] == "shadow"
+                               for r in self._agent_rules(a["agent"]["rules"])) else "enforce"
 
     def _on_behalf(self, identity, req):
         """The person a bridge acts for (`on_behalf`, for an identity granted approval_decide_on_behalf), else `identity`.
@@ -1579,20 +1788,21 @@ class SignerService:
     def _evaluate(self, tool, args, hint, untrusted=None):
         """(policy decision, hint disagreed, the rule ids of both readings). A class hint that disagrees with the
         policy's class gets the stricter of the two decisions; detection sees the rules of both, so a mismatch can't
-        hide a step."""
-        d = self.policy.decide(tool, args, untrusted=untrusted)
+        hide a step. A tool the policy maps whose own reading is at least as strict as the hint's (an MCP adapter's
+        generic `mcp` against the deployment's `sql`) is no disagreement worth a gap."""
+        d, cls = self.policy.decide(tool, args, untrusted=untrusted), self.policy.tool_class(tool)
         if tool.startswith("mcp:") and "/" in tool:
             # an MCP tool is also checked under its bare name (the name the model may know it by), in its own class if
             # the policy maps it, else the MCP call's: a rule on that name can't be dodged by naming the call an MCP one
-            bare, cls = tool.split("/", 1)[1], self.policy.tool_class(tool)
+            bare = tool.split("/", 1)[1]
             b = self.policy.decide(bare, args, None if self.policy.tool_class(bare) != "unknown" else cls, untrusted)
             d = {**max(d, b, key=lambda x: STRICTNESS.index(x["verdict"])),
                  "rule_ids": list(dict.fromkeys(d["rule_ids"] + b["rule_ids"]))}
-        if hint is None or hint == self.policy.tool_class(tool):
+        if hint is None or hint == cls:
             return d, False, d["rule_ids"]
         h = self.policy.decide(tool, args, hint if hint in policy_compile.CLASSES else "unknown", untrusted)
-        return (max(d, h, key=lambda x: STRICTNESS.index(x["verdict"])), True,
-                list(dict.fromkeys(d["rule_ids"] + h["rule_ids"])))
+        strict = max(d, h, key=lambda x: STRICTNESS.index(x["verdict"]))   # d on a tie
+        return strict, cls == "unknown" or strict is not d, list(dict.fromkeys(d["rule_ids"] + h["rule_ids"]))
 
     def _agent_rules(self, ids):
         """The rules among rule ids `ids` with approval.agent."""
@@ -1819,6 +2029,347 @@ class SignerService:
             return "remote"
         return "unknown"
 
+    # --- containment (docs/incidents.md) ---
+
+    def _scope_keys(self, tenant, scope):
+        """The live runs of `tenant` an incident's scope reaches, keyed as detect.Detector._scope keys them."""
+        kind, val = scope["kind"], scope["id"]
+
+        def of(r):
+            return (r["run_id"] if kind == "run" else r.get("session", r["run_id"]) if kind == "session" else
+                    r["owner"] if kind == "owner" else r["people"][1]) or ""
+        return [k for k in self.log.live if k[0] == tenant and of(self.log.runs[k])[:256] == val]
+
+    def _open_calls(self, key, run):
+        """The calls of `run` (`key`) that may be running: allowed, or approved and consumed, and not completed."""
+        def consumed(c):   # this decision's own approval: a retry decided again after a consume never ran
+            a = self.log.approvals.get(self.log.approval_index.get((*key, c["tool_call_id"], c["attempt"])), {})
+            return a.get("state") == "consumed" and a.get("decision_id") == c["decision_id"]
+        return [c for c in run["decisions"].values() if c and (c["decision"] in ("allow", "flag") or consumed(c))]
+
+    def _in_flight(self, key, run, skip=None):
+        """A response's `in_flight`: the open calls of `run` but decision `skip`."""
+        return [{"run_id": key[1], "tool_call_id": c["tool_call_id"], "decision_id": c["decision_id"]}
+                for c in self._open_calls(key, run) if c["decision_id"] != skip][:1024]
+
+    def _contain(self, tx, run, kind, iid, scope, by, reason, flight=(), cooldown=0, inherited=False):
+        """Hold (`kind` held) or quarantine (quarantined) `run` for incident `iid`, `scope` its scope: its live
+        approvals expire and a run.held or run.quarantined records it, with until when new runs of its owner and
+        principal inherit it (`cooldown` seconds). A quarantined run stays as it is; a held one is held by `iid` too."""
+        if run.get("quarantined") or iid in (run.get("held") or ()):
+            return
+        key = (run["tenant"], run["run_id"])
+        # lean: visits every approval; index them by run (as sweep's _approvals_by_run) if holds become frequent
+        for aid, a in list(self.log.approvals.items()):
+            if a["run_key"] == key and a["state"] in LIVE:
+                self._expire(tx, run, aid, "hold" if kind == "held" else "quarantine")
+        until = cooldown and not inherited and _iso(time.time() + cooldown)
+        tx.emit(run, "run.held" if kind == "held" else "run.quarantined", {
+            "incident_id": iid, "scope": scope, "by": by[:256], "reason": reason[:1024],
+            **({"in_flight": flight} if flight else {}), **({"inherited": True} if inherited else {}),
+            **({"inherit_until": until} if until else {})}, source="signer")
+
+    def _respond(self, tx, run, e, inc):
+        """RecordLog.respond: on the writer, in the item of record `e` of `run`, write the enforced incident `inc` with
+        what it does; with `inc` None (decision `e` says its detection state is unavailable) hold `run` under a
+        detector_unavailable incident when the policy enforces holds (fail closed). A hold or quarantine reaches every
+        live run of the incident's scope."""
+        tenant = run["tenant"]
+        if inc is None:
+            if not self._fail_closed or run.get("held") or run.get("quarantined"):
+                return
+            inc, rule = {"incident_id": "inc-" + secrets.token_hex(16), "trigger": "detector_unavailable",
+                         "rule_ids": [], "scope": {"kind": "run", "id": run["run_id"][:256]},
+                         "cites": [{"run_id": e["run_id"], "run_seq": e["run_seq"]}], "mode": "enforce", "actions": [],
+                         "would": ["hold"]}, {"action": "hold"}
+        else:
+            rule = self.log.detector.respond[inc["rule_ids"][0] if inc["trigger"] in ("sequence", "limit")
+                                             else inc["trigger"]]
+        action, why = rule["action"], None
+        if self.log.contain["paused"].get(tenant):
+            action, why = None, "the response engine is paused (response_pause): detection records, nothing acts"
+        elif action == "hold" and not self._people:
+            action, why = "quarantine", ("no person approver is configured (approvals.approvers): a hold no one may "
+                                         "answer is a quarantine")
+        keys = self._scope_keys(tenant, inc["scope"]) if action in ("hold", "quarantine") else []
+        skip = e["data"].get("decision_id") if e["type"] == "policy.decision" else None   # held by _decide itself
+        flight = {k: self._in_flight(k, self.log.runs[k], skip) for k in keys}
+        actions = [action] if action else []
+        every = [c for k in keys for c in flight[k]][:1024]
+        iid = inc["incident_id"]
+        tx.emit(run, "incident.opened", {**inc, "actions": actions, **({"reason": why[:1024]} if why else {}),
+                                         **({"in_flight": every} if every else {})}, source="signer")
+        text = f"incident {iid}: {inc['trigger']} {' '.join(inc['rule_ids'])}".strip()
+        for k in keys:
+            self._contain(tx, self.log.runs[k], "held" if action == "hold" else "quarantined", iid, inc["scope"],
+                          "signer", text, flight[k], rule.get("cooldown_s", COOLDOWN_S))
+
+    def _contained(self, run, verdict, rule_ids):
+        """(verdict, rule ids, incident id or None) of a call of `run` under its hold or quarantine: quarantined, a
+        deny (TK-QUARANTINE; past QUARANTINE_DENIES of them refused unrecorded); held, an ask (TK-HOLD) a person
+        answers, unless the policy denies it."""
+        if run.get("quarantined"):
+            if run.get("quarantine_denies", 0) >= QUARANTINE_DENIES:
+                raise RPCError("forbidden", f"{self._why_contained(run)} (past {QUARANTINE_DENIES} recorded denies, "
+                                            "calls are refused unrecorded)")
+            return "deny", ["TK-QUARANTINE"], run["quarantined"]
+        if run.get("held") and verdict != "deny":
+            return "ask", rule_ids + ["TK-HOLD"] * ("TK-HOLD" not in rule_ids), run["held"][0]
+        return verdict, rule_ids, None
+
+    @staticmethod
+    def _why_contained(run):
+        """What a caller of a held or quarantined run is told: what happened and what to do."""
+        q, h = run.get("quarantined"), " and ".join(run.get("held") or ())
+        return (f"run {run['run_id'][:128]} is quarantined by incident {q}: its calls are denied for good; an operator "
+                f"reviews it (tracekit signer incidents show {q})" if q else
+                f"run {run['run_id'][:128]} is held by incident {h}: each call waits for a person's approval; a person "
+                f"ends the hold (tracekit signer incidents resume {run['run_id'][:128]}, or resolve each incident)")
+
+    def _check_suspended(self, identity):
+        """RPCError forbidden when the suspension list names one of the identity's keys in the identity's tenant. A
+        changed list first gets this signer's identity.suspension records (_enforce)."""
+        entries, changed = self._suspensions.load()
+        if changed:
+            try:
+                self.log.write(lambda tx: self._enforce(tx, entries))
+            except Exception:
+                self._suspensions.forget()   # read and recorded again by the next call
+                raise
+        mine = entries.get(self._tenant_of(identity), {})
+        hit = next((x for k in keys(identity) if (x := lookup(mine, k)) is not None), None)
+        if hit is not None:
+            raise RPCError("forbidden", f"{subject(identity)[:256]} is suspended (by {str(hit.get('by'))[:256]} at "
+                                        f"{str(hit.get('at'))[:40]}): its calls are refused until an operator lifts "
+                                        "the suspension (tracekit signer incidents unsuspend)")
+
+    def _enforce(self, tx, entries):
+        """identity.suspension records for the suspension list's entries this signer starts (`enforced`) or stops
+        (`lifted`) enforcing."""
+        on = self.log.contain["enforcing"]
+        mine = {f"{tenant}\0{ident[:256]}" for tenant, ids in entries.items() for ident in ids}
+        for k in sorted(mine):
+            if not on.get(k):
+                tenant, ident = k.split("\0", 1)
+                tx.emit(self.log.signer_run(tx, tenant), "identity.suspension",
+                        {"identity": ident, "state": "enforced", "by": "signer"}, source="signer")
+        for k, v in list(on.items()):
+            if v and k not in mine:
+                tenant, ident = k.split("\0", 1)
+                tx.emit(self.log.signer_run(tx, tenant), "identity.suspension",
+                        {"identity": ident, "state": "lifted", "by": "signer"}, source="signer")
+
+    def _after_write(self, records):
+        """Observer of written records: the argument copies of approvals a hold or quarantine expired go, and their
+        waiters wake."""
+        ended = [r["event"]["data"]["approval_id"] for r in records if r["event"]["type"] == "approval.expired"
+                 and r["event"]["data"].get("reason") in ("hold", "quarantine")]
+        for aid in ended:
+            self._drop_args(aid)
+        if ended:
+            with self._cond:
+                self._cond.notify_all()
+
+    def _cited(self, r):
+        """The records incident record `r` cites: its related events on a webhook (webhook.Outbox)."""
+        # lean: reads each cited run from its start; index records by (run, run_seq) if incidents cite long runs
+        return [x for c in r["event"]["data"].get("cites", ()) for x in itertools.islice(
+            self.log.storage.iter_run(r["event"]["tenant"], c["run_id"]), c["run_seq"], c["run_seq"] + 1)]
+
+    def _operator(self, identity):
+        """The tenant an operator call acts in, the caller's. An identity that owns open runs is an agent's: refused,
+        whatever it is granted."""
+        if self.log.open_runs.get(owner(identity)):
+            raise RPCError("forbidden", f"{subject(identity)[:256]} owns open runs: containment is operated by an "
+                                        "identity that runs no agent")
+        return self._tenant_of(identity)
+
+    def _resolver(self, identity, tenant, run_ids, reason):
+        """(person id, break-glass) of whoever resolves an incident or resumes a run for runs `run_ids` of `tenant`: a
+        person (OIDC, or mapped in approvals.persons) who is an approver, or break-glass with a reason; never one of
+        those runs' owner, principal or requester, directly or as the same person."""
+        sub = subject(identity)
+        who = person(identity) or self._persons.get(sub)
+        if not who:
+            raise RPCError("forbidden", f"{sub[:256]} is not a person: resolving and resuming is a person's call (map the "
+                                        "identity in approvals.persons, or sign in as an OIDC person)")
+        glass = not self._in(self._approvers, identity)
+        if glass and not self._in(self._break_glass, identity):
+            raise RPCError("forbidden", f"{sub[:256]} is not an approver (approvals.approvers) or break-glass")
+        if glass and not (reason or "").strip():
+            raise RPCError("forbidden", "a break-glass resolve or resume needs a reason")
+        theirs = {a["requester"] for a in list(self.log.approvals.values())
+                  if a["run_key"][0] == tenant and a["run_key"][1] in run_ids}
+        for rid in run_ids:
+            r = self.log.runs.get((tenant, rid)) or {}
+            theirs |= {r.get("owner"), r.get("principal"), *r.get("people", ())}
+        theirs |= {self._persons.get(x) for x in theirs}
+        if {sub, owner(identity), who, self._persons.get(sub)} & (theirs - {None}):
+            raise RPCError("forbidden", f"{sub[:256]} is the owner, principal or requester of a run this concerns: "
+                                        "another person resolves or resumes it")
+        return who, glass
+
+    def _incident(self, tenant, iid):
+        inc = self.log.contain["incidents"].get(iid)
+        if inc is None or inc["tenant"] != tenant:
+            raise RPCError("unknown_incident", iid)
+        return inc
+
+    def _incident_view(self, iid, inc):
+        def state(rid):
+            r = self.log.runs.get((inc["tenant"], rid), {})
+            return ("final" if r.get("final") else "quarantined" if r.get("quarantined") else
+                    "held" if iid in (r.get("held") or ()) else "resumed")
+        return {"incident_id": iid, "run_id": inc["run_id"], "ts": inc["ts"], "state": inc["state"],
+                **{k: inc[k] for k in ("trigger", "rule_ids", "scope", "mode", "actions")},
+                "runs": [{"run_id": rid, "state": state(rid)} for rid in dict.fromkeys(inc["runs"])]}
+
+    def _incident_list(self, identity, req):
+        tenant = self._operator(identity)
+        # copied on the writer, so only committed states are listed
+        items = iter(self.log.write(lambda tx: [
+            (iid, self._incident_view(iid, inc)) for iid, inc in self.log.contain["incidents"].items()
+            if inc["tenant"] == tenant and req.get("state") in (None, inc["state"])]))
+        page, cursor = [], req.get("cursor")
+        if cursor is not None:
+            for iid, _ in items:
+                if iid == cursor:
+                    break
+        for iid, view in items:
+            if len(page) == req.get("limit", LIST_PAGE):
+                return {"incidents": page, "next_cursor": page[-1]["incident_id"]}
+            page.append(view)
+        return {"incidents": page, "next_cursor": None}
+
+    def _incident_show(self, identity, req):
+        tenant = self._operator(identity)
+        return self.log.write(lambda tx: self._incident_view(req["incident_id"],
+                                                             self._incident(tenant, req["incident_id"])))
+
+    def _incident_resolve(self, identity, req):
+        """A person resolves an incident: run.resumed in each run it still holds, then incident.resolved in the
+        tenant's signer run. Quarantines stay: resolving is not undoing."""
+        tenant, iid = self._operator(identity), req["incident_id"]
+        reason = req.get("reason") and privacy.redact_text(req["reason"])[0]
+        inc = self._incident(tenant, iid)
+        who, glass = self._resolver(identity, tenant, [inc["run_id"], *inc["runs"]], reason)
+        self.quotas.take_event(identity)
+        done = {"incident_id": iid, "by": subject(identity)[:256], "person": who[:256],
+                **({"reason": reason} if reason else {}), **({"break_glass": True} if glass else {})}
+
+        def fn(tx, _):
+            if self._incident(tenant, iid)["state"] != "open":
+                raise RPCError("invalid_request", f"incident {iid} is resolved already")
+            resumed = []
+            for rid in dict.fromkeys(inc["runs"]):
+                run = self.log.runs.get((tenant, rid))
+                if run and not run["final"] and iid in (run.get("held") or ()):
+                    self._resume(tx, run, iid, done)
+                    resumed.append(rid)
+            tx.emit(self.log.signer_run(tx, tenant), "incident.resolved", dict(done, resumed=resumed),
+                    source="signer", request_id=req["request_id"])
+            return {"incident_id": iid, "resumed": resumed}
+        return self.log.submit(identity, "incident_resolve", req, fn)
+
+    @staticmethod
+    def _resume(tx, run, iid, data, **top):
+        """run.resumed: incident `iid` no longer holds `run`; `held_by`, the incidents that still do."""
+        tx.emit(run, "run.resumed", {**data, "held_by": [x for x in run["held"] if x != iid]}, source="signer", **top)
+
+    def _run_hold(self, identity, req):
+        return self._operator_contain(identity, req, "held")
+
+    def _run_quarantine(self, identity, req):
+        return self._operator_contain(identity, req, "quarantined")
+
+    def _operator_contain(self, identity, req, kind):
+        """An operator holds or quarantines a run: an incident of trigger `operator` in it, then the response."""
+        tenant, method = self._operator(identity), "run_hold" if kind == "held" else "run_quarantine"
+        if kind == "held" and not self._people:
+            raise RPCError("invalid_request", "no person approver is configured (approvals.approvers), so no one could "
+                                              "answer a held call: quarantine the run instead, or configure approvers")
+        by, reason = subject(identity)[:256], req.get("reason") and privacy.redact_text(req["reason"])[0]
+        self.quotas.take_event(identity)
+
+        def fn(tx, run):
+            if run.get("quarantined"):
+                raise RPCError("invalid_request", self._why_contained(run))
+            iid, scope = "inc-" + secrets.token_hex(16), {"kind": "run", "id": run["run_id"][:256]}
+            flight = self._in_flight((tenant, run["run_id"]), run)
+            tx.emit(run, "incident.opened", {
+                "incident_id": iid, "trigger": "operator", "rule_ids": [], "scope": scope, "cites": [],
+                "mode": "enforce", "actions": ["hold" if kind == "held" else "quarantine"], "would": [],
+                **({"reason": reason} if reason else {}), **({"in_flight": flight} if flight else {})},
+                    source="signer", request_id=req["request_id"])
+            self._contain(tx, run, kind, iid, scope, by, reason or f"{method} by {by}", flight, COOLDOWN_S)
+            return {"run_id": run["run_id"], "incident_id": iid, "state": kind}
+        return self.log.submit(identity, method, req, fn, (tenant, req["run_id"]), late=True)
+
+    def _run_resume(self, identity, req):
+        """A person ends a run's holds (a run.resumed for each incident holding it); the incidents stay open. A
+        quarantine is final."""
+        tenant = self._operator(identity)
+        reason = req.get("reason") and privacy.redact_text(req["reason"])[0]
+        who, glass = self._resolver(identity, tenant, [req["run_id"]], reason)
+        self.quotas.take_event(identity)
+
+        def fn(tx, run):
+            if not run.get("held"):
+                raise RPCError("invalid_request", f"run {run['run_id'][:128]} is not held" +
+                               ("; a quarantine is final" if run.get("quarantined") else ""))
+            held = run["held"]
+            for i, iid in enumerate(held):
+                self._resume(tx, run, iid, {"incident_id": iid, "by": subject(identity)[:256], "person": who[:256],
+                                            **({"reason": reason} if reason else {}),
+                                            **({"break_glass": True} if glass else {})},
+                             **({} if i else {"request_id": req["request_id"]}))
+            return {"run_id": run["run_id"], "incident_id": held[0], "state": "resumed"}
+        return self.log.submit(identity, "run_resume", req, fn, (tenant, req["run_id"]), late=True)
+
+    def _response_pause(self, identity, req):
+        return self._response(identity, req, False)
+
+    def _response_resume(self, identity, req):
+        return self._response(identity, req, True)
+
+    def _response(self, identity, req, enabled):
+        """Pause (or resume) the tenant's response engine on this signer: incidents are still detected and written,
+        with no action (incident.response)."""
+        tenant, by = self._operator(identity), subject(identity)[:256]
+        self.quotas.take_event(identity)
+
+        def fn(tx, _):
+            tx.emit(self.log.signer_run(tx, tenant), "incident.response", {
+                "enabled": enabled, "by": by,
+                **({"reason": privacy.redact_text(req["reason"])[0]} if "reason" in req else {})},
+                    source="signer", request_id=req["request_id"])
+            return {"enabled": enabled}
+        return self.log.submit(identity, "response_resume" if enabled else "response_pause", req, fn)
+
+    def _suspend(self, identity, req, lift=False):
+        """Add an identity of the caller's tenant to the shared suspension list (or lift it): every replica refuses
+        its calls once it reads the list, each writing its own `enforced` record. No token is revoked."""
+        tenant, target, method = self._operator(identity), req["identity"], "unsuspend" if lift else "suspend"
+        # the entry applies only to identities of `tenant` (_check_suspended); refuse a target `tenants` maps elsewhere
+        if lookup(self.tenants, target, tenant) != tenant:
+            raise RPCError("forbidden", f"{target[:256]} is not an identity of tenant {tenant[:64]!r}")
+        by, reason = subject(identity)[:256], req.get("reason") and privacy.redact_text(req["reason"])[0]
+        self.quotas.take_event(identity)
+        changed = self._suspensions.change(tenant, target, None if lift else {
+            "by": by, "at": _iso(time.time()), **({"reason": reason} if reason else {})})
+        if not changed and (identity.scheme, identity.subject, req["request_id"]) not in self.log.done:   # not a retry
+            raise RPCError("invalid_request", f"{target[:256]} is {'not suspended' if lift else 'suspended already'}")
+
+        def fn(tx, _):
+            tx.emit(self.log.signer_run(tx, tenant), "identity.suspension", {
+                "identity": target, "state": "lifted" if lift else "suspended", "by": by,
+                **({"reason": reason} if reason else {})}, source="signer", request_id=req["request_id"])
+            return {"identity": target, "state": "lifted" if lift else "suspended"}
+        return self.log.submit(identity, method, req, fn)
+
+    def _unsuspend(self, identity, req):
+        return self._suspend(identity, req, lift=True)
+
     # --- methods ---
 
     def _register_run(self, identity, req):
@@ -1901,7 +2452,18 @@ class SignerService:
                 data.update(parent_run=parent["run_id"], session=run["session"])
             if harness:
                 data["harness"] = dict(harness, attested=True)
+            if self.posture:
+                data["posture"] = {**self.posture, "attested": False}
             tx.emit(run, "run.registered", data, request_id=req["request_id"], **top)
+            # evasion: a new run of a held owner and principal, or of a held parent run, starts held
+            now = _iso(time.time())
+            had = [("quarantined", up["quarantined"], "the parent run")] if up and up.get("quarantined") else \
+                [("held", i, "the parent run") for i in (up or {}).get("held") or ()]
+            had += [(kind, i, f"its owner and principal (until {until})") for i, (until, kind) in
+                    (self.log.contain["cooldown"].get(cooldown_key(tenant, run)) or {}).items() if until > now]
+            for kind, iid, whose in [h for h in had if h[0] == "quarantined"][:1] or had:
+                self._contain(tx, run, kind, iid, {"kind": "run", "id": run_id[:256]}, "signer",
+                              f"inherits incident {iid} from {whose}", inherited=True)
             if up and harness:   # the parent's records name a child its harness process started
                 tx.emit(up, "run.child", {"run_id": run_id}, source="signer")
             other = harness and n and not req.keys() & {"analyzes", "replay_of", "source"} and self._overlapping(
@@ -1911,7 +2473,12 @@ class SignerService:
                 o = self.log.runs[(tenant, other)]
                 tx.set(o, "overlapped_by", [*o.get("overlapped_by", ()), run_id])
             return out
-        return self.log.submit(identity, "register_run", req, fn)
+        out = self.log.submit(identity, "register_run", req, fn)
+        with self._beats_lock:   # the observers alive now cover the run from its start
+            for (t, obs), (at, _) in self._observers.items():
+                if t == out["tenant"] and time.monotonic() - at < TAILER_LOST_S:
+                    self._beats.setdefault((t, out["run_id"], obs), at)
+        return out
 
     def _overlapping(self, tenant, run_id, own, harness, session):
         """An open run of `own` in `tenant`, of the same harness process, in another session than run `run_id`'s, or
@@ -1938,26 +2505,29 @@ class SignerService:
         sums, unreadable = self.log.detector.prepare(tool, args, ruled[2]) if self.log.detector and ruled else ({}, False)
         agent = self._eligibility(key, identity, tool, args, digest, ruled[0], prov) if ruled and \
             ruled[0]["verdict"] == "ask" else None
+        cls = self.policy.tool_class(tool)
+        host = classes.extract(cls, tool, args).get("host") if cls in ("http", "browser") and isinstance(
+            args, dict) else None
         did = "dec-" + secrets.token_hex(16)
-        commitment = self._commit(did, digest) if digest else None
         # lean: expires_at is signed but `complete` does not enforce it; enforce once executors check it before running
         expires_at = _iso(time.time() + DECISION_TTL_S)
         # rule_ids say only TK-OVERSIZE: name the subjects it stands for
         big = {"reasons": [(f"TK-OVERSIZE: over {engine.MAX_SUBJECT // 1024} KiB, so never matched: "
                             + ", ".join(ruled[0]["oversize"]))[:4096]]} if ruled and ruled[0].get("oversize") else {}
-        written = []   # the record's run_seq, once this call (not a retry the request_id cache answers) wrote it
+        written = []   # (run_seq, commitment) of each decision record this call (not a retry the cache answers) wrote
 
         def fn(tx, run):
             memo, gaps = run["calls"].get(tcid), []
             self._hold(memo, holder, tcid)
-            data = {"tool_use_id": tcid, "tool": tool, "decision_id": did, "policy_hash": self.policy.policy_hash,
-                    "engine": self.policy.engine, "nonce": secrets.token_hex(16), "expires_at": expires_at, **prov}
+            data = {"tool_use_id": tcid, "tool": tool, "policy_hash": self.policy.policy_hash,
+                    "engine": self.policy.engine, "expires_at": expires_at, **prov}
             counts = self.log.detector and self.log.detector.counts
             if gw:   # the call is the gateway's, for this caller: only it may answer for it (_hold), after a restart too
                 data["via"], data["caller"] = holder
             if digest is None:
                 verdict, rule_ids = "deny", ["TK-ARGS-INVALID"]
-            elif memo and memo["attempt"] == attempt and memo["decision"] in ("deny", "ask") and self._same(memo, digest):
+            elif memo and memo["attempt"] == attempt and memo["decision"] in ("deny", "ask") and self._same(memo, digest) \
+                    and ("TK-HOLD" not in memo["rule_ids"] or run.get("held")):   # a hold's ask ends with the hold
                 # the memo's decision as it was recorded: a retry keeps both readings' rule ids and nondeterminism
                 verdict, rule_ids = memo["decision"], memo["rule_ids"]
                 if counts and memo.get("detect_ids"):
@@ -1983,43 +2553,63 @@ class SignerService:
                 verdict, rule_ids = "ask", rule_ids + [detect.SUM_UNREADABLE]
             if sums:
                 data["detect"] = {**data.get("detect", {}), **sums}
-            if commitment:
-                data["args_commitment"] = commitment
-            call = {"tool_call_id": tcid, "attempt": attempt, "decision": verdict, "rule_ids": rule_ids,
-                    "decision_id": did, "commitment": commitment, "dotenv": _dotenv(args), "tool": tool,
-                    "via": holder[0], "caller": holder[1], "nondeterministic": bool(data.get("nondeterministic")),
-                    "detect_ids": data.get("detect", {}).get("rule_ids")}
-            if verdict == "ask":   # the signer's copy, for the approval request (memory only: decide again after a restart)
-                call["pending"] = {"tool": tool, "args_source": req["args_source"], "args": req["args"]}
-                if agent and rule_ids == ruled[0]["rule_ids"]:
-                    call["agent"] = agent
-            tx.set(run["calls"], tcid, call)
-            tx.set(run["decisions"], did, call)
             names = reconcile.model_names(tool)   # an MCP call: its digest under each name the model may have used
-            seq = tx.event(run, req, "policy.decision", dict(data, decision=verdict, rule_ids=rule_ids, **big),
-                           digests={tcid: digest if digest is None or len(names) == 1 else {
-                               n: event_hash({"tool": n, "args": args}) for n in names}},
-                           tool_call_id=tcid, attempt=attempt, args_source=req["args_source"],
-                           **top)
-            written.append(seq)
+            l2 = digest if digest is None or len(names) == 1 else {n: event_hash({"tool": n, "args": args}) for n in names}
+
+            def record(did, verdict, rule_ids, again=False):
+                """Write decision `did`, as the run's hold or quarantine leaves it, and make it the call's; `again`: the
+                call's second decision, written by the signer after the first fired a hold or quarantine."""
+                verdict, rule_ids, iid = self._contained(run, verdict, rule_ids)
+                commitment = self._commit(did, digest) if digest else None
+                d = dict(data, decision_id=did, nonce=secrets.token_hex(16), decision=verdict, rule_ids=rule_ids,
+                         **({"args_commitment": commitment} if commitment else {}),
+                         **({"incident_id": iid} if iid else {}), **big)
+                call = {"tool_call_id": tcid, "attempt": attempt, "decision": verdict, "rule_ids": rule_ids,
+                        "decision_id": did, "commitment": commitment, "dotenv": _dotenv(args), "tool": tool,
+                        "via": holder[0], "caller": holder[1], "nondeterministic": bool(data.get("nondeterministic")),
+                        "detect_ids": data.get("detect", {}).get("rule_ids"), "incident": iid}
+                if verdict == "ask":   # the signer's copy, for the approval request (memory only: decide again after a restart)
+                    call["pending"] = {"tool": tool, "args_source": req["args_source"], "args": req["args"]}
+                    if agent and rule_ids == ruled[0]["rule_ids"]:
+                        call["agent"] = agent
+                tx.set(run["calls"], tcid, call)
+                tx.set(run["decisions"], did, call)
+                kw = dict(digests={tcid: l2}, tool_call_id=tcid, attempt=attempt, args_source=req["args_source"],
+                          **top)
+                seq = tx.emit(run, "policy.decision", d, **kw) if again else \
+                    tx.event(run, req, "policy.decision", d, **kw)
+                written.append((seq, commitment))
+                return seq, d
+            seq, d = record(did, verdict, rule_ids)
+            if d["decision"] in ("allow", "flag") and (run.get("held") or run.get("quarantined")):
+                tx.pop(run["decisions"], did)   # the call fired a hold or quarantine: it never runs on this decision
+                seq, d = record("dec-" + secrets.token_hex(16), d["decision"], d["rule_ids"], again=True)
+            if isinstance(host, str) and d["decision"] != "deny" and run.get("rec") is not None:   # explains its traffic
+                # lean: hosts are memory and snapshot state; after a restart with no snapshot since, the run's earlier
+                # http calls no longer explain an observed host (an unexplained_effect warning)
+                tx.set(reconcile.sub(tx.set, run["rec"], "hosts"), host.lower().rstrip("."), True)
             for kind, reason in gaps:
                 tx.emit(run, "capture.gap", {"kind": kind, "reason": reason, "tool_use_id": tcid}, source="signer",
                         tool_call_id=tcid)
-            out = {"decision": "allow" if verdict == "flag" else verdict, "decision_id": did, "rule_ids": rule_ids,
-                   "run_seq": seq, "expires_at": expires_at, **({"reason": big["reasons"][0][:1024]} if big else {})}
+            out = {"decision": "allow" if d["decision"] == "flag" else d["decision"], "decision_id": d["decision_id"],
+                   "rule_ids": d["rule_ids"], "run_seq": seq, "expires_at": expires_at,
+                   **({"reason": big["reasons"][0][:1024]} if big else {})}
+            if "incident_id" in d:
+                out.update(incident_id=d["incident_id"], reason=self._why_contained(run))
             if self.policy.untrusted_results(tool):   # the result itself, for the provenance index
                 out["send_result"] = True
             return out
         out = self.log.submit(identity, "decide", req, fn, key)
-        if written and commitment:
-            self._retain(key, written[0], commitment, _shown(args, _dotenv(args)))
+        if written and written[-1][1]:
+            self._retain(key, *written[-1], _shown(args, _dotenv(args)))
         return out
 
     def _event(self, identity, method, req, typ, data, need_call=False, digests=None, out=None, keep=None, gw=None,
-               **top):
+               check=None, **top):
         """`data(commit)`: the event's data, given `commit(digest)`, the commitment under this record's salt. `out`:
         more fields of the response. `keep`: (the content its content_digest commits to,) for the content vault.
-        `gw`: the gateway making the call (_as_caller), whose events these are."""
+        `gw`: the gateway making the call (_as_caller), whose events these are. `check(run)`: on the writer, raises to
+        refuse the event."""
         key = self._authorize(identity, req, gw)
         self.quotas.take_event(gw or identity)
         sid = secrets.token_hex(16)
@@ -2030,6 +2620,8 @@ class SignerService:
         def fn(tx, run):
             if need_call and req["tool_call_id"] not in run["calls"]:
                 raise RPCError("unknown_tool_call", req["tool_call_id"])
+            if check:
+                check(run)
             written.append(tx.event(run, req, typ, data, digests, **top))
             return {"run_seq": written[0], **(out or {})}
         res = self.log.submit(identity, method, req, fn, key, late=True)
@@ -2168,6 +2760,7 @@ class SignerService:
             raise RPCError("forbidden", f"{subject(identity)[:64]}...: a gateway's identity is at most 256 characters")
         gw, identity = identity, CallerIdentity(*req["caller"].split(":", 1), True)
         self._grant(identity, method)
+        self._check_suspended(identity)
         return identity, gw
 
     @staticmethod
@@ -2213,9 +2806,13 @@ class SignerService:
                     if "args_digest" in t:
                         u["args_commitment"] = commit(t["args_digest"])
             return d
+
+        def check(run):   # a quarantined run's model loop stops: no further request is recorded or forwarded
+            if req["phase"] == "request" and run.get("quarantined"):
+                raise RPCError("forbidden", self._why_contained(run))
         return self._event(identity, "model_event", req, "model.exchange", data,
                            digests={t["id"]: t.get("args_digest") for t in req.get("tool_uses", ())}, out=out, keep=keep,
-                           gw=gw, **top)
+                           gw=gw, check=check, **top)
 
     def _approval_request(self, identity, req):
         identity, gw = self._as_caller(identity, "approval_request", req)
@@ -2234,8 +2831,14 @@ class SignerService:
                 return {"approval_id": had, "state": a["state"], "expires_at": a["expires_at"]}
             if call is None or call["attempt"] != attempt or not call.get("pending"):
                 raise RPCError("unknown_tool_call", f"{tcid} attempt {attempt} has no pending `ask` decision")
-            self.quotas.check_count("pending_approvals", sum(a["requester"] == sub and a["state"] == "requested"
-                                                             for a in self.log.approvals.values()))
+            if run.get("quarantined"):
+                raise RPCError("forbidden", self._why_contained(run))
+            # a held run's approvals: answered by people only, on a budget of the run's own, not its owner's
+            held = run.get("held") or []   # the hold a call was decided under, while it still holds the run
+            iid = call.get("incident") if call.get("incident") in held else held[0] if held else None
+            self.quotas.check_count("pending_approvals", sum(
+                a["state"] == "requested" and bool(a.get("incident_id")) == bool(iid)
+                and (a["run_key"] == key if iid else a["requester"] == sub) for a in self.log.approvals.values()))
             p = call["pending"]
             expires_at = _iso(time.time() + self.ttl_s)
             args, digest = self._args(p)
@@ -2250,6 +2853,8 @@ class SignerService:
                 data["requester_person"] = person(identity)
             if gw:
                 data["via"] = holder[0]
+            if iid:
+                data["incident_id"] = iid
             options = [r.get("approval") or {} for _, r, *_ in self.policy.rules if r["id"] in call["rule_ids"]]
             if any(o.get("executor") == "t2" for o in options):
                 data["executor"] = "t2"
@@ -2258,7 +2863,8 @@ class SignerService:
             agent, reask = dict(call.get("agent") or {}), False
             spend = agent.pop("spend", {})
             if agent.get("eligible"):
-                reason = self._capped(key, run, p["tool"], tcid, agent)
+                reason = f"held by incident {iid}: people answer it" if iid else \
+                    self._capped(key, run, p["tool"], tcid, agent)
                 if reason:
                     agent.update(eligible=False, reason=reason)
                     reask = reason.startswith("reask_after_reject")
@@ -2323,6 +2929,13 @@ class SignerService:
             raise RPCError("forbidden", f"{sub[:256]} is the run's principal and may not answer its approvals")
         same = self._self_approval(a, sub, own, *([who] if who else ())) or \
             bool(who) and who in (a.get("requester_person"), owner_person)
+        held = a.get("incident_id")
+        if held and not who:
+            raise RPCError("forbidden", f"{a['tool_call_id'][:128]} is held by incident {held}: a person answers it (an "
+                                        "identity approvals.persons maps, or an OIDC person)")
+        if held and same:
+            raise RPCError("forbidden", f"{sub[:256]} may not answer a held call of its own run, whatever self_approval "
+                                        "says")
         glass = False
         if self.approvals is not None:
             if same:
@@ -2371,6 +2984,8 @@ class SignerService:
                 data["break_glass"] = True
             if "reason" in req:
                 data["reason"] = req["reason"]
+            if held:
+                data["incident_id"] = held
             tx.emit(run, "approval", data, request_id=req["request_id"], tool_call_id=a["tool_call_id"])
             return {"approval_id": aid, "state": a["state"], "self_approved": same}
         out = self.log.submit(identity, "approval_decide" if groups is None else ON_BEHALF, req, fn, run_key)
@@ -2412,12 +3027,7 @@ class SignerService:
             a, now = self.log.approvals[aid], time.time()
             if a["state"] != "requested" or a["expires_at"] <= _iso(now):
                 raise RPCError("approval_not_pending", a["state"] if a["state"] != "requested" else "expired")
-            why = ("it was escalated: people answer it now" if a["escalated"] else
-                   "agent approvals are switched off: people answer it" if self.log.agent["off"] else
-                   "the policy changed since it was requested: people answer it"
-                   if a["policy_hash"] != self.policy.policy_hash else
-                   "an agent did not approve this call in this run: people answer it"
-                   if any(k in run.get("person_only", {}) for k in person_only_keys(a)) else None)
+            why = self._agent_refusal(a)
             if why:
                 raise RPCError("forbidden", why)
             if shadow:
@@ -2504,7 +3114,8 @@ class SignerService:
 
     def _approval_agents(self, identity, req):
         """The operator's kill switch: switch agent approvals off (every agent approval not consumed yet is revoked,
-        and people answer every approval from then on) or on again; a signed `approval.agents`."""
+        every pending one an agent could answer is escalated, and people answer every approval from then on) or on
+        again; a signed `approval.agents`."""
         by = subject(identity)[:256]
         self.quotas.take_event(identity)
 
@@ -2515,6 +3126,10 @@ class SignerService:
                     if a.get("kind") == "agent" and a["state"] == "approved":
                         self._revoke(tx, self.log.runs[a["run_key"]], aid, "signer", "agent approvals switched off")
                         revoked.append(aid)
+                    elif a["state"] == "requested" and (a.get("agent") or {}).get("eligible") and not a["escalated"]:
+                        tx.emit(self.log.runs[a["run_key"]], "approval.escalated", {
+                            "approval_id": aid, "by": "signer", "reason": "agent approvals switched off"},
+                                source="signer", tool_call_id=a["tool_call_id"])
             tx.emit(self.log.signer_run(tx), "approval.agents", {
                 "enabled": req["enabled"], "by": by, **({"reason": privacy.redact_text(req["reason"])[0]}
                                                         if "reason" in req else {})}, source="signer",
@@ -2530,12 +3145,15 @@ class SignerService:
     def _approval_wait(self, identity, req):
         identity, gw = self._as_caller(identity, "approval_wait", req)
         aid = req["approval_id"]   # only waits for a state the run's records show anyway: no hold
-        self._approval(self._authorize(identity, req, gw), aid)
+        a = self._approval(self._authorize(identity, req, gw), aid)
+        # a held run's waits use a budget of the run's own, so they don't starve its owner's healthy runs
+        slot = ("held", "/".join(a["run_key"])) if a.get("incident_id") else ((gw or identity).scheme,
+                                                                              (gw or identity).subject)
 
         def waiting(a, now):   # an agent's approval waits out its veto delay: people may still revoke it
             return a["state"] == "requested" or a["state"] == "approved" and a.get("not_before", "") > _iso(now)
         end = time.monotonic() + req.get("timeout_ms", 0) / 1000
-        with self.quotas.wait_slot(gw or identity), self._cond:
+        with self.quotas.wait_slot(slot), self._cond:
             while ((a := self.log.approvals.get(aid)) is not None and waiting(a, time.time())
                    and end > time.monotonic()):
                 self._cond.wait(min(end - time.monotonic(), TICK_S))
@@ -2564,7 +3182,11 @@ class SignerService:
             aid = self.log.approval_index.get((*key, tcid, attempt))
             a, call, top = self.log.approvals.get(aid), run["calls"].get(tcid), {"tool_call_id": tcid, "attempt": attempt}
             self._hold(call, holder, tcid)
-            if hint is not None and hint != aid:
+            if run.get("quarantined"):
+                why = "TK-QUARANTINE", self._why_contained(run)
+            elif run.get("held") and not (a and a.get("incident_id") in run["held"]):   # expired by the holds
+                why = "TK-HOLD", self._why_contained(run)
+            elif hint is not None and hint != aid:
                 why = "TK-APPROVAL-UNBOUND", "approval_id not bound to this call"
             elif digest is None:
                 why = "TK-ARGS-INVALID", "the arguments are not canonical JSON"
@@ -2633,16 +3255,17 @@ class SignerService:
             for aid, _ in items:
                 if aid == cursor:
                     break
-        for aid, a in items:
-            agent = bool((a.get("agent") or {}).get("eligible")) and not a.get("escalated")
+        for aid, a in items:   # for: agent, those an agent may still answer (shadow too); person, those it can't decide
             if req.get("run_id") in (None, a["run_key"][1]) and req.get("state") in (None, a["state"]) and \
-                    req.get("for") in (None, "agent" if agent else "person") and \
-                    req.get("escalated") in (None, bool(a.get("escalated"))) and self._may_see(identity, a):
+                    req.get("escalated") in (None, bool(a.get("escalated"))) and self._may_see(identity, a) and (
+                    "for" not in req or req["for"] == "agent" and self._agent_mode(a) is not None
+                    or req["for"] == "person" and self._agent_mode(a) != "enforce"):
                 if len(page) == req.get("limit", LIST_PAGE):
                     return {"approvals": page, "next_cursor": page[-1]["approval_id"]}
                 s = {**self._summary(aid, a), **({"run_closing": True} if a["run_closing"] else {})}
                 page.append({k: v for k, v in s.items() if k not in ("run_id", "tool_call_id", "attempt", "requester",
-                                                                     "passkey")} if agent_view else s)
+                                                                     "passkey", "answered", "escalation")}
+                            if agent_view else s)
         return {"approvals": page, "next_cursor": None}
 
     def _approval_abandon(self, identity, req):
@@ -2762,6 +3385,101 @@ class SignerService:
         with self._beats_lock:   # reported: its silence from now on is no second loss
             self._beats.pop(key, None)
         return out
+
+    def _observe_effect(self, identity, req):
+        """An egress observer's effects (tracekit.egress): each an effect.observed in the run it is attributed to while
+        that run is open or closing, then reconciled (a host nothing explains is one reconcile.unexplained_effect);
+        else a capture.gap{effect_outside_run} in the tenant's signer run, which a run-set shows. Every call is the
+        observer's heartbeat: the runs of its tenant registered while it is alive are covered by it, until another
+        process of it (`instance`) takes over, which is an observer_lost gap in each. `check`: refused unless this
+        signer issued that run token for that run of the observer's tenant (the proxy asks before it connects)."""
+        obs, tenant = subject(identity), self._tenant_of(identity)
+        if len(obs) > 256:   # each record names it in full
+            raise RPCError("forbidden", f"{obs[:64]}...: an observer's identity is at most 256 characters")
+        self.quotas.take_event(identity)
+        now = time.monotonic()
+        with self._beats_lock:
+            before = self._observers.get((tenant, obs))
+            self._observers[(tenant, obs)] = (now, req["instance"])
+            covered = [k for k in self._beats if len(k) == 3 and k[0] == tenant and k[2] == obs]
+            restarted = covered if before and before[1] != req["instance"] else []
+            for k in covered:
+                if restarted:
+                    self._beats.pop(k)
+                else:
+                    self._beats[k] = now
+        if restarted:
+            self.log.write(lambda tx: [self._observer_lost(tx, self.log.runs[k[:2]], obs) for k in restarted
+                                       if not self.log.runs[k[:2]]["final"]])
+        if "check" in req:
+            why = self._attributed(tenant, req["check"])[2]
+            if why:
+                raise RPCError("run_token_invalid", why)
+        if not req["effects"]:
+            return {"recorded": 0}
+        labels = {r["id"]: r["label"] for _, r, *_ in self.policy.rules if "label" in r}
+        explains = self.policy.policy.get("explains", ())
+
+        def fn(tx, _):
+            for x in req["effects"]:
+                key, how, why = self._attributed(tenant, x)
+                run = key and self.log.runs.get(key)
+                if run and run["owner"] == owner(identity):
+                    raise RPCError("forbidden", f"{obs[:256]} owns run {key[1]}: an observer is never the agent's "
+                                                "identity; give the egress proxy its own")
+                if not run or run["final"]:
+                    why = why or (f"run {key[1]} was final by then (raise observe_grace_s if the observer's reports "
+                                  "often come this late)" if run else f"there is no run {key[1]}")
+                    claimed = x.get("run_id") or key and key[1]
+                    tx.emit(self.log.signer_run(tx, tenant), "capture.gap", {
+                        "kind": "effect_outside_run", **({"run_id": claimed} if claimed else {}),
+                        "reason": f"egress observer {obs[:256]} saw {x['host']}:{x['port']} ({x['bytes_out']} bytes "
+                                  f"out, {x['bytes_in']} in, {x['connections']} connection(s), {x['first_ts']} to "
+                                  f"{x['last_ts']}) that no open run holds: {why}"}, source="signer")
+                    continue
+                rec = run.get("rec")
+                by = rec is not None and reconcile.explained(rec, x["host"], explains, labels) or None
+                tx.emit(run, "effect.observed", {"observer": obs, **{k: x[k] for k in (
+                    "kind", "host", "port", "bytes_out", "bytes_in", "connections", "first_ts", "last_ts")},
+                    "attribution": how, **({"explained_by": by} if by else {})}, source="signer")
+                if by or rec is None or x["host"] in rec.get("effects", {}):   # once per host
+                    continue
+                tx.set(reconcile.sub(tx.set, rec, "effects"), x["host"], True)
+                tx.emit(run, "reconcile.unexplained_effect", {
+                    "layers": ["L6"], "observer": obs, "kind": x["kind"], "host": x["host"], "port": x["port"],
+                    "detail": f"the run reached {x['host'][:253]}:{x['port']} and no http or model call to it nor "
+                              "explains entry of the policy covers it: if one of the run's tools needs it (a CDN, a "
+                              "package index), add it to the policy's explains; else find which call opened it"},
+                        source="signer")
+            return {"recorded": len(req["effects"])}
+        return self.log.submit(identity, "observe_effect", req, fn)
+
+    def _attributed(self, tenant, x):
+        """(run key or None, attribution, why there is none) of effect `x` of an observer of `tenant` (on the writer):
+        the run its run token names, unless this signer didn't issue that token for that run of `tenant`, or issued it
+        to another identity than the client's (`caller`); else the latest open run of `caller`."""
+        why = None
+        if "run_token" in x:
+            try:
+                claims = self.tokens.claims(x["run_token"])
+            except RPCError:
+                claims = {}
+            if (claims.get("tenant"), claims.get("run_id")) != (tenant, x.get("run_id")):
+                why = "the run token the client presented is not one this signer issued for that run of its tenant"
+            elif x.get("caller", claims["sub"]) != claims["sub"]:
+                why = f"the run token the client presented was issued to {claims['sub'][:256]}, not {x['caller']}"
+            else:
+                return (tenant, claims["run_id"]), "token", None
+        if "caller" not in x:
+            return None, "token", why or "the client presented neither a run token nor an identity"
+        why = why + ", and " if why else ""
+        c = CallerIdentity(*x["caller"].split(":", 1), True)
+        if self._tenant_of(c) != tenant:
+            return None, "identity", f"{why}{x['caller'][:256]} is of another tenant than the observer"
+        # lean: the owner's latest open run takes it; with concurrent runs of one owner, send the run token instead
+        key = next((k for k in reversed(list(self.log.live)) if k[0] == tenant
+                    and self.log.runs[k]["owner"] == owner(c)), None)
+        return key, "identity", None if key else f"{why}{x['caller'][:256]} has no open run"
 
     def _why_finding(self, identity, req):
         key = self._authorize(identity, req)
@@ -3285,6 +4003,7 @@ def open_service(cfg, **kw):
                          harness_binding=cfg.get("harness_binding"), record_key=cfg.get("record_key"),
                          route=cfg.get("route"), decision_keys=cfg.get("decision_keys"), webhooks=cfg.get("webhook", ()),
                          content=cfg.get("content"), gateway_wait_s=float(cfg.get("gateway_wait_s", GATEWAY_WAIT_S)),
+                         posture=cfg.get("posture"), observe_grace_s=float(cfg.get("observe_grace_s", OBSERVE_GRACE_S)),
                          **kw)
 
 
@@ -3419,7 +4138,8 @@ def _serve_dev():
     logkey.harden()
 
     def open_handler():
-        service = SignerService(dev_data_dir(), isolation="same-user", fsck_every_s=0)
+        service = SignerService(dev_data_dir(), isolation="same-user", fsck_every_s=0,
+                                grace_s=float(os.environ.get("TRACEKIT_DEV_GRACE", GRACE_S)))
         return service.handle_frame, service.close
     try:
         return serve_dev(runtime_dir(), open_handler, idle_s=float(os.environ.get("TRACEKIT_DEV_IDLE", 900)))
@@ -3484,6 +4204,49 @@ def _token_cmd(a, cfg):
     return 0
 
 
+INCIDENT_CMDS = {"list": "incident_list", "show": "incident_show", "resolve": "incident_resolve", "hold": "run_hold",
+                 "quarantine": "run_quarantine", "resume": "run_resume", "pause": "response_pause",
+                 "unpause": "response_resume", "suspend": "suspend", "unsuspend": "unsuspend"}
+
+
+def _incidents_cmd(a):
+    """`tracekit signer incidents`: each call goes to every `--signer` named (default $TRACEKIT_SIGNER, else the dev
+    signer). list merges what each replica holds, pause and unpause reach each replica's own response engine; the
+    rest stop at the first replica that knows the incident or run."""
+    from tracekit.sdk.client import Client
+    method = INCIDENT_CMDS[a.action]
+    key = {"show": "incident_id", "resolve": "incident_id", "hold": "run_id", "quarantine": "run_id",
+           "resume": "run_id", "suspend": "identity", "unsuspend": "identity"}.get(a.action)
+    if key and not a.target:
+        raise ValueError(f"tracekit signer incidents {a.action} needs the {key.replace('_', ' ')}")
+    req = {**({key: a.target} if key else {}), **({"reason": a.reason} if a.reason else {}),
+           **({"state": a.state} if a.action == "list" and a.state else {})}
+    out, last = [], None
+    for url in a.signer or [None]:
+        c = Client(url)
+        try:
+            out.append(c.call(method, req))
+        except RPCError as e:
+            if e.code not in ("unknown_incident", "unknown_run") or a.action in ("list", "pause", "unpause"):
+                raise
+            last = e
+            continue
+        finally:
+            c.close()
+        if a.action not in ("list", "pause", "unpause"):
+            break
+    if not out:
+        raise last
+    if a.action == "list":
+        for x in [i for o in out for i in o["incidents"]]:
+            print(f"{x['incident_id']}  {x['state']}  {x['trigger']} {','.join(x['rule_ids'])}  run={x['run_id']}  "
+                  f"{x['mode']} {'+'.join(x['actions']) or 'no action'}  " +
+                  " ".join(f"{r['run_id']}:{r['state']}" for r in x["runs"]))
+    else:
+        print(json.dumps(out if len(out) > 1 else out[0], indent=2))
+    return 0
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="tracekit signer", description="the v2 signer service")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -3533,6 +4296,14 @@ def main(argv=None):
         q.add_argument("--run", required=True)
         q.add_argument("--config", help="reach the signer on this config's socket (default: $TRACEKIT_SIGNER, else "
                                         "the dev signer)")
+    q = sub.add_parser("incidents", help="containment's operator calls on the running signer (docs/incidents.md)")
+    q.add_argument("action", choices=sorted(INCIDENT_CMDS))
+    q.add_argument("target", nargs="?", help="the incident (show, resolve), run (hold, quarantine, resume) or "
+                                              "identity (suspend, unsuspend)")
+    q.add_argument("--signer", action="append", help="a replica to reach, repeatable (default: $TRACEKIT_SIGNER, else "
+                                                     "the dev signer)")
+    q.add_argument("--reason", help="recorded with the call (redacted); a break-glass resolve or resume needs one")
+    q.add_argument("--state", choices=("open", "resolved"), help="list: only incidents in this state")
     p = sub.add_parser("bridge", help="continue a v1 ledger in this signer's log and destroy the v1 key")
     p.add_argument("--v1-home", required=True)
     g = p.add_mutually_exclusive_group(required=True)
@@ -3549,6 +4320,13 @@ def main(argv=None):
             print(f"tracekit signer: {e}", file=sys.stderr)
             return 2
         return 0
+    if a.cmd == "incidents":
+        from tracekit.sdk.client import Incompatible, SignerUnavailable
+        try:
+            return _incidents_cmd(a)
+        except (OSError, ValueError, RPCError, SignerUnavailable, Incompatible) as e:
+            print(f"tracekit signer incidents: {e}", file=sys.stderr)
+            return 1
     if a.cmd == "content":
         from tracekit.sdk.client import Client, Incompatible, SignerUnavailable
         try:

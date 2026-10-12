@@ -65,7 +65,7 @@ customer. Tracekit keeps that record outside the agent's control, and lets anyon
 - Coding agents through their hooks: Claude Code, Codex CLI, Cursor, Gemini CLI
   ([coding agents](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/coding-agents.md)).
 - Python and TypeScript SDKs, with integrations for LangChain and LangGraph, the OpenAI Agents SDK, the Claude Agent
-  SDK, MCP clients, Browser Use (Python) and the Vercel AI SDK (TypeScript)
+  SDK, MCP clients, Browser Use and CrewAI (Python) and the Vercel AI SDK (TypeScript)
   ([quickstarts](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/quickstart-v2.md)).
 - OpenTelemetry traces imported as evidence ([OpenTelemetry](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/otel.md)).
 - An LLM gateway for OpenAI-compatible APIs that records model calls outside the agent's process
@@ -271,7 +271,8 @@ report it.
   [evaluation](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/evaluation.md),
   [technical report](https://github.com/Cygnux-Labs/Tracekit/blob/main/report/tracekit-v2.md),
   [FAQ and limits](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/faq.md),
-  [known limits and trade-offs](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/limits.md)
+  [known limits and trade-offs](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/limits.md),
+  [case study: two open-source agents](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/case-study-oss-agents.md)
 - Asking why an action happened: [tracekit why](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/why.md), [its architecture](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/why-architecture.md)
 - Releasing: [launch checklist for 1.0](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/launch-checklist.md)
 - The v1 laptop signer (`tracekitd`, `tracekit init --dev`, `tracekit demo`, `tracekit observe`) and its bundles keep

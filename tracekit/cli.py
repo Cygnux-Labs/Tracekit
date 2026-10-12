@@ -29,7 +29,8 @@ _DELEGATED = {"observe": "observe", "analyze": "findings", "otel": "otlp", "cost
               "public-witness": "public_witness_server",
              "deploy": "deploy.compose",
               "signer": "signer.service", "view": "view", "monitor": "monitor", "gateway": "gateway",
-              "executor": "executor", "mcp-gateway": "mcp_gateway", "issuer": "issuer", "why": "why.cli"}  # subcommands with their own parsers
+              "egress": "egress", "executor": "executor", "mcp-gateway": "mcp_gateway", "issuer": "issuer",
+              "why": "why.cli", "reviewer": "reviewer"}  # subcommands with their own parsers
 _MOVED = {"sql": "query", "proofpack": "proofpack", "report": "proofpack", "causeway": "causeway"}  # now separate packages under contrib/
 
 
@@ -75,6 +76,9 @@ def main(argv=None):
     p.add_argument("--public-witness", action="store_true", help="with --v2, system mode: the public witness cosigns "
                                                                  "the signer's logs (docs/witnesses.md; it sees origins, "
                                                                  "sizes, roots and timing, never content)")
+    p.add_argument("--egress", action="store_true", help="with --v2, system mode on Linux: the agent user's outside "
+                                                         "traffic only through a local egress observer (an owner-match "
+                                                         "firewall rule; undone by uninstall; docs/egress.md)")
     p.add_argument("--project", action="store_true", help="hooks in ./.claude/settings.json instead of ~/.claude")
     p.add_argument("--no-hooks", action="store_true")
     p.add_argument("--witness", action="append", default=[], help="file:/path.jsonl or git:/clone[@remote] (repeatable)")
@@ -142,6 +146,12 @@ def main(argv=None):
                        add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
     p = sub.add_parser("gateway", help="LLM gateway for the v2 signer: `gateway serve --config gateway.yaml`", add_help=False)
+    p.add_argument("rest", nargs=argparse.REMAINDER)
+    p = sub.add_parser("egress", help="egress observer for the v2 signer: `egress serve --config egress.yaml`",
+                       add_help=False)
+    p.add_argument("rest", nargs=argparse.REMAINDER)
+    p = sub.add_parser("reviewer", help="the reference agent approver: `reviewer serve|eval --config reviewer.yaml`",
+                       add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
     p = sub.add_parser("executor", help="tool executor for the v2 signer: `executor serve --config executor.yaml`",
                        add_help=False)
@@ -305,7 +315,7 @@ def _init_remote_v2(a, url):
             print(f"tracekit: cannot read {env[k]}", file=sys.stderr)
             return 2
     hooks = None if a.no_hooks or a.agent != "claude" else (
-        os.path.join(os.getcwd(), ".claude", "settings.json") if a.project else os.path.expanduser("~/.claude/settings.json"))
+        os.path.join(os.getcwd(), ".claude", "settings.json") if a.project else install.user_settings())
     try:
         if hooks:
             install.install_hooks(hooks, module=install.V2_HOOK, signer=env)
@@ -365,9 +375,9 @@ def _run(a):
             print("tracekit: --home, --witness, --proxy, --fail-closed, --signer-cmd and --managed are v1 "
                   "signer options; they don't apply with --v2", file=sys.stderr)
             return 2
-        if (a.approver or a.policy or a.public_witness or a.v2 and a.harness) and (a.dev or not a.v2):
-            print("tracekit: --approver, --policy, --public-witness and --harness with --v2 are for --v2 system mode",
-                  file=sys.stderr)
+        if (a.approver or a.policy or a.public_witness or a.egress or a.v2 and a.harness) and (a.dev or not a.v2):
+            print("tracekit: --approver, --policy, --public-witness, --egress and --harness with --v2 are for --v2 "
+                  "system mode", file=sys.stderr)
             return 2
         if a.v2 and not a.dev:
             if not a.user:
@@ -376,7 +386,8 @@ def _run(a):
             try:
                 sock, settings = install.init_system_v2(a.user, a.approver, a.policy, os.getcwd() if a.project else None,
                                                         a.no_service, not a.no_hooks, a.experimental_macos,
-                                                        a.allow_privileged, a.agent, a.harness, a.public_witness)
+                                                        a.allow_privileged, a.agent, a.harness, a.public_witness,
+                                                        a.egress)
             except install.SettingsError as e:
                 print(f"tracekit: {e}", file=sys.stderr)
                 return 1
@@ -409,7 +420,7 @@ def _run(a):
         if a.dev:
             home = a.home or os.path.expanduser("~/.tracekit-signer")
             hooks = None if a.no_hooks else (os.path.join(os.getcwd(), ".claude", "settings.json") if a.project
-                                            else os.path.expanduser("~/.claude/settings.json"))
+                                            else install.user_settings())
             if a.v2:
                 if not _signer_extra():
                     return 2
@@ -686,8 +697,8 @@ def _export_v2(a, show=print):
             reg = reader.checkpoint_latest(registry_tree(tenant))
             if note is None or reg is None:
                 raise ValueError(f"no registry checkpoint of tenant {tenant!r} in the store yet")
-            print(json.dumps(export(reader, tenant, a.run, note[1], a.out, run_set=(0, reg[0]), tenant_salt=tsalt),
-                             indent=2))
+            print(json.dumps(export(reader, tenant, a.run, note[1], a.out, run_set=(0, reg[0]), tenant_salt=tsalt,
+                                    policy_dir=os.path.join(cfg["data_dir"], "policies")), indent=2))
             return 0
         run = reader.runs.get((tenant, a.run))
         if run is None:
@@ -724,7 +735,8 @@ def _export_v2(a, show=print):
             if note is None:
                 raise ValueError(f"the signer wrote no checkpoint covering run {a.run!r} within {NUDGE_WAIT_S:g}s")
         reopen()   # opened after the note: holds its records
-        info = export(reader, tenant, a.run, note[1], a.out, with_runs=about)
+        info = export(reader, tenant, a.run, note[1], a.out, with_runs=about,
+                      policy_dir=os.path.join(cfg["data_dir"], "policies"))
         if a.otel or a.otel_endpoint:
             info["otel"] = _otel_v2(a, info["bundle"])
     except (OSError, ValueError, SignerUnavailable, StorageCorrupt, StorageUnavailable) as e:

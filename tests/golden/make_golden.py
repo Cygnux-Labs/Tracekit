@@ -331,7 +331,10 @@ def negative(out):
         base = log()
         other = next(r for r in base.store.iter_range(0, 100) if r["event"]["run_id"] == "run-b")
         good = os.path.join(d, "good.tkb")
-        export(base.store, "acme", "run-a", base.note(), good, policies=[b'{"version":"1"}'])
+        export(base.store, "acme", "run-a", base.note(), good)
+        snap = b'{"version":"1"}'   # a policy snapshot, which no record of the run cites
+        name = f"policies/{hashlib.sha256(snap).hexdigest()}.json"
+        rewrite_bundle(good, good, lambda f, m: (f.update({name: snap}), m["files"].update({name: ""})))
         base.store.close()
         with zipfile.ZipFile(good) as z:
             entries = [(i.filename, z.read(i)) for i in z.infolist()]

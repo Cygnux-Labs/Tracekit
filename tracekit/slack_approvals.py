@@ -17,6 +17,8 @@ The signer authorizes the bridge's identity for approval_list, approval_get and 
 approver is `slack:<team>/<user>`, and the signer checks it (or one of `groups` the user is in) against its approvers
 and its self-approval rule. A callback is answered only with a valid v0 signature, a timestamp within WINDOW_S of now,
 and a signature not seen before. What the agent chose (tool, arguments, reason) is posted as plain text, never mrkdwn.
+An approval an agent approver's answer can still decide (its summary's `agent`) is not posted; it is once people must
+answer it: escalated, in shadow mode, or with agent approvals switched off (docs/approvals.md).
 """
 import hashlib
 import hmac
@@ -118,13 +120,18 @@ class Bridge:
         return True
 
     @staticmethod
-    def blocks(a, state=None, user=None):
+    def blocks(a, state=None, user=None, answered=None):
         args = a["args"] if isinstance(a["args"], str) or a["args"] is None else json.dumps(a["args"], indent=2)
         lines = [f"Tool: {a['tool']}", f"Run: {a['run_id']}", f"Call: {a['tool_call_id']} attempt {a['attempt']}",
                  f"Rules: {', '.join(a['rule_ids'])}", f"Requested by: {a['requester']}", f"Expires: {a['expires_at']}",
                  "Arguments (the signer's redacted copy):", "(deleted)" if args is None else args]
         if "reason" in a:
             lines.append(f"Reason given by the agent (unverified): {a['reason']}")
+        esc = a.get("escalation")
+        if esc:
+            lines.append("Escalated to people by " + (
+                f"the reviewer agent: {esc.get('reason', 'no reason given')} (model output, over arguments the "
+                "requesting agent supplied)" if esc["by"] == "agent" else f"the signer: {esc.get('reason', '')}"))
         out = [{"type": "section", "text": {"type": "plain_text", "text": "\n".join(lines)[:2900]}},
                {"type": "context", "elements": [{"type": "plain_text", "text": a["approval_id"]}]}]
         if state == "requested":
@@ -132,41 +139,46 @@ class Bridge:
                 {"type": "button", "action_id": d, "value": a["approval_id"], "style": style,
                  "text": {"type": "plain_text", "text": d.capitalize()}}
                 for d, style in (("approve", "primary"), ("reject", "danger"))]})
-        else:   # user: a Slack id the signature vouched for, safe in mrkdwn
+        elif user or not answered:   # user: a Slack id the signature vouched for, safe in mrkdwn
             out.append({"type": "context", "elements": [
                 {"type": "mrkdwn", "text": f"*{state}*" + (f" by <@{user}>" if user else "")}]})
+        else:   # answered elsewhere: who the signer says answered, as plain text
+            out.append({"type": "context", "elements": [{"type": "plain_text",
+                                                         "text": f"{state} by {answered['by']}"[:2900]}]})
         return out
 
-    def show(self, aid, state, user=None):
+    def show(self, aid, state, user=None, answered=None):
         with self.lock:
             p = self.posted.get(aid)
             if p is None or p["state"] == state:
                 return
             self.slack("chat.update", channel=self.cfg["channel"], ts=p["ts"], text=f"Tracekit approval {state}",
-                       blocks=self.blocks(p["a"], state, user))
+                       blocks=self.blocks(p["a"], state, user, answered))
             p["state"] = state
             if state not in LIVE:
                 del self.posted[aid]
 
     def poll(self):
-        """Post the approvals waiting for an answer that are not posted yet; update the posted ones whose state moved."""
+        """Post the approvals waiting for a person's answer that are not posted yet (never one an agent approver's
+        answer can still decide); update the posted ones whose state moved."""
         live, page = {}, {"next_cursor": None}
         while True:
             page = self.signer.approval_list({"cursor": page["next_cursor"]} if page["next_cursor"] else {})
-            live.update((x["approval_id"], x["state"]) for x in page["approvals"])
+            live.update((x["approval_id"], x) for x in page["approvals"])
             if page["next_cursor"] is None:
                 break
         # lean: what was posted is kept in memory, so a restart posts the pending approvals again; persist the
         # message ids if duplicates after a restart matter
-        for aid, state in live.items():
-            if state == "requested" and aid not in self.posted:
+        for aid, x in live.items():
+            if x["state"] == "requested" and aid not in self.posted and not x.get("agent"):
                 a = self.signer.approval_get({"approval_id": aid})
                 ts = self.slack("chat.postMessage", channel=self.cfg["channel"], text="Tracekit approval requested",
                                 blocks=self.blocks(a, "requested"))["ts"]
                 with self.lock:
                     self.posted.setdefault(aid, {"ts": ts, "a": a, "state": "requested"})
-        for aid in list(self.posted):
-            self.show(aid, live.get(aid, "expired"))   # gone from the list: its run ended, which expired it
+        for aid in list(self.posted):   # gone from the list: its run ended, which expired it
+            x = live.get(aid, {"state": "expired"})
+            self.show(aid, x["state"], answered=x.get("answered"))
 
     def in_groups(self, user):
         out, now = [], time.monotonic()

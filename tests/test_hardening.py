@@ -7,6 +7,7 @@ import json
 import os
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
@@ -692,6 +693,10 @@ class BurstOfWriters(unittest.TestCase):
         os.environ.pop("TRACEKIT_POLICY", None)
         try:
             install.init_dev(home, [], checkpoint_every=50)
+            # one write first: a cold daemon on a slow runner (its first file writes) is not what the burst measures
+            with Tracer(agent="burst", session_id="warmup") as t:
+                with t.tool("Read", {"file_path": "warm.py"}) as c:
+                    c.result({"bytes": 0})
             errors = []
 
             def work(w):
@@ -714,6 +719,41 @@ class BurstOfWriters(unittest.TestCase):
         finally:
             install.stop_dev_daemon(home)
             shutil.rmtree(d, ignore_errors=True)
+
+
+class ReplyLostAfterSend(unittest.TestCase):
+    """A request that went out whole but got no answer may have been written: its counter value is kept, so the next
+    send neither reads as a replay ("went backwards") nor is reported as a client-side gap."""
+
+    @unittest.skipUnless(hasattr(socket, "AF_UNIX"), "the v1 client's Unix socket")
+    def test_a_lost_reply_keeps_the_counter(self):
+        from tracekit import client
+        d = tempfile.mkdtemp(dir="/tmp" if os.path.isdir("/tmp") else None)
+        self.addCleanup(shutil.rmtree, d, True)
+        path, got = os.path.join(d, "s.sock"), []
+        srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        srv.bind(path)
+        srv.listen(4)
+        self.addCleanup(srv.close)
+
+        def serve():
+            for answer in (False, True):   # the first request is read and dropped, as by a signer that died
+                c, _ = srv.accept()
+                with c, c.makefile("rb") as f:
+                    got.append(json.loads(f.readline()))
+                    if answer:
+                        c.sendall(b'{"ok": true}\n')
+        t = threading.Thread(target=serve, daemon=True)
+        t.start()
+        ev = {"run_id": "lost1", "agent_id": "main", "parent_id": None, "type": "tool.call", "ts": "t", "data": {}}
+        with mock.patch.dict(os.environ, {"TRACEKIT_CLIENT_HOME": os.path.join(d, "client")}), \
+                mock.patch.object(client, "socket_path", return_value=path), \
+                mock.patch.object(client, "client_config", return_value={}):
+            with self.assertRaises(client.SignerUnavailable):
+                client.send(ev)
+            client.send(dict(ev, type="tool.result"))
+        t.join(5)
+        self.assertEqual([(r["cseq"], r["event"]["type"]) for r in got], [(0, "tool.call"), (1, "tool.result")])
 
 
 class PidAlive(unittest.TestCase):

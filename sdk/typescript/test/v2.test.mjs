@@ -212,6 +212,22 @@ test("fake: decide, complete, deny and continue; requests are validated before t
   assert.equal(frames.filter((f) => f.method === "decide").length, 3);
 });
 
+test("fake: with TRACEKIT_EGRESS_PROXY, a run's id and token become its commands' proxy credentials, not the process's", async (t) => {
+  const { client } = await fake(t);
+  const saved = Object.fromEntries(["TRACEKIT_EGRESS_PROXY", "HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"]
+    .map((k) => [k, process.env[k]]));
+  t.after(() => { for (const [k, v] of Object.entries(saved)) v === undefined ? delete process.env[k] : (process.env[k] = v); });
+  delete process.env.TRACEKIT_EGRESS_PROXY;
+  assert.deepEqual((await client.registerRun("a")).proxyEnv, {});
+  process.env.TRACEKIT_EGRESS_PROXY = "https://egress:3128";
+  const before = { ...process.env };
+  const run = await client.registerRun("a");
+  assert.deepEqual(process.env, before);
+  const u = new URL(run.proxyEnv.HTTPS_PROXY);
+  assert.deepEqual([u.host, decodeURIComponent(u.username), decodeURIComponent(u.password), run.proxyEnv.http_proxy],
+    ["egress:3128", run.runId, run.runToken, u.href]);
+});
+
 test("fake: ask, then the approval wait holds up no other call", async (t) => {
   const { client, frames } = await fake(t);
   const run = await client.registerRun("a");

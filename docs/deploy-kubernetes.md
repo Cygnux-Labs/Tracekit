@@ -92,6 +92,7 @@ every replica.
 |---|---|
 | identity | HTTPS (`:8443`) with `k8s_sa`: agents send a projected service-account token of audience `tracekit-signer` (`audience`), checked by TokenReview (the signers are bound to `system:auth-delegator`). Map identities to tenants and grants in `signer.config` (`tenants`, `authorize`). |
 | routing | a new run goes to any ready replica (Service `tk`); its run id, and its approvals' ids, start with the replica's name, `tk-<n>.`, and the Python and TypeScript clients send every later call for them to Service `tk-<n>`. A run stays on the replica that registered it, also when another process resumes it. A client's own run_id must carry the prefix of the replica it names. Calls that name no run or approval (`status`, `approval_list` without a run) reach one replica: list each replica's approvals through its own Service (`tk-<n>`). `replicas` is at least 1: a replica scaled away closes its log for good. |
+| containment | holds, quarantines and a paused response engine are each replica's own ([incidents](incidents.md)); suspensions are shared through `suspensions:`, a file on a volume every replica mounts. Send `tracekit signer incidents list`, `pause` and `unpause` to every replica (`--signer` per `tk-<n>`). |
 | cloud credentials | only on the signers' ServiceAccount (`serviceAccount.annotations`, for workload identity to the KMS keys). Agent pods, the viewer and the monitor get none. |
 | metrics | `:9464` on each replica: Prometheus, and with the monitor the record entries it reads. The chart's NetworkPolicy admits it only from `networkPolicy.monitoringNamespace` and the monitor. |
 
@@ -176,7 +177,13 @@ volumes:
 
 Custody holds only if the agents can't reach the APIs around these services. `agentEgress.enabled` adds a
 NetworkPolicy for the agent pods (`agentEgress.podSelector`, in `agentEgress.namespace`) that lets them reach only the
-signers, the enabled custody services, the egress proxy (`agentEgress.egressProxy`) and DNS:
+signers, the enabled custody services, the egress proxy (`agentEgress.egressProxy`) and DNS. `egress.enabled` runs
+the chart's own [egress observer](egress.md) as `<release>-egress` on 3128, which the policy then allows too: the
+agents' outside traffic goes through it and each run records the hosts it reached. Clients name their run with its
+[`proxy_env`](egress.md#attribution) (`TRACEKIT_EGRESS_PROXY=https://<release>-egress.<namespace>.svc:3128`, with
+`NO_PROXY=.svc,.cluster.local`); a plain `HTTPS_PROXY` without a run token is refused (407), since the observer
+knows a networked client only by what it sends. Grant its identity `observe_effect` and set
+`posture: {network: enforced}` in signer.config:
 
 ```yaml
 agentEgress:

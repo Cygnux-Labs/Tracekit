@@ -132,6 +132,22 @@ scope: {kind, id}, cites: [{run_id, run_seq}], mode, actions, would}`, `incident
 match, at most once per window; for a session, owner or principal scope possibly in another run of that scope than
 the one that opened it) and `incident.capped{cap, max, trigger, reason}`.
 
+Containment (format 1.2, [incidents](incidents.md)): an enforced `incident.opened` (`mode: enforce`) lists the
+`actions` taken (`hold`, `quarantine`, `notify`; none while paused, with `reason`) and `in_flight`: the
+calls `{run_id, tool_call_id, decision_id}` allowed (or approved and consumed) and not completed then. Triggers
+`operator` (an operator's run_hold or run_quarantine) and `detector_unavailable` (the detector could not vouch for the
+cited decision) join the detection's. In each run the response reaches: `run.held{incident_id, scope, by, reason,
+in_flight?, inherited?, inherit_until?}` or `run.quarantined{...the same}`, after an `approval.expired{reason: hold |
+quarantine}` for each of its live approvals; `run.resumed{incident_id, by, person, reason?, break_glass?,
+held_by}` ends that incident's hold; a run held by several incidents (a `run.held` each) stays held by those `held_by`
+names.
+A held run's calls are `policy.decision{decision: ask, rule_ids: [..., TK-HOLD], incident_id}`, their approvals carry
+`incident_id` (`approval.request` and the person's `approval`); a quarantined run's are `decision: deny, rule_ids:
+[TK-QUARANTINE]` and it closes with `run.closing{reason: quarantine}`. The call whose decision fired a hold gets a
+second, signer-written decision right after the response. In the tenant's signer run: `incident.resolved{incident_id,
+by, person, reason?, break_glass?, resumed}`, `incident.response{enabled, by, reason?}` and
+`identity.suspension{identity, state: suspended | enforced | lifted, by, reason?}`.
+
 Content vault (format 1.1, [privacy](privacy.md#the-content-vault)): `content.accessed{principal, run_id, seqs,
 purpose}` records that the signer returned the retained content of records `seqs` (run_seqs) of run `run_id` to
 `principal`, for `purpose`; `content.erased{run_id, reason, by}` records that it deleted that run's retained content.
@@ -167,6 +183,20 @@ and then never heard about. All are `capture.gap` records with `source: signer`.
 | `client_counter_gap` | also at `close_run` with `last_client_seq`: the values of a stream the closing identity wrote (or that never reached the signer) not received by then (the reason names that identity; values up to there that arrive later are recorded with no second gap). A gateway's report about a run already final goes in the tenant's run `tracekit/signer` | `missed_events`, top-level `stream`; in `tracekit/signer`, `run_id`: the run |
 | `tailer_lost` | also when a transcript tailer (an identity a run was delegated to with the `tailer_heartbeat` grant) makes no call for 90 s while its run is open, counted from the delegation | — |
 | `tailer_redelegated` | in the run, when a second tailer token is delegated for it | — |
+| `observer_lost` | in each open run an egress observer covers, when it makes no `observe_effect` call for 90 s, or another process of it (`instance`) takes over | — |
+| `effect_outside_run` | in the tenant's run `tracekit/signer`: an egress observation no open run holds (after its `run.final` and `observe_grace_s`, a token the signer didn't issue for that run, an identity with no open run) | `run_id`: the run the client named or it was attributed to, when there is one |
+
+Effects (format 1.2, [egress](egress.md)): an egress observer outside the agent reports the hosts each run reached
+(`observe_effect`, its own identity's never-default grant); the signer writes `effect.observed{observer, kind: net,
+host, port, bytes_out, bytes_in, connections, first_ts, last_ts, attribution: token|identity, explained_by?:
+call|explains}` (`source: signer`, one per host, port and minute) in the run, and for a host no recorded http or model
+call nor the policy's `explains` covers, once per host and run,
+`reconcile.unexplained_effect{layers: [L6], observer, kind, host, port, detail}`, counted in `run.final`'s
+`coverage.unreconciled`. `run.registered` carries the deployment's `posture{network: enforced|open, tool_calls:
+enforced|open, gateway_mandatory, attested: false}` when signer.yaml sets `posture` or `gateway_mandatory`.
+`run.final` carries `matrix`: per action class (`model_calls`, `tool_calls`, `network`, `processes`, `services`)
+`{status: enforced|observed|reported|none, layers, asserted?}`, from the sources of the run's records, the posture and
+the observers that covered the run throughout.
 
 A run bound to a harness process that registers with `parent` writes a `run.child` record (`source: signer`,
 `data: {run_id}`: the child) in its parent run.
@@ -177,8 +207,9 @@ tenant's registry (§7), so a run-set proves it; the verifier counts it with the
 result back with no decide, not only before `run.final`. A `model.exchange` tool use with `executed_by: provider`
 carries an `args_commitment` when the provider returned its input; `run.final` carries `provider_executed`, the number
 of such tool uses, which no decide covers and which are never `reconcile.fabricated` (with `gateway_mandatory`, only
-those the gateway reported). A bundle with any of these kinds, fields or `run.child` needs `verifier_min_version`
-1.2.0.
+those the gateway reported), and `paired_by_args`, the number of calls reconciled by pairing a decide with a tool use
+of the same model turn by their arguments when the adapter had no tool-call id (never across turns, never when two
+could match). A bundle with any of these kinds, fields or `run.child` needs `verifier_min_version` 1.2.0.
 
 ## 4. Records and the signature message
 
@@ -372,7 +403,8 @@ proofs/records.json       {"checkpoint": "checkpoints/<size>.note", "tree_size":
 checkpoints/<size>.note   the record-tree note the proofs are against
 rekor/<size>.json         its Rekor v2 TransparencyLogEntry, when anchored
 tsa/<size>.tsr            its RFC 3161 timestamp response, when anchored
-policies/<sha256>.json    policy snapshots, named by the SHA-256 of their bytes
+policies/<sha256>.json    the compiled policies a verifier checks the records against, named by the SHA-256 of
+                          their bytes (their policy_hash)
 ```
 
 A run-set bundle adds:
@@ -414,7 +446,7 @@ what it added: record types, data fields per record type, and enum values per (r
 | Version | Record types | Data fields | Enum values |
 |---|---|---|---|
 | 1.1.0 | `input.observed`, `content.accessed`, `content.erased`, `why.finding` | `policy.decision`: `provenance`, `provenance_state`; `run.registered`: `replay_of` | — |
-| 1.2.0 | `run.child`, `approval.escalated`, `approval.revoked`, `approval.suggested`, `approval.agents`, `incident.opened`, `incident.updated`, `incident.capped` | `run.registered`: `parent_run`, `session`; `capture.gap`: `run_id`; `run.final`: `provider_executed`; `policy.decision`: `via`, `caller`, `detect`; `approval.request`: `agent`, `via`, `passkey`; `tool.result`, `input.observed`: `via`; `approval`: `approver_kind`, `asserted`, `spent`, `not_before`, `consume_by`; `approval.expired`: `reason` | `capture.gap` `kind`: `decided_not_completed`, `late_activity`, `concurrent_run`, `tailer_redelegated`, `reask_after_reject`, `held_call_unresolved` |
+| 1.2.0 | `run.child`, `approval.escalated`, `approval.revoked`, `approval.suggested`, `approval.agents`, `incident.opened`, `incident.updated`, `incident.capped`, `run.held`, `run.resumed`, `run.quarantined`, `incident.resolved`, `incident.response`, `identity.suspension`, `effect.observed` | `run.registered`: `parent_run`, `session`, `posture`; `capture.gap`: `run_id`; `run.final`: `provider_executed`, `paired_by_args`, `matrix`; `policy.decision`: `via`, `caller`, `detect`, `incident_id`; `approval.request`: `agent`, `via`, `incident_id`, `passkey`; `tool.result`, `input.observed`: `via`; `approval`: `approver_kind`, `asserted`, `spent`, `not_before`, `consume_by`, `incident_id`; `approval.expired`: `reason`; `reconcile.unexplained_effect`: `observer`, `kind`, `host`, `port` | `capture.gap` `kind`: `decided_not_completed`, `late_activity`, `concurrent_run`, `tailer_redelegated`, `reask_after_reject`, `held_call_unresolved`, `observer_lost`, `effect_outside_run`; `run.closing` `reason`: `quarantine` |
 
 Every v2 definition is closed (`additionalProperties: false`), so an older verifier would fail a record that uses a
 newer entry; the version the manifest declares makes it report `UNVERIFIABLE (needs tracekit >= x)` instead, never
@@ -474,7 +506,21 @@ line and verdict is in [verdicts](verdicts.md).
    `key.retire` leaf in the range must be among the key records. A `log.closed` in the range must be
    the checkpoint's last record, or later records were added after the log closed.
 8. **Format bridge** (with `--v1-ledger`/`--v1-key`, §12).
-9. **Policy snapshots.** Each `policies/` file is named by its own SHA-256.
+9. **Policy snapshots.** Each `policies/` file is named by its own SHA-256 (else `policy snapshot` fails and neither
+   check below reads it). `tracekit export --v2` bundles, from the signer's `<data_dir>/policies`, the compiled policy
+   (canonical JSON, so its SHA-256 is its `policy_hash`) of each `policy_hash` a verifier checks against, once: the
+   one the `policy.decision` an agent's approval answered cites (`approvals by agents` checks its rules permit agents;
+   without it, a warning) and the one policy a run with an `incident.opened` was decided under. No other is bundled.
+   **Incidents** (with containment records): a record an incident cites must, when its run is in the bundle, exist
+   and be one that fires a trigger; an incident of scope `run` citing only its own run is recomputed from that run's
+   records under the bundled policy of the run's one `policy_hash` (not in the bundle: signer-asserted, with an
+   `incident policies` warning), and must follow from them;
+   a `detector_unavailable` incident must cite a decision whose `detect.state` is `unavailable`; the rest are counted
+   signer-asserted. Each response must have been honoured: while held, no allow and no ask without the incident id;
+   while quarantined, only deny; a held call approved only by a person (never `approver_kind: agent`, never
+   self-approved) with the incident id; no consume under a hold but of such an approval, none under a quarantine; no
+   `tool.result` while held or quarantined but of a call `in_flight` then or (held) consumed with such an approval
+   (`incidents`).
 10. **Verdict.** Any failed line: `FAILED`, exit 1. Otherwise `VERIFIED`, `VERIFIED TO HEAD n (open)` for one open
     run, or `VERIFIED (k run(s) open)`. Then the informational lines (policy, gaps, coverage, tiers, args source,
     isolation, fail-open classes, key assurance, break-glass approvals) and the assurance level. Exit 0, or 3 with

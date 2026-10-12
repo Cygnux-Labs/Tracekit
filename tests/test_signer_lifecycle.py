@@ -145,8 +145,12 @@ class TestLifecycle(Lifecycle):
         final = es[-1]
         self.assertEqual(final["source"], "signer")
         rs = {r["event"]["run_seq"]: r["hash"] for r in records(self.dir) if r["event"]["run_id"] == run["run_id"]}
+        none = {"status": "none", "layers": []}
         self.assertEqual(final["data"], {"head_run_seq": 5, "head_hash": rs[5], "coverage": {
-            "layers": ["L2", "L3"], "reconciled": 1, "unreconciled": {}}})
+            "layers": ["L2", "L3"], "reconciled": 1, "unreconciled": {}}, "matrix": {
+            "model_calls": {"status": "reported", "layers": ["adapter"]},
+            "tool_calls": {"status": "reported", "layers": ["adapter"]}, "network": none, "processes": none,
+            "services": none}})
 
     def test_idle_close_pauses_while_an_approval_is_pending(self):
         t0 = time.monotonic()

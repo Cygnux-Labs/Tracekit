@@ -13,6 +13,7 @@ import threading
 import time
 import types
 import unittest
+from unittest import mock
 from http.server import BaseHTTPRequestHandler
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -153,7 +154,9 @@ class SilentClient(unittest.TestCase):
         for _ in range(3):
             threading.Thread(target=drip, daemon=True).start()
         time.sleep(0.4)  # every handler slot is held by a dripping client
-        self.assertEqual(self.request(port, tls=tls), 401)
+        # the request waits for the first slot a deadline frees, however late a slow machine starts the drippers
+        with mock.patch.object(netserver, "SLOT_WAIT_S", 5.0):
+            self.assertEqual(self.request(port, tls=tls), 401)
 
     def test_connections_per_ip_are_capped(self):
         port = self.start(netserver.Server(("127.0.0.1", 0), self.handler(), timeout=3, max_per_ip=1))

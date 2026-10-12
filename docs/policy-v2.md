@@ -62,21 +62,23 @@ handoffs: [transfer_to_refunds_agent]   # tool names the framework runs as hando
                                         # pack names any: exact names, as your agents' handoff tools are called
 structured_output: ['browser_use:*']    # tool names the model asks for in its structured output, not as tool calls:
                                         # reconciliation doesn't compare them with tool uses (browser.yaml names these)
+explains:                       # hosts a tool's own dependencies reach, for the egress observer (docs/egress.md#explains)
+  - {label: package-install, hosts: [pypi.org, '*.pythonhosted.org']}   # a rule label, or a tool glob: {tool: ...}
 deny:  [<rule>, ...]
 ask:   [<rule>, ...]
 flag:  [<rule>, ...]
 sequences: [<sequence>, ...]    # detection (below): steps across calls
 limits:    [<limit>, ...]       # detection: counts and sums in a window
-respond:   [<respond>, ...]     # detection: what each trigger does (shadow only in 1.2)
+respond:   [<respond>, ...]     # detection: what each trigger does (shadow, or enforced: docs/incidents.md)
 ```
 
-`extends` merges the parent's `tools` under the child's, joins every `untrusted`, `handoffs` and `structured_output`
-list (a child can't remove a name its parent declares), keeps the parent's other top-level keys unless the child sets
-them, and keeps the parent's rules except those whose id the child redefines. A list of parents is merged in order (a
-later parent's top-level keys and tools win; the same rule id in two parents is a duplicate-id error, unless both carry
-the identical rule, which is kept once). `sequences`, `limits` and `respond` merge the same way, by id (`respond` by
-trigger): a deployment that adds a sequence keeps the pack's. The compiled `extends` is the list of their hashes. An
-absolute path, `~` or a loop is an error.
+`extends` merges the parent's `tools` under the child's, joins every `untrusted`, `handoffs`, `structured_output` and
+`explains` list (a child can't remove a name its parent declares), keeps the parent's other top-level keys unless the
+child sets them, and keeps the parent's rules except those whose id the child redefines. A list of parents is merged in
+order (a later parent's top-level keys and tools win; the same rule id in two parents is a duplicate-id error, unless
+both carry the identical rule, which is kept once). `sequences`, `limits` and `respond` merge the same way, by id
+(`respond` by trigger): a deployment that adds a sequence keeps the pack's. The compiled `extends` is the list of their
+hashes. An absolute path, `~` or a loop is an error.
 
 **Rule fields:**
 
@@ -278,6 +280,7 @@ limits:
 respond:
   - {trigger: TK-L002, mode: shadow, action: hold}   # mode off|shadow|enforce, action notify|hold|quarantine
   - {trigger: denied_calls, mode: shadow, action: notify, max: 5, window: 300, scope: run}
+  - {trigger: executed_against_policy, mode: enforce, action: quarantine, cooldown_s: 3600}
 ```
 
 **What counts.** A call's names are its rule ids from both class readings (the policy's and the client's hint, so a
@@ -333,7 +336,9 @@ deny or an unapproved ask), `denied_calls` (more than `max` distinct denied call
 don't count), `provenance` (a `from: untrusted` rule held a call whose decision names its provenance and whose index is
 complete), and the notify-only `class_mismatch`, `refusal_burst` (a `refusal.summary` over `max`) and `tamper`, which
 are never enforced (lint refuses `mode: enforce` or an action other than `notify` on them). Only `denied_calls` takes
-`max`, `window` and `scope`, and `refusal_burst` `max`; lint refuses them elsewhere.
+`max`, `window` and `scope`, and `refusal_burst` `max`; lint refuses them elsewhere. `unexplained_effect` (a host an
+[egress observer](egress.md) saw a run reach that nothing explains) fires once per host and run; the server pack
+notifies on it in shadow mode until a deployment's `explains` is tuned.
 
 An incident is a signed `incident.opened {incident_id, trigger, rule_ids, scope, cites, mode, actions, would}` in the
 run whose record fired it, citing the records that make it up. One stays open per scope, trigger and rule: later
@@ -341,8 +346,20 @@ matches are an `incident.updated {incident_id, cites}` at most once per window o
 without one), written in the run whose record matched, which for a `session`, `owner` or `principal` scope can be
 another run than the one that opened it. Only opened incidents count toward the caps: 100 per run and trigger, 60 per
 tenant a minute, of which one run may open 20; past a cap one `incident.capped {cap, max, trigger, reason}` is written
-instead. In 1.2 every incident is in **shadow**: `mode: shadow`, no `actions`, `would` the configured action; holds and
-quarantines come later.
+instead. An incident carries its trigger's `respond` mode. In **shadow** it has no `actions` and `would` names the
+configured action. In **enforce** the signer acts in the same writer step as the record that fired it and lists what it
+did in `actions`:
+
+| `action` | What the signer does ([incidents](incidents.md)) |
+|---|---|
+| `notify` | Nothing more than delivering the incident to every webhook subscribed to `incident` events, at least once (the signer refuses to start without one). |
+| `hold` | Every live run the incident's scope reaches is held: its live approvals expire, and each further call is an `ask` (rule `TK-HOLD`, with the `incident_id`) that only a person answers: never an agent approver, never the run's owner, principal or requester, whatever `self_approval` says. The call that fired the hold is decided again, held. With no person approver configured, a hold is a quarantine. |
+| `quarantine` | Every live run the scope reaches is quarantined, for good: each further call is denied (`TK-QUARANTINE`; past 100 such denies, refused unrecorded), approvals are refused, a gateway forwards no further model request of it, and it closes with reason `quarantine`. |
+
+`cooldown_s` (default 3600, at most 86400): for that long, a new run of the same owner and attested principal (and any
+child run of a held one) starts held or quarantined too. No trigger suspends an identity: that is an operator's call
+(`tracekit signer incidents suspend`), and lint refuses `suspend:` in `respond`. Operators resolve incidents, hold, quarantine and resume runs, pause the response engine and suspend identities
+with `tracekit signer incidents` ([incidents](incidents.md)).
 
 **Backtest.** `tracekit policy backtest --policy P --store DIR` (a signer's `data_dir/store`, read-only, safe while it
 runs) or `--bundle B...` runs the policy's detection over recorded runs and prints the incidents it would open. It

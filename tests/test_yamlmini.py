@@ -14,6 +14,13 @@ class FlowMappings(unittest.TestCase):
         self.assertEqual(yamlmini.loads('a: {"uid:1": t, l: 127.0.0.1:9, xs: ["p:*", q], n: {b: 1}, e: {}}'),
                          {"a": {"uid:1": "t", "l": "127.0.0.1:9", "xs": ["p:*", "q"], "n": {"b": 1}, "e": {}}})
 
+    def test_a_flow_list_or_mapping_may_go_over_lines(self):
+        text = "handoffs: [a, b,  # the first two\n  c]\nx:\n  - {k: [1,\n      2], m: \"]\"}\n"
+        self.assertEqual(yamlmini.loads(text), {"handoffs": ["a", "b", "c"], "x": [{"k": [1, 2], "m": "]"}]})
+        self.assertEqual(yamlmini.loads("pattern: ^rm -[rf]\n"), {"pattern": "^rm -[rf]"})
+        with self.assertRaisesRegex(yamlmini.YAMLError, "line 1: unterminated flow list"):
+            yamlmini.loads("a: [1,\n")
+
     def test_a_flow_item_that_is_not_key_value_is_an_error(self):
         with self.assertRaises(yamlmini.YAMLError):
             yamlmini.loads("a: {b c}")
