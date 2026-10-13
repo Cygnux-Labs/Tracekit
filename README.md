@@ -2,7 +2,7 @@
 
 # Tracekit
 
-**Tamper-evident records of what your AI agents did.**
+**Tamper-evident records of what your AI agents did, and why.**
 
 [![CI](https://img.shields.io/github/actions/workflow/status/Cygnux-Labs/Tracekit/ci.yml?branch=main&label=CI)](https://github.com/Cygnux-Labs/Tracekit/actions/workflows/ci.yml)
 [![PyPI](https://img.shields.io/pypi/v/tracekit-ai)](https://pypi.org/project/tracekit-ai/)
