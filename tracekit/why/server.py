@@ -277,7 +277,7 @@ class Store:
         paths = self.paths()
         items = [self.analysed(p) for p in paths]
         out = workspace(paths, items)
-        out["alerts"], out["calls"], out["alone"] = [], {}, self.tape   # alone: no signed records, the page opens on GRAPH
+        out["alerts"], out["calls"] = [], {}
         with self.out.lock:
             signed = {f"{r.get('session_id')}|{r['v2'].get('run_seq')}": r.get("tool_name")
                       for r in self.out.records if isinstance(r.get("v2"), dict)}

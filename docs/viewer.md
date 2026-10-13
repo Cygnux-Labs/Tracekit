@@ -72,8 +72,8 @@ own (a call's decision or result is on the call's row) opens the row before it a
 
 With why logs, select a tool call (or click a `WHY` alert, panel 3) and open **WHY** in panel 8. The verdict sentence
 says what replays found; **How it got here** is the recorded path from each untrusted input (red border) through the
-agents' model calls and messages to the call. Click any step to open it. In DESK, while WHY or NODE is open, panel 8
-widens so its tables and values wrap instead of being cut; DETAIL gives the room back.
+agents' model calls and messages to the call. Click any step to open it. While WHY or NODE is open, panel 8 widens
+so its tables and values wrap instead of being cut; DETAIL gives the room back.
 
 ### FIND THE CAUSE and RUN TEST
 
@@ -90,17 +90,26 @@ The effect is the drop in how often the call happens, with its 95% interval.
 
 ![GRAPH with the planner's model call clicked: NODE shows its model, tokens, what it saw, what it produced, where it came from, what it led to and its record](viewer/graph-node.png)
 
-**GRAPH** (header buttons; `tracekit view --why DIR` opens on it) draws the run's data flow across the page, beside
-panel 8: inputs (cyan), model calls (magenta), tool calls (green), messages (amber); a red border is untrusted content,
-a red line a tested cause with its effect. **FIT** (the default) shows the whole flowchart in the panel; **ACTUAL SIZE**
-draws it at full size and scrolls, keeping the clicked node in view. The picker next to GRAPH chooses the run; **DESK**
-brings back the run list, tape and alerts. Click a node: the graph keeps what it came from and led to and fades the
-rest, and panel 8's **NODE** tab shows it in full: for a model call
+**GRAPH** (header buttons) draws the run's data flow: inputs (cyan), model calls (magenta), tool calls (green),
+messages (amber); a red border is untrusted content, a red line a tested cause with its effect. Click a node: the graph
+keeps what it came from and led to and fades the rest, and panel 8's **NODE** tab shows it in full: for a model call
 its model, time, tokens, what it saw (each a link) and what it produced; for a tool call its arguments, result,
 policy decision and a **WHY DID THIS HAPPEN?** button; for an input or a message its content and trust. **Came from**
 and **Led to** link the neighbours; **Record** gives its time, hash, previous hash and the signed Tracekit record it
 cites. Click the node again, or **CLEAR**, to see the whole graph. The checkboxes add inferred links and ruled-out
 tests.
+
+### A signed run's graph
+
+![GRAPH of a signed run: five tool calls left to right in run order, two Bash calls marked DENIED with their rule ids](viewer/signed-graph.png)
+
+`tracekit view` on a signer store needs no why logs for GRAPH: each run that verifies is imported read-only
+(`why import --store`'s import) into the viewer's own temp dir, and imported again as it grows. Its tool calls read
+left to right in run order; each node carries its signed decision: **DENIED** (red), **HELD** or **FLAGGED** (amber),
+**APPROVED**, or ALLOWED (muted), with the first rule id. Click a node: NODE shows the decision, every rule with its
+reason, who approved, and the record it cites. A run's arguments are only a salted commitment, so WHY can list the
+path but not replay it. A flowchart wider than its panel scrolls sideways (`scroll →` in the panel's title), and a
+clicked node is scrolled into view.
 
 ### AGENTS
 

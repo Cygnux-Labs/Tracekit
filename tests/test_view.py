@@ -28,6 +28,7 @@ from tracekit.why.core import GENESIS, HttpSink, event_hash, load_run, reference
 from tracekit.why.demo import EXFIL_TARGET, SYSTEM
 from tracekit.why.graph import target_hits
 from tracekit.why import cli as why_cli
+from tracekit.why.import_v2 import store_records
 from tracekit.why.server import Feed as WhyFeed, IngestError, Store, tape
 
 POLICY = Engine({"deny": [{"id": "T-DENY", "tool": "rm", "pattern": "^"}],
@@ -352,9 +353,9 @@ class View(unittest.TestCase):
                 server.return_value.server_address = ("127.0.0.1", 7778)
                 self.assertEqual(view.main(["--data-dir", self.d, *args]), 0)
             return server.call_args[0][8], out.getvalue()
-        store, out = why()
-        self.assertIsNone(store)
-        self.assertNotIn("why logs", out)
+        store, out = why()   # no why logs: the store's own runs, imported as they verify
+        self.assertNotEqual(store.root, os.path.join(self.d, view.WHY_DIR))
+        self.assertIn("graphs: each verified run", out)
         os.makedirs(os.path.join(self.d, view.WHY_DIR))
         store, out = why("--allow-program", "m:SYSTEM")
         self.assertEqual((store.root, store.allow), (os.path.join(self.d, view.WHY_DIR), {"m:SYSTEM"}))
@@ -363,6 +364,23 @@ class View(unittest.TestCase):
         store, out = why("--why", other)
         self.assertEqual(store.root, other)
         self.assertIn("start with --allow-program", out)
+
+    def test_a_store_with_no_why_logs_still_gets_a_graph_of_each_run_with_its_decisions(self):
+        run_id = self.finished_run()
+        why_dir = ts.tmpdir(self)
+        feed = view.StoreFeed({"data_dir": self.d}, on_run=lambda recs: view.mirror_run(recs, why_dir))
+        self.report(feed, run_id)
+        store = Store(why_dir, out=feed)
+        d = store.detail("tk-" + run_id)
+        calls = {n["tool"]: n for n in d["nodes"] if n["type"] == "action"}
+        self.assertEqual(calls["rm"]["policy"]["decision"], "deny")   # GRAPH and NODE mark it DENIED with its rule
+        self.assertEqual(calls["rm"]["policy"]["rule_ids"], ["T-DENY"])
+        self.assertEqual(calls["pay"]["policy"]["decision"], "ask")
+        self.assertEqual(calls["pay"]["policy"]["approval"]["decision"], "approve")
+        self.assertEqual(calls["Bash"]["policy"]["decision"], "allow")
+        self.assertTrue(store.workspace()["calls"])   # each signed call joins its imported why event (the WHY tab)
+        view.mirror_run(store_records(self.d, run_id)[run_id], why_dir)   # a re-import replaces the run
+        self.assertEqual(sorted(os.listdir(why_dir)), ["tk-" + run_id])
 
     def test_hostile_tool_names_are_data_and_the_page_escapes_every_sink(self):
         run = self.client.run(agent="a")
@@ -540,10 +558,6 @@ class WhyData(WhyServer):
         status, page = self.request("GET", "/", AUTH)[::2]
         self.assertEqual(status, 200)
         self.assertIn(b'data-wtab="node"', page)
-
-    def test_why_logs_alone_open_on_the_graph(self):
-        self.assertTrue(self.get("/api/why/workspace")["alone"])   # `tracekit view --why DIR`: the page opens on GRAPH
-        self.assertFalse(Store(os.path.join(self.tmp, "signed"), out=WhyFeed()).workspace()["alone"])
 
     def test_workspace_has_every_alert_and_the_signed_call_each_why_event_cites(self):
         run = self.exfil()

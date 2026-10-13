@@ -532,9 +532,10 @@ def review(records, rep, verdict):
 
 
 class StoreFeed:
-    """What observe.make_handler serves (records, base, lock, verify()), from the store of a v2 signer's config."""
+    """What observe.make_handler serves (records, base, lock, verify()), from the store of a v2 signer's config.
+    `on_run`: called with the records of each client run that verifies, each time it grows (mirror_run)."""
 
-    def __init__(self, cfg, log_vkey=None):
+    def __init__(self, cfg, log_vkey=None, on_run=None):
         self.cfg, self.pg = cfg, bool(cfg.get("storage"))
         self.store = "the Postgres store" if self.pg else os.path.join(cfg["data_dir"], "store")
         self.note = "trust pins --log-vkey" if log_vkey else STORED_NOTE if self.pg else DEV_NOTE
@@ -554,6 +555,7 @@ class StoreFeed:
         self.max_records = int(os.environ.get("TRACEKIT_OBSERVE_MAX_RECORDS", "50000") or 50000)
         self.runs = {}   # (tenant, run_id) -> {"count": records verified, "shown": records translated, "failed": report}
         self.tr = Translator(policy_reasons([cfg["policy"]] if cfg.get("policy") else []))
+        self.on_run = on_run
         self.tmp = tempfile.mkdtemp(prefix="tk-view-")
         atexit.register(shutil.rmtree, self.tmp, True)
         self.trust = write_trust(os.path.join(self.tmp, "trust.json"), vkeys)
@@ -627,6 +629,11 @@ class StoreFeed:
             new.append(self.tr.alert(e, records[-1], "info", f"RUN {run_id} · Integrity {rep.integrity} · Assurance "
                                      f"{rv['assurance']}", f"{summary}\n{self.note}\n{OPERATOR_SIDE}\n\n{text}", "VERIFY"))
             state = dict(state, count=count, shown=len(records), failed=None)
+            if self.on_run and key[1] != SIGNER_RUN[1]:
+                try:
+                    self.on_run(records)
+                except Exception as e:   # the run's own view does not depend on its graph
+                    print(f"tracekit view: no graph for run {run_id}: {e}", file=sys.stderr, flush=True)
         new[-1]["review"] = rv
         if key[1] == SIGNER_RUN[1]:
             new[-1].update(signer=True, agent="signer")
@@ -649,6 +656,21 @@ class StoreFeed:
             runs = {k: s for k, s in self.runs.items() if tenant is None or k[0] == tenant}
             return (sum(s["shown"] for s in runs.values() if not s["failed"]),
                     [f"run {k[1]} of tenant {k[0]}: {s['failed']}" for k, s in runs.items() if s["failed"]], None)
+
+
+def mirror_run(records, why_dir):
+    """Import one verified v2 run as a why run under `why_dir` (why.import_v2, from the records only), replacing an
+    earlier import of it, so GRAPH, WHY, AGENTS and INFLUENCE work on a store with no why logs."""
+    # lean: the whole run is imported again each time it grows; import only the new records if long runs make it slow
+    from .why.import_v2 import import_records
+    stage = tempfile.mkdtemp(prefix=".import-", dir=why_dir)
+    try:
+        path = import_records({records[0]["event"]["run_id"]: records}, stage)[0]
+        target = os.path.join(why_dir, os.path.basename(path))
+        shutil.rmtree(target, True)
+        os.rename(path, target)
+    finally:
+        shutil.rmtree(stage, True)
 
 
 def write_trust(path, vkeys):
@@ -897,14 +919,19 @@ def main(argv=None):
         desk = login and view.get("signer") and ApprovalDesk(Client(view["signer"]),
                                                              (cfg.get("approvals") or {}).get("webauthn"))
         runs = view.get("logs") and Runs(view["logs"], a.log_vkey)
+        why_dir = a.why or (cfg.get("data_dir") and os.path.join(cfg["data_dir"], WHY_DIR))
+        mirror = None
+        if not (v1 or alone or runs or a.why or (why_dir and os.path.isdir(why_dir))):   # no why logs: the store's own
+            why_dir = tempfile.mkdtemp(prefix="tk-view-why-")
+            atexit.register(shutil.rmtree, why_dir, True)
+            mirror = lambda recs: mirror_run(recs, why_dir)   # noqa: E731
         if v1:
             ledger, code = observe.ledger_path(a.ledger, a.bundle, "tracekit view")
             if ledger is None:
                 return code
             feed = observe.Feed(ledger)
         else:
-            feed = None if runs or alone else StoreFeed(cfg, a.log_vkey)
-        why_dir = a.why or (cfg.get("data_dir") and os.path.join(cfg["data_dir"], WHY_DIR))
+            feed = None if runs or alone else StoreFeed(cfg, a.log_vkey, mirror)
         why = Store(why_dir, a.allow_program, a.webhook, out=feed, tape=bool(alone), ingest_tokens=a.ingest_token) \
             if (feed or alone) and why_dir and (a.why or os.path.isdir(why_dir)) else None
         feed = why.out if alone else feed
@@ -918,7 +945,10 @@ def main(argv=None):
           + (f"  ({len(runs.logs)} Postgres logs, read-only)" if runs else
              f"  (ledger: {feed.path}, read-only)" if v1 else f"  (why logs alone: {why.root})" if alone else
              f"  (store: {feed.store}, read-only; {feed.note})"), flush=True)
-    if why:
+    if why and mirror:
+        why.watch()
+        print("  graphs: each verified run, imported from the store (read-only) into a temp dir", flush=True)
+    elif why:
         why.watch()
         print(f"  why logs: {why.root}; FIND THE CAUSE and RUN TEST "
               + (f"replay {', '.join(a.allow_program)}" if a.allow_program else
