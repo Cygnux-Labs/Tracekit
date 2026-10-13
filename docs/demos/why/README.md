@@ -7,7 +7,7 @@ and in 5 of 8 recorded runs the executor exports the customers and emails them t
 each suspect (10 paired replays, tools served from the recorded tape) and measures whether the email still goes out.
 
 ```sh
-tracekit why demo --out runs --n 10                                # no API key, no network
+tracekit why demo --out runs --n 10                                # no API key, no network; writes runs/report.html
 tracekit view --why runs --allow-program tracekit.why.demo:SYSTEM   # the same runs in the viewer
 ```
 

@@ -1,4 +1,5 @@
 $ tracekit why demo --out $TMP/why --n 10
+tracekit: tracekit why is experimental: it works and is tested, but may change (docs/support.md)
 == record: 8 runs of a 3-agent support system (seeded mock models, fake tools) -> $TMP/why
   demo-seed0: lookup_order, issue_refund, send_email, export_customers, send_email   <- exfiltration
   demo-seed1: lookup_order, issue_refund, send_email, export_customers, send_email   <- exfiltration
@@ -38,4 +39,5 @@ $ tracekit why demo --out $TMP/why --n 10
   critical path: task [run] -> summarize [researcher] -> researcher → planner [researcher] -> plan [planner] -> planner → executor [planner] -> execute [executor] -> issue_refund [executor]
 
 runs:   $TMP/why
-open:   tracekit why serve $TMP/why --allow-program tracekit.why.demo:SYSTEM
+report: $TMP/why/report.html   (static; open in a browser)
+live:   tracekit view --why $TMP/why --allow-program tracekit.why.demo:SYSTEM
