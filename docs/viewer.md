@@ -90,14 +90,30 @@ The effect is the drop in how often the call happens, with its 95% interval.
 
 ![GRAPH with the planner's model call clicked: NODE shows its model, tokens, what it saw, what it produced, where it came from, what it led to and its record](viewer/graph-node.png)
 
-**GRAPH** (header buttons) draws the run's data flow: inputs (cyan), model calls (magenta), tool calls (green),
-messages (amber); a red border is untrusted content, a red line a tested cause with its effect. Click a node: the graph
+**GRAPH** (header buttons) draws the run's data flow as a left-to-right flowchart, as Causeway did: inputs (cyan),
+model calls (magenta), tool calls (green), messages (amber), each arrow a recorded flow; a red border is untrusted
+content, a thick red arrow a confirmed cause with its effect, a dashed one an inferred link, an amber dot a sensitive
+tool call. **FIT** (the default) shrinks a wide flowchart to the panel, never above actual size; **ACTUAL SIZE**
+scrolls; **CLEAR HIGHLIGHT** undoes a click. Click a node: the graph
 keeps what it came from and led to and fades the rest, and panel 8's **NODE** tab shows it in full: for a model call
 its model, time, tokens, what it saw (each a link) and what it produced; for a tool call its arguments, result,
 policy decision and a **WHY DID THIS HAPPEN?** button; for an input or a message its content and trust. **Came from**
 and **Led to** link the neighbours; **Record** gives its time, hash, previous hash and the signed Tracekit record it
 cites. Click the node again, or **CLEAR**, to see the whole graph. The checkboxes add inferred links and ruled-out
 tests.
+
+### A signed run's graph
+
+![GRAPH of a signed run: five tool calls left to right in run order, two Bash calls marked DENIED with their rule ids](viewer/signed-graph.png)
+
+`tracekit view` on a signer store needs no why logs for GRAPH: each run that verifies is imported read-only
+(`why import --store`'s import) into the viewer's own temp dir, and imported again as it grows. Its tool calls read
+left to right in run order; each node carries its signed decision: **DENIED** (red), **HELD** or **FLAGGED** (amber),
+**APPROVED**, or ALLOWED (muted), with the first rule id. Click a node: NODE shows the decision, every rule with its
+reason, who approved, and the record it cites. A run's arguments are only a salted commitment, so WHY can list the
+path but not replay it. With ACTUAL SIZE a flowchart wider than its panel scrolls sideways (`scroll →` in the
+panel's title), and a
+clicked node is scrolled into view. The legend's DENIED, HELD and FLAGGED are the marks on the nodes.
 
 ### AGENTS
 

@@ -630,7 +630,7 @@
 
     .v2 #detail {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
+      grid-template-columns: repeat(auto-fit, minmax(min(380px, 100%), 1fr));
       align-content: start
     }
 
@@ -1081,6 +1081,38 @@
       grid-template-areas: "agents tape alerts" "whyv whyv detail"
     }
 
+    .wv.wd main,
+    .v2.wv.wd main {
+      grid-template-areas: "agents tape alerts" "whyv whyv detail"
+    }
+
+    .whyv .glegend svg {
+      display: inline-block;
+      vertical-align: middle;
+      margin-right: 4px
+    }
+
+    .gunt::before {
+      content: "";
+      display: inline-block;
+      width: 7px;
+      height: 7px;
+      margin-right: 4px;
+      border: 2px solid var(--red);
+      border-radius: 50%;
+      vertical-align: middle
+    }
+
+    /* a flowchart wider than its panel scrolls: a scrollbar that stays visible says there is more */
+    #whyv::-webkit-scrollbar {
+      width: 8px;
+      height: 8px
+    }
+
+    #whyv::-webkit-scrollbar-thumb {
+      background: var(--line2)
+    }
+
     .wv .whyv {
       display: flex
     }
@@ -1100,6 +1132,21 @@
       color: var(--muted);
       font-size: 11px;
       flex-wrap: wrap
+    }
+
+    .wbar button {
+      font: inherit;
+      background: none;
+      border: 1px solid var(--line2);
+      color: var(--muted);
+      padding: 0 6px;
+      cursor: pointer
+    }
+
+    .wbar button.on {
+      color: #000;
+      background: var(--amber);
+      border-color: var(--amber)
     }
 
     .wbar .legend {
@@ -1132,11 +1179,6 @@
       display: none
     }
 
-    .wv.wd main,
-    .v2.wv.wd main {
-      grid-template-columns: minmax(250px, 1fr) minmax(0, 1.4fr) minmax(0, 1.9fr);
-      grid-template-areas: "agents tape alerts" "whyv whyv detail"
-    }
 
     .wt th {
       color: var(--muted);
@@ -1623,9 +1665,9 @@
 
     function render() {
       renderTop(); renderTicker(); renderAgents(); renderTape(); renderAlerts(); renderMix(); renderLanes(); renderReason(); renderFiles();
-      renderWhyView();
       if (WTAB === "node" && !WNODE) WTAB = "detail";
-      document.body.classList.toggle("wd", WTAB !== "detail");
+      document.body.classList.toggle("wd", WTAB !== "detail");   // before the graph, which scrolls its node into view
+      renderWhyView();
       $("wtabnode").hidden = !WNODE;
       document.querySelectorAll(".p>h2 .wtab").forEach(b => b.classList.toggle("on", b.dataset.wtab === WTAB));
       if (WTAB === "node") renderNode(); else if (WTAB === "why") renderWhyPanel(); else if (selected) renderDetail(selected); else if (V2) renderReview();
@@ -2124,7 +2166,7 @@
     /* ---------------- why logs (why.server.Store; docs/viewer.md#why) ---------------- */
     // WHY: /api/why/workspace; WD: why run id -> its detail (null while loading); VIEW: the lower panels' view
     let WHY = null, whyT = null, VIEW = "desk", WTAB = "detail", WRUN = null, WMSG = "", WBUSY = null, wvKey = "", WNODE = null;
-    const WD = new Map(), WTARGET = {}, WJOINT = new Set(), GV = { inferred: false, ruled: false, focus: null };
+    const WD = new Map(), WTARGET = {}, WJOINT = new Set(), GV = { inferred: false, ruled: false, focus: null, fit: true };
     const WTYPE = { input: "input", decision: "model call", action: "tool call", message: "message" };
     const WSTATUS = { confirmed: "PRIMARY CAUSE", contributing: "CONTRIBUTING", suppressive: "SUPPRESSES IT", inconclusive: "INCONCLUSIVE", untested: "NOT TESTED", "no-effect-seen": "NO EFFECT SEEN", "ruled-out": "RULED OUT" };
     const PSTATE = { unavailable: "unavailable (signer restarted: the run's untrusted-value index is kept in memory only)", truncated: "truncated (past 20000 untrusted values in the run, later ones are not tracked)" };
@@ -2242,9 +2284,12 @@
           + (n.ablated && n.ablated.length ? `<p class="dim">removed by the replay's intervention: ${esc(n.ablated.length)}</p>` : "")
           + `<div class="sec">WHAT IT PRODUCED</div><pre>${esc(n.output)}</pre>`;
       } else if (n.type === "action") {
-        const pol = n.policy && n.policy.decision ? n.policy.decision + (n.policy.rule_ids && n.policy.rule_ids.length ? ` (${n.policy.rule_ids.join(", ")})` : "") : null;
+        const dc = decided(n.policy), pr = n.policy && n.policy.rule_ids || [];
+        const pol = dc && `${dc[0]} (${n.policy.decision})` + (pr.length ? " · " + pr.map((r, i) => (r + " " + ((n.policy.reasons || [])[i] || "")).trim()).join("; ") : "");
+        const ap = n.policy && n.policy.approval;
         const g = n.guard ? n.guard.verdict + (n.guard.alerts && n.guard.alerts.length ? ": " + n.guard.alerts.map(a => a.title).join("; ") : "") : null;
-        body = kv([["tool", n.tool], ["took", ms(n.duration_ms)], ["status", n.status], ["executed", n.mode], ["sensitive", n.sensitive ? "yes" : null], ["Tracekit policy", pol], ["guard", g]])
+        body = kv([["tool", n.tool], ["took", ms(n.duration_ms)], ["status", n.status], ["executed", n.mode], ["sensitive", n.sensitive ? "yes" : null], ["signed decision", pol],
+          ["approval", ap ? `${ap.decision} by ${ap.approver}${ap.self_approved ? " (self-approved)" : ""}` : null], ["guard", g]])
           + `<div class="sec">ARGUMENTS</div><pre>${esc(JSON.stringify(n.args, null, 2))}</pre><div class="sec">RESULT</div><pre>${esc(n.result)}</pre>`
           + (act && d.actions[n.id] ? `<p><button type="button" data-wwhy="${esc(n.id)}">WHY DID THIS HAPPEN? →</button></p>` : "");
       } else {
@@ -2283,7 +2328,7 @@
       if (VIEW === "desk") return;
       const runs = WHY.runs.map(r => r.run_id);
       if (!runs.includes(WRUN)) WRUN = whyRef(selected)?.run || (scope && Object.entries(WHY.calls).find(([k]) => k.startsWith(scope + "|"))?.[1][0]) || runs[0] || null;
-      const key = [VIEW, WRUN, WD.get(WRUN) ? 1 : 0, GV.inferred, GV.ruled, GV.focus].join("|");
+      const key = [VIEW, WRUN, WD.get(WRUN) ? 1 : 0, GV.inferred, GV.ruled, GV.focus, GV.fit].join("|");
       if (key === wvKey) return;
       wvKey = key;
       $("wvtitle").textContent = VIEW.toUpperCase();
@@ -2303,36 +2348,52 @@
       }
       return { nodes, edges };
     }
+    const DECIDED = { deny: ["DENIED", "--red"], ask: ["HELD", "--amber"], flag: ["FLAGGED", "--amber"], allow: ["ALLOWED", "--muted"] };
+    function decided(p) {   // a tool call's signed decision: [word, colour], an approval's answer over a hold
+      if (!p || !p.decision) return null;
+      const ap = p.approval && p.approval.decision;
+      return ap === "approve" ? ["APPROVED", "--green"] : ap ? [String(ap).toUpperCase(), "--red"] : DECIDED[p.decision] || [String(p.decision).toUpperCase(), "--muted"];
+    }
+    const GTYPE = { input: "Input", decision: "Model call", action: "Tool call", message: "Message" };
+    // GRAPH: Causeway's flowchart (tGraph), in this page's colours
     function graphView(el, d) {
       const show = e => e.evidence === "observed" || (e.evidence === "inferred" && GV.inferred) || (e.evidence === "tested" && (e.verdict === "causal" || e.verdict === "suppressive" || GV.ruled));
-      const E = d.edges.filter(show), N = d.nodes, by = {}, depth = {}, cols = {}, pos = {}, lanes = d.agents.map(a => a.name);
+      const N = d.nodes, by = {}, depth = {}, cols = {}, lanes = d.agents.map(a => a.name);
       N.forEach(n => { by[n.id] = n; depth[n.id] = 0; });
-      [...N].sort((a, b) => a.seq - b.seq).forEach(n => d.edges.forEach(e => { if (e.evidence === "observed" && e.dst === n.id && by[e.src]) depth[n.id] = Math.max(depth[n.id], depth[e.src] + 1); }));
+      // a tool call nothing recorded flowing into follows the call before it (a signed run's calls): run order, not a cause
+      const acts = N.filter(n => n.type === "action").sort((a, b) => a.seq - b.seq), into = new Set(d.edges.filter(e => e.evidence === "observed").map(e => e.dst));
+      const SEQ = acts.flatMap((n, i) => i && !into.has(n.id) ? [{ src: acts[i - 1].id, dst: n.id, kind: "next in the run", evidence: "observed" }] : []);
+      const E = d.edges.filter(show).concat(SEQ), flow = d.edges.filter(e => e.evidence === "observed").concat(SEQ);
+      [...N].sort((a, b) => a.seq - b.seq).forEach(n => flow.forEach(e => { if (e.dst === n.id && by[e.src]) depth[n.id] = Math.max(depth[n.id], depth[e.src] + 1); }));
       N.forEach(n => (cols[depth[n.id]] = cols[depth[n.id]] || []).push(n));
       Object.values(cols).forEach(c => c.sort((a, b) => lanes.indexOf(a.agent) - lanes.indexOf(b.agent) || a.seq - b.seq));
-      const BW = 150, BH = 34, CX = 190, RY = 44, PAD = 16, maxr = Math.max(1, ...Object.values(cols).map(c => c.length));
-      const W = PAD * 2 + Math.max(0, Object.keys(cols).length - 1) * CX + BW, H = PAD * 2 + maxr * RY;
+      const BW = 158, BH = 42, CX = 210, RY = 58, PAD = 24, nc = Object.keys(cols).length, maxr = Math.max(1, ...Object.values(cols).map(c => c.length));
+      const W = PAD * 2 + (nc - 1) * CX + BW, H = PAD * 2 + maxr * RY, pos = {};
       Object.entries(cols).forEach(([c, arr]) => { const off = (maxr - arr.length) * RY / 2; arr.forEach((n, i) => pos[n.id] = [PAD + c * CX, PAD + off + i * RY]); });
       const TC = { input: "--cyan", decision: "--magenta", action: "--green", message: "--amber" }, keep = GV.focus && by[GV.focus] ? reach(E, GV.focus) : null;
-      let svg = `<svg viewBox="${esc(`0 0 ${W} ${H}`)}" width="${esc(W)}" height="${esc(H)}">`;
+      let svg = `<svg viewBox="${esc(`0 0 ${W} ${H}`)}" width="${esc(GV.fit ? "100%" : W)}" style="${esc(GV.fit ? `max-width:${W}px;min-width:${Math.min(W, 720)}px` : `height:${H}px`)}"><defs>`
+        + ["faint", "red", "blue"].map(k => `<marker id="ar-${esc(k)}" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0L8,4L0,8z" style="${esc(`fill:var(--${k})`)}"/></marker>`).join("") + `</defs>`;
       E.forEach((e, i) => {
         if (!pos[e.src] || !pos[e.dst]) return;
         const x1 = pos[e.src][0] + BW, y1 = pos[e.src][1] + BH / 2, x2 = pos[e.dst][0], y2 = pos[e.dst][1] + BH / 2, mx = (x1 + x2) / 2;
         const cause = e.evidence === "tested" && e.verdict === "causal", sup = e.evidence === "tested" && e.verdict === "suppressive", ruled = e.evidence === "tested" && !cause && !sup;
-        const col = cause ? "var(--red)" : sup ? "var(--blue)" : "var(--faint)";
-        const style = `fill:none;stroke:${col};stroke-width:${cause || sup ? 2.5 : 1.2};${e.evidence === "inferred" ? "stroke-dasharray:5 4;" : ""}${ruled ? "stroke-dasharray:1 4;" : ""}${keep && !keep.edges.has(i) ? "opacity:.12" : ""}`;
-        svg += `<path d="${esc(`M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2},${y2}`)}" style="${esc(style)}"><title>${esc(`${e.kind} (${e.evidence})` + (e.effect != null ? " effect " + sgn(e.effect) : ""))}</title></path>`;
-        if (e.evidence === "tested") svg += `<text x="${esc(x2 - 34)}" y="${esc(y2 - 5)}" style="${esc(`fill:${col};font-size:10px`)}">${esc(sgn(e.effect))}</text>`;
+        const k = cause ? "red" : sup ? "blue" : "faint";
+        const style = `fill:none;stroke:var(--${k});stroke-width:${cause || sup ? 2.6 : 1.3};${e.evidence === "inferred" ? "stroke-dasharray:5 4;" : ""}${ruled ? "stroke-dasharray:1 4;" : ""}${keep && !keep.edges.has(i) ? "opacity:.13" : ""}`;
+        svg += `<path d="${esc(`M${x1},${y1} C${mx},${y1} ${mx},${y2} ${x2 - 2},${y2}`)}" style="${esc(style)}" marker-end="url(#ar-${esc(k)})"><title>${esc(`${e.kind} (${e.evidence})` + (e.effect != null ? ` effect ${sgn(e.effect)}` + (e.ci ? ` [${e.ci}]` : "") : ""))}</title></path>`;
+        if (e.evidence === "tested") svg += `<text x="${esc(x2 - 36)}" y="${esc(y2 - 6)}" style="${esc(`fill:var(--${k});font-size:11px;font-weight:700${keep && !keep.edges.has(i) ? ";opacity:.13" : ""}`)}">${esc(sgn(e.effect))}</text>`;
       });
       N.forEach(n => {
-        const [x, y] = pos[n.id], unt = n.trust === "untrusted" && n.type === "input", hl = n.id === GV.focus;
-        const box = `fill:var(--panel2);stroke:${unt ? "var(--red)" : hl ? "var(--yellow)" : "var(--line2)"};stroke-width:${unt || hl ? 2 : 1}`;
-        svg += `<g data-wnode="${esc(n.id)}" style="${esc("cursor:pointer" + (keep && !keep.nodes.has(n.id) ? ";opacity:.15" : ""))}" transform="${esc(`translate(${x},${y})`)}"><rect width="${esc(BW)}" height="${esc(BH)}" style="${esc(box)}"/><rect width="3" height="${esc(BH - 8)}" x="4" y="4" style="${esc(`fill:var(${TC[n.type] || "--muted"})`)}"/><text x="12" y="14" style="fill:var(--text);font-size:11px">${esc(String(n.label).slice(0, 22))}</text><text x="12" y="27" style="fill:var(--muted);font-size:10px">${esc(WTYPE[n.type] || n.type)} · ${esc(n.agent)}</text><title>${esc(n.label)}</title></g>`;
+        const [x, y] = pos[n.id], unt = n.trust === "untrusted" && n.type === "input", dc = n.type === "action" && decided(n.policy), rule = dc && (n.policy.rule_ids || [])[0];
+        svg += `<g data-wnode="${esc(n.id)}" style="${esc("cursor:pointer" + (keep && !keep.nodes.has(n.id) ? ";opacity:.13" : ""))}" transform="${esc(`translate(${x},${y})`)}"><rect width="${esc(BW)}" height="${esc(BH)}" rx="8" style="${esc(`fill:var(--panel2);stroke:${unt ? "var(--red)" : "var(--line2)"};stroke-width:${unt ? 2 : 1}`)}"/><rect width="4" height="${esc(BH - 12)}" x="6" y="6" rx="2" style="${esc(`fill:var(${TC[n.type] || "--muted"})`)}"/>`
+          + `<text x="16" y="17" style="fill:var(--text);font-size:11px;font-weight:600">${esc(String(n.label).slice(0, 20))}</text><text x="16" y="32" style="fill:var(--muted);font-size:10.5px">${dc ? `<tspan style="${esc(`fill:var(${dc[1]})`)}">${esc(dc[0] + (rule ? " " + rule : ""))}</tspan>` : ""}${esc(dc ? "" : `${GTYPE[n.type] || n.type} · ${n.agent}`)}</text>`
+          + `${n.sensitive ? `<circle cx="${esc(BW - 10)}" cy="10" r="4" style="fill:var(--amber)"><title>sensitive</title></circle>` : ""}<title>${esc(n.label + (dc ? ` · ${dc[0]} ${(n.policy.rule_ids || []).join(", ")}` : "") + ` · ${GTYPE[n.type] || n.type} · ${n.agent}`)}</title></g>`;
       });
       el.innerHTML = `<div class="wbar"><label><input type="checkbox" data-gv="inferred"${GV.inferred ? " checked" : ""}> inferred links</label><label><input type="checkbox" data-gv="ruled"${GV.ruled ? " checked" : ""}> ruled-out tests</label>
-        <span class="legend"><span style="--c:var(--cyan)">input</span><span style="--c:var(--magenta)">model call</span><span style="--c:var(--green)">tool call</span><span style="--c:var(--amber)">message</span><span style="--c:var(--red)">tested cause · untrusted</span></span>
-        ${GV.focus ? `<button type="button" data-wnode="">CLEAR</button>` : `<span>click a node: what it came from and led to</span>`}</div>` + svg + `</svg>`;
-      $("wvsum").textContent = `${N.length} nodes · ${E.length} of ${d.edges.length} edges (observed${GV.inferred ? ", inferred" : ""}, tested)`;
+        <button type="button" data-gfit="1" class="${GV.fit ? "on" : ""}">FIT</button><button type="button" data-gfit="" class="${GV.fit ? "" : "on"}">ACTUAL SIZE</button><button type="button" data-wnode="">CLEAR HIGHLIGHT</button><span>click a node to trace it upstream and downstream</span></div>
+        <div class="wbar glegend"><span class="legend"><span style="--c:var(--cyan)">input</span><span style="--c:var(--magenta)">model call</span><span style="--c:var(--green)">tool call</span><span style="--c:var(--amber)">message</span></span>
+        <span><svg width="26" height="8"><line x1="0" y1="4" x2="26" y2="4" style="stroke:var(--faint);stroke-width:1.5"/></svg> recorded flow</span><span><svg width="26" height="8"><line x1="0" y1="4" x2="26" y2="4" style="stroke:var(--red);stroke-width:3"/></svg> confirmed cause</span><span><svg width="26" height="8"><line x1="0" y1="4" x2="26" y2="4" style="stroke:var(--faint);stroke-dasharray:4 3"/></svg> inferred</span><span class="gunt">untrusted</span><span class="s-deny">DENIED</span><span class="s-flag">HELD · FLAGGED</span></div>` + svg + `</svg>`;
+      el.querySelector(`[data-wnode="${CSS.escape(GV.focus || "")}"]`)?.scrollIntoView({ block: "nearest", inline: "center" });
+      $("wvsum").textContent = `${N.length} nodes · ${E.length - SEQ.length} of ${d.edges.length} edges (observed${GV.inferred ? ", inferred" : ""}, tested)` + (SEQ.length ? ` · ${SEQ.length} in run order` : "") + (!GV.fit && W > el.clientWidth ? " · scroll →" : "");
     }
     function cell(t) {
       return t ? `<span class="${t.verdict === "causal" ? "s-deny" : t.verdict === "suppressive" ? "s-run" : "dim"}" title="${esc(`${t.verdict} n=${t.n}`)}">${esc(sgn(t.effect))}</span>` : `<span class="dim">–</span>`;
@@ -2366,10 +2427,11 @@
       $("wvsum").textContent = `${I.sources.length} sources · ${I.outcomes.length} tools`;
     }
     document.addEventListener("click", e => {
-      const t = e.target.closest("[data-wtab],[data-view],[data-rseq],[data-wal],[data-wtest],[data-wfind],[data-wnode],[data-wopen],[data-wwhy],[data-wreach]"); if (!t) return;
+      const t = e.target.closest("[data-wtab],[data-view],[data-rseq],[data-wal],[data-wtest],[data-wfind],[data-wnode],[data-wopen],[data-wwhy],[data-wreach],[data-gfit]"); if (!t) return;
       e.preventDefault();
       if (t.dataset.wtab) { WTAB = t.dataset.wtab; return schedule(); }
       if (t.dataset.view) { VIEW = t.dataset.view; wvKey = ""; return schedule(); }
+      if (t.dataset.gfit !== undefined) { GV.fit = !!t.dataset.gfit; return schedule(); }
       if (t.dataset.wal) { const a = whyAlerts()[+t.dataset.wal]; return a && openWhy(a.run_id, a.node); }
       if (t.dataset.rseq) {   // a signed provenance source: the record of the same run that brought the value in
         const run = (selected?.pre || selected)?.session_id, r = ALL.find(r => r.session_id === run && r.v2?.run_seq === +t.dataset.rseq);
