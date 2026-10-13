@@ -351,7 +351,8 @@ talk to the signer: they must not write evidence.
 
 **Import.** `tracekit why import --store DIR` reads a signer data dir (read-only, like `tracekit view --data-dir`);
 `--bundle FILE.tkb --trust trust.json` verifies the bundle first and refuses one that does not verify. Each v2 run
-becomes a why run `tk-<run id>`:
+becomes a why run `tk-<run id>-<hash>` (the hash covers the tenant and the whole run id, so two runs never share a
+folder; the readable run id and tenant are in its `run.start` meta):
 
 | v2 record | why event |
 |---|---|

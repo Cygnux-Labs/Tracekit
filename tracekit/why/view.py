@@ -2,8 +2,11 @@
 page with every run embedded (render_report)."""
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import os
+import re
 from typing import Any, Dict, List, Optional
 
 from .analysis import _count, investigation
@@ -116,8 +119,15 @@ def render_report(root: str) -> str:
     for p in store.paths():
         run = store.analysed(p).get("run")
         if run is not None:   # a broken run: the workspace lists it with why
-            runs[run.run_id] = {**run_detail(run), "replay": {"program": run.start.get("program"), "allowed": False}}
+            rel = os.path.relpath(p, root)   # never this machine's absolute path: the report is shared
+            runs[run.run_id] = {**run_detail(run), "path": rel if rel != "." else os.path.basename(os.path.abspath(p)),
+                                "replay": {"program": run.start.get("program"), "allowed": False}}
     data = {"snapshot": {"records": store.out.records, "next": len(store.out.records)},
             "workspace": store.workspace(), "runs": runs}
-    return (_page().replace("<head>", "<head>" + CSP_META, 1)
-            .replace("<script>", SHIM.replace("__DATA__", _script_json(data)) + "<script>", 1))
+    page = _page().replace("<script>", SHIM.replace("__DATA__", _script_json(data)) + "<script>", 1)
+    # only these scripts run: each one's hash, not 'unsafe-inline'; no <base>, no form posts
+    hashes = " ".join("'sha256-" + base64.b64encode(hashlib.sha256(m.encode()).digest()).decode() + "'"
+                      for m in re.findall(r"<script>(.*?)</script>", page, re.S))
+    csp = CSP_META.replace("script-src 'unsafe-inline'", "script-src " + hashes).replace(
+        "connect-src 'none'", "connect-src 'none'; base-uri 'none'; form-action 'none'")
+    return page.replace("<head>", "<head>" + csp, 1)

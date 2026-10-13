@@ -2,9 +2,9 @@
 
     tracekit why import --store DATA_DIR --out runs                  # a signer's store, read-only
     tracekit why import --bundle run.tkb --trust trust.json --out runs
-    tracekit why verify runs/tk-<run> --salts salts.jsonl            # `tracekit signer reveal` lines
+    tracekit why verify runs/tk-<run>-<hash> --salts salts.jsonl     # `tracekit signer reveal` lines
 
-One why run per v2 run (tk-<run id>), each event citing the signed record it came from (`tracekit`: log_id, seq,
+One why run per v2 run (tk-<run id>-<hash>: _target), each event citing the signed record it came from (`tracekit`: log_id, seq,
 run_id, run_seq, the record's hash and, where it has one, its commitment). The signer keeps commitments, never
 content: observed inputs and tool results import as "content committed, not in the log", model exchanges as
 decisions over what the run had observed so far, and each decision's provenance as observed edges from the record
@@ -17,11 +17,11 @@ content matches what the signer committed to is checked only with the record's s
 """
 from __future__ import annotations
 
+import hashlib
 import hmac
 import json
 import os
 import re
-import secrets
 from typing import Any, Dict, List, Optional
 
 from .. import privacy
@@ -143,15 +143,18 @@ def _evidence(recs: List[Dict[str, Any]]) -> List[Dict[str, str]]:
     return out
 
 
-def _target(out_dir: str, run_id: str) -> str:
-    return os.path.join(out_dir, "tk-" + "".join(c if c.isalnum() or c in "-_." else "_" for c in run_id)[:100])
+def _target(out_dir: str, run_id: str, tenant: str = "") -> str:
+    """The folder of the why run of `run_id` of `tenant`: readable, and unique however the id is spelled (the readable
+    part is cut and sanitized; the hash covers the tenant and the whole id)."""
+    tag = hashlib.sha256(f"{tenant}\0{run_id}".encode()).hexdigest()[:16]
+    return os.path.join(out_dir, "tk-" + "".join(c if c.isalnum() or c in "-_." else "_" for c in run_id)[:80] + "-" + tag)
 
 
 class _Writer:
     """A new why run under out_dir: hash-chained events and content-addressed blobs."""
 
-    def __init__(self, out_dir: str, run_id: str):
-        self.path = _target(out_dir, run_id)
+    def __init__(self, out_dir: str, run_id: str, tenant: str = ""):
+        self.path = _target(out_dir, run_id, tenant)
         self.run_id = os.path.basename(self.path)
         if os.path.exists(os.path.join(self.path, "events.jsonl")):
             raise FileExistsError(f"{self.path} already exists; remove it to re-import")
@@ -166,7 +169,9 @@ class _Writer:
 
     def emit(self, agent: str, etype: str, ts: str, rec: Optional[Dict[str, Any]] = None,
              also: Optional[Dict[str, Any]] = None, **body: Any):
-        ev = {"schema": SCHEMA, "seq": len(self.events), "id": body.pop("id", None) or secrets.token_hex(16),
+        # an imported event's id is its run's, seq and type: the same on every import of a growing run
+        eid = body.pop("id", None) or hashlib.sha256(f"{self.run_id}|{len(self.events)}|{etype}".encode()).hexdigest()[:32]
+        ev = {"schema": SCHEMA, "seq": len(self.events), "id": eid,
               "prev_hash": self.events[-1]["hash"] if self.events else GENESIS, "ts": ts, "run_id": self.run_id,
               "agent": agent, "type": etype, **body}
         if rec is not None:
@@ -186,7 +191,7 @@ class _Writer:
 
 def convert(recs: List[Dict[str, Any]], out_dir: str, reasons: Dict[str, Dict[str, str]]) -> str:
     first = recs[0]["event"]
-    w = _Writer(out_dir, first["run_id"])
+    w = _Writer(out_dir, first["run_id"], first["tenant"])
     agent = (first["data"].get("agent") or {}).get("name") if first["type"] == "run.registered" else None
     agent = agent or "main"
     calls = _calls(recs)
@@ -454,14 +459,17 @@ def recheck(records: Dict[str, List[Dict[str, Any]]], out_dir: str) -> List[tupl
     return [(run.path, a) for run in _plan(records, out_dir)[2] if (a := check(run, records)[1])]
 
 
-def import_records(records: Dict[str, List[Dict[str, Any]]], out_dir: str) -> List[str]:
+def import_records(records: Dict[str, List[Dict[str, Any]]], out_dir: str,
+                   reasons: Optional[Dict[str, Dict[str, str]]] = None) -> List[str]:
     """Merge every why log under out_dir that cites one of these runs; convert the others. Returns the run paths.
-    Writes nothing when a run it would write exists (FileExistsError)."""
-    from ..view import policy_reasons
-    reasons = policy_reasons()
+    Writes nothing when a run it would write exists (FileExistsError). `reasons`: view.policy_reasons(), computed here
+    when not given (it compiles every shipped pack)."""
+    if reasons is None:
+        from ..view import policy_reasons
+        reasons = policy_reasons()
     merge_, convert_, _ = _plan(records, out_dir)
-    targets = [_target(out_dir, r.run_id) for r in merge_] + [_target(out_dir, recs[0]["event"]["run_id"])
-                                                               for recs in convert_]
+    targets = [_target(out_dir, r.run_id) for r in merge_] + [_target(out_dir, recs[0]["event"]["run_id"],
+                                                                       recs[0]["event"]["tenant"]) for recs in convert_]
     there = [t for t in targets if os.path.exists(os.path.join(t, "events.jsonl"))]
     if there:
         raise FileExistsError(f"{', '.join(there)} already exist{'s' if len(there) == 1 else ''}: remove "

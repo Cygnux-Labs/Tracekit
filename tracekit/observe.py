@@ -676,7 +676,7 @@ def make_handler(feed, token, allowed_hosts=None, secure=False, login=None, appr
     return Handler
 
 
-def _open_bundle(bundle_path):
+def _open_bundle(bundle_path, prog="tracekit observe"):
     """Unpack a bundle's records and public key into a private temp dir laid out like a signer home, so the same
     feed and the same /api/verify (chain + signatures) run over it. Returns (ledger path, `tracekit verify` exit)."""
     import atexit
@@ -687,7 +687,7 @@ def _open_bundle(bundle_path):
         _rep, code = bundle.verify(bundle_path)
         _manifest, blobs = bundle.load_bundle(bundle_path)
     except Exception as e:
-        print(f"tracekit observe: cannot read bundle {bundle_path}: {e}", file=sys.stderr)
+        print(f"{prog}: cannot read bundle {bundle_path}: {e}", file=sys.stderr)
         return None, 2
     d = tempfile.mkdtemp(prefix="tk-observe-")
     atexit.register(shutil.rmtree, d, True)
@@ -706,9 +706,9 @@ def ledger_path(home=None, bundle=None, prog="tracekit observe"):
         from . import client
         home = home or client.client_config().get("signer_home") or "/var/lib/tracekit"
         return os.path.join(home, "ledger", "ledger.jsonl"), 0
-    path, code = _open_bundle(bundle)
+    path, code = _open_bundle(bundle, prog)
     if path is None:
-        return None, 1
+        return None, code
     if code != 0:
         print(f"{prog}: bundle {bundle} FAILED verification (exit {code}); refusing to show it. "
               f"Run `tracekit verify {bundle}` for the details.", file=sys.stderr)

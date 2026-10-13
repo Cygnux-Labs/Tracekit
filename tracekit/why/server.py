@@ -154,16 +154,18 @@ def tape(run, start: int = 0) -> List[Dict[str, Any]]:
 class Store:
     """The why logs under `root`. Live changes are published into `out` (an observe.make_handler feed: the viewer's,
     or a Feed) as `{"event": "why", "why": {...}}` records; with `tape`, each run's events too (tape()).
-    `ingest_tokens`: the bearer tokens /v1/ingest takes (none: the viewer's own token)."""
+    `ingest_tokens`: the bearer tokens /v1/ingest takes (none: the viewer's own token); with `ingest` False it takes
+    none."""
 
     def __init__(self, root: str, allow_programs: Iterable[str] = (), webhook: Optional[str] = None,
-                 out=None, tape: bool = False, ingest_tokens: Iterable[str] = ()):
+                 out=None, tape: bool = False, ingest_tokens: Iterable[str] = (), ingest: bool = True):
         self.root = root
         self.allow = set(allow_programs)
         self.webhook = Webhook(webhook) if webhook else None
         self.out = out or Feed()
         self.tape = tape
         self.ingest_tokens = [t for t in ingest_tokens if t]
+        self.ingest_open = ingest   # False: the runs are the viewer's imports of a signer store; nothing else writes
         self.lock = threading.Lock()
         os.makedirs(root, exist_ok=True)
         self._stat: Dict[str, Tuple] = {}
@@ -335,6 +337,8 @@ class Store:
 
     def ingest(self, body: Dict[str, Any], token: str = "") -> Dict[str, Any]:
         """Appends a batch of one run's events (with the blobs they reference) sent with the ingest `token`."""
+        if not self.ingest_open:
+            raise IngestError(404, "this viewer takes no ingest: its why runs are imported from the signer's store")
         events, blobs = body.get("events"), body.get("blobs") or {}
         if not isinstance(events, list) or not events or not isinstance(blobs, dict):
             raise IngestError(400, "expected {events: [...], blobs: {...}}")
