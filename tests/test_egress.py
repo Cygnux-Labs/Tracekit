@@ -461,6 +461,7 @@ class TestProxy(unittest.TestCase):
         return out
 
     def test_a_tunnel_whose_sni_is_its_host_is_observed_per_minute(self):
+        before = time.time()   # the connection's minute ends after this, even when the clock turns a minute mid-test
         s, status = self.connect(f"localhost:{self.up.port}")
         self.assertEqual(status, "HTTP/1.1 200 Connection established")
         hello = client_hello("localhost")
@@ -472,7 +473,7 @@ class TestProxy(unittest.TestCase):
             time.sleep(0.01)
         self.assertEqual(self.up.got, [hello])
         time.sleep(0.1)
-        self.assertTrue(self.srv.observer.flush(time.time()))   # the minute has not ended: a heartbeat alone
+        self.assertTrue(self.srv.observer.flush(before))   # the minute has not ended: a heartbeat alone
         self.assertEqual(self.sent[-1]["effects"], [])
         self.srv.observer.flush(math.inf)
         (e,) = self.sent[-1]["effects"]
