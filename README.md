@@ -18,14 +18,6 @@ offline.
 
 <img src="https://raw.githubusercontent.com/Cygnux-Labs/Tracekit/main/docs/demo/observer.gif" alt="tracekit view: four coding agents traced live; each dangerous action is blocked by policy and recorded" width="100%">
 
-## What's stable
-
-The stable core is the v2 signer (dev mode and Linux system mode, file storage), the Python SDK with
-`tracekit.instrument()` and its OpenAI Agents, LangChain / LangGraph, Claude Agent SDK and MCP integrations, the Claude
-Code hooks (v2), policy v2 with its packs, bundle export, the Python and TypeScript verifiers, `tracekit view` and
-`tracekit doctor`. Everything else works and is tested but is experimental: it may change and gets less hardening;
-experimental commands and servers say so when they start ([what's stable](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/support.md)).
-
 ## Why it exists
 
 Agents now run shell commands, edit code, query databases and send messages on real systems. Most agent logs are
@@ -291,8 +283,9 @@ report it.
 
 ## Docs
 
-- Seeing it work: [recorded demos](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/demos/README.md) of each
-  main use case, offline, with their bundles and verify reports
+- Seeing it work: a [walkthrough](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/walkthrough.md) of every step,
+  recorded on a clean install with screenshots; [recorded demos](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/demos/README.md)
+  of each main use case, offline, with their bundles and verify reports
 - The tour: a [terminal video](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/demos/tracekit-tour.mp4) of every
   demo running (3 min 44 s)
 - What's stable and what's experimental: [support](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/support.md)
@@ -328,7 +321,8 @@ report it.
   [security checklist](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/security-checklist.md),
   [case study: two open-source agents](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/case-study-oss-agents.md)
 - Asking why an action happened: [tracekit why](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/why.md), [its architecture](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/why-architecture.md)
-- Releasing: [launch checklist for 1.0](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/launch-checklist.md)
+- Releasing: [the procedure](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/RELEASING.md),
+  [launch checklist](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/launch-checklist.md)
 - The v1 laptop signer (`tracekitd`, `tracekit init --dev`, `tracekit demo`, `tracekit view --ledger`) and its bundles keep
   working: [coding agents](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/coding-agents.md),
   [signing](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/signing.md),
@@ -346,7 +340,12 @@ This is 1.2.0. 1.0 was the first stable release, and 1.x is the supported line
   verifier are unchanged.
 - **Versioned:** the signer RPC (version 16; a 1.2 signer also serves version 15 clients). A client newer than its
   signer is refused, so upgrade the signer first ([changelog](https://github.com/Cygnux-Labs/Tracekit/blob/main/CHANGELOG.md)).
-- **Experimental:** everything outside the stable core
+- **Stable core:** the v2 signer (dev mode and Linux system mode, file storage), the Python SDK with
+  `tracekit.instrument()` and its OpenAI Agents, LangChain / LangGraph, Claude Agent SDK and MCP integrations, the
+  Claude Code hooks (v2), policy v2 with its packs, bundle export, the Python and TypeScript verifiers, `tracekit view`
+  and `tracekit doctor`.
+- **Experimental:** everything else. It works and is tested, but may change and gets less hardening; experimental
+  commands and servers say so when they start
   ([what's stable](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/support.md)). The v1 OTLP receiver, ingest
   gateway and model proxy also need `--experimental`.
 - **Not yet done:** an external review of the threat models, and some release checks that wait on the owner
