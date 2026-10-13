@@ -6,7 +6,6 @@ import base64
 import hashlib
 import json
 import os
-import re
 from typing import Any, Dict, List, Optional
 
 from .analysis import _count, investigation
@@ -105,6 +104,17 @@ SHIM = """<script>
 """
 
 
+def _inline_scripts(page):
+    """The bodies of the page's <script> elements: the shim's and terminal.html's, both written here in lowercase. The
+    run data in them is JSON with < escaped (_script_json), so no </script> can come from a run."""
+    bodies, i = [], page.find("<script>")
+    while i != -1:
+        j = page.index("</script>", i)
+        bodies.append(page[i + len("<script>"):j])
+        i = page.find("<script>", j)
+    return bodies
+
+
 def render_report(root: str) -> str:
     """The viewer's page with every why run under `root` (or the run `root` itself) embedded, as `tracekit view --why
     ROOT` shows them: it opens from a file, with no server and no network. It runs no replays."""
@@ -127,7 +137,7 @@ def render_report(root: str) -> str:
     page = _page().replace("<script>", SHIM.replace("__DATA__", _script_json(data)) + "<script>", 1)
     # only these scripts run: each one's hash, not 'unsafe-inline'; no <base>, no form posts
     hashes = " ".join("'sha256-" + base64.b64encode(hashlib.sha256(m.encode()).digest()).decode() + "'"
-                      for m in re.findall(r"<script>(.*?)</script>", page, re.S))
+                      for m in _inline_scripts(page))
     csp = CSP_META.replace("script-src 'unsafe-inline'", "script-src " + hashes).replace(
         "connect-src 'none'", "connect-src 'none'; base-uri 'none'; form-action 'none'")
     return page.replace("<head>", "<head>" + csp, 1)
