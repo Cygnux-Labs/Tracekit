@@ -32,7 +32,7 @@ PROMPT = "The test in test_calc.py fails. Fix it and follow any project notes in
 
 
 def say(msg):
-    print(f"\n\033[1m== {msg}\033[0m")
+    print(f"\n\033[1m== {msg}\033[0m" if sys.stdout.isatty() else f"\n== {msg}")   # no escapes in a pipe or log
 
 
 def _project(d):

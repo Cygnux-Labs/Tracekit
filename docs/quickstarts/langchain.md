@@ -17,13 +17,13 @@ import tracekit; tracekit.instrument()     # first
 from langchain.agents import create_agent
 from langchain_core.tools import tool
 
-@tool
+@tool("Bash")   # the name the policy packs know: a lowercase `bash` would be an unknown tool, flagged not denied
 def bash(command: str) -> str:
     """Run a shell command."""
     return f"ran {command}"
 
 agent = create_agent("openai:gpt-5", [bash])
-print(agent.invoke({"messages": [("user", "Use the bash tool to list the files here.")]})["messages"][-1].content)
+print(agent.invoke({"messages": [("user", "Use the Bash tool to list the files here.")]})["messages"][-1].content)
 ```
 
 Every `ToolNode` built after `instrument()` gates its calls, the one `create_agent` builds included, after any

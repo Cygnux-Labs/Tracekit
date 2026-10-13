@@ -913,7 +913,7 @@ def _approvals(a):
                      json.dumps(args, indent=2) if x["args"] is not None else "  (deleted: the approval is no longer live)"]
             if "reason" in x:
                 lines.append(f"reason given by the agent (unverified): {json.dumps(x['reason'])}")
-            pydoc.pager("\n".join(lines))
+            pydoc.pager("\n".join(lines) + "\n")
         else:
             req = {"approval_id": a.approval_id, "decision": a.action, **({"reason": a.reason} if a.reason else {})}
             r = c.approval_decide(req)
