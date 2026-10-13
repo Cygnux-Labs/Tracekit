@@ -16,7 +16,7 @@ against your policy and allows it, denies it, or holds it for a person to approv
 as a signed, hash-chained record that the agent can't edit. A run exports as one `.tkb` file that anyone can verify
 offline.
 
-<img src="https://raw.githubusercontent.com/Cygnux-Labs/Tracekit/main/docs/demo/observer.gif" alt="tracekit observe: four coding agents traced live; each dangerous action is blocked by policy and recorded" width="100%">
+<img src="https://raw.githubusercontent.com/Cygnux-Labs/Tracekit/main/docs/demo/observer.gif" alt="tracekit view: four coding agents traced live; each dangerous action is blocked by policy and recorded" width="100%">
 
 ## What's stable
 
@@ -166,6 +166,15 @@ Per framework, with a 10-line example each:
 [v2 quickstart](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/quickstart-v2.md) explains each step and what
 `dev` assurance means; [limits](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/limits.md) lists what this path
 doesn't cover.
+
+### See it
+
+`tracekit view --dev` opens the one viewer on your runs: each run verified, every call with its decision, and (with
+why logs) why a call happened, down to clicking any node of the run's graph.
+
+![tracekit view: the planner's model call clicked in the run graph, with what it saw, produced and led to](https://raw.githubusercontent.com/Cygnux-Labs/Tracekit/main/docs/viewer/graph-node.png)
+
+A screenshot tour of every panel: [viewer tour](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/viewer.md#tour).
 
 No agent at hand? Each demo runs in a temp dir and needs no API key. `--server` shows calls allowed, denied and
 approved, a witness cosignature, and a tampered copy failing verification. `--why` shows a held email whose cause is
@@ -320,7 +329,7 @@ report it.
   [case study: two open-source agents](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/case-study-oss-agents.md)
 - Asking why an action happened: [tracekit why](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/why.md), [its architecture](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/why-architecture.md)
 - Releasing: [launch checklist for 1.0](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/launch-checklist.md)
-- The v1 laptop signer (`tracekitd`, `tracekit init --dev`, `tracekit demo`, `tracekit observe`) and its bundles keep
+- The v1 laptop signer (`tracekitd`, `tracekit init --dev`, `tracekit demo`, `tracekit view --ledger`) and its bundles keep
   working: [coding agents](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/coding-agents.md),
   [signing](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/signing.md),
   [findings](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/findings.md),

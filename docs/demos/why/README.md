@@ -8,7 +8,7 @@ each suspect (10 paired replays, tools served from the recorded tape) and measur
 
 ```sh
 tracekit why demo --out runs --n 10                                # no API key, no network
-tracekit why serve runs --allow-program tracekit.why.demo:SYSTEM   # the same runs in the viewer
+tracekit view --why runs --allow-program tracekit.why.demo:SYSTEM   # the same runs in the viewer
 ```
 
 **What the record shows.** The run's five calls by agent, its hash chain checked (20 events), and the blast radius:

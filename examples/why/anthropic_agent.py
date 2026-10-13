@@ -3,7 +3,7 @@
     pip install anthropic
     export ANTHROPIC_API_KEY=...
     export TRACEKIT_WHY_MODEL=<a Claude model id>
-    tracekit why serve runs-claude                      # optional: watch it live at the URL it prints
+    tracekit view --why runs-claude                     # optional: watch it live at the URL it prints
     python examples/why/anthropic_agent.py [block|alert]
 
 Every system prompt, message block and tool result becomes a context item automatically. The

@@ -1,5 +1,131 @@
 # Viewer
 
+`tracekit view` is Tracekit's one viewer: one command, one page, one server, whatever the runs come from.
+
+| Command | Shows |
+|---|---|
+| `tracekit view` (`--dev`, `--config signer.yaml`, `--data-dir DIR`) | the v2 signer's runs, each verified ([below](#laptop-viewer)) |
+| `tracekit view --dev --why DIR` | those runs with the why investigation of their why logs ([below](#why)) |
+| `tracekit view --why DIR` | why logs alone, each run's events on the tape |
+| `tracekit view --ledger [HOME]`, `tracekit view --bundle FILE` | the v1 ledger (`tracekitd`), or a v1 bundle once it verifies; loopback only |
+| `tracekit view --config signer.yaml` with `view.logs` | every log of a central deployment ([below](#central-viewer)) |
+
+The nav at the top of each page links the pages this server has: **LIVE** (the run list, tape and detail; with why
+logs, the header's DESK, GRAPH, AGENTS and INFLUENCE buttons switch to the investigation), **RUNS** (the central run
+pages) and **APPROVALS** (with OIDC login and `view.signer`, for approvers). `tracekit observe` and `tracekit why serve`
+still work as before and print one line pointing here. A single bundle's self-contained `replay.html` stays a file
+you open without a server.
+
+## Tour
+
+Open it with one command, then open the URL it prints (it carries a one-time token):
+
+```bash
+tracekit view --dev                     # the dev signer's runs
+tracekit view --why runs --allow-program tracekit.why.demo:SYSTEM   # after `tracekit why demo --out runs`
+```
+
+The screenshots below come from two runs of a coding agent (two calls denied by the policy), the `tracekit why demo`
+runs, and the sample v1 bundle.
+
+### Runs and the tape
+
+![Two verified runs in the run list, the coding agent's run selected, its tape with two BLOCK rows](viewer/runs.png)
+
+Panel 1 lists each run with its verdict: `VERIFIED` means `tracekit verify`'s checks passed on the run's bundle against
+the pinned log key (here the store's own key: `dev` assurance); `FAILED` means they did not, and the run shows only its
+failure report; `PENDING` means no checkpoint covers the run's last record yet. Under each run: calls, **blocked** (red:
+the policy denied them), held for a person, and signed gaps. Panel 2, the tape, has one row per signed record: `VERIFY`
+is the verifier's report, `BLOCK` a denied call (red), `TOOL` an allowed one (`⚑` flagged by a rule), `SESS` the run's
+start and end. The header's `CHAIN ✓ N SIGNED RECORDS` counts the records shown from runs that verified. Click a run
+to scope the whole page to it; **All runs** goes back.
+
+### A run's review
+
+![The run review: integrity VERIFIED, assurance dev, two allowed, one flagged, two denied, no gaps](viewer/review.png)
+
+With a run selected and no row, panel 8 is the run review: Integrity, Assurance, how many calls were allowed, flagged,
+denied and held, who approved, gaps by kind and coverage. Click a line to jump to its first record. Every verdict here
+is operator-side: for evidence, verify the bundle yourself with keys you pinned.
+
+### A denied call
+
+![A BLOCK row selected: the call, its decision DENY to BLOCKED, the rules with their reasons, and its ledger evidence](viewer/denied.png)
+
+Click a tape row for its record: the decision (`DENY → BLOCKED`), the rules that matched with their reasons, the run's
+verdict, the arguments commitment (v2 records keep arguments only as a salted commitment) and, on the right, the
+record's seq, hash and previous hash. The bottom bar replays the selected run: `SPACE` plays, `←` `→` step,
+`D` `H` `G` jump to the next deny, hold or gap, `L` returns to live.
+
+### The command box
+
+![HELP lists every command of the box at the top](viewer/help.png)
+
+Type `/` (or click the box at the top), then a command and Enter: `AGT name`, `TOOL Bash`, `FILE .env`, `FLAG`
+(flagged, blocked or failed only), `FIND text`, `SEQ n` (open record n), `CLR` (clear every filter), `HELP` (this
+list). Each filter shows as a chip in the header; click its `✕` to drop it. `SEQ n` on a record with no row of its
+own (a call's decision or result is on the call's row) opens the row before it and says so in the box.
+
+### Why: the verdict and the path
+
+![The WHY tab of a send_email call: its verdict sentence and how it got here, from the untrusted inputs](viewer/why.png)
+
+With why logs, select a tool call (or click a `WHY` alert, panel 3) and open **WHY** in panel 8. The verdict sentence
+says what replays found; **How it got here** is the recorded path from each untrusted input (red border) through the
+agents' model calls and messages to the call. Click any step to open it. While WHY or NODE is open, panel 8 widens
+so its tables and values wrap instead of being cut; DETAIL gives the room back.
+
+### FIND THE CAUSE and RUN TEST
+
+![Candidate causes after FIND THE CAUSE: two primary causes in red, two with no effect seen, two not tested; the graph's tested causes in red](viewer/find-the-cause.png)
+
+**Candidate causes** lists every input and channel upstream of the call. **RUN TEST** replays the run without one of
+them (recorded tool results, new tool calls stubbed: nothing real is re-sent) and compares how often the call
+happens: `PRIMARY CAUSE` (red) means it stops happening without it, `NO EFFECT SEEN` means no change larger than the
+test can detect, `INCONCLUSIVE` means too few replays reproduced the call. **FIND THE CAUSE** runs a group test and
+narrows it down. Both run only for a program passed with `--allow-program`; otherwise the panel prints the command.
+The effect is the drop in how often the call happens, with its 95% interval.
+
+### GRAPH: click a node
+
+![GRAPH with the planner's model call clicked: NODE shows its model, tokens, what it saw, what it produced, where it came from, what it led to and its record](viewer/graph-node.png)
+
+**GRAPH** (header buttons) draws the run's data flow: inputs (cyan), model calls (magenta), tool calls (green),
+messages (amber); a red border is untrusted content, a red line a tested cause with its effect. Click a node: the graph
+keeps what it came from and led to and fades the rest, and panel 8's **NODE** tab shows it in full: for a model call
+its model, time, tokens, what it saw (each a link) and what it produced; for a tool call its arguments, result,
+policy decision and a **WHY DID THIS HAPPEN?** button; for an input or a message its content and trust. **Came from**
+and **Led to** link the neighbours; **Record** gives its time, hash, previous hash and the signed Tracekit record it
+cites. Click the node again, or **CLEAR**, to see the whole graph. The checkboxes add inferred links and ruled-out
+tests.
+
+### AGENTS
+
+![AGENTS: each agent's role, parent, calls, messages, model time and tokens; the channels and their tested influence](viewer/agents.png)
+
+Per agent: role, who spawned it, model and tool calls, messages, model time and tokens. **Channels used** says whether
+a receiver's model call had each message in its context, and what a replay without the channel changed. The influence
+matrix fills in as tests run; the critical path is the longest chain of the run.
+
+### INFLUENCE
+
+![INFLUENCE: sources by trust across the eight demo runs, which tools each reached, and the links replays confirmed](viewer/influence.png)
+
+Across every why run: each source (with a preview of its content), its trust, how many runs and decisions cited it, and
+for each tool whether it reached it (`reached N×`), a replay confirmed it (`+0.90 confirmed`, red) or ruled it out.
+
+### A v1 bundle
+
+![A v1 bundle verified and shown: its tape with a blocked curl upload of .env and the record's ledger evidence](viewer/bundle.png)
+
+`tracekit view --bundle FILE` verifies a v1 bundle first and shows it only if it verifies; `--ledger` shows the live
+v1 ledger. A tampered bundle is refused before anything is served:
+
+```text
+$ tracekit view --bundle docs/sample/demo-run-tampered.tkb
+tracekit view: bundle docs/sample/demo-run-tampered.tkb FAILED verification (exit 1); refusing to show it. Run `tracekit verify docs/sample/demo-run-tampered.tkb` for the details.
+```
+
 ## Laptop viewer
 
 ![tracekit view: three runs with their verdicts, the support agent's run selected, its blocked calls with rule reasons, the held refund approved by an ops approver, and the run review](demo/viewer.png)
@@ -52,12 +178,12 @@ The viewer is also the UI of [`tracekit why`](why.md): with why logs it investig
 is both signed evidence and a causal log.
 
 ```bash
-tracekit view --why runs --allow-program myapp.agents:SYSTEM
-tracekit why serve runs --allow-program myapp.agents:SYSTEM     # the same page on why logs alone, no signer store
+tracekit view --dev --why runs --allow-program myapp.agents:SYSTEM   # the dev signer's runs with their why logs
+tracekit view --why runs --allow-program myapp.agents:SYSTEM         # the same page on why logs alone, no signer store
 ```
 
 `--why DIR` names the why logs (default: `why/` in the signer's data dir, where the signer-backed why runtime writes
-them, when it exists). A tool call's why event cites the signed record it produced (`tracekit: {run_id, run_seq}`);
+them, when it exists). Without `--dev`, `--config` or `--data-dir` it shows the why logs alone. A tool call's why event cites the signed record it produced (`tracekit: {run_id, run_seq}`);
 that citation joins the two.
 
 - **Detail · where the arguments came from**: from the signed `provenance` of the call's decision (labelled

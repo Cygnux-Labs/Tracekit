@@ -173,7 +173,7 @@ def cmd_demo(a):
     _p("\n== structure")
     _p("  critical path: " + " -> ".join(st["critical_path"]))
     _p(f"\nruns:   {out}")
-    _p(f"open:   tracekit why serve {out} --allow-program tracekit.why.demo:SYSTEM")
+    _p(f"open:   tracekit view --why {out} --allow-program tracekit.why.demo:SYSTEM")
 
 
 def cmd_verify(a):
@@ -388,11 +388,14 @@ def cmd_watch(a):
 
 
 def cmd_serve(a):
-    """The viewer (tracekit view's page and server) on the why logs under ROOT, with no signer store."""
+    """The viewer (tracekit view's page and server) on the why logs under ROOT, with no signer store: `tracekit view
+    --why ROOT` runs the same."""
     import ssl
     from .. import view
     from ..observe import LOOPBACK_HOSTS
     from .server import Store
+    print("tracekit why serve is now part of tracekit view: `tracekit view --why ROOT`; this command keeps working",
+          file=sys.stderr, flush=True)
     if bool(a.tls_cert) != bool(a.tls_key):
         print("tracekit why serve: --tls-cert and --tls-key go together", file=sys.stderr)
         return 2

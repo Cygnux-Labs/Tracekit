@@ -23,7 +23,7 @@ approves held calls from a second process; without it, you approve them from ano
 ## tracekit why
 
 Causal investigation and replay of multi-agent runs ([docs/why.md](../docs/why.md)): `why/quickstart.py` is the
-smallest program, `why/live_demo.py` and `why/remote_agent.py` feed `tracekit why serve`, and
+smallest program, `why/live_demo.py` and `why/remote_agent.py` feed `tracekit view --why`, and
 `why/anthropic_agent.py` records a real Claude tool-use loop.
 
 ## v1 signer (laptop) and SDK

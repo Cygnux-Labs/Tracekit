@@ -188,9 +188,9 @@ def main(argv=None):
     p.add_argument("--port", type=int)
     p.add_argument("--upstream")
 
-    p = sub.add_parser("observe", help="live terminal for the ledger or a bundle (read-only web UI)")
+    p = sub.add_parser("observe", help="now part of `tracekit view --ledger`: the v1 ledger or a bundle (read-only web UI)")
     p.add_argument("rest", nargs=argparse.REMAINDER)
-    p = sub.add_parser("view", help="laptop viewer for the v2 signer's runs, each verified (read-only web UI)")
+    p = sub.add_parser("view", help="the viewer: the v2 signer's runs, each verified; --why DIR, --ledger, --bundle (read-only web UI)")
     p.add_argument("rest", nargs=argparse.REMAINDER)
     p = sub.add_parser("why", help="causal investigation and replay of multi-agent runs: `why demo|record|serve|test|...`",
                        add_help=False)

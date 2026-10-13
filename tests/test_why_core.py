@@ -467,7 +467,7 @@ class Cli(Tmp):
         code, out = self.cli(["demo", "--out", self.tmp, "--n", "10"])
         self.assertEqual(code, 0)
         self.assertIn("CAUSAL", out)
-        self.assertIn(f"tracekit why serve {self.tmp}", out)   # the viewer is the one UI: no static report
+        self.assertIn(f"tracekit view --why {self.tmp}", out)   # the viewer is the one UI: no static report
         self.assertFalse(os.path.exists(os.path.join(self.tmp, "report.html")))
         self.assertEqual(self.cli(["verify", os.path.join(self.tmp, "demo-seed0")])[0], 0)
 

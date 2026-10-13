@@ -1,4 +1,5 @@
-"""`tracekit observe`: the live terminal (the Bloomberg-style observer) for v0.2 ledgers.
+"""`tracekit observe`: the live terminal (the Bloomberg-style observer) for v0.2 ledgers; part of `tracekit view` now
+(`tracekit view --ledger [HOME]`, `--bundle FILE`), whose server this handler is.
 
 Reads the signer's ledger (world-readable, never written here), translates each signed v0.2
 event into the record shape the terminal UI understands, and serves the same endpoints as the
@@ -340,13 +341,18 @@ class Feed:
         return verify_ledger_cached(self.path)
 
 
-def _page(trace="null", raw="null", nonce=None):
+def _page(trace="null", raw="null", nonce=None, nav=""):
     """terminal.html with its data slots filled in one pass (so record content that happens to contain a slot name is
-    never substituted again) and, when served, the per-response script nonce."""
-    slots = {"/*__TRACE_DATA__*/null": trace, "/*__RAW_DATA__*/null": raw}
+    never substituted again) and, when served, the per-response script nonce and the viewer's nav."""
+    slots = {"/*__TRACE_DATA__*/null": trace, "/*__RAW_DATA__*/null": raw, NAV: nav}
     if nonce:
         slots["<script>"] = f'<script nonce="{nonce}">'
     return re.sub("|".join(re.escape(k) for k in slots), lambda m: slots[m.group(0)], read_text(UI))
+
+
+NAV = "<!--__NAV__-->"   # where a served page gets the viewer's nav
+NOTICE = ("tracekit observe is now part of tracekit view: `tracekit view --ledger [HOME]` or `tracekit view --bundle "
+          "FILE`; this command keeps working")
 
 
 LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
@@ -382,6 +388,14 @@ def make_handler(feed, token, allowed_hosts=None, secure=False, login=None, appr
     an OIDC session), its replay POSTs for the token with a same-origin JSON body, and /v1/ingest for a bearer token
     only: one of the Store's ingest tokens, else (none set) the token."""
     allowed = set(LOOPBACK_HOSTS) | {h.lower() for h in (allowed_hosts or ()) if h.lower() not in WILDCARD_HOSTS}
+    pages = [p for p, on in (("/", feed is not None), ("/runs", runs), ("/approvals", approvals)) if on]
+
+    def nav(here):
+        """One nav for every page this server has: the live terminal (its why views are its header buttons), the run
+        pages, the approval pages."""
+        names = {"/": "LIVE", "/runs": "RUNS", "/approvals": "APPROVALS"}
+        return '<nav class="nav">' + "".join(f'<a href="{p}" class="{"on" if p == here else ""}">{names[p]}</a>'
+                                             for p in pages) + "</nav>"
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "tracekit-observe"
@@ -489,7 +503,7 @@ def make_handler(feed, token, allowed_hosts=None, secure=False, login=None, appr
                 return self._send(404, '{"error":"not found"}')
             if u.path in ("/", "/index.html"):
                 nonce = secrets.token_urlsafe(18)
-                return self._send(200, _page(nonce=nonce), "text/html", nonce=nonce)
+                return self._send(200, _page(nonce=nonce, nav=nav("/")), "text/html", nonce=nonce)
             if u.path == "/api/snapshot":
                 with feed.lock:   # copied under the lock, written after it: a client that stops reading holds nothing
                     body = {"next": feed.base + len(feed.records), "dropped": feed.base,
@@ -510,8 +524,8 @@ def make_handler(feed, token, allowed_hosts=None, secure=False, login=None, appr
             """The run pages of a central deployment's logs (view.Runs), read-only."""
             if u.path == "/runs":
                 nonce = secrets.token_urlsafe(18)
-                return self._send(200, read_text(RUNS_UI).replace("<script>", f'<script nonce="{nonce}">'),
-                                  "text/html", nonce=nonce)
+                return self._send(200, read_text(RUNS_UI).replace("<script>", f'<script nonce="{nonce}">')
+                                  .replace(NAV, nav("/runs")), "text/html", nonce=nonce)
             q = {k: v[0] for k, v in parse_qs(u.query).items()}
             try:
                 out = {"/api/runs": runs.search, "/api/run": runs.run, "/api/bundle": runs.bundle}[u.path](scope, q)
@@ -533,8 +547,8 @@ def make_handler(feed, token, allowed_hosts=None, secure=False, login=None, appr
                 return self._send(403, '{"error":"needs an approver session"}')
             if not post and path == "/approvals":
                 nonce = secrets.token_urlsafe(18)
-                return self._send(200, read_text(APPROVALS_UI).replace("<script>", f'<script nonce="{nonce}">'),
-                                  "text/html", nonce=nonce)
+                return self._send(200, read_text(APPROVALS_UI).replace("<script>", f'<script nonce="{nonce}">')
+                                  .replace(NAV, nav("/approvals")), "text/html", nonce=nonce)
             if not post:
                 code, out = approvals.get(s, path)
                 return self._send(code, json.dumps(out, ensure_ascii=False))
@@ -685,8 +699,25 @@ def _open_bundle(bundle_path):
     return os.path.join(d, "ledger", "ledger.jsonl"), code
 
 
+def ledger_path(home=None, bundle=None, prog="tracekit observe"):
+    """(the ledger to show, 0): `bundle`'s, verified first, else HOME's (default: the client config's signer home);
+    (None, exit code) once the refusal is printed."""
+    if not bundle:
+        from . import client
+        home = home or client.client_config().get("signer_home") or "/var/lib/tracekit"
+        return os.path.join(home, "ledger", "ledger.jsonl"), 0
+    path, code = _open_bundle(bundle)
+    if path is None:
+        return None, 1
+    if code != 0:
+        print(f"{prog}: bundle {bundle} FAILED verification (exit {code}); refusing to show it. "
+              f"Run `tracekit verify {bundle}` for the details.", file=sys.stderr)
+        return None, code
+    print(f"{prog}: bundle {bundle} verified", file=sys.stderr)
+    return path, 0
+
+
 def main(argv=None):
-    from . import client
     ap = argparse.ArgumentParser(prog="tracekit observe")
     ap.add_argument("--home", help="signer home (default: from the client config)")
     ap.add_argument("--host", default="127.0.0.1")
@@ -699,18 +730,9 @@ def main(argv=None):
     if a.prices:
         from .usage import Prices
         prices = Prices.load(a.prices)
-    if a.bundle:
-        path, code = _open_bundle(a.bundle)
-        if path is None:
-            return 1
-        if code != 0:
-            print(f"tracekit observe: bundle {a.bundle} FAILED verification (exit {code}); refusing to show it. "
-                  f"Run `tracekit verify {a.bundle}` for the details.", file=sys.stderr)
-            return code
-        print(f"tracekit observe: bundle {a.bundle} verified", file=sys.stderr)
-    else:
-        home = a.home or client.client_config().get("signer_home") or "/var/lib/tracekit"
-        path = os.path.join(home, "ledger", "ledger.jsonl")
+    path, code = ledger_path(a.home, a.bundle)
+    if path is None:
+        return code
     if a.export:
         if not os.path.exists(path):
             print(f"tracekit observe: no ledger at {path} (is the signer running? pass --home)", file=sys.stderr)
@@ -732,6 +754,7 @@ def main(argv=None):
         print("tracekit observe: serves plain HTTP, so only on loopback; reach it from another machine through an "
               "SSH tunnel", file=sys.stderr)
         return 1
+    print(NOTICE, file=sys.stderr, flush=True)
     feed = Feed(path, prices=prices)
     try:
         srv = ThreadingHTTPServer((a.host, a.port), make_handler(feed, token, [a.host]))

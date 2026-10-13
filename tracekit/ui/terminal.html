@@ -1026,6 +1026,20 @@
       width: 170px
     }
 
+    /* the viewer's nav (observe.make_handler fills it in): the pages this server has */
+    .nav a {
+      color: var(--muted);
+      border: 1px solid var(--line2);
+      padding: 0 6px;
+      text-decoration: none
+    }
+
+    .nav a.on {
+      color: #000;
+      background: var(--amber);
+      border-color: var(--amber)
+    }
+
     /* why logs (docs/viewer.md#why): a why view takes the lower panels' room; header, run list and tape stay */
     .views {
       display: flex;
@@ -1102,7 +1116,26 @@
       text-align: left;
       padding: 2px 8px;
       border-bottom: 1px solid var(--line);
-      vertical-align: top
+      vertical-align: top;
+      white-space: normal;
+      overflow-wrap: anywhere;
+      max-width: none
+    }
+
+    /* WHY and NODE: the detail panel takes the room their tables and values need */
+    .wd main,
+    .v2.wd main {
+      grid-template-areas: "agents tape alerts" "agents tape mix" "lanes lanes lanes" "reason detail detail"
+    }
+
+    .wd .files {
+      display: none
+    }
+
+    .wv.wd main,
+    .v2.wv.wd main {
+      grid-template-columns: minmax(250px, 1fr) minmax(0, 1.4fr) minmax(0, 1.9fr);
+      grid-template-areas: "agents tape alerts" "whyv whyv detail"
     }
 
     .wt th {
@@ -1121,6 +1154,15 @@
       padding: 0 4px;
       cursor: pointer;
       white-space: nowrap
+    }
+
+    [data-wopen] {
+      color: var(--cyan);
+      text-decoration: none
+    }
+
+    [data-wopen]:hover {
+      text-decoration: underline
     }
 
     .wstep.unt {
@@ -1189,7 +1231,7 @@
   <noscript>Tracekit Observer needs JavaScript. For a terminal-only view of a bundle run <code>tracekit verify</code>.</noscript>
   <div id="app">
     <header class="top">
-      <span class="brand">TRACEKIT</span>
+      <span class="brand">TRACEKIT</span><!--__NAV__-->
       <label class="cmd" for="cmd"><span>▶</span><input id="cmd" autocomplete="off" spellcheck="false"
           placeholder="AGT api · TOOL BASH · FLAG · FILE .env · SEQ 12 · CLR · HELP"><kbd>GO</kbd></label>
       <div class="chips" id="chips"></div>
@@ -1262,7 +1304,8 @@
       </section>
       <section class="p detail">
         <h2><b>8</b><button class="wtab" data-wtab="detail" type="button">DETAIL</button><button class="wtab"
-            data-wtab="why" id="wtabwhy" type="button" hidden>WHY</button><small id="detsum">click any row</small></h2>
+            data-wtab="why" id="wtabwhy" type="button" hidden>WHY</button><button class="wtab" data-wtab="node" id="wtabnode"
+            type="button" hidden>NODE</button><small id="detsum">click any row</small></h2>
         <div class="body" id="detail">
           <div class="empty">Select an action, alert or reasoning entry.</div>
         </div>
@@ -1581,7 +1624,11 @@
     function render() {
       renderTop(); renderTicker(); renderAgents(); renderTape(); renderAlerts(); renderMix(); renderLanes(); renderReason(); renderFiles();
       renderWhyView();
-      if (WTAB === "why") renderWhyPanel(); else if (selected) renderDetail(selected); else if (V2) renderReview();
+      if (WTAB === "node" && !WNODE) WTAB = "detail";
+      document.body.classList.toggle("wd", WTAB !== "detail");
+      $("wtabnode").hidden = !WNODE;
+      document.querySelectorAll(".p>h2 .wtab").forEach(b => b.classList.toggle("on", b.dataset.wtab === WTAB));
+      if (WTAB === "node") renderNode(); else if (WTAB === "why") renderWhyPanel(); else if (selected) renderDetail(selected); else if (V2) renderReview();
     }
     function renderTop() {
       const m = $("mode");
@@ -1888,8 +1935,10 @@
       for (const h of laneHits) { if (my < h.y0 || my > h.y1) continue; const d = mx < h.x0 ? h.x0 - mx : mx > h.x1 ? mx - h.x1 : 0; if (d < bd) { bd = d; best = h; } }
       if (best) select(best.act);
     });
+    const CMD_HINT = $("cmd").placeholder;
     function runCommand(raw) {
       const s = raw.trim(); if (!s) return;
+      $("cmd").placeholder = CMD_HINT;
       const [cmd, ...rest] = s.split(/\s+/), arg = rest.join(" ");
       switch (cmd.toUpperCase()) {
         case "AGT": case "A": F.agent = arg || null; break;
@@ -1898,10 +1947,15 @@
         case "FIND": case "/": F.find = arg || null; break;
         case "FLAG": case "F": F.flag = !F.flag; break;
         case "CLR": case "CLEAR": F.agent = F.tool = F.file = F.find = F.kind = null; F.flag = false; selected = null; break;
-        case "SEQ": { const r = S.recs.find(r => lseq(r) === +arg); if (r) { const act = S.actList.find(a => a.pre === r || a.post === r); select(act || r); } break; }
+        case "SEQ": {   // a record with no row of its own (a call's decision, a checkpoint): the row before it
+          const n = +arg, r = S.recs.reduce((b, r) => lseq(r) <= n && (!b || lseq(r) > lseq(b)) ? r : b, null);
+          if (r) { const act = S.actList.find(a => a.pre === r || a.post === r); select(act || r); }
+          if (!r || lseq(r) !== n) $("cmd").placeholder = `seq ${arg} has no row of its own on the tape` + (r ? `; showing the row before it, seq ${lseq(r)}` : "");
+          break;
+        }
         case "HELP": case "?": $("help").hidden = false; break;
-        case "PAUSE": playing = false; updatePlay(); break;
-        case "PLAY": playing = true; updatePlay(); tick(); break;
+        case "PAUSE": if (BOOT) { playing = false; updatePlay(); } break;
+        case "PLAY": if (BOOT) { playing = true; updatePlay(); tick(); } break;
         case "SPEED": $("speed").value = arg; break;
         default: F.find = s;
       }
@@ -1954,7 +2008,7 @@
     let liveOk = false, liveErr = "";
     async function getJSON(path) {
       const r = await fetch(path, { credentials: "same-origin" });
-      if (r.status === 401) throw Object.assign(new Error("This observer needs a token: open the page with ?token=<TRACEKIT_OBSERVE_TOKEN>."), { fatal: true });
+      if (r.status === 401) throw Object.assign(new Error("This viewer needs a token: open the URL it printed (?token=…; TRACEKIT_VIEW_TOKEN, or TRACEKIT_OBSERVE_TOKEN for tracekit observe)."), { fatal: true });
       if (!r.ok) throw new Error(`observer answered HTTP ${r.status}`);
       return r.json();
     }
@@ -2069,7 +2123,7 @@
 
     /* ---------------- why logs (why.server.Store; docs/viewer.md#why) ---------------- */
     // WHY: /api/why/workspace; WD: why run id -> its detail (null while loading); VIEW: the lower panels' view
-    let WHY = null, whyT = null, VIEW = "desk", WTAB = "detail", WRUN = null, WMSG = "", WBUSY = null, wvKey = "";
+    let WHY = null, whyT = null, VIEW = "desk", WTAB = "detail", WRUN = null, WMSG = "", WBUSY = null, wvKey = "", WNODE = null;
     const WD = new Map(), WTARGET = {}, WJOINT = new Set(), GV = { inferred: false, ruled: false, focus: null };
     const WTYPE = { input: "input", decision: "model call", action: "tool call", message: "message" };
     const WSTATUS = { confirmed: "PRIMARY CAUSE", contributing: "CONTRIBUTING", suppressive: "SUPPRESSES IT", inconclusive: "INCONCLUSIVE", untested: "NOT TESTED", "no-effect-seen": "NO EFFECT SEEN", "ruled-out": "RULED OUT" };
@@ -2169,6 +2223,42 @@
         + (WMSG ? `<p>${esc(WMSG)}</p>` : "") + how + `<p class="dim">A test replays the run without the item (recorded tool results, new tool calls stubbed: nothing real is re-sent) and compares how often this call happens.</p>`;
       el.innerHTML = cols(left, right);
     }
+    // NODE: one why event of the graph or a lineage step, in full: what it saw, did and produced, its links, its record
+    function renderNode() {
+      const d = whyDetail(WNODE.run), el = $("detail");
+      $("detsum").textContent = `why · ${WNODE.run}`;
+      const n = d && !d.error && d.nodes.find(x => x.id === WNODE.id);
+      if (!n) { el.innerHTML = `<div class="empty">${esc(!d ? "loading…" : d.error || "This node is not in the run's why log any more.")}</div>`; return; }
+      const by = Object.fromEntries(d.nodes.map(x => [x.id, x])), ms = v => v == null ? "–" : `${(+v).toFixed(1)} ms`;
+      const link = id => { const x = by[id]; return x ? `<a href="#" data-wopen="${esc(id)}">${esc(WTYPE[x.type] || x.type)} · ${esc(x.agent)} · ${esc(String(x.label).slice(0, 50))}</a>` : esc(id); };
+      const kv = (rows, more = "") => `<dl class="kv">` + rows.filter(r => r[1] != null && r[1] !== "").map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("") + more + `</dl>`;
+      const act = n.type === "action" && S.actList.find(a => { const r = whyRef(a); return r && r.run === WNODE.run && r.node === n.id; });
+      let body;
+      if (n.type === "decision") {
+        const u = n.usage || {};
+        body = kv([["model", n.model], ["purpose", n.purpose || "–"], ["took", ms(n.duration_ms)], ["tokens", u.input_tokens != null ? `${u.input_tokens} in · ${u.output_tokens} out${u.estimated ? " (estimated)" : ""}` : null],
+          ["status", n.status || "ok"], ["context", n.context_mode ? (n.context_mode === "exact" ? "exact (from the recorded request)" : "reconstructed (the request was hashed)") : null]])
+          + `<div class="sec">WHAT IT SAW (${esc(n.context.length)})</div><div class="wflow">` + (n.context.map(c => (c.node && by[c.node] ? link(c.node) : esc(c.source)) + (c.trust === "untrusted" ? ` <span class="s-deny">untrusted</span>` : "")).join("<br>") || `<span class="dim">nothing</span>`) + `</div>`
+          + (n.ablated && n.ablated.length ? `<p class="dim">removed by the replay's intervention: ${esc(n.ablated.length)}</p>` : "")
+          + `<div class="sec">WHAT IT PRODUCED</div><pre>${esc(n.output)}</pre>`;
+      } else if (n.type === "action") {
+        const pol = n.policy && n.policy.decision ? n.policy.decision + (n.policy.rule_ids && n.policy.rule_ids.length ? ` (${n.policy.rule_ids.join(", ")})` : "") : null;
+        const g = n.guard ? n.guard.verdict + (n.guard.alerts && n.guard.alerts.length ? ": " + n.guard.alerts.map(a => a.title).join("; ") : "") : null;
+        body = kv([["tool", n.tool], ["took", ms(n.duration_ms)], ["status", n.status], ["executed", n.mode], ["sensitive", n.sensitive ? "yes" : null], ["Tracekit policy", pol], ["guard", g]])
+          + `<div class="sec">ARGUMENTS</div><pre>${esc(JSON.stringify(n.args, null, 2))}</pre><div class="sec">RESULT</div><pre>${esc(n.result)}</pre>`
+          + (act && d.actions[n.id] ? `<p><button type="button" data-wwhy="${esc(n.id)}">WHY DID THIS HAPPEN? →</button></p>` : "");
+      } else {
+        body = kv([[n.type === "message" ? "channel" : "source", n.type === "message" ? `${n.agent} → ${n.to}` : n.source || n.label], ["trust", n.trust]])
+          + `<div class="sec">CONTENT</div><pre>${esc(n.content)}</pre>`
+          + (VIEW !== "graph" || GV.focus !== n.id ? `<p><button type="button" data-wreach="${esc(n.id)}">SHOW WHAT IT REACHED →</button></p>` : "");
+      }
+      const ins = d.edges.filter(e => e.dst === n.id && e.evidence !== "tested"), outs = d.edges.filter(e => e.src === n.id && e.evidence !== "tested");
+      const edges = (title, list, end) => list.length ? `<div class="sec">${esc(title)}</div><div class="wflow">` + list.map(e => link(e[end]) + ` <span class="dim">${esc(e.kind)}${e.evidence === "inferred" ? " · inferred" : ""}</span>`).join("<br>") + `</div>` : "";
+      const ev = (n.evidence || []).map(x => `signed record #${esc(x.seq)} ${esc(x.type || "")} <span class="dim">${esc(String(x.hash || "").slice(0, 16))}</span>`).join("<br>");
+      el.innerHTML = `<div class="sec">${esc(WTYPE[n.type] || n.type)} · ${esc(n.agent)} · EVENT #${esc(n.seq)}${n.trust === "untrusted" ? ` · <span class="s-deny">UNTRUSTED</span>` : ""}</div><div class="wverdict">${esc(n.label)}</div>`
+        + cols(body, edges("CAME FROM", ins, "src") + edges("LED TO", outs, "dst")
+          + `<div class="sec">RECORD</div>` + kv([["time", n.ts], ["hash", n.hash], ["prev", n.prev]], ev && `<dt>Tracekit</dt><dd>` + ev + `</dd>`));
+    }
     async function whyReplay(ref, kind, body) {
       WBUSY = ref.run + "|" + ref.node; WMSG = ""; schedule();
       try {
@@ -2249,8 +2339,8 @@
     }
     function agentsView(el, d) {
       const M = d.matrix;
-      el.innerHTML = `<div class="sec">AGENTS</div><table class="wt"><thead><tr><th>AGENT</th><th>ROLE</th><th>SPAWNED BY</th><th>MODEL CALLS</th><th>TOOL CALLS</th><th>SENT / RECEIVED</th></tr></thead><tbody>`
-        + d.agents.map(a => `<tr><td>${esc(a.name)}</td><td>${esc(a.role || "")}</td><td>${esc(a.parent || "")}</td><td>${esc(a.decisions || 0)}</td><td>${esc(a.actions || 0)}</td><td>${esc(`${a.sent || 0} / ${a.received || 0}`)}</td></tr>`).join("") + `</tbody></table>`
+      el.innerHTML = `<div class="sec">AGENTS</div><table class="wt"><thead><tr><th>AGENT</th><th>ROLE</th><th>SPAWNED BY</th><th>MODEL CALLS</th><th>TOOL CALLS</th><th>SENT / RECEIVED</th><th>MODEL TIME</th><th>TOKENS</th></tr></thead><tbody>`
+        + d.agents.map(a => `<tr><td>${esc(a.name)}</td><td>${esc(a.role || "")}</td><td>${esc(a.parent || "")}</td><td>${esc(a.decisions || 0)}</td><td>${esc(a.actions || 0)}</td><td>${esc(`${a.sent || 0} / ${a.received || 0}`)}</td><td>${esc(a.model_ms ? `${a.model_ms} ms` : "–")}</td><td>${esc(a.tokens || "–")}</td></tr>`).join("") + `</tbody></table>`
         + `<div class="sec">CHANNELS USED · DO THE AGENTS LISTEN TO EACH OTHER?</div><table class="wt"><thead><tr><th>CHANNEL</th><th>MESSAGES</th><th>USED BY THE RECEIVER</th><th>TESTED INFLUENCE</th></tr></thead><tbody>`
         + (d.channels.map(c => `<tr><td>${esc(c.channel.replace("->", " → "))}</td><td>${esc(c.sent)}</td><td>${esc(`${c.used}/${c.sent}`)}</td><td>`
           + (c.tests.map(t => cell(t) + ` <span class="dim">${esc(t.target)}</span>`).join("<br>") || `<span class="dim">not tested: remove the channel in a replay to measure it</span>`) + `</td></tr>`).join("")
@@ -2271,12 +2361,12 @@
       };
       el.innerHTML = `<div class="sec">SOURCES × TOOLS ACROSS ${esc(WHY.runs.length)} RUNS · WHICH CONTENT REACHED WHICH CALLS, AND WHICH LINKS REPLAYS TESTED</div><table class="wt"><thead><tr><th>SOURCE</th><th>TRUST</th><th>RUNS</th><th>CITED BY</th>`
         + I.outcomes.map(t => `<th>${esc(t.id)}</th>`).join("") + `</tr></thead><tbody>`
-        + I.sources.map(s => `<tr><td title="${esc(s.preview)}">${esc(s.labels.join(", "))}</td><td class="${s.trust === "untrusted" ? "s-deny" : "s-ok"}">${esc(s.trust)}</td><td>${esc(s.runs)}</td><td>${esc(s.cited_by)}</td>`
+        + I.sources.map(s => `<tr><td title="${esc(s.preview)}">${esc(s.labels.join(", "))}<br><span class="dim">${esc(String(s.preview || "").slice(0, 90))}</span></td><td class="${s.trust === "untrusted" ? "s-deny" : "s-ok"}">${esc(s.trust)}</td><td>${esc(s.runs)}</td><td>${esc(s.cited_by)}</td>`
           + I.outcomes.map(t => `<td>` + link(s, t) + `</td>`).join("") + `</tr>`).join("") + `</tbody></table>`;
       $("wvsum").textContent = `${I.sources.length} sources · ${I.outcomes.length} tools`;
     }
     document.addEventListener("click", e => {
-      const t = e.target.closest("[data-wtab],[data-view],[data-rseq],[data-wal],[data-wtest],[data-wfind],[data-wnode]"); if (!t) return;
+      const t = e.target.closest("[data-wtab],[data-view],[data-rseq],[data-wal],[data-wtest],[data-wfind],[data-wnode],[data-wopen],[data-wwhy],[data-wreach]"); if (!t) return;
       e.preventDefault();
       if (t.dataset.wtab) { WTAB = t.dataset.wtab; return schedule(); }
       if (t.dataset.view) { VIEW = t.dataset.view; wvKey = ""; return schedule(); }
@@ -2286,12 +2376,22 @@
         if (r) select(S.actList.find(a => a.pre === r || a.post === r) || r);
         return;
       }
+      if (t.dataset.wopen || t.dataset.wwhy || t.dataset.wreach) {   // inside NODE: another node, its WHY, or what it reached
+        const id = t.dataset.wopen || t.dataset.wwhy || t.dataset.wreach, run = WNODE.run;
+        const act = S.actList.find(a => { const r = whyRef(a); return r && r.run === run && r.node === id; });
+        if (act) selected = act;
+        if (t.dataset.wwhy) WTAB = "why";
+        else { WNODE = { run, id }; if (t.dataset.wreach || VIEW === "graph") { WRUN = run; VIEW = "graph"; GV.focus = id; } }
+        return schedule();
+      }
       if (t.dataset.wnode !== undefined) {
         const id = t.dataset.wnode || null;
         if (VIEW !== "graph") { WRUN = whyRef(selected)?.run || WRUN; VIEW = "graph"; GV.focus = id; }
         else GV.focus = GV.focus === id ? null : id;
-        const act = id && S.actList.find(a => { const r = whyRef(a); return r && r.run === WRUN && r.node === id; });
+        const act = GV.focus && S.actList.find(a => { const r = whyRef(a); return r && r.run === WRUN && r.node === GV.focus; });
         if (act) selected = act;
+        WNODE = GV.focus && { run: WRUN, id: GV.focus };
+        WTAB = WNODE ? "node" : WTAB;
         return schedule();
       }
       const ref = whyRef(selected);

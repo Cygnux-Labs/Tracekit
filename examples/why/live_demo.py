@@ -1,6 +1,6 @@
-"""Watch agents live: the demo system, slowed down, recorded into a folder while `tracekit why serve` shows it.
+"""Watch agents live: the demo system, slowed down, recorded into a folder while `tracekit view --why` shows it.
 
-    tracekit why serve runs-live                       # terminal 1, then open the URL it prints
+    tracekit view --why runs-live                      # terminal 1, then open the URL it prints
     python examples/why/live_demo.py runs-live block   # terminal 2  (or "alert" to let it through)
 
 Each run appears as it is recorded. The guard checks every sensitive tool call before it executes:
