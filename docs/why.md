@@ -56,7 +56,7 @@ and runs no replays (`tracekit why report ROOT [-o FILE]` writes one for any fol
 `tracekit view --dev --why DIR` adds them to a signer's runs (`tracekit why serve DIR` still runs the first). Each run's calls are on the tape; select one and open **WHY**
 in the detail panel for where each argument came from, the recorded path through the agents, and every candidate cause
 with its test status and the **FIND THE CAUSE** / **RUN TEST** buttons. The header switches the lower panels to
-**GRAPH** (the data-flow graph, tested causes in red), **AGENTS** (per-channel usage and tested influence, the
+**RUNS**, **OVERVIEW**, **TIMELINE**, **WHY DID IT HAPPEN?**, **GRAPH** (the data-flow graph, tested causes in red), **AGENTS** (per-channel usage and tested influence, the
 influence matrix, the critical path) or **INFLUENCE** (across runs: which content reached which tools, and which links
 tests confirmed). The why alerts join the alert panel.
 
@@ -132,7 +132,7 @@ objects.
 
 ```python
 from tracekit.why.core import HttpSink
-SYSTEM.run(seed=0, sink=HttpSink("http://collector:7788", token))
+SYSTEM.run(seed=0, sink=HttpSink("http://collector:7778", token))   # tracekit view's port; why serve: 7788
 ```
 
 `HttpSink` posts to a `tracekit view --why` collector's `/v1/ingest` after every tool call, so the collector sees the

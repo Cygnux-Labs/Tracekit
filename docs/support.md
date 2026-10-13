@@ -2,7 +2,7 @@
 
 Tracekit has a small stable core and a larger set of experimental surfaces. Both ship in the same package.
 
-**Stable** means it is tested end to end on every push and hardened first.
+**Stable** means it is tested end to end on every push to main and every pull request, and hardened first.
 
 **Experimental** means it works and is tested, but it may change between releases and gets less hardening. Each
 experimental command or server prints one line to stderr when it starts. Anything not listed as stable is
@@ -15,7 +15,7 @@ experimental.
 | v2 signer, dev mode | `tracekit.instrument()`, `tracekit up/down/last`, `tracekit signer serve --dev`, file storage |
 | v2 signer, system mode on Linux | `sudo tracekit init --v2 --user AGENT`: the signer as its own OS user, file storage, uid and token callers |
 | Python SDK | `tracekit.sdk` (`RunHandle`) and `tracekit.instrument()` |
-| Framework integrations | OpenAI Agents SDK, LangChain / LangGraph, Claude Agent SDK, MCP client wrapping: each runs the adapter contract against the pinned real library on every push |
+| Framework integrations | OpenAI Agents SDK, LangChain / LangGraph, Claude Agent SDK, MCP client wrapping: each runs the adapter contract against the pinned real library on every push to main and every pull request |
 | Claude Code hooks (v2) | `tracekit init --dev --v2` and system mode's hooks |
 | Policy v2 | the engine, `tracekit policy compile/lint`, the shipped packs (`tracekit/policy2/packs/`), `ask` approvals from the command line (`tracekit approvals`) |
 | Bundles | `tracekit export --v2`, evidence format v2 |
@@ -44,4 +44,4 @@ experimental.
 | CrewAI (tested against a stand-in, not the real library) and Browser Use (its real-library contract runs nightly only) | [CrewAI](integrations/crewai.md), [Browser Use](integrations/browser-use.md) |
 | The TypeScript SDK client and its Vercel AI SDK integration (not on npm yet: installed from the release's `.tgz`) | [TypeScript SDK](../sdk/typescript/README.md) |
 | `contrib/` packages | [contrib](../contrib) |
-| The v1 signer path: `tracekitd`, `tracekit init` without `--v2`, `tracekit observe`, v1 adapters. Verifying v1 bundles stays stable. | [coding agents](coding-agents.md), [signing](signing.md) |
+| The v1 signer path: `tracekitd`, `tracekit init` without `--v2`, `tracekit observe`, v1 adapters, the Claude Code plugin (`plugin/`). Verifying v1 bundles stays stable. | [coding agents](coding-agents.md), [signing](signing.md) |

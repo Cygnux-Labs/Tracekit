@@ -11,7 +11,8 @@
 | `tracekit view --config signer.yaml` with `view.logs` | every log of a central deployment ([below](#central-viewer)) |
 
 The nav at the top of each page links the pages this server has: **LIVE** (the run list, tape and detail; with why
-logs, the header's DESK, GRAPH, AGENTS and INFLUENCE buttons switch to the investigation), **RUNS** (the central run
+logs, the header's DESK, RUNS, OVERVIEW, TIMELINE, WHY DID IT HAPPEN?, GRAPH, AGENTS and INFLUENCE buttons switch to the
+investigation), **RUNS** (the central run
 pages) and **APPROVALS** (with OIDC login and `view.signer`, for approvers). `tracekit observe` and `tracekit why serve`
 still work as before and print one line pointing here. A single bundle's self-contained `replay.html` stays a file
 you open without a server.
@@ -131,14 +132,14 @@ keeps what it came from and led to and fades the rest, and panel 8's **NODE** ta
 its model, time, tokens, what it saw (each a link) and what it produced; for a tool call its arguments, result,
 policy decision and a **WHY DID THIS HAPPEN?** button; for an input or a message its content and trust. **Came from**
 and **Led to** link the neighbours; **Record** gives its time, hash, previous hash and the signed Tracekit record it
-cites. Click the node again, or **CLEAR**, to see the whole graph. The checkboxes add inferred links and ruled-out
+cites. Click the node again, or **CLEAR HIGHLIGHT**, to see the whole graph. The checkboxes add inferred links and ruled-out
 tests.
 
 ### A signed run's graph
 
 ![GRAPH of a signed run: five tool calls left to right in run order, two Bash calls marked DENIED with their rule ids](viewer/signed-graph.png)
 
-`tracekit view` on a signer store needs no why logs for GRAPH: each run that verifies is imported read-only
+`tracekit view` on a signer store with no why logs (no `--why`, no `why/` in its data dir) still has GRAPH: each run that verifies is imported read-only
 (`why import --store`'s import) into the viewer's own temp dir, and imported again as it grows. Its tool calls read
 left to right in run order; each node carries its signed decision: **DENIED** (red), **HELD** or **FLAGGED** (amber),
 **APPROVED**, or ALLOWED (muted), with the first rule id. Click a node: NODE shows the decision, every rule with its
@@ -245,7 +246,8 @@ that citation joins the two.
   observed path through agents, model calls and messages, from each of the 20 nearest untrusted inputs), **candidate causes** with their
   status (primary cause, contributing, confirmed, joint, inconclusive, no effect seen, ruled out, not tested), effect,
   95% interval and with → without rates, and **FIND THE CAUSE** / **RUN TEST**.
-- **Views** (header buttons; the run list and tape stay): **GRAPH**, the run's data flow (observed edges; tested causes
+- **Views** (header buttons; the run list and tape stay): **RUNS**, **OVERVIEW**, **TIMELINE** and **WHY DID IT HAPPEN?**
+  (as below), **GRAPH**, the run's data flow (observed edges; tested causes
   in red; inferred links and ruled-out tests hidden until ticked; click a node for what it came from and led to),
   **AGENTS** (the channels used, the influence matrix, the critical path), **INFLUENCE** (across runs: sources ×
   tools, with tested effects). **DESK** returns to the panels.

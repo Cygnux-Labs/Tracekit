@@ -22,9 +22,9 @@ offline.
 
 The stable core is the v2 signer (dev mode and Linux system mode, file storage), the Python SDK with
 `tracekit.instrument()` and its OpenAI Agents, LangChain / LangGraph, Claude Agent SDK and MCP integrations, the Claude
-Code hooks, policy v2 with its packs, bundle export, the Python and TypeScript verifiers, `tracekit view` and
-`tracekit doctor`. Everything else works and is tested but is experimental: it may change, gets less hardening, and
-says so when it starts ([what's stable](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/support.md)).
+Code hooks (v2), policy v2 with its packs, bundle export, the Python and TypeScript verifiers, `tracekit view` and
+`tracekit doctor`. Everything else works and is tested but is experimental: it may change and gets less hardening;
+experimental commands and servers say so when they start ([what's stable](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/support.md)).
 
 ## Why it exists
 
@@ -51,7 +51,7 @@ customer. Tracekit keeps that record outside the agent's control, and lets anyon
 - A reviewer agent may answer routine approvals inside bounds the policy sets, with budgets and a veto delay; people
   answer everything else ([agent approvers](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/approvals.md#agent-approvers)).
 
-**Contain** (1.2, release candidate)
+**Contain** (1.2, experimental)
 - The policy names risky sequences of calls and limits on them. When one trips, the signer opens a signed incident
   and can hold or quarantine the run; new runs of the same owner and principal inherit that for a cooldown
   ([incidents](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/incidents.md)).
@@ -74,7 +74,7 @@ customer. Tracekit keeps that record outside the agent's control, and lets anyon
 - `tracekit view` shows runs with their verdicts, blocked and held calls, approvals, gaps, a replay of each run, and a
   run review ([viewer](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/viewer.md)).
 
-**Explain** (1.2, release candidate)
+**Explain** (1.2, experimental)
 - Where each argument came from: the signer tracks values that entered a run through untrusted content (a fetched page,
   an email, a ticket) and can hold a call whose recipient, payee or host came only from there
   ([provenance](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/policy-v2.md#provenance-untrusted-and-from-untrusted)).
@@ -167,7 +167,8 @@ doesn't cover.
 ### See it
 
 `tracekit view --dev` opens the one viewer on your runs: each run verified, every call with its decision, and (with
-why logs) why a call happened, down to clicking any node of the run's graph.
+why logs) why a call happened, down to clicking any node of the run's graph. A store opened without why logs gets a
+graph of each signed run's calls and their decisions.
 
 ![tracekit view: the planner's model call clicked in the run graph, with what it saw, produced and led to](https://raw.githubusercontent.com/Cygnux-Labs/Tracekit/main/docs/viewer/graph-node.png)
 

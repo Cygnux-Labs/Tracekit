@@ -80,10 +80,12 @@ both below.
 ### Added
 - **The viewer works like the why app it came from** (#224, #228): RUNS, OVERVIEW, TIMELINE, WHY DID IT HAPPEN?,
   GRAPH, AGENTS and INFLUENCE views; the graph is a flowchart with arrows and confirmed causes drawn to their target
-  with their effect; clicking a node shows what it saw, produced, came from and led to. Every signed run gets a graph
-  of its calls with their decisions, with no why log needed. A screenshot tour is in [docs/viewer.md](docs/viewer.md#tour).
+  with their effect; clicking a node shows what it saw, produced, came from and led to. A store opened without why logs
+  gets a graph of each signed run's calls with their decisions. A screenshot tour is in [docs/viewer.md](docs/viewer.md#tour).
 - **`tracekit why report`** (#228): one offline HTML file with every run; `tracekit why demo` writes one.
-- **Faster signer** (#223): about 12% more throughput and 15% less CPU per event at ack-on-write; no record, hash or
+- **`tracekit view --webhook URL`**: POSTs each new high why alert as JSON (Slack-compatible), as `tracekit why serve` did.
+- **Faster signer** (#223): about 12% more events per second in E9's quick run and 15% less CPU per event at
+  ack-on-write; no record, hash or
   signature changes.
 - **Signer settings** (signer.yaml): `posture`, `observe_grace_s`, `gateway_wait_s`, `suspensions`,
   `approvals.agents`, a configurable `approvals.ttl_s`, `agent_consume_s` and `agent_timeout_s`; the signer refuses to

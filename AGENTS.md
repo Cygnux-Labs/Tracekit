@@ -69,6 +69,8 @@ There is no typecheck step.
 - New tests: `tests/test_<area>.py`, `unittest` classes run by pytest; build events, signers and bundles with the shared
   builders in `tests/factories.py`. [HIGH CONFIDENCE]
 - Every change that touches the signer, ledger, verifier or policy gets a regression test that fails without it.
+- Every v2 bundle a test exports in the test process must verify (`tests/conftest.py`); a test that builds a bad
+  bundle on purpose carries `@pytest.mark.unverified_bundles`. Bundles exported by a child process aren't checked.
 
 ## Local traps
 
