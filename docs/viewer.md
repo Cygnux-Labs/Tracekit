@@ -86,6 +86,38 @@ test can detect, `INCONCLUSIVE` means too few replays reproduced the call. **FIN
 narrows it down. Both run only for a program passed with `--allow-program`; otherwise the panel prints the command.
 The effect is the drop in how often the call happens, with its 95% interval.
 
+### Runs, overview and timeline (Causeway's)
+
+With why logs the header also has Causeway's views of a run; each takes panel 9, and the picker next to its title
+chooses the run.
+
+![RUNS: every why run with its task, agents, model and tool calls, alerts, tests and whether its log is intact](viewer/runs-list.png)
+
+**RUNS** lists every run: alerts (`high` red, `review` amber), tests with how many were causal, and `intact` when the
+log's hash chain checks. Click a run for its overview.
+
+![OVERVIEW of a run: LOG INTACT, REPLAYABLE, what the agents did, the alerts that need attention with their confirmed causes, the run's numbers](viewer/overview.png)
+
+**OVERVIEW**: `LOG INTACT` (the why log's hash chain checks) and `REPLAYABLE` (the run names a program a replay can
+import), what the agents did (a flagged call is red: click one for why it happened), what needs attention, each with
+its confirmed causes and **INVESTIGATE →**, the run's numbers, and how to read the evidence: *reached* is recorded,
+not proof; a *confirmed cause* changed how often the action happens in replays; *ruled out* changed nothing detectable.
+
+![TIMELINE: every event of the run with its time, agent, type, what happened and how long it took; filters by agent, type, flagged and text](viewer/timeline.png)
+
+**TIMELINE**: every event, filtered by agent, type (inputs, model calls, tool calls, messages), **flagged only** and
+text. Click a row for its NODE.
+
+### WHY DID IT HAPPEN?
+
+![WHY DID IT HAPPEN?: the run's tool calls with the flagged one first, where each argument value came from, the verdict, how it got here and the candidate causes](viewer/why-view.png)
+
+The run's tool calls, high alerts first; pick one. **Argument value / where the value came from** says, for each
+value, *only from untrusted content*, *from a trusted source* or *written by the model*, and which source. Then the
+verdict, how it got here and the candidate causes, with each test's effect bar (dot = effect, whisker = its 95%
+interval), with → without, and **text reuse** (how much of the content's wording the next model output reused).
+**DETAILS** opens the call's NODE. The detail panel's WHY tab shows the same for the call selected on the tape.
+
 ### GRAPH: click a node
 
 ![GRAPH with the planner's model call clicked: NODE shows its model, tokens, what it saw, what it produced, where it came from, what it led to and its record](viewer/graph-node.png)
@@ -125,10 +157,12 @@ matrix fills in as tests run; the critical path is the longest chain of the run.
 
 ### INFLUENCE
 
-![INFLUENCE: sources by trust across the eight demo runs, which tools each reached, and the links replays confirmed](viewer/influence.png)
+![INFLUENCE: sources on the left, tools on the right; thicker lines reached in more runs, red lines confirmed causes with their effect; the sources table below](viewer/influence.png)
 
-Across every why run: each source (with a preview of its content), its trust, how many runs and decisions cited it, and
-for each tool whether it reached it (`reached N×`), a replay confirmed it (`+0.90 confirmed`, red) or ruled it out.
+Across every why run, as a citation index: each source (left; a red ring is untrusted) to the tools it reached
+(right), thicker for more runs, red with its effect where a replay confirmed it, dotted where one ruled it out. The
+**sources** table gives each one's content, trust, runs, the decisions that cited it, its strongest tested effect and
+the tools it is a confirmed cause of.
 
 ### A v1 bundle
 
