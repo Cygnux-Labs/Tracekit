@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "tracekit-ai"
 dynamic = ["version"]   # single source of truth: tracekit/__init__.py
-description = "Tamper-evident records of what AI agents did: signed, policy-gated, verifiable offline"
+description = "Tamper-evident records of what AI agents did, and why: signed, policy-gated, verifiable offline"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]

@@ -16,7 +16,7 @@ against your policy and allows it, denies it, or holds it for a person to approv
 as a signed, hash-chained record that the agent can't edit. A run exports as one `.tkb` file that anyone can verify
 offline.
 
-<img src="https://raw.githubusercontent.com/Cygnux-Labs/Tracekit/main/docs/demo/observer.gif" alt="tracekit view: four coding agents traced live; each dangerous action is blocked by policy and recorded" width="100%">
+<img src="https://raw.githubusercontent.com/Cygnux-Labs/Tracekit/main/docs/demo/observer.gif" alt="Tracekit 1.2: every agent run recorded and signed, a call blocked before it ran, each run as a flowchart, where each argument came from, and the input that caused an action" width="100%">
 
 ## Why it exists
 
