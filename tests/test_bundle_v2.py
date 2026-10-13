@@ -16,9 +16,8 @@ import unittest
 import zipfile
 from unittest import mock
 
-import pytest
 
-from factories import rewrite_bundle
+from factories import rewrite_bundle, unverified_bundles
 from tracekit import cli, crypto
 from tracekit.bundle_v2 import VERIFIER_MIN_VERSION, VERSIONS, export
 from tracekit.format import checkpoint
@@ -450,7 +449,7 @@ class TestVerifyV2(Case):
         export(log.store, "acme", "run-a", log.note(origin="other.example.org/log"), out)
         self.assert_fails(out, "checkpoint")
 
-    @pytest.mark.unverified_bundles
+    @unverified_bundles
     def test_keys_valid_by_position(self):
         log = self.log()
         log.epoch(KEY1)
@@ -801,7 +800,7 @@ class TestAgentApprovals(Case):
         self.assertEqual((code, lines["approvals by agents"]["status"]), (0, "warn"))
         self.assertIn("agent approval bounds unchecked", lines["approvals by agents"]["detail"])
 
-    @pytest.mark.unverified_bundles
+    @unverified_bundles
     def test_what_an_agent_may_not_approve_fails(self):
         person_rule = {"ask": [{"id": "R1", "pattern": "^"}], "flag": [{"id": "F1", "pattern": "^"}]}
         for why, kw in (("provenance", {"decided": {"provenance": [{"field": "amount", "kind": "x",

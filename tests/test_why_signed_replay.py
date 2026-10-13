@@ -10,9 +10,9 @@ import urllib.request
 import uuid
 from unittest import mock
 
-import pytest
 
 from adapter_contract import tmpdir
+from factories import unverified_bundles
 from test_bundle_v2 import LOG_SECRET, ORIGIN, pub
 from test_gateway import AGENT, SECRET, InProcess, serve
 from test_why_signed import quiet
@@ -279,7 +279,7 @@ class TestFindings(SignedReplay):
         self.assertEqual(manifest["verifier_min_version"], "1.1.0")
         self.assertIn(("findings", "pass"), [(c["check"], c["status"]) for c in rep.checks])
 
-    @pytest.mark.unverified_bundles
+    @unverified_bundles
     def test_a_finding_whose_outcomes_do_not_count_up_fails_verification(self):
         inv = self.investigation()
         r = signed.counterfactual_signed(inv, "result:fetch", TARGET, decision=self.exchange_seqs()[1], n=2,
@@ -306,7 +306,7 @@ class TestFindings(SignedReplay):
         self.assertEqual(code, 0, rep.checks)
         self.assertIn(("findings", "pass"), [(c["check"], c["status"]) for c in rep.checks])
 
-    @pytest.mark.unverified_bundles
+    @unverified_bundles
     def test_a_replay_run_cited_twice_fails_verification(self):
         inv = self.investigation()
         r = signed.counterfactual_signed(inv, "result:fetch", TARGET, decision=self.exchange_seqs()[1], n=2,
@@ -334,7 +334,7 @@ class TestFindings(SignedReplay):
         (rep, code), _ = self.bundle()
         return code, [c for c in rep.checks if c["check"] in ("findings", "replay runs")]
 
-    @pytest.mark.unverified_bundles
+    @unverified_bundles
     def test_an_invented_verdict_and_interval_fail_verification(self):
         inv = self.investigation()
         r = signed.counterfactual_signed(inv, "result:fetch", TARGET, decision=self.exchange_seqs()[1], n=4,
@@ -347,7 +347,7 @@ class TestFindings(SignedReplay):
         self.assertIn("not the [0.9, 1.0] and causal it reports", " ".join(check["problems"]))
         self.assertIn("scored a hit, but its gateway records hold no tool use", " ".join(check["problems"]))
 
-    @pytest.mark.unverified_bundles
+    @unverified_bundles
     def test_a_reversed_interval_fails_verification(self):
         inv = self.investigation()
         r = signed.counterfactual_signed(inv, "result:fetch", TARGET, decision=self.exchange_seqs()[1], n=2,
@@ -357,7 +357,7 @@ class TestFindings(SignedReplay):
         self.assertEqual(code, 1)
         self.assertIn("give the interval", " ".join(check["problems"]))
 
-    @pytest.mark.unverified_bundles
+    @unverified_bundles
     def test_a_tool_target_miss_whose_gateway_records_hold_the_tool_fails(self):
         inv = self.investigation()
         r = signed.counterfactual_signed(inv, "result:fetch", "tool=send_email", decision=self.exchange_seqs()[1],
@@ -369,7 +369,7 @@ class TestFindings(SignedReplay):
         self.assertEqual(len(check["problems"]), 1)
         self.assertIn("scored a miss, but its gateway records hold a tool use", check["problems"][0])
 
-    @pytest.mark.unverified_bundles
+    @unverified_bundles
     def test_a_cherry_picked_subset_with_an_empty_replay_run_fails(self):
         inv = self.investigation()
         r = signed.counterfactual_signed(inv, "result:fetch", TARGET, decision=self.exchange_seqs()[1], n=4,

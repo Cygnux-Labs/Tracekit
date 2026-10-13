@@ -15,12 +15,10 @@ import unittest
 import uuid
 import zipfile
 
-import pytest
-
 TESTS = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(TESTS)
 sys.path.insert(0, TESTS)
-from factories import rewrite_bundle  # noqa: E402
+from factories import rewrite_bundle, unverified_bundles  # noqa: E402
 from tracekit.bundle_v2 import export  # noqa: E402
 from tracekit.demo_server import Witness  # noqa: E402
 from tracekit.format import checkpoint  # noqa: E402
@@ -278,7 +276,7 @@ class Agreement(unittest.TestCase):
         self.assertEqual([c for c in ts_verify(bundle, trust)["checks"] if c["check"] == "tiers"], [want])
         self.assertEqual(want["status"], "warn")
 
-    @pytest.mark.unverified_bundles   # its fail cases are tampered on purpose
+    @unverified_bundles   # its fail cases are tampered on purpose
     def test_agent_approvals(self):
         import test_bundle_v2 as b   # synthetic runs whose ask an agent approved
         trust = os.path.join(self.d, "agent-trust.json")

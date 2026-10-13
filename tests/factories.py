@@ -50,6 +50,13 @@ def ledger_records(home):
     return [r for _, r, _ in read_records(os.path.join(home, "ledger", "ledger.jsonl")) if r]
 
 
+def unverified_bundles(test):
+    """@pytest.mark.unverified_bundles for files the TypeScript suite runs without pytest: the test exports v2 bundles
+    the verifier rejects on purpose, so conftest's every-export-verifies check skips it."""
+    test.unverified_bundles = True
+    return test
+
+
 def rewrite_bundle(src, dst, edit):
     """Copy a bundle, letting `edit(files: dict, manifest: dict)` change it; manifest hashes are refreshed."""
     with zipfile.ZipFile(src) as z:

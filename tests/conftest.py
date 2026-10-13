@@ -124,7 +124,8 @@ checkpoint.log_line, bundle_v2.export = _recording_log_line, _verified_export
 
 @pytest.fixture(autouse=True)
 def _exported_bundles_verify(request):
-    opted_out = request.node.get_closest_marker("unverified_bundles") is not None
+    opted_out = request.node.get_closest_marker("unverified_bundles") is not None or \
+        getattr(getattr(request, "function", None), "unverified_bundles", False)   # factories.unverified_bundles
     early, _BUNDLES["failures"] = _BUNDLES["failures"], []
     if early:   # exported outside any test (a setUpClass, a module fixture, a thread): never blamed on this one
         pytest.fail(f"a v2 bundle exported before {request.node.nodeid} (setUpClass, a module fixture or a thread) "
