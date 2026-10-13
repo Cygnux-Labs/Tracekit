@@ -1,0 +1,56 @@
+$ tracekit demo --server
+
+== setup: dev signer and an in-process test witness in /tmp/tk-demo-qmc8zvvp
+
+== agent run (SCRIPTED: fixed tool calls, not a model)
+  Bash 'ls': allow 
+  Bash 'sudo rm -rf /': deny TK-D001 TK-D004 TK-F003
+  Bash 'echo "unterminated': ask TK-SHELL-PARSE
+    approved apr-dc2abc2964eb429401e13cd971df6dd1 (self-approved: True)
+
+== export the run once it is final and a witness cosigned it
+  wrote /tmp/tk-demo-qmc8zvvp/run.tkb
+  trust config /tmp/tk-demo-qmc8zvvp/trust.json: pins the log key and the witness
+
+== verify offline with the pinned trust config
+[PASS] manifest — every file is listed with its SHA-256 and nothing else is in the bundle
+[PASS] checkpoint — tracekit.local/89647c0d22331cd160447f70542db1b8 at tree size 12, signed by its pinned log key
+[PASS] witness quorum — 1 pinned cosignature(s), 1 required
+[PASS] keys — 1 record key(s) from 1 key record(s)
+[PASS] signatures — 11 record(s), keys valid at their position
+[PASS] run chain — run '9839fda7ba2d846569dcc14041cee3e1' of tenant 'default', contiguous from run_seq 0
+[PASS] inclusion — first and last records of 1 run(s) are in the checkpointed tree of size 12
+[PASS] coverage — layers L2 (L3 absent); 0 call(s) reconciled; unreconciled: none
+[PASS] coverage matrix — model calls not covered, tool calls reported (adapter), network not covered, processes not covered, services not covered
+[PASS] tiers — 3 tool call(s): T1 0, T2 0, T3 0, untiered 3
+[PASS] args source — 3 record(s): raw 0, parsed 3, coerced 0
+[PASS] isolation — signer-reported: same-user 1 run(s)
+[PASS] fail-open classes — none
+[PASS] key assurance — asserted: the log declares its record keys; none is attested
+
+Integrity: VERIFIED.
+Assurance: dev; records ed25519; checkpoint Ed25519 only (tracekit.local/89647c0d22331cd160447f70542db1b8); cosigned ed25519 by witness.demo.tracekit.local (customer) at 2026-10-13T00:50:41Z; earliest independent anchor 2026-10-13T00:50:41Z; approvals: self; key retirements not proven complete.
+
+== tamper test: rewrite the denied call as allowed in a copy, then verify again
+[FAIL] manifest — every file is listed with its SHA-256 and nothing else is in the bundle
+[PASS] checkpoint — tracekit.local/89647c0d22331cd160447f70542db1b8 at tree size 12, signed by its pinned log key
+[PASS] witness quorum — 1 pinned cosignature(s), 1 required
+[PASS] keys — 1 record key(s) from 1 key record(s)
+[FAIL] signatures — 11 record(s), keys valid at their position
+        seq 4: hash does not match the event
+[PASS] run chain — run '9839fda7ba2d846569dcc14041cee3e1' of tenant 'default', contiguous from run_seq 0
+[PASS] inclusion — first and last records of 1 run(s) are in the checkpointed tree of size 12
+[PASS] coverage — layers L2 (L3 absent); 0 call(s) reconciled; unreconciled: none
+[PASS] coverage matrix — model calls not covered, tool calls reported (adapter), network not covered, processes not covered, services not covered
+[PASS] tiers — 3 tool call(s): T1 0, T2 0, T3 0, untiered 3
+[PASS] args source — 3 record(s): raw 0, parsed 3, coerced 0
+[PASS] isolation — signer-reported: same-user 1 run(s)
+[PASS] fail-open classes — none
+[PASS] key assurance — asserted: the log declares its record keys; none is attested
+
+Integrity: FAILED.
+Assurance: dev; records ed25519; checkpoint Ed25519 only (tracekit.local/89647c0d22331cd160447f70542db1b8); cosigned ed25519 by witness.demo.tracekit.local (customer) at 2026-10-13T00:50:41Z; earliest independent anchor 2026-10-13T00:50:41Z; approvals: self; key retirements not proven complete.
+
+  original bundle exit 0, tampered bundle exit 1
+[exit 0]
+

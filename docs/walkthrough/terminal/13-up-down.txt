@@ -1,0 +1,16 @@
+$ tracekit up
+dev signer 1.2.0 running (pid 71392)
+[exit 0]
+
+$ tracekit down
+dev signer stopped (pid 71392)
+[exit 0]
+
+$ tracekit up --json
+{"proto": [15, 16], "version": "1.2.0", "pid": 80778}
+[exit 0]
+
+$ tracekit down
+dev signer stopped (pid 80778)
+[exit 0]
+

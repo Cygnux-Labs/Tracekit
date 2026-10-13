@@ -173,6 +173,8 @@ graph of each signed run's calls and their decisions.
 ![tracekit view: the planner's model call clicked in the run graph, with what it saw, produced and led to](https://raw.githubusercontent.com/Cygnux-Labs/Tracekit/main/docs/viewer/graph-node.png)
 
 A screenshot tour of every panel: [viewer tour](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/viewer.md#tour).
+Every step end to end, recorded on a clean install with its real output and screenshots:
+[walkthrough](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/walkthrough.md).
 
 No agent at hand? Each demo runs in a temp dir and needs no API key. `--server` shows calls allowed, denied and
 approved, a witness cosignature, and a tampered copy failing verification. `--why` shows a held email whose cause is

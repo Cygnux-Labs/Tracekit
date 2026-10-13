@@ -1,0 +1,96 @@
+$ tracekit signer trust -o trust.json
+wrote trust.json: pins log tracekit.local/2524cf9a0e001c45620723a9a4374abb and no witness(es)
+[exit 0]
+
+$ tracekit export --v2 --run a7ca7a32c3bd18102ad42a735d85a682 -o run.tkb
+{
+  "bundle": "run.tkb",
+  "records": 14,
+  "tree_size": 30
+}
+[exit 0]
+
+$ tracekit verify run.tkb --trust trust.json
+[PASS] manifest — every file is listed with its SHA-256 and nothing else is in the bundle
+[PASS] checkpoint — tracekit.local/2524cf9a0e001c45620723a9a4374abb at tree size 30, signed by its pinned log key
+[PASS] witness quorum — 0 pinned cosignature(s), 0 required
+[PASS] keys — 1 record key(s) from 1 key record(s)
+[PASS] signatures — 14 record(s), keys valid at their position
+[PASS] run chain — run 'a7ca7a32c3bd18102ad42a735d85a682' of tenant 'default', contiguous from run_seq 0
+[PASS] inclusion — first and last records of 1 run(s) are in the checkpointed tree of size 30
+[PASS] coverage — layers L2 (L3 absent); 0 call(s) reconciled; unreconciled: none
+[PASS] coverage matrix — model calls not covered, tool calls reported (adapter), network not covered, processes not covered, services not covered
+[PASS] tiers — 4 tool call(s): T1 0, T2 0, T3 0, untiered 4
+[PASS] args source — 4 record(s): raw 0, parsed 4, coerced 0
+[PASS] isolation — signer-reported: same-user 1 run(s)
+[PASS] fail-open classes — none
+[PASS] key assurance — asserted: the log declares its record keys; none is attested
+
+Integrity: VERIFIED.
+Assurance: dev; records ed25519; checkpoint Ed25519 only (tracekit.local/2524cf9a0e001c45620723a9a4374abb); no witness cosignature; approvals: self; key retirements not proven complete.
+[exit 0]
+
+$ # a copy of run.tkb with the denied call edited to "allow" (run-tampered.tkb)
+
+$ tracekit verify run-tampered.tkb --trust trust.json
+[FAIL] manifest — every file is listed with its SHA-256 and nothing else is in the bundle
+[PASS] checkpoint — tracekit.local/2524cf9a0e001c45620723a9a4374abb at tree size 30, signed by its pinned log key
+[PASS] witness quorum — 0 pinned cosignature(s), 0 required
+[PASS] keys — 1 record key(s) from 1 key record(s)
+[FAIL] signatures — 14 record(s), keys valid at their position
+        seq 20: hash does not match the event
+[PASS] run chain — run 'a7ca7a32c3bd18102ad42a735d85a682' of tenant 'default', contiguous from run_seq 0
+[PASS] inclusion — first and last records of 1 run(s) are in the checkpointed tree of size 30
+[PASS] coverage — layers L2 (L3 absent); 0 call(s) reconciled; unreconciled: none
+[PASS] coverage matrix — model calls not covered, tool calls reported (adapter), network not covered, processes not covered, services not covered
+[PASS] tiers — 4 tool call(s): T1 0, T2 0, T3 0, untiered 4
+[PASS] args source — 4 record(s): raw 0, parsed 4, coerced 0
+[PASS] isolation — signer-reported: same-user 1 run(s)
+[PASS] fail-open classes — none
+[PASS] key assurance — asserted: the log declares its record keys; none is attested
+
+Integrity: FAILED.
+Assurance: dev; records ed25519; checkpoint Ed25519 only (tracekit.local/2524cf9a0e001c45620723a9a4374abb); no witness cosignature; approvals: self; key retirements not proven complete.
+[exit 1]
+
+$ npx --yes --package ./cygnux-tracekit-1.2.0.tgz tracekit verify run.tkb --trust trust.json
+[PASS] manifest — every file is listed with its SHA-256 and nothing else is in the bundle
+[PASS] checkpoint — tracekit.local/2524cf9a0e001c45620723a9a4374abb at tree size 30, signed by its pinned log key
+[PASS] witness quorum — 0 pinned cosignature(s), 0 required
+[PASS] keys — 1 record key(s) from 1 key record(s)
+[PASS] signatures — 14 record(s), keys valid at their position
+[PASS] run chain — run 'a7ca7a32c3bd18102ad42a735d85a682' of tenant 'default', contiguous from run_seq 0
+[PASS] inclusion — first and last records of 1 run(s) are in the checkpointed tree of size 30
+[PASS] coverage — layers L2 (L3 absent); 0 call(s) reconciled; unreconciled: none
+[PASS] coverage matrix — model calls not covered, tool calls reported (adapter), network not covered, processes not covered, services not covered
+[PASS] tiers — 4 tool call(s): T1 0, T2 0, T3 0, untiered 4
+[PASS] args source — 4 record(s): raw 0, parsed 4, coerced 0
+[PASS] isolation — signer-reported: same-user 1 run(s)
+[PASS] fail-open classes — none
+[PASS] key assurance — asserted: the log declares its record keys; none is attested
+
+Integrity: VERIFIED.
+Assurance: dev; records ed25519; checkpoint Ed25519 only (tracekit.local/2524cf9a0e001c45620723a9a4374abb); no witness cosignature; approvals: self; key retirements not proven complete.
+[exit 0]
+
+$ npx --yes --package ./cygnux-tracekit-1.2.0.tgz tracekit verify run-tampered.tkb --trust trust.json
+[FAIL] manifest — every file is listed with its SHA-256 and nothing else is in the bundle
+[PASS] checkpoint — tracekit.local/2524cf9a0e001c45620723a9a4374abb at tree size 30, signed by its pinned log key
+[PASS] witness quorum — 0 pinned cosignature(s), 0 required
+[PASS] keys — 1 record key(s) from 1 key record(s)
+[FAIL] signatures — 14 record(s), keys valid at their position
+        seq 20: hash does not match the event
+[PASS] run chain — run 'a7ca7a32c3bd18102ad42a735d85a682' of tenant 'default', contiguous from run_seq 0
+[PASS] inclusion — first and last records of 1 run(s) are in the checkpointed tree of size 30
+[PASS] coverage — layers L2 (L3 absent); 0 call(s) reconciled; unreconciled: none
+[PASS] coverage matrix — model calls not covered, tool calls reported (adapter), network not covered, processes not covered, services not covered
+[PASS] tiers — 4 tool call(s): T1 0, T2 0, T3 0, untiered 4
+[PASS] args source — 4 record(s): raw 0, parsed 4, coerced 0
+[PASS] isolation — signer-reported: same-user 1 run(s)
+[PASS] fail-open classes — none
+[PASS] key assurance — asserted: the log declares its record keys; none is attested
+
+Integrity: FAILED.
+Assurance: dev; records ed25519; checkpoint Ed25519 only (tracekit.local/2524cf9a0e001c45620723a9a4374abb); no witness cosignature; approvals: self; key retirements not proven complete.
+[exit 1]
+

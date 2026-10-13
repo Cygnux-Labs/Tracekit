@@ -1,0 +1,37 @@
+$ python scripted.py   # docs/quickstart-v2.md "A scripted agent", plus one unknown tool (in terminal 1)
+deny ['TK-D007']
+approve with: tracekit approvals approve apr-41231b925244ca5526a3fb5913812499
+  ... waiting for approval ...
+
+$ tracekit approvals list
+apr-41231b925244ca5526a3fb5913812499  requested  run=a7ca7a32c3bd18102ad42a735d85a682  tool="Bash"  rules=TK-SHELL-PARSE  expires 2026-10-13T01:49:43.958712Z
+[exit 0]
+
+$ tracekit approvals show apr-41231b925244ca5526a3fb5913812499
+approval    apr-41231b925244ca5526a3fb5913812499 (requested)
+tool        "Bash"
+rules       TK-SHELL-PARSE
+policy      sha256:d474d6b75e929cbf63e4f4d9272f22474513c28383b6c41913aedaf0ebd397bc
+requester   "uid:501"
+run         a7ca7a32c3bd18102ad42a735d85a682
+call        call-3 attempt 0
+expires     2026-10-13T01:49:43.958712Z
+binding     sha256:ad5c8927798de270d30a2e3602094b7a4166074ca04aee5f2ebb6b96e9ecac80
+arguments (the signer's copy, in full):
+{
+  "command": "echo \"unterminated"
+}[exit 0]
+
+$ tracekit approvals approve apr-41231b925244ca5526a3fb5913812499
+approved: apr-41231b925244ca5526a3fb5913812499 (self-approved: dev mode only)
+[exit 0]
+
+$ tracekit last
+run a7ca7a32c3bd18102ad42a735d85a682 (quickstart)
+Integrity: VERIFIED.
+Assurance: dev; records ed25519; checkpoint Ed25519 only (tracekit.local/2524cf9a0e001c45620723a9a4374abb); no witness cosignature; approvals: self; key retirements not proven complete.
+bundle: ~/demo/qs/a7ca7a32c3bd18102ad42a735d85a682.tkb
+check it again: tracekit verify ~/demo/qs/a7ca7a32c3bd18102ad42a735d85a682.tkb --trust ~/demo/qs/a7ca7a32c3bd18102ad42a735d85a682.trust.json
+next: tracekit view --dev   (every run, replayed and reviewed)
+[exit 0]
+

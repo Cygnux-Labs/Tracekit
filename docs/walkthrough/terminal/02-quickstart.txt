@@ -1,0 +1,26 @@
+$ python agent.py
+~/demo/qs/agent.py:1: UserWarning: tracekit.instrument(): none of the frameworks or model SDKs it wires is installed (OpenAI Agents SDK, LangGraph, Claude Agent SDK, MCP, Browser Use, CrewAI, OpenAI, Anthropic, Google Gen AI); nothing is recorded. Record calls yourself: docs/quickstarts/custom.md
+  import tracekit; tracekit.instrument()     # the first line of your agent
+ran ls
+[exit 0]
+
+$ tracekit last
+tracekit last: no runs in the dev signer's store (~/Library/Application Support/tracekit/data/store) yet: add `import tracekit; tracekit.instrument()` to your agent and run it
+[exit 1]
+
+$ python custom_agent.py
+call-1 Bash {'command': 'ls'} -> allow | ran Bash {'command': 'ls'}
+call-2 Bash {'command': 'rm -rf /'} -> deny | refused: TK-D004, TK-F003
+call-3 Read {'file_path': 'README.md'} -> allow | ran Read {'file_path': 'README.md'}
+run 8d61ea51a476899c069dfd8a493b72b2
+[exit 0]
+
+$ tracekit last
+run 8d61ea51a476899c069dfd8a493b72b2 (my-agent)
+Integrity: VERIFIED.
+Assurance: dev; records ed25519; checkpoint Ed25519 only (tracekit.local/2524cf9a0e001c45620723a9a4374abb); no witness cosignature; key retirements not proven complete.
+bundle: ~/demo/qs/8d61ea51a476899c069dfd8a493b72b2.tkb
+check it again: tracekit verify ~/demo/qs/8d61ea51a476899c069dfd8a493b72b2.tkb --trust ~/demo/qs/8d61ea51a476899c069dfd8a493b72b2.trust.json
+next: tracekit view --dev   (every run, replayed and reviewed)
+[exit 0]
+

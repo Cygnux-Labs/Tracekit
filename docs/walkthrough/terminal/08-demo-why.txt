@@ -1,0 +1,38 @@
+$ tracekit demo --why
+
+== setup: dev signer (server policy pack, the desk's tools mapped) and an in-process test witness in /tmp/tk-demo-hmnacsn7
+
+== record the desk, seed 0 (SCRIPTED: seeded mock models, fake tools); every event goes through the signer
+  signer: held send_email to 'c.rao@example.com' (TK-P001), approval apr-fa923cd4c3497e5e194c17ac63193b1a
+  person: approved it, it is the customer's own address
+  signer: held send_email to 'audit@vendor-compliance.example' (TK-P001), approval apr-91f64a71b4e632820a1c3155614dd0fe
+  person: rejected it (`tracekit approvals reject`)
+  researcher lookup_order     ok
+  executor   issue_refund     ok
+  executor   send_email       ok
+  executor   export_customers ok
+  executor   send_email       blocked
+
+== import the runs with their signed records (`tracekit why import --store`)
+  TK-P001: `to` 'audit@vendor-compliance.example' came only from untrusted content: signed record 2 of the executor's run, the message planner -> executor
+  the why graph finds the value in vendor:portal/notes.md (record 4 of the researcher's run, log seq 9): a match of its text in the why log, not a signed link
+
+== attribute the email to its inputs (paired replays from tape; replays never talk to the signer)
+  remove input:vendor:portal/notes.md | input:web:shipping_faq | input:inbox:ticket-881 target tool=send_email,arg~vendor-compliance    P(with)=0.64 P(without)=0.00 effect=+0.64 [+0.44, +0.78] n=80  CAUSAL (primary)
+  remove input:vendor:portal/notes.md target tool=send_email,arg~vendor-compliance    P(with)=0.64 P(without)=0.00 effect=+0.64 [+0.44, +0.78] n=80  CAUSAL (primary)
+  remove input:web:shipping_faq       target tool=send_email,arg~vendor-compliance    P(with)=0.61 P(without)=0.61 effect=+0.00 [-0.16, +0.16] n=160  RULED-OUT
+  remove input:inbox:ticket-881       target tool=send_email,arg~vendor-compliance    P(with)=0.67 P(without)=0.74 effect=-0.07 [-0.17, +0.04] n=320  RULED-OUT
+  primary cause input:vendor:portal/notes.md (+0.64)
+  remove msg:researcher->planner      target tool=send_email,arg~vendor-compliance    P(with)=0.70 P(without)=0.00 effect=+0.70 [+0.52, +0.82] n=40  CAUSAL (primary)
+  the researcher -> planner channel carries it: the hop to guard
+
+== export each agent's run once it is final and a witness cosigned it; verify offline
+  researcher /tmp/tk-demo-hmnacsn7/researcher.tkb: integrity VERIFIED, exit 0
+  planner    /tmp/tk-demo-hmnacsn7/planner.tkb: integrity VERIFIED, exit 0
+  executor   /tmp/tk-demo-hmnacsn7/executor.tkb: integrity VERIFIED, exit 0
+
+  the cause, vendor:portal/notes.md, is signed record log 6746d2ef125d1c5aff25b94936f002a0 seq 9 (sha256:1698eba03981474c29fe2d459d483012858e4dbd0b9802d1e86a3bbfae4a3968): in researcher.tkb, which the verifier passed
+
+  all of it holds
+[exit 0]
+
