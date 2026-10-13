@@ -1076,15 +1076,21 @@
     }
 
     .wv main,
-    .v2.wv main {
-      grid-template-rows: minmax(0, .8fr) minmax(0, 1.7fr);
-      grid-template-areas: "agents tape alerts" "whyv whyv detail"
+    .v2.wv main,
+    .wv.wd main,
+    .v2.wv.wd main {
+      grid-template-columns: minmax(0, 2.4fr) minmax(340px, 1fr);
+      grid-template-rows: minmax(0, 1fr);
+      grid-template-areas: "whyv detail"
     }
 
     .wv .whyv {
       display: flex
     }
 
+    .wv .agents,
+    .wv .tape,
+    .wv .alerts,
     .wv .mix,
     .wv .lanes,
     .wv .reason,
@@ -1100,6 +1106,21 @@
       color: var(--muted);
       font-size: 11px;
       flex-wrap: wrap
+    }
+
+    .wbar button {
+      font: inherit;
+      background: none;
+      border: 1px solid var(--line2);
+      color: var(--muted);
+      padding: 0 6px;
+      cursor: pointer
+    }
+
+    .wbar button.on {
+      color: #000;
+      background: var(--amber);
+      border-color: var(--amber)
     }
 
     .wbar .legend {
@@ -1132,11 +1153,6 @@
       display: none
     }
 
-    .wv.wd main,
-    .v2.wv.wd main {
-      grid-template-columns: minmax(250px, 1fr) minmax(0, 1.4fr) minmax(0, 1.9fr);
-      grid-template-areas: "agents tape alerts" "whyv whyv detail"
-    }
 
     .wt th {
       color: var(--muted);
@@ -2124,7 +2140,7 @@
     /* ---------------- why logs (why.server.Store; docs/viewer.md#why) ---------------- */
     // WHY: /api/why/workspace; WD: why run id -> its detail (null while loading); VIEW: the lower panels' view
     let WHY = null, whyT = null, VIEW = "desk", WTAB = "detail", WRUN = null, WMSG = "", WBUSY = null, wvKey = "", WNODE = null;
-    const WD = new Map(), WTARGET = {}, WJOINT = new Set(), GV = { inferred: false, ruled: false, focus: null };
+    const WD = new Map(), WTARGET = {}, WJOINT = new Set(), GV = { inferred: false, ruled: false, focus: null, fit: true };
     const WTYPE = { input: "input", decision: "model call", action: "tool call", message: "message" };
     const WSTATUS = { confirmed: "PRIMARY CAUSE", contributing: "CONTRIBUTING", suppressive: "SUPPRESSES IT", inconclusive: "INCONCLUSIVE", untested: "NOT TESTED", "no-effect-seen": "NO EFFECT SEEN", "ruled-out": "RULED OUT" };
     const PSTATE = { unavailable: "unavailable (signer restarted: the run's untrusted-value index is kept in memory only)", truncated: "truncated (past 20000 untrusted values in the run, later ones are not tracked)" };
@@ -2132,7 +2148,9 @@
     const CHAIN = { unchained: "UNCHAINED", broken: "FAILED CHECK" }, chainMark = t => t && CHAIN[t.chain] ? ` [${CHAIN[t.chain]}]` : "";
     const pct = x => x == null ? "–" : Math.round(x * 100) + "%", sgn = x => (x > 0 ? "+" : "") + (Math.round(x * 100) / 100).toFixed(2);
     async function loadWhy() {
+      const first = !WHY;
       try { WHY = await getJSON("api/why/workspace"); } catch { return; }   // a viewer without why logs: 404
+      if (first && WHY.alone) VIEW = "graph";
       $("views").hidden = $("wtabwhy").hidden = false; wvKey = ""; schedule();
     }
     function whyChanged(m) { WD.delete(m.run_id); clearTimeout(whyT); whyT = setTimeout(loadWhy, 400); }
@@ -2283,7 +2301,7 @@
       if (VIEW === "desk") return;
       const runs = WHY.runs.map(r => r.run_id);
       if (!runs.includes(WRUN)) WRUN = whyRef(selected)?.run || (scope && Object.entries(WHY.calls).find(([k]) => k.startsWith(scope + "|"))?.[1][0]) || runs[0] || null;
-      const key = [VIEW, WRUN, WD.get(WRUN) ? 1 : 0, GV.inferred, GV.ruled, GV.focus].join("|");
+      const key = [VIEW, WRUN, WD.get(WRUN) ? 1 : 0, GV.inferred, GV.ruled, GV.focus, GV.fit].join("|");
       if (key === wvKey) return;
       wvKey = key;
       $("wvtitle").textContent = VIEW.toUpperCase();
@@ -2310,11 +2328,12 @@
       [...N].sort((a, b) => a.seq - b.seq).forEach(n => d.edges.forEach(e => { if (e.evidence === "observed" && e.dst === n.id && by[e.src]) depth[n.id] = Math.max(depth[n.id], depth[e.src] + 1); }));
       N.forEach(n => (cols[depth[n.id]] = cols[depth[n.id]] || []).push(n));
       Object.values(cols).forEach(c => c.sort((a, b) => lanes.indexOf(a.agent) - lanes.indexOf(b.agent) || a.seq - b.seq));
-      const BW = 150, BH = 34, CX = 190, RY = 44, PAD = 16, maxr = Math.max(1, ...Object.values(cols).map(c => c.length));
+      const BW = 150, BH = 34, CX = 176, RY = 44, PAD = 16, maxr = Math.max(1, ...Object.values(cols).map(c => c.length));
       const W = PAD * 2 + Math.max(0, Object.keys(cols).length - 1) * CX + BW, H = PAD * 2 + maxr * RY;
       Object.entries(cols).forEach(([c, arr]) => { const off = (maxr - arr.length) * RY / 2; arr.forEach((n, i) => pos[n.id] = [PAD + c * CX, PAD + off + i * RY]); });
       const TC = { input: "--cyan", decision: "--magenta", action: "--green", message: "--amber" }, keep = GV.focus && by[GV.focus] ? reach(E, GV.focus) : null;
-      let svg = `<svg viewBox="${esc(`0 0 ${W} ${H}`)}" width="${esc(W)}" height="${esc(H)}">`;
+      let svg = GV.fit ? `<svg viewBox="${esc(`0 0 ${W} ${H}`)}" width="100%" style="${esc(`min-width:${Math.min(W, 640)}px`)}">`
+        : `<svg viewBox="${esc(`0 0 ${W} ${H}`)}" width="${esc(W)}" height="${esc(H)}">`;
       E.forEach((e, i) => {
         if (!pos[e.src] || !pos[e.dst]) return;
         const x1 = pos[e.src][0] + BW, y1 = pos[e.src][1] + BH / 2, x2 = pos[e.dst][0], y2 = pos[e.dst][1] + BH / 2, mx = (x1 + x2) / 2;
@@ -2331,7 +2350,9 @@
       });
       el.innerHTML = `<div class="wbar"><label><input type="checkbox" data-gv="inferred"${GV.inferred ? " checked" : ""}> inferred links</label><label><input type="checkbox" data-gv="ruled"${GV.ruled ? " checked" : ""}> ruled-out tests</label>
         <span class="legend"><span style="--c:var(--cyan)">input</span><span style="--c:var(--magenta)">model call</span><span style="--c:var(--green)">tool call</span><span style="--c:var(--amber)">message</span><span style="--c:var(--red)">tested cause · untrusted</span></span>
+        <button type="button" data-gfit="1" class="${GV.fit ? "on" : ""}">FIT</button><button type="button" data-gfit="" class="${GV.fit ? "" : "on"}">ACTUAL SIZE</button>
         ${GV.focus ? `<button type="button" data-wnode="">CLEAR</button>` : `<span>click a node: what it came from and led to</span>`}</div>` + svg + `</svg>`;
+      el.querySelector(`[data-wnode="${CSS.escape(GV.focus || "")}"]`)?.scrollIntoView({ block: "nearest", inline: "nearest" });
       $("wvsum").textContent = `${N.length} nodes · ${E.length} of ${d.edges.length} edges (observed${GV.inferred ? ", inferred" : ""}, tested)`;
     }
     function cell(t) {
@@ -2366,10 +2387,11 @@
       $("wvsum").textContent = `${I.sources.length} sources · ${I.outcomes.length} tools`;
     }
     document.addEventListener("click", e => {
-      const t = e.target.closest("[data-wtab],[data-view],[data-rseq],[data-wal],[data-wtest],[data-wfind],[data-wnode],[data-wopen],[data-wwhy],[data-wreach]"); if (!t) return;
+      const t = e.target.closest("[data-wtab],[data-view],[data-rseq],[data-wal],[data-wtest],[data-wfind],[data-wnode],[data-wopen],[data-wwhy],[data-wreach],[data-gfit]"); if (!t) return;
       e.preventDefault();
       if (t.dataset.wtab) { WTAB = t.dataset.wtab; return schedule(); }
       if (t.dataset.view) { VIEW = t.dataset.view; wvKey = ""; return schedule(); }
+      if (t.dataset.gfit !== undefined) { GV.fit = !!t.dataset.gfit; return schedule(); }
       if (t.dataset.wal) { const a = whyAlerts()[+t.dataset.wal]; return a && openWhy(a.run_id, a.node); }
       if (t.dataset.rseq) {   // a signed provenance source: the record of the same run that brought the value in
         const run = (selected?.pre || selected)?.session_id, r = ALL.find(r => r.session_id === run && r.v2?.run_seq === +t.dataset.rseq);

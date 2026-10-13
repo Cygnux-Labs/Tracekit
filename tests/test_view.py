@@ -541,6 +541,10 @@ class WhyData(WhyServer):
         self.assertEqual(status, 200)
         self.assertIn(b'data-wtab="node"', page)
 
+    def test_why_logs_alone_open_on_the_graph(self):
+        self.assertTrue(self.get("/api/why/workspace")["alone"])   # `tracekit view --why DIR`: the page opens on GRAPH
+        self.assertFalse(Store(os.path.join(self.tmp, "signed"), out=WhyFeed()).workspace()["alone"])
+
     def test_workspace_has_every_alert_and_the_signed_call_each_why_event_cites(self):
         run = self.exfil()
         acts = run.of_type("action")

@@ -72,8 +72,8 @@ own (a call's decision or result is on the call's row) opens the row before it a
 
 With why logs, select a tool call (or click a `WHY` alert, panel 3) and open **WHY** in panel 8. The verdict sentence
 says what replays found; **How it got here** is the recorded path from each untrusted input (red border) through the
-agents' model calls and messages to the call. Click any step to open it. While WHY or NODE is open, panel 8 widens
-so its tables and values wrap instead of being cut; DETAIL gives the room back.
+agents' model calls and messages to the call. Click any step to open it. In DESK, while WHY or NODE is open, panel 8
+widens so its tables and values wrap instead of being cut; DETAIL gives the room back.
 
 ### FIND THE CAUSE and RUN TEST
 
@@ -90,9 +90,12 @@ The effect is the drop in how often the call happens, with its 95% interval.
 
 ![GRAPH with the planner's model call clicked: NODE shows its model, tokens, what it saw, what it produced, where it came from, what it led to and its record](viewer/graph-node.png)
 
-**GRAPH** (header buttons) draws the run's data flow: inputs (cyan), model calls (magenta), tool calls (green),
-messages (amber); a red border is untrusted content, a red line a tested cause with its effect. Click a node: the graph
-keeps what it came from and led to and fades the rest, and panel 8's **NODE** tab shows it in full: for a model call
+**GRAPH** (header buttons; `tracekit view --why DIR` opens on it) draws the run's data flow across the page, beside
+panel 8: inputs (cyan), model calls (magenta), tool calls (green), messages (amber); a red border is untrusted content,
+a red line a tested cause with its effect. **FIT** (the default) shows the whole flowchart in the panel; **ACTUAL SIZE**
+draws it at full size and scrolls, keeping the clicked node in view. The picker next to GRAPH chooses the run; **DESK**
+brings back the run list, tape and alerts. Click a node: the graph keeps what it came from and led to and fades the
+rest, and panel 8's **NODE** tab shows it in full: for a model call
 its model, time, tokens, what it saw (each a link) and what it produced; for a tool call its arguments, result,
 policy decision and a **WHY DID THIS HAPPEN?** button; for an input or a message its content and trust. **Came from**
 and **Led to** link the neighbours; **Record** gives its time, hash, previous hash and the signed Tracekit record it
