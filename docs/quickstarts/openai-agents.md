@@ -7,7 +7,7 @@ means](../quickstart-v2.md#what-dev-assurance-means)).
 ## 1. Install
 
 ```sh
-pip install --pre tracekit-ai 'openai-agents>=0.23.1,<0.24'
+pip install tracekit-ai 'openai-agents>=0.23.1,<0.24'
 ```
 
 ## 2. One line in your agent

@@ -1,0 +1,8 @@
+guardrails: ok
+prompt-injection: ok
+mcp: ok
+agent-approvers: ok
+containment: ok
+completeness: ok
+egress: ok
+why: ok

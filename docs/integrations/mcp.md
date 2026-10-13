@@ -8,7 +8,7 @@ answers it records the outcome. It works with any object that implements the sig
 ## Install
 
 ```bash
-pip install --pre tracekit-ai "mcp>=2.3,<2.4"
+pip install tracekit-ai "mcp>=2.3,<2.4"
 ```
 
 Python 3.10 or newer (the `mcp` package's own requirement).

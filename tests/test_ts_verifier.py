@@ -18,7 +18,7 @@ import zipfile
 TESTS = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(TESTS)
 sys.path.insert(0, TESTS)
-from factories import rewrite_bundle  # noqa: E402
+from factories import rewrite_bundle, unverified_bundles  # noqa: E402
 from tracekit.bundle_v2 import export  # noqa: E402
 from tracekit.demo_server import Witness  # noqa: E402
 from tracekit.format import checkpoint  # noqa: E402
@@ -50,16 +50,22 @@ def _node():
         "needs the TypeScript build (make test-ts)"
 
 
+_BUILT = []
+
+
 def _build():
-    """Compile the TypeScript (a compile error fails the tests that need it, not the whole suite's collection)."""
-    if os.path.exists(TSC):
+    """Compile the TypeScript once per session (a compile error fails the tests that need it, not the whole suite's
+    collection)."""
+    if os.path.exists(TSC) and not _BUILT:
         subprocess.run(["node", TSC, "-p", TS], check=True)
+        _BUILT.append(True)
 
 
 SKIP = _node()
 
 
 def ts_verify(bundle, trust):
+    _build()   # other test files call this before this file's classes run: never against a stale dist
     p = subprocess.run(["node", CLI, "verify", bundle, "--trust", trust, "--json"], capture_output=True, text=True)
     out = json.loads(p.stdout)
     assert out["exit_code"] == p.returncode, p
@@ -270,13 +276,14 @@ class Agreement(unittest.TestCase):
         self.assertEqual([c for c in ts_verify(bundle, trust)["checks"] if c["check"] == "tiers"], [want])
         self.assertEqual(want["status"], "warn")
 
+    @unverified_bundles   # its fail cases are tampered on purpose
     def test_agent_approvals(self):
         import test_bundle_v2 as b   # synthetic runs whose ask an agent approved
         trust = os.path.join(self.d, "agent-trust.json")
         with open(trust, "w") as f:
             json.dump(b.trust_config(), f)
         for why, kw, want in (("with the snapshot", {}, "pass"), ("without it", {"snapshot": False}, "warn"),
-                              ("by a person", {"answer": {"approver_kind": "person"}}, None),
+                              ("by a person", {"answer": {"approver_kind": None}}, None),
                               ("provenance", {"decided": {"provenance_state": "partial"}}, "fail"),
                               ("passkey", {"request": {"passkey": True}}, "fail"),
                               ("the run's owner", {"answer": {"approver_identity": dict(b.AGENT, subject="svc")}}, "fail"),

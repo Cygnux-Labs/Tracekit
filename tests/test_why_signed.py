@@ -164,7 +164,7 @@ class SignedRuntime(unittest.TestCase):
         with contextlib.redirect_stdout(buf):
             self.assertEqual(main(["import", "--store", os.path.join(self.dir, "data"), "--out", out]), 0)
         self.assertIn("merged with", buf.getvalue())
-        merged = load_run(os.path.join(out, "tk-r"))
+        merged = load_run(import_v2._target(out, "r"))
         acts = self.actions(merged)
         self.assertEqual(acts["ls"]["tracekit"]["log_id"], self.service.log.log_id)
         self.assertIn("commitment", acts["ls"]["tracekit"])
@@ -418,7 +418,7 @@ class ImportWithoutWhyLog(unittest.TestCase):
         cls.out = os.path.join(cls.dir, "runs")
         with contextlib.redirect_stdout(io.StringIO()):
             assert main(["import", "--store", os.path.join(cls.dir, "data"), "--out", cls.out]) == 0
-        cls.imported = load_run(os.path.join(cls.out, "tk-" + cls.tk_run))
+        cls.imported = load_run(import_v2._target(cls.out, cls.tk_run, "default"))
 
     @classmethod
     def tearDownClass(cls):

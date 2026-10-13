@@ -1,5 +1,7 @@
 # The compose stack
 
+> **Experimental:** this works and is tested, but may change and gets less hardening than the [stable core](support.md).
+
 `deploy/compose/` runs the v2 signer with a Postgres store, a C2SP witness, the viewer and an example agent on one
 Docker host. `tracekit deploy compose` writes a ready-to-run copy with its own keys and passwords.
 

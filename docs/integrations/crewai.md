@@ -1,5 +1,7 @@
 # CrewAI
 
+> **Experimental:** this works and is tested, but may change and gets less hardening than the [stable core](../support.md).
+
 `tracekit.integrations.crewai` gates every tool call a CrewAI crew makes, through CrewAI's global tool hooks: before
 each call it asks the Tracekit signer for a decision (an `ask` waits for a person), and after the call it records the
 outcome.
@@ -7,7 +9,7 @@ outcome.
 ## Install
 
 ```bash
-pip install --pre tracekit-ai "crewai>=1.15.27,<1.16"
+pip install tracekit-ai "crewai>=1.15.27,<1.16"
 ```
 
 Tested with CrewAI 1.15.27.

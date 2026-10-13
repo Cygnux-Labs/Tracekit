@@ -7,7 +7,7 @@ means](../quickstart-v2.md#what-dev-assurance-means)).
 ## 1. Install
 
 ```sh
-pip install --pre tracekit-ai 'mcp>=2.3,<2.4'
+pip install tracekit-ai 'mcp>=2.3,<2.4'
 ```
 
 ## 2. One line in your agent

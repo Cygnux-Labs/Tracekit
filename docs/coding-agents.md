@@ -1,5 +1,7 @@
 # Coding agents other than Claude Code
 
+> **Experimental:** this works and is tested, but may change and gets less hardening than the [stable core](support.md).
+
 ```bash
 tracekit init --dev --agent codex      # ~/.codex/hooks.json
 tracekit init --dev --agent cursor     # ~/.cursor/hooks.json

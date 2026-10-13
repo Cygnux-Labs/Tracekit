@@ -1,5 +1,7 @@
 # Egress observation
 
+> **Experimental:** this works and is tested, but may change and gets less hardening than the [stable core](support.md).
+
 `tracekit egress serve` is a forward and CONNECT proxy outside the agent. Every connection an agent makes to the
 outside goes through it, and it tells the v2 signer which hosts each run reached, on which port, how many bytes each
 way and when. The signer writes that as signed `effect.observed` records in the run and reconciles them against the

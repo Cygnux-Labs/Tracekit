@@ -1,5 +1,7 @@
 # Log monitor (`tracekit monitor`)
 
+> **Experimental:** this works and is tested, but may change and gets less hardening than the [stable core](support.md).
+
 Witnesses check that a log only grows. They don't read its records, so they can't see a run finalised twice, a record
 after a `run.final`, a second registration of a run id, or a key retired that nobody announced. A **monitor** reads
 every record and checks those rules, then publishes a signed report. A verifier that pins the monitor uses a fresh,

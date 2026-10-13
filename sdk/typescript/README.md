@@ -6,12 +6,13 @@ at runtime (the same-user dev signer is started with Python when none is running
 
 ## Install
 
+The package isn't on npm yet. Install the file attached to the GitHub release (Node 18 or newer):
+
 ```sh
-npm install @cygnux/tracekit@next     # Node 18 or newer
+npm install https://github.com/Cygnux-Labs/Tracekit/releases/download/v1.2.0/cygnux-tracekit-1.2.0.tgz
 ```
 
-The first npm release ships with 1.2.0rc1 under the `next` dist-tag. If npm says not found, build the package from a
-checkout and install the file it makes:
+Or build it from a checkout and install the file it makes:
 
 ```sh
 cd sdk/typescript && npm ci && npm run build && npm pack    # writes cygnux-tracekit-<version>.tgz
@@ -45,8 +46,8 @@ await client.close();                                     // waits for what is i
   re-read per call; `$TRACEKIT_SIGNER_CERT`/`_KEY`: mTLS; `$TRACEKIT_SIGNER_CA`: the signer's CA). In system mode the
   signer named by the root-owned `/etc/tracekit/client.json` is used and a different `$TRACEKIT_SIGNER` is refused.
   Otherwise the same-user dev signer is found, or started with `tracekit up --json`: `$TRACEKIT_PYTHON -m tracekit` if
-  set, else a pip-installed `tracekit` on PATH, else the Python bundled in the `@cygnux/tracekit-signer-<platform>`
-  package npm installs with this one. `npx @cygnux/tracekit up|down|status|view|verify|signer` runs the same command.
+  set, else a pip-installed `tracekit` on PATH (the `@cygnux/tracekit-signer-<platform>` packages that bundle a Python
+  aren't published while npm is paused: `pip install tracekit-ai`). `npx @cygnux/tracekit up|down|status|view|verify|signer` runs the same command.
 - **Protocol:** `hello` first; a signer that does not speak this client's RPC version is refused with `Incompatible`.
   Requests are validated against the RPC schemas before they are sent, pipelined on one connection and answered in
   order; a call whose connection drops is resent with the same `request_id`. Each handle's events carry the client's

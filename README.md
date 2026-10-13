@@ -16,7 +16,7 @@ against your policy and allows it, denies it, or holds it for a person to approv
 as a signed, hash-chained record that the agent can't edit. A run exports as one `.tkb` file that anyone can verify
 offline.
 
-<img src="https://raw.githubusercontent.com/Cygnux-Labs/Tracekit/main/docs/demo/observer.gif" alt="tracekit observe: four coding agents traced live; each dangerous action is blocked by policy and recorded" width="100%">
+<img src="https://raw.githubusercontent.com/Cygnux-Labs/Tracekit/main/docs/demo/observer.gif" alt="tracekit view: four coding agents traced live; each dangerous action is blocked by policy and recorded" width="100%">
 
 ## Why it exists
 
@@ -43,7 +43,7 @@ customer. Tracekit keeps that record outside the agent's control, and lets anyon
 - A reviewer agent may answer routine approvals inside bounds the policy sets, with budgets and a veto delay; people
   answer everything else ([agent approvers](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/approvals.md#agent-approvers)).
 
-**Contain** (1.2, release candidate)
+**Contain** (1.2, experimental)
 - The policy names risky sequences of calls and limits on them. When one trips, the signer opens a signed incident
   and can hold or quarantine the run; new runs of the same owner and principal inherit that for a cooldown
   ([incidents](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/incidents.md)).
@@ -66,7 +66,7 @@ customer. Tracekit keeps that record outside the agent's control, and lets anyon
 - `tracekit view` shows runs with their verdicts, blocked and held calls, approvals, gaps, a replay of each run, and a
   run review ([viewer](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/viewer.md)).
 
-**Explain** (1.2, release candidate)
+**Explain** (1.2, experimental)
 - Where each argument came from: the signer tracks values that entered a run through untrusted content (a fetched page,
   an email, a ticket) and can hold a call whose recipient, payee or host came only from there
   ([provenance](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/policy-v2.md#provenance-untrusted-and-from-untrusted)).
@@ -128,11 +128,8 @@ Three steps, with the agent you already have (OpenAI Agents SDK, LangGraph / Lan
 client, or plain OpenAI / Anthropic / Google Gen AI calls):
 
 ```sh
-pip install --pre tracekit-ai
+pip install tracekit-ai
 ```
-
-`--pre` gets 1.2.0rc1 once it is tagged; a plain `pip install tracekit-ai` gets 1.0.0, which lacks the 1.1 and 1.2
-features below.
 
 ```python
 import tracekit; tracekit.instrument()     # the first line of your agent; then run it as usual
@@ -159,6 +156,18 @@ Per framework, with a 10-line example each:
 `dev` assurance means; [limits](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/limits.md) lists what this path
 doesn't cover.
 
+### See it
+
+`tracekit view --dev` opens the one viewer on your runs: each run verified, every call with its decision, and (with
+why logs) why a call happened, down to clicking any node of the run's graph. A store opened without why logs gets a
+graph of each signed run's calls and their decisions.
+
+![tracekit view: the planner's model call clicked in the run graph, with what it saw, produced and led to](https://raw.githubusercontent.com/Cygnux-Labs/Tracekit/main/docs/viewer/graph-node.png)
+
+A screenshot tour of every panel: [viewer tour](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/viewer.md#tour).
+Every step end to end, recorded on a clean install with its real output and screenshots:
+[walkthrough](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/walkthrough.md).
+
 No agent at hand? Each demo runs in a temp dir and needs no API key. `--server` shows calls allowed, denied and
 approved, a witness cosignature, and a tampered copy failing verification. `--why` shows a held email whose cause is
 found by replay and cited by its signed record. `init --dev --v2` wires Claude Code's hooks to a dev signer:
@@ -181,9 +190,9 @@ tracekit verify docs/sample/demo-run-tampered.tkb --key docs/sample/signer.pub  
 
 ## What you need
 
-- **Python 3.9 to 3.13**, and `pip install --pre tracekit-ai`. The framework integrations need Python 3.10 or
-  newer. For the TypeScript SDK, Node 18 or newer and `npm install @cygnux/tracekit@next`: the
-  first npm release ships with 1.2.0rc1 under the `next` tag. If npm says not found, build it from a checkout
+- **Python 3.9 to 3.13**, and `pip install tracekit-ai`. The framework integrations need Python 3.10 or
+  newer. For the TypeScript SDK, Node 18 or newer and the package file from the GitHub release:
+  `npm install https://github.com/Cygnux-Labs/Tracekit/releases/download/v1.2.0/cygnux-tracekit-1.2.0.tgz`. It isn't on npm yet
   ([TypeScript SDK](https://github.com/Cygnux-Labs/Tracekit/blob/main/sdk/typescript/README.md#install)).
 - **An OS.** Dev mode runs on macOS, Linux and Windows. A signer under its own OS user runs on Linux (macOS is
   experimental). Containers and Kubernetes run on Linux
@@ -274,10 +283,12 @@ report it.
 
 ## Docs
 
-- Seeing it work: [recorded demos](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/demos/README.md) of each
-  main use case, offline, with their bundles and verify reports
+- Seeing it work: a [walkthrough](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/walkthrough.md) of every step,
+  recorded on a clean install with screenshots; [recorded demos](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/demos/README.md)
+  of each main use case, offline, with their bundles and verify reports
 - The tour: a [terminal video](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/demos/tracekit-tour.mp4) of every
   demo running (3 min 44 s)
+- What's stable and what's experimental: [support](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/support.md)
 - How it fits together: [architecture](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/architecture.md),
   [evidence format v2](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/format-v2.md)
 - Running it: [deployment](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/deploy.md),
@@ -310,8 +321,9 @@ report it.
   [security checklist](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/security-checklist.md),
   [case study: two open-source agents](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/case-study-oss-agents.md)
 - Asking why an action happened: [tracekit why](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/why.md), [its architecture](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/why-architecture.md)
-- Releasing: [launch checklist for 1.0](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/launch-checklist.md)
-- The v1 laptop signer (`tracekitd`, `tracekit init --dev`, `tracekit demo`, `tracekit observe`) and its bundles keep
+- Releasing: [the procedure](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/RELEASING.md),
+  [launch checklist](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/launch-checklist.md)
+- The v1 laptop signer (`tracekitd`, `tracekit init --dev`, `tracekit demo`, `tracekit view --ledger`) and its bundles keep
   working: [coding agents](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/coding-agents.md),
   [signing](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/signing.md),
   [findings](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/findings.md),
@@ -320,7 +332,7 @@ report it.
 
 ## Status
 
-This is 1.2.0rc1, a release candidate. 1.0 is the first stable release, and 1.x is the supported line
+This is 1.2.0. 1.0 was the first stable release, and 1.x is the supported line
 ([SECURITY.md](https://github.com/Cygnux-Labs/Tracekit/blob/main/SECURITY.md)). What changed in each release:
 [CHANGELOG.md](https://github.com/Cygnux-Labs/Tracekit/blob/main/CHANGELOG.md).
 
@@ -328,8 +340,14 @@ This is 1.2.0rc1, a release candidate. 1.0 is the first stable release, and 1.x 
   verifier are unchanged.
 - **Versioned:** the signer RPC (version 16; a 1.2 signer also serves version 15 clients). A client newer than its
   signer is refused, so upgrade the signer first ([changelog](https://github.com/Cygnux-Labs/Tracekit/blob/main/CHANGELOG.md)).
-- **Experimental:** laptop system mode on macOS, the Rekor witness of the v1 signer, and the v1 OTLP receiver, ingest
-  gateway and model proxy (each needs `--experimental`).
+- **Stable core:** the v2 signer (dev mode and Linux system mode, file storage), the Python SDK with
+  `tracekit.instrument()` and its OpenAI Agents, LangChain / LangGraph, Claude Agent SDK and MCP integrations, the
+  Claude Code hooks (v2), policy v2 with its packs, bundle export, the Python and TypeScript verifiers, `tracekit view`
+  and `tracekit doctor`.
+- **Experimental:** everything else. It works and is tested, but may change and gets less hardening; experimental
+  commands and servers say so when they start
+  ([what's stable](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/support.md)). The v1 OTLP receiver, ingest
+  gateway and model proxy also need `--experimental`.
 - **Not yet done:** an external review of the threat models, and some release checks that wait on the owner
   ([launch checklist](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/launch-checklist.md)).
 

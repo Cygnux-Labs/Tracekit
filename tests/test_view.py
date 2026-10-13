@@ -1,11 +1,13 @@
 """`tracekit view`: the v2 signer's runs, each verified by verify.v2, served with the observer's page and security."""
 import collections
 import contextlib
+import functools
 import http.client
 import io
 import json
 import os
 import shutil
+import signal
 import socket
 import ssl
 import subprocess
@@ -14,10 +16,12 @@ import unittest
 import urllib.request
 from unittest import mock
 
+import pytest
+
 import test_signer_service as ts
 from factories import wait_for
 from test_observe_render import XSS, script_of, unescaped
-from tracekit import cli, view
+from tracekit import cli, observe, view
 from tracekit.observe import _session
 from tracekit.policy2 import compile as policy_compile
 from tracekit.policy2.engine import Engine
@@ -27,7 +31,9 @@ from tracekit.storage.file import FileStorage
 from tracekit.why.core import GENESIS, HttpSink, event_hash, load_run, referenced_refs
 from tracekit.why.demo import EXFIL_TARGET, SYSTEM
 from tracekit.why.graph import target_hits
-from tracekit.why.server import IngestError, Store, tape
+from tracekit.why import cli as why_cli
+from tracekit.why.import_v2 import _target, store_records
+from tracekit.why.server import Feed as WhyFeed, IngestError, Store, tape
 
 POLICY = Engine({"deny": [{"id": "T-DENY", "tool": "rm", "pattern": "^"}],
                  "ask": [{"id": "T-PAY", "tool": "pay", "pattern": "^"}]})
@@ -285,6 +291,7 @@ class View(unittest.TestCase):
             self.assertEqual(cli.main(["last"]), 1)
         self.assertEqual((exported, err.getvalue()), (["r1"], ""))
 
+    @pytest.mark.unverified_bundles
     def test_tampered_record_shows_only_the_failure(self):
         run_id = self.finished_run()
         self.service.close()
@@ -351,9 +358,9 @@ class View(unittest.TestCase):
                 server.return_value.server_address = ("127.0.0.1", 7778)
                 self.assertEqual(view.main(["--data-dir", self.d, *args]), 0)
             return server.call_args[0][8], out.getvalue()
-        store, out = why()
-        self.assertIsNone(store)
-        self.assertNotIn("why logs", out)
+        store, out = why()   # no why logs: the store's own runs, imported as they verify
+        self.assertNotEqual(store.root, os.path.join(self.d, view.WHY_DIR))
+        self.assertIn("graphs: each verified run", out)
         os.makedirs(os.path.join(self.d, view.WHY_DIR))
         store, out = why("--allow-program", "m:SYSTEM")
         self.assertEqual((store.root, store.allow), (os.path.join(self.d, view.WHY_DIR), {"m:SYSTEM"}))
@@ -362,6 +369,63 @@ class View(unittest.TestCase):
         store, out = why("--why", other)
         self.assertEqual(store.root, other)
         self.assertIn("start with --allow-program", out)
+
+    def test_a_store_with_no_why_logs_still_gets_a_graph_of_each_run_with_its_decisions(self):
+        run_id = self.finished_run()
+        why_dir = ts.tmpdir(self)
+        feed = view.StoreFeed({"data_dir": self.d}, on_run=functools.partial(view.mirror_run, why_dir))
+        self.report(feed, run_id)
+        wait_for(lambda: os.listdir(why_dir), 15)
+        store = Store(why_dir, out=feed)
+        why_id = os.path.basename(_target(why_dir, run_id, "default"))
+        d = store.detail(why_id)
+        calls = {n["tool"]: n for n in d["nodes"] if n["type"] == "action"}
+        self.assertEqual(calls["rm"]["policy"]["decision"], "deny")   # GRAPH and NODE mark it DENIED with its rule
+        self.assertEqual(calls["rm"]["policy"]["rule_ids"], ["T-DENY"])
+        self.assertEqual(calls["pay"]["policy"]["decision"], "ask")
+        self.assertEqual(calls["pay"]["policy"]["approval"]["decision"], "approve")
+        self.assertEqual(calls["Bash"]["policy"]["decision"], "allow")
+        self.assertTrue(store.workspace()["calls"])   # each signed call joins its imported why event (the WHY tab)
+        ids = [n["id"] for n in d["nodes"]]
+        view.mirror_run(why_dir, "default", run_id, store_records(self.d, run_id)[run_id])   # a re-import replaces it
+        self.assertEqual(sorted(os.listdir(why_dir)), [why_id])
+        # the same event ids: a re-import neither re-announces its alerts nor drops the page's selection
+        self.assertEqual([n["id"] for n in Store(why_dir).detail(why_id)["nodes"]], ids)
+        with self.assertRaises(IngestError) as e:   # the mirror is the store's: nothing ingests into it
+            Store(why_dir, ingest=False).ingest({"events": [{}]}, "t")
+        self.assertEqual(e.exception.status, 404)
+        view.mirror_run(why_dir, "default", run_id, None)   # it failed verification: no graph says LOG INTACT
+        self.assertEqual(os.listdir(why_dir), [])
+
+    def test_mirror_folders_are_unique_per_tenant_and_run_id(self):
+        names = {os.path.basename(_target("/w", rid, tenant)) for rid, tenant in (
+            ("victim_run", "default"), ("victim:run", "default"), ("victim_run", "other"),
+            ("x" * 100 + "a", "default"), ("x" * 100 + "b", "default"))}
+        self.assertEqual(len(names), 5)
+        self.assertTrue(all(n.startswith("tk-") and len(n) < 120 for n in names))
+
+    def test_a_mirror_takes_the_feeds_reasons_and_comes_after_the_tape(self):
+        run_id = self.finished_run()
+        seen = []
+        feed = view.StoreFeed({"data_dir": self.d}, on_run=lambda *a: seen.append((len(feed.records), a)))
+        self.report(feed, run_id)
+        wait_for(lambda: seen, 15)
+        shown, (tenant, rid, records, reasons) = seen[0]
+        self.assertEqual((tenant, rid), ("default", run_id))
+        self.assertIs(reasons, feed.tr.reasons)   # computed once, with the operator's policy: not per import
+        self.assertTrue(shown and records)   # the tape had the run before its graph was built
+        with mock.patch.object(view, "policy_reasons", side_effect=AssertionError("recompiled the packs")):
+            view.mirror_run(ts.tmpdir(self), tenant, rid, records, reasons)
+
+    def test_a_stop_cleans_up_and_a_bad_bundle_keeps_its_name_and_code(self):
+        before = signal.getsignal(signal.SIGTERM)
+        self.addCleanup(signal.signal, signal.SIGTERM, before)
+        with contextlib.redirect_stderr(io.StringIO()) as err, contextlib.redirect_stdout(io.StringIO()):
+            code = view.main(["--bundle", os.path.join(self.d, "missing.tkb")])
+        self.assertEqual(code, 2)   # observe's exit code for an unreadable bundle, not 1
+        self.assertIn("tracekit view: cannot read bundle", err.getvalue())
+        with self.assertRaises(SystemExit):   # SIGTERM exits through atexit, which removes the temp dirs
+            signal.getsignal(signal.SIGTERM)(signal.SIGTERM, None)
 
     def test_hostile_tool_names_are_data_and_the_page_escapes_every_sink(self):
         run = self.client.run(agent="a")
@@ -520,6 +584,26 @@ class WhyData(WhyServer):
         self.assertEqual((c["status"], c["test"]["n"] >= 20), ("confirmed", True))
         self.assertGreater(c["test"]["p_with"], c["test"]["p_without"])
 
+    def test_every_node_carries_what_its_node_detail_shows(self):
+        """Clicking a GRAPH node opens NODE (Causeway's drawer): what each type saw, did or held, its links, its record."""
+        run = SYSTEM.run(seed=0, out_dir=self.store.root, run_id="nodes")
+        d = self.get(f"/api/why/runs/{run.run_id}")
+        ids = {n["id"] for n in d["nodes"]}
+        by_type = {n["type"]: n for n in d["nodes"]}
+        self.assertEqual(set(by_type), {"input", "decision", "action", "message"})
+        for n in d["nodes"]:
+            self.assertTrue(n["hash"] and n["prev"] and n["ts"] and n["label"], n)
+        dec, act = by_type["decision"], by_type["action"]
+        self.assertTrue(dec["model"] and dec["output"] and dec["context"])
+        self.assertTrue(all(c["node"] is None or c["node"] in ids for c in dec["context"]))   # WHAT IT SAW links
+        self.assertIn("args", act)
+        self.assertIsInstance(act["result"], str)
+        self.assertTrue(by_type["input"]["content"] and by_type["message"]["to"])
+        self.assertTrue(all(e["src"] in ids and e["dst"] in ids for e in d["edges"]))   # CAME FROM / LED TO links
+        status, page = self.request("GET", "/", AUTH)[::2]
+        self.assertEqual(status, 200)
+        self.assertIn(b'data-wtab="node"', page)
+
     def test_workspace_has_every_alert_and_the_signed_call_each_why_event_cites(self):
         run = self.exfil()
         acts = run.of_type("action")
@@ -667,6 +751,8 @@ class WhyPage(WhyServer):
             self.assertIn(directive, h["Content-Security-Policy"])
         self.assertIn(b'data-wtab="why"', page)
         self.assertEqual(unescaped(script_of(page.decode())), [])
+        self.assertIn("DESK · RUNS · OVERVIEW · TIMELINE · WHY DID IT HAPPEN? · GRAPH · AGENTS · INFLUENCE".encode(), page)
+        self.assertIn(b'<option value="${esc(a)}"', page)   # an agent name with odd spaces still matches its filter
         self.assertEqual(self.request("GET", "/api/why/workspace", session)[0], 200)
 
     def test_foreign_host_is_refused_without_the_token(self):
@@ -697,6 +783,99 @@ class WhyPage(WhyServer):
         self.assertEqual(self.request("POST", "/api/why/runs/r/tests", JSON, body)[0], 200)
         self.assertEqual(self.request("POST", "/api/why/runs/no-such/tests", JSON, body)[0], 404)
 
+
+
+class OneViewer(unittest.TestCase):
+    """`tracekit view` is the one viewer: the v1 ledger or bundle (`tracekit observe`) and why logs alone (`tracekit
+    why serve`) on its server, token and nav; the old commands keep working and say so."""
+    SAMPLE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "docs", "sample")
+
+    def main(self, *args):
+        """(code, the args view.server was called with, stdout) of `tracekit view ARGS`, the server not started."""
+        with mock.patch.object(view, "server") as server, mock.patch.object(Store, "watch"), \
+                contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(io.StringIO()):
+            server.return_value.serve_forever.side_effect = KeyboardInterrupt
+            server.return_value.server_address = ("127.0.0.1", 7778)
+            code = view.main(list(args))
+        return code, server.call_args and server.call_args[0], out.getvalue()
+
+    def get(self, port, path, headers):
+        c = http.client.HTTPConnection("127.0.0.1", port, timeout=10)
+        self.addCleanup(c.close)
+        c.request("GET", path, headers=headers)
+        r = c.getresponse()
+        return r.status, r.read().decode()
+
+    def test_v1_bundle_is_served_on_the_viewers_server_and_a_tampered_one_is_refused(self):
+        code, args, out = self.main("--bundle", os.path.join(self.SAMPLE, "demo-run.tkb"))
+        feed, token = args[0], args[3]
+        self.assertEqual(code, 0)
+        self.assertIsInstance(feed, observe.Feed)
+        self.assertIn(f"(ledger: {feed.path}, read-only)", out)
+        srv = view.server(feed, "127.0.0.1", 0, token)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        port = srv.server_address[1]
+        self.assertEqual(self.get(port, "/api/verify", {})[0], 401)   # the viewer's token, unlike observe's default
+        auth = {"Authorization": f"Bearer {token}"}
+        wait_for(lambda: json.loads(self.get(port, "/api/verify", auth)[1])["records"] > 0)
+        self.assertTrue(json.loads(self.get(port, "/api/verify", auth)[1])["ok"])
+        status, page = self.get(port, "/", auth)
+        self.assertEqual(status, 200)
+        self.assertIn('<nav class="nav"><a href="/" class="on">LIVE</a></nav>', page)
+        code, args, _ = self.main("--bundle", os.path.join(self.SAMPLE, "demo-run-tampered.tkb"))
+        self.assertNotEqual(code, 0)
+        self.assertIsNone(args)
+
+    def test_v1_ledger_defaults_to_its_home_and_stays_on_loopback(self):
+        home = ts.tmpdir(self)
+        code, args, out = self.main("--ledger", home)
+        self.assertEqual((code, args[0].path), (0, os.path.join(home, "ledger", "ledger.jsonl")))
+        for host in ("0.0.0.0", "192.0.2.1"):   # the v1 ledger stays on loopback, as observe kept it, even with TLS
+            self.assertEqual(self.main("--ledger", home, "--host", host, "--tls-cert", "c", "--tls-key", "k")[:2],
+                             (2, None))
+
+    def test_why_alone_is_why_serve(self):
+        root = ts.tmpdir(self)
+        code, args, out = self.main("--why", root, "--allow-program", "m:SYSTEM", "--webhook", "http://127.0.0.1:9/")
+        store = args[8]
+        self.assertEqual(code, 0)
+        self.assertEqual((store.root, store.tape, store.allow, args[0]), (root, True, {"m:SYSTEM"}, store.out))
+        self.assertIsNotNone(store.webhook)
+        self.assertIn(f"(why logs alone: {root})", out)
+
+    def test_one_nav_reaches_every_page_this_server_has(self):
+        runs = mock.Mock()
+        runs.search.return_value = {"runs": [], "next": None}
+        srv = view.server(WhyFeed(), "127.0.0.1", 0, "t0k", runs=runs)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        port, auth = srv.server_address[1], {"Authorization": "Bearer t0k"}
+        for path, on in (("/", "LIVE"), ("/runs", "RUNS")):
+            status, page = self.get(port, path, auth)
+            self.assertEqual(status, 200)
+            self.assertIn('<a href="/" class="%s">LIVE</a><a href="/runs" class="%s">RUNS</a>'
+                          % ("on" if on == "LIVE" else "", "on" if on == "RUNS" else ""), page)
+            self.assertNotIn("APPROVALS", page)
+        self.assertEqual(self.get(port, "/runs", {})[0], 401)
+
+    def test_observe_and_why_serve_say_they_are_part_of_view_and_keep_working(self):
+        with mock.patch.object(observe, "Feed"), mock.patch.object(observe, "ThreadingHTTPServer") as httpd, \
+                contextlib.redirect_stderr(io.StringIO()) as err, contextlib.redirect_stdout(io.StringIO()):
+            httpd.return_value.serve_forever.side_effect = KeyboardInterrupt
+            httpd.return_value.server_address = ("127.0.0.1", 7777)
+            self.assertEqual(observe.main(["--home", ts.tmpdir(self)]), 0)
+        self.assertEqual(err.getvalue(), observe.NOTICE + "\n")
+        with mock.patch.object(view, "server") as server, contextlib.redirect_stderr(io.StringIO()) as err, \
+                contextlib.redirect_stdout(io.StringIO()):
+            server.return_value.serve_forever.side_effect = KeyboardInterrupt
+            server.return_value.server_address = ("127.0.0.1", 7788)
+            why_cli.main(["serve", ts.tmpdir(self)])
+        self.assertTrue(server.called)
+        self.assertEqual(err.getvalue().splitlines(), ["tracekit why serve is now part of tracekit view: "
+                                                       "`tracekit view --why ROOT`; this command keeps working"])
 
 class BoundedState(unittest.TestCase):
     """What a long-running viewer keeps per run, approval or session stays bounded however many it sees."""

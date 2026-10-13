@@ -1,5 +1,7 @@
 # tracekit why: architecture
 
+> **Experimental:** this works and is tested, but may change and gets less hardening than the [stable core](support.md).
+
 The formats and algorithms of [`tracekit why`](why.md), in enough detail to reimplement them or to audit what a result
 means. [why.md](why.md) covers how to use them. The code is `tracekit/why/`.
 
@@ -182,8 +184,8 @@ Intervals are computed at 95% (z = 1.96). The viewer's verdicts use each test's 
 
 ## Server and ingestion
 
-`tracekit why serve ROOT` is the viewer (`tracekit.view.server`, on `tracekit.netserver.Server`) on the why logs under
-ROOT: the same page, session, headers and limits ([viewer.md](viewer.md#why)). The event stream and the replay POSTs
+`tracekit view --why ROOT` (or its old name, `tracekit why serve ROOT`) is the viewer (`tracekit.view.server`, on
+`tracekit.netserver.Server`) on the why logs under ROOT: the same page, session, headers and limits ([viewer.md](viewer.md#why)). The event stream and the replay POSTs
 lift the connection deadline once their request is read.
 
 | Method | Path | Notes |
@@ -241,6 +243,6 @@ A watcher thread polls the runs folder every 0.5 s. When a run's `events.jsonl` 
 
 `tracekit.why.import_v1` reads a v1 Tracekit ledger (`ledger/ledger.jsonl`), checks its chain and signatures with
 `tracekit.observe.verify_ledger` (the result goes into `run.start.meta.signatures`), and writes a why run
-`tk-<run id>` plus `tracekit-map.json` (`{"events": {why event id: [{seq, hash, type}, ...]}}`). The mapping is in
+`tk-<run id>-<hash>` plus `tracekit-map.json` (`{"events": {why event id: [{seq, hash, type}, ...]}}`). The mapping is in
 [why.md](why.md#importing-a-v1-ledger). Hashes are not shared: Tracekit hashes raw content with its own canonical form
 and the why log hashes `{"v": value}`, so the map, not content hashes, is the join between the two.

@@ -52,7 +52,7 @@ Every model reply is kept in the recorded runs (`usage.raw` on each decision). A
 
 `--max-calls` caps the model calls per scenario: harmful runs that would push a scenario past it are counted but not tested, and the report says how many.
 
-Results go to `eval/why_bench/results/<model>-<date>.json` and `.md`. Use `--keep-runs DIR` to keep the recorded runs and open them with `tracekit why serve DIR/<scenario>`.
+Results go to `eval/why_bench/results/<model>-<date>.json` and `.md`. Use `--keep-runs DIR` to keep the recorded runs and open them with `tracekit view --why DIR/<scenario>`.
 
 Without `--yes`, the Claude mode prints a worst-case call estimate and stops. Each attribution costs about `2 × n × (agents that call a model) × (untrusted inputs)` model calls. With the defaults (n = 30, 3 to 4 untrusted inputs, 2 to 3 model-calling agents) that is 360 to 540 calls per attributed run.
 

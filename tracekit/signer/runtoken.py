@@ -8,6 +8,7 @@ so nothing needs a public key; and keeping the evidence key out of it means a to
 to obtain, a signature over evidence.
 """
 import base64
+import functools
 import hashlib
 import hmac
 import json
@@ -32,6 +33,7 @@ def subject(identity):
 class RunTokens:
     def __init__(self, secret):
         self.secret = secret
+        self._claims = functools.lru_cache(maxsize=4096)(self._check)   # a run presents the same token every call
 
     def _mac(self, payload):
         return hmac.new(self.secret, _DOMAIN + payload, hashlib.sha256).digest()
@@ -43,6 +45,9 @@ class RunTokens:
 
     def claims(self, token):
         """The claims of a token this signer issued; refuses a malformed or tampered one. Checks nothing else."""
+        return dict(self._claims(token)) if type(token) is str else self._check(token)   # a copy: the cache's stays
+
+    def _check(self, token):
         try:
             p, m = token.split(".")
             payload, mac = _unb64(p), _unb64(m)

@@ -184,10 +184,16 @@ class LongRuns(Tmp):
         chains = lineage(g, last)
         self.assertEqual(len(chains), LINEAGE_CHAINS)
         self.assertTrue(all(len(c) == 3 and c[-1] == last and g.nodes[c[0]]["type"] == "input" for c in chains))
-        run = full_history(150)
-        start = time.monotonic()
-        run_detail(run)
-        self.assertLess(time.monotonic() - start, 4)   # 10 s before
+
+        def took(steps):   # the best of two, so a busy runner's pause isn't counted
+            run, best = full_history(steps), float("inf")
+            for _ in range(2):
+                start = time.perf_counter()
+                run_detail(run)
+                best = min(best, time.perf_counter() - start)
+            return best
+
+        self.assertLess(took(150), 30 * took(50))   # 3x the steps: about 14x the time; 60x before
 
     def test_dense_contexts_build_their_graph_in_time(self):
         """add_edge scanned the source's edges for a duplicate: cubic when every model call sees every input."""
@@ -457,13 +463,54 @@ class Cli(Tmp):
         vendor = next(r for r in rows if "vendor:portal/notes.md" in r["sources"])
         self.assertEqual((vendor["runs"], vendor["reached_action_runs"]), (6, 6))
 
-    def test_demo_points_at_the_viewer_and_verifies(self):
+    def test_demo_writes_the_report_points_at_the_viewer_and_verifies(self):
         code, out = self.cli(["demo", "--out", self.tmp, "--n", "10"])
         self.assertEqual(code, 0)
         self.assertIn("CAUSAL", out)
-        self.assertIn(f"tracekit why serve {self.tmp}", out)   # the viewer is the one UI: no static report
-        self.assertFalse(os.path.exists(os.path.join(self.tmp, "report.html")))
-        self.assertEqual(self.cli(["verify", os.path.join(self.tmp, "demo-seed0")])[0], 0)
+        report = os.path.join(self.tmp, "report.html")
+        self.assertIn(f"report: {report}", out)
+        self.assertEqual(sorted(self.report(report)["runs"]), [f"demo-seed{s}" for s in range(8)])
+        self.assertIn(f"tracekit view --why {self.tmp}", out)
+        code, out = self.cli(["verify", os.path.join(self.tmp, "demo-seed0")])
+        self.assertEqual(code, 0)
+        self.assertIn("record with the Tracekit signer", out)   # what to do about an unsigned log
+
+    @staticmethod
+    def report(path):
+        """The data a static report embeds for the viewer's page."""
+        with open(path, encoding="utf-8") as f:
+            page = f.read()
+        return json.loads(page.split("const D = ", 1)[1].split(";\n", 1)[0])
+
+    def test_report_embeds_every_run_in_the_viewer_page(self):
+        for s in range(2):
+            SYSTEM.run(seed=s, out_dir=self.tmp, run_id=f"r{s}")
+        out = os.path.join(self.tmp, "r.html")
+        code, printed = self.cli(["report", self.tmp, "-o", out])
+        self.assertEqual((code, printed.strip()), (0, out))
+        with open(out, encoding="utf-8") as f:
+            page = f.read()
+        csp = page[page.index("Content-Security-Policy"):].split(">", 1)[0]
+        self.assertIn("connect-src 'none'", csp)   # opens from a file: no server, no network
+        self.assertNotIn("unsafe-inline", csp.split("script-src", 1)[1].split(";", 1)[0])   # only its own scripts
+        self.assertEqual(csp.count("'sha256-"), page.count("<script>"))
+        self.assertIn("base-uri 'none'; form-action 'none'", csp)
+        self.assertNotIn(os.path.abspath(self.tmp), page)   # no path of this machine in a shared report
+        from tracekit.observe import UI
+        with open(UI, encoding="utf-8") as f:   # the page still asks for what the report answers
+            ui = f.read()
+        for path in ('"api/snapshot"', '"api/why/workspace"', '"api/why/runs/" + encodeURIComponent(id)'):
+            self.assertIn(path, ui)
+        d = self.report(out)
+        self.assertEqual(sorted(r["run_id"] for r in d["workspace"]["runs"]), ["r0", "r1"])
+        self.assertEqual(d["runs"]["r0"]["replay"]["allowed"], False)   # the page shows the command to run
+        self.assertTrue(d["runs"]["r0"]["nodes"] and d["runs"]["r1"]["edges"])
+        self.assertEqual({r["session_id"] for r in d["snapshot"]["records"] if "session_id" in r}, {"r0", "r1"})
+        self.assertEqual(self.cli(["report", os.path.join(self.tmp, "r0"), "-o", out])[0], 0)   # one run folder
+        self.assertEqual(sorted(self.report(out)["runs"]), ["r0"])
+        missing = os.path.join(self.tmp, "nope")
+        self.assertEqual(self.cli(["report", missing])[0], 2)
+        self.assertFalse(os.path.exists(missing))
 
     def test_the_demo_runs_on_a_console_that_cannot_print_every_character(self):
         import subprocess

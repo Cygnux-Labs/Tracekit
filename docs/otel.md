@@ -1,5 +1,7 @@
 # OpenTelemetry
 
+> **Experimental:** this works and is tested, but may change and gets less hardening than the [stable core](support.md).
+
 Tracekit speaks OpenTelemetry in both directions.
 
 - **In:** `tracekit otel serve` receives OTLP/HTTP traces and records the agent-relevant spans as signed ledger events.

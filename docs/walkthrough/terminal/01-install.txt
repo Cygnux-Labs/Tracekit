@@ -1,0 +1,27 @@
+$ python3 -m venv venv && venv/bin/pip install tracekit_ai-1.2.0-py3-none-any.whl
+Successfully installed cffi-2.0.0 cryptography-50.0.2 pycparser-2.23 regex-2026.1.15 rfc8785-0.1.4 tracekit-ai-1.2.0 typing_extensions-4.16.0
+[exit 0]
+
+$ tracekit --version
+tracekit 1.2.0
+[exit 0]
+
+$ tracekit --help | head -12
+usage: tracekit [-h] [--version] command ...
+
+Tamper-evident records of what AI agents did.
+
+positional arguments:
+  command
+    init          install the signer and Claude Code hooks
+    status        hooks, signer, witnesses, policy, fail mode, capture sources
+    up            find or start the same-user v2 dev signer
+    down          stop the same-user v2 dev signer
+    doctor        check this setup (v1/v2 system mode, the dev signer);
+                  docs/doctor.md
+[exit 0]
+
+$ tracekit why --help 2>&1 | head -1   # experimental commands say so
+tracekit: tracekit why is experimental: it works and is tested, but may change (docs/support.md)
+[exit 0]
+

@@ -1,6 +1,9 @@
-"""What the viewer's why views show of one run (served by why.server.Store.detail)."""
+"""What the viewer's why views show of one run (served by why.server.Store.detail), and the static report: the viewer's
+page with every run embedded (render_report)."""
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import os
 from typing import Any, Dict, List, Optional
@@ -82,3 +85,59 @@ def run_detail(run: Run) -> Dict[str, Any]:
             "critical_path": st["critical_path"], "tests": run.tests,
             "source": (run.start.get("meta") or {}) if (run.start.get("meta") or {}).get("source") == "tracekit" else None,
             "outcome": run.events[-1].get("outcome") if run.events and run.events[-1]["type"] == "run.end" else None}
+
+
+# The page's API answered from the data embedded below, since a static report has no server: GET api/snapshot,
+# api/why/workspace and api/why/runs/<id>; anything else (a replay) gets an error the page shows.
+SHIM = """<script>
+(() => {
+  const D = __DATA__;
+  const answer = (status, body) => Promise.resolve(new Response(JSON.stringify(body), { status }));
+  window.fetch = path => {
+    const p = String(path), run = p.startsWith("api/why/runs/") && D.runs[decodeURIComponent(p.slice(13))];
+    return p === "api/snapshot" ? answer(200, D.snapshot) : p === "api/why/workspace" ? answer(200, D.workspace)
+      : run ? answer(200, run) : answer(404, { error: "this is a static report: replay with tracekit view --why DIR" });
+  };
+  window.EventSource = class { close() {} };
+})();
+</script>
+"""
+
+
+def _inline_scripts(page):
+    """The bodies of the page's <script> elements: the shim's and terminal.html's, both written here in lowercase. The
+    run data in them is JSON with < escaped (_script_json), so no </script> can come from a run."""
+    bodies, i = [], page.find("<script>")
+    while i != -1:
+        j = page.index("</script>", i)
+        bodies.append(page[i + len("<script>"):j])
+        i = page.find("<script>", j)
+    return bodies
+
+
+def render_report(root: str) -> str:
+    """The viewer's page with every why run under `root` (or the run `root` itself) embedded, as `tracekit view --why
+    ROOT` shows them: it opens from a file, with no server and no network. It runs no replays."""
+    from ..observe import _page, _script_json
+    from ..replay import CSP_META
+    from .server import Store
+    if not os.path.isdir(root):
+        raise FileNotFoundError(f"no folder {root}")
+    store = Store(root, tape=True)
+    store.scan(announce=False)
+    runs = {}
+    for p in store.paths():
+        run = store.analysed(p).get("run")
+        if run is not None:   # a broken run: the workspace lists it with why
+            rel = os.path.relpath(p, root)   # never this machine's absolute path: the report is shared
+            runs[run.run_id] = {**run_detail(run), "path": rel if rel != "." else os.path.basename(os.path.abspath(p)),
+                                "replay": {"program": run.start.get("program"), "allowed": False}}
+    data = {"snapshot": {"records": store.out.records, "next": len(store.out.records)},
+            "workspace": store.workspace(), "runs": runs}
+    page = _page().replace("<script>", SHIM.replace("__DATA__", _script_json(data)) + "<script>", 1)
+    # only these scripts run: each one's hash, not 'unsafe-inline'; no <base>, no form posts
+    hashes = " ".join("'sha256-" + base64.b64encode(hashlib.sha256(m.encode()).digest()).decode() + "'"
+                      for m in _inline_scripts(page))
+    csp = CSP_META.replace("script-src 'unsafe-inline'", "script-src " + hashes).replace(
+        "connect-src 'none'", "connect-src 'none'; base-uri 'none'; form-action 'none'")
+    return page.replace("<head>", "<head>" + csp, 1)

@@ -69,6 +69,8 @@ There is no typecheck step.
 - New tests: `tests/test_<area>.py`, `unittest` classes run by pytest; build events, signers and bundles with the shared
   builders in `tests/factories.py`. [HIGH CONFIDENCE]
 - Every change that touches the signer, ledger, verifier or policy gets a regression test that fails without it.
+- Every v2 bundle a test exports in the test process must verify (`tests/conftest.py`); a test that builds a bad
+  bundle on purpose carries `@pytest.mark.unverified_bundles`. Bundles exported by a child process aren't checked.
 
 ## Local traps
 
@@ -80,6 +82,9 @@ There is no typecheck step.
   merge gate, macOS/Windows are advisory. A green local run isn't proof for those paths.
 - `make test` takes ~10–11 minutes (about 2,400 tests): many start a real signer daemon and spawn hook processes. Run
   single files while iterating.
+- `agent-flow gates run` runs in the main checkout, not the worktree you call it from. In a worktree run the gates
+  there: `PYTHONPATH=$PWD make test-ts lint build test PY=<repo>/.venv/bin/python` (the venv's editable install points
+  at the main checkout, so without PYTHONPATH test subprocesses import its code).
 - Rules in `tracekit/policy/default.yaml` match raw strings: quoted text that mentions a risky command can trip them.
 - `planning/` is local and gitignored — task specs must be copied into the issue, not referenced by path. <!-- agent-flow:ignore-refs -->
 

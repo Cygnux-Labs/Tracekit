@@ -88,18 +88,21 @@ class Values(unittest.TestCase):
         self.assertEqual(self.kinds("x" * 100 + "@evil.example", "email"), ["x" * 64 + "@evil.example"])
 
     def test_adversarial_text_is_read_in_linear_time(self):
-        n = 1 << 20
+        def took(unit, n):   # the best of two, so a busy runner's pause isn't counted
+            text, best = (unit * (n // len(unit) + 1))[:n], float("inf")
+            for _ in range(2):
+                t = time.perf_counter()
+                provenance.values(text)
+                best = min(best, time.perf_counter() - t)
+            return best
+
         alphabets = {"local part": "aZ09._%+-", "host": "a-.", "path": "/a", "digits": "0123456789",
                      "email": "a@a.", "url": "http://a.b/", "address": "[:a1.", "idn": "\u00fc.", "mixed": "a.@-:/[ 1"}
         for name, a in alphabets.items():
             for sep in ("", " ", "@", "\u200b"):
                 for unit in (a + sep, a[0] * 70 + sep):
-                    text = (unit * (n // len(unit) + 1))[:n]
-                    with self.subTest(name, unit=unit[:12]):
-                        t = time.monotonic()
-                        provenance.values(text)
-                        # a pass that isn't linear takes minutes on 1 MiB; coverage runners are ~3x slower
-                        self.assertLess(time.monotonic() - t, 3.0)
+                    with self.subTest(name, unit=unit[:12]):   # 8x the text: 8x the time; a quadratic pass, 64x
+                        self.assertLess(took(unit, 1 << 18), 24 * took(unit, 1 << 15))
 
     def test_a_deadline_stops_the_work(self):
         with self.assertRaises(TimeoutError):

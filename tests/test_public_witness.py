@@ -123,6 +123,10 @@ class Server(unittest.TestCase):
                                                                                  self.secret))[0], 400)
 
     def test_limits(self):
+        now = time.time()   # the limits count per calendar minute and day: one that turns mid-test restarts a count
+        clock = mock.patch.object(pws, "time", mock.Mock(time=lambda: now))
+        clock.start()
+        self.addCleanup(clock.stop)
         with mock.patch.object(pws, "CHECKPOINTS_PER_MIN", 2):
             self.add(1, 0)
             self.add(2, 1)
@@ -238,8 +242,10 @@ class Server(unittest.TestCase):
                           b"Content-Length: 1000\r\n\r\nold 0\n")
                 held.append(s)
             threading.Thread(target=trickle, daemon=True).start()
-            self.assertTrue(wait_for(lambda: self.post("/register", "{}", xff="192.0.2.1")[0] == 429, 20))
-            self.assertEqual(self.post("/register", "{}", xff="192.0.2.2")[0], 400)   # another client is served
+            # by its text: each poll counts toward the /24's registrations, whose own 429 must not pass for this one
+            self.assertTrue(wait_for(lambda: "at a time" in self.post("/register", "{}", xff="192.0.2.1")[2], 20))
+            # a neighbour in the same /24 is served: the cap is per address, not per network (its own /24 limit may 429)
+            self.assertNotIn("at a time", self.post("/register", "{}", xff="192.0.2.2")[2])
 
     def test_deploy_buffers_bodies_and_only_compose_trusts_the_proxy(self):
         def read(name):

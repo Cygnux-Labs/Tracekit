@@ -1,5 +1,7 @@
 # Browser Use (signer RPC)
 
+> **Experimental:** this works and is tested, but may change and gets less hardening than the [stable core](../support.md).
+
 `tracekit.integrations.browser_use.trace_tools` gates every action a Browser Use agent runs (navigate, click, input,
 extract, upload_file, evaluate, custom actions). Before each action it asks the Tracekit signer for a policy decision;
 after the action it records the outcome. It works with any object that implements the signer RPC
@@ -8,7 +10,7 @@ after the action it records the outcome. It works with any object that implement
 ## Install
 
 ```bash
-pip install --pre tracekit-ai "browser-use==0.13.11"
+pip install tracekit-ai "browser-use==0.13.11"
 ```
 
 Tested with browser-use 0.13.11 (Python 3.11 or newer, its own requirement). Browser Use is imported only to build

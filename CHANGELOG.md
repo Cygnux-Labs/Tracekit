@@ -2,7 +2,7 @@
 
 All notable changes to Tracekit. Versions follow [PEP 440](https://peps.python.org/pep-0440/).
 
-## 1.2.0rc1 (2026-10-12) — control
+## 1.2.0 (2026-10-13) — control
 
 1.1 records why an agent acted. 1.2 lets the signer act on what it sees, for agents running on servers:
 - tool calls run with credentials the agent never holds ([executor](docs/executor.md),
@@ -18,7 +18,7 @@ It also has fixes from running Tracekit inside eight real agent projects: OpenAI
 Browser Use, mcp-agent, OpenAI Agents JS, the Vercel AI SDK, PydanticAI and CrewAI. v1 bundles and 1.0/1.1 bundles
 keep verifying. Every limit of the new features is in [docs/limits.md](docs/limits.md).
 
-1.1.0rc1 was never published, and neither was 1.0.1 on PyPI; this release candidate includes everything listed under
+1.1.0rc1 was never published, and neither was 1.0.1 on PyPI; this release includes everything listed under
 both below.
 
 ### Upgrade notes
@@ -46,6 +46,13 @@ both below.
   shows.
 
 ### Behaviour changes
+- **One viewer** (#224): `tracekit view` opens the v2 signer's runs (default), why logs (`--why DIR`), the v1 ledger
+  (`--ledger`) or a v1 bundle (`--bundle`, refused when it fails verification). `tracekit observe` and `tracekit why
+  serve` keep working and say they are now part of `tracekit view`. `tracekit view --why DIR` with no store shows the
+  why logs alone; `--dev --why DIR` combines them with the dev signer's runs.
+- **Experimental surfaces say so** (#226): each experimental command or server prints one line when it starts, and
+  the signer names the experimental settings it was given. [docs/support.md](docs/support.md) lists the stable core.
+- **npm is paused** (#225): the TypeScript SDK installs from the `.tgz` attached to the GitHub release.
 - **Python `RunHandle.decide` no longer raises `SignerUnavailable`** (#218). While the signer can't be
   reached, it returns the run's fail-mode decision with `unavailable: True` and a warning, as the TypeScript client
   does. A refusal still raises `RPCError`.
@@ -71,6 +78,15 @@ both below.
   `suspend:` in `respond` fails to compile, so the signer won't load it.
 
 ### Added
+- **The viewer works like the why app it came from** (#224, #228): RUNS, OVERVIEW, TIMELINE, WHY DID IT HAPPEN?,
+  GRAPH, AGENTS and INFLUENCE views; the graph is a flowchart with arrows and confirmed causes drawn to their target
+  with their effect; clicking a node shows what it saw, produced, came from and led to. A store opened without why logs
+  gets a graph of each signed run's calls with their decisions. A screenshot tour is in [docs/viewer.md](docs/viewer.md#tour).
+- **`tracekit why report`** (#228): one offline HTML file with every run; `tracekit why demo` writes one.
+- **`tracekit view --webhook URL`**: POSTs each new high why alert as JSON (Slack-compatible), as `tracekit why serve` did.
+- **Faster signer** (#223): about 12% more events per second in E9's quick run and 15% less CPU per event at
+  ack-on-write; no record, hash or
+  signature changes.
 - **Signer settings** (signer.yaml): `posture`, `observe_grace_s`, `gateway_wait_s`, `suspensions`,
   `approvals.agents`, a configurable `approvals.ttl_s`, `agent_consume_s` and `agent_timeout_s`; the signer refuses to
   start when an agent approver's `veto_s` isn't shorter than `approvals.ttl_s`. `tracekit init --v2 --egress` routes
