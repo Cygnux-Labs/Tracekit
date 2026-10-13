@@ -1,4 +1,5 @@
-"""What the viewer's why views show of one run (served by why.server.Store.detail)."""
+"""What the viewer's why views show of one run (served by why.server.Store.detail), and the static report: the viewer's
+page with every run embedded (render_report)."""
 from __future__ import annotations
 
 import json
@@ -82,3 +83,41 @@ def run_detail(run: Run) -> Dict[str, Any]:
             "critical_path": st["critical_path"], "tests": run.tests,
             "source": (run.start.get("meta") or {}) if (run.start.get("meta") or {}).get("source") == "tracekit" else None,
             "outcome": run.events[-1].get("outcome") if run.events and run.events[-1]["type"] == "run.end" else None}
+
+
+# The page's API answered from the data embedded below, since a static report has no server: GET api/snapshot,
+# api/why/workspace and api/why/runs/<id>; anything else (a replay) gets an error the page shows.
+SHIM = """<script>
+(() => {
+  const D = __DATA__;
+  const answer = (status, body) => Promise.resolve(new Response(JSON.stringify(body), { status }));
+  window.fetch = path => {
+    const p = String(path), run = p.startsWith("api/why/runs/") && D.runs[decodeURIComponent(p.slice(13))];
+    return p === "api/snapshot" ? answer(200, D.snapshot) : p === "api/why/workspace" ? answer(200, D.workspace)
+      : run ? answer(200, run) : answer(404, { error: "this is a static report: replay with tracekit view --why DIR" });
+  };
+  window.EventSource = class { close() {} };
+})();
+</script>
+"""
+
+
+def render_report(root: str) -> str:
+    """The viewer's page with every why run under `root` (or the run `root` itself) embedded, as `tracekit view --why
+    ROOT` shows them: it opens from a file, with no server and no network. It runs no replays."""
+    from ..observe import _page, _script_json
+    from ..replay import CSP_META
+    from .server import Store
+    if not os.path.isdir(root):
+        raise FileNotFoundError(f"no folder {root}")
+    store = Store(root, tape=True)
+    store.scan(announce=False)
+    runs = {}
+    for p in store.paths():
+        run = store.analysed(p).get("run")
+        if run is not None:   # a broken run: the workspace lists it with why
+            runs[run.run_id] = {**run_detail(run), "replay": {"program": run.start.get("program"), "allowed": False}}
+    data = {"snapshot": {"records": store.out.records, "next": len(store.out.records)},
+            "workspace": store.workspace(), "runs": runs}
+    return (_page().replace("<head>", "<head>" + CSP_META, 1)
+            .replace("<script>", SHIM.replace("__DATA__", _script_json(data)) + "<script>", 1))

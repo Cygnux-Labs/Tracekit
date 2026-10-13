@@ -172,8 +172,22 @@ def cmd_demo(a):
     st = structure(run)
     _p("\n== structure")
     _p("  critical path: " + " -> ".join(st["critical_path"]))
-    _p(f"\nruns:   {out}")
-    _p(f"open:   tracekit view --why {out} --allow-program tracekit.why.demo:SYSTEM")
+    html = _write_report(out, None)
+    _p(f"\nruns:   {out}\nreport: {html}   (static; open in a browser)")
+    _p(f"live:   tracekit view --why {out} --allow-program tracekit.why.demo:SYSTEM")
+
+
+def _write_report(root, output):
+    from .view import render_report
+    out = output or os.path.join(root, "report.html")
+    page = render_report(root)
+    with open(out, "w", encoding="utf-8") as f:
+        f.write(page)
+    return out
+
+
+def cmd_report(a):
+    _p(_write_report(a.root, a.output))
 
 
 def cmd_verify(a):
@@ -184,7 +198,7 @@ def cmd_verify(a):
             _p("[FAIL] " + p)
         return 1
     _p(f"[PASS] {len(run.events)} events, chain intact, {len(run.blobs)} blobs match their hashes")
-    _p("       (hash-chained, not signed)")
+    _p("       (hash-chained, not signed; record with the Tracekit signer to sign and witness it)")
     if not a.salts:
         return 0
     from .import_v2 import check_content
@@ -529,7 +543,7 @@ def main(argv=None):
     ap = argparse.ArgumentParser(prog="tracekit why", description="Causal logs, replay and investigation for multi-agent systems")
     sp = ap.add_subparsers(dest="cmd", required=True)
 
-    p = sp.add_parser("demo", help="record the 3-agent demo and test causes")
+    p = sp.add_parser("demo", help="record the 3-agent demo, test causes, write the static report")
     p.add_argument("--out"); p.add_argument("--n", type=_positive, default=40); p.set_defaults(f=cmd_demo)
 
     p = sp.add_parser("record", help="run a System (module:ATTR) and record it")
@@ -594,6 +608,10 @@ def main(argv=None):
     p = sp.add_parser("replay", help="re-run from tape and diff against the original")
     p.add_argument("run"); p.add_argument("--remove", action="append"); p.add_argument("--system")
     p.add_argument("--allow-program", action="append", metavar="SPEC", help="replay the program the run names if it is this one (repeatable); without it or --system, nothing is imported"); p.set_defaults(f=cmd_replay)
+
+    p = sp.add_parser("report", help="the viewer's page with every run under ROOT (or the run ROOT) embedded: a static "
+                                     "file, no server")
+    p.add_argument("root"); p.add_argument("-o", "--output", help="default: ROOT/report.html"); p.set_defaults(f=cmd_report)
 
     p = sp.add_parser("serve", help="the viewer on the why logs under ROOT: the page, its API and ingest")
     p.add_argument("root"); p.add_argument("--host", default="127.0.0.1"); p.add_argument("--port", type=int, default=7788)

@@ -33,7 +33,7 @@ seeded mock policies and whose tools are fakes. A vendor note the researcher rea
 email the customer list to an outside address.
 
 ```bash
-tracekit why demo --out runs
+tracekit why demo --out runs                                        # also writes runs/report.html
 tracekit view --why runs --allow-program tracekit.why.demo:SYSTEM
 ```
 
@@ -49,6 +49,8 @@ tracekit view --why runs --allow-program tracekit.why.demo:SYSTEM
 
 All three untrusted inputs reached the email; replaying without the vendor note drops it from 80% of runs to 0%, and
 removing the other two changes nothing detectable. `tracekit view` prints a URL with a one-time token; open it.
+`runs/report.html` is the same page with the 8 runs embedded: it opens from the file, with no server and no network,
+and runs no replays (`tracekit why report ROOT [-o FILE]` writes one for any folder of why logs, or one run).
 
 **The UI is the viewer** ([viewer.md](viewer.md#why)): `tracekit view --why DIR` shows the why logs alone, and
 `tracekit view --dev --why DIR` adds them to a signer's runs (`tracekit why serve DIR` still runs the first). Each run's calls are on the tape; select one and open **WHY**
@@ -516,7 +518,8 @@ with `--allow-program`. The server is in the [HTTP security checklist](security-
 
 | Command | What it does |
 |---|---|
-| `tracekit why demo [--out DIR] [--n N]` | record the demo and run tests |
+| `tracekit why demo [--out DIR] [--n N]` | record the demo, run tests, write `DIR/report.html` |
+| `tracekit why report ROOT [-o FILE]` | the viewer's page with every run under ROOT (or the run ROOT) embedded: a static file, no server (default `ROOT/report.html`) |
 | `tracekit why record module:SYSTEM [--out DIR] [--seed S] [--guard off\|alert\|block] [--webhook URL]` | record one run of a System |
 | `tracekit view --why ROOT [--host] [--port] [--ingest-token T] [--allow-program SPEC] [--webhook URL] [--tls-cert --tls-key \| --insecure-http]` | the viewer on ROOT's why logs: page, API, ingest and live updates (token: `$TRACEKIT_VIEW_TOKEN`, else printed) |
 | `tracekit why serve ROOT [--token] [...]` | the same, under its old name (port 7788, token `--token` or `$TRACEKIT_WHY_TOKEN`) |
