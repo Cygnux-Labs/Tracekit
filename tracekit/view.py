@@ -36,6 +36,7 @@ import argparse
 import atexit
 import base64
 import collections
+import functools
 import glob
 import hashlib
 import hmac
@@ -46,6 +47,7 @@ import json
 import os
 import secrets
 import shutil
+import signal
 import ssl
 import sys
 import tempfile
@@ -533,7 +535,8 @@ def review(records, rep, verdict):
 
 class StoreFeed:
     """What observe.make_handler serves (records, base, lock, verify()), from the store of a v2 signer's config.
-    `on_run`: called with the records of each client run that verifies, each time it grows (mirror_run)."""
+    `on_run(tenant, run_id, records, reasons)`: called once a client run's records are on the tape, each time it grows
+    and verifies (records), and when it fails verification (None): mirror_run."""
 
     def __init__(self, cfg, log_vkey=None, on_run=None):
         self.cfg, self.pg = cfg, bool(cfg.get("storage"))
@@ -618,6 +621,7 @@ class StoreFeed:
             new = [self.tr.alert(e, {}, "high", f"RUN {run_id} · Integrity {rep.integrity}",
                                  f"{OPERATOR_SIDE}\n\n{text}", "VERIFY")]
             state = dict(state, count=count, failed=rep.integrity)
+            records = None   # a mirror of it, from when it verified, goes
         else:
             records = list(reader.iter_run(tenant, run_id))
             e["ts"] = records[-1]["event"]["ts"]   # the report sits at the end of what it covers
@@ -629,11 +633,6 @@ class StoreFeed:
             new.append(self.tr.alert(e, records[-1], "info", f"RUN {run_id} · Integrity {rep.integrity} · Assurance "
                                      f"{rv['assurance']}", f"{summary}\n{self.note}\n{OPERATOR_SIDE}\n\n{text}", "VERIFY"))
             state = dict(state, count=count, shown=len(records), failed=None)
-            if self.on_run and key[1] != SIGNER_RUN[1]:
-                try:
-                    self.on_run(records)
-                except Exception as e:   # the run's own view does not depend on its graph
-                    print(f"tracekit view: no graph for run {run_id}: {e}", file=sys.stderr, flush=True)
         new[-1]["review"] = rv
         if key[1] == SIGNER_RUN[1]:
             new[-1].update(signer=True, agent="signer")
@@ -642,6 +641,11 @@ class StoreFeed:
             self.records.extend(dict(x, tenant=tenant) for x in new)
             self._trim()
             self.lock.notify_all()
+        if self.on_run and key[1] != SIGNER_RUN[1]:   # after the tape has the records: the graph waits, not the tape
+            try:
+                self.on_run(tenant, run_id, records, self.tr.reasons)
+            except Exception as e:   # the run's own view does not depend on its graph
+                print(f"tracekit view: no graph for run {run_id}: {e}", file=sys.stderr, flush=True)
 
     def _trim(self):
         """Under self.lock: drop the oldest records past max_records, counted in base (what /api/snapshot calls dropped)."""
@@ -658,17 +662,21 @@ class StoreFeed:
                     [f"run {k[1]} of tenant {k[0]}: {s['failed']}" for k, s in runs.items() if s["failed"]], None)
 
 
-def mirror_run(records, why_dir):
+def mirror_run(why_dir, tenant, run_id, records, reasons=None):
     """Import one verified v2 run as a why run under `why_dir` (why.import_v2, from the records only), replacing an
-    earlier import of it, so GRAPH, WHY, AGENTS and INFLUENCE work on a store with no why logs."""
+    earlier import of it, so GRAPH, WHY, AGENTS and INFLUENCE work on a store with no why logs; with `records` None (the
+    run failed verification), remove its import. A reader sees the old import or the new one, never part of either."""
     # lean: the whole run is imported again each time it grows; import only the new records if long runs make it slow
-    from .why.import_v2 import import_records
+    from .why.import_v2 import _target, import_records
+    target = _target(why_dir, run_id, tenant)
     stage = tempfile.mkdtemp(prefix=".import-", dir=why_dir)
     try:
-        path = import_records({records[0]["event"]["run_id"]: records}, stage)[0]
-        target = os.path.join(why_dir, os.path.basename(path))
-        shutil.rmtree(target, True)
-        os.rename(path, target)
+        if records is not None:
+            path = import_records({run_id: records}, stage, reasons)[0]
+        if os.path.exists(target):
+            os.rename(target, os.path.join(stage, "old"))
+        if records is not None:
+            os.rename(path, target)
     finally:
         shutil.rmtree(stage, True)
 
@@ -890,6 +898,7 @@ def main(argv=None):
                          "viewer's token)")
     ap.add_argument("--webhook", help="POST each new high why alert here as JSON (Slack-compatible)")
     a = ap.parse_args(argv)
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))   # a stop runs atexit too: the temp dirs go
     from .cli import experimental
     if a.why:
         experimental("tracekit why (tracekit view --why)")
@@ -929,7 +938,7 @@ def main(argv=None):
         if not (v1 or alone or runs or a.why or (why_dir and os.path.isdir(why_dir))):   # no why logs: the store's own
             why_dir = tempfile.mkdtemp(prefix="tk-view-why-")
             atexit.register(shutil.rmtree, why_dir, True)
-            mirror = lambda recs: mirror_run(recs, why_dir)   # noqa: E731
+            mirror = functools.partial(mirror_run, why_dir)
         if v1:
             ledger, code = observe.ledger_path(a.ledger, a.bundle, "tracekit view")
             if ledger is None:
@@ -937,7 +946,8 @@ def main(argv=None):
             feed = observe.Feed(ledger)
         else:
             feed = None if runs or alone else StoreFeed(cfg, a.log_vkey, mirror)
-        why = Store(why_dir, a.allow_program, a.webhook, out=feed, tape=bool(alone), ingest_tokens=a.ingest_token) \
+        why = Store(why_dir, a.allow_program, a.webhook, out=feed, tape=bool(alone), ingest_tokens=a.ingest_token,
+                    ingest=not mirror) \
             if (feed or alone) and why_dir and (a.why or os.path.isdir(why_dir)) else None
         feed = why.out if alone else feed
         srv = server(feed, a.host, a.port, token, tls, login, desk, runs, why)

@@ -489,7 +489,13 @@ class Cli(Tmp):
         code, printed = self.cli(["report", self.tmp, "-o", out])
         self.assertEqual((code, printed.strip()), (0, out))
         with open(out, encoding="utf-8") as f:
-            self.assertIn("connect-src 'none'", f.read())   # opens from a file: no server, no network
+            page = f.read()
+        csp = page[page.index("Content-Security-Policy"):].split(">", 1)[0]
+        self.assertIn("connect-src 'none'", csp)   # opens from a file: no server, no network
+        self.assertNotIn("unsafe-inline", csp.split("script-src", 1)[1].split(";", 1)[0])   # only its own scripts
+        self.assertEqual(csp.count("'sha256-"), page.count("<script>"))
+        self.assertIn("base-uri 'none'; form-action 'none'", csp)
+        self.assertNotIn(os.path.abspath(self.tmp), page)   # no path of this machine in a shared report
         from tracekit.observe import UI
         with open(UI, encoding="utf-8") as f:   # the page still asks for what the report answers
             ui = f.read()

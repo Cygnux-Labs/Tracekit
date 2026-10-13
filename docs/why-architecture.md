@@ -243,6 +243,6 @@ A watcher thread polls the runs folder every 0.5 s. When a run's `events.jsonl` 
 
 `tracekit.why.import_v1` reads a v1 Tracekit ledger (`ledger/ledger.jsonl`), checks its chain and signatures with
 `tracekit.observe.verify_ledger` (the result goes into `run.start.meta.signatures`), and writes a why run
-`tk-<run id>` plus `tracekit-map.json` (`{"events": {why event id: [{seq, hash, type}, ...]}}`). The mapping is in
+`tk-<run id>-<hash>` plus `tracekit-map.json` (`{"events": {why event id: [{seq, hash, type}, ...]}}`). The mapping is in
 [why.md](why.md#importing-a-v1-ledger). Hashes are not shared: Tracekit hashes raw content with its own canonical form
 and the why log hashes `{"v": value}`, so the map, not content hashes, is the join between the two.

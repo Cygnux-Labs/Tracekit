@@ -1083,6 +1083,7 @@
 
     .wv.wd main,
     .v2.wv.wd main {
+      grid-template-columns: minmax(250px, 1fr) minmax(0, 1.6fr) minmax(420px, 1.5fr);
       grid-template-areas: "agents tape alerts" "whyv whyv detail"
     }
 
@@ -1094,6 +1095,10 @@
       color: var(--amber);
       padding: 0 6px;
       cursor: pointer
+    }
+
+    .wt button {
+      white-space: nowrap
     }
 
     .wtiles {
@@ -1194,7 +1199,7 @@
     .wt th,
     .wt td {
       text-align: left;
-      padding: 2px 8px;
+      padding: 2px 5px;
       border-bottom: 1px solid var(--line);
       vertical-align: top;
       white-space: normal;
@@ -1453,9 +1458,9 @@
               gap, back to live (also ESC)</td>
           </tr>
           <tr>
-            <td>DESK · GRAPH · AGENTS · INFLUENCE</td>
-            <td>With why logs (header buttons): a why view in place of the lower panels; DETAIL · WHY: why the selected
-              call happened</td>
+            <td>DESK · RUNS · OVERVIEW · TIMELINE · WHY DID IT HAPPEN? · GRAPH · AGENTS · INFLUENCE</td>
+            <td>With why logs (header buttons): a why view in place of the lower panels; DETAIL · WHY · NODE: the
+              selected record, why the selected call happened, the clicked node</td>
           </tr>
         </tbody>
       </table>
@@ -2280,7 +2285,7 @@
     const PROV = { "untrusted-only": ["s-deny", "only from untrusted content"], trusted: ["s-ok", "from a trusted source"], hashed: ["dim", "content hashed: can't trace"], generated: ["s-run", "written by the model"] };
     function effectBar(t) {   // Causeway's: -1..1, zero in the middle; dot = effect, whisker = 95% interval
       if (!t) return "";
-      const W = 120, H = 14, x = v => W / 2 + v * (W / 2 - 4), c = t.verdict === "causal" ? "var(--red)" : t.verdict === "suppressive" ? "var(--blue)" : "var(--muted)";
+      const W = 80, H = 14, x = v => W / 2 + v * (W / 2 - 4), c = t.verdict === "causal" ? "var(--red)" : t.verdict === "suppressive" ? "var(--blue)" : "var(--muted)";
       return `<svg width="${esc(W)}" height="${esc(H)}" viewBox="${esc(`0 0 ${W} ${H}`)}"><line x1="${esc(W / 2)}" x2="${esc(W / 2)}" y1="1" y2="${esc(H - 1)}" style="stroke:var(--line2)"/><line x1="${esc(x(t.ci[0]))}" x2="${esc(x(t.ci[1]))}" y1="${esc(H / 2)}" y2="${esc(H / 2)}" style="${esc(`stroke:${c};stroke-width:3;opacity:.45`)}"/><circle cx="${esc(x(t.effect))}" cy="${esc(H / 2)}" r="4" style="${esc(`fill:${c}`)}"/></svg>`;
     }
     function whyBody(ref, d, A) {
@@ -2427,7 +2432,7 @@
     // TIMELINE: every event of the run, filtered by agent, type, flagged and text; a row opens its NODE
     function timelineView(el, d) {
       const agents = [...new Set(d.timeline.map(r => r.agent))];
-      el.innerHTML = runHead(d) + `<div class="wbar"><select id="tlagent"><option value="">All agents</option>` + agents.map(a => `<option${TL.agent === a ? " selected" : ""}>${esc(a)}</option>`).join("") + `</select>`
+      el.innerHTML = runHead(d) + `<div class="wbar"><select id="tlagent"><option value="">All agents</option>` + agents.map(a => `<option value="${esc(a)}"${TL.agent === a ? " selected" : ""}>${esc(a)}</option>`).join("") + `</select>`
         + [["", "ALL"], ["input", "INPUTS"], ["decision", "MODEL CALLS"], ["action", "TOOL CALLS"], ["message", "MESSAGES"]].map(([k, l]) => `<button type="button" data-tlk="${esc(k)}" class="${TL.type === k ? "on" : ""}">${esc(l)}</button>`).join("")
         + `<label><input type="checkbox" id="tlflag"${TL.flag ? " checked" : ""}> flagged only</label><input id="tlq" placeholder="Search" value="${esc(TL.q)}" spellcheck="false"></div><div id="wtl"></div>`;
       drawTimeline(d);

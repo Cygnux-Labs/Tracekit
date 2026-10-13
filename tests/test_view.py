@@ -1,11 +1,13 @@
 """`tracekit view`: the v2 signer's runs, each verified by verify.v2, served with the observer's page and security."""
 import collections
 import contextlib
+import functools
 import http.client
 import io
 import json
 import os
 import shutil
+import signal
 import socket
 import ssl
 import subprocess
@@ -30,7 +32,7 @@ from tracekit.why.core import GENESIS, HttpSink, event_hash, load_run, reference
 from tracekit.why.demo import EXFIL_TARGET, SYSTEM
 from tracekit.why.graph import target_hits
 from tracekit.why import cli as why_cli
-from tracekit.why.import_v2 import store_records
+from tracekit.why.import_v2 import _target, store_records
 from tracekit.why.server import Feed as WhyFeed, IngestError, Store, tape
 
 POLICY = Engine({"deny": [{"id": "T-DENY", "tool": "rm", "pattern": "^"}],
@@ -371,10 +373,12 @@ class View(unittest.TestCase):
     def test_a_store_with_no_why_logs_still_gets_a_graph_of_each_run_with_its_decisions(self):
         run_id = self.finished_run()
         why_dir = ts.tmpdir(self)
-        feed = view.StoreFeed({"data_dir": self.d}, on_run=lambda recs: view.mirror_run(recs, why_dir))
+        feed = view.StoreFeed({"data_dir": self.d}, on_run=functools.partial(view.mirror_run, why_dir))
         self.report(feed, run_id)
+        wait_for(lambda: os.listdir(why_dir), 15)
         store = Store(why_dir, out=feed)
-        d = store.detail("tk-" + run_id)
+        why_id = os.path.basename(_target(why_dir, run_id, "default"))
+        d = store.detail(why_id)
         calls = {n["tool"]: n for n in d["nodes"] if n["type"] == "action"}
         self.assertEqual(calls["rm"]["policy"]["decision"], "deny")   # GRAPH and NODE mark it DENIED with its rule
         self.assertEqual(calls["rm"]["policy"]["rule_ids"], ["T-DENY"])
@@ -382,8 +386,46 @@ class View(unittest.TestCase):
         self.assertEqual(calls["pay"]["policy"]["approval"]["decision"], "approve")
         self.assertEqual(calls["Bash"]["policy"]["decision"], "allow")
         self.assertTrue(store.workspace()["calls"])   # each signed call joins its imported why event (the WHY tab)
-        view.mirror_run(store_records(self.d, run_id)[run_id], why_dir)   # a re-import replaces the run
-        self.assertEqual(sorted(os.listdir(why_dir)), ["tk-" + run_id])
+        ids = [n["id"] for n in d["nodes"]]
+        view.mirror_run(why_dir, "default", run_id, store_records(self.d, run_id)[run_id])   # a re-import replaces it
+        self.assertEqual(sorted(os.listdir(why_dir)), [why_id])
+        # the same event ids: a re-import neither re-announces its alerts nor drops the page's selection
+        self.assertEqual([n["id"] for n in Store(why_dir).detail(why_id)["nodes"]], ids)
+        with self.assertRaises(IngestError) as e:   # the mirror is the store's: nothing ingests into it
+            Store(why_dir, ingest=False).ingest({"events": [{}]}, "t")
+        self.assertEqual(e.exception.status, 404)
+        view.mirror_run(why_dir, "default", run_id, None)   # it failed verification: no graph says LOG INTACT
+        self.assertEqual(os.listdir(why_dir), [])
+
+    def test_mirror_folders_are_unique_per_tenant_and_run_id(self):
+        names = {os.path.basename(_target("/w", rid, tenant)) for rid, tenant in (
+            ("victim_run", "default"), ("victim:run", "default"), ("victim_run", "other"),
+            ("x" * 100 + "a", "default"), ("x" * 100 + "b", "default"))}
+        self.assertEqual(len(names), 5)
+        self.assertTrue(all(n.startswith("tk-") and len(n) < 120 for n in names))
+
+    def test_a_mirror_takes_the_feeds_reasons_and_comes_after_the_tape(self):
+        run_id = self.finished_run()
+        seen = []
+        feed = view.StoreFeed({"data_dir": self.d}, on_run=lambda *a: seen.append((len(feed.records), a)))
+        self.report(feed, run_id)
+        wait_for(lambda: seen, 15)
+        shown, (tenant, rid, records, reasons) = seen[0]
+        self.assertEqual((tenant, rid), ("default", run_id))
+        self.assertIs(reasons, feed.tr.reasons)   # computed once, with the operator's policy: not per import
+        self.assertTrue(shown and records)   # the tape had the run before its graph was built
+        with mock.patch.object(view, "policy_reasons", side_effect=AssertionError("recompiled the packs")):
+            view.mirror_run(ts.tmpdir(self), tenant, rid, records, reasons)
+
+    def test_a_stop_cleans_up_and_a_bad_bundle_keeps_its_name_and_code(self):
+        before = signal.getsignal(signal.SIGTERM)
+        self.addCleanup(signal.signal, signal.SIGTERM, before)
+        with contextlib.redirect_stderr(io.StringIO()) as err, contextlib.redirect_stdout(io.StringIO()):
+            code = view.main(["--bundle", os.path.join(self.d, "missing.tkb")])
+        self.assertEqual(code, 2)   # observe's exit code for an unreadable bundle, not 1
+        self.assertIn("tracekit view: cannot read bundle", err.getvalue())
+        with self.assertRaises(SystemExit):   # SIGTERM exits through atexit, which removes the temp dirs
+            signal.getsignal(signal.SIGTERM)(signal.SIGTERM, None)
 
     def test_hostile_tool_names_are_data_and_the_page_escapes_every_sink(self):
         run = self.client.run(agent="a")
@@ -709,6 +751,8 @@ class WhyPage(WhyServer):
             self.assertIn(directive, h["Content-Security-Policy"])
         self.assertIn(b'data-wtab="why"', page)
         self.assertEqual(unescaped(script_of(page.decode())), [])
+        self.assertIn("DESK · RUNS · OVERVIEW · TIMELINE · WHY DID IT HAPPEN? · GRAPH · AGENTS · INFLUENCE".encode(), page)
+        self.assertIn(b'<option value="${esc(a)}"', page)   # an agent name with odd spaces still matches its filter
         self.assertEqual(self.request("GET", "/api/why/workspace", session)[0], 200)
 
     def test_foreign_host_is_refused_without_the_token(self):
