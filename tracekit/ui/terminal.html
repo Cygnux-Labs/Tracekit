@@ -1708,7 +1708,7 @@
     function renderTop() {
       const m = $("mode");
       m.className = "mode " + (mode === "live" ? (liveOk ? "live" : "off") : "replay");
-      m.textContent = mode === "live" ? (liveOk ? "LIVE" : "DISCONNECTED") : "REPLAY";
+      m.textContent = mode === "live" ? (location.protocol === "file:" ? "STATIC" : liveOk ? "LIVE" : "DISCONNECTED") : "REPLAY";   // file: a `tracekit why report`
       m.title = mode === "live" && !liveOk ? liveErr : "";
       const c = $("chain");
       const run = V2 && scope ? RUNS.get(scope) : null;   // a selected run: its own verdict, not the page's
