@@ -63,6 +63,11 @@ class RunToken(unittest.TestCase):
                 self.refused(payload + "." + _b64(b"\0" * 32))
             self.assertEqual(mac.call_count, 3)
 
+    def test_a_caller_changing_its_claims_changes_nobody_elses(self):
+        self.tokens.claims(self.tok)["tenant"] = "evil"
+        self.assertEqual(self.tokens.claims(self.tok)["tenant"], "acme")
+        self.tokens.verify(self.tok, "acme", "run-1", ALICE)   # the owner is still accepted
+
 
 class RateLimit(unittest.TestCase):
     def setUp(self):

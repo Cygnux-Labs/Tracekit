@@ -244,7 +244,8 @@ class Server(unittest.TestCase):
             threading.Thread(target=trickle, daemon=True).start()
             # by its text: each poll counts toward the /24's registrations, whose own 429 must not pass for this one
             self.assertTrue(wait_for(lambda: "at a time" in self.post("/register", "{}", xff="192.0.2.1")[2], 20))
-            self.assertEqual(self.post("/register", "{}", xff="198.51.100.1")[0], 400)   # another network is served
+            # a neighbour in the same /24 is served: the cap is per address, not per network (its own /24 limit may 429)
+            self.assertNotIn("at a time", self.post("/register", "{}", xff="192.0.2.2")[2])
 
     def test_deploy_buffers_bodies_and_only_compose_trusts_the_proxy(self):
         def read(name):

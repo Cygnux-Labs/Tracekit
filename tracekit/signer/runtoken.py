@@ -45,7 +45,7 @@ class RunTokens:
 
     def claims(self, token):
         """The claims of a token this signer issued; refuses a malformed or tampered one. Checks nothing else."""
-        return self._claims(token) if type(token) is str else self._check(token)
+        return dict(self._claims(token)) if type(token) is str else self._check(token)   # a copy: the cache's stays
 
     def _check(self, token):
         try:

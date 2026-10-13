@@ -890,6 +890,11 @@ def main(argv=None):
                          "viewer's token)")
     ap.add_argument("--webhook", help="POST each new high why alert here as JSON (Slack-compatible)")
     a = ap.parse_args(argv)
+    from .cli import experimental
+    if a.why:
+        experimental("tracekit why (tracekit view --why)")
+    if a.ledger is not None or a.bundle:
+        experimental("the v1 ledger (tracekit view --ledger, --bundle)")
     loopback = a.host in observe.LOOPBACK_HOSTS
     if (a.ledger is not None or a.bundle) and not loopback:
         print("tracekit view: --ledger and --bundle serve on loopback only, as `tracekit observe` did; reach the page "

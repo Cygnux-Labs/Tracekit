@@ -84,6 +84,12 @@ class TestStrictParser(unittest.TestCase):
                      "[" * 100000):
             self.rejects(text, "depth")
 
+    def test_deep_values_are_accepted_as_deep_as_the_jcs_library_accepts_them(self):
+        deep = [1]
+        for _ in range(600):   # past half the recursion limit: the plain check alone would give up here
+            deep = [deep]
+        self.assertEqual(canonical(deep), rfc8785.dumps(deep))
+
     def test_plain_values_take_the_standard_librarys_encoder(self):
         event = {"seq": 2 ** 53 - 1, "z": [None, True, "\u2028\x7f\x00\n\"é😀", {"b": -1, "a": ()}], "a": {}}
         with mock.patch.object(canon, "_dumps", side_effect=AssertionError("JCS library called")):
@@ -97,7 +103,7 @@ class TestStrictParser(unittest.TestCase):
     def test_matches_rfc8785(self, value):
         try:
             want = rfc8785.dumps(value)
-        except rfc8785.CanonicalizationError as e:   # a lone surrogate in st.text(), an unsafe integer
+        except rfc8785.CanonicalizationError as e:   # an unsafe integer (lone surrogates: below)
             with self.assertRaisesRegex(rfc8785.CanonicalizationError, re.escape(str(e))):
                 canonical(value)
             return

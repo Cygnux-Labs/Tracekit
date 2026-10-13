@@ -344,7 +344,7 @@ CONFIG_KEYS = {"data_dir", "socket", "socket_mode", "tcp_endpoint", "http", "dur
                "webhook", "content", "gateway_wait_s", "suspensions", "posture", "observe_grace_s"}
 # signer.yaml sections whose features are experimental (docs/support.md)
 EXPERIMENTAL_KEYS = ("http", "storage", "tenants", "multi_tenant_apps", "gateways", "witnesses", "anchors", "record_key",
-                     "webhook", "otlp", "otel_out", "harness_binding", "suspensions")
+                     "log_key", "webhook", "otlp", "otel_out", "harness_binding", "suspensions")
 APPROVAL_KEYS = {"self_approval", "approvers", "break_glass", "persons", "webauthn", "agents", "ttl_s",
                  "agent_consume_s", "agent_timeout_s"}
 # agent approvers (docs/approvals.md#agent-approvers): what an identity in approvals.agents may call, given an authorize
@@ -4436,7 +4436,7 @@ def main(argv=None):
     if a.cmd == "serve":
         logkey.harden()   # before any key is read
         extra = [k for k in EXPERIMENTAL_KEYS if cfg.get(k)] + [
-            f"approvals.{k}" for k in ("agents", "webauthn") if (cfg.get("approvals") or {}).get(k)]
+            f"approvals.{k}" for k in ("agents", "webauthn") if isinstance(cfg.get("approvals"), dict) and cfg["approvals"].get(k)]
         if extra:
             print(f"tracekit: the signer's {', '.join(extra)} setting(s) are experimental: they work and are tested, "
                   "but may change (docs/support.md)", file=sys.stderr)

@@ -85,7 +85,11 @@ def _plain(v):
 def canonical(obj):
     """JCS bytes of a JSON value; raises CanonicalizationError for anything JCS can't encode."""
     try:
-        if _plain(obj):
+        try:
+            plain = _plain(obj)
+        except RecursionError:   # _plain recurses twice per level: deep values are _dumps's to accept or refuse
+            plain = False
+        if plain:
             try:
                 return _json(obj).encode("utf-8")
             except UnicodeEncodeError:   # a lone surrogate: _dumps refuses it with its own message

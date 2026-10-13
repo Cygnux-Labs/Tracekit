@@ -26,8 +26,8 @@ MARKERS = {
     "nightly": "too slow for every push; runs on the nightly schedule",
     "perf": "performance measurement",
     "quickstart": "builds the wheel into a fresh venv and runs docs/quickstart-v2.md (TRACEKIT_QUICKSTART=1)",
-    "unverified_bundles": "exports v2 bundles the verifier rejects on purpose (a tampered store), or that need a "
-                          "pinned issuer; skips the every-export-verifies check",
+    "unverified_bundles": "exports v2 bundles the verifier rejects on purpose (a tampered or synthetic store, a "
+                          "forged line), or that need a pinned issuer; skips the every-export-verifies check",
 }
 
 # settings a developer's shell may carry that would change what the signer, hook or client does under test
@@ -125,6 +125,10 @@ checkpoint.log_line, bundle_v2.export = _recording_log_line, _verified_export
 @pytest.fixture(autouse=True)
 def _exported_bundles_verify(request):
     opted_out = request.node.get_closest_marker("unverified_bundles") is not None
+    early, _BUNDLES["failures"] = _BUNDLES["failures"], []
+    if early:   # exported outside any test (a setUpClass, a module fixture, a thread): never blamed on this one
+        pytest.fail(f"a v2 bundle exported before {request.node.nodeid} (setUpClass, a module fixture or a thread) "
+                    "fails verification:\n" + "\n".join(early), pytrace=False)
     _BUNDLES["check"] = not opted_out
     yield
     failures, _BUNDLES["failures"], _BUNDLES["check"] = _BUNDLES["failures"], [], True
