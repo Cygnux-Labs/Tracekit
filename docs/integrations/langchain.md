@@ -9,7 +9,7 @@ The older callback adapter in `tracekit.adapters.langchain` ([adapters.md](../ad
 ## Install
 
 ```bash
-pip install --pre tracekit-ai "langchain>=1.4"
+pip install tracekit-ai "langchain>=1.4"
 pip install langgraph-checkpoint-sqlite   # optional: a durable checkpointer for approvals
 ```
 

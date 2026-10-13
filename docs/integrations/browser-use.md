@@ -10,7 +10,7 @@ after the action it records the outcome. It works with any object that implement
 ## Install
 
 ```bash
-pip install --pre tracekit-ai "browser-use==0.13.11"
+pip install tracekit-ai "browser-use==0.13.11"
 ```
 
 Tested with browser-use 0.13.11 (Python 3.11 or newer, its own requirement). Browser Use is imported only to build

@@ -136,11 +136,8 @@ Three steps, with the agent you already have (OpenAI Agents SDK, LangGraph / Lan
 client, or plain OpenAI / Anthropic / Google Gen AI calls):
 
 ```sh
-pip install --pre tracekit-ai
+pip install tracekit-ai
 ```
-
-`--pre` gets 1.2.0rc1 once it is tagged; a plain `pip install tracekit-ai` gets 1.0.0, which lacks the 1.1 and 1.2
-features below.
 
 ```python
 import tracekit; tracekit.instrument()     # the first line of your agent; then run it as usual
@@ -198,9 +195,9 @@ tracekit verify docs/sample/demo-run-tampered.tkb --key docs/sample/signer.pub  
 
 ## What you need
 
-- **Python 3.9 to 3.13**, and `pip install --pre tracekit-ai`. The framework integrations need Python 3.10 or
+- **Python 3.9 to 3.13**, and `pip install tracekit-ai`. The framework integrations need Python 3.10 or
   newer. For the TypeScript SDK, Node 18 or newer and the package file from the GitHub release:
-  `npm install https://github.com/Cygnux-Labs/Tracekit/releases/download/v1.2.0rc1/cygnux-tracekit-1.2.0-rc.1.tgz`. It isn't on npm yet
+  `npm install https://github.com/Cygnux-Labs/Tracekit/releases/download/v1.2.0/cygnux-tracekit-1.2.0.tgz`. It isn't on npm yet
   ([TypeScript SDK](https://github.com/Cygnux-Labs/Tracekit/blob/main/sdk/typescript/README.md#install)).
 - **An OS.** Dev mode runs on macOS, Linux and Windows. A signer under its own OS user runs on Linux (macOS is
   experimental). Containers and Kubernetes run on Linux
@@ -338,7 +335,7 @@ report it.
 
 ## Status
 
-This is 1.2.0rc1, a release candidate. 1.0 is the first stable release, and 1.x is the supported line
+This is 1.2.0. 1.0 was the first stable release, and 1.x is the supported line
 ([SECURITY.md](https://github.com/Cygnux-Labs/Tracekit/blob/main/SECURITY.md)). What changed in each release:
 [CHANGELOG.md](https://github.com/Cygnux-Labs/Tracekit/blob/main/CHANGELOG.md).
 

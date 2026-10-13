@@ -9,7 +9,7 @@ at runtime (the same-user dev signer is started with Python when none is running
 The package isn't on npm yet. Install the file attached to the GitHub release (Node 18 or newer):
 
 ```sh
-npm install https://github.com/Cygnux-Labs/Tracekit/releases/download/v1.2.0rc1/cygnux-tracekit-1.2.0-rc.1.tgz
+npm install https://github.com/Cygnux-Labs/Tracekit/releases/download/v1.2.0/cygnux-tracekit-1.2.0.tgz
 ```
 
 Or build it from a checkout and install the file it makes:

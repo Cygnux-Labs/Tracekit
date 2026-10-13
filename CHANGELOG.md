@@ -2,7 +2,7 @@
 
 All notable changes to Tracekit. Versions follow [PEP 440](https://peps.python.org/pep-0440/).
 
-## 1.2.0rc1 (2026-10-12) — control
+## 1.2.0 (2026-10-13) — control
 
 1.1 records why an agent acted. 1.2 lets the signer act on what it sees, for agents running on servers:
 - tool calls run with credentials the agent never holds ([executor](docs/executor.md),

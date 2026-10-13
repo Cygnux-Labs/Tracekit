@@ -7,7 +7,7 @@ means](../quickstart-v2.md#what-dev-assurance-means)).
 ## 1. Install
 
 ```sh
-pip install --pre tracekit-ai 'claude-agent-sdk>=0.2.165,<0.3'
+pip install tracekit-ai 'claude-agent-sdk>=0.2.165,<0.3'
 ```
 
 ## 2. One line in your agent
