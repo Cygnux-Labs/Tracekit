@@ -2,6 +2,30 @@
 
 All notable changes to Tracekit. Versions follow [PEP 440](https://peps.python.org/pep-0440/).
 
+## 1.2.1 (2026-10-16) — on npm
+
+A patch for 1.2: the TypeScript SDK goes on npm, and the fixes a first-time user hits in their first ten minutes.
+Bundles are unchanged: 1.2.1 writes and verifies the same evidence format as 1.2.0.
+
+### Changed
+- **npm: `@cygnuxlabs/tracekit`.** The TypeScript SDK installs with `npm install @cygnuxlabs/tracekit` (the
+  `@cygnux` scope belongs to someone else, so the packages moved). On Apple Silicon macOS, Linux (x64 and arm64,
+  glibc) and Windows x64, npm also installs a `@cygnuxlabs/tracekit-signer-<platform>` package that bundles a Python,
+  so `npx @cygnuxlabs/tracekit up` starts a dev signer without one. On an Intel Mac or Alpine,
+  `pip install 'tracekit-ai[signer]'` ([limits](docs/limits.md#install)).
+- **A refusal says why.** `decide` answers a deny or an ask with its rules' reasons in `reason`, an optional field
+  RPC 16 already had, so older clients are unaffected. The Claude Code hook prints
+  `Blocked by tracekit policy: TK-D007: touching Tracekit's own files or signer`, and the framework integrations pass
+  the reason to the model.
+
+### Fixed
+- `tracekit doctor` on a fresh dev home says to start the dev signer (`tracekit up`) for the missing keys, not to run
+  doctor as root, and that a dev signer's assurance stays `dev` (it takes no witnesses).
+- The manifest check's failure names the files that differ from the manifest and how (changed, missing, not listed),
+  the same in the Python and TypeScript verifiers; it repeated the pass text.
+- `tracekit down` right after `tracekit up` stops the starting signer; it exited 1 (`Hung`) or missed it.
+- `tracekit uninstall` says what it removed once.
+
 ## 1.2.0 (2026-10-13) — control
 
 1.1 records why an agent acted. 1.2 lets the signer act on what it sees, for agents running on servers:
