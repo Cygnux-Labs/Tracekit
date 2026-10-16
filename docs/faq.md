@@ -1,6 +1,7 @@
 # FAQ and limits
 
-Every known limit and trade-off, from all the docs, is listed in one place: [known limits](limits.md).
+Every known limit and trade-off, from all the docs, is listed in one place: [known limits](limits.md). How the whole
+system works, and the hard questions about it, on one page: [Tracekit in depth](in-depth.md).
 
 ## What does a verified bundle prove?
 

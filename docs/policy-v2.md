@@ -403,7 +403,7 @@ two engines can decide differently; install `google-re2` on the signer.
 | Pack | For | Contents |
 |---|---|---|
 | `coding.yaml` | coding agents on a laptop | shell, file and harness self-protection rules; `unknown_tools: flag`; maps the shell, file, web and MCP tools of Claude Code, Codex, Cursor, Gemini CLI, OpenAI Agents and LangChain |
-| `dev.yaml` | the signer's default | `coding.yaml` plus `TK-DEMO-DENY` (denies the tool `tracekit_demo_denied`, so a deny is easy to see) |
+| `dev.yaml` | the signer's default | `coding.yaml` plus `TK-DEMO-DENY` (denies the tool `tracekit_demo_denied`) and `TK-DEMO-ASK` (holds `tracekit_demo_ask` for a person), so both are easy to see |
 | `browser.yaml` | browser agents (Browser Use) | local file and internal-network navigation (addresses and names) denied; uploads, typing outside an allowlist, the agent's own page JavaScript (`evaluate`), and typing or a navigation with a query string to a host from untrusted content, ask; Browser Use's actions are `structured_output` |
 | `server.yaml` | server-hosted agents | `extends: [coding, browser, server-data, server-net, server-cloud, server-comms]` plus rules for every tool; `unknown_tools: ask`: an unmapped tool waits for a person; detection in shadow: `TK-Q001` a secret read then egress (notify), `TK-L001` a runaway loop and `TK-L002` a delete burst (limits), `executed_against_policy` (notify) |
 | `server-data.yaml` | SQL tools | destructive and privilege-changing SQL, SQL that reaches the server's shell or files |
