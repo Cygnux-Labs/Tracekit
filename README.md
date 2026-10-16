@@ -5,10 +5,10 @@
 # Agents can edit logs. They can't hide the edit.
 
 **Tracekit checks every tool call your agent makes before it runs, signs each call and decision into a hash chain,
-and gives you one file per run that anyone can verify offline.**
+and gives you one `.tkb` file per run that anyone can verify offline.**
 
 <a href="https://pypi.org/project/tracekit-ai/"><img src="https://img.shields.io/pypi/v/tracekit-ai?style=flat-square&color=F3B23B&labelColor=1C1A1C" alt="PyPI"></a>
-<a href="#install"><img src="https://img.shields.io/badge/works_with-13_agents_%26_frameworks-F3B23B?style=flat-square&labelColor=1C1A1C" alt="Works with 13 agents and frameworks"></a>
+<a href="#add-it-to-your-agent"><img src="https://img.shields.io/badge/works_with-13_agents_%26_frameworks-F3B23B?style=flat-square&labelColor=1C1A1C" alt="Works with 13 agents and frameworks"></a>
 <a href="https://github.com/Cygnux-Labs/Tracekit/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/Cygnux-Labs/Tracekit/ci.yml?branch=main&style=flat-square&label=CI&labelColor=1C1A1C" alt="CI"></a>
 <a href="https://github.com/Cygnux-Labs/Tracekit/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-F3B23B?style=flat-square&labelColor=1C1A1C" alt="MIT licence"></a>
 
@@ -16,15 +16,15 @@ and gives you one file per run that anyone can verify offline.**
 <tr>
 <td align="center" width="25%"><h3>8 of 8</h3>tamper attacks caught<br><sub><a href="#proof">480 trials</a>, with a witness (E1)</sub></td>
 <td align="center" width="25%"><h3>462 of 462</h3>harmful calls stopped<br><sub><a href="#proof">11 classes</a>, 1 false alarm in 668 (E17)</sub></td>
-<td align="center" width="25%"><h3>0.9 ms</h3>p99 per tool call<br><sub><a href="#proof">signer round trip</a>, file storage (E9)</sub></td>
+<td align="center" width="25%"><h3>&lt; 1 ms</h3>added per tool call<br><sub><a href="#proof">0.91 ms at p99</a>, signer round trip (E9)</sub></td>
 <td align="center" width="25%"><h3>8 of 8</h3>insider attacks caught<br><sub><a href="#proof">a merge gate</a> on every PR (E8)</sub></td>
 </tr>
 </table>
 
-Built on **RFC 6962** Merkle logs · **Ed25519** · **C2SP** signed notes and witness cosignatures · **RFC 8785** canonical JSON<br>
-Verifiers in **Python** and **TypeScript** · **MIT** · runs on your machine or your servers
+Built like **Certificate Transparency**: signed records in an append-only log that independent witnesses cosign<br>
+**Open file format** · verifiers in **Python** and **TypeScript** · **MIT** · runs on your own machines
 
-**[Install](#install) · [What's in it](#whats-in-it) · [Proof](#proof) · [How it works](#how-it-works) · [Commands](#commands) · [Limits](#limits) · [Docs](#docs)**
+**[Try it](#try-it) · [Add it to your agent](#add-it-to-your-agent) · [What's in it](#whats-in-it) · [Proof](#proof) · [How it works](#how-it-works) · [Commands](#commands) · [Limits](#limits) · [Docs](#docs)**
 
 </div>
 
@@ -75,20 +75,22 @@ changed.**
 <sub>A support ticket hides an instruction. The agent deletes 43 of 128 orders, then rewrites both logs. The database,
 the signer, the viewer and both edits are real; the model is scripted. <a href="https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/demo/cover-up.mp4">Watch it with sound (1:47)</a></sub>
 
-Honest part: here the signer ran as the agent's own user (dev mode), so an agent that knew how could have read the key
-and re-signed the log. Run the signer [where the agent can't reach it](#how-it-works), with a witness, and it can't.
+In this demo the signer ran as the agent's own user (dev mode), so an agent that knew how could have read the key and
+re-signed the log. Run the signer [where the agent can't reach it](#how-it-works), with a witness, and it can't.
 
-## Install
+## Try it
 
 ```sh
 uvx --from tracekit-ai tracekit demo --server
 ```
 
-One command. No API key, and nothing to install with [uv](https://docs.astral.sh/uv/). A scripted agent runs
+One command, a few seconds. No API key, and nothing to install with [uv](https://docs.astral.sh/uv/). A scripted agent runs
 `sudo rm -rf /`; Tracekit denies it before it runs. Then the demo rewrites that denial as allowed in a copy of the run,
 and verification fails at `seq 4: hash does not match the event`.
 
-Your own agent, three lines:
+## Add it to your agent
+
+Three lines:
 
 ```sh
 pip install tracekit-ai
@@ -189,8 +191,8 @@ Our own experiments: small, synthetic and written by us. Nothing rounded up. The
 | **E3** the v1 regex gate, on a rougher set | 16 harmful and 20 benign calls written after the rules | **12 of 16 caught**, 1 false alarm. Rules are tripwires, not a sandbox |
 
 The two E1 misses are the design: a log can't see its own tail cut off, and whoever holds the key can re-sign it. Only
-a copy of the head held elsewhere, a witness, catches those, so an unwitnessed run verifies as `dev`. Honest part: the
-test sets were written by us, and no one outside has reviewed the threat models yet. Every experiment, and what isn't
+a copy of the head held elsewhere, a witness, catches those, so an unwitnessed run verifies as `dev`. The test sets
+were written by us, and no one outside has reviewed the threat models yet. Every experiment, and what isn't
 measured: [evaluation](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/evaluation.md) ·
 [technical report](https://github.com/Cygnux-Labs/Tracekit/blob/main/report/tracekit-v2.md).
 
@@ -202,11 +204,12 @@ measured: [evaluation](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/ev
   <img alt="1. Your agent, through its SDK or hook, asks the signer to decide each call; it holds a run token, never a key. 2. The signer, out of the agent's reach, allows, denies or asks a person, and signs every call, decision and result into one hash chain per run. 3. Witnesses cosign each checkpoint. 4. Each run exports as run.tkb, which tracekit verify checks offline: VERIFIED, or FAILED at the record that changed." src="https://raw.githubusercontent.com/Cygnux-Labs/Tracekit/main/docs/readme/how-it-works-light.png" width="100%">
 </picture>
 
-**The agent never holds a signing key** and never assigns sequence numbers. Each record is signed and carries the hash
-of the one before it, so a changed byte fails verification at that record. **Nothing the agent reports about itself is
-trusted**: not its isolation, its fail mode, gaps, or who approved a call. **Who can rewrite the log decides what a run
-is worth**, so put the signer where the agent can't reach it. The agent's code is the same in every mode;
-`TRACEKIT_SIGNER` points it at the signer:
+- **The agent never holds a signing key** and never assigns sequence numbers.
+- **Each record is signed and carries the hash of the one before it**, so a changed byte fails verification at that
+  record.
+- **Nothing the agent reports about itself is trusted**: not its isolation, its fail mode, gaps, or who approved a call.
+- **Who can rewrite the log decides what a run is worth**, so put the signer where the agent can't reach it. The agent's
+  code is the same in every mode; `TRACEKIT_SIGNER` points it at the signer.
 
 | Where the signer runs | Who can reach the keys and log | Recorded isolation |
 |---|---|---|
@@ -229,7 +232,7 @@ tracekit up                                 # start the dev signer, or find the 
 tracekit last                               # export your latest run, pin the dev key, verify it
 tracekit view --dev                         # every run, verified: calls, decisions, gaps, replay, why
 tracekit approvals list                     # calls held for a person; tracekit approvals approve ID
-tracekit export --v2 --run ID -o run.tkb    # one run as one file
+tracekit export --v2 --run ID -o run.tkb    # one run as one .tkb file
 tracekit verify run.tkb --trust trust.json  # check it offline, against the keys and witnesses you pinned
 tracekit policy lint policy.yaml            # check a policy before the signer loads it
 tracekit doctor                             # check this setup
@@ -256,7 +259,10 @@ Every limit, with what to do about it: [limits](https://github.com/Cygnux-Labs/T
 - **Specified.** [Evidence format v2](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/format-v2.md) aims to be
   precise enough to write an independent verifier, with normative
   [test vectors](https://github.com/Cygnux-Labs/Tracekit/tree/main/tests/vectors).
-- **Self-contained.** A run's file is a zip of records, inclusion proofs, checkpoints and the policy snapshots that
+- **Built on standards.** Records are signed with Ed25519 over RFC 8785 canonical JSON. Each log is an RFC 6962
+  Merkle tree, the structure Certificate Transparency uses. Checkpoints are C2SP signed notes, and witnesses cosign
+  them per C2SP tlog-cosignature.
+- **Self-contained.** A `.tkb` file is a zip of records, inclusion proofs, checkpoints and the policy snapshots that
   decided the calls. It holds no verification code.
 - **Old files keep verifying.** Formats only grow, each format's verifier is frozen, and an older verifier reports a
   newer file `UNVERIFIABLE (needs tracekit >= x)`, never `FAILED`.
