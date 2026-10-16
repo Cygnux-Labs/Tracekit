@@ -1,0 +1,85 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700;800;900&family=IBM+Plex+Mono:wght@400;500;600&display=block" rel="stylesheet">
+<style>
+:root{--bg:#0e0d0c;--grid:rgba(255,236,210,.05);--ink:#f1ebe0;--soft:#a79f92;--dim:#6d665d;--amber:#f1b23c;--amber-ink:#f1b23c;
+  --card:#171513;--well:#0b0a09;--line:rgba(255,236,210,.16);--ok:#8fd19e;--bad:#f1b23c;--badbg:rgba(241,178,60,.10)}
+html.light{--bg:#f4efe6;--grid:rgba(60,40,15,.06);--ink:#1b1714;--soft:#5d554b;--dim:#8c8378;--amber:#e3a02a;--amber-ink:#a8690a;
+  --card:#fffdf8;--well:#f6f1e8;--line:rgba(60,40,15,.18);--ok:#2f8a4a;--bad:#b8730c;--badbg:rgba(227,160,42,.12)}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{width:1280px;height:620px;overflow:hidden;background:transparent}
+.frame{position:absolute;inset:0;border-radius:18px;overflow:hidden;background-color:var(--bg);background-image:linear-gradient(var(--grid) 1px,transparent 1px),linear-gradient(90deg,var(--grid) 1px,transparent 1px);background-size:40px 40px}
+body{font-family:Archivo,sans-serif;color:var(--ink);position:relative}
+.mono{font-family:"IBM Plex Mono",monospace}
+/* the story, in three steps */
+.steps{position:absolute;left:36px;right:36px;top:30px;display:grid;grid-template-columns:1fr 1fr 1fr;gap:34px}
+.step{position:relative;display:flex;align-items:center;min-height:80px;border:1px solid var(--line);background:var(--card);border-radius:10px;padding:12px 16px 12px 56px;font-weight:600;font-size:19px;line-height:1.3}
+.step b{position:absolute;left:16px;top:50%;transform:translateY(-50%);width:26px;height:26px;border:1px solid var(--amber);border-radius:6px;color:var(--amber-ink);font:600 14px/24px "IBM Plex Mono",monospace;text-align:center}
+.step+.step::before{content:"";position:absolute;left:-28px;top:50%;width:22px;border-top:2px solid var(--amber)}
+.step+.step::after{content:"";position:absolute;left:-10px;top:calc(50% - 5px);border:5px solid transparent;border-left:7px solid var(--amber)}
+.hl{color:var(--amber-ink)}
+/* the two records */
+.panel{position:absolute;top:132px;width:590px;height:458px;border:1px solid var(--line);background:var(--card);border-radius:12px;padding:20px 22px;display:flex;flex-direction:column;gap:14px}
+.head{display:flex;align-items:baseline;justify-content:space-between}
+.tag{font:600 16px/1 "IBM Plex Mono",monospace;letter-spacing:.08em;color:var(--soft)}
+.who{font:500 15px/1 "IBM Plex Mono",monospace;color:var(--dim)}
+.well{background:var(--well);border:1px solid var(--line);border-radius:8px;padding:12px 14px;font:500 17px/1.6 "IBM Plex Mono",monospace;color:var(--ink)}
+.well .c{color:var(--dim)}
+.row{display:grid;grid-template-columns:94px 1fr;gap:0 10px}
+.t{color:var(--dim)}
+.note{font:500 15px/1.3 "IBM Plex Mono",monospace;color:var(--amber-ink);margin-top:2px}
+.ok{color:var(--ok)} .bad{color:var(--bad);font-weight:600}
+.verdict{margin-top:auto;border-radius:8px;padding:14px 16px;border:1px solid var(--line)}
+.verdict .big{font-weight:900;font-size:27px;letter-spacing:-.01em}
+.verdict .sub{margin-top:4px;font-size:18px;line-height:1.35;color:var(--soft)}
+.verdict.caught{border-color:var(--amber);background:var(--badbg)}
+.verdict.caught .big{color:var(--amber-ink)}
+</style>
+<script>if(location.search.includes('light'))document.documentElement.classList.add('light')</script>
+</head><body><div class="frame">
+
+<div class="steps">
+  <div class="step"><b>1</b><span>A support ticket hides an instruction</span></div>
+  <div class="step"><b>2</b><span>The agent deletes <span class="hl">43 of 128</span> orders</span></div>
+  <div class="step"><b>3</b><span>It rewrites its log and Tracekit's record to hide the delete</span></div>
+</div>
+
+<div class="panel" style="left:36px">
+  <div class="head"><span class="tag">THE AGENT'S OWN LOG</span><span class="who">written by the agent</span></div>
+  <div class="well">
+    <div class="row"><span class="t">13:51:52</span><span>run_sql SELECT status … id = 1042</span></div>
+    <div class="row"><span class="t">13:51:59</span><span>run_sql SELECT status … id = 1042</span></div>
+    <div class="row"><span></span><span class="note">↑ this line was the DELETE</span></div>
+  </div>
+  <div class="well">
+    <div><span class="c">$</span> grep -c DELETE agent.log</div>
+    <div>0</div>
+    <div><span class="c">$</span> sqlite3 shop.db 'SELECT count(*) FROM orders'</div>
+    <div>85 <span class="c">(was 128)</span></div>
+  </div>
+  <div class="verdict">
+    <div class="big">Looks clean.</div>
+    <div class="sub">Two lookups, no delete, and nothing says the log was edited. The orders are still gone.</div>
+  </div>
+</div>
+
+<div class="panel" style="left:654px">
+  <div class="head"><span class="tag">TRACEKIT, THE SAME RUN</span><span class="who">signed records</span></div>
+  <div class="well">
+    <div class="row"><span class="t">13:51:52</span><span>run_sql <span class="ok">allowed</span></span></div>
+    <div class="row"><span class="t">13:51:59</span><span>run_sql <span class="bad">FLAGGED</span> ACME-F001 deleting rows</span></div>
+    <div class="row"><span></span><span class="note">↑ the rule that fired, signed into the record</span></div>
+  </div>
+  <div class="well">
+    <div><span class="c">verified when the run closed:</span></div>
+    <div><span class="bad">[FAIL]</span> signatures, 7 records</div>
+    <div>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; seq 7: hash does not match the event</div>
+    <div>RUN <span class="bad">FAILED</span></div>
+  </div>
+  <div class="verdict caught">
+    <div class="big">Caught at record 7.</div>
+    <div class="sub">The delete was flagged when it ran, and the agent's edit no longer matches the record's hash.</div>
+  </div>
+</div>
+
+</div></body></html>

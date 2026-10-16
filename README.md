@@ -34,50 +34,15 @@ When an agent does something it shouldn't, you ask three things: **what did it d
 the record?** The agent's own log can't answer the third, because the agent can edit it. Here is one run, recorded
 both ways:
 
-<table>
-<tr>
-<th width="50%">The agent's own log, after the cover-up</th>
-<th width="50%">Tracekit, the same run</th>
-</tr>
-<tr>
-<td valign="top">
-
-```text
-$ tail agent.log
-13:51:52 INFO run_sql "SELECT status FROM
-         orders WHERE id = 1042"
-13:51:59 INFO run_sql "SELECT status FROM
-         orders WHERE id = 1042"
-$ grep -c DELETE agent.log
-0
-$ sqlite3 shop.db 'SELECT count(*) FROM orders'
-85
-```
-
-</td>
-<td valign="top">
-
-```text
-ALERT  SIGNED FLAGGED · run_sql · 13:51:59
-       ACME-F001 deleting rows
-RUN    FAILED
-
-[FAIL] signatures — 7 records,
-       keys valid at their position
-       seq 7: hash does not match the event
-```
-
-</td>
-</tr>
-</table>
-
-**Same run. The log shows two lookups. Tracekit shows the flagged delete, and fails the run at the record the agent
-changed.**
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/Cygnux-Labs/Tracekit/main/docs/readme/cover-up-dark.png">
+  <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/Cygnux-Labs/Tracekit/main/docs/readme/cover-up-light.png">
+  <img alt="What happened: a support ticket hides an instruction, the agent deletes 43 of 128 orders, then edits its log and Tracekit's record so the delete reads as a lookup. The agent's own log shows two lookups of order 1042; grep finds no DELETE, and the database holds 85 orders: it looks clean. Tracekit, the same run: the 13:51:59 run_sql call is flagged ACME-F001 deleting rows, and when the run closed verification failed with seq 7: hash does not match the event. Caught at record 7." src="https://raw.githubusercontent.com/Cygnux-Labs/Tracekit/main/docs/readme/cover-up-light.png" width="100%">
+</picture>
 
 <a href="https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/demo/cover-up.mp4"><img src="https://raw.githubusercontent.com/Cygnux-Labs/Tracekit/main/docs/demo/cover-up.gif" alt="A ticket with a hidden instruction makes a support agent delete 43 orders, then edit its own log and Tracekit's record of the delete. grep finds no delete; Tracekit marks the run FAILED because record 7 no longer matches its hash." width="100%"></a>
 
-<sub>A support ticket hides an instruction. The agent deletes 43 of 128 orders, then rewrites both logs. The database,
-the signer, the viewer and both edits are real; the model is scripted. <a href="https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/demo/cover-up.mp4">Watch it with sound (1:47)</a></sub>
+<sub>The same run, recorded: the database, the signer, the viewer and both edits are real; the model is scripted. <a href="https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/demo/cover-up.mp4">Watch it with sound (1:47)</a></sub>
 
 In this demo the signer ran as the agent's own user (dev mode), so an agent that knew how could have read the key and
 re-signed the log. Run the signer [where the agent can't reach it](#how-it-works), with a witness, and it can't.
