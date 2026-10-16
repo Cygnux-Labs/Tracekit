@@ -321,7 +321,7 @@ To start: `make install`, then `make check`
 
 ## License
 
-[MIT](https://github.com/Cygnux-Labs/Tracekit/blob/main/LICENSE), Copyright Cygnux Labs. This is 1.2.0, and 1.x is the
+[MIT](https://github.com/Cygnux-Labs/Tracekit/blob/main/LICENSE), Copyright Cygnux Labs. This is 1.2.1, and 1.x is the
 supported line. Report vulnerabilities privately as
 [SECURITY.md](https://github.com/Cygnux-Labs/Tracekit/blob/main/SECURITY.md) describes.
 
