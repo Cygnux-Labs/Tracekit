@@ -1,7 +1,7 @@
 /**
  * Native client for the v2 signer RPC (tracekit/sdk/client.py in TypeScript), Node built-ins only.
  *
- *   import { Client, withRun } from "@cygnux/tracekit/v2";
+ *   import { Client, withRun } from "@cygnuxlabs/tracekit/v2";
  *   const run = await new Client().registerRun("my-agent");
  *   const d = await run.decide("call-1", "Bash", '{"command": "ls"}');
  *   if (d.decision === "allow") await run.complete("call-1", "ok");

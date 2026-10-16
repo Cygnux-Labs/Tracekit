@@ -25,7 +25,7 @@ class VerifyDryRun(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.mkdtemp()
         for name, data in (("tracekit_ai-1.0-py3-none-any.whl", b"w"), ("tracekit_ai-1.0.tar.gz", b"s"),
-                           ("cygnux-tracekit-1.0.tgz", b"n"), (release.PY_SBOM, b'{"bomFormat": "CycloneDX"}')):
+                           ("cygnuxlabs-tracekit-1.0.tgz", b"n"), (release.PY_SBOM, b'{"bomFormat": "CycloneDX"}')):
             with open(os.path.join(self.dir, name), "wb") as f:
                 f.write(data)
         release.write_sums(self.dir)

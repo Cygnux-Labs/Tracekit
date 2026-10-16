@@ -21,7 +21,7 @@ executor.yaml:
                properties: {owner: {type: string}, repo: {type: string}, title: {type: string}}}
 
 `GET /v1/actions` lists the actions (name, description, args schema) to any identity the authenticators accept; the
-client helpers (tracekit.integrations.executor_tools, @cygnux/tracekit/v2/executor) build framework tools from it.
+client helpers (tracekit.integrations.executor_tools, @cygnuxlabs/tracekit/v2/executor) build framework tools from it.
 The agent calls `POST /v1/actions/<name>` with its run, as at the LLM gateway (`X-Tracekit-Run: <run_id>.<run token>`
 and an identity the authenticators accept), and `{"args": {...}, "tool_call_id": "..."}` (the model's id for the call,
 optional). The arguments must match the action's `args` schema (400). The executor decides through the signer with

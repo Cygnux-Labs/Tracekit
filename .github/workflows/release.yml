@@ -151,7 +151,7 @@ jobs:
   # `needs` back to npm and its artifact to release-final (docs/RELEASING.md#npm-paused).
   # npm:
   #   # the signer packages bundle the release's own tracekit-ai wheel (checked against SHA256SUMS); they go up after
-  #   # PyPI and before @cygnux/tracekit, which depends on them
+  #   # PyPI and before @cygnuxlabs/tracekit, which depends on them
   #   needs: pypi
   #   runs-on: ubuntu-latest
   #   environment: npm
@@ -181,13 +181,13 @@ jobs:
   #     - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
   #       with:
   #         subject-path: |
-  #           release/cygnux-tracekit-signer-*.tgz
+  #           release/cygnuxlabs-tracekit-signer-*.tgz
   #           release/SHA256SUMS
   #     - name: Publish (platform packages first)
   #       run: |
   #         case "${GITHUB_REF_NAME#v}" in *[a-z]*) dist=next ;; *) dist=latest ;; esac   # pre-releases never become latest
-  #         for f in release/cygnux-tracekit-signer-*.tgz; do npm publish "$f" --provenance --access public --tag "$dist"; done
-  #         npm publish release/cygnux-tracekit-[0-9]*.tgz --provenance --access public --tag "$dist"
+  #         for f in release/cygnuxlabs-tracekit-signer-*.tgz; do npm publish "$f" --provenance --access public --tag "$dist"; done
+  #         npm publish release/cygnuxlabs-tracekit-[0-9]*.tgz --provenance --access public --tag "$dist"
   #     - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
   #       with:
   #         name: release-final

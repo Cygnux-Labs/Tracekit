@@ -202,9 +202,9 @@ for (const mode of ["exit", "close"]) {
   });
 }
 
-test("the default import is the v2 client; the v1 SDK stays at @cygnux/tracekit/v1", async () => {
-  assert.equal((await import("@cygnux/tracekit")).Client, (await import("../dist/v2/client.js")).Client);
-  assert.equal((await import("@cygnux/tracekit/v1")).Tracekit, Tracekit);
+test("the default import is the v2 client; the v1 SDK stays at @cygnuxlabs/tracekit/v1", async () => {
+  assert.equal((await import("@cygnuxlabs/tracekit")).Client, (await import("../dist/v2/client.js")).Client);
+  assert.equal((await import("@cygnuxlabs/tracekit/v1")).Tracekit, Tracekit);
 });
 
 test("v1 warns once per process (TRACEKIT_V1, and the bridge on stderr); TRACEKIT_NO_DEPRECATION silences both", () => {

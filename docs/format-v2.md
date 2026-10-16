@@ -548,7 +548,7 @@ tell a later v1 record from a genuine one; only this check reports it.
 | Implementation | Where | Notes |
 |---|---|---|
 | Python, the reference | `tracekit/verify/v2.py` (`tracekit verify`) | everything on this page |
-| TypeScript, independent | `sdk/typescript/src/verify` (`@cygnux/tracekit/verify`, `npx @cygnux/tracekit verify`) | written from this page; Node ≥ 20.12 and browsers, Web Crypto only |
+| TypeScript, independent | `sdk/typescript/src/verify` (`@cygnuxlabs/tracekit/verify`, `npx @cygnuxlabs/tracekit verify`) | written from this page; Node ≥ 20.12 and browsers, Web Crypto only |
 
 The TypeScript verifier does not implement SLH-DSA (§6, Web Crypto has none), Rekor anchors (§8) or record-key
 certificates ([issuer.md](issuer.md)): a bundle that relies on one is `UNVERIFIABLE (not checked by this verifier: ...)`,

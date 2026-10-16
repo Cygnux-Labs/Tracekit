@@ -1,8 +1,8 @@
 /**
- * @cygnux/tracekit/v1: the v1 SDK, deprecated and removed in 0.5.0; use the native v2 client (`@cygnux/tracekit`).
+ * @cygnuxlabs/tracekit/v1: the v1 SDK, deprecated and removed in 0.5.0; use the native v2 client (`@cygnuxlabs/tracekit`).
  * Tracekit.start warns once per process (DeprecationWarning TRACEKIT_V1; TRACEKIT_NO_DEPRECATION=1 silences it).
  *
- *   import { Tracekit, instrumentOpenAI } from "@cygnux/tracekit/v1";
+ *   import { Tracekit, instrumentOpenAI } from "@cygnuxlabs/tracekit/v1";
  *   const tk = await Tracekit.start({ agent: "research-bot" });
  *   const openai = instrumentOpenAI(new OpenAI(), tk);             // every model call: signed request + response
  *   const out = await tk.tool("Bash", { command: "ls" }, () => run("ls"));   // policy-gated before it runs
@@ -150,8 +150,8 @@ export class Tracekit {
   static async start(opts: StartOptions = {}): Promise<Tracekit> {
     if (!deprecationWarned && !process.env.TRACEKIT_NO_DEPRECATION) {
       deprecationWarned = true;
-      process.emitWarning("@cygnux/tracekit/v1 (the Python bridge) is deprecated and removed in 0.5.0: use the native v2 client, " +
-        "import { Client } from \"@cygnux/tracekit\" (README: Migrating from v1).", { type: "DeprecationWarning", code: "TRACEKIT_V1" });
+      process.emitWarning("@cygnuxlabs/tracekit/v1 (the Python bridge) is deprecated and removed in 0.5.0: use the native v2 client, " +
+        "import { Client } from \"@cygnuxlabs/tracekit\" (README: Migrating from v1).", { type: "DeprecationWarning", code: "TRACEKIT_V1" });
     }
     const python = opts.python ?? process.env.TRACEKIT_PYTHON ?? "python3";
     const timeoutMs = opts.timeoutMs ?? 30_000;

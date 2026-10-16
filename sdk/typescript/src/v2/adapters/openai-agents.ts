@@ -3,8 +3,8 @@
  * tracekit/integrations/openai_agents.py does in Python.
  *
  *   import { Agent, Runner, tool } from "@openai/agents";
- *   import { Client } from "@cygnux/tracekit/v2";
- *   import { TracekitAgents } from "@cygnux/tracekit/v2/openai-agents";
+ *   import { Client } from "@cygnuxlabs/tracekit/v2";
+ *   import { TracekitAgents } from "@cygnuxlabs/tracekit/v2/openai-agents";
  *   const tk = new TracekitAgents(await new Client().registerRun("payer"));
  *   const agent = new Agent({ name: "payer", model: "gpt-5", tools: [tk.tool(tool, { name: "pay", description, parameters, execute })] });
  *   const result = await new Runner().run(agent, "pay acct-42 $15", { context: {} });

@@ -91,7 +91,7 @@ Export a run and verify it with a trust config built from sources you trust, not
 tracekit export --v2 --config signer.yaml --run RUN_ID -o run.tkb
 tracekit signer trust --config signer.yaml -o trust.json
 tracekit verify run.tkb --trust trust.json
-npx --package ./cygnux-tracekit-<version>.tgz tracekit verify run.tkb --trust trust.json   # the TypeScript verifier must agree
+npx --package ./cygnuxlabs-tracekit-<version>.tgz tracekit verify run.tkb --trust trust.json   # the TypeScript verifier must agree
 ```
 
 - `Integrity: VERIFIED.` says that the run's records are the ones the signer signed, complete from registration to

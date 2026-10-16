@@ -54,7 +54,7 @@ class TestSignerBundles(unittest.TestCase):
         with open(os.path.join(ROOT, "sdk", "typescript", "package.json")) as f:
             pkg = json.load(f)
         self.assertEqual(pkg["optionalDependencies"],
-                         {f"@cygnux/tracekit-signer-{k}": pkg["version"] for k in bsb.TARGETS})
+                         {f"@cygnuxlabs/tracekit-signer-{k}": pkg["version"] for k in bsb.TARGETS})
         for key, (triple, digest, npm_os, cpu, platforms) in bsb.TARGETS.items():
             self.assertTrue(key.startswith(f"{npm_os}-{cpu}"), key)
             self.assertRegex(digest, r"^[0-9a-f]{64}$")
@@ -63,7 +63,7 @@ class TestSignerBundles(unittest.TestCase):
     def test_package_json(self):
         linux = bsb.package_json("linux-arm64-gnu", "1.2.3")
         self.assertEqual((linux["name"], linux["version"], linux["os"], linux["cpu"], linux["libc"]),
-                         ("@cygnux/tracekit-signer-linux-arm64-gnu", "1.2.3", ["linux"], ["arm64"], ["glibc"]))
+                         ("@cygnuxlabs/tracekit-signer-linux-arm64-gnu", "1.2.3", ["linux"], ["arm64"], ["glibc"]))
         mac = bsb.package_json("darwin-arm64", "1.2.3")
         self.assertEqual((mac["os"], mac["cpu"]), (["darwin"], ["arm64"]))
         self.assertNotIn("libc", mac)

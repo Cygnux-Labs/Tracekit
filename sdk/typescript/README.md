@@ -1,4 +1,4 @@
-# @cygnux/tracekit
+# @cygnuxlabs/tracekit
 
 Tracekit for TypeScript and JavaScript agents: every tool call is decided by the Tracekit signer before it runs and
 recorded after, and model responses become signed evidence. The client talks to the signer directly; it needs no Python
@@ -6,26 +6,30 @@ at runtime (the same-user dev signer is started with Python when none is running
 
 ## Install
 
-The package isn't on npm yet. Install the file attached to the GitHub release (Node 18 or newer):
+Node 18 or newer:
 
 ```sh
-npm install https://github.com/Cygnux-Labs/Tracekit/releases/download/v1.2.0/cygnux-tracekit-1.2.0.tgz
+npm install @cygnuxlabs/tracekit
 ```
+
+npm also installs the signer package for your platform (`@cygnuxlabs/tracekit-signer-<platform>`: Apple Silicon
+macOS, Linux x64 and arm64 with glibc, Windows x64), which bundles a Python, so `npx @cygnuxlabs/tracekit up` starts a
+dev signer without one. On an Intel Mac or Alpine there is none: `pip install 'tracekit-ai[signer]'`.
 
 Or build it from a checkout and install the file it makes:
 
 ```sh
-cd sdk/typescript && npm ci && npm run build && npm pack    # writes cygnux-tracekit-<version>.tgz
-cd /path/to/your/app && npm install /path/to/Tracekit/sdk/typescript/cygnux-tracekit-*.tgz
+cd sdk/typescript && npm ci && npm run build && npm pack    # writes cygnuxlabs-tracekit-<version>.tgz
+cd /path/to/your/app && npm install /path/to/Tracekit/sdk/typescript/cygnuxlabs-tracekit-*.tgz
 ```
 
-## Signer client (`@cygnux/tracekit`)
+## Signer client (`@cygnuxlabs/tracekit`)
 
 A native client of the v2 signer RPC with no runtime dependencies (Node ≥ 18 built-ins only, no Python bridge); also
-exported as `@cygnux/tracekit/v2`.
+exported as `@cygnuxlabs/tracekit/v2`.
 
 ```ts
-import { Client, withRun, currentRun } from "@cygnux/tracekit";
+import { Client, withRun, currentRun } from "@cygnuxlabs/tracekit";
 
 const client = new Client();                              // or new Client({ signer: "https://signer:8443" })
 const run = await client.registerRun("research-bot");
@@ -46,8 +50,9 @@ await client.close();                                     // waits for what is i
   re-read per call; `$TRACEKIT_SIGNER_CERT`/`_KEY`: mTLS; `$TRACEKIT_SIGNER_CA`: the signer's CA). In system mode the
   signer named by the root-owned `/etc/tracekit/client.json` is used and a different `$TRACEKIT_SIGNER` is refused.
   Otherwise the same-user dev signer is found, or started with `tracekit up --json`: `$TRACEKIT_PYTHON -m tracekit` if
-  set, else a pip-installed `tracekit` on PATH (the `@cygnux/tracekit-signer-<platform>` packages that bundle a Python
-  aren't published while npm is paused: `pip install tracekit-ai`). `npx @cygnux/tracekit up|down|status|view|verify|signer` runs the same command.
+  set, else a pip-installed `tracekit` on PATH, else the Python bundled in this platform's
+  `@cygnuxlabs/tracekit-signer-<platform>` package. `npx @cygnuxlabs/tracekit up|down|status|view|verify|signer` runs the
+  same command.
 - **Protocol:** `hello` first; a signer that does not speak this client's RPC version is refused with `Incompatible`.
   Requests are validated against the RPC schemas before they are sent, pipelined on one connection and answered in
   order; a call whose connection drops is resent with the same `request_id`. Each handle's events carry the client's
@@ -60,21 +65,21 @@ await client.close();                                     // waits for what is i
 - `argsDigest(tool, args)`, `canonicalize`, `strictParse`: JCS (RFC 8785) and the strict parser, byte-identical to
   the Python client on the shared vectors in `tests/vectors/jcs.jsonl`.
 
-## Verify a bundle (`@cygnux/tracekit/verify`)
+## Verify a bundle (`@cygnuxlabs/tracekit/verify`)
 
 An independent verifier of v2 bundles (`.tkb`), written from [docs/format-v2.md](../../docs/format-v2.md) and tested to
 agree with the Python verifier. No dependencies: Web Crypto and `DecompressionStream`, so Node ≥ 20.12 and current
 browsers.
 
 ```sh
-npx @cygnux/tracekit verify run.tkb --trust trust.json [--json] [--strict]
+npx @cygnuxlabs/tracekit verify run.tkb --trust trust.json [--json] [--strict]
 ```
 
 Exit 0 verified, 1 failed, 2 unusable or unverifiable, 3 a warning under `--strict`; the report and `--json` are those
 of `tracekit verify`. In code, Node or a browser:
 
 ```ts
-import { verify, formatReport } from "@cygnux/tracekit/verify";
+import { verify, formatReport } from "@cygnuxlabs/tracekit/verify";
 
 const bundle = new Uint8Array(await (await fetch("run.tkb")).arrayBuffer());
 const trust = new Uint8Array(await (await fetch("trust.json")).arrayBuffer());   // your own pinned trust config
@@ -92,7 +97,7 @@ One call registers a run (the dev signer is started if none answers), closes it 
 and hands you the adapters bound to it; then `tracekit last` exports, pins and verifies the run:
 
 ```ts
-import { instrument } from "@cygnux/tracekit";
+import { instrument } from "@cygnuxlabs/tracekit";
 const tk = await instrument();                    // the same on a second call
 const model = wrapLanguageModel({ model: openai("gpt-5"), middleware: tk.ai.middleware });   // Vercel AI SDK
 const r = await generateText({ model, tools: tk.ai.tools({ pay }), toolApproval: tk.ai.toolApproval, messages });
@@ -131,11 +136,11 @@ and streams (`messages.stream()`, `streamText`) work as without Tracekit. Offlin
   the adapters use, `approval_list` included ([limits](../../docs/limits.md#deployment)). The adapters' own model
   events are then optional: the gateway records each exchange too.
 
-**OpenAI Agents SDK** (`@cygnux/tracekit/v2/openai-agents`)
+**OpenAI Agents SDK** (`@cygnuxlabs/tracekit/v2/openai-agents`)
 
 ```ts
 import { Agent, Runner, tool } from "@openai/agents";
-import { TracekitAgents } from "@cygnux/tracekit/v2/openai-agents";
+import { TracekitAgents } from "@cygnuxlabs/tracekit/v2/openai-agents";
 const tk = new TracekitAgents(await new Client().registerRun("payer"));
 const agent = new Agent({ name: "payer", tools: [tk.tool(tool, { name: "pay", description, parameters, execute })] });
 let result = await runner.run(agent, "pay acct-42 $15", { context: {} });   // the context must be an object
@@ -163,11 +168,11 @@ the nested result) or run the LLM gateway. Also not gated, listed as uncovered: 
 code interpreter, hosted MCP, hosted shell), shell, apply_patch and computer tools, and handoffs (name them in the
 policy's `handoffs:` so they reconcile). `recordResponses` records them (T3) in a signed model event per response.
 
-**Vercel AI SDK v7** (`@cygnux/tracekit/v2/vercel-ai`)
+**Vercel AI SDK v7** (`@cygnuxlabs/tracekit/v2/vercel-ai`)
 
 ```ts
 import { generateText, wrapLanguageModel } from "ai";
-import { tracekitAI } from "@cygnux/tracekit/v2/vercel-ai";
+import { tracekitAI } from "@cygnuxlabs/tracekit/v2/vercel-ai";
 const tk = tracekitAI(await new Client().registerRun("assistant"));
 const model = wrapLanguageModel({ model: openai("gpt-5"), middleware: tk.middleware });
 const r = await generateText({ model, tools: tk.tools({ pay }), toolApproval: tk.toolApproval, messages });
@@ -189,11 +194,11 @@ MCP tools (`@ai-sdk/mcp`): `tk.tools(await client.tools(), { mcp: "filesystem" }
 allows (a call you deny is recorded as refused; one you answer `user-approval` and then deny in your own UI stays
 decided and not completed); `tk.toolApproval` alone replaces yours.
 
-**Claude Agent SDK** (`@cygnux/tracekit/v2/claude-agent-sdk`)
+**Claude Agent SDK** (`@cygnuxlabs/tracekit/v2/claude-agent-sdk`)
 
 ```ts
 import { query } from "@anthropic-ai/claude-agent-sdk";
-import { tracekitHooks, tracekitSessionStore } from "@cygnux/tracekit/v2/claude-agent-sdk";
+import { tracekitHooks, tracekitSessionStore } from "@cygnuxlabs/tracekit/v2/claude-agent-sdk";
 const run = await new Client().registerRun("my-agent");
 query({ prompt, options: { hooks: tracekitHooks(run), sessionStore: tracekitSessionStore(myStore, run) } });
 ```
@@ -207,24 +212,24 @@ between two writes shows up as a signed `state_tamper` gap.
 ## Migrating from v1
 
 The v1 SDK (`Tracekit`, driving `python -m tracekit.bridge`) is deprecated and removed in 0.5.0. Until then it stays at
-`@cygnux/tracekit/v1`; `Tracekit.start` warns once per process (`DeprecationWarning`, code `TRACEKIT_V1`) and the bridge
+`@cygnuxlabs/tracekit/v1`; `Tracekit.start` warns once per process (`DeprecationWarning`, code `TRACEKIT_V1`) and the bridge
 prints a matching notice on stderr; `TRACEKIT_NO_DEPRECATION=1` silences both. The import becomes
-`import { Tracekit } from "@cygnux/tracekit/v1"`.
+`import { Tracekit } from "@cygnuxlabs/tracekit/v1"`.
 
-| v1 (`@cygnux/tracekit/v1`) | v2 (`@cygnux/tracekit`) |
+| v1 (`@cygnuxlabs/tracekit/v1`) | v2 (`@cygnuxlabs/tracekit`) |
 |---|---|
 | `await Tracekit.start({ agent })` | `const client = new Client(); const run = await client.registerRun(agent)` |
 | `await tk.tool(name, args, fn, { toolUseId })` | `await run.decide(toolUseId, name, args)`, run `fn` on `allow`, then `await run.complete(toolUseId, "ok", { result })` |
 | `TracekitDenied` | `d.decision === "deny"` (`d.rule_ids`); a refusal by the signer rejects with `RPCError` |
 | held for approval inside `tk.tool` | `d.decision === "ask"`: `run.approvalRequest(id)`, then `run.approvalWait(approval_id)` |
 | `instrumentOpenAI` / `instrumentAnthropic`, `tk.modelBegin` / `tk.modelEnd` | `run.modelEvent(provider, model, "response", { stop_reason, usage, tool_uses })`, or a framework adapter below |
-| `tracekitMiddleware(tk)` | `tracekitAI(run).middleware` from `@cygnux/tracekit/v2/vercel-ai`, with `tools` and `toolApproval` |
+| `tracekitMiddleware(tk)` | `tracekitAI(run).middleware` from `@cygnuxlabs/tracekit/v2/vercel-ai`, with `tools` and `toolApproval` |
 | `tk.prompt` / `tk.say` / `tk.think` | not recorded by the v2 signer |
 | `tk.end(reason)` | `await run.close(reason); await client.close()` |
 
 ```ts
 // v1
-import { Tracekit, TracekitDenied } from "@cygnux/tracekit/v1";
+import { Tracekit, TracekitDenied } from "@cygnuxlabs/tracekit/v1";
 const tk = await Tracekit.start({ agent: "research-bot" });
 try {
   out = await tk.tool("Bash", args, () => runShell(args), { toolUseId: call.id });
@@ -234,7 +239,7 @@ try {
 await tk.end();
 
 // v2
-import { Client } from "@cygnux/tracekit";
+import { Client } from "@cygnuxlabs/tracekit";
 const client = new Client();
 const run = await client.registerRun("research-bot");
 const d = await run.decide(call.id, "Bash", call.function.arguments);
@@ -246,14 +251,14 @@ await run.close();
 await client.close();
 ```
 
-## v1 SDK (deprecated, `@cygnux/tracekit/v1`)
+## v1 SDK (deprecated, `@cygnuxlabs/tracekit/v1`)
 
 Removed in 0.5.0; see the migration above. Tool calls pass Tracekit's policy gate before they run, and model calls
 become signed evidence, in the same ledger and format as the Python SDK.
 
 ```ts
 import OpenAI from "openai";
-import { Tracekit, TracekitDenied, instrumentOpenAI } from "@cygnux/tracekit/v1";
+import { Tracekit, TracekitDenied, instrumentOpenAI } from "@cygnuxlabs/tracekit/v1";
 
 const tk = await Tracekit.start({ agent: "research-bot" });
 const openai = instrumentOpenAI(new OpenAI(), tk);        // also: instrumentAnthropic(client, tk), tracekitMiddleware(tk) for the Vercel AI SDK

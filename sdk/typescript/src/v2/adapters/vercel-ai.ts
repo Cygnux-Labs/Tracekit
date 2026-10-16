@@ -2,8 +2,8 @@
  * Vercel AI SDK v7: every tool call is decided by the signer before it runs and recorded after.
  *
  *   import { generateText, wrapLanguageModel } from "ai";
- *   import { Client } from "@cygnux/tracekit/v2";
- *   import { tracekitAI } from "@cygnux/tracekit/v2/vercel-ai";
+ *   import { Client } from "@cygnuxlabs/tracekit/v2";
+ *   import { tracekitAI } from "@cygnuxlabs/tracekit/v2/vercel-ai";
  *   const tk = tracekitAI(await new Client().registerRun("assistant"));
  *   const model = wrapLanguageModel({ model: openai("gpt-5"), middleware: tk.middleware });
  *   const r = await generateText({ model, tools: tk.tools({ pay }), toolApproval: tk.toolApproval, messages });

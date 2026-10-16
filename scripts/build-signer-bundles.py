@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Build the npm packages @cygnux/tracekit-signer-<platform>: a python-build-standalone CPython with tracekit-ai[signer]
-and its wheels unpacked into site-packages, for `npx @cygnux/tracekit up` without a Python. A release step
+"""Build the npm packages @cygnuxlabs/tracekit-signer-<platform>: a python-build-standalone CPython with tracekit-ai[signer]
+and its wheels unpacked into site-packages, for `npx @cygnuxlabs/tracekit up` without a Python. A release step
 (docs/RELEASING.md); npm install never runs it. It bundles the tracekit-ai wheel of this release from RELEASE (checked
 against RELEASE/SHA256SUMS, as scripts/release/build.py writes it), never the package index's, and its dependencies at
 the versions of scripts/release/runtime-constraints.txt.
@@ -81,9 +81,9 @@ def pip_download(platforms, wheel, dest):
 
 def package_json(key, version):
     _, _, npm_os, cpu, _ = TARGETS[key]
-    pkg = {"name": f"@cygnux/tracekit-signer-{key}", "version": version,
+    pkg = {"name": f"@cygnuxlabs/tracekit-signer-{key}", "version": version,
            "description": f"The Tracekit signer for {key}: a standalone CPython with tracekit-ai[signer]. "
-                          "Installed by @cygnux/tracekit; not used directly.",
+                          "Installed by @cygnuxlabs/tracekit; not used directly.",
            "license": "MIT", "repository": {"type": "git", "url": "https://github.com/Cygnux-Labs/Tracekit"},
            "os": [npm_os], "cpu": [cpu], "files": ["python", "wheels.sha256"]}
     if npm_os == "linux":
