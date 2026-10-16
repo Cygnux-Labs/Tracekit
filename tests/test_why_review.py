@@ -201,6 +201,8 @@ class IngestCost(Served):
         self.assertEqual([r["why"]["type"] for r in store.out.records], ["run"])   # every batch, analysed once
 
     def test_a_batch_committed_before_a_client_timeout_is_not_resent_forever(self):
+        answered = threading.Event()
+
         class Slow(Store):
             first = True
 
@@ -209,6 +211,7 @@ class IngestCost(Served):
                 if Slow.first:   # committed, but the answer comes after the client gave up
                     Slow.first = False
                     time.sleep(1.0)
+                    answered.set()
                 return out
 
         store = Slow(tmpdir(self))
@@ -218,6 +221,8 @@ class IngestCost(Served):
         a = rt.agent("a")
         with self.assertRaises(OSError):
             a.act("t", {"i": 0})
+        # the next batch once the slow one is answered: sent sooner, it can time out behind it on a slow runner
+        self.assertTrue(answered.wait(10))
         a.act("t", {"i": 1})
         rt.finish()
         stored = load_run(os.path.join(store.root, "slow"))

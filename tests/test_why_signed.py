@@ -122,6 +122,21 @@ class SignedRuntime(unittest.TestCase):
         self.assertEqual(sorted(u["id"] for u in uses), sorted(e["tracekit"]["tool_call_id"]
                                                                for e in self.why.of_type("action")))
 
+    def test_a_call_still_running_in_an_open_run_is_not_a_failure(self):
+        """An open run's newest allowed call, its result not yet recorded, came back as "failed: the signer recorded no
+        outcome", a false alarm while the call ran; once the run is final with no result, it still says so."""
+        run = self.client.run("in-flight")
+        run.decide("c1", "Bash", {"command": "sleep 60"})
+
+        def action(recs):
+            path = import_v2.convert(recs, tempfile.mkdtemp(dir=self.dir), {})
+            return [e for e in load_run(path).events if e["type"] == "action"]
+        self.assertEqual(action(self.records()[run.run_id]), [])
+        run.close()
+        self.assertTrue(wait_for(lambda: self.records()[run.run_id][-1]["event"]["type"] == "run.final"))
+        [e] = action(self.records()[run.run_id])
+        self.assertEqual((e["status"], e["mode"]), ("error", "unrecorded"))
+
     def test_a_deny_comes_back_as_the_blocked_result_and_the_tool_does_not_run(self):
         e = self.actions()["sudo rm -rf /"]
         self.assertEqual((e["status"], e["mode"], e["policy"]["decision"]), ("blocked", "blocked", "deny"))
@@ -435,6 +450,11 @@ class ImportWithoutWhyLog(unittest.TestCase):
         for e in self.imported.events:
             if e["type"] != "run.start":
                 self.assertLessEqual({"log_id", "seq", "run_id", "run_seq", "hash"}, set(e["tracekit"]), e)
+
+    def test_a_signed_runs_graph_infers_no_links_from_its_placeholders(self):
+        """The GRAPH of a signed run drew dashed "content-overlap · inferred" links: every committed value is the same
+        placeholder text, so unrelated nodes overlapped. Committed content gives no text to compare."""
+        self.assertEqual([e for e in build_graph(self.imported).edges if e["kind"] == "content-overlap"], [])
 
     def test_calls_carry_their_verdicts(self):
         acts = self.acts()

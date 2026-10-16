@@ -26,10 +26,9 @@ from typing import Any, Dict, List, Optional
 
 from .. import privacy
 from ..format.canon import event_hash as jcs_hash
-from .core import GENESIS, SCHEMA, UNFINISHED, Run, content_hash, event_hash, load_run, verify
+from .core import COMMITTED, GENESIS, SCHEMA, UNFINISHED, Run, content_hash, event_hash, load_run, verify
 from .evals import list_runs
 
-COMMITTED = "content committed, not in the log"
 NO_OUTCOME = "the signer recorded no outcome: the call may have run"
 CHECK_FILE = "content-check.json"
 
@@ -204,6 +203,7 @@ def convert(recs: List[Dict[str, Any]], out_dir: str, reasons: Dict[str, Dict[st
            meta={"source": "tracekit", "tracekit_runs": [first["run_id"]], "tenant": first["tenant"],
                  "agent": agent, "evidence_alerts": _evidence(recs)})
     by_seq: Dict[int, str] = {}
+    final = recs[-1]["event"]["type"] == "run.final"   # an open run's newest calls may still be running
     seen: List[Dict[str, Any]] = []        # what the run had observed so far: a model exchange's context
     decision_of: Dict[str, str] = {}       # tool_use id -> the decision event of the exchange that asked for it
     for r in recs:
@@ -233,6 +233,8 @@ def convert(recs: List[Dict[str, Any]], out_dir: str, reasons: Dict[str, Dict[st
             # a call allowed (or approved) that has no result may have run: the signer recorded no outcome
             refused = dd["decision"] == "deny" or (dd["decision"] == "ask"
                                                    and (call.get("approval") or {}).get("decision") != "approve")
+            if not (ran or refused or final):   # still running, or its result not yet recorded: shown once it is
+                continue
             res = {"content": COMMITTED, **d["output"]} if ran else _blocked(pol) if refused else {"error": NO_OUTCOME}
             extra = {} if ran or not refused else {"guard": {"verdict": "block", "alerts": [],
                                                              "reason": "Tracekit policy " + ", ".join(dd["rule_ids"])}}

@@ -296,8 +296,8 @@ class Feed:
     disk is untouched, and `tracekit export` / `observe --export` still cover all of it). Stream
     positions are absolute (`base` + index) so a client never loses its place when records drop."""
 
-    def __init__(self, path, max_records=None, prices=None):
-        self.path, self.records, self.lock = path, [], threading.Condition()
+    def __init__(self, path, max_records=None, prices=None, source=None):
+        self.path, self.records, self.lock, self.source = path, [], threading.Condition(), source   # "bundle": a file
         self.max_records = max_records or int(os.environ.get("TRACEKIT_OBSERVE_MAX_RECORDS", "50000") or 50000)
         self.base = 0  # absolute index of records[0]
         self.tr = Translator(prices)
@@ -497,6 +497,8 @@ def make_handler(feed, token, allowed_hosts=None, secure=False, login=None, appr
                 if u.path != "/api/why/workspace" and not m:
                     return self._send(404, '{"error":"not found"}')
                 return self._why(lambda: why.detail(unquote(m.group(1))) if m else why.workspace())
+            if u.path == "/api/why/workspace":   # no why logs here: nothing to load, not a missing page
+                return self._send(204, "")
             if feed is None:
                 if u.path in ("/", "/index.html"):
                     return self._send(303, "", "text/plain", headers=[("Location", "/runs")])
@@ -507,7 +509,8 @@ def make_handler(feed, token, allowed_hosts=None, secure=False, login=None, appr
             if u.path == "/api/snapshot":
                 with feed.lock:   # copied under the lock, written after it: a client that stops reading holds nothing
                     body = {"next": feed.base + len(feed.records), "dropped": feed.base,
-                            "records": [r for r in feed.records if scope is ALL or r.get("tenant") == scope]}
+                            "records": [r for r in feed.records if scope is ALL or r.get("tenant") == scope],
+                            **({"source": feed.source} if getattr(feed, "source", None) else {})}
                 return self._send(200, json.dumps(body, ensure_ascii=False))
             if u.path == "/api/verify":
                 n, problems, head = feed.verify() if scope is ALL else feed.verify(scope)
@@ -755,7 +758,7 @@ def main(argv=None):
               "SSH tunnel", file=sys.stderr)
         return 1
     print(NOTICE, file=sys.stderr, flush=True)
-    feed = Feed(path, prices=prices)
+    feed = Feed(path, prices=prices, source="bundle" if a.bundle else None)
     try:
         srv = ThreadingHTTPServer((a.host, a.port), make_handler(feed, token, [a.host]))
     except OSError as e:

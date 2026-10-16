@@ -11,7 +11,7 @@ import re
 from collections import deque
 from typing import Any, Callable, Dict, Iterable, List, Optional, Set
 
-from .core import Ref, Run, ablation_matches, canonical
+from .core import COMMITTED, Ref, Run, ablation_matches, canonical
 
 EVIDENCE = ("observed", "inferred", "tested")
 
@@ -163,13 +163,16 @@ def _label(ev: Dict[str, Any], run: Run) -> str:
 
 
 def _node_text(ev: Dict[str, Any], run: Run) -> str:
+    def text(ref):   # a signed run's committed content is the same placeholder everywhere: no text to overlap
+        v = run.value(ref)
+        return "" if isinstance(v, dict) and v.get("content") == COMMITTED else _text(v)
     t = ev["type"]
     if t in ("input", "message"):
-        return _text(run.value(ev["ref"]))
+        return text(ev["ref"])
     if t == "decision":
-        return _text(run.value(ev["output"]))
+        return text(ev["output"])
     if t == "action":
-        return _text(run.value(ev["args_ref"])) + " " + _text(run.value(ev["result_ref"]))
+        return text(ev["args_ref"]) + " " + text(ev["result_ref"])
     return ""
 
 

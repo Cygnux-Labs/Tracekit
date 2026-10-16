@@ -2,6 +2,22 @@
 
 All notable changes to Tracekit. Versions follow [PEP 440](https://peps.python.org/pep-0440/).
 
+## 1.2.3 (2026-10-17) — viewer fixes
+
+A patch for 1.2: the last items from the 1.2.0 verification (#229), and the first release whose npm packages the
+release workflow publishes itself. Bundles are unchanged.
+
+### Fixed
+- In an open run, a call that is still running no longer shows as "failed: the signer recorded no outcome" in the why
+  view; once the run is final with no result, it still says so.
+- The GRAPH of a signed run no longer draws "content-overlap · inferred" links between unrelated calls: committed
+  content was the same placeholder text everywhere.
+- The why viewer opens on a run that was tested (a demo's newest runs may not be); a static report's header says why
+  it has no CHAIN verdict instead of waiting forever, and its ELAPSED is the records' span, not a running clock.
+- `tracekit view --bundle` says BUNDLE instead of LIVE, and asks for why logs without a 404 in the console.
+- The release workflow publishes npm packages with `./` paths: npm 12 read `release/x.tgz` as a GitHub repository,
+  which failed 1.2.2's npm job (its packages were published by hand).
+
 ## 1.2.2 (2026-10-16) — watch your coding agent
 
 A patch for 1.2 from running Tracekit on a Claude Code session: the dev viewer shows what each call ran, and a
