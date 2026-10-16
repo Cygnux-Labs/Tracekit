@@ -2,6 +2,26 @@
 
 All notable changes to Tracekit. Versions follow [PEP 440](https://peps.python.org/pep-0440/).
 
+## 1.2.2 (2026-10-16) — watch your coding agent
+
+A patch for 1.2 from running Tracekit on a Claude Code session: the dev viewer shows what each call ran, and a
+session can be verified while it runs. Bundles are unchanged.
+
+### Changed
+- **The dev viewer shows what each call ran.** The dev signer keeps each call's redacted arguments and results for
+  7 days in its content vault and grants your user `content_read`, so `tracekit view --dev` names each call by its
+  command or path, then its rules (each read is a `content.accessed` record). The dev signer runs as you and you hold
+  every dev key already, so this gives no one new access; `TRACEKIT_DEV_CONTENT=0` keeps nothing
+  ([privacy](docs/privacy.md#the-content-vault)).
+- **`tracekit last --open`** verifies the newest run as it stands, such as a coding agent's session, which stays open
+  until the session ends.
+
+### Fixed
+- The viewer's AGENTS counts agents by name; it counted each run's agent separately.
+- TK-D009 (the agent harness's transcripts) no longer denies Claude Code's memory notes beside them
+  (`.claude/projects/<project>/memory/*.md`). Coding pack `2026.10-v2-5`; the policy corpus (E17) is unchanged.
+- `tracekit doctor` checks the content vault the dev signer runs.
+
 ## 1.2.1 (2026-10-16) — on npm
 
 A patch for 1.2: the TypeScript SDK goes on npm, and the fixes a first-time user hits in their first ten minutes.
