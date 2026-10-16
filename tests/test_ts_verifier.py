@@ -263,6 +263,12 @@ class Agreement(unittest.TestCase):
                         data = json.dumps(m).encode()
                     out.writestr(i.filename, data)
             self.assertEqual(self.agree(bad, self.trusts["witnessed"])[0], 1)
+            # the failure names the file (it repeated the pass text), the same in both verifiers
+            want = "files differ from the manifest: keys/records.jsonl (changed)"
+            self.assertEqual(next(c["detail"] for c in v2.verify(bad, self.trusts["witnessed"])[0].checks
+                                  if c["check"] == "manifest"), want)
+            self.assertEqual(next(c["detail"] for c in ts_verify(bad, self.trusts["witnessed"])["checks"]
+                                  if c["check"] == "manifest"), want)
 
     def test_tiers_of_calls_whose_records_disagree(self):
         import test_bundle_v2 as b   # a synthetic log: a T2 decision completed by the client, which the signer refuses

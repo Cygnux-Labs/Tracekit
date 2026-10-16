@@ -93,6 +93,12 @@ class DevSignerEndToEnd(unittest.TestCase):
         self.cli("down")
         self.assertEqual(service.fsck(data_dir), [])   # one chain across all three signers, every signature valid
 
+    def test_down_right_after_up_stops_the_starting_signer(self):
+        """`tracekit up` returns while the signer starts; a `down` before it published endpoint.json exited 1 (Hung)."""
+        self.assertIn("dev signer starting", self.cli("up"))
+        self.assertIn("dev signer stopped (pid ", self.cli("down"))
+        self.assertFalse(self.held())
+
     def test_a_previous_version_client_is_served(self):
         """RPC 16 adds only optional fields: the signer serves 15..16, and a 15 client keeps working unchanged."""
         with mock.patch("tracekit.sdk.client.RPC_VERSION", RPC_MIN):

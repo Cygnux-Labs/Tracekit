@@ -45,7 +45,7 @@ from tracekit.deploy import files
 from tracekit.format.canon import event_hash
 from tracekit.locking import lock_file
 from tracekit.sdk import autospawn
-from tracekit.sdk.client import Client, RunHandle, SignerUnavailable, fail_open, sendable
+from tracekit.sdk.client import Client, RunHandle, SignerUnavailable, fail_open, named_rules, sendable
 from tracekit.signer.rpc_schema import RPCError
 
 AGENT = "claude-code"
@@ -170,7 +170,8 @@ def _pre(client, p, sid, tid):
     cap()
     run, d = _run(client, sid, send="decide", tool_call_id=tid, tool=tool, args=args, args_source="parsed")
     if d["decision"] == "deny":
-        print(f"Blocked by tracekit policy: {'; '.join(d['rule_ids'])} {d.get('reason', '')}".rstrip(), file=sys.stderr)
+        print("Blocked by tracekit policy: " + named_rules(d["rule_ids"]) + (f": {d['reason']}" if d.get("reason") else ""),
+              file=sys.stderr)
         return 2
     if d["decision"] == "ask":
         try:

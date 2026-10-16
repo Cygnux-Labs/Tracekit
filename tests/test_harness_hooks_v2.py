@@ -227,7 +227,7 @@ class Installer(unittest.TestCase):
                     self.assertEqual(self.cli("init", "--dev", "--v2", "--agent", harness, "--project")[1],
                                      f"v2 {harness} hooks: {path}\n")   # idempotent: nothing replaced
                     code, out = self.cli("uninstall", "--agent", harness, "--project")
-                    self.assertIn(f"Tracekit v2 hooks removed from {path}", out)
+                    self.assertEqual(out, f"Tracekit v2 hooks removed from {path}\n")   # once: the CLI repeated it
                     with open(path) as f:
                         self.assertNotIn("hooks", json.load(f))
 

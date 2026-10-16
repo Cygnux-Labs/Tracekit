@@ -8,6 +8,7 @@ Run it as root for system mode: it then probes the files as the agent's user, in
 
 Doctor output is advice, not evidence: it reads the host as it is now, and nothing it prints is signed or verified.
 """
+import errno
 import json
 import os
 import re
@@ -260,8 +261,9 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
         add("D-KEYS-MODE", False, f"{len(names)} keys in {keys}; modes not checked", acl, bad=WARN)
     except OSError as e:
         names = None
-        add("D-KEYS-MODE", False, f"cannot inspect {keys}: {e.strerror}", "run doctor as root (sudo tracekit doctor)",
-            bad=WARN)
+        fresh = not prod and e.errno == errno.ENOENT   # a dev signer that never started has no keys yet
+        add("D-KEYS-MODE", False, f"cannot inspect {keys}: {e.strerror}",
+            "start the dev signer: tracekit up" if fresh else "run doctor as root (sudo tracekit doctor)", bad=WARN)
 
     try:
         content = service.content_config(cfg.get("content"))   # as the signer validates it
@@ -411,7 +413,9 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
 
     ws = cfg.get("witnesses") or []
     add("D-WITNESS-CONFIGURED", bool(ws), f"{len(ws)} witnesses" if ws else "no witnesses: checkpoints are not cosigned, "
-        "so assurance stays local", "add a witness under witnesses: in signer.yaml (docs/witnesses.md)", bad=sev)
+        f"so assurance stays {'local' if prod else 'dev'}", "add a witness under witnesses: in signer.yaml (docs/witnesses.md)"
+        if prod else "the dev signer takes no witnesses: serve one from a signer.yaml with witnesses: (docs/witnesses.md)",
+        bad=sev)
     if ws:
         operator = all(w["class"] == "operator" for w in ws)
         add("D-WITNESS-OWNERSHIP", not operator, "only operator witnesses: whoever runs the signer can also rewrite "

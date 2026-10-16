@@ -346,11 +346,22 @@ def _ts(ts):
     return datetime.datetime.strptime(ts, "%Y-%m-%dT%H:%M:%S.%fZ").replace(tzinfo=datetime.timezone.utc).timestamp()
 
 
+def _manifest_detail(listed, hashes, bad):
+    """The manifest check's detail: on a failure, the files that differ from the manifest (the first 5) and how."""
+    if not isinstance(listed, dict):
+        return "the manifest lists no files"
+    if not bad:
+        return "every file is listed with its SHA-256 and nothing else is in the bundle"
+    how = [f"{n} ({'changed' if n in listed and n in hashes else 'missing' if n in listed else 'not listed'})"
+           for n in bad[:5]]
+    return "files differ from the manifest: " + ", ".join(how) + (f" and {len(bad) - 5} more" if len(bad) > 5 else "")
+
+
 def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, revocations):
-    listed = manifest.get("files")
-    rep.check("manifest", isinstance(listed, dict) and listed == {n: hashlib.sha256(b).hexdigest()
-                                                                  for n, b in files.items()},
-              "every file is listed with its SHA-256 and nothing else is in the bundle")
+    listed, hashes = manifest.get("files"), {n: hashlib.sha256(b).hexdigest() for n, b in files.items()}
+    bad = sorted(n for n in set(listed) | set(hashes) if n not in listed or n not in hashes or listed[n] != hashes[n]) \
+        if isinstance(listed, dict) else []
+    rep.check("manifest", isinstance(listed, dict) and not bad, _manifest_detail(listed, hashes, bad))
 
     # checkpoint: the only thing the records' trust hangs on
     proofs = loads_strict(files["proofs/records.json"])
