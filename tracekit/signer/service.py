@@ -1809,6 +1809,11 @@ class SignerService:
         strict = max(d, h, key=lambda x: STRICTNESS.index(x["verdict"]))   # d on a tie
         return strict, cls == "unknown" or strict is not d, list(dict.fromkeys(d["rule_ids"] + h["rule_ids"]))
 
+    def _reasons(self, ids):
+        """The reasons of the rules among `ids` that give one, in their order, joined by "; " (at most 1024 chars)."""
+        by = {r["id"]: r.get("reason") or r.get("label") for _, r, *_ in self.policy.rules}
+        return "; ".join(by[i] for i in ids if i != "TK-UNKNOWN-TOOL" and by.get(i))[:1024]
+
     def _agent_rules(self, ids):
         """The rules among rule ids `ids` with approval.agent."""
         return [r for _, r, *_ in self.policy.rules if r["id"] in ids and "agent" in (r.get("approval") or {})]
@@ -2615,6 +2620,8 @@ class SignerService:
             out = {"decision": "allow" if d["decision"] == "flag" else d["decision"], "decision_id": d["decision_id"],
                    "rule_ids": d["rule_ids"], "run_seq": seq, "expires_at": expires_at,
                    **({"reason": big["reasons"][0][:1024]} if big else {})}
+            if d["decision"] in ("deny", "ask") and not big and (why := self._reasons(d["rule_ids"])):
+                out["reason"] = why   # what the client tells the model or the person, after the rule ids
             if "incident_id" in d:
                 out.update(incident_id=d["incident_id"], reason=self._why_contained(run))
             if self.policy.untrusted_results(tool):   # the result itself, for the provenance index

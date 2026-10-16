@@ -132,7 +132,8 @@ class HookV2(unittest.TestCase):
     def test_deny(self):
         code, err = self.pre("pkill tracekitd")
         self.assertEqual(code, 2)
-        self.assertIn("TK-D007", err)
+        # the reason, not only the rule id: it tells the model why (the v1 hook did; the v2 one printed ids only)
+        self.assertIn("TK-D007: touching Tracekit's own files or signer", err)
         self.assertEqual(self.events()[-1]["data"]["decision"], "deny")
         self.assertIn("no decision", self.post("pkill tracekitd")[1])   # nothing to complete
 

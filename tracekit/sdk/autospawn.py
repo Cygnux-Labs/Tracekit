@@ -136,7 +136,10 @@ def ensure(wait=True, timeout=10):
             for f in (os.path.join(d, SOCK), os.path.join(d, ENDPOINT)):
                 pathlib.Path(f).unlink(missing_ok=True)
             p = spawn(d)
-            if not wait:
+            if not wait:   # once it holds signer.lock, so a `tracekit down` straight after finds it starting
+                deadline = time.monotonic() + timeout
+                while not _held(lock) and p.poll() is None and time.monotonic() < deadline:
+                    time.sleep(0.02)
                 return None
         deadline = time.monotonic() + timeout
         while True:
@@ -156,11 +159,15 @@ def down(timeout=10):
     """Stop the dev signer (SIGTERM to the pid in endpoint.json while it holds signer.lock). Its pid, or None."""
     d = runtime_dir()
     lock = os.path.join(d, LOCK)
-    if not _held(lock):
+    deadline = time.monotonic() + timeout
+    while (pid := _pid(d)) is None:   # one still starting (`tracekit up` without --wait) publishes its pid shortly
+        if not _held(lock):
+            return None
+        if time.monotonic() > deadline:
+            raise Hung(f"a dev signer holds {lock} but never published {ENDPOINT}; see {os.path.join(d, LOG)}")
+        time.sleep(0.05)
+    if not _held(lock):   # the endpoint of a signer that has exited
         return None
-    pid = _pid(d)
-    if pid is None:
-        raise Hung(f"a dev signer holds {lock} but never published {ENDPOINT}; see {os.path.join(d, LOG)}")
     os.kill(pid, signal.SIGTERM)
     deadline = time.monotonic() + timeout
     while _held(lock):

@@ -62,6 +62,15 @@ export class Report {
 // JSON access with the reference's failure modes: a missing key or a wrong container throws (a malformed bundle)
 type J = any;
 const isObj = (v: unknown): v is Record<string, J> => typeof v === "object" && v !== null && !Array.isArray(v);
+
+/** The manifest check's detail: on a failure, the files that differ from the manifest (the first 5) and how. */
+function manifestDetail(listed: J | undefined, hashes: Map<string, string>, bad: string[]): string {
+  if (!isObj(listed)) return "the manifest lists no files";
+  if (bad.length === 0) return "every file is listed with its SHA-256 and nothing else is in the bundle";
+  const how = bad.slice(0, 5).map((n) => `${n} (${Object.hasOwn(listed, n) && hashes.has(n) ? "changed"
+    : Object.hasOwn(listed, n) ? "missing" : "not listed"})`);
+  return "files differ from the manifest: " + how.join(", ") + (bad.length > 5 ? ` and ${bad.length - 5} more` : "");
+}
 const kind = (v: unknown) => v === null ? "null" : Array.isArray(v) ? "array" : typeof v;
 function at(o: unknown, k: string): J {
   if (!isObj(o)) throw new TypeError(`${kind(o)} is not an object`);
@@ -211,9 +220,9 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
 
   const listed = manifest.files, hashes = new Map<string, string>();
   for (const [n, b] of files) hashes.set(n, await sha256hex(b));
-  rep.check("manifest", isObj(listed) && Object.keys(listed).length === hashes.size
-    && [...hashes].every(([n, h]) => Object.hasOwn(listed, n) && listed[n] === h),
-  "every file is listed with its SHA-256 and nothing else is in the bundle");
+  const bad = isObj(listed) ? [...new Set([...Object.keys(listed), ...hashes.keys()])]
+    .filter((n) => !(Object.hasOwn(listed, n) && hashes.get(n) === listed[n])).sort() : [];
+  rep.check("manifest", isObj(listed) && bad.length === 0, manifestDetail(listed, hashes, bad));
 
   // the checkpoint: the only thing the records' trust hangs on
   const proofs = json("proofs/records.json");

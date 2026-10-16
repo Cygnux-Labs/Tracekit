@@ -519,12 +519,13 @@ def _run(a):
         return 0
     if a.cmd == "uninstall" and a.agent != "claude":
         from . import agent_hooks
-        print("hooks removed from", agent_hooks.install(a.agent, os.getcwd() if a.project else None, uninstall=True))
+        agent_hooks.install(a.agent, os.getcwd() if a.project else None, uninstall=True)   # it says what it removed
         return 0
     if a.cmd == "uninstall":
         from . import install
         try:
-            print("hooks removed from", install.uninstall(os.getcwd() if a.project else None))
+            if install.uninstall(os.getcwd() if a.project else None) == "no settings file":   # else it said what it removed
+                print("tracekit: no Claude Code settings file, so no hooks to remove")
         except install.SettingsError as e:
             print(f"tracekit: {e}", file=sys.stderr)
             return 1

@@ -64,6 +64,18 @@ class E16(unittest.TestCase):
         self.assertEqual(got["D-PROCESS-BOUNDARY"]["status"], "fail")
 
 
+class DevFresh(unittest.TestCase):
+    def test_a_dev_signer_that_never_started_gets_dev_advice(self):
+        """On a fresh home doctor said "run doctor as root" for the missing keys and "add a witness in signer.yaml" at
+        assurance "local", none of which fits a dev signer: it has no keys until `tracekit up` and takes no witnesses."""
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        got = {r["id"]: r for r in doctor.v2_checks({"data_dir": d}, "dev")}
+        self.assertEqual(got["D-KEYS-MODE"]["fix"], "start the dev signer: tracekit up")
+        self.assertIn("assurance stays dev", got["D-WITNESS-CONFIGURED"]["detail"])
+        self.assertIn("the dev signer takes no witnesses", got["D-WITNESS-CONFIGURED"]["fix"])
+
+
 class K8s(unittest.TestCase):
     def test_clean_deployment_passes_every_check(self):
         results = e16.run_k8s_case(None)
