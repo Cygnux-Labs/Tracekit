@@ -1,0 +1,51 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700;800;900&family=IBM+Plex+Mono:wght@400;500;600&display=block" rel="stylesheet">
+<style>
+:root{--bg:#0e0d0c;--grid:rgba(255,236,210,.05);--ink:#f1ebe0;--soft:#a79f92;--dim:#6d665d;--amber:#f1b23c;--amber-ink:#f1b23c;
+  --track:rgba(255,236,210,.06);--line:rgba(255,236,210,.12);--wit:#f6d38e;--miss:#5c564f}
+html.light{--bg:#f4efe6;--grid:rgba(60,40,15,.06);--ink:#1b1714;--soft:#5d554b;--dim:#8c8378;--amber:#e3a02a;--amber-ink:#a8690a;
+  --track:rgba(60,40,15,.07);--line:rgba(60,40,15,.14);--wit:#8a5a0c;--miss:#b9b0a3}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{width:1280px;height:560px;overflow:hidden;background:transparent}
+.frame{position:absolute;inset:0;border-radius:18px;overflow:hidden;background-color:var(--bg);
+  background-image:linear-gradient(var(--grid) 1px,transparent 1px),linear-gradient(90deg,var(--grid) 1px,transparent 1px);background-size:40px 40px}
+body{font-family:Archivo,sans-serif;color:var(--ink);position:relative}
+.head{position:absolute;left:56px;top:40px;right:56px;display:flex;justify-content:space-between;align-items:flex-end}
+.title{font-weight:800;font-size:28px;letter-spacing:-.01em}
+.title span{color:var(--soft);font-weight:600;font-size:20px;margin-left:10px}
+.legend{font:500 14px "IBM Plex Mono",monospace;color:var(--soft);display:flex;gap:22px}
+.legend i{display:inline-block;width:22px;height:10px;border-radius:2px;margin-right:8px;vertical-align:1px}
+.rows{position:absolute;left:56px;right:56px;top:104px}
+.row{display:grid;grid-template-columns:340px 1fr 92px;align-items:center;column-gap:18px;height:48px;border-top:1px solid var(--line)}
+.row:last-child{border-bottom:1px solid var(--line)}
+.lab{font:500 16px "IBM Plex Mono",monospace;color:var(--ink)}
+.lab small{display:block;font-size:12.5px;color:var(--dim);margin-top:2px}
+.bars{display:flex;flex-direction:column;gap:5px}
+.t{height:11px;background:var(--track);border-radius:3px;position:relative;overflow:hidden}
+.b{position:absolute;left:0;top:0;bottom:0;border-radius:3px}
+.log{background:var(--amber)} .wit{background:var(--wit)}
+.num{font:600 13px/1.4 "IBM Plex Mono",monospace;color:var(--soft);text-align:right}
+.num .z{color:var(--miss)} .row.hl .num .z{color:var(--amber-ink)}
+.row.hl .lab{color:var(--amber-ink)}
+.miss{position:absolute;left:8px;top:-1px;font:600 11.5px/15px "IBM Plex Mono",monospace;color:var(--amber-ink);letter-spacing:.03em}
+.foot{position:absolute;left:56px;right:56px;bottom:30px;font:500 14px/1.5 "IBM Plex Mono",monospace;color:var(--soft)}
+.foot b{color:var(--amber-ink);font-weight:600}
+</style>
+<script>if(location.search.includes('light'))document.documentElement.classList.add('light')</script>
+</head><body><div class="frame">
+<div class="head">
+  <div class="title">Tamper detection<span>60 trials per attack</span></div>
+  <div class="legend"><span><i class="log"></i>the signed log alone</span><span><i class="wit"></i>plus a witness</span></div>
+</div>
+<div class="rows" id="rows"></div>
+<div class="foot">Measured on Tracekit 1.2 with <b>eval/e1_integrity.py</b>: 120-record signed logs, a witness checkpoint every 10 records.</div>
+<script>
+const rows=[["edit a record",60,60],["delete a record",60,60],["swap two records",60,60],["insert a forged record",60,60],
+ ["re-chain without the key",60,60],["tear the last line",60,60],["truncate the tail",0,60,1],["re-sign with the key",0,60,1]];
+document.getElementById('rows').innerHTML=rows.map(([l,a,b,h])=>`<div class="row${h?' hl':''}"><div class="lab">${l}</div>
+<div class="bars"><div class="t">${a?`<div class="b log" style="width:${a/60*100}%"></div>`:'<span class="miss">missed</span>'}</div>
+<div class="t"><div class="b wit" style="width:${b/60*100}%"></div></div></div>
+<div class="num"><span class="${a?'':'z'}">${a}/60</span><br>${b}/60</div></div>`).join('');
+</script>
+</div></body></html>

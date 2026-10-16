@@ -1,0 +1,64 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;800;900&family=IBM+Plex+Mono:wght@400;500;600&display=block" rel="stylesheet">
+<style>
+:root{--bg:#0e0d0c;--grid:rgba(255,236,210,.055);--ink:#f1ebe0;--soft:#a79f92;--dim:#6d665d;--amber:#f1b23c;--amber-ink:#f1b23c;
+  --card:#171513;--card-line:rgba(255,236,210,.14);--glow:rgba(241,178,60,.16);--bad:#f1b23c}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{width:1280px;height:420px;overflow:hidden;background:transparent}.frame{position:absolute;inset:0;border-radius:18px;overflow:hidden;background-color:var(--bg);background-image:linear-gradient(var(--grid) 1px,transparent 1px),linear-gradient(90deg,var(--grid) 1px,transparent 1px);background-size:40px 40px}
+body{font-family:Archivo,sans-serif;color:var(--ink);position:relative}
+.glow{position:absolute;inset:0;background:radial-gradient(520px 300px at 26% 52%,var(--glow),transparent 70%)}
+.vig{position:absolute;inset:0;box-shadow:inset 0 0 120px 30px var(--bg)}
+.left{position:absolute;left:72px;top:74px;width:580px}
+.label{font:600 15px/1 "IBM Plex Mono",monospace;letter-spacing:.14em;color:var(--amber-ink);text-transform:uppercase}
+.word{margin-top:18px;font-weight:900;font-size:108px;line-height:.9;letter-spacing:-.035em;display:flex;align-items:baseline;gap:22px}
+.word .chev{color:var(--amber);font-size:84px;transform:translateY(-6px)}
+.tag{margin-top:24px;font-weight:700;font-size:30px;letter-spacing:-.01em;line-height:1.2}
+.tag em{font-style:normal;color:var(--amber-ink)}
+.sub{margin-top:16px;font:500 15.5px/1.45 "IBM Plex Mono",monospace;color:var(--soft)}
+.chain{position:absolute;left:676px;top:92px;display:flex;align-items:center}
+.card{width:156px;height:206px;border:1px solid var(--card-line);background:var(--card);border-radius:7px;padding:11px 11px;
+  font:500 12.5px/1.45 "IBM Plex Mono",monospace;color:var(--soft);position:relative}
+.card b{font-weight:600;color:var(--ink);font-size:15px}
+.card .ok{float:right;color:var(--dim);font-size:11px;margin-top:3px}
+.card .k{color:var(--dim);font-size:11px;margin-top:10px;text-transform:lowercase}
+.card .v{color:var(--ink);opacity:.85}
+.card .h{margin-top:9px;padding-top:7px;border-top:1px dashed var(--card-line)}
+.link{width:26px;height:2px;background:linear-gradient(90deg,var(--amber),var(--amber));opacity:.75;position:relative}
+.link:after{content:"";position:absolute;right:-1px;top:-3px;border:4px solid transparent;border-left:6px solid var(--amber);opacity:1}
+.card.bad{border:1.5px solid var(--amber);box-shadow:0 0 0 4px var(--glow),0 0 40px var(--glow)}
+.card.bad .ok{color:var(--bad);font-weight:600}
+.card.bad .v.x{color:var(--bad);text-decoration:line-through}
+.card.bad .v.n{color:var(--bad);font-weight:600}
+.cap{position:absolute;left:676px;top:322px;font:500 14.5px/1.5 "IBM Plex Mono",monospace;color:var(--soft)}
+.cap span{color:var(--amber-ink);font-weight:600}
+.fade{opacity:.55}
+</style>
+</head><body><div class="frame">
+<div class="glow"></div>
+<div class="left">
+  <div class="label">open source · MIT · Python &amp; TypeScript</div>
+  <div class="word"><span class="chev">&gt;</span><span>tracekit</span></div>
+  <div class="tag">The <em>tamper-evident</em> flight recorder<br>for AI agents.</div>
+  <div class="sub">Every tool call checked before it runs,<br>signed into a hash chain, verifiable offline.</div>
+</div>
+<div class="chain">
+  <div class="card"><b>seq 5</b><span class="ok">✓ signed</span>
+    <div class="k">prev</div><div class="v">378f126ee86f</div>
+    <div class="k">event</div><div class="v">policy.decision<br>run_sql · flag</div>
+    <div class="h"><div class="k" style="margin-top:0">hash</div><div class="v">a14143378de6</div></div></div>
+  <div class="link"></div>
+  <div class="card bad"><b>seq 6</b><span class="ok">✕ mismatch</span>
+    <div class="k">prev</div><div class="v">a14143378de6</div>
+    <div class="k">event</div><div class="v n">edited by<br>the agent</div>
+    <div class="h"><div class="k" style="margin-top:0">hash</div><div class="v x">7ad0a3a2d92d</div></div></div>
+  <div class="link fade"></div>
+  <div class="card fade"><b>seq 7</b><span class="ok">✓ signed</span>
+    <div class="k">prev</div><div class="v">7ad0a3a2d92d</div>
+    <div class="k">event</div><div class="v">tool.result<br>run_sql · ok</div>
+    <div class="h"><div class="k" style="margin-top:0">hash</div><div class="v">3f19c2e0b87d</div></div></div>
+</div>
+<div class="cap">tracekit verify → <span>FAILED</span> · seq 6: hash does not match</div>
+<div class="vig"></div>
+</div></body></html>
