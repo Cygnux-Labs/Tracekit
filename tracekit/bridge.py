@@ -192,7 +192,7 @@ class Bridge:
 def main():
     if not os.environ.get("TRACEKIT_NO_DEPRECATION"):
         print("tracekit.bridge is deprecated and removed in 0.5.0: the TypeScript SDK's native v2 client "
-              "(import { Client } from \"@cygnux/tracekit\") needs no Python bridge. TRACEKIT_NO_DEPRECATION=1 silences this.",
+              "(import { Client } from \"@cygnuxlabs/tracekit\") needs no Python bridge. TRACEKIT_NO_DEPRECATION=1 silences this.",
               file=sys.stderr, flush=True)
     b = Bridge(sys.stdout)
     b.reply({"id": 0, "ok": True, "ready": True, "protocol": 1})

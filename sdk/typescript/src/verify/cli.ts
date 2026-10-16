@@ -1,5 +1,5 @@
 /**
- * `npx @cygnux/tracekit verify BUNDLE --trust trust.json [--json] [--strict]`: the TypeScript verifier, with the reference
+ * `npx @cygnuxlabs/tracekit verify BUNDLE --trust trust.json [--json] [--strict]`: the TypeScript verifier, with the reference
  * CLI's report and exit codes (0 verified, 1 failed, 2 unusable or unverifiable, 3 a warning under --strict).
  */
 import { readFile } from "node:fs/promises";

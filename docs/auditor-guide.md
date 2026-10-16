@@ -66,7 +66,7 @@ code, and is tested to reach the same verdicts ([implementations](format-v2.md#1
 two sources you obtained yourself, means a bug in one doesn't decide your audit:
 
 ```sh
-npx --package ./cygnux-tracekit-<version>.tgz tracekit verify run.tkb --trust trust.json --strict   # the .tgz from the GitHub release
+npx --package ./cygnuxlabs-tracekit-<version>.tgz tracekit verify run.tkb --trust trust.json --strict   # the .tgz from the GitHub release
 ```
 
 It needs only Node ≥ 20.12. Where it can't check something the bundle relies on (an SLH-DSA checkpoint line, a Rekor

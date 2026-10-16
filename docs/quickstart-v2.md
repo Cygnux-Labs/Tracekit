@@ -27,7 +27,7 @@ wires every framework it finds installed: OpenAI Agents SDK tools, LangGraph / L
 builds), CrewAI's tool hooks, and the OpenAI, Anthropic and Google Gen AI clients' model calls. Each tool call is decided by the signer
 before it runs (`allow`, `deny`, `ask`) and recorded after. A denied call reaches the model as a refusal and the agent
 goes on. Calling it again returns the same run. With none of these installed it warns and does nothing. TypeScript:
-`const tk = await instrument()` from `@cygnux/tracekit`, then pass `tk.ai` (Vercel AI SDK) or `tk.agents` (OpenAI Agents
+`const tk = await instrument()` from `@cygnuxlabs/tracekit`, then pass `tk.ai` (Vercel AI SDK) or `tk.agents` (OpenAI Agents
 JS) to the framework.
 
 ### A server: a run per conversation

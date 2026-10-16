@@ -3,7 +3,7 @@
  * checked against the reference (tracekit/verify/v2.py) by tests/test_ts_verifier.py: same checks, integrity, assurance
  * and exit codes. Web Crypto and DecompressionStream only, so it runs in Node ≥ 20 and current browsers.
  *
- *     import { verify } from "@cygnux/tracekit/verify";
+ *     import { verify } from "@cygnuxlabs/tracekit/verify";
  *     const { report, code } = await verify(bundleBytes, trustConfigBytes);
  *
  * Not implemented here, so never VERIFIED when a bundle relies on them (integrity `UNVERIFIABLE (...)` names them):

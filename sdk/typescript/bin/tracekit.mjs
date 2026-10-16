@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// `npx @cygnux/tracekit up|down|status|view|verify|signer ...`: runs the Tracekit CLI that src/v2/launcher.ts finds.
+// `npx @cygnuxlabs/tracekit up|down|status|view|verify|signer ...`: runs the Tracekit CLI that src/v2/launcher.ts finds.
 // `verify BUNDLE --trust trust.json` (a v2 bundle) runs the TypeScript verifier instead, so it needs nothing else,
 // unless an option only the Python verifier has is given.
 import { spawnSync } from "node:child_process";

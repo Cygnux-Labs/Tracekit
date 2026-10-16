@@ -137,9 +137,8 @@ tracekit verify docs/sample/demo-run.tkb --key docs/sample/signer.pub           
 tracekit verify docs/sample/demo-run-tampered.tkb --key docs/sample/signer.pub   # exit 1
 ```
 
-TypeScript needs Node 18 or newer and the package file from the GitHub release (it isn't on npm yet):
-`npm install https://github.com/Cygnux-Labs/Tracekit/releases/download/v1.2.0/cygnux-tracekit-1.2.0.tgz`
-([TypeScript SDK](https://github.com/Cygnux-Labs/Tracekit/blob/main/sdk/typescript/README.md#install)). Python 3.9 to
+TypeScript needs Node 18 or newer: `npm install @cygnuxlabs/tracekit`, and `npx @cygnuxlabs/tracekit up` starts a dev
+signer without Python on Apple Silicon Macs, Linux and Windows ([TypeScript SDK](https://github.com/Cygnux-Labs/Tracekit/blob/main/sdk/typescript/README.md#install)). Python 3.9 to
 3.13; the framework integrations need 3.10 or newer.
 
 </details>

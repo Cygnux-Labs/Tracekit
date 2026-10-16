@@ -20,7 +20,7 @@ function fixture(t, { platformPackage = true } = {}) {
     writeFileSync(path, `#!/bin/sh\n${body}\n`);
     chmodSync(path, 0o755);
   };
-  const sdk = join(d, "node_modules/@cygnux/tracekit");
+  const sdk = join(d, "node_modules/@cygnuxlabs/tracekit");
   mkdirSync(join(sdk, "bin"), { recursive: true });
   mkdirSync(join(sdk, "dist/v2"), { recursive: true });
   writeFileSync(join(sdk, "package.json"), '{"type": "module"}');
@@ -29,7 +29,7 @@ function fixture(t, { platformPackage = true } = {}) {
   const bin = join(sdk, "bin/tracekit.mjs");
   script(join(d, "path/tracekit"), 'echo "path $*"; exit 3');
   if (platformPackage) {
-    const pkg = join(d, `node_modules/@cygnux/tracekit-signer-${platformKey()}`);
+    const pkg = join(d, `node_modules/@cygnuxlabs/tracekit-signer-${platformKey()}`);
     script(join(pkg, "python/bin/python3"), 'echo "pkg $*"');
     writeFileSync(join(pkg, "package.json"), "{}");
   }

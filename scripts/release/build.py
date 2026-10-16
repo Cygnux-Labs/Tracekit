@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Build the release artifacts of the committed tree at HEAD into OUT (docs/RELEASING.md): the tracekit-ai sdist and
 wheel (byte-identical across builds: SOURCE_DATE_EPOCH is HEAD's commit time, tool versions from constraints.txt), the
-@cygnux/tracekit npm tarball, CycloneDX SBOMs of the Python package and, with --image, the container image, and
+@cygnuxlabs/tracekit npm tarball, CycloneDX SBOMs of the Python package and, with --image, the container image, and
 SHA256SUMS over all of it. Publishes nothing; the release workflow attests and publishes what it writes.
 
     python3 scripts/release/build.py [OUT] [--image REF]      (needs `pip install -c scripts/release/constraints.txt build`)
@@ -53,7 +53,7 @@ def python_dists(src, out, epoch):
 
 
 def npm_pack(src, out):
-    """@cygnux/tracekit as the tarball `npm publish` uploads."""
+    """@cygnuxlabs/tracekit as the tarball `npm publish` uploads."""
     sdk = os.path.join(src, "sdk", "typescript")
     for cmd in (["npm", "ci", "--no-audit", "--no-fund"], ["npm", "run", "build"],
                 ["npm", "pack", "--pack-destination", os.path.abspath(out)]):

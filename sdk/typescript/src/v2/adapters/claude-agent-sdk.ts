@@ -3,8 +3,8 @@
  * tracekit/integrations/claude_agent_sdk.py does in Python.
  *
  *   import { query } from "@anthropic-ai/claude-agent-sdk";
- *   import { Client } from "@cygnux/tracekit/v2";
- *   import { tracekitHooks, tracekitSessionStore } from "@cygnux/tracekit/v2/claude-agent-sdk";
+ *   import { Client } from "@cygnuxlabs/tracekit/v2";
+ *   import { tracekitHooks, tracekitSessionStore } from "@cygnuxlabs/tracekit/v2/claude-agent-sdk";
  *   const run = await new Client().registerRun("my-agent");
  *   query({ prompt, options: { hooks: tracekitHooks(run), sessionStore: tracekitSessionStore(myStore, run) } });
  *

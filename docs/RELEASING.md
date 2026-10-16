@@ -1,7 +1,7 @@
 # Releasing
 
 > **Status:** 1.0.0 was the first release made this way (its PyPI files carry provenance and SBOMs); its npm job
-> failed, so `@cygnux/tracekit` is not on npm yet. Earlier releases (1.0.0rc2 and before) carry only `SHA256SUMS`, so
+> failed. The npm scope is `@cygnuxlabs` (the `@cygnux` scope belongs to someone else); 1.2.1 is its first version. Earlier releases (1.0.0rc2 and before) carry only `SHA256SUMS`, so
 > `verify-release.sh` can check only the sums for them.
 
 A release is one tag. From it the release workflow builds the PyPI files, the npm packages and the multi-arch signer
@@ -12,7 +12,7 @@ and attaches every file with its SBOMs and `SHA256SUMS` to the GitHub release. U
 ## Procedure
 
 1. Set the version in `tracekit/__init__.py` (`__version__`) and in `sdk/typescript/package.json` (`version` and the
-   five `@cygnux/tracekit-signer-*` `optionalDependencies`), and add a dated entry to `CHANGELOG.md`.
+   five `@cygnuxlabs/tracekit-signer-*` `optionalDependencies`), and add a dated entry to `CHANGELOG.md`.
 2. `make check` and `make release-dry-run` locally; CI must be green on `main`.
 3. Tag and push: `git tag v0.4.0 && git push origin v0.4.0`. The workflow refuses a tag that matches neither version.
 4. Approve the `release` environment (build, image push, attestations), then `pypi`, then `npm`. Each needs a
@@ -23,8 +23,8 @@ and attaches every file with its SBOMs and `SHA256SUMS` to the GitHub release. U
 | Artifact | Built by | Signed / attested | Published to |
 |---|---|---|---|
 | `tracekit_ai-<v>.tar.gz`, `tracekit_ai-<v>-py3-none-any.whl` | `scripts/release/build.py` | build provenance (`actions/attest-build-provenance`); PEP 740 attestations from trusted publishing | PyPI, GitHub release |
-| `cygnux-tracekit-<v>.tgz` | `scripts/release/build.py` (`npm pack`) | build provenance; `npm publish --provenance` | npm, GitHub release |
-| `cygnux-tracekit-signer-<platform>-<v>.tgz` (5) | `scripts/build-signer-bundles.py`, `npm pack` | build provenance; `npm publish --provenance` | npm (before `@cygnux/tracekit`), GitHub release |
+| `cygnuxlabs-tracekit-<v>.tgz` | `scripts/release/build.py` (`npm pack`) | build provenance; `npm publish --provenance` | npm, GitHub release |
+| `cygnuxlabs-tracekit-signer-<platform>-<v>.tgz` (5) | `scripts/build-signer-bundles.py`, `npm pack` | build provenance; `npm publish --provenance` | npm (before `@cygnuxlabs/tracekit`), GitHub release |
 | `ghcr.io/cygnux-labs/tracekit-signer` (linux/amd64 + linux/arm64) | `docker buildx`, `deploy/docker/Dockerfile` | build provenance pushed to the registry; cosign keyless signature and CycloneDX attestation, by digest | ghcr.io |
 | `tracekit-ai.cdx.json`, `tracekit-signer-image.cdx.json` | `scripts/release/build.py` (cyclonedx-bom, syft; versions pinned) | build provenance | GitHub release |
 | `SHA256SUMS` | `scripts/release/build.py`, extended by the npm job | build provenance | GitHub release |
@@ -35,7 +35,7 @@ The sdist and wheel are byte-identical across builds of the same commit: `build.
 
 ### Dry run
 
-`make release-dry-run` builds the Python files, the `@cygnux/tracekit` tarball, the Python SBOM and `SHA256SUMS` into
+`make release-dry-run` builds the Python files, the `@cygnuxlabs/tracekit` tarball, the Python SBOM and `SHA256SUMS` into
 a temporary directory twice, checks the two Python builds are identical, and runs `verify-release.sh --dry-run`
 (sums and SBOM, no attestations). It publishes nothing; it needs the package index and npm. To keep the output:
 `python3 scripts/release/build.py [OUT] [--image docker:IMAGE]` (default `dist/release/`; `--image` needs syft at
@@ -64,7 +64,7 @@ cosign verify ghcr.io/cygnux-labs/tracekit-signer@sha256:<digest> \
 
 1. **PyPI** (trusted publishing, no stored token): on pypi.org, project `tracekit-ai`, add a trusted publisher: owner
    `Cygnux-Labs`, repository `Tracekit`, workflow `release.yml`, environment `pypi`.
-2. **npm** (paused: [npm paused](#npm-paused)) (trusted publishing, no stored token): for `@cygnux/tracekit` and each `@cygnux/tracekit-signer-*`, add a
+2. **npm** (paused: [npm paused](#npm-paused)) (trusted publishing, no stored token): for `@cygnuxlabs/tracekit` and each `@cygnuxlabs/tracekit-signer-*`, add a
    trusted publisher on npmjs.com: repository `Cygnux-Labs/Tracekit`, workflow `release.yml`, environment `npm`.
    A package must exist before it can be configured; publish the first version by hand from the dry run's tarballs.
 3. **GitHub**: environments `release`, `pypi` and `npm`, each with required reviewers and "prevent self-review",
@@ -75,15 +75,15 @@ Until these are done the publish jobs fail and nothing is released; the build jo
 ## npm paused
 
 npm publishing is off for now (owner decision, 2026-10-13): the `npm` job in `release.yml` is commented out, and
-`github-release` runs after `pypi` with the build's files. The GitHub release still carries `cygnux-tracekit-<v>.tgz`,
+`github-release` runs after `pypi` with the build's files. The GitHub release still carries `cygnuxlabs-tracekit-<v>.tgz`,
 which TypeScript users install with `npm install <its URL>`; npm skips the platform signer packages it can't find, so
 the dev signer needs `pip install 'tracekit-ai[signer]'` until npm is back. To turn npm back on: do step 2 of the
 one-time setup, uncomment the `npm` job, and set `github-release` back to `needs: npm` with the `release-final`
 artifact.
 
-## npm signer packages (`npx @cygnux/tracekit up` without Python)
+## npm signer packages (`npx @cygnuxlabs/tracekit up` without Python)
 
-`@cygnux/tracekit` lists `@cygnux/tracekit-signer-{darwin-arm64,linux-x64-gnu,linux-arm64-gnu,win32-x64}`
+`@cygnuxlabs/tracekit` lists `@cygnuxlabs/tracekit-signer-{darwin-arm64,linux-x64-gnu,linux-arm64-gnu,win32-x64}`
 as `optionalDependencies` at its own version; npm installs the one matching the platform, with no postinstall. There
 is no Intel-Mac package (its dependencies publish no usable wheels there): on an Intel Mac, `pip install
 'tracekit-ai[signer]'` and the launcher uses that `tracekit` from PATH. Each
@@ -202,7 +202,7 @@ jobs:
 
   npm:
     # the signer packages bundle the release's own tracekit-ai wheel (checked against SHA256SUMS); they go up after
-    # PyPI and before @cygnux/tracekit, which depends on them
+    # PyPI and before @cygnuxlabs/tracekit, which depends on them
     needs: pypi
     runs-on: ubuntu-latest
     environment: npm
@@ -232,12 +232,12 @@ jobs:
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: |
-            release/cygnux-tracekit-signer-*.tgz
+            release/cygnuxlabs-tracekit-signer-*.tgz
             release/SHA256SUMS
       - name: Publish (platform packages first)
         run: |
-          for f in release/cygnux-tracekit-signer-*.tgz; do npm publish "$f" --provenance --access public; done
-          npm publish release/cygnux-tracekit-[0-9]*.tgz --provenance --access public
+          for f in release/cygnuxlabs-tracekit-signer-*.tgz; do npm publish "$f" --provenance --access public; done
+          npm publish release/cygnuxlabs-tracekit-[0-9]*.tgz --provenance --access public
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-final

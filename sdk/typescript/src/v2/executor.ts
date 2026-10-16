@@ -4,7 +4,7 @@
  *
  *   import { tool } from "@openai/agents";
  *   import { jsonSchema } from "ai";
- *   import { executorActions, openaiAgentsTool, vercelTool } from "@cygnux/tracekit/v2/executor";
+ *   import { executorActions, openaiAgentsTool, vercelTool } from "@cygnuxlabs/tracekit/v2/executor";
  *   const actions = await executorActions("https://executor.internal:8090", run, { headers: { authorization: `Bearer ${token}` } });
  *   new Agent({ tools: actions.map((a) => openaiAgentsTool(tool, a)) });
  *   generateText({ tools: Object.fromEntries(actions.map((a) => [a.name, vercelTool(a, jsonSchema)])) });
