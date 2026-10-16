@@ -838,6 +838,9 @@ class OneViewer(unittest.TestCase):
         auth = {"Authorization": f"Bearer {token}"}
         wait_for(lambda: json.loads(self.get(port, "/api/verify", auth)[1])["records"] > 0)
         self.assertTrue(json.loads(self.get(port, "/api/verify", auth)[1])["ok"])
+        # a bundle has no why logs (204, not a 404 in the console) and the page says BUNDLE, not LIVE
+        self.assertEqual(self.get(port, "/api/why/workspace", auth)[0], 204)
+        self.assertEqual(json.loads(self.get(port, "/api/snapshot", auth)[1])["source"], "bundle")
         status, page = self.get(port, "/", auth)
         self.assertEqual(status, 200)
         self.assertIn('<nav class="nav"><a href="/" class="on">LIVE</a></nav>', page)

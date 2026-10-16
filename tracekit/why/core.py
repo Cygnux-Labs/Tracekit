@@ -25,6 +25,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence
 
 SCHEMA = "tracekit.why.event.v1"
 GENESIS = "0" * 64
+COMMITTED = "content committed, not in the log"   # a signed run's content: only its commitment is known
 
 TRUST_LEVELS = ("trusted", "untrusted")
 EVENT_TYPES = ("run.start", "agent.start", "input", "decision", "action", "message", "run.end")

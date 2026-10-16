@@ -979,7 +979,7 @@ def main(argv=None):
             ledger, code = observe.ledger_path(a.ledger, a.bundle, "tracekit view")
             if ledger is None:
                 return code
-            feed = observe.Feed(ledger)
+            feed = observe.Feed(ledger, source="bundle" if a.bundle else None)
         else:
             feed = None if runs or alone else StoreFeed(cfg, a.log_vkey, mirror, None if a.config or a.data_dir
                                                         else dev_content_source())

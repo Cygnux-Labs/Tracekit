@@ -1714,7 +1714,7 @@
     function renderTop() {
       const m = $("mode");
       m.className = "mode " + (mode === "live" ? (liveOk ? "live" : "off") : "replay");
-      m.textContent = mode === "live" ? (document.URL.startsWith("file:") ? "STATIC" : liveOk ? "LIVE" : "DISCONNECTED") : "REPLAY";   // file: a `tracekit why report`
+      m.textContent = mode === "live" ? (document.URL.startsWith("file:") ? "STATIC" : SOURCE === "bundle" ? "BUNDLE" : liveOk ? "LIVE" : "DISCONNECTED") : "REPLAY";   // file: a `tracekit why report`
       m.title = mode === "live" && !liveOk ? liveErr : "";
       const c = $("chain");
       const run = V2 && scope ? RUNS.get(scope) : null;   // a selected run: its own verdict, not the page's
@@ -1741,7 +1741,7 @@
       const t = nowTs(), recent = S.actList.filter(a => a.start > t - 60).length;
       const blocked = S.actList.filter(a => a.denied).length, errors = S.actList.filter(a => a.error).length;
       const flagged = S.actList.filter(a => a.flags.length).length;
-      const elapsed = S.firstTs ? (V2 ? S.lastTs : t) - S.firstTs : 0;
+      const elapsed = S.firstTs ? (V2 || document.URL.startsWith("file:") ? S.lastTs : t) - S.firstTs : 0;
       const held = S.actList.filter(a => a.v2?.decision === "ask").length, v2flag = S.actList.filter(a => a.v2?.decision === "flag").length, high = S.alerts.filter(a => a.sev === "high").length;
       const items = V2 ? [
         // a v2 agent is keyed per run (its session): count the agents by name, as the runs list names them
@@ -2087,7 +2087,7 @@
     }
 
     /* ---------------- live mode ---------------- */
-    let liveOk = false, liveErr = "";
+    let liveOk = false, liveErr = "", SOURCE = "";   // SOURCE: "bundle" when the server shows a file, not a live log
     async function getJSON(path) {
       const r = await fetch(path, { credentials: "same-origin" });
       if (r.status === 401) throw Object.assign(new Error("This viewer needs a token: open the URL it printed (?token=…; TRACEKIT_VIEW_TOKEN, or TRACEKIT_OBSERVE_TOKEN for tracekit observe)."), { fatal: true });
@@ -2097,12 +2097,12 @@
     async function startLive() {
       try {
         const snap = await getJSON("api/snapshot");
-        snap.records.forEach(accept); liveOk = true; liveErr = ""; loadWhy(); schedule();
+        snap.records.forEach(accept); liveOk = true; liveErr = ""; SOURCE = snap.source || ""; loadWhy(); schedule();
         const es = new EventSource("api/stream?from=" + encodeURIComponent(snap.next));
         es.onmessage = e => { try { accept(JSON.parse(e.data)); schedule(); } catch (err) { console.error("bad stream record", err); } };
         es.onopen = () => { liveOk = true; liveErr = ""; schedule(); };
         es.onerror = () => { liveOk = false; liveErr = "Connection lost; reconnecting…"; schedule(); };
-        const check = async () => { try { const v = await getJSON("api/verify"); chainState = { ok: v.ok, n: v.records, detail: (v.problems || []).join("\n") || "Verified by the observer (hash chain and Ed25519 signatures): operator-side view — re-verify with the signed release for evidence. Head " + (v.head || "").slice(0, 16) }; schedule(); } catch { } };
+        const check = async () => { try { const v = await getJSON("api/verify"); chainState = { ok: v.ok, n: v.records, detail: (v.problems || []).join("\n") || "Verified by the observer (hash chain and Ed25519 signatures): operator-side view — re-verify with the signed release for evidence. Head " + (v.head || "").slice(0, 16) }; schedule(); } catch { if (document.URL.startsWith("file:")) { chainState = { ok: null, n: 0, detail: "A static report: nothing here verifies it. Check the why logs with `tracekit why verify`." }; schedule(); } } };
         check(); setInterval(check, 10000);
       } catch (e) {
         liveOk = false; liveErr = e.message || String(e); schedule();
@@ -2215,7 +2215,7 @@
     const CHAIN = { unchained: "UNCHAINED", broken: "FAILED CHECK" }, chainMark = t => t && CHAIN[t.chain] ? ` [${CHAIN[t.chain]}]` : "";
     const pct = x => x == null ? "–" : Math.round(x * 100) + "%", sgn = x => (x > 0 ? "+" : "") + (Math.round(x * 100) / 100).toFixed(2);
     async function loadWhy() {
-      try { WHY = await getJSON("api/why/workspace"); } catch { return; }   // a viewer without why logs: 404
+      try { WHY = await getJSON("api/why/workspace"); } catch { return; }   // no why logs: 204, no JSON (404 from an older server)
       $("views").hidden = $("wtabwhy").hidden = false; wvKey = ""; schedule();
     }
     function whyChanged(m) { WD.delete(m.run_id); clearTimeout(whyT); whyT = setTimeout(loadWhy, 400); }
@@ -2382,7 +2382,7 @@
       $("views").innerHTML = ["desk", "runs", "overview", "timeline", "why", "graph", "agents", "influence"].map(k => `<button type="button" data-view="${esc(k)}" class="${VIEW === k ? "on" : ""}">${esc(VNAME[k] || k.toUpperCase())}</button>`).join("");
       if (VIEW === "desk") return;
       const runs = WHY.runs.map(r => r.run_id);
-      if (!runs.includes(WRUN)) WRUN = whyRef(selected)?.run || (scope && Object.entries(WHY.calls).find(([k]) => k.startsWith(scope + "|"))?.[1][0]) || runs[0] || null;
+      if (!runs.includes(WRUN)) WRUN = whyRef(selected)?.run || (scope && Object.entries(WHY.calls).find(([k]) => k.startsWith(scope + "|"))?.[1][0]) || WHY.runs.find(r => r.tests)?.run_id || runs[0] || null;
       const key = [VIEW, WRUN, WD.get(WRUN) ? 1 : 0, GV.inferred, GV.ruled, GV.focus, GV.fit, WPICK, WBUSY, WMSG, WHY.runs.length].join("|");
       if (key === wvKey || document.activeElement?.closest("#whyv input")) return;   // never under a field being typed in
       wvKey = key;
