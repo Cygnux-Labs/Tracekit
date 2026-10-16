@@ -24,56 +24,25 @@ and gives you one `.tkb` file per run that anyone can verify offline.**
 Built like **Certificate Transparency**: signed records in an append-only log that independent witnesses cosign<br>
 **Open file format** · verifiers in **Python** and **TypeScript** · **MIT** · runs on your own machines
 
-**[Try it](#try-it) · [Add it to your agent](#add-it-to-your-agent) · [What's in it](#whats-in-it) · [Proof](#proof) · [How it works](#how-it-works) · [Commands](#commands) · [Limits](#limits) · [Docs](#docs)**
+**[Try it](#try-it) · [Add it to your agent](#add-it-to-your-agent) · [What it proves](#what-it-proves) · [What's in it](#whats-in-it) · [Proof](#proof) · [How it works](#how-it-works) · [Contribute](#contribute) · [Docs](#docs)**
 
 </div>
 
 ---
 
-<table>
-<tr>
-<th width="50%">The agent's own log, after the cover-up</th>
-<th width="50%">Tracekit, the same run</th>
-</tr>
-<tr>
-<td valign="top">
+When an agent does something it shouldn't, you ask three things: **what did it do, was it allowed, and can you trust
+the record?** The agent's own log can't answer the third, because the agent can edit it. Here is one run, recorded
+both ways:
 
-```text
-$ tail agent.log
-13:51:52 INFO run_sql "SELECT status FROM
-         orders WHERE id = 1042"
-13:51:59 INFO run_sql "SELECT status FROM
-         orders WHERE id = 1042"
-$ grep -c DELETE agent.log
-0
-$ sqlite3 shop.db 'SELECT count(*) FROM orders'
-85
-```
-
-</td>
-<td valign="top">
-
-```text
-ALERT  SIGNED FLAGGED · run_sql · 13:51:59
-       ACME-F001 deleting rows
-RUN    FAILED
-
-[FAIL] signatures — 7 records,
-       keys valid at their position
-       seq 7: hash does not match the event
-```
-
-</td>
-</tr>
-</table>
-
-**Same run. The log shows two lookups. Tracekit shows the flagged delete, and fails the run at the record the agent
-changed.**
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/Cygnux-Labs/Tracekit/main/docs/readme/cover-up-dark.png">
+  <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/Cygnux-Labs/Tracekit/main/docs/readme/cover-up-light.png">
+  <img alt="What happened: a support ticket hides an instruction, the agent deletes 43 of 128 orders, then edits its log and Tracekit's record so the delete reads as a lookup. The agent's own log shows two lookups of order 1042; grep finds no DELETE, and the database holds 85 orders: it looks clean. Tracekit, the same run: the 13:51:59 run_sql call is flagged ACME-F001 deleting rows, and when the run closed verification failed with seq 7: hash does not match the event. Caught at record 7." src="https://raw.githubusercontent.com/Cygnux-Labs/Tracekit/main/docs/readme/cover-up-light.png" width="100%">
+</picture>
 
 <a href="https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/demo/cover-up.mp4"><img src="https://raw.githubusercontent.com/Cygnux-Labs/Tracekit/main/docs/demo/cover-up.gif" alt="A ticket with a hidden instruction makes a support agent delete 43 orders, then edit its own log and Tracekit's record of the delete. grep finds no delete; Tracekit marks the run FAILED because record 7 no longer matches its hash." width="100%"></a>
 
-<sub>A support ticket hides an instruction. The agent deletes 43 of 128 orders, then rewrites both logs. The database,
-the signer, the viewer and both edits are real; the model is scripted. <a href="https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/demo/cover-up.mp4">Watch it with sound (1:47)</a></sub>
+<sub>The same run, recorded: the database, the signer, the viewer and both edits are real; the model is scripted. <a href="https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/demo/cover-up.mp4">Watch it with sound (1:47)</a></sub>
 
 In this demo the signer ran as the agent's own user (dev mode), so an agent that knew how could have read the key and
 re-signed the log. Run the signer [where the agent can't reach it](#how-it-works), with a witness, and it can't.
@@ -84,9 +53,25 @@ re-signed the log. Run the signer [where the agent can't reach it](#how-it-works
 uvx --from tracekit-ai tracekit demo --server
 ```
 
-One command, a few seconds. No API key, and nothing to install with [uv](https://docs.astral.sh/uv/). A scripted agent runs
-`sudo rm -rf /`; Tracekit denies it before it runs. Then the demo rewrites that denial as allowed in a copy of the run,
-and verification fails at `seq 4: hash does not match the event`.
+No API key, and nothing to install with [uv](https://docs.astral.sh/uv/). From an empty cache on a Mac it took 5
+seconds (10 with `pip install tracekit-ai` in a fresh venv). A scripted agent makes three calls, and you should see:
+
+```text
+== agent run (SCRIPTED: fixed tool calls, not a model)
+  Bash 'ls': allow
+  Bash 'sudo rm -rf /': deny TK-D001 TK-D004 TK-F003
+  Bash 'echo "unterminated': ask TK-SHELL-PARSE
+...
+Integrity: VERIFIED.
+
+== tamper test: rewrite the denied call as allowed in a copy, then verify again
+[FAIL] signatures — 11 record(s), keys valid at their position
+        seq 4: hash does not match the event
+Integrity: FAILED.
+```
+
+The delete was denied before it ran, the held call ran after an approval, and the run verified. Then the demo rewrote
+the denial as allowed in a copy, and verification failed at the record it changed.
 
 ## Add it to your agent
 
@@ -106,7 +91,8 @@ tracekit last                               # Integrity: VERIFIED. / Assurance: 
 
 `tracekit.instrument()` starts a dev signer (or reuses the running one) and gates and records every tool and model call
 of the frameworks it finds. `tracekit last` exports your latest run, verifies it and says where it is.
-`tracekit view --dev` shows every run.
+`tracekit view --dev` shows every run. On a clean machine the LangGraph example (a mock model, no API key) installed,
+ran and verified in 27 seconds: [`examples/v2/clean-machine.sh langchain`](https://github.com/Cygnux-Labs/Tracekit/blob/main/examples/v2/clean-machine.sh).
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/Cygnux-Labs/Tracekit/main/docs/readme/works-with-dark.png">
@@ -133,7 +119,8 @@ CLI, Cursor, Gemini CLI, CrewAI, Browser Use and the TypeScript SDK. Setup:
 <br>
 
 Coding agents: `tracekit init --dev --v2` wires Claude Code's hooks to a dev signer; add `--agent codex`, `cursor` or
-`gemini` for the others. Without uv: `pip install tracekit-ai`, then `tracekit demo --server`. `--why` shows a held
+`gemini` for the others (experimental). Without uv: `pip install tracekit-ai`, then `tracekit demo --server`. `--why`
+(experimental) shows a held
 email whose cause is found by replay and cited by its signed record:
 
 ```sh
@@ -157,19 +144,51 @@ TypeScript needs Node 18 or newer and the package file from the GitHub release (
 
 </details>
 
+## What it proves
+
+Three guarantees. They're related, but one doesn't give you the others, and each needs something different.
+
+| Guarantee | What you get | What it needs |
+|---|---|---|
+| **Evidence integrity** | A record that was edited, deleted, swapped or inserted fails verification at that record | Only the signed log. Cutting off the end of the log, or re-signing it with a stolen key, takes a witness to catch |
+| **Execution control** | Each call is checked before it runs. A denied call is blocked; a held call runs only after a yes, with exactly the arguments that were approved | The call goes through Tracekit: an SDK, a hook or a gateway. Code that skips it isn't stopped |
+| **Independent assurance** | An operator who rewrites or forks its own log is caught | A witness the operator doesn't control, and a monitor. Both are experimental, and no public witness is running yet |
+
+### Limits
+
+- **Dev mode protects nothing against an agent that runs as you.** Dev runs say `isolation: same-user`
+  ([FAQ](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/faq.md#what-does-same-user-dev-mode-protect)).
+- **A verified run proves the record is intact**: not intent, not that a reported tool result is true, and not that
+  every action was captured ([FAQ](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/faq.md#what-cant-tracekit-prove)).
+- **Actions outside the capture path leave no record**, such as a subprocess a hook never sees or code that skips the
+  adapter ([adapters](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/adapters.md)).
+- **Policy rules match text and tool names.** A determined agent can reword a command; the protection is the signer's
+  isolation ([policy reference](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/policy-v2.md#packs-shipped)).
+- **Commitments hide content, not timing, sizes or counts**
+  ([privacy](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/privacy.md#what-hashes-and-metadata-still-leak)).
+
+Every limit, with what to do about it: [limits](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/limits.md).
+
 ## What's in it
 
-One signer, seven parts. Stable unless marked experimental ([what's stable](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/support.md)).
+One signer. The core is stable and is hardened first. The rest ships in the same package as experimental: it works and
+is tested, but may change between releases ([what's stable](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/support.md)).
 
-| Part | What it does | Measured |
+| Core | What it does | Measured |
 |---|---|---|
-| **Record** | Every tool call, decision and result in one signed hash chain per run. A lost event becomes a signed gap, never silence | 8 of 8 tamper attacks caught with a witness, 6 of 8 without (E1) |
+| **Record** | Every tool call, decision and result in one signed hash chain per run. A lost event becomes a signed gap, never silence | 6 of 8 tamper attacks caught by the log alone (E1) |
 | **Decide** | Allow, deny, or hold each call for a person, before it runs. [Packs](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/policy-v2.md) for shell, files, SQL, HTTP, cloud CLIs, browsers, email, messaging, payments, secrets and MCP | 462 of 462 harmful calls stopped, 1 false alarm in 668 (E17) |
-| **Approve** | A held call runs only after a yes, bound to its exact arguments and used once. From the command line; or experimental: a web page with passkeys, Slack, or a reviewer agent within bounds ([approvals](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/approvals.md)) | 7 of 7 abuse cases against agent approvers caught (E18) |
-| **Prove** | `tracekit verify` checks a run's file offline against keys you pinned. Experimental: [witnesses](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/witnesses.md) cosign checkpoints, a [monitor](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/monitor.md) watches the log | 8 of 8 insider attacks caught (E8); 12 of 12 seeded discrepancies flagged, 0 false (E10) |
+| **Approve** | A held call runs only after a yes from the command line, bound to its exact arguments and used once ([approvals](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/approvals.md)) | Edited arguments, a replayed snapshot or another run's approval: refused, in the contract tests every stable framework integration runs |
+| **Prove** | `tracekit verify` checks a run's file offline against keys you pinned | 8 of 8 insider attacks caught (E8) |
 | **Watch** | `tracekit view`: every run verified, blocked and held calls, approvals, gaps, replay and a run review ([viewer](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/viewer.md)) | Not measured |
-| **Contain**<br><sub>experimental</sub> | Signed [incidents](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/incidents.md) hold or quarantine a run. Tools run on credentials the agent never holds ([executor](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/executor.md), [MCP gateway](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/mcp-gateway.md)). An [egress observer](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/egress.md) flags traffic no call explains | 8 of 8 containment and 10 of 10 detection checks (E17) |
-| **Explain**<br><sub>experimental</sub> | Where each argument came from, and [`tracekit why`](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/why.md): which input caused an action, found by replaying the run without it | 6 of 6 true causes named, 0 false blames, one 7B model, small sample |
+
+| Experimental | What it does | Measured |
+|---|---|---|
+| **Witness** | Independent [witnesses](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/witnesses.md) cosign each checkpoint; a [monitor](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/monitor.md) watches the log for rewrites and forks | 8 of 8 tamper attacks caught with a witness (E1) |
+| **Cross-check** | The signer compares the calls the model asked for, as an [LLM gateway](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/gateway.md) or the session transcript saw them, with the calls the agent reported. A skipped hook or a made-up call is flagged | 12 of 12 seeded discrepancies flagged, 0 false (E10) |
+| **Contain** | Signed [incidents](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/incidents.md) hold or quarantine a run. Tools run on credentials the agent never holds ([executor](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/executor.md), [MCP gateway](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/mcp-gateway.md)). An [egress observer](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/egress.md) flags traffic no call explains | 8 of 8 containment and 10 of 10 detection checks (E17) |
+| **Explain** | Where each argument came from, and [`tracekit why`](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/why.md): which input caused an action, found by replaying the run without it | 6 of 6 true causes named, 0 false blames, one 7B model, small sample |
+| **More approvers** | A web page with passkeys, Slack, or a reviewer agent that approves within bounds | 7 of 7 abuse cases against agent approvers caught (E18) |
 
 ## Proof
 
@@ -224,6 +243,17 @@ The full model: [architecture](https://github.com/Cygnux-Labs/Tracekit/blob/main
 [laptop](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/threat-model-laptop.md) and
 [server](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/threat-model-server.md) threat models.
 
+## Is it for you?
+
+| Use Tracekit when | A plain tracer is enough when |
+|---|---|
+| Your agent acts on real systems: a shell, files, databases, email, payments, the cloud | It only reads, or runs in a throwaway sandbox |
+| Some calls must be stopped or held for a person before they run | Seeing what happened afterwards is enough |
+| Someone outside the team has to trust the record: a customer, an auditor, an incident review | Only your team reads the logs, to debug |
+
+For debugging a prototype, a tracer such as OpenTelemetry, Langfuse or LangSmith is the right tool. Tracekit doesn't
+replace one; it's the record you can hand to someone who doesn't trust the agent.
+
 ## Commands
 
 ```sh
@@ -238,21 +268,6 @@ tracekit policy lint policy.yaml            # check a policy before the signer l
 tracekit doctor                             # check this setup
 tracekit init --dev --v2                    # wire Claude Code's hooks; add --agent codex, cursor or gemini
 ```
-
-## Limits
-
-- **Dev mode protects nothing against an agent that runs as you.** Dev runs say `isolation: same-user`
-  ([FAQ](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/faq.md#what-does-same-user-dev-mode-protect)).
-- **A verified run proves the record is intact**: not intent, not that a reported tool result is true, and not that
-  every action was captured ([FAQ](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/faq.md#what-cant-tracekit-prove)).
-- **Actions outside the capture path leave no record**, such as a subprocess a hook never sees or code that skips the
-  adapter ([adapters](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/adapters.md)).
-- **Policy rules match text and tool names.** A determined agent can reword a command; the protection is the signer's
-  isolation ([policy reference](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/policy-v2.md#packs-shipped)).
-- **Without an independent witness, the operator can rewrite the log unseen**, and commitments hide content, not
-  timing, sizes or counts ([privacy](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/privacy.md#what-hashes-and-metadata-still-leak)).
-
-Every limit, with what to do about it: [limits](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/limits.md).
 
 ## The evidence format
 
@@ -271,6 +286,26 @@ Verify a v1 bundle in GitHub Actions with `uses: Cygnux-Labs/Tracekit@main` (`bu
 `require-anchor` defaults to `true`, so an unanchored bundle fails the step; set `require-anchor: "false"` to only
 report it.
 
+## Contribute
+
+Each of these is useful on its own, and none needs to know the whole codebase:
+
+- **Write a verifier in another language.** The [evidence format](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/format-v2.md)
+  is specified and has [test vectors](https://github.com/Cygnux-Labs/Tracekit/tree/main/tests/vectors). A Go or Rust
+  verifier written from the spec alone is the best test that the spec is complete.
+- **Find a harmful call the packs let through.** Add it to
+  [`tests/data/policy/deny/`](https://github.com/Cygnux-Labs/Tracekit/tree/main/tests/data/policy/deny) with a rule
+  that catches it; E17 runs every case.
+- **Run Tracekit on your own agent and report what broke.** Doing that with two open-source agents found real bugs
+  ([case study](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/case-study-oss-agents.md)).
+- **Add a framework.** An integration is done when it passes the
+  [adapter contract](https://github.com/Cygnux-Labs/Tracekit/blob/main/CONTRIBUTING.md#adding-a-framework-adapter).
+- **Try to break it.** Find a tamper or a bypass that E1 and E8 miss, and report it privately as
+  [SECURITY.md](https://github.com/Cygnux-Labs/Tracekit/blob/main/SECURITY.md) describes.
+
+To start: `make install`, then `make check`
+([contributing](https://github.com/Cygnux-Labs/Tracekit/blob/main/CONTRIBUTING.md)).
+
 ## Docs
 
 | To | Start here |
@@ -288,9 +323,8 @@ report it.
 ## License
 
 [MIT](https://github.com/Cygnux-Labs/Tracekit/blob/main/LICENSE), Copyright Cygnux Labs. This is 1.2.0, and 1.x is the
-supported line. [Contributing](https://github.com/Cygnux-Labs/Tracekit/blob/main/CONTRIBUTING.md): `make install`, then
-`make check`. Report vulnerabilities privately as [SECURITY.md](https://github.com/Cygnux-Labs/Tracekit/blob/main/SECURITY.md)
-describes.
+supported line. Report vulnerabilities privately as
+[SECURITY.md](https://github.com/Cygnux-Labs/Tracekit/blob/main/SECURITY.md) describes.
 
 ## Cite
 

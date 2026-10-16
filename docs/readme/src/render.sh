@@ -14,10 +14,11 @@ for t in dark light; do
   shot how-it-works.html how-it-works-$t.png 1280 560 $t
   shot proof.html proof-$t.png 1280 560 $t
   shot works-with.html works-with-$t.png 1280 360 $t
+  shot cover-up.html cover-up-$t.png 1280 620 $t
 done
 # The flat graphics shrink about 4x as 256-colour PNGs; the banner's glow would band, so it stays full colour.
 cd .. && python3 - <<'PY' || echo "Pillow not installed: PNGs left full colour"
 from PIL import Image
-for f in ["how-it-works-dark.png", "how-it-works-light.png", "proof-dark.png", "proof-light.png", "works-with-dark.png", "works-with-light.png"]:
+for f in ["cover-up-dark.png", "cover-up-light.png", "how-it-works-dark.png", "how-it-works-light.png", "proof-dark.png", "proof-light.png", "works-with-dark.png", "works-with-light.png"]:
     Image.open(f).quantize(colors=256, method=Image.Quantize.FASTOCTREE, dither=Image.Dither.NONE).save(f, optimize=True)
 PY
