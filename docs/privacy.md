@@ -115,6 +115,10 @@ content: {retain: true, retention_days: 30, max_record_bytes: 1048576}   # defau
 
 - **Off by default.** With `retain: false` the signer stores no content at all. `tracekit doctor` (`D-CONTENT-VAULT`)
   says whether the vault is on and for how long it keeps content.
+- **On for the dev signer (1.2.2).** The same-user dev signer (`tracekit up`) keeps content for 7 days and grants your
+  user `content_read`, so `tracekit view --dev` can show what each call ran (its redacted arguments); each read is a
+  `content.accessed` record. It runs as you and you hold every dev key already, so this gives no one new access.
+  `TRACEKIT_DEV_CONTENT=0` (set before the dev signer starts) keeps nothing.
 - **What it keeps.** Exactly what the signer commits to, after its own redaction, one item per record: a
   `policy.decision`'s arguments (redacted as the approver sees them), a `tool.result`'s result or error, an
   `input.observed` value, and a `model.exchange`'s `body` (the request, or the assembled response) when the client

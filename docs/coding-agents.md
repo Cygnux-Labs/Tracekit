@@ -45,6 +45,9 @@ The hooks run `python -I -m tracekit.integrations.harness_hooks <agent> <event>`
 v2 Claude Code hook's core (the signer decides; approvals; the run's fail mode, closed by default and always closed in
 system mode). Unlike v1, a payload without a session or tool call id blocks the call, and so does any hook error.
 
+A session is one run, open until the session ends. To watch it, `tracekit view --dev` (each call with what it ran);
+to verify it as it stands, `tracekit last --open` (1.2.2).
+
 ### Hooks name their event (1.2)
 
 `tracekit init` writes each hook command with the event it's configured for as its last argument (the Claude Code

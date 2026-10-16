@@ -220,6 +220,23 @@ class View(unittest.TestCase):
         wait_for(lambda: any(r.get("title", "").startswith(f"RUN {run_id}") for r in self.rows(feed, run_id)), 15)
         return [r for r in self.rows(feed, run_id) if r.get("title", "").startswith(f"RUN {run_id}")]
 
+    def test_with_a_content_source_each_decision_carries_its_arguments(self):
+        """The tape named every allowed call "no rule matched": with the dev signer's retained arguments each decision
+        carries them (the page names the call by them), asked for once, for exactly the run's decisions."""
+        run_id = self.finished_run()
+        asked = []
+
+        def content(rid, seqs):
+            asked.append((rid, list(seqs)))
+            return {s: {"command": f"at {s}"} for s in seqs}
+        feed = view.StoreFeed({"data_dir": self.d}, content=content)
+        self.report(feed, run_id)
+        rows = [r for r in self.rows(feed, run_id) if r["event"] == "PreToolUse"]
+        self.assertEqual(len(rows), 3)
+        self.assertEqual([(r["tool_input"], r["target"]) for r in rows],
+                         [({"command": f"at {r['v2']['run_seq']}"}, None) for r in rows])
+        self.assertEqual(asked, [(run_id, [r["v2"]["run_seq"] for r in rows])])
+
     def test_dev_run_is_listed_with_its_counts_and_verified_while_the_signer_holds_the_lock(self):
         run_id = self.finished_run()
         with self.assertRaises(OSError):

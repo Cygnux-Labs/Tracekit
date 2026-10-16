@@ -300,6 +300,10 @@ class Detect(unittest.TestCase):
     def test_dev_signer(self):
         ids, v2 = self.collect(None)
         self.assertEqual(v2.call_args.args[1], "dev")
+        # the dev signer keeps content (1.2.2): doctor checks the vault it runs, not one that is off
+        self.assertTrue(v2.call_args.args[0]["content"]["retain"])
+        with mock.patch.dict(os.environ, {"TRACEKIT_DEV_CONTENT": "0"}):
+            self.assertIsNone(self.collect(None)[1].call_args.args[0]["content"])
 
     def test_dev_signer_finds_the_hooks_in_any_settings_file_init_writes(self):
         """Dev doctor read only $CLAUDE_CONFIG_DIR's (or ~/.claude's) settings: hooks in the other one, or in the

@@ -376,6 +376,7 @@ OPERATOR = frozenset({"incident_list", "incident_show", "incident_resolve", "run
 NEVER_DEFAULT = frozenset({DECISION_IMPORT, ON_BEHALF, "content_get", "content_erase", "approval_review",
                            "approval_agents", "tailer_heartbeat", "observe_effect"}) | OPERATOR
 CONTENT = {"retain": False, "retention_days": 30, "max_record_bytes": 1 << 20}   # the `content` config section
+DEV_RETENTION_DAYS = 7   # how long the dev signer keeps call content for its viewer (dev_content)
 CONTENT_SWEEP_S = 3600.0
 ERASED = object()   # _data_key of a run whose content was erased
 QUARANTINE_DENIES = 100   # TK-QUARANTINE decisions a quarantined run records; later calls are refused unrecorded
@@ -4170,6 +4171,17 @@ def serve_dev(runtime_dir, open_handler, proto=(rpc_schema.RPC_MIN, rpc_schema.R
     return 0
 
 
+def dev_content():
+    """The dev signer's content vault and who may read it: it keeps each call's redacted arguments and results for
+    DEV_RETENTION_DAYS, so `tracekit view --dev` can show what the agent ran, and grants this user (already the holder
+    of every dev key) `content_read`. TRACEKIT_DEV_CONTENT=0 keeps nothing."""
+    if os.environ.get("TRACEKIT_DEV_CONTENT", "1") == "0":
+        return {}
+    me = "token:dev" if os.name == "nt" else f"uid:{os.getuid()}"
+    return {"content": {**CONTENT, "retain": True, "retention_days": DEV_RETENTION_DAYS},
+            "authorize": {me: sorted(DEFAULT_GRANTS | {CONTENT_READ})}}
+
+
 def _serve_dev():
     from tracekit.sdk.autospawn import runtime_dir
 
@@ -4177,7 +4189,7 @@ def _serve_dev():
 
     def open_handler():
         service = SignerService(dev_data_dir(), isolation="same-user", fsck_every_s=0,
-                                grace_s=float(os.environ.get("TRACEKIT_DEV_GRACE", GRACE_S)))
+                                grace_s=float(os.environ.get("TRACEKIT_DEV_GRACE", GRACE_S)), **dev_content())
         return service.handle_frame, service.close
     try:
         return serve_dev(runtime_dir(), open_handler, idle_s=float(os.environ.get("TRACEKIT_DEV_IDLE", 900)))

@@ -67,6 +67,19 @@ class TestEmptyStore(DevSigner):
         self.assertIn("tracekit.instrument()", p.stderr)
 
 
+class TestOpenRun(DevSigner):
+    def test_last_open_verifies_a_run_still_open(self):
+        """A coding agent's session run stays open until the session ends: `tracekit last` only skipped it, so nothing
+        verified the session as it stood."""
+        p = self.sh("-c", "import os; from tracekit.sdk.client import Client; r = Client().run('open-one'); "
+                          "r.decide('c1', 'Bash', {'command': 'ls'}); print(r.run_id, flush=True); os._exit(0)")
+        run_id = p.stdout.split()[0]
+        self.assertIn("tracekit last --open verifies it as it stands", self.sh("-m", "tracekit", "last", code=1).stderr)
+        out = self.sh("-m", "tracekit", "last", "--open").stdout
+        self.assertIn(f"run {run_id} (open-one)\nIntegrity: VERIFIED TO HEAD", out)
+        self.assertIn("(open).\nAssurance: dev", out)
+
+
 class TestThreeSteps(DevSigner):
     def test_each_framework(self):
         for name, (reqs, script) in AGENTS.items():

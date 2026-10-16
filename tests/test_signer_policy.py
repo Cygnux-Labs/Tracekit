@@ -123,6 +123,15 @@ class CodingPack(unittest.TestCase):
         self.verdicts([({"file_path": "/etc/tracekit/../tracekit/policy.yaml"}, "TK-D013"),
                        ({"file_path": "/home/u/.claude/projects/../projects/a.jsonl"}, "TK-D009")], tool="Write")
 
+    def test_the_agents_memory_notes_are_not_transcripts(self):
+        """TK-D009 denied Claude Code's own memory notes (~/.claude/projects/<p>/memory/*.md), which sit beside the
+        transcripts it protects; a transcript, or a path that only passes through memory/, is still denied."""
+        memory = "/Users/u/.claude/projects/-Users-u-repo/memory/feedback-x.md"
+        self.assertNotIn("TK-D009", self.e.decide("Write", {"file_path": memory})["rule_ids"])
+        self.verdicts([({"file_path": "/Users/u/.claude/projects/-Users-u-repo/abc.jsonl"}, "TK-D009"),
+                       ({"file_path": "/Users/u/.claude/projects/p/memory/../abc.jsonl"}, "TK-D009"),
+                       ({"file_path": "/Users/u/.claude/projects/p/memory/x/abc.jsonl"}, "TK-D009")], tool="Write")
+
     def test_dev_signer_dirs_and_installed_packs_are_protected(self):
         for path in ("/Users/u/Library/Application Support/tracekit/data/keys/log.key", "/home/u/.local/share/tracekit/x",
                      "C:\\Users\\u\\AppData\\Local\\tracekit\\keys", "/run/user/1000/tracekit/signer.sock",

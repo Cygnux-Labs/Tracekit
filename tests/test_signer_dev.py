@@ -18,7 +18,7 @@ from tracekit import __version__, cli
 from tracekit.sdk import autospawn
 from tracekit.sdk.client import Client, SignerUnavailable
 from tracekit.signer import service
-from tracekit.signer.rpc_schema import RPC_MIN, RPC_VERSION
+from tracekit.signer.rpc_schema import RPC_MIN, RPC_VERSION, RPCError
 from tracekit.storage.file import FileReader
 from tracekit.transport import tcp_dev, read_frame, write_frame
 
@@ -92,6 +92,27 @@ class DevSignerEndToEnd(unittest.TestCase):
         third.close()
         self.cli("down")
         self.assertEqual(service.fsck(data_dir), [])   # one chain across all three signers, every signature valid
+
+    def test_the_dev_signer_keeps_each_calls_arguments_for_its_user(self):
+        """`tracekit view --dev` showed "no rule matched" for every allowed call: the dev signer kept no content. It
+        keeps each call's redacted arguments and lets its own user read them; TRACEKIT_DEV_CONTENT=0 keeps none."""
+        c = Client()
+        self.addCleanup(c.close)
+        with c.run("e2e") as run:
+            seq = run.decide("c1", "Bash", {"command": "ls -la"})["run_seq"]
+            run.complete("c1")
+        got = c.call("content_get", run_id=run.run_id, seqs=[seq], purpose="test")["items"]
+        self.assertEqual(got[0]["content"], {"command": "ls -la"})
+        c.close()
+        autospawn.down()
+        with mock.patch.dict(os.environ, {"TRACEKIT_DEV_CONTENT": "0"}):
+            off = Client()
+            self.addCleanup(off.close)
+            with off.run("e2e") as run:
+                seq = run.decide("c1", "Bash", {"command": "ls"})["run_seq"]
+            with self.assertRaises(RPCError) as e:
+                off.call("content_get", run_id=run.run_id, seqs=[seq], purpose="test")
+            self.assertEqual(e.exception.code, "forbidden")
 
     def test_down_right_after_up_stops_the_starting_signer(self):
         """`tracekit up` returns while the signer starts; a `down` before it published endpoint.json exited 1 (Hung)."""

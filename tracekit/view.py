@@ -309,6 +309,7 @@ class Translator(observe.Translator):
         self.requests, self.suggested = (observe._Bounded(observe.MAX_RUNS_KEPT),
                                          observe._Bounded(observe.MAX_RUNS_KEPT))
         self.shadow = collections.defaultdict(lambda: [0, 0])   # rule id -> [person answers agreeing, compared]
+        self.content = {}   # (run_id, run_seq) -> a decision's retained arguments, from StoreFeed's content source
 
     def _base(self, e, rec, event):
         return {**super()._base(e, rec, event), "agent": self.agent_names.get(e["run_id"], "agent")}
@@ -349,9 +350,13 @@ class Translator(observe.Translator):
             return [{**self._base(e, rec, "SessionEnd"), "reason": line, "v2": {"coverage": line}}]
         if t == "policy.decision":
             dec, rules = d.get("decision"), self.rules(d)
+            shown = self.content.pop((e["run_id"], e.get("run_seq")), None)
             r = self._base(e, rec, "PreToolUse")
-            r.update(tool_name=d.get("tool"), tool_use_id=d.get("tool_use_id"), tool_input={},
-                     target="; ".join(f"{x['id']} {x['reason']}".strip() for x in rules) or "no rule matched",
+            # with its retained arguments the page names the call by them (a command, a path), then its rules
+            r.update(tool_name=d.get("tool"), tool_use_id=d.get("tool_use_id"),
+                     tool_input={} if shown is None else shown if isinstance(shown, dict) else {"args": shown},
+                     target=None if shown is not None else
+                     "; ".join(f"{x['id']} {x['reason']}".strip() for x in rules) or "no rule matched",
                      policy={"decision": "deny" if dec == "deny" else "allow", "reasons": [x["id"] for x in rules],
                              "flags": {"flag": ["flagged"], "ask": ["held_for_approval"]}.get(dec, [])},
                      v2={"decision": dec, "rules": rules, "args_commitment": d.get("args_commitment"),
@@ -533,12 +538,39 @@ def review(records, rep, verdict):
     return out
 
 
+def dev_content_source():
+    """StoreFeed's `content` for the dev signer's store: the retained arguments of a run's decisions, read with
+    `content_get` (the dev signer keeps them and grants this user content_read: service.dev_content). Each read is one
+    signed content.accessed record. A refusal (TRACEKIT_DEV_CONTENT=0, or a signer from before 1.2.2) stops it for
+    good, said once; while the signer is down it reads nothing."""
+    state = {"client": None, "off": False}
+
+    def read(run_id, seqs):
+        if state["off"]:
+            return {}
+        out = {}
+        try:
+            state["client"] = state["client"] or Client()
+            for i in range(0, len(seqs), 1000):
+                got = state["client"].call("content_get", run_id=run_id, seqs=seqs[i:i + 1000], purpose="tracekit view")
+                out.update((x["seq"], x["content"]) for x in got["items"] if "content" in x)
+        except RPCError as e:
+            state["off"] = True
+            print(f"tracekit view: calls show their rules, not their arguments: the dev signer keeps none for this "
+                  f"viewer ({e.code}: {e})", file=sys.stderr, flush=True)
+        except (SignerUnavailable, OSError):
+            state["client"] = None
+        return out
+    return read
+
+
 class StoreFeed:
     """What observe.make_handler serves (records, base, lock, verify()), from the store of a v2 signer's config.
     `on_run(tenant, run_id, records, reasons)`: called once a client run's records are on the tape, each time it grows
-    and verifies (records), and when it fails verification (None): mirror_run."""
+    and verifies (records), and when it fails verification (None): mirror_run. `content(run_id, run_seqs)`: the
+    retained arguments of those decisions ({run_seq: arguments}), for the tape to show (dev_content)."""
 
-    def __init__(self, cfg, log_vkey=None, on_run=None):
+    def __init__(self, cfg, log_vkey=None, on_run=None, content=None):
         self.cfg, self.pg = cfg, bool(cfg.get("storage"))
         self.store = "the Postgres store" if self.pg else os.path.join(cfg["data_dir"], "store")
         self.note = "trust pins --log-vkey" if log_vkey else STORED_NOTE if self.pg else DEV_NOTE
@@ -558,7 +590,7 @@ class StoreFeed:
         self.max_records = int(os.environ.get("TRACEKIT_OBSERVE_MAX_RECORDS", "50000") or 50000)
         self.runs = {}   # (tenant, run_id) -> {"count": records verified, "shown": records translated, "failed": report}
         self.tr = Translator(policy_reasons([cfg["policy"]] if cfg.get("policy") else []))
-        self.on_run = on_run
+        self.on_run, self.content = on_run, content
         self.tmp = tempfile.mkdtemp(prefix="tk-view-")
         atexit.register(shutil.rmtree, self.tmp, True)
         self.trust = write_trust(os.path.join(self.tmp, "trust.json"), vkeys)
@@ -625,6 +657,10 @@ class StoreFeed:
         else:
             records = list(reader.iter_run(tenant, run_id))
             e["ts"] = records[-1]["event"]["ts"]   # the report sits at the end of what it covers
+            seqs = [r["event"]["run_seq"] for r in records[state["shown"]:] if self.content
+                    and r["event"]["type"] == "policy.decision" and (r["event"].get("data") or {}).get("args_commitment")]
+            if seqs:   # one content_get, one content.accessed record, per run and refresh
+                self.tr.content.update({(run_id, s): c for s, c in self.content(run_id, seqs).items()})
             new = [x for r in records[state["shown"]:] for x in self.tr.feed(r)]
             rv = review(records, rep, "verified")
             summary = (f"tenant {tenant} · agent {rv['agent'] or '?'} · {rv['state']} · decisions "
@@ -945,7 +981,8 @@ def main(argv=None):
                 return code
             feed = observe.Feed(ledger)
         else:
-            feed = None if runs or alone else StoreFeed(cfg, a.log_vkey, mirror)
+            feed = None if runs or alone else StoreFeed(cfg, a.log_vkey, mirror, None if a.config or a.data_dir
+                                                        else dev_content_source())
         why = Store(why_dir, a.allow_program, a.webhook, out=feed, tape=bool(alone), ingest_tokens=a.ingest_token,
                     ingest=not mirror) \
             if (feed or alone) and why_dir and (a.why or os.path.isdir(why_dir)) else None

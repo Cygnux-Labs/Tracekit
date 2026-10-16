@@ -1584,7 +1584,8 @@
         const a = agentOf(r), pol = r.policy || {};
         const act = {
           id: r.v2 ? tuid(r) : r.tool_use_id || ("s" + r.seq), pre: r, post: null, agent: a, tool: r.tool_name || "?", input: r.tool_input || {},
-          target: r.target ?? rel(subject(r.tool_name, r.tool_input), r.cwd), flags: [...(pol.flags || [])], denied: pol.decision === "deny",
+          // a v2 decision with its retained arguments: named by them (a command, a path), then its rules
+          target: r.target ?? [rel(subject(r.tool_name, r.tool_input), r.cwd), ...(r.v2?.rules || []).map(x => `${x.id} ${x.reason}`.trim())].filter(Boolean).join(" · "), flags: [...(pol.flags || [])], denied: pol.decision === "deny",
           reasons: pol.reasons || [], start: r.ts, end: null, ms: null, error: false, child: null, v2: r.v2, approvals: []
         };
         if (act.denied) act.flags.unshift("denied");
@@ -1743,7 +1744,8 @@
       const elapsed = S.firstTs ? (V2 ? S.lastTs : t) - S.firstTs : 0;
       const held = S.actList.filter(a => a.v2?.decision === "ask").length, v2flag = S.actList.filter(a => a.v2?.decision === "flag").length, high = S.alerts.filter(a => a.sev === "high").length;
       const items = V2 ? [
-        ["RUNS", scope ? 1 : [...RUNS.values()].length, ""], ["AGENTS", agents.length, ""], ["CALLS", S.actList.length, "am"],
+        // a v2 agent is keyed per run (its session): count the agents by name, as the runs list names them
+        ["RUNS", scope ? 1 : [...RUNS.values()].length, ""], ["AGENTS", new Set(agents.map(a => a.name || a.type)).size, ""], ["CALLS", S.actList.length, "am"],
         ["FLAGGED", v2flag, v2flag ? "am" : ""], ["BLOCKED", blocked, blocked ? "dn" : ""], ["HELD", held, held ? "am" : ""],
         ["APPROVED", S.approved, S.approved ? "up" : ""], ["GAPS", S.gaps, S.gaps ? "dn" : ""], ["HIGH ALERTS", high, high ? "dn" : ""],
         ["ERRORS", errors, errors ? "dn" : ""], ["SPAN", fmtDur(elapsed), ""], ["RECORDS", S.recs.length, ""]] : [
