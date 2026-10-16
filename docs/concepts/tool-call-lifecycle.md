@@ -25,7 +25,7 @@ sequenceDiagram
     A->>S: complete(decision_id, args_digest, result)
     S-->>A: ok (tool.result)
     A->>S: close_run
-    Note over S: grace window, gaps, reconciliation, run.final
+    Note over A,S: grace window, gaps, reconciliation, run.final
     S->>W: checkpoint + consistency proof
     W-->>S: cosignature
 ```
