@@ -1,7 +1,7 @@
 # FAQ and limits
 
 Every known limit and trade-off, from all the docs, is listed in one place: [known limits](limits.md). How the whole
-system works, and the hard questions about it, on one page: [Tracekit in depth](in-depth.md).
+system works, one concept per page: [how Tracekit works](concepts/README.md).
 
 ## What does a verified bundle prove?
 
