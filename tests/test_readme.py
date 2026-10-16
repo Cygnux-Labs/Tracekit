@@ -39,16 +39,10 @@ class Readme(unittest.TestCase):
         self.assertEqual(p.returncode, 0)
         self.assertTrue(p.stdout.startswith("tracekit "))
 
-    def test_hero_is_the_reproducible_observer_video(self):
-        with open(os.path.join(ROOT, "docs", "demo", "record_observer.mjs"), encoding="utf-8") as f:
-            self.assertIn('"observer.gif"', f.read())
-        self.assertTrue(os.path.exists(os.path.join(ROOT, "docs", "demo", "observer_scene.py")))
-        with open(os.path.join(ROOT, "README.md"), encoding="utf-8") as f:
-            self.assertIn('src="https://raw.githubusercontent.com/Cygnux-Labs/Tracekit/main/docs/demo/observer.gif"', f.read())
-
     def test_repo_links_point_at_existing_files(self):
-        # README links are absolute so they work on PyPI too; each must still name a file in this repository
+        # README links and images are absolute so they work on PyPI too; each must still name a file in this repository
         with open(os.path.join(ROOT, "README.md"), encoding="utf-8") as f:
-            paths = re.findall(r"https://github\.com/Cygnux-Labs/Tracekit/(?:blob|tree)/main/([^)#\s\"]+)", f.read())
-        self.assertTrue(paths)
+            paths = re.findall(r"https://(?:github\.com/Cygnux-Labs/Tracekit/(?:blob|tree)/main|"
+                               r"raw\.githubusercontent\.com/Cygnux-Labs/Tracekit/main)/([^)#\s\"]+)", f.read())
+        self.assertIn("docs/demo/cover-up.gif", paths)
         self.assertEqual([p for p in paths if not os.path.exists(os.path.join(ROOT, p))], [])

@@ -1,0 +1,63 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@500;600;700;800;900&family=IBM+Plex+Mono:wght@400;500;600&display=block" rel="stylesheet">
+<style>
+:root{--bg:#0e0d0c;--grid:rgba(255,236,210,.05);--ink:#f1ebe0;--soft:#a79f92;--dim:#6d665d;--amber:#f1b23c;--amber-ink:#f1b23c;
+  --card:#171513;--line:rgba(255,236,210,.16);--glow:rgba(241,178,60,.13);--ok:#8fd19e;--bad:#f1b23c;--zone:rgba(241,178,60,.05)}
+html.light{--bg:#f4efe6;--grid:rgba(60,40,15,.06);--ink:#1b1714;--soft:#5d554b;--dim:#8c8378;--amber:#e3a02a;--amber-ink:#a8690a;
+  --card:#fffdf8;--line:rgba(60,40,15,.18);--glow:rgba(227,160,42,.16);--ok:#2f8a4a;--bad:#b8730c;--zone:rgba(227,160,42,.07)}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{width:1280px;height:560px;overflow:hidden;background:transparent}.frame{position:absolute;inset:0;border-radius:18px;overflow:hidden;background-color:var(--bg);background-image:linear-gradient(var(--grid) 1px,transparent 1px),linear-gradient(90deg,var(--grid) 1px,transparent 1px);background-size:40px 40px}
+body{font-family:Archivo,sans-serif;color:var(--ink);position:relative}
+.box{position:absolute;border:1px solid var(--line);background:var(--card);border-radius:10px;padding:16px 18px}
+.t{font-weight:800;font-size:21px;letter-spacing:-.01em}
+.s{margin-top:6px;font:500 13.5px/1.5 "IBM Plex Mono",monospace;color:var(--soft)}
+.n{position:absolute;top:-12px;left:14px;background:var(--bg);color:var(--amber-ink);font:600 13px/1 "IBM Plex Mono",monospace;padding:4px 7px;border:1px solid var(--amber);border-radius:5px}
+.zone{position:absolute;left:430px;top:40px;width:420px;height:484px;border:1.5px dashed var(--amber);border-radius:16px;background:var(--zone)}
+.zl{position:absolute;left:452px;top:470px;line-height:1.5 !important;font:600 12.5px/1 "IBM Plex Mono",monospace;color:var(--amber-ink);letter-spacing:.04em}
+.pill{display:inline-block;font:600 12.5px/1 "IBM Plex Mono",monospace;padding:5px 8px;border-radius:5px;border:1px solid var(--line);margin:8px 6px 0 0}
+.allow{color:var(--ok);border-color:var(--ok)} .deny{color:var(--bad);border-color:var(--bad)} .ask{color:var(--soft)}
+.chain{display:flex;gap:6px;margin-top:10px}
+.chain i{display:block;width:38px;height:26px;border:1px solid var(--line);border-radius:4px;font:600 11px/24px "IBM Plex Mono",monospace;text-align:center;font-style:normal;color:var(--soft)}
+svg{position:absolute;inset:0;overflow:visible}
+.lbl{position:absolute;font:500 12.5px/1.3 "IBM Plex Mono",monospace;color:var(--soft);background:var(--bg);padding:2px 5px}
+.big{font-weight:900;font-size:15px;letter-spacing:.04em}
+.v{color:var(--ok)} .f{color:var(--bad)}
+</style>
+<script>if(location.search.includes('light'))document.documentElement.classList.add('light')</script>
+</head><body><div class="frame">
+<svg width="1280" height="560">
+  <defs><marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="var(--amber)"/></marker></defs>
+  <g stroke="var(--amber)" stroke-width="2" fill="none" marker-end="url(#a)">
+    <path d="M272 165 H452"/>
+    <path d="M452 228 H272" stroke-dasharray="5 5"/>
+    <path d="M828 165 H930"/>
+    <path d="M640 360 V440 H930" />
+    
+  </g>
+</svg>
+<div class="box" style="left:36px;top:108px;width:236px;height:176px"><div class="n">1</div>
+  <div class="t">Your agent</div><div class="s">through its SDK, adapter or coding-agent hook</div>
+  <div class="s" style="color:var(--dim)">holds a run token,<br>never a key</div></div>
+<div class="lbl" style="left:284px;top:138px">decide this call?</div>
+<div class="lbl" style="left:284px;top:236px">allow · deny · ask</div>
+
+<div class="zone"></div>
+<div class="zl">OUT OF THE AGENT'S REACH<br><span style="font-weight:500;letter-spacing:0">a separate user, a sidecar or a central host</span></div>
+<div class="box" style="left:452px;top:70px;width:376px;height:290px"><div class="n">2</div>
+  <div class="t">Signer</div>
+  <div class="s">decides with its own policy, before the call runs</div>
+  <div><span class="pill allow">allow</span><span class="pill deny">deny</span><span class="pill ask">ask a person</span></div>
+  <div class="s" style="margin-top:14px">signs every call, decision and result into one hash chain per run</div>
+  <div class="chain"><i>1</i><i>2</i><i>3</i><i>4</i><i>5</i><i>6</i><i style="border-color:var(--amber);color:var(--amber-ink)">7</i></div>
+  <div class="s" style="margin-top:12px">a missed event becomes a signed gap</div></div>
+
+<div class="box" style="left:930px;top:108px;width:310px;height:132px"><div class="n">3</div>
+  <div class="t">Witnesses</div><div class="s">cosign each checkpoint; a monitor watches the log from outside</div></div>
+<div class="lbl" style="left:836px;top:138px">checkpoints</div>
+
+<div class="box" style="left:930px;top:360px;width:310px;height:164px"><div class="n">4</div>
+  <div class="t">run.tkb → tracekit verify</div><div class="s">offline, with the keys and witnesses you pinned</div>
+  <div class="s" style="margin-top:10px"><span class="big v">VERIFIED</span> &nbsp;or&nbsp; <span class="big f">FAILED</span> at the record that changed</div></div>
+<div class="lbl" style="left:676px;top:428px">export a file per run</div>
+</div></body></html>
