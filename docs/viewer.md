@@ -195,7 +195,9 @@ run with the code `tracekit verify` runs. The page is the observer's terminal, f
 - **Detail**: a call's decision, its rules with their reasons, its arguments commitment and approval binding, and the
   verdict of its run. v2 records keep a call's arguments only as a salted commitment, so the viewer shows the rules'
   reasons instead (from the policy whose hash the decision records: a shipped pack or the config's `policy`; other
-  policies show rule ids only); `tracekit signer reveal --record <seq>` gives an auditor the salt.
+  policies show rule ids only); `tracekit signer reveal --record <seq>` gives an auditor the salt. With the dev signer
+  (`tracekit view --dev`, 1.2.2), each call also shows what it ran: its redacted arguments from the dev signer's
+  [content vault](privacy.md#the-content-vault), read once per run and refresh (a `content.accessed` record each).
 - **Run review** (detail, with a run selected and no row): Integrity and Assurance, allowed / flagged / denied / held
   and who approved, gaps by kind, coverage. Each line opens its first record.
 - **Replay** (with a run selected): `SPACE` plays or pauses, `←` `→` step one record, `D` `H` `G` jump to the next deny,

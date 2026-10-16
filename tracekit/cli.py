@@ -239,6 +239,8 @@ def main(argv=None):
     p = sub.add_parser("last", help="the dev signer's most recent finished run: export it, pin the dev signer's key "
                                     "and verify it")
     p.add_argument("-o", "--out", help="the bundle (default: <run id>.tkb here); its trust config goes next to it")
+    p.add_argument("--open", action="store_true", help="the most recent run even if it is still open (a coding "
+                   "agent's session run stays open until the session ends), verified up to its last checkpointed record")
 
     p = sub.add_parser("verify", help="verify a .tkb offline")
     p.add_argument("bundle")
@@ -782,7 +784,8 @@ def _quote(path):
 def _last(a):
     """`tracekit last`: the dev signer's most recent finished run, exported, checked against a trust config that pins
     the dev signer's own log key (dev assurance: the same user holds that key), and verified. A newer run that is
-    closing is waited for, up to LAST_WAIT_S; a newer one still open is named and skipped."""
+    closing is waited for, up to LAST_WAIT_S; a newer one still open is named and skipped, or with --open taken as it
+    stands."""
     import argparse
     import collections
     import time
@@ -818,19 +821,20 @@ def _last(a):
         print(f"tracekit last: cannot read the dev signer's store: {e}", file=sys.stderr)
         return 1
     final = [x for x in runs if x[1] == "run.final"]
-    for (_, run_id), kind, agent in runs[:len(runs) - len(final)]:
+    for (_, run_id), kind, agent in [] if a.open else runs[:len(runs) - len(final)]:
         why = ("closed, and not finalised yet: is the dev signer still running (`tracekit up`)?" if kind == "run.closing"
                else "still open: it finishes when the agent's process exits (tracekit.instrument() closes its run "
-                    "then) or after the signer's idle timeout")
+                    "then) or after the signer's idle timeout; tracekit last --open verifies it as it stands")
         print(f"tracekit last: the newer run {run_id} ({agent}) is {why}" + (
             "; showing the run before it" if final else "; run tracekit last again once it has finished"),
             file=sys.stderr)
-    if not final:
+    pick = runs if a.open else final
+    if not pick:
         if not runs:
             print(f"tracekit last: no runs in the dev signer's store ({store}) yet: add `import tracekit; "
                   "tracekit.instrument()` to your agent and run it", file=sys.stderr)
         return 1
-    (tenant, run_id), _, agent = final[0]
+    (tenant, run_id), _, agent = pick[0]
     out = os.path.abspath(a.out or f"{run_id}.tkb")
     ns = argparse.Namespace(run=run_id, run_set=False, dev=True, config=None, tenant=tenant, out=out, otel=False,
                             otel_endpoint=None, with_findings=False)

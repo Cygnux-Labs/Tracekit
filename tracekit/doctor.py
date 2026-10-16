@@ -81,8 +81,9 @@ def collect(config=None, issuer_key=None):
                                client_json=client.SYSTEM_CONFIG if sc else None, issuer_key=issuer_key)
     if sc:
         return out
-    from .signer.service import dev_data_dir
-    return v2_checks({"data_dir": dev_data_dir()}, "dev", settings=_dev_settings())
+    from .signer.service import dev_content, dev_data_dir
+    return v2_checks({"data_dir": dev_data_dir(), "content": dev_content().get("content")}, "dev",
+                     settings=_dev_settings())
 
 
 def _dev_settings():
