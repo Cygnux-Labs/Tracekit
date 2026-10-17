@@ -60,8 +60,13 @@ def e4_v2(d):
 
 def e8(d):
     cases = {k: v for k, v in d.items() if not k.startswith("_")}
-    rows = [(k, yes(v["caught"]), v.get("verdict") or f"hook exit {v.get('hook_exit_code')} ({v.get('meaning', '')})")
-            for k, v in sorted(cases.items())]
+    def outcome(v):
+        if v.get("verdict"):
+            return v["verdict"]
+        if "hook_exit_code" not in v:   # E8 v2 cases answered by the signer, not a hook
+            return v.get("meaning", "refused")
+        return f"hook exit {v['hook_exit_code']}" + (f" ({v['meaning']})" if v.get("meaning") else "")
+    rows = [(k, yes(v["caught"]), outcome(v)) for k, v in sorted(cases.items())]
     gates = ", ".join(f"{k[1:]} {'passed' if v['passed'] else 'FAILED'}" for k, v in sorted(d.items())
                       if k.startswith("_"))
     return table(("Case", "Caught", "Verdict or outcome"), rows) + f"\n\nGates: {gates}."

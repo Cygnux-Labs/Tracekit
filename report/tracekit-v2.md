@@ -267,10 +267,20 @@ on v1 only.
 
 E8 attacks the path that feeds the log rather than a finished log: real unprivileged OS users (the agent's user and
 a second local user) against a system-mode signer with a registered harness. E8 v2 runs the same attacks, plus
-self-approval, against the v2 signer in system mode; it needs root on Linux.
+self-approval, against the v2 signer in system mode; it needs root on Linux. The result below is the CI job's run at
+v1.2.3 (Linux, system mode), which runs E8 v2 on every pull request too.
 
 <!-- table e8-v2 -->
-_No `eval/results/e8_insider_v2.json` committed: run `eval/e8_insider_v2.py` (see its docstring)._
+| Case | Caught | Verdict or outcome |
+|---|---|---|
+| E8v2.1 decoy redirect | yes | hook exit 2 (2 = refused; 0 = ran, recorded only by the decoy) |
+| E8v2.2 cross-user injection | yes | refused |
+| E8v2.3 signer down | yes | hook exit 2 (2 = blocked; 0 = ran unrecorded) |
+| E8v2.4 policy via env | yes | hook exit 2 (2 = still denied by the signer's policy) |
+| E8v2.5 self-approval | yes | the agent's own approve is refused and the call stays unapproved |
+| E8v2.6 fabricated run, outside the harness | yes | hook exit 2 |
+
+Gates: gate passed.
 <!-- /table -->
 
 The committed results are those of E8 on the v0.3 laptop signer, which the CI job "E8 insider attacks (Linux system
@@ -476,7 +486,7 @@ Doctor checks only the misconfigurations it was written for. Its output is advic
   report's tree is not proven consistent with it.
 - **The evaluation's reach.** The experiments are synthetic, written by the authors, and mostly run on one developer
   machine; several gates hold on Linux only. No experiment measures adversarial models trying to bypass capture, real
-  production traffic, or an external review. E8 v2 results are not yet committed.
+  production traffic, or an external review.
 
 # 6. Related work
 
