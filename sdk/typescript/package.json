@@ -2,6 +2,8 @@
   "name": "@cygnuxlabs/tracekit",
   "version": "1.2.3",
   "description": "Tracekit for TypeScript/JavaScript agents: a native client of the Tracekit signer: policy-gated tool calls and signed evidence, no runtime dependencies.",
+  "keywords": ["ai-agents", "agent-security", "audit-log", "tamper-evident", "guardrails", "mcp", "openai-agents",
+    "vercel-ai", "claude-agent-sdk", "observability", "provenance", "llm"],
   "author": "Cygnux Labs",
   "license": "MIT",
   "type": "module",
@@ -40,5 +42,7 @@
     "openai": "*",
     "@anthropic-ai/sdk": "*"
   },
-  "repository": { "type": "git", "url": "https://github.com/Cygnux-Labs/Tracekit" }
+  "repository": { "type": "git", "url": "https://github.com/Cygnux-Labs/Tracekit" },
+  "homepage": "https://github.com/Cygnux-Labs/Tracekit#readme",
+  "bugs": "https://github.com/Cygnux-Labs/Tracekit/issues"
 }
