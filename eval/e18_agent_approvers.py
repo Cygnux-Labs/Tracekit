@@ -55,13 +55,14 @@ class World:
     def new_run(self):
         r = self.s.register_run({"request_id": f"r{next(_n)}", "agent": {"name": "victim"}})
         self.run = {"run_id": r["run_id"], "run_token": r["run_token"]}
+        self.seq = itertools.count()   # a client counts each run's events from 0; a jump is a signed gap
 
     def call(self, method, who=None, **req):
         return self.s.call(who or self.s.identity, method, {"request_id": f"r{next(_n)}", **req})
 
     def ask(self, args, tcid, attempt=0):
         """Decide and request an approval for the call; the approval id, or None when it was not held."""
-        d = self.call("decide", **self.run, stream="s", client_seq=next(_n), tool_call_id=tcid, attempt=attempt,
+        d = self.call("decide", **self.run, stream="s", client_seq=next(self.seq), tool_call_id=tcid, attempt=attempt,
                       tool="pay", args_source="parsed", args=args)
         return d["decision"] == "ask" and self.call("approval_request", **self.run, tool_call_id=tcid,
                                                     attempt=attempt)["approval_id"] or None
@@ -108,7 +109,7 @@ def bounds(w):
 
 
 def untrusted(w):
-    w.call("observe", **w.run, stream="s", client_seq=next(_n), source="inbox:1", trust="untrusted",
+    w.call("observe", **w.run, stream="s", client_seq=next(w.seq), source="inbox:1", trust="untrusted",
            value="refund to new account")
     ran = w.attack(dict(OK, memo="refund to new account"), "u1")
     return {"caught": not ran, "ran": ran}
