@@ -10,7 +10,8 @@ readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "Cygnux Labs" }]
-keywords = ["ai-agents", "observability", "audit", "tamper-evident", "claude-code", "security", "provenance", "opentelemetry"]
+keywords = ["ai-agents", "observability", "audit", "audit-log", "tamper-evident", "claude-code", "security", "provenance",
+            "opentelemetry", "agent-security", "guardrails", "mcp", "langchain", "langgraph", "openai-agents", "llm"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Environment :: Console",
@@ -58,6 +59,7 @@ tracekit = "tracekit.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/Cygnux-Labs/Tracekit"
+Documentation = "https://github.com/Cygnux-Labs/Tracekit#docs"
 Issues = "https://github.com/Cygnux-Labs/Tracekit/issues"
 Changelog = "https://github.com/Cygnux-Labs/Tracekit/blob/main/CHANGELOG.md"
 Security = "https://github.com/Cygnux-Labs/Tracekit/blob/main/SECURITY.md"
