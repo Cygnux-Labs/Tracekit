@@ -54,7 +54,8 @@ uvx --from tracekit-ai tracekit demo --server
 ```
 
 No API key, and nothing to install with [uv](https://docs.astral.sh/uv/). From an empty cache on a Mac it took 5
-seconds (10 with `pip install tracekit-ai` in a fresh venv). A scripted agent makes three calls, and you should see:
+seconds (10 with `pip install tracekit-ai` in a fresh venv). The package is `tracekit-ai`: `tracekit` on PyPI is an
+unrelated project. A scripted agent makes three calls, and you should see:
 
 ```text
 == agent run (SCRIPTED: fixed tool calls, not a model)
@@ -251,7 +252,9 @@ The full model: [architecture](https://github.com/Cygnux-Labs/Tracekit/blob/main
 | Someone outside the team has to trust the record: a customer, an auditor, an incident review | Only your team reads the logs, to debug |
 
 For debugging a prototype, a tracer such as OpenTelemetry, Langfuse or LangSmith is the right tool. Tracekit doesn't
-replace one; it's the record you can hand to someone who doesn't trust the agent.
+replace one; it's the record you can hand to someone who doesn't trust the agent. How it compares with tracers,
+guardrail libraries and other tamper-evident logs, and when it's the wrong choice:
+[comparisons](https://github.com/Cygnux-Labs/Tracekit/blob/main/COMPARISONS.md).
 
 ## Commands
 
@@ -303,7 +306,9 @@ Each of these is useful on its own, and none needs to know the whole codebase:
   [SECURITY.md](https://github.com/Cygnux-Labs/Tracekit/blob/main/SECURITY.md) describes.
 
 To start: `make install`, then `make check`
-([contributing](https://github.com/Cygnux-Labs/Tracekit/blob/main/CONTRIBUTING.md)).
+([contributing](https://github.com/Cygnux-Labs/Tracekit/blob/main/CONTRIBUTING.md)). Smaller tasks are labelled
+[good first issue](https://github.com/Cygnux-Labs/Tracekit/labels/good%20first%20issue). Everyone taking part follows
+the [code of conduct](https://github.com/Cygnux-Labs/Tracekit/blob/main/CODE_OF_CONDUCT.md).
 
 ## Docs
 
