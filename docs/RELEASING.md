@@ -18,6 +18,9 @@ and attaches every file with its SBOMs and `SHA256SUMS` to the GitHub release. U
 3. Tag and push: `git tag v0.4.0 && git push origin v0.4.0`. The workflow refuses a tag that matches neither version.
 4. Approve the `release` environment (build, image push, attestations), then `pypi`, then `npm`. Each needs a
    reviewer other than the person who pushed the tag.
+5. Once the `npm` job has published, refresh the TypeScript lockfile in a follow-up PR: `make test-ts`, then commit
+   `sdk/typescript/package-lock.json`. The version bump can't lock signer packages that aren't published yet, and once
+   they are, `npm ci` (the `release-dry-run` job, `scripts/release/build.py`) fails until the lockfile names them.
 
 ### What gets built, signed and published
 

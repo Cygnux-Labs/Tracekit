@@ -37,7 +37,7 @@ The CI `test` job installs `.[dev]` only: no `psycopg`, and no `initdb` on `PATH
 | PyPI, npm and ghcr names | `tracekit-ai` (`pyproject.toml`), `@cygnuxlabs/tracekit` and `@cygnuxlabs/tracekit-signer-*` (`sdk/typescript/package.json`), `ghcr.io/cygnux-labs/tracekit-signer` (the chart's default image) | | owner action (own the names, set up trusted publishing: [RELEASING.md](RELEASING.md#one-time-setup)) |
 | Technical report | [report/tracekit-v2.md](../report/tracekit-v2.md); `tests/test_report.py` (its tables match `eval/results`) | `python -m pytest tests/test_report.py`; `python3 report/tables.py` regenerates the tables | done |
 | E-series results current | `eval/results/*.json`, recorded on macOS; `tests/test_report.py` keeps the report equal to them but reruns nothing | `make eval` | done locally (no CI job reruns the evals) |
-| E8 v2 on Linux as root | `eval/e8_insider_v2.py`. The CI `insider` job runs the v1 `eval/e8_insider.py` only; no E8 v2 result is recorded | as root on Linux, after `tracekit init --v2` (see the script's docstring) | owner action (a Linux host as root, or an `insider` job for v2) |
+| E8 v2 on Linux as root | `eval/e8_insider_v2.py`; CI runs it as root on Linux on every pull request; `eval/results/e8_insider_v2.json` is the run at v1.2.3 | as root on Linux, after `tracekit init --v2` (see the script's docstring) | done |
 | E9 full on Linux | `eval/e9_signer_perf.py` (gates only on Linux without `--quick`); the recorded results are `--quick` runs on macOS | `python eval/e9_signer_perf.py` on Linux; `--storage postgres --dsn DSN` for Postgres | owner action (a full run on a Linux host) |
 | Nightly real-AWS KMS | as in the exit gate | | owner action |
 | CHANGELOG entry for 1.0 | `CHANGELOG.md` (1.0.0) | | done |

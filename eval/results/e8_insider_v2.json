@@ -1,0 +1,60 @@
+{
+  "E8v2.1 decoy redirect": {
+    "caught": true,
+    "honest_call_recorded": true,
+    "hook_exit_code": 2,
+    "recorded_on_the_system_signer": false,
+    "meaning": "2 = refused; 0 = ran, recorded only by the decoy",
+    "stderr": "[tracekit] TRACEKIT_SIGNER=/tmp/e8v2-decoy/signer.sock is not the system signer /run/tracekit-signer/signer.sock; refused; blocking"
+  },
+  "E8v2.2 cross-user injection": {
+    "caught": true,
+    "honest_call_recorded": true,
+    "injection_recorded": false,
+    "mallory_saw": {
+      "guessed": "{\"read_token\": \"PermissionError\", \"decide\": \"run_token_invalid\"}",
+      "stolen": "{\"read_token\": \"PermissionError\", \"decide\": \"run_token_invalid\"}"
+    }
+  },
+  "E8v2.4 policy via env": {
+    "caught": true,
+    "honest_call_recorded": true,
+    "hook_exit_code": 2,
+    "meaning": "2 = still denied by the signer's policy",
+    "stderr": "Blocked by tracekit policy: TK-D006, TK-F001, TK-F005, TK-F012, TK-F013: uploading a secrets file; network; secrets_access; egress; egress"
+  },
+  "E8v2.5 self-approval": {
+    "caught": true,
+    "agent_saw": {
+      "decision": "ask",
+      "self_approve": "forbidden",
+      "consume_ok": false
+    },
+    "meaning": "the agent's own approve is refused and the call stays unapproved"
+  },
+  "E8v2.6 fabricated run, outside the harness": {
+    "caught": true,
+    "fake_call_recorded": false,
+    "hook_exit_code": 2,
+    "stderr": "[tracekit] hook error (RPCError: forbidden: not from a registered harness (no registered harness among the sender's ancestor processes)); blocking"
+  },
+  "E8v2.3 signer down": {
+    "caught": true,
+    "honest_call_recorded": true,
+    "hook_exit_code": 2,
+    "meaning": "2 = blocked; 0 = ran unrecorded",
+    "stderr": "[tracekit] signer unreachable (no signer answering at /run/tracekit-signer/signer.sock: [Errno 2] No such file or directory); blocking (fail-closed)"
+  },
+  "_gate": {
+    "harness_binding": true,
+    "required": [
+      "E8v2.1 decoy redirect",
+      "E8v2.2 cross-user injection",
+      "E8v2.4 policy via env",
+      "E8v2.5 self-approval",
+      "E8v2.6 fabricated run, outside the harness",
+      "E8v2.3 signer down"
+    ],
+    "passed": true
+  }
+}
