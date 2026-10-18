@@ -69,3 +69,11 @@
 {"tool": "mcp:aws/describe_log_groups", "args": {"prefix": "/aws/lambda"}, "expect": "allow", "note": "read through a cloud MCP tool"}
 {"tool": "mcp:aws/suggest_aws_commands", "args": {"query": "how do I delete an S3 bucket"}, "expect": "allow", "note": "read through a cloud MCP tool"}
 {"tool": "mcp:kubernetes/resources_get", "args": {"kind": "Deployment", "name": "api"}, "expect": "allow", "note": "read through a cloud MCP tool"}
+{"tool": "Bash", "args": {"command": "railway up"}, "expect": "allow", "note": "deploy, read or list"}
+{"tool": "bash", "args": {"command": "railway logs"}, "expect": "allow", "note": "deploy, read or list"}
+{"tool": "shell", "args": {"command": "fly deploy"}, "expect": "allow", "note": "deploy, read or list"}
+{"tool": "Bash", "args": {"command": "flyctl status --app acme-prod"}, "expect": "allow", "note": "deploy, read or list"}
+{"tool": "terminal", "args": {"command": "heroku logs --tail --app acme-prod"}, "expect": "allow", "note": "deploy, read or list"}
+{"tool": "Bash", "args": {"command": "createdb test_acme"}, "expect": "allow", "note": "deploy, read or list"}
+{"tool": "bash", "args": {"command": "git commit -m 'docs: why we never run railway down or dropdb on prod'"}, "expect": "allow", "note": "a commit message naming a destroy command"}
+{"tool": "Bash", "args": {"command": "grep -rn volumeDelete src/"}, "expect": "allow", "note": "searching for a destroy mutation"}
