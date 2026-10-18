@@ -20,7 +20,8 @@ if HAVE:
     from pydantic import BaseModel
 
     from tracekit import autowire
-    from tracekit.integrations.agent_framework import WAIT_MS, Tracekit
+    from tracekit.integrations.agent_framework import Tracekit
+    from tracekit.integrations.gate import WAIT_MS
 
     class Scripted(FunctionInvocationLayer, BaseChatClient):
         """A chat client whose model is `script(messages)`, the contents of its next response: no network, no key."""

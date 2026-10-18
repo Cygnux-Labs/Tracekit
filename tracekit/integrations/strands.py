@@ -21,10 +21,9 @@ import warnings
 from strands.hooks import AfterToolCallEvent, BeforeToolCallEvent, HookProvider, MultiAgentInitializedEvent
 
 from tracekit.format.canon import event_hash, loads_strict
-from tracekit.sdk.client import AsyncRunHandle, named_rules, result_field
+from tracekit.integrations.gate import gate_call, run_handle
+from tracekit.sdk.client import result_field
 
-WAIT_MS = 300000   # lean: one wait of the signer's cap (5 minutes) for an `ask`; loop to a deadline if people need longer
-POLL_S = 0.5   # how often a wait for a person checks the agent's cancel signal (agent.cancel())
 BACKGROUND = "_background_execution"   # the flag Strands strips from a call's input before it runs (background_tasks)
 
 
@@ -33,13 +32,7 @@ class Tracekit(HookProvider):
     RunHandle (`Client().run(...)`); an AsyncRunHandle works too. One instance may serve several agents, in any threads."""
 
     def __init__(self, run):
-        if isinstance(run, AsyncRunHandle):   # it wraps the RunHandle that does the work
-            run = run._sync
-        if not callable(getattr(run, "decide", None)):
-            raise TypeError(f"Tracekit(run) needs a run handle, Client().run(...), not {run!r}"
-                            + (": tracekit.instrument() returns None when none of the frameworks it wires is "
-                               "installed, and doesn't wire Strands, so use Client().run(...)" if run is None else ""))
-        self.run = run
+        self.run = run_handle(run, unwired=", and doesn't wire Strands")
         self._lock = threading.Lock()
         # lean: one entry per call id for the provider's life, and one per call interrupted and never resumed; prune
         # them at run end if agents run for days
@@ -59,7 +52,8 @@ class Tracekit(HookProvider):
         with self._lock:   # a sync tool's sub-agent, or agents in other threads, may share this provider
             attempt = self._attempts.get(call_id, 0)
             self._attempts[call_id] = attempt + 1
-        d, why = await self._gate(call_id, attempt, use["name"], use.get("input") or {}, event.agent.cancel_signal)
+        d, why = await gate_call(self.run, call_id, attempt, use["name"], use.get("input") or {},
+                                 cancelled=event.agent.cancel_signal)
         self._decided[id(event)] = d, attempt, why, copy.deepcopy(use) if d else None, event.selected_tool
         if why is not None:
             event.cancel_tool = why
@@ -90,59 +84,6 @@ class Tracekit(HookProvider):
         else:
             out = f"{type(e).__name__}: {e}" if e else " ".join(c.get("text", "") for c in r.get("content", []))
             await self._complete(call, "error", error=out[:4096])
-
-    async def _gate(self, call_id, attempt, tool, args, cancelled):
-        """(the signer's decision, None) when the call may run now, else (the decision, the reason the model reads); the
-        decision is None when there is none to complete (an outage the run's fail mode decided, or none was made).
-        Raises nothing but CancelledError: a call Tracekit can't decide doesn't run, and an approval whose wait is
-        cancelled (the task, or `cancelled`) is withdrawn."""
-        run, at, d = self.run, {"attempt": attempt}, None
-        # lean: each signer call, and an ask's wait of up to 5 minutes, holds a thread of asyncio's default executor;
-        # many asks pending at once can starve it, so use an async signer client once one exists
-        try:
-            d = await asyncio.to_thread(run.decide, call_id, tool, args, **at)
-            rules = named_rules(d["rule_ids"]) or d.get("reason") or d["decision"]
-            if d.get("unavailable"):   # the run's fail mode decided: nothing to consume or complete
-                return None, None if d["decision"] == "allow" else f"Tool call refused by Tracekit: {d['reason']}"
-            if d["decision"] == "deny":
-                return d, f"Tool call blocked by Tracekit policy: {rules}"
-            hint = None
-            if d["decision"] == "ask":
-                request = asyncio.ensure_future(asyncio.to_thread(run.call, "approval_request", tool_call_id=call_id, **at))
-                try:
-                    hint = (await asyncio.shield(request))["approval_id"]   # a cancel lets it finish, to withdraw it
-                    wait = asyncio.ensure_future(asyncio.to_thread(run.call, "approval_wait", approval_id=hint,
-                                                                   timeout_ms=WAIT_MS))
-                    while not (await asyncio.wait({wait}, timeout=POLL_S))[0]:
-                        if cancelled.is_set():   # agent.cancel(): the call won't run, so no one may approve it
-                            await asyncio.to_thread(self._abandon, hint, "the agent was cancelled while it waited")
-                            return d, f"Tool call held by Tracekit policy ({rules}) and not approved: cancelled"
-                    state = wait.result()["state"]
-                except asyncio.CancelledError:   # the agent's task was cancelled: so is the approval
-                    if hint is None:
-                        hint = (await request)["approval_id"]
-                    await asyncio.to_thread(self._abandon, hint, "the agent run was cancelled while it waited")
-                    raise
-                if state != "approved":
-                    if state == "requested":   # unanswered: withdrawn, so no one approves a call that is gone
-                        await asyncio.to_thread(self._abandon, hint, "no answer within the hook's wait")
-                    return d, f"Tool call held by Tracekit policy ({rules}) and not approved: {state}"
-            c = await asyncio.to_thread(run.approval_consume, call_id, tool, args, approval_id_hint=hint, **at)
-            if not c["ok"]:
-                return d, f"Tool call blocked by Tracekit policy: {c.get('reason') or rules}"
-            if "args" in c and c["args"] != args:
-                return d, "Tool call blocked by Tracekit: the arguments the signer approved are not the call's"
-            return d, None
-        except asyncio.CancelledError:
-            raise
-        except Exception as e:
-            return d, f"Tool call refused: Tracekit could not decide it ({type(e).__name__}: {e})"[:4096]
-
-    def _abandon(self, approval_id, reason):
-        try:
-            self.run.call("approval_abandon", approval_id=approval_id, reason=reason)
-        except Exception as e:   # it then expires with the run
-            warnings.warn(f"tracekit: approval {approval_id} not withdrawn: {type(e).__name__}: {e}", stacklevel=2)
 
     async def _complete(self, call, status, **fields):
         d, attempt, why, use, _ = call

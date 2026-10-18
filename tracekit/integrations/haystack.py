@@ -24,9 +24,8 @@ from haystack.components.agents.state import replace_values
 from haystack.dataclasses import ChatMessage
 
 from tracekit.format.canon import event_hash
-from tracekit.sdk.client import AsyncRunHandle, named_rules, result_field
-
-WAIT_MS = 300000   # lean: one wait of the signer's cap (5 minutes) for an `ask`; loop to a deadline if people need longer
+from tracekit.integrations.gate import gate_call, run_handle
+from tracekit.sdk.client import result_field
 
 
 class Tracekit:
@@ -34,13 +33,7 @@ class Tracekit:
     list it last at both. `run` is a RunHandle (`Client().run(...)`); an AsyncRunHandle works too."""
 
     def __init__(self, run):
-        if isinstance(run, AsyncRunHandle):   # it wraps the RunHandle that does the work
-            run = run._sync
-        if not callable(getattr(run, "decide", None)):
-            raise TypeError(f"Tracekit(run) needs a run handle, Client().run(...) or tracekit.instrument()'s, not {run!r}"
-                            + (": tracekit.instrument() returns None when none of the frameworks it wires is "
-                               "installed, so use Client().run(...)" if run is None else ""))
-        self.handle = run
+        self.handle = run_handle(run, instrument=True)
         # lean: one entry per call id for the hook's life; prune them at run end if agents run for days
         self._attempts = {}   # tool call id -> the attempt its next decision is
         self._ran = {}   # tool call id -> [(decision, attempt, ToolCall)] of the calls let run, in call order, until
@@ -81,54 +74,11 @@ class Tracekit:
 
     async def _gate(self, call):
         """(the reason the model reads, None) for a call that may not run, else (None, (decision, attempt) to complete
-        it under; None for an outage the fail mode let through). Raises nothing but CancelledError: a call Tracekit
-        can't decide doesn't run, and an agent run cancelled while it waits for a person withdraws the approval."""
-        call_id, tool, args = call.id, call.tool_name, call.arguments or {}
-        attempt = self._attempts.get(call_id, 0)
-        self._attempts[call_id] = attempt + 1
-        run, at = self.handle, {"attempt": attempt}
-        # lean: each signer call, and an ask's wait of up to 5 minutes, holds a thread of asyncio's default executor;
-        # many asks pending at once can starve it, so use an async signer client once one exists
-        try:
-            d = await asyncio.to_thread(run.decide, call_id, tool, args, **at)
-            rules = named_rules(d["rule_ids"]) or d.get("reason") or d["decision"]
-            if d.get("unavailable"):   # the run's fail mode decided: nothing to consume or complete
-                return (None, None) if d["decision"] == "allow" else \
-                    (f"Tool call refused by Tracekit: {d['reason']}", None)
-            if d["decision"] == "deny":
-                return f"Tool call blocked by Tracekit policy: {rules}", None
-            hint = None
-            if d["decision"] == "ask":
-                request = asyncio.ensure_future(asyncio.to_thread(run.call, "approval_request", tool_call_id=call_id, **at))
-                try:
-                    hint = (await asyncio.shield(request))["approval_id"]   # a cancel lets it finish, to withdraw it
-                    state = (await asyncio.to_thread(run.call, "approval_wait", approval_id=hint,
-                                                     timeout_ms=WAIT_MS))["state"]
-                except asyncio.CancelledError:   # the agent run was cancelled: so is the approval, before anyone uses it
-                    if hint is None:
-                        hint = (await request)["approval_id"]
-                    await asyncio.to_thread(self._abandon, hint, "the agent run was cancelled while it waited")
-                    raise
-                if state != "approved":
-                    if state == "requested":   # unanswered: withdrawn, so no one approves a call that is gone
-                        await asyncio.to_thread(self._abandon, hint, "no answer within the hook's wait")
-                    return f"Tool call held by Tracekit policy ({rules}) and not approved: {state}", None
-            c = await asyncio.to_thread(run.approval_consume, call_id, tool, args, approval_id_hint=hint, **at)
-            if not c["ok"]:
-                return f"Tool call blocked by Tracekit policy: {c.get('reason') or rules}", None
-            if "args" in c and c["args"] != args:
-                return "Tool call blocked by Tracekit: the arguments the signer approved are not the call's", None
-            return None, (d, attempt)
-        except asyncio.CancelledError:
-            raise
-        except Exception as e:
-            return f"Tool call refused: Tracekit could not decide it ({type(e).__name__}: {e})"[:4096], None
-
-    def _abandon(self, approval_id, reason):
-        try:
-            self.handle.call("approval_abandon", approval_id=approval_id, reason=reason)
-        except Exception as e:   # it then expires with the run
-            warnings.warn(f"tracekit: approval {approval_id} not withdrawn: {type(e).__name__}: {e}", stacklevel=2)
+        it under; None for an outage the fail mode let through)."""
+        attempt = self._attempts.get(call.id, 0)
+        self._attempts[call.id] = attempt + 1
+        d, why = await gate_call(self.handle, call.id, attempt, call.tool_name, call.arguments or {})
+        return why, ((d, attempt) if why is None and d is not None else None)
 
     async def _record(self, result):
         """Complete the first open call of the id `result` (a ToolCallResult) is the outcome of, under its own decision
