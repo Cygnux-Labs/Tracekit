@@ -85,6 +85,12 @@ class Hook(unittest.TestCase):
         r.approval_consume.assert_called_once_with("call-1", "close_account", '{"account": "ACC-9"}',
                                                    approval_id_hint=None, attempt=0)
 
+    def test_approved_arguments_match_the_models_json_text_parsed(self):
+        r = run()
+        r.approval_consume.return_value = {"ok": True, "rule_ids": [], "args": {"account": "ACC-9"}}
+        self.assertEqual(agent(r, self.tool(), '{"account": "ACC-9"}').run_sync("close it").output, "closed ACC-9")
+        self.assertEqual(self.ran, ["ACC-9"])
+
     def test_an_approved_ask_consumes_its_approval(self):
         r = run("ask", ["A1"])
         agent(r, self.tool()).run_sync("close it")

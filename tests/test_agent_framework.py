@@ -140,7 +140,8 @@ class Hook(unittest.TestCase):
     def test_an_unanswered_approval_is_withdrawn(self):
         r = run("ask", ["A1"], state="requested")
         self.assertIn("not approved: requested", go(agent(r, self.tool())).text)
-        self.assertEqual([c.args[0] for c in r.call.call_args_list][-1], "approval_abandon")
+        self.assertEqual(r.call.call_args_list[-1], mock.call("approval_abandon", approval_id="apr-1",
+                                                              reason="no answer within the middleware's wait"))
         self.assertEqual(self.ran, [])
 
     def test_the_refusal_names_the_rules_but_not_the_unknown_tool_flag(self):

@@ -92,7 +92,7 @@ class Tracekit:
             elif out.is_error:   # the tool raised (LlamaIndex made its exception the result) or isn't the agent's
                 e = out.exception
                 await complete(self.run, d, call_id, attempt, "error",
-                                     error=(f"{type(e).__name__}: {e}" if e else str(out.content))[:4096])
+                               error=(f"{type(e).__name__}: {e}" if e else str(out.content))[:4096])
             else:
                 send = d and d.get("send_result")
                 await complete(self.run, d, call_id, attempt, "ok", result=result_field(send, out.content))
