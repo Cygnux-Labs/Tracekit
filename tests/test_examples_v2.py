@@ -13,7 +13,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 NEEDS = {"custom": (), "langchain": ("langchain", "langgraph"), "openai_agents": ("agents",),
          "claude_agent_sdk": ("claude_agent_sdk",), "mcp": ("mcp",),
          "pydantic_ai": ("pydantic_ai",), "agent_framework": ("agent_framework",), "google_adk": ("google.adk",),
-         "haystack": ("haystack",), "strands": ("strands",)}
+         "haystack": ("haystack",), "strands": ("strands",), "llama_index": ("llama_index",)}
 
 
 def python(*argv, env, cwd):
@@ -82,6 +82,9 @@ class Examples(unittest.TestCase):
 
     def test_strands(self):
         self.run_example("strands")
+
+    def test_llama_index(self):
+        self.run_example("llama_index")
 
 
 class DemoServer(unittest.TestCase):
