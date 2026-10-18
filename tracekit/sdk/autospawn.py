@@ -4,8 +4,9 @@ The runtime dir (0700, ours) holds `signer.lock`, which the signer locks for its
 else (the kernel drops the lock when the process dies, so liveness never depends on pids); `spawn.lock`, which a
 client holds while it decides whether to start one; `signer.sock`; `endpoint.json` ({"pid", ...}, written by the
 signer after it binds; without Unix sockets also the loopback port and token, decision S3) and `signer.log`. A
-signer that answers `hello` with a protocol range that excludes this client is refused and left running: only
-`tracekit up --replace` stops it.
+dev signer whose protocol range ends below this client's (one from before an upgrade) is stopped and replaced, with a
+warning; a newer one is refused and left running, so an old client never downgrades it: only `tracekit up --replace`
+stops that one.
 
 Off in system mode and when TRACEKIT_SIGNER is set: an agent must not be able to substitute its own signer there.
 """
@@ -19,7 +20,9 @@ import subprocess
 import sys
 import threading
 import time
+import warnings
 
+from tracekit import __version__
 from tracekit.client import SYSTEM_CONFIG
 from tracekit.locking import lock_file, unlock_file
 from tracekit.sdk.client import Incompatible, SignerUnavailable, connect
@@ -123,12 +126,24 @@ def ensure(wait=True, timeout=10):
         raise SignerUnavailable("dev auto-spawn is off when TRACEKIT_SIGNER is set or in system mode")
     d = runtime_dir()
     lock = os.path.join(d, LOCK)
-    conn = _try(d)
+    try:
+        conn = _try(d)
+    except Incompatible as e:
+        if not e.older:
+            raise
+        conn = None
     if conn:
         return conn
     with open(os.path.join(d, SPAWN_LOCK), "a") as spawn_lock:
         lock_file(spawn_lock)
-        conn = _try(d)
+        try:
+            conn = _try(d)
+        except Incompatible as e:
+            if not e.older:   # newer than this client: an old client never downgrades it
+                raise
+            warnings.warn(f"tracekit: stopped the dev signer from an older Tracekit (pid {down(timeout)}) to start "
+                          f"this one's ({__version__})", stacklevel=2)
+            conn = None
         if conn:
             return conn
         p = None

@@ -113,6 +113,18 @@ class DevSigner(unittest.TestCase):
         self.assertEqual(p.wait(10), 0)
         self.assertEqual(Client().status()["rpc_version"], RPC_VERSION)
 
+    def test_an_older_signer_is_replaced_with_a_warning(self):
+        os.makedirs(self.run_dir, 0o700)   # what an upgrade leaves running: hooks would otherwise all fail closed
+        p = subprocess.Popen(FAKE_ARGV + ["--proto", f"{RPC_VERSION - 2}-{RPC_VERSION - 1}", "--version", "0.0.1"],
+                             start_new_session=True, stderr=subprocess.DEVNULL)
+        self.addCleanup(p.wait, 10)
+        while autospawn._pid(self.run_dir) is None:
+            self.assertIsNone(p.poll())
+            time.sleep(0.02)
+        with self.assertWarnsRegex(UserWarning, rf"older Tracekit \(pid {p.pid}\)"):
+            self.assertEqual(Client().status()["rpc_version"], RPC_VERSION)
+        self.assertEqual(p.wait(10), 0)
+
     def test_read_only_home_with_tracekit_signer(self):
         hello = json.loads(self.cli("up", "--json"))   # --json waits for the signer it starts
         home = os.path.join(self.dir, "home")

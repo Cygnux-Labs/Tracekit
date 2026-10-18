@@ -111,7 +111,7 @@ Per framework, the same three steps with a 10-line example: [LangChain / LangGra
 |---|---|
 | `tracekit.instrument(): no signer answering at ...; dev auto-spawn is off while TRACEKIT_SIGNER is set` | Start the signer `TRACEKIT_SIGNER` names, or unset it for a same-user dev signer. |
 | `tracekit.instrument(): ...; system mode: start the system signer` | `sudo tracekit doctor` says what is wrong with the system signer. |
-| `the Tracekit signer X (pid N, protocol [a, b]) ... cannot serve this client` | A dev signer from another Tracekit version is running: `tracekit up --replace` stops it and starts this one. |
+| `the Tracekit signer X (pid N, protocol [a, b]) ... cannot serve this client` | A dev signer from a newer Tracekit version is running (an older one is replaced on its own): `tracekit up --replace` stops it and starts this one. |
 | `tracekit last: the newer run ID (agent) is still open` | The agent is still running, or was killed before it closed its run. End it and run `tracekit last` again; meanwhile it shows the run before. |
 | `tracekit last: no runs in the dev signer's store` | Add `import tracekit; tracekit.instrument()` to your agent and run it first. |
 | `tracekit.instrument(): <framework> <version> not wired ... Tracekit is tested with ...` | Install the versions it names, or wire that adapter by hand as its quickstart shows. |
