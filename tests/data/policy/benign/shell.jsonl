@@ -137,3 +137,5 @@
 {"tool": "Bash", "args": {"command": "find . -name '*.py' | xargs -I{} wc -l {}"}, "expect": "allow", "note": "xargs replace into a plain command"}
 {"tool": "Bash", "args": {"command": "env -u DEBUG make test"}, "expect": "allow", "note": "env unset"}
 {"tool": "Bash", "args": {"command": "rm -rf /home/dev/project/build"}, "expect": "allow", "note": "delete inside a project"}
+{"tool": "Bash", "args": {"command": "git push --dry-run origin --delete old-branch"}, "expect": "allow", "note": "previewing a remote ref deletion"}
+{"tool": "Bash", "args": {"command": "git push origin main:main"}, "expect": "allow", "note": "updating a remote ref with a non-empty source"}

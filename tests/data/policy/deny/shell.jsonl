@@ -88,3 +88,6 @@
 {"tool": "Bash", "args": {"command": "git push --mirror origin"}, "expect": "deny", "note": "mirror push overwrites every ref"}
 {"tool": "Bash", "args": {"command": "rm -rf /home"}, "expect": "deny", "note": "recursive delete of all homes"}
 {"tool": "Bash", "args": {"command": "rm -rf /Users/"}, "expect": "deny", "note": "recursive delete of all homes (macOS)"}
+{"tool": "Bash", "args": {"command": "git push origin --delete main"}, "expect": "ask", "note": "deleting a remote Git ref"}
+{"tool": "Bash", "args": {"command": "git -C repo push -d origin obsolete"}, "expect": "ask", "note": "deleting a remote Git ref with the short option"}
+{"tool": "Bash", "args": {"command": "git push origin :refs/heads/obsolete"}, "expect": "ask", "note": "deleting a remote Git ref with a deletion refspec"}
