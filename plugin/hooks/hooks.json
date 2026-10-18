@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/tracekit-hook\" PreToolUse",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/tracekit-hook\" PreToolUse",
             "timeout": 600
           }
         ]
@@ -19,7 +19,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/tracekit-hook\" PostToolUse",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/tracekit-hook\" PostToolUse",
             "timeout": 30
           }
         ]
@@ -31,7 +31,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/tracekit-hook\" PostToolUseFailure",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/tracekit-hook\" PostToolUseFailure",
             "timeout": 30
           }
         ]
@@ -42,7 +42,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/tracekit-hook\" UserPromptSubmit",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/tracekit-hook\" UserPromptSubmit",
             "timeout": 30
           }
         ]
@@ -53,7 +53,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/tracekit-hook\" Stop",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/tracekit-hook\" Stop",
             "timeout": 30
           }
         ]
@@ -64,7 +64,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/tracekit-hook\" SubagentStart",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/tracekit-hook\" SubagentStart",
             "timeout": 30
           }
         ]
@@ -75,7 +75,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/tracekit-hook\" SubagentStop",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/tracekit-hook\" SubagentStop",
             "timeout": 30
           }
         ]
@@ -86,7 +86,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/tracekit-hook\" SessionStart",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/tracekit-hook\" SessionStart",
             "timeout": 30
           }
         ]
@@ -97,7 +97,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/tracekit-hook\" SessionEnd",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/scripts/tracekit-hook\" SessionEnd",
             "timeout": 15
           }
         ]

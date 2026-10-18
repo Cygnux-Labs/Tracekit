@@ -3,7 +3,8 @@
 Tracekit makes a record of what an agent did that can't be changed without the change showing, and that anyone can
 check offline. How much of the agent's activity that record holds, and who could have rewritten it, depends on where
 the signer runs. This page says, per deployment, what you can rely on and what you can't. Every limit, with what to do
-about it, is in [limits](limits.md).
+about it, is in [limits](limits.md). How this evidence bears on the EU AI Act, ISO/IEC 42001, the NIST AI RMF and
+OWASP's lists: [compliance mapping](compliance/README.md).
 
 ## Everywhere
 

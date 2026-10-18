@@ -23,9 +23,17 @@ image, attests each one (SLSA build provenance through GitHub artifact attestati
    `sdk/typescript/package-lock.json`. The version bump can't lock signer packages that aren't published yet, and once
    they are, `npm ci` (the `release-dry-run` job, `scripts/release/build.py`) fails until the lockfile names them.
 6. Once the `pypi` job has published, an owner of the `Cygnux-Labs` GitHub organisation publishes the MCP gateway's
-   entry in the MCP Registry from the tagged checkout: `mcp-publisher login github`, then `mcp-publisher publish`
-   (it reads `server.json`). The registry proves the `io.github.Cygnux-Labs` namespace through that GitHub login; the
-   release workflow doesn't run this step.
+   entry in the MCP Registry from the tagged checkout. The registry proves the `io.github.Cygnux-Labs` namespace
+   through a GitHub login, and `mcp-publisher login github` (device flow) can't see the org's Owner role: create a
+   classic token with only `read:org` and `read:user` and a 7-day expiry
+   ([new token](https://github.com/settings/tokens/new?scopes=read:org,read:user&description=mcp-publisher)), run
+   `mcp-publisher login github --token <token>`, then `mcp-publisher publish` (it reads `server.json`), then delete the
+   token. The release workflow doesn't run this step.
+7. If the release changed `plugin/`, copy it to
+   [Cygnux-Labs/tracekit-claude-plugin](https://github.com/Cygnux-Labs/tracekit-claude-plugin), the source of the
+   Claude Code plugin directory's listing (this repository is over the directory's 50 MiB limit). From the tagged
+   checkout, `rsync -a --delete --exclude .git --exclude LICENSE plugin/ <clone>/` (the clone keeps its own
+   `LICENSE`), then commit and push there; change nothing else. The directory picks up new commits about every 6 hours.
 
 ### What gets built, signed and published
 
