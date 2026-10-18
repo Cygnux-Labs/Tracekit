@@ -11,12 +11,11 @@ from the model's JSON and validated against the function: the ones it runs with 
 function's exception is recorded as an error and reaches Agent Framework unchanged, which hands the model its error
 result; a call that runs again under the same id (a model that reuses an id) is decided as its next attempt.
 """
-import json
-
 from agent_framework import Content, FunctionMiddleware, MiddlewareTermination
 from pydantic_core import to_jsonable_python
 
 from tracekit.autowire import DECIDED_UPSTREAM
+from tracekit.format.canon import loads_strict
 from tracekit.integrations.gate import complete, gate_call, run_handle
 from tracekit.sdk.client import result_field
 
@@ -99,6 +98,6 @@ def _as_the_model_reads(result):
 
 def _parsed(text):
     try:
-        return json.loads(text)
+        return loads_strict(text)
     except (TypeError, ValueError):
         return text

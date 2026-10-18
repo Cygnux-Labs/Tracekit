@@ -86,6 +86,9 @@ the sub-agent's own hooks decide the calls the sub-agent makes (give it the same
   a `State` parameter) are not the model's arguments: they are not decided, so `from: untrusted` rules don't see an
   untrusted tool's values passed that way.
 - A `before_tool` hook listed after Tracekit can add a call, which then runs undecided. List Tracekit last.
+- A call without an id is decided under `haystack-<hex>`, which its result then carries. With the
+  [LLM gateway](../gateway.md) the model's tool use has an id of the gateway's own, so the two pair only by their
+  arguments (`paired_by_args`), never when two calls of a turn are alike.
 - An `ask` holds its whole step: Haystack runs a step's calls once every `before_tool` hook has returned, so the
   step's allowed calls wait for the answer too.
 - A refused call's error result is not sent to the agent's `streaming_callback` and not counted in

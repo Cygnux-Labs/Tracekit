@@ -105,7 +105,10 @@ class Hook(Tools):
                     r.complete.assert_called_once_with("call-1", "ok", attempt=0, result=mock.ANY)
                 else:
                     self.assertIn("Tracekit policy", out)
-                    r.complete.assert_not_called()
+                    if name == "consume refused":   # allowed, then refused: completed as not run
+                        r.complete.assert_called_once_with("call-1", "error", attempt=0, error=mock.ANY)
+                    else:
+                        r.complete.assert_not_called()
 
     def test_the_signer_decides_the_call_id_and_the_models_arguments(self):
         r = run()

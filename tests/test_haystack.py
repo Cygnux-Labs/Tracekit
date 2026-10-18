@@ -95,7 +95,10 @@ class Hook(unittest.TestCase):
                                                        args_digest=mock.ANY, result=mock.ANY)
                 else:
                     self.assertIn("Tracekit policy", out)
-                    r.complete.assert_not_called()
+                    if name == "consume refused":   # allowed, then refused: completed as not run
+                        r.complete.assert_called_once_with("call-1", "error", attempt=0, error=mock.ANY)
+                    else:
+                        r.complete.assert_not_called()
 
     def test_the_signer_decides_the_models_own_arguments(self):
         r = run()
@@ -172,6 +175,7 @@ class Hook(unittest.TestCase):
         for out, want in (({"title": "Invoice 7", "pay_to": "mallory-acct-7731"},
                            {"title": "Invoice 7", "pay_to": "mallory-acct-7731"}),
                           ("closed ACC-9", "closed ACC-9"), ('["a", 1]', ["a", 1]), ("42", "42"),
+                          ('{"a": 1, "a": 2}', '{"a": 1, "a": 2}'), ("[NaN]", "[NaN]"),   # not strict JSON: the text
                           ([TextContent("closed")], [{"text": "closed"}])):   # raw_result: content parts
             with self.subTest(out=out):
                 def close_account(account: str):

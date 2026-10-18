@@ -3,6 +3,7 @@ Strands, LlamaIndex): check the run handle, decide a call (an `ask` waits for a 
 Framework-free: what differs between the integrations comes in as arguments.
 """
 import asyncio
+import contextlib
 import warnings
 
 from tracekit.format.canon import loads_strict
@@ -64,19 +65,26 @@ async def gate_call(run, call_id, attempt, tool, args, *, args_source=None, json
                     state = wait.result()["state"]
             except asyncio.CancelledError:   # the task was cancelled: so is the approval, before anyone uses it
                 if hint is None:
-                    hint = (await request)["approval_id"]
-                await asyncio.to_thread(_abandon, run, hint, f"{who} was cancelled while it waited")
+                    with contextlib.suppress(Exception):   # no approval was requested: nothing to withdraw
+                        hint = (await request)["approval_id"]
+                if hint is not None:
+                    await asyncio.to_thread(_abandon, run, hint, f"{who} was cancelled while it waited")
                 raise
             if state != "approved":
                 if state == "requested":   # unanswered: withdrawn, so no one approves a call that is gone
                     await asyncio.to_thread(_abandon, run, hint, f"no answer within the {waiter}'s wait")
                 return d, f"Tool call held by Tracekit policy ({rules}) and not approved: {state}"
         c = await asyncio.to_thread(run.approval_consume, call_id, tool, args, approval_id_hint=hint, **src, **at)
+        why = None
         if not c["ok"]:
-            return d, f"Tool call blocked by Tracekit policy: {c.get('reason') or rules}"
-        if "args" in c and c["args"] != (loads_strict(args) if json_text and isinstance(args, str) else args):
-            return d, "Tool call blocked by Tracekit: the arguments the signer approved are not the call's"
-        return d, None
+            why = f"Tool call blocked by Tracekit policy: {c.get('reason') or rules}"
+        elif "args" in c and c["args"] != (loads_strict(args) if json_text and isinstance(args, str) else args):
+            why = "Tool call blocked by Tracekit: the arguments the signer approved are not the call's"
+        # an allowed call (or a consumed approval) left open would read as a result sent before it was recorded; an
+        # ask whose consume was refused stays open: completing it would sign it as run without an approval
+        if why is not None and (c["ok"] or d["decision"] != "ask"):
+            await complete(run, d, call_id, attempt, "error", error=f"not run: {why}"[:4096])
+        return d, why
     except asyncio.CancelledError:
         raise
     except Exception as e:

@@ -98,5 +98,10 @@ scripted model, no API key): [`examples/v2/google_adk`](../../examples/v2/google
   `destination_y` in its arguments.
 - The `payload` a user sends with ADK's tool confirmation (`tool_context.tool_confirmation.payload`) is input the tool
   reads that Tracekit never decided.
+- With the gateway's [verified tool results](../gateway.md#verified-tool-results), a result is recorded as the tool
+  callbacks get it (`{"result": ...}` around anything but a dict), not as each model class sends it: under
+  `AnthropicLlm` every result but a dict (and a dict with a `content` key or only `result`) reads as `result_mismatch`,
+  under `LiteLlm` a model or dataclass return (ADK sends its Python repr). Gemini requests, ADK's default, don't pass
+  through the gateway, so nothing is checked.
 - Each signer call, and an `ask`'s wait, holds a thread of asyncio's default executor; many asks waiting at once can
   starve it.
