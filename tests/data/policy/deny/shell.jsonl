@@ -100,3 +100,5 @@
 {"tool": "Bash", "args": {"command": "git push --del origin b1"}, "expect": "ask", "note": "a unique prefix of --delete"}
 {"tool": "Bash", "args": {"command": "git push --pru origin"}, "expect": "ask", "note": "a unique prefix of --prune"}
 {"tool": "Bash", "args": {"command": "git push origin 0000000000000000000000000000000000000000:refs/heads/b1"}, "expect": "ask", "note": "the all-zero object id as the source deletes the ref"}
+{"tool": "Bash", "args": {"command": "npm install", "dangerouslyDisableSandbox": true}, "expect": "ask", "note": "Claude Code's unsandboxed retry: no filesystem or network limits"}
+{"tool": "Bash", "args": {"command": "gh pr view 12", "dangerouslyDisableSandbox": true}, "expect": "ask", "note": "an unsandboxed retry after a TLS failure under Seatbelt"}

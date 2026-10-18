@@ -293,6 +293,14 @@ class Detect(unittest.TestCase):
     def test_both_system_modes(self):
         self.assertEqual(self.collect({"socket": "/s", "signer": "/t"})[0], ["D-V1-X", "D-V2"])
 
+    def test_the_sandbox_settings_read_are_the_ones_claude_code_ranks(self):
+        project = os.path.join(os.getcwd(), ".claude")
+        self.assertEqual(self.collect(None)[1].call_args.kwargs["sandbox_settings"][-3:],
+                         [os.path.join(project, "settings.json"), os.path.join(project, "settings.local.json"),
+                          doctor._managed()])
+        v2 = self.collect({"signer": "/t", "hooks": {"user": "nobody-e16", "settings": "/home/a/.claude/settings.json"}})[1]
+        self.assertEqual(v2.call_args.kwargs["sandbox_settings"], ["/home/a/.claude/settings.json", doctor._managed()])
+
     def test_config_flag(self):
         ids, v2 = self.collect(None, "/etc/other.yaml")
         self.assertEqual((ids, v2.call_args.args[0]), (["D-V2"], "/etc/other.yaml"))
@@ -328,6 +336,52 @@ class Detect(unittest.TestCase):
     def test_untrusted_system_config_fails(self):
         with mock.patch.object(doctor.client, "system_config", side_effect=client.SystemConfigError("not root-owned")):
             self.assertEqual([(r["id"], r["status"]) for r in doctor.collect()], [("D-SYSTEM-CONFIG", "fail")])
+
+
+class ClaudeSandbox(unittest.TestCase):
+    """D-CLAUDE-SANDBOX: a sandbox that falls back to running commands unsandboxed, or whose allowlist a custom proxy
+    port switched off, looked the same as a sandbox that holds."""
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.d, True)
+
+    def check(self, *layers):
+        paths = []
+        for i, layer in enumerate(layers):
+            paths.append(os.path.join(self.d, f"{i}.json"))
+            with open(paths[-1], "w") as f:
+                json.dump(layer, f)
+        paths.append(os.path.join(self.d, "missing.json"))
+        return {r["id"]: r for r in doctor.v2_checks({"data_dir": self.d}, "dev",
+                                                     sandbox_settings=paths)}.get("D-CLAUDE-SANDBOX")
+
+    def test_shown_only_when_the_sandbox_is_on(self):
+        self.assertIsNone(self.check({}, {"sandbox": {"enabled": False}}, ["not settings"], {"sandbox": "on"}))
+        self.assertIsNone(self.check({"sandbox": {"enabled": True, "failIfUnavailable": True}},
+                                     {"sandbox": {"enabled": False}}))
+
+    def test_a_fallback_or_a_custom_proxy_warns(self):
+        got = self.check({"sandbox": {"enabled": True}})
+        self.assertEqual(got["status"], "warn")
+        self.assertIn("runs commands unsandboxed", got["detail"])
+        self.assertIn('"failIfUnavailable": true', got["fix"])
+        got = self.check({"sandbox": {"enabled": True, "failIfUnavailable": True, "network": {"httpProxyPort": 8080}}})
+        self.assertEqual(got["status"], "warn")
+        self.assertIn("httpProxyPort set: Claude Code's network allowlist stops applying", got["detail"])
+        self.assertNotIn("failIfUnavailable", got["fix"])
+
+    def test_a_sandbox_that_fails_closed_is_ok_and_says_who_holds_retries(self):
+        got = self.check({"sandbox": {"enabled": True, "failIfUnavailable": True}})
+        self.assertEqual((got["status"], got["fix"]), ("ok", ""))
+        self.assertIn("TK-A003 holds each one", got["detail"])
+        got = self.check({"sandbox": {"enabled": True, "failIfUnavailable": True, "allowUnsandboxedCommands": False}})
+        self.assertIn("retries off", got["detail"])
+
+    def test_a_later_file_wins_each_key_and_network_keys_merge(self):
+        got = self.check({"sandbox": {"enabled": True, "network": {"socksProxyPort": 1080}}},
+                         {"sandbox": {"failIfUnavailable": True, "network": {"allowedDomains": ["example.org"]}}})
+        self.assertEqual(got["status"], "warn")
+        self.assertEqual(got["detail"].split(":")[0], "socksProxyPort set")
 
 
 class PluginHooks(unittest.TestCase):

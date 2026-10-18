@@ -140,3 +140,4 @@
 {"tool": "Bash", "args": {"command": "git push origin main:main"}, "expect": "allow", "note": "updating a remote ref with a non-empty source"}
 {"tool": "Bash", "args": {"command": "git push -u origin add-delete-button"}, "expect": "allow", "note": "a branch name containing -delete"}
 {"tool": "Bash", "args": {"command": "git push -o merge_request.draft origin feature"}, "expect": "allow", "note": "a push option whose value contains d"}
+{"tool": "Bash", "args": {"command": "npm install", "dangerouslyDisableSandbox": false}, "expect": "allow", "note": "a sandboxed call that names the parameter"}

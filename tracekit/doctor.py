@@ -80,12 +80,36 @@ def collect(config=None, issuer_key=None):
         plugin = agent and install.plugin_enabled([os.path.join(agent.pw_dir, ".claude", "settings.json")])
         return out + v2_checks(config or install.V2_CONFIG, agent=agent, settings=settings,
                                signer=(sc or {}).get("signer"), opt=install.OPT, unit=unit,
-                               client_json=client.SYSTEM_CONFIG if sc else None, issuer_key=issuer_key, plugin=plugin)
+                               client_json=client.SYSTEM_CONFIG if sc else None, issuer_key=issuer_key, plugin=plugin,
+                               sandbox_settings=[p for p in (settings, _managed()) if p])
     if sc:
         return out
     from .signer.service import dev_content, dev_data_dir
+    project = os.path.join(os.getcwd(), ".claude")
     return v2_checks({"data_dir": dev_data_dir(), "content": dev_content().get("content")}, "dev",
-                     settings=_dev_settings(), plugin=install.plugin_enabled())
+                     settings=_dev_settings(), plugin=install.plugin_enabled(),
+                     sandbox_settings=[*install.user_settings_all(), os.path.join(project, "settings.json"),
+                                       os.path.join(project, "settings.local.json"), _managed()])
+
+
+def _managed():
+    return install.MANAGED_SETTINGS["darwin" if sys.platform == "darwin" else "linux"]
+
+
+def _sandbox(paths):
+    """Claude Code's `sandbox` settings from the files `paths`, a later file winning each key (the order Claude Code
+    ranks them: user, project, local, managed).
+    lean: key by key, not Claude Code's whole precedence (--settings, a user `allowUnsandboxedCommands: false` that a
+    project can't undo); doctor reports these files, so a setup that relies on the rest can read differently"""
+    out = {"network": {}}
+    for p in paths:
+        try:
+            s = read_json(p).get("sandbox")
+        except (OSError, ValueError, AttributeError):   # missing, unreadable, or not a settings object
+            continue
+        if isinstance(s, dict):
+            out.update(s, network={**out["network"], **(s["network"] if isinstance(s.get("network"), dict) else {})})
+    return out
 
 
 def _dev_settings():
@@ -199,12 +223,13 @@ def _vault_off(cfg, keys):
 
 
 def v2_checks(config, profile="production", agent=None, settings=None, signer=None, opt=None, unit=None,
-              client_json=None, now=None, issuer_key=None, plugin=None):
+              client_json=None, now=None, issuer_key=None, plugin=None, sandbox_settings=()):
     """Checks of a v2 signer. config: a signer.yaml path, or the dev signer's config dict. profile "dev" turns what
     a dev setup can't have into warnings. agent: the agent's pwd entry; settings: its Claude Code settings; signer: the
     socket client.json names; opt: the root-owned venv; unit: the service file; client_json: the system client config;
     issuer_key: the KMS key of the record key issuer, which this host's AWS principal must not sign with; plugin: the
-    settings file that enables the Tracekit Claude Code plugin (install.plugin_enabled), whose hooks are init's."""
+    settings file that enables the Tracekit Claude Code plugin (install.plugin_enabled), whose hooks are init's;
+    sandbox_settings: the Claude Code settings files that set its sandbox, lowest rank first (_sandbox)."""
     from .format import checkpoint
     from .integrations.claude_code import APPROVAL_WAIT_S
     from .signer import service
@@ -399,6 +424,24 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
                 add("D-SIGNER-ENV", env in (None, signer), f"TRACEKIT_SIGNER is {str(env)[:256]!r}, not {signer}" if env not in
                     (None, signer) else "TRACEKIT_SIGNER names the system socket or is unset",
                     f"remove env.TRACEKIT_SIGNER from {settings} (the hook refuses it and blocks every call)")
+
+    sandbox = _sandbox(sandbox_settings)
+    if sandbox.get("enabled") is True:
+        why, fix = [], []
+        if sandbox.get("failIfUnavailable") is not True:
+            why.append("when the sandbox can't start, Claude Code runs commands unsandboxed (failIfUnavailable is "
+                       "not true), and no hook sees that it didn't start")
+            fix.append('set "failIfUnavailable": true under "sandbox"')
+        ports = [k for k in ("httpProxyPort", "socksProxyPort") if sandbox["network"].get(k) is not None]
+        if ports:
+            why.append(f"{' and '.join(ports)} set: Claude Code's network allowlist stops applying to what its "
+                       "commands send to that proxy")
+            fix.append("remove the proxy ports unless your proxy enforces an allowlist")
+        retry = ("off (allowUnsandboxedCommands is false)" if sandbox.get("allowUnsandboxedCommands") is False else
+                 "on: the coding pack's TK-A003 holds each one for a person")
+        add("D-CLAUDE-SANDBOX", not why, "; ".join(why) or f"Claude Code's sandbox is on and fails closed; "
+            f"unsandboxed retries {retry}",
+            "; ".join(fix) + " (docs/integrations/claude-code-sandbox.md)" if fix else "", bad=WARN)
 
     if prod:
         bad = trusted_file(policy)
