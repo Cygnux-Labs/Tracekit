@@ -1,5 +1,7 @@
 {
   "$schema": "https://context7.com/schema/context7.json",
+  "url": "https://context7.com/cygnux-labs/tracekit",
+  "public_key": "pk_EDimjdtfVG7Kmtb36fdbw",
   "projectTitle": "Tracekit",
   "description": "Checks each AI agent tool call against a policy before it runs (allow, deny, or hold for a person's approval), signs every call and decision into a hash chain, and exports each run as a .tkb file that verifies offline. Python package tracekit-ai, TypeScript package @cygnuxlabs/tracekit.",
   "folders": [
