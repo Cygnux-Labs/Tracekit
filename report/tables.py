@@ -63,8 +63,8 @@ def e8(d):
     def outcome(v):
         if v.get("verdict"):
             return v["verdict"]
-        if "hook_exit_code" not in v:   # E8 v2 cases answered by the signer, not a hook
-            return v.get("meaning", "refused")
+        if v.get("hook_exit_code") is None:   # E8 v2 cases answered by the signer, not a hook
+            return (v.get("meaning") or "refused") if v["caught"] else "not refused"
         return f"hook exit {v['hook_exit_code']}" + (f" ({v['meaning']})" if v.get("meaning") else "")
     rows = [(k, yes(v["caught"]), outcome(v)) for k, v in sorted(cases.items())]
     gates = ", ".join(f"{k[1:]} {'passed' if v['passed'] else 'FAILED'}" for k, v in sorted(d.items())

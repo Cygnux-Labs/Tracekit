@@ -7,7 +7,7 @@
 # normalised one), with `\` as `/` and also casefolded (the agent's file system may ignore case). Rules stay tripwires: the
 # protection is the signer, its storage and the witnesses.
 
-version: '2026.10-v2-5'
+version: '2026.10-v2-6'
 description: coding agents on a laptop (Claude Code, Codex, Cursor, Gemini)
 # laptop: a tool the pack does not map is flagged, not held; server.yaml holds it for a person (ask)
 unknown_tools: flag
@@ -121,6 +121,19 @@ deny:
     pattern: '(^|/)(etc/tracekit|var/lib/tracekit[^/]*|run/tracekit|\.tracekit-signer|\.tracekit-client|[Ll]ibrary/[Aa]pplication [Ss]upport/tracekit|\.local/share/tracekit|run/user/[0-9]+/tracekit|tmp/(tracekit|tk)-[0-9]+|(site|dist)-packages/tracekit/policy2/packs)(/|$)|/[Aa]pp[Dd]ata/[Ll]ocal/tracekit(/|$)'
     reason: writing Tracekit's own files, signer state or policy
     rationale: The file-editing twin of TK-D007; /etc/tracekit holds the signer config and policy, the dev data dir its keys and store.
+
+ask:
+  - id: TK-A001
+    class: shell
+    # each command's argv, so `echo terraform destroy`, a grep for it or a commit message naming it don't match. The
+    # CLIs' own aliases count (railway and fly rm/remove, pulumi down/dn, heroku apps:delete); the verb sits in the
+    # subcommand position and ends a word, so `--service delete-worker` or `fly logs -a delete-me` don't match; a
+    # mutation needs its call parenthesis, so a URL or file named serviceDelete.json doesn't.
+    pattern: '^((((railway|heroku) run (-[^ ]+ )*)?((terraform|tofu) (-[^ ]+ ){0,4}(destroy|apply (.* )?--?destroy)|pulumi (.* )?(destroy|down|dn)|dropdb)|((npx (-y |--yes )?|bunx )?(@railway/cli|railway)) ([a-z]+ )?(delete|remove|rm|down)|(fly|flyctl) ([a-z]+ )?(destroy|delete|remove|rm)|heroku (.* )?((apps|addons):(destroy|delete|remove)|destroy|pg:reset))([ =]|$)|(curl|wget|https?|xhs?|railway api) .*\b(volume|service|environment|project|database)Delete\s*\()'
+    # each of these CLIs prints its help and exits on --help (-h is dropdb's host)
+    unless: '(^| )--help( |$)'
+    reason: destroying a deployment, database or volume
+    rationale: Wipes whole environments or production data in one step (the 2026 PocketOS and DataTalks.Club wipes); a person confirms it.
 
 flag:
   - id: TK-F001
