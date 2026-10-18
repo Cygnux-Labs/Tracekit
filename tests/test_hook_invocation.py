@@ -95,7 +95,7 @@ class PluginShim(unittest.TestCase):
         if fail_mode is not None:
             with open(self.config, "w", encoding="utf-8") as f:
                 json.dump({"fail_mode": fail_mode} if fail_mode else {}, f)
-        return subprocess.run(["/bin/sh", self.script], input="{}", capture_output=True, text=True,
+        return subprocess.run(["/bin/sh", self.script, "PreToolUse"], input="{}", capture_output=True, text=True,
                               env={"PATH": self.bin, "TRACEKIT_PYTHON": ""}).returncode
 
     def test_missing_package_blocks_when_system_config_is_fail_closed(self):
@@ -124,18 +124,28 @@ class PluginShim(unittest.TestCase):
         with open(self.config, "w", encoding="utf-8") as f:
             json.dump({}, f)
         user_python = self.fake_python(os.path.join(self.bin, "python3"))
-        return subprocess.run(["/bin/sh", self.script], input="{}", capture_output=True, text=True,
+        return subprocess.run(["/bin/sh", self.script, "PreToolUse"], input="{}", capture_output=True, text=True,
                               env={"PATH": self.bin, "TRACEKIT_PYTHON": user_python}).returncode
 
     def test_system_mode_runs_only_the_root_owned_runtime(self):
         self.fake_python(self.system_python)
         self.assertEqual(self.run_system_mode(), 0)
-        self.assertIn(f"{self.system_python} -I -m tracekit.hook", self.calls())
+        self.assertIn(f"{self.system_python} -I -m tracekit.integrations.claude_code PreToolUse", self.calls())
         self.assertNotIn("python3", self.calls())
 
     def test_system_mode_blocks_without_the_runtime_and_ignores_other_pythons(self):
         self.assertEqual(self.run_system_mode(), 2)
         self.assertEqual(self.calls(), "")
+
+    def test_dev_mode_blocks_when_the_hook_starts_but_cannot_finish(self):
+        py = os.path.join(self.bin, "python3")   # imports tracekit, but the hook itself exits 1
+        with open(py, "w", encoding="utf-8") as f:
+            f.write('#!/bin/sh\ncase "$*" in *_entry*) exit 1 ;; esac\n')
+        os.chmod(py, 0o755)
+        r = subprocess.run(["/bin/sh", self.script, "PreToolUse"], input="{}", capture_output=True, text=True,
+                           env={"PATH": self.bin, "TRACEKIT_PYTHON": ""})
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("call blocked", r.stderr)
 
 
 if __name__ == "__main__":

@@ -138,7 +138,7 @@ class PluginPackage(unittest.TestCase):
         self.assertEqual(set(hooks), set(install.TOOL_EVENTS + install.OTHER_EVENTS))
         for ev, groups in hooks.items():
             h = groups[0]["hooks"][0]
-            self.assertEqual(h["command"], "${CLAUDE_PLUGIN_ROOT}/bin/tracekit-hook")
+            self.assertEqual(h["command"], '"${CLAUDE_PLUGIN_ROOT}/bin/tracekit-hook" ' + ev)   # v2: names its event
             self.assertEqual(h["timeout"], install.HOOK_TIMEOUT.get(ev, 30), ev)
             self.assertEqual(groups[0].get("matcher") == "*", ev in install.TOOL_EVENTS, ev)
 

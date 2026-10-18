@@ -9,6 +9,7 @@ import shlex
 import shutil
 import statistics
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -225,6 +226,18 @@ class HookV2(unittest.TestCase):
         code, err = self.hook("PreToolUse", tool_name="Read", tool_input={"file_path": "a"}, tool_use_id="t2")
         self.assertEqual(code, 0)
         self.assertIn("allowing (fail-open)", err)
+
+    def test_the_plugin_decides_through_the_dev_signer(self):
+        os.environ.update(CLAUDE_PLUGIN_ROOT=os.path.join(ROOT, "plugin"), TRACEKIT_PYTHON=sys.executable)
+        with open(os.path.join(ROOT, "plugin", "hooks", "hooks.json")) as f:
+            cmd = json.load(f)["hooks"]["PreToolUse"][0]["hooks"][0]["command"]
+        for tid, command, code in (("t1", "pkill tracekitd", 2), ("t2", "ls", 0)):   # no hook_event_name: hooks.json names it
+            p = subprocess.run(cmd, shell=True, cwd=self.cwd, capture_output=True, text=True, timeout=60, input=json.dumps(
+                {"session_id": "s1", "tool_use_id": tid, "tool_name": "Bash", "tool_input": {"command": command}}))
+            self.assertEqual(p.returncode, code, p.stderr)
+            if code == 2:
+                self.assertIn("TK-D007", p.stderr)
+        self.assertEqual([e["data"]["decision"] for e in self.events() if e["type"] == "policy.decision"], ["deny", "allow"])
 
     def test_overhead(self):
         self.pre("ls", tid="warm")
