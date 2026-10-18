@@ -11,7 +11,8 @@ import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 NEEDS = {"custom": (), "langchain": ("langchain", "langgraph"), "openai_agents": ("agents",),
-         "claude_agent_sdk": ("claude_agent_sdk",), "mcp": ("mcp",)}
+         "claude_agent_sdk": ("claude_agent_sdk",), "mcp": ("mcp",),
+         "pydantic_ai": ("pydantic_ai",)}
 
 
 def python(*argv, env, cwd):
@@ -65,6 +66,9 @@ class Examples(unittest.TestCase):
 
     def test_mcp(self):
         self.run_example("mcp")
+
+    def test_pydantic_ai(self):
+        self.run_example("pydantic_ai")
 
 
 class DemoServer(unittest.TestCase):
