@@ -325,6 +325,25 @@ class Paths(unittest.TestCase):
         self.assertEqual(self.ran, [])
         self.assertIn("Tool call blocked by Tracekit policy: D1", json.dumps([e.model_dump(mode="json") for e in out]))
 
+    def test_handing_a_task_to_a_task_mode_sub_agent_is_not_decided_but_its_tools_are(self):
+        """Not covered (docs/integrations/google-adk.md): ADK runs a task-mode sub-agent outside the tool callbacks."""
+        r = run()
+        r.decide.side_effect = lambda call_id, tool, args, **at: (
+            {"decision": "deny", "rule_ids": ["D1"]} if tool in ("helper", "close_account")
+            else run().decide.return_value)
+
+        def task(contents):
+            if not back(contents, "close_account"):
+                return calls(("close_account", {"account": "ACC-9"}, "sub-1"))
+            return calls(("finish_task", {"result": "done"}, "sub-2"))
+        helper = LlmAgent(name="helper", description="Closes accounts.", mode="task", model=Model(script=task),
+                          tools=[self.tool()])
+        asyncio.run(turn(runner([Tracekit(r)], root=LlmAgent(name="agent", model=Model(script=once("helper", {
+            "request": "close ACC-9"}, "root-1")), sub_agents=[helper]))))
+        self.assertEqual([c.args[:2] for c in r.decide.call_args_list], [("sub-1", "close_account"),
+                                                                         ("sub-2", "finish_task")])
+        self.assertEqual(self.ran, [])
+
     @unittest.skipUnless(importlib.util.find_spec("mcp"), "mcp not installed")
     def test_an_mcp_toolsets_tools_are_gated(self):
         from google.adk.tools.mcp_tool import McpToolset, StdioConnectionParams
@@ -403,6 +422,29 @@ class Paths(unittest.TestCase):
         self.confirm(r, False)
         self.assertEqual(self.ran, [])
         r.complete.assert_called_once_with("call-1", "error", attempt=1, error="rejected in ADK's tool confirmation")
+
+    def test_a_tool_that_asks_for_confirmation_itself_and_runs_on_a_rejection_completes_with_its_result(self):
+        def refund(amount: int, tool_context: ToolContext) -> str:
+            """Refund."""
+            if tool_context.tool_confirmation is None:
+                tool_context.request_confirmation(hint="a big refund?")
+                return "waiting"
+            if not tool_context.tool_confirmation.confirmed:
+                self.ran.append("ticket")
+                return "rejected: filed ticket T-9 instead"
+            return "refunded"
+        r = run()
+        rn = runner([Tracekit(r)], [refund], once("refund", {"amount": 500}))
+
+        async def go():
+            first = await turn(rn)
+            ask = next(c for e in first for c in e.get_function_calls() if c.name == "adk_request_confirmation")
+            await turn(rn, types.Content(role="user", parts=[types.Part(function_response=types.FunctionResponse(
+                name="adk_request_confirmation", id=ask.id, response={"confirmed": False}))]))
+        asyncio.run(go())
+        self.assertEqual(self.ran, ["ticket"])
+        r.complete.assert_called_once_with("call-1", "ok", attempt=1,
+                                           result={"result": "rejected: filed ticket T-9 instead"})
 
     def test_a_call_waiting_for_credentials_is_not_completed_and_its_rerun_is_its_next_attempt(self):
         from fastapi.openapi.models import APIKey

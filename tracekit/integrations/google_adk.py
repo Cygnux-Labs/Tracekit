@@ -74,7 +74,8 @@ class Tracekit(BasePlugin):
             return None   # not Tracekit's to record (refused, or answered before it), or paused for the user
         if tool_args != call[2]:
             await self._complete(call_id, call, "error", error="the call's arguments changed after the decision")
-        elif tool_context.tool_confirmation is not None and not tool_context.tool_confirmation.confirmed:
+        elif result == {"error": "This tool call is rejected."} and tool_context.tool_confirmation is not None \
+                and not tool_context.tool_confirmation.confirmed:   # ADK's own answer: the tool didn't run
             await self._complete(call_id, call, "error", error="rejected in ADK's tool confirmation")
         else:
             await self._complete(call_id, call, "ok", result=result_field(call[0].get("send_result"),

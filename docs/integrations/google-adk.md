@@ -54,10 +54,11 @@ scripted model, no API key): [`examples/v2/google_adk`](../../examples/v2/google
   [provenance](../policy-v2.md#provenance-untrusted-and-from-untrusted). A tool that raises is recorded as
   `status: error` and its exception reaches ADK unchanged, so `on_tool_error_callback` handlers and
   `ReflectAndRetryToolPlugin` work as before; the model's retry is a new call id and a new decision.
-- **Covers every tool path ADK has.** Function tools (sync and async, parallel calls), sub-agents (and the
-  `transfer_to_agent` call that hands over to one), agents run as tools (`AgentTool`: the call and the agent's own tool
-  calls, since it inherits the Runner's plugins), MCP toolsets (under ADK's tool name), long-running tools, workflow
-  tool nodes (under the id ADK gives each run of the node) and a tool the model made up (recorded as an error).
+- **Covers ADK's tool paths.** Function tools (sync and async, parallel calls), sub-agents (the `transfer_to_agent`
+  call that hands over to one, and the sub-agent's own tool calls), agents run as tools (`AgentTool`: the call and the
+  agent's own tool calls, since it inherits the Runner's plugins), MCP toolsets (under ADK's tool name), long-running
+  tools, workflow tool nodes (under the id ADK gives each run of the node) and a tool the model made up (recorded as an
+  error). Handing a task to a task-mode sub-agent is the exception: see [Not covered](#not-covered).
 - **Waits for people.** An `ask` waits up to 5 minutes (the signer's cap for one wait) before the call; then it is
   skipped with the approval's state, and an unanswered approval is withdrawn. So is one whose agent run is cancelled
   while it waits.
@@ -65,10 +66,18 @@ scripted model, no API key): [`examples/v2/google_adk`](../../examples/v2/google
   `tool_context.request_confirmation()`) or for credentials (`tool_context.request_credential()`), is not completed.
   Once the user answers, ADK runs it again under the same call id and Tracekit decides it again as the call's next
   `attempt`; the first attempt shows as `decided_not_completed` on `run.final`. A call the user rejects in ADK's tool
-  confirmation is recorded as `status: error`, "rejected in ADK's tool confirmation".
+  confirmation, which ADK answers without running the tool, is recorded as `status: error`, "rejected in ADK's tool
+  confirmation"; a tool that asks for confirmation itself and runs on a rejection is recorded with its result.
 
 ## Not covered
 
+- Handing a task to a task-mode sub-agent (`LlmAgent(mode="task")` in a chat agent's `sub_agents`) is not decided: ADK
+  runs the sub-agent itself, outside the tool callbacks, so a policy rule on the sub-agent's name doesn't apply. The
+  sub-agent's own tool calls are decided. A plugin can't refuse it cleanly: an answer from `before_agent_callback` ends
+  the turn with the hand-off unanswered, and ADK gives every later turn back to the refused sub-agent.
+- The agent's own `before_tool_callback` runs after the decision: arguments it rewrites in place run undecided (the call
+  is recorded as `status: error`, "the call's arguments changed after the decision"), and an answer it returns instead
+  of the tool is recorded as `ok`, as if the tool ran.
 - ADK's tool confirmation is not a Tracekit approval: the signer records only its effect (the call runs again, or is
   recorded as rejected). A tool under both a Tracekit `ask` and ADK's confirmation is decided at each of its two runs,
   so a person approves it in Tracekit twice. Use one, Tracekit's `ask` for an approval in the evidence.
@@ -85,6 +94,9 @@ scripted model, no API key): [`examples/v2/google_adk`](../../examples/v2/google
   `ok` result) or replace its result (the call then reads `decided_not_completed`). A result a later plugin's or the
   agent's `after_tool_callback` replaces is recorded as the tool returned it.
 - A tool that changes its own arguments in place (appends to a list it was given) is recorded as changed after the
-  decision.
+  decision. `ComputerUseTool` does this to every coordinate action: it rescales `x`, `y`, `destination_x` and
+  `destination_y` in its arguments.
+- The `payload` a user sends with ADK's tool confirmation (`tool_context.tool_confirmation.payload`) is input the tool
+  reads that Tracekit never decided.
 - Each signer call, and an `ask`'s wait, holds a thread of asyncio's default executor; many asks waiting at once can
   starve it.
