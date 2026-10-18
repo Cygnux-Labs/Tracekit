@@ -71,7 +71,7 @@ class Tracekit(FunctionMiddleware):
                            error="the call's arguments changed after the decision")
         else:
             await complete(self.run, d, call_id, attempt, "ok",
-                                 result=result_field(d and d.get("send_result"), _as_the_model_reads(out)))
+                           result=result_field(d and d.get("send_result"), _as_the_model_reads(out)))
 
 
 def _as_json(value):
