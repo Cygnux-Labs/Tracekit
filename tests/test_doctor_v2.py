@@ -294,10 +294,13 @@ class Detect(unittest.TestCase):
         self.assertEqual(self.collect({"socket": "/s", "signer": "/t"})[0], ["D-V1-X", "D-V2"])
 
     def test_the_sandbox_settings_read_are_the_ones_claude_code_ranks(self):
+        """With CLAUDE_CONFIG_DIR set, an old ~/.claude/settings.json read after it made a sandbox that falls back to
+        running unsandboxed look fail-closed: only the user settings file Claude Code reads counts."""
         project = os.path.join(os.getcwd(), ".claude")
-        self.assertEqual(self.collect(None)[1].call_args.kwargs["sandbox_settings"][-3:],
-                         [os.path.join(project, "settings.json"), os.path.join(project, "settings.local.json"),
-                          doctor._managed()])
+        with mock.patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": "/work/claude"}):
+            self.assertEqual(self.collect(None)[1].call_args.kwargs["sandbox_settings"],
+                             ["/work/claude/settings.json", os.path.join(project, "settings.json"),
+                              os.path.join(project, "settings.local.json"), doctor._managed()])
         v2 = self.collect({"signer": "/t", "hooks": {"user": "nobody-e16", "settings": "/home/a/.claude/settings.json"}})[1]
         self.assertEqual(v2.call_args.kwargs["sandbox_settings"], ["/home/a/.claude/settings.json", doctor._managed()])
 
@@ -357,6 +360,7 @@ class ClaudeSandbox(unittest.TestCase):
 
     def test_shown_only_when_the_sandbox_is_on(self):
         self.assertIsNone(self.check({}, {"sandbox": {"enabled": False}}, ["not settings"], {"sandbox": "on"}))
+        self.assertEqual(doctor._sandbox([["client.json's settings, not a path"]]), {"network": {}})
         self.assertIsNone(self.check({"sandbox": {"enabled": True, "failIfUnavailable": True}},
                                      {"sandbox": {"enabled": False}}))
 

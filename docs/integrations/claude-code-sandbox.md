@@ -39,11 +39,14 @@ Turn both on. Tracekit first (`tracekit init --dev --v2`, or the [plugin](../../
 ## The unsandboxed retry (TK-A003)
 
 When a command fails inside the sandbox, Claude may retry it with the Bash tool's `dangerouslyDisableSandbox: true`. The
-retry runs with none of the sandbox's limits. Claude Code asks you first in its default mode, but not in
-`bypassPermissions` mode or when an allow rule such as `Bash(curl *)` matches the command.
+retry runs with none of the sandbox's limits. Who approves it depends on Claude Code's permission mode: you in the
+default mode, a classifier model in auto mode, nobody in `bypassPermissions` mode or when an allow rule such as
+`Bash(curl *)` matches the command. Claude Code's own ask rule `Bash(dangerouslyDisableSandbox:true)` makes it prompt in
+every mode.
 
-The coding pack's `TK-A003` (an `ask` rule) holds every call whose `dangerouslyDisableSandbox` argument is `true` until a
-person approves it, in every permission mode:
+The coding pack's `TK-A003` (an `ask` rule) adds what that prompt doesn't: it holds every call whose
+`dangerouslyDisableSandbox` argument is `true` until a person approves it from outside the agent's session, and signs
+the decision:
 
 ```text
 [tracekit] waiting for approval apr-… (TK-A003)
@@ -51,19 +54,24 @@ tracekit approvals approve apr-…            # from another terminal
 ```
 
 The approval is bound to the exact command, used once, and recorded with who approved it, like every Tracekit approval
-([approvals](../approvals.md)). The call's signed record carries the parameter, so a bundle shows which commands ran
-outside the sandbox. To allow retries without asking, override `TK-A003` in your own policy ([policy](../policy-v2.md)).
+([approvals](../approvals.md)). The signed decision names `TK-A003`, so a bundle shows which calls were unsandboxed
+retries and who approved each; the command itself is committed to, not stored in the bundle
+([format v2](../format-v2.md#2-hashes-over-agent-content)). To allow retries without asking, override `TK-A003` in your
+own policy ([policy](../policy-v2.md)).
 
 ## What Tracekit sees and doesn't
 
-- **Sees:** every call Claude makes, with its arguments (`dangerouslyDisableSandbox` included), the decision, any
-  approval, and the result. When the sandbox blocks a connection, Claude Code names the denied host in the command's
-  result, which Tracekit records with the result.
+- **Sees:** every call Claude makes with its arguments (`dangerouslyDisableSandbox` included), the decision, any
+  approval, and the result. Records commit to the arguments rather than store them ([privacy](../privacy.md)). When
+  the sandbox blocks a connection, Claude Code names the denied host in the command's result, which Tracekit records
+  with the result.
 - **Doesn't see:** whether the sandbox actually started for a command, and what it blocked inside one beyond what
   Claude Code writes into the result. The sandbox runs inside Claude Code's process and keeps no record of its own.
-  Hooks, MCP servers and commands matching `excludedCommands` run outside the sandbox; Tracekit still decides each
-  call, but no `dangerouslyDisableSandbox` marks them.
+  Commands matching `excludedCommands`, MCP servers and hooks run outside the sandbox. Tracekit still decides each
+  excluded command and each MCP tool call, but no `dangerouslyDisableSandbox` marks them.
+- **Doesn't record:** the sandbox settings themselves. They aren't signed into the run or the bundle; `tracekit doctor`
+  reads them on the machine.
 - **Doesn't check:** the full precedence of Claude Code's settings. `D-CLAUDE-SANDBOX` merges the files it reads key
   by key ([doctor](../doctor.md)).
 
-[Limits](../limits.md#signer-and-capture) lists these with what to do.
+[Limits](../limits.md) lists these with what to do.

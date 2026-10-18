@@ -77,18 +77,19 @@ def collect(config=None, issuer_key=None):
         # (reported as no hooks recorded) until doctor learns their formats
         settings = h.get("settings") if h.get("agent", "claude") == "claude" else None
         agent = _user(h.get("user"))
-        plugin = agent and install.plugin_enabled([os.path.join(agent.pw_dir, ".claude", "settings.json")])
+        home = agent and os.path.join(agent.pw_dir, ".claude", "settings.json")
+        plugin = agent and install.plugin_enabled([home])
         return out + v2_checks(config or install.V2_CONFIG, agent=agent, settings=settings,
                                signer=(sc or {}).get("signer"), opt=install.OPT, unit=unit,
                                client_json=client.SYSTEM_CONFIG if sc else None, issuer_key=issuer_key, plugin=plugin,
-                               sandbox_settings=[p for p in (settings, _managed()) if p])
+                               sandbox_settings=[p for p in (home, settings, _managed()) if p])
     if sc:
         return out
     from .signer.service import dev_content, dev_data_dir
     project = os.path.join(os.getcwd(), ".claude")
     return v2_checks({"data_dir": dev_data_dir(), "content": dev_content().get("content")}, "dev",
                      settings=_dev_settings(), plugin=install.plugin_enabled(),
-                     sandbox_settings=[*install.user_settings_all(), os.path.join(project, "settings.json"),
+                     sandbox_settings=[install.user_settings(), os.path.join(project, "settings.json"),
                                        os.path.join(project, "settings.local.json"), _managed()])
 
 
@@ -105,8 +106,8 @@ def _sandbox(paths):
     for p in paths:
         try:
             s = read_json(p).get("sandbox")
-        except (OSError, ValueError, AttributeError):   # missing, unreadable, or not a settings object
-            continue
+        except (OSError, ValueError, AttributeError, TypeError):   # missing, unreadable, not a settings object, or
+            continue                                                  # client.json's settings not a path
         if isinstance(s, dict):
             out.update(s, network={**out["network"], **(s["network"] if isinstance(s.get("network"), dict) else {})})
     return out
@@ -438,7 +439,7 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
                        "commands send to that proxy")
             fix.append("remove the proxy ports unless your proxy enforces an allowlist")
         retry = ("off (allowUnsandboxedCommands is false)" if sandbox.get("allowUnsandboxedCommands") is False else
-                 "on: the coding pack's TK-A003 holds each one for a person")
+                 "on: the shipped coding pack's TK-A003 holds each one for a person")
         add("D-CLAUDE-SANDBOX", not why, "; ".join(why) or f"Claude Code's sandbox is on and fails closed; "
             f"unsandboxed retries {retry}",
             "; ".join(fix) + " (docs/integrations/claude-code-sandbox.md)" if fix else "", bad=WARN)
