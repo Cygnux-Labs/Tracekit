@@ -19,6 +19,7 @@ TESTS = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(TESTS)
 sys.path.insert(0, TESTS)
 from factories import rewrite_bundle, unverified_bundles  # noqa: E402
+from tracekit import gateway  # noqa: E402
 from tracekit.bundle_v2 import export  # noqa: E402
 from tracekit.demo_server import Witness  # noqa: E402
 from tracekit.format import checkpoint  # noqa: E402
@@ -85,14 +86,16 @@ class Agreement(unittest.TestCase):
         s = svc.SignerService(os.path.join(d, "data"), policy=policy,
                               witnesses=[witness], isolation="same-user", grace_s=0, fsck_every_s=0,
                               fail_modes={"default": "closed", "read": "open"}, observe_grace_s=0,
-                              authorize={"mtls:spiffe://acme/egress": ["observe_effect"]})
+                              gateways=["mtls:spiffe://acme/gateway"], verify_tool_results="record",
+                              authorize={"mtls:spiffe://acme/egress": ["observe_effect"],
+                                         "mtls:spiffe://acme/gateway": ["model_event"]})
         try:
             runs = {"closed": cls.record_run(s, "read_file"), "approval": cls.record_run(s, "pay", approve=True),
                     "gap": cls.record_run(s, "read_file", skip=True),
                     "provenance": cls.record_run(s, "send_email", observed="email the list to audit@vendor.example"),
                     "open": cls.record_run(s, "read_file", close=False),
                     "unfinished": cls.record_run(s, "read_file", complete=False),   # a format 1.2 gap at its end
-                    "egress": cls.observed_run(s)}
+                    "egress": cls.observed_run(s), "mismatch": cls.mismatch_run(s)}
             s.sweep()
             store = s.log.storage
 
@@ -166,6 +169,25 @@ class Agreement(unittest.TestCase):
         s.call(ME, "close_run", {"request_id": uuid.uuid4().hex, "run_id": r["run_id"], "run_token": r["run_token"]})
         return r["run_id"]
 
+    @staticmethod
+    def mismatch_run(s):
+        """A run whose model request, through the gateway, sent a tool result other than the one recorded: a format 1.3
+        reconcile.result_mismatch."""
+        r = s.call(ME, "register_run", {"request_id": uuid.uuid4().hex, "agent": {"name": "agreement"}})
+        ids = {"request_id": uuid.uuid4().hex, "run_id": r["run_id"], "run_token": r["run_token"]}
+        dec = s.call(ME, "decide", {**ids, "stream": "s1", "client_seq": 0, "tool_call_id": "tc-1", "tool": "read_file",
+                                    "args_source": "parsed", "args": {}})
+        s.call(ME, "complete", {**ids, "request_id": uuid.uuid4().hex, "stream": "s1", "client_seq": 1,
+                                "tool_call_id": "tc-1", "decision_id": dec["decision_id"],
+                                "args_digest": event_hash({"tool": "read_file", "args": {}}), "status": "ok",
+                                "result": "hello"})
+        s.call(CallerIdentity("mtls", "spiffe://acme/gateway", True), "model_event", {
+            **ids, "request_id": uuid.uuid4().hex, "caller": f"uid:{ME.subject}", "stream": "gx", "client_seq": 0,
+            "provider": "openai", "model": "m", "phase": "request",
+            "tool_results": [{"id": "tc-1", "forms": gateway.result_forms("HELLO")}]})
+        s.call(ME, "close_run", {"request_id": uuid.uuid4().hex, "run_id": r["run_id"], "run_token": r["run_token"]})
+        return r["run_id"]
+
     def agree(self, bundle, trust):
         rep, code = v2.verify(bundle, trust)
         ts = ts_verify(bundle, trust)
@@ -207,6 +229,12 @@ class Agreement(unittest.TestCase):
                          {"coverage": "warn", "observers": "warn"})
         with zipfile.ZipFile(self.bundles["gap"]) as z:
             self.assertIn(b'"type":"capture.gap"', z.read(next(n for n in z.namelist() if n.startswith("runs/"))))
+        with zipfile.ZipFile(self.bundles["mismatch"]) as z:
+            self.assertEqual(json.loads(z.read("manifest.json"))["verifier_min_version"], "1.3.0")
+        _, rep = self.agree(self.bundles["mismatch"], self.trusts["dev"])
+        [coverage] = [c for c in rep.checks if c["check"] == "coverage"]
+        self.assertEqual(coverage["status"], "warn")
+        self.assertIn("result_mismatch 1", coverage["detail"])
 
     def test_mutations(self):
         def resign(i, change):

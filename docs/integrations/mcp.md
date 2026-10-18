@@ -66,3 +66,4 @@ a lost connection) propagates unchanged. Both are recorded as `error`.
   `instrument()` takes it from the session's `initialize()` when that runs after `instrument()`; by hand, pass
   `TracekitSession(session, client, run, server="github")`. Without a name the calls are recorded as `mcp:unknown/<tool>`,
   with a warning, and rules written for the server's name don't match them.
+- The LLM gateway's verified tool results don't check MCP calls: this integration decides each under an id of its own, not the model's tool call id ([gateway](../gateway.md#verified-tool-results)).

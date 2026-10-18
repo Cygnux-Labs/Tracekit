@@ -154,6 +154,59 @@ reconciled. A tool the provider runs itself would run again, so the investigator
 call whose request enables one (OpenAI Responses tools other than function and custom, Anthropic typed server tools,
 `mcp_servers`, `container`, chat `web_search_options`); see [why](why.md#attribution-on-signed-runs).
 
+## Verified tool results
+
+> **Experimental (1.3):** this works and is tested, but may change and gets less hardening than the
+> [stable core](support.md).
+
+An agent can change what a tool returned before the model reads it. The gateway sees what goes to the model; the
+signer holds what the tool returned (each `tool.result`'s commitment). With `verify_tool_results` in signer.yaml, the
+signer compares the two on every request through the gateway:
+
+```yaml
+verify_tool_results: record    # or refuse
+```
+
+It catches two things, each a signed `reconcile.result_mismatch` (once per call) that `tracekit verify` and run.final's
+coverage count with the run's unreconciled calls:
+
+- a tool result (an OpenAI chat `role: tool` message, a Responses `*_output` item, an Anthropic `tool_result` block)
+  for a call the signer already completed, whose content is not what was completed: the agent edited it;
+- a tool result sent for a call the run allowed before its result was recorded. The shipped integrations complete a
+  call before the next model request; a client of your own that completes later is flagged here too.
+
+`record` forwards the request; `refuse` answers the agent `403` and doesn't send it to the model (the exchange's
+response is recorded with that error). How it works: for each tool result a request sends (the newest 512), the gateway
+sends digests of the values it may have been recorded as (the content as sent, the text of a list of text blocks, the
+value of a JSON string or of that text, `""` for no content); the signer computes their commitments under that
+result's salt (only it can) and compares. No content leaves the gateway. A tool_call_id used again in a run matches
+any of its last 8 results.
+
+It does not catch:
+
+- text the agent adds anywhere else: a user turn, the system prompt, an assistant message;
+- a tool call the agent writes into the history itself, with its result. Reconciliation flags it at run.final
+  (`result_without_call`, or `fabricated` under `gateway_mandatory`), unless the agent also records a decide, a result
+  and a model report for it and `gateway_mandatory` is off;
+- results past a request's newest 512: the agent chooses which those are, since it can add results of its own;
+- a request under another run's token: the agent can register a run of its own and send its requests in that run,
+  which has no results to compare;
+- a result sent again later is checked again, but one the API doesn't resend (OpenAI Responses with
+  `previous_response_id`) is checked once, when it is first sent;
+- a model call that doesn't go through the gateway; and, with the signer unreachable and the run's `model` class
+  failing open, a request the gateway forwards unchecked;
+- a call that completed with no result, an error result, and a result whose content redaction changed (its commitment
+  is over the redacted value);
+- calls decided under ids of the client's own, not the model's: the MCP integration and the MCP gateway's calls are
+  unchecked.
+
+It is off unless set. A match needs the value your client completed the call with to be the value the model is sent
+(or its digest). It can't be used with the Claude Code hooks (they record a digest of the tool's raw output, not what
+the model is sent) or the Claude Agent SDK integration (it records the structured tool response): every result would
+mismatch. Run with `record` first and check that `tracekit verify` shows no `result_mismatch` on honest runs before you
+set `refuse`. When the signer doesn't check, its answers say so and the gateway stops sending digests. A gateway older
+than 1.3 sends none.
+
 ## Reconciliation
 
 Gateway tool uses are L3 and take precedence over agent-reported L3 (autotrace) for the same tool call id. **(1.2)** A

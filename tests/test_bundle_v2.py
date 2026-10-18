@@ -918,6 +918,8 @@ ENTRIES = {
        for f in ("observer", "kind", "host", "port")},
     **{f"capture.gap.kind={k}": [registered(), ("capture.gap", {"kind": k, "reason": "r"}, "run-a")]
        for k in ("observer_lost", "effect_outside_run")},
+    "reconcile.result_mismatch": [registered(), ("reconcile.result_mismatch", {"layers": ["L2", "L3"], "detail": "d"},
+                                                 "run-a")],
 }
 
 

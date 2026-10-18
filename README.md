@@ -167,7 +167,9 @@ Three guarantees. They're related, but one doesn't give you the others, and each
 - **Commitments hide content, not timing, sizes or counts**
   ([privacy](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/privacy.md#what-hashes-and-metadata-still-leak)).
 
-Every limit, with what to do about it: [limits](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/limits.md).
+What each deployment guarantees, from dev mode to a signer the agent can't reach:
+[guarantees](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/guarantees.md). Every limit, with what to do
+about it: [limits](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/limits.md).
 
 ## What's in it
 

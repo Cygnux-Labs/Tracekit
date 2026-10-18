@@ -126,6 +126,7 @@
         "reconcile.result_without_call",
         "reconcile.unexplained_effect",
         "reconcile.args_unparseable",
+        "reconcile.result_mismatch",
         "refusal.summary",
         "policy.external",
         "content.accessed",
@@ -883,6 +884,22 @@
         "properties": {
           "type": {
             "const": "reconcile.args_unparseable"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/reconcile"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "reconcile.result_mismatch"
           }
         }
       },
@@ -2690,6 +2707,11 @@
                   "maximum": 9007199254740991
                 },
                 "unexplained_effect": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 9007199254740991
+                },
+                "result_mismatch": {
                   "type": "integer",
                   "minimum": 1,
                   "maximum": 9007199254740991

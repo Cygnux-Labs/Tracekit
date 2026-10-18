@@ -57,6 +57,10 @@ signer.yaml:
                                              # executor and the MCP gateway (the coverage matrix's enforced;
                                              # docs/egress.md#posture)
     observe_grace_s: 120                     # how long a closing run an egress observer covers waits for its last reports
+    verify_tool_results: record              # an LLM gateway's digests of the tool results a request sends the model,
+                                             # checked against each call's tool.result: one that differs is a signed
+                                             # reconcile.result_mismatch; refuse: the gateway also doesn't forward the
+                                             # request. Absent: not checked (docs/gateway.md#verified-tool-results)
     fail_modes: {default: closed, fs: open}     # tool class -> fail mode, recorded and returned by register_run
     grace_s: 5                               # reconciliation window between run.closing and run.final
     gateway_wait_s: 600                      # past grace_s, how long a closing run waits for the results of calls a
@@ -298,8 +302,8 @@ from tracekit.policy2 import classes, compile as policy_compile, engine
 from tracekit.policy2.engine import Engine
 from tracekit.signer import detect, logkey, metrics, reconcile, rpc_schema, webhook
 from tracekit.signer import otel as signer_otel
-from tracekit.signer.pipeline import (EXPIRED, LOST, RecordLog, approval, cooldown_key, degrade, epoch, final_run,
-                                      owner, person_only_keys, salt_label, skipped, subject, writer)
+from tracekit.signer.pipeline import (EXPIRED, LOST, RESULTS_PER_CALL, RecordLog, approval, cooldown_key, degrade, epoch,
+                                      final_run, owner, person_only_keys, salt_label, skipped, subject, writer)
 from tracekit.signer.quotas import MAX_LINE, Limits, Quotas
 from tracekit.signer.rpc_schema import REQUESTS, RPCError
 from tracekit.signer.runtoken import RunTokens
@@ -341,10 +345,11 @@ CONFIG_KEYS = {"data_dir", "socket", "socket_mode", "tcp_endpoint", "http", "dur
                "fail_modes", "grace_s", "idle_s", "origin", "metrics", "witnesses", "contact", "approvals",
                "lock_timeout_s", "fsck_every_s", "clock_skew_s", "anchors", "otlp", "otel_out", "storage", "gateways",
                "gateway_mandatory", "log_key", "harness_binding", "record_key", "route", "view", "decision_keys",
-               "webhook", "content", "gateway_wait_s", "suspensions", "posture", "observe_grace_s"}
+               "webhook", "content", "gateway_wait_s", "suspensions", "posture", "observe_grace_s",
+               "verify_tool_results"}
 # signer.yaml sections whose features are experimental (docs/support.md)
 EXPERIMENTAL_KEYS = ("http", "storage", "tenants", "multi_tenant_apps", "gateways", "witnesses", "anchors", "record_key",
-                     "log_key", "webhook", "otlp", "otel_out", "harness_binding", "suspensions")
+                     "log_key", "webhook", "otlp", "otel_out", "harness_binding", "suspensions", "verify_tool_results")
 APPROVAL_KEYS = {"self_approval", "approvers", "break_glass", "persons", "webauthn", "agents", "ttl_s",
                  "agent_consume_s", "agent_timeout_s"}
 # agent approvers (docs/approvals.md#agent-approvers): what an identity in approvals.agents may call, given an authorize
@@ -636,7 +641,7 @@ class SignerService:
                  storage_config=None, gateways=(), gateway_mandatory=False, log_key=None, slh_dsa_file=None,
                  harness_binding=None, record_key=None, route=None, oidc=None, decision_keys=None, webhooks=(),
                  content=None, gateway_wait_s=GATEWAY_WAIT_S, suspensions=None, posture=None,
-                 observe_grace_s=OBSERVE_GRACE_S):
+                 observe_grace_s=OBSERVE_GRACE_S, verify_tool_results=None):
         """`identity` answers the in-process SignerAPI calls (default: this process's uid); transports call
         handle_frame with the identity they established. `policy` is a policy2 Engine (default: load_policy()).
         `open_storage()` defaults to the store `storage_config` (the `storage` config section) names, else file storage
@@ -660,7 +665,7 @@ class SignerService:
         `webhooks`: the `webhook` config section as webhook.load gives it ({url, events, secret, format?}).
         `content`: the `content` config section (the content vault; see the module docstring), or None (off).
         `suspensions`: the shared suspension list's path (default data_dir/suspensions.json).
-        `posture` ({network, tool_calls}) and `observe_grace_s`: see the config keys."""
+        `posture` ({network, tool_calls}), `observe_grace_s` and `verify_tool_results`: see the config keys."""
         fail_modes = dict(fail_modes or FAIL_MODES)
         if not all(isinstance(k, str) and v in ("open", "closed") for k, v in fail_modes.items()):
             raise ValueError("fail_modes maps tool classes to open or closed")
@@ -731,6 +736,9 @@ class SignerService:
         self.posture = {"network": "open", "tool_calls": "open", **(posture or {}), "gateway_mandatory": bool(
             gateway_mandatory)} if posture is not None or gateway_mandatory else None
         self.observe_grace_s = observe_grace_s
+        if verify_tool_results not in (None, "record", "refuse"):
+            raise ValueError("verify_tool_results is record or refuse")
+        self.verify_tool_results = verify_tool_results
         self.metrics = metrics.SignerMetrics()
         self._prov_key = os.urandom(32)   # the provenance index's key: per process, as the index is
         authorize = dict(authorize or {})
@@ -2634,11 +2642,11 @@ class SignerService:
         return out
 
     def _event(self, identity, method, req, typ, data, need_call=False, digests=None, out=None, keep=None, gw=None,
-               check=None, **top):
+               check=None, after=None, **top):
         """`data(commit)`: the event's data, given `commit(digest)`, the commitment under this record's salt. `out`:
         more fields of the response. `keep`: (the content its content_digest commits to,) for the content vault.
         `gw`: the gateway making the call (_as_caller), whose events these are. `check(run)`: on the writer, raises to
-        refuse the event."""
+        refuse the event. `after(tx, run)`: on the writer, once the event is written: more fields of the response."""
         key = self._authorize(identity, req, gw)
         self.quotas.take_event(gw or identity)
         sid = secrets.token_hex(16)
@@ -2652,7 +2660,7 @@ class SignerService:
             if check:
                 check(run)
             written.append(tx.event(run, req, typ, data, digests, **top))
-            return {"run_seq": written[0], **(out or {})}
+            return {"run_seq": written[0], **(out or {}), **(after(tx, run) if after else {})}
         res = self.log.submit(identity, method, req, fn, key, late=True)
         if written and keep:
             self._retain(key, written[0], data.get("content_digest"), keep[0])
@@ -2701,6 +2709,9 @@ class SignerService:
                                                      **({"via": holder[0]} if gw else {})},
                            tool_call_id=tcid, attempt=attempt, **top)
             written.append(seq)
+            comparable = req["status"] == "ok" and "result" in req and "error" not in req   # no result: nothing to compare
+            tx.set(run["results"], tcid, run["results"].get(tcid, [])[1 - RESULTS_PER_CALL:] + [
+                [did, output["hash"], comparable, output["redacted"], None]])
             if keys:
                 self._index(tx, run, keys, {"run_seq": seq, "tool": call["tool"], "tool_call_id": tcid,
                                             "trust": "untrusted"})
@@ -2808,7 +2819,8 @@ class SignerService:
         top, out, gw = {}, None, None
         if "caller" in req:   # an LLM gateway reports the exchange of the client it authenticated, under its run token
             identity, gw = self._as_caller(identity, "model_event", req)
-            top, out = {"source": "gateway"}, {"fail_modes": self.fail_modes}
+            top, out = {"source": "gateway"}, {"fail_modes": self.fail_modes,
+                                               "check_results": self.verify_tool_results is not None}
         keep, content_digest = None, req.get("content_digest")
         if "body" in req:   # committed to after redaction, as a result is; kept when the vault is on
             try:
@@ -2839,9 +2851,71 @@ class SignerService:
         def check(run):   # a quarantined run's model loop stops: no further request is recorded or forwarded
             if req["phase"] == "request" and run.get("quarantined"):
                 raise RPCError("forbidden", self._why_contained(run))
+
+        def after(tx, run):   # only a gateway's digests count: an agent's own report of its context proves nothing
+            bad = self._results_checked(tx, run, req["tool_results"])
+            if bad and self.verify_tool_results == "refuse":
+                return {"refused": (f"the tool result(s) {', '.join(bad[:5])}{' ...' if len(bad) > 5 else ''} sent to "
+                                    "the model are not what the tool returned, as the signer recorded it, or were sent "
+                                    "before it was recorded (reconcile.result_mismatch); this signer refuses such "
+                                    "requests (verify_tool_results: refuse)")[:1024]}
+            return {}
+        verify = gw and self.verify_tool_results and req.get("tool_results")
         return self._event(identity, "model_event", req, "model.exchange", data,
                            digests={t["id"]: t.get("args_digest") for t in req.get("tool_uses", ())}, out=out, keep=keep,
-                           gw=gw, check=check, **top)
+                           gw=gw, check=check, after=after if verify else None, **top)
+
+    def _results_checked(self, tx, run, results):
+        """The ids of the tool results a gateway saw a request send (`results`: model_event's `tool_results`) that are
+        not what the call's tool.results committed to (any of them: a tool_call_id may be reused), by either form
+        complete takes (the value, or its digest), under that result's salt; or that are sent for a call the run
+        allowed before its result was recorded (the shipped clients complete a call before the next model request).
+        Each one's first time is a signed reconcile.result_mismatch. Not checked: a call the run never decided or
+        didn't allow, a call whose results are all errors or carry no result, one redaction changed (its commitment is
+        over the redacted value) and matching none, a run that is not reconciled (imported, a replay run)."""
+        rec, bad = run.get("rec"), []
+        if rec is None:
+            return bad
+        for r in results:
+            tcid, entries = r["id"], run.get("results", {}).get(r["id"])
+            if entries is None:
+                call = run.get("calls", {}).get(tcid)   # still open: decided, allowed, not completed
+                if not call or call["decision"] not in ("allow", "flag") or call.get("decision_id") not in run.get(
+                        "decisions", {}):
+                    continue
+                detail = (f"a request sent the model a result for {tcid[:128]} before the call's result was recorded: "
+                          "a result the tool never returned, or a client that completes calls late")
+            else:
+                ours = [x for x in entries if x[2]]
+                if not ours or self._matched(tx, run, tcid, entries, r["forms"]):
+                    continue
+                if any(x[3] for x in ours):   # one of them redaction changed: it can't be told apart from an edit
+                    continue
+                detail = (f"a request sent the model a result for {tcid[:128]} that is not what the tool returned "
+                          "(its tool.result): the agent's context differs from the record")
+            bad.append(tcid)
+            if tcid not in rec.get("mismatched", {}):
+                tx.emit(run, "reconcile.result_mismatch", {"layers": ["L2", "L3"], "detail": detail}, source="signer",
+                        tool_call_id=tcid)
+        return bad
+
+    def _matched(self, tx, run, tcid, entries, forms):
+        """Whether one of `forms` (a gateway's digests of a tool result as sent) is what a comparable one of the call's
+        tool.results (`entries`) committed to; the form that matched is kept, so the next request that resends it costs
+        no HMAC."""
+        digests = {f["result_digest"] for f in forms}
+        if any(x[2] and x[4] in digests for x in entries):
+            return True
+        for i, (did, commitment, comparable, _, _) in enumerate(entries):
+            if not comparable:
+                continue
+            label = "result:" + did
+            for f in forms:
+                if commitment in (self._commit(label, f["result_digest"]), self._commit(
+                        label, "sha256:" + hashlib.sha256(canonical({"result": f["digest"]})).hexdigest())):
+                    tx.set(run["results"], tcid, entries[:i] + [entries[i][:4] + [f["result_digest"]]] + entries[i + 1:])
+                    return True
+        return False
 
     def _approval_request(self, identity, req):
         identity, gw = self._as_caller(identity, "approval_request", req)
@@ -4043,6 +4117,7 @@ def open_service(cfg, **kw):
                          route=cfg.get("route"), decision_keys=cfg.get("decision_keys"), webhooks=cfg.get("webhook", ()),
                          content=cfg.get("content"), gateway_wait_s=float(cfg.get("gateway_wait_s", GATEWAY_WAIT_S)),
                          posture=cfg.get("posture"), observe_grace_s=float(cfg.get("observe_grace_s", OBSERVE_GRACE_S)),
+                         verify_tool_results=cfg.get("verify_tool_results"),
                          **kw)
 
 
