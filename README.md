@@ -8,7 +8,7 @@
 and gives you one `.tkb` file per run that anyone can verify offline.**
 
 <a href="https://pypi.org/project/tracekit-ai/"><img src="https://img.shields.io/pypi/v/tracekit-ai?style=flat-square&color=F3B23B&labelColor=1C1A1C" alt="PyPI"></a>
-<a href="#add-it-to-your-agent"><img src="https://img.shields.io/badge/works_with-13_agents_%26_frameworks-F3B23B?style=flat-square&labelColor=1C1A1C" alt="Works with 13 agents and frameworks"></a>
+<a href="#add-it-to-your-agent"><img src="https://img.shields.io/badge/works_with-14_agents_%26_frameworks-F3B23B?style=flat-square&labelColor=1C1A1C" alt="Works with 14 agents and frameworks"></a>
 <a href="https://github.com/Cygnux-Labs/Tracekit/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/Cygnux-Labs/Tracekit/ci.yml?branch=main&style=flat-square&label=CI&labelColor=1C1A1C" alt="CI"></a>
 <a href="https://github.com/Cygnux-Labs/Tracekit/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-F3B23B?style=flat-square&labelColor=1C1A1C" alt="MIT licence"></a>
 
@@ -102,7 +102,7 @@ ran and verified in 27 seconds: [`examples/v2/clean-machine.sh langchain`](https
 </picture>
 
 <sub>Stable: Claude Code, the OpenAI Agents SDK, LangChain / LangGraph, the Claude Agent SDK and MCP. Experimental: Codex
-CLI, Cursor, Gemini CLI, CrewAI, Browser Use and the TypeScript SDK. Setup:
+CLI, Cursor, Gemini CLI, CrewAI, Browser Use, Pydantic AI and the TypeScript SDK. Setup:
 <a href="https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/coding-agents.md">coding agents</a> ·
 <a href="https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/quickstarts/openai-agents.md">OpenAI Agents SDK</a> ·
 <a href="https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/quickstarts/claude-agent-sdk.md">Claude Agent SDK</a> ·
@@ -110,6 +110,7 @@ CLI, Cursor, Gemini CLI, CrewAI, Browser Use and the TypeScript SDK. Setup:
 <a href="https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/quickstarts/mcp.md">MCP</a> ·
 <a href="https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/integrations/crewai.md">CrewAI</a> ·
 <a href="https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/integrations/browser-use.md">Browser Use</a> ·
+<a href="https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/integrations/pydantic-ai.md">Pydantic AI</a> ·
 <a href="https://github.com/Cygnux-Labs/Tracekit/blob/main/sdk/typescript/README.md">TypeScript</a> ·
 <a href="https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/otel.md">OpenTelemetry</a> ·
 <a href="https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/quickstarts/custom.md">any other agent</a></sub>
