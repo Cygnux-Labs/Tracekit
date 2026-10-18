@@ -293,6 +293,10 @@ as it needs nothing the schema lacks:
   run `tracekit signer migrate --config signer.yaml` as the migration role, then apply
   `tracekit.storage.postgres.GRANTS` to the signer's role again. A signer with the vault on refuses to start on a
   version 1 store, with an error that names `tracekit signer migrate`.
+- **1.3** speaks signer protocol 17. A 1.3 signer serves clients and gateways of 1.2 and 1.3, but a 1.3 client or
+  gateway refuses a 1.2 signer: upgrade the signer first, then the agents' Tracekit and the gateway. A bundle that
+  holds a `reconcile.result_mismatch` record (verified tool results) needs a 1.3 verifier; every other bundle verifies
+  with 1.2 too. A same-user dev signer from 1.2 is replaced by the first 1.3 client that finds it.
 
 Helm (`tracekit-central`): migrate each replica's schema before upgrading the release with `signer.content.retain`
 set. Compose: the stack's init script runs only on an empty database, so on an existing stack run

@@ -12,9 +12,9 @@
 
 Tamper-evident tracing for AI agents: every tool call is recorded as an Ed25519-signed, hash-chained event by a signer
 the agent can't control, checkpointed to witnesses, gated by a policy engine, and exported as offline-verifiable `.tkb`
-bundles. Today's code (1.2) has two generations: the v1 laptop path (tracekitd, the
+bundles. Today's code (1.3) has two generations: the v1 laptop path (tracekitd, the
 JSONL ledger, Claude Code / Codex / Cursor / Gemini hooks) and the v2 signer service for server-hosted agents (evidence
-format v2 at 1.2, signer-side policy, detection and containment, custody through the executor and MCP gateway, egress
+format v2 at 1.3, signer-side policy, detection and containment, custody through the executor and MCP gateway, egress
 observation), with Python and TypeScript SDKs and framework integrations. [HIGH CONFIDENCE — read
 `tracekit/signer/service.py`, `tracekit/signer/pipeline.py`, `tracekit/verify/v2.py`, `tracekit/daemon.py`,
 `tracekit/ledger.py`]
@@ -80,7 +80,7 @@ There is no typecheck step.
 - `tracekit/policy.py` (module) and `tracekit/policy/` (data dir) share a name; importing works only because the module wins.
 - Tests marked root-only and the harness-binding tests (Linux `/proc`) skip on a normal laptop; CI runs Linux as the
   merge gate, macOS/Windows are advisory. A green local run isn't proof for those paths.
-- `make test` takes ~10–11 minutes (about 2,400 tests): many start a real signer daemon and spawn hook processes. Run
+- `make test` takes ~10–11 minutes (about 2,800 tests): many start a real signer daemon and spawn hook processes. Run
   single files while iterating.
 - `agent-flow gates run` runs in the main checkout, not the worktree you call it from. In a worktree run the gates
   there: `PYTHONPATH=$PWD make test-ts lint build test PY=<repo>/.venv/bin/python` (the venv's editable install points

@@ -10,7 +10,7 @@
 and gives you one `.tkb` file per run that anyone can verify offline.**
 
 <a href="https://pypi.org/project/tracekit-ai/"><img src="https://img.shields.io/pypi/v/tracekit-ai?style=flat-square&color=F3B23B&labelColor=1C1A1C" alt="PyPI"></a>
-<a href="#add-it-to-your-agent"><img src="https://img.shields.io/badge/works_with-14_agents_%26_frameworks-F3B23B?style=flat-square&labelColor=1C1A1C" alt="Works with 14 agents and frameworks"></a>
+<a href="#add-it-to-your-agent"><img src="https://img.shields.io/badge/works_with-19_agents_%26_frameworks-F3B23B?style=flat-square&labelColor=1C1A1C" alt="Works with 19 agents and frameworks"></a>
 <a href="https://github.com/Cygnux-Labs/Tracekit/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/Cygnux-Labs/Tracekit/ci.yml?branch=main&style=flat-square&label=CI&labelColor=1C1A1C" alt="CI"></a>
 <a href="https://github.com/Cygnux-Labs/Tracekit/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-F3B23B?style=flat-square&labelColor=1C1A1C" alt="MIT licence"></a>
 
@@ -348,7 +348,7 @@ the [code of conduct](https://github.com/Cygnux-Labs/Tracekit/blob/main/CODE_OF_
 
 ## License
 
-[MIT](https://github.com/Cygnux-Labs/Tracekit/blob/main/LICENSE), Copyright Cygnux Labs. This is 1.2.3, and 1.x is the
+[MIT](https://github.com/Cygnux-Labs/Tracekit/blob/main/LICENSE), Copyright Cygnux Labs. This is 1.3.0, and 1.x is the
 supported line. Report vulnerabilities privately as
 [SECURITY.md](https://github.com/Cygnux-Labs/Tracekit/blob/main/SECURITY.md) describes.
 
