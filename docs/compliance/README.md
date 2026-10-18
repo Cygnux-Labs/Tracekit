@@ -13,7 +13,7 @@ each: what Tracekit provides as a technical measure, what evidence you can show,
 
 | Framework | What it is | Who it binds | Page |
 |---|---|---|---|
-| EU AI Act, Regulation (EU) 2024/1689 | EU law | Providers and deployers of AI systems in the EU. Most of the obligations mapped apply to high-risk AI systems only | [EU AI Act](eu-ai-act.md) |
+| EU AI Act, Regulation (EU) 2024/1689 | EU law | Providers and deployers of AI systems in the EU. The obligations mapped apply to high-risk AI systems only | [EU AI Act](eu-ai-act.md) |
 | ISO/IEC 42001:2023 | International standard for an AI management system | Organisations that adopt it, or whose customers ask for it; certifiable | [ISO/IEC 42001](iso-42001.md) |
 | NIST AI RMF 1.0 (NIST AI 100-1) and its Generative AI Profile (NIST AI 600-1) | US voluntary framework | Organisations that adopt it | [NIST AI RMF](nist-ai-rmf.md) |
 | OWASP Top 10 for LLM Applications 2025 and OWASP Top 10 for Agentic Applications for 2026 | Community lists of security risks | Nobody; security reviews and questionnaires use them | [OWASP](owasp.md) |
@@ -30,14 +30,16 @@ sources. Laws and standards change: check the current text before you rely on a 
 | Decisions with rule ids | `policy.decision`: allow, flag, ask or deny, every rule id that matched, the hash of the policy that decided (`policy_hash`) and a commitment to the arguments | [policy](../policy-v2.md#decisions) |
 | Approvals | `approval.request`, `approval` and `approval.consumed`: the held call, who answered (the identity the signer's transport established), the reason, and whether it was a self-approval or break-glass. Each is bound to the call's exact arguments and consumed once | [approvals](../approvals.md#flow) |
 | Signed gaps and tamper records | `capture.gap`, `trace.tamper` and `reconcile.*`: an outage, a call that ran against its decision, an edited store, a call one capture layer saw and another didn't. Only the signer writes them | [verdicts](../verdicts.md#signed-gaps) |
-| Checkpoints and cosignatures | Signed notes over the log's Merkle tree (C2SP), cosigned by witnesses and optionally anchored in Rekor. Both are experimental | [witnesses](../witnesses.md#v2-c2sp-tlog-witnesses) |
+| Checkpoints and cosignatures | Signed notes over the log's Merkle tree (C2SP), cosigned by witnesses and optionally anchored in Rekor. Witness cosignatures and Rekor anchors are experimental; checkpoints are part of the stable v2 format | [witnesses](../witnesses.md#v2-c2sp-tlog-witnesses) |
 | Bundles (`.tkb`) | One run, or a tenant's run-set (every run registered in a range, so a run left out shows), with inclusion proofs, checkpoints and the policy snapshots a verifier needs. A bundle holds no code | [format v2](../format-v2.md#9-bundle-layout) |
 | Verify reports | The output of `tracekit verify`, as text or JSON: integrity, assurance, isolation, gaps, coverage and approvals | [verdicts](../verdicts.md) |
 | Incident and containment records (experimental) | `incident.opened`, `run.held`, `run.quarantined`, `run.resumed`, `incident.resolved` and `identity.suspension` | [incidents](../incidents.md) |
 | Content access records (experimental) | With the content vault on: `content.accessed` (who read retained content, and for what purpose) and `content.erased` | [privacy](../privacy.md#the-content-vault) |
 
-A v2 record keeps a call's arguments and result only as salted commitments, not as content. The content vault, off by
-default, keeps redacted content encrypted for investigations ([privacy](../privacy.md#the-v2-signer)).
+A v2 record keeps a call's arguments and result only as salted commitments, not as content. The content vault keeps
+redacted content encrypted for investigations. It is off by default on a signer started from `signer.yaml`; the dev
+signer keeps content for 7 days, so `tracekit view --dev` can show what each call ran
+([privacy](../privacy.md#the-content-vault)).
 
 ## Handing evidence to an auditor
 
@@ -80,7 +82,8 @@ witnesses you class as independent; `run-set: COMPLETE`; `isolation: separate-us
 `policy`, `coverage` and approval lines ([verdicts](../verdicts.md)).
 
 Operator-side views are not evidence. The verdicts `tracekit view` shows are computed on the operator's side, and
-`tracekit doctor` output is advice about the host ([limits](../limits.md#viewer)). The evidence is the bundle, checked by a verifier and a trust config the auditor chose.
+`tracekit doctor` output is advice about the host ([limits](../limits.md#viewer)). The evidence is the bundle,
+checked by a verifier and a trust config the auditor chose.
 
 ## How the deployment changes the evidence
 
