@@ -8,12 +8,12 @@ before it runs (an `ask` waits for a person) and records each call's outcome aft
 At `before_tool` the signer decides each ToolCall the model asked for, under its id (a call without one is given one)
 and with the arguments the model sent. A refused call never runs: as with a call Haystack's ConfirmationHook rejects,
 the model reads an error tool result in its place, Tracekit's reason, and the run goes on. At `after_tool` the result
-of each call that ran is recorded as the model reads it; an error result (the tool raised) as `error`. A call decided
-again under the same id is decided as its next attempt.
+of each call that ran is recorded as the model reads it; an error result (the tool raised) as `error`. A call id the
+model uses again, in the same step or a later one, is decided as that call's next attempt and recorded on its own.
 """
 import asyncio
+import collections
 import contextvars
-import itertools
 import json
 import uuid
 import warnings
@@ -23,6 +23,7 @@ from dataclasses import replace
 from haystack.components.agents.state import replace_values
 from haystack.dataclasses import ChatMessage
 
+from tracekit.format.canon import event_hash
 from tracekit.sdk.client import AsyncRunHandle, named_rules, result_field
 
 WAIT_MS = 300000   # lean: one wait of the signer's cap (5 minutes) for an `ask`; loop to a deadline if people need longer
@@ -42,7 +43,8 @@ class Tracekit:
         self.handle = run
         # lean: one entry per call id for the hook's life; prune them at run end if agents run for days
         self._attempts = {}   # tool call id -> the attempt its next decision is
-        self._ran = {}   # tool call id -> (decision, attempt, arguments) of a call let run, until its result is recorded
+        self._ran = {}   # tool call id -> [(decision, attempt, ToolCall)] of the calls let run, in call order, until
+        # their results are recorded (a model may give two calls of a step one id)
 
     def run(self, state):
         """The hook in a sync Agent.run: run_async on an event loop of its own, in a thread (the caller's thread may
@@ -55,21 +57,32 @@ class Tracekit:
         if messages and messages[-1].tool_calls:   # before_tool: the calls the model asked for, still to run
             msg = messages[-1]
             calls = [c if c.id else replace(c, id=f"haystack-{uuid.uuid4().hex}") for c in msg.tool_calls]
-            why = await asyncio.gather(*map(self._gate, calls))
-            refused = [m for c, w in zip(calls, why) if w is not None
-                       for m in (_assistant(msg, [c]), ChatMessage.from_tool(w, origin=c, error=True))]
-            kept = [c for c, w in zip(calls, why) if w is None]
+            turns = collections.defaultdict(asyncio.Lock)   # the signer takes one call per id at a time: calls a
+            # model gave one id are decided one after the other, in call order
+
+            async def gate(c):
+                async with turns[c.id]:
+                    return await self._gate(c)
+            gated = await asyncio.gather(*map(gate, calls))   # (refusal, (decision, attempt) to record)
+            refused = [m for c, (why, _) in zip(calls, gated) if why is not None
+                       for m in (_assistant(msg, [c]), ChatMessage.from_tool(why, origin=c, error=True))]
+            kept = [c for c, (why, _) in zip(calls, gated) if why is None]
+            for c, (_, ran) in zip(calls, gated):
+                if ran:
+                    self._ran.setdefault(c.id, []).append((*ran, c))
             if refused or kept != msg.tool_calls:   # Haystack runs the calls on the last message
                 state.set("messages", messages[:-1] + refused + ([_assistant(msg, kept)] if kept else []),
                           handler_override=replace_values)
-        else:   # after_tool: the results of the calls that ran, after the step's last assistant message
-            for m in reversed(list(itertools.takewhile(lambda m: m.tool_call_result, reversed(messages)))):
-                await self._record(m.tool_call_result)
+        else:   # after_tool: every result after the step's calls, wherever the after_tool hooks before this one put it
+            step = max((i for i, m in enumerate(messages) if m.tool_calls), default=-1)
+            for m in messages[step + 1:]:
+                if m.tool_call_result:
+                    await self._record(m.tool_call_result)
 
     async def _gate(self, call):
-        """None when the call may run now, else the reason the model reads. Raises nothing but CancelledError: a call
-        Tracekit can't decide doesn't run, and an agent run cancelled while it waits for a person withdraws the
-        approval."""
+        """(the reason the model reads, None) for a call that may not run, else (None, (decision, attempt) to complete
+        it under; None for an outage the fail mode let through). Raises nothing but CancelledError: a call Tracekit
+        can't decide doesn't run, and an agent run cancelled while it waits for a person withdraws the approval."""
         call_id, tool, args = call.id, call.tool_name, call.arguments or {}
         attempt = self._attempts.get(call_id, 0)
         self._attempts[call_id] = attempt + 1
@@ -80,9 +93,10 @@ class Tracekit:
             d = await asyncio.to_thread(run.decide, call_id, tool, args, **at)
             rules = named_rules(d["rule_ids"]) or d.get("reason") or d["decision"]
             if d.get("unavailable"):   # the run's fail mode decided: nothing to consume or complete
-                return None if d["decision"] == "allow" else f"Tool call refused by Tracekit: {d['reason']}"
+                return (None, None) if d["decision"] == "allow" else \
+                    (f"Tool call refused by Tracekit: {d['reason']}", None)
             if d["decision"] == "deny":
-                return f"Tool call blocked by Tracekit policy: {rules}"
+                return f"Tool call blocked by Tracekit policy: {rules}", None
             hint = None
             if d["decision"] == "ask":
                 request = asyncio.ensure_future(asyncio.to_thread(run.call, "approval_request", tool_call_id=call_id, **at))
@@ -98,18 +112,17 @@ class Tracekit:
                 if state != "approved":
                     if state == "requested":   # unanswered: withdrawn, so no one approves a call that is gone
                         await asyncio.to_thread(self._abandon, hint, "no answer within the hook's wait")
-                    return f"Tool call held by Tracekit policy ({rules}) and not approved: {state}"
+                    return f"Tool call held by Tracekit policy ({rules}) and not approved: {state}", None
             c = await asyncio.to_thread(run.approval_consume, call_id, tool, args, approval_id_hint=hint, **at)
             if not c["ok"]:
-                return f"Tool call blocked by Tracekit policy: {c.get('reason') or rules}"
+                return f"Tool call blocked by Tracekit policy: {c.get('reason') or rules}", None
             if "args" in c and c["args"] != args:
-                return "Tool call blocked by Tracekit: the arguments the signer approved are not the call's"
-            self._ran[call_id] = d, attempt, args
-            return None
+                return "Tool call blocked by Tracekit: the arguments the signer approved are not the call's", None
+            return None, (d, attempt)
         except asyncio.CancelledError:
             raise
         except Exception as e:
-            return f"Tool call refused: Tracekit could not decide it ({type(e).__name__}: {e})"[:4096]
+            return f"Tool call refused: Tracekit could not decide it ({type(e).__name__}: {e})"[:4096], None
 
     def _abandon(self, approval_id, reason):
         try:
@@ -118,19 +131,24 @@ class Tracekit:
             warnings.warn(f"tracekit: approval {approval_id} not withdrawn: {type(e).__name__}: {e}", stacklevel=2)
 
     async def _record(self, result):
-        """Complete the call `result` (a ToolCallResult) is the outcome of, if this hook let it run."""
-        ran = self._ran.pop(result.origin.id, None)
-        if ran is None:   # a call this hook refused, or one Haystack found no tool for
+        """Complete the first open call of the id `result` (a ToolCallResult) is the outcome of, under its own decision
+        and attempt (the client's defaults are the id's last decision)."""
+        open_calls = self._ran.get(result.origin.id)
+        if not open_calls:   # a call this hook refused or recorded already, or one Haystack found no tool for
             return
-        d, attempt, args = ran
+        d, attempt, call = open_calls.pop(0)
+        if not open_calls:
+            del self._ran[call.id]
         if result.error:   # the tool raised: Haystack hands the model the error as the result
             status, fields = "error", {"error": str(result.result)[:4096]}
-        elif (result.origin.arguments or {}) != args:   # another before_tool hook, after this one, changed them
-            status, fields = "error", {"error": "the call's arguments changed after the decision"}
+        elif (result.origin.tool_name, result.origin.arguments or {}) != (call.tool_name, call.arguments or {}):
+            status, fields = "error", {"error": "the call's tool or arguments changed after the decision"}
         else:
             status, fields = "ok", {"result": result_field(d.get("send_result"), _as_the_model_reads(result))}
         try:
-            await asyncio.to_thread(self.handle.complete, result.origin.id, status, attempt=attempt, **fields)
+            digest = event_hash({"tool": call.tool_name, "args": call.arguments or {}})
+            await asyncio.to_thread(self.handle.complete, call.id, status, attempt=attempt,
+                                    decision_id=d["decision_id"], args_digest=digest, **fields)
         except Exception as e:   # the tool already ran: its result reaches the model unchanged
             warnings.warn(f"tracekit: the outcome of {result.origin.id} was not recorded: {type(e).__name__}: {e}",
                           stacklevel=2)

@@ -56,24 +56,35 @@ the sub-agent's own hooks decide the calls the sub-agent makes (give it the same
 - **Records failures as failures.** A tool that raises reaches the model as Haystack's error result, as before, and is
   recorded as `status: error`. A result goes to the signer as the model reads it: Haystack sends the model a tool's
   return as text, JSON text for a dict or a list, which is parsed back, so an untrusted tool's values reach
-  [provenance](../policy-v2.md#provenance-untrusted-and-from-untrusted).
-- **Decides each call on its own.** The calls of one step are decided at once; a call the model sends again under the
-  same id is decided as the call's next `attempt`.
-- **Notices a later change.** A `before_tool` hook listed after Tracekit that changes a decided call's arguments
-  doesn't stop it running, but the call is recorded as `status: error`, "the call's arguments changed after the
-  decision". Hooks listed before it (Haystack's `ConfirmationHook` among them) may change the calls: it decides them
-  as they leave those hooks.
+  [provenance](../policy-v2.md#provenance-untrusted-and-from-untrusted). It records every result after the step's
+  calls, wherever an `after_tool` hook listed before it moved it.
+- **Decides each call on its own.** The calls of one step are decided at once, those the model gave one id one after
+  the other; a call id the model uses again, in the same step or a later one, is decided as the call's next `attempt`
+  and recorded with its own result.
+- **Notices a later change.** A `before_tool` hook listed after Tracekit that changes a decided call's tool or
+  arguments doesn't stop it running, but the call is recorded as `status: error`, "the call's tool or arguments changed
+  after the decision". Hooks listed before it (Haystack's `ConfirmationHook` among them) may change the calls: it
+  decides them as they leave those hooks.
 - **Waits for people.** An `ask` waits up to 5 minutes (the signer's cap for one wait) in the hook; then the call is
   refused with the approval's state, and an unanswered approval is withdrawn. So is one whose `run_async` is cancelled
   while it waits.
-- **Covers every tool the agent runs.** `Agent.run` and `Agent.run_async`, sync and async tools, `ComponentTool`,
+- **Covers every tool Haystack runs.** `Agent.run` and `Agent.run_async`, sync and async tools, `ComponentTool`,
   `PipelineTool`, `AgentTool` and the tools of a `Toolset` all reach the same hooks.
 
 ## Not covered
 
 - With `raise_on_tool_invocation_failure=True`, a tool that raises ends the agent run before `after_tool`: the calls of
   that step are not completed and read as `decided_not_completed` on `run.final`. Keep the default (`False`), where the
-  model reads the error and the call is recorded as one.
+  model reads the error and the call is recorded as one. A tool output that fails to merge into the agent's state
+  (`outputs_to_state`) ends the run the same way, whatever that setting.
+- An `after_tool` hook listed before Tracekit that drops a result (or the whole step) leaves that call
+  `decided_not_completed`.
+- Tools the model provider runs itself (`OpenAIResponsesChatGenerator`'s built-in tools such as `web_search` or a
+  remote `mcp` server) never reach the hooks; they show only in the model's responses, which autotrace records under
+  `instrument()`.
+- Values a tool writes to the agent's state (`outputs_to_state`) and a later tool reads from it (`inputs_from_state`,
+  a `State` parameter) are not the model's arguments: they are not decided, so `from: untrusted` rules don't see an
+  untrusted tool's values passed that way.
 - A `before_tool` hook listed after Tracekit can add a call, which then runs undecided. List Tracekit last.
 - An `ask` holds its whole step: Haystack runs a step's calls once every `before_tool` hook has returned, so the
   step's allowed calls wait for the answer too.

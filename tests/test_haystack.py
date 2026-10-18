@@ -91,7 +91,8 @@ class Hook(unittest.TestCase):
                 self.assertEqual(self.ran, ["ACC-9"] if runs else [])
                 if runs:
                     self.assertEqual(out, "closed ACC-9")
-                    r.complete.assert_called_once_with("call-1", "ok", attempt=0, result=mock.ANY)
+                    r.complete.assert_called_once_with("call-1", "ok", attempt=0, decision_id="dec-1",
+                                                       args_digest=mock.ANY, result=mock.ANY)
                 else:
                     self.assertIn("Tracekit policy", out)
                     r.complete.assert_not_called()
@@ -181,20 +182,39 @@ class Hook(unittest.TestCase):
                 answer(agent(r, create_tool_from_function(close_account, outputs_to_string=raw)))
                 self.assertEqual(r.complete.call_args.kwargs["result"], want)
 
-    def test_arguments_a_later_hook_changes_are_recorded_as_changed(self):
+    def test_a_tool_or_arguments_a_later_hook_changes_are_recorded_as_changed(self):
+        def read_account(account: str) -> str:
+            """Read an account."""
+            self.ran.append(f"read {account}")
+            return f"read {account}"
+        for name, account in (("close_account", "ACC-1"), ("read_account", "ACC-9")):
+            with self.subTest(name=name, account=account):
+                @hook
+                def rewrite(state: State):
+                    last = state.data["messages"][-1]
+                    call = ToolCall(name, {"account": account}, last.tool_calls[0].id)
+                    state.set("messages", [*state.data["messages"][:-1], ChatMessage.from_assistant(tool_calls=[call])],
+                              handler_override=replace_values)
+                self.ran.clear()
+                r = run()
+                tk = Tracekit(r)
+                Agent(chat_generator=model(ToolCall("close_account", {"account": "ACC-9"}, "call-1")),
+                      tools=[self.tool(), create_tool_from_function(read_account)],
+                      hooks={"before_tool": [tk, rewrite], "after_tool": [tk]}).run([ChatMessage.from_user("x")])
+                self.assertEqual(self.ran, ["ACC-1" if name == "close_account" else "read ACC-9"])
+                self.assertEqual(r.complete.call_args.args, ("call-1", "error"))
+                self.assertIn("changed after the decision", r.complete.call_args.kwargs["error"])
+
+    def test_a_result_an_earlier_after_tool_hook_moved_is_recorded(self):
         @hook
-        def rewrite(state: State):
-            last = state.data["messages"][-1]
-            call = ToolCall("close_account", {"account": "ACC-1"}, last.tool_calls[0].id)
-            state.set("messages", [*state.data["messages"][:-1], ChatMessage.from_assistant(tool_calls=[call])],
-                      handler_override=replace_values)
+        def nudge(state: State):
+            state.set("messages", [ChatMessage.from_user("be brief")])
         r = run()
         tk = Tracekit(r)
         Agent(chat_generator=model(ToolCall("close_account", {"account": "ACC-9"}, "call-1")), tools=[self.tool()],
-              hooks={"before_tool": [tk, rewrite], "after_tool": [tk]}).run([ChatMessage.from_user("close it")])
-        self.assertEqual(self.ran, ["ACC-1"])
-        self.assertEqual(r.complete.call_args.args, ("call-1", "error"))
-        self.assertIn("changed after the decision", r.complete.call_args.kwargs["error"])
+              hooks={"before_tool": [tk], "after_tool": [nudge, tk]}).run([ChatMessage.from_user("close it")])
+        self.assertEqual(r.complete.call_args.args, ("call-1", "ok"))
+        self.assertEqual(tk._ran, {})
 
     def test_approved_arguments_other_than_the_calls_dont_run(self):
         r = run()
@@ -203,12 +223,12 @@ class Hook(unittest.TestCase):
         self.assertEqual(self.ran, [])
 
     def test_a_call_id_seen_again_is_decided_as_its_next_attempt(self):
-        r = run()
-        answer(agent(r, self.tool(), None, ToolCall("close_account", {"account": "ACC-9"}, "call-1")))
-        self.assertEqual(self.ran, ["ACC-9", "ACC-9"])
+        r = run(send_result=True)
+        answer(agent(r, self.tool(), None, ToolCall("close_account", {"account": "ACC-8"}, "call-1")))
+        self.assertEqual(self.ran, ["ACC-9", "ACC-8"])
         self.assertEqual([c.kwargs["attempt"] for c in r.decide.call_args_list], [0, 1])
-        self.assertEqual([(c.args, c.kwargs["attempt"]) for c in r.complete.call_args_list],
-                         [(("call-1", "ok"), 0), (("call-1", "ok"), 1)])
+        self.assertEqual([(c.args, c.kwargs["attempt"], c.kwargs["result"]) for c in r.complete.call_args_list],
+                         [(("call-1", "ok"), 0, "closed ACC-9"), (("call-1", "ok"), 1, "closed ACC-8")])
 
     def test_a_call_without_an_id_is_decided_under_one_it_is_given(self):
         r = run()
@@ -218,7 +238,8 @@ class Hook(unittest.TestCase):
         given = r.decide.call_args.args[0]
         self.assertTrue(given.startswith("haystack-"))
         self.assertEqual(next(m.tool_call_result for m in msgs if m.tool_call_result).origin.id, given)
-        r.complete.assert_called_once_with(given, "ok", attempt=0, result=mock.ANY)
+        r.complete.assert_called_once_with(given, "ok", attempt=0, decision_id="dec-1", args_digest=mock.ANY,
+                                           result=mock.ANY)
 
     def test_each_call_of_a_step_is_decided_on_its_own(self):
         r = run()
@@ -235,7 +256,8 @@ class Hook(unittest.TestCase):
 
     def test_a_sync_run_decides_in_the_callers_context_where_a_loop_is_running(self):   # a notebook's cell
         r, seen = run(), []
-        r.decide.side_effect = lambda *a, **at: seen.append(current_run.get()) or {"decision": "allow", "rule_ids": []}
+        r.decide.side_effect = lambda *a, **at: seen.append(current_run.get()) or {"decision": "allow", "rule_ids": [],
+                                                                                   "decision_id": "dec-1"}
 
         async def cell():
             with RunHandle(None, {"run_id": "r-1", "run_token": "t"}).current() as handle:
@@ -309,14 +331,32 @@ class Setup(unittest.TestCase):
 
 
 @unittest.skipUnless(HAVE, "haystack-ai not installed")
-class Provenance(unittest.TestCase):
-    """On a real signer: values an untrusted tool's result carries reach the provenance index."""
+class RealSigner(unittest.TestCase):
+    """On a real signer: what the signer takes and records."""
 
-    def test_a_payee_from_an_untrusted_tools_result_is_traced_to_it(self):
+    def setUp(self):
         s = SignerService(ac.tmpdir(self), policy=Engine({"untrusted": ["WebFetch"]}))
         self.addCleanup(s.close)
-        client = Client(ac._serve(self, lambda identity, frame: s.handle_frame(identity, frame)))
+        self.signer, self.client = s, Client(ac._serve(self, lambda identity, frame: s.handle_frame(identity, frame)))
 
+    def events(self, rid, kind):
+        return [e["event"] for e in self.signer.log.storage.iter_run("default", rid) if e["event"]["type"] == kind]
+
+    def test_two_calls_of_a_step_under_one_id_are_each_recorded(self):
+        def close_account(account: str) -> str:
+            """Close an account."""
+            return f"closed {account}"
+        calls = [ToolCall("close_account", {"account": a}, "dup") for a in ("A1", "A2")]
+        with warnings.catch_warnings(), self.client.run(agent="dup") as r:
+            warnings.filterwarnings("error", "tracekit")   # every outcome recorded
+            tk = Tracekit(r)
+            Agent(chat_generator=model(calls), tools=[create_tool_from_function(close_account)],
+                  hooks={"before_tool": [tk], "after_tool": [tk]}).run([ChatMessage.from_user("close both")])
+            rid = r.run_id
+        self.assertEqual(sorted((e["attempt"], e["data"]["ok"]) for e in self.events(rid, "tool.result")),
+                         [(0, True), (1, True)])
+
+    def test_a_payee_from_an_untrusted_tools_result_is_traced_to_it(self):
         def WebFetch(url: str) -> dict:   # noqa: N802 - the policy names the tool
             """Fetch a page."""
             return {"title": "Invoice 7", "pay_to": "mallory-acct-7731"}
@@ -326,13 +366,12 @@ class Provenance(unittest.TestCase):
             return "paid"
         calls = (ToolCall("WebFetch", {"url": "https://docs.example.org/i"}, "w-1"),
                  ToolCall("pay", {"to": "mallory-acct-7731"}, "w-2"))
-        with client.run(agent="provenance") as r:
+        with self.client.run(agent="provenance") as r:
             tk = Tracekit(r)
             Agent(chat_generator=model(*calls), tools=[create_tool_from_function(WebFetch), create_tool_from_function(pay)],
                   hooks={"before_tool": [tk], "after_tool": [tk]}).run([ChatMessage.from_user("pay the invoice")])
             rid = r.run_id
-        d = next(e["event"]["data"] for e in s.log.storage.iter_run("default", rid)
-                 if e["event"]["type"] == "policy.decision" and e["event"].get("tool_call_id") == "w-2")
+        d = next(e["data"] for e in self.events(rid, "policy.decision") if e.get("tool_call_id") == "w-2")
         self.assertEqual([p["source"]["tool"] for p in d["provenance"]], ["WebFetch"])
 
 
