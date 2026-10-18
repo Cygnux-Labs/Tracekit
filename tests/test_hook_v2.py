@@ -276,7 +276,8 @@ class InitV2(unittest.TestCase):
     def setUp(self):   # init reads the user's Claude Code settings and makes the dev signer's data dir
         self.home = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.home, True)
-        env = mock.patch.dict(os.environ, {"HOME": self.home, "XDG_DATA_HOME": os.path.join(self.home, "data")})
+        env = mock.patch.dict(os.environ, {"HOME": self.home, "USERPROFILE": self.home,   # Windows' ~
+                                           "XDG_DATA_HOME": os.path.join(self.home, "data")})
         env.start()
         self.addCleanup(env.stop)
 
