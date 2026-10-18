@@ -79,3 +79,4 @@ the last write, the next write starts from another digest than the signer record
 - The CLI gives every tool use its own `tool_use_id` and runs it once, so every call is attempt 0.
 - A store that keeps an entry twice (a retried append without de-duplication by `uuid`) changes the transcript's
   digest, and the next resume records a `state_tamper`.
+- The LLM gateway's verified tool results (signer.yaml `verify_tool_results`) can't be used with this integration: it records the structured tool response, not what the model is sent, so every result would mismatch ([gateway](../gateway.md#verified-tool-results)).

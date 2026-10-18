@@ -214,9 +214,10 @@ could match). A bundle with any of these kinds, fields or `run.child` needs `ver
 Verified tool results (format 1.3, [gateway](gateway.md#verified-tool-results)): when signer.yaml sets
 `verify_tool_results`, an LLM gateway's request record is checked against the run's tool results. For each tool result
 the request sends, the gateway gives the digests of the values it may have been recorded as; the signer computes their
-commitments under that `tool.result`'s salt (§2). A result that matches none, of a call with an ok `tool.result` whose
-content redaction did not change, is a `reconcile.result_mismatch{layers: [L2, L3], detail}` (`source: signer`,
-`tool_call_id`), once per call. A bundle with one needs `verifier_min_version` 1.3.0.
+commitments under the salts of that call's `tool.result`s (§2). A result that matches none of a call's ok results that
+carried a result (redaction having changed none of them), or a result sent for a call the run allowed and has not
+completed, is a `reconcile.result_mismatch{layers: [L2, L3], detail}` (`source: signer`, `tool_call_id`), once per
+call, counted in `run.final`'s `coverage.unreconciled`. A bundle with one needs `verifier_min_version` 1.3.0.
 
 ## 4. Records and the signature message
 

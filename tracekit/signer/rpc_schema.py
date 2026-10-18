@@ -180,11 +180,11 @@ REQUESTS = {
                                    cache_write_tokens=SEQ, reasoning_tokens=SEQ),
                         tool_uses={"type": "array", "maxItems": 128, "items": _TOOL_USE},
                         tool_results_sent={"type": "array", "maxItems": MAX_RESULTS_SENT, "items": ID},
-                        # a gateway's: each tool result the request sends, as the candidate values it may be (`digest`
-                        # event_hash(value), `size` its JCS bytes, `result_digest` sha256(JCS({"result": value})))
+                        # a gateway's: each tool result the request sends, as the values it may have been recorded as
+                        # (`digest` event_hash(value), `result_digest` sha256(JCS({"result": value})))
                         tool_results={"type": "array", "maxItems": MAX_RESULTS_SENT, "items": _obj(
                             ["id", "forms"], id=ID, forms={"type": "array", "minItems": 1, "maxItems": 3, "items": _obj(
-                                ["digest", "size", "result_digest"], digest=DIGEST, size=SEQ, result_digest=DIGEST)})},
+                                ["digest", "result_digest"], digest=DIGEST, result_digest=DIGEST)})},
                         caller=IDENTITY,   # from a `gateways` identity only: the client it authenticated (source gateway)
                         body=ANY),   # the exchange's body, for the content vault when status says it is on
     "approval_request": _obj(_RUN_REQ + ["tool_call_id"], **_RUN, caller=IDENTITY, tool_call_id=ID, attempt=SEQ,
@@ -307,9 +307,11 @@ RESPONSES = {
     "complete": _SEQ_ONLY,
     "observe": _SEQ_ONLY,
     "state_write": _SEQ_ONLY,
-    # to a gateway: fail_modes; refused: a tool result the request sends differs from the one recorded and the signer's
+    # to a gateway: fail_modes; check_results: whether the signer checks tool_results (verify_tool_results), so the
+    # gateway sends none when it doesn't; refused: a tool result the request sends is not the one recorded and
     # verify_tool_results is refuse, so the gateway must not forward the request
-    "model_event": _obj(["run_seq"], run_seq=SEQ, fail_modes=_FAIL_MODES, refused=REASON),
+    "model_event": _obj(["run_seq"], run_seq=SEQ, fail_modes=_FAIL_MODES, check_results={"type": "boolean"},
+                        refused=REASON),
     "approval_request": _obj(["approval_id", "state"], approval_id=ID, state=APPROVAL_STATE,
                              expires_at=_str(40)),
     "approval_decide": _obj(["approval_id", "state", "self_approved"], approval_id=ID, state=APPROVAL_STATE,

@@ -108,3 +108,5 @@ gateway, for the identity it decided the call for, alone; a run closed mid-call 
   (the model's tool use). Read such a pair as one call through the gateway.
 
 See [limits](limits.md#custody-12).
+
+The LLM gateway's verified tool results don't check calls through the MCP gateway: they are decided under its own ids, not the model's tool call ids ([gateway](gateway.md#verified-tool-results)).

@@ -35,6 +35,10 @@ reconcile.unexplained_effect, written at once (`effects`), and counted in run.fi
 coverage per action class, from the sources of the run's records (`models`, `tools`), the deployment's posture and
 the observers that covered the run throughout.
 
+A tool result an LLM gateway saw a request send that is not the call's tool.result (SignerService._results_checked) is
+one reconcile.result_mismatch, written at once (`mismatched`, rebuilt from the records on replay), and counted in
+run.final's coverage.
+
 Decisions other systems made (policy.external, from decision_import) are indexed by tool call and system; each that
 disagrees with the signer's last decision for that call (flag counts as allow), names another tool, or names a call
 the signer never decided is a signed
@@ -76,6 +80,8 @@ def observe(put, run, e, digests=None, handoff=lambda tool: False):
         put(sub(put, rec, "ext"), tcid, {**rec["ext"].get(tcid, {}), d["system"]: [d["decision"], d["tool"]]})
     if rec is not None and e["type"] == "reconcile.hook_missing":   # written live: finish does not write it again
         put(sub(put, rec, "live"), e["tool_call_id"], True)
+    if rec is not None and e["type"] == "reconcile.result_mismatch":   # written live, once per call; counted by finish
+        put(sub(put, rec, "mismatched"), e["tool_call_id"], True)
     if rec is None or layer is None:
         return []
     digests, now = digests or {}, []
@@ -288,6 +294,8 @@ def finish(tx, run, mandatory=False, handoff=lambda tool: False, structured=lamb
     unreconciled = {"hook_missing": len(live)} if live else {}
     if rec.get("effects"):
         unreconciled["unexplained_effect"] = len(rec["effects"])
+    if rec.get("mismatched"):
+        unreconciled["result_mismatch"] = len(rec["mismatched"])
     for kind, tcid, layers, detail in found:
         tx.emit(run, "reconcile." + kind, {"layers": layers, "detail": detail}, source="signer", tool_call_id=tcid)
         unreconciled[kind] = unreconciled.get(kind, 0) + 1

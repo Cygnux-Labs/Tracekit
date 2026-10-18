@@ -48,8 +48,9 @@ def new_run(tenant, run_id):
     `closing_at` are monotonic times for the idle and grace clocks. `prov`: the provenance index of a run registered
     since this signer started (SignerService._index), memory only; None after a restart (unavailable). `writers`: who
     wrote each stream first (writer()), `tails`: the last client_seq a close_run said each stream ended at; both memory
-    and snapshot only. `results`: tool_call_id -> [decision_id, output hash, ok, redacted, mismatch recorded] of each
-    tool.result, which a gateway's tool result digests are checked against (SignerService._results_checked)."""
+    and snapshot only. `results`: tool_call_id -> [[decision_id, output hash, comparable, redacted, the form digest it
+    matched or None], ...] of its tool.results (the newest RESULTS_PER_CALL: an id may be reused), which a gateway's
+    tool result digests are checked against (SignerService._results_checked)."""
     return {"tenant": tenant, "run_id": run_id, "run_seq": 0, "head": ZERO_HASH, "streams": {}, "writers": {},
             "tails": {}, "closed": False, "results": {},
             "final": False, "calls": {}, "decisions": {}, "denied": {}, "states": {}, "owner": None, "source": "sdk",
@@ -64,6 +65,8 @@ FINAL_KEYS = ("tenant", "run_id", "run_seq", "head", "closed", "final", "owner",
 CALL_KEYS = ("tool_call_id", "attempt", "decision", "rule_ids", "decision_id", "commitment", "nondeterministic",
              "detect_ids", "via", "caller")
 TENANT_GAPS = ("witness_failed", "witness_late", "clock_skew", "degraded_unanchored")
+RESULTS_PER_CALL = 8   # tool.results kept per tool_call_id for checking what a gateway saw sent (an id may be reused)
+NO_RESULT = len(b"{}")   # a tool.result output's size when complete sent neither result nor error
 
 
 def final_run(run):
@@ -550,13 +553,14 @@ class RecordLog:
                     run["decisions"][call["decision_id"]] = call
             elif e["type"] == "state.write":
                 run["states"][e["data"]["key"]] = (salt_label(e), e["data"]["digest"])
-            elif e["type"] == "reconcile.result_mismatch" and e.get("tool_call_id") in run["results"]:
-                run["results"][e["tool_call_id"]][4] = True
             elif e["type"] == "tool.result" and "decision_id" in e["data"]:
                 d, out = e["data"], e["data"].get("output") or {}
                 if out.get("hash") and e.get("tool_call_id"):
-                    run["results"][e["tool_call_id"]] = [d["decision_id"], out["hash"], d.get("ok") is True,
-                                                         out.get("redacted") is True, False]
+                    # lean: an ok result that also carried `error` counts as comparable after a restart (no shipped
+                    # client sends both); record whether it is comparable in tool.result if one ever does
+                    run["results"][e["tool_call_id"]] = run["results"].get(e["tool_call_id"], [])[1 - RESULTS_PER_CALL:] + [
+                        [d["decision_id"], out["hash"], d.get("ok") is True and out.get("size") != NO_RESULT,
+                         out.get("redacted") is True, None]]
                 run["decisions"].pop(e["data"]["decision_id"], None)
                 aid = index.get((e["tenant"], e["run_id"], e["tool_call_id"], e.get("attempt", 0)))
                 if aid and approvals[aid]["state"] == "consumed":   # its approved call completed (Service._complete)

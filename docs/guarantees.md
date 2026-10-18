@@ -10,7 +10,7 @@ about it, is in [limits](limits.md).
 - **A verified bundle proves the records weren't changed since they were signed and checkpointed.** It does not prove
   intent, that every action was captured, or that a tool result the agent reported was true
   ([FAQ](faq.md#what-cant-tracekit-prove)).
-- **Recording is not containment.** Every path the agent is allowed to use, the model gateway included, can carry
+- **A record doesn't stop an action.** Every path the agent is allowed to use, the model gateway included, can carry
   data out or carry instructions in, hidden in ordinary requests. Tracekit records those requests exactly. It doesn't
   flag what they mean.
 - **Policy rules are tripwires.** They match text, tool names and extracted fields; a determined agent can reword a
@@ -54,7 +54,7 @@ of these services are experimental.
 |---|---|
 | Model calls, credentialed actions and MCP calls are recorded by services outside the agent, even if the agent controls its own machine: the credentials it would need live only in those services. | That the route really is the only one: the coverage matrix's `enforced` is the operator's assertion, recorded as not attested ([egress](egress.md#posture)). |
 | Network connections are recorded by host, port and bytes; a host no call explains is a signed `reconcile.unexplained_effect`. | What was inside a connection: the egress observer doesn't intercept TLS. |
-| A tool result the agent changed before the model read it is a signed `reconcile.result_mismatch`, when signer.yaml sets `verify_tool_results` ([gateway](gateway.md#verified-tool-results)). | Covert content in allowed requests, including requests to the model itself. |
+| An edited tool result for a call the signer already completed, or one sent before its call completed, is a signed `reconcile.result_mismatch`, when signer.yaml sets `verify_tool_results` ([gateway](gateway.md#verified-tool-results)). | Text the agent adds outside tool results, tool calls it writes into the history itself, and covert content in allowed requests, including requests to the model itself ([limits](limits.md#signer-and-capture)). |
 
 ## Outside every deployment
 
