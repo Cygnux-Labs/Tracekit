@@ -192,6 +192,19 @@ jobs:
       - name: Test
         run: make test-contrib PY=python
 
+  strands:
+    name: "Strands integration (own environment: needs mcp<2.2)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -e . pytest PyYAML regex "strands-agents>=1.61,<1.62"
+      - run: python -m pytest -q tests/test_strands.py
+      - run: python -m pytest -q tests/test_examples_v2.py -k test_strands
+
   quickstart:
     # M1a exit gate: docs/quickstart-v2.md from a wheel in a fresh venv. Not a required check at first.
     name: v2 quickstart (${{ matrix.os }})
