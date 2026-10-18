@@ -3,16 +3,18 @@
 > **Experimental:** this works and is tested, but may change and gets less hardening than the [stable core](../support.md).
 
 `tracekit.integrations.pydantic_ai.Tracekit` is a Pydantic AI [capability](https://pydantic.dev/docs/ai/capabilities/overview/)
-that gates every tool call an agent makes: its `wrap_tool_execute` hook asks the Tracekit signer for a decision before
-the tool runs (an `ask` waits for a person) and records the outcome after.
+that gates every tool call an agent makes, and every output function the model calls through an output tool: its
+`wrap_tool_execute` and `wrap_output_process` hooks ask the Tracekit signer for a decision before the function runs (an
+`ask` waits for a person) and record the outcome after.
 
 ## Install
 
 ```bash
-pip install tracekit-ai "pydantic-ai-slim>=2.57,<2.58"
+pip install tracekit-ai "pydantic-ai-slim[openai]>=2.57,<2.58"
 ```
 
-Tested with Pydantic AI 2.57.
+Tested with Pydantic AI 2.57, which needs Python 3.11+. Pick the extra for your model provider (`[openai]`,
+`[anthropic]`, ...); the capability itself needs none.
 
 ## Setup
 
@@ -26,25 +28,45 @@ with Client().run(agent="support-agent") as run:
     agent.run_sync("close ACC-9")
 ```
 
-`tracekit.instrument()` returns a run handle that works here too, and it also records the model calls the agent makes
-through the OpenAI, Anthropic and Google Gen AI SDKs (autotrace): `capabilities=[Tracekit(tracekit.instrument())]`.
-Then `tracekit last` exports and verifies the run. A runnable offline example (a `FunctionModel`, no API key):
+Or make `import tracekit; tracekit.instrument()` the first line: every `Agent` built after it gets the capability
+(an agent given a `Tracekit` by hand keeps that one alone), and it also records the model calls the agent makes through
+the OpenAI, Anthropic and Google Gen AI SDKs (autotrace). An `AsyncRunHandle` works as well as a `RunHandle`. Then
+`tracekit last` exports and verifies the run.
+
+Every agent needs the capability, a delegate agent a tool calls included: an agent built before `instrument()` or
+without `Tracekit(run)` runs its tools ungated. To gate one run of an agent you don't build, pass it to the run:
+`agent.run(..., capabilities=[Tracekit(run)])`. A runnable offline example (a `FunctionModel`, no API key):
 [`examples/v2/pydantic_ai`](../../examples/v2/pydantic_ai/README.md).
 
 ## What it does
 
 - **Decides the model's own arguments.** The signer decides `call.args`, the arguments as the model sent them (its JSON
-  text or dict); the tool runs with the arguments Pydantic AI validated from them. An approval is bound to those
-  arguments and used once.
+  text or dict, an empty string as `{}`); the tool runs with the arguments Pydantic AI validated from them. An approval
+  is bound to those arguments and used once. Under the [executor](../executor.md) (T2), a call whose approved arguments
+  are not the model's is refused, not run with either.
+- **Runs outermost.** The capability wraps every other one, so a capability that rewrites a call's arguments in
+  `before_tool_execute` or `wrap_tool_execute` does it inside Tracekit's decision: the call runs, and is recorded as
+  `status: error`, "the call's arguments changed after the decision".
 - **Never runs a refused call.** A deny, a rejected or unanswered approval, a refused consume, a signer refusal, an
   outage under a closed fail mode and any error of Tracekit's own all skip the tool (`SkipToolExecution`): the model
   reads Tracekit's reason as the tool's result and the run goes on. Under an open fail mode a call runs unrecorded
   during an outage, with a warning.
 - **Records failures as failures.** A tool that raises is recorded as `status: error` and its exception reaches
   Pydantic AI unchanged, so `ModelRetry` and the agent's retries work as before. A retry is a new call id and a new
-  decision.
+  decision. A tool's result goes to the signer as the JSON the model reads (a model or dataclass as its fields), so an
+  untrusted tool's values reach [provenance](../policy-v2.md#provenance-untrusted-and-from-untrusted).
+- **Gates output functions.** An output function the model calls through an output tool (`output_type=ToolOutput(fn)`,
+  or a function in `output_type`) is decided under that tool's name, `final_result` by default, and runs only when
+  allowed; a refused one never runs and the model reads the reason as a retry prompt. When streaming, it runs once, on
+  the final output (the partial outputs come back unprocessed).
 - **Waits for people.** An `ask` waits up to 5 minutes (the signer's cap for one wait) before the call; then it is
-  skipped with the approval's state, and an unanswered approval is withdrawn.
+  skipped with the approval's state, and an unanswered approval is withdrawn. So is one whose agent run is cancelled
+  while it waits.
+- **Decides MCP calls once.** A tool from an MCP toolset is decided by the capability under its Pydantic AI name; the
+  `ClientSession` that `instrument()` wires doesn't decide it again.
+- **Keeps Pydantic AI's deferred tools.** A tool that raises `ApprovalRequired` or `CallDeferred` is not completed; when
+  it is resumed with `DeferredToolResults` under the same call id it is decided again as the call's next `attempt`.
+  The first attempt then shows as `decided_not_completed` on `run.final`.
 
 ## Not covered
 
@@ -52,5 +74,12 @@ Then `tracekit last` exports and verifies the run. A runnable offline example (a
   (`ApprovalRequired`, `DeferredToolRequests`): an approval given there is not the signer's and would not be recorded.
 - Builtin tools the model provider runs (web search, code execution on the provider's side) never reach
   `wrap_tool_execute`; they are seen only in the model responses autotrace records.
-- Output tools (structured output) are not tool calls here and are not decided.
+- Plain structured output (an output type with no function) and text output functions (`TextOutput`) are not decided:
+  nothing runs that the model chose. Register a function with side effects as a tool or a `ToolOutput`. Under
+  autotrace the model's output tool calls (`final_result`, `final_result_<Type>` per output type) have no tool result:
+  name each in the policy's `structured_output:`, or `reconcile` reports them.
+- An argument rewrite in another capability's `before_tool_validate` is invisible: it happens before the validated
+  arguments Tracekit compares.
+- Each signer call, and an `ask`'s wait, holds a thread of asyncio's default executor; many asks waiting at once can
+  starve it.
 - The capability holds a live run, so it is not built from an agent spec (`Agent.from_spec`).

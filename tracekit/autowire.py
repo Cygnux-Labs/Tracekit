@@ -15,6 +15,8 @@ signer; else $TRACEKIT_SIGNER), closes it when the process exits, and wires ever
 * MCP client: every ClientSession.call_tool goes through TracekitSession;
 * Browser Use: the actions of every Tools built from now on (an Agent builds one) are gated (trace_tools);
 * CrewAI: global tool hooks decide every tool call and block by return value (tracekit.integrations.crewai);
+* Pydantic AI: every Agent built from now on gets the Tracekit capability (tracekit.integrations.pydantic_ai), unless
+  it was given one;
 * the Anthropic, OpenAI and Google Gen AI clients: every model call (tracekit.autotrace).
 
 Idempotent: a second call returns the same run. Calls addressed to its run go to the current run while one is
@@ -26,6 +28,7 @@ Don't also wire an adapter by hand in the same process: the call would be decide
 """
 import atexit
 import collections
+import contextvars
 import functools
 import logging
 import os
@@ -37,6 +40,9 @@ import weakref
 from importlib import metadata
 
 _STATE = {"run": None}
+# True while an adapter that already decided a call runs it (the Pydantic AI capability around an MCP toolset's call):
+# the MCP session wired below then doesn't decide that call a second time
+DECIDED_UPSTREAM = contextvars.ContextVar("tracekit_decided_upstream", default=False)
 
 
 NEW_WORK = {"decide", "model_event", "observe", "state_write", "approval_list"}   # go to the current run
@@ -250,6 +256,8 @@ def _mcp(run):
 
     @functools.wraps(call_tool)
     async def gated(self, *a, **kw):
+        if DECIDED_UPSTREAM.get():
+            return await call_tool(self, *a, **kw)
         if self not in gates:   # every session shares one signer stream: a run allows 64 (quotas.streams_per_run)
             # the gate holds its session weakly: a strong one would keep every session (the dict's key) alive
             g = gates[self] = TracekitSession(_Unpatched(weakref.proxy(self), call_tool), run.client, run.registered,
@@ -284,6 +292,20 @@ def _browser_use(run):
     Tools.__init__ = gated
 
 
+def _pydantic_ai(run):
+    from pydantic_ai import Agent
+
+    from .integrations.pydantic_ai import Tracekit
+    init = Agent.__init__
+
+    @functools.wraps(init)
+    def wired(self, *a, capabilities=None, **kw):
+        if not any(isinstance(c, Tracekit) for c in capabilities or ()):   # one given by hand decides alone
+            capabilities = [*(capabilities or ()), Tracekit(run)]
+        init(self, *a, capabilities=capabilities, **kw)
+    Agent.__init__ = wired
+
+
 def _crewai(run):
     from crewai.hooks import register_after_tool_call_hook, register_before_tool_call_hook
 
@@ -305,6 +327,8 @@ FRAMEWORKS = (
     ("Browser Use", "browser-use", (0, 13, 11), (0, 14), "browser-use>=0.13.11,<0.14", "integrations/browser-use",
      _browser_use),
     ("CrewAI", "crewai", (1, 15, 27), (1, 16), "crewai>=1.15.27,<1.16", "integrations/crewai", _crewai),
+    ("Pydantic AI", "pydantic-ai-slim", (2, 57), (2, 58), "pydantic-ai-slim>=2.57,<2.58", "integrations/pydantic-ai",
+     _pydantic_ai),
 )
 
 
@@ -363,7 +387,7 @@ def instrument(agent=None):
         found = [(f, v) for f in FRAMEWORKS if (v := _version(f[1]))]
         if not found and not any(map(_version, MODEL_SDKS)):
             warnings.warn("tracekit.instrument(): none of the frameworks or model SDKs it wires is installed (OpenAI "
-                          "Agents SDK, LangGraph, Claude Agent SDK, MCP, Browser Use, CrewAI, OpenAI, Anthropic, "
+                          "Agents SDK, LangGraph, Claude Agent SDK, MCP, Browser Use, CrewAI, Pydantic AI, OpenAI, Anthropic, "
                           "Google Gen AI); nothing is recorded. Record calls yourself: docs/quickstarts/custom.md", stacklevel=2)
             return None
         script = sys.argv[0] if sys.argv and sys.argv[0] not in ("", "-c") else "python"

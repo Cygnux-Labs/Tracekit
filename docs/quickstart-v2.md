@@ -24,7 +24,7 @@ import tracekit; tracekit.instrument()     # the first line, before your agent b
 Then run your agent as usual. `instrument()` registers a run with the signer and closes it when the process exits. It
 wires every framework it finds installed: OpenAI Agents SDK tools, LangGraph / LangChain `ToolNode`s (which
 `create_agent` builds), Claude Agent SDK hooks, MCP `ClientSession.call_tool`, Browser Use's `Tools` (which an `Agent`
-builds), CrewAI's tool hooks, and the OpenAI, Anthropic and Google Gen AI clients' model calls. Each tool call is decided by the signer
+builds), CrewAI's tool hooks, Pydantic AI `Agent`s (the `Tracekit` capability), and the OpenAI, Anthropic and Google Gen AI clients' model calls. Each tool call is decided by the signer
 before it runs (`allow`, `deny`, `ask`) and recorded after. A denied call reaches the model as a refusal and the agent
 goes on. Calling it again returns the same run. With none of these installed it warns and does nothing. TypeScript:
 `const tk = await instrument()` from `@cygnuxlabs/tracekit`, then pass `tk.ai` (Vercel AI SDK) or `tk.agents` (OpenAI Agents
@@ -69,7 +69,7 @@ refuses the call. An unanswered approval expires after an hour.
 | MCP client (`call_tool`) | timed wait in `call_tool` | `approval_wait_s`, 300 s (0 refuses at once) | an error `CallToolResult` when not approved, and an unanswered approval is withdrawn; the run goes on |
 | Browser Use | timed wait before the action | `approval_wait_s`, by default and at most five sixths of Browser Use's action timeout: 150 s of `BROWSER_USE_ACTION_TIMEOUT_S`'s 180 s (0 refuses at once) | an error `ActionResult` when not approved, and an unanswered approval is withdrawn; the agent goes on |
 | CrewAI | timed wait in its `before_tool_call` hook | 300 s | the call is blocked and the model gets the approval's state |
-| Pydantic AI | timed wait in the `Tracekit` capability's `wrap_tool_execute` | 300 s | the call is skipped and the model gets the approval's state |
+| Pydantic AI | timed wait in the `Tracekit` capability, before the tool or output function runs | 300 s | the call is skipped and the model gets the approval's state; an unanswered approval, or one whose agent run is cancelled, is withdrawn |
 | Claude Agent SDK (Python, TS) | timed wait in its PreToolUse hook | 540 s (the hook's own timeout is 600 s) | a `deny` with the reason when not approved; the session goes on |
 | Claude Code, Codex, Cursor, Gemini hooks | timed wait in the hook process | 540 s (hook timeout 600 s) | the harness's deny when not approved; the model may retry |
 | Vercel AI SDK (TS, `tk.ai`) | the SDK's own tool approval | none of its own | `approvalResponses(parts)`, pushed to `messages`, resumes it; a call not approved throws |
