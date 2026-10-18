@@ -12,7 +12,7 @@ import unittest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 NEEDS = {"custom": (), "langchain": ("langchain", "langgraph"), "openai_agents": ("agents",),
          "claude_agent_sdk": ("claude_agent_sdk",), "mcp": ("mcp",),
-         "pydantic_ai": ("pydantic_ai",), "agent_framework": ("agent_framework",)}
+         "pydantic_ai": ("pydantic_ai",), "agent_framework": ("agent_framework",), "google_adk": ("google.adk",)}
 
 
 def python(*argv, env, cwd):
@@ -72,6 +72,9 @@ class Examples(unittest.TestCase):
 
     def test_agent_framework(self):
         self.run_example("agent_framework")
+
+    def test_google_adk(self):
+        self.run_example("google_adk")
 
 
 class DemoServer(unittest.TestCase):
