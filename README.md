@@ -15,7 +15,7 @@ and gives you one `.tkb` file per run that anyone can verify offline.**
 <table>
 <tr>
 <td align="center" width="25%"><h3>8 of 8</h3>tamper attacks caught<br><sub><a href="#proof">480 trials</a>, with a witness (E1)</sub></td>
-<td align="center" width="25%"><h3>473 of 473</h3>harmful calls stopped<br><sub><a href="#proof">11 classes</a>, 1 false alarm in 676 (E17)</sub></td>
+<td align="center" width="25%"><h3>483 of 483</h3>harmful calls stopped<br><sub><a href="#proof">11 classes</a>, 1 false alarm in 685 (E17)</sub></td>
 <td align="center" width="25%"><h3>&lt; 1 ms</h3>added per tool call<br><sub><a href="#proof">0.91 ms at p99</a>, signer round trip (E9)</sub></td>
 <td align="center" width="25%"><h3>8 of 8</h3>insider attacks caught<br><sub><a href="#proof">a merge gate</a> on every PR (E8)</sub></td>
 </tr>
@@ -24,7 +24,7 @@ and gives you one `.tkb` file per run that anyone can verify offline.**
 Built like **Certificate Transparency**: signed records in an append-only log that independent witnesses cosign<br>
 **Open file format** · verifiers in **Python** and **TypeScript** · **MIT** · runs on your own machines
 
-**[Try it](#try-it) · [Add it to your agent](#add-it-to-your-agent) · [Pilot it](#pilot-it-with-us) · [What it proves](#what-it-proves) · [What's in it](#whats-in-it) · [Proof](#proof) · [How it works](#how-it-works) · [Contribute](#contribute) · [Docs](#docs)**
+**[Try it](#try-it) · [Add it to your agent](#add-it-to-your-agent) · [What it proves](#what-it-proves) · [What's in it](#whats-in-it) · [Proof](#proof) · [How it works](#how-it-works) · [Pilot it](#pilot-it-with-us) · [Contribute](#contribute) · [Docs](#docs)**
 
 </div>
 
@@ -177,7 +177,7 @@ is tested, but may change between releases ([what's stable](https://github.com/C
 | Core | What it does | Measured |
 |---|---|---|
 | **Record** | Every tool call, decision and result in one signed hash chain per run. A lost event becomes a signed gap, never silence | 6 of 8 tamper attacks caught by the log alone (E1) |
-| **Decide** | Allow, deny, or hold each call for a person, before it runs. [Packs](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/policy-v2.md) for shell, files, SQL, HTTP, cloud CLIs, browsers, email, messaging, payments, secrets and MCP | 473 of 473 harmful calls stopped, 1 false alarm in 676 (E17) |
+| **Decide** | Allow, deny, or hold each call for a person, before it runs. [Packs](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/policy-v2.md) for shell, files, SQL, HTTP, cloud CLIs, browsers, email, messaging, payments, secrets and MCP | 483 of 483 harmful calls stopped, 1 false alarm in 685 (E17) |
 | **Approve** | A held call runs only after a yes from the command line, bound to its exact arguments and used once ([approvals](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/approvals.md)) | Edited arguments, a replayed snapshot or another run's approval: refused, in the contract tests every stable framework integration runs |
 | **Prove** | `tracekit verify` checks a run's file offline against keys you pinned | 8 of 8 insider attacks caught (E8) |
 | **Watch** | `tracekit view`: every run verified, blocked and held calls, approvals, gaps, replay and a run review ([viewer](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/viewer.md)) | Not measured |
@@ -204,7 +204,7 @@ Our own experiments: small, synthetic and written by us. Nothing rounded up. The
 |---|---|---|
 | **E1** tamper detection | 120-record signed logs, 8 attacks, 60 trials each, re-run on 1.2 | 6 of 8 caught by the log alone, **8 of 8 with a witness** |
 | **E8** insider attacks | Real unprivileged users against a Linux system-mode signer: a decoy signer, a stopped signer, a swapped policy, fabricated runs | **8 of 8 caught**, a merge gate on every pull request |
-| **E17** policy packs | 473 harmful and 676 benign tool calls in 11 classes, decided by both regex engines | **473 of 473 stopped**; 1 false alarm, a draft email held for a person |
+| **E17** policy packs | 483 harmful and 685 benign tool calls in 11 classes, decided by both regex engines | **483 of 483 stopped**; 1 false alarm, a draft email held for a person |
 | **E10** reconciliation | 30 runs, 12 with a seeded discrepancy: a missing hook, a fabricated call, changed arguments | **12 of 12 flagged**, 0 false positives |
 | **E9** overhead | Signer round trip over a Unix socket, file storage, macOS quick run | **0.45 ms p50, 0.91 ms p99** per call; 5,356 events/s |
 | **E3** the v1 regex gate, on a rougher set | 16 harmful and 20 benign calls written after the rules | **12 of 16 caught**, 1 false alarm. Rules are tripwires, not a sandbox |
@@ -312,7 +312,8 @@ Each of these is useful on its own, and none needs to know the whole codebase:
   [adapter contract](https://github.com/Cygnux-Labs/Tracekit/blob/main/CONTRIBUTING.md#adding-a-framework-adapter).
 - **Try to break it.** Find a tamper or a bypass that E1 and E8 miss, and report it privately as
   [SECURITY.md](https://github.com/Cygnux-Labs/Tracekit/blob/main/SECURITY.md) describes. Everyone who finds one is
-  named in the [hall of fame](https://github.com/Cygnux-Labs/Tracekit/blob/main/HALL_OF_FAME.md).
+  named in the [hall of fame](https://github.com/Cygnux-Labs/Tracekit/blob/main/HALL_OF_FAME.md) unless they ask us
+  not to.
 
 To start: `make install`, then `make check`
 ([contributing](https://github.com/Cygnux-Labs/Tracekit/blob/main/CONTRIBUTING.md)). Smaller tasks are labelled

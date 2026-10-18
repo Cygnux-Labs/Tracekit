@@ -77,3 +77,12 @@
 {"tool": "Bash", "args": {"command": "createdb test_acme"}, "expect": "allow", "note": "deploy, read or list"}
 {"tool": "bash", "args": {"command": "git commit -m 'docs: why we never run railway down or dropdb on prod'"}, "expect": "allow", "note": "a commit message naming a destroy command"}
 {"tool": "Bash", "args": {"command": "grep -rn volumeDelete src/"}, "expect": "allow", "note": "searching for a destroy mutation"}
+{"tool": "Bash", "args": {"command": "railway up --service delete-worker"}, "expect": "allow", "note": "names a destroy word without destroying"}
+{"tool": "bash", "args": {"command": "fly logs -a delete-me"}, "expect": "allow", "note": "names a destroy word without destroying"}
+{"tool": "Bash", "args": {"command": "curl -O https://example.com/schema/serviceDelete.json"}, "expect": "allow", "note": "names a destroy word without destroying"}
+{"tool": "shell", "args": {"command": "railway run docker compose down"}, "expect": "allow", "note": "names a destroy word without destroying"}
+{"tool": "Bash", "args": {"command": "pulumi config set destroy-protection true"}, "expect": "allow", "note": "names a destroy word without destroying"}
+{"tool": "terminal", "args": {"command": "terraform workspace select destroy-test"}, "expect": "allow", "note": "names a destroy word without destroying"}
+{"tool": "Bash", "args": {"command": "heroku destroy-test-app-helper"}, "expect": "allow", "note": "names a destroy word without destroying"}
+{"tool": "bash", "args": {"command": "dropdb --help"}, "expect": "allow", "note": "names a destroy word without destroying"}
+{"tool": "Bash", "args": {"command": "terraform destroy --help"}, "expect": "allow", "note": "names a destroy word without destroying"}

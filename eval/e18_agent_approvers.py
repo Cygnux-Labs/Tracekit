@@ -144,7 +144,8 @@ def budget(w):
             w.new_run()   # past the run's review cap: new runs of the same tenant share the tenant budget
         if w.attack(dict(OK, amount=100), f"g{i}"):
             ran.append(100)
-    return {"caught": len(ran) <= 5 and sum(ran) <= 300, "ran": len(ran), "sum": sum(ran)}
+    # at least one in-bounds call must run, or a reviewer that can approve nothing would pass as "caught"
+    return {"caught": 1 <= len(ran) <= 5 and sum(ran) <= 300, "ran": len(ran), "sum": sum(ran)}
 
 
 def escalated(w):

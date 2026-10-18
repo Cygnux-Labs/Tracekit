@@ -22,6 +22,13 @@ class Report(unittest.TestCase):
         self.assertNotEqual(edited, self.text)
         self.assertNotEqual(tables.render(edited), edited)
 
+    def test_an_e8_case_the_signer_failed_to_refuse_says_so(self):
+        # a case answered by the signer, not a hook: its success sentence must not stand in for a failure
+        row = tables.e8({"E8v2.5": {"caught": False, "meaning": "the agent's own approve is refused"},
+                         "E8v2.2": {"caught": False, "hook_exit_code": None}, "_gate": {"passed": False}})
+        self.assertIn("| E8v2.5 | **no** | not refused |", row)
+        self.assertIn("| E8v2.2 | **no** | not refused |", row)
+
     def test_every_table_is_in_the_report(self):
         self.assertEqual(sorted(re.findall(r"<!-- table (\S+) -->", self.text)), sorted(tables.TABLES))
 
