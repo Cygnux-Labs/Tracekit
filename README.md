@@ -177,7 +177,8 @@ Three guarantees. They're related, but one doesn't give you the others, and each
 
 What each deployment guarantees, from dev mode to a signer the agent can't reach:
 [guarantees](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/guarantees.md). Every limit, with what to do
-about it: [limits](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/limits.md).
+about it: [limits](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/limits.md). How it maps to the EU AI Act,
+ISO/IEC 42001, the NIST AI RMF and OWASP: [compliance](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/compliance/README.md).
 
 ## What's in it
 
@@ -338,7 +339,7 @@ the [code of conduct](https://github.com/Cygnux-Labs/Tracekit/blob/main/CODE_OF_
 | Wire up an agent | [v2 quickstart](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/quickstart-v2.md) · [coding agents](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/coding-agents.md) · [TypeScript SDK](https://github.com/Cygnux-Labs/Tracekit/blob/main/sdk/typescript/README.md) |
 | Put the signer out of reach | [deployment](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/deploy.md) · [compose](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/deploy-compose.md) · [container](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/deploy-container.md) · [Kubernetes](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/deploy-kubernetes.md) · [doctor](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/doctor.md) |
 | Decide calls | [policy reference](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/policy-v2.md) · [approvals](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/approvals.md) · [incidents](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/incidents.md) · [webhooks](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/webhooks.md) |
-| Check evidence | [reading a verify report](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/verdicts.md) · [auditor guide](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/auditor-guide.md) · [witnesses](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/witnesses.md) · [monitor](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/monitor.md) |
+| Check evidence | [reading a verify report](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/verdicts.md) · [auditor guide](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/auditor-guide.md) · [witnesses](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/witnesses.md) · [monitor](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/monitor.md) · [compliance mapping](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/compliance/README.md) |
 | Ask why an action happened | [tracekit why](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/why.md) · [its architecture](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/why-architecture.md) |
 | Understand the design | [architecture](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/architecture.md) · [evaluation](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/evaluation.md) · [technical report](https://github.com/Cygnux-Labs/Tracekit/blob/main/report/tracekit-v2.md) · [case study](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/case-study-oss-agents.md) |
 | Know what's stable | [support](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/support.md) · [limits](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/limits.md) · [FAQ](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/faq.md) · [security checklist](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/security-checklist.md) · [changelog](https://github.com/Cygnux-Labs/Tracekit/blob/main/CHANGELOG.md) |

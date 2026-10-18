@@ -3,6 +3,8 @@
 You are checking an operator's evidence about its agents. The operator gives you bundles; everything you trust has to
 come from somewhere else. That is the point of the format: a bundle carries no code and no trust configuration, and
 the verifier pins its own ([format v2](format-v2.md), invariant I9 in the [threat model](threat-model-server.md)).
+Which requirements of the EU AI Act, ISO/IEC 42001, the NIST AI RMF and OWASP's lists this evidence bears on, and
+what it doesn't cover: [compliance mapping](compliance/README.md).
 
 ## 1. Get a verifier you trust
 
