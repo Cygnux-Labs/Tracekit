@@ -95,3 +95,8 @@
 {"tool": "Bash", "args": {"command": "git push -d origin main -o --dry-run"}, "expect": "ask", "note": "deleting a remote Git ref; --dry-run is the -o push option's value, not a dry run"}
 {"tool": "Bash", "args": {"command": "git push -d origin main -o -n"}, "expect": "ask", "note": "deleting a remote Git ref; -n is the -o push option's value, not a dry run"}
 {"tool": "Bash", "args": {"command": "git push --prune origin 'refs/heads/*:refs/heads/*'"}, "expect": "ask", "note": "deleting every remote branch with no local counterpart"}
+{"tool": "Bash", "args": {"command": "git push -4d origin b1"}, "expect": "ask", "note": "-d in a short-option cluster with the IPv4 flag"}
+{"tool": "Bash", "args": {"command": "git push -doci.skip origin b1"}, "expect": "ask", "note": "-d with -o's value glued on"}
+{"tool": "Bash", "args": {"command": "git push --del origin b1"}, "expect": "ask", "note": "a unique prefix of --delete"}
+{"tool": "Bash", "args": {"command": "git push --pru origin"}, "expect": "ask", "note": "a unique prefix of --prune"}
+{"tool": "Bash", "args": {"command": "git push origin 0000000000000000000000000000000000000000:refs/heads/b1"}, "expect": "ask", "note": "the all-zero object id as the source deletes the ref"}
