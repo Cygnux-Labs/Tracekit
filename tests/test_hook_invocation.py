@@ -87,24 +87,93 @@ class PluginShim(unittest.TestCase):
         with open(self.script, "w", encoding="utf-8") as f:
             f.write(text.replace("SYSTEM_CONFIG=/etc/tracekit/client.json", f"SYSTEM_CONFIG={self.config}")
                     .replace("SYSTEM_PYTHON=/opt/tracekit/bin/python", f"SYSTEM_PYTHON={self.system_python}"))
-        self.bin = os.path.join(self.d, "bin")  # grep only: no python on PATH, so the package is missing
+        self.bin = os.path.join(self.d, "bin")  # grep and uname only: no python on PATH, so the package is missing
         os.makedirs(self.bin)
-        os.symlink(shutil.which("grep"), os.path.join(self.bin, "grep"))
+        for tool in ("grep", "uname"):
+            os.symlink(shutil.which(tool), os.path.join(self.bin, tool))
+        self.home, self.data = os.path.join(self.d, "home"), os.path.join(self.d, "data")
+
+    def hook(self, event="PreToolUse", **env):
+        """(exit code, stderr) of the plugin's hook for `event`, with this test's PATH, HOME and XDG_DATA_HOME."""
+        r = subprocess.run(["/bin/sh", self.script, event], input="{}", capture_output=True, text=True,
+                           env={"PATH": self.bin, "HOME": self.home, "XDG_DATA_HOME": self.data, "TRACEKIT_PYTHON": "",
+                                **env})
+        return r.returncode, r.stderr
 
     def run_missing_package(self, fail_mode):
         if fail_mode is not None:
             with open(self.config, "w", encoding="utf-8") as f:
                 json.dump({"fail_mode": fail_mode} if fail_mode else {}, f)
-        return subprocess.run(["/bin/sh", self.script], input="{}", capture_output=True, text=True,
-                              env={"PATH": self.bin, "TRACEKIT_PYTHON": ""}).returncode
+        return self.hook()[0]
 
     def test_missing_package_blocks_when_system_config_is_fail_closed(self):
         self.assertEqual(self.run_missing_package("closed"), 2)
         self.assertEqual(self.run_missing_package(""), 2)  # system mode defaults to closed
 
-    def test_missing_package_allows_when_fail_open_or_no_system_config(self):
-        self.assertEqual(self.run_missing_package(None), 0)
-        self.assertEqual(self.run_missing_package("open"), 0)
+    def test_missing_package_runs_the_call_with_a_visible_error_when_fail_open_or_not_set_up(self):
+        """Both exited 0, and Claude Code shows no stderr of a hook that exits 0: nobody saw "NOT recorded"."""
+        self.assertEqual(self.run_missing_package(None), 1)
+        self.assertEqual(self.run_missing_package("open"), 1)
+
+    def test_without_tracekit_or_its_setup_every_event_proceeds_with_a_notice(self):
+        for event in ("PreToolUse", "UserPromptSubmit", "Stop"):
+            code, err = self.hook(event)
+            self.assertEqual(code, 1, event)
+            self.assertIn("NOT recorded", err.splitlines()[0])   # the line Claude Code shows
+            self.assertIn("pip install tracekit-ai && tracekit init --dev --v2 --no-hooks", err)
+
+    def set_up_tracekit(self):
+        """What `tracekit init --dev --v2` and the dev signer leave behind: the dev signer's data dir."""
+        from tracekit.signer import service
+        with mock.patch.dict(os.environ, {"HOME": self.home, "XDG_DATA_HOME": self.data}):
+            service.dev_data_dir()
+
+    def test_once_tracekit_is_set_up_a_missing_package_blocks_tool_calls_only(self):
+        self.set_up_tracekit()
+        code, err = self.hook("PreToolUse")
+        self.assertEqual(code, 2)
+        self.assertIn("call was blocked", err)
+        self.assertIn("/plugin disable tracekit@tracekit", err)
+        for event in ("UserPromptSubmit", "Stop", "SubagentStop", "SessionStart"):   # 2 would erase or loop these
+            code, err = self.hook(event)
+            self.assertEqual(code, 1, event)
+            self.assertIn(f"this {event} event was NOT recorded", err.splitlines()[0])
+
+    def test_a_tracekit_python_that_is_gone_counts_as_set_up(self):
+        self.assertEqual(self.hook(TRACEKIT_PYTHON=os.path.join(self.d, "gone", "python"))[0], 2)
+
+    def install_tracekit(self, hook_source):
+        """A python3 on PATH whose only tracekit is a stub in the user site-packages (`pip install --user`)."""
+        py = os.path.join(self.bin, "python3")
+        with open(py, "w", encoding="utf-8") as f:   # -S: none of this interpreter's own site-packages
+            f.write(f'#!/bin/sh\nexec "{sys.executable}" -S "$@"\n')
+        os.chmod(py, 0o755)
+        site = subprocess.run([py, "-I", "-c", "import site; print(site.getusersitepackages())"], env={"HOME": self.home},
+                              capture_output=True, text=True, check=True).stdout.strip()
+        os.makedirs(os.path.join(site, "tracekit", "integrations"))
+        for path, text in (("__init__.py", '__version__ = "1.0.0"\n'), ("integrations/__init__.py", ""),
+                           ("integrations/claude_code.py", hook_source)):
+            with open(os.path.join(site, "tracekit", path), "w", encoding="utf-8") as f:
+                f.write(text)
+
+    def test_a_tracekit_before_1_2_blocks_tool_calls_and_says_to_upgrade(self):
+        """0.4 and 1.0 define _entry() without the event: the plugin's call raised TypeError, and the wrapper blocked
+        every event, prompts and Stop included."""
+        self.install_tracekit("def _entry():\n    return 0\n")
+        for event, want in (("PreToolUse", 2), ("UserPromptSubmit", 1), ("Stop", 1)):
+            code, err = self.hook(event)
+            self.assertEqual(code, want, (event, err))
+            self.assertIn("tracekit 1.0.0", err.splitlines()[0])
+            self.assertIn("is older than 1.2", err)
+            self.assertIn("pip install -U tracekit-ai && tracekit init --dev --v2 --no-hooks", err)
+            self.assertNotIn("Traceback", err)
+
+    def test_a_tracekit_whose_hook_does_not_import_blocks_tool_calls(self):
+        self.install_tracekit("import a_dependency_that_is_missing\n")
+        code, err = self.hook("PreToolUse")
+        self.assertEqual(code, 2)
+        self.assertIn("cannot import its hook (ModuleNotFoundError", err)
+        self.assertEqual(self.hook("Stop")[0], 1)
 
     def fake_python(self, path):
         """A python that has tracekit: it logs how it was called."""
@@ -124,18 +193,34 @@ class PluginShim(unittest.TestCase):
         with open(self.config, "w", encoding="utf-8") as f:
             json.dump({}, f)
         user_python = self.fake_python(os.path.join(self.bin, "python3"))
-        return subprocess.run(["/bin/sh", self.script], input="{}", capture_output=True, text=True,
+        return subprocess.run(["/bin/sh", self.script, "PreToolUse"], input="{}", capture_output=True, text=True,
                               env={"PATH": self.bin, "TRACEKIT_PYTHON": user_python}).returncode
 
     def test_system_mode_runs_only_the_root_owned_runtime(self):
         self.fake_python(self.system_python)
         self.assertEqual(self.run_system_mode(), 0)
-        self.assertIn(f"{self.system_python} -I -m tracekit.hook", self.calls())
+        self.assertIn(f"{self.system_python} -I -m tracekit.integrations.claude_code PreToolUse", self.calls())
         self.assertNotIn("python3", self.calls())
 
     def test_system_mode_blocks_without_the_runtime_and_ignores_other_pythons(self):
         self.assertEqual(self.run_system_mode(), 2)
         self.assertEqual(self.calls(), "")
+        code, err = self.hook("Stop")   # never sends Claude back to work
+        self.assertEqual(code, 1)
+        self.assertIn("tracekit init --v2 --user <agent-user> --no-hooks", err)
+
+    def test_dev_mode_blocks_when_the_hook_starts_but_cannot_finish(self):
+        for status in (1, 2):   # imports tracekit, but the hook exits 1 (a crash) or 2 (a 1.2 hook's error)
+            py = os.path.join(self.bin, "python3")
+            with open(py, "w", encoding="utf-8") as f:
+                f.write(f'#!/bin/sh\ncase "$*" in *_entry*) exit {status} ;; esac\n')
+            os.chmod(py, 0o755)
+            code, err = self.hook("PreToolUse")
+            self.assertEqual(code, 2)
+            if status == 1:
+                self.assertIn("call was blocked", err)
+            for event in ("UserPromptSubmit", "Stop"):
+                self.assertEqual(self.hook(event)[0], 1, (status, event))
 
 
 if __name__ == "__main__":

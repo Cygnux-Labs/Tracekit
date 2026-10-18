@@ -1,0 +1,38 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.Cygnux-Labs/tracekit-mcp-gateway",
+  "title": "Tracekit MCP gateway",
+  "description": "MCP gateway you deploy: a Tracekit signer decides and signs each call; agents send each run's token.",
+  "version": "1.3.0",
+  "repository": {
+    "url": "https://github.com/Cygnux-Labs/Tracekit",
+    "source": "github"
+  },
+  "websiteUrl": "https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/mcp-gateway.md",
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "https://{tracekit_gateway}/mcp",
+      "variables": {
+        "tracekit_gateway": {
+          "description": "host:port of the gateway you deployed (tracekit mcp-gateway serve, as its own user, with TLS)",
+          "isRequired": true,
+          "placeholder": "mcp-gateway.internal:8091"
+        }
+      },
+      "headers": [
+        {
+          "name": "X-Tracekit-Run",
+          "description": "<run_id>.<run_token> of the agent's run (register_run): new for every run, so the agent framework sets it per run; one typed in once works for one run",
+          "isRequired": true,
+          "isSecret": true
+        },
+        {
+          "name": "Authorization",
+          "description": "Bearer <token>: the agent's identity, when the gateway's http.authenticators accept a bearer or Kubernetes service account token (else a client certificate)",
+          "isSecret": true
+        }
+      ]
+    }
+  ]
+}

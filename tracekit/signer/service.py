@@ -386,6 +386,7 @@ CONTENT_SWEEP_S = 3600.0
 ERASED = object()   # _data_key of a run whose content was erased
 QUARANTINE_DENIES = 100   # TK-QUARANTINE decisions a quarantined run records; later calls are refused unrecorded
 COOLDOWN_S = 3600   # respond.cooldown_s default: how long new runs of a held owner and principal inherit the hold
+MAX_UNMATCHED = 1 << 16   # (decision, result digest) pairs remembered as not matching; forgotten all at once past it
 
 
 def load_policy(path=DEFAULT_POLICY, backend=None):
@@ -739,6 +740,7 @@ class SignerService:
         if verify_tool_results not in (None, "record", "refuse"):
             raise ValueError("verify_tool_results is record or refuse")
         self.verify_tool_results = verify_tool_results
+        self._unmatched = set()   # (decision_id, result_digest) of a gateway's forms that open no tool.result of it
         self.metrics = metrics.SignerMetrics()
         self._prov_key = os.urandom(32)   # the provenance index's key: per process, as the index is
         authorize = dict(authorize or {})
@@ -2853,30 +2855,37 @@ class SignerService:
                 raise RPCError("forbidden", self._why_contained(run))
 
         def after(tx, run):   # only a gateway's digests count: an agent's own report of its context proves nothing
-            bad = self._results_checked(tx, run, req["tool_results"])
+            bad = self._results_checked(tx, run, req.get("tool_results", []), req.get("tool_results_sent", []))
             if bad and self.verify_tool_results == "refuse":
                 return {"refused": (f"the tool result(s) {', '.join(bad[:5])}{' ...' if len(bad) > 5 else ''} sent to "
-                                    "the model are not what the tool returned, as the signer recorded it, or were sent "
-                                    "before it was recorded (reconcile.result_mismatch); this signer refuses such "
-                                    "requests (verify_tool_results: refuse)")[:1024]}
+                                    "the model are not what the tool returned, as the signer recorded it "
+                                    "(reconcile.result_mismatch); this signer refuses such requests "
+                                    "(verify_tool_results: refuse)")[:1024]}
             return {}
-        verify = gw and self.verify_tool_results and req.get("tool_results")
+        verify = gw and self.verify_tool_results and (req.get("tool_results") or req.get("tool_results_sent"))
         return self._event(identity, "model_event", req, "model.exchange", data,
                            digests={t["id"]: t.get("args_digest") for t in req.get("tool_uses", ())}, out=out, keep=keep,
                            gw=gw, check=check, after=after if verify else None, **top)
 
-    def _results_checked(self, tx, run, results):
+    def _results_checked(self, tx, run, results, sent=()):
         """The ids of the tool results a gateway saw a request send (`results`: model_event's `tool_results`) that are
         not what the call's tool.results committed to (any of them: a tool_call_id may be reused), by either form
-        complete takes (the value, or its digest), under that result's salt; or that are sent for a call the run
-        allowed before its result was recorded (the shipped clients complete a call before the next model request).
-        Each one's first time is a signed reconcile.result_mismatch. Not checked: a call the run never decided or
-        didn't allow, a call whose results are all errors or carry no result, one redaction changed (its commitment is
-        over the redacted value) and matching none, a run that is not reconciled (imported, a replay run)."""
+        complete takes (the value, or its digest), under that result's salt. Each one's first time is a signed
+        reconcile.result_mismatch, and so is a result sent for a call the run allowed before its result was recorded
+        (the shipped clients complete a call before the next model request), whose id is not returned (not refused): a
+        complete that was lost would otherwise refuse every later request of an honest run, as each resends it. A
+        result the request sends (`sent`: its `tool_results_sent`) that the gateway gave no digests of (past its
+        MAX_DIGESTED bytes or MAX_RESULTS_CHECKED results, or a gateway older than 1.3), for a call with a result to
+        compare, is unchecked: its first time is a signed capture.gap result_unchecked, never refused (a gateway that
+        restarted has no digests cached, so an honest long run would trip it). Not checked: a call the run never
+        decided or didn't allow, a call whose results are all errors or carry no result, one redaction changed (its
+        commitment is over the redacted value) and matching none, a run that is not reconciled (imported, a replay
+        run)."""
         rec, bad = run.get("rec"), []
         if rec is None:
             return bad
-        for r in results:
+        unformed = collections.Counter(sent) - collections.Counter(r["id"] for r in results)   # an id may be reused
+        for r in results + [{"id": i, "forms": None} for i in unformed]:
             tcid, entries = r["id"], run.get("results", {}).get(r["id"])
             if entries is None:
                 call = run.get("calls", {}).get(tcid)   # still open: decided, allowed, not completed
@@ -2884,16 +2893,25 @@ class SignerService:
                         "decisions", {}):
                     continue
                 detail = (f"a request sent the model a result for {tcid[:128]} before the call's result was recorded: "
-                          "a result the tool never returned, or a client that completes calls late")
+                          "a result the tool never returned, or a complete that was lost or comes late")
             else:
                 ours = [x for x in entries if x[2]]
+                if ours and r["forms"] is None:
+                    if tcid not in rec.get("unchecked", {}):
+                        tx.emit(run, "capture.gap", {
+                            "kind": "result_unchecked", "tool_use_id": tcid,
+                            "reason": f"a request sent the model a result for {tcid[:128]} that the gateway gave no "
+                                      "digests of (past the 1 MiB or the newest 512 results it digests per request, "
+                                      "or a gateway older than 1.3): not compared with its tool.result"},
+                                source="signer", tool_call_id=tcid)
+                    continue
                 if not ours or self._matched(tx, run, tcid, entries, r["forms"]):
                     continue
                 if any(x[3] for x in ours):   # one of them redaction changed: it can't be told apart from an edit
                     continue
                 detail = (f"a request sent the model a result for {tcid[:128]} that is not what the tool returned "
                           "(its tool.result): the agent's context differs from the record")
-            bad.append(tcid)
+                bad.append(tcid)
             if tcid not in rec.get("mismatched", {}):
                 tx.emit(run, "reconcile.result_mismatch", {"layers": ["L2", "L3"], "detail": detail}, source="signer",
                         tool_call_id=tcid)
@@ -2901,20 +2919,28 @@ class SignerService:
 
     def _matched(self, tx, run, tcid, entries, forms):
         """Whether one of `forms` (a gateway's digests of a tool result as sent) is what a comparable one of the call's
-        tool.results (`entries`) committed to; the form that matched is kept, so the next request that resends it costs
-        no HMAC."""
+        tool.results (`entries`) committed to; the form that matched is kept, and a form that matched none is remembered
+        (`_unmatched`), so the next request that resends either costs no HMAC."""
         digests = {f["result_digest"] for f in forms}
         if any(x[2] and x[4] in digests for x in entries):
             return True
+        as_digest = None
         for i, (did, commitment, comparable, _, _) in enumerate(entries):
-            if not comparable:
+            left = [f for f in forms if (did, f["result_digest"]) not in self._unmatched] if comparable else []
+            if not left:
                 continue
-            label = "result:" + did
-            for f in forms:
-                if commitment in (self._commit(label, f["result_digest"]), self._commit(
-                        label, "sha256:" + hashlib.sha256(canonical({"result": f["digest"]})).hexdigest())):
+            if as_digest is None:   # complete's result was the value's digest
+                as_digest = {f["result_digest"]: "sha256:" + hashlib.sha256(canonical({"result": f["digest"]}))
+                             .hexdigest() for f in forms}
+            salt = _salt(self._salt_key, "result:" + did)   # once per entry, not per form as _commit would
+            for f in left:
+                if commitment in ["hmac-sha256:" + hmac.new(salt, d.encode(), "sha256").hexdigest()
+                                  for d in (f["result_digest"], as_digest[f["result_digest"]])]:
                     tx.set(run["results"], tcid, entries[:i] + [entries[i][:4] + [f["result_digest"]]] + entries[i + 1:])
                     return True
+            if len(self._unmatched) > MAX_UNMATCHED:
+                self._unmatched.clear()
+            self._unmatched.update((did, f["result_digest"]) for f in left)
         return False
 
     def _approval_request(self, identity, req):

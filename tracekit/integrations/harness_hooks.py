@@ -47,8 +47,9 @@ def run(harness, raw, stdout=None, stderr=None, event=None):
             with contextlib.redirect_stderr(err):
                 code = claude_code.handle(q)
     except Exception as e:   # never a reason to let the call run
-        print(f"[tracekit] {harness} hook error ({type(e).__name__}: {e}); blocking", file=err)
-        code = 2
+        print(f"[tracekit] {harness} hook error ({type(e).__name__}: {e}); "
+              + ("blocking" if is_pre else "event not recorded"), file=err)
+        code = 2 if is_pre else 1
     if code and harness == "gemini" and is_pre and q and q.get("tool_use_id"):   # a blocked call gets no AfterTool
         agent_hooks._gemini_ids(q["session_id"], None, None, "pre", drop=q["tool_use_id"])
     agent_hooks._reply(harness, stdout, code == 0, err.getvalue().strip(), is_pre)

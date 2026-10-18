@@ -105,7 +105,10 @@ class Hook(Tools):
                     r.complete.assert_called_once_with("call-1", "ok", attempt=0, result=mock.ANY)
                 else:
                     self.assertIn("Tracekit policy", out)
-                    r.complete.assert_not_called()
+                    if name == "consume refused":   # allowed, then refused: completed as not run
+                        r.complete.assert_called_once_with("call-1", "error", attempt=0, error=mock.ANY)
+                    else:
+                        r.complete.assert_not_called()
 
     def test_the_signer_decides_the_call_id_and_the_models_arguments(self):
         r = run()
@@ -293,7 +296,8 @@ class Hook(Tools):
         threading.Timer(0.6, answered.set).start()
         with self.assertRaises(WorkflowTimeoutError):
             ask(gated(r, self.tool(), timeout=0.3))   # returns once the approval_wait thread has
-        self.assertIn("approval_abandon", [c.args[0] for c in r.call.call_args_list])
+        r.call.assert_any_call("approval_abandon", approval_id="apr-1",
+                               reason="the workflow was cancelled while it waited")
         r.approval_consume.assert_not_called()
         self.assertEqual(self.ran, [])
 

@@ -86,3 +86,10 @@
 {"tool": "Bash", "args": {"command": "heroku destroy-test-app-helper"}, "expect": "allow", "note": "names a destroy word without destroying"}
 {"tool": "bash", "args": {"command": "dropdb --help"}, "expect": "allow", "note": "names a destroy word without destroying"}
 {"tool": "Bash", "args": {"command": "terraform destroy --help"}, "expect": "allow", "note": "names a destroy word without destroying"}
+{"tool": "shell", "args": {"command": "fly apps destroy --help"}, "expect": "allow", "note": "names a destroy word without destroying"}
+{"tool": "terminal", "args": {"command": "heroku apps:destroy --help"}, "expect": "allow", "note": "names a destroy word without destroying"}
+{"tool": "Bash", "args": {"command": "railway run rm -rf dist"}, "expect": "allow", "note": "names a destroy word without destroying"}
+{"tool": "bash", "args": {"command": "pulumi up --yes -m 'tear down the old preview stack'"}, "expect": "allow", "note": "names a destroy word without destroying"}
+{"tool": "Bash", "args": {"command": "pulumi config set note 'scale down at night'"}, "expect": "allow", "note": "names a destroy word without destroying"}
+{"tool": "local_shell", "args": {"command": "heroku logs -a destroy"}, "expect": "allow", "note": "names a destroy word without destroying"}
+{"tool": "mcp:aws/call_aws", "args": {"cli_command": "terraform plan -destroy"}, "expect": "allow", "note": "read, list or create"}

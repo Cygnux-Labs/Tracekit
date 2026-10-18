@@ -291,7 +291,7 @@ def install(harness, project=None, uninstall=False, v2=False, python=None, path=
 
     def cmd(ev):   # the v2 hook names its event, so it can block a pre-tool payload it cannot read
         return _hook_command(V2_MODULE if v2 else "tracekit.agent_hooks", "entry", (harness, ev) if v2 else (harness,),
-                             python)
+                             python, ev in PRE)
 
     def ours(cmds):
         vs = {_version(c) for c in cmds} - {None}

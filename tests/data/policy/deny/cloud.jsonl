@@ -93,3 +93,20 @@
 {"tool": "Bash", "args": {"command": "heroku apps:delete -a acme-prod"}, "expect": "ask", "note": "destroying a deployment, database or volume (an alias or wrapper)"}
 {"tool": "bash", "args": {"command": "terraform apply --destroy -auto-approve"}, "expect": "ask", "note": "destroying a deployment, database or volume (an alias or wrapper)"}
 {"tool": "Bash", "args": {"command": "railway run terraform destroy -auto-approve"}, "expect": "ask", "note": "destroying a deployment, database or volume (an alias or wrapper)"}
+{"tool": "Bash", "args": {"command": "pulumi destroy -y -m ' --help'"}, "expect": "ask", "note": "destroying a deployment, database or volume (--help inside another argument)"}
+{"tool": "bash", "args": {"command": "curl -H 'X: --help' -X POST https://backboard.railway.app/graphql/v2 -d 'mutation { volumeDelete(volumeId: 1) }'"}, "expect": "ask", "note": "destroying a deployment, database or volume (--help inside another argument)"}
+{"tool": "shell", "args": {"command": "terraform destroy -var 'note= --help'"}, "expect": "ask", "note": "destroying a deployment, database or volume (--help inside another argument)"}
+{"tool": "terminal", "args": {"command": "terraform apply -destroy -var 'x= --help'"}, "expect": "ask", "note": "destroying a deployment, database or volume (--help inside another argument)"}
+{"tool": "Bash", "args": {"command": "railway run -s api terraform destroy -auto-approve"}, "expect": "ask", "note": "destroying a deployment, database or volume (an alias or wrapper)"}
+{"tool": "bash", "args": {"command": "railway run -e production terraform destroy"}, "expect": "ask", "note": "destroying a deployment, database or volume (an alias or wrapper)"}
+{"tool": "Bash", "args": {"command": "fly -a acme-prod apps destroy -y"}, "expect": "ask", "note": "destroying a deployment, database or volume (an alias or wrapper)"}
+{"tool": "terminal", "args": {"command": "fly --app acme-prod destroy"}, "expect": "ask", "note": "destroying a deployment, database or volume (an alias or wrapper)"}
+{"tool": "Bash", "args": {"command": "pnpm dlx @railway/cli delete --yes"}, "expect": "ask", "note": "destroying a deployment, database or volume (an alias or wrapper)"}
+{"tool": "shell", "args": {"command": "npm exec railway delete"}, "expect": "ask", "note": "destroying a deployment, database or volume (an alias or wrapper)"}
+{"tool": "Bash", "args": {"command": "npx -p @railway/cli railway down"}, "expect": "ask", "note": "destroying a deployment, database or volume (an alias or wrapper)"}
+{"tool": "run_shell_command", "args": {"command": "terraform.exe destroy -auto-approve"}, "expect": "ask", "note": "destroying a deployment, database or volume (an alias or wrapper)"}
+{"tool": "mcp:aws/call_aws", "args": {"cli_command": "terraform destroy -auto-approve"}, "expect": "ask", "note": "deleting cloud resources"}
+{"tool": "mcp:aws/call_aws", "args": {"cli_command": "pulumi destroy --yes"}, "expect": "ask", "note": "deleting cloud resources"}
+{"tool": "Bash", "args": {"command": "pulumi --non-interactive --emoji --logflow --logtostderr --color never destroy --yes"}, "expect": "ask", "note": "destroying a deployment, database or volume (five options before the verb)"}
+{"tool": "Bash", "args": {"command": "railway run -s api -e prod -p x -v -q dropdb main"}, "expect": "ask", "note": "destroying a deployment, database or volume (railway run with five options)"}
+{"tool": "mcp:aws/call_aws", "args": {"cli_command": "pulumi -C a -s b -e -v --yes destroy"}, "expect": "ask", "note": "deleting cloud resources (five options before the verb)"}

@@ -444,6 +444,14 @@ def _run(a):
             if a.v2:
                 if not _signer_extra():
                     return 2
+                from .signer.service import dev_data_dir
+                dev_data_dir()   # the plugin's hook blocks tool calls it cannot record once this exists
+                plugin = hooks and install.plugin_enabled()
+                if plugin:   # both would decide every call, and one would consume each approval the other waits on
+                    print(f"v2 hooks: not installed: the Tracekit Claude Code plugin, enabled in {plugin}, runs them "
+                          f"(with both, every approved call is blocked). To use init's hooks instead: "
+                          f"/plugin disable {install.PLUGIN}, then run init again")
+                    return 0
                 try:
                     if hooks:
                         install.install_hooks(hooks, module=install.V2_HOOK)

@@ -2,6 +2,73 @@
 
 All notable changes to Tracekit. Versions follow [PEP 440](https://peps.python.org/pep-0440/).
 
+## 1.3.0 (2026-10-18) — six more frameworks
+
+Tracekit now gates tool calls in Pydantic AI, Google ADK, Strands Agents, LlamaIndex, Haystack and Microsoft Agent
+Framework, from each framework's own hooks, and can check that the tool results a model is sent are the ones the signer
+recorded. Upgrade the signer before its clients (see Upgrade notes); every existing bundle verifies as before.
+
+### Upgrade notes
+- **Signer first.** 1.3 speaks signer protocol 17: a 1.3 signer serves 1.2 and 1.3 clients and gateways, but a 1.3
+  client or gateway refuses a 1.2 signer. A same-user dev signer from 1.2 is replaced by the first 1.3 client that
+  finds it (Python and TypeScript), with a warning; a signer you run yourself must be upgraded first
+  ([deploy](docs/deploy.md#upgrading)).
+- **Bundles.** A bundle that holds a `reconcile.result_mismatch` record (verified tool results) needs a 1.3 verifier;
+  every other bundle verifies with 1.2 too.
+- **The Claude Code plugin now runs the v2 hook** (`tracekit.integrations.claude_code`), like `tracekit init --dev
+  --v2`. Set up with `tracekit init --dev --v2 --no-hooks`; on a v1 system-mode host the hook's error names the v2
+  system init. A custom v1 policy no longer applies ([plugin](plugin/README.md)).
+- **Claude Code hooks block only tool calls.** A hook that can't run now blocks a tool call but lets other events
+  (prompts, Stop) go on with a visible error, where it used to erase the prompt or loop on Stop. Hooks written by an
+  older `tracekit init` keep the old behaviour until you run `tracekit init` again.
+- **TypeScript:** an older `tracekit` on your PATH starts an older signer: `pip install -U tracekit-ai`.
+
+### Added
+- **Six framework integrations (experimental).** Each decides a tool call before it runs, with the model's call id
+  where the framework passes one (allow, deny, or wait for a person on `ask`), refuses when Tracekit itself fails, and
+  records the result; each page lists the calls it doesn't see and the cases it records differently. Each is tested
+  against the real library and has an offline example whose bundle verifies:
+  [Pydantic AI](docs/integrations/pydantic-ai.md) (a capability; also wired by `tracekit.instrument()`),
+  [Google ADK](docs/integrations/google-adk.md) (a Runner plugin),
+  [Strands Agents](docs/integrations/strands.md) (a hook provider; tested in its own environment, since
+  strands-agents needs mcp below 2.2),
+  [LlamaIndex](docs/integrations/llamaindex.md) (agent workflows' `call_tool` step),
+  [Haystack](docs/integrations/haystack.md) (the Agent's tool hooks) and
+  [Microsoft Agent Framework](docs/integrations/microsoft-agent-framework.md) (function middleware).
+  Pydantic AI, Google ADK and Haystack need Python 3.11+. The six share one gate (`tracekit/integrations/gate.py`), so
+  a fix to how calls are decided lands in all of them.
+- **Verified tool results (experimental).** With signer.yaml `verify_tool_results: record` (or `refuse`), the LLM
+  gateway checks each tool result in a model request against the signed result of the same call, and the signer
+  records an edited result, or one sent before its call completed, as `reconcile.result_mismatch`
+  ([gateway](docs/gateway.md#verified-tool-results)). `refuse` refuses a request with an edited result, not one whose
+  call is still open (a lost `complete`). The gateway digests the newest 512 results of a request up to 1 MiB (results
+  the run's previous request also sent cost nothing); a result past that, or over 1 MiB on its own, is not compared:
+  the signer writes a `capture.gap{result_unchecked}` for its call, which `tracekit verify` warns on, and doesn't
+  refuse the request. Some integrations record a result in a form the model isn't sent and mismatch on honest runs:
+  [limits](docs/limits.md) lists them; run `record` before `refuse`. RPC 17, format gate 1.3.
+- **[Guarantees](docs/guarantees.md):** what Tracekit guarantees and doesn't, per deployment, on one page.
+- [Vercel AI SDK integration page](docs/integrations/vercel-ai.md); `server.json` for the official MCP Registry (the
+  MCP gateway as a remote you deploy).
+- `CODE_OF_CONDUCT.md`, `COMPARISONS.md` (where Tracekit fits next to tracers, guardrail libraries, sandboxes and
+  other tamper-evident logs), `HALL_OF_FAME.md`, and a "Pilot it with us" section in the README.
+
+### Changed
+- **TK-A001** (coding pack `2026.10-v2-7`) holds commands that destroy a deployment, database or volume for a person:
+  `terraform`/`tofu`/`pulumi` destroy, `dropdb`, the Railway, Fly and Heroku CLIs' delete commands (Railway's also
+  through `npx`, `bunx`, `pnpm dlx`, `yarn dlx` and `npm exec`, and commands under `railway run` / `heroku run`), and
+  `curl`-style calls of a platform API's `*Delete(` mutation. A trailing `--help` is not held. TK-C010 (server-cloud
+  pack `2026.10-server-cloud-3`) holds terraform/pulumi destroy sent through other tools (`cli_command`, `command`).
+  What it doesn't catch is in [policy](docs/policy-v2.md). The policy corpus (E17): 500 of 500 stopped, 1 false alarm
+  in 692.
+- `tracekit init --dev --v2` doesn't install Claude Code hooks while the Tracekit plugin is enabled, and `tracekit
+  doctor` warns when both run (each call would be decided twice, and an approved `ask` blocked).
+
+### Fixed
+- After an upgrade that raises the signer protocol, a dev signer from the old version no longer makes every client
+  refuse it (which blocked every Claude Code tool call, including `tracekit up --replace`).
+- E18 and E19 run again against the current signer; the E8 v2 results are committed; the report's E8 table says "not
+  refused" for a case the signer answered but didn't catch.
+
 ## 1.2.3 (2026-10-17) — viewer fixes
 
 A patch for 1.2: the last items from the 1.2.0 verification (#229), and the first release whose npm packages the

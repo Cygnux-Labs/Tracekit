@@ -9,11 +9,14 @@ import warnings
 from unittest import mock
 
 import adapter_contract as ac
+import test_gateway
 
 HAVE = importlib.util.find_spec("pydantic_ai") is not None
+OPENAI = HAVE and importlib.util.find_spec("openai") is not None
 if HAVE:
     from pydantic import BaseModel
-    from pydantic_ai import Agent, DeferredToolRequests, DeferredToolResults, ModelRetry, RunContext, ToolOutput
+    from pydantic_ai import (Agent, DeferredToolRequests, DeferredToolResults, ModelRetry, RunContext, ToolOutput,
+                             ToolReturn)
     from pydantic_ai.capabilities import AbstractCapability
     from pydantic_ai.exceptions import ApprovalRequired, UnexpectedModelBehavior
     from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart, ToolReturnPart, RetryPromptPart
@@ -21,6 +24,10 @@ if HAVE:
 
     from tracekit import autowire
     from tracekit.integrations.pydantic_ai import Tracekit
+if OPENAI:
+    from openai import AsyncOpenAI
+    from pydantic_ai.models.openai import OpenAIChatModel
+    from pydantic_ai.providers.openai import OpenAIProvider
 
 from tracekit.policy2.engine import Engine
 from tracekit.sdk.client import AsyncRunHandle, Client
@@ -76,7 +83,10 @@ class Hook(unittest.TestCase):
                     r.complete.assert_called_once_with("call-1", "ok", attempt=0, result=mock.ANY)
                 else:
                     self.assertIn("Tracekit policy", out)
-                    r.complete.assert_not_called()
+                    if name == "consume refused":   # allowed, then refused: completed as not run
+                        r.complete.assert_called_once_with("call-1", "error", attempt=0, error=mock.ANY)
+                    else:
+                        r.complete.assert_not_called()
 
     def test_the_signer_decides_the_models_own_arguments(self):
         r = run()
@@ -84,6 +94,12 @@ class Hook(unittest.TestCase):
         r.decide.assert_called_once_with("call-1", "close_account", '{"account": "ACC-9"}', attempt=0)
         r.approval_consume.assert_called_once_with("call-1", "close_account", '{"account": "ACC-9"}',
                                                    approval_id_hint=None, attempt=0)
+
+    def test_approved_arguments_match_the_models_json_text_parsed(self):
+        r = run()
+        r.approval_consume.return_value = {"ok": True, "rule_ids": [], "args": {"account": "ACC-9"}}
+        self.assertEqual(agent(r, self.tool(), '{"account": "ACC-9"}').run_sync("close it").output, "closed ACC-9")
+        self.assertEqual(self.ran, ["ACC-9"])
 
     def test_an_approved_ask_consumes_its_approval(self):
         r = run("ask", ["A1"])
@@ -159,6 +175,15 @@ class Hook(unittest.TestCase):
         r = run(send_result=True)
         agent(r, close_account).run_sync("close it")
         self.assertEqual(r.complete.call_args.kwargs["result"], {"title": "Invoice 7", "pay_to": "mallory-acct-7731"})
+
+    def test_a_tool_return_is_recorded_as_its_return_value(self):
+        """Its return_value is the tool result the model reads; its content goes as a message of its own."""
+        def close_account(account: str) -> ToolReturn:
+            """Close an account."""
+            return ToolReturn(return_value={"closed": account}, content="the account had a balance")
+        r = run(send_result=True)
+        agent(r, close_account).run_sync("close it")
+        self.assertEqual(r.complete.call_args.kwargs["result"], {"closed": "ACC-9"})
 
     def test_arguments_another_capability_changes_are_recorded_as_changed(self):
         class Before(AbstractCapability):
@@ -258,7 +283,7 @@ class Output(unittest.TestCase):
         r = run()
         out = Agent(FunctionModel(model), output_type=ToolOutput(self.bash()), capabilities=[Tracekit(r)]).run_sync("x")
         self.assertEqual((out.output, self.ran), ("ran sudo rm -rf /", ["sudo rm -rf /"]))
-        r.complete.assert_called_once_with("o-1", "ok", attempt=0, result=mock.ANY)
+        r.complete.assert_called_once_with("o-1", "ok", attempt=0)   # the model reads "Final result processed."
 
     def test_streaming_runs_an_output_function_once_on_the_decided_final_output(self):
         async def stream(messages, info):
@@ -355,6 +380,68 @@ class Provenance(unittest.TestCase):
         d = next(e["event"]["data"] for e in s.log.storage.iter_run("default", rid)
                  if e["event"]["type"] == "policy.decision" and e["event"].get("tool_call_id") == "w-2")
         self.assertEqual([p["source"]["tool"] for p in d["provenance"]], ["WebFetch"])
+
+
+@unittest.skipUnless(OPENAI, "pydantic_ai or openai not installed")
+class VerifiedToolResults(test_gateway.Gateway):
+    """Through the LLM gateway, with verify_tool_results: refuse and Pydantic AI's OpenAI chat model: what the
+    capability records is what the model is sent, so an honest run's requests are not refused (they were: 403)."""
+    verify = "refuse"
+
+    def setUp(self):
+        super().setUp()
+        self.gw.gateway.max_body = 1 << 20   # the requests carry the tools' definitions
+        self.client = Client(ac._serve(self, lambda identity, frame: self.s.handle_frame(test_gateway.AGENT, frame)))
+
+    def model(self, r):
+        c = AsyncOpenAI(base_url=f"http://127.0.0.1:{self.port}/v1", api_key=test_gateway.SECRET, max_retries=0,
+                        default_headers={"X-Tracekit-Run": f"{r.run_id}.{r.run_token}"})
+        return OpenAIChatModel("gpt-x", provider=OpenAIProvider(openai_client=c))
+
+    def replies(self, *turns):
+        """The provider's answer to each request: [(tool, call id, arguments)] to call, or the final text."""
+        self.up.reply = [("json", {"id": "chatcmpl-1", "object": "chat.completion", "created": 1, "model": "gpt-x",
+                                   "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5},
+                                   "choices": [{"index": 0, "finish_reason": "stop", "message": {
+                                       "role": "assistant", "content": t}} if isinstance(t, str) else {
+                                       "index": 0, "finish_reason": "tool_calls", "message": {
+                                           "role": "assistant", "content": None, "tool_calls": [
+                                               {"id": i, "type": "function", "function": {"name": n, "arguments": a}}
+                                               for n, i, a in t]}}]}) for t in turns]
+
+    def mismatches(self, run_id):
+        return [e["tool_call_id"] for e in self.events({"run_id": run_id}) if e["type"] == "reconcile.result_mismatch"]
+
+    def test_tools_returning_none_an_empty_list_or_a_tool_return(self):
+        def send_email() -> None:
+            """Send an email."""
+
+        def search() -> list:
+            """Search."""
+            return []
+
+        def lookup() -> ToolReturn:
+            """Look up."""
+            return ToolReturn(return_value={"v": 1}, content="more context for the model")
+        self.replies([("send_email", "call_none", "{}"), ("search", "call_empty", "{}"), ("lookup", "call_tr", "{}")],
+                     "done")
+        with self.client.run(agent="pai") as r:
+            out = Agent(self.model(r), tools=[send_email, search, lookup], capabilities=[Tracekit(r)]).run_sync("go")
+        self.assertEqual(out.output, "done")
+        self.assertEqual(self.mismatches(r.run_id), [])
+
+    def test_an_output_functions_call_sent_again_in_a_later_run(self):
+        def finish(text: str) -> str:
+            """Finish."""
+            return text.upper()
+        self.replies([("final_result", "call_out", '{"text": "hi"}')], "follow-up answer")
+        with self.client.run(agent="pai") as r:
+            first = Agent(self.model(r), output_type=ToolOutput(finish, name="final_result"),
+                          capabilities=[Tracekit(r)]).run_sync("go")
+            out = Agent(self.model(r), capabilities=[Tracekit(r)]).run_sync("again",
+                                                                              message_history=first.all_messages())
+        self.assertEqual((first.output, out.output), ("HI", "follow-up answer"))
+        self.assertEqual(self.mismatches(r.run_id), [])
 
 
 if __name__ == "__main__":

@@ -48,7 +48,7 @@ STREAM = sse({"id": "chatcmpl-2", "model": "gpt-x", "choices": [{"index": 0, "de
 
 class Upstream(http.server.BaseHTTPRequestHandler):
     """Answers with the server's `reply`: ("json", obj[, status]), ("sse", bytes) or ("cut", bytes): a chunked stream
-    that breaks after `bytes`; ("redirect", location)."""
+    that breaks after `bytes`; ("redirect", location); a list of those: one per request, in order."""
     protocol_version = "HTTP/1.1"
 
     def log_message(self, *a):
@@ -57,7 +57,8 @@ class Upstream(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         self.server.seen.append((dict(self.headers), self.rfile.read(int(self.headers["content-length"]))))
         time.sleep(self.server.delay)
-        how, data, *status = self.server.reply
+        reply = self.server.reply
+        how, data, *status = reply.pop(0) if isinstance(reply, list) else reply
         if how == "redirect":
             self.send_response(302)
             self.send_header("location", data)
@@ -526,6 +527,10 @@ class TestVerifiedToolResults(Gateway):
     def mismatches(self):
         return [(e["tool_call_id"], e["data"]["layers"]) for e in self.events() if e["type"] == "reconcile.result_mismatch"]
 
+    def unchecked(self):
+        return [e["tool_call_id"] for e in self.events()
+                if e["type"] == "capture.gap" and e["data"]["kind"] == "result_unchecked"]
+
     def reopen(self, drop_snapshots=True):
         """The signer closed and opened again on its data dir; with `drop_snapshots`, rebuilt from the records alone."""
         self.close()
@@ -569,12 +574,91 @@ class TestVerifiedToolResults(Gateway):
         self.assertEqual(self.mismatches(), [("call_7", ["L2", "L3"])])
         self.assertEqual(len(self.up.seen), 2)
 
-    def test_a_result_sent_before_the_call_completed(self):
+    def test_a_result_sent_before_the_call_completed_is_recorded_not_refused(self):
+        """Its complete may have been lost (the client gave up on it): refusing would stop the run for good, since every
+        later request sends the result again. Under refuse it failed with 403 on every request."""
         self.decided("call_9")   # allowed, never completed: whatever the request says it returned, it didn't yet
-        self.post(tool_message("made up", tcid="call_9"))
+        for _ in range(2):
+            self.assertEqual(self.post(tool_message("made up", tcid="call_9"))[0], 200)
+        self.assertEqual(len(self.up.seen), 2)
         [e] = [e for e in self.events() if e["type"] == "reconcile.result_mismatch"]
         self.assertEqual(e["tool_call_id"], "call_9")
         self.assertIn("before the call's result was recorded", e["data"]["detail"])
+
+    def test_no_content_matches_a_result_recorded_as_none_empty_or_no_blocks(self):
+        """Pydantic AI sends a tool's None or [] to OpenAI as ""; an empty LlamaIndex result reaches Anthropic as no
+        blocks. A result that had content never matches none."""
+        for i, (recorded, sent) in enumerate(((None, ""), ([], ""), ("", []), ("", None))):
+            with self.subTest(recorded=recorded, sent=sent):
+                self.completed(recorded, tcid=f"call_{i}")
+                self.assertEqual(self.post(tool_message(sent, tcid=f"call_{i}"))[0], 200)
+        self.completed("sent", tcid="call_x")
+        self.assertEqual(self.post(tool_message("", tcid="call_x"))[0], 403 if self.verify == "refuse" else 200)
+        self.assertEqual(self.mismatches(), [("call_x", ["L2", "L3"])])
+
+    def test_a_result_jcs_cant_encode_is_compared_as_its_json_text(self):
+        """A lone surrogate gave no digest, so a forged result carrying one went unchecked. Now it is compared as its
+        JSON text, as result_field records such a result."""
+        self.completed(client.result_field(False, "caf\u00e9 \ud800"), tcid="call_ok")
+        self.completed("hello")
+        self.assertEqual(self.post(tool_message("caf\u00e9 \ud800", tcid="call_ok"))[0], 200)
+        self.assertEqual(self.post(tool_message("FORGED \ud800"))[0], 403 if self.verify == "refuse" else 200)
+        self.assertEqual(self.mismatches(), [("call_7", ["L2", "L3"])])
+
+    def test_a_resent_history_is_digested_once(self):
+        self.completed("hello")
+        forms = mock.Mock(wraps=gateway.result_forms)
+        with mock.patch.object(gateway, "result_forms", forms):
+            for _ in range(2):
+                self.assertEqual(self.post(tool_message("hello"))[0], 200)
+        self.assertEqual(forms.call_count, 1)   # the second request's copy cost a hash
+        first, second = [r["tool_results"] for r in self.signer.sent if r["phase"] == "request"]
+        self.assertEqual(first, second)
+
+    def test_a_result_the_gateway_gave_no_digests_of_is_signed_unchecked(self):
+        """An edit padded past MAX_DIGESTED, pushed past it by newer results of the agent's own, or sent twice under one
+        id with a correct copy got no digests: it was forwarded, under refuse too, with nothing signed. Now each such
+        call's first is a signed capture.gap result_unchecked; never refused."""
+        for tcid in ("call_7", "call_8", "call_9"):
+            self.completed(event_hash("hello"), tcid=tcid)   # its digest, as result_field records a trusted tool's
+        padded = "HELLO" + " " * 1200
+        with mock.patch.object(gateway, "MAX_DIGESTED", 1000):
+            for _ in range(2):   # sent again: one record per call
+                self.assertEqual(self.post(tool_message(padded, tcid="call_7"))[0], 200)
+            self.assertEqual(self.post({"model": "gpt-x", "messages": [   # the newer result uses up the budget
+                {"role": "tool", "tool_call_id": "call_8", "content": "HELLO"},
+                {"role": "tool", "tool_call_id": "junk_1", "content": "j" * 995}]})[0], 200)
+            self.assertEqual(self.post({"model": "gpt-x", "messages": [
+                {"role": "tool", "tool_call_id": "call_9", "content": padded},
+                {"role": "tool", "tool_call_id": "call_9", "content": "hello"}]})[0], 200)
+        self.assertEqual(self.mismatches(), [])
+        self.assertEqual(self.unchecked(), ["call_7", "call_8", "call_9"])
+        [gap] = [e for e in self.events() if e["type"] == "capture.gap"][:1]
+        self.assertEqual((gap["source"], gap["data"]["tool_use_id"]), ("signer", "call_7"))
+
+    def test_a_gateway_that_sends_no_digests_leaves_signed_unchecked_results(self):
+        """As a gateway older than 1.3 does (tool_results_sent only); once per call, a restart included."""
+        self.completed("hello")
+
+        def sends(seq):
+            self.s.call(GW, "model_event", {"request_id": uuid.uuid4().hex, **self.run, "caller": "token:http",
+                                            "stream": "gx2", "client_seq": seq, "provider": "openai", "model": "m",
+                                            "phase": "request", "tool_results_sent": ["call_7", "call_unknown"]})
+        sends(0)
+        self.reopen()
+        sends(1)
+        self.assertEqual(self.unchecked(), ["call_7"])   # call_unknown was never decided: nothing to compare
+
+    def test_a_resent_edit_costs_the_writer_no_hmac(self):
+        """The salt is derived once per tool.result, and a form that opened none is remembered."""
+        self.completed("hello")
+        salts = mock.Mock(wraps=svc._salt)
+        with mock.patch.object(svc, "_salt", salts):
+            self.gateway_sends("HELLO")
+            first = salts.call_count
+            self.gateway_sends("HELLO", seq=1)
+        self.assertEqual((first, salts.call_count), (1, 1))
+        self.assertEqual(self.mismatches(), [("call_7", ["L2", "L3"])])
 
     def test_a_denied_calls_refusal_sent_back_is_not_a_mismatch(self):
         self.decided("call_d", tool="tracekit_demo_denied")   # denied: the model gets the refusal as its result
@@ -671,11 +755,6 @@ class TestVerifiedToolResultsRefused(TestVerifiedToolResults):
         [(_, _, err)] = [x for x in self.exchanges() if x[1] == "response"]
         self.assertTrue(err.startswith("not forwarded: "), err)
 
-    def test_a_result_sent_before_the_call_completed(self):
-        self.decided("call_9")
-        self.assertEqual(self.post(tool_message("made up", tcid="call_9"))[0], 403)
-        self.assertEqual(self.up.seen, [])
-
 
 class TestVerifiedToolResultsOff(Gateway):
     def test_off_unless_set_and_the_gateway_stops_sending_digests(self):
@@ -704,8 +783,19 @@ class ToolResultParsing(unittest.TestCase):
         self.assertEqual(parsed["digest"], event_hash({"a": 1}))
         self.assertEqual(len(gateway.result_forms("plain")), 1)
         self.assertEqual(len(gateway.result_forms([{"type": "text", "text": '{"a": 1}'}])), 3)   # REQUESTS' maxItems
-        self.assertEqual([f["digest"] for f in gateway.result_forms(None)], [event_hash(None), event_hash("")])
-        self.assertEqual(gateway.result_forms(2 ** 60), [])   # JCS can't encode it
+        self.assertEqual(parsed["result_digest"], event_hash({"result": {"a": 1}}))
+        empty = [event_hash(None), event_hash(""), event_hash([])]
+        for v in (None, "", []):
+            self.assertEqual(sorted(f["digest"] for f in gateway.result_forms(v)), sorted(empty))
+        self.assertEqual([f["digest"] for f in gateway.result_forms(2 ** 60)], [event_hash(str(2 ** 60))])   # its text
+
+    def test_results_newest_first_within_the_budget_and_cached_for_the_runs_next_request(self):
+        g, key = gateway.Gateway("https://up.example", "k"), ("run", "t.mac", "token:x")
+        sent = [("old", "a" * 60), ("new", "b" * 60)]
+        with mock.patch.object(gateway, "MAX_DIGESTED", 100):
+            self.assertEqual([r["id"] for r in g.results(key, sent)], ["new"])   # the older one is past it: unchecked
+            self.assertEqual([r["id"] for r in g.results(key, sent)], ["old", "new"])   # "new" cost a hash
+            self.assertEqual(g.results(key, [("big", "c" * 200)]), [])   # one result over it is never checked
 
 
 if __name__ == "__main__":

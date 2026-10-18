@@ -54,7 +54,7 @@ of these services are experimental.
 |---|---|
 | Model calls, credentialed actions and MCP calls are recorded by services outside the agent, even if the agent controls its own machine: the credentials it would need live only in those services. | That the route really is the only one: the coverage matrix's `enforced` is the operator's assertion, recorded as not attested ([egress](egress.md#posture)). |
 | Network connections are recorded by host, port and bytes; a host no call explains is a signed `reconcile.unexplained_effect`. | What was inside a connection: the egress observer doesn't intercept TLS. |
-| An edited tool result for a call the signer already completed, or one sent before its call completed, is a signed `reconcile.result_mismatch`, when signer.yaml sets `verify_tool_results` ([gateway](gateway.md#verified-tool-results)). | Text the agent adds outside tool results, tool calls it writes into the history itself, and covert content in allowed requests, including requests to the model itself ([limits](limits.md#signer-and-capture)). |
+| An edited tool result for a call the signer already completed, or one sent before its call completed, is a signed `reconcile.result_mismatch`, and one the gateway didn't compare (past what it digests per request) a signed `capture.gap{result_unchecked}`, when signer.yaml sets `verify_tool_results` ([gateway](gateway.md#verified-tool-results)). | Text the agent adds outside tool results, tool calls it writes into the history itself, and covert content in allowed requests, including requests to the model itself ([limits](limits.md#signer-and-capture)). |
 
 ## Outside every deployment
 

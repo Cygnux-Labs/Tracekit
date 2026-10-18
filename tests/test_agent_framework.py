@@ -20,7 +20,8 @@ if HAVE:
     from pydantic import BaseModel
 
     from tracekit import autowire
-    from tracekit.integrations.agent_framework import WAIT_MS, Tracekit
+    from tracekit.integrations.agent_framework import Tracekit
+    from tracekit.integrations.gate import WAIT_MS
 
     class Scripted(FunctionInvocationLayer, BaseChatClient):
         """A chat client whose model is `script(messages)`, the contents of its next response: no network, no key."""
@@ -107,7 +108,10 @@ class Hook(unittest.TestCase):
                     r.complete.assert_called_once_with("call-1", "ok", attempt=0, result=mock.ANY)
                 else:
                     self.assertIn("Tracekit policy", out)
-                    r.complete.assert_not_called()
+                    if name == "consume refused":   # allowed, then refused: completed as not run
+                        r.complete.assert_called_once_with("call-1", "error", attempt=0, error=mock.ANY)
+                    else:
+                        r.complete.assert_not_called()
 
     def test_the_signer_decides_the_models_call_id_and_arguments(self):
         r = run()
@@ -139,7 +143,8 @@ class Hook(unittest.TestCase):
     def test_an_unanswered_approval_is_withdrawn(self):
         r = run("ask", ["A1"], state="requested")
         self.assertIn("not approved: requested", go(agent(r, self.tool())).text)
-        self.assertEqual([c.args[0] for c in r.call.call_args_list][-1], "approval_abandon")
+        self.assertEqual(r.call.call_args_list[-1], mock.call("approval_abandon", approval_id="apr-1",
+                                                              reason="no answer within the middleware's wait"))
         self.assertEqual(self.ran, [])
 
     def test_the_refusal_names_the_rules_but_not_the_unknown_tool_flag(self):
@@ -215,6 +220,13 @@ class Hook(unittest.TestCase):
         r = run(send_result=True)
         go(agent(r, self.tool()))
         self.assertEqual(r.complete.call_args.kwargs["result"], "closed ACC-9")
+
+        def close_account(account: str) -> str:
+            """Close an account."""
+            return '{"a": 1, "a": 2}'   # not JSON to the gateway's strict parse: recorded as the text, not {"a": 2}
+        r = run(send_result=True)
+        go(agent(r, close_account))
+        self.assertEqual(r.complete.call_args.kwargs["result"], '{"a": 1, "a": 2}')
 
     def test_arguments_a_later_middleware_changes_are_recorded_as_changed(self):
         class Rewrite(FunctionMiddleware):

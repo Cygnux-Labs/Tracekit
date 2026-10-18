@@ -104,4 +104,10 @@ key): [`examples/v2/agent_framework`](../../examples/v2/agent_framework/README.m
   Agent Framework.
 - An `ask` blocks the call while it waits, and each signer call holds a thread of asyncio's default executor; many asks
   waiting at once can starve it.
+- A call to a function the agent doesn't have is answered before function middleware: never decided. With the
+  [LLM gateway](../gateway.md) it reads as a live `reconcile.hook_missing`, whose detail says the call ran with no hook
+  gating it, though it never ran.
+- With the gateway's [verified tool results](../gateway.md#verified-tool-results), a result of several content items is
+  recorded as its items, which the gateway doesn't match to what the model is sent (joined with newlines for OpenAI,
+  separate blocks for Anthropic): such a call reads as `result_mismatch`.
 - Not wired by `tracekit.instrument()`, and tested with 1.22 only: other versions get no warning.

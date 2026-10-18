@@ -8,14 +8,14 @@
 and gives you one `.tkb` file per run that anyone can verify offline.**
 
 <a href="https://pypi.org/project/tracekit-ai/"><img src="https://img.shields.io/pypi/v/tracekit-ai?style=flat-square&color=F3B23B&labelColor=1C1A1C" alt="PyPI"></a>
-<a href="#add-it-to-your-agent"><img src="https://img.shields.io/badge/works_with-14_agents_%26_frameworks-F3B23B?style=flat-square&labelColor=1C1A1C" alt="Works with 14 agents and frameworks"></a>
+<a href="#add-it-to-your-agent"><img src="https://img.shields.io/badge/works_with-19_agents_%26_frameworks-F3B23B?style=flat-square&labelColor=1C1A1C" alt="Works with 19 agents and frameworks"></a>
 <a href="https://github.com/Cygnux-Labs/Tracekit/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/Cygnux-Labs/Tracekit/ci.yml?branch=main&style=flat-square&label=CI&labelColor=1C1A1C" alt="CI"></a>
 <a href="https://github.com/Cygnux-Labs/Tracekit/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT-F3B23B?style=flat-square&labelColor=1C1A1C" alt="MIT licence"></a>
 
 <table>
 <tr>
 <td align="center" width="25%"><h3>8 of 8</h3>tamper attacks caught<br><sub><a href="#proof">480 trials</a>, with a witness (E1)</sub></td>
-<td align="center" width="25%"><h3>483 of 483</h3>harmful calls stopped<br><sub><a href="#proof">11 classes</a>, 1 false alarm in 685 (E17)</sub></td>
+<td align="center" width="25%"><h3>500 of 500</h3>harmful calls stopped<br><sub><a href="#proof">11 classes</a>, 1 false alarm in 692 (E17)</sub></td>
 <td align="center" width="25%"><h3>&lt; 1 ms</h3>added per tool call<br><sub><a href="#proof">0.91 ms at p99</a>, signer round trip (E9)</sub></td>
 <td align="center" width="25%"><h3>8 of 8</h3>insider attacks caught<br><sub><a href="#proof">a merge gate</a> on every PR (E8)</sub></td>
 </tr>
@@ -102,7 +102,8 @@ ran and verified in 27 seconds: [`examples/v2/clean-machine.sh langchain`](https
 </picture>
 
 <sub>Stable: Claude Code, the OpenAI Agents SDK, LangChain / LangGraph, the Claude Agent SDK and MCP. Experimental: Codex
-CLI, Cursor, Gemini CLI, CrewAI, Browser Use, Pydantic AI and the TypeScript SDK. Setup:
+CLI, Cursor, Gemini CLI, CrewAI, Browser Use, Pydantic AI, Google ADK, Haystack, LlamaIndex, Microsoft Agent
+Framework, Strands Agents and the TypeScript SDK. Setup:
 <a href="https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/coding-agents.md">coding agents</a> ·
 <a href="https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/quickstarts/openai-agents.md">OpenAI Agents SDK</a> ·
 <a href="https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/quickstarts/claude-agent-sdk.md">Claude Agent SDK</a> ·
@@ -111,7 +112,13 @@ CLI, Cursor, Gemini CLI, CrewAI, Browser Use, Pydantic AI and the TypeScript SDK
 <a href="https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/integrations/crewai.md">CrewAI</a> ·
 <a href="https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/integrations/browser-use.md">Browser Use</a> ·
 <a href="https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/integrations/pydantic-ai.md">Pydantic AI</a> ·
+<a href="https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/integrations/google-adk.md">Google ADK</a> ·
+<a href="https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/integrations/haystack.md">Haystack</a> ·
+<a href="https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/integrations/llamaindex.md">LlamaIndex</a> ·
+<a href="https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/integrations/microsoft-agent-framework.md">Microsoft Agent Framework</a> ·
+<a href="https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/integrations/strands.md">Strands Agents</a> ·
 <a href="https://github.com/Cygnux-Labs/Tracekit/blob/main/sdk/typescript/README.md">TypeScript</a> ·
+<a href="https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/integrations/vercel-ai.md">Vercel AI SDK</a> ·
 <a href="https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/otel.md">OpenTelemetry</a> ·
 <a href="https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/quickstarts/custom.md">any other agent</a></sub>
 
@@ -180,7 +187,7 @@ is tested, but may change between releases ([what's stable](https://github.com/C
 | Core | What it does | Measured |
 |---|---|---|
 | **Record** | Every tool call, decision and result in one signed hash chain per run. A lost event becomes a signed gap, never silence | 6 of 8 tamper attacks caught by the log alone (E1) |
-| **Decide** | Allow, deny, or hold each call for a person, before it runs. [Packs](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/policy-v2.md) for shell, files, SQL, HTTP, cloud CLIs, browsers, email, messaging, payments, secrets and MCP | 483 of 483 harmful calls stopped, 1 false alarm in 685 (E17) |
+| **Decide** | Allow, deny, or hold each call for a person, before it runs. [Packs](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/policy-v2.md) for shell, files, SQL, HTTP, cloud CLIs, browsers, email, messaging, payments, secrets and MCP | 500 of 500 harmful calls stopped, 1 false alarm in 692 (E17) |
 | **Approve** | A held call runs only after a yes from the command line, bound to its exact arguments and used once ([approvals](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/approvals.md)) | Edited arguments, a replayed snapshot or another run's approval: refused, in the contract tests every stable framework integration runs |
 | **Prove** | `tracekit verify` checks a run's file offline against keys you pinned | 8 of 8 insider attacks caught (E8) |
 | **Watch** | `tracekit view`: every run verified, blocked and held calls, approvals, gaps, replay and a run review ([viewer](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/viewer.md)) | Not measured |
@@ -207,7 +214,7 @@ Our own experiments: small, synthetic and written by us. Nothing rounded up. The
 |---|---|---|
 | **E1** tamper detection | 120-record signed logs, 8 attacks, 60 trials each, re-run on 1.2 | 6 of 8 caught by the log alone, **8 of 8 with a witness** |
 | **E8** insider attacks | Real unprivileged users against a Linux system-mode signer: a decoy signer, a stopped signer, a swapped policy, fabricated runs | **8 of 8 caught**, a merge gate on every pull request |
-| **E17** policy packs | 483 harmful and 685 benign tool calls in 11 classes, decided by both regex engines | **483 of 483 stopped**; 1 false alarm, a draft email held for a person |
+| **E17** policy packs | 500 harmful and 692 benign tool calls in 11 classes, decided by both regex engines | **500 of 500 stopped**; 1 false alarm, a draft email held for a person |
 | **E10** reconciliation | 30 runs, 12 with a seeded discrepancy: a missing hook, a fabricated call, changed arguments | **12 of 12 flagged**, 0 false positives |
 | **E9** overhead | Signer round trip over a Unix socket, file storage, macOS quick run | **0.45 ms p50, 0.91 ms p99** per call; 5,356 events/s |
 | **E3** the v1 regex gate, on a rougher set | 16 harmful and 20 benign calls written after the rules | **12 of 16 caught**, 1 false alarm. Rules are tripwires, not a sandbox |
@@ -339,7 +346,7 @@ the [code of conduct](https://github.com/Cygnux-Labs/Tracekit/blob/main/CODE_OF_
 
 ## License
 
-[MIT](https://github.com/Cygnux-Labs/Tracekit/blob/main/LICENSE), Copyright Cygnux Labs. This is 1.2.3, and 1.x is the
+[MIT](https://github.com/Cygnux-Labs/Tracekit/blob/main/LICENSE), Copyright Cygnux Labs. This is 1.3.0, and 1.x is the
 supported line. Report vulnerabilities privately as
 [SECURITY.md](https://github.com/Cygnux-Labs/Tracekit/blob/main/SECURITY.md) describes.
 

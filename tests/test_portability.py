@@ -138,7 +138,7 @@ class PluginPackage(unittest.TestCase):
         self.assertEqual(set(hooks), set(install.TOOL_EVENTS + install.OTHER_EVENTS))
         for ev, groups in hooks.items():
             h = groups[0]["hooks"][0]
-            self.assertEqual(h["command"], "${CLAUDE_PLUGIN_ROOT}/bin/tracekit-hook")
+            self.assertEqual(h["command"], '"${CLAUDE_PLUGIN_ROOT}/bin/tracekit-hook" ' + ev)   # v2: names its event
             self.assertEqual(h["timeout"], install.HOOK_TIMEOUT.get(ev, 30), ev)
             self.assertEqual(groups[0].get("matcher") == "*", ev in install.TOOL_EVENTS, ev)
 
@@ -154,13 +154,15 @@ class PluginPackage(unittest.TestCase):
         self.assertEqual(market["plugins"][0]["name"], plugin["name"])
 
     @unittest.skipIf(sys.platform == "win32", "the plugin wrapper is POSIX shell")
-    def test_wrapper_is_executable_and_fails_open_with_a_notice(self):
+    def test_wrapper_is_executable_and_shows_a_notice_without_tracekit(self):
         import subprocess
+        import tempfile
         script = os.path.join(ROOT, "plugin", "bin", "tracekit-hook")
         self.assertTrue(os.access(script, os.X_OK))
-        r = subprocess.run(["/bin/sh", script], input="{}", capture_output=True, text=True,
-                           env={"PATH": "/nonexistent", "TRACEKIT_PYTHON": ""})
-        self.assertEqual(r.returncode, 0)
+        with tempfile.TemporaryDirectory() as home:   # Tracekit never set up there
+            r = subprocess.run(["/bin/sh", script], input="{}", capture_output=True, text=True,
+                               env={"PATH": "/nonexistent", "HOME": home, "TRACEKIT_PYTHON": ""})
+        self.assertEqual(r.returncode, 1)   # a non-blocking error Claude Code shows; exit 0's stderr is never seen
         self.assertIn("NOT recorded", r.stderr)
 
 

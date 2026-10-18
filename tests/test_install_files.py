@@ -377,7 +377,8 @@ class ClaudeConfigDir(unittest.TestCase):
                 self.addCleanup(shutil.rmtree, home, True)
                 self.addCleanup(shutil.rmtree, cfg, True)
                 os.makedirs(os.path.join(home, ".claude"))
-                env = lambda on: mock.patch.dict(os.environ, {"HOME": home, **({"CLAUDE_CONFIG_DIR": cfg} if on else {})})
+                env = lambda on: mock.patch.dict(os.environ, {"HOME": home, "USERPROFILE": home,   # Windows' ~
+                                                              **({"CLAUDE_CONFIG_DIR": cfg} if on else {})})
                 with env(installed_with):
                     if not installed_with:
                         os.environ.pop("CLAUDE_CONFIG_DIR", None)

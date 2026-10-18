@@ -8,6 +8,21 @@ runs and completes every tool call itself, in the signer, for the agent's run. I
 T2: a tool call through it can't happen without the signer seeing it. The [MCP client adapter](integrations/mcp.md)
 records calls the agent's own process makes (T1); the gateway records calls the agent can only ask for.
 
+It needs a running v2 signer, a config (below) and the MCP Python SDK, which it reaches the upstreams with
+(Python 3.10+):
+
+```bash
+pip install tracekit-ai "mcp>=2.3,<2.4"
+tracekit mcp-gateway serve --config mcp-gateway.yaml
+```
+
+It is a service you deploy and point agents at, not a one-click install. The MCP Registry lists it
+(`io.github.Cygnux-Labs/tracekit-mcp-gateway`) as a remote server, `https://{tracekit_gateway}/mcp`, where you fill
+in the host of the gateway you run. Run it as its own user, so the agent can't read its upstream credentials. Each
+request needs the agent's current run in `X-Tracekit-Run` ([Connecting](#connecting)). Its value changes with every
+run, so the agent framework that registers the run must set the header. A client that asks for headers once, at
+install, works for one run only.
+
 ## Configure
 
 `mcp-gateway.yaml` (relative paths are from the file):

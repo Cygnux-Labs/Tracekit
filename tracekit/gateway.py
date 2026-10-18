@@ -23,7 +23,7 @@ run, identity or tenant: 403. Nothing is attributed by address or name. Relative
 
 For each exchange: model_event phase request (with the tool results it sends back and, unless the signer last said it
 doesn't check them, the digests of the values each may have been recorded as, so the signer can compare it with the
-tool.result it signed: `tool_results`, result_forms) before forwarding; when the signer answers `refused` (a result
+tool.result it signed: `tool_results`, Gateway.results) before forwarding; when the signer answers `refused` (a result
 differs and its verify_tool_results is refuse), the request is not forwarded: 403, and the exchange's response is
 recorded with that error. With the signer unreachable and the run's model class failing open, the request is
 forwarded unchecked. The response
@@ -62,7 +62,7 @@ import uuid
 
 from tracekit import parsers, yamlmini
 from tracekit.client import remote_url_error
-from tracekit.format.canon import canonical, event_hash, loads_strict
+from tracekit.format.canon import canonical, loads_strict
 from tracekit.identity.base import bearer
 from tracekit.proxy import HOP, MAX_SSE_LINE
 from tracekit.sdk.client import Client, SignerUnavailable, fail_open
@@ -81,6 +81,10 @@ MAX_RUN_HEADER = 2048   # X-Tracekit-Run: a run id and its token (well under 1 K
 # the newest tool results a request's record carries digests of (at most ~200 KB, so a half-frame body still fits); the
 # agent controls which those are (it can pad a request with results of its own)
 MAX_RESULTS_CHECKED = 512
+# bytes of tool results (as JSON) a request's digests are computed over, newest first, past those the run's previous
+# request sent too: it bounds the pure-Python canonical JSON done before forwarding (15 MB of numbers took 3.4 s). A
+# result past it gets no digests, and the signer signs it as unchecked (capture.gap result_unchecked)
+MAX_DIGESTED = MAX_LINE
 UPSTREAM_TIMEOUT_S = 600
 
 
@@ -105,7 +109,7 @@ class Gateway:
     def _run(self, key):
         with self.lock:
             run = self.runs.pop(key, None) or types.SimpleNamespace(
-                stream="gx-" + uuid.uuid4().hex, seq=0, acked=-1, modes=None, lock=threading.Lock())
+                stream="gx-" + uuid.uuid4().hex, seq=0, acked=-1, modes=None, lock=threading.Lock(), forms={})
             self.runs[key] = run
             evicted = self.runs.popitem(last=False) if len(self.runs) > MAX_RUNS else None
         if evicted:
@@ -186,6 +190,27 @@ class Gateway:
     def fail_open(self, key):
         return fail_open(self._run(key).modes, "model")
 
+    def results(self, key, sent):
+        """model_event's `tool_results` for a request of run `key` that sends the model `sent` ([(tool_call_id,
+        content)]): each one's result_forms, newest first while the bytes digested stay within MAX_DIGESTED; a content
+        the run's previous request sent too costs a hash. A result past that is left out; its id is still in the
+        request's tool_results_sent, so the signer signs it as unchecked."""
+        # lean: a run's cache is its last request's forms (~1.4 KB per result, for up to MAX_RUNS runs); bound it by
+        # bytes if gateways hold many long runs
+        run, budget, forms, out = self._run(key), MAX_DIGESTED, {}, []
+        for tcid, content in reversed(sent):
+            raw = json.dumps(content, separators=(",", ":"), ensure_ascii=False).encode("utf-8", "surrogatepass")
+            h = hashlib.sha256(raw).digest()
+            f = forms.get(h) or run.forms.get(h)
+            if f is None and len(raw) <= budget:
+                budget -= len(raw)
+                f = result_forms(content)
+            if f:
+                forms[h] = f
+                out.append({"id": tcid, "forms": f})
+        run.forms = forms
+        return out[::-1]
+
     def body(self, content, size):
         """{"body": content} when the signer keeps content, `size` (its bytes) fits and `content` is strict JSON (no
         integer past 2^53, non-finite number or lone surrogate, which a frame cannot carry), else {}: the record keeps
@@ -208,12 +233,17 @@ class Gateway:
         return {"body": content}
 
 
+EMPTY = (None, "", [])   # no content, as providers and frameworks send a result with none
+
+
 def result_forms(content):
     """The values a tool result sent to the model may have been recorded as (complete's `result`, itself or as its
-    digest): the content as sent; the text of a list of text blocks; the value of a JSON string, or of that text; ""
-    for a result with no content (an Anthropic tool_result may have none). Each as {digest, result_digest}: event_hash
-    of the value and sha256 of JCS({"result": value})."""
-    values = [content, ""] if content is None else [content]
+    digest): the content as sent; the text of a list of text blocks; the value of a JSON string, or of that text; for
+    no content (None, "", no blocks: an Anthropic tool_result may have none, Pydantic AI sends `None` and `[]` as ""),
+    each of those. A value JCS can't encode (a lone surrogate, an integer past 2^53, NaN) is taken as its JSON text, as
+    tracekit.sdk.client.result_field records it, so every result has a form. Each as {digest, result_digest}:
+    event_hash of the value and sha256 of JCS({"result": value})."""
+    values = [content] + [v for v in EMPTY if v != content] if content in EMPTY else [content]
     if isinstance(content, list) and content and all(
             isinstance(b, dict) and b.get("type") in ("text", "input_text", "output_text") and isinstance(b.get("text"), str)
             for b in content):
@@ -221,14 +251,16 @@ def result_forms(content):
     if isinstance(values[-1], str) and values[-1]:
         try:
             values.append(loads_strict(values[-1]))
-        except (ValueError, RecursionError):   # not JSON: the text is the value
+        except ValueError:   # not JSON: the text is the value
             pass
     forms = []
     for v in values:
         try:
-            form = {"digest": event_hash(v), "result_digest": event_hash({"result": v})}
-        except (ValueError, RecursionError):   # JCS can't encode it (an integer past 2^53): no form
-            continue
+            c = canonical(v)
+        except ValueError:   # CanonicalizationError
+            c = canonical(json.dumps(v))
+        form = {"digest": "sha256:" + hashlib.sha256(c).hexdigest(),
+                "result_digest": "sha256:" + hashlib.sha256(b'{"result":' + c + b"}").hexdigest()}   # JCS of it
         if form not in forms:
             forms.append(form)
     return forms
@@ -348,8 +380,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         base = {"provider": kind.split(":")[0], "model": str(req.get("model") or "")[:128],
                 "streamed": req.get("stream") is True}
         sent = parsers.parse(kind, None, req)["tool_results_sent"][-MAX_RESULTS_SENT:]
-        results = [{"id": i, "forms": f} for i, c in parsers.tool_results(kind, req)[-MAX_RESULTS_CHECKED:]
-                   if (f := result_forms(c))] if gw.check_results else []
+        results = gw.results(key, parsers.tool_results(kind, req)[-MAX_RESULTS_CHECKED:]) if gw.check_results else []
         try:
             ok = gw.record(key, xid, phase="request", content_digest="sha256:" + hashlib.sha256(body).hexdigest(),
                            **base, **({"tool_results_sent": sent} if sent else {}),

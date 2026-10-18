@@ -10,7 +10,8 @@ Without it (hooks installed before 1.2) the event comes from the payload alone.
 
 Each hook is a new process, so the run of a Claude Code session (id, token, fail modes, and the one event stream and
 next client_seq all its hooks share) and the decision binding of a tool call are kept in the runtime dir between hooks.
-Exit 0 lets the call proceed, exit 2 blocks it (reason on stderr). An approval with a T2 executor runs the arguments the
+Exit 0 lets the call proceed, exit 2 blocks it (reason on stderr); only a PreToolUse is blocked: another event whose
+hook fails exits 1, an error the harness shows without blocking. An approval with a T2 executor runs the arguments the
 consume returns: the hook prints them as `updatedInput` (Claude Code only; the other harnesses run the arguments the
 signer consumed, which it checked against the approved ones). The signer unreachable: the run's fail mode for the
 tool's class, from register_run (closed before a run is registered). A signer refusal, a failure while a call waits for
@@ -318,35 +319,45 @@ def _entry(event=None):
 
 def handle(p):
     """One hook event in Claude Code's payload shape (tracekit.integrations.harness_hooks maps the other harnesses'
-    onto it). -> exit code: 0 lets the call proceed, 2 blocks it; the reason is on stderr."""
+    onto it). -> exit code: 0 lets the call proceed, 2 blocks it; the reason is on stderr. Only a PreToolUse is ever
+    blocked: any other event that fails returns 1, a non-blocking error the harness shows (2 would erase a prompt, or
+    send the agent back to work at Stop), and its tool calls are still decided at PreToolUse."""
     name, sid, tid = p.get("hook_event_name"), p.get("session_id"), p.get("tool_use_id")
+    pre = name == "PreToolUse"
     missing = [k for k, v in (("session_id", sid), ("tool_use_id", tid if name in TOOL_EVENTS else "-"))
                if not isinstance(v, str) or not v]
     if missing:   # never defaulted: the signer records the gap from what it did not receive
-        pre = name == "PreToolUse"
         print(f"[tracekit] hook payload has no {', '.join(missing)}; "
               + ("tool call blocked" if pre else "event not recorded"), file=sys.stderr)
         return 2 if pre else 0
+    failed, code = ("blocking", 2) if pre else ("event not recorded", 1)
     try:
         client = Client()
     except Exception as e:   # a TRACEKIT_SIGNER that is not the system signer, or an unreadable system config
-        print(f"[tracekit] {e}; blocking", file=sys.stderr)
-        return 2
+        print(f"[tracekit] {e}; {failed}", file=sys.stderr)
+        return code
     try:
         return _handle(client, p, name, sid, tid)
     except SignerUnavailable as e:   # the signer unreachable: the run's fail mode for the tool's class (a local
         # OSError, a full disk, is no outage: it blocks below, as the call could not be counted)
+        fix = ""
         try:
-            closed = bool((system_config() or {}).get("signer")) or not fail_open(   # system mode: always closed
+            sc = system_config() or {}
+            if sc and not sc.get("signer") and not os.environ.get("TRACEKIT_SIGNER"):   # v1 system mode: no v2 signer
+                fix = (". This host is in v1 system mode (the system config names no v2 signer): set up v2 system "
+                       "mode, sudo /usr/bin/python3 -m tracekit init --v2 --user <agent-user> (--no-hooks with the "
+                       "Claude Code plugin)")
+            closed = bool(sc.get("signer")) or not fail_open(   # system mode: always closed
                 (_load(_state(sid)) or {}).get("fail_modes"), _tool_class(p.get("tool_name") or "?"))
         except Exception:
             closed = True
-        print(f"[tracekit] signer unreachable ({e}); " + ("blocking (fail-closed)" if closed else "allowing (fail-open)"),
-              file=sys.stderr)
-        return 2 if closed else 0
+        if pre:
+            failed, code = ("blocking (fail-closed)", 2) if closed else ("allowing (fail-open)", 0)
+        print(f"[tracekit] signer unreachable ({e}); {failed}{fix}", file=sys.stderr)
+        return code
     except Exception as e:   # a signer refusal or a crash: never a reason to let the call run
-        print(f"[tracekit] hook error ({type(e).__name__}: {e}); blocking", file=sys.stderr)
-        return 2
+        print(f"[tracekit] hook error ({type(e).__name__}: {e}); {failed}", file=sys.stderr)
+        return code
     finally:
         client.close()
 

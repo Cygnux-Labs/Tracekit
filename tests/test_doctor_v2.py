@@ -330,6 +330,50 @@ class Detect(unittest.TestCase):
             self.assertEqual([(r["id"], r["status"]) for r in doctor.collect()], [("D-SYSTEM-CONFIG", "fail")])
 
 
+class PluginHooks(unittest.TestCase):
+    """The Claude Code plugin's hooks are init's: doctor told plugin users `fix: tracekit init --dev --v2`, after which
+    every call was decided twice and every approved call blocked."""
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.d, True)
+        self.settings, self.plugin = os.path.join(self.d, "settings.json"), os.path.join(self.d, "user.json")
+
+    def hooks_present(self, settings, plugin):
+        return {r["id"]: r for r in doctor.v2_checks({"data_dir": self.d}, "dev", settings=settings,
+                                                     plugin=plugin)}["D-HOOKS-PRESENT"]
+
+    def test_the_plugins_hooks_count_and_init_is_not_suggested(self):
+        for settings in (self.settings, None):   # dev mode; system mode with no hooks recorded in client.json
+            got = self.hooks_present(settings, self.plugin)
+            self.assertEqual((got["status"], got["fix"]), ("ok", ""), settings)
+            self.assertIn("Claude Code plugin", got["detail"])
+        self.assertIn("tracekit init --dev --v2", self.hooks_present(self.settings, None)["fix"])
+
+    def test_the_plugin_with_inits_hooks_is_flagged(self):
+        with contextlib.redirect_stdout(io.StringIO()):
+            install.install_hooks(self.settings, module=install.V2_HOOK)
+        got = self.hooks_present(self.settings, self.plugin)
+        self.assertEqual(got["status"], "warn")
+        self.assertIn("every approved call is blocked", got["detail"])
+        self.assertIn(f"/plugin disable {install.PLUGIN}", got["fix"])
+        self.assertEqual(self.hooks_present(self.settings, None)["status"], "ok")
+
+    def test_collect_reads_enabled_plugins(self):
+        home = os.path.join(self.d, "home")
+        os.makedirs(os.path.join(home, ".claude"))
+        with open(os.path.join(home, ".claude", "settings.json"), "w") as f:
+            json.dump({"enabledPlugins": {install.PLUGIN: True}}, f)
+        cwd = os.getcwd()
+        self.addCleanup(os.chdir, cwd)
+        os.chdir(self.d)
+        with mock.patch.dict(os.environ, {"HOME": home, "USERPROFILE": home}), \
+                mock.patch.object(install.client, "client_config", return_value={}), \
+                mock.patch.object(doctor.client, "system_config", return_value=None), \
+                mock.patch.object(doctor, "v2_checks", return_value=[]) as v2:
+            doctor.collect()
+        self.assertEqual(v2.call_args.kwargs["plugin"], os.path.join(home, ".claude", "settings.json"))
+
+
 @unittest.skipIf(os.name == "nt", "POSIX modes")
 class DevProfile(unittest.TestCase):
     def test_dev_signer_warns_instead_of_failing(self):
