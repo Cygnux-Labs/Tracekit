@@ -12,7 +12,7 @@ import unittest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 NEEDS = {"custom": (), "langchain": ("langchain", "langgraph"), "openai_agents": ("agents",),
          "claude_agent_sdk": ("claude_agent_sdk",), "mcp": ("mcp",),
-         "pydantic_ai": ("pydantic_ai",)}
+         "pydantic_ai": ("pydantic_ai",), "llama_index": ("llama_index",)}
 
 
 def python(*argv, env, cwd):
@@ -69,6 +69,9 @@ class Examples(unittest.TestCase):
 
     def test_pydantic_ai(self):
         self.run_example("pydantic_ai")
+
+    def test_llama_index(self):
+        self.run_example("llama_index")
 
 
 class DemoServer(unittest.TestCase):
