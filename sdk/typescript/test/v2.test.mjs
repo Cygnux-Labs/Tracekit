@@ -124,7 +124,7 @@ test("a dev signer from before an upgrade is replaced, not a reason to fail ever
     process.env = saved;
     rmSync(d, { recursive: true, force: true });
   });
-  while (!pyCan(`import json; assert json.load(open(${JSON.stringify(join(d, "run", "endpoint.json"))}))["pid"]`)) await sleep(50);
+  while (pyCan(`import json; assert json.load(open(${JSON.stringify(join(d, "run", "endpoint.json"))}))["pid"]`)) await sleep(50);   // a reason until it has a pid
   const c = new Client();
   await c.registerRun({ name: "ts-upgrade", version: "1" });
   assert.equal(c.hello.proto[1], RPC_VERSION);
