@@ -140,9 +140,9 @@ ask:
     rationale: Wipes whole environments or production data in one step (the 2026 PocketOS and DataTalks.Club wipes); a person confirms it.
   - id: TK-A002
     class: shell
-    # deleting a remote ref rewrites shared state; ordinary pushes and dry runs remain unheld
-    pattern: '^git (-[Cc] [^ ]+ |--?[A-Za-z][-A-Za-z]*(=[^ ]*)? ){0,8}push\b.*( --delete( |$)| -[A-Za-z]*d[A-Za-z]*( |$)| :[^ ]+( |$))'
-    unless: '^git .*push\b.*( --dry-run( |$)| -[A-Za-z]*n[A-Za-z]*( |$))'
+    # deleting a remote ref rewrites shared state; ordinary pushes remain unheld. No dry-run exemption: `-o`/`--push-option`
+    # takes the next word as its value, so `git push -d origin main -o --dry-run` deletes main
+    pattern: '^git (-[Cc] [^ ]+ |--?[A-Za-z][-A-Za-z]*(=[^ ]*)? ){0,8}push\b.*( --delete( |$)| -[A-Za-z]*d[A-Za-z]*( |$)| :[^ ]+( |$)| --prune( |$))'
     reason: deleting a remote Git ref
     rationale: Deleting a remote branch or tag changes shared state and can remove work; a person confirms it.
 

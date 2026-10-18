@@ -91,3 +91,7 @@
 {"tool": "Bash", "args": {"command": "git push origin --delete main"}, "expect": "ask", "note": "deleting a remote Git ref"}
 {"tool": "Bash", "args": {"command": "git -C repo push -d origin obsolete"}, "expect": "ask", "note": "deleting a remote Git ref with the short option"}
 {"tool": "Bash", "args": {"command": "git push origin :refs/heads/obsolete"}, "expect": "ask", "note": "deleting a remote Git ref with a deletion refspec"}
+{"tool": "Bash", "args": {"command": "git push --dry-run origin --delete old-branch"}, "expect": "ask", "note": "a dry run of a deletion is held too: there is no exemption a push option could fake"}
+{"tool": "Bash", "args": {"command": "git push -d origin main -o --dry-run"}, "expect": "ask", "note": "deleting a remote Git ref; --dry-run is the -o push option's value, not a dry run"}
+{"tool": "Bash", "args": {"command": "git push -d origin main -o -n"}, "expect": "ask", "note": "deleting a remote Git ref; -n is the -o push option's value, not a dry run"}
+{"tool": "Bash", "args": {"command": "git push --prune origin 'refs/heads/*:refs/heads/*'"}, "expect": "ask", "note": "deleting every remote branch with no local counterpart"}
