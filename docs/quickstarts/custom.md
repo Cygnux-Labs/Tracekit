@@ -50,7 +50,7 @@ refusals) raises `tracekit.Refused`, a `PermissionError`: let it through your ow
 | CrewAI | runs the tool when a `before_tool_call` hook raises | `instrument()` wires hooks that block by returning `False` ([CrewAI](../integrations/crewai.md)) |
 | LangGraph / LangChain | `ToolNode`'s `handle_tool_errors` turns a tool's exception into a message | the middleware returns its refusal as a tool message, and pauses an `ask` whatever `handle_tool_errors` says |
 | mcp-agent | `generate_str` logs an exception from the model call at debug level and returns `""` | a fail-closed model refusal reads as an empty answer: treat `""` as a failure, or run with `fail_modes: {model: open}` |
-| PydanticAI | validates a call's arguments before any hook, and asks the model again when they fail | the call is never decided, and reads as `reconcile.hook_missing` under autotrace; its structured output comes as output tools (`final_result`, `final_result_<Type>` per output type): name each in the policy's `structured_output:` |
+| PydanticAI | validates a call's arguments before any hook, and asks the model again when they fail | the call is never decided, and reads as `reconcile.hook_missing` under autotrace; its structured output comes as output tools (`final_result`, `final_result_<Type>` per output type): name each in the policy's `structured_output:`; the `Tracekit` capability decides every call after validation, and output functions too ([Pydantic AI](../integrations/pydantic-ai.md)) |
 | Your own loop | whatever your `except` does | re-raise `tracekit.Refused`, or return the refusal to the model |
 
 ## 3. See it verified

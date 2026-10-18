@@ -28,7 +28,7 @@ observation), with Python and TypeScript SDKs and framework integrations. [HIGH 
 | `tracekit/verify/` | Offline verifiers: `v2.py`, and `v1.py` re-exporting the v1 one (an independent TS verifier is in `sdk/typescript/src/verify/`) | [HIGH CONFIDENCE] |
 | `tracekit/policy2/` | v2 policy engine, compiler/lint and packs (`packs/*.yaml`) | [HIGH CONFIDENCE] |
 | `tracekit/sdk/`, `tracekit/autowire.py` | Python v2 client (`RunHandle`), dev-signer autospawn, `tracekit.instrument()` | [HIGH CONFIDENCE] |
-| `tracekit/integrations/` | v2 framework integrations (OpenAI Agents, LangChain/LangGraph, Claude Agent SDK, MCP, Browser Use, CrewAI, Claude Code and harness hooks) | [HIGH CONFIDENCE] |
+| `tracekit/integrations/` | v2 framework integrations (OpenAI Agents, LangChain/LangGraph, Claude Agent SDK, MCP, Browser Use, CrewAI, Pydantic AI, Claude Code and harness hooks) | [HIGH CONFIDENCE] |
 | `tracekit/gateway.py`, `tracekit/executor.py`, `tracekit/mcp_gateway.py`, `tracekit/egress.py` | LLM gateway, T2 tool executor, MCP gateway, egress observer | [HIGH CONFIDENCE] |
 | `tracekit/why/` | `tracekit why`: causal investigation and replay | [HIGH CONFIDENCE] |
 | `tracekit/storage/`, `tracekit/identity/`, `tracekit/transport/` | v2 storage (file, Postgres), caller identities (uid, token, mTLS, k8s service account, OIDC, WebAuthn), RPC transports | [HIGH CONFIDENCE] |

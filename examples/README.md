@@ -16,6 +16,7 @@ approves held calls from a second process; without it, you approve them from ano
 | [v2/openai_agents/](v2/openai_agents/) | An OpenAI Agents SDK agent |
 | [v2/claude_agent_sdk/](v2/claude_agent_sdk/) | A Claude Agent SDK agent |
 | [v2/mcp/](v2/mcp/) | An MCP client |
+| [v2/pydantic_ai/](v2/pydantic_ai/) | A Pydantic AI agent (the `Tracekit` capability) |
 | [v2/demos/](v2/demos/) | The scenarios behind [docs/demos/](../docs/demos/): containment, prompt injection, agent approvers, completeness, egress |
 
 `v2/story.py` holds what these examples share; `v2/clean-machine.sh` (`.ps1` on Windows) runs one in a fresh venv.
