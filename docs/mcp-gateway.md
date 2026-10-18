@@ -8,6 +8,14 @@ runs and completes every tool call itself, in the signer, for the agent's run. I
 T2: a tool call through it can't happen without the signer seeing it. The [MCP client adapter](integrations/mcp.md)
 records calls the agent's own process makes (T1); the gateway records calls the agent can only ask for.
 
+It needs a running v2 signer, a config (below) and the MCP Python SDK, which it reaches the upstreams with
+(Python 3.10+):
+
+```bash
+pip install tracekit-ai "mcp>=2.3,<2.4"
+tracekit mcp-gateway serve --config mcp-gateway.yaml
+```
+
 ## Configure
 
 `mcp-gateway.yaml` (relative paths are from the file):

@@ -1,0 +1,62 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.Cygnux-Labs/tracekit-mcp-gateway",
+  "title": "Tracekit MCP gateway",
+  "description": "MCP proxy: a Tracekit signer decides and signs each tool call. Needs a running signer and a config.",
+  "version": "1.3.0",
+  "repository": {
+    "url": "https://github.com/Cygnux-Labs/Tracekit",
+    "source": "github"
+  },
+  "websiteUrl": "https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/mcp-gateway.md",
+  "packages": [
+    {
+      "registryType": "pypi",
+      "identifier": "tracekit-ai",
+      "version": "1.3.0",
+      "runtimeHint": "uvx",
+      "runtimeArguments": [
+        {
+          "type": "named",
+          "name": "--with",
+          "value": "mcp>=2.3,<2.4",
+          "description": "the MCP Python SDK the gateway connects to its upstream servers with"
+        }
+      ],
+      "packageArguments": [
+        {
+          "type": "positional",
+          "value": "mcp-gateway"
+        },
+        {
+          "type": "positional",
+          "value": "serve"
+        },
+        {
+          "type": "named",
+          "name": "--config",
+          "format": "filepath",
+          "isRequired": true,
+          "description": "mcp-gateway.yaml: its HTTPS listener, the Tracekit signer it reaches and the upstream MCP servers"
+        }
+      ],
+      "transport": {
+        "type": "streamable-http",
+        "url": "https://localhost:8091/mcp",
+        "headers": [
+          {
+            "name": "X-Tracekit-Run",
+            "description": "<run_id>.<run_token> of the agent's run, from register_run on the signer",
+            "isRequired": true,
+            "isSecret": true
+          },
+          {
+            "name": "Authorization",
+            "description": "Bearer <token>: the agent's identity, when the gateway's http.authenticators accept a bearer or Kubernetes service account token (else a client certificate)",
+            "isSecret": true
+          }
+        ]
+      }
+    }
+  ]
+}

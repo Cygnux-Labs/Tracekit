@@ -1,4 +1,4 @@
-"""tracekit --version, the Claude Code plugin and the npm package must carry the same version."""
+"""tracekit --version, the Claude Code plugin and the npm package carry one version; server.json names its release."""
 import json
 import os
 import re
@@ -30,6 +30,15 @@ class VersionSourceTest(unittest.TestCase):
         for rel in ("plugin/.claude-plugin/plugin.json", "sdk/typescript/package.json"):
             with open(os.path.join(ROOT, rel)) as f:
                 self.assertEqual(json.load(f)["version"], expected, rel)
+
+    def test_mcp_registry_server_json_names_this_release(self):
+        import tracekit
+        with open(os.path.join(ROOT, "server.json")) as f:
+            server = json.load(f)
+        with open(os.path.join(ROOT, "README.md")) as f:   # the registry's PyPI ownership check reads the README
+            self.assertIn(f"<!-- mcp-name: {server['name']} -->", f.read())
+        release = re.match(r"\d+\.\d+\.\d+", tracekit.__version__).group()
+        self.assertEqual({server["version"], *(p["version"] for p in server["packages"])}, {release})
 
     def test_semver_mapping(self):
         self.assertEqual(_semver("0.2.0rc1"), "0.2.0-rc.1")
