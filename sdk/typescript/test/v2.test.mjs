@@ -112,6 +112,27 @@ test("a real dev signer, started on demand: decide/complete, deny and continue, 
   await c.close();
 });
 
+test("a dev signer from before an upgrade is replaced, not a reason to fail every call", { skip: NO_SIGNER }, async (t) => {
+  const d = mkdtempSync("/tmp/tkv2-"), saved = { ...process.env };
+  Object.assign(process.env, { TRACEKIT_RUNTIME_DIR: join(d, "run"), HOME: join(d, "home"), XDG_DATA_HOME: join(d, "data"), PYTHONPATH: ROOT, TRACEKIT_PYTHON: PY });
+  delete process.env.TRACEKIT_SIGNER;
+  const old = spawn(PY, ["-m", "tracekit.testing", "--proto", `${RPC_VERSION - 2}-${RPC_VERSION - 1}`], { env: process.env, stdio: "ignore" });
+  const exited = new Promise((r) => old.once("exit", r));
+  t.after(() => {
+    old.kill();
+    spawnSync(PY, ["-m", "tracekit", "down"], { env: process.env });
+    process.env = saved;
+    rmSync(d, { recursive: true, force: true });
+  });
+  while (!pyCan(`import json; assert json.load(open(${JSON.stringify(join(d, "run", "endpoint.json"))}))["pid"]`)) await sleep(50);
+  const c = new Client();
+  await c.registerRun({ name: "ts-upgrade", version: "1" });
+  assert.equal(c.hello.proto[1], RPC_VERSION);
+  assert.notEqual(c.hello.pid, old.pid);
+  await exited;
+  await c.close();
+});
+
 test("TCP dev transport: mutual HMAC proof of the token (Python's server)", { skip: NO_PY }, async (t) => {
   const info = await pyServer(t, PY_FAKE + `
 import os, tempfile

@@ -26,12 +26,13 @@ from tracekit import __version__
 from tracekit.client import SYSTEM_CONFIG
 from tracekit.locking import lock_file, unlock_file
 from tracekit.sdk.client import Incompatible, SignerUnavailable, connect
+from tracekit.signer.rpc_schema import RPC_VERSION
 
 SOCK, LOCK, SPAWN_LOCK, ENDPOINT, LOG = "signer.sock", "signer.lock", "spawn.lock", "endpoint.json", "signer.log"
 # -P (3.11+) keeps the working directory off sys.path; before 3.11 it is there, and spawn() makes it the private runtime
 # dir. Not -I, which also drops the PYTHONPATH a checkout without an install needs.
-SIGNER_ARGV = [sys.executable, *(["-P"] if sys.version_info >= (3, 11) else []), "-m", "tracekit", "signer", "serve",
-               "--dev"]
+PYTHON = [sys.executable, *(["-P"] if sys.version_info >= (3, 11) else [])]
+SIGNER_ARGV = [*PYTHON, "-m", "tracekit", "signer", "serve", "--dev"]
 _ENV = ("PATH", "HOME", "USER", "LOGNAME", "LANG", "TMPDIR", "XDG_RUNTIME_DIR", "XDG_DATA_HOME", "LOCALAPPDATA",
         "SYSTEMROOT", "PYTHONPATH")   # SYSTEMROOT: Windows sockets need it
 
@@ -108,10 +109,28 @@ def _pid(d):
         return None
 
 
-def spawn(d):
-    """Start a detached `tracekit signer serve --dev` for runtime dir `d`."""
+def _env(d):
     env = {k: v for k, v in os.environ.items() if k in _ENV or k.startswith(("LC_", "TRACEKIT_"))}
     env["TRACEKIT_RUNTIME_DIR"] = d
+    return env
+
+
+def _starts_ours(d):
+    """True when the signer spawn(d) starts would serve this client. Not when `python -m tracekit` there runs an older
+    Tracekit than this process imports (a checkout over an older install, a downgrade under a running process): that
+    signer would be refused too, and every client would stop the shared one again."""
+    try:
+        lo, hi = map(int, subprocess.run([*PYTHON, "-c", "from tracekit.signer.rpc_schema import RPC_MIN, RPC_VERSION; "
+                                          "print(RPC_MIN, RPC_VERSION)"], capture_output=True, text=True, cwd=d,
+                                         env=_env(d), timeout=30, check=True).stdout.split())
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return False
+    return lo <= RPC_VERSION <= hi
+
+
+def spawn(d):
+    """Start a detached `tracekit signer serve --dev` for runtime dir `d`."""
+    env = _env(d)
     with open(os.path.join(d, LOG), "ab") as log:
         p = subprocess.Popen(SIGNER_ARGV, stdin=subprocess.DEVNULL, stdout=log, stderr=log, cwd=d, env=env,
                              start_new_session=True, umask=0o077)
@@ -141,6 +160,9 @@ def ensure(wait=True, timeout=10):
         except Incompatible as e:
             if not e.older:   # newer than this client: an old client never downgrades it
                 raise
+            if not _starts_ours(d):
+                raise Incompatible(f"{e}. `{sys.executable} -m tracekit` runs an older Tracekit than this process "
+                                   "imports: install this version") from None
             warnings.warn(f"tracekit: stopped the dev signer from an older Tracekit (pid {down(timeout)}) to start "
                           f"this one's ({__version__})", stacklevel=2)
             conn = None
