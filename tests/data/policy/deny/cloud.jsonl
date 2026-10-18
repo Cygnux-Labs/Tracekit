@@ -107,3 +107,6 @@
 {"tool": "run_shell_command", "args": {"command": "terraform.exe destroy -auto-approve"}, "expect": "ask", "note": "destroying a deployment, database or volume (an alias or wrapper)"}
 {"tool": "mcp:aws/call_aws", "args": {"cli_command": "terraform destroy -auto-approve"}, "expect": "ask", "note": "deleting cloud resources"}
 {"tool": "mcp:aws/call_aws", "args": {"cli_command": "pulumi destroy --yes"}, "expect": "ask", "note": "deleting cloud resources"}
+{"tool": "Bash", "args": {"command": "pulumi --non-interactive --emoji --logflow --logtostderr --color never destroy --yes"}, "expect": "ask", "note": "destroying a deployment, database or volume (five options before the verb)"}
+{"tool": "Bash", "args": {"command": "railway run -s api -e prod -p x -v -q dropdb main"}, "expect": "ask", "note": "destroying a deployment, database or volume (railway run with five options)"}
+{"tool": "mcp:aws/call_aws", "args": {"cli_command": "pulumi -C a -s b -e -v --yes destroy"}, "expect": "ask", "note": "deleting cloud resources (five options before the verb)"}

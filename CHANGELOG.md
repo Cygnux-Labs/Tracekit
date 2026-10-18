@@ -56,7 +56,7 @@ recorded. Upgrade the signer before its clients (see Upgrade notes); every exist
   through `npx`, `bunx`, `pnpm dlx`, `yarn dlx` and `npm exec`, and commands under `railway run` / `heroku run`), and
   `curl`-style calls of a platform API's `*Delete(` mutation. A trailing `--help` is not held. TK-C010 (server-cloud
   pack `2026.10-server-cloud-3`) holds terraform/pulumi destroy sent through other tools (`cli_command`, `command`).
-  What it doesn't catch is in [policy](docs/policy-v2.md). The policy corpus (E17): 497 of 497 stopped, 1 false alarm
+  What it doesn't catch is in [policy](docs/policy-v2.md). The policy corpus (E17): 500 of 500 stopped, 1 false alarm
   in 692.
 - `tracekit init --dev --v2` doesn't install Claude Code hooks while the Tracekit plugin is enabled, and `tracekit
   doctor` warns when both run (each call would be decided twice, and an approved `ask` blocked).
