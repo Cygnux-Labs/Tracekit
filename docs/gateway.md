@@ -173,14 +173,19 @@ coverage count with the run's unreconciled calls:
 - a tool result (an OpenAI chat `role: tool` message, a Responses `*_output` item, an Anthropic `tool_result` block)
   for a call the signer already completed, whose content is not what was completed: the agent edited it;
 - a tool result sent for a call the run allowed before its result was recorded. The shipped integrations complete a
-  call before the next model request; a client of your own that completes later is flagged here too.
+  call before the next model request; a client of your own that completes later is flagged here too. This one is
+  recorded, never refused: a complete that was lost (a client gives up after its retries) would otherwise stop the
+  run for good, since every later request sends the result again.
 
-`record` forwards the request; `refuse` answers the agent `403` and doesn't send it to the model (the exchange's
-response is recorded with that error). How it works: for each tool result a request sends (the newest 512), the gateway
-sends digests of the values it may have been recorded as (the content as sent, the text of a list of text blocks, the
-value of a JSON string or of that text, `""` for no content); the signer computes their commitments under that
-result's salt (only it can) and compares. No content leaves the gateway. A tool_call_id used again in a run matches
-any of its last 8 results.
+`record` forwards the request; `refuse` answers the agent `403` for an edited result of a completed call and doesn't
+send the request to the model (the exchange's response is recorded with that error). How it works: for each tool result
+a request sends (the newest 512, newest first while their JSON stays within 1 MiB), the gateway sends digests of the
+values it may have been recorded as (the content as sent, the text of a list of text blocks, the value of a JSON string
+or of that text; for no content, `None`, `""` and `[]` alike; a value canonical JSON can't encode, such as one with a
+lone surrogate, as its JSON text, as `result_field` records it); the signer computes their commitments under that
+result's salt (only it can) and compares. No content leaves the gateway. A result the run's previous request sent too
+reuses its digests, and a digest that matched or failed once isn't computed again. A tool_call_id used again in a run
+matches any of its last 8 results.
 
 It does not catch:
 
@@ -188,7 +193,10 @@ It does not catch:
 - a tool call the agent writes into the history itself, with its result. Reconciliation flags it at run.final
   (`result_without_call`, or `fabricated` under `gateway_mandatory`), unless the agent also records a decide, a result
   and a model report for it and `gateway_mandatory` is off;
-- results past a request's newest 512: the agent chooses which those are, since it can add results of its own;
+- results past a request's newest 512, or past 1 MiB of them as JSON (newest first; one the run's previous request also
+  sent counts for nothing), so any one result over 1 MiB: the agent chooses which those are, since it can add results
+  of its own. The gateway digests results in pure Python before it forwards the request; the cap bounds that work, and
+  a result `complete` carries fits one 1 MiB frame anyway;
 - a request under another run's token: the agent can register a run of its own and send its requests in that run,
   which has no results to compare;
 - a result sent again later is checked again, but one the API doesn't resend (OpenAI Responses with
@@ -203,8 +211,13 @@ It does not catch:
 It is off unless set. A match needs the value your client completed the call with to be the value the model is sent
 (or its digest). It can't be used with the Claude Code hooks (they record a digest of the tool's raw output, not what
 the model is sent) or the Claude Agent SDK integration (it records the structured tool response): every result would
-mismatch. Run with `record` first and check that `tracekit verify` shows no `result_mismatch` on honest runs before you
-set `refuse`. When the signer doesn't check, its answers say so and the gateway stops sending digests. A gateway older
+mismatch. These mismatch too: in Pydantic AI, a tool returning a list to Anthropic (one text block per item); in Google
+ADK under `AnthropicLlm`, every result but a dict (and a dict with a `content` key or only `result`), under `LiteLlm` a
+model or dataclass return (ADK sends its Python repr); a result of several content blocks (Agent Framework, Strands).
+Gemini requests (ADK's default model) don't pass through the gateway, so nothing is checked. A Pydantic AI output
+function's call is completed with no result (the model reads `Final result processed.`): unchecked. Run with `record`
+first, and set `refuse` only once `tracekit verify` shows no `result_mismatch` on honest runs of your own agent, model
+and tools. When the signer doesn't check, its answers say so and the gateway stops sending digests. A gateway older
 than 1.3 sends none.
 
 ## Reconciliation

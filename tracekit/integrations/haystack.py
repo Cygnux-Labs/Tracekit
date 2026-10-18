@@ -14,7 +14,6 @@ model uses again, in the same step or a later one, is decided as that call's nex
 import asyncio
 import collections
 import contextvars
-import json
 import uuid
 import warnings
 from concurrent.futures import ThreadPoolExecutor
@@ -23,7 +22,7 @@ from dataclasses import replace
 from haystack.components.agents.state import replace_values
 from haystack.dataclasses import ChatMessage
 
-from tracekit.format.canon import event_hash
+from tracekit.format.canon import event_hash, loads_strict
 from tracekit.integrations.gate import gate_call, run_handle
 from tracekit.sdk.client import result_field
 
@@ -116,7 +115,10 @@ def _as_the_model_reads(result):
     `raw_result`) as their dicts."""
     try:
         value = result.to_dict()["result"]
-        parsed = json.loads(value) if isinstance(value, str) else value
-        return parsed if isinstance(parsed, (dict, list)) else value
     except Exception:
         return result.result
+    try:
+        parsed = loads_strict(value) if isinstance(value, str) else value
+    except ValueError:   # not JSON as the gateway parses it (duplicate keys, NaN): the text
+        return value
+    return parsed if isinstance(parsed, (dict, list)) else value

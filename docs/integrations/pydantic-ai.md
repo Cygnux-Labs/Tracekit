@@ -53,12 +53,14 @@ without `Tracekit(run)` runs its tools ungated. To gate one run of an agent you 
   during an outage, with a warning.
 - **Records failures as failures.** A tool that raises is recorded as `status: error` and its exception reaches
   Pydantic AI unchanged, so `ModelRetry` and the agent's retries work as before. A retry is a new call id and a new
-  decision. A tool's result goes to the signer as the JSON the model reads (a model or dataclass as its fields), so an
-  untrusted tool's values reach [provenance](../policy-v2.md#provenance-untrusted-and-from-untrusted).
+  decision. A tool's result goes to the signer as the JSON the model reads (a model or dataclass as its fields, a
+  `ToolReturn` as its `return_value`), so an untrusted tool's values reach
+  [provenance](../policy-v2.md#provenance-untrusted-and-from-untrusted).
 - **Gates output functions.** An output function the model calls through an output tool (`output_type=ToolOutput(fn)`,
   or a function in `output_type`) is decided under that tool's name, `final_result` by default, and runs only when
   allowed; a refused one never runs and the model reads the reason as a retry prompt. When streaming, it runs once, on
-  the final output (the partial outputs come back unprocessed).
+  the final output (the partial outputs come back unprocessed). Its call is completed with no result: the model reads
+  `Final result processed.`, not what the function returned.
 - **Waits for people.** An `ask` waits up to 5 minutes (the signer's cap for one wait) before the call; then it is
   skipped with the approval's state, and an unanswered approval is withdrawn. So is one whose agent run is cancelled
   while it waits.
@@ -83,3 +85,10 @@ without `Tracekit(run)` runs its tools ungated. To gate one run of an agent you 
 - Each signer call, and an `ask`'s wait, holds a thread of asyncio's default executor; many asks waiting at once can
   starve it.
 - The capability holds a live run, so it is not built from an agent spec (`Agent.from_spec`).
+- A call Pydantic AI rejects before `wrap_tool_execute` (arguments that fail validation, a tool the agent doesn't have)
+  is never decided. With the [LLM gateway](../gateway.md) it reads as a live `reconcile.hook_missing`, whose detail
+  says the call ran with no hook gating it, though it never ran: what the model is sent for it is Pydantic AI's retry
+  prompt.
+- With the gateway's [verified tool results](../gateway.md#verified-tool-results), a tool returning a list reaches
+  Anthropic as one text block per item, which doesn't match the list recorded: such a call reads as `result_mismatch`.
+  An output function's call, completed with no result, is not checked.

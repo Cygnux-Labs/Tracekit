@@ -108,7 +108,10 @@ class Hook(unittest.TestCase):
                     r.complete.assert_called_once_with("call-1", "ok", attempt=0, result=mock.ANY)
                 else:
                     self.assertIn("Tracekit policy", out)
-                    r.complete.assert_not_called()
+                    if name == "consume refused":   # allowed, then refused: completed as not run
+                        r.complete.assert_called_once_with("call-1", "error", attempt=0, error=mock.ANY)
+                    else:
+                        r.complete.assert_not_called()
 
     def test_the_signer_decides_the_models_call_id_and_arguments(self):
         r = run()
@@ -217,6 +220,13 @@ class Hook(unittest.TestCase):
         r = run(send_result=True)
         go(agent(r, self.tool()))
         self.assertEqual(r.complete.call_args.kwargs["result"], "closed ACC-9")
+
+        def close_account(account: str) -> str:
+            """Close an account."""
+            return '{"a": 1, "a": 2}'   # not JSON to the gateway's strict parse: recorded as the text, not {"a": 2}
+        r = run(send_result=True)
+        go(agent(r, close_account))
+        self.assertEqual(r.complete.call_args.kwargs["result"], '{"a": 1, "a": 2}')
 
     def test_arguments_a_later_middleware_changes_are_recorded_as_changed(self):
         class Rewrite(FunctionMiddleware):

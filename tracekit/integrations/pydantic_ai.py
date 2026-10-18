@@ -11,7 +11,7 @@ the model gets the reason as a retry prompt. A tool's exception is recorded as a
 unchanged, so its retries and `ModelRetry` work as before; each retry is a new call id and a new decision, and a call
 that runs again under the same id (a deferral resumed) is decided as its next attempt.
 """
-from pydantic_ai import ToolDenied
+from pydantic_ai import ToolDenied, ToolReturn
 from pydantic_ai.capabilities import AbstractCapability, CapabilityOrdering
 from pydantic_ai.exceptions import ApprovalRequired, CallDeferred, ModelRetry, SkipToolExecution
 from pydantic_core import to_jsonable_python
@@ -53,9 +53,9 @@ class Tracekit(AbstractCapability):
             return await handler(output)
         if ctx.partial_output:   # streaming: an output function runs only on the final output, once it is decided
             return output
-        return await self._gated(call, lambda: handler(output), ModelRetry)
+        return await self._gated(call, lambda: handler(output), ModelRetry, output=True)
 
-    async def _gated(self, call, run_it, refused, args=None):
+    async def _gated(self, call, run_it, refused, args=None, output=False):
         call_id, tool, raw = call.tool_call_id, call.tool_name, call.args or {}   # Pydantic AI reads "" as {}
         attempt = self._attempts.get(call_id, 0)
         d, why = await gate_call(self.run, call_id, attempt, tool, raw, json_text=True)
@@ -73,9 +73,12 @@ class Tracekit(AbstractCapability):
             if args is not None and self._ran.get(call_id, args) != args:
                 await complete(self.run, d, call_id, attempt, "error",
                                error="the call's arguments changed after the decision")
-            else:
+            elif output:   # the model reads "Final result processed.", not what the output function returned
+                await complete(self.run, d, call_id, attempt, "ok")
+            else:   # a ToolReturn's return_value is the tool result; its content goes to the model as a user message
+                value = out.return_value if isinstance(out, ToolReturn) else out
                 await complete(self.run, d, call_id, attempt, "ok", result=result_field(d and d.get("send_result"),
-                                                                                        _as_the_model_reads(out)))
+                                                                                        _as_the_model_reads(value)))
             return out
         finally:
             DECIDED_UPSTREAM.reset(upstream)
