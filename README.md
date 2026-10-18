@@ -1,5 +1,3 @@
-<!-- mcp-name: io.github.Cygnux-Labs/tracekit-mcp-gateway -->
-
 <div align="center">
 
 <a href="https://github.com/Cygnux-Labs/Tracekit"><img src="https://raw.githubusercontent.com/Cygnux-Labs/Tracekit/main/docs/readme/banner.png" alt="Tracekit: the tamper-evident flight recorder for AI agents" width="840"></a>

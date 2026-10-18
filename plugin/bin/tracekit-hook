@@ -1,35 +1,81 @@
 #!/bin/sh
-# Claude Code hook entry point for the Tracekit plugin: the v2 hook (tracekit.integrations.claude_code), run as
+# Claude Code hook entry point for the Tracekit plugin: the v2 hook (tracekit.integrations.claude_code), as
 # `tracekit init --v2` wires it, with the hook event hooks.json names as its argument. Needs the `tracekit` package:
 #   pip install tracekit-ai && tracekit init --dev --v2 --no-hooks     (or a v2 system-mode signer)
 # Python runs isolated (-I), so the project directory and PYTHON* variables never decide which tracekit runs.
-# Exit 0 lets the call proceed, 2 blocks it; a hook that starts but cannot finish (any other exit) blocks it too.
+# Exit 0 lets the event proceed. Only a PreToolUse is ever blocked (2): a hook that starts but cannot finish blocks the
+# call. Any other event that fails exits 1, a non-blocking error the transcript shows (2 would erase a prompt, or send
+# Claude back to work at Stop).
 # In system mode (/etc/tracekit/client.json exists) only the root-owned runtime runs the hook; TRACEKIT_PYTHON and
 # PATH are ignored. If it cannot run the hook the call is blocked, unless that config sets fail_mode open.
-# Otherwise the hook tries TRACEKIT_PYTHON, python3 and python, with the user site-packages directory added back
-# explicitly for `pip install --user` installs; if none has the package it says so on stderr and lets the call proceed.
+# Otherwise the hook runs in the first of TRACEKIT_PYTHON, python3 and python that imports tracekit (user
+# site-packages added back for `pip install --user`). A tracekit before 1.2, or one whose hook won't import, blocks
+# the call. With none, the call is blocked once Tracekit is set up for this user (the dev signer's data dir exists,
+# which `tracekit init --dev --v2` creates, or TRACEKIT_PYTHON or TRACEKIT_SIGNER is set); before that every event
+# says so in the transcript and proceeds, unrecorded.
 HOOK=tracekit.integrations.claude_code
 SYSTEM_CONFIG=/etc/tracekit/client.json
 SYSTEM_PYTHON=/opt/tracekit/bin/python
-if [ -e "$SYSTEM_CONFIG" ]; then
-  "$SYSTEM_PYTHON" -I -m $HOOK "$@"; s=$?
-  [ $s = 0 ] || [ $s = 2 ] && exit $s
-  if grep -Eq '"fail_mode"[[:space:]]*:[[:space:]]*"open"' "$SYSTEM_CONFIG" 2>/dev/null; then
-    echo "tracekit plugin: $SYSTEM_PYTHON could not run the tracekit hook, so this call was NOT recorded. Re-run system init from a root-owned clone: sudo /usr/bin/python3 -m tracekit init --v2 --user <agent-user>" >&2
-    exit 0
-  fi
-  echo "tracekit plugin: $SYSTEM_PYTHON could not run the tracekit hook and $SYSTEM_CONFIG requires fail-closed, so this call was blocked. Re-run system init from a root-owned clone: sudo /usr/bin/python3 -m tracekit init --v2 --user <agent-user>" >&2
-  exit 2
-fi
-PATHS='import site, sys; site.addsitedir(site.getusersitepackages())'
-for py in "${TRACEKIT_PYTHON:-}" python3 python; do
-  [ -n "$py" ] || continue
-  if command -v "$py" >/dev/null 2>&1 && "$py" -I -c "$PATHS; import $HOOK" >/dev/null 2>&1; then
-    "$py" -I -c "$PATHS; from $HOOK import _entry; raise SystemExit(_entry(*sys.argv[1:2]))" "$@"; s=$?
-    [ $s = 0 ] || [ $s = 2 ] && exit $s
-    echo "tracekit plugin: $py could not run the tracekit hook; call blocked (fail-closed)" >&2
+EV=${1:-}
+
+# finish STATUS WHAT FIX [open]: the hook exited STATUS. A PreToolUse it blocked (2) stays blocked, and one it could
+# not finish is blocked too (with "open": runs, with the error shown). Any other event's failure is 1; the hook's own
+# message (status 1 or 2) comes first, else WHAT and FIX are said here.
+finish() {
+  [ "$1" = 0 ] && exit 0
+  if [ "$EV" = PreToolUse ]; then
+    [ "$1" = 2 ] && exit 2
+    if [ "${4:-}" = open ]; then
+      echo "tracekit plugin: $2, so this call was NOT recorded (fail_mode open). $3" >&2
+      exit 1
+    fi
+    echo "tracekit plugin: $2, so this call was blocked (fail-closed). $3" >&2
     exit 2
   fi
+  [ "$1" = 1 ] || [ "$1" = 2 ] || echo "tracekit plugin: $2, so this $EV event was NOT recorded. $3" >&2
+  exit 1
+}
+
+if [ -e "$SYSTEM_CONFIG" ]; then
+  "$SYSTEM_PYTHON" -I -m $HOOK "$@"; s=$?
+  [ $s = 0 ] && exit 0
+  grep -Eq '"fail_mode"[[:space:]]*:[[:space:]]*"open"' "$SYSTEM_CONFIG" 2>/dev/null && open=open
+  finish $s "$SYSTEM_PYTHON could not run the tracekit hook" "Re-run system init from a root-owned clone: sudo \
+/usr/bin/python3 -m tracekit init --v2 --user <agent-user> --no-hooks" "${open:-}"
+fi
+PATHS='import site, sys; site.addsitedir(site.getusersitepackages())'
+RUN="$PATHS"'
+import inspect
+pre = sys.argv[1:2] == ["PreToolUse"]
+try:
+    from tracekit.integrations.claude_code import _entry
+    why = "" if inspect.signature(_entry).parameters else "is older than 1.2"
+except Exception as e:
+    why = "cannot import its hook (%s: %s)" % (type(e).__name__, e)
+if why:
+    import tracekit
+    print("tracekit plugin: tracekit %s in %s %s, so this %s. Upgrade: pip install -U tracekit-ai && tracekit init "
+          "--dev --v2 --no-hooks" % (getattr(tracekit, "__version__", "?"), sys.executable, why,
+                                     "call was blocked" if pre else "event was NOT recorded"), file=sys.stderr)
+    raise SystemExit(2 if pre else 1)
+raise SystemExit(_entry(*sys.argv[1:2]))'
+for py in "${TRACEKIT_PYTHON:-}" python3 python; do
+  [ -n "$py" ] || continue
+  if command -v "$py" >/dev/null 2>&1 && "$py" -I -c "$PATHS; import tracekit" >/dev/null 2>&1; then
+    "$py" -I -c "$RUN" "$@"
+    finish $? "$py could not run the tracekit hook" "Reinstall: pip install -U tracekit-ai"
+  fi
 done
-echo "tracekit plugin: the 'tracekit' Python package is not installed for python3, so this call was NOT recorded. Run: pip install tracekit-ai && tracekit init --dev --v2 --no-hooks" >&2
-exit 0
+case $(uname -s 2>/dev/null) in
+  Darwin) data="$HOME/Library/Application Support/tracekit/data" ;;
+  MINGW*|MSYS*|CYGWIN*) data="${LOCALAPPDATA:-}/tracekit" ;;
+  *) data="${XDG_DATA_HOME:-$HOME/.local/share}/tracekit" ;;
+esac
+if [ -n "${TRACEKIT_PYTHON:-}${TRACEKIT_SIGNER:-}" ] || [ -d "$data" ]; then
+  finish 3 "no Python here (TRACEKIT_PYTHON, python3, python) has the tracekit package, though Tracekit is set up" \
+    "Install it (pip install tracekit-ai), set TRACEKIT_PYTHON to the Python that has it, or turn the plugin off: \
+/plugin disable tracekit@tracekit"
+fi
+echo "tracekit plugin: the tracekit package is not installed for python3, so this $EV event was NOT recorded. Set up: \
+pip install tracekit-ai && tracekit init --dev --v2 --no-hooks" >&2
+exit 1

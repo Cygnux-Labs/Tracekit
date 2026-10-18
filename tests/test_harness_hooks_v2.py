@@ -163,6 +163,17 @@ class Mapping(HarnessCase):
         self.assertEqual(json.loads(out)["hookSpecificOutput"]["permissionDecision"], "deny")
         self.assertIn("blocking (fail-closed)", err)
 
+    def test_only_a_tool_call_is_blocked_when_the_hook_fails(self):
+        """2 on a prompt event blocked the prompt itself."""
+        os.environ["TRACEKIT_SIGNER"] = os.path.join(os.environ["HOME"], "nowhere.sock")
+        prompt = {"session_id": "s", "hook_event_name": "UserPromptSubmit", "prompt": "hi"}
+        code, _, err = self.hook("codex", prompt)
+        self.assertEqual(code, 1)
+        self.assertIn("event not recorded", err)
+        with mock.patch.object(claude_code, "handle", side_effect=RuntimeError("boom")):
+            self.assertEqual(self.hook("codex", prompt)[0], 1)
+            self.assertEqual(self.hook("codex", cases("codex")[0]["payload"])[0], 2)
+
     def test_a_refusal_blocks(self):
         with mock.patch.object(self.signer, "decide", side_effect=RPCError("quota_exceeded", "streams_per_run")):
             code, out, err = self.hook("gemini", cases("gemini")[0]["payload"])

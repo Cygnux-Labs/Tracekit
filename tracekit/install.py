@@ -247,30 +247,38 @@ HOOK_TIMEOUT = {"PreToolUse": 600, "SessionEnd": 15}   # PreToolUse may hold a c
 V2_HOOK = "tracekit.integrations.claude_code"
 SIGNER_ENV = ("TRACEKIT_SIGNER", "TRACEKIT_SIGNER_TOKEN_FILE", "TRACEKIT_SIGNER_CA")   # what init --remote --v2 sets
 V2_HOOKS = (V2_HOOK, "tracekit.integrations.harness_hooks")   # Claude Code's, the other harnesses' (agent_hooks.V2_MODULE)
+PLUGIN = "tracekit@tracekit"   # the Claude Code plugin, as enabledPlugins names it
 
 
-def _blocking(run, unless=""):
+def _blocking(run, unless="", pre=True):
     """`run` in a shell that turns any exit status but 0 and 2 (the hook could not run) into 2, a blocked call, unless
-    the shell command `unless` exits 0 first."""
-    script = (f"{run}; s=$?; [ $s = 0 ] || [ $s = 2 ] && exit $s; {unless}"
-              "echo 'tracekit: the hook could not run; call blocked (fail-closed)' >&2; exit 2")
+    the shell command `unless` exits first. Not `pre` (any event but a pre-tool call): every status but 0 becomes 1, a
+    non-blocking error the harness shows, as 2 there would block a prompt or send the agent back to work at Stop."""
+    if not pre:
+        script = (f"{run}; s=$?; [ $s = 0 ] && exit 0; [ $s = 1 ] || [ $s = 2 ] || "
+                  "echo 'tracekit: the hook could not run; event not recorded' >&2; exit 1")
+    else:
+        script = (f"{run}; s=$?; [ $s = 0 ] || [ $s = 2 ] && exit $s; {unless}"
+                  "echo 'tracekit: the hook could not run; call blocked (fail-closed)' >&2; exit 2")
     return f"/bin/sh -c {shlex.quote(script)}"
 
 
-def _hook_command(module="tracekit.hook", func="_entry", args=(), python=None):
+def _hook_command(module="tracekit.hook", func="_entry", args=(), python=None, pre=True):
     """Shell command that runs `module.func(*args)`. Python runs isolated (-I): the working directory, user
     site-packages and PYTHON* variables are not on the import path, so the harness's cwd cannot shadow tracekit.
     python: an interpreter that has tracekit installed (system mode: OPT_PYTHON). If it cannot run the hook (the
-    package or interpreter is missing), the call is blocked unless the system config sets fail_mode open; a v2 hook
-    that cannot run blocks the call in dev mode too."""
+    package or interpreter is missing), a pre-tool call (`pre`) is blocked unless the system config sets fail_mode
+    open (then it runs, with an error the harness shows); a v2 hook that cannot run blocks the call in dev mode too.
+    Any other event is never blocked (_blocking)."""
     if python:
         return _blocking(" ".join([shlex.quote(python), "-I", "-m", module, *args]),
                          f"grep -Eq '\"fail_mode\"[[:space:]]*:[[:space:]]*\"open\"' {client.SYSTEM_CONFIG} 2>/dev/null "
-                         "&& exit 0; ")
+                         "&& { echo 'tracekit: the hook could not run; call NOT recorded (fail_mode open)' >&2; "
+                         "exit 1; }; ", pre)
     cmd = _dev_hook_command(module, func, args)
     # lean: on Windows a dev v2 hook that cannot start fails open (no POSIX shell to wrap it in); wrap it in
     # PowerShell when Windows dev mode must fail closed
-    return _blocking(cmd) if module in V2_HOOKS and os.name != "nt" else cmd
+    return _blocking(cmd, pre=pre) if module in V2_HOOKS and os.name != "nt" else cmd
 
 
 def _dev_hook_command(module, func, args):
@@ -352,6 +360,25 @@ def user_settings_all():
     return out
 
 
+def plugin_enabled(user=None):
+    """The Claude Code settings file that enables the Tracekit plugin (plugin/, whose hooks are the ones init writes),
+    or None. Reads `user` (default user_settings_all()), the working directory's project and local settings, then the
+    managed settings: a later file's enabledPlugins entry wins, as in Claude Code."""
+    # lean: enabledPlugins only; a plugin on through --plugin-dir, --settings or its defaultEnabled with no entry goes
+    # unseen; read Claude Code's installed-plugins state too if users hit that
+    found, managed = None, MANAGED_SETTINGS["darwin" if sys.platform == "darwin" else "linux"]
+    project = [os.path.join(os.getcwd(), ".claude", f) for f in ("settings.json", "settings.local.json")]
+    for p in (*(user or user_settings_all()), *project, managed):
+        try:
+            with open(p, encoding="utf-8") as f:
+                v = json.load(f).get("enabledPlugins", {}).get(PLUGIN)
+        except (OSError, ValueError, AttributeError):   # missing, or not a settings file
+            continue
+        if isinstance(v, bool):
+            found = p if v else None
+    return found
+
+
 def install_hooks(settings_path, uninstall=False, owner=None, proxy_url=None, extra=None, mode=0o600, python=None,
                   module="tracekit.hook", signer=None):
     """Add (or remove) Tracekit's hooks in a Claude Code settings file. Idempotent; backs up the
@@ -405,7 +432,8 @@ def _install_hooks_at(d, settings_path, uninstall, proxy_url, extra, mode, pytho
             elif uninstall or v != new:
                 replaced.add(v)
         if not uninstall:
-            cmd = _hook_command(module, args=(ev,) if module == V2_HOOK else (), python=python)   # v2: names its event
+            cmd = _hook_command(module, args=(ev,) if module == V2_HOOK else (), python=python,   # v2: names its event
+                                pre=ev == "PreToolUse")
             e = {"hooks": [{"type": "command", "command": cmd, "timeout": HOOK_TIMEOUT.get(ev, 30)}]}
             groups.append({"matcher": "*", **e} if ev in TOOL_EVENTS else e)
         if groups:

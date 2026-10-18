@@ -11,8 +11,9 @@ image, attests each one (SLSA build provenance through GitHub artifact attestati
 
 ## Procedure
 
-1. Set the version in `tracekit/__init__.py` (`__version__`) and in `sdk/typescript/package.json` (`version` and the
-   four `@cygnuxlabs/tracekit-signer-*` `optionalDependencies`), and add a dated entry to `CHANGELOG.md`.
+1. Set the version in `tracekit/__init__.py` (`__version__`), in `sdk/typescript/package.json` (`version` and the
+   four `@cygnuxlabs/tracekit-signer-*` `optionalDependencies`) and in `server.json` (`version`), and add a dated
+   entry to `CHANGELOG.md`.
 2. `make check` and `make release-dry-run` locally; CI must be green on `main`.
 3. Tag and push: `git tag v0.4.0 && git push origin v0.4.0`. The workflow refuses a tag that matches neither version.
 4. The workflow runs `release` (build, image push, attestations), then `pypi`, then `npm` with no approval step: since
@@ -21,6 +22,10 @@ image, attests each one (SLSA build provenance through GitHub artifact attestati
 5. Once the `npm` job has published, refresh the TypeScript lockfile in a follow-up PR: `make test-ts`, then commit
    `sdk/typescript/package-lock.json`. The version bump can't lock signer packages that aren't published yet, and once
    they are, `npm ci` (the `release-dry-run` job, `scripts/release/build.py`) fails until the lockfile names them.
+6. Once the `pypi` job has published, an owner of the `Cygnux-Labs` GitHub organisation publishes the MCP gateway's
+   entry in the MCP Registry from the tagged checkout: `mcp-publisher login github`, then `mcp-publisher publish`
+   (it reads `server.json`). The registry proves the `io.github.Cygnux-Labs` namespace through that GitHub login; the
+   release workflow doesn't run this step.
 
 ### What gets built, signed and published
 
