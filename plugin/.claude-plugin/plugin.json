@@ -13,5 +13,7 @@
     "security",
     "provenance",
     "hooks"
-  ]
+  ],
+  "documentationUrl": "https://github.com/Cygnux-Labs/Tracekit#readme",
+  "supportUrl": "https://github.com/Cygnux-Labs/Tracekit/issues"
 }

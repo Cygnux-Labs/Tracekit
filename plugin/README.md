@@ -22,7 +22,7 @@ policy's decision on it, and your prompts as hashes. In dev mode the signer also
 and the result it was sent, encrypted, for 7 days, so `tracekit view --dev` can show them; `TRACEKIT_DEV_CONTENT=0`,
 set before the dev signer starts, keeps none. Exported bundles hold only the hashes. Everything stays with the local
 signer (dev mode: a store under your own user; system mode: the signer's own user); the plugin sends nothing off the
-machine. Field by field: [privacy](../docs/privacy.md).
+machine. Field by field: [privacy](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/privacy.md).
 
 ## The plugin or `tracekit init`, not both
 
@@ -76,7 +76,7 @@ tracekit init --dev --v2 --no-hooks
 ```
 
 If the v2 signer has already recorded something, the bridge refuses and the two logs stay separate; both keep
-verifying. Details: [migrating](../docs/migration.md#laptop-v1--v2-signer).
+verifying. Details: [migrating](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/migration.md#laptop-v1--v2-signer).
 
 ## Platforms
 
@@ -84,4 +84,4 @@ The hook script is POSIX shell: macOS, Linux and WSL. On native Windows, Claude 
 Windows is installed (untested). Without Git Bash it runs it in PowerShell, which can't, so Claude Code blocks every
 tool call: there, don't install the plugin, and use `tracekit init --dev --v2`.
 
-See the main [README](../README.md) for what Tracekit proves and what it does not.
+See the main [README](https://github.com/Cygnux-Labs/Tracekit#readme) for what Tracekit proves and what it does not.
