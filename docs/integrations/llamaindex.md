@@ -37,24 +37,31 @@ with Client().run(agent="support-agent") as run:
 Gate the object you call `.run()` on. An `AgentWorkflow` runs every agent's tools, the handoff tool too, in its own
 `call_tool` step: gate the workflow, as above (gating only its agents gates nothing there). A single agent run on its
 own: gate the agent. An agent that a tool of yours runs (an agent as a tool) is a workflow of its own: gate it too, with
-the same `Tracekit`. `gate` returns the object it was given, so you can gate it where you build it. An `AsyncRunHandle`
-works as well as a `RunHandle`. Then `tracekit last` exports and verifies the run. `tracekit.instrument()` doesn't wire
-LlamaIndex: build the gate by hand, as above. A runnable offline example (a scripted mock model from `llama_index.core`,
+the same `Tracekit`. `gate` returns the object it was given, so you can gate it where you build it. A gated object
+belongs to its `Tracekit`'s run for life (gating it again raises): build and gate the workflow inside each run, as
+above, not once for the whole process; a server builds it per conversation, in that conversation's run.
+`tracekit.instrument()` doesn't wire LlamaIndex, and in an app that uses only LlamaIndex it returns None, so there is no
+process run to share: open the run with `Client().run(...)`. An `AsyncRunHandle` works as well as a `RunHandle`. Then
+`tracekit last` exports and verifies the run. A runnable offline example (a scripted mock model from `llama_index.core`,
 no API key): [`examples/v2/llama_index`](../../examples/v2/llama_index/README.md).
 
 ## What it does
 
 - **Overrides one step.** `gate` switches the object's class to a subclass of its own class (the same name, so
   `isinstance` and `repr` don't change) whose `call_tool` step decides the call, runs LlamaIndex's own `call_tool` and
-  records the outcome. An object is gated once; gating it again raises `ValueError`.
+  records the outcome. An object is gated once; gating it again raises `ValueError`. An object that takes tool calls in
+  any other step than `call_tool` (a LlamaIndex version that runs tools elsewhere) is not gated: `gate` raises
+  `TypeError`.
 - **Runs outermost.** A `call_tool` your agent's or workflow's own class overrides runs inside the gate: if it changes
   the call's arguments, the call runs and is recorded as `status: error`, "the call's arguments changed after the
   decision".
 - **Decides the call's id and the model's arguments.** The signer decides `ToolCall.tool_id` and `tool_kwargs`, the
   arguments as LlamaIndex's model integration parsed them from the model (`{}` for none). For a function-calling model
   the id is the model's tool-call id; `ReActAgent` and `CodeActAgent` make a UUID for each call, since their model
-  writes the action as text. An approval is bound to those arguments and used once. Under the [executor](../executor.md)
-  (T2), a call whose approved arguments are not the model's is refused, not run with either.
+  writes the action as text. A call whose model integration names it by its tool (Ollama's, Google's) or gives it no id
+  is decided under a UUID of its own, so two calls of one tool are two calls. An approval is bound to those arguments
+  and used once. Under the [executor](../executor.md) (T2), a call whose approved arguments are not the model's is
+  refused, not run with either.
 - **Covers every tool the workflow runs.** Sync and async `FunctionTool`s, your own `BaseTool`s, tools from a
   `tool_retriever`, each of several parallel calls on its own, the `handoff` tool, `return_direct` tools, and
   `CodeActAgent`'s code, decided as one `execute` call with `{"code": ...}`. A tool name the agent doesn't have is
@@ -65,9 +72,11 @@ no API key): [`examples/v2/llama_index`](../../examples/v2/llama_index/README.md
   doesn't end the run, and a refused handoff hands nothing off. Under an open fail mode a call runs unrecorded during an
   outage, with a warning.
 - **Records failures as failures.** LlamaIndex turns a tool's exception into an error result for the model; the call is
-  recorded as `status: error` with the exception. A tool's result goes to the signer as the value it returned, in JSON
-  (a model or dataclass as its fields; LlamaIndex shows the model its text), so an untrusted tool's values reach
-  [provenance](../policy-v2.md#provenance-untrusted-and-from-untrusted).
+  recorded as `status: error` with the exception. A tool's result is recorded as the text the model reads
+  (`ToolOutput.content`), so it is what the [LLM gateway](../gateway.md) sees sent back. An untrusted tool that returned
+  a structure (a dict, list, model or dataclass) has it observed too, as JSON (`input.observed`, source
+  `llama_index:<tool>:<id>`), so each of its values reaches
+  [provenance](../policy-v2.md#provenance-untrusted-and-from-untrusted), not only those the text's patterns find.
 - **Waits for people.** An `ask` waits up to 5 minutes (the signer's cap for one wait) in the `call_tool` step; then the
   call is skipped with the approval's state, and an unanswered approval is withdrawn. So is one whose workflow is
   cancelled or times out while it waits.
@@ -81,12 +90,16 @@ no API key): [`examples/v2/llama_index`](../../examples/v2/llama_index/README.md
 
 - Only what you gate: an agent or workflow you didn't gate, an agent inside an `AgentWorkflow` you gated only by itself,
   and tools called outside an agent workflow's `call_tool` step (`llm.predict_and_call`, a router or sub-question query
-  engine choosing tools) run ungated.
+  engine choosing tools) run ungated. While a gated call runs, the MCP `ClientSession` that `instrument()` wires decides
+  nothing made inside it, so an ungated agent that a tool runs has its MCP tools run undecided: gate every agent a tool
+  runs.
 - The functions `CodeActAgent`'s code calls inside your `code_execute_fn` are not decided one by one: the code is
   decided as a whole, as `execute`. Run it in a sandbox.
 - `ReActAgent` and `CodeActAgent` calls carry an id LlamaIndex makes, not one from the model: with model calls recorded
   (the [LLM gateway](../gateway.md), autotrace), each reads as `reconcile.fabricated`, since no model tool use has its
-  id.
+  id. A call named by its tool is decided under a UUID of the gate's own, so it pairs with the model's tool use only by
+  its arguments (`paired_by_args`), never when two calls in one turn are alike; a tool-named call that waits for an
+  event gets a new UUID when it runs again, not a next attempt.
 - A tool that waits for an event runs from its start again (LlamaIndex re-runs the step): an `ask` is asked again for
   its next attempt, and the first attempt reads as `decided_not_completed` on `run.final`. The attempt count lives in
   the `Tracekit` object, so a workflow resumed from a saved `Context` in a new process decides its calls from attempt 0
@@ -97,3 +110,5 @@ no API key): [`examples/v2/llama_index`](../../examples/v2/llama_index/README.md
   can starve it.
 - A `call_tool` step your own subclass declares with `num_workers` or a `retry_policy` runs with LlamaIndex's defaults
   once gated, and an argument change in an override of LlamaIndex's private `_call_tool` is not seen.
+- An untrusted tool's structure that can't be observed (the signer refuses it, or it is too big for one request) only
+  warns: the values in it that the text's patterns don't find are missing from provenance.

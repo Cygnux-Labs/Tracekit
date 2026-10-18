@@ -7,13 +7,16 @@
 
 `gate` switches the object to a subclass of its own class that overrides `call_tool`, the step every tool call of
 the workflow runs through (LlamaIndex's way to customise a workflow: subclass it and override a step). The signer
-decides the call's `tool_id` and the model's arguments as LlamaIndex parsed them (`tool_kwargs`). A refused call never
-runs: the model reads Tracekit's reason as an error tool result and the run goes on. A tool's exception, which
-LlamaIndex turns into an error result, is recorded as an error. A tool that waits for an event (`ctx.wait_for_event`)
-runs again from its start when the event comes: it is decided again then, as the call's next attempt.
+decides the call's `tool_id` (a fresh id where the model integration gives none, or the tool's name, as Ollama and
+Google's do) and the model's arguments as LlamaIndex parsed them (`tool_kwargs`). A refused call never runs: the model
+reads Tracekit's reason as an error tool result and the run goes on. A result is recorded as the text the model reads;
+an untrusted tool's structured value is observed too, for provenance. A tool's exception, which LlamaIndex turns into an
+error result, is recorded as an error. A tool that waits for an event (`ctx.wait_for_event`) runs again from its start
+when the event comes: it is decided again then, as the call's next attempt.
 """
 import asyncio
 import copy
+import uuid
 import warnings
 
 from llama_index.core.agent.workflow import AgentWorkflow, BaseWorkflowAgent, ToolCall, ToolCallResult
@@ -52,6 +55,11 @@ class Tracekit:
             raise TypeError(f"Tracekit.gate needs a LlamaIndex agent or AgentWorkflow, not {workflow!r}")
         if isinstance(workflow, _Gated):
             raise ValueError(f"{type(workflow).__name__} {getattr(workflow, 'name', '')!r} is gated already")
+        takes = sorted(n for n, f in workflow._get_steps().items() if ToolCall in f._step_config.accepted_events)
+        if takes != ["call_tool"]:   # a LlamaIndex that runs tools elsewhere would run them ungated
+            raise TypeError(f"Tracekit.gate: {type(workflow).__name__} takes tool calls in the steps {takes}, not in "
+                            "call_tool alone, so it can't gate them; this llama-index-core is not the one it was "
+                            "tested with (0.14)")
         cls = type(workflow)
         if cls not in self._classes:
             sub = type(cls.__name__, (_Gated, cls), {"__module__": cls.__module__, "__tracekit__": self})
@@ -61,12 +69,15 @@ class Tracekit:
         return workflow
 
     async def _call(self, call_tool, ctx, ev):
-        call_id, tool, args = ev.tool_id, ev.tool_name, ev.tool_kwargs   # a dict, {} for no arguments
+        tool, args = ev.tool_name, ev.tool_kwargs   # a dict, {} for no arguments
+        # Ollama's and Google's integrations name the call by its tool (and some by nothing): two calls of one tool
+        # would share an id, so the signer gets one of its own
+        call_id = ev.tool_id if ev.tool_id and ev.tool_id != tool else str(uuid.uuid4())
         attempt = self._attempts.get(call_id, 0)
         d, why = await self._gate(call_id, attempt, tool, args)
         if why is not None:   # as call_tool reports a tool the agent doesn't have: an error result, and the run goes on
-            ctx.write_event_to_stream(ToolCall(tool_name=tool, tool_kwargs=args, tool_id=call_id))
-            refused = ToolCallResult(tool_name=tool, tool_kwargs=args, tool_id=call_id, return_direct=False,
+            ctx.write_event_to_stream(ToolCall(tool_name=tool, tool_kwargs=args, tool_id=ev.tool_id))
+            refused = ToolCallResult(tool_name=tool, tool_kwargs=args, tool_id=ev.tool_id, return_direct=False,
                                      tool_output=ToolOutput(content=why, tool_name=tool, raw_input=args, raw_output=why,
                                                             is_error=True))
             ctx.write_event_to_stream(refused)
@@ -89,8 +100,10 @@ class Tracekit:
                 await self._complete(d, call_id, attempt, "error",
                                      error=(f"{type(e).__name__}: {e}" if e else str(out.content))[:4096])
             else:
-                await self._complete(d, call_id, attempt, "ok", result=result_field(d and d.get("send_result"),
-                                                                                    _returned(out)))
+                send = d and d.get("send_result")
+                await self._complete(d, call_id, attempt, "ok", result=result_field(send, out.content))
+                if send:
+                    await self._observe(tool, call_id, out.raw_output)
             return result
         finally:
             DECIDED_UPSTREAM.reset(upstream)
@@ -143,6 +156,21 @@ class Tracekit:
         except Exception as e:   # it then expires with the run
             warnings.warn(f"tracekit: approval {approval_id} not withdrawn: {type(e).__name__}: {e}", stacklevel=2)
 
+    async def _observe(self, tool, call_id, value):
+        """An untrusted tool's returned structure (a dict, list, model or dataclass) as JSON, observed as untrusted, so
+        the provenance index has each of its values: the model reads LlamaIndex's text of it, which `complete` records
+        and whose values inside the text the index doesn't read one by one."""
+        try:
+            value = to_jsonable_python(value)
+        except Exception:   # nothing JSON can carry: the text the model read is what there is
+            return
+        if not isinstance(value, (dict, list)):
+            return
+        try:
+            await asyncio.to_thread(self.run.observe, value, f"llama_index:{tool}:{call_id}"[:256])
+        except Exception as e:   # the tool already ran: its result reaches LlamaIndex unchanged
+            warnings.warn(f"tracekit: the result of {call_id} was not observed: {type(e).__name__}: {e}", stacklevel=2)
+
     async def _complete(self, d, call_id, attempt, status, **fields):
         if d is None:   # ran unrecorded: the signer was unreachable and the run fails open
             return
@@ -159,11 +187,3 @@ class _Gated:
     async def call_tool(self, ctx: Context, ev: ToolCall) -> ToolCallResult:
         return await self.__tracekit__._call(super().call_tool, ctx, ev)
 
-
-def _returned(out):
-    """What the tool returned, as JSON (a model or dataclass as its fields), so an untrusted tool's values reach the
-    signer's provenance index; a value it can't convert as the text LlamaIndex gave the model."""
-    try:
-        return to_jsonable_python(out.content if out.raw_output is None else out.raw_output)
-    except Exception:
-        return out.content

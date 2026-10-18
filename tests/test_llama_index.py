@@ -26,6 +26,8 @@ if HAVE:
     from tracekit import autowire
     from tracekit.integrations.llama_index import Tracekit
 
+from tracekit import gateway
+from tracekit.identity.base import CallerIdentity
 from tracekit.policy2.engine import Engine
 from tracekit.sdk.client import AsyncRunHandle, Client
 from tracekit.signer.rpc_schema import RPCError
@@ -133,6 +135,16 @@ class Hook(Tools):
         self.assertEqual(self.ran, ["ACC-9"])
         self.assertEqual(sorted(c.args[0] for c in r.decide.call_args_list), ["call-1", "call-2"])
 
+    def test_a_call_named_by_its_tool_or_by_nothing_is_decided_under_an_id_of_its_own(self):
+        r = run()
+        events = []
+        ask(gated(r, self.tool(), turns=([("close_account", {"account": "A"}, "close_account"),
+                                          ("close_account", {"account": "B"}, "")],)), events)
+        ids = [c.args[0] for c in r.decide.call_args_list]
+        self.assertEqual((len(set(ids)), [len(i) for i in ids], sorted(self.ran)), (2, [36, 36], ["A", "B"]))
+        self.assertEqual(sorted(c.args[0] for c in r.complete.call_args_list), sorted(ids))
+        self.assertEqual(sorted(e.tool_id for e in events if isinstance(e, ToolCallResult)), ["", "close_account"])
+
     def test_an_approved_ask_consumes_its_approval(self):
         r = run("ask", ["A1"])
         ask(gated(r, self.tool()))
@@ -169,6 +181,14 @@ class Hook(Tools):
         with self.assertWarnsRegex(UserWarning, "was not recorded"):
             self.assertEqual(ask(gated(r, self.tool())), "closed ACC-9")
 
+        def close_account(account: str) -> dict:
+            """Close an account."""
+            return {"closed": account}
+        r = run(send_result=True)
+        r.observe.side_effect = RuntimeError("bug")
+        with self.assertWarnsRegex(UserWarning, "was not observed"):
+            self.assertEqual(ask(gated(r, close_account)), "{'closed': 'ACC-9'}")
+
     def test_an_outage_follows_the_runs_fail_mode(self):
         out = ask(gated(run("deny", unavailable=True, reason="signer unavailable: down"), self.tool()))
         self.assertEqual(out, "Tool call refused by Tracekit: signer unavailable: down")
@@ -201,7 +221,7 @@ class Hook(Tools):
         ask(gated(r, close_account, turns=([("close_account", "", "call-1")],)))
         self.assertEqual(r.decide.call_args.args, ("call-1", "close_account", {}))
 
-    def test_an_untrusted_tools_result_goes_to_the_signer_as_json(self):
+    def test_a_result_is_recorded_as_the_model_reads_it_and_an_untrusted_structure_is_observed(self):
         class Page(BaseModel):
             title: str
             pay_to: str
@@ -209,9 +229,18 @@ class Hook(Tools):
         def close_account(account: str) -> Page:
             """Close an account."""
             return Page(title="Invoice 7", pay_to="mallory-acct-7731")
+        events = []
         r = run(send_result=True)
-        ask(gated(r, close_account))
-        self.assertEqual(r.complete.call_args.kwargs["result"], {"title": "Invoice 7", "pay_to": "mallory-acct-7731"})
+        ask(gated(r, close_account), events)
+        [read] = [e.tool_output.content for e in events if isinstance(e, ToolCallResult)]
+        self.assertEqual(r.complete.call_args.kwargs["result"], read)
+        r.observe.assert_called_once_with({"title": "Invoice 7", "pay_to": "mallory-acct-7731"},
+                                          "llama_index:close_account:call-1")
+        for name, r, tool in (("a text result", run(send_result=True), self.tool()),
+                              ("a trusted tool", run(), close_account)):
+            with self.subTest(name):   # nothing the text doesn't carry, or nothing provenance reads
+                ask(gated(r, tool))
+                r.observe.assert_not_called()
 
     def test_approved_arguments_other_than_the_calls_dont_run(self):
         r = run()
@@ -372,6 +401,14 @@ class Setup(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "gated already"):
             Tracekit(run()).gate(agent)
 
+    def test_an_object_that_takes_tool_calls_in_another_step_is_not_gated(self):
+        class Elsewhere(FunctionAgent):
+            @step
+            async def run_tool(self, ctx: Context, ev: ToolCall) -> ToolCallResult:
+                return await FunctionAgent.call_tool(self, ctx, ev)
+        with self.assertRaisesRegex(TypeError, r"takes tool calls in the steps \['call_tool', 'run_tool'\]"):
+            Tracekit(run()).gate(Elsewhere(llm=model()))
+
     def test_a_gated_workflow_keeps_its_class_and_steps(self):
         class Ping(Event):
             pass
@@ -390,13 +427,21 @@ class Setup(unittest.TestCase):
 
 
 @unittest.skipUnless(HAVE, "llama_index not installed")
-class Provenance(unittest.TestCase):
-    """On a real signer: values an untrusted tool's result carries reach the provenance index."""
+class RealSigner(unittest.TestCase):
+    """On a real signer, in this process."""
+
+    def signer(self, **config):
+        s = SignerService(ac.tmpdir(self), policy=Engine({"untrusted": ["WebFetch"]}), **config)
+        self.addCleanup(s.close)
+        self.callers = []
+        return s, Client(ac._serve(self, lambda identity, frame: (self.callers.append(identity),
+                                                                  s.handle_frame(identity, frame))[1]))
+
+    def records(self, s, rid, kind):
+        return [e["event"] for e in s.log.storage.iter_run("default", rid) if e["event"]["type"] == kind]
 
     def test_a_payee_from_an_untrusted_tools_result_is_traced_to_it(self):
-        s = SignerService(ac.tmpdir(self), policy=Engine({"untrusted": ["WebFetch"]}))
-        self.addCleanup(s.close)
-        client = Client(ac._serve(self, lambda identity, frame: s.handle_frame(identity, frame)))
+        s, client = self.signer()
 
         class Page(BaseModel):
             title: str
@@ -414,9 +459,58 @@ class Provenance(unittest.TestCase):
         with client.run(agent="provenance") as r:
             ask(Tracekit(r).gate(FunctionAgent(tools=[WebFetch, pay], llm=model(*turns))))
             rid = r.run_id
-        d = next(e["event"]["data"] for e in s.log.storage.iter_run("default", rid)
-                 if e["event"]["type"] == "policy.decision" and e["event"].get("tool_call_id") == "w-2")
-        self.assertEqual([p["source"]["tool"] for p in d["provenance"]], ["WebFetch"])
+        d = next(e["data"] for e in self.records(s, rid, "policy.decision") if e.get("tool_call_id") == "w-2")
+        source = d["provenance"][0]["source"]["run_seq"]
+        [seen] = [e for e in self.records(s, rid, "input.observed") if e["run_seq"] == source]
+        self.assertEqual((len(d["provenance"]), seen["data"]["source"]), (1, "llama_index:WebFetch:w-1"))
+
+    def test_a_result_the_model_read_as_text_matches_what_the_gateway_saw_sent(self):
+        s, client = self.signer(gateways=["mtls:spiffe://acme/*"], verify_tool_results="record",
+                                authorize={"mtls:spiffe://acme/gateway": ["model_event"]})
+
+        class Page(BaseModel):
+            title: str
+
+        def lookup(account: str) -> dict:
+            """Look an account up."""
+            return {"account": account, "open": False}
+
+        def WebFetch(url: str) -> Page:   # noqa: N802 - the policy names the tool
+            """Fetch a page."""
+            return Page(title="Invoice 7")
+        events = []
+        turns = ([("lookup", {"account": "ACC-9"}, "l-1"), ("WebFetch", {"url": "https://docs.example.org/i"}, "w-1")],)
+        with client.run(agent="gateway") as r:
+            ask(Tracekit(r).gate(FunctionAgent(tools=[lookup, WebFetch], llm=model(*turns))), events)
+            sent = [{"id": e.tool_id, "forms": gateway.result_forms(e.tool_output.content)}
+                    for e in events if isinstance(e, ToolCallResult)]   # the tool messages the next request sends
+            s.call(CallerIdentity("mtls", "spiffe://acme/gateway", True), "model_event", {
+                "request_id": "gw-1", "run_id": r.run_id, "run_token": r.run_token,
+                "caller": "{0.scheme}:{0.subject}".format(self.callers[0]),
+                "stream": "gw", "client_seq": 0, "provider": "openai", "model": "m", "phase": "request",
+                "tool_results": sent})
+            rid = r.run_id
+        self.assertEqual(len(sent), 2)
+        self.assertEqual(self.records(s, rid, "reconcile.result_mismatch"), [])
+
+    def test_two_calls_of_one_tool_named_by_it_both_run(self):
+        """Ollama's and Google's integrations give each call its tool's name as its id."""
+        s, client = self.signer()
+        ran = []
+
+        def close_account(account: str) -> str:
+            """Close an account."""
+            ran.append(account)
+            return "closed " + account
+        turns = ([("close_account", {"account": "A"}, "close_account"),
+                  ("close_account", {"account": "B"}, "close_account")],)
+        with warnings.catch_warnings():
+            warnings.filterwarnings("error", "tracekit")   # every outcome recorded
+            with client.run(agent="ollama") as r:
+                ask(Tracekit(r).gate(FunctionAgent(tools=[close_account], llm=model(*turns))))
+                rid = r.run_id
+        self.assertEqual(sorted(ran), ["A", "B"])
+        self.assertEqual(len({e["tool_call_id"] for e in self.records(s, rid, "tool.result")}), 2)
 
 
 if __name__ == "__main__":
