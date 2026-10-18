@@ -5,6 +5,7 @@ import asyncio
 import importlib.metadata
 import importlib.util
 import threading
+import time
 import unittest
 import warnings
 from unittest import mock
@@ -39,11 +40,13 @@ if HAVE:
                 return ChatResponse(messages=[Message(role="assistant", contents=contents)])
             return response()
 
+from tracekit.format.canon import event_hash
 from tracekit.policy2.engine import Engine
 from tracekit.sdk.client import AsyncRunHandle, Client
 from tracekit.signer.rpc_schema import RPCError
 from tracekit.signer.service import SignerService
 
+FIRST = {"args_source": "coerced", "attempt": 0}   # how a call's first decide and consume are sent
 MCP1 = importlib.util.find_spec("mcp") is not None and importlib.metadata.version("mcp").startswith("1.")
 
 
@@ -109,9 +112,9 @@ class Hook(unittest.TestCase):
     def test_the_signer_decides_the_models_call_id_and_arguments(self):
         r = run()
         go(agent(r, self.tool(), '{"account": "ACC-9"}'))
-        r.decide.assert_called_once_with("call-1", "close_account", {"account": "ACC-9"}, attempt=0)
+        r.decide.assert_called_once_with("call-1", "close_account", {"account": "ACC-9"}, **FIRST)
         r.approval_consume.assert_called_once_with("call-1", "close_account", {"account": "ACC-9"},
-                                                   approval_id_hint=None, attempt=0)
+                                                   approval_id_hint=None, **FIRST)
 
     def test_no_arguments_or_an_empty_string_are_no_arguments(self):
         def close_account(account: str = "ACC-0") -> str:
@@ -131,7 +134,7 @@ class Hook(unittest.TestCase):
         r.call.assert_any_call("approval_wait", approval_id="apr-1", timeout_ms=WAIT_MS)
         self.assertEqual(WAIT_MS, 300000)
         r.approval_consume.assert_called_once_with("call-1", "close_account", {"account": "ACC-9"},
-                                                   approval_id_hint="apr-1", attempt=0)
+                                                   approval_id_hint="apr-1", **FIRST)
 
     def test_an_unanswered_approval_is_withdrawn(self):
         r = run("ask", ["A1"], state="requested")
@@ -250,6 +253,31 @@ class Hook(unittest.TestCase):
         self.assertEqual(self.ran, [])
         r.complete.assert_called_once_with("call-1", "ok", attempt=0, result=mock.ANY)
 
+    def test_a_call_a_later_middleware_ends_or_holds_unrun_or_rewrites_is_an_error(self):
+        class Block(FunctionMiddleware):   # ends the loop with no result
+            async def process(self, context, call_next):
+                raise MiddlewareTermination("Validation failed")
+
+        class Hold(FunctionMiddleware):   # Agent Framework's own approval request instead of the call
+            async def process(self, context, call_next):
+                call = Content.from_function_call(context.metadata["call_id"], "close_account", arguments={})
+                context.result = Content.from_function_approval_request(id="req-1", function_call=call)
+
+        class RewriteAndEnd(FunctionMiddleware):
+            async def process(self, context, call_next):
+                context.arguments = {"account": "ACC-1"}
+                await call_next()
+                raise MiddlewareTermination(result=context.result)
+        for later, why in ((Block, "ended the loop"), (Hold, "not run"), (RewriteAndEnd, "changed after the decision")):
+            with self.subTest(later.__name__):
+                self.ran.clear()
+                r = run()
+                go(Agent(client=Scripted(model(("call-1", "close_account", {"account": "ACC-9"}))),
+                         tools=[self.tool()], middleware=[Tracekit(r), later()]))
+                self.assertEqual(self.ran, ["ACC-1"] if later is RewriteAndEnd else [])
+                self.assertEqual(r.complete.call_args.args, ("call-1", "error"))
+                self.assertIn(why, r.complete.call_args.kwargs["error"])
+
     def test_the_call_runs_marked_as_decided_for_a_wired_mcp_session(self):
         def close_account(account: str) -> str:
             """Close an account."""
@@ -337,7 +365,7 @@ class Paths(unittest.TestCase):
                 parent = Agent(client=Scripted(model(("p-1", "helper", {"task": "close ACC-9"}))),
                                tools=[sub.as_tool()], middleware=[Tracekit(parent_run)])
                 go(parent)
-                parent_run.decide.assert_called_once_with("p-1", "helper", {"task": "close ACC-9"}, attempt=0)
+                parent_run.decide.assert_called_once_with("p-1", "helper", {"task": "close ACC-9"}, **FIRST)
                 self.assertEqual(self.ran, [] if inner else [("close_account", "ACC-9")])
         sub_run = mock.Mock()
         sub = Agent(client=Scripted(model(("sub-1", "close_account", {"account": "ACC-9"}))), name="helper",
@@ -359,7 +387,7 @@ class Paths(unittest.TestCase):
                 go(a, Message(role="user", contents=[answer]), session=session)
                 self.assertEqual(self.ran, [("close_account", "ACC-9")] if approved else [])
                 if approved:   # then the signer decides it, under the model's call id
-                    r.decide.assert_called_once_with("call-1", "close_account", {"account": "ACC-9"}, attempt=0)
+                    r.decide.assert_called_once_with("call-1", "close_account", {"account": "ACC-9"}, **FIRST)
                 else:
                     r.decide.assert_not_called()
 
@@ -398,7 +426,7 @@ class Paths(unittest.TestCase):
             for r, runs in ((run(), True), (run("deny", ["D1"]), False)):
                 self.ran.clear()
                 out = asyncio.run(main(r))
-                r.decide.assert_called_once_with("m-1", "list_files", {"path": "src"}, attempt=0)
+                r.decide.assert_called_once_with("m-1", "list_files", {"path": "src"}, **FIRST)
                 self.assertEqual(self.ran, ["src"] if runs else [])
                 if runs:
                     self.assertIn("README.md", out)
@@ -417,13 +445,34 @@ class Setup(unittest.TestCase):
 
 
 @unittest.skipUnless(HAVE, "agent_framework not installed")
-class Provenance(unittest.TestCase):
-    """On a real signer: values an untrusted tool's returned object carries reach the provenance index."""
+class RealSigner(unittest.TestCase):
+    def signer(self, policy):
+        s = SignerService(ac.tmpdir(self), policy=Engine(policy))
+        self.addCleanup(s.close)
+        return s, Client(ac._serve(self, lambda identity, frame: s.handle_frame(identity, frame)))
+
+    def test_validated_arguments_go_as_coerced_so_the_models_own_dont_mismatch(self):
+        s, client = self.signer({})
+
+        def refund(amount: float, n: int) -> str:
+            """Refund."""
+            return "refunded"
+        asked = {"amount": 10, "n": "5", "extra": "x"}   # Agent Framework runs it with {"amount": 10.0, "n": 5}
+        with client.run(agent="reconcile") as r:   # the model's tool use as the LLM gateway or autotrace records it
+            r.call("model_event", provider="p", model="m", phase="response", tool_results_sent=[],
+                   tool_uses=[{"id": "c-1", "name": "refund", "executed_by": "client", "args_source": "parsed",
+                               "args_digest": event_hash({"tool": "refund", "args": asked})}])
+            go(Agent(client=Scripted(model(("c-1", "refund", asked))), tools=[refund], middleware=[Tracekit(r)]))
+            rid = r.run_id
+        s.sweep(time.monotonic() + 61)   # past the grace window: run.final, reconciled
+        events = [e["event"] for e in s.log.storage.iter_run("default", rid)]
+        self.assertEqual(next(e for e in events if e["type"] == "policy.decision")["args_source"], "coerced")
+        self.assertEqual(events[-1]["type"], "run.final")
+        self.assertEqual([e["type"] for e in events if e["type"].startswith("reconcile.")], [])
 
     def test_a_payee_from_an_untrusted_tools_object_is_traced_to_it(self):
-        s = SignerService(ac.tmpdir(self), policy=Engine({"untrusted": ["WebFetch"]}))
-        self.addCleanup(s.close)
-        client = Client(ac._serve(self, lambda identity, frame: s.handle_frame(identity, frame)))
+        """Values an untrusted tool's returned object carries reach the provenance index."""
+        s, client = self.signer({"untrusted": ["WebFetch"]})
 
         class Page(BaseModel):
             title: str

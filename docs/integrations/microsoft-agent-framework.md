@@ -59,7 +59,9 @@ key): [`examples/v2/agent_framework`](../../examples/v2/agent_framework/README.m
   Tracekit that rewrites `context.arguments` makes the call run with arguments the signer never decided: it is recorded
   as `status: error`, "the call's arguments changed after the decision". One before Tracekit is decided as rewritten
   (Agent Framework's own advice: argument-repair middleware before policy middleware). A middleware after Tracekit
-  that ends the loop with the call's result (`MiddlewareTermination`) completes the call with that result.
+  that ends the loop with the call's result (`MiddlewareTermination`) completes the call with that result; one that
+  ends it with no result, or answers with Agent Framework's approval request instead, records the call as
+  `status: error`, since it did not run.
 - **Waits for people.** An `ask` waits up to 5 minutes (the signer's cap for one wait) before the call; then the call is
   refused with the approval's state, and an unanswered approval is withdrawn. So is one whose agent run is cancelled
   while it waits.
@@ -83,7 +85,9 @@ key): [`examples/v2/agent_framework`](../../examples/v2/agent_framework/README.m
 
 - The signer decides the validated arguments, not the model's JSON text: function middleware never sees it. A value the
   model sent that the function doesn't take is not in the record; one Agent Framework converted (`"5"` for an `int`)
-  is recorded converted.
+  is recorded converted, and the decision says so (`args_source: coerced`), so the gateway's or autotrace's record of
+  the model's own arguments is not held against them. A `SecretStr` argument is decided as `**********`: the policy
+  never sees its value.
 - Agent Framework's own approvals are not the signer's: they are not in the bundle, and a call its approver rejects
   leaves no record. Use the policy's `ask` for approvals the bundle should hold.
 - A refusal reads to the model as the call's result, not as Agent Framework's error result: middleware that doesn't
@@ -92,6 +96,9 @@ key): [`examples/v2/agent_framework`](../../examples/v2/agent_framework/README.m
 - Tools the provider runs (hosted MCP, web and file search, code interpreter) never reach function middleware; they
   are seen only in the model responses the [gateway](../gateway.md) records. Nor do calls Agent Framework hands back to
   the caller to run (`declaration_only` functions, `additional_tools`).
+- Tools that a CodeAct provider (`agent-framework-monty`, `agent-framework-hyperlight`) exposes inside the code it runs
+  are called there through `FunctionTool.invoke`, outside function middleware: only the `execute_code` call and its
+  code are decided. Give a tool that must be gated to the agent directly, not to a CodeAct provider.
 - A delegate agent's or a workflow agent's calls are not gated unless that agent (or its chat client) has the
   middleware. Middleware given to a workflow wrapped as an agent (`workflow.as_agent(middleware=...)`) is not run by
   Agent Framework.

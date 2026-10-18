@@ -43,33 +43,42 @@ class Tracekit(FunctionMiddleware):
         call_id, tool = context.metadata.get("call_id"), context.function.name
         attempt = self._attempts.get(call_id, 0)
         self._attempts[call_id] = attempt + 1
-        # lean: the validated arguments, not the model's JSON text, which function middleware never sees; pair a chat
-        # middleware that keeps each response's function_call arguments by call id if the record needs the raw text
+        # lean: the validated arguments, not the model's JSON text, which function middleware never sees, so they go
+        # as `coerced` (reconcile doesn't hold them to the model's tool use); pair a chat middleware that keeps each
+        # response's function_call arguments by call id if the record needs the raw text
         args = _as_json(context.arguments)
         d, why = await self._gate(call_id, attempt, tool, args)
         if why is not None:
             context.result = why   # not calling call_next: the function never runs and the model reads this
             return
-        send = d and d.get("send_result")
         upstream = DECIDED_UPSTREAM.set(True)   # an MCP session instrument() wired doesn't decide this call again
         try:
             await call_next()
-        except MiddlewareTermination as e:   # a later middleware ended the loop with this call's result (a handoff)
+        except MiddlewareTermination as e:   # a later middleware ended the loop: with the call's result (a handoff)?
             out = e.result if context.result is None else context.result
-            await self._complete(d, call_id, attempt, "ok", result=result_field(send, _as_the_model_reads(out)))
+            if out is None:
+                await self._complete(d, call_id, attempt, "error", error="a later middleware ended the loop instead")
+            else:
+                await self._finish(d, call_id, attempt, args, context.arguments, out)
             raise
         except Exception as e:
             await self._complete(d, call_id, attempt, "error", error=f"{type(e).__name__}: {e}"[:4096])
             raise
         else:
-            if _as_json(context.arguments) != args:   # a later middleware rewrote them: it ran with others
-                await self._complete(d, call_id, attempt, "error",
-                                     error="the call's arguments changed after the decision")
-            else:
-                await self._complete(d, call_id, attempt, "ok",
-                                     result=result_field(send, _as_the_model_reads(context.result)))
+            await self._finish(d, call_id, attempt, args, context.arguments, context.result)
         finally:
             DECIDED_UPSTREAM.reset(upstream)
+
+    async def _finish(self, d, call_id, attempt, args, ran_with, out):
+        """Complete a call a later middleware returned `out` for: an error when it is Agent Framework's approval request
+        (the call waits for its approver, not run) or the call ran with arguments other than the decided ones."""
+        if isinstance(out, Content) and out.type == "function_approval_request":
+            await self._complete(d, call_id, attempt, "error", error="held for Agent Framework's approval, not run")
+        elif _as_json(ran_with) != args:   # a later middleware rewrote them
+            await self._complete(d, call_id, attempt, "error", error="the call's arguments changed after the decision")
+        else:
+            await self._complete(d, call_id, attempt, "ok",
+                                 result=result_field(d and d.get("send_result"), _as_the_model_reads(out)))
 
     async def _gate(self, call_id, attempt, tool, args):
         """(decision, None) when the call may run now (decision None: an outage the fail mode let through, nothing to
@@ -79,7 +88,7 @@ class Tracekit(FunctionMiddleware):
         # lean: each signer call, and an ask's wait of up to 5 minutes, holds a thread of asyncio's default executor;
         # many asks pending at once can starve it, so use an async signer client once one exists
         try:
-            d = await asyncio.to_thread(run.decide, call_id, tool, args, **at)
+            d = await asyncio.to_thread(run.decide, call_id, tool, args, args_source="coerced", **at)
             rules = named_rules(d["rule_ids"]) or d.get("reason") or d["decision"]
             if d.get("unavailable"):   # the run's fail mode decided: nothing to consume or complete
                 return (None, None) if d["decision"] == "allow" else (None, f"Tool call refused by Tracekit: {d['reason']}")
@@ -101,7 +110,8 @@ class Tracekit(FunctionMiddleware):
                     if state == "requested":   # unanswered: withdrawn, so no one approves a call that is gone
                         await asyncio.to_thread(self._abandon, hint, "no answer within the middleware's wait")
                     return None, f"Tool call held by Tracekit policy ({rules}) and not approved: {state}"
-            c = await asyncio.to_thread(run.approval_consume, call_id, tool, args, approval_id_hint=hint, **at)
+            c = await asyncio.to_thread(run.approval_consume, call_id, tool, args, approval_id_hint=hint,
+                                        args_source="coerced", **at)
             if not c["ok"]:
                 return None, f"Tool call blocked by Tracekit policy: {c.get('reason') or rules}"
             if "args" in c and c["args"] != args:
