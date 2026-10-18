@@ -238,6 +238,29 @@ class HookV2(unittest.TestCase):
             if code == 2:
                 self.assertIn("TK-D007", p.stderr)
         self.assertEqual([e["data"]["decision"] for e in self.events() if e["type"] == "policy.decision"], ["deny", "allow"])
+        os.environ["TRACEKIT_SIGNER"] = os.path.join(self.dir, "nowhere.sock")
+        for event, code in (("PreToolUse", 2), ("UserPromptSubmit", 1), ("Stop", 1)):   # 2 erases a prompt, loops Stop
+            p = subprocess.run(cmd.replace("PreToolUse", event), shell=True, cwd=self.cwd, capture_output=True,
+                               text=True, timeout=60, input=json.dumps({"session_id": "s2", "tool_use_id": "t3",
+                                                                        "tool_name": "Bash", "tool_input": {}}))
+            self.assertEqual(p.returncode, code, (event, p.stderr))
+            self.assertIn("signer unreachable", p.stderr.splitlines()[0])
+
+    def test_only_a_tool_call_is_blocked_by_the_hooks_init_writes(self):
+        """A hook that could not finish exited 2 on every event: an unreachable signer erased each prompt and sent
+        Claude back to work at every Stop."""
+        settings = os.path.join(self.dir, "settings.json")
+        with contextlib.redirect_stdout(io.StringIO()):
+            install.install_hooks(settings, module=install.V2_HOOK)
+        with open(settings) as f:
+            cmds = {ev: gs[0]["hooks"][0]["command"] for ev, gs in json.load(f)["hooks"].items()}
+        os.environ["TRACEKIT_SIGNER"] = os.path.join(self.dir, "nowhere.sock")
+        for event in ["PreToolUse"] + install.OTHER_EVENTS[:-1]:   # each registers the session's run first
+            p = subprocess.run(cmds[event], shell=True, cwd=self.cwd, capture_output=True, text=True, timeout=60,
+                               input=json.dumps({"session_id": "s1", "tool_use_id": "t1", "tool_name": "Bash",
+                                                 "tool_input": {"command": "ls"}}))
+            self.assertEqual(p.returncode, 2 if event == "PreToolUse" else 1, (event, p.stderr))
+            self.assertIn("signer unreachable", p.stderr)
 
     def test_overhead(self):
         self.pre("ls", tid="warm")
@@ -250,10 +273,56 @@ class HookV2(unittest.TestCase):
 
 
 class InitV2(unittest.TestCase):
+    def setUp(self):   # init reads the user's Claude Code settings and makes the dev signer's data dir
+        self.home = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.home, True)
+        env = mock.patch.dict(os.environ, {"HOME": self.home, "XDG_DATA_HOME": os.path.join(self.home, "data")})
+        env.start()
+        self.addCleanup(env.stop)
+
     def init(self, *argv):
         err = io.StringIO()
-        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
-            return cli.main(["init", *argv]), err.getvalue()
+        with contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(err):
+            code = cli.main(["init", *argv])
+        self.out = out.getvalue()
+        return code, err.getvalue()
+
+    def test_init_installs_no_hooks_while_the_plugin_is_enabled(self):
+        """Plugin and init hooks both decided every call, and one consumed each approval the other waited on, so
+        every approved call was blocked (TK-APPROVAL-CONSUMED)."""
+        settings = os.path.join(self.home, ".claude", "settings.json")
+        os.makedirs(os.path.dirname(settings))
+        for enabled in (True, False):
+            with open(settings, "w") as f:
+                json.dump({"enabledPlugins": {install.PLUGIN: enabled}}, f)
+            with mock.patch("os.getcwd", return_value=self.home):
+                self.assertEqual(self.init("--dev", "--v2")[0], 0)
+            with open(settings) as f:
+                self.assertEqual("hooks" in json.load(f), not enabled)
+        with contextlib.redirect_stdout(io.StringIO()):
+            install.install_hooks(settings, uninstall=True)
+        with open(settings, "w") as f:
+            json.dump({"enabledPlugins": {install.PLUGIN: True}}, f)
+        with mock.patch("os.getcwd", return_value=self.home):
+            self.init("--dev", "--v2")
+        self.assertIn(f"/plugin disable {install.PLUGIN}", self.out)
+        self.assertTrue(os.path.isdir(service.dev_data_dir()))   # the plugin's hook now blocks calls it can't record
+
+    def test_a_project_can_turn_the_plugin_off_and_managed_settings_on(self):
+        user, project = os.path.join(self.home, "user.json"), os.path.join(self.home, "project")
+        local, managed = os.path.join(project, ".claude", "settings.local.json"), os.path.join(self.home, "managed.json")
+        os.makedirs(os.path.dirname(local))
+        for path, enabled in ((user, True), (local, False), (managed, True)):
+            with open(path, "w") as f:
+                json.dump({"enabledPlugins": {install.PLUGIN: enabled}}, f)
+        with mock.patch("os.getcwd", return_value=project), \
+                mock.patch.dict(install.MANAGED_SETTINGS, darwin=os.path.join(self.home, "none"),
+                                linux=os.path.join(self.home, "none")):
+            self.assertIsNone(install.plugin_enabled([user]))
+            self.assertIsNone(install.plugin_enabled([os.path.join(self.home, "missing.json")]))
+        with mock.patch("os.getcwd", return_value=project), \
+                mock.patch.dict(install.MANAGED_SETTINGS, darwin=managed, linux=managed):
+            self.assertEqual(install.plugin_enabled([user]), managed)
 
     def test_init_dev_v2_writes_the_hook(self):
         d = tempfile.mkdtemp()
@@ -265,6 +334,8 @@ class InitV2(unittest.TestCase):
         self.assertEqual(set(hooks), set(install.TOOL_EVENTS + install.OTHER_EVENTS))
         cmd = hooks["PreToolUse"][0]["hooks"][0]["command"]
         self.assertEqual(cmd, install._hook_command(install.V2_HOOK, args=("PreToolUse",)))
+        self.assertEqual(hooks["Stop"][0]["hooks"][0]["command"],   # never blocks: Stop would send Claude back to work
+                         install._hook_command(install.V2_HOOK, args=("Stop",), pre=False))
         self.assertIn(" -I ", cmd)
         self.assertTrue(os.path.isabs(shlex.split(cmd)[0]), cmd)
         self.assertTrue(all(install._is_ours(g) for gs in hooks.values() for g in gs))
@@ -276,6 +347,12 @@ class InitV2(unittest.TestCase):
                 p = subprocess.run(install._hook_command(module), shell=True, capture_output=True, text=True, timeout=30)
                 self.assertEqual(p.returncode, 2, module)
                 self.assertIn("call blocked (fail-closed)", p.stderr)
+                for run in ("false", "sh -c 'exit 2'", "sh -c 'exit 9'"):   # any other event: never blocked (Stop)
+                    with mock.patch.object(install, "_dev_hook_command", return_value=run):
+                        p = subprocess.run(install._hook_command(module, pre=False), shell=True, capture_output=True,
+                                           text=True, timeout=30)
+                    self.assertEqual(p.returncode, 1, (module, run))
+                self.assertIn("event not recorded", p.stderr)
             self.assertEqual(install._hook_command(), "false")   # the v1 dev hook keeps its own fail mode
 
     def test_v2_without_the_policy_engine_is_refused(self):
@@ -343,6 +420,25 @@ class PreBudget(unittest.TestCase):
             self.assertEqual(claude_code._pre(client, {"tool_name": "pay", "tool_input": {}}, "s1", "t1"), 0)
         self.assertEqual(calls[-1], "approval_consume")
         self.assertLessEqual(now[0], claude_code.APPROVAL_WAIT_S)
+
+
+class V1SystemMode(unittest.TestCase):
+    def test_the_hook_names_the_v2_init_on_a_v1_system_mode_host(self):
+        """A v1 system mode host (client.json names tracekitd's socket, no v2 signer) blocked every call with "signer
+        unreachable (dev auto-spawn is off ...)", which named no fix."""
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        err = io.StringIO()
+        with mock.patch.dict(os.environ, {"TRACEKIT_RUNTIME_DIR": os.path.join(d, "run")}), \
+                mock.patch.object(claude_code, "system_config", return_value={"socket": "/var/lib/tracekit/t.sock"}), \
+                mock.patch.object(claude_code, "Client"), contextlib.redirect_stderr(err), \
+                mock.patch.object(claude_code, "_handle", side_effect=autospawn.SignerUnavailable("dev auto-spawn is off")):
+            os.environ.pop("TRACEKIT_SIGNER", None)
+            self.assertEqual(claude_code.handle({"hook_event_name": "PreToolUse", "session_id": "s", "tool_use_id": "t",
+                                                 "tool_name": "Bash"}), 2)
+            self.assertEqual(claude_code.handle({"hook_event_name": "Stop", "session_id": "s"}), 1)
+        self.assertEqual(err.getvalue().count("v1 system mode"), 2)
+        self.assertEqual(err.getvalue().count("sudo /usr/bin/python3 -m tracekit init --v2 --user <agent-user>"), 2)
 
 
 class StateReads(unittest.TestCase):

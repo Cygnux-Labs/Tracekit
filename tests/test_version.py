@@ -35,10 +35,19 @@ class VersionSourceTest(unittest.TestCase):
         import tracekit
         with open(os.path.join(ROOT, "server.json")) as f:
             server = json.load(f)
-        with open(os.path.join(ROOT, "README.md")) as f:   # the registry's PyPI ownership check reads the README
-            self.assertIn(f"<!-- mcp-name: {server['name']} -->", f.read())
         release = re.match(r"\d+\.\d+\.\d+", tracekit.__version__).group()
-        self.assertEqual({server["version"], *(p["version"] for p in server["packages"])}, {release})
+        self.assertEqual(server["version"], release)
+
+    def test_mcp_registry_lists_the_gateway_as_one_you_deploy(self):
+        """A `packages` entry had MCP clients start the gateway as the agent's own user, at a fixed localhost URL: the
+        agent could read its upstream credentials, which undid the gateway's T2 claim."""
+        with open(os.path.join(ROOT, "server.json")) as f:
+            server = json.load(f)
+        self.assertNotIn("packages", server)
+        (remote,) = server["remotes"]
+        self.assertEqual(remote["url"], "https://{tracekit_gateway}/mcp")
+        self.assertTrue(remote["variables"]["tracekit_gateway"]["isRequired"])
+        self.assertLessEqual(len(server["description"]), 100)
 
     def test_semver_mapping(self):
         self.assertEqual(_semver("0.2.0rc1"), "0.2.0-rc.1")

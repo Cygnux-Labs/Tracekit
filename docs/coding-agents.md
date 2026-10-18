@@ -44,6 +44,8 @@ sudo tracekit init --v2 --user AGENT --agent codex       # system mode: the sign
 The hooks run `python -I -m tracekit.integrations.harness_hooks <agent> <event>`: the same mapping as above, then the
 v2 Claude Code hook's core (the signer decides; approvals; the run's fail mode, closed by default and always closed in
 system mode). Unlike v1, a payload without a session or tool call id blocks the call, and so does any hook error.
+**(1.3)** On any other event (a prompt, a tool result, a session event) a hook that fails exits 1, not 2, which
+would block a prompt, and the event isn't recorded.
 
 A session is one run, open until the session ends. To watch it, `tracekit view --dev` (each call with what it ran);
 to verify it as it stands, `tracekit last --open` (1.2.2).

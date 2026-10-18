@@ -331,7 +331,7 @@ class SystemModeUsesOpt(unittest.TestCase):
         self.addCleanup(shutil.rmtree, d, True)
         cfg = os.path.join(d, "client.json")
 
-        def run(status, fail_mode=None):
+        def run(status, fail_mode=None, pre=True):
             py = os.path.join(d, "python")
             with open(py, "w") as f:
                 f.write(f"#!/bin/sh\necho 'No module named tracekit' >&2\nexit {status or 0}\n")
@@ -340,14 +340,17 @@ class SystemModeUsesOpt(unittest.TestCase):
                 with open(cfg, "wb") as f:
                     f.write(install.files.json_bytes({"fail_mode": fail_mode}))
             with mock.patch.object(client, "SYSTEM_CONFIG", cfg):
-                cmd = install._hook_command(python=py if status is not None else os.path.join(d, "missing"))
+                cmd = install._hook_command(python=py if status is not None else os.path.join(d, "missing"), pre=pre)
             return subprocess.run(cmd, shell=True, input="{}", capture_output=True, text=True).returncode
         self.assertEqual(run(1), 2)
         self.assertEqual(run(None), 2)  # no interpreter at all
         self.assertEqual(run(0), 0)
         self.assertEqual(run(1, "closed"), 2)
-        self.assertEqual(run(1, "open"), 0)
+        self.assertEqual(run(1, "open"), 1)   # runs, with an error the harness shows: exit 0's stderr is never seen
         self.assertEqual(run(2, "open"), 2)
+        for status in (1, 2, None):   # a prompt or Stop is never blocked: 2 erases the prompt, or loops Stop
+            self.assertEqual(run(status, "closed", pre=False), 1, status)
+        self.assertEqual(run(0, pre=False), 0)
 
 
 @unittest.skipIf(os.name == "nt", "system mode is POSIX-only")

@@ -76,14 +76,16 @@ def collect(config=None, issuer_key=None):
         # lean: the hook checks read Claude Code's settings only; a Codex, Cursor or Gemini config goes unchecked
         # (reported as no hooks recorded) until doctor learns their formats
         settings = h.get("settings") if h.get("agent", "claude") == "claude" else None
-        return out + v2_checks(config or install.V2_CONFIG, agent=_user(h.get("user")), settings=settings,
+        agent = _user(h.get("user"))
+        plugin = agent and install.plugin_enabled([os.path.join(agent.pw_dir, ".claude", "settings.json")])
+        return out + v2_checks(config or install.V2_CONFIG, agent=agent, settings=settings,
                                signer=(sc or {}).get("signer"), opt=install.OPT, unit=unit,
-                               client_json=client.SYSTEM_CONFIG if sc else None, issuer_key=issuer_key)
+                               client_json=client.SYSTEM_CONFIG if sc else None, issuer_key=issuer_key, plugin=plugin)
     if sc:
         return out
     from .signer.service import dev_content, dev_data_dir
     return v2_checks({"data_dir": dev_data_dir(), "content": dev_content().get("content")}, "dev",
-                     settings=_dev_settings())
+                     settings=_dev_settings(), plugin=install.plugin_enabled())
 
 
 def _dev_settings():
@@ -197,11 +199,12 @@ def _vault_off(cfg, keys):
 
 
 def v2_checks(config, profile="production", agent=None, settings=None, signer=None, opt=None, unit=None,
-              client_json=None, now=None, issuer_key=None):
+              client_json=None, now=None, issuer_key=None, plugin=None):
     """Checks of a v2 signer. config: a signer.yaml path, or the dev signer's config dict. profile "dev" turns what
     a dev setup can't have into warnings. agent: the agent's pwd entry; settings: its Claude Code settings; signer: the
     socket client.json names; opt: the root-owned venv; unit: the service file; client_json: the system client config;
-    issuer_key: the KMS key of the record key issuer, which this host's AWS principal must not sign with."""
+    issuer_key: the KMS key of the record key issuer, which this host's AWS principal must not sign with; plugin: the
+    settings file that enables the Tracekit Claude Code plugin (install.plugin_enabled), whose hooks are init's."""
     from .format import checkpoint
     from .integrations.claude_code import APPROVAL_WAIT_S
     from .signer import service
@@ -352,18 +355,28 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
                              else install.V2_HELPER + ".service"), REINIT + " --harness [NAME=]PATH"))
 
     hook_fix = REINIT if prod else "tracekit init --dev --v2"
+    from_plugin = f"hooks from the Tracekit Claude Code plugin, enabled in {plugin}"
     if not settings:
-        add("D-HOOKS-PRESENT", False, "no hooks recorded in client.json", REINIT, bad=WARN)
+        add("D-HOOKS-PRESENT", bool(plugin), from_plugin if plugin else "no hooks recorded in client.json", REINIT,
+            bad=WARN)
     else:
         try:
             hooks = _hooks(settings)
+        except FileNotFoundError:   # no settings file, so no hooks in it
+            hooks = {ev: [] for ev in install.TOOL_EVENTS}
         except (OSError, ValueError, AttributeError, TypeError) as e:   # the agent's own file: any shape
             hooks = None
             add("D-HOOKS-PRESENT", False, f"{settings}: {e}", hook_fix, bad=sev)
-        if hooks is not None:
+        if hooks is not None and plugin:   # init's hooks too would decide every call twice
+            both = any(hooks.values())
+            add("D-HOOKS-PRESENT", not both, f"{from_plugin}, and init's v2 hooks in {settings}: every call is decided "
+                "twice, and every approved call is blocked" if both else from_plugin,
+                f"keep one: tracekit uninstall (init's hooks), or /plugin disable {install.PLUGIN}", bad=sev)
+        elif hooks is not None:
             missing = [ev for ev, hs in hooks.items() if not hs]
             add("D-HOOKS-PRESENT", not missing, f"no v2 hook for {', '.join(missing)} in {settings}" if missing else
                 f"v2 hooks in {settings}", hook_fix, bad=sev)
+        if hooks is not None:
             cmds = [(ev, h.get("command") or "") for ev, hs in hooks.items() for h in hs]
             unnamed = sorted({ev for ev, c in cmds if not re.search(rf"\b{ev}\b", c)})
             add("D-HOOKS-EVENT", not unnamed, f"the {', '.join(unnamed)} hook command(s) do not name their event "
@@ -371,10 +384,11 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
                 if unnamed else "each hook command names its event", hook_fix, bad=WARN)
             if prod and opt and cmds:
                 python = os.path.join(opt, "bin", "python")
-                stray = [c for ev, c in cmds if c not in (install._hook_command(install.V2_HOOK, args=a, python=python)
+                stray = [c for ev, c in cmds if c not in (install._hook_command(install.V2_HOOK, args=a, python=python,
+                                                                                pre=ev == "PreToolUse")
                                                           for a in ((ev,), ()))]   # a pre-1.2 one is D-HOOKS-EVENT's
-                add("D-HOOKS-VENV", not stray, f"{len(stray)} hooks run another Python than {python}" if stray else
-                    f"hooks run {python}", REINIT)
+                add("D-HOOKS-VENV", not stray, f"{len(stray)} hooks are not the command init writes for {python} "
+                    "(another Python, or init from before 1.3)" if stray else f"hooks run {python}", REINIT)
             pre = [t if type(t) in (int, float) else 0 for t in (h.get("timeout", 60) for h in hooks["PreToolUse"])]
             if pre:
                 add("D-HOOKS-TIMEOUT", min(pre) >= APPROVAL_WAIT_S, f"PreToolUse timeout {min(pre)} s, approval wait "
