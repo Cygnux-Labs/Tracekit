@@ -69,3 +69,20 @@
 {"tool": "mcp:aws/describe_log_groups", "args": {"prefix": "/aws/lambda"}, "expect": "allow", "note": "read through a cloud MCP tool"}
 {"tool": "mcp:aws/suggest_aws_commands", "args": {"query": "how do I delete an S3 bucket"}, "expect": "allow", "note": "read through a cloud MCP tool"}
 {"tool": "mcp:kubernetes/resources_get", "args": {"kind": "Deployment", "name": "api"}, "expect": "allow", "note": "read through a cloud MCP tool"}
+{"tool": "Bash", "args": {"command": "railway up"}, "expect": "allow", "note": "deploy, read or list"}
+{"tool": "bash", "args": {"command": "railway logs"}, "expect": "allow", "note": "deploy, read or list"}
+{"tool": "shell", "args": {"command": "fly deploy"}, "expect": "allow", "note": "deploy, read or list"}
+{"tool": "Bash", "args": {"command": "flyctl status --app acme-prod"}, "expect": "allow", "note": "deploy, read or list"}
+{"tool": "terminal", "args": {"command": "heroku logs --tail --app acme-prod"}, "expect": "allow", "note": "deploy, read or list"}
+{"tool": "Bash", "args": {"command": "createdb test_acme"}, "expect": "allow", "note": "deploy, read or list"}
+{"tool": "bash", "args": {"command": "git commit -m 'docs: why we never run railway down or dropdb on prod'"}, "expect": "allow", "note": "a commit message naming a destroy command"}
+{"tool": "Bash", "args": {"command": "grep -rn volumeDelete src/"}, "expect": "allow", "note": "searching for a destroy mutation"}
+{"tool": "Bash", "args": {"command": "railway up --service delete-worker"}, "expect": "allow", "note": "names a destroy word without destroying"}
+{"tool": "bash", "args": {"command": "fly logs -a delete-me"}, "expect": "allow", "note": "names a destroy word without destroying"}
+{"tool": "Bash", "args": {"command": "curl -O https://example.com/schema/serviceDelete.json"}, "expect": "allow", "note": "names a destroy word without destroying"}
+{"tool": "shell", "args": {"command": "railway run docker compose down"}, "expect": "allow", "note": "names a destroy word without destroying"}
+{"tool": "Bash", "args": {"command": "pulumi config set destroy-protection true"}, "expect": "allow", "note": "names a destroy word without destroying"}
+{"tool": "terminal", "args": {"command": "terraform workspace select destroy-test"}, "expect": "allow", "note": "names a destroy word without destroying"}
+{"tool": "Bash", "args": {"command": "heroku destroy-test-app-helper"}, "expect": "allow", "note": "names a destroy word without destroying"}
+{"tool": "bash", "args": {"command": "dropdb --help"}, "expect": "allow", "note": "names a destroy word without destroying"}
+{"tool": "Bash", "args": {"command": "terraform destroy --help"}, "expect": "allow", "note": "names a destroy word without destroying"}

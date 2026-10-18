@@ -6,8 +6,7 @@
 > before) carry only `SHA256SUMS`, so `verify-release.sh` can check only the sums for them.
 
 A release is one tag. From it the release workflow builds the PyPI files, the npm packages and the multi-arch signer
-image, attests each one (SLSA build provenance through GitHub artifact attestations), publishes them after approval,
-and attaches every file with its SBOMs and `SHA256SUMS` to the GitHub release. Users check a download with
+image, attests each one (SLSA build provenance through GitHub artifact attestations), publishes them, and attaches every file with its SBOMs and `SHA256SUMS` to the GitHub release. Users check a download with
 `scripts/release/verify-release.sh`.
 
 ## Procedure
@@ -16,8 +15,9 @@ and attaches every file with its SBOMs and `SHA256SUMS` to the GitHub release. U
    four `@cygnuxlabs/tracekit-signer-*` `optionalDependencies`), and add a dated entry to `CHANGELOG.md`.
 2. `make check` and `make release-dry-run` locally; CI must be green on `main`.
 3. Tag and push: `git tag v0.4.0 && git push origin v0.4.0`. The workflow refuses a tag that matches neither version.
-4. Approve the `release` environment (build, image push, attestations), then `pypi`, then `npm`. Each needs a
-   reviewer other than the person who pushed the tag.
+4. The workflow runs `release` (build, image push, attestations), then `pypi`, then `npm` with no approval step: since
+   2026-10-17 the environments have no required reviewers, so pushing a `v*` tag publishes. Add reviewers back
+   (one-time setup, step 3) to require a second person.
 5. Once the `npm` job has published, refresh the TypeScript lockfile in a follow-up PR: `make test-ts`, then commit
    `sdk/typescript/package-lock.json`. The version bump can't lock signer packages that aren't published yet, and once
    they are, `npm ci` (the `release-dry-run` job, `scripts/release/build.py`) fails until the lockfile names them.
@@ -71,8 +71,8 @@ cosign verify ghcr.io/cygnux-labs/tracekit-signer@sha256:<digest> \
 2. **npm** (trusted publishing, no stored token): for `@cygnuxlabs/tracekit` and each `@cygnuxlabs/tracekit-signer-*`, add a
    trusted publisher on npmjs.com: repository `Cygnux-Labs/Tracekit`, workflow `release.yml`, environment `npm`.
    A package must exist before it can be configured; publish the first version by hand from the dry run's tarballs.
-3. **GitHub**: environments `release`, `pypi` and `npm`, each with required reviewers and "prevent self-review",
-   limited to `v*` tags. Package `tracekit-signer` on ghcr.io linked to the repository (first push creates it).
+3. **GitHub**: environments `release`, `pypi` and `npm`, each limited to `v*` tags; optionally with required
+   reviewers and "prevent self-review" (off since 2026-10-17). Package `tracekit-signer` on ghcr.io linked to the repository (first push creates it).
 
 Until these are done the publish jobs fail and nothing is released; the build job still checks the package.
 

@@ -283,7 +283,7 @@ v1.2.3 (Linux, system mode), which runs E8 v2 on every pull request too.
 Gates: gate passed.
 <!-- /table -->
 
-The committed results are those of E8 on the v0.3 laptop signer, which the CI job "E8 insider attacks (Linux system
+The v1 results below are those of E8 on the v0.3 laptop signer, which the CI job "E8 insider attacks (Linux system
 mode)" runs on every pull request as a merge gate:
 
 <!-- table e8 -->
