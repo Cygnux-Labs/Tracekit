@@ -70,7 +70,12 @@ class Refused(PermissionError):
 
 
 class Incompatible(Exception):
-    """The signer answered but does not speak this client's protocol version. It is left running."""
+    """The signer answered but does not speak this client's protocol version. It is left running. `older`: its protocol
+    range ends below this client's, a signer from before an upgrade."""
+
+    def __init__(self, message, older=False):
+        super().__init__(message)
+        self.older = older
 
 
 class _ConnectionLost(Exception):
@@ -143,7 +148,8 @@ def _check(hello, where):
         raise Incompatible(
             f"the Tracekit signer {hello.get('version', '?')} (pid {hello.get('pid', '?')}, protocol {proto}) at {where} "
             f"cannot serve this client {__version__} (protocol {RPC_VERSION}). It was left running. Stop it with "
-            "`tracekit down`, or replace it with `tracekit up --replace`")
+            "`tracekit down`, or replace it with `tracekit up --replace`",
+            older=isinstance(proto, list) and len(proto) == 2 and isinstance(proto[1], int) and proto[1] < RPC_VERSION)
     if hello.get("version") != __version__:
         warnings.warn(f"Tracekit signer {hello.get('version')} serves client {__version__}", stacklevel=3)
 
