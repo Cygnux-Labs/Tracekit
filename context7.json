@@ -1,0 +1,37 @@
+{
+  "$schema": "https://context7.com/schema/context7.json",
+  "url": "https://context7.com/cygnux-labs/tracekit",
+  "public_key": "pk_EDimjdtfVG7Kmtb36fdbw",
+  "projectTitle": "Tracekit",
+  "description": "Checks each AI agent tool call against a policy before it runs (allow, deny, or hold for a person's approval), signs every call and decision into a hash chain, and exports each run as a .tkb file that verifies offline. Python package tracekit-ai, TypeScript package @cygnuxlabs/tracekit.",
+  "folders": [
+    "docs",
+    "examples",
+    "sdk/typescript"
+  ],
+  "excludeFolders": [
+    "docs/walkthrough"
+  ],
+  "excludeFiles": [
+    "AGENTS.md",
+    "CLAUDE.md",
+    "DOCS_INDEX.md",
+    "CHANGELOG.md",
+    "CONTRIBUTING.md",
+    "CODE_OF_CONDUCT.md",
+    "HALL_OF_FAME.md",
+    "RELEASING.md",
+    "launch-checklist.md",
+    "transcript.txt",
+    "verify.txt"
+  ],
+  "rules": [
+    "Install the Python package as tracekit-ai (pip install tracekit-ai); the package named tracekit on PyPI is an unrelated project. The npm package is @cygnuxlabs/tracekit.",
+    "Fastest start: put import tracekit; tracekit.instrument() on the first line of the agent, run it, then run tracekit last to export and verify the latest run.",
+    "Python framework integrations live in tracekit.integrations.<framework> (e.g. tracekit.integrations.langchain.TracekitMiddleware), with guides in docs/integrations/. The Vercel AI SDK integration is in the npm package @cygnuxlabs/tracekit.",
+    "A denied call does not run: the model gets 'Tool call blocked by Tracekit policy: <rule ids>' as the tool result and the run goes on.",
+    "A held call waits for a person (tracekit approvals approve <id>) until a deadline, 5 minutes in most integrations, then is refused; LangGraph and the OpenAI Agents SDK pause the run for the app to resume.",
+    "Dev mode runs the signer as the agent's own user and does not protect the record from that agent; for tamper resistance run the signer as another user, in a container or on another host.",
+    "Python 3.9 to 3.13 for the core; most framework integrations need Python 3.10 or newer, and Pydantic AI, Google ADK, Haystack and Browser Use need 3.11. The TypeScript SDK needs Node 18 or newer."
+  ]
+}
