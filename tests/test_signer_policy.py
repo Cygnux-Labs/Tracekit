@@ -234,6 +234,17 @@ class PackReading(unittest.TestCase):
         self.check(self.dev, [("Write", {"file_path": p}) for p in ("/Users/u/proj/.ENV.example", "C:\\proj\\app.py")],
                    "allow")
 
+    def test_terraform_and_pulumi_destroy_are_one_rule_on_any_tool(self):
+        # TK-A001 reads a shell tool's argv, TK-C010 a CLI line in any other tool's argument; neither reports the other's
+        for tool, args, cls, rule in (("Bash", {"command": "terraform destroy -auto-approve"}, None, "TK-A001"),
+                                      ("ops_cmd", {"cmd": "terraform destroy -auto-approve"}, "app", "TK-C010"),
+                                      ("ops_cmd", {"command": "pulumi -C infra down"}, "app", "TK-C010")):
+            with self.subTest(args=args):
+                d = self.server.decide(tool, args, cls)
+                self.assertEqual((d["verdict"], d["rule_ids"]), ("ask", [rule]))
+        for args in ({"cmd": "pulumi up -m 'tear down'"}, {"cmd": "terraform plan -destroy"}, {"note": "terraform destroy"}):
+            self.assertEqual(self.server.decide("ops_cmd", args, "app")["verdict"], "allow", args)
+
     def test_a_large_write_is_flagged_on_the_laptop_pack(self):
         d = self.dev.decide("Write", {"file_path": "/repo/data.py", "content": "x = 1\n" * 12000})
         self.assertEqual((d["verdict"], d["rule_ids"]), ("flag", ["TK-OVERSIZE"]))

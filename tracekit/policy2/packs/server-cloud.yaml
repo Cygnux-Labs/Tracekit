@@ -6,7 +6,7 @@
 # `cli_command`, `command` or `cmd` argument (the AWS API MCP server's call_aws takes `cli_command`). A web search for
 # the same words is not a command.
 
-version: '2026.10-server-cloud-2'
+version: '2026.10-server-cloud-3'
 description: server-hosted agents, cloud CLIs and cloud MCP tools
 unknown_tools: ask
 
@@ -23,7 +23,9 @@ deny:
 
 ask:
   - id: TK-C010
-    pattern: '(^|"(cli_command|command|cmd)":")(aws (.* )?(ec2 (terminate-instances|delete-[a-z-]+)|rds delete-db-[a-z-]+|s3 rb|s3 rm (.* )?--recursive|s3api delete-(bucket|objects)|dynamodb delete-table|lambda delete-function|cloudformation delete-stack|(eks|ecs|elasticache|backup) delete-[a-z-]+|iam delete-[a-z-]+|kms (schedule-key-deletion|disable-key)|route53 delete-hosted-zone|logs delete-log-group|ecr delete-repository|secretsmanager delete-secret|sqs delete-queue|sns delete-topic|efs delete-file-system)|gcloud (.* )?(delete|storage rm)|gsutil (.* )?(rb|rm -[A-Za-z]*r)|az (.* )?delete|kubectl (.* )?delete ((ns|namespace|pv|pvc|persistentvolume|persistentvolumeclaim|statefulset|deployment|crd|node|customresourcedefinition)s?( |$)|(.* )?--all\b)|helm (uninstall|delete)|doctl (.* )?delete)\b'
+    # terraform, tofu and pulumi on a shell tool are the coding pack's TK-A001; here only as another tool's argument,
+    # read as TK-A001 reads them, each scan stopping at the end of its value
+    pattern: '(^|"(cli_command|command|cmd)":")(aws (.* )?(ec2 (terminate-instances|delete-[a-z-]+)|rds delete-db-[a-z-]+|s3 rb|s3 rm (.* )?--recursive|s3api delete-(bucket|objects)|dynamodb delete-table|lambda delete-function|cloudformation delete-stack|(eks|ecs|elasticache|backup) delete-[a-z-]+|iam delete-[a-z-]+|kms (schedule-key-deletion|disable-key)|route53 delete-hosted-zone|logs delete-log-group|ecr delete-repository|secretsmanager delete-secret|sqs delete-queue|sns delete-topic|efs delete-file-system)|gcloud (.* )?(delete|storage rm)|gsutil (.* )?(rb|rm -[A-Za-z]*r)|az (.* )?delete|kubectl (.* )?delete ((ns|namespace|pv|pvc|persistentvolume|persistentvolumeclaim|statefulset|deployment|crd|node|customresourcedefinition)s?( |$)|(.* )?--all\b)|helm (uninstall|delete)|doctl (.* )?delete)\b|"(cli_command|command|cmd)":"((terraform|tofu) (-[^ "]+ ){0,4}(destroy|apply (([^"\\]|\\.)* )?--?destroy)|pulumi (-[^ "]+ ([^- "][^ "]* )?){0,4}(destroy|down|dn))[ ="]'
     reason: deleting cloud resources
     rationale: Deleting instances, databases, buckets, clusters or whole stacks is the kind of step a person confirms; reading and creating are allowed.
   - id: TK-C011
