@@ -150,6 +150,11 @@ class CodingPack(unittest.TestCase):
         server = Engine(pc.build(os.path.join(PACKS, "server.yaml"))[0], "regex")
         self.assertEqual((server.decide("Foo", {})["verdict"], self.e.decide("Foo", {})["verdict"]), ("ask", "flag"))
 
+    def test_a_long_option_word_after_git_push_is_decided_without_the_fallback_timeout(self):
+        # TK-A002's short-option cluster backtracked over a long word: the regex fallback ran out of time and denied
+        d = self.e.decide("Bash", {"command": "git push -" + "d" * 60000 + "1"})
+        self.assertEqual((d["verdict"], "TK-A002" in d["rule_ids"], d.get("nondeterministic")), ("ask", True, None))
+
 
 class PackReading(unittest.TestCase):
     """How the shipped packs read SQL, hosts, paths and commands an agent can spell more than one way."""

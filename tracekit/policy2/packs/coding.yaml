@@ -7,7 +7,7 @@
 # normalised one), with `\` as `/` and also casefolded (the agent's file system may ignore case). Rules stay tripwires: the
 # protection is the signer, its storage and the witnesses.
 
-version: '2026.10-v2-7'
+version: '2026.10-v2-8'
 description: coding agents on a laptop (Claude Code, Codex, Cursor, Gemini)
 # laptop: a tool the pack does not map is flagged, not held; server.yaml holds it for a person (ask)
 unknown_tools: flag
@@ -138,6 +138,15 @@ ask:
     unless: '^[a-z]{1,16}( [a-z:]{1,32}){0,2} --help$'
     reason: destroying a deployment, database or volume
     rationale: Wipes whole environments or production data in one step (the 2026 PocketOS and DataTalks.Club wipes); a person confirms it.
+  - id: TK-A002
+    class: shell
+    # deleting a remote ref rewrites shared state; ordinary pushes remain unheld. No dry-run exemption: `-o` takes the next
+    # word as its value, so `git push -d origin main -o --dry-run` deletes main. Also held: a long-option prefix (`--del`,
+    # `--pru`), `d` in a short-option cluster before any `o` (`-4d`, `-doci.skip`; the class leaves `d` out so a long word
+    # can't backtrack) and an all-zero source object id
+    pattern: '^git (-[Cc] [^ ]+ |--?[A-Za-z][-A-Za-z]*(=[^ ]*)? ){0,8}push\b.*( --de(l|le|let|lete)?( |$)| -[0-9A-Za-ce-np-z]*d| :[^ ]+( |$)| --pru(ne?)?( |$)|0{40}:)'
+    reason: deleting a remote Git ref
+    rationale: Deleting a remote branch or tag changes shared state and can remove work; a person confirms it.
 
 flag:
   - id: TK-F001
