@@ -138,7 +138,7 @@ class PluginPackage(unittest.TestCase):
         self.assertEqual(set(hooks), set(install.TOOL_EVENTS + install.OTHER_EVENTS))
         for ev, groups in hooks.items():
             h = groups[0]["hooks"][0]
-            self.assertEqual(h["command"], '"${CLAUDE_PLUGIN_ROOT}/bin/tracekit-hook" ' + ev)   # v2: names its event
+            self.assertEqual(h["command"], '"${CLAUDE_PLUGIN_ROOT}/scripts/tracekit-hook" ' + ev)   # v2: names its event
             self.assertEqual(h["timeout"], install.HOOK_TIMEOUT.get(ev, 30), ev)
             self.assertEqual(groups[0].get("matcher") == "*", ev in install.TOOL_EVENTS, ev)
 
@@ -157,7 +157,7 @@ class PluginPackage(unittest.TestCase):
     def test_wrapper_is_executable_and_shows_a_notice_without_tracekit(self):
         import subprocess
         import tempfile
-        script = os.path.join(ROOT, "plugin", "bin", "tracekit-hook")
+        script = os.path.join(ROOT, "plugin", "scripts", "tracekit-hook")
         self.assertTrue(os.access(script, os.X_OK))
         with tempfile.TemporaryDirectory() as home:   # Tracekit never set up there
             r = subprocess.run(["/bin/sh", script], input="{}", capture_output=True, text=True,

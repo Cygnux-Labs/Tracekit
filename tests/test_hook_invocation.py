@@ -78,7 +78,7 @@ class PluginShim(unittest.TestCase):
         self.d = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, self.d, True)
         self.config = os.path.join(self.d, "client.json")
-        with open(os.path.join(ROOT, "plugin", "bin", "tracekit-hook"), encoding="utf-8") as f:
+        with open(os.path.join(ROOT, "plugin", "scripts", "tracekit-hook"), encoding="utf-8") as f:
             text = f.read()
         self.assertIn("SYSTEM_CONFIG=/etc/tracekit/client.json", text)
         self.assertIn("SYSTEM_PYTHON=/opt/tracekit/bin/python", text)
