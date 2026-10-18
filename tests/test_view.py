@@ -392,9 +392,9 @@ class View(unittest.TestCase):
         why_dir = ts.tmpdir(self)
         feed = view.StoreFeed({"data_dir": self.d}, on_run=functools.partial(view.mirror_run, why_dir))
         self.report(feed, run_id)
-        wait_for(lambda: os.listdir(why_dir), 15)
-        store = Store(why_dir, out=feed)
         why_id = os.path.basename(_target(why_dir, run_id, "default"))
+        wait_for(lambda: os.listdir(why_dir) == [why_id], 15)   # renamed in, its .import-* staging folder gone
+        store = Store(why_dir, out=feed)
         d = store.detail(why_id)
         calls = {n["tool"]: n for n in d["nodes"] if n["type"] == "action"}
         self.assertEqual(calls["rm"]["policy"]["decision"], "deny")   # GRAPH and NODE mark it DENIED with its rule
