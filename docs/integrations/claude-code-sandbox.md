@@ -41,8 +41,8 @@ Turn both on. Tracekit first (`tracekit init --dev --v2`, or the [plugin](../../
 When a command fails inside the sandbox, Claude may retry it with the Bash tool's `dangerouslyDisableSandbox: true`. The
 retry runs with none of the sandbox's limits. Who approves it depends on Claude Code's permission mode: you in the
 default mode, a classifier model in auto mode, nobody in `bypassPermissions` mode or when an allow rule such as
-`Bash(curl *)` matches the command. Claude Code's own ask rule `Bash(dangerouslyDisableSandbox:true)` makes it prompt in
-every mode.
+`Bash(curl *)` matches the command. Claude Code's own ask rule `Bash(dangerouslyDisableSandbox:true)` makes Bash
+retries prompt even in auto and `bypassPermissions` mode.
 
 The coding pack's `TK-A003` (an `ask` rule) adds what that prompt doesn't: it holds every call whose
 `dangerouslyDisableSandbox` argument is `true` until a person approves it from outside the agent's session, and signs

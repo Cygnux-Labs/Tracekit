@@ -299,10 +299,17 @@ class Detect(unittest.TestCase):
         project = os.path.join(os.getcwd(), ".claude")
         with mock.patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": "/work/claude"}):
             self.assertEqual(self.collect(None)[1].call_args.kwargs["sandbox_settings"],
-                             ["/work/claude/settings.json", os.path.join(project, "settings.json"),
+                             [os.path.join("/work/claude", "settings.json"), os.path.join(project, "settings.json"),
                               os.path.join(project, "settings.local.json"), doctor._managed()])
         v2 = self.collect({"signer": "/t", "hooks": {"user": "nobody-e16", "settings": "/home/a/.claude/settings.json"}})[1]
         self.assertEqual(v2.call_args.kwargs["sandbox_settings"], ["/home/a/.claude/settings.json", doctor._managed()])
+        # hooks in a project file (init --project): the agent's own user settings are read first
+        with mock.patch.object(doctor, "_user", return_value=types.SimpleNamespace(pw_dir="/home/a")), \
+                mock.patch.object(install, "plugin_enabled", return_value=None):
+            v2 = self.collect({"signer": "/t", "hooks": {"user": "a", "settings": "/srv/app/.claude/settings.json"}})[1]
+        self.assertEqual(v2.call_args.kwargs["sandbox_settings"],
+                         [os.path.join("/home/a", ".claude", "settings.json"), "/srv/app/.claude/settings.json",
+                          doctor._managed()])
 
     def test_config_flag(self):
         ids, v2 = self.collect(None, "/etc/other.yaml")
