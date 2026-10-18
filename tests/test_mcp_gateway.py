@@ -4,6 +4,7 @@ import asyncio
 import http.client
 import json
 import os
+import re
 import unittest
 from unittest import mock
 
@@ -16,6 +17,8 @@ from tracekit.identity.base import CallerIdentity
 from tracekit.policy2.engine import Engine
 from tracekit.signer import service as svc
 from tracekit.signer.rpc_schema import REQUESTS
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 try:
     import httpx2
@@ -266,6 +269,29 @@ class McpGateway(unittest.TestCase):
         [e] = [e for e in self.events() if e["type"] == "input.observed" and e["data"]["source"] == "mcp:up/resource"]
         self.assertEqual((e["source"], e["tier"], e["data"]["source"], e["data"]["trust"]),
                          ("gateway", "T2", "mcp:up/resource", "untrusted"))
+
+
+class RegistryListing(unittest.TestCase):
+    """server.json, the gateway's MCP Registry entry (here, not test_version.py: the release's wheel check runs that
+    one outside the repo)."""
+
+    def test_mcp_registry_server_json_names_this_release(self):
+        import tracekit
+        with open(os.path.join(ROOT, "server.json")) as f:
+            server = json.load(f)
+        release = re.match(r"\d+\.\d+\.\d+", tracekit.__version__).group()
+        self.assertEqual(server["version"], release)
+
+    def test_mcp_registry_lists_the_gateway_as_one_you_deploy(self):
+        """A `packages` entry had MCP clients start the gateway as the agent's own user, at a fixed localhost URL: the
+        agent could read its upstream credentials, which undid the gateway's T2 claim."""
+        with open(os.path.join(ROOT, "server.json")) as f:
+            server = json.load(f)
+        self.assertNotIn("packages", server)
+        (remote,) = server["remotes"]
+        self.assertEqual(remote["url"], "https://{tracekit_gateway}/mcp")
+        self.assertTrue(remote["variables"]["tracekit_gateway"]["isRequired"])
+        self.assertLessEqual(len(server["description"]), 100)
 
 
 if __name__ == "__main__":
