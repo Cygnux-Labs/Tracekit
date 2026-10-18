@@ -17,6 +17,11 @@ approves held calls from a second process; without it, you approve them from ano
 | [v2/claude_agent_sdk/](v2/claude_agent_sdk/) | A Claude Agent SDK agent |
 | [v2/mcp/](v2/mcp/) | An MCP client |
 | [v2/pydantic_ai/](v2/pydantic_ai/) | A Pydantic AI agent (the `Tracekit` capability) |
+| [v2/google_adk/](v2/google_adk/) | A Google ADK agent (the `Tracekit` plugin) |
+| [v2/haystack/](v2/haystack/) | A Haystack agent (the `Tracekit` hook) |
+| [v2/llama_index/](v2/llama_index/) | A LlamaIndex `AgentWorkflow` with a handoff (`Tracekit(run).gate(...)`) |
+| [v2/agent_framework/](v2/agent_framework/) | A Microsoft Agent Framework agent (the `Tracekit` function middleware) |
+| [v2/strands/](v2/strands/) | A Strands Agents agent (the `Tracekit` hook provider) |
 | [v2/demos/](v2/demos/) | The scenarios behind [docs/demos/](../docs/demos/): containment, prompt injection, agent approvers, completeness, egress |
 
 `v2/story.py` holds what these examples share; `v2/clean-machine.sh` (`.ps1` on Windows) runs one in a fresh venv.

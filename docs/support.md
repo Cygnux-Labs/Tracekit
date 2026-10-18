@@ -44,6 +44,11 @@ experimental.
 | Codex CLI, Cursor and Gemini CLI hooks (checked against recorded hook payloads, not the live tools) | [coding agents](coding-agents.md) |
 | CrewAI (tested against a stand-in, not the real library) and Browser Use (its real-library contract runs nightly only) | [CrewAI](integrations/crewai.md), [Browser Use](integrations/browser-use.md) |
 | Pydantic AI (tested against the real library; not yet run through `tests/adapter_contract.py`) | [Pydantic AI](integrations/pydantic-ai.md) |
+| Google ADK (tested against the real library; not yet run through `tests/adapter_contract.py`) | [Google ADK](integrations/google-adk.md) |
+| Haystack (tested against the real library; not yet run through `tests/adapter_contract.py`) | [Haystack](integrations/haystack.md) |
+| LlamaIndex agents: `FunctionAgent`, `ReActAgent`, `CodeActAgent`, `AgentWorkflow` (tested against the real library; not yet run through `tests/adapter_contract.py`) | [LlamaIndex](integrations/llamaindex.md) |
+| Microsoft Agent Framework (tested against the real library with a scripted chat client; not yet run through `tests/adapter_contract.py`; its MCP tools need `mcp` 1.x) | [Microsoft Agent Framework](integrations/microsoft-agent-framework.md) |
+| Strands Agents (tested against the real library in a CI job of its own, as strands-agents needs `mcp` below 2.2; not yet run through `tests/adapter_contract.py`) | [Strands Agents](integrations/strands.md) |
 | The TypeScript SDK client and its Vercel AI SDK integration (`@cygnuxlabs/tracekit` on npm) | [TypeScript SDK](../sdk/typescript/README.md) |
 | `contrib/` packages | [contrib](../contrib) |
 | The v1 signer path: `tracekitd`, `tracekit init` without `--v2`, `tracekit observe`, v1 adapters, the Claude Code plugin (`plugin/`). Verifying v1 bundles stays stable. | [coding agents](coding-agents.md), [signing](signing.md) |
