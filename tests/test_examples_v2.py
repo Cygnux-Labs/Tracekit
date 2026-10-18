@@ -12,7 +12,8 @@ import unittest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 NEEDS = {"custom": (), "langchain": ("langchain", "langgraph"), "openai_agents": ("agents",),
          "claude_agent_sdk": ("claude_agent_sdk",), "mcp": ("mcp",),
-         "pydantic_ai": ("pydantic_ai",), "agent_framework": ("agent_framework",), "google_adk": ("google.adk",)}
+         "pydantic_ai": ("pydantic_ai",), "agent_framework": ("agent_framework",), "google_adk": ("google.adk",),
+         "haystack": ("haystack",), "strands": ("strands",)}
 
 
 def python(*argv, env, cwd):
@@ -75,6 +76,12 @@ class Examples(unittest.TestCase):
 
     def test_google_adk(self):
         self.run_example("google_adk")
+
+    def test_haystack(self):
+        self.run_example("haystack")
+
+    def test_strands(self):
+        self.run_example("strands")
 
 
 class DemoServer(unittest.TestCase):
