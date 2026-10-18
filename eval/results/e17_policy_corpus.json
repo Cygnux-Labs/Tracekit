@@ -1,5 +1,5 @@
 {
-  "policy_hash": "sha256:c11caa929a73ad5cf88c552ddeeaf38245413091864d63d4cf0e27162759cca0",
+  "policy_hash": "sha256:88c08057fb8da2a7b4b018a45f37f20309060d7f7699ca5567de56e540933104",
   "engines": [
     "re2@1.1.20251105",
     "regex@2026.9.29"
@@ -12,8 +12,8 @@
       "fp": 0
     },
     "cloud": {
-      "deny": 84,
-      "caught": 84,
+      "deny": 85,
+      "caught": 85,
       "benign": 79,
       "fp": 0
     },
