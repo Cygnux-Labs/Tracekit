@@ -1,0 +1,28 @@
+{
+  "$schema": "https://context7.com/schema/context7.json",
+  "projectTitle": "Tracekit",
+  "description": "Checks each AI agent tool call against a policy before it runs (allow, deny, or hold for a person's approval), signs every call and decision into a hash chain, and exports each run as a .tkb file that verifies offline. Python package tracekit-ai, TypeScript package @cygnuxlabs/tracekit.",
+  "folders": ["docs", "examples", "sdk/typescript"],
+  "excludeFolders": ["docs/walkthrough", "docs/sample"],
+  "excludeFiles": [
+    "AGENTS.md",
+    "CLAUDE.md",
+    "DOCS_INDEX.md",
+    "CHANGELOG.md",
+    "CONTRIBUTING.md",
+    "CODE_OF_CONDUCT.md",
+    "HALL_OF_FAME.md",
+    "RELEASING.md",
+    "launch-checklist.md",
+    "transcript.txt",
+    "verify.txt"
+  ],
+  "rules": [
+    "Install the Python package as tracekit-ai (pip install tracekit-ai); the package named tracekit on PyPI is an unrelated project. The npm package is @cygnuxlabs/tracekit.",
+    "Fastest start: put import tracekit; tracekit.instrument() on the first line of the agent, run it, then run tracekit last to export and verify the latest run.",
+    "Framework integrations live in tracekit.integrations.<framework>, for example tracekit.integrations.langchain.TracekitMiddleware; each has a guide in docs/integrations/ or docs/quickstarts/.",
+    "A denied call returns the reason to the model as the tool result and the run goes on; a held call waits until a person runs tracekit approvals approve <id>.",
+    "Dev mode runs the signer as the agent's own user and does not protect the record from that agent; for tamper resistance run the signer as another user, in a container or on another host.",
+    "Python 3.9 or newer for the core; most framework integrations need Python 3.10 or newer, and Pydantic AI, Google ADK and Haystack need 3.11. The TypeScript SDK needs Node 18 or newer."
+  ]
+}
