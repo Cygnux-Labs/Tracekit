@@ -50,6 +50,10 @@ export class SignerUnavailable extends Error {
 /** The signer answered but does not speak this client's protocol version. It is left running. */
 export class Incompatible extends Error {
   name = "Incompatible";
+  /** Its protocol range ends below this client's: a signer from before an upgrade. */
+  constructor(message: string, readonly older = false) {
+    super(message);
+  }
 }
 
 /** A refusal from the signer (or of a request that fails the contract before it is sent). */
@@ -144,7 +148,8 @@ function check(hello: Frame, where: string) {
   if (!(Array.isArray(proto) && proto.length === 2 && proto[0] <= RPC_VERSION && RPC_VERSION <= proto[1]))
     throw new Incompatible(`the Tracekit signer ${hello?.version ?? "?"} (pid ${hello?.pid ?? "?"}, protocol ` +
       `${JSON.stringify(proto)}) at ${where} cannot serve this client (protocol ${RPC_VERSION}). It was left running. ` +
-      "Stop it with `tracekit down`, or replace it with `tracekit up --replace`");
+      "Stop it with `tracekit down`, or replace it with `tracekit up --replace`",
+      Array.isArray(proto) && proto.length === 2 && typeof proto[1] === "number" && proto[1] < RPC_VERSION);
 }
 
 /** A connection to the signer at `path` (a Unix socket or tcp://host:port) and its hello, after the version check. */
@@ -505,8 +510,8 @@ export class Client {
       try {
         c = await connect(...devAddress(d));
       } catch (e) {
-        if (!(e instanceof SignerUnavailable)) throw e;
-        await startDevSigner();
+        if (!(e instanceof SignerUnavailable || e instanceof Incompatible && e.older)) throw e;
+        await startDevSigner();   // `tracekit up` replaces a dev signer from before an upgrade
         c = await connect(...devAddress(d));
       }
     }
