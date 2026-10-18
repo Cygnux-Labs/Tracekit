@@ -154,6 +154,38 @@ reconciled. A tool the provider runs itself would run again, so the investigator
 call whose request enables one (OpenAI Responses tools other than function and custom, Anthropic typed server tools,
 `mcp_servers`, `container`, chat `web_search_options`); see [why](why.md#attribution-on-signed-runs).
 
+## Verified tool results
+
+> **Experimental (1.3):** this works and is tested, but may change and gets less hardening than the
+> [stable core](support.md).
+
+An agent can change a tool result in its own context before the model reads it: edit what a tool returned, or make
+one up. The gateway sees what goes to the model; the signer holds what the tool returned (each `tool.result`'s
+commitment). With `verify_tool_results` in signer.yaml, the signer compares the two on every request:
+
+```yaml
+verify_tool_results: record    # or refuse
+```
+
+- For each tool result a request sends (OpenAI chat `role: tool` messages, Responses `*_output` items, Anthropic
+  `tool_result` blocks; the newest 512), the gateway sends digests of the values it may have been recorded as: the
+  content as sent, the text of a list of text blocks, and the value of a JSON string.
+- The signer computes their commitments under that call's `tool.result` salt (only it can) and compares. No content
+  leaves the gateway, and the record keeps no new value.
+- A result that matches none is a signed `reconcile.result_mismatch` (once per call), which `tracekit verify` counts
+  with the run's unreconciled calls.
+- `record` forwards the request; `refuse` answers the agent `403` and doesn't send it to the model (the exchange's
+  response is recorded with that error).
+
+Not checked: a tool call with no result in the run yet, an error result, a result whose content redaction changed (its
+commitment is over the redacted value), and anything a model call that skips the gateway sends.
+
+It is off unless set. A match needs the value your client completed the call with to be the value the model is sent
+(or its digest). A client that records something else will mismatch on honest runs: a harness hook's structured tool
+response, an MCP result object the framework turns into text. Run with `record` first and check that
+`tracekit verify` shows no `result_mismatch` on honest runs before you set `refuse`. A gateway older than 1.3 sends no
+digests, and nothing is checked.
+
 ## Reconciliation
 
 Gateway tool uses are L3 and take precedence over agent-reported L3 (autotrace) for the same tool call id. **(1.2)** A

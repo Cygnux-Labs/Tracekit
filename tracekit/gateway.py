@@ -21,7 +21,10 @@ that value as `Authorization: Bearer` (then the identity must come from a client
 The signer checks the run token against that identity (signer.yaml `gateways` lists this gateway): a token of another
 run, identity or tenant: 403. Nothing is attributed by address or name. Relative paths are from the config file.
 
-For each exchange: model_event phase request (with the tool results it sends back) before forwarding; the response
+For each exchange: model_event phase request (with the tool results it sends back, each with the digests of the
+values it may have been recorded as, so the signer can compare it with the tool.result it signed: `tool_results`,
+result_forms) before forwarding; when the signer answers `refused` (a result differs and its verify_tool_results is
+refuse), the request is not forwarded: 403, and the exchange's response is recorded with that error. The response
 streams through, parsed by tracekit.parsers; model_event phase response (tool uses with args digests, usage, stop
 reason, error) is recorded before the chunk with the stream's terminal event, or before any of a non-streamed
 response. Tools the provider ran itself are recorded with the digest of their input where the provider returns it
@@ -73,6 +76,8 @@ KEYS = {"http", "upstream", "api_key_file", "api_key_header", "signer", "max_bod
 MAX_BODY = 32 * 1024 * 1024
 MAX_RUNS = 10_000   # runs remembered (stream, counter, fail modes), least recently used dropped first
 MAX_RUN_HEADER = 2048   # X-Tracekit-Run: a run id and its token (well under 1 KB)
+# the newest tool results a request's record carries digests of (at most ~300 KB, so a half-frame body still fits)
+MAX_RESULTS_CHECKED = 512
 UPSTREAM_TIMEOUT_S = 600
 
 
@@ -146,9 +151,10 @@ class Gateway:
                 and (listed(n, deny) or allow is not None and not listed(n, allow))]
 
     def record(self, key, xid, **fields):
-        """model_event for run `key` = (run_id, token, caller): True once recorded, False when the signer can't be
-        reached; RPCError for a refusal. A run's records share one stream whose counter every attempt advances, so an
-        exchange the signer never got shows as a client_counter_gap once a later one of the run reaches it."""
+        """model_event for run `key` = (run_id, token, caller): the signer's answer once recorded, False when the
+        signer can't be reached; RPCError for a refusal. A run's records share one stream whose counter every attempt
+        advances, so an exchange the signer never got shows as a client_counter_gap once a later one of the run
+        reaches it."""
         # lean: no gap if no later exchange of the run reaches the signer; a gateway-side outbox if that matters
         run_id, token, caller = key
         run = self._run(key)
@@ -168,7 +174,7 @@ class Gateway:
                             del self.runs[key]
                 raise
             run.modes, run.acked = out.get("fail_modes"), seq
-        return True
+        return out
 
     def fail_open(self, key):
         return fail_open(self._run(key).modes, "model")
@@ -193,6 +199,33 @@ class Gateway:
         except ValueError:   # CanonicalizationError, StrictJSONError
             return {}
         return {"body": content}
+
+
+def result_forms(content):
+    """The values a tool result sent to the model may have been recorded as (complete's `result`, itself or as its
+    digest): the content as sent, the text of a list of text blocks, the value of a JSON string; each as {digest,
+    size, result_digest} (event_hash of the value, its JCS bytes, sha256 of JCS({"result": value}))."""
+    values = [content]
+    if isinstance(content, list) and content and all(
+            isinstance(b, dict) and b.get("type") in ("text", "input_text", "output_text") and isinstance(b.get("text"), str)
+            for b in content):
+        values.append("".join(b["text"] for b in content))
+    if isinstance(content, str):
+        try:
+            values.append(loads_strict(content))
+        except (ValueError, RecursionError):   # not JSON: the string is the only value
+            pass
+    forms = []
+    for v in values:
+        try:
+            c = canonical(v)
+            form = {"digest": "sha256:" + hashlib.sha256(c).hexdigest(), "size": len(c),
+                    "result_digest": "sha256:" + hashlib.sha256(canonical({"result": v})).hexdigest()}
+        except (ValueError, RecursionError):   # JCS can't encode it (an integer past 2^53): no form
+            continue
+        if form not in forms:
+            forms.append(form)
+    return forms
 
 
 class _SSE:
@@ -309,13 +342,22 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         base = {"provider": kind.split(":")[0], "model": str(req.get("model") or "")[:128],
                 "streamed": req.get("stream") is True}
         sent = parsers.parse(kind, None, req)["tool_results_sent"][-MAX_RESULTS_SENT:]
+        results = [{"id": i, "forms": f} for i, c in parsers.tool_results(kind, req)[-MAX_RESULTS_CHECKED:]
+                   if (f := result_forms(c))]
         try:
             ok = gw.record(key, xid, phase="request", content_digest="sha256:" + hashlib.sha256(body).hexdigest(),
-                           **base, **({"tool_results_sent": sent} if sent else {}), **gw.body(req, len(body)))
+                           **base, **({"tool_results_sent": sent} if sent else {}),
+                           **({"tool_results": results} if results else {}), **gw.body(req, len(body)))
         except RPCError as e:
             return self._error(429 if e.code == "quota_exceeded" else 403, f"the signer refused the run: {e.message}")
         if not ok and not gw.fail_open(key):
             return self._error(503, "the signer is unreachable and the run's fail mode is closed")
+        if ok and ok.get("refused"):
+            try:
+                gw.record(key, xid, phase="response", error=f"not forwarded: {ok['refused']}"[:1024], **base)
+            except RPCError:   # the request record and the signer's reconcile record stand
+                pass
+            return self._error(403, ok["refused"], close=False)
         self._forward(gw, kind, key, xid, base, req, body)
 
     def _forward(self, gw, kind, key, xid, base, req, body):

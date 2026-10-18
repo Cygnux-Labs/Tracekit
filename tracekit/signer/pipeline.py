@@ -48,9 +48,10 @@ def new_run(tenant, run_id):
     `closing_at` are monotonic times for the idle and grace clocks. `prov`: the provenance index of a run registered
     since this signer started (SignerService._index), memory only; None after a restart (unavailable). `writers`: who
     wrote each stream first (writer()), `tails`: the last client_seq a close_run said each stream ended at; both memory
-    and snapshot only."""
+    and snapshot only. `results`: tool_call_id -> [decision_id, output hash, ok, redacted, mismatch recorded] of each
+    tool.result, which a gateway's tool result digests are checked against (SignerService._results_checked)."""
     return {"tenant": tenant, "run_id": run_id, "run_seq": 0, "head": ZERO_HASH, "streams": {}, "writers": {},
-            "tails": {}, "closed": False,
+            "tails": {}, "closed": False, "results": {},
             "final": False, "calls": {}, "decisions": {}, "denied": {}, "states": {}, "owner": None, "source": "sdk",
             "principal": None, "people": (None, None), "harness": None, "active": time.monotonic(), "closing_at": None,
             "rec": reconcile.new(), "digests": {}, "prov": None}
@@ -472,6 +473,7 @@ class RecordLog:
                     r["denied"], r["digests"], r["prov"] = {}, {}, None
                     r.setdefault("writers", {})   # a snapshot written before 1.2
                     r.setdefault("tails", {})
+                    r.setdefault("results", {})   # before 1.3: results recorded since the snapshot are checked
                 runs[(r["tenant"], r["run_id"])] = r
             approvals = {aid: dict(a, run_key=tuple(a["run_key"])) for aid, a in st["approvals"].items()}
             agent, contain = st.get("agent", agent), st.get("contain", contain)
@@ -548,7 +550,13 @@ class RecordLog:
                     run["decisions"][call["decision_id"]] = call
             elif e["type"] == "state.write":
                 run["states"][e["data"]["key"]] = (salt_label(e), e["data"]["digest"])
+            elif e["type"] == "reconcile.result_mismatch" and e.get("tool_call_id") in run["results"]:
+                run["results"][e["tool_call_id"]][4] = True
             elif e["type"] == "tool.result" and "decision_id" in e["data"]:
+                d, out = e["data"], e["data"].get("output") or {}
+                if out.get("hash") and e.get("tool_call_id"):
+                    run["results"][e["tool_call_id"]] = [d["decision_id"], out["hash"], d.get("ok") is True,
+                                                         out.get("redacted") is True, False]
                 run["decisions"].pop(e["data"]["decision_id"], None)
                 aid = index.get((e["tenant"], e["run_id"], e["tool_call_id"], e.get("attempt", 0)))
                 if aid and approvals[aid]["state"] == "consumed":   # its approved call completed (Service._complete)

@@ -15,6 +15,7 @@ from adapter_contract import tmpdir
 from test_reconcile import use
 from test_signer_service import records
 from tracekit import gateway
+from tracekit.format.canon import canonical, event_hash
 from tracekit.identity.base import CallerIdentity
 from tracekit.sdk import client
 from tracekit.sdk.client import SignerUnavailable
@@ -104,7 +105,7 @@ def serve(case, srv):
 
 
 class Gateway(unittest.TestCase):
-    mandatory, content = False, None
+    mandatory, content, verify = False, None, None
 
     def setUp(self):
         self.dir = tmpdir(self)
@@ -112,7 +113,7 @@ class Gateway(unittest.TestCase):
                                    gateways=["mtls:spiffe://acme/*"], gateway_mandatory=self.mandatory,
                                    authorize={"token:http": sorted(REQUESTS.keys() - {"content_get"} - svc.OPERATOR),
                                               "mtls:spiffe://acme/gateway": ["model_event", "status"]},
-                                   grace_s=60, idle_s=600, content=self.content)
+                                   grace_s=60, idle_s=600, content=self.content, verify_tool_results=self.verify)
         self.closed = False
         self.addCleanup(self.close)
         self.up = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Upstream)
@@ -488,6 +489,121 @@ class TestMandatory(Gateway):
                                       "tool_call_id": "bu-1", "tool": "browser_use:click", "args_source": "parsed",
                                       "args": {"index": 3, "page_url": "https://shop.example/"}})
         self.assertEqual(self.final(), [])
+
+
+def tool_message(content, tcid="call_7"):
+    return {"model": "gpt-x", "messages": [{"role": "tool", "tool_call_id": tcid, "content": content}]}
+
+
+class TestVerifiedToolResults(Gateway):
+    """verify_tool_results: the signer compares each tool result a request sends the model with the call's tool.result,
+    by the digests the gateway gives of the values the result may have been recorded as."""
+    verify = "record"
+
+    def completed(self, result, tcid="call_7", status="ok"):
+        d = self.s.call(AGENT, "decide", {"request_id": uuid.uuid4().hex, **self.run, "stream": "agent",
+                                          "client_seq": len(self.done), "tool_call_id": tcid, "tool": "read_file",
+                                          "args_source": "parsed", "args": {}})
+        self.s.call(AGENT, "complete", {"request_id": uuid.uuid4().hex, **self.run, "stream": "agent",
+                                        "client_seq": len(self.done) + 1, "tool_call_id": tcid,
+                                        "decision_id": d["decision_id"],
+                                        "args_digest": event_hash({"tool": "read_file", "args": {}}), "status": status,
+                                        **({"result": result} if status == "ok" else {"error": result})})
+        self.done += [d, d]
+
+    def setUp(self):
+        super().setUp()
+        self.done = []
+
+    def mismatches(self):
+        return [(e["tool_call_id"], e["data"]["layers"]) for e in self.events() if e["type"] == "reconcile.result_mismatch"]
+
+    def test_a_result_passed_on_unchanged_matches_in_either_recorded_form(self):
+        cases = (("the value", "hello", "hello"), ("its digest", event_hash("hello"), "hello"),
+                 ("text blocks", "hello", [{"type": "text", "text": "hel"}, {"type": "text", "text": "lo"}]),
+                 ("a JSON string", {"a": 1}, '{"a": 1}'))
+        for i, (case, recorded, sent) in enumerate(cases):
+            with self.subTest(case):
+                self.completed(recorded, tcid=f"call_{i}")
+                self.assertEqual(self.post(tool_message(sent, tcid=f"call_{i}"))[0], 200)
+        self.assertEqual(self.mismatches(), [])
+        self.assertEqual(len(self.up.seen), 4)
+
+    def test_an_edited_result(self):
+        """A signed mismatch, once per call; record mode forwards. Fails without the check: nothing is written."""
+        self.completed("hello")
+        self.assertEqual(self.post(tool_message("HELLO"))[0], 200)
+        self.assertEqual(self.post(tool_message("HELLO"))[0], 200)   # the history repeats: one record per call
+        self.assertEqual(self.mismatches(), [("call_7", ["L2", "L3"])])
+        self.assertEqual(len(self.up.seen), 2)
+
+    def test_not_checked_without_a_comparable_result(self):
+        self.completed("timeout", tcid="call_e", status="error")   # an error result: what the model sees varies
+        self.completed("key " + "sk-ant-" + "Zq8" * 10, tcid="call_r")   # redaction changed it: no commitment to test
+        for tcid in ("call_e", "call_r", "call_unknown"):
+            self.assertEqual(self.post(tool_message("something else", tcid=tcid))[0], 200)
+        self.assertEqual(self.mismatches(), [])
+
+    def test_only_a_gateways_digests_are_checked(self):
+        self.completed("hello")
+        self.s.call(AGENT, "model_event", {"request_id": uuid.uuid4().hex, **self.run, "stream": "agent-l3",
+                                           "client_seq": 0, "provider": "openai", "model": "m", "phase": "request",
+                                           "tool_results": [{"id": "call_7", "forms": gateway.result_forms("HELLO")}]})
+        self.assertEqual(self.mismatches(), [])
+
+    def test_the_results_are_rebuilt_from_the_records_after_a_restart(self):
+        self.completed("hello")
+        self.close()
+        self.s = svc.SignerService(self.dir, gateways=["mtls:spiffe://acme/*"], verify_tool_results="record",
+                                   authorize={"token:http": ["model_event"], "mtls:spiffe://acme/gateway": ["model_event"]})
+        self.closed = False
+        self.s.call(GW, "model_event", {"request_id": uuid.uuid4().hex, **self.run, "caller": "token:http",
+                                        "stream": "gx", "client_seq": 0, "provider": "openai", "model": "m",
+                                        "phase": "request",
+                                        "tool_results": [{"id": "call_7", "forms": gateway.result_forms("HELLO")}]})
+        self.assertEqual(self.mismatches(), [("call_7", ["L2", "L3"])])
+
+
+class TestVerifiedToolResultsRefused(TestVerifiedToolResults):
+    verify = "refuse"
+
+    def test_an_edited_result(self):
+        self.completed("hello")
+        status, body = self.post(tool_message("HELLO"))
+        self.assertEqual(status, 403)
+        self.assertIn("differ from what the tool returned", json.loads(body)["error"]["message"])
+        self.assertEqual(self.up.seen, [])   # never sent to the model
+        self.assertEqual(self.mismatches(), [("call_7", ["L2", "L3"])])
+        [(_, _, err)] = [x for x in self.exchanges() if x[1] == "response"]
+        self.assertTrue(err.startswith("not forwarded: "), err)
+
+
+class TestVerifiedToolResultsOff(Gateway):
+    def test_off_unless_set(self):
+        self.assertEqual(self.post(tool_message("anything"))[0], 200)
+        self.assertEqual([e for e in self.events() if e["type"] == "reconcile.result_mismatch"], [])
+        [req] = [r for r in self.signer.sent if r["phase"] == "request"]
+        self.assertEqual(req["tool_results"], [{"id": "call_7", "forms": gateway.result_forms("anything")}])
+
+
+class ToolResultParsing(unittest.TestCase):
+    def test_each_provider_shape(self):
+        from tracekit import parsers
+        self.assertEqual(parsers.tool_results("openai:chat", tool_message("x")), [("call_7", "x")])
+        self.assertEqual(parsers.tool_results("openai:responses", {"input": [
+            {"type": "function_call_output", "call_id": "c1", "output": "y"}, {"type": "message", "content": "hi"}]}),
+            [("c1", "y")])
+        self.assertEqual(parsers.tool_results("anthropic:messages", {"messages": [{"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "tu_1", "content": [{"type": "text", "text": "z"}]}]}]}),
+            [("tu_1", [{"type": "text", "text": "z"}])])
+
+    def test_forms_cover_both_ways_complete_records_a_result(self):
+        [form, parsed] = gateway.result_forms('{"a": 1}')
+        self.assertEqual((form["digest"], form["size"]), (event_hash('{"a": 1}'), len(canonical('{"a": 1}'))))
+        self.assertEqual(form["result_digest"], event_hash({"result": '{"a": 1}'}))
+        self.assertEqual(parsed["digest"], event_hash({"a": 1}))
+        self.assertEqual(gateway.result_forms("plain"), gateway.result_forms("plain")[:1])
+        self.assertEqual(gateway.result_forms(2 ** 60), [])   # JCS can't encode it
 
 
 if __name__ == "__main__":

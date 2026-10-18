@@ -126,6 +126,7 @@
         "reconcile.result_without_call",
         "reconcile.unexplained_effect",
         "reconcile.args_unparseable",
+        "reconcile.result_mismatch",
         "refusal.summary",
         "policy.external",
         "content.accessed",
@@ -883,6 +884,22 @@
         "properties": {
           "type": {
             "const": "reconcile.args_unparseable"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/reconcile"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "reconcile.result_mismatch"
           }
         }
       },

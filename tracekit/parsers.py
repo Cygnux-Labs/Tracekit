@@ -12,7 +12,7 @@ gives `args_unparseable: true` and no digest. Tools the provider runs itself (we
 interpreter, hosted MCP, ...) are `executed_by: provider`, with the digest of their input where the provider returns it
 (Anthropic server_tool_use `input`, OpenAI web_search_call `action`, file_search_call `queries`, code_interpreter_call
 `code`, mcp_call `arguments`): no signer decision covers them. `provider_tools(kind, request)` names the ones a request
-declares.
+declares; `tool_results(kind, request)` gives the tool results a request sends, with their content.
 A tool use the provider sent without an id gets `<provider>:<response id>:<index>` and `id_synthetic: true` (a random
 nonce in place of a missing response id, so two such responses never share one).
 
@@ -302,6 +302,23 @@ def provider_tools(kind, req):
     names = [":".join(str(v) for v in (t.get("type"), t.get("server_label")) if v) for t in tools
              if t.get("type", "function") not in ("function", "custom")]
     return names + ["web_search_options"] * ("web_search_options" in req)
+
+
+def tool_results(kind, req):
+    """[(tool call id, content)] of each tool result request `req` (a dict) sends the model, oldest first: an OpenAI
+    chat `role: tool` message's content, a Responses `*_output` item's output, an Anthropic `tool_result` block's
+    content. Ids as the RPC takes them (_id); a result without an id is left out."""
+    if kind == "openai:chat":
+        pairs = [(_get(m, "tool_call_id"), _get(m, "content")) for m in _list(req, "messages") if _get(m, "role") == "tool"]
+    elif kind == "openai:responses":
+        pairs = [(_get(i, "call_id"), _get(i, "output")) for i in _list(req, "input")
+                 if str(_get(i, "type", default="")).endswith("_output")]
+    elif kind == "anthropic:messages":
+        pairs = [(_get(b, "tool_use_id"), _get(b, "content")) for m in _list(req, "messages")
+                 for b in _list(m, "content") if _get(b, "type") == "tool_result"]
+    else:
+        return []
+    return [(_id(i), c) for i, c in pairs if i]
 
 
 def parse(kind, response, request=None):

@@ -1,6 +1,8 @@
-"""The signer RPC contract, version 16: one JSON Schema per request and response, the error shape, and `SignerAPI`.
+"""The signer RPC contract, version 17: one JSON Schema per request and response, the error shape, and `SignerAPI`.
 
-Frozen: a change to any schema here is a new RPC_VERSION. Version 16 (all of Tracekit 1.2) adds register_run's optional
+Frozen: a change to any schema here is a new RPC_VERSION. Version 17 (Tracekit 1.3) adds model_event's optional
+`tool_results` (a gateway's digests of the tool results a request sends the model) and its response's `refused`.
+Version 16 (all of Tracekit 1.2) adds register_run's optional
 `parent`, close_run's optional `last_client_seq` (and a gateway's `caller`), `tailer_heartbeat`, args digests on tool uses
 the provider ran, agent approvers (approval_review, approval_revoke, approval_agents, approval_decide's `escalate` and
 `asserted`, approval_list's filters), containment's operator calls (incident_list, incident_show, incident_resolve,
@@ -19,7 +21,7 @@ from typing import Protocol
 from tracekit.format.canon import MAX_SAFE_INT
 from tracekit.schema import _check
 
-RPC_VERSION = 16
+RPC_VERSION = 17
 RPC_MIN = 15   # the oldest client version a signer serves
 MAX_RAW_ARGS = 1 << 20   # characters of a raw arguments string
 MAX_EXTERNAL_RECORD = 1 << 16   # characters of an external system's own decision record
@@ -178,6 +180,11 @@ REQUESTS = {
                                    cache_write_tokens=SEQ, reasoning_tokens=SEQ),
                         tool_uses={"type": "array", "maxItems": 128, "items": _TOOL_USE},
                         tool_results_sent={"type": "array", "maxItems": MAX_RESULTS_SENT, "items": ID},
+                        # a gateway's: each tool result the request sends, as the candidate values it may be (`digest`
+                        # event_hash(value), `size` its JCS bytes, `result_digest` sha256(JCS({"result": value})))
+                        tool_results={"type": "array", "maxItems": MAX_RESULTS_SENT, "items": _obj(
+                            ["id", "forms"], id=ID, forms={"type": "array", "minItems": 1, "maxItems": 3, "items": _obj(
+                                ["digest", "size", "result_digest"], digest=DIGEST, size=SEQ, result_digest=DIGEST)})},
                         caller=IDENTITY,   # from a `gateways` identity only: the client it authenticated (source gateway)
                         body=ANY),   # the exchange's body, for the content vault when status says it is on
     "approval_request": _obj(_RUN_REQ + ["tool_call_id"], **_RUN, caller=IDENTITY, tool_call_id=ID, attempt=SEQ,
@@ -300,7 +307,9 @@ RESPONSES = {
     "complete": _SEQ_ONLY,
     "observe": _SEQ_ONLY,
     "state_write": _SEQ_ONLY,
-    "model_event": _obj(["run_seq"], run_seq=SEQ, fail_modes=_FAIL_MODES),   # fail_modes: to a gateway
+    # to a gateway: fail_modes; refused: a tool result the request sends differs from the one recorded and the signer's
+    # verify_tool_results is refuse, so the gateway must not forward the request
+    "model_event": _obj(["run_seq"], run_seq=SEQ, fail_modes=_FAIL_MODES, refused=REASON),
     "approval_request": _obj(["approval_id", "state"], approval_id=ID, state=APPROVAL_STATE,
                              expires_at=_str(40)),
     "approval_decide": _obj(["approval_id", "state", "self_approved"], approval_id=ID, state=APPROVAL_STATE,
