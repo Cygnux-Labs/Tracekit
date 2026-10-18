@@ -2138,7 +2138,8 @@
             "reask_after_reject",
             "held_call_unresolved",
             "observer_lost",
-            "effect_outside_run"
+            "effect_outside_run",
+            "result_unchecked"
           ],
           "description": "Gap and tamper kinds (signer-written only)."
         },

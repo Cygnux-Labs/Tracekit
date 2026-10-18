@@ -527,6 +527,10 @@ class TestVerifiedToolResults(Gateway):
     def mismatches(self):
         return [(e["tool_call_id"], e["data"]["layers"]) for e in self.events() if e["type"] == "reconcile.result_mismatch"]
 
+    def unchecked(self):
+        return [e["tool_call_id"] for e in self.events()
+                if e["type"] == "capture.gap" and e["data"]["kind"] == "result_unchecked"]
+
     def reopen(self, drop_snapshots=True):
         """The signer closed and opened again on its data dir; with `drop_snapshots`, rebuilt from the records alone."""
         self.close()
@@ -610,6 +614,40 @@ class TestVerifiedToolResults(Gateway):
         self.assertEqual(forms.call_count, 1)   # the second request's copy cost a hash
         first, second = [r["tool_results"] for r in self.signer.sent if r["phase"] == "request"]
         self.assertEqual(first, second)
+
+    def test_a_result_the_gateway_gave_no_digests_of_is_signed_unchecked(self):
+        """An edit padded past MAX_DIGESTED, pushed past it by newer results of the agent's own, or sent twice under one
+        id with a correct copy got no digests: it was forwarded, under refuse too, with nothing signed. Now each such
+        call's first is a signed capture.gap result_unchecked; never refused."""
+        for tcid in ("call_7", "call_8", "call_9"):
+            self.completed(event_hash("hello"), tcid=tcid)   # its digest, as result_field records a trusted tool's
+        padded = "HELLO" + " " * 1200
+        with mock.patch.object(gateway, "MAX_DIGESTED", 1000):
+            for _ in range(2):   # sent again: one record per call
+                self.assertEqual(self.post(tool_message(padded, tcid="call_7"))[0], 200)
+            self.assertEqual(self.post({"model": "gpt-x", "messages": [   # the newer result uses up the budget
+                {"role": "tool", "tool_call_id": "call_8", "content": "HELLO"},
+                {"role": "tool", "tool_call_id": "junk_1", "content": "j" * 995}]})[0], 200)
+            self.assertEqual(self.post({"model": "gpt-x", "messages": [
+                {"role": "tool", "tool_call_id": "call_9", "content": padded},
+                {"role": "tool", "tool_call_id": "call_9", "content": "hello"}]})[0], 200)
+        self.assertEqual(self.mismatches(), [])
+        self.assertEqual(self.unchecked(), ["call_7", "call_8", "call_9"])
+        [gap] = [e for e in self.events() if e["type"] == "capture.gap"][:1]
+        self.assertEqual((gap["source"], gap["data"]["tool_use_id"]), ("signer", "call_7"))
+
+    def test_a_gateway_that_sends_no_digests_leaves_signed_unchecked_results(self):
+        """As a gateway older than 1.3 does (tool_results_sent only); once per call, a restart included."""
+        self.completed("hello")
+
+        def sends(seq):
+            self.s.call(GW, "model_event", {"request_id": uuid.uuid4().hex, **self.run, "caller": "token:http",
+                                            "stream": "gx2", "client_seq": seq, "provider": "openai", "model": "m",
+                                            "phase": "request", "tool_results_sent": ["call_7", "call_unknown"]})
+        sends(0)
+        self.reopen()
+        sends(1)
+        self.assertEqual(self.unchecked(), ["call_7"])   # call_unknown was never decided: nothing to compare
 
     def test_a_resent_edit_costs_the_writer_no_hmac(self):
         """The salt is derived once per tool.result, and a form that opened none is remembered."""

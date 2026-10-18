@@ -67,7 +67,8 @@ VERSIONS = {
                                                   "tailer_redelegated", "reask_after_reject", "held_call_unresolved",
                                                   "observer_lost", "effect_outside_run"]},
                          "run.closing": {"reason": ["quarantine"]}}},
-    "1.3.0": {"types": ["reconcile.result_mismatch"], "fields": {}, "values": {}},
+    "1.3.0": {"types": ["reconcile.result_mismatch"], "fields": {},
+              "values": {"capture.gap": {"kind": ["result_unchecked"]}}},
 }
 KEY_TYPES = ("signer.epoch", "key.retire")
 

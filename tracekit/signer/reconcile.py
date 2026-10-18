@@ -37,7 +37,7 @@ the observers that covered the run throughout.
 
 A tool result an LLM gateway saw a request send that is not the call's tool.result (SignerService._results_checked) is
 one reconcile.result_mismatch, written at once (`mismatched`, rebuilt from the records on replay), and counted in
-run.final's coverage.
+run.final's coverage; one it gave no digests of is one capture.gap result_unchecked (`unchecked`, likewise).
 
 Decisions other systems made (policy.external, from decision_import) are indexed by tool call and system; each that
 disagrees with the signer's last decision for that call (flag counts as allow), names another tool, or names a call
@@ -82,6 +82,8 @@ def observe(put, run, e, digests=None, handoff=lambda tool: False):
         put(sub(put, rec, "live"), e["tool_call_id"], True)
     if rec is not None and e["type"] == "reconcile.result_mismatch":   # written live, once per call; counted by finish
         put(sub(put, rec, "mismatched"), e["tool_call_id"], True)
+    if rec is not None and e["type"] == "capture.gap" and e["data"].get("kind") == "result_unchecked":   # once per call
+        put(sub(put, rec, "unchecked"), e["tool_call_id"], True)
     if rec is None or layer is None:
         return []
     digests, now = digests or {}, []

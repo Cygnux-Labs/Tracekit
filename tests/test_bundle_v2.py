@@ -920,6 +920,8 @@ ENTRIES = {
        for k in ("observer_lost", "effect_outside_run")},
     "reconcile.result_mismatch": [registered(), ("reconcile.result_mismatch", {"layers": ["L2", "L3"], "detail": "d"},
                                                  "run-a")],
+    "capture.gap.kind=result_unchecked": [registered(), ("capture.gap", {
+        "kind": "result_unchecked", "tool_use_id": "t1", "reason": "no digests"}, "run-a")],
 }
 
 

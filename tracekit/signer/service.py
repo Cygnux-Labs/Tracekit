@@ -2855,32 +2855,37 @@ class SignerService:
                 raise RPCError("forbidden", self._why_contained(run))
 
         def after(tx, run):   # only a gateway's digests count: an agent's own report of its context proves nothing
-            bad = self._results_checked(tx, run, req["tool_results"])
+            bad = self._results_checked(tx, run, req.get("tool_results", []), req.get("tool_results_sent", []))
             if bad and self.verify_tool_results == "refuse":
                 return {"refused": (f"the tool result(s) {', '.join(bad[:5])}{' ...' if len(bad) > 5 else ''} sent to "
                                     "the model are not what the tool returned, as the signer recorded it "
                                     "(reconcile.result_mismatch); this signer refuses such requests "
                                     "(verify_tool_results: refuse)")[:1024]}
             return {}
-        verify = gw and self.verify_tool_results and req.get("tool_results")
+        verify = gw and self.verify_tool_results and (req.get("tool_results") or req.get("tool_results_sent"))
         return self._event(identity, "model_event", req, "model.exchange", data,
                            digests={t["id"]: t.get("args_digest") for t in req.get("tool_uses", ())}, out=out, keep=keep,
                            gw=gw, check=check, after=after if verify else None, **top)
 
-    def _results_checked(self, tx, run, results):
+    def _results_checked(self, tx, run, results, sent=()):
         """The ids of the tool results a gateway saw a request send (`results`: model_event's `tool_results`) that are
         not what the call's tool.results committed to (any of them: a tool_call_id may be reused), by either form
         complete takes (the value, or its digest), under that result's salt. Each one's first time is a signed
         reconcile.result_mismatch, and so is a result sent for a call the run allowed before its result was recorded
         (the shipped clients complete a call before the next model request), whose id is not returned (not refused): a
-        complete that was lost would otherwise refuse every later request of an honest run, as each resends it. Not
-        checked: a call the run never decided or didn't allow, a call whose results are all errors or carry no result,
-        one redaction changed (its commitment is over the redacted value) and matching none, a run that is not
-        reconciled (imported, a replay run)."""
+        complete that was lost would otherwise refuse every later request of an honest run, as each resends it. A
+        result the request sends (`sent`: its `tool_results_sent`) that the gateway gave no digests of (past its
+        MAX_DIGESTED bytes or MAX_RESULTS_CHECKED results, or a gateway older than 1.3), for a call with a result to
+        compare, is unchecked: its first time is a signed capture.gap result_unchecked, never refused (a gateway that
+        restarted has no digests cached, so an honest long run would trip it). Not checked: a call the run never
+        decided or didn't allow, a call whose results are all errors or carry no result, one redaction changed (its
+        commitment is over the redacted value) and matching none, a run that is not reconciled (imported, a replay
+        run)."""
         rec, bad = run.get("rec"), []
         if rec is None:
             return bad
-        for r in results:
+        unformed = collections.Counter(sent) - collections.Counter(r["id"] for r in results)   # an id may be reused
+        for r in results + [{"id": i, "forms": None} for i in unformed]:
             tcid, entries = r["id"], run.get("results", {}).get(r["id"])
             if entries is None:
                 call = run.get("calls", {}).get(tcid)   # still open: decided, allowed, not completed
@@ -2891,6 +2896,15 @@ class SignerService:
                           "a result the tool never returned, or a complete that was lost or comes late")
             else:
                 ours = [x for x in entries if x[2]]
+                if ours and r["forms"] is None:
+                    if tcid not in rec.get("unchecked", {}):
+                        tx.emit(run, "capture.gap", {
+                            "kind": "result_unchecked", "tool_use_id": tcid,
+                            "reason": f"a request sent the model a result for {tcid[:128]} that the gateway gave no "
+                                      "digests of (past the 1 MiB or the newest 512 results it digests per request, "
+                                      "or a gateway older than 1.3): not compared with its tool.result"},
+                                source="signer", tool_call_id=tcid)
+                    continue
                 if not ours or self._matched(tx, run, tcid, entries, r["forms"]):
                     continue
                 if any(x[3] for x in ours):   # one of them redaction changed: it can't be told apart from an edit

@@ -217,7 +217,10 @@ the request sends, the gateway gives the digests of the values it may have been 
 commitments under the salts of that call's `tool.result`s (§2). A result that matches none of a call's ok results that
 carried a result (redaction having changed none of them), or a result sent for a call the run allowed and has not
 completed, is a `reconcile.result_mismatch{layers: [L2, L3], detail}` (`source: signer`, `tool_call_id`), once per
-call, counted in `run.final`'s `coverage.unreconciled`. A bundle with one needs `verifier_min_version` 1.3.0.
+call, counted in `run.final`'s `coverage.unreconciled`. A result the request names (`tool_results_sent`) that the
+gateway gave no digests of (past what it digests per request, or a gateway older than 1.3), for a call with such a
+result to compare, is a `capture.gap{kind: result_unchecked, tool_use_id, reason}` (`source: signer`, `tool_call_id`),
+once per call. A bundle with either needs `verifier_min_version` 1.3.0.
 
 ## 4. Records and the signature message
 
@@ -455,7 +458,7 @@ what it added: record types, data fields per record type, and enum values per (r
 |---|---|---|---|
 | 1.1.0 | `input.observed`, `content.accessed`, `content.erased`, `why.finding` | `policy.decision`: `provenance`, `provenance_state`; `run.registered`: `replay_of` | — |
 | 1.2.0 | `run.child`, `approval.escalated`, `approval.revoked`, `approval.suggested`, `approval.agents`, `incident.opened`, `incident.updated`, `incident.capped`, `run.held`, `run.resumed`, `run.quarantined`, `incident.resolved`, `incident.response`, `identity.suspension`, `effect.observed` | `run.registered`: `parent_run`, `session`, `posture`; `capture.gap`: `run_id`; `run.final`: `provider_executed`, `paired_by_args`, `matrix`; `policy.decision`: `via`, `caller`, `detect`, `incident_id`; `approval.request`: `agent`, `via`, `incident_id`, `passkey`; `tool.result`, `input.observed`: `via`; `approval`: `approver_kind`, `asserted`, `spent`, `not_before`, `consume_by`, `incident_id`; `approval.expired`: `reason`; `reconcile.unexplained_effect`: `observer`, `kind`, `host`, `port` | `capture.gap` `kind`: `decided_not_completed`, `late_activity`, `concurrent_run`, `tailer_redelegated`, `reask_after_reject`, `held_call_unresolved`, `observer_lost`, `effect_outside_run`; `run.closing` `reason`: `quarantine` |
-| 1.3.0 | `reconcile.result_mismatch` | — | — |
+| 1.3.0 | `reconcile.result_mismatch` | — | `capture.gap` `kind`: `result_unchecked` |
 
 Every v2 definition is closed (`additionalProperties: false`), so an older verifier would fail a record that uses a
 newer entry; the version the manifest declares makes it report `UNVERIFIABLE (needs tracekit >= x)` instead, never

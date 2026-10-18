@@ -171,19 +171,21 @@ class Agreement(unittest.TestCase):
 
     @staticmethod
     def mismatch_run(s):
-        """A run whose model request, through the gateway, sent a tool result other than the one recorded: a format 1.3
-        reconcile.result_mismatch."""
+        """A run whose model request, through the gateway, sent a tool result other than the one recorded, and one the
+        gateway gave no digests of: a format 1.3 reconcile.result_mismatch and capture.gap result_unchecked."""
         r = s.call(ME, "register_run", {"request_id": uuid.uuid4().hex, "agent": {"name": "agreement"}})
         ids = {"request_id": uuid.uuid4().hex, "run_id": r["run_id"], "run_token": r["run_token"]}
-        dec = s.call(ME, "decide", {**ids, "stream": "s1", "client_seq": 0, "tool_call_id": "tc-1", "tool": "read_file",
-                                    "args_source": "parsed", "args": {}})
-        s.call(ME, "complete", {**ids, "request_id": uuid.uuid4().hex, "stream": "s1", "client_seq": 1,
-                                "tool_call_id": "tc-1", "decision_id": dec["decision_id"],
-                                "args_digest": event_hash({"tool": "read_file", "args": {}}), "status": "ok",
-                                "result": "hello"})
+        for i, tcid in enumerate(("tc-1", "tc-2")):
+            ids["request_id"] = uuid.uuid4().hex
+            dec = s.call(ME, "decide", {**ids, "stream": "s1", "client_seq": 2 * i, "tool_call_id": tcid,
+                                        "tool": "read_file", "args_source": "parsed", "args": {}})
+            s.call(ME, "complete", {**ids, "request_id": uuid.uuid4().hex, "stream": "s1", "client_seq": 2 * i + 1,
+                                    "tool_call_id": tcid, "decision_id": dec["decision_id"],
+                                    "args_digest": event_hash({"tool": "read_file", "args": {}}), "status": "ok",
+                                    "result": "hello"})
         s.call(CallerIdentity("mtls", "spiffe://acme/gateway", True), "model_event", {
             **ids, "request_id": uuid.uuid4().hex, "caller": f"uid:{ME.subject}", "stream": "gx", "client_seq": 0,
-            "provider": "openai", "model": "m", "phase": "request",
+            "provider": "openai", "model": "m", "phase": "request", "tool_results_sent": ["tc-1", "tc-2"],
             "tool_results": [{"id": "tc-1", "forms": gateway.result_forms("HELLO")}]})
         s.call(ME, "close_run", {"request_id": uuid.uuid4().hex, "run_id": r["run_id"], "run_token": r["run_token"]})
         return r["run_id"]
@@ -235,6 +237,9 @@ class Agreement(unittest.TestCase):
         [coverage] = [c for c in rep.checks if c["check"] == "coverage"]
         self.assertEqual(coverage["status"], "warn")
         self.assertIn("result_mismatch 1", coverage["detail"])
+        [gaps] = [c for c in rep.checks if c["check"] == "gaps"]   # a result not compared doesn't read as verified
+        self.assertEqual(gaps["status"], "warn")
+        self.assertIn("result_unchecked 1", gaps["detail"])
 
     def test_mutations(self):
         def resign(i, change):

@@ -41,9 +41,11 @@ recorded. Upgrade the signer before its clients (see Upgrade notes); every exist
   gateway checks each tool result in a model request against the signed result of the same call, and the signer
   records an edited result, or one sent before its call completed, as `reconcile.result_mismatch`
   ([gateway](docs/gateway.md#verified-tool-results)). `refuse` refuses a request with an edited result, not one whose
-  call is still open (a lost `complete`). The gateway checks the newest 1 MiB of results per request. Some integrations
-  record a result in a form the model isn't sent and mismatch on honest runs: [limits](docs/limits.md) lists them; run
-  `record` before `refuse`. RPC 17, format gate 1.3.
+  call is still open (a lost `complete`). The gateway digests the newest 512 results of a request up to 1 MiB (results
+  the run's previous request also sent cost nothing); a result past that, or over 1 MiB on its own, is not compared:
+  the signer writes a `capture.gap{result_unchecked}` for its call, which `tracekit verify` warns on, and doesn't
+  refuse the request. Some integrations record a result in a form the model isn't sent and mismatch on honest runs:
+  [limits](docs/limits.md) lists them; run `record` before `refuse`. RPC 17, format gate 1.3.
 - **[Guarantees](docs/guarantees.md):** what Tracekit guarantees and doesn't, per deployment, on one page.
 - [Vercel AI SDK integration page](docs/integrations/vercel-ai.md); `server.json` for the official MCP Registry (the
   MCP gateway as a remote you deploy).

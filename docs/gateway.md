@@ -177,6 +177,11 @@ coverage count with the run's unreconciled calls:
   recorded, never refused: a complete that was lost (a client gives up after its retries) would otherwise stop the
   run for good, since every later request sends the result again.
 
+A result the gateway gives no digests of (past the newest 512 or the 1 MiB it digests per request, below) is not
+compared: for a call with a result to compare, the signer writes a signed `capture.gap{result_unchecked}` (once per
+call), which `tracekit verify` warns on (`gaps`). It is never refused: a gateway that restarted has no digests cached,
+so an honest long run's first request would trip it.
+
 `record` forwards the request; `refuse` answers the agent `403` for an edited result of a completed call and doesn't
 send the request to the model (the exchange's response is recorded with that error). How it works: for each tool result
 a request sends (the newest 512, newest first while their JSON stays within 1 MiB), the gateway sends digests of the
@@ -195,8 +200,9 @@ It does not catch:
   and a model report for it and `gateway_mandatory` is off;
 - results past a request's newest 512, or past 1 MiB of them as JSON (newest first; one the run's previous request also
   sent counts for nothing), so any one result over 1 MiB: the agent chooses which those are, since it can add results
-  of its own. The gateway digests results in pure Python before it forwards the request; the cap bounds that work, and
-  a result `complete` carries fits one 1 MiB frame anyway;
+  of its own. Each such call is a signed `result_unchecked` gap, not a mismatch (results past the newest 1024 aren't
+  named in the request record, so not even that). The cap bounds the pure-Python canonical JSON the gateway computes
+  before it forwards the request: 15 MB of numbers took 3.4 s;
 - a request under another run's token: the agent can register a run of its own and send its requests in that run,
   which has no results to compare;
 - a result sent again later is checked again, but one the API doesn't resend (OpenAI Responses with
@@ -218,7 +224,7 @@ Gemini requests (ADK's default model) don't pass through the gateway, so nothing
 function's call is completed with no result (the model reads `Final result processed.`): unchecked. Run with `record`
 first, and set `refuse` only once `tracekit verify` shows no `result_mismatch` on honest runs of your own agent, model
 and tools. When the signer doesn't check, its answers say so and the gateway stops sending digests. A gateway older
-than 1.3 sends none.
+than 1.3 sends none: each result it sends is a `result_unchecked` gap.
 
 ## Reconciliation
 

@@ -82,7 +82,8 @@ MAX_RUN_HEADER = 2048   # X-Tracekit-Run: a run id and its token (well under 1 K
 # agent controls which those are (it can pad a request with results of its own)
 MAX_RESULTS_CHECKED = 512
 # bytes of tool results (as JSON) a request's digests are computed over, newest first, past those the run's previous
-# request sent too: one frame, as a result `complete` carries; a result past it is unchecked
+# request sent too: it bounds the pure-Python canonical JSON done before forwarding (15 MB of numbers took 3.4 s). A
+# result past it gets no digests, and the signer signs it as unchecked (capture.gap result_unchecked)
 MAX_DIGESTED = MAX_LINE
 UPSTREAM_TIMEOUT_S = 600
 
@@ -192,7 +193,8 @@ class Gateway:
     def results(self, key, sent):
         """model_event's `tool_results` for a request of run `key` that sends the model `sent` ([(tool_call_id,
         content)]): each one's result_forms, newest first while the bytes digested stay within MAX_DIGESTED; a content
-        the run's previous request sent too costs a hash. A result past that is left out: unchecked."""
+        the run's previous request sent too costs a hash. A result past that is left out; its id is still in the
+        request's tool_results_sent, so the signer signs it as unchecked."""
         # lean: a run's cache is its last request's forms (~1.4 KB per result, for up to MAX_RUNS runs); bound it by
         # bytes if gateways hold many long runs
         run, budget, forms, out = self._run(key), MAX_DIGESTED, {}, []
