@@ -8,6 +8,7 @@ import random
 import shutil
 import tempfile
 import unittest
+from unittest import mock
 
 from tracekit import schema
 from tracekit.format.canon import event_hash
@@ -470,18 +471,41 @@ class SignerPolicy(unittest.TestCase):
 
     def test_an_engine_error_is_a_signed_deny(self):
         broken = Engine({})
-        broken._decide = lambda *a: [][0]
+        broken.decide = lambda *a, **k: [][0]
         self.open(broken)
-        d = self.decide("Bash", {"command": "ls"})
+        with self.assertLogs("tracekit.signer.service", "ERROR") as logs:
+            d = self.decide("Bash", {"command": "ls"})
+        self.assertIn("IndexError", logs.output[0])   # with its traceback
         self.assertEqual((d["decision"], d["rule_ids"]), ("deny", ["TK-ENGINE-ERROR"]))
         self.assertIn("IndexError", d["reason"])
         rec = [e["data"] for e in self.events() if e["type"] == "policy.decision"]
         self.assertEqual([(r["decision"], r["rule_ids"]) for r in rec], [("deny", ["TK-ENGINE-ERROR"])])
         self.assertIn("IndexError", rec[0]["reasons"][0])
 
+    def test_nesting_too_deep_for_the_engine_or_a_record_is_refused_not_dropped(self):
+        # TK-ENGINE-ERROR swallowed the engine's RecursionError, and an MCP alias digest the writer could not
+        # canonicalize escaped call(): the connection dropped and nothing was signed
+        def too_deep(*a, **k):
+            raise RecursionError
+
+        def alias_fails(obj):
+            if obj["tool"] != "mcp:x/y":
+                raise svc.rfc8785.CanonicalizationError("too deep")
+            return real(obj)
+        deep = Engine({})
+        deep.decide = too_deep
+        self.open(deep)
+        self.refused("invalid_request", self.decide, "Bash", {"command": "ls"})
+        self.open()
+        real = svc.event_hash
+        with mock.patch.object(svc, "event_hash", alias_fails):
+            self.refused("invalid_request", self.decide, "mcp:x/y", {"q": 1})
+        self.assertFalse([e for e in self.events() if e["type"] == "policy.decision"])
+
     def test_no_shell_input_crashes_the_parser_or_the_engine(self):
-        """A deterministic fuzz: shell-ish text parses or raises ParseError, and every pack decides it without
-        TK-ENGINE-ERROR, as a string, an argv list and Codex's `commands`; the signer signs a decision for each."""
+        """A deterministic fuzz: shell-ish text parses or raises ParseError, and every pack decides it (an engine error
+        raises here) as a string, an argv list and Codex's `commands`; the signer signs a decision without
+        TK-ENGINE-ERROR."""
         rng = random.Random(258)
         atoms = ["git", "push", "Git", "-f", "--delete", ":b", ";", "';'", '";"', "\\;", "&", "&&", "|", "||", "\n",
                  "'", '"', "\\", "$(", ")", "`", "<<EOF\n", "\nEOF\n", "<<<", ">", "2>&1", "(", "{", "}", "$'a\\nb'",
@@ -497,7 +521,7 @@ class SignerPolicy(unittest.TestCase):
                 pass
             for args in ({"command": cmd}, {"command": cmd.split(" ")}, {"commands": cmd.split("\n")}):
                 for e in engines:
-                    self.assertNotIn("TK-ENGINE-ERROR", e.decide("Bash", args)["rule_ids"], (args, e.engine))
+                    e.decide("Bash", args)
             if i % 50 == 0:
                 self.assertNotIn("TK-ENGINE-ERROR", self.decide("Bash", {"command": cmd}, tcid=f"fz-{i}")["rule_ids"])
         self.assertEqual(sum(e["type"] == "policy.decision" for e in self.events()), 30)
