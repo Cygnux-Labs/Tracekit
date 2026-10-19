@@ -1,6 +1,7 @@
 """TK-X205 and the v1 text checks on the v2 view (tracekit/findings_text.py, through `tracekit analyze --v2`): Claude
 Code sessions replayed through the transcript tailer and the hook into an in-process signer with the content vault on
 (eval/e20_alignment.py's replay); E6's corpus against v1's detectors; hostile 64 KiB inputs read in linear time."""
+import json
 import os
 import random
 import shutil
@@ -12,7 +13,7 @@ import unittest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 from eval import e6_findings as e6  # noqa: E402
-from eval.e20_alignment import Signer, Transcript, replay  # noqa: E402
+from eval.e20_alignment import POOL, TUNED, Signer, Transcript, replay  # noqa: E402
 from tracekit import findings, findings_text, findings_v2  # noqa: E402
 from tracekit.why.signed import vault_content  # noqa: E402
 
@@ -314,11 +315,27 @@ class Linear(unittest.TestCase):
         self.assertNotIn("budget", str(out["coverage"]))
 
 
+class HeldOutPool(unittest.TestCase):
+    def test_no_success_phrase_tk_x205_reads_comes_from_the_held_out_pool_alone(self):
+        """E20's held-out pool scores the checks and never tunes them: a phrase TK-X205 reads as a success claim
+        that only the pool says was taken from it."""
+        def texts(v):
+            return [f" {' '.join(findings_text.TOKEN.findall(s.lower()))} " for s in strings(v, set())]
+        with open(POOL, encoding="utf-8") as f:
+            held = texts(json.load(f))
+        tuned = texts([TUNED, e6.CLAIM_TESTS, e6.CLAIM_PUSH_DENY])
+        read = [" ".join(i) for i in findings_text.IDIOMS] + [
+            w for w in findings_text.RAN if "generic" in findings_text.read_message(f"I {w} the fix.")["claims"]]
+        self.assertEqual([p for p in read if any(f" {p} " in t for t in held)
+                          and not any(f" {p} " in t for t in tuned)], [])
+
+
 class E6Parity(unittest.TestCase):
     """E6's corpus (eval/e6_findings.py) through the v2 view gives v1's results for the ported detectors (TK-X105 as
-    TK-X205). The differences are all of one kind: v2 also finds paraphrases v1's patterns miss ("Nothing ... to the
-    remote", "Everything checks out, ... run is clean", "No remote was updated", "Sanity-checked it; no failures"),
-    each on a trial that spliced in that very misbehaviour; no clean trial gets a finding v1 did not give."""
+    TK-X205). The differences are all of one kind: v2 also finds paraphrases v1's patterns miss ("Verified the fix: the
+    suite is green", "Everything checks out, ... run is clean"), each on a trial that spliced in that very
+    misbehaviour; no clean trial gets a finding v1 did not give. E6's held-out sets are left out: a test that pins what
+    is found on them makes them a tuning target; E6 scores them."""
 
     @staticmethod
     def to_v2(recs):
@@ -353,10 +370,11 @@ class E6Parity(unittest.TestCase):
 
     def test_the_v2_view_gives_v1s_findings_and_only_more_on_injected_paraphrases(self):
         rng, extra = random.Random(e6.SEED), {}
+        kinds = [k for k in e6.INJECT if not k.endswith("_heldout")]
         for i in range(600):
             s = e6.Session(rng, f"r{i}")
             e6.base(s, rng)
-            kind = list(e6.INJECT)[(i // 2) % len(e6.INJECT)] if i % 2 == 0 else None
+            kind = kinds[(i // 2) % len(kinds)] if i % 2 == 0 else None
             if kind:
                 e6.INJECT[kind][1](s, rng)
             rng.choice([f for tag, f in e6.CLEAN if not (kind and tag and tag == e6.TOUCHES.get(kind))])(s, rng)
@@ -369,8 +387,7 @@ class E6Parity(unittest.TestCase):
                 self.assertTrue(kind and rule == {"TK-X105": "TK-X205"}.get(e6.INJECT[kind][0], e6.INJECT[kind][0]),
                                 (kind, rule))
                 extra[kind] = extra.get(kind, 0) + 1
-        self.assertEqual(set(extra), {"fake_tests", "fake_tests_heldout", "push_denied_heldout",
-                                      "failed_tests_claimed"})
+        self.assertEqual(set(extra), {"fake_tests", "failed_tests_claimed"})
 
 
 if __name__ == "__main__":

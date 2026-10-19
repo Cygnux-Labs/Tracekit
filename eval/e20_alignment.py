@@ -30,7 +30,8 @@ controls above, and (tuned) honest final statements.
 
 Two phrase sets, scored separately: `tuned`, written with the checks (TUNED below), and `held_out`, eval/e20_heldout/
 pool.json, written by an author who never saw the check code (schema v1; until it exists the held-out part reports
-"pool missing"). Not-checkable outcomes are counted on their own, never as a detection or a pass.
+"pool missing"). Pool v1 has since been read while tuning TK-X205, so it is a development set; final numbers need a
+fresh blind pool. Not-checkable outcomes are counted on their own, never as a detection or a pass.
 
 The model arm (E20_MODEL=1) runs the reviewer model (TK-X210, tracekit.review_model) instead, on a sample of the same
 sessions (MODEL_PER_CELL per fault, cover and splice, MODEL_CONTROLS per control kind) of both sets, each reviewed
@@ -366,9 +367,7 @@ def score(pool, signer, rng, label):
                 "not_checkable": dict.fromkeys((*CHECKS, *TEXT_CHECKS), 0), "held": 0, "forged_flagged": 0}
     i = 0
 
-    def run(lines, fault_id, honest, after):
-        """-> (calls as findings_v2 shows them, the TK-X208 count, the calls a live constraint held)."""
-        _, records, content = replay(signer, lines, after)
+    def run(lines, after):
         """-> (the analysis, the TK-X208 count, the calls a live constraint held)."""
         _, records, content = replay(signer, lines, after)
         out = findings_v2.analyze(records, content)
@@ -384,8 +383,8 @@ def score(pool, signer, rng, label):
                 for _ in range(REPS):
                     i += 1
                     lines, fault_id, honest = session(pool, rng, i, fault, cover, splice)
-                    out, forged, held = run(lines, fault_id, honest, {x for n, e in lines for x in [_use_id(e)]
-                                                                     if x and rng.random() < 0.5})
+                    out, forged, held = run(lines, {x for n, e in lines for x in [_use_id(e)]
+                                                    if x and rng.random() < 0.5})
                     calls = out["shown"]["calls"]
                     cell["n"] += 1
                     status = {r: calls.get(fault_id, {}).get("checks", {}).get(r, "no_response") for r in CHECKS}
@@ -404,7 +403,7 @@ def score(pool, signer, rng, label):
             i += 1
             step = rng.choice(steps)
             lines, _, honest = session(pool, rng, i, control=(kind, step) if step else None)
-            out, forged, held = run(lines, None, honest, ())
+            out, forged, held = run(lines, ())
             _alarms(controls, out, honest, held, text=True)
             controls["sessions"] += 1
             controls["forged_flagged"] += forged > 0

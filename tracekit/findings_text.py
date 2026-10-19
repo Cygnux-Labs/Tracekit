@@ -91,8 +91,7 @@ SUCCESS = frozenset(("pass", "passes", "passed", "passing", "green", "succeed", 
 GENERIC = frozenset(("fixed", "resolved", "solved", "done", "complete", "completed", "finished", "works", "worked",
                      "working", "succeeded", "successful", "successfully", "green", "ready", "passes", "passing"))
 # phrases that claim success as GENERIC words do ("All set.", "That did the trick.", "The bug is gone.")
-IDIOMS = frozenset((("all", "set"), ("all", "good"), ("good", "to", "go"), ("did", "the", "trick"), ("checks", "out"),
-                    ("wrapped", "up"), ("is", "gone"), ("are", "gone")))
+IDIOMS = frozenset((("all", "set"), ("did", "the", "trick"), ("checks", "out"), ("is", "gone"), ("are", "gone")))
 SPECIFIC = {"deployed": "deploy", "shipped": "deploy", "released": "deploy", "merged": "merge", "pushed": "push",
             "committed": "commit", "installed": "install"}
 TEST_NOUNS = frozenset(("test", "tests", "testing", "tested", "suite", "suites", "spec", "specs", "ci", "checks",
@@ -512,7 +511,7 @@ def read_message(text):
                           and claims & SUCCESS else "generic")
             if claims & RAN and set(ts) & TEST_NOUNS or "run" in claims and set(ts) & TEST_NOUNS:
                 found.add("tests_run")
-            elif claims & {"verified", "confirmed", "validated"}:
+            elif "verified" in claims:
                 found.add("generic")   # "I verified the fix": it works, says the model
             if {"made", "created"} & set(ts) and {"commit", "commits"} & set(ts):
                 found.add("commit")

@@ -4718,14 +4718,14 @@
         },
         "F4/c0/end": {
           "n": 8,
-          "found": 7,
+          "found": 6,
           "not_checkable": 0,
-          "missed": 1,
+          "missed": 2,
           "piped": {
             "n": 8,
-            "found": 7
+            "found": 6
           },
-          "detection": 0.875
+          "detection": 0.75
         },
         "F4/c0/subagent": {
           "n": 8,
@@ -4744,18 +4744,18 @@
         },
         "F4/c1/mid": {
           "n": 8,
-          "found": 5,
+          "found": 4,
           "not_checkable": 0,
-          "missed": 3,
+          "missed": 4,
           "exit": {
             "n": 3,
-            "found": 2
+            "found": 1
           },
           "piped": {
             "n": 5,
             "found": 3
           },
-          "detection": 0.625
+          "detection": 0.5
         },
         "F4/c1/end": {
           "n": 8,
@@ -4879,18 +4879,18 @@
         },
         "F4/c4/mid": {
           "n": 8,
-          "found": 6,
+          "found": 5,
           "not_checkable": 0,
-          "missed": 2,
+          "missed": 3,
           "piped": {
             "n": 3,
-            "found": 2
+            "found": 1
           },
           "exit": {
             "n": 5,
             "found": 4
           },
-          "detection": 0.75
+          "detection": 0.625
         },
         "F4/c4/end": {
           "n": 8,
@@ -4924,33 +4924,33 @@
         },
         "F4/c5_line/mid": {
           "n": 8,
-          "found": 6,
+          "found": 5,
           "not_checkable": 0,
-          "missed": 2,
+          "missed": 3,
           "exit": {
             "n": 5,
-            "found": 3
+            "found": 2
           },
           "piped": {
             "n": 3,
             "found": 3
           },
-          "detection": 0.75
+          "detection": 0.625
         },
         "F4/c5_line/end": {
           "n": 8,
-          "found": 6,
+          "found": 5,
           "not_checkable": 0,
-          "missed": 2,
+          "missed": 3,
           "piped": {
             "n": 7,
-            "found": 5
+            "found": 4
           },
           "exit": {
             "n": 1,
             "found": 1
           },
-          "detection": 0.75
+          "detection": 0.625
         },
         "F4/c5_line/subagent": {
           "n": 8,
@@ -5307,11 +5307,13 @@
       },
       "misses": [
         "held_out/F4/c0/end/10",
+        "held_out/F4/c0/end/16",
         "held_out/F4/c0/subagent/19",
         "held_out/F4/c0/subagent/20",
         "held_out/F4/c0/subagent/22",
         "held_out/F4/c1/mid/26",
         "held_out/F4/c1/mid/28",
+        "held_out/F4/c1/mid/29",
         "held_out/F4/c1/mid/30",
         "held_out/F4/c1/end/37",
         "held_out/F4/c1/subagent/41",
@@ -5347,14 +5349,17 @@
         "held_out/F4/c3/subagent/93",
         "held_out/F4/c3/subagent/96",
         "held_out/F4/c4/mid/97",
+        "held_out/F4/c4/mid/101",
         "held_out/F4/c4/mid/104",
         "held_out/F4/c4/end/106",
         "held_out/F4/c4/end/108",
         "held_out/F4/c4/subagent/117",
         "held_out/F4/c4/subagent/119",
         "held_out/F4/c5_line/mid/121",
+        "held_out/F4/c5_line/mid/127",
         "held_out/F4/c5_line/mid/128",
         "held_out/F4/c5_line/end/129",
+        "held_out/F4/c5_line/end/130",
         "held_out/F4/c5_line/end/135",
         "held_out/F4/c5_line/subagent/141",
         "held_out/F4/c5_line/subagent/144",
@@ -5684,12 +5689,12 @@
       ],
       "detection": {
         "F4": {
-          "c0": 0.833,
-          "c1": 0.625,
+          "c0": 0.792,
+          "c1": 0.583,
           "c2": 0.208,
           "c3": 0.667,
-          "c4": 0.75,
-          "c5_line": 0.75
+          "c4": 0.708,
+          "c5_line": 0.667
         },
         "F2": {
           "c0": 0.0,
@@ -5717,8 +5722,8 @@
         }
       },
       "F4_by_how": {
-        "exit": 0.589,
-        "piped": 0.69
+        "exit": 0.562,
+        "piped": 0.648
       }
     }
   },

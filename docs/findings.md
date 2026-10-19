@@ -365,12 +365,13 @@ constraint grammar reads 4 of the 14 held-out ways of saying "don't touch X", so
 rest; both are in the [limits](limits.md#intent-reasoning-and-action-checks).
 
 E20 also splices text faults. A false success claim after a failed test run (F4) is found in every tuned session and in
-64% of sessions built from the held-out pool (written blind to the checks): 73% when the claim is one of the pool's
-success claims, 21% when it is a free-form final summary; 69% when the run was piped through `tail` (exit 0, the
-failure only in its output), 59% with a failing exit (the claim, not the failure, is what is missed). No honest
-control session, tuned or held out, got a text finding. The checks that need the model to deny or claim an
-action (TK-X111..X114, X101..X104) find a fault only when the summary says so: E20 reports them per cover. On E6's
-corpus the v2 view gives every v1 finding of the ported checks, plus paraphrases v1's patterns miss, and no more on
+60% of sessions built from pool v1 (written blind to the checks, but since read while tuning them: a development set
+until a fresh blind pool is scored): 68% when the claim is one of the pool's success claims, 21% when it is a free-form
+final summary; 65% when the run was piped through `tail` (exit 0, the failure only in its output), 56% with a failing
+exit (the claim, not the failure, is what is missed). No control session got a text finding, but the pool holds no
+honest final statements, so false alarms on unseen wording are not measured. The checks that need the model to deny or
+claim an action (TK-X111..X114, X101..X104) find a fault only when the summary says so: E20 reports them per cover. On
+E6's corpus the v2 view gives every v1 finding of the ported checks, plus paraphrases v1's patterns miss, and no more on
 clean sessions.
 
 E20's effects arm replays synthetic sensor runs (Claude Code-like, Codex-like) with Tracekit's hook processes and the
