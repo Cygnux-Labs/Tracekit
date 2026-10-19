@@ -24,7 +24,7 @@ export { MAX_ENTRIES, MAX_ENTRY, MAX_TOTAL, Unusable, readZip } from "./zip.js";
 export { StrictJSONError, canonicalize, strictParse, strictParseBytes } from "./jcs.js";
 
 /** The bundle format version this verifier implements: a bundle needing a later one is UNVERIFIABLE. */
-export const VERSION = "1.3.0";
+export const VERSION = "1.4.0";
 export const EXIT_OK = 0, EXIT_FAIL = 1, EXIT_BAD = 2, EXIT_WARN = 3;
 const FORMAT = "tracekit.bundle.v2";
 const MAX_LINE = 1 << 20;
@@ -437,7 +437,7 @@ async function check(rep: Report, manifest: J, files: Map<string, Uint8Array>, t
       }).join(", "));
   const lost = gaps("observer_lost");
   if (lost.length)
-    rep.check("observers", false, `${lost.length} egress observer(s) went silent while their run was open`, lost.slice(0, 20), true);
+    rep.check("observers", false, `${lost.length} observer gap(s): an observer went silent, restarted or lost events while its run was open`, lost.slice(0, 20), true);
   checkIncidents(rep, runs, policies, floats);
   const accessed = typed("content.accessed").length, erased = typed("content.erased").length;
   if (accessed || erased)   // signer records of the content vault (docs/privacy.md): who read or erased retained content

@@ -69,6 +69,7 @@ VERSIONS = {
                          "run.closing": {"reason": ["quarantine"]}}},
     "1.3.0": {"types": ["reconcile.result_mismatch"], "fields": {},
               "values": {"capture.gap": {"kind": ["result_unchecked"]}}},
+    "1.4.0": {"types": [], "fields": {"effect.observed": ["sensor"]}, "values": {}},
 }
 KEY_TYPES = ("signer.epoch", "key.retire")
 

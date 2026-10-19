@@ -1,6 +1,7 @@
-"""The signer RPC contract, version 17: one JSON Schema per request and response, the error shape, and `SignerAPI`.
+"""The signer RPC contract, version 18: one JSON Schema per request and response, the error shape, and `SignerAPI`.
 
-Frozen: a change to any schema here is a new RPC_VERSION. Version 17 (Tracekit 1.3) adds model_event's optional
+Frozen: a change to any schema here is a new RPC_VERSION. Version 18 adds observe_effect's kernel sensor events (its
+`sensor`, `lost`, and the exec, exit, connect and file effects). Version 17 (Tracekit 1.3) adds model_event's optional
 `tool_results` (a gateway's digests of the tool results a request sends the model) and its response's `refused`.
 Version 16 (all of Tracekit 1.2) adds register_run's optional
 `parent`, close_run's optional `last_client_seq` (and a gateway's `caller`), `tailer_heartbeat`, args digests on tool uses
@@ -21,7 +22,7 @@ from typing import Protocol
 from tracekit.format.canon import MAX_SAFE_INT
 from tracekit.schema import _check
 
-RPC_VERSION = 17
+RPC_VERSION = 18
 RPC_MIN = 15   # the oldest client version a signer serves
 MAX_RAW_ARGS = 1 << 20   # characters of a raw arguments string
 MAX_EXTERNAL_RECORD = 1 << 16   # characters of an external system's own decision record
@@ -61,11 +62,13 @@ def _obj(required, **props):
 
 ID = _str(128, minLength=1, pattern=r"^[A-Za-z0-9._:-]+" + _END)
 SEQ = {"type": "integer", "minimum": 0, "maximum": MAX_SAFE_INT}
+U32 = {"type": "integer", "minimum": 0, "maximum": 4294967295}
 DIGEST = _str(71, pattern=r"^sha256:[0-9a-f]{64}" + _END)
 TOKEN = _str(1024, minLength=1)
 RULE_IDS = {"type": "array", "maxItems": 32, "items": _str(64)}
 REASON = _str(1024)
 IDENTITY = _str(256, pattern=r"^[a-z0-9_]+:.+" + _END)   # scheme:subject
+HOST = _str(253, minLength=1, pattern=r"^[a-z0-9._:-]+" + _END)   # a host name or IP address, lower case
 TS = _str(27, pattern=r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z" + _END)
 SLACK_ID = _str(64, pattern=r"^slack:[A-Z0-9]+/[A-Z0-9]+" + _END)   # slack:<team id>/<user or user group id>
 ANY = {}   # any JSON value; bounded by the transport's line limit
@@ -84,6 +87,10 @@ _EVENT = dict(_RUN, stream=ID, client_seq=SEQ)
 _RUN_REQ = ["request_id", "run_id", "run_token"]
 _EVENT_REQ = _RUN_REQ + ["stream", "client_seq"]
 _SEQ_ONLY = _obj(["run_seq"], run_seq=SEQ)
+# a kernel sensor's event (observe_effect): process `pid` running `binary`, attributed like a net effect
+_OS = dict(run_id=ID, run_token=TOKEN, caller=IDENTITY, ts=TS, pid=U32, binary=_str(4096, minLength=1),
+           exec_id=_str(256, minLength=1), tool_call_id=ID)
+_OS_REQ = ["kind", "ts", "pid", "binary"]
 
 # `caller`, from a `gateways` identity only: the client it authenticated, whose run token the call carries (tier T2)
 _decide = _obj(_EVENT_REQ + ["tool_call_id", "tool", "args_source", "args"], **_EVENT, caller=IDENTITY,
@@ -235,13 +242,22 @@ REQUESTS = {
     # by the run token the client presented (run_id, run_token) or by the identity the observer authenticated for the
     # connection (`caller`), which also goes with a token. Every call is the heartbeat of the observer's process
     # `instance`; `check`: refused with run_token_invalid unless the signer issued that token for that run
+    # A kernel sensor's import (tracekit.sensor) names its `sensor` in every call: each of its effects is what that
+    # sensor says process `pid` did (`tool_call_id`: the id the process's environment carried, the agent's claim);
+    # `lost`: events the sensor or the import dropped, a gap in each run it covers
     "observe_effect": _obj(["request_id", "instance", "effects"], request_id=ID, instance=ID, effects={
-        "type": "array", "maxItems": 256, "items": _obj(
+        "type": "array", "maxItems": 256, "items": {"oneOf": [_obj(
             ["kind", "host", "port", "bytes_out", "bytes_in", "connections", "first_ts", "last_ts"], run_id=ID,
-            run_token=TOKEN, caller=IDENTITY, kind={"const": "net"},
-            host=_str(253, minLength=1, pattern=r"^[a-z0-9._:-]+" + _END),
+            run_token=TOKEN, caller=IDENTITY, kind={"const": "net"}, host=HOST,
             port={"type": "integer", "minimum": 1, "maximum": 65535}, bytes_out=SEQ, bytes_in=SEQ, connections=SEQ,
-            first_ts=TS, last_ts=TS)}, check=_obj(["run_id", "run_token"], run_id=ID, run_token=TOKEN)),
+            first_ts=TS, last_ts=TS),
+            _obj(_OS_REQ, kind={"const": "exec"}, args_digest=DIGEST, **_OS),
+            _obj(_OS_REQ, kind={"const": "exit"}, status=U32, signal=_str(32), **_OS),
+            _obj(_OS_REQ + ["host", "port"], kind={"const": "connect"}, host=HOST,
+                 port={"type": "integer", "minimum": 0, "maximum": 65535}, **_OS),
+            _obj(_OS_REQ + ["path"], kind={"const": "file"}, path=_str(4096, minLength=1), **_OS)]}},
+        check=_obj(["run_id", "run_token"], run_id=ID, run_token=TOKEN), sensor={"enum": ["tetragon", "falco"]},
+        lost=REASON),
     "status": _obj([]),
     "read": _obj(["run_id", "run_token"], run_id=ID, run_token=TOKEN, from_seq=SEQ,
                  limit={"type": "integer", "minimum": 1, "maximum": 1000}),

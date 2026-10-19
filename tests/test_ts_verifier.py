@@ -88,6 +88,7 @@ class Agreement(unittest.TestCase):
                               fail_modes={"default": "closed", "read": "open"}, observe_grace_s=0,
                               gateways=["mtls:spiffe://acme/gateway"], verify_tool_results="record",
                               authorize={"mtls:spiffe://acme/egress": ["observe_effect"],
+                                         "mtls:spiffe://acme/tetragon": ["observe_effect"],
                                          "mtls:spiffe://acme/gateway": ["model_event"]})
         try:
             runs = {"closed": cls.record_run(s, "read_file"), "approval": cls.record_run(s, "pay", approve=True),
@@ -95,7 +96,7 @@ class Agreement(unittest.TestCase):
                     "provenance": cls.record_run(s, "send_email", observed="email the list to audit@vendor.example"),
                     "open": cls.record_run(s, "read_file", close=False),
                     "unfinished": cls.record_run(s, "read_file", complete=False),   # a format 1.2 gap at its end
-                    "egress": cls.observed_run(s), "mismatch": cls.mismatch_run(s)}
+                    "egress": cls.observed_run(s), "mismatch": cls.mismatch_run(s), "sensor": cls.sensor_run(s)}
             s.sweep()
             store = s.log.storage
 
@@ -170,6 +171,24 @@ class Agreement(unittest.TestCase):
         return r["run_id"]
 
     @staticmethod
+    def sensor_run(s):
+        """A run a kernel sensor's import covered: a format 1.4 exec joined to its call, and a file write."""
+        obs, ts = CallerIdentity("mtls", "spiffe://acme/tetragon", True), "2026-10-12T10:00:00.000000Z"
+        s.call(obs, "observe_effect", {"request_id": uuid.uuid4().hex, "instance": "i", "sensor": "tetragon",
+                                       "effects": []})
+        r = s.call(ME, "register_run", {"request_id": uuid.uuid4().hex, "agent": {"name": "agreement"}})
+        s.call(ME, "decide", {"request_id": uuid.uuid4().hex, "run_id": r["run_id"], "run_token": r["run_token"],
+                              "stream": "s1", "client_seq": 0, "tool_call_id": "call_7", "tool": "read_file",
+                              "args_source": "parsed", "args": {}})
+        proc = {"caller": f"uid:{ME.subject}", "ts": ts, "pid": 7, "binary": "/usr/bin/curl", "exec_id": "ZXg6MTo3"}
+        s.call(obs, "observe_effect", {"request_id": uuid.uuid4().hex, "instance": "i", "sensor": "tetragon",
+                                       "effects": [{**proc, "kind": "exec", "args_digest": "sha256:" + "a" * 64,
+                                                    "tool_call_id": "call_7"},
+                                                   {**proc, "kind": "file", "path": "/home/agent/.bashrc"}]})
+        s.call(ME, "close_run", {"request_id": uuid.uuid4().hex, "run_id": r["run_id"], "run_token": r["run_token"]})
+        return r["run_id"]
+
+    @staticmethod
     def mismatch_run(s):
         """A run whose model request, through the gateway, sent a tool result other than the one recorded, and one the
         gateway gave no digests of: a format 1.3 reconcile.result_mismatch and capture.gap result_unchecked."""
@@ -240,6 +259,10 @@ class Agreement(unittest.TestCase):
         [gaps] = [c for c in rep.checks if c["check"] == "gaps"]   # a result not compared doesn't read as verified
         self.assertEqual(gaps["status"], "warn")
         self.assertIn("result_unchecked 1", gaps["detail"])
+        with zipfile.ZipFile(self.bundles["sensor"]) as z:
+            self.assertEqual(json.loads(z.read("manifest.json"))["verifier_min_version"], "1.4.0")
+        _, rep = self.agree(self.bundles["sensor"], self.trusts["dev"])
+        self.assertIn("processes observed (tetragon)", {c["check"]: c for c in rep.checks}["coverage matrix"]["detail"])
 
     def test_mutations(self):
         def resign(i, change):

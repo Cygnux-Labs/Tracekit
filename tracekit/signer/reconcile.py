@@ -171,9 +171,10 @@ def explained(rec, host, explains, labels):
     return None
 
 
-def matrix(rec, posture, observed):
+def matrix(rec, posture, observed, sensors=()):
     """run.final's coverage matrix of the run of index `rec`; `posture`: signer.yaml's; `observed`: whether an egress
-    observer covered the run and heartbeat throughout. Processes and services: none until an observer covers them."""
+    observer covered the run and heartbeat throughout; `sensors`: the kernel sensors whose imports did, which make
+    processes observed. Services: none until an observer covers them."""
     def cls(status, layers, asserted=False):
         return {"status": status, "layers": sorted(layers), **({"asserted": True} if asserted else {})}
     models, tools, gw = rec.get("models", {}), rec.get("tools", {}), posture.get("gateway_mandatory", False)
@@ -184,7 +185,7 @@ def matrix(rec, posture, observed):
             "tool_calls": cls("enforced", tools, True) if custody else cls("reported" if tools else "none", tools),
             "network": cls("enforced" if enforced else "observed", ["egress"], enforced) if observed else
             cls("reported", tools) if rec.get("hosts") else cls("none", ()),
-            "processes": cls("none", ()), "services": cls("none", ())}
+            "processes": cls("observed" if sensors else "none", sensors), "services": cls("none", ())}
 
 
 def counted(rec, mandatory, k="l3"):

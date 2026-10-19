@@ -35,13 +35,14 @@ _DELEGATED = {"observe": "observe", "analyze": "findings", "otel": "otlp", "cost
              "deploy": "deploy.compose",
               "signer": "signer.service", "view": "view", "monitor": "monitor", "gateway": "gateway",
               "egress": "egress", "executor": "executor", "mcp-gateway": "mcp_gateway", "issuer": "issuer",
-              "why": "why.cli", "reviewer": "reviewer"}  # subcommands with their own parsers
+              "why": "why.cli", "reviewer": "reviewer", "sensor": "sensor"}  # subcommands with their own parsers
 # delegated subcommands that are experimental (docs/support.md); otel has its own --experimental gate
 _EXPERIMENTAL = {"why": "tracekit why", "gateway": "the LLM gateway", "egress": "the egress observer",
                  "executor": "the tool executor", "mcp-gateway": "the MCP gateway", "reviewer": "the reference reviewer",
                  "issuer": "the record-key issuer", "witness": "the witness", "public-witness": "the public witness",
                  "monitor": "the log monitor", "deploy": "the compose stack", "cost": "tracekit cost",
-                 "analyze": "tracekit analyze", "observe": "tracekit observe (the v1 ledger)"}
+                 "analyze": "tracekit analyze", "observe": "tracekit observe (the v1 ledger)",
+                 "sensor": "the kernel sensor import"}
 _MOVED = {"sql": "query", "proofpack": "proofpack", "report": "proofpack", "causeway": "causeway"}  # now separate packages under contrib/
 
 
@@ -164,6 +165,9 @@ def main(argv=None):
     p = sub.add_parser("gateway", help="LLM gateway for the v2 signer: `gateway serve --config gateway.yaml`", add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
     p = sub.add_parser("egress", help="egress observer for the v2 signer: `egress serve --config egress.yaml`",
+                       add_help=False)
+    p.add_argument("rest", nargs=argparse.REMAINDER)
+    p = sub.add_parser("sensor", help="kernel sensor import for the v2 signer: `sensor import --config sensor.yaml`",
                        add_help=False)
     p.add_argument("rest", nargs=argparse.REMAINDER)
     p = sub.add_parser("reviewer", help="the reference agent approver: `reviewer serve|eval --config reviewer.yaml`",

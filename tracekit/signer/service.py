@@ -1455,12 +1455,14 @@ class SignerService:
                                                    "with no tool.result next to the harness's transcript or the "
                                                    "app's log for whether they ran"},
                     source="signer")
-        observed = False
+        observed, sensors = False, set()   # an egress observer, the kernel sensors, covering the run throughout
         for obs, at in self._covering(key).items():
-            if (time.monotonic() if now is None else now) - at < TAILER_LOST_S:
-                observed = True
-            else:
+            if (time.monotonic() if now is None else now) - at >= TAILER_LOST_S:
                 self._observer_lost(tx, run, obs, at, now)
+            elif self._observers.get((key[0], obs), (0, None, None))[2]:
+                sensors.add(self._observers[(key[0], obs)][2])
+            else:
+                observed = True
         coverage = reconcile.finish(tx, run, self.gateway_mandatory, self.policy.is_handoff,
                                     self.policy.is_structured_output)
         provider = len(reconcile.counted(run["rec"], self.gateway_mandatory, "provider")) if run.get("rec") else 0
@@ -1468,7 +1470,8 @@ class SignerService:
         tx.set(run, "final", True)
         tx.emit(run, "run.final", {"head_run_seq": run["run_seq"] - 1, "head_hash": run["head"],
                                    **({"coverage": coverage,
-                                       "matrix": reconcile.matrix(run["rec"], self.posture or {}, observed)}
+                                       "matrix": reconcile.matrix(run["rec"], self.posture or {}, observed,
+                                                                  sorted(sensors))}
                                       if coverage else {}),
                                    **({"provider_executed": provider} if provider else {}),
                                    **({"paired_by_args": paired} if paired else {})}, source="signer")
@@ -1637,9 +1640,22 @@ class SignerService:
         with self._beats_lock:
             return {k[2]: at for k, at in self._beats.items() if len(k) == 3 and k[:2] == key}
 
-    def _observer_lost(self, tx, run, obs, at=None, now=None):
-        """An observer_lost gap in `run`: observer `obs` silent since `at` (monotonic) until `now`, or restarted."""
+    def _observer_lost(self, tx, run, obs, at=None, now=None, lost=None):
+        """An observer_lost gap in `run`: observer `obs` silent since `at` (monotonic) until `now`, restarted, or (a
+        kernel sensor's import) reporting `lost` events."""
         t = time.monotonic() if now is None else now
+        sensor = self._observers.get((run["tenant"], obs), (0, None, None))[2]
+        if sensor:
+            name = f"the {sensor} import {obs[:256]}"
+            why = (f"{name} reported lost events: {privacy.redact_text(lost)[0]}" if lost else
+                   f"{name} restarted while the run was open: events its old process had not sent are not in the run"
+                   if at is None else f"no observe_effect from {name} for {t - at:.0f}s while the run was open: it "
+                   "stopped or was killed, so the run's processes, connections and file writes from then on are not "
+                   "in the run")
+            tx.emit(run, "capture.gap", {"kind": "observer_lost", "reason": (
+                f"{why}; its coverage says processes not observed. Check `tracekit sensor import`, the sensor and that "
+                "the import's identity has the observe_effect grant")[:1024]}, source="signer")
+            return
         why = (f"egress observer {obs[:256]} restarted while the run was open: what the old process had not reported "
                "when it ended (up to a minute and a heartbeat of traffic if it was killed, none if it was stopped with "
                "SIGTERM) is not in the run, so its coverage says network not observed; find why the egress proxy "
@@ -2507,7 +2523,7 @@ class SignerService:
             return out
         out = self.log.submit(identity, "register_run", req, fn)
         with self._beats_lock:   # the observers alive now cover the run from its start
-            for (t, obs), (at, _) in self._observers.items():
+            for (t, obs), (at, *_) in self._observers.items():
                 if t == out["tenant"] and time.monotonic() - at < TAILER_LOST_S:
                     self._beats.setdefault((t, out["run_id"], obs), at)
         return out
@@ -3529,10 +3545,16 @@ class SignerService:
         else a capture.gap{effect_outside_run} in the tenant's signer run, which a run-set shows. Every call is the
         observer's heartbeat: the runs of its tenant registered while it is alive are covered by it, until another
         process of it (`instance`) takes over, which is an observer_lost gap in each. `check`: refused unless this
-        signer issued that run token for that run of the observer's tenant (the proxy asks before it connects)."""
-        obs, tenant = subject(identity), self._tenant_of(identity)
+        signer issued that run token for that run of the observer's tenant (the proxy asks before it connects).
+        A kernel sensor's import (tracekit.sensor; `sensor` in every call) is an observer the same way, of processes
+        rather than network: its effects (_sensor_effect) are recorded but not reconciled, and `lost` ends its coverage
+        of the runs it covers with an observer_lost gap in each (in the signer run when it covers none)."""
+        obs, tenant, sensor = subject(identity), self._tenant_of(identity), req.get("sensor")
         if len(obs) > 256:   # each record names it in full
             raise RPCError("forbidden", f"{obs[:64]}...: an observer's identity is at most 256 characters")
+        if any((x["kind"] == "net") == bool(sensor) for x in req["effects"]) or "lost" in req and not sensor:
+            raise RPCError("invalid_request", "net effects go without `sensor`; a kernel sensor's events and `lost` "
+                                              "go with it")
         if "check" in req:   # before anything is charged: a made-up token must not spend the observer's events
             why = self._attributed(tenant, req["check"])[2]
             if why:
@@ -3542,38 +3564,50 @@ class SignerService:
         now = time.monotonic()
         with self._beats_lock:
             before = self._observers.get((tenant, obs))
-            self._observers[(tenant, obs)] = (now, req["instance"])
+            self._observers[(tenant, obs)] = (now, req["instance"], sensor)
             covered = [k for k in self._beats if len(k) == 3 and k[0] == tenant and k[2] == obs]
             restarted = covered if before and before[1] != req["instance"] else []
+            lost = covered if "lost" in req and not restarted else []
             for k in covered:
-                if restarted:
+                if restarted or lost:
                     self._beats.pop(k)
                 else:
                     self._beats[k] = now
         if restarted:
             self.log.write(lambda tx: [self._observer_lost(tx, self.log.runs[k[:2]], obs) for k in restarted
                                        if not self.log.runs[k[:2]]["final"]])
-        if not req["effects"]:
+        if not req["effects"] and "lost" not in req:
             return {"recorded": 0}
         labels = {r["id"]: r["label"] for _, r, *_ in self.policy.rules if "label" in r}
         explains = self.policy.policy.get("explains", ())
 
         def fn(tx, _):
+            if "lost" in req:
+                for run in [self.log.runs[k[:2]] for k in lost if not self.log.runs[k[:2]]["final"]] or [
+                        self.log.signer_run(tx, tenant)]:
+                    self._observer_lost(tx, run, obs, lost=req["lost"])
             for x in req["effects"]:
                 key, how, why = self._attributed(tenant, x)
                 run = key and self.log.runs.get(key)
                 if run and run["owner"] == owner(identity):
                     raise RPCError("forbidden", f"{obs[:256]} owns run {key[1]}: an observer is never the agent's "
-                                                "identity; give the egress proxy its own")
+                                                f"identity; give the {'sensor import' if sensor else 'egress proxy'} "
+                                                "its own")
                 if not run or run["final"]:
                     why = why or (f"run {key[1]} was final by then (raise observe_grace_s if the observer's reports "
                                   "often come this late)" if run else f"there is no run {key[1]}")
                     claimed = x.get("run_id") or key and key[1]
+                    target = f" {x['host']}:{x['port']}" if "host" in x else f" {x['path'][:256]}" if "path" in x else ""
+                    saw = (f"{x['kind']}{target} by pid {x['pid']} ({x['binary'][:256]}) at {x['ts']}" if sensor else
+                           f"{x['host']}:{x['port']} ({x['bytes_out']} bytes out, {x['bytes_in']} in, "
+                           f"{x['connections']} connection(s), {x['first_ts']} to {x['last_ts']})")
                     tx.emit(self.log.signer_run(tx, tenant), "capture.gap", {
                         "kind": "effect_outside_run", **({"run_id": claimed} if claimed else {}),
-                        "reason": f"egress observer {obs[:256]} saw {x['host']}:{x['port']} ({x['bytes_out']} bytes "
-                                  f"out, {x['bytes_in']} in, {x['connections']} connection(s), {x['first_ts']} to "
-                                  f"{x['last_ts']}) that no open run holds: {why}"}, source="signer")
+                        "reason": f"{sensor or 'egress observer'} {obs[:256]} saw {saw} that no open run holds: "
+                                  f"{why}"}, source="signer")
+                    continue
+                if sensor:
+                    tx.emit(run, "effect.observed", self._sensor_effect(run, obs, sensor, x, how), source="signer")
                     continue
                 rec = run.get("rec")
                 by = rec is not None and reconcile.explained(rec, x["host"], explains, labels) or None
@@ -3591,6 +3625,21 @@ class SignerService:
                         source="signer")
             return {"recorded": len(req["effects"])}
         return self.log.submit(identity, "observe_effect", req, fn)
+
+    def _sensor_effect(self, run, obs, sensor, x, how):
+        """effect.observed of kernel sensor event `x` in `run`: the arguments' digest as a commitment, and
+        explained_by call when the run decided the tool call the process's environment names and didn't deny it."""
+        # lean: an effect nothing explains is not reconciled (no reconcile.unexplained_effect, no count in run.final);
+        # add it once runs carry a tool call id into every process (Codex does, Claude Code doesn't)
+        d = {"observer": obs, "sensor": sensor, **{k: x[k] for k in (
+            "kind", "ts", "pid", "binary", "exec_id", "status", "signal", "host", "port", "path", "tool_call_id")
+            if k in x}, "attribution": how}
+        if "args_digest" in x:
+            sid = secrets.token_hex(16)
+            d.update(args_commitment=self._commit(salt_label({"type": "effect.observed", "data": {"salt_id": sid}}),
+                                                  x["args_digest"]), salt_id=sid)
+        call = (run.get("rec") or {}).get("l2", {}).get(x.get("tool_call_id"))
+        return {**d, "explained_by": "call"} if call and call["decision"] != "deny" else d
 
     def _attributed(self, tenant, x):
         """(run key or None, attribution, why there is none) of effect `x` of an observer of `tenant` (on the writer):

@@ -64,7 +64,8 @@ by kind) gives a `coverage` line; unreconciled calls and unexplained effects mak
 on them. Its `matrix` gives the `coverage matrix` line: per action class (model calls, tool calls, network, processes,
 services) enforced, observed, reported or not covered, the layers behind it and `asserted` where the status rests on
 the operator's posture; across several runs, each class's weakest. It never says a run is complete. Each capture.gap
-`observer_lost` (an egress observer went silent while its run was open) is an `observers` warning.
+`observer_lost` (an egress observer or a kernel sensor's import went silent, restarted or lost events while its run was
+open) is an `observers` warning.
 Gaps: every other signer-written capture.gap in a run (unless its kind is in INFO_GAPS), approval.binding_mismatch and
 trace.tamper record is counted by kind on a `gaps` warning; a run that declares a fail-open class makes `fail-open
 classes` a warning (calls the agent classed as one of them may have run unrecorded while the signer was down: the
@@ -591,8 +592,8 @@ def _verify(rep, manifest, files, trust, v1_ledger, v1_key, monitor_reports, rev
     lost = [f"seq {r['event']['seq']}: {str(r['event']['data'].get('reason'))[:200]}" for r in every
             if r["event"].get("type") == "capture.gap" and r["event"]["data"].get("kind") == "observer_lost"]
     if lost:
-        rep.check("observers", False, f"{len(lost)} egress observer(s) went silent while their run was open", lost[:20],
-                  warn=True)
+        rep.check("observers", False, f"{len(lost)} observer gap(s): an observer went silent, restarted or lost events "
+                                      "while its run was open", lost[:20], warn=True)
     _findings(rep, runs)
     _incidents(rep, runs, policies)
     vault = collections.Counter(r["event"]["type"] for r in every if r["event"].get("type") in ("content.accessed",

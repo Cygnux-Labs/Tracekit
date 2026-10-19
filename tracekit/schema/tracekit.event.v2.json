@@ -1162,7 +1162,14 @@
       "then": {
         "properties": {
           "data": {
-            "$ref": "#/$defs/effect_observed"
+            "oneOf": [
+              {
+                "$ref": "#/$defs/effect_observed"
+              },
+              {
+                "$ref": "#/$defs/sensor_effect"
+              }
+            ]
           }
         }
       }
@@ -4523,6 +4530,110 @@
             "explains"
           ],
           "description": "what explains the host: a recorded http or model call to it, or the policy's explains; absent: unexplained (a reconcile.unexplained_effect follows)"
+        }
+      }
+    },
+    "sensor_effect": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "observer",
+        "sensor",
+        "kind",
+        "ts",
+        "pid",
+        "binary",
+        "attribution"
+      ],
+      "description": "format 1.4: what a kernel sensor (Tetragon, Falco) reported a process of the run did, imported by tracekit sensor under its own signer identity (an observer's assertion); signer-written",
+      "properties": {
+        "observer": {
+          "type": "string",
+          "maxLength": 256,
+          "description": "the import's signer identity (scheme:subject)"
+        },
+        "sensor": {
+          "enum": [
+            "tetragon",
+            "falco"
+          ]
+        },
+        "kind": {
+          "enum": [
+            "exec",
+            "exit",
+            "connect",
+            "file"
+          ],
+          "description": "exec: the process started; exit: it ended; connect: it connected to host:port; file: the sensor's policy selected a file event of it (a write outside the workspace, in the shipped samples)"
+        },
+        "ts": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{6}Z$",
+          "maxLength": 27
+        },
+        "pid": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "binary": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "exec_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "description": "the sensor's id of the process (Tetragon's exec_id)"
+        },
+        "args_commitment": {
+          "$ref": "#/$defs/commitment",
+          "description": "commitment to sha256 of the arguments string as the sensor reported it"
+        },
+        "salt_id": {
+          "$ref": "#/$defs/id",
+          "description": "the signer's salt id for this record's commitments (salt label <type>:<salt_id>)"
+        },
+        "status": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "signal": {
+          "type": "string",
+          "maxLength": 32
+        },
+        "host": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 253
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "tool_call_id": {
+          "$ref": "#/$defs/id",
+          "description": "the tool call id the process's environment carried (CODEX_TOOL_CALL_ID): the agent's claim"
+        },
+        "attribution": {
+          "enum": [
+            "token",
+            "identity"
+          ],
+          "description": "identity: the import mapped the process to the run's owner and the signer picked that owner's latest open run"
+        },
+        "explained_by": {
+          "const": "call",
+          "description": "the run decided the tool call tool_call_id names, and didn't deny it"
         }
       }
     },
