@@ -26,6 +26,7 @@ never changes a hook's answer: a failure prints a line and the hook goes on.
 import contextlib
 import json
 import os
+import stat
 import sys
 
 from tracekit import agent_hooks, parsers
@@ -128,9 +129,13 @@ def said_since(harness, p, stderr):
 
 
 def _read(path, st):
-    """The JSON objects on the complete lines of `path` past st["offset"], which moves past them."""
-    with open(path, "rb") as f:
-        size = os.fstat(f.fileno()).st_size
+    """The JSON objects on the complete lines of the regular file `path` past st["offset"], which moves past them; none
+    of anything else."""
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NONBLOCK", 0))   # a FIFO in its place must not block the hook
+    with os.fdopen(fd, "rb") as f:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return []
+        size = os.fstat(fd).st_size
         if size < st["offset"]:
             # lean: a transcript rewritten in place (Gemini CLI's rewind, a resumed session) is read on from its new
             # end, as reading it again would record its lines twice; follow such rewrites line by line if they matter
