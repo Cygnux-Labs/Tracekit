@@ -1,6 +1,7 @@
 """`tracekit view`: the v2 signer's runs, each verified by verify.v2, served with the observer's page and security."""
 import collections
 import contextlib
+import datetime
 import functools
 import http.client
 import io
@@ -21,6 +22,7 @@ import pytest
 import test_signer_service as ts
 from factories import wait_for
 from test_observe_render import XSS, script_of, unescaped
+from test_sensor import SENSOR
 from tracekit import cli, findings_v2, observe, view
 from tracekit.format.canon import event_hash as canon_hash
 from tracekit.observe import _session
@@ -187,7 +189,8 @@ class View(unittest.TestCase):
     def setUp(self):
         self.d = ts.tmpdir(self)
         cfg = {"data_dir": self.d, "socket": os.path.join(self.d, "s.sock"), "grace_s": 0,
-               "approvals": {"self_approval": "allow"}}   # one uid runs and approves
+               "approvals": {"self_approval": "allow"},   # one uid runs and approves
+               "authorize": {f"{SENSOR.scheme}:{SENSOR.subject}": ["observe_effect"]}, "observe_grace_s": 0}
         self.service = svc.open_service(cfg, policy=POLICY)
         self.addCleanup(self.service.close)
         for srv in svc.serve(cfg, self.service):
@@ -289,6 +292,44 @@ class View(unittest.TestCase):
         self.assertEqual(rep["title"], f"RUN {run.run_id} · Integrity VERIFIED · Assurance dev")
         self.assertEqual(rep["review"]["findings"]["line"], "1 problem (1 medium) · reasoning readable before 1 of 1 "
                                                             "actions (100%)")
+
+    def test_what_a_sensor_saw_shows_joined_to_its_call_and_what_no_call_explains_is_a_finding(self):
+        """#309 TK-X206: each kernel sensor effect is an EFFECT row; once the run is final its analysis joins each to
+        the call that explains it (the page's Happened column), and one no call explains is a FINDING."""
+        def observe(*effects):
+            self.service.call(SENSOR, "observe_effect", {"request_id": os.urandom(8).hex(), "instance": "i",
+                                                         "sensor": "tetragon", "effects": list(effects)})
+
+        def at(dt=0.0):
+            t = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=dt)
+            return t.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+        me = f"uid:{os.getuid()}"
+        observe()   # the import's heartbeat: it covers the runs registered from now on
+        run = self.client.run(agent="claude-code")
+        stray = {"caller": me, "kind": "exec", "ts": at(-30), "pid": 9, "binary": "/usr/bin/curl", "exec_id": "c"}
+        run.decide("c1", "Bash", {"command": "git status"})
+        observe({"caller": me, "kind": "exec", "ts": at(), "pid": 10, "binary": "/bin/bash", "exec_id": "b",
+                 "parent_exec_id": "harness"},
+                {"caller": me, "kind": "exec", "ts": at(), "pid": 11, "binary": "/usr/bin/git", "exec_id": "g",
+                 "parent_exec_id": "b"}, stray)
+        run.complete("c1")
+        run.close()
+        storage = self.service.log.storage
+        self.assertTrue(wait_for(lambda: list(storage.iter_run("default", run.run_id))[-1]["event"]["type"] ==
+                                 "run.final" and (storage.checkpoint_latest() or (0,))[0] == storage.tree.size, 20))
+        feed = view.StoreFeed({"data_dir": self.d}, analyze=lambda records: findings_v2.analyze(records, None))
+        [rep] = self.report(feed, run.run_id)
+        self.assertEqual(rep["title"], f"RUN {run.run_id} · Integrity VERIFIED · Assurance dev")
+        rows = self.rows(feed, run.run_id)
+        effects = {r["v2"]["run_seq"]: r for r in rows if r.get("tape") == "EFFECT"}
+        self.assertEqual(sorted(r["title"] for r in effects.values()),
+                         ["EFFECT · exec /bin/bash", "EFFECT · exec /usr/bin/curl", "EFFECT · exec /usr/bin/git"])
+        joined = next(r for r in rows if r.get("title", "").startswith("FINDINGS · "))["v2"]["effects"]
+        self.assertEqual({effects[s]["v2"]["effect"]["target"]: (j["call"], j["status"]) for s, j in joined.items()},
+                         {"/bin/bash": ("c1", "explained"), "/usr/bin/git": ("c1", "explained"),
+                          "/usr/bin/curl": (None, "found")})
+        [finding] = [r for r in rows if r.get("title", "").startswith("FINDING TK-X206")]
+        self.assertIn("/usr/bin/curl start", finding["text"])
 
     def test_dev_run_is_listed_with_its_counts_and_verified_while_the_signer_holds_the_lock(self):
         run_id = self.finished_run()
