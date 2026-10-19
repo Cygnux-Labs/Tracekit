@@ -46,7 +46,7 @@ def generate():
 
 
 def links(text):
-    return [m.group(3) for line, outside in wiki.prose(text) if outside for m in wiki.LINK.finditer(line)]
+    return [m.group(3) for run, outside in wiki.paragraphs(text) if outside for m in wiki.LINK.finditer(run)]
 
 
 class Wiki(unittest.TestCase):
@@ -86,6 +86,11 @@ class Wiki(unittest.TestCase):
         self.assertEqual(broken, [])
         self.assertIn(f"/blob/{REF}/", self.pages["Concepts-Evidence-Format"])
         self.assertIn(f" at {REF}.", self.pages["_Footer"])
+
+    def test_no_page_links_to_a_docs_file(self):
+        """Links whose text wrapped a line were never rewritten: pages linked to .md files and ../ paths."""
+        left = re.compile(r"\]\((?![a-z][a-z0-9+.-]*:)[^)\s]*\.md[#)]|\]\(\.\./")
+        self.assertEqual([f"{p}: {m}" for p, t in self.pages.items() for m in left.findall(t)], [])
 
     def test_links_from_outside_docs_name_wiki_pages_and_anchors(self):
         bad, seen = [], 0
