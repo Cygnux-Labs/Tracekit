@@ -13,6 +13,7 @@ import threading
 import time
 import unittest
 import uuid
+from unittest import mock
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -21,10 +22,13 @@ from adapter_contract import tmpdir
 from test_signer_service import ME
 from tracekit import openshell
 from tracekit.bundle_v2 import export
+from tracekit.identity.base import CallerIdentity
 from tracekit.otlp_wire import _fields, varint
 from tracekit.policy2.engine import Engine
 from tracekit.sdk.client import Client
+from tracekit.signer import service as svc
 from tracekit.signer.quotas import Limits
+from tracekit.signer.rpc_schema import RPCError
 from tracekit.signer.service import SignerService
 from tracekit.transport import answering_hello, hello
 from tracekit.verify import v2
@@ -142,18 +146,20 @@ def token(sandbox=SANDBOX, key=GATEWAY_KEY, typ="openshell-ext+jwt", **claims):
 class Middleware(unittest.TestCase):
     """The middleware on loopback in front of a signer, and a grpcio client playing OpenShell."""
     config = {}   # the middleware's config besides listen and signer
+    authorize = {"openshell:*": PER_CALL}
 
     def setUp(self):
         import grpc
         self.grpc = grpc
-        self.s = SignerService(tmpdir(self), policy=POLICY, gateways=["uid:*"], authorize={"openshell:*": PER_CALL})
+        self.s = SignerService(tmpdir(self), policy=POLICY, gateways=["uid:*"], authorize=self.authorize,
+                               observe_grace_s=0)
         self.addCleanup(self.s.close)
         path, self.signer = serve_signer(self, self.s)
         self.client = Client(path, timeout=5)
         self.addCleanup(self.client.close)
-        srv, port = openshell.serve({"listen": "127.0.0.1:0", "signer": path, **self.config}, self.client)
+        srv, self.port, self.mw = openshell.serve({"listen": "127.0.0.1:0", "signer": path, **self.config}, self.client)
         self.addCleanup(srv.stop, None)
-        channel = grpc.insecure_channel(f"127.0.0.1:{port}")
+        channel = grpc.insecure_channel(f"127.0.0.1:{self.port}")
         self.addCleanup(channel.close)
         self.rpc = {m: channel.unary_unary(f"/{openshell.SERVICE}/{m}")
                     for m in ("Describe", "ValidateConfig", "EvaluateHttpRequest")}
@@ -364,6 +370,299 @@ class Authenticated(Middleware):
         self.assertTrue(done["data"]["ok"])
 
 
+# OpenShell's OCSF events as its OTLP log export sends them (openshell-otel/src/ocsf.rs log_record and gap_record): the
+# body the OCSF JSON event (openshell-ocsf/src/events, shaped after docs/observability/ocsf-json-export.mdx), the
+# attributes ocsf.class_uid, ocsf.activity_id, ocsf.severity_id, ocsf.metadata.uid and openshell.sandbox.id, a
+# supervisor's resource naming its sandbox (openshell-supervisor/src/main.rs supervisor_resource_attributes)
+OTHER = "9a1c0d2e-5b7f-4c3a-8e6d-1f2b3c4d5e6f"
+SUPERVISOR = {"service.name": "openshell-sandbox", "openshell.gateway.name": "openshell"}
+GATEWAY = {"service.name": "openshell-gateway", "openshell.gateway.name": "openshell"}
+
+
+def ocsf_event(cls, activity=1, sandbox=SANDBOX, **fields):
+    names = {4001: "Network Activity", 4002: "HTTP Activity", 1007: "Process Activity", 5019: "Device Config State "
+             "Change", 4007: "SSH Activity", 3002: "Authentication"}
+    return {"class_uid": cls, "class_name": names[cls], "category_uid": cls // 1000, "activity_id": activity,
+            "severity_id": 1, "severity": "Informational", "status_id": 1, "status": "Success",
+            "time": 1791996125789, "metadata": {"version": "1.8.0", "uid": str(uuid.uuid4()), "product": {
+                "name": "OpenShell Sandbox Supervisor", "vendor_name": "OpenShell", "version": "0.1.4"}},
+            "device": {"hostname": "node-1", "type_id": 99, "type": "Sandbox"},
+            **({"container": {"name": "demo", "uid": sandbox}} if sandbox else {}), **fields}
+
+
+def connect(host="api.example.com", denied=False, **fields):
+    return ocsf_event(4001, **{
+        "message": f"CONNECT {'denied' if denied else 'allowed'} {host}:443", "action_id": 2 if denied else 1,
+        "action": "Denied" if denied else "Allowed", "disposition_id": 2 if denied else 1,
+        "disposition": "Blocked" if denied else "Allowed", "dst_endpoint": {"domain": host, "port": 443},
+        "src_endpoint": {"ip": "192.0.2.31", "port": 37494},
+        "actor": {"process": {"name": "/usr/bin/curl", "pid": 2187, "cmd_line": f"curl https://{host}"}},
+        "firewall_rule": {"name": "api_policy", "type": "opa"}, **fields})
+
+
+LAUNCH = dict(cls=1007, message="Process started: pid=57", process={"name": "/usr/local/bin/agent", "pid": 57},
+              launch_type_id=1, action_id=1, disposition_id=1)   # openshell-sandbox/src/delegated.rs
+APPROVED = dict(cls=5019, state_id=99, state="approved", message="gateway approved draft chunk c-1: add-rule example",
+                unmapped={"policy_version": "v7", "policy_hash": "3f" * 32, "actor": "user:dev@example.com"})
+
+
+def kv(field, key, value):
+    """A KeyValue as field `field`: an int as AnyValue int_value, else string_value."""
+    return (field, [(1, key), (2, [(3, value)] if isinstance(value, int) else [(1, value)])])
+
+
+def log_record(ev=None, attrs=None, event_name=None, ns=0):
+    """A LogRecord: time_unix_nano (fixed64, written by hand), severity, the body, attributes, event_name."""
+    if isinstance(ev, dict):
+        attrs = {"ocsf.class_uid": ev["class_uid"], "ocsf.activity_id": ev["activity_id"], "ocsf.severity_id": 1,
+                 "ocsf.metadata.uid": ev["metadata"]["uid"],
+                 **({"openshell.sandbox.id": ev["container"]["uid"]} if "container" in ev else {}), **(attrs or {})}
+    out = varint(1 << 3 | 1) + ns.to_bytes(8, "little") + pb(
+        [(2, 9), (3, "INFO")] + ([(5, [(1, json.dumps(ev) if isinstance(ev, dict) else ev)])] if ev else [])
+        + [kv(6, k, v) for k, v in (attrs or {}).items()] + ([(12, event_name)] if event_name else []))
+    return out
+
+
+def logs(*records, resource=SUPERVISOR, sandbox=SANDBOX):
+    """ExportLogsServiceRequest of one resource (a supervisor's names its sandbox) and the openshell.ocsf scope."""
+    res = {**resource, **({"openshell.sandbox.id": sandbox} if sandbox and resource is SUPERVISOR else {})}
+    return pb([(1, [(1, [kv(1, k, v) for k, v in res.items()]),
+                    (2, [(1, [(1, "openshell.ocsf")])] + [(2, r) for r in records])])])
+
+
+def gap(dropped=12, since=1791996125000):
+    return log_record(attrs={"openshell.ocsf.gap.dropped": dropped, "openshell.ocsf.gap.since_unix_ms": since},
+                      event_name="openshell.ocsf.gap")
+
+
+class OcsfCodec(unittest.TestCase):
+    def test_a_batch_decodes_and_each_class_maps(self):
+        ev = connect(denied=True)
+        [(res, attrs, text, ns, name)] = openshell.log_records(logs(log_record(ev, ns=5 * 10 ** 18)))
+        self.assertEqual((res["openshell.sandbox.id"], attrs["ocsf.metadata.uid"], json.loads(text), ns, name),
+                         (SANDBOX, ev["metadata"]["uid"], ev, 5 * 10 ** 18, ""))
+        ts = "2026-10-15T00:00:00.000000Z"
+        self.assertEqual(openshell.ocsf_effect(ev, ts), {"kind": "connect", "ts": ts, "pid": 2187,
+                                                         "binary": "/usr/bin/curl", "host": "api.example.com",
+                                                         "port": 443, "denied": True})
+        http = ocsf_event(4002, 99, action_id=2, http_request={"http_method": "POST", "url": {
+            "scheme": "https", "hostname": "Upload.Example.com", "path": "/v1", "port": 8443}})
+        self.assertEqual(openshell.ocsf_effect(http, ts), {"kind": "connect", "ts": ts, "pid": 0, "binary": "unknown",
+                                                           "host": "upload.example.com", "port": 8443, "denied": True})
+        self.assertEqual(openshell.ocsf_effect(ocsf_event(**LAUNCH), ts),
+                         {"kind": "exec", "ts": ts, "pid": 57, "binary": "/usr/local/bin/agent"})
+        ended = ocsf_event(1007, 2, process={"name": "/bin/sh", "pid": 9}, exit_code=3)
+        self.assertEqual(openshell.ocsf_effect(ended, ts),
+                         {"kind": "exit", "ts": ts, "pid": 9, "binary": "/bin/sh", "status": 3})
+        policy = openshell.ocsf_effect(ocsf_event(**APPROVED), ts)
+        self.assertEqual({k: policy[k] for k in ("kind", "change", "policy_hash", "by")},
+                         {"kind": "policy", "change": "approved", "policy_hash": "3f" * 32,
+                          "by": "user:dev@example.com"})
+        self.assertRegex(policy["detail_digest"], "^sha256:[0-9a-f]{64}$")   # the message, never in clear
+        for ev, why in ((connect(firewall_rule={"name": "p", "type": "middleware"}), "the middleware's own decisions"),
+                        (ocsf_event(4001, 4, message="connection failed"), "Network Activity events that neither"),
+                        (ocsf_event(4007), "SSH Activity events"),
+                        (ocsf_event(1007, 2, status_id=2, message="Failed to send SIGTERM"), "Process Activity events "
+                                                                                          "other than")):
+            with self.subTest(why):
+                self.assertTrue(openshell.ocsf_effect(ev, ts).startswith(why))
+
+    def test_what_does_not_decode_is_refused(self):
+        for body in (b"\x0a\x05\x12\x03\x12\x01", b"\xff"):
+            with self.subTest(body=body), self.assertRaises(openshell.WireError):
+                openshell.log_records(body)
+
+
+class Ocsf(Middleware):
+    """OpenShell's OCSF export into the middleware (LogsService.Export on its port), recorded in each sandbox's run."""
+    config = {"ocsf": {}}
+    authorize = {"openshell:*": PER_CALL, f"uid:{os.getuid()}": sorted(svc.DEFAULT_GRANTS | {"observe_effect"})}
+
+    def setUp(self):
+        super().setUp()
+        channel = self.grpc.insecure_channel(f"127.0.0.1:{self.port}")
+        self.addCleanup(channel.close)
+        self.export = channel.unary_unary(f"/{openshell.LOGS}/Export")
+        self.mw.tick()   # its first heartbeat (the server's own check thread sends one too): it covers runs from now
+
+    def run_of(self, sandbox=SANDBOX):
+        [run_id] = self.runs(sandbox)
+        return run_id
+
+    def test_each_class_goes_to_its_sandboxs_run_and_verifies_in_both_verifiers(self):
+        allowed, denied, other = connect(), connect("blocked.example.com", denied=True), connect(sandbox=OTHER)
+        launch, approved = ocsf_event(**LAUNCH), ocsf_event(**APPROVED)
+        batch = logs(log_record(launch), log_record(allowed), log_record(denied))
+        self.assertEqual(self.export(batch, timeout=20), b"")   # an empty ExportLogsServiceResponse: all taken
+        self.export(logs(log_record(approved), resource=GATEWAY), timeout=20)   # the gateway's, naming the sandbox
+        self.export(logs(log_record(other), sandbox=OTHER), timeout=20)
+        self.assertEqual(self.evaluate(request("allowed.example", request_id="r-1", method="GET"))[0], openshell.ALLOW)
+        run_id = self.run_of()   # the one run of the sandbox: its OCSF events' and its requests'
+        self.assertEqual(len(self.runs(OTHER)), 1)
+        effects = self.events(run_id, "effect.observed")
+        self.assertEqual([(e["data"]["kind"], e["data"].get("host"), e["data"].get("denied")) for e in effects],
+                         [("exec", None, None), ("connect", "api.example.com", None),
+                          ("connect", "blocked.example.com", True)])
+        for e in effects:
+            self.assertEqual((e["source"], e["data"]["sensor"], e["data"]["observer"], e["data"]["attribution"]),
+                             ("signer", "openshell", f"uid:{os.getuid()}", "token"))
+        [ext] = self.events(run_id, "ext")
+        self.assertEqual({k: ext["data"][k] for k in ("name", "change", "policy_hash", "by")},
+                         {"name": "openshell.policy", "change": "approved", "policy_hash": "3f" * 32,
+                          "by": "user:dev@example.com"})
+        self.assertNotIn("draft chunk", json.dumps(ext))   # the message is committed, not stored
+        self.assertTrue(ext["data"]["detail_commitment"])
+        self.respond(preflight("r-1"), unit(1, b"ok", end=True), TRAILERS)
+        self.s.idle_s, self.s.grace_s = 0, 0
+        self.s.sweep(now=time.monotonic() + 1)
+        self.s.sweep(now=time.monotonic() + 2)
+        [final] = self.events(run_id, "run.final")
+        self.assertEqual(final["data"]["matrix"]["processes"]["status"], "none")   # OpenShell's report isn't a sensor's
+        bundle = self.bundle(run_id)
+        rep, code = v2.verify(bundle, self.trust)
+        self.assertEqual(code, 0, rep.checks)
+        [line] = [c for c in rep.checks if c["check"] == "openshell policy"]
+        self.assertEqual((line["status"], line["detail"]), ("pass", "OpenShell changed the sandbox policy or "
+                                                                    "configuration 1 time(s) (approved: 1), as "
+                                                                    "OpenShell reported it"))
+        with mock.patch.dict(v2.EXT_CHECKS):   # a verifier that doesn't interpret it: VERIFIED, the name not read
+            del v2.EXT_CHECKS["openshell.policy"]
+            old, code = v2.verify(bundle, self.trust)
+        self.assertEqual((code, old.integrity), (0, rep.integrity))
+        [note] = [c for c in old.checks if c["check"] == "not interpreted"]
+        self.assertEqual(note["status"], "warn")
+        self.assertIn("1 record(s) carry ext.openshell.policy", note["detail"])
+        try:
+            from test_ts_verifier import SKIP, ts_verify
+        except ImportError:
+            SKIP = "no TypeScript verifier test helpers"
+        if not SKIP:
+            ts = ts_verify(bundle, self.trust)
+            self.assertEqual((ts["exit_code"], ts["integrity"]), (code, rep.integrity))
+            self.assertEqual([(c["check"], c["status"]) for c in ts["checks"]],
+                             [(c["check"], c["status"]) for c in rep.checks])
+            self.assertEqual([c for c in ts["checks"] if c["check"] == "openshell policy"], [line])
+
+    def bundle(self, run_id):
+        self.s.checkpoint()
+        bundle, self.trust = os.path.join(self.s.data_dir, f"{run_id}.tkb"), os.path.join(self.s.data_dir, "t.json")
+        export(self.s.log.storage, "default", run_id, self.s.log.storage.checkpoint_latest()[1], bundle)
+        with open(self.trust, "w") as f:
+            json.dump({"logs": [self.s.vkey], "algs": ["ed25519"]}, f)
+        return bundle
+
+    def test_a_batch_sent_again_is_recorded_once(self):
+        batch = logs(log_record(connect()), log_record(connect(denied=True)))
+        self.export(batch, timeout=20)
+        self.export(batch, timeout=20)   # OpenShell's retry of a batch the signer had (at least once delivery)
+        self.assertEqual(len(self.events(self.run_of(), "effect.observed")), 2)
+
+    def test_losses_are_signed_gaps(self):
+        self.export(logs(log_record(connect()), gap()), timeout=20)   # a supervisor's: its own sandbox
+        run_id = self.run_of()
+        [lost] = [e["data"] for e in self.events(run_id, "capture.gap") if e["data"]["kind"] == "observer_lost"]
+        self.assertIn("OpenShell dropped 12 OCSF record(s) before export from 2026-10-14T16:42:05.000000Z",
+                      lost["reason"])
+        self.assertIn("sandbox supervisor's gap record", lost["reason"])
+        self.export(logs(gap(3), resource=GATEWAY), timeout=20)   # the gateway's: any sandbox, every covered run
+        self.assertTrue(any("its gateway's gap record" in e["data"]["reason"]
+                            for e in self.events(run_id, "capture.gap")))
+        # a request decided, then nothing from the sandbox's stream for STALE_S: its export stopped, once
+        self.evaluate(request("allowed.example", method="GET", sandbox=OTHER))
+        later = time.monotonic() + openshell.STALE_S + 1
+        self.mw.tick(later)
+        self.mw.tick(later + 1)
+        self.evaluate(request("allowed.example", method="GET", sandbox=OTHER))   # still stalled: no second gap
+        self.mw.tick(later + openshell.STALE_S + 2)
+        stopped = [e["data"]["reason"] for e in self.events(self.run_of(OTHER), "capture.gap")]
+        self.assertEqual(len(stopped), 1, stopped)
+        self.assertIn(f"no OCSF event from OpenShell for sandbox {OTHER} in {openshell.STALE_S}s", stopped[0])
+        self.export(logs(log_record(connect(sandbox=OTHER)), sandbox=OTHER), timeout=20)   # it sends again: watched
+        self.evaluate(request("allowed.example", method="GET", sandbox=OTHER))
+        self.mw.tick(time.monotonic() + openshell.STALE_S + 1)
+        self.assertEqual(len(self.events(self.run_of(OTHER), "capture.gap")), 2)
+
+    def test_what_is_not_imported_is_counted_and_printed(self):
+        self.export(logs(log_record(ocsf_event(4007)), log_record("not json", attrs={"openshell.sandbox.id": SANDBOX}),
+                         log_record(connect(firewall_rule={"name": "p", "type": "middleware"}))), timeout=20)
+        self.export(logs(log_record(ocsf_event(3002, sandbox=None)), resource=GATEWAY), timeout=20)
+        self.assertEqual(self.runs(), [])   # nothing to record: no run
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.mw.tick()
+        self.assertIn("OpenShell OCSF events not imported so far: 1 x SSH Activity events; 1 x events of no sandbox "
+                      "(the gateway's own); 1 x log records that aren't OCSF events OpenShell writes; 1 x the "
+                      "middleware's own decisions (recorded as its calls)", err.getvalue())
+
+    def test_a_batch_the_signer_cannot_take_is_refused_for_openshell_to_send_again(self):
+        batch = logs(log_record(connect()))
+        self.signer.shutdown()
+        self.signer.server_close()
+        self.client.close()
+        with self.assertRaises(self.grpc.RpcError) as e:
+            self.export(batch, timeout=20)
+        self.assertEqual(e.exception.code(), self.grpc.StatusCode.UNAVAILABLE)
+        with self.assertRaises(self.grpc.RpcError) as e:
+            self.export(b"\xff", timeout=20)
+        self.assertEqual(e.exception.code(), self.grpc.StatusCode.INVALID_ARGUMENT)
+
+
+class OcsfToken(Middleware):
+    """ocsf.token_file: OpenShell's OCSF export sends it as its collector header (OTEL_EXPORTER_OTLP_LOGS_HEADERS)."""
+    authorize = Ocsf.authorize
+
+    def setUp(self):
+        path = os.path.join(tmpdir(self), "ocsf.token")
+        with open(path, "w") as f:
+            f.write("s3cret-token\n")
+        self.config = {"ocsf": {"token_file": path}}
+        super().setUp()
+        channel = self.grpc.insecure_channel(f"127.0.0.1:{self.port}")
+        self.addCleanup(channel.close)
+        self.export = channel.unary_unary(f"/{openshell.LOGS}/Export")
+
+    def test_only_the_token_is_taken(self):
+        batch = logs(log_record(connect()))
+        for auth in (None, "wrong-token", "s3cret-token-2"):
+            with self.subTest(auth=auth), self.assertRaises(self.grpc.RpcError) as e:
+                self.export(batch, timeout=20, metadata=_bearer(auth))
+            self.assertEqual(e.exception.code(), self.grpc.StatusCode.UNAUTHENTICATED)
+        self.assertEqual(self.runs(), [])
+        self.assertEqual(self.export(batch, timeout=20, metadata=_bearer("s3cret-token")), b"")
+        self.assertEqual(len(self.events(self.run_of(), "effect.observed")), 1)
+
+    run_of = Ocsf.run_of
+
+
+class GatewayObserver(unittest.TestCase):
+    def test_only_a_configured_gateway_observes_the_runs_it_registered(self):
+        """An observer is never the run's agent: a run's owner is refused as its observer, unless it is a configured
+        gateway, which registers runs for the clients it serves (the OpenShell middleware's OCSF import). Policy and
+        lost effects are OpenShell's alone."""
+        ids = {name: CallerIdentity("mtls", f"spiffe://acme.example/{name}", True) for name in ("agent", "gateway")}
+        s = SignerService(tmpdir(self), policy=POLICY, gateways=["mtls:spiffe://acme.example/gateway"],
+                          authorize={f"mtls:{i.subject}": ["register_run", "observe_effect"] for i in ids.values()})
+        self.addCleanup(s.close)
+        for name, who in ids.items():
+            r = s.call(who, "register_run", {"request_id": uuid.uuid4().hex, "agent": {"name": name}})
+            at = {"run_id": r["run_id"], "run_token": r["run_token"], "ts": "2026-10-15T00:00:00.000000Z"}
+            req = {"request_id": uuid.uuid4().hex, "instance": "i", "sensor": "openshell", "effects": [
+                {**at, "kind": "connect", "pid": 1, "binary": "/usr/bin/curl", "host": "blocked.example.com",
+                 "port": 443, "denied": True}]}
+            with self.subTest(name):
+                if name == "gateway":
+                    self.assertEqual(s.call(who, "observe_effect", req), {"recorded": 1})
+                else:
+                    with self.assertRaises(RPCError) as e:
+                        s.call(who, "observe_effect", req)
+                    self.assertEqual(e.exception.code, "forbidden")
+            for kind in ({"kind": "policy", "change": "loaded"}, {"kind": "lost", "reason": "x"}):
+                with self.subTest(kind=kind), self.assertRaises(RPCError) as e:
+                    s.call(who, "observe_effect", {"request_id": uuid.uuid4().hex, "instance": "i", "sensor": "falco",
+                                                   "effects": [{**at, **kind}]})
+                self.assertEqual(e.exception.code, "invalid_request")
+
+
 class Config(unittest.TestCase):
     def load(self, **cfg):
         d = tmpdir(self)
@@ -387,6 +686,21 @@ class Config(unittest.TestCase):
         self.assertTrue(cfg["gateway_jwt"]["public_key"].endswith(os.path.join("jwt", "public.pem")))
         self.assertTrue(os.path.isabs(cfg["gateway_jwt"]["public_key"]))
         self.assertTrue(self.load(listen="0.0.0.0:50051", allow_unauthenticated=True)["allow_unauthenticated"])
+
+    def test_ocsf_beyond_loopback_needs_a_token_and_the_token_needs_tls(self):
+        jwt = {"gateway_id": "openshell", "public_key": "jwt/public.pem", "audience": AUDIENCE}
+        tls = {"cert": "tls/mw.pem", "key": "tls/mw.key"}
+        self.assertEqual(self.load(listen="127.0.0.1:50051", ocsf={})["ocsf"], {})
+        for bad in ({"listen": "0.0.0.0:50051", "gateway_jwt": jwt, "tls": tls, "ocsf": {}},
+                    {"listen": "127.0.0.1:50051", "ocsf": {"token_file": "ocsf.token"}},
+                    {"listen": "127.0.0.1:50051", "ocsf": {"token_file": ""}},
+                    {"listen": "127.0.0.1:50051", "ocsf": {"endpoint": "x"}},
+                    {"listen": "127.0.0.1:50051", "ocsf": True}):
+            with self.subTest(bad), self.assertRaises(ValueError):
+                self.load(**bad)
+        cfg = self.load(listen="0.0.0.0:50051", gateway_jwt=jwt, tls=tls, ocsf={"token_file": "ocsf.token"})
+        self.assertTrue(os.path.isabs(cfg["ocsf"]["token_file"]))
+        self.assertEqual(self.load(listen="0.0.0.0:50051", allow_unauthenticated=True, ocsf={})["ocsf"], {})
 
 
 if __name__ == "__main__":

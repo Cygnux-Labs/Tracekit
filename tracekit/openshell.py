@@ -14,6 +14,9 @@ openshell-middleware.yaml (relative paths are from the file):
     allow_unauthenticated: false           # true: listen beyond loopback without gateway_jwt
     signer: https://signer.internal:8443   # the middleware's own identity: $TRACEKIT_SIGNER_* (tracekit.sdk.client);
                                            # signer.yaml lists it under `gateways`
+    ocsf: {token_file: ocsf.token}         # optional: also take OpenShell's OCSF events (OTLP logs) on this port;
+                                           # token_file: the bearer token OpenShell sends (needs tls), else {} on
+                                           # loopback or with allow_unauthenticated
 
 Callers: with gateway_jwt each call's OpenShell extension token (authorization: Bearer, typ openshell-ext+jwt, EdDSA
 under the gateway's key, iss openshell-gateway:<gateway_id>, the audience, unexpired) is checked; a request or response
@@ -52,12 +55,31 @@ bodyless) is skipped and completed at once with the digest; a stream that ends, 
 last unit, as an error. At most MAX_STREAMS responses stream at once (one more: RESOURCE_EXHAUSTED). A
 response to a request this process didn't allow (it restarted) is skipped, unrecorded: its call ends as a
 held_call_unresolved gap.
+
+OCSF (`ocsf`): OpenShell's gateway and sandbox supervisors export their OCSF events as OTLP log records over gRPC
+(openshell-otel/src/ocsf.rs) to `[openshell.gateway.otlp.ocsf] endpoint`, this port: LogsService.Export, decoded by
+hand, each record's body one OCSF JSON event, its sandbox the attribute openshell.sandbox.id (the record's, else the
+resource's: a supervisor's). The import is an observer (observe_effect, sensor openshell) under the middleware's own
+identity, each effect attributed to the sandbox's run by its run token (registered here on the sandbox's first event or
+request, whichever comes first). Network and HTTP activity OpenShell allowed or denied: a connect effect (`denied` when
+OpenShell blocked it); OpenShell's records of middleware decisions (firewall_rule type middleware) are skipped: the
+middleware recorded those as calls. Process activity: exec (launch) and exit (terminate). Device config state change:
+a policy effect, the signer's `ext` record openshell.policy (OpenShell's name for the change, its policy_hash, the
+actor, the message's digest). Losses are signed gaps: OpenShell's gap records (openshell.ocsf.gap, records it dropped)
+in the sandbox's run, or in every covered run when they name no sandbox (the gateway's); and a sandbox the middleware
+decided a request of whose stream then sends nothing for STALE_S (OpenShell records each middleware decision as an OCSF
+event), once until it sends again. Events delivered twice (OpenShell retries a batch) are dropped by ocsf.metadata.uid.
+Anything else is counted by kind and printed on stderr. A batch the signer can't take is refused UNAVAILABLE, so
+OpenShell sends it again. Every OCSF_CHECK_S the import checks the streams, and every HEARTBEAT_S calls observe_effect
+empty: the signer's silence check of the observer.
 """
 import argparse
 import base64
 import collections
 import concurrent.futures
+import datetime
 import hashlib
+import hmac
 import json
 import os
 import re
@@ -72,13 +94,14 @@ from tracekit import __version__, yamlmini
 from tracekit.executor import Custody
 from tracekit.format.canon import event_hash
 from tracekit.identity.k8s_sa import verify_jwt
-from tracekit.otlp_wire import WireError, _fields, _varint, varint
+from tracekit.otlp_wire import MAX_ATTRS, WireError, _fields, _kvs_pb, _repeated, _varint, varint
 from tracekit.sdk.client import Client, SignerUnavailable, named_rules, result_field, sendable
 from tracekit.signer.quotas import MAX_LINE
-from tracekit.signer.rpc_schema import RPCError
+from tracekit.signer.rpc_schema import REQUESTS, RPCError, validate
+from tracekit.signer.service import HEARTBEAT_S
 from tracekit.transport import loopback
 
-KEYS = {"listen", "tls", "signer", "gateway_jwt", "allow_unauthenticated"}
+KEYS = {"listen", "tls", "signer", "gateway_jwt", "allow_unauthenticated", "ocsf"}
 JWT_KEYS = {"gateway_id", "public_key", "audience"}
 JWT_TYP = "openshell-ext+jwt"   # the typ of OpenShell's extension tokens (openshell-extension-core/src/jwt.rs)
 SERVICE, RESPONSES = "openshell.middleware.v1.SupervisorMiddleware", "openshell.middleware.v1.HttpResponsePreReturn"
@@ -96,6 +119,14 @@ MAX_RUNS = MAX_HELD = MAX_INFLIGHT = 10_000   # each least recently used dropped
 # kept for evaluations; serve the streams with grpc.aio once more sandboxes stream responses at once
 MAX_STREAMS, UNARY_WORKERS = 64, 32
 SIGNER_TIMEOUT_S = 5
+LOGS = "opentelemetry.proto.collector.logs.v1.LogsService"
+GAP_EVENT = "openshell.ocsf.gap"   # OpenShell's record of OCSF records it dropped (openshell-otel/src/ocsf.rs)
+STALE_S = 60   # after a request the middleware decided, how long its sandbox's OCSF stream may send nothing
+OCSF_CHECK_S = 5
+OCSF_EXPORTS = 8   # Export calls at once (each waits on the signer); one more is refused and OpenShell retries it
+MAX_SEEN = 100_000   # OCSF event uids kept to drop the events of a batch OpenShell sends again
+MAX_RECORDS = 10_000   # log records per Export (OpenShell sends at most 100 and a gap record)
+ITEM = REQUESTS["observe_effect"]["properties"]["effects"]["items"]
 SANDBOX = re.compile(r"[A-Za-z0-9._-]{1,100}")
 DEFAULT_PORT = {"http": 80, "ws": 80, "https": 443, "wss": 443}
 
@@ -176,6 +207,96 @@ INSPECT = _len(1, _len(2, _int(1, STREAM_BYTES)))   # preflight_result {inspect 
 TRAILERS = _len(3, b"")   # trailers_result {}
 
 
+def log_records(body):
+    """(resource attributes, record attributes, body text or None, time in ns, event name) of each log record of
+    ExportLogsServiceRequest `body` (opentelemetry/proto/collector/logs/v1/logs_service.proto, logs/v1/logs.proto).
+    WireError when it doesn't decode."""
+    out = []
+    try:
+        for rl in _repeated(memoryview(body), 1, MAX_RECORDS, "resource logs"):
+            resource = {}
+            for f, w, v in _fields(rl):
+                if f == 1 and w == 2:
+                    resource = _kvs_pb(_repeated(v, 1, MAX_ATTRS, "resource attributes"))
+            for sl in _repeated(rl, 2, MAX_RECORDS, "scope logs"):
+                for lr in _repeated(sl, 2, MAX_RECORDS - len(out), "log records"):
+                    attrs, text, ns, event = [], None, 0, ""
+                    for f, w, v in _fields(lr):
+                        if f == 1 and w == 1:
+                            ns = v
+                        elif f == 5 and w == 2:   # AnyValue: its string_value
+                            text = next((bytes(x).decode("utf-8", "replace") for f2, w2, x in _fields(v)
+                                         if f2 == 1 and w2 == 2), None)
+                        elif f == 6 and w == 2:
+                            attrs.append(v)
+                        elif f == 12 and w == 2:
+                            event = bytes(v).decode("utf-8", "replace")
+                    out.append((resource, _kvs_pb(attrs[:MAX_ATTRS]), text, ns, event))
+    except WireError:
+        raise
+    except Exception as e:   # a shape the decoder didn't expect (a RecursionError among them)
+        raise WireError(f"malformed logs request: {type(e).__name__}") from None
+    return out
+
+
+def _ts(ms):
+    return datetime.datetime.fromtimestamp(ms / 1000, datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+
+def _process(p):
+    p = p if isinstance(p, dict) else {}
+    pid = p.get("pid")
+    return {"pid": pid if isinstance(pid, int) and 0 <= pid < 1 << 32 else 0,
+            "binary": str(p.get("name") or "unknown")[:4096]}
+
+
+def ocsf_effect(ev, ts):
+    """The observe_effect effect of OCSF event `ev` (OpenShell's JSON record: openshell-ocsf/src/events), or why it
+    isn't imported (a str)."""
+    cls, act, name = ev.get("class_uid"), ev.get("action_id"), ev.get("class_name") or f"class {ev.get('class_uid')}"
+    denied = {"denied": True} if act == 2 else {}
+    if cls in (4001, 4002):   # Network Activity, HTTP Activity
+        if (ev.get("firewall_rule") or {}).get("type") == "middleware":
+            return "the middleware's own decisions (recorded as its calls)"
+        if act not in (1, 2):
+            return f"{name} events that neither allow nor deny"
+        dst, url = ev.get("dst_endpoint") or {}, (ev.get("http_request") or {}).get("url") or {}
+        host = dst.get("domain") or dst.get("ip") or url.get("hostname")
+        if not host:
+            return f"{name} events with no destination"
+        return {"kind": "connect", "ts": ts, **_process((ev.get("actor") or {}).get("process")),
+                "host": str(host).lower().rstrip("."), "port": dst.get("port") or url.get("port") or 0, **denied}
+    if cls == 1007 and ev.get("status_id") != 2 and ev.get("activity_id") in (1, 2):   # Process Activity: Launch,
+        if ev["activity_id"] == 1:                                                    # Terminate
+            return {"kind": "exec", "ts": ts, **_process(ev.get("process")), **denied}
+        code = ev.get("exit_code")
+        return {"kind": "exit", "ts": ts, **_process(ev.get("process")),
+                **({"status": code} if isinstance(code, int) and 0 <= code < 1 << 32 else {})}
+    if cls == 5019:   # Device Config State Change: the sandbox's policy or configuration
+        u = ev.get("unmapped") if isinstance(ev.get("unmapped"), dict) else {}
+        return {"kind": "policy", "ts": ts,
+                "change": re.sub(r"[^a-z0-9_.-]", "_", str(ev.get("state") or "unknown").lower())[:64],
+                **({"policy_hash": str(u["policy_hash"])[:128]} if u.get("policy_hash") else {}),
+                **({"by": str(u["actor"])[:256]} if u.get("actor") else {}),
+                **({"detail_digest": "sha256:" + hashlib.sha256(str(ev["message"]).encode("utf-8")).hexdigest()}
+                   if ev.get("message") else {})}
+    return f"{name} events other than a launch or an exit" if cls == 1007 else f"{name} events"
+
+
+def _chunks(items):
+    """`items` as observe_effect calls: at most 256 effects and about MAX_TEXT bytes each."""
+    chunk, size = [], 0
+    for x in items:
+        n = len(json.dumps(x))
+        if chunk and (len(chunk) == 256 or size + n > MAX_TEXT):
+            yield chunk
+            chunk, size = [], 0
+        chunk.append(x)
+        size += n
+    if chunk:
+        yield chunk
+
+
 def negotiate(gateway):
     """Why the gateway's PeerMetadata `gateway` (decoded; None: absent) is refused, or None."""
     want = f"{PROTOCOL[0]}.{PROTOCOL[1]}"
@@ -230,12 +351,18 @@ def args_of(req):
 class Middleware:
     """The sandboxes' runs and the calls they wait on, and the signer steps for each request and response."""
 
-    def __init__(self, client):
+    def __init__(self, client, ocsf=False):
         self.client, self.custody = client, Custody(client)
         self.lock, self.registering = threading.Lock(), threading.Lock()
         self.runs = collections.OrderedDict()       # sandbox_id -> (run_id, token, caller)
         self.held = collections.OrderedDict()       # (run_id, args digest) -> (tool_call_id, decision, approval_id)
         self.inflight = collections.OrderedDict()   # (sandbox_id, request_id) -> (key, tool_call_id, decision, args)
+        # the OCSF import: on or off, this process's instance, its last call, the event uids recorded, each sandbox's
+        # first request still waiting for its stream (monotonic time), the sandboxes whose stream stopped, and what
+        # wasn't imported (and how much of it was printed)
+        self.ocsf, self.instance, self.beat = ocsf, "os-" + uuid.uuid4().hex, float("-inf")
+        self.seen, self.watch, self.stalled = collections.OrderedDict(), {}, set()
+        self.unmapped, self.reported = collections.Counter(), {}
 
     def _put(self, table, k, v, cap):
         with self.lock:
@@ -279,6 +406,10 @@ class Middleware:
         if sandbox is not None and sandbox != ctx["sandbox_id"]:
             return self._deny("tracekit_unauthenticated", f"a token for sandbox {sandbox[:100]} sent another "
                                                           "sandbox's request")
+        if self.ocsf:   # OpenShell records the middleware's decision as an OCSF event of the sandbox
+            with self.lock:
+                if ctx["sandbox_id"] not in self.stalled:
+                    self.watch.setdefault(ctx["sandbox_id"], time.monotonic())
         try:
             for attempt in (1, 2):
                 key = self._run(ctx)
@@ -415,6 +546,105 @@ class Middleware:
         self.custody.complete(key, tcid, d, TOOL, args, "ok" if head["status"] < 400 else "error",
                               result=result_field(send, out))
 
+    def export(self, body):
+        """Import OpenShell's ExportLogsServiceRequest `body` into the sandboxes' runs. Raises WireError,
+        SignerUnavailable or RPCError; no event of a sandbox whose call failed counts as recorded, so the batch sent
+        again records it."""
+        sandboxes, lost = {}, []   # sandbox_id -> [its name, effects, their uids]; the losses no sandbox names
+        for resource, attrs, text, ns, event in log_records(body):
+            sid = attrs.get("openshell.sandbox.id") or resource.get("openshell.sandbox.id")
+            sid = sid if isinstance(sid, str) and SANDBOX.fullmatch(sid) else None
+            if sid:
+                with self.lock:   # its stream is alive
+                    self.watch.pop(sid, None)
+                    self.stalled.discard(sid)
+            if event == GAP_EVENT or "openshell.ocsf.gap.dropped" in attrs:
+                since = attrs.get("openshell.ocsf.gap.since_unix_ms")
+                why = (f"OpenShell dropped {attrs.get('openshell.ocsf.gap.dropped', 'some')} OCSF record(s) before "
+                       "export" + (f" from {_ts(since)}" if isinstance(since, int) and 0 < since < 1 << 46 else "")
+                       + (" (its sandbox supervisor's gap record)" if sid else " (its gateway's gap record: they may "
+                                                                              "be of any sandbox)"))[:1024]
+                if sid:
+                    sandboxes.setdefault(sid, [sid, [], []])[1].append({"kind": "lost", "reason": why})
+                else:
+                    lost.append(why)
+                continue
+            try:
+                ev = json.loads(text)
+                uid = attrs.get("ocsf.metadata.uid") or ev["metadata"].get("uid")
+                uid = uid if isinstance(uid, str) else None
+                ms = ev.get("time") if isinstance(ev.get("time"), int) and 0 < ev["time"] < 1 << 46 else ns // 10 ** 6
+                x = ocsf_effect(ev, _ts(ms or time.time() * 1000)) if isinstance(ev["class_uid"], int) else None
+                name = str((ev.get("container") or {}).get("name") or sid)[:100]   # gone when downgraded to 1.1, 1.3
+            except (TypeError, ValueError, KeyError, AttributeError, RecursionError):
+                x = None
+            if x is None:
+                self._unmapped("log records that aren't OCSF events OpenShell writes")
+                continue
+            with self.lock:
+                if uid is not None and uid in self.seen:
+                    continue
+            if not sid:
+                self._unmapped("events of no sandbox (the gateway's own)")
+                continue
+            if isinstance(x, str):
+                self._unmapped(x)
+                continue
+            if validate(ITEM, x):   # one the signer would refuse would refuse its whole call
+                x = {"kind": "lost", "reason": f"OpenShell reported a {x['kind']} event Tracekit could not record: a "
+                                               "field past the signer's bounds"}
+            box = sandboxes.setdefault(sid, [sid, [], []])
+            box[0] = name
+            box[1].append(x)
+            box[2].append(uid)
+        for sid, (name, effects, uids) in sandboxes.items():
+            # lean: a run the signer closed (idle_s) stays this sandbox's until its next request opens another, so its
+            # events meanwhile are effect_outside_run gaps; ask the signer whether the run is open if that matters
+            run_id, token, _ = self._run({"sandbox_id": sid, "sandbox": name})
+            for chunk in _chunks([{**x, "run_id": run_id, "run_token": token} for x in effects]):
+                self._observe(chunk)
+            with self.lock:
+                self.seen.update((uid, True) for uid in uids if uid is not None)
+                while len(self.seen) > MAX_SEEN:
+                    self.seen.popitem(last=False)
+        if lost:
+            self._observe([], "; ".join(lost)[:1024])
+
+    def _unmapped(self, why):
+        with self.lock:
+            self.unmapped[why] += 1
+
+    def _observe(self, effects, lost=None):
+        self.client.observe_effect({"request_id": "os-" + uuid.uuid4().hex, "instance": self.instance,
+                                    "sensor": "openshell", "effects": effects, **({"lost": lost} if lost else {})})
+        self.beat = time.monotonic()
+
+    def tick(self, now=None):
+        """The OCSF import's checks: a sandbox the middleware decided a request of whose stream then sent nothing for
+        STALE_S gets a signed loss in its run (once, until its stream sends again); a heartbeat when one is due; what
+        wasn't imported, on stderr when it grew. Raises SignerUnavailable or RPCError: the next tick tries again."""
+        now = time.monotonic() if now is None else now
+        with self.lock:
+            late = [(sid, self.runs.get(sid)) for sid, t in self.watch.items() if now - t >= STALE_S]
+        for sid, key in late:
+            if key:
+                self._observe([{"kind": "lost", "run_id": key[0], "run_token": key[1], "reason": (
+                    f"no OCSF event from OpenShell for sandbox {sid} in {STALE_S}s after the middleware decided a "
+                    "request of it: its OCSF export stopped or doesn't reach the middleware, so OpenShell's blocks, "
+                    "process events and policy changes of it from then on may be missing")}])
+            with self.lock:
+                self.watch.pop(sid, None)
+                self.stalled.add(sid)
+        if time.monotonic() - self.beat >= HEARTBEAT_S:
+            self._observe([])
+        with self.lock:
+            grown = {k: n for k, n in self.unmapped.items() if self.reported.get(k) != n}
+            self.reported.update(grown)
+            shown = "; ".join(f"{n} x {k}" for k, n in sorted(self.unmapped.items()))
+        if grown:
+            print(f"tracekit openshell-middleware: OpenShell OCSF events not imported so far: {shown}", file=sys.stderr,
+                  flush=True)
+
 
 def validate_config(body):
     """ValidateConfigResponse: valid for an empty config only."""
@@ -452,16 +682,37 @@ def load_config(path):
         raise ValueError(f"{path}: listen {cfg['listen']} needs gateway_jwt, so the middleware takes calls from the "
                          "OpenShell gateway and its sandboxes only (or allow_unauthenticated: true, on a network that "
                          "authenticates callers already)")
+    if "ocsf" in cfg:
+        ocsf = cfg["ocsf"]
+        if not (isinstance(ocsf, dict) and set(ocsf) <= {"token_file"} and all(isinstance(v, str) and v
+                                                                               for v in ocsf.values())):
+            raise ValueError(f"{path}: ocsf is {{token_file: <the bearer token OpenShell's OCSF export sends>}} or "
+                             "{}")
+        if "token_file" in ocsf:
+            if tls is None:
+                raise ValueError(f"{path}: ocsf's token_file needs tls: without it the token crosses the network in "
+                                 "the clear")
+            cfg["ocsf"] = {"token_file": os.path.join(base, ocsf["token_file"])}
+        elif not (loopback(cfg["listen"].rpartition(":")[0].strip("[]")) or cfg.get("allow_unauthenticated")):
+            raise ValueError(f"{path}: ocsf needs token_file (the bearer token OpenShell sends with its OCSF events) "
+                             f"when listen {cfg['listen']} is beyond loopback, or allow_unauthenticated: true")
     return cfg
 
 
 def serve(cfg, client=None):
-    """(the started grpc server, its port) for a loaded config; stop it with stop(None)."""
+    """(the started grpc server, its port, its Middleware) for a loaded config; stop it with stop(None)."""
     try:
         import grpc
     except ImportError:
         raise ValueError("the OpenShell middleware needs grpcio: pip install 'tracekit-ai[grpc]'") from None
-    mw = Middleware(client or Client(cfg["signer"], timeout=SIGNER_TIMEOUT_S))
+    ocsf, bearer, exports = cfg.get("ocsf"), None, threading.BoundedSemaphore(OCSF_EXPORTS)
+    if ocsf and "token_file" in ocsf:
+        with open(ocsf["token_file"], encoding="utf-8") as f:
+            bearer = f.read().strip()
+        if not bearer:
+            raise ValueError(f"{ocsf['token_file']}: empty (ocsf.token_file: the bearer token OpenShell's OCSF export "
+                             "sends)")
+    mw = Middleware(client or Client(cfg["signer"], timeout=SIGNER_TIMEOUT_S), ocsf is not None)
     jwt, streams = cfg.get("gateway_jwt"), threading.BoundedSemaphore(MAX_STREAMS)
     if jwt:
         from cryptography.hazmat.primitives.asymmetric import ed25519
@@ -531,13 +782,40 @@ def serve(cfg, client=None):
         finally:
             streams.release()
 
+    def logs(body, context):
+        """LogsService.Export: OpenShell's OCSF events. An empty ExportLogsServiceResponse once the signer has them."""
+        if bearer is not None:
+            scheme, _, tok = dict(context.invocation_metadata() or ()).get("authorization", "").partition(" ")
+            if scheme.lower() != "bearer" or not hmac.compare_digest(tok.encode(), bearer.encode()):
+                why = "OpenShell's OCSF export refused: no bearer token, or not ocsf.token_file's"
+                print(f"tracekit openshell-middleware: {why}", file=sys.stderr, flush=True)
+                context.abort(grpc.StatusCode.UNAUTHENTICATED, why)
+        if not exports.acquire(blocking=False):   # each waits on the signer: the rest stay free for evaluations
+            context.abort(grpc.StatusCode.RESOURCE_EXHAUSTED, f"{OCSF_EXPORTS} OCSF batches are being imported")
+        try:
+            mw.export(body)
+        except WireError as e:
+            print(f"tracekit openshell-middleware: an OCSF batch refused: {e}", file=sys.stderr, flush=True)
+            context.abort(grpc.StatusCode.INVALID_ARGUMENT, f"the OCSF batch doesn't decode: {e}")
+        except (SignerUnavailable, RPCError) as e:
+            why = f"the signer didn't take OpenShell's OCSF events ({e}); OpenShell sends the batch again" + (
+                "; grant the middleware observe_effect in signer.yaml authorize" if getattr(e, "code", "") ==
+                "forbidden" else "")
+            print(f"tracekit openshell-middleware: {why}", file=sys.stderr, flush=True)
+            context.abort(grpc.StatusCode.UNAVAILABLE, why)
+        finally:
+            exports.release()
+        return b""
+
     unary = {"Describe": describe, "ValidateConfig": validate, "EvaluateHttpRequest": evaluate}
-    srv = grpc.server(concurrent.futures.ThreadPoolExecutor(max_workers=MAX_STREAMS + UNARY_WORKERS),
+    srv = grpc.server(concurrent.futures.ThreadPoolExecutor(max_workers=MAX_STREAMS + UNARY_WORKERS + OCSF_EXPORTS),
                       options=[("grpc.max_receive_message_length", MAX_MESSAGE)])
     srv.add_generic_rpc_handlers((
         grpc.method_handlers_generic_handler(SERVICE, {k: grpc.unary_unary_rpc_method_handler(f)
                                                        for k, f in unary.items()}),
-        grpc.method_handlers_generic_handler(RESPONSES, {"Evaluate": grpc.stream_stream_rpc_method_handler(respond)})))
+        grpc.method_handlers_generic_handler(RESPONSES, {"Evaluate": grpc.stream_stream_rpc_method_handler(respond)}),
+        *([grpc.method_handlers_generic_handler(LOGS, {"Export": grpc.unary_unary_rpc_method_handler(logs)})]
+          if ocsf is not None else [])))
     tls = cfg.get("tls")
     try:
         if tls:
@@ -550,7 +828,23 @@ def serve(cfg, client=None):
     if not port:
         raise OSError(f"can't listen on {cfg['listen']}")
     srv.start()
-    return srv, port
+
+    def checks():
+        said = None
+        while True:
+            try:
+                mw.tick()
+                said = None
+            except (SignerUnavailable, RPCError) as e:
+                if str(e) != said:
+                    print(f"tracekit openshell-middleware: the OCSF import's check didn't reach the signer ({e}); it "
+                          "tries again", file=sys.stderr, flush=True)
+                said = str(e)
+            if not srv.wait_for_termination(OCSF_CHECK_S):   # False once the server stopped
+                return
+    if ocsf is not None:
+        threading.Thread(target=checks, daemon=True).start()
+    return srv, port, mw
 
 
 def main(argv=None):
@@ -560,12 +854,15 @@ def main(argv=None):
     a = ap.parse_args(argv)
     try:
         cfg = load_config(a.config)
-        srv, port = serve(cfg)
+        srv, port, _ = serve(cfg)
     except (OSError, ValueError) as e:
         print(f"tracekit openshell-middleware: {e}", file=sys.stderr)
         return 2
     if not cfg.get("gateway_jwt"):
         print("tracekit openshell-middleware: no gateway_jwt: any peer that reaches the port is taken for OpenShell",
+              file=sys.stderr, flush=True)
+    if "ocsf" in cfg and "token_file" not in cfg["ocsf"]:
+        print("tracekit openshell-middleware: no ocsf.token_file: any peer that reaches the port may send OCSF events",
               file=sys.stderr, flush=True)
     print(f"tracekit openshell-middleware: listening on port {port}", flush=True)
     signal.signal(signal.SIGTERM, signal.default_int_handler)   # stop as on Ctrl-C

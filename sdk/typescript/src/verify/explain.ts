@@ -146,6 +146,8 @@ export const MEANING: Record<string, string> = {
   "not interpreted": "Records carry an extension this verifier doesn't read. They verified like every other record.",
   "gateway amendments": "Requests the LLM gateway changed so the provider shows its reasoning; each record commits to "
     + "the request as sent.",
+  "openshell policy": "Changes of the sandbox's policy or configuration that NVIDIA OpenShell reported, signed into "
+    + "the run as OpenShell's report.",
   "constraints": "What the person's request said not to do, added while the run was open, and the calls it held.",
   "run-set": "Every run of the tenant in the registry range is in the bundle (COMPLETE), or what is missing.",
   "tenant-level gaps": "Signer gaps in the range that concern every tenant, such as witness failures.",

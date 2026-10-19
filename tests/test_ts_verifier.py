@@ -131,6 +131,7 @@ class Agreement(unittest.TestCase):
                               gateways=["mtls:spiffe://acme/gateway"], verify_tool_results="record",
                               authorize={"mtls:spiffe://acme/egress": ["observe_effect"],
                                          "mtls:spiffe://acme/tetragon": ["observe_effect"],
+                                         "mtls:spiffe://acme/openshell": ["observe_effect"],
                                          "mtls:spiffe://acme/gateway": ["model_event"]})
         try:
             runs = {"closed": cls.record_run(s, "read_file"), "approval": cls.record_run(s, "pay", approve=True),
@@ -139,7 +140,8 @@ class Agreement(unittest.TestCase):
                     "open": cls.record_run(s, "read_file", close=False),
                     "unfinished": cls.record_run(s, "read_file", complete=False),   # a format 1.2 gap at its end
                     "egress": cls.observed_run(s), "mismatch": cls.mismatch_run(s), "sensor": cls.sensor_run(s),
-                    "constraint": cls.constraint_run(s), "amended": cls.amended_run(s)}
+                    "constraint": cls.constraint_run(s), "amended": cls.amended_run(s),
+                    "openshell": cls.openshell_run(s)}
             s.sweep()
             store = s.log.storage
 
@@ -286,6 +288,21 @@ class Agreement(unittest.TestCase):
             "request_id": uuid.uuid4().hex, "run_id": r["run_id"], "run_token": r["run_token"],
             "caller": f"uid:{ME.subject}", "stream": "gx", "client_seq": 0, "provider": "anthropic", "model": "m",
             "phase": "request", "content_digest": "sha256:" + "a" * 64, "amended": ["/thinking/display"]})
+        s.call(ME, "close_run", {"request_id": uuid.uuid4().hex, "run_id": r["run_id"], "run_token": r["run_token"]})
+        return r["run_id"]
+
+    @staticmethod
+    def openshell_run(s):
+        """A run with OpenShell's reports (the OpenShell middleware's OCSF import): a connection OpenShell blocked and a
+        policy change, a format 1.4 ext.openshell.policy."""
+        r = s.call(ME, "register_run", {"request_id": uuid.uuid4().hex, "agent": {"name": "agreement"}})
+        at = {"run_id": r["run_id"], "run_token": r["run_token"], "ts": "2026-10-15T00:00:00.000000Z"}
+        s.call(CallerIdentity("mtls", "spiffe://acme/openshell", True), "observe_effect", {
+            "request_id": uuid.uuid4().hex, "instance": "i", "sensor": "openshell", "effects": [
+                {**at, "kind": "connect", "pid": 7, "binary": "/usr/bin/curl", "host": "blocked.example.com",
+                 "port": 443, "denied": True},
+                {**at, "kind": "policy", "change": "approved", "policy_hash": "3f" * 32, "by": "user:dev@example.com",
+                 "detail_digest": "sha256:" + "b" * 64}]})
         s.call(ME, "close_run", {"request_id": uuid.uuid4().hex, "run_id": r["run_id"], "run_token": r["run_token"]})
         return r["run_id"]
 
@@ -462,6 +479,23 @@ class Agreement(unittest.TestCase):
                 _, rep = self.agree(bundle, trust)
                 [line] = [c for c in rep.checks if c["check"] == "gateway amendments"]
                 self.assertEqual([c for c in ts_verify(bundle, trust)["checks"] if c["check"] == "gateway amendments"],
+                                 [line])
+                self.assertEqual(line["status"], status)
+
+    def test_both_verifiers_read_ext_openshell_policy_alike(self):
+        import test_bundle_v2 as b   # and one the signer would never write: a warning in both
+        log = b.Log(os.path.join(self.d, f"openshell-{uuid.uuid4().hex}"))
+        self.addCleanup(log.store.close)
+        odd, trust = b.ext_bundle(log, os.path.join(self.d, "odd-openshell.tkb"), {"openshell.policy": {}},
+                                  ("openshell.policy", {})), os.path.join(self.d, "odd-openshell-trust.json")
+        with open(trust, "w") as f:
+            json.dump(b.trust_config(), f)
+        for bundle, trust, status in ((self.bundles["openshell"], self.trusts["witnessed"], "pass"),
+                                      (odd, trust, "warn")):
+            with self.subTest(status):
+                _, rep = self.agree(bundle, trust)
+                [line] = [c for c in rep.checks if c["check"] == "openshell policy"]
+                self.assertEqual([c for c in ts_verify(bundle, trust)["checks"] if c["check"] == "openshell policy"],
                                  [line])
                 self.assertEqual(line["status"], status)
 

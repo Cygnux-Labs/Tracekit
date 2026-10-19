@@ -4613,7 +4613,7 @@
         "binary",
         "attribution"
       ],
-      "description": "format 1.4: what a kernel sensor (Tetragon, Falco) reported a process of the run did, imported by tracekit sensor under its own signer identity (an observer's assertion); signer-written",
+      "description": "format 1.4: what a kernel sensor (Tetragon, Falco) reported a process of the run did, or what OpenShell reported of its sandbox (its connections allowed and blocked, its entrypoint's start), imported under the import's own signer identity (an observer's assertion); signer-written",
       "properties": {
         "observer": {
           "type": "string",
@@ -4623,7 +4623,8 @@
         "sensor": {
           "enum": [
             "tetragon",
-            "falco"
+            "falco",
+            "openshell"
           ]
         },
         "kind": {
@@ -4697,6 +4698,10 @@
         "tool_call_id": {
           "$ref": "#/$defs/id",
           "description": "the tool call id the process's environment carried (CODEX_TOOL_CALL_ID): the agent's claim"
+        },
+        "denied": {
+          "const": true,
+          "description": "the sensor (OpenShell's network policy) blocked it"
         },
         "attribution": {
           "enum": [
