@@ -1037,6 +1037,11 @@ class SignerService:
             e = RPCError("invalid_request", "the request nests too deeply")
             self._refused(identity, e)
             raise e from None
+        except rfc8785.CanonicalizationError:   # hashing a record on the writer (rolled back): the same, one level deeper
+            e = RPCError("invalid_request", "the request can't be canonicalized (nested too deeply, or a number out of "
+                                            "range)")
+            self._refused(identity, e)
+            raise e from None
         except RPCError as e:
             self._refused(identity, e)
             raise
@@ -1813,20 +1818,32 @@ class SignerService:
         """(policy decision, hint disagreed, the rule ids of both readings). A class hint that disagrees with the
         policy's class gets the stricter of the two decisions; detection sees the rules of both, so a mismatch can't
         hide a step. A tool the policy maps whose own reading is at least as strict as the hint's (an MCP adapter's
-        generic `mcp` against the deployment's `sql`) is no disagreement worth a gap."""
-        d, cls = self.policy.decide(tool, args, untrusted=untrusted), self.policy.tool_class(tool)
-        if tool.startswith("mcp:") and "/" in tool:
-            # an MCP tool is also checked under its bare name (the name the model may know it by), in its own class if
-            # the policy maps it, else the MCP call's: a rule on that name can't be dodged by naming the call an MCP one
-            bare = tool.split("/", 1)[1]
-            b = self.policy.decide(bare, args, None if self.policy.tool_class(bare) != "unknown" else cls, untrusted)
-            d = {**max(d, b, key=lambda x: STRICTNESS.index(x["verdict"])),
-                 "rule_ids": list(dict.fromkeys(d["rule_ids"] + b["rule_ids"]))}
-        if hint is None or hint == cls:
+        generic `mcp` against the deployment's `sql`) is no disagreement worth a gap. An error of the engine itself on
+        these arguments (a bug they reach) is a deny, TK-ENGINE-ERROR (`error`: its type), logged with its traceback,
+        never an exception that drops the connection and lets the call run unrecorded; a RecursionError is the
+        request's nesting, which call() refuses."""
+        try:
+            d, cls = self.policy.decide(tool, args, untrusted=untrusted), self.policy.tool_class(tool)
+            if tool.startswith("mcp:") and "/" in tool:
+                # an MCP tool is also checked under its bare name (the name the model may know it by), in its own class
+                # if the policy maps it, else the MCP call's: a rule on that name can't be dodged by naming the call an
+                # MCP one
+                bare = tool.split("/", 1)[1]
+                b = self.policy.decide(bare, args, None if self.policy.tool_class(bare) != "unknown" else cls, untrusted)
+                d = {**max(d, b, key=lambda x: STRICTNESS.index(x["verdict"])),
+                     "rule_ids": list(dict.fromkeys(d["rule_ids"] + b["rule_ids"]))}
+            if hint is None or hint == cls:
+                return d, False, d["rule_ids"]
+            h = self.policy.decide(tool, args, hint if hint in policy_compile.CLASSES else "unknown", untrusted)
+            strict = max(d, h, key=lambda x: STRICTNESS.index(x["verdict"]))   # d on a tie
+            return strict, cls == "unknown" or strict is not d, list(dict.fromkeys(d["rule_ids"] + h["rule_ids"]))
+        except RecursionError:
+            raise
+        except Exception as e:
+            logging.getLogger(__name__).exception("tracekit policy: the engine failed on a %s call", tool[:256])
+            d = {"verdict": "deny", "rule_ids": ["TK-ENGINE-ERROR"], "policy_hash": self.policy.policy_hash,
+                 "engine": self.policy.engine, "error": type(e).__name__}
             return d, False, d["rule_ids"]
-        h = self.policy.decide(tool, args, hint if hint in policy_compile.CLASSES else "unknown", untrusted)
-        strict = max(d, h, key=lambda x: STRICTNESS.index(x["verdict"]))   # d on a tie
-        return strict, cls == "unknown" or strict is not d, list(dict.fromkeys(d["rule_ids"] + h["rule_ids"]))
 
     def _reasons(self, ids):
         """The reasons of the rules among `ids` that give one, in their order, joined by "; " (at most 1024 chars)."""
