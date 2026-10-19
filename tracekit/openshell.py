@@ -1,0 +1,484 @@
+"""NVIDIA OpenShell supervisor middleware: the gRPC service OpenShell's sandbox supervisor calls for each HTTP request
+its network policy allows to a host the policy entry selects, before it injects credentials, and for the response
+before the sandbox gets it. Each request is decided in the v2 signer for the sandbox's run and each response completes
+the call. docs/integrations/openshell.md.
+
+    tracekit openshell-middleware serve --config openshell-middleware.yaml
+
+openshell-middleware.yaml (relative paths are from the file):
+    listen: 0.0.0.0:50051                  # reached by the OpenShell gateway and every sandbox supervisor
+    tls: {cert: tls/mw.pem, key: tls/mw.key}   # optional: without it plaintext gRPC (OpenShell's
+                                           # allow_insecure_transport = true)
+    signer: https://signer.internal:8443   # the middleware's own identity: $TRACEKIT_SIGNER_* (tracekit.sdk.client);
+                                           # signer.yaml lists it under `gateways`
+
+Protocol openshell.middleware.v1 (OpenShell's proto/supervisor_middleware.proto), negotiated in Describe as extension
+protocol 1.0 with capability openshell.supervisor-middleware.contract. Any other version, unmet capabilities, or a
+gateway that sends no metadata (OpenShell before 0.1.0) is refused with FAILED_PRECONDITION, and the gateway doesn't
+start. Messages are read and written by hand with otlp_wire's wire primitives, only the fields used here; unknown
+fields are skipped. The service declares HTTP_REQUEST/PRE_CREDENTIALS and HTTP_RESPONSE/PRE_RETURN, not WebSocket
+messages, and takes no policy-entry `config` (ValidateConfig refuses one).
+
+Runs: a sandbox's first request (RequestContext.sandbox_id) registers its run, `openshell-<sandbox_id>-<8 hex>`, as the
+middleware, and delegates it to `openshell:<sandbox_id>` (signer.yaml grants `openshell:*` the per-call methods). Each
+call is decided, approved and completed with that `caller`, so the records are source gateway, tier T2, naming the
+sandbox. The tokens stay in this process. Once the signer has closed a sandbox's run (idle_s), its next request
+registers a new one.
+
+Request: tool `http_request`, args {method, url, headers: [[name, value], ...], body}: `body` is the text of a UTF-8
+body (else, or when the args would not fit a frame, {digest, size}). allow: ALLOW. deny: DENY tracekit_denied. ask: approval_request and DENY
+tracekit_approval_required at once (OpenShell waits at most its registration timeout, 30 s at most); the same request
+again (same run, tool and args) reads the approval: requested, DENY tracekit_approval_pending; approved, consumed and
+ALLOW; else DENY tracekit_approval_<state>, and the request after that is decided anew. The signer unreachable: DENY
+tracekit_signer_unreachable; a signer refusal: tracekit_signer_refused; a request that doesn't decode:
+tracekit_malformed_request. OpenShell enforces a DENY whatever the entry's on_error, and gives the sandbox the code,
+never the reason; refusals and asks are printed on stderr.
+
+Response (HttpResponsePreReturn.Evaluate): the preflight names its request (sandbox_id, request_id). The body is read
+as STREAM_BYTES when OpenShell offers it, each unit passed through unchanged, and the call completed at the last unit
+with {status, headers, body}: the body's text when it is UTF-8 and the result fits a frame (sent itself when the
+decision says send_result), else the result's digest. A response OpenShell offers no body of (compressed, partial,
+bodyless) is skipped and completed at once with the digest; a stream that ends before its last unit, as an error. A
+response to a request this process didn't allow (it restarted) is skipped, unrecorded: its call ends as a
+held_call_unresolved gap.
+"""
+import argparse
+import collections
+import concurrent.futures
+import hashlib
+import os
+import re
+import secrets
+import signal
+import sys
+import threading
+import uuid
+
+from tracekit import __version__, yamlmini
+from tracekit.executor import Custody
+from tracekit.format.canon import event_hash
+from tracekit.otlp_wire import WireError, _fields, _varint, varint
+from tracekit.sdk.client import Client, SignerUnavailable, named_rules, result_field, sendable
+from tracekit.signer.quotas import MAX_LINE
+from tracekit.signer.rpc_schema import RPCError
+
+KEYS = {"listen", "tls", "signer"}
+SERVICE, RESPONSES = "openshell.middleware.v1.SupervisorMiddleware", "openshell.middleware.v1.HttpResponsePreReturn"
+PROTOCOL = (1, 0)
+CONTRACT = "openshell.supervisor-middleware.contract"
+TOOL = "http_request"
+HTTP_REQUEST, HTTP_RESPONSE, PRE_CREDENTIALS, PRE_RETURN = 1, 3, 1, 2   # SupervisorMiddlewareOperation, ...Phase
+ALLOW, DENY = 1, 2   # Decision
+STREAM_BYTES = 3   # HttpResponseBodyMode
+MAX_PAYLOAD = 4 * 1024 * 1024   # OpenShell's largest request body or response unit
+MAX_MESSAGE = 5 * 1024 * 1024   # a payload and its envelope (OpenShell asks for at least 4.5 MiB)
+MAX_TEXT = MAX_LINE // 2   # bytes of a response body kept to send as text (sdk.client.sendable)
+MAX_RUNS = MAX_HELD = MAX_INFLIGHT = 10_000   # each least recently used dropped first
+# lean: 64 evaluations and response streams at once, a thread each; a larger pool once more sandboxes stream at once
+MAX_WORKERS = 64
+SIGNER_TIMEOUT_S = 5
+SANDBOX = re.compile(r"[A-Za-z0-9._-]{1,100}")
+DEFAULT_PORT = {"http": 80, "ws": 80, "https": 443, "wss": 443}
+
+# the fields read, by number (OpenShell's proto/supervisor_middleware.proto and extension.proto): {n: (name, kind)},
+# kind "int", "str", "bytes", a nested message's spec, or [kind] for a repeated field
+_PEER = {1: ("version", {1: ("major", "int"), 2: ("minor", "int")}), 4: ("supported", ["str"]),
+         5: ("required", ["str"])}
+_CONTEXT = {1: ("request_id", "str"), 2: ("sandbox_id", "str"), 4: ("sandbox", "str")}
+_HEADER = {1: ("name", "str"), 2: ("value", "str")}
+_TARGET = {1: ("scheme", "str"), 2: ("host", "str"), 3: ("port", "int"), 4: ("method", "str"), 5: ("path", "str"),
+           6: ("query", "str")}
+_DESCRIBE = {1: ("gateway", _PEER)}
+_VALIDATE = {1: ("config", {1: ("fields", ["bytes"])})}   # google.protobuf.Struct: its map entries
+_REQUEST = {1: ("phase", "int"), 2: ("context", _CONTEXT), 4: ("target", _TARGET), 5: ("headers", [_HEADER]),
+            6: ("body", "bytes")}
+_EVENT = {1: ("preflight", {1: ("context", _CONTEXT), 3: ("status", "int"), 4: ("headers", [_HEADER]),
+                            8: ("modes", ["int"])}),
+          2: ("body", {1: ("sequence", "int"), 2: ("data", "bytes"), 3: ("end", "int")}),
+          4: ("trailers", {}), 3: ("session_end", {1: ("reason", "int")})}
+
+
+def decode(buf, spec):
+    """{name: value} of `spec`'s fields in protobuf message `buf`; others are skipped. WireError when it doesn't
+    decode."""
+    out = {}
+    for fn, wt, v in _fields(memoryview(buf)):
+        if fn not in spec:
+            continue
+        name, kind = spec[fn]
+        many = isinstance(kind, list)
+        kind = kind[0] if many else kind
+        if kind == "int" and many and wt == 2:   # packed
+            i = 0
+            while i < len(v):
+                x, i = _varint(v, i)
+                out.setdefault(name, []).append(x)
+            continue
+        if wt != (0 if kind == "int" else 2):
+            raise WireError(f"{name}: wire type {wt}")
+        if kind == "str":
+            try:
+                v = bytes(v).decode("utf-8")
+            except UnicodeDecodeError:
+                raise WireError(f"{name}: not UTF-8") from None
+        elif kind == "bytes":
+            v = bytes(v)
+        elif kind != "int":
+            v = decode(v, kind)
+        if many:
+            out.setdefault(name, []).append(v)
+        else:
+            out[name] = v
+    return out
+
+
+def _len(fn, b):
+    b = b.encode() if isinstance(b, str) else b
+    return varint(fn << 3 | 2) + varint(len(b)) + b
+
+
+def _int(fn, n):
+    return varint(fn << 3) + varint(n) if n else b""
+
+
+def _str(fn, s):
+    return _len(fn, s) if s else b""
+
+
+# MiddlewareManifest: name, a binding per operation (operation, phase, max_payload_bytes), PeerMetadata (protocol
+# version, implementation name and version, the contract supported and required)
+BINDINGS = ((HTTP_REQUEST, PRE_CREDENTIALS), (HTTP_RESPONSE, PRE_RETURN))
+MANIFEST = (_len(1, "tracekit") + b"".join(_len(3, _int(1, op) + _int(2, phase) + _int(3, MAX_PAYLOAD))
+                                           for op, phase in BINDINGS)
+            + _len(5, _len(1, _int(1, PROTOCOL[0]) + _int(2, PROTOCOL[1])) + _len(2, "tracekit/openshell-middleware")
+                   + _len(3, __version__) + _len(4, CONTRACT) + _len(5, CONTRACT)))
+SKIP = _len(1, _len(1, b""))   # HttpResponseEventResult: preflight_result {skip {}}
+INSPECT = _len(1, _len(2, _int(1, STREAM_BYTES)))   # preflight_result {inspect {body_mode STREAM_BYTES}}
+TRAILERS = _len(3, b"")   # trailers_result {}
+
+
+def negotiate(gateway):
+    """Why the gateway's PeerMetadata `gateway` (decoded; None: absent) is refused, or None."""
+    want = f"{PROTOCOL[0]}.{PROTOCOL[1]}"
+    if gateway is None:
+        return f"the gateway sent no protocol metadata (OpenShell before 0.1.0); Tracekit speaks protocol {want} only"
+    v = gateway.get("version")
+    got = None if v is None else f"{v.get('major', 0)}.{v.get('minor', 0)}"
+    if got != want:
+        return (f"the gateway speaks supervisor-middleware protocol {got or 'none'}; Tracekit speaks {want} only: "
+                "use a Tracekit release that supports the gateway's version")
+    if CONTRACT not in gateway.get("supported", []):
+        return f"the gateway doesn't support {CONTRACT}"
+    extra = sorted(set(gateway.get("required", [])) - {CONTRACT})
+    if extra:
+        return f"the gateway requires capabilities Tracekit's middleware doesn't have: {', '.join(extra)[:512]}"
+    return None
+
+
+def result(decision, why="", code=""):
+    """HttpRequestResult: `why` is the diagnostic (OpenShell shows it to no one), `code` the reason_code."""
+    return _int(1, decision) + _str(2, why.encode()[:4096].decode("utf-8", "ignore")) + _str(8, code)
+
+
+def _url(t):
+    host = f"[{t['host']}]" if ":" in t["host"] else t["host"]
+    port = "" if t.get("port", 0) in (0, DEFAULT_PORT.get(t["scheme"])) else f":{t['port']}"
+    return f"{t['scheme']}://{host}{port}{t.get('path') or '/'}" + (f"?{t['query']}" if t.get("query") else "")
+
+
+def _digest(data):
+    return {"digest": "sha256:" + hashlib.sha256(data).hexdigest(), "size": len(data)}
+
+
+def args_of(req):
+    """The decided arguments of HttpRequestEvaluation `req` (decoded)."""
+    t = req.get("target", {})
+    if not all(t.get(k) for k in ("scheme", "host", "method")):
+        raise WireError("the target has no scheme, host or method")
+    args = {"method": t["method"], "url": _url(t),
+            "headers": [[h.get("name", ""), h.get("value", "")] for h in req.get("headers", [])]}
+    raw = req.get("body", b"")
+    if raw:
+        try:
+            args["body"] = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            args["body"] = _digest(raw)
+        if not sendable(args):
+            args["body"] = _digest(raw)
+    return args
+
+
+class Middleware:
+    """The sandboxes' runs and the calls they wait on, and the signer steps for each request and response."""
+
+    def __init__(self, client):
+        self.client, self.custody = client, Custody(client)
+        self.lock, self.registering = threading.Lock(), threading.Lock()
+        self.runs = collections.OrderedDict()       # sandbox_id -> (run_id, token, caller)
+        self.held = collections.OrderedDict()       # (run_id, args digest) -> (tool_call_id, decision, approval_id)
+        self.inflight = collections.OrderedDict()   # (sandbox_id, request_id) -> (key, tool_call_id, decision, args)
+
+    def _put(self, table, k, v, cap):
+        with self.lock:
+            table[k] = v
+            table.move_to_end(k)
+            while len(table) > cap:
+                table.popitem(last=False)
+
+    def _run(self, ctx):
+        """(run_id, token, caller) of the sandbox `ctx` names, registered on its first request."""
+        sid = ctx["sandbox_id"]
+        with self.lock:
+            key = self.runs.get(sid)
+        if key is None:
+            with self.registering:   # one run per sandbox, when its first requests arrive together too
+                with self.lock:
+                    key = self.runs.get(sid)
+                if key is None:
+                    caller, name = "openshell:" + sid, ctx.get("sandbox") or sid
+                    r = self.client.register_run({"run_id": f"openshell-{sid}-{secrets.token_hex(4)}",
+                                                  "agent": {"name": f"openshell sandbox {name}"[:128]}})
+                    key = (r["run_id"], self.client.delegate_run({"run_id": r["run_id"], "run_token": r["run_token"],
+                                                                  "identity": caller})["run_token"], caller)
+                    print(f"tracekit openshell-middleware: sandbox {name} ({sid}): run {r['run_id']}", file=sys.stderr,
+                          flush=True)
+        self._put(self.runs, sid, key, MAX_RUNS)
+        return key
+
+    def evaluate(self, body):
+        """HttpRequestResult for HttpRequestEvaluation `body`."""
+        # lean: OpenShell's extension token (a JWT naming the sandbox) isn't checked, so any peer that reaches `listen`
+        # is taken for a supervisor; verify it against the gateway's key once a deployment needs callers checked
+        try:
+            req = decode(body, _REQUEST)
+            ctx = req.get("context", {})
+            if req.get("phase") != PRE_CREDENTIALS or not SANDBOX.fullmatch(ctx.get("sandbox_id", "")) \
+                    or not ctx.get("request_id"):
+                raise WireError("needs phase PRE_CREDENTIALS, a sandbox_id ([A-Za-z0-9._-]{1,100}) and a request_id")
+            args = args_of(req)
+        except WireError as e:
+            return self._deny("tracekit_malformed_request", f"the request doesn't decode: {e}")
+        try:
+            for attempt in (1, 2):
+                key = self._run(ctx)
+                try:
+                    code, why, call = self._gate(key, args, ctx)
+                    break
+                except RPCError as e:
+                    if attempt == 2 or e.code not in ("run_closed", "unknown_run"):
+                        raise
+                    with self.lock:   # the signer closed the sandbox's run (idle_s): a new run takes the request
+                        if self.runs.get(ctx["sandbox_id"]) == key:
+                            del self.runs[ctx["sandbox_id"]]
+        except SignerUnavailable as e:
+            return self._deny("tracekit_signer_unreachable", f"the signer is unreachable ({e}); denied")
+        except RPCError as e:
+            return self._deny("tracekit_signer_refused", f"the signer refused the call: {e}")
+        if code:
+            return result(DENY, why, code)
+        self._put(self.inflight, (ctx["sandbox_id"], ctx["request_id"]), (key, *call, args), MAX_INFLIGHT)
+        return result(ALLOW)
+
+    @staticmethod
+    def _deny(code, why):
+        print(f"tracekit openshell-middleware: {code}: {why}", file=sys.stderr, flush=True)
+        return result(DENY, why, code)
+
+    def _gate(self, key, args, ctx):
+        """(None, None, (tool_call_id, decision)) when the request may go, else (reason_code, why, None). Raises
+        SignerUnavailable or RPCError."""
+        run_id, token, caller = key
+        base = {"run_id": run_id, "run_token": token, "caller": caller}
+        h = (run_id, event_hash({"tool": TOOL, "args": args}))
+        with self.lock:
+            held = self.held.get(h)
+        hint = {}
+        if held is None:
+            tcid = "os-" + uuid.uuid4().hex
+            d = self.client.decide({**base, "tool_call_id": tcid, "tool": TOOL, "args_source": "parsed", "args": args})
+            if d["decision"] == "deny":
+                return "tracekit_denied", "denied by policy: " + (named_rules(d["rule_ids"]) or "deny"), None
+            if d["decision"] == "ask":
+                aid = self.client.approval_request({**base, "tool_call_id": tcid})["approval_id"]
+                self._put(self.held, h, (tcid, d, aid), MAX_HELD)
+                rules = ", ".join(d["rule_ids"])
+                print(f"tracekit openshell-middleware: sandbox {ctx.get('sandbox') or ctx['sandbox_id']}: "
+                      f"{args['method']} {args['url'][:200]} waits for approval {aid} ({rules}): "
+                      f"tracekit approvals approve {aid}", file=sys.stderr, flush=True)
+                return "tracekit_approval_required", f"approval {aid} requested ({rules}); the same request runs " \
+                                                     "once a person approves it", None
+        else:
+            tcid, d, aid = held
+            state = self.client.approval_wait({**base, "approval_id": aid, "timeout_ms": 0})["state"]
+            if state == "requested":
+                return "tracekit_approval_pending", f"approval {aid} is still requested", None
+            with self.lock:
+                self.held.pop(h, None)
+            if state != "approved":
+                return "tracekit_approval_" + state, f"approval {aid} {state}", None
+            hint = {"approval_id_hint": aid}
+        c = self.client.approval_consume({**base, "tool_call_id": tcid, "tool": TOOL, "args_source": "parsed",
+                                          "args": args, **hint})
+        if not c["ok"]:
+            return "tracekit_denied", named_rules(c["rule_ids"]) + (f": {c['reason']}" if c.get("reason") else ""), None
+        return None, None, (tcid, d)
+
+    def respond(self, events, abort):
+        """The HttpResponseEventResult of each HttpResponseEvent in `events`; `abort(why)` raises, ending the
+        stream."""
+        call, seq, sha, text, size = None, 0, hashlib.sha256(), bytearray(), 0
+        for raw in events:
+            try:
+                ev = decode(raw, _EVENT)
+                if len(ev) != 1:
+                    raise WireError("an event is one of preflight, body, trailers and session_end")
+            except WireError as e:
+                abort(f"the response event doesn't decode: {e}")
+            (kind, x), = ev.items()
+            if kind == "preflight":
+                ctx = x.get("context", {})
+                with self.lock:
+                    found = self.inflight.pop((ctx.get("sandbox_id"), ctx.get("request_id")), None)
+                if found is None:
+                    print(f"tracekit openshell-middleware: a response to request {ctx.get('request_id', '?')[:64]}, "
+                          "which this process didn't allow (it restarted?): not recorded", file=sys.stderr, flush=True)
+                    yield SKIP
+                    continue
+                head = {"status": x.get("status", 0),
+                        "headers": [[h.get("name", ""), h.get("value", "")] for h in x.get("headers", [])]}
+                if STREAM_BYTES in x.get("modes", []):
+                    call = (found, head)
+                    yield INSPECT
+                else:
+                    self._complete(found, head, None)
+                    yield SKIP
+            elif kind == "body":
+                if call is None or x.get("sequence") != seq + 1:
+                    abort("a body unit out of order")
+                seq, data = seq + 1, x.get("data", b"")
+                sha.update(data)
+                size += len(data)
+                if text is not None and len(text) + len(data) <= MAX_TEXT:
+                    text += data
+                else:
+                    text = None
+                if x.get("end"):
+                    self._complete(*call, (text, {"digest": "sha256:" + sha.hexdigest(), "size": size}))
+                    call = None
+                yield _len(2, _int(1, seq) + _len(2, b""))   # body_result {sequence, pass_through {}}
+            elif kind == "trailers":
+                yield TRAILERS
+        if call is not None:
+            key, tcid, d, args = call[0]
+            self.custody.complete(key, tcid, d, TOOL, args, "error", error="OpenShell ended the response stream before "
+                                  "its last body unit: the sandbox may not have received the whole response")
+
+    def _complete(self, found, head, body):
+        """Complete the call `found` with response `head`, and `body` ((its text or None, its digest); None: not
+        read)."""
+        key, tcid, d, args = found
+        out, send = dict(head), False
+        if body is not None:
+            text, out["body"] = body
+            if text is not None:
+                try:
+                    out["body"], send = bytes(text).decode("utf-8"), d.get("send_result", False)
+                except UnicodeDecodeError:
+                    pass
+        self.custody.complete(key, tcid, d, TOOL, args, "ok" if head["status"] < 400 else "error",
+                              result=result_field(send, out))
+
+
+def validate_config(body):
+    """ValidateConfigResponse: valid for an empty config only."""
+    try:
+        if not decode(body, _VALIDATE).get("config", {}).get("fields"):
+            return _int(1, 1)
+    except WireError:
+        pass
+    return _len(2, "Tracekit's middleware takes no config: leave config out of its network_middlewares entry")
+
+
+def load_config(path):
+    with open(path, encoding="utf-8") as f:
+        cfg = yamlmini.load_any(f.read()) or {}
+    if not isinstance(cfg, dict) or set(cfg) - KEYS or not {"listen", "signer"} <= set(cfg):
+        raise ValueError(f"{path}: needs listen and signer; takes {sorted(KEYS)}")
+    if not isinstance(cfg["listen"], str) or ":" not in cfg["listen"]:
+        raise ValueError(f"{path}: listen is host:port")
+    tls = cfg.get("tls")
+    if tls is not None:
+        if not (isinstance(tls, dict) and set(tls) == {"cert", "key"} and all(isinstance(v, str) for v in
+                                                                             tls.values())):
+            raise ValueError(f"{path}: tls is {{cert: <file>, key: <file>}}")
+        cfg["tls"] = {k: os.path.join(os.path.dirname(os.path.abspath(path)), v) for k, v in tls.items()}
+    return cfg
+
+
+def serve(cfg, client=None):
+    """(the started grpc server, its port) for a loaded config; stop it with stop(None)."""
+    try:
+        import grpc
+    except ImportError:
+        raise ValueError("the OpenShell middleware needs grpcio: pip install 'tracekit-ai[grpc]'") from None
+    mw = Middleware(client or Client(cfg["signer"], timeout=SIGNER_TIMEOUT_S))
+
+    def describe(body, context):
+        try:
+            why = negotiate(decode(body, _DESCRIBE).get("gateway"))
+        except WireError as e:
+            why = f"the Describe request doesn't decode: {e}"
+        if why:
+            print(f"tracekit openshell-middleware: Describe refused: {why}", file=sys.stderr, flush=True)
+            context.abort(grpc.StatusCode.FAILED_PRECONDITION, why)
+        return MANIFEST
+
+    def respond(events, context):
+        return mw.respond(events, lambda why: context.abort(grpc.StatusCode.INVALID_ARGUMENT, why))
+
+    unary = {"Describe": describe, "ValidateConfig": lambda body, _: validate_config(body),
+             "EvaluateHttpRequest": lambda body, _: mw.evaluate(body)}
+    srv = grpc.server(concurrent.futures.ThreadPoolExecutor(max_workers=MAX_WORKERS),
+                      options=[("grpc.max_receive_message_length", MAX_MESSAGE)])
+    srv.add_generic_rpc_handlers((
+        grpc.method_handlers_generic_handler(SERVICE, {k: grpc.unary_unary_rpc_method_handler(f)
+                                                       for k, f in unary.items()}),
+        grpc.method_handlers_generic_handler(RESPONSES, {"Evaluate": grpc.stream_stream_rpc_method_handler(respond)})))
+    tls = cfg.get("tls")
+    try:
+        if tls:
+            with open(tls["key"], "rb") as k, open(tls["cert"], "rb") as c:
+                port = srv.add_secure_port(cfg["listen"], grpc.ssl_server_credentials([(k.read(), c.read())]))
+        else:
+            port = srv.add_insecure_port(cfg["listen"])
+    except RuntimeError as e:   # grpcio raises when it can't bind
+        raise OSError(f"can't listen on {cfg['listen']}: {e}") from None
+    if not port:
+        raise OSError(f"can't listen on {cfg['listen']}")
+    srv.start()
+    return srv, port
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="tracekit openshell-middleware")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("serve", help="run in the foreground").add_argument("--config", required=True)
+    a = ap.parse_args(argv)
+    try:
+        srv, port = serve(load_config(a.config))
+    except (OSError, ValueError) as e:
+        print(f"tracekit openshell-middleware: {e}", file=sys.stderr)
+        return 2
+    print(f"tracekit openshell-middleware: listening on port {port}", flush=True)
+    signal.signal(signal.SIGTERM, signal.default_int_handler)   # stop as on Ctrl-C
+    try:
+        srv.wait_for_termination()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        srv.stop(None)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
