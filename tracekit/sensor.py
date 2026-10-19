@@ -90,7 +90,8 @@ def tetragon(e):
         if typ == "process_exec":
             if "procFS" in p.get("flags", "").split():   # running when Tetragon started: read from /proc, no exec
                 return None
-            out = {"kind": "exec", **({"args_digest": _digest(p["arguments"])} if p.get("arguments") else {})}
+            out = {"kind": "exec", **({"args_digest": _digest(p["arguments"])} if p.get("arguments") else {}),
+                   **({"parent_exec_id": p["parent_exec_id"]} if p.get("parent_exec_id") else {})}
         elif typ == "process_exit":   # protojson leaves out a zero status and an empty signal
             out = {"kind": "exit", "status": ev.get("status", 0), **({"signal": ev["signal"]} if ev.get("signal") else {})}
         else:

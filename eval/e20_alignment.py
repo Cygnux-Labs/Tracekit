@@ -33,7 +33,7 @@ from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
-from tracekit import findings_v2, tailer  # noqa: E402
+from tracekit import findings_effects, findings_v2, tailer  # noqa: E402
 from tracekit.format.canon import event_hash  # noqa: E402
 from tracekit.identity.base import CallerIdentity  # noqa: E402
 from tracekit.signer import pipeline, service as svc  # noqa: E402
@@ -521,12 +521,12 @@ def effects_replay(signer, sess, rng):
             e["tool_call_id"] = p["claim"]
         return e
     acts = []   # (signer time, order, action)
-    for p in sess["procs"]:
+    for p in sess["procs"] if sess["sensor"] else ():
         evs = [("exec", p["t"], {})] + p["effects"] + ([("exit", p["exit"], {"status": 0})]
                                                        if p["exit"] is not None and sess["parents"] else [])
         for kind, t, fields in evs:
             acts.append((t + rng.uniform(*sess["latency"]), 2, ("effect", effect(p, kind, t, fields))))
-    for kind, t, fields in sess["harness"]["effects"]:
+    for kind, t, fields in sess["harness"]["effects"] if sess["sensor"] else ():
         acts.append((t + rng.uniform(*sess["latency"]), 2, ("effect", effect(sess["harness"], kind, t, fields))))
     for c in sess["calls"]:
         acts += [(c["t0"], 1, ("decide", c)), (c["t1"], 1, ("complete", c))]
@@ -554,6 +554,112 @@ def effects_replay(signer, sess, rng):
     return records, lambda recs: vault_content(signer, recs, "e20 effects")
 
 
+def _effect_found(out):
+    return any(f["verdict"]["rule"] in findings_effects.CHECKS for f in out["findings"])
+
+
+def effects_score(es, signer, rng):
+    """The effects arm over effect set `es`: per fault and flavor, the fault's outcome (found, not checkable, missed);
+    over every honest effect and call of every session, false alarms and not-checkable reasons; the daemon child with
+    and without parent exec ids; each clock skew; runs no sensor covered."""
+    def analysed(count=True, into=signer, **kw):
+        """One session, analysed; with `count`, its honest effects and calls count towards the controls (not the
+        sessions whose clock skew is past the tolerance: they have a cell of their own)."""
+        sess = effects_session(es, rng, **kw)
+        records, content = sess["records"], sess["content"] = effects_replay(into, sess, rng)
+        out = findings_v2.analyze(records, content, effects=findings_effects.options(**EFFECT_OPTIONS))
+        role = {p["pid"]: p["role"] for p in sess["procs"]}
+        pids = {r["event"]["run_seq"]: role.get(r["event"]["data"]["pid"], "harness") for r in records
+                if r["event"]["type"] == "effect.observed"}
+        calls = {c["id"]: out["shown"]["calls"].get(c["id"], {}).get("checks", {}).get("TK-X207")
+                 for c in sess["calls"]}
+        if not count:
+            return sess, out, pids, calls
+        ctl["sessions"] += 1
+        for s, j in out["shown"]["effects"].items():
+            if pids[s] in ("fault", "daemon_child"):
+                continue
+            ctl["effects"] += 1
+            by = ctl["by_role"].setdefault(pids[s], {})
+            by[j["status"]] = by.get(j["status"], 0) + 1
+            if j["status"] == "found":
+                ctl["false_alarms"]["TK-X206"] += 1
+                ctl["false_alarm_examples"].append(f"{kw}: record {s} ({pids[s]})")
+        for tid, status in calls.items():
+            if tid not in sess["fault_calls"] and status:
+                ctl["calls"] += 1
+                ctl["false_alarms"]["TK-X207"] += status == "found"
+                if status not in ("found", "checked"):
+                    ctl["not_checkable_x207"][status] = ctl["not_checkable_x207"].get(status, 0) + 1
+        return sess, out, pids, calls
+
+    def outcome(statuses):
+        return "found" if "found" in statuses else "missed" if "explained" in statuses or "checked" in statuses \
+            else "not_checkable"
+    ctl = {"sessions": 0, "effects": 0, "calls": 0, "false_alarms": {"TK-X206": 0, "TK-X207": 0}, "by_role": {},
+           "not_checkable_x207": {}, "false_alarm_examples": []}
+    res = {"faults": {}, "daemon_child": {}, "skew": {}, "no_sensor": {}}
+    for fault, rule in EFFECT_FAULTS.items():
+        for flavor in FLAVORS:
+            cell = res["faults"].setdefault(f"{fault}/{flavor}", {"rule": rule, "n": 0, "found": 0, "missed": 0,
+                                                                  "not_checkable": 0, "reasons": {}})
+            for _ in range(EFFECT_REPS):
+                sess, out, pids, calls = analysed(flavor=flavor, fault=fault)
+                if rule == "TK-X206":
+                    statuses = [j["status"] for s, j in out["shown"]["effects"].items() if pids[s] == "fault"]
+                else:
+                    statuses = [calls[t] or "not_judged" for t in sess["fault_calls"]]
+                k = outcome(statuses)
+                cell["n"] += 1
+                cell[k] += 1
+                for x in statuses:
+                    if x not in ("found", "explained", "checked"):
+                        cell["reasons"][x] = cell["reasons"].get(x, 0) + 1
+            cell["detection"] = round(cell["found"] / cell["n"], 3)
+    for flavor in FLAVORS:
+        for _ in range(EFFECT_CONTROL_REPS):
+            analysed(flavor=flavor)
+        for parents in (True, False):   # the daemon's child connects 20-40 s after its call
+            cell = res["daemon_child"].setdefault(f"{'parent_ids' if parents else 'no_parent_ids'}/{flavor}",
+                                                  {"n": 0, "false_alarms": 0})
+            for _ in range(EFFECT_REPS):
+                sess, out, pids, _ = analysed(flavor=flavor, daemon=True, parents=parents)
+                cell["n"] += 1
+                cell["false_alarms"] += any(j["status"] == "found" for s, j in out["shown"]["effects"].items()
+                                            if pids[s] == "daemon_child")
+        for skew in SKEWS:
+            cell = res["skew"].setdefault(f"{skew:+g}s/{flavor}", {"n": 0, "sessions_with_false_alarms": 0,
+                                                                   "skew_seen": 0, "false_alarms_at_suggested_skew": 0})
+            for _ in range(EFFECT_REPS):
+                sess, out, pids, calls = analysed(abs(skew) <= findings_effects.SKEW_S, flavor=flavor, skew=skew)
+                cell["n"] += 1
+                cell["sessions_with_false_alarms"] += _effect_found(out)
+                seen = out["shown"]["effect_window"].get("skew_seen")
+                if seen:   # analysed again with the --clock-skew the finding suggests
+                    cell["skew_seen"] += 1
+                    again = findings_v2.analyze(sess["records"], sess["content"], effects=findings_effects.options(
+                        **{**EFFECT_OPTIONS, "skew_s": seen["suggest_s"]}))
+                    cell["false_alarms_at_suggested_skew"] += _effect_found(again)
+        cell = res["no_sensor"].setdefault(flavor, {"n": 0, "coverage": {}})
+        with tempfile.TemporaryDirectory() as d:   # a signer no sensor's import ever reached
+            bare = Signer(os.path.join(d, "data"))
+            try:
+                for _ in range(EFFECT_REPS // 2):
+                    sess, out, pids, calls = analysed(flavor=flavor, sensor=False, into=bare)
+                    cell["n"] += 1
+                    for rule in findings_effects.CHECKS:   # what coverage says, with no call marked found
+                        c = out["coverage"]["verdict"]["checks"][rule]
+                        k = cell["coverage"].setdefault(rule, {"checked": 0, "found": 0})
+                        k["checked"] += c["checked"]
+                        k["found"] += c["found"]
+                        for g in c["not_checkable"]:
+                            k[g["reason"]] = k.get(g["reason"], 0) + g["n"]
+            finally:
+                bare.close()
+    ctl["false_alarm_examples"] = ctl["false_alarm_examples"][:20]
+    return {**res, "controls": ctl}
+
+
 def main():
     d = tempfile.mkdtemp(prefix="e20-")
     signer = Signer(os.path.join(d, "data"))
@@ -565,6 +671,16 @@ def main():
                 out["held_out"] = score(json.load(f), signer, random.Random(SEED + 1), "held_out")
         else:
             out["held_out"] = {"status": "pool missing", "path": os.path.relpath(POOL, ROOT)}
+        signer.close()
+        signer = Signer(os.path.join(d, "effects"), SENSOR)
+        out["effects"] = {"tuned": effects_score(TUNED_EFFECTS, signer, random.Random(SEED + 2)),
+                          "held_out": effects_score(effects_heldout(), signer, random.Random(SEED + 3)),
+                          "options": {**findings_effects.options(**EFFECT_OPTIONS), "seeds": [SEED + 2, SEED + 3]},
+                          "note": "TK-X206/X207 on synthetic sensor sessions (effects_session). The held-out set is "
+                                  "effects_heldout(), a separate generator with its own seed, binaries, hosts, paths "
+                                  "and timings, committed before the checks existed: the E20 pool has no effects "
+                                  "section. A fault is found when the check flags it, missed when the check passed "
+                                  "it, not checkable otherwise."}
     finally:
         signer.close()
         shutil.rmtree(d, True)
@@ -587,6 +703,16 @@ def main():
             print(f"  {k:24} n={c['n']}  " + "  ".join(
                 f"{rule[3:]} found {c[rule]['found']} checked {c[rule]['checked']} nc {c[rule]['not_checkable']}"
                 for rule in CHECKS))
+    for label in ("tuned", "held_out"):
+        r = out["effects"][label]
+        c = r["controls"]
+        print(f"effects {label}: false alarms {c['false_alarms']} over {c['effects']} honest effects and {c['calls']} "
+              f"honest calls in {c['sessions']} sessions")
+        for k, cell in r["faults"].items():
+            print(f"  {k:22} {cell['rule']} found {cell['found']}/{cell['n']} missed {cell['missed']} not checkable "
+                  f"{cell['not_checkable']} {cell['reasons'] or ''}")
+        for k, cell in {**r["daemon_child"], **r["skew"]}.items():
+            print(f"  {k:22} {cell}")
 
 
 if __name__ == "__main__":

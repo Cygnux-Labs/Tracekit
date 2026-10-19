@@ -4,6 +4,7 @@
     tracekit analyze --v2 --run R --store DIR      # a signer's store, read-only
     tracekit analyze --v2 --run R --bundle B --trust T
         [--project DIR] [--allow DIR ...] [--open] [--budget S] [--dry-run] [--json]
+        [--effect-grace S] [--clock-skew S] [--sensor-skip DIR ...]
 
 Records come from the store, or from a bundle once it verifies; content (what the person asked, what the model said, a
 call's arguments) from the signer's content vault (content_get, each read a signed content.accessed), each item opening
@@ -17,6 +18,8 @@ Checks, for each call the run allowed or ran:
           call names. A sentence that names a file to keep away from it ("leave billing.py untouched") is no mention:
           it is a constraint, and a file the request kept away is a finding whatever the model said about it.
   TK-X203 (high) a write tool, a Bash write target or a kernel sensor's file effect outside the project
+  TK-X206 (high) a kernel sensor's exec, connect or file effect no call explains, and TK-X207 (medium) a call that
+          returned ok without the effect it should have had (findings_effects)
   TK-X200 (info) coverage: per check what it checked, found and could not check (by reason), and the monitorability
           score: how many actions had full, summarized, withheld (sealed or absent) or no reasoning before them, from
           which the share of actions each check could check follows.
@@ -49,7 +52,7 @@ import sys
 import tempfile
 import time
 
-from . import parsers
+from . import findings_effects, parsers
 from .findings import SEVERITY, WRITE_TOOLS
 
 BUDGET_S = 60.0
@@ -61,8 +64,9 @@ SHELL_TOOLS = ("Bash", "bash", "shell")
 
 # the fixed titles the signer writes beside a signed finding (rpc_schema.FINDING_TITLES once review_finding is in)
 TITLES = {"TK-X200": "Check coverage", "TK-X201": "Action with no reasoning before it",
-          "TK-X202": "Edit of a file not mentioned before", "TK-X203": "Write outside the project"}
-SEVERITIES = {"TK-X201": "info", "TK-X202": "medium", "TK-X203": "high"}
+          "TK-X202": "Edit of a file not mentioned before", "TK-X203": "Write outside the project",
+          **findings_effects.TITLES}
+SEVERITIES = {"TK-X201": "info", "TK-X202": "medium", "TK-X203": "high", **findings_effects.SEVERITIES}
 WHY = {   # rule -> (why it matters, what to do)
     "TK-X201": ("nothing the model said explains this action, so there is no stated reason to check it against",
                 "read the action and its result; if the model's reasoning was withheld, turn on thinking summaries"),
@@ -71,6 +75,7 @@ WHY = {   # rule -> (why it matters, what to do)
     "TK-X203": ("an agent working on one project changed a file elsewhere on the machine",
                 "check that file and what the change did; keep the agent's writes inside the project with a policy "
                 "rule or a sandbox"),
+    **findings_effects.WHY,
 }
 REASONS = {   # not checkable: (why, the exact change that makes it checkable)
     "no_response": ("no model response was recorded for this call",
@@ -95,8 +100,9 @@ REASONS = {   # not checkable: (why, the exact change that makes it checkable)
     "relative_path": ("a relative path with no working directory for the call",
                       "Claude Code: `tracekit init --dev --v2` (the transcript tailer records each call's cwd)"),
     "budget": ("the analysis reached its time or size budget", "pass --budget SECONDS, larger than the default 60"),
+    **findings_effects.REASONS,
 }
-CHECKS = ("TK-X201", "TK-X202", "TK-X203")
+CHECKS = ("TK-X201", "TK-X202", "TK-X203", *findings_effects.CHECKS)
 FORMS = ("full", "summary", "withheld", "none", "unknown")   # the monitorability classes, best first
 TIERS = ("operator", "observer", "gateway", "decision", "sdk", "transcript")   # trust, best first
 TEXT_TIERS = ("transcript", "sdk", "gateway")   # weakest first: a finding names the weakest text it relied on
@@ -332,7 +338,7 @@ class _Run:
                 self.args[seq] = {"paths": [path] if isinstance(path, str) else [], "cd": False, "edit": True}
             elif d["tool"] in SHELL_TOOLS and isinstance(body, dict) and isinstance(body.get("command"), str):
                 paths, cd = _targets(body["command"])
-                self.args[seq] = {"paths": paths, "cd": cd, "edit": False}
+                self.args[seq] = {"paths": paths, "cd": cd, "edit": False, "command": _text(body["command"])}
             return
         tier = "gateway" if e["source"] == "gateway" else "transcript" if _tailer(body) else "sdk"
         self.tier[seq] = tier
@@ -582,13 +588,15 @@ def _check(run, out, project, allow, deadline, clock):
     return cov, forms
 
 
-def analyze(records, content=None, project=None, allow=(), partial=False, budget_s=BUDGET_S, clock=time.monotonic):
+def analyze(records, content=None, project=None, allow=(), partial=False, budget_s=BUDGET_S, clock=time.monotonic,
+            effects=None):
     """The checks over one run's v2 records. `content(records)`: (run_seq, content, opened) of those of `records` the
     vault holds content for, in run_seq order (why.signed.vault_content), or None (no vault: little is checkable).
     -> the --json shape (docs/findings.md): {"run_id", "agent", "summary": the one line, "findings": [{verdict,
     cites}], "coverage": {verdict, cites} (TK-X200), "shown": what printing shows, plaintext, never signed
     ("details" per finding, "tiers" per check, "constraints", "calls": tool_use_id -> the reasoning before it and each
-    check's outcome)}; each {verdict, cites} is what review_finding signs. EvidenceAlert (from `content`) when the
+    check's outcome, "effects": run_seq -> each kernel sensor effect's call, "effect_window")}; each {verdict, cites}
+    is what review_finding signs; `effects`: findings_effects.options(). EvidenceAlert (from `content`) when the
     vault's content does not open its record."""
     run, deadline = _Run(records), clock() + budget_s
     out = {"run_id": run.run_id, "agent": run.agent, "findings": [],
@@ -607,6 +615,7 @@ def analyze(records, content=None, project=None, allow=(), partial=False, budget
             if nxt is not None and nxt[0] == seq:
                 run.feed(r, nxt[1], nxt[2])
         cov, forms = _check(run, out, project, allow, deadline, clock)
+        findings_effects.check(run, out, cov, effects, deadline, clock)
     except Budget:
         budget, out["findings"], out["shown"]["details"] = True, [], []
         out["shown"]["calls"] = {}
@@ -683,7 +692,8 @@ def render(out):
         lines.append("Not checkable (never counted as a pass):")
         for r, why, n in gaps:
             plain, fix = REASONS[why]
-            lines += [f"  {r} for {n} call{'s' * (n != 1)}: {plain}.", f"    To make it checkable: {fix}"]
+            lines += [f"  {r} for {n} {findings_effects.unit(r, why)}{'s' * (n != 1)}: {plain}.",
+                      f"    To make it checkable: {fix}"]
         lines.append("")
     if out["shown"]["constraints"]:
         lines.append("Stated constraints (a sentence that names a file to keep away from it):")
@@ -724,7 +734,8 @@ def main(argv=None):
     ap = argparse.ArgumentParser(prog="tracekit analyze --v2", description=(
         "Check whether what a v2 run's person asked, what its model said and what its agent did agree (TK-X201 "
         "nothing said before an action, TK-X202 an unmentioned file edited, TK-X203 a write outside the project; "
-        "TK-X200 coverage and the monitorability score). Exit 0, 4 when a finding is high or worse, 2 on an error."))
+        "TK-X206 a kernel sensor's effect no call explains, TK-X207 a call with no effect; TK-X200 coverage and the "
+        "monitorability score). Exit 0, 4 when a finding is high or worse, 2 on an error."))
     ap.add_argument("--run", help="the run id (default: the store's latest run)")
     src = ap.add_mutually_exclusive_group()
     src.add_argument("--store", metavar="DIR", help="a signer data dir (default: the dev signer's), read-only")
@@ -735,6 +746,7 @@ def main(argv=None):
                     help="a directory outside the project the agent may write (with /tmp and $TMPDIR)")
     ap.add_argument("--open", action="store_true", help="analyse a run that is still open: coverage says partial")
     ap.add_argument("--budget", type=float, default=BUDGET_S, metavar="S", help="seconds the analysis may take")
+    findings_effects.arguments(ap)
     ap.add_argument("--dry-run", action="store_true", help="print the findings, sign nothing")
     ap.add_argument("--json", action="store_true")
     a = ap.parse_args(argv)
@@ -788,7 +800,7 @@ def main(argv=None):
             else:
                 raise
     try:
-        out = analyze(records, content, a.project, a.allow, a.open, a.budget)
+        out = analyze(records, content, a.project, a.allow, a.open, a.budget, effects=findings_effects.from_args(a))
     except EvidenceAlert as e:
         print(f"tracekit analyze: EVIDENCE ALERT: {e}", file=sys.stderr)
         return 4
