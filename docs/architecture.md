@@ -30,7 +30,9 @@ flowchart LR
 Everything that reports to the signer, none of it trusted: the SDK client (`tracekit.sdk.client`) and the framework
 integrations built on it (`tracekit/integrations/`, [quickstarts](quickstart-v2.md)), the Claude Code hook and the
 transcript tailer (`tracekit.integrations.claude_code`, `tracekit.tailer`; the tailer reports every prompt and model
-line, which `tracekit analyze --v2` reads back from the content vault to compare what was asked, said and done), and
+line, which `tracekit analyze --v2` reads back from the content vault to compare what was asked, said and done; the hook
+also records each prompt as the harness submitted it, so a prompt line the agent writes into its own transcript stands
+out, and sends the constraints it states as [live constraints](policy-v2.md#live-constraints)), and
 the out-of-process recorders: the
 [LLM gateway](gateway.md) and T2 executors ([approvals](approvals.md#tiers-t1-and-t2-executors)). A client registers a run, asks the signer to `decide` each tool call
 before it runs and reports it `complete` after. Clients hold a run token, never a signing key.
@@ -80,7 +82,13 @@ tenant. Nothing is written into the analysed run. `review_finding` signs each fi
 records of the analysed run by `run_seq` and hash; its closed schema keeps text of the run (excerpts, paths, reasons)
 out of signed records, which can't be erased. The finding's author is the identity the signer measured when the
 findings run registered. `tracekit export --v2 --run R --with-findings` bundles a run with its findings runs; the
-verifier checks each citation and labels the author ([verdicts](verdicts.md#reviews)).
+verifier checks each citation and labels the author ([verdicts](verdicts.md#reviews)), and prints the findings on a
+`Findings:` line of their own: an opinion of the run, never part of its integrity.
+
+Live constraints go the other way: a limit the person's request states ("don't touch billing.py", "don't push") is
+sent by the hook as `constraint_add` and kept in the run's state (a `constraint.added` record holds the kind and a
+commitment to the file name). After its policy, the signer raises a later call of the run that breaks one to an ask
+(`TK-CONSTRAINT`), never lowering a decision, so prevention needs no trust in whoever added the constraint.
 
 ## Bundles and the verifier
 

@@ -1,6 +1,7 @@
 # Reading a v2 verify report
 
-`tracekit verify bundle.tkb --trust trust.json` prints one line per check, then two summary lines:
+`tracekit verify bundle.tkb --trust trust.json` prints one line per check, then two summary lines, and a third when
+the bundle holds signed findings:
 
 ```text
 [PASS] manifest — every file is listed with its SHA-256 and nothing else is in the bundle
@@ -8,10 +9,11 @@
 ...
 Integrity: VERIFIED.
 Assurance: witnessed; records ed25519; checkpoint Ed25519 only (tracekit.example.org/log/1); cosigned ed25519 by ...
+Findings: 2 finding(s) (1 high, 1 medium) and 1 coverage review(s); 3 independent (an opinion of the run, not its integrity).
 ```
 
 Each line is `PASS`, `WARN` or `FAIL`. `--json` prints the same as `{"exit_code", "checks", "failures", "warnings",
-"integrity", "assurance", "notes"}`. The algorithm behind each line is in [format v2](format-v2.md#11-verification-algorithm);
+"integrity", "assurance", "notes"}`, with `"findings"` when there is a Findings line. The algorithm behind each line is in [format v2](format-v2.md#11-verification-algorithm);
 this page says what each one means, and what it does not. The v1 report is described in [signing](signing.md).
 
 ## Exit codes
@@ -161,6 +163,24 @@ Only `independent` vouches for the author; read every other label as the analyze
 
 A finding says that a check fired on these records, not that the agent did wrong. A bundle with signed findings needs
 `verifier_min_version` 1.4.0: an older verifier reports `UNVERIFIABLE (needs tracekit >= 1.4.0)`.
+
+The `Findings:` line, after `Integrity` and `Assurance`, sums them up: how many findings by severity, the coverage
+reviews, and the author labels. It is kept apart on purpose. Integrity depends only on the cryptographic and structural
+checks; a finding is someone's opinion of the run and never changes it. Only a citation that doesn't match fails the
+bundle (`reviews`), because then the analyzer misstated the evidence or the evidence changed.
+
+## Live constraints
+
+A [live constraint](policy-v2.md#live-constraints) is what the person's request said not to do in the rest of a run
+(`constraint.added`); the signer held each later call that broke one for a person's approval (`TK-CONSTRAINT`). When a
+bundle holds either, both verifiers add:
+
+| Line | Pass means | Failure |
+|---|---|---|
+| `constraints` | `n live constraint(s) added; m call(s) held by them`: each decision held by `TK-CONSTRAINT` is an `ask` that comes after a `constraint.added` in its run | a decision held by `TK-CONSTRAINT` before any constraint in its run, or one that is not an `ask`: the signer never writes either |
+
+The line counts holds, not breaches: a held call ran only if a person approved it (`approvals by people`). A
+constraint holds a file's commitment, never its name; the person's prompt it came from is in the content vault.
 
 ## Signed gaps
 

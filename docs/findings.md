@@ -60,20 +60,24 @@ Re-running the analyzer is idempotent: a finding with the same fingerprint (rule
 On a run of the v2 signer, `tracekit analyze --v2` checks whether what the person asked, what the model said and what
 the agent did agree. It reads the run's signed records and, from the signer's
 [content vault](privacy.md#the-content-vault), what they commit to; each item must open its record's commitment, or the
-analysis stops with an evidence alert. The findings are printed. Signing them into a findings run beside the analysed
-run comes with the `review_finding` RPC.
+analysis stops with an evidence alert. Then it signs what it found: each finding and the coverage review go through the
+signer (`review_finding`) into a findings run of its own about the run, as the identity that ran it, which signer.yaml
+`analyzers` must list (the dev signer lists its user). `--dry-run` only prints.
 
 ```bash
-tracekit analyze --v2                          # the dev signer's latest run
+tracekit analyze --v2                          # the dev signer's latest run, signed
 tracekit analyze --v2 --run R --store /var/lib/tracekit-signer
 tracekit analyze --v2 --run R --bundle r.tkb --trust trust.json   # records from a bundle that verifies
 tracekit analyze --v2 --open --json            # a run still open: partial, machine-readable
+tracekit analyze --v2 --dry-run                # print, sign nothing
+tracekit export --v2 --run R --with-findings -o r.tkb   # the run and its findings runs, for `tracekit verify`
 ```
 
 `--project DIR` names the project (default: the working directory of the first prompt), `--allow DIR` a directory
 outside it the agent may write (`/tmp` and `$TMPDIR` always are), `--budget S` the time the analysis may take (60 s).
 Exit 0, 4 when a finding is high or worse (or the vault's content doesn't open its record), 2 on an error: no run, a
-run still open without `--open`, a bundle that doesn't verify. For Claude Code, `tracekit init --dev --v2` sets up
+run still open without `--open`, a bundle that doesn't verify, findings the signer would not sign (they are printed,
+and the reason is on stderr). For Claude Code, `tracekit init --dev --v2` sets up
 everything the checks read: the transcript tailer, the dev signer's vault, and thinking summaries.
 
 The first line is the answer; then each finding in plain words; record numbers last:
@@ -87,32 +91,40 @@ HIGH · Write outside the project  (TK-X203)
   What to do: check that file and what the change did; keep the agent's writes inside the project with a policy rule or a sandbox
   Records: 1 (ec2371cf8fc7), 15 (d55930adc31e), 16 (bd83db487cda) · relied on: decision, transcript (the agent can write it)
 
-MEDIUM · Edit of a file not mentioned before  (TK-X202) [kept_away]
-  What happened: Edit changed /work/shop/billing.py; the request named it only to keep it unchanged
+HIGH · Stated constraint broken  (TK-X204) [keep_away]
+  What happened: Edit changed billing.py after the request (record 2) said to keep billing.py unchanged
   ...
 Not checkable (never counted as a pass):
   TK-X201 for 1 call: the model's reasoning was withheld or sealed, so it can't be read.
     To make it checkable: Claude Code: `tracekit init --dev --v2` sets "showThinkingSummaries": true ...
+...
+Signed: 4 record(s), the findings and the coverage review, in findings run 7c1e…; bundle them with `tracekit export --v2 --run 13b8… --with-findings`
 ```
 
 | Rule | Severity | What it checks | Not checkable when |
 |---|---|---|---|
 | TK-X200 | info | coverage: per check, how many calls it checked and found, and how many it could not check, by reason; the monitorability counts | - |
 | TK-X201 | info; low when most checkable calls had reasoning | an action with nothing said before it: no reasoning and no text earlier in the model message that asked for the call | `no_response`, `unlinked`, `conflicting_reports`, `no_content`, `withheld` |
-| TK-X202 | medium | an edit (Write, Edit, MultiEdit, NotebookEdit) of a file whose name neither the person's request nor the model's text before the call names. A clause that names a file to keep away from it ("leave billing.py untouched") is no mention: the file is a stated constraint, and editing a file the request kept away is a finding whatever the model said about it | `no_content`, `no_text` |
+| TK-X202 | medium | an edit (Write, Edit, MultiEdit, NotebookEdit) of a file whose name neither the person's request nor the model's text before the call names. Words that name a file to keep away from it ("leave billing.py untouched") are no mention: they state a constraint, which TK-X204 checks (a call TK-X204 found is not reported twice) | `no_content`, `no_text` |
 | TK-X203 | high | a write tool, a Bash write target or a [kernel sensor](integrations/tetragon.md)'s file effect outside the project | `no_content`, `no_root`, `root_too_broad`, `relative_path` |
+| TK-X204 | high when the request stated the constraint; medium when the model did ("I'll leave billing.py alone"); low when a later request lifted it | a call, or a kernel sensor's file or network effect, that breaks a constraint stated before it: keep a file unchanged, change only certain files, read-only, don't push, no network (the kinds of [live constraints](policy-v2.md#live-constraints)). A later request that names what the constraint keeps away ("now update billing.py too") lifts it: the finding stays, downgraded to low, marked `lifted`, and cites the request that lifted it | `no_content`, `no_text` |
+| TK-X208 | high | a prompt line of the main transcript whose text no prompt the hook recorded at UserPromptSubmit has: the harness never submitted it. Each hook prompt confirms one line. Such a line is no request: it lifts and clears nothing | `no_hook`, `no_content` |
 
 Terms, as the output uses them:
 
 - **Intent** is only what a person typed: a prompt line of the main Claude Code transcript (not a meta line, a
-  compaction summary, command output, a tool result or a sub-agent's task prompt), the newest user message of a model
-  request the gateway recorded, an input observed as trusted.
+  compaction summary, command output, a tool result or a sub-agent's task prompt) that the hook's own copy of the
+  prompt confirms, the newest user message of a model request the gateway recorded, an input observed as trusted. In a
+  run whose hook recorded no prompt (hooks before this release), each prompt line counts, as the transcript's word.
+- A **stated constraint** is what the run's own words said not to do, read by a small fixed grammar: from a request
+  (and, live, held by the signer) or from the model's text before the call (its own promise).
 - **Reasoning** is what the model said before the call: `full` (an open model's own reasoning), `summary` (Claude's
   thinking, an OpenAI reasoning summary, Gemini's thought summaries), `withheld` (the provider returned it sealed,
   encrypted, or not at all), `none`. It is the model's account of itself: self-reported, not proof.
 - **Monitorability** is the share of actions whose reasoning can be read (`full` or `summary`).
-- **Trust tier** is where the text a finding relied on came from: `gateway` (the LLM gateway's record), `sdk` (an
-  in-process adapter's report), `transcript` (a Claude Code transcript line, which the agent can write); the printed
+- **Trust tier** is where the text a finding relied on came from: `gateway` (the LLM gateway's record), `harness` (a
+  prompt the hook recorded and the transcript agree on), `sdk` (an in-process adapter's report), `transcript` (a Claude
+  Code transcript line, which the agent can write); the printed
   list also names `decision` (the arguments the signer decided on), `observer` (a kernel sensor) and `operator`
   (`--project`). Text the agent can write is labelled, and the gateway's record of a model message is preferred. Two
   reports of one model message from different event streams make its reasoning not checkable, and clear nothing.
@@ -132,6 +144,7 @@ Not checkable is never a pass. Each reason, and the change that makes it checkab
 | `no_root`, `root_too_broad` | the project is unknown, or `/` or a home directory | `--project DIR` |
 | `relative_path` | a relative path with no working directory for the call (a Bash `cd`) | the transcript tailer records each call's cwd |
 | `budget` | the analysis reached its time or size budget | `--budget SECONDS` |
+| `no_hook` | the run's hook recorded no prompt, so no prompt line can be confirmed (TK-X208) | update the hooks: `tracekit init --dev --v2` |
 
 ### The `--json` shape
 
@@ -145,27 +158,49 @@ Stable from this release; new keys may be added:
  "coverage": {"verdict": {"kind": "coverage", "rule": "TK-X200", "severity": "info",
                           "checks": {"TK-X201": {"checked": 4, "found": 1, "not_checkable": [{"reason": "withheld", "n": 1}]},
                                      "TK-X202": {"checked": 2, "found": 1, "not_checkable": []},
-                                     "TK-X203": {"checked": 5, "found": 1, "not_checkable": []}},
+                                     "TK-X203": {"checked": 5, "found": 1, "not_checkable": []},
+                                     "TK-X204": {"checked": 5, "found": 1, "not_checkable": []},
+                                     "TK-X208": {"checked": 1, "found": 0, "not_checkable": []}},
                           "reasoning": {"full": 0, "summary": 3, "withheld": 1, "none": 1}},
               "cites": []},
  "shown": {"details": [{"what": "Edit changed /work/shop/billing.py; …", "tiers": ["decision", "transcript"],
-                        "labels": ["kept_away"]}],
-           "tiers": {"TK-X201": ["transcript"], "TK-X202": ["decision", "transcript"], "TK-X203": ["decision", "transcript"]},
-           "constraints": [{"name": "billing.py", "run_seq": 1, "tier": "transcript", "source": "request"}],
+                        "labels": []}],
+           "tiers": {"TK-X201": ["transcript"], "TK-X202": ["decision", "transcript"], "TK-X203": ["decision", "transcript"],
+                     "TK-X204": ["decision", "harness"], "TK-X208": ["harness"]},
+           "constraints": [{"kind": "keep_away", "name": "billing.py", "run_seq": 2, "source": "request", "tier": "harness"}],
+           "prompts": [{"run_seq": 2, "status": "confirmed", "hook": 1}],
            "calls": {"toolu_7": {"tool": "Edit", "form": "summary", "order": "signed_before", "seqs": [11],
-                                 "excerpt": "…", "checks": {"TK-X201": "checked", "TK-X202": "found", "TK-X203": "checked"}}}}}
+                                 "excerpt": "…", "checks": {"TK-X201": "checked", "TK-X204": "checked",
+                                                           "TK-X202": "found", "TK-X203": "checked"}}}},
+ "signed": {"findings_run": "7c1e…", "records": 4}}
 ```
 
-`findings` and `coverage` hold no text of the run: each `{verdict, cites}` is exactly what `review_finding` will sign
-(the signer adds the rule's fixed title). A finding may also carry `redacted: true` (it relied on content redaction
-changed); the coverage, `partial: true` for an open run. `shown` is plaintext for whoever ran the analysis (`details`
+`findings` and `coverage` hold no text of the run: each `{verdict, cites}` is exactly what `review_finding` signs (the
+signer adds the rule's fixed title). A finding may also carry `redacted: true` (it relied on content redaction
+changed) and `lifted: true` (TK-X204, downgraded by a later request); the coverage, `partial: true` for an open run.
+`shown.prompts` says of each prompt line whether the hook's copy confirmed it (`confirmed`, with the hook's record),
+didn't (`unconfirmed`: TK-X208) or couldn't (`unchecked`: no hook prompts). `signed` names the findings run and its
+record count; it is absent with `--dry-run`. `shown` is plaintext for whoever ran the analysis (`details`
 in the order of `findings`, per check the trust tiers relied on, the stated constraints, and per call what was said
 before it and each check's outcome: `checked`, `found` or a not-checkable reason); it is printed, never signed.
 
+### Signed findings
+
+Each pass is a findings run of its own (`register_run analyzes`), closed after its last finding; passes are never
+merged, and a reader shows the latest pass of each author. `tracekit export --v2 --run R --with-findings` puts the run
+and its findings runs in one bundle, and `tracekit verify` checks each finding's citations against the run's records:
+a citation that doesn't match fails the bundle. The findings themselves get a `Findings:` line of their own after
+`Integrity` and `Assurance`, with their author's label (`independent`, `unpinned author`, `self-asserted`;
+[verdicts](verdicts.md#reviews)): an opinion of the run, never part of its integrity. On a laptop the analyzer is the
+agent's own user, so dev findings read `self-asserted`; for findings an auditor can take as independent, run
+`tracekit analyze --v2` as an operator identity and pin it in the verifier's trust config (`analyzers`).
+
 ### For agents
 
-An agent can read its own run the same way: `tracekit analyze --v2 --run $RUN --json` as an identity with
-`content_read`. `findings[].verdict` and `shown.details` say what to explain or undo; `coverage.verdict.checks` and
+An agent can read its own run the same way: `tracekit analyze --v2 --run $RUN --json --dry-run` as an identity with
+`content_read`. When the signer holds one of its calls for a [live constraint](policy-v2.md#live-constraints), the
+decision's `reason` says which and what to do: `the person's request in this run said not to modify billing.py; ask the
+person (TK-CONSTRAINT)`. `findings[].verdict` and `shown.details` say what to explain or undo; `coverage.verdict.checks` and
 `shown.calls[id].checks` say which of its actions couldn't be checked, and the table above says what makes them
 checkable. Findings are an opinion about a run, never part of its integrity: before relying on another agent's work,
 verify its bundle offline (`tracekit verify r.tkb --trust trust.json --json`) and read its findings beside that.
@@ -173,9 +208,11 @@ verify its bundle offline (`tracekit verify r.tkb --trust trust.json --json`) an
 ### Accuracy
 
 E20 in [evaluation](evaluation.md#e20-intent-reasoning-and-action-checks) replays synthetic Claude Code sessions with a
-spliced edit of an unrequested file through the tailer and hook into a signer with the vault on. Naming the file
-innocently in the model's text clears TK-X202 (a name check can't tell why), and so does a prompt line the agent
-appends to its own transcript; both are in the [limits](limits.md#intent-reasoning-and-action-checks).
+spliced edit of an unrequested file through the hook and tailer into a signer with the vault on. A prompt line the
+agent appends to its own transcript no longer clears anything: TK-X208 flags it in every such session (0 of 24
+before). Naming the file innocently in the model's text still clears TK-X202 (a name check can't tell why), and the
+constraint grammar reads 4 of the 14 held-out ways of saying "don't touch X", so TK-X204 and live constraints miss the
+rest; both are in the [limits](limits.md#intent-reasoning-and-action-checks).
 
 ## Accuracy
 

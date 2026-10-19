@@ -378,6 +378,43 @@ backtested: none of those runs reads a secret or sends anything, and the golden 
 ids; its ten minutes are a judgment of how long a secret read and its use stay related. Before enforcing anything,
 record runs under the pack in shadow, backtest your own store and set `max` above the busiest minute you see.
 
+## Live constraints
+
+A policy is written ahead of time; a person's request often adds a limit for one task: "don't touch billing.py",
+"read-only, just tell me what you'd change", "don't push". A live constraint is such a limit, held by the signer for the
+rest of the run. It is experimental, new after 1.3.0.
+
+The Claude Code hook (and the Codex, Cursor and Gemini hooks, which share it) reads the person's prompt at
+`UserPromptSubmit`, as the harness hands it over, and sends each constraint it states with `constraint_add` (RPC 19).
+A small fixed grammar reads them ([tracekit/constraints.py](../tracekit/constraints.py)):
+
+| Kind | Read from | Holds |
+|---|---|---|
+| `keep_away` | "don't touch / modify / edit / change / delete X", "leave X alone", "X stays untouched", "X is read-only", for a file name X | a call that writes X: a write tool's path, a shell redirection, `rm`, `touch`, `tee`, `sed -i`, the destination of `cp` or `mv` |
+| `only_change` | "only change / edit / modify / touch X" | a call that writes any other file |
+| `read_only` | "read-only" naming no file, "don't change anything" | any call that writes, commits or installs |
+| `no_push` | "don't push", "never push", "no pushing" | a `git push` |
+| `no_network` | "no network", "no internet", "work offline" | an http or browser call, `WebFetch`, `curl`, `wget`, `ssh`, `git pull`/`fetch`/`clone`/`push`, a package install |
+
+After the policy engine has decided, the signer checks each call of the run against the run's constraints. A call
+that breaks one is raised to `ask` with the rule `TK-CONSTRAINT` added; a person answers it like any other ask (an
+agent approver never does). A `deny` stays a `deny`, an `ask` stays an `ask`, and nothing is ever lowered, so a
+constraint can only hold more calls. That is why any client of the run may add one, the agent's own identity included:
+a made-up constraint only makes the agent wait.
+
+The agent is told why, in its own words: `held: the person's request in this run said not to modify billing.py; ask
+the person (TK-CONSTRAINT)` (the hook prints it; the decide response carries it as `reason`). The file name comes from
+the call's own arguments. The log never holds it: `constraint.added` records the kind and, for a file, a salted
+commitment to its lower-cased base name ([format v2](format-v2.md#3-events)), and the signer matches a call by
+committing each file it writes under that record's salt. The prompt itself is recorded beside it (`input.observed`,
+source `claude-code:UserPromptSubmit`), its text in the content vault when the signer keeps content.
+
+A run takes at most 32 constraints. After a signer restart the constraints come back from the run's records.
+`tracekit analyze --v2` checks the same constraints after the run, with the model's own statements too
+([TK-X204](findings.md#v2-runs-what-was-asked-said-and-done-tracekit-analyze---v2)); `tracekit verify` checks that
+each `TK-CONSTRAINT` hold comes after a constraint ([verdicts](verdicts.md#live-constraints)). What the grammar misses
+is in the [limits](limits.md#intent-reasoning-and-action-checks).
+
 ## Patterns: the RE2 subset
 
 Patterns must mean the same to RE2 (`google-re2`, used when installed) and to the `regex` module in ASCII mode

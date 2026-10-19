@@ -61,6 +61,19 @@ only sealed. For headless runs pass `claude -p --thinking-display summarized`. `
 them. Codex, Cursor and Gemini CLI have no transcript tailer: their runs record no model messages, so the checks that
 read them say `no_response` unless the model calls go through the [LLM gateway](gateway.md).
 
+At each prompt (`UserPromptSubmit`; Cursor's `beforeSubmitPrompt`, Gemini CLI's `BeforeAgent`) the hook also records
+the prompt as the harness handed it over (`input.observed`, source `claude-code:UserPromptSubmit`; its text in the
+content vault). `tracekit analyze --v2` takes a prompt line of the transcript as the person's only when the hook
+recorded the same text: a line the agent appended to its own transcript is flagged (TK-X208) and clears nothing.
+Hooks before this release record no prompt, and TK-X208 says `no_hook`.
+
+The hook also sends what the prompt says not to do ("don't touch billing.py", "read-only", "don't push", "no network",
+"only change src/pager.py") to the signer as [live constraints](policy-v2.md#live-constraints): a later call that
+breaks one waits for your approval, and the agent reads why on stderr: `waiting for approval apr-… (TK-CONSTRAINT): the
+person's request in this run said not to modify billing.py; ask the person`. Answer it from another terminal as any
+held call: `tracekit approvals list`, then `tracekit approvals approve <id>` (or `reject`). `tracekit view --dev` lists
+the run's constraints at the top of its review.
+
 ### Hooks name their event (1.2)
 
 `tracekit init` writes each hook command with the event it's configured for as its last argument (the Claude Code

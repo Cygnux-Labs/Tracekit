@@ -157,6 +157,9 @@ content: {retain: true, retention_days: 30, max_record_bytes: 1048576}   # defau
   commitment. The sealed forms of reasoning (a thinking block's signature, `redacted_thinking`, OpenAI's
   `encrypted_content`) are kept byte for byte in the body, so a run recorded now can be checked if a provider later
   lets an auditor read them.
+- **Prompts at the hook.** The Claude Code hook (and the Codex, Cursor and Gemini CLI hooks) also records each prompt as
+  the harness submitted it (`input.observed`): a commitment, the prompt itself kept in the vault when it is on. A live
+  constraint it states records a commitment to the file it names, never the name.
 - **Findings carry no content.** `tracekit analyze --v2` reads content through `content_get` (a `content.accessed`
   record each), and a finding names only its rule, severity, trust tier and the records it cites by `run_seq` and
   hash. The paths and excerpts it prints come from the content it read and are never signed.
