@@ -10,25 +10,25 @@
   },
   "platform": "darwin",
   "python": "3.11.15",
-  "quick": true,
+  "quick": false,
   "scenarios": {
     "a_fail_closed": {
-      "blocked": 5,
-      "calls_while_down": 5,
+      "blocked": 20,
+      "calls_while_down": 20,
       "ok": true
     },
     "b_fail_open": {
-      "calls_while_down": 5,
+      "calls_while_down": 20,
       "client_counter_gaps": [
-        5
+        20
       ],
       "client_seqs_recorded": [
         0,
-        6
+        21
       ],
       "fsck_problems": [],
       "ok": true,
-      "ran": 5
+      "ran": 20
     },
     "c_restart": {
       "approval_after_restart": "approved",
@@ -42,44 +42,44 @@
     },
     "d_partition": {
       "after": {
-        "added_p50": 1.01,
-        "added_p99": 5.91,
-        "max": 8.14,
-        "n": 30,
-        "p50": 3.25,
-        "p95": 7.07
+        "added_p50": 0.01,
+        "added_p99": 4.5,
+        "max": 14.12,
+        "n": 200,
+        "p50": 1.97,
+        "p95": 3.03
       },
       "baseline": {
-        "max": 3.73,
-        "n": 30,
-        "p50": 2.23,
-        "p95": 2.88
+        "max": 3.29,
+        "n": 200,
+        "p50": 1.97,
+        "p95": 2.18
       },
       "client_counter_gaps": [
         [
-          5
+          20
         ],
         [
-          5
+          20
         ]
       ],
       "client_timeout_ms": 1000.0,
       "during": {
-        "added_p50": 999.91,
-        "added_p99": 1000.07,
-        "max": 1002.3,
-        "n": 10,
-        "p50": 1002.15,
-        "p95": 1002.3
+        "added_p50": 1002.5,
+        "added_p99": 1005.35,
+        "max": 1007.31,
+        "n": 40,
+        "p50": 1004.47,
+        "p95": 1006.13
       },
-      "fs_ran_unrecorded": 5,
+      "fs_ran_unrecorded": 20,
       "fsck_problems": [],
       "ok": true,
-      "shell_blocked": 5
+      "shell_blocked": 20
     },
     "e_witness_unreachable": {
-      "answered": 10,
-      "calls_while_down": 10,
+      "answered": 40,
+      "calls_while_down": 40,
       "cosigned_after_recovery": true,
       "degraded_unanchored_gaps": 1,
       "fsck_problems": [],
@@ -87,32 +87,32 @@
       "witness_failed_gaps": 2
     },
     "f_storage_unavailable": {
-      "acknowledged": 11,
+      "acknowledged": 41,
       "acknowledged_lost": 0,
       "client_counter_gaps": [
-        7
+        22
       ],
       "fsck_problems": [],
       "ok": true,
       "refused": {
-        "unavailable": 7
+        "unavailable": 22
       },
       "signer_unavailable_gaps": 1
     },
     "g_typescript": {
       "back": "allow",
-      "blocked": 5,
-      "calls_while_down": 10,
+      "blocked": 20,
+      "calls_while_down": 40,
       "client_counter_gaps": [
-        10
+        40
       ],
       "client_seqs_recorded": [
         0,
-        11
+        41
       ],
       "fsck_problems": [],
       "ok": true,
-      "ran": 5,
+      "ran": 20,
       "up": "allow"
     }
   },

@@ -266,9 +266,9 @@ fail modes are `{default: closed, fs: open}`, so Read runs and Bash is blocked w
 | g | a and b through the TS client | as a and b (skipped with the reason without node or the built SDK) |
 
 a to c and g drive `tracekit signer serve`; d to f run the signer in process to inject the fault and shorten its timers.
-Every store must pass `tracekit signer fsck`. Under the partition (measured on macOS) each call took the client timeout (about 1000 ms added
-at p50 and p99 over a 2 ms baseline); after it, the added latency was under 5 ms at p99. `make eval` runs the `--quick`
-form (5 calls per phase instead of 20). Results: `eval/results/e14_outage.json`.
+Every store must pass `tracekit signer fsck`. Under the partition (full run, measured on macOS) each call took the
+client timeout (about 1000 ms added at p50 and p99 over a 2 ms baseline); after it, the added latency was 4.5 ms at
+p99. `make eval` runs the `--quick` form (5 calls per phase instead of 20). Results: `eval/results/e14_outage.json`.
 
 ## E19: egress observation
 

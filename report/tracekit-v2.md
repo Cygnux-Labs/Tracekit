@@ -403,15 +403,15 @@ cases a and b through the TypeScript client. Every store must pass `tracekit sig
 <!-- table e14 -->
 | Scenario | Passed | Measured |
 |---|---|---|
-| a fail closed | yes | blocked 5; calls while down 5 |
-| b fail open | yes | calls while down 5; ran 5; fsck problems 0 |
+| a fail closed | yes | blocked 20; calls while down 20 |
+| b fail open | yes | calls while down 20; ran 20; fsck problems 0 |
 | c restart | yes | approval after restart approved; asked ask; decide after allow; decide before allow; completed; consumed; fsck problems 0 |
-| d partition | yes | client timeout ms 1000.0; fs ran unrecorded 5; shell blocked 5; fsck problems 0 |
-| e witness unreachable | yes | answered 10; calls while down 10; degraded unanchored gaps 1; witness failed gaps 2; cosigned after recovery; fsck problems 0 |
-| f storage unavailable | yes | acknowledged 11; acknowledged lost 0; signer unavailable gaps 1; fsck problems 0 |
-| g typescript | yes | back allow; blocked 5; calls while down 10; ran 5; up allow; fsck problems 0 |
+| d partition | yes | client timeout ms 1000.0; fs ran unrecorded 20; shell blocked 20; fsck problems 0 |
+| e witness unreachable | yes | answered 40; calls while down 40; degraded unanchored gaps 1; witness failed gaps 2; cosigned after recovery; fsck problems 0 |
+| f storage unavailable | yes | acknowledged 41; acknowledged lost 0; signer unavailable gaps 1; fsck problems 0 |
+| g typescript | yes | back allow; blocked 20; calls while down 40; ran 20; up allow; fsck problems 0 |
 
-Run: quick. Platform: darwin, Python 3.11.15.
+Run: full. Platform: darwin, Python 3.11.15.
 <!-- /table -->
 
 Latency of a tool call under the partition (scenario d):
@@ -419,9 +419,9 @@ Latency of a tool call under the partition (scenario d):
 <!-- table e14-partition -->
 | Phase | Calls | p50 ms | p95 ms | added p50 ms | added p99 ms |
 |---|---|---|---|---|---|
-| baseline | 30 | 2.23 | 2.88 | - | - |
-| during | 10 | 1002.15 | 1002.3 | 999.91 | 1000.07 |
-| after | 30 | 3.25 | 7.07 | 1.01 | 5.91 |
+| baseline | 200 | 1.97 | 2.18 | - | - |
+| during | 40 | 1004.47 | 1006.13 | 1002.5 | 1005.35 |
+| after | 200 | 1.97 | 3.03 | 0.01 | 4.5 |
 
 Client timeout: 1000.0 ms.
 <!-- /table -->
