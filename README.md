@@ -15,7 +15,7 @@ and gives you one `.tkb` file per run that anyone can verify offline.**
 <table>
 <tr>
 <td align="center" width="25%"><h3>8 of 8</h3>tamper attacks caught<br><sub><a href="#proof">480 trials</a>, with a witness (E1)</sub></td>
-<td align="center" width="25%"><h3>514 of 514</h3>harmful calls stopped<br><sub><a href="#proof">11 classes</a>, 1 false alarm in 696 (E17)</sub></td>
+<td align="center" width="25%"><h3>516 of 516</h3>harmful calls stopped<br><sub><a href="#proof">11 classes</a>, 1 false alarm in 697 (E17)</sub></td>
 <td align="center" width="25%"><h3>&lt; 1 ms</h3>added per tool call<br><sub><a href="#proof">0.91 ms at p99</a>, signer round trip (E9)</sub></td>
 <td align="center" width="25%"><h3>8 of 8</h3>insider attacks caught<br><sub><a href="#proof">a merge gate</a> on every PR (E8)</sub></td>
 </tr>
@@ -132,7 +132,9 @@ Coding agents: `tracekit init --dev --v2` wires Claude Code's hooks to a dev sig
 person
 ([Claude Code's sandbox](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/integrations/claude-code-sandbox.md));
 with Codex's, see what Tracekit sees and the settings to use
-([Codex's sandbox](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/integrations/codex-sandbox.md)).
+([Codex's sandbox](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/integrations/codex-sandbox.md));
+with Gemini CLI's tool sandbox, Tracekit holds each sandbox expansion for a person
+([Gemini CLI's sandbox](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/integrations/gemini-sandbox.md)).
 Without uv: `pip install tracekit-ai`, then `tracekit demo --server`. `--why`
 (experimental) shows a held
 email whose cause is found by replay and cited by its signed record:
@@ -193,7 +195,7 @@ is tested, but may change between releases ([what's stable](https://github.com/C
 | Core | What it does | Measured |
 |---|---|---|
 | **Record** | Every tool call, decision and result in one signed hash chain per run. A lost event becomes a signed gap, never silence | 6 of 8 tamper attacks caught by the log alone (E1) |
-| **Decide** | Allow, deny, or hold each call for a person, before it runs. [Packs](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/policy-v2.md) for shell, files, SQL, HTTP, cloud CLIs, browsers, email, messaging, payments, secrets and MCP | 514 of 514 harmful calls stopped, 1 false alarm in 696 (E17) |
+| **Decide** | Allow, deny, or hold each call for a person, before it runs. [Packs](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/policy-v2.md) for shell, files, SQL, HTTP, cloud CLIs, browsers, email, messaging, payments, secrets and MCP | 516 of 516 harmful calls stopped, 1 false alarm in 697 (E17) |
 | **Approve** | A held call runs only after a yes from the command line, bound to its exact arguments and used once ([approvals](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/approvals.md)) | Edited arguments, a replayed snapshot or another run's approval: refused, in the contract tests every stable framework integration runs |
 | **Prove** | `tracekit verify` checks a run's file offline against keys you pinned | 8 of 8 insider attacks caught (E8) |
 | **Watch** | `tracekit view`: every run verified, blocked and held calls, approvals, gaps, replay and a run review ([viewer](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/viewer.md)) | Not measured |
@@ -220,7 +222,7 @@ Our own experiments: small, synthetic and written by us. Nothing rounded up. The
 |---|---|---|
 | **E1** tamper detection | 120-record signed logs, 8 attacks, 60 trials each, re-run on 1.2 | 6 of 8 caught by the log alone, **8 of 8 with a witness** |
 | **E8** insider attacks | Real unprivileged users against a Linux system-mode signer: a decoy signer, a stopped signer, a swapped policy, fabricated runs | **8 of 8 caught**, a merge gate on every pull request |
-| **E17** policy packs | 514 harmful and 696 benign tool calls in 11 classes, decided by both regex engines | **514 of 514 stopped**; 1 false alarm, a draft email held for a person |
+| **E17** policy packs | 516 harmful and 697 benign tool calls in 11 classes, decided by both regex engines | **516 of 516 stopped**; 1 false alarm, a draft email held for a person |
 | **E10** reconciliation | 30 runs, 12 with a seeded discrepancy: a missing hook, a fabricated call, changed arguments | **12 of 12 flagged**, 0 false positives |
 | **E9** overhead | Signer round trip over a Unix socket, file storage, macOS quick run | **0.45 ms p50, 0.91 ms p99** per call; 5,356 events/s |
 | **E3** the v1 regex gate, on a rougher set | 16 harmful and 20 benign calls written after the rules | **12 of 16 caught**, 1 false alarm. Rules are tripwires, not a sandbox |

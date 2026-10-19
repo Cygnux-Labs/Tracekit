@@ -141,3 +141,4 @@
 {"tool": "Bash", "args": {"command": "git push -u origin add-delete-button"}, "expect": "allow", "note": "a branch name containing -delete"}
 {"tool": "Bash", "args": {"command": "git push -o merge_request.draft origin feature"}, "expect": "allow", "note": "a push option whose value contains d"}
 {"tool": "Bash", "args": {"command": "npm install", "dangerouslyDisableSandbox": false}, "expect": "allow", "note": "a sandboxed call that names the parameter"}
+{"tool": "run_shell_command", "args": {"command": "npm test", "additional_permissions": {"network": false}}, "expect": "allow", "note": "a sandboxed Gemini CLI call that asks for nothing more"}

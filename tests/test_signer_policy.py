@@ -103,6 +103,15 @@ class CodingPack(unittest.TestCase):
         for args in ({"command": "npm install", "dangerouslyDisableSandbox": False}, {"command": "npm install"}):
             self.assertEqual(self.e.decide("Bash", args)["verdict"], "allow", args)
 
+    def test_a_command_asking_for_more_than_geminis_sandbox_asks(self):
+        self.verdicts([({"command": "npm install", "additional_permissions": {"network": True}}, "TK-A004"),
+                       ({"command": "cp a ~/b", "additional_permissions": {"fileSystem": {"write": ["/home/a"]}}}, "TK-A004"),
+                       ({"command": "cat ~/n", "additional_permissions": {"fileSystem": {"read": ["/home/a/n"],
+                                                                                         "write": []}}}, "TK-A004")])
+        for args in ({"command": "npm test", "additional_permissions": {"network": False, "fileSystem": {"read": []}}},
+                     {"command": "npm test", "additional_permissions": {}}):
+            self.assertEqual(self.e.decide("Bash", args)["verdict"], "allow", args)
+
     def test_argv_lists_and_command_fields(self):
         self.verdicts([({"command": ["sudo", "id"]}, "TK-D001"), ({"command": ["bash", "-lc", "sudo id"]}, "TK-D001"),
                        ({"commands": ["ls", "sudo id"]}, "TK-D001"), ({"command": 42}, "TK-SHELL-PARSE"),

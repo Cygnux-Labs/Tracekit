@@ -6,6 +6,7 @@ import io
 import json
 import os
 import shutil
+import sys
 import tempfile
 import types
 import unittest
@@ -311,6 +312,19 @@ class Detect(unittest.TestCase):
                          [os.path.join("/home/a", ".claude", "settings.json"), "/srv/app/.claude/settings.json",
                           doctor._managed()])
 
+    def test_the_gemini_settings_read_are_the_ones_gemini_ranks(self):
+        d = "/Library/Application Support/GeminiCli" if sys.platform == "darwin" else "/etc/gemini-cli"
+        defaults, system = os.path.join(d, "system-defaults.json"), os.path.join(d, "settings.json")
+        self.assertEqual(self.collect(None)[1].call_args.kwargs["gemini_settings"],
+                         [defaults, os.path.join(os.path.expanduser("~"), ".gemini", "settings.json"),
+                          os.path.join(os.getcwd(), ".gemini", "settings.json"), system])
+        with mock.patch.object(doctor, "_user", return_value=types.SimpleNamespace(pw_dir="/home/a")), \
+                mock.patch.object(install, "plugin_enabled", return_value=None):
+            v2 = self.collect({"signer": "/t", "hooks": {"user": "a", "agent": "gemini",
+                                                         "settings": "/srv/app/.gemini/settings.json"}})[1]
+        self.assertEqual(v2.call_args.kwargs["gemini_settings"],
+                         [defaults, "/home/a/.gemini/settings.json", "/srv/app/.gemini/settings.json", system])
+
     def test_config_flag(self):
         ids, v2 = self.collect(None, "/etc/other.yaml")
         self.assertEqual((ids, v2.call_args.args[0]), (["D-V2"], "/etc/other.yaml"))
@@ -393,6 +407,49 @@ class ClaudeSandbox(unittest.TestCase):
                          {"sandbox": {"failIfUnavailable": True, "network": {"allowedDomains": ["example.org"]}}})
         self.assertEqual(got["status"], "warn")
         self.assertEqual(got["detail"].split(":")[0], "socksProxyPort set")
+
+
+class GeminiSandbox(unittest.TestCase):
+    """D-GEMINI-SANDBOX: Gemini's whole-CLI sandbox runs its hooks in the box too (a container without them, Seatbelt
+    with no place for their state), so a sandboxed Gemini looked traced when nothing was recorded."""
+    HOOKS = {"hooks": {"BeforeTool": [{"matcher": "*", "hooks": [
+        {"type": "command", "command": "/v/python -I -m tracekit.integrations.harness_hooks gemini BeforeTool"}]}]}}
+
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.d, True)
+
+    def check(self, *layers):
+        paths = []
+        for i, layer in enumerate(layers):
+            paths.append(os.path.join(self.d, f"{i}.json"))
+            with open(paths[-1], "w") as f:
+                json.dump(layer, f)
+        return {r["id"]: r for r in doctor.v2_checks({"data_dir": self.d}, "dev",
+                                                     gemini_settings=paths)}.get("D-GEMINI-SANDBOX")
+
+    def test_shown_only_with_tracekits_hooks_and_a_sandbox_on(self):
+        self.assertIsNone(self.check({"tools": {"sandbox": "docker"}}))
+        for off in ({}, {"tools": {"sandbox": "false"}, "security": {"toolSandboxing": "true"}},
+                    {"tools": {"sandbox": {"enabled": False, "command": "docker"}}}, {"tools": {"sandbox": 0}}):
+            self.assertIsNone(self.check(self.HOOKS, off), off)
+
+    def test_the_whole_cli_sandbox_warns(self):
+        for box in (True, "1", "docker", "sandbox-exec", {"enabled": True}):
+            got = self.check(self.HOOKS, {"tools": {"sandbox": box}, "security": {"toolSandboxing": True}})
+            self.assertEqual(got["status"], "warn", box)
+        self.assertIn("nothing is recorded", got["detail"])
+        self.assertIn('"toolSandboxing": true', got["fix"])
+
+    def test_the_tool_sandbox_is_ok_and_says_who_holds_expansions(self):
+        got = self.check(self.HOOKS, {"security": {"toolSandboxing": True}})
+        self.assertEqual((got["status"], got["fix"]), ("ok", ""))
+        self.assertIn("TK-A004 holds", got["detail"])
+
+    def test_a_later_file_wins_each_key(self):
+        got = self.check({"tools": {"sandbox": "docker"}, "security": {"toolSandboxing": True}}, self.HOOKS,
+                         {"tools": {"sandbox": False}})
+        self.assertEqual(got["status"], "ok")
 
 
 class PluginHooks(unittest.TestCase):

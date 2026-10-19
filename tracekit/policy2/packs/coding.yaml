@@ -7,7 +7,7 @@
 # normalised one), with `\` as `/` and also casefolded (the agent's file system may ignore case). Rules stay tripwires: the
 # protection is the signer, its storage and the witnesses.
 
-version: '2026.10-v2-9'
+version: '2026.10-v2-10'
 description: coding agents on a laptop (Claude Code, Codex, Cursor, Gemini)
 # laptop: a tool the pack does not map is flagged, not held; server.yaml holds it for a person (ask)
 unknown_tools: flag
@@ -154,6 +154,14 @@ ask:
     pattern: '^true$'
     reason: running a command outside Claude Code's sandbox
     rationale: The sandbox limits what a command can read, write and reach; a person confirms each command that leaves it.
+  - id: TK-A004
+    # Gemini CLI's sandbox expansion: with security.toolSandboxing on, a run_shell_command call's additional_permissions
+    # gives the command network access or more paths to read or write, and in YOLO mode Gemini asks nobody
+    # (docs/integrations/gemini-sandbox.md). Matched as canonical JSON; a request that turns nothing on isn't held.
+    field: additional_permissions
+    pattern: '"network":true|"(read|write)":\["'
+    reason: running a command with more than Gemini CLI's sandbox allows
+    rationale: The sandbox limits what a command can read, write and reach; a person confirms each command that asks for more.
 
 flag:
   - id: TK-F001
