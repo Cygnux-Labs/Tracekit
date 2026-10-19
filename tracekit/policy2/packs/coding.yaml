@@ -8,7 +8,7 @@
 # with `\` as `/` and also casefolded (the agent's file system may ignore case). Rules stay tripwires: the protection
 # is the signer, its storage and the witnesses.
 
-version: '2026.10-v2-16'
+version: '2026.10-v2-18'
 description: coding agents on a laptop (Claude Code, Codex, Cursor, Gemini)
 # laptop: a tool the pack does not map is flagged, not held; server.yaml holds it for a person (ask)
 unknown_tools: flag
@@ -55,11 +55,11 @@ deny:
   - id: TK-D003
     class: shell
     # each command's argv, as TK-A002: a later command (`git push origin main && ls -f`), a heredoc after the push or
-    # a commit message naming one is not the push's arguments. Global options may come before `push` (git -C dir push);
-    # -f may sit in a short-option cluster before any `o` (`-uf`, `-4f`; `-of` is -o's value); --mirror may be
-    # abbreviated (`--m`: push's only option starting with m); a `+` refspec forces too. `[\w\W]*?` crosses a newline
-    # inside an argument; anchored and lazy, so the fallback engine stays linear
-    pattern: '^git (-[Cc] [^ ]+ |--?[A-Za-z][-A-Za-z]*(=[^ ]*)? ){0,8}push\b[\w\W]*?( --force\b| -[0-9A-Za-eg-np-z]*f| --m(i|ir|irr|irro|irror)?( |$)| \+[^ ])'
+    # a commit message naming one is not the push's arguments. Global options may come before `push` (git -C dir push,
+    # git --work-tree dir push); -f may sit in a short-option cluster before any `o` (`-uf`, `-4f`; `-of` is -o's
+    # value); --mirror may be abbreviated (`--m`: push's only option starting with m); a `+` refspec forces too.
+    # `[\w\W]*?` crosses a newline inside an argument; anchored and lazy, so the fallback engine stays linear
+    pattern: '^git (-[Cc] [^ ]+ |--(git-dir|work-tree|namespace|super-prefix|config-env) [^ ]+ |--?[A-Za-z][-A-Za-z]*(=[^ ]*)? ){0,8}push\b[\w\W]*?( --force\b| -[0-9A-Za-eg-np-z]*f| --m(i|ir|irr|irro|irror)?( |$)| \+[^ ])'
     reason: force push
     remedy: Push without --force, --mirror or a + refspec (rebase onto the remote branch, or push a new branch); a person rewrites shared history themselves.
     rationale: Rewrites shared history.
@@ -91,7 +91,7 @@ deny:
   - id: TK-D006
     class: shell
     field: line
-    pattern: '\bcat\s+\S*\.env\b[^\n]*\|\s*(curl|wget|nc|ncat)\b|(curl|wget|http|nc|ncat|scp|rsync)\b[^\n]*(@\S*\.env\b|--data[-a-z]*[ =]@?\S*\.env\b|--upload-file\s+\S*\.env\b|--post-file[ =]\S*\.env\b|\s\S*\.env\s+\S+:|<\s*\S*\.env\b)'
+    pattern: '\bcat\s+\S*\.env\b[^\n]*\|\s*(curl|wget|nc|ncat)\b|\b(curl|wget|http|nc|ncat|scp|rsync)(\s[^\n]*)?(@\S*\.env\b|--data[-a-z]*[ =]@?\S*\.env\b|--upload-file\s+\S*\.env\b|--post-file[ =]\S*\.env\b|\s\S*\.env\s+\S+:|<\s*\S*\.env\b)'
     reason: uploading a secrets file
     remedy: Send only the values the request needs, never the .env file; a person shares secrets through the deployment's secret store.
     rationale: Sending .env off the machine is exfiltration.
@@ -168,15 +168,16 @@ ask:
     # can't backtrack) and an all-zero source object id (SHA-1 or SHA-256). `[\w\W]*?` crosses a newline inside an
     # argument (`--repo=$'x\ny'`) but never reaches another command, which is its own subject; lazy, so the fallback
     # engine stays linear
-    pattern: '^git (-[Cc] [^ ]+ |--?[A-Za-z][-A-Za-z]*(=[^ ]*)? ){0,8}push\b[\w\W]*?( --de(l|le|let|lete)?( |$)| -[0-9A-Za-ce-np-z]*d| :[^ ]+( |$)| --pru(ne?)?( |$)| \+?(0{40}|0{64}):)'
+    pattern: '^git (-[Cc] [^ ]+ |--(git-dir|work-tree|namespace|super-prefix|config-env) [^ ]+ |--?[A-Za-z][-A-Za-z]*(=[^ ]*)? ){0,8}push\b[\w\W]*?( --de(l|le|let|lete)?( |$)| -[0-9A-Za-ce-np-z]*d| :[^ ]+( |$)| --pru(ne?)?( |$)| \+?(0{40}|0{64}):)'
     reason: deleting a remote Git ref
     remedy: Wait for a person to approve the held call, or delete only the local branch (git branch -d) and leave the remote one.
     rationale: Deleting a remote branch or tag changes shared state and can remove work; a person confirms it.
   - id: TK-A003
     # Claude Code's escape hatch: a Bash call with dangerouslyDisableSandbox runs with none of its sandbox's limits, and
-    # in bypassPermissions mode or under a matching allow rule nobody is asked (docs/integrations/claude-code-sandbox.md)
+    # in bypassPermissions mode or under a matching allow rule nobody is asked
+    # (docs/integrations/claude-code-sandbox.md); true in any case, as JSON or as a string, as TK-F008 reads it
     field: dangerouslyDisableSandbox
-    pattern: '^true$'
+    pattern: '^[Tt][Rr][Uu][Ee]$'
     reason: running a command outside Claude Code's sandbox
     remedy: Wait for a person to approve the held call, or run the command inside the sandbox, without dangerouslyDisableSandbox.
     rationale: The sandbox limits what a command can read, write and reach; a person confirms each command that leaves it.
@@ -192,9 +193,10 @@ ask:
   - id: TK-A004
     # Gemini CLI's sandbox expansion: with security.toolSandboxing on, a run_shell_command call's additional_permissions
     # gives the command network access or more paths to read or write, and in YOLO mode Gemini asks nobody
-    # (docs/integrations/gemini-sandbox.md). Matched as canonical JSON; a request that turns nothing on isn't held.
+    # (docs/integrations/gemini-sandbox.md). Matched as canonical JSON, or as the JSON text a string holds (spaces
+    # allowed); a request that turns nothing on isn't held.
     field: additional_permissions
-    pattern: '"network":true|"(read|write)":\["'
+    pattern: '"network":\s*true|"(read|write)":\s*\[\s*"'
     reason: running a command with more than Gemini CLI's sandbox allows
     remedy: Wait for a person to approve the held call, or run the command with the sandbox's own permissions, without additional_permissions.
     rationale: The sandbox limits what a command can read, write and reach; a person confirms each command that asks for more.
@@ -204,18 +206,20 @@ ask:
     class: fs
     tool: Write|Edit|MultiEdit|NotebookEdit
     field: path
-    pattern: '(^|/)[Ll]ibrary/Launch(Agents|Daemons)/|(^|/)\.config/(systemd/user|autostart)/|(^|/)etc/(systemd/system|init\.d|rc\.local|xdg/autostart)(/|$)|(^|/)(usr/)?lib/systemd/(system|user)/'
+    pattern: '(^|/)library/launch(agents|daemons)/|(^|/)\.config/(systemd/user|autostart)/|(^|/)etc/(systemd/system|init\.d|rc\.local|xdg/autostart)(/|$)|(^|/)(usr/)?lib/systemd/(system|user)/'
     reason: adding something that runs at every login or boot
     remedy: Wait for a person to approve the held call, or keep the file in the project and start the program when it is needed.
     rationale: Startup items and service definitions outlive the agent's session; a person confirms each one.
   - id: TK-A011
     class: shell
     field: target
-    # the TK-A010 locations in a command that writes, copies or links into them (cp, install, mv, ln, tee, sed -i, dd
-    # of=) or as a redirection target, and turning a startup item on; each command and target on its own, anchored
-    # and lazy, as TK-D010. Listing and reading them stay unheld (but for a read redirected with `<`), and so does
-    # managing an existing service (`systemctl restart`)
-    pattern: '^(cp|install|mv|ln|tee) [\w\W]*?([Ll]ibrary/Launch(Agents|Daemons)/|\.config/(systemd/user|autostart)/|/etc/(systemd/system|init\.d|rc\.local|xdg/autostart)|/lib/systemd/(system|user)/)|^sed( -[a-hj-zA-Z][a-zA-Z]*)* -i[\w\W]*?([Ll]ibrary/Launch(Agents|Daemons)/|\.config/(systemd/user|autostart)/|/etc/(systemd/system|init\.d|rc\.local|xdg/autostart)|/lib/systemd/(system|user)/)|^dd ([\w\W]*? )?of=[^ ]*?([Ll]ibrary/Launch(Agents|Daemons)/|\.config/(systemd/user|autostart)/|/etc/(systemd/system|init\.d|rc\.local|xdg/autostart)|/lib/systemd/(system|user)/)|^[^ =]*?([Ll]ibrary/Launch(Agents|Daemons)/|\.config/(systemd/user|autostart)/|/etc/(systemd/system|init\.d|rc\.local|xdg/autostart)|/lib/systemd/(system|user)/)|^launchctl (load|bootstrap|enable)\b|^systemctl (--user )?enable\b'
+    # the TK-A010 locations as where a command writes, copies or links to (cp, install, mv or ln: the last word, or
+    # -t's directory; tee, sed -i, dd of=: any of its files) or as a redirection target, and turning a startup item on
+    # (systemctl enable, reenable, preset or add-wants after any options); each command and target on its own,
+    # anchored and lazy, as TK-D010, and casefolded (lower-case places). Listing them, copying out of them and reading
+    # them stay unheld (but for a read redirected with `<`), and so does managing an existing service (`systemctl
+    # restart`)
+    pattern: '^(cp|install|mv|ln) ([\w\W]*? )?[^ ]*?(library/launch(agents|daemons)|\.config/(systemd/user|autostart)|/etc/(systemd/system|init\.d|rc\.local|xdg/autostart)|/lib/systemd/(system|user))(/[^/]*)?$|^(cp|install|mv|ln) ([\w\W]*? )?(-[a-z]*t ?|--target-directory[= ])[^ ]*?(library/launch(agents|daemons)|\.config/(systemd/user|autostart)|/etc/(systemd/system|init\.d|rc\.local|xdg/autostart)|/lib/systemd/(system|user))(/| |$)|^tee [\w\W]*?(library/launch(agents|daemons)|\.config/(systemd/user|autostart)|/etc/(systemd/system|init\.d|rc\.local|xdg/autostart)|/lib/systemd/(system|user))(/| |$)|^sed( -[a-hj-zA-Z][a-zA-Z]*)* -i[\w\W]*?(library/launch(agents|daemons)|\.config/(systemd/user|autostart)|/etc/(systemd/system|init\.d|rc\.local|xdg/autostart)|/lib/systemd/(system|user))(/| |$)|^dd ([\w\W]*? )?of=[^ ]*?(library/launch(agents|daemons)|\.config/(systemd/user|autostart)|/etc/(systemd/system|init\.d|rc\.local|xdg/autostart)|/lib/systemd/(system|user))(/| |$)|^[^ =]*?(library/launch(agents|daemons)|\.config/(systemd/user|autostart)|/etc/(systemd/system|init\.d|rc\.local|xdg/autostart)|/lib/systemd/(system|user))(/| |$)|^launchctl (load|bootstrap|enable)\b|^systemctl (-[^ ]+ ([^- ][^ ]* )?)*(enable|reenable|preset|preset-all|add-wants|add-requires)( |$)'
     reason: adding something that runs at every login or boot
     remedy: Wait for a person to approve the held call, or run the program directly for this session; a person installs and enables services.
     rationale: TK-A010 for the shell, plus turning a startup item on; a person confirms it.
@@ -232,9 +236,10 @@ ask:
   - id: TK-A013
     class: shell
     field: target
-    # as TK-A011: each command and redirection target on its own, anchored and lazy; `git config` after at most eight
-    # global options, as TK-A002 reads `push`
-    pattern: '^(cp|install|mv|ln|tee|chmod) [\w\W]*?\.git/hooks/|^sed( -[a-hj-zA-Z][a-zA-Z]*)* -i[\w\W]*?\.git/hooks/|^[^ =]*?\.git/hooks/|^git (-[Cc] [^ ]+ |--?[A-Za-z][-A-Za-z]*(=[^ ]*)? ){0,8}config [\w\W]*?\b[Cc][Oo][Rr][Ee]\.[Hh][Oo][Oo][Kk][Ss][Pp][Aa][Tt][Hh]\b'
+    # as TK-A011 (chmod too: any of its files); `git config` after at most eight global options, as TK-A002 reads
+    # `push`, setting core.hooksPath (the key and a value) or unsetting it; reading it (`--get`, the key alone) is not
+    # held
+    pattern: '^(cp|install|mv|ln) ([\w\W]*? )?[^ ]*?\.git/hooks(/[^/]*)?$|^(cp|install|mv|ln) ([\w\W]*? )?(-[a-z]*t ?|--target-directory[= ])[^ ]*?\.git/hooks(/| |$)|^(tee|chmod) [\w\W]*?\.git/hooks(/| |$)|^sed( -[a-hj-zA-Z][a-zA-Z]*)* -i[\w\W]*?\.git/hooks(/| |$)|^[^ =]*?\.git/hooks(/| |$)|^git (-[Cc] [^ ]+ |--(git-dir|work-tree|namespace|super-prefix|config-env) [^ ]+ |--?[A-Za-z][-A-Za-z]*(=[^ ]*)? ){0,8}config ([\w\W]*? )?(core\.hookspath[ =]|(--unset(-all)?|unset)( [^ ]+){0,4} core\.hookspath( |$))'
     reason: writing a Git hook or moving where hooks live
     remedy: Wait for a person to approve the held call, or put the script in the project and run it as an ordinary command.
     rationale: TK-A012 for the shell, plus core.hooksPath, which points every hook at another directory; a person confirms it.
@@ -285,7 +290,7 @@ flag:
   - id: TK-F008
     tool: Bash
     field: run_in_background
-    pattern: '^(true|True|TRUE)$'
+    pattern: '^[Tt][Rr][Uu][Ee]$'
     label: background_spawn
   - id: TK-F009
     tool: Bash|Write|Edit|MultiEdit
@@ -299,7 +304,7 @@ flag:
   - id: TK-F011
     class: shell
     field: command
-    pattern: '\b(export\s+)?(PATH|LD_PRELOAD|LD_LIBRARY_PATH|BASH_ENV|ENV|PROMPT_COMMAND|PYTHONPATH|NODE_OPTIONS)=|\bunset\s+(ANTHROPIC_BASE_URL|HTTPS?_PROXY)\b|>>?\s*~?/?[^\s]*\.(bashrc|profile|zshrc|bash_profile)\b'
+    pattern: '\b(export\s+)?(PATH|LD_PRELOAD|LD_LIBRARY_PATH|BASH_ENV|ENV|PROMPT_COMMAND|PYTHONPATH|NODE_OPTIONS)=|\bunset\s+(ANTHROPIC_BASE_URL|HTTPS?_PROXY)\b|>>?\s*~?/?[^\s>]*\.(bashrc|profile|zshrc|bash_profile)\b'
     label: env_tamper
   - id: TK-F012
     # any URL a call acts on: an http or browser call, a URL in a command's argv, an MCP tool's arguments. A GET with

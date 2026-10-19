@@ -221,7 +221,8 @@ class Engine:
     @staticmethod
     def _targets(cls, args, fields, parsed):
         """shell: each command's argv without its data words (shell.data_words), the redirection targets, assignments
-        and heredoc programs; fs: the paths; http and browser: the URL; email: the attachments; mcp, app and unknown
+        and heredoc programs, each also casefolded as a path is (the agent's file system may ignore case: `cp x .ENV`
+        writes .env on macOS); fs: the paths; http and browser: the URL; email: the attachments; mcp, app and unknown
         tools: the whole call. Each URL is also matched as scheme://canonical-host/ (classes.url_target), so a host in
         decimal, hex, octal or IPv6 form reads as the address it is."""
         if cls == "shell":
@@ -231,7 +232,9 @@ class Engine:
             urls = [t for t in map(classes.url_target, (u for w in found for u in _URL.findall(w))) if t]
             bare = [t for t in (classes.url_target("http://" + w) for w in found if _BARE_ADDRESS.match(w))
                     if t and _BARE_TARGET.fullmatch(t)]
-            return [" ".join(w) for w in words] + parsed[2] + urls + bare
+            targets = [" ".join(w) for w in words] + parsed[2]
+            have = set(targets)
+            return targets + [f for f in dict.fromkeys(map(str.casefold, targets)) if f not in have] + urls + bare
         if cls == "fs":
             return Engine._subjects(cls, "path", args, fields, parsed)
         if cls in ("http", "browser"):

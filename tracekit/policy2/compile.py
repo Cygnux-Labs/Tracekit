@@ -21,6 +21,9 @@ TOP_KEYS = {"version", "description", "extends", "tools", "untrusted", "handoffs
 RULE_KEYS = {"id", "class", "tool", "field", "pattern", "unless", "reason", "rationale", "label", "approval", "from",
              "remedy"}
 MAX_REMEDY = 200   # characters: one sentence the agent and the person read with the decision
+# the rule ids the engine and the signer give a decision themselves (and TK-APPROVAL-*): a rule can't pass for one
+RESERVED_IDS = {"TK-UNKNOWN-TOOL", "TK-SQL-PARSE", "TK-SHELL-PARSE", "TK-OVERSIZE", "TK-ENGINE-ERROR", "TK-ARGS-INVALID",
+                "TK-CONSTRAINT", "TK-HOLD", "TK-QUARANTINE", "TK-LIMIT-SUM", "TK-APPROVED"}
 # a remedy says what to do, in the present tense: not what one might, could or should do
 _HEDGE = re.compile(r"(?i)\b(please|should|would|could|might|maybe|perhaps|consider|try to)\b")
 # an ask rule's `approval`: executor t2 runs only the signer's copy; passkey required: approving needs a passkey;
@@ -329,6 +332,9 @@ def _lint(pol, path):
                 errors += [f"{where}: approval.agent: {e}" for e in _lint_agent(r)]
             if r["id"] in ids:
                 errors.append(f"{where}: duplicate id")
+            if r["id"] in RESERVED_IDS or r["id"].startswith("TK-APPROVAL-"):
+                errors.append(f"{where}: the engine or the signer gives a decision this id itself; name the rule "
+                              "another way")
             ids.add(r["id"])
             for key in ("pattern", "unless", "tool"):
                 try:

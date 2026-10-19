@@ -3,7 +3,8 @@
 `parse(command)` returns every simple command the line would run, including those reached through wrappers, `sh -c`
 strings, substitutions, heredocs into a shell and interpreter one-liners:
 `{"argv": [...], "via": [...], "pipeline": n, "glob": bool, "opaque": bool}`. argv[0] is a basename, the part after any
-`\\` in lower case (the agent's file system may ignore case: macOS runs git for `Git`); `via` says how the command was
+`\\` in lower case and without a `.exe` (the agent's file system may ignore case: macOS runs git for `Git`; Windows
+runs git.exe for git); `via` says how the command was
 reached (empty at top level); commands with the same `pipeline` are stages of one pipeline, in order. `opaque`: what
 the command runs cannot be read from the line (a glob, brace or expansion in its name, a shell or interpreter reading
 its script from a pipe, a file or inherited stdin, `source` of a stream).
@@ -48,7 +49,35 @@ WRAPPERS = {"command": ((), 0), "env": (("-u", "-C", "-P", "-a", "--unset", "--c
                          "--whitelist-environment"), 0),
             "taskset": ((), 1), "chrt": (("-T", "-P", "-D", "--sched-runtime", "--sched-period", "--sched-deadline"), 1),
             "unbuffer": ((), 0), "fakeroot": (("-l", "-s", "-i", "-b", "--lib", "--faked"), 0),
-            "dbus-run-session": (("--config-file", "--dbus-daemon"), 0)}
+            "dbus-run-session": (("--config-file", "--dbus-daemon"), 0),
+            "caffeinate": (("-t", "-w"), 0), "arch": (("-arch", "-d", "-e"), 0), "pkexec": (("--user",), 0),
+            "gtimeout": (("-s", "-k", "--signal", "--kill-after"), 1), "npx": (("-p", "--package"), 0),
+            "bunx": (("-p", "--package"), 0), "dotenv": (("-e", "-v", "-p"), 0),
+            "torsocks": (("-u", "-p", "-a", "-P", "--user", "--pass", "--address", "--port"), 0),
+            "proxychains": (("-f",), 0), "proxychains4": (("-f",), 0), "firejail": ((), 0),
+            "sandbox-exec": (("-f", "-n", "-p", "-D"), 0), "ssh-agent": (("-a", "-E", "-t", "-O", "-P"), 0),
+            "systemd-run": (("-u", "--unit", "-p", "--property", "-E", "--setenv", "--description", "--slice", "--uid",
+                             "--gid", "--nice", "--working-directory", "-H", "--host", "-M", "--machine", "--on-active",
+                             "--on-boot", "--on-startup", "--on-unit-active", "--on-unit-inactive", "--on-calendar"), 0),
+            "valgrind": ((), 0), "ltrace": (("-a", "-A", "-D", "-e", "-F", "-l", "-n", "-o", "-p", "-s", "-u", "-w"), 0),
+            "chpst": (("-u", "-U", "-b", "-e", "-/", "-n", "-l", "-L", "-m", "-d", "-o", "-p", "-f", "-c", "-r", "-t"), 0),
+            "s6-setuidgid": ((), 1), "gosu": ((), 1), "su-exec": ((), 1), "with-contenv": ((), 0),
+            "dumb-init": (("-r", "--rewrite"), 0), "tini": (("-p", "-e"), 0)}
+# runner -> (its subcommands that run a command, options that take a value, positional arguments before the command;
+# "--": the command follows a `--`, after the tools to run it with)
+# lean: a wrapper or runner not named here (bwrap, whose options take two values) hides what it runs from the rules
+# anchored on a command's name (TK-D001, TK-D003, TK-D010, ...); name it here when one turns up (docs/limits.md)
+RUNNERS = {"uv": (("run",), ("--with", "-w", "--with-editable", "--with-requirements", "--python", "-p", "--package",
+                             "--extra", "--group", "--only-group", "--env-file", "--directory", "--project", "--index",
+                             "--default-index", "--index-url", "--extra-index-url"), 0),
+           "poetry": (("run",), ("-C", "--directory", "-P", "--project"), 0), "pipenv": (("run",), (), 0),
+           "pdm": (("run",), ("-p", "--project"), 0), "direnv": (("exec",), (), 1),
+           "op": (("run",), ("--env-file", "--account", "--config", "--environment"), 0),
+           "doppler": (("run",), ("-p", "--project", "-c", "--config", "--token", "--scope", "--mount"), 0),
+           "mise": (("exec", "x"), ("-C", "--cd", "-j", "--jobs"), "--"),
+           "npm": (("exec", "x"), ("-p", "--package", "-w", "--workspace"), 0),
+           "pnpm": (("exec", "dlx"), ("-C", "--dir", "-F", "--filter", "--package"), 0),
+           "yarn": (("exec", "dlx"), ("-p", "--package"), 0), "bun": (("x",), ("-p", "--package"), 0)}
 # GNU parallel runs its command words through a shell, as watch does; these options take a value
 PARALLEL_OPTS = {"-a", "-d", "-E", "-I", "-j", "-n", "-N", "-L", "-P", "-S", "-s", "-C", "--arg-file", "--delimiter", "--jobs",
                  "--max-procs", "--max-args", "--max-lines", "--max-chars", "--sshlogin", "--sshloginfile", "--slf",
@@ -108,7 +137,8 @@ def data_words(argv):
     name, i = argv[0], 1
     if name == "git":   # the subcommand, after git's own options
         while i < len(argv) and argv[i].startswith("-"):
-            i += 2 if argv[i] in ("-C", "-c", "--git-dir", "--work-tree", "--namespace") else 1
+            i += 2 if argv[i] in ("-C", "-c", "--git-dir", "--work-tree", "--namespace", "--super-prefix",
+                                  "--config-env") else 1
         name, i = (argv[i] if i < len(argv) else ""), i + 1
         if name in ("commit", "tag", "merge", "stash", "notes"):
             out = set()
@@ -141,7 +171,14 @@ def _kind(name):
 
 
 def _unwrap(name, args):
-    opts, positional = WRAPPERS[name]
+    """What a wrapper, or a runner's subcommand (args[0]: `uv run`), runs."""
+    if name in WRAPPERS:
+        opts, positional = WRAPPERS[name]
+    else:
+        _, opts, positional = RUNNERS[name]
+        args = args[1:]
+        if positional == "--":
+            return args[args.index("--") + 1:] if "--" in args else []
     i = 0
     while i < len(args):
         a = args[i]
@@ -538,7 +575,7 @@ class _Parser:
                     cmd["opaque"] = True   # it reads the commands from stdin
             elif name == "env" and _split_string(args) is not None:
                 self.nested(_split_string(args), via + ["env -S"])
-            elif name in WRAPPERS:
+            elif name in WRAPPERS or name in RUNNERS and args[:1] and args[0] in RUNNERS[name][0]:
                 if name == "runuser" and _dash_c(args) is not None:
                     self.nested(_dash_c(args), via + ["runuser -c"])
                 inner = _unwrap(name, args)
@@ -559,6 +596,10 @@ class _Parser:
                 self.nested(" ".join(args), via + ["eval"])
             elif name == "ssh":
                 self.nested(_ssh_command(args), via + ["ssh"])
+            elif name == "nix-shell":   # --run and --command take a script, as sh -c does
+                for i in range(len(args) - 1):
+                    if args[i] in ("--run", "--command"):
+                        self.nested(args[i + 1], via + ["nix-shell --run"])
             elif name == "find":
                 for inner in _find_execs(args):
                     self.emit(inner, pid, via + ["find -exec"])
@@ -747,15 +788,24 @@ class _Parser:
 
 
 def _lower_name(word):
-    """`word` with the name after its last / or \\ in lower case: the directories keep their case."""
+    """`word` with the name after its last / or \\ in lower case and without a `.exe` (Windows runs git.exe for git):
+    the directories keep their case."""
     i = max(word.rfind("/"), word.rfind("\\")) + 1
-    return word[:i] + word[i:].lower()
+    name = word[i:].lower()
+    return word[:i] + (name[:-4] if name.endswith(".exe") and len(name) > 4 else name)
 
 
 def _programs(words, cmds):
-    """Indexes in `words` of the program names of `cmds`, emit's commands for them (a wrapper's and what it runs)."""
-    return [len(words) - len(c["argv"]) for c in cmds
-            if len(c["argv"]) <= len(words) and words[len(words) - len(c["argv"]) + 1:] == c["argv"][1:]]
+    """Indexes in `words` of the program names of `cmds`, emit's commands for them (a wrapper's and what it runs), and
+    of what a find among them runs (the word after each -exec, -execdir, -ok or -okdir)."""
+    out = []
+    for c in cmds:
+        k = len(words) - len(c["argv"])
+        if k >= 0 and words[k + 1:] == c["argv"][1:]:
+            out.append(k)
+            if c["argv"][0] == "find":
+                out += [k + j + 1 for j, a in enumerate(c["argv"][:-1]) if a in ("-exec", "-execdir", "-ok", "-okdir")]
+    return out
 
 
 def _lines(words, progs):

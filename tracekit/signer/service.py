@@ -2621,8 +2621,9 @@ class SignerService:
         agent = self._eligibility(key, identity, tool, args, digest, ruled[0], prov) if ruled and \
             ruled[0]["verdict"] == "ask" else None
         cls = self.policy.tool_class(tool)
-        host = classes.extract(cls, tool, args).get("host") if cls in ("http", "browser") and isinstance(
-            args, dict) else None
+        # read only where the engine read these arguments without failing (a host matters to no deny)
+        host = classes.extract(cls, tool, args).get("host") if ruled and "error" not in ruled[0] and cls in (
+            "http", "browser") and isinstance(args, dict) else None
         facts = self._facts(key, tool, args, cls) if digest else None   # what a live constraint looks at
         did = "dec-" + secrets.token_hex(16)
         # lean: expires_at is signed but `complete` does not enforce it; enforce once executors check it before running
@@ -2672,8 +2673,8 @@ class SignerService:
             f = facts if facts is not None or not (digest and run.get("constraints")) else \
                 self._facts(key, tool, args, cls, run)   # the run's first constraint came meanwhile
             held = f and verdict != "deny" and self._constrained(run, f)   # tighten only: never lowered
-            if held and "TK-CONSTRAINT" not in rule_ids:
-                verdict, rule_ids = "ask", rule_ids + ["TK-CONSTRAINT"]
+            if held:
+                verdict, rule_ids = "ask", rule_ids + ["TK-CONSTRAINT"] * ("TK-CONSTRAINT" not in rule_ids)
             if unreadable and verdict in ("allow", "flag"):
                 verdict, rule_ids = "ask", rule_ids + [detect.SUM_UNREADABLE]
             if sums:

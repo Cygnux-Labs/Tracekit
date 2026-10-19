@@ -108,7 +108,8 @@ class CodingPack(unittest.TestCase):
 
     def test_a_command_run_outside_claude_codes_sandbox_asks(self):
         self.verdicts([({"command": "npm install", "dangerouslyDisableSandbox": True}, "TK-A003"),
-                       ({"command": "npm install", "dangerouslyDisableSandbox": "true"}, "TK-A003")])
+                       ({"command": "npm install", "dangerouslyDisableSandbox": "true"}, "TK-A003"),
+                       ({"command": "npm install", "dangerouslyDisableSandbox": "True"}, "TK-A003")])
         for args in ({"command": "npm install", "dangerouslyDisableSandbox": False}, {"command": "npm install"}):
             self.assertEqual(self.e.decide("Bash", args)["verdict"], "allow", args)
 
@@ -126,7 +127,9 @@ class CodingPack(unittest.TestCase):
         self.verdicts([({"command": "npm install", "additional_permissions": {"network": True}}, "TK-A004"),
                        ({"command": "cp a ~/b", "additional_permissions": {"fileSystem": {"write": ["/home/a"]}}}, "TK-A004"),
                        ({"command": "cat ~/n", "additional_permissions": {"fileSystem": {"read": ["/home/a/n"],
-                                                                                         "write": []}}}, "TK-A004")])
+                                                                                         "write": []}}}, "TK-A004"),
+                       ({"command": "ls", "additional_permissions": '{"network": true}'}, "TK-A004"),
+                       ({"command": "ls", "additional_permissions": '{"read": [ "/etc" ]}'}, "TK-A004")])
         for args in ({"command": "npm test", "additional_permissions": {"network": False, "fileSystem": {"read": []}}},
                      {"command": "npm test", "additional_permissions": {}}):
             self.assertEqual(self.e.decide("Bash", args)["verdict"], "allow", args)
@@ -144,6 +147,36 @@ class CodingPack(unittest.TestCase):
                            ("Read", {"file_path": "/etc/systemd/system/nginx.service"}),
                            ("Write", {"file_path": "/repo/docs/hooks.md"})):
             self.assertEqual(self.e.decide(tool, args)["verdict"], "allow", args)
+
+    def test_a_copy_is_held_by_its_destination_and_reading_a_place_is_not(self):
+        # TK-A011 and TK-A013 found a place anywhere after cp/install/mv/ln and only with a trailing slash: a copy into
+        # the directory itself was allowed and a copy out of it held; `systemctl --now enable` was missed and reading
+        # core.hooksPath held
+        self.verdicts([(c, "TK-A011") for c in (
+            "cp com.example.plist ~/Library/LaunchAgents", "install -m644 x.service ~/.config/systemd/user",
+            "ln -s $PWD/x.plist ~/Library/LaunchAgents", "cp -t ~/Library/LaunchAgents x.plist",
+            "cp x.service /usr/lib/systemd/system", "cp 'a b.plist' '/Library/LaunchDaemons/a b.plist'",
+            "systemctl --now enable x", "systemctl -q enable x", "systemctl --system enable x",
+            "systemctl --user --now enable x", "systemctl -M host enable x", "systemctl reenable x",
+            "systemctl preset x", "systemctl add-wants default.target x")] + [(c, "TK-A013") for c in (
+            "cp pre-commit .git/hooks", "install -m755 pre-commit .git/hooks", "ln -s ../../x .git/hooks",
+            "cp -t .git/hooks pre-commit", "cp --target-directory=.git/hooks pre-commit", "mv pre-commit .git/hooks",
+            "cp x '.git/hooks/pre commit'", "chmod -R +x .git/hooks", "git config --unset core.hooksPath",
+            "git config --global --unset-all core.hooksPath", "git config unset core.hooksPath")])
+        for command in ("cp ~/Library/LaunchAgents/x.plist /tmp/", "cp .git/hooks/pre-commit.sample /tmp/x",
+                        "git config --get core.hooksPath", "git config core.hooksPath", "ls .git/hooks",
+                        "cp x /etc/systemd/system.conf.d/", "systemctl status enable-x", "systemctl is-enabled x"):
+            ids = self.e.decide("Bash", {"command": command})["rule_ids"]
+            self.assertFalse({"TK-A011", "TK-A013"} & set(ids), command)
+
+    def test_shell_targets_and_startup_paths_are_matched_in_any_case(self):
+        # the agent's file system may ignore case (on macOS `cp x .ENV` writes .env): TK-A010 looked for LaunchAgents
+        # in the casefolded path, and shell targets weren't casefolded at all
+        self.verdicts([({"file_path": "/Users/u/library/launchagents/x.plist"}, "TK-A010"),
+                       ({"file_path": "/Users/u/LIBRARY/LAUNCHDAEMONS/x.plist"}, "TK-A010")], tool="Write")
+        self.verdicts([("cp x ~/library/launchagents/", "TK-A011"), ("cp x ~/.CONFIG/systemd/user/", "TK-A011"),
+                       ("cp x .GIT/hooks/pre-commit", "TK-A013"), ("echo x > .Git/Hooks/pre-commit", "TK-A013"),
+                       ("cp x .ENV", "TK-D010"), ("echo k > .Env", "TK-D010")])
 
     def test_shell_writes_into_protected_paths_are_read_per_command(self):
         # each command on its own, a wrapper's and a nested shell's too, and each redirection target
@@ -249,6 +282,15 @@ class CodingPack(unittest.TestCase):
                 d = self.e.decide("Bash", {"command": command})
                 self.assertEqual((d["verdict"], d.get("nondeterministic")), ("flag", None), d)
 
+    def test_git_global_options_with_a_separate_value_come_before_the_subcommand(self):
+        # the global-option prefix read `--work-tree .` as an option and a stray word: the push was allowed
+        self.verdicts([("git --work-tree . push -f origin main", "TK-D003"), ("git --namespace x push --force", "TK-D003"),
+                       ("git --config-env a.b=V push --mirror", "TK-D003"),
+                       ("git --git-dir .git --work-tree . push origin :b", "TK-A002"),
+                       ("git --super-prefix x/ push -d origin b", "TK-A002"),
+                       ("git --git-dir .git config core.hooksPath h", "TK-A013")])
+        self.assertEqual(self.e.decide("Bash", {"command": "git --work-tree . push origin main"})["verdict"], "allow")
+
     def test_command_line_rules_read_program_names_in_any_case(self):
         # the normalised line lower-cases each program name (after wrappers too), as argv does: macOS runs git for `Git`
         self.verdicts([("Git push --force", "TK-D003"), ({"command": ["Git", "push", "--force"]}, "TK-D003"),
@@ -260,6 +302,30 @@ class CodingPack(unittest.TestCase):
         self.assertIn("TK-F004", self.e.decide("Bash", {"command": "Git push origin main"})["rule_ids"])
         # an argument keeps its case
         self.assertEqual(self.e.decide("Bash", {"command": "grep -rn 'Git push --force' docs"})["verdict"], "allow")
+
+    def test_exec_wrappers_runners_and_exe_names_reach_the_anchored_rules(self):
+        # the rules anchored on a command's name lost what an unknown wrapper or runner runs, and git.exe or cp.exe
+        # (Windows runs them for git and cp): 1.3's unanchored rules denied these
+        for wrapper in ("caffeinate -i", "arch -arm64", "uv run --with x", "poetry run", "pipenv run", "pdm run", "npx",
+                        "direnv exec .", "mise exec node@20 --", "op run --env-file=a --", "doppler run -c dev --",
+                        "npm exec --", "dotenv -e a --", "torsocks", "proxychains4 -q", "firejail --quiet",
+                        "gtimeout 5", "ssh-agent", "sandbox-exec -n x", "systemd-run --user -p A=1", "valgrind",
+                        "ltrace -o f", "chpst -u bob", "s6-setuidgid bob", "with-contenv", "dumb-init", "tini --",
+                        "gosu bob", "su-exec bob"):
+            self.verdicts([(f"{wrapper} git push --force origin main", "TK-D003"), (f"{wrapper} cp x .env", "TK-D010"),
+                           (f"{wrapper} git push -d origin x", "TK-A002")])
+        self.verdicts([("nix-shell -p git --run 'git push -f'", "TK-D003"), ("git.exe push --force", "TK-D003"),
+                       ("Git.EXE push -d origin x", "TK-A002"), ("cp.exe x .env", "TK-D010"), ("sudo.exe id", "TK-D001"),
+                       ("rm.exe -rf /", "TK-D004")])
+        for command in ("uv pip install cp", "npm install git", "mise use node@20", "poetry add sudo", "direnv allow ."):
+            self.assertIn(self.e.decide("Bash", {"command": command})["verdict"], ("allow", "flag"), command)
+
+    def test_a_program_find_runs_is_read_in_lower_case_on_the_line(self):
+        # the lower-cased line kept a program under find -exec as typed: `-exec Rm` evaded TK-D008, `-exec Pkill` TK-D007
+        self.verdicts([("find ~/.claude/projects -name x -exec Rm {} +", "TK-D008"),
+                       ("find ~/.codex/sessions -exec Truncate -s0 {} +", "TK-D008"),
+                       ("find . -name x -execdir Shred {} + -exec Pkill tracekit \\;", "TK-D007")])
+        self.assertIn("find . -exec rm -f {} ; -ok shred {} +", shell.analyse("find . -exec RM -f {} \\; -ok Shred {} +")[1])
 
     def test_a_windows_path_keeps_its_directories_case_and_the_line_its_original_case(self):
         # lower-casing a whole program word without a / hid AppData\Local\tracekit from TK-D007; the lower-cased line
@@ -620,6 +686,27 @@ class SignerPolicy(unittest.TestCase):
         rec = [e["data"] for e in self.events() if e["type"] == "policy.decision"]
         self.assertEqual([(r["decision"], r["rule_ids"]) for r in rec], [("deny", ["TK-ENGINE-ERROR"])])
         self.assertIn("IndexError", rec[0]["reasons"][0])
+
+    def test_a_rule_named_tk_constraint_does_not_keep_a_live_constraint_from_holding(self):
+        # the guard against naming TK-CONSTRAINT twice read the policy's rule ids: a flag rule with that id (lint refuses
+        # it; a policy given as an Engine skips lint) left a call that breaks a live constraint unheld
+        self.open(Engine({"tools": {"Bash": "shell"}, "flag": [{"id": "TK-CONSTRAINT", "class": "shell", "pattern": "git"}]}))
+        self.s.constraint_add({"request_id": "c1", "run_id": self.run["run_id"], "run_token": self.run["run_token"],
+                               "constraint": {"kind": "no_push"}})
+        d = self.decide("Bash", {"command": "git push origin main"})
+        self.assertEqual((d["decision"], d["rule_ids"]), ("ask", ["TK-CONSTRAINT"]))
+
+    def test_a_long_digit_run_is_decided_and_an_engine_error_on_a_url_is_signed(self):
+        # int() refuses over 4,300 digits: a URL host of 5,000 digits raised again where decide read the host outside
+        # the engine's guard (the connection dropped, nothing signed), and a shell word of them was TK-ENGINE-ERROR
+        digits = "1" * 5000
+        self.assertNotIn("TK-ENGINE-ERROR", self.decide("WebFetch", {"url": f"http://{digits}/"})["rule_ids"])
+        self.assertNotIn("TK-ENGINE-ERROR", self.decide("Bash", {"command": "echo " + digits}, tcid="tc-2")["rule_ids"])
+        with mock.patch.object(classes, "url_info", side_effect=ValueError), \
+                self.assertLogs("tracekit.signer.service", "ERROR"):
+            d = self.decide("WebFetch", {"url": "http://example.com/"}, tcid="tc-3")
+        self.assertEqual((d["decision"], d["rule_ids"]), ("deny", ["TK-ENGINE-ERROR"]))
+        self.assertEqual(sum(e["type"] == "policy.decision" for e in self.events()), 3)
 
     def test_nesting_too_deep_for_the_engine_or_a_record_is_refused_not_dropped(self):
         # TK-ENGINE-ERROR swallowed the engine's RecursionError, and an MCP alias digest the writer could not

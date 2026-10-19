@@ -20,7 +20,7 @@ import regex
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 from tracekit import cli  # noqa: E402
-from tracekit.policy import PolicyError  # noqa: E402
+from tracekit.policy import PolicyError, _sre_c, _sre_p  # noqa: E402
 from tracekit.policy2 import classes, compile as pc, engine, shell  # noqa: E402
 from tracekit.policy2.engine import MAX_SUBJECT, Engine  # noqa: E402
 
@@ -88,6 +88,14 @@ class Compile(unittest.TestCase):
                        "rule B: can never fire: no tool maps to class http", "rule C: unknown key 'colour'",
                        "rule C: duplicate id", "rule C: pattern: "):
             self.assertIn(needle, text)
+
+    def test_lint_refuses_an_id_the_engine_or_the_signer_gives_a_decision(self):
+        # a flag rule named TK-CONSTRAINT kept a broken live constraint from holding the call (the signer saw the id)
+        for rid in sorted(pc.RESERVED_IDS) + ["TK-APPROVAL-EXPIRED"]:
+            with self.subTest(rid=rid):
+                self.assertIn(f"flag rule {rid}: the engine or the signer gives a decision this id itself",
+                              "\n".join(self.errors(f"flag:\n  - {{id: {rid}, pattern: x}}\n")))
+        self.assertEqual(self.errors("flag:\n  - {id: TK-CONSTRAINTS, pattern: x}\n"), [])
 
     def test_a_remedy_is_one_short_present_tense_sentence_on_a_deny_or_ask_rule(self):
         rule = "  - {id: %s, class: shell, pattern: x, remedy: '%s'}\n"
@@ -478,12 +486,14 @@ class Speed(unittest.TestCase):
     """The fallback engine (`regex`) on 64 KiB built to make a pattern back off or rescan."""
     BUDGET_S = 0.05
     FILLERS = (" -a", " --de", ":", "0" * 39 + "x", "x\n", "--x", "/.", "\\", "a=", '"', "@")
-    # lean: TK-D002 (a download, then a pipe into a shell) and TK-D004 (a recursive option, then a root or home path)
-    # look for one thing after another with any text between: a backtracking engine rescans that text from each
-    # occurrence of their first word, so 64 KiB repeating it spends the fallback's 1 s and denies (nondeterministic).
-    # RE2, the default engine, is linear; they are held to the generic fillers here. Upgrade: structural pipeline and
-    # argv rules
-    RESCAN = {"TK-D002", "TK-D004"}
+    # lean: these look for one thing after another with any text between, on a command line (TK-D002 a download, then a
+    # pipe into a shell; TK-D004 a recursive option, then a root or home path; TK-D006, TK-D011 a read or upload, then
+    # a secrets file, or a read piped into an upload; TK-D007 kill or launchctl, then tracekit; TK-D008 a writer, then a
+    # transcript path) or in an SQL statement (TK-DB003 DELETE FROM, then an always-true WHERE): a backtracking engine
+    # rescans that text from each occurrence of their first word, so 64 KiB repeating it in one command or statement
+    # spends the fallback's 1 s and denies (nondeterministic). RE2, the default engine, is linear; they are held to the
+    # generic fillers here. Upgrade: structural pipeline and argv rules
+    RESCAN = {"TK-D002", "TK-D004", "TK-D006", "TK-D007", "TK-D008", "TK-D011", "TK-DB003"}
 
     def fillers(self, rid, pattern):
         n = MAX_SUBJECT - 4
@@ -494,7 +504,55 @@ class Speed(unittest.TestCase):
                 for sep in ("", " "):
                     out.append("".join("".join(rnd.choice((c, c.upper())) for c in lit) + sep
                                        for _ in range(n // (len(lit) + len(sep)))))
-        return out + [s[:n - 3] + "://" for s in out]
+            # the rule's literal once, then what it starts with over and over (`echo @.env; nc nc nc …`): a
+            # backtracking engine retries the rest of the pattern from every copy
+            lit = (pc.literals(pattern) or ("",))[0]
+            out += [lit + "; " + (o + sep) * (n // (len(o) + len(sep))) for o in self.openings(pattern)
+                    for sep in ("", " ", "/")]
+        return [s[:n] for s in out] + [s[:n - 3] + "://" for s in out]
+
+    @staticmethod
+    def openings(pattern):
+        """What each top-level branch of `pattern` matches up to each of its first three unbounded repeats (`curl`
+        before `[^\\n]*`, `<!channel|` before `[^>]*`), a class read as one character it holds."""
+        def char(items):
+            if items[0][0] == _sre_c.NEGATE:
+                return next(c for c in "a-1 /" if not any(
+                    k == _sre_c.LITERAL and v == ord(c) or k == _sre_c.RANGE and v[0] <= ord(c) <= v[1]
+                    for k, v in items[1:]))
+            k, v = items[0]
+            return chr(v) if k == _sre_c.LITERAL else chr(v[0]) if k == _sre_c.RANGE else \
+                {_sre_c.CATEGORY_SPACE: " ", _sre_c.CATEGORY_DIGIT: "1"}.get(v, "a")
+
+        def walk(items, text, found):
+            for op, av in items:
+                if len(found) >= 3:
+                    break
+                if op == _sre_c.LITERAL:
+                    text += chr(av)
+                elif op in (_sre_c.NOT_LITERAL, _sre_c.ANY):
+                    text += "b" if av == ord("a") else "a"
+                elif op == _sre_c.IN:
+                    text += char(av)
+                elif op == _sre_c.SUBPATTERN:
+                    text = walk(av[-1], text, found)
+                elif op == _sre_c.BRANCH:
+                    text = walk(av[1][0], text, found)
+                elif op in (_sre_c.MAX_REPEAT, _sre_c.MIN_REPEAT):
+                    if av[1] == _sre_c.MAXREPEAT and text.strip():
+                        found.append(text)
+                    for _ in range(max(av[0], av[1] != _sre_c.MAXREPEAT)):
+                        text = walk(av[2], text, found)
+            return text
+
+        tree = list(_sre_p.parse(pattern))
+        branches = tree[0][1][1] if len(tree) == 1 and tree[0][0] == _sre_c.BRANCH else [tree]
+        out = []
+        for b in branches:
+            found = []
+            walk(b, "", found)
+            out += found
+        return list(dict.fromkeys(out))
 
     def test_every_pack_pattern_searches_64_kib_within_budget(self):
         slow = []
@@ -527,11 +585,19 @@ class Speed(unittest.TestCase):
                     self.assertLess(self.search(rx, f * ((MAX_SUBJECT - 4) // len(f)) + "://"), self.BUDGET_S)
 
     def test_adversarial_calls_decide_before_the_fallback_deadline(self):
-        """TK-S002's URL scheme rescanned to the end from each word: 64 KiB of `--x` spent the 1 s and denied."""
+        """TK-S002's URL scheme rescanned to the end from each word: 64 KiB of `--x` spent the 1 s and denied. TK-D006
+        took `http` in each URL for a network command (a 20 KB download script: 0.8 s), TK-F011 a redirection
+        target past the next `>`, TK-M004 a mention's label past the next `<`, TK-DB005 the text after each COPY."""
         e = Engine(pc.build(os.path.join(PACKS, "server.yaml"))[0], "regex")
-        for tool, args in [("Bash", {"command": "git push " + f * ((MAX_SUBJECT - 200) // len(f))})
-                           for f in self.FILLERS] + [("Write", {"file_path": "/p/a", "content": "--x" * 21000 + "://"}),
-                                                     ("Bash", {"command": "echo " + "--x" * 21000 + "://"})]:
+        n = MAX_SUBJECT - 200
+        for tool, args in [("Bash", {"command": "git push " + f * (n // len(f))}) for f in self.FILLERS] + [
+                ("Write", {"file_path": "/p/a", "content": "--x" * 21000 + "://"}),
+                ("Bash", {"command": "echo " + "--x" * 21000 + "://"}),
+                ("Bash", {"command": "source .env && curl -sS " + " ".join(
+                    f"https://example.com/f{i}.tar.gz -O http://example.com/g{i}" for i in range(700))}),
+                ("Bash", {"command": "echo x" + ">a" * (n // 2) + " .zshrc"}),
+                ("mcp__slack__slack_post_message", {"channel": "C1", "text": "<!channel|a" * (n // 11)}),
+                ("execute_sql", {"sql": "SELECT program FROM jobs; " + "COPY " * (n // 5)})]:
             with self.subTest(args=str(args)[:40]):
                 start = time.perf_counter()
                 d = e.decide(tool, args)
