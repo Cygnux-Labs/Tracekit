@@ -48,6 +48,9 @@ trusted: []                            # upstreams whose resources are recorded 
                                        # neither the agent nor outsiders can write
 ```
 
+For Wassette's WebAssembly tools as an upstream, with each component load and permission grant held for a person,
+see [Wassette](integrations/wassette.md).
+
 The gateway reaches the signer as itself (`TRACEKIT_SIGNER_TOKEN_FILE` or `TRACEKIT_SIGNER_CERT`/`_KEY`). In
 `signer.yaml`, list it under `gateways` and grant it the calls it makes for the agents:
 
