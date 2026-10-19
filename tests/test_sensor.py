@@ -8,6 +8,7 @@ import tempfile
 import time
 import types
 import unittest
+import uuid
 from unittest import mock
 
 from test_signer_lifecycle import Lifecycle
@@ -17,6 +18,7 @@ from tracekit.bundle_v2 import export
 from tracekit.identity.base import CallerIdentity
 from tracekit.policy2.engine import Engine
 from tracekit.sdk.client import SignerUnavailable
+from tracekit.signer import pipeline
 from tracekit.signer import service as svc
 from tracekit.signer.rpc_schema import RPCError
 from tracekit.verify import v2
@@ -274,6 +276,39 @@ class TestImport(Sensed):
         imp.flush(time.monotonic() + 2 * svc.HEARTBEAT_S)
         (lost,) = self.gaps(self.events(later["run_id"]), "observer_lost")
         self.assertIn("the tetragon import mtls:spiffe://acme/tetragon restarted", lost["reason"])
+
+    def failing_once(self):
+        """The signer's storage refusing its next append, as a full disk would, and recovering at once."""
+        real, fail = self.s.log.storage.append_batch, [OSError("disk full")]
+
+        def append(records):
+            if fail:
+                raise fail.pop()
+            return real(records)
+        return mock.patch.multiple(self.s.log.storage, append_batch=append), mock.patch.object(pipeline, "RECOVER_S", 0)
+
+    def failed_then_sent_again(self, change):
+        """The gap of the import's call after `change(imp)`: its write fails, and the import sends the call again."""
+        imp = self.importer()
+        imp.flush()
+        run = self.register()
+        change(imp)
+        later = time.monotonic() + svc.HEARTBEAT_S
+        store, recover = self.failing_once()
+        with store, recover:
+            self.assertFalse(imp.flush(later))   # unavailable: the import sends it again
+            self.assertTrue(imp.flush(later + 1))
+        (gap,) = self.gaps(self.final(run), "observer_lost")   # in the run it covered, not the signer run
+        self.assertEqual(self.gaps(self.events("tracekit/signer"), "observer_lost"), [])
+        return gap
+
+    def test_a_loss_whose_gap_failed_to_write_is_a_gap_in_the_run_once_sent_again(self):
+        gap = self.failed_then_sent_again(lambda imp: imp.add(RATE_LIMITED))
+        self.assertIn("the tetragon import mtls:spiffe://acme/tetragon reported lost events", gap["reason"])
+
+    def test_a_restart_whose_gap_failed_to_write_is_a_gap_in_the_run_once_sent_again(self):
+        gap = self.failed_then_sent_again(lambda imp: setattr(imp, "instance", uuid.uuid4().hex))
+        self.assertIn("the tetragon import mtls:spiffe://acme/tetragon restarted", gap["reason"])
 
     def test_the_signer_keeps_sensor_and_net_effects_apart(self):
         run = self.register()

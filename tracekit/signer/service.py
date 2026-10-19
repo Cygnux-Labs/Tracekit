@@ -3628,20 +3628,23 @@ class SignerService:
         if req["effects"] or "check" not in req:   # one token check per proxied connection costs no event
             self.quotas.take_event(identity)
         now = time.monotonic()
+        # coverage ends only once the gap that ends it is written: until then the old process stays the one on record,
+        # so a call sent again after a failed write still finds the runs it covered
         with self._beats_lock:
             before = self._observers.get((tenant, obs))
-            self._observers[(tenant, obs)] = (now, req["instance"], sensor)
+            self._observers[(tenant, obs)] = (now, before[1] if before else req["instance"], sensor)
             covered = [k for k in self._beats if len(k) == 3 and k[0] == tenant and k[2] == obs]
             restarted = covered if before and before[1] != req["instance"] else []
             lost = covered if "lost" in req and not restarted else []
-            for k in covered:
-                if restarted or lost:
-                    self._beats.pop(k)
-                else:
-                    self._beats[k] = now
+            for k in [] if restarted or lost else covered:
+                self._beats[k] = now
         if restarted:
             self.log.write(lambda tx: [self._observer_lost(tx, self.log.runs[k[:2]], obs) for k in restarted
                                        if not self.log.runs[k[:2]]["final"]])
+        with self._beats_lock:
+            self._observers[(tenant, obs)] = (now, req["instance"], sensor)
+            for k in restarted:
+                self._beats.pop(k, None)
         if not req["effects"] and "lost" not in req:
             return {"recorded": 0}
         labels = {r["id"]: r["label"] for _, r, *_ in self.policy.rules if "label" in r}
@@ -3690,7 +3693,11 @@ class SignerService:
                               "package index), add it to the policy's explains; else find which call opened it"},
                         source="signer")
             return {"recorded": len(req["effects"])}
-        return self.log.submit(identity, "observe_effect", req, fn)
+        out = self.log.submit(identity, "observe_effect", req, fn)
+        with self._beats_lock:
+            for k in lost:
+                self._beats.pop(k, None)
+        return out
 
     def _sensor_effect(self, obs, sensor, x, how):
         """effect.observed of kernel sensor event `x`: the arguments' digest as a commitment. The tool call id the
