@@ -28,9 +28,10 @@ position only). A record after a run's run.final breaks the run chain.
 A run in parts (format 1.4, runs/<id>.part-0001.jsonl, ...: bundle_v2.run_files) is checked as the one file its parts
 read in order make. A `run parts` line says what is wrong with them: a part missing from part-0001 to the last, a name
 outside that numbering, a part with no records, a part whose first record does not follow the last of the part before
-it (parts out of order, an extra or repeated part), or the run in one file and in parts. A missing last part shows on
-the `inclusion` line: the record now last is not one the proofs include. A part over the format's per-file limit, as
-any file, is an UNUSABLE BUNDLE.
+it (parts out of order, an extra or repeated part), or the run in one file and in parts. A run with its last part
+missing reads open, and fails `inclusion` while the proofs don't include the record now last: a cut-back run reads open
+(VERIFIED TO HEAD n), never VERIFIED; only run.final or a run-set proves a run complete. A part over the format's
+per-file limit, as any file, is an UNUSABLE BUNDLE.
 The assurance line names the algorithms each conclusion rests on (records; the checkpoint: "Ed25519 only" or
 "Ed25519 + SLH-DSA-SHA2-128s"; cosignatures; anchors) and the earliest independent anchor time (a cosignature or a
 TSA time of a witness or anchor not classed operator).

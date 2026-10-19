@@ -531,14 +531,16 @@ zip limits above, which no verifier would read.
 one is written as `runs/<id>.part-0001.jsonl`, `runs/<id>.part-0002.jsonl`, ...: the run's file cut between records,
 each part as full as the limit allows, so its parts, read in order, are that file, and a verifier checks them as it
 (chain, signatures, inclusion of the run's first and last records). The proofs carry no inclusion of a part's own
-first or last record: a bundle cut back to a part boundary must still fail `inclusion`, as one cut anywhere does. A
-run can then hold up to the bundle's 512 MiB (about 190,000 tool calls of the server pack). Anything else about the
-parts fails the `run parts` line ([verdicts](verdicts.md)): a part missing between part-0001 and the last (a gap in
-the numbers), a name outside that numbering (`part-0000`, `part-02`, five digits), a part with no records, a part
-whose first record's `run_prev_hash` is not the hash of the last record of the part before it (parts out of order, an
-extra or repeated part), or the run both in one file and in parts. Its last part missing shows on `inclusion`: the
-record now last is not one the proofs include. A part over 64 MiB is, as any file, `UNUSABLE BUNDLE`. A bundle with a
-run in parts declares `run parts` (below), so a 1.3 or older verifier, which would read each part as a run of its own,
+first or last record. A run cut back, at a part boundary or anywhere, reads open (`VERIFIED TO HEAD n`), never
+`VERIFIED`: the proofs file isn't signed, and from a run's records an inclusion proof of the record now last can often
+be computed, so only the run's `run.final` or a run-set proves a run complete. A run can then hold up to the bundle's
+512 MiB (about 190,000 tool calls of the server pack). Anything else about the parts fails the `run parts` line
+([verdicts](verdicts.md)): a part missing between part-0001 and the last (a gap in the numbers), a name outside that
+numbering (`part-0000`, `part-02`, five digits), a part with no records, a part whose first record's `run_prev_hash`
+is not the hash of the last record of the part before it (parts out of order, an extra or repeated part), or the run
+both in one file and in parts. Its last part missing leaves the run open, and fails `inclusion` while the proofs
+include no proof of the record now last. A part over 64 MiB is, as any file, `UNUSABLE BUNDLE`. A bundle with a run in
+parts declares `run parts` (below), so a 1.3 or older verifier, which would read each part as a run of its own,
 reports it `UNVERIFIABLE (needs tracekit >= 1.4.0)`.
 
 `verifier_min_version` is the newest version in the version table (`VERSIONS` in `tracekit/bundle_v2.py`) whose

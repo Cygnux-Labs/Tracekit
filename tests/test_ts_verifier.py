@@ -813,6 +813,27 @@ class Agreement(unittest.TestCase):
         self.assertEqual(words["json"], ts_verify(bundle, trust))
         self.assertTrue(dict(words["summary"])["Records"].startswith("6 signed record(s) in 1 run(s), "), words)
 
+    def test_a_run_cut_back_to_a_part_boundary_reads_open(self):
+        """The proofs file isn't signed: with its last part dropped and a proof of the record now last computed from the
+        run's leaves, a run in parts reads open in both verifiers, never VERIFIED (docs/format-v2.md §9)."""
+        from tracekit.merkle import inclusion_proof, leaf_hash
+        golden = os.path.join(TESTS, "golden", "parts")
+
+        def cut(files, manifest):
+            parts = sorted(n for n in files if n.startswith("runs/"))
+            recs = {r["event"]["seq"]: r for n in ["keys/records.jsonl", *parts]
+                    for r in map(json.loads, files[n].splitlines())}
+            proofs = json.loads(files["proofs/records.json"])
+            leaves = [leaf_hash(bytes.fromhex(recs[s]["hash"][7:])) for s in range(proofs["tree_size"])]
+            files.pop(parts[-1])
+            last = json.loads(files[parts[-2]].splitlines()[-1])["event"]["seq"]
+            proofs["inclusion"][str(last)] = [base64.b64encode(h).decode() for h in inclusion_proof(last, leaves)]
+            files["proofs/records.json"] = json.dumps(proofs).encode()
+        bundle = os.path.join(self.d, "cut.tkb")
+        rewrite_bundle(os.path.join(golden, "parts.tkb"), bundle, cut)
+        code, rep = self.agree(bundle, os.path.join(golden, "trust.json"))
+        self.assertEqual((code, rep.integrity), (0, "VERIFIED TO HEAD 3 (open)"))
+
     def test_unimplemented_checks_are_unverifiable(self):
         golden = os.path.join(TESTS, "golden", "v2")
         ts = ts_verify(os.path.join(golden, "closed.tkb"), os.path.join(golden, "trust-rekor.json"))
