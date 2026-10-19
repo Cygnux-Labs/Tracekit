@@ -13,6 +13,7 @@ from unittest import mock
 from tracekit import schema
 from tracekit.format.canon import event_hash
 from tracekit.policy2 import classes, compile as pc, shell
+from tracekit.policy2 import engine as engine_mod
 from tracekit.policy2.engine import Engine
 from tracekit.signer import service as svc
 from tracekit.signer.rpc_schema import RPCError
@@ -607,11 +608,9 @@ class SignerPolicy(unittest.TestCase):
             if obj["tool"] != "mcp:x/y":
                 raise svc.rfc8785.CanonicalizationError("too deep")
             return real(obj)
-        deep = Engine({})
-        deep.decide = too_deep
-        self.open(deep)
-        self.refused("invalid_request", self.decide, "Bash", {"command": "ls"})
-        self.open()
+        self.open()   # the default engine, raising from inside Engine.decide: a catch-all there would turn it into a deny
+        with mock.patch.object(engine_mod, "_shell", too_deep):
+            self.refused("invalid_request", self.decide, "Bash", {"command": "ls"})
         real = svc.event_hash
         with mock.patch.object(svc, "event_hash", alias_fails):
             self.refused("invalid_request", self.decide, "mcp:x/y", {"q": 1})
