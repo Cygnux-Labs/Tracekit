@@ -3,7 +3,6 @@
 
 import argparse
 import glob
-import importlib.util
 import json
 import os
 import shlex
@@ -48,13 +47,12 @@ def load_cases():
 
 
 def rewrites(command):
-    """Return wrappers appropriate for a stateless shell command."""
-    if stateful_reason(command):
-        return {}
+    """Return same-shell equivalents and, when safe, equivalent child-shell wrappers."""
     quoted = shlex.quote(command)
-    parsed, _, _ = shell.analyse(command)
-    out = {"cd-dot-and": f"cd . && {command}", "true-semi": f"true; {command}",
-           "bash-c": f"bash -c {quoted}", "env-bash-c": f"env bash -c {quoted}"}
+    parsed = shell.analyse(command)[0]
+    out = {"cd-dot-and": f"cd . && {command}", "true-semi": f"true; {command}"}
+    if stateful_reason(command) is None:
+        out.update({"bash-c": f"bash -c {quoted}", "env-bash-c": f"env bash -c {quoted}"})
     top_level = [cmd for cmd in parsed if not cmd["via"]]
     if (len(top_level) == 1 and all(not cmd["opaque"] for cmd in parsed)
             and not any(op in command for op in ("&&", "||", ";", "|", "\n", ">", "<", "$(", "`"))):
@@ -65,16 +63,16 @@ def rewrites(command):
 def stateful_reason(command):
     """Return why child-shell rewrites would not preserve the agent shell's state."""
     try:
-        parsed, _, _ = shell.analyse(command)
+        parsed = shell.analyse(command)[0]
     except shell.ParseError:
         return "shell parse failed"
     for cmd in parsed:
         argv = cmd["argv"]
         name, args = argv[0], argv[1:]
+        if name == "history":
+            return "history state belongs to the current shell"
         if name in STATEFUL_BUILTINS:
             return f"stateful builtin: {name}"
-        if name == "history" and args[:1] in (["-c"], ["-d"]):
-            return "history state change"
     return None
 
 
@@ -109,8 +107,8 @@ def measure(cases, engines, policy):
             continue
         excluded = stateful_reason(command)
         if excluded:
-            excluded_rewrites.append({"source": case["source"], "reason": excluded})
-            continue
+            excluded_rewrites.append({"source": case["source"], "reason": excluded,
+                                      "forms": ["bash-c", "env-bash-c"]})
         rewritten_cases += 1
         source_rules = (set(decisions[0]["rule_ids"]) & set(decisions[-1]["rule_ids"])) & held_rule_ids
         # A rule cohort contains only cases that both engines agree that rule held at source.
@@ -157,8 +155,10 @@ def run(rebaseline=False):
     if errors:
         raise ValueError("\n".join(errors))
     cases = load_cases()
-    engines = ((Engine(policy, "re2"), Engine(policy, "regex")) if importlib.util.find_spec("re2")
-               else (Engine(policy, "regex"),))
+    try:
+        engines = (Engine(policy, "re2"), Engine(policy, "regex"))
+    except ImportError as exc:
+        raise RuntimeError("E21 requires google-re2; install the project evaluation dependencies") from exc
     measured = measure(cases, engines, policy)
     previous = None
     try:
@@ -169,8 +169,7 @@ def run(rebaseline=False):
     if previous is None and not rebaseline:
         raise ValueError("no saved baseline; pass --rebaseline to establish one explicitly")
     current_policy_hash = getattr(engines[0], "policy_hash", pc.policy_hash(policy))
-    if not rebaseline and (not previous.get("policy_hash") or previous["policy_hash"] != current_policy_hash):
-        raise ValueError("saved baseline lacks this policy hash; pass --rebaseline to replace it explicitly")
+    # Compare by rule id below; a policy hash change alone need not erase a useful baseline.
     baseline = ({"policy_hash": current_policy_hash, "engines": [getattr(e, "engine", None) for e in engines],
                  "by_form": measured["by_form"], "per_rule": measured["per_rule"]}
                 if rebaseline else previous)

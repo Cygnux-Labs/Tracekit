@@ -36,11 +36,33 @@ class Rewrites(unittest.TestCase):
         self.assertEqual(e21.rewrites("git push origin feature")["command-prefix"],
                          "command git push origin feature")
 
-    def test_state_changing_shell_commands_are_excluded(self):
+    def test_state_changing_commands_keep_same_shell_rewrites_only(self):
         for command in ("history -c", "unset HISTFILE", "cd /tmp"):
             with self.subTest(command=command):
                 self.assertIsNotNone(e21.stateful_reason(command))
                 self.assertNotIn("bash-c", e21.rewrites(command))
+                self.assertNotIn("env-bash-c", e21.rewrites(command))
+                self.assertIn("cd-dot-and", e21.rewrites(command))
+                self.assertIn("true-semi", e21.rewrites(command))
+
+    def test_shell_analysis_uses_the_command_list_from_the_four_value_result(self):
+        for command in ("sudo id", "cd . && sudo id", "true; sudo id"):
+            with self.subTest(command=command):
+                self.assertTrue(e21.shell.analyse(command)[0])
+
+    def test_stateful_builtins_are_counted_for_same_shell_rewrites(self):
+        class Engine:
+            def decide(self, tool, args):
+                return {"verdict": "ask", "rule_ids": ["TK-A001"]}
+
+        case = {"source": "shell.jsonl:1", "tool": "Bash", "args": {"command": "history -c"}, "expect": "ask"}
+        measured = e21.measure([case], (Engine(), Engine()), {"deny": [], "ask": [{"id": "TK-A001"}]})
+        self.assertEqual(measured["by_form"]["cd-dot-and"]["contained"], 1)
+        self.assertEqual(measured["by_form"]["true-semi"]["contained"], 1)
+        self.assertEqual(measured["by_form"]["command-prefix"]["contained"], 1)
+        self.assertEqual(measured["by_form"]["bash-c"]["total"], 0)
+        self.assertEqual(measured["by_form"]["env-bash-c"]["total"], 0)
+        self.assertEqual(measured["excluded_rewrites"][0]["forms"], ["bash-c", "env-bash-c"])
 
     def test_missing_baseline_requires_an_explicit_rebaseline(self):
         class Engine:
@@ -58,6 +80,12 @@ class Rewrites(unittest.TestCase):
                     mock.patch.object(e21, "RESULTS", os.path.join(temp_dir, "results.json")):
                 with self.assertRaisesRegex(ValueError, "--rebaseline"):
                     e21.run()
+
+    def test_missing_re2_has_an_explicit_requirement_message(self):
+        with mock.patch.object(e21.pc, "build", return_value=({"deny": [], "ask": []}, [])), \
+                mock.patch.object(e21, "Engine", side_effect=ImportError("missing")):
+            with self.assertRaisesRegex(RuntimeError, "requires google-re2"):
+                e21.run()
 
     def test_reports_per_rule_containment_and_parser_hold_as_contained(self):
         class Engine:
@@ -122,7 +150,7 @@ class Rewrites(unittest.TestCase):
         self.assertFalse(result["no_regression"]["rewrites_contained"])
         self.assertFalse(result["ok"])
         self.assertIn("policy_hash", result)
-        self.assertGreaterEqual(len(result["engines"]), 1)
+        self.assertEqual(len(result["engines"]), 2)
 
     def test_rewrite_coverage_regression_fails_against_saved_first_run(self):
         class Engine:
@@ -136,7 +164,7 @@ class Rewrites(unittest.TestCase):
                 return {"verdict": "allow", "rule_ids": []}
 
         policy = {"deny": [{"id": "TK-D001"}], "ask": []}
-        baseline = {"policy_hash": e21.pc.policy_hash(policy), "per_rule": {form: {"TK-D001": {"total": 1, "contained": 1, "missed": 0,
+        baseline = {"policy_hash": "earlier-policy-hash", "per_rule": {form: {"TK-D001": {"total": 1, "contained": 1, "missed": 0,
                                                      "rate": 1.0, "same_rule": 1, "same_rule_rate": 1.0,
                                                      "covered_by_rule_or_parse": 1, "coverage_rate": 1.0}}
                                  for form in e21.TRANSFORMATIONS}}
