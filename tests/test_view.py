@@ -46,6 +46,13 @@ SERVER = view.policy_reasons()   # the shipped packs' rule reasons, by policy ha
 SERVER_HASH = next(h for h, rules in SERVER.items() if "TK-S001" in rules and "TK-M001" in rules)
 
 
+def store_feed(test, cfg, **kw):
+    """A StoreFeed whose threads stop before the test's store goes away."""
+    feed = view.StoreFeed(cfg, **kw)
+    test.addCleanup(feed.close)
+    return feed
+
+
 def v2rec(seq, typ, data, run="r1", **top):
     return {"event": {"seq": seq, "run_seq": seq, "run_id": run, "agent_id": "main", "type": typ, "data": data,
                       "ts": f"2026-10-10T17:00:{seq:02d}.000000Z", "prev_hash": "sha256:p", **top},
@@ -305,7 +312,7 @@ class View(unittest.TestCase):
             seqs = [r["event"]["run_seq"] for r in recs]
             asked.append((rid, seqs))
             return {s: {"command": f"at {s}"} for s in seqs}
-        feed = view.StoreFeed({"data_dir": self.d}, content=content)
+        feed = store_feed(self, {"data_dir": self.d}, content=content)
         self.report(feed, run_id)
         rows = [r for r in self.rows(feed, run_id) if r["event"] == "PreToolUse"]
         self.assertEqual(len(rows), 3)
@@ -321,7 +328,7 @@ class View(unittest.TestCase):
                 return {"items": [{"seq": s, "content": {"command": "echo tampered"}, "salt": "00" * 32}
                                   for s in req["seqs"]]}
         with mock.patch.object(view, "Client", Tampered):
-            feed = view.StoreFeed({"data_dir": self.d}, content=view.dev_content_source())
+            feed = store_feed(self, {"data_dir": self.d}, content=view.dev_content_source())
             self.report(feed, run_id)
         rows = self.rows(feed, run_id)
         self.assertEqual([r["title"] for r in rows if r.get("title") == "CONTENT NOT SHOWN"], ["CONTENT NOT SHOWN"])
@@ -357,7 +364,7 @@ class View(unittest.TestCase):
         def vault(want):
             return ((r["event"]["run_seq"], bodies[r["event"]["run_seq"]], True) for r in want
                     if r["event"]["run_seq"] in bodies)
-        feed = view.StoreFeed({"data_dir": self.d}, content=lambda rid, recs: {
+        feed = store_feed(self, {"data_dir": self.d}, content=lambda rid, recs: {
                                   r["event"]["run_seq"]: bodies[r["event"]["run_seq"]] for r in recs
                                   if r["event"]["run_seq"] in bodies},
                               analyze=lambda records: findings_v2.analyze(records, vault))
@@ -406,7 +413,7 @@ class View(unittest.TestCase):
         storage = self.service.log.storage
         self.assertTrue(wait_for(lambda: list(storage.iter_run("default", run.run_id))[-1]["event"]["type"] ==
                                  "run.final" and (storage.checkpoint_latest() or (0,))[0] == storage.tree.size, 20))
-        feed = view.StoreFeed({"data_dir": self.d}, analyze=lambda records: findings_v2.analyze(records, None))
+        feed = store_feed(self, {"data_dir": self.d}, analyze=lambda records: findings_v2.analyze(records, None))
         [rep] = self.report(feed, run.run_id)
         self.assertEqual(rep["title"], f"RUN {run.run_id} · Integrity VERIFIED · Assurance dev")
         rows = self.rows(feed, run.run_id)
@@ -424,7 +431,7 @@ class View(unittest.TestCase):
         run_id = self.finished_run()
         with self.assertRaises(OSError):
             FileStorage(os.path.join(self.d, "store"))   # the signer still holds the store
-        feed = view.StoreFeed({"data_dir": self.d})
+        feed = store_feed(self, {"data_dir": self.d})
         [rep] = self.report(feed, run_id)
         self.assertEqual(rep["title"], f"RUN {run_id} · Integrity VERIFIED · Assurance dev")
         self.assertIn("tenant default · agent e2e · final · decisions allow 1, ask 1, deny 1 · approvals 1 · gaps 0",
@@ -455,7 +462,7 @@ class View(unittest.TestCase):
         fake.checkpoint_latest.return_value = None
         fake.iter_run.side_effect = lambda *key: iter([v2rec(0, "run.registered", {"agent": {"name": "late"}}, "r9")])
         with mock.patch.object(view, "reader", return_value=fake):
-            feed = view.StoreFeed({"data_dir": self.d})
+            feed = store_feed(self, {"data_dir": self.d})
             self.assertTrue(wait_for(lambda: feed.records, 5))
             r = feed.records[0]
         self.assertEqual((r["event"], r["session_id"], r["tenant"], r["review"]),
@@ -484,7 +491,7 @@ class View(unittest.TestCase):
         verified = (mock.Mock(integrity="VERIFIED", assurance="dev"), 0, "Integrity: VERIFIED.")
         with mock.patch.object(view, "reader", return_value=fake), mock.patch.object(view, "check",
                                                                                       return_value=verified):
-            feed = view.StoreFeed({"data_dir": self.d}, analyze=analyze)
+            feed = store_feed(self, {"data_dir": self.d}, analyze=analyze)
             for rid in recs:
                 feed._verify(fake, "note", ("default", rid), 2)
         with feed.lock:
@@ -518,7 +525,7 @@ class View(unittest.TestCase):
         with mock.patch.object(view, "reader", return_value=fake), \
                 mock.patch.object(view, "check", return_value=verified) as check:
             fake.checkpoint_latest.return_value = (3, "note at 3")
-            feed = view.StoreFeed({"data_dir": self.d})
+            feed = store_feed(self, {"data_dir": self.d})
             self.assertTrue(wait_for(lambda: rows(), 5))
             self.assertEqual(rows(), [("SessionStart", None), ("PreToolUse", None), ("PreToolUse", None),
                                       ("tk_alert", "VERIFY")])
@@ -538,7 +545,7 @@ class View(unittest.TestCase):
         fake.checkpoint_latest.return_value = None
         fake.iter_run.side_effect = lambda *key: iter([v2rec(0, "run.registered", {"agent": {"name": "late"}}, key[1])])
         with mock.patch.object(view, "reader", return_value=fake):
-            feed = view.StoreFeed({"data_dir": self.d})
+            feed = store_feed(self, {"data_dir": self.d})
             self.assertTrue(wait_for(lambda: feed.records, 5))
         with feed.lock:
             self.assertEqual([r["session_id"] for r in feed.records], ["r9"])   # not listed as a pending agent run
@@ -571,7 +578,7 @@ class View(unittest.TestCase):
         self.assertEqual(data.count('"tool":"Bash"'), 1)
         with open(path, "w", encoding="utf-8") as f:
             f.write(data.replace('"tool":"Bash"', '"tool":"Bosh"'))
-        feed = view.StoreFeed({"data_dir": self.d})
+        feed = store_feed(self, {"data_dir": self.d})
         [rep] = self.report(feed, run_id)
         self.assertEqual(rep["title"], f"RUN {run_id} · Integrity FAILED")
         self.assertIn(view.OPERATOR_SIDE, rep["text"])
@@ -583,7 +590,7 @@ class View(unittest.TestCase):
         """A run was checked only when it grew: an edit of records the page already showed stayed VERIFIED until the
         viewer restarted."""
         run_id = self.finished_run()
-        feed = view.StoreFeed({"data_dir": self.d})
+        feed = store_feed(self, {"data_dir": self.d})
         self.report(feed, run_id)
         self.service.close()
         path = os.path.join(self.d, "store", "records.jsonl")
@@ -661,7 +668,7 @@ class View(unittest.TestCase):
     def test_a_store_with_no_why_logs_still_gets_a_graph_of_each_run_with_its_decisions(self):
         run_id = self.finished_run()
         why_dir = ts.tmpdir(self)
-        feed = view.StoreFeed({"data_dir": self.d}, on_run=functools.partial(view.mirror_run, why_dir))
+        feed = store_feed(self, {"data_dir": self.d}, on_run=functools.partial(view.mirror_run, why_dir))
         self.report(feed, run_id)
         why_id = os.path.basename(_target(why_dir, run_id, "default"))
         wait_for(lambda: os.listdir(why_dir) == [why_id], 15)   # renamed in, its .import-* staging folder gone
@@ -695,7 +702,7 @@ class View(unittest.TestCase):
     def test_a_mirror_takes_the_feeds_reasons_and_comes_after_the_tape(self):
         run_id = self.finished_run()
         seen = []
-        feed = view.StoreFeed({"data_dir": self.d}, on_run=lambda *a: seen.append((len(feed.records), a)))
+        feed = store_feed(self, {"data_dir": self.d}, on_run=lambda *a: seen.append((len(feed.records), a)))
         self.report(feed, run_id)
         wait_for(lambda: seen, 15)
         shown, (tenant, rid, records, reasons) = seen[0]
@@ -719,7 +726,7 @@ class View(unittest.TestCase):
         run = self.client.run(agent="a")
         run.decide("c1", XSS, {"q": XSS})
         self.client.call("checkpoint_nudge", {})
-        feed = view.StoreFeed({"data_dir": self.d})
+        feed = store_feed(self, {"data_dir": self.d})
         self.report(feed, run.run_id)
         c, cookie = self.session(self.serve(feed))
         c.request("GET", "/", headers=cookie)
@@ -733,7 +740,7 @@ class View(unittest.TestCase):
         self.assertIn(XSS, [x.get("tool_name") for x in snap["records"]])
 
     def test_sse_shows_a_new_record(self):
-        feed = view.StoreFeed({"data_dir": self.d})
+        feed = store_feed(self, {"data_dir": self.d})
         c, cookie = self.session(self.serve(feed), 15)
         c.request("GET", "/api/snapshot", headers=cookie)
         start = json.loads(c.getresponse().read())["next"]
@@ -757,13 +764,19 @@ class View(unittest.TestCase):
                         "1", "-keyout", key, "-out", cert], check=True, capture_output=True)
         tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         tls.load_cert_chain(cert, key)
-        port = self.serve(view.StoreFeed({"data_dir": self.d}), "s3cret", tls)
+        port = self.serve(store_feed(self, {"data_dir": self.d}), "s3cret", tls)
         c = http.client.HTTPSConnection("127.0.0.1", port, timeout=5, context=ssl._create_unverified_context())
         c.request("GET", "/?token=s3cret")
         r = c.getresponse()
         r.read()
         self.assertEqual(r.status, 303)
         self.assertIn("; Secure", r.getheader("Set-Cookie"))
+
+    def test_close_stops_the_feeds_threads(self):
+        feed = view.StoreFeed({"data_dir": self.d}, on_run=lambda *a: None)
+        self.assertEqual(len(feed.threads), 2)   # the watch and the mirror thread
+        feed.close()
+        self.assertEqual([t.is_alive() for t in feed.threads], [False, False])
 
 
 TOKEN = "why-test-" + "t" * 32
