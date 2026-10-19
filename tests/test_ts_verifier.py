@@ -724,6 +724,16 @@ class Agreement(unittest.TestCase):
         self.assertEqual(out["seen"], [["verifying", True], ["done", False], ["verifying", True], ["done", False]])
         self.assertIn("\nIntegrity: FAILED.\n", out["report"])
 
+    def test_a_samples_trust_config_is_not_kept_for_the_persons_own_bundle(self):
+        """After a sample, the person's own bundle chosen alone was checked against the samples' trust config: a
+        genuine bundle of another signer showed FAILED, not UNVERIFIABLE. The sample's trust goes with the sample; a
+        trust config the person chose stays."""
+        out = page_steps("#sample-clean", self.bundles["closed"])
+        self.assertEqual(out["trust"], "none")
+        self.assertTrue(out["report"].endswith("\nExit code 2.\n"), out["report"][-300:])
+        mine = page_steps(f"{self.bundles['closed']},{self.trusts['witnessed']}", self.bundles["closed"])
+        self.assertIn("\nIntegrity: VERIFIED.\n", mine["report"])
+
     def test_a_run_of_many_records_under_a_small_stack(self):
         """No record-sized array is spread into a call's arguments, which puts each element on the stack: the CLI and
         the page verify 25,000 records under a 100 KiB stack (`Math.max(...seqs)` made the page say FAILED for a valid

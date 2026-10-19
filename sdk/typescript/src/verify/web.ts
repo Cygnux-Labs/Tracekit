@@ -78,8 +78,10 @@ function page() {
 
   const read = async (f: File) => ({ name: f.name, bytes: new Uint8Array(await f.arrayBuffer()) });
   const unb64 = (s: string) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+  const sampleTrust = { name: "sample.trust.json", bytes: unb64(SAMPLES["sample.trust.json"]) };
 
   async function choose(files: FileList | null | undefined) {
+    if (trust === sampleTrust) trust = null;   // the samples' signer is not the one behind the person's own bundle
     for (const f of [...files ?? []]) {
       if (/\.json$/i.test(f.name)) trust = await read(f);
       else bundle = await read(f);
@@ -174,7 +176,7 @@ function page() {
   for (const [id, file] of [["sample-clean", "sample.tkb"], ["sample-tampered", "sample-tampered.tkb"]] as const)
     $(id).addEventListener("click", () => {
       bundle = { name: file, bytes: unb64(SAMPLES[file]) };
-      trust = { name: "sample.trust.json", bytes: unb64(SAMPLES["sample.trust.json"]) };
+      trust = sampleTrust;
       return show();
     });
   $("copy").addEventListener("click", async () => {
