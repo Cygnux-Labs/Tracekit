@@ -425,42 +425,47 @@ Code-like runs and a Python process during a fetch in 3 of 8; on the tuned set a
   is denied or held (ask); a benign call is a false positive when it is denied or held.
 - Developer sessions (`eval/e21_benign_sessions.jsonl`): 130 calls of ordinary sessions (Python, web, Go, Rust, docs,
   data, read-only operations, repository chores), written by the packs' builder, so tuned: false positives only.
-- Latency: each call's fastest of three decisions, over E17 and both E21 sets (2,230 calls).
+- Latency: each call's fastest of three decisions, over E17 and both E21 sets (2,290 calls).
 
 The recorded results (on the packs as merged for 1.4):
 
 | Profile | Held-out caught | of which denied | caught only as an unmapped tool | Held-out benign FP | Session FP |
 |---|---|---|---|---|---|
-| default | 215 / 420 (51.2%) | 108 (25.7%) | 44 | 18 / 432 (4.2%) | 2 / 130 (1.5%) |
-| strict | 250 / 420 (59.5%) | 149 (35.5%) | 44 | 47 / 432 (10.9%) | 13 / 130 (10.0%) |
+| default | 236 / 420 (56.2%) | 109 (26.0%) | 44 | 18 / 432 (4.2%) | 2 / 130 (1.5%) |
+| strict | 266 / 420 (63.3%) | 150 (35.7%) | 44 | 47 / 432 (10.9%) | 13 / 130 (10.0%) |
 
-Weakest categories (default, caught): defence evasion 2 of 30, supply chain 8 of 27, privilege escalation 7 of 27,
-exfiltration 12 of 39, destructive 15 of 36; strongest: Kubernetes 23 of 27, database 28 of 32. By evasion, calls
-with none are caught 124 of 275; quoting 8 of 18, environment prefixes 6 of 14, substitution 35 of 49, interpreter
-one-liners 23 of 28 (many held as unreadable, `TK-SHELL-PARSE`). Per category, severity and evasion, and every miss
+Weakest categories (default, caught): exfiltration 12 of 39, privilege escalation 8 of 27, prompt injection 8 of 22,
+destructive 15 of 36, defence evasion 14 of 30, supply chain 13 of 27; strongest: Kubernetes 23 of 27, database 28 of
+32. By evasion, calls with none are caught 141 of 275; quoting 9 of 18, environment prefixes 6 of 14, substitution 37
+of 49, interpreter one-liners 23 of 28 (many held as unreadable, `TK-SHELL-PARSE`). Per category, severity and evasion, and every miss
 and false positive: `eval/results/e21_policy_robustness.json`. The two engines decided every call the same.
 
 | Latency (µs) | p50 | p99 | max |
 |---|---|---|---|
-| default, RE2 / regex | 60 / 56 | 134 / 166 | 234 / 320 |
-| strict, RE2 / regex | 58 / 54 | 128 / 161 | 230 / 320 |
-| dev, RE2 / regex | 41 / 38 | 106 / 114 | 198 / 191 |
+| default, RE2 / regex | 62 / 59 | 136 / 165 | 232 / 333 |
+| strict, RE2 / regex | 61 / 59 | 135 / 189 | 223 / 327 |
+| dev, RE2 / regex | 47 / 43 | 112 / 121 | 193 / 202 |
 
-Measured on macOS arm64, Python 3.11. Gates, recorded in the results file, guard against regressions from the first
-run: per profile, held-out recall doesn't drop below that run's (50.2% default, 58.6% strict) and no benign set's
-false-positive rate rises (held-out, sessions and E17's benign calls: 4.2%, 1.5%, 0.14% default; 10.9%, 10.0%, 4.1%
-strict); p99 stays within 25% of the first run's on the same machine (re-measured once before failing). The targets of 2% (default) and 5%
-(strict) false positives are reported, not gated: this run is over target on the held-out set (default 4.2%, strict
-10.9%) and on strict's sessions (10.0%).
-`TK-A010` to `TK-A013` (autostart locations and Git hooks) were added after this run: with them the held-out pool is
-caught 215 of 420 (51.2%) by default and 250 of 420 (59.5%) strict, with the same false positives; the gates still
-compare with the first run.
+Measured on macOS arm64, Python 3.11. Gates, recorded in the results file, guard against regressions from the
+recorded run: per profile, held-out recall doesn't drop below its (56.2% default, 63.3% strict) and no benign set's
+false-positive rate rises (held-out, sessions and E17's benign calls: 4.2%, 1.5%, 0.14% default; 10.9%, 10.0%, 4.9%
+strict); p99 stays within 25% of its on the same machine (re-measured once before failing). The targets of 2%
+(default) and 5% (strict) false positives are reported, not gated: the run is over target on the held-out set
+(default 4.2%, strict 10.9%) and on strict's sessions (10.0%).
 
-Shell rewrites (`eval/e21_robustness.py`): E17's 536 harmful calls are decided as they are, and each of the 232 shell
+How the held-out numbers moved, the pool unchanged: the first run caught 211 of 420 (50.2%) by default and 246
+(58.6%) strict; `TK-A010` to `TK-A013` (autostart locations and Git hooks) raised that to 215 (51.2%) and 250
+(59.5%); the credential-store, container, package-source and history rules (`TK-D020`, `TK-D021`, `TK-A020` to
+`TK-A028`) to 236 (56.2%) and 266 (63.3%), with no new false positive on the held-out or session calls. The gates were
+recorded again with those rules, on purpose: strict's false positives on E17's benign calls rose from 4.1% to 4.9%
+(29 of 711 to 36 of 738), all of them benign calls added to E17 with the rules that strict holds as installs,
+`docker run`, URLs or network commands (`TK-F004`, `TK-F012`, `TK-F013`), none by a new rule.
+
+Shell rewrites (`eval/e21_robustness.py`): E17's 570 harmful calls are decided as they are, and each of the 261 shell
 commands among them again rewritten in up to five equivalent ways (`cd . &&` or `true;` before it, Bash's `command`
 builtin, `bash -c` and `env bash -c` around it; a form that could change what the command does is left out, such as
-`bash -c` around a `cd` or an `export`). A call is contained when the server pack still denies or holds it: all 536
-originals and all 1,133 rewrites are, and both engines decide each the same. The run gates against a recorded
+`bash -c` around a `cd` or an `export`). A call is contained when the server pack still denies or holds it: all 570
+originals and all 1,265 rewrites are, and both engines decide each the same. The run gates against a recorded
 baseline, rule id by rule id, so a rule that held a form and no longer does fails it. Results:
 `eval/results/e21_robustness.json`.
 

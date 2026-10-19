@@ -95,6 +95,10 @@ class Packs(unittest.TestCase):
         self.assertEqual(classes.extract("mcp", "mcp__github__create_issue", {})["server"], "github")
 
 
+# the rules this change added to the coding pack
+NEW_RULES = {"TK-D020", "TK-D021", "TK-A020", "TK-A021", "TK-A022", "TK-A023", "TK-A024", "TK-A025", "TK-A026",
+             "TK-A027", "TK-A028"}
+
 class CodingPack(unittest.TestCase):
     def setUp(self):
         self.e = Engine(pc.build(os.path.join(PACKS, "coding.yaml"))[0], "regex")
@@ -343,6 +347,182 @@ class CodingPack(unittest.TestCase):
                 d = self.e.decide("Bash", {"command": command})
                 self.assertFalse({"TK-F007", "TK-F014"} & set(d["rule_ids"]), d)
         self.assertIn("TK-F014", self.e.decide("Bash", {"command": "sleep 9 &"})["rule_ids"])
+
+    @unittest.skipUnless(HAVE_RE2, "google-re2 not installed")
+    def test_new_credential_container_package_and_track_rules(self):
+        packs = os.path.join(os.path.dirname(svc.DEFAULT_POLICY), "coding.yaml")
+        policy, errors = pc.build(packs)
+        self.assertEqual(errors, [])
+        cases = [
+            ("Read", {"file_path": "/home/app/.mozilla/firefox/p1/logins.json"}, "ask", "TK-A020"),
+            ("Read", {"file_path": "/home/app/.config/google-chrome/Default/Network/Cookies"}, "ask", "TK-A020"),
+            ("Read", {"file_path": "/Users/u/Library/Application Support/Google/Chrome/Profile 1/Network/Cookies"}, "ask", "TK-A020"),
+            ("Read", {"file_path": "/home/app/.config/BraveSoftware/Brave-Browser/Default/Network/Cookies"}, "ask", "TK-A020"),
+            ("Read", {"file_path": "/home/app/.config/microsoft-edge/Default/Network/Cookies"}, "ask", "TK-A020"),
+            ("Read", {"file_path": r"C:\Users\u\AppData\Local\Google\Chrome\User Data\Default\Network\Cookies"}, "ask", "TK-A020"),
+            ("Read", {"file_path": r"C:\Users\u\AppData\Local\Google\Chrome\User Data\Default\Login Data"}, "ask", "TK-A020"),
+            ("Read", {"file_path": r"C:\Users\u\AppData\Local\Microsoft\Edge\User Data\Profile 1\Login Data"}, "ask", "TK-A020"),
+            ("Grep", {"path": "/home/app/.password-store", "pattern": "secret"}, "ask", "TK-A020"),
+            ("Bash", {"command": "security find-generic-password -s example"}, "ask", "TK-A021"),
+            ("Bash", {"command": "cat ~/.config/google-chrome/Default/Cookies"}, "ask", "TK-A021"),
+            ("Bash", {"command": "cat ~/.config/google-chrome/Default/Network/Cookies"}, "ask", "TK-A021"),
+            ("Bash", {"command": "cat ~/Library/Application Support/Google/Chrome/Profile 1/Network/Cookies"}, "ask", "TK-A021"),
+            ("Bash", {"command": "cat ~/.config/BraveSoftware/Brave-Browser/Default/Network/Cookies"}, "ask", "TK-A021"),
+            ("Bash", {"command": "cat ~/.config/microsoft-edge/Default/Network/Cookies"}, "ask", "TK-A021"),
+            ("Bash", {"command": "cat 'C:/Users/u/AppData/Local/Google/Chrome/User Data/Default/Network/Cookies'"}, "ask", "TK-A021"),
+            ("Bash", {"command": "sqlite3 'C:/Users/u/AppData/Local/Microsoft/Edge/User Data/Default/Login Data'"}, "ask", "TK-A021"),
+            ("Bash", {"command": "security dump-keychain"}, "deny", "TK-D020"),
+            ("Bash", {"command": "pip install https://packages.example.test/pkg.whl"}, "deny", "TK-D021"),
+            ("Bash", {"command": "uv pip install --no-deps https://packages.example.test/pkg.whl"}, "deny", "TK-D021"),
+            ("Bash", {"command": "pip install git+https://example.test/org/pkg.git"}, "ask", "TK-A028"),
+            ("Write", {"file_path": "/var/run/docker.sock"}, "ask", "TK-A022"),
+            ("Bash", {"command": "docker run --pid=host alpine"}, "ask", "TK-A023"),
+            ("Bash", {"command": "docker run --mount type=bind,source=/,target=/host alpine"}, "ask", "TK-A023"),
+            ("Bash", {"command": "docker run --mount type=bind,readonly,source=/proc/1,target=/host/proc alpine"}, "ask", "TK-A023"),
+            ("Bash", {"command": "podman run -v /proc:/host/proc alpine"}, "ask", "TK-A023"),
+            ("Bash", {"command": "docker run --privileged=1 alpine"}, "ask", "TK-A023"),
+            ("Bash", {"command": "docker run --name web -e A=1 --privileged alpine"}, "ask", "TK-A023"),
+            ("Bash", {"command": "docker run -itv /:/host alpine"}, "ask", "TK-A023"),
+            ("Bash", {"command": "docker run alpine ls --privileged"}, "allow", ""),
+            ("Bash", {"command": "docker run --privileged=false alpine"}, "allow", ""),
+            ("Write", {"file_path": "/etc/apt/sources.list.d/example.list"}, "ask", "TK-A024"),
+            ("Bash", {"command": "pip install --index-url https://packages.example.test/simple demo"}, "ask", "TK-A025"),
+            ("Bash", {"command": "pip install -i https://packages.example.test/simple demo"}, "ask", "TK-A025"),
+            ("Bash", {"command": "pip install --index-url https://packages.example.test/simple --extra-index-url https://pypi.org/simple demo"}, "ask", "TK-A025"),
+            ("Bash", {"command": "pip install --extra-index-url https://pypi.org/simple --index-url https://packages.example.test/simple demo"}, "ask", "TK-A025"),
+            ("Bash", {"command": "uv pip install --default-index https://packages.example.test/simple demo"}, "ask", "TK-A025"),
+            ("Bash", {"command": "npm install --registry=https://registry.npmjs.org --registry=https://packages.example.test demo"}, "ask", "TK-A025"),
+            ("Bash", {"command": "npm install --registry=https://packages.example.test --registry=https://registry.npmjs.org demo"}, "allow", ""),
+            ("Bash", {"command": "npm config set registry https://packages.example.test/"}, "ask", "TK-A025"),
+            ("Bash", {"command": "npm config set registry=https://packages.example.test/"}, "ask", "TK-A025"),
+            ("Bash", {"command": "npm set registry https://packages.example.test/"}, "ask", "TK-A025"),
+            ("Bash", {"command": "npm config set --location=user @org:registry https://packages.example.test/"}, "ask", "TK-A025"),
+            ("Bash", {"command": "pip config --user set global.index-url https://packages.example.test/simple"}, "ask", "TK-A025"),
+            ("Bash", {"command": "npm config set registry=https://registry.npmjs.org/"}, "allow", ""),
+            ("Bash", {"command": "npm publish --registry=https://npm.pkg.github.com/"}, "allow", ""),
+            ("Bash", {"command": "pip config set global.index-url https://packages.example.test/simple"}, "ask", "TK-A025"),
+            ("Bash", {"command": "pip install --index-url https://pypi.org/simple demo"}, "allow", ""),
+            ("Bash", {"command": "npm install --registry=https://registry.npmjs.org demo"}, "allow", ""),
+            ("Bash", {"command": "pip config set global.index-url https://pypi.org/simple"}, "allow", ""),
+            ("Bash", {"command": "npm config set registry https://registry.npmjs.org/"}, "allow", ""),
+            ("Write", {"file_path": "/home/app/.zsh_history"}, "ask", "TK-A026"),
+            ("Bash", {"command": "echo x > ~/.bash_history"}, "ask", "TK-A027"),
+            ("Bash", {"command": "rm /var/log"}, "ask", "TK-A027"),
+            ("Bash", {"command": "find /var/log -type f -delete"}, "ask", "TK-A027"),
+            ("Bash", {"command": "find /tmp -path /tmp/.bash_history -delete"}, "ask", "TK-A027"),
+            ("Bash", {"command": "find /tmp -name .bash_history -delete"}, "ask", "TK-A027"),
+            ("Bash", {"command": "find /var/log -type f -exec rm {} +"}, "ask", "TK-A027"),
+            ("Bash", {"command": "find /var/log -mtime +7 -exec rm -f {} \\;"}, "ask", "TK-A027"),
+            ("Bash", {"command": "mv /var/log/auth.log /tmp/x"}, "ask", "TK-A027"),
+            ("Bash", {"command": "mv ~/.bash_history /tmp/h"}, "ask", "TK-A027"),
+            ("Bash", {"command": "rm -r /var/log/journal"}, "ask", "TK-A027"),
+            ("Bash", {"command": "cp -t /var/log/ x"}, "ask", "TK-A027"),
+            ("Bash", {"command": "sed -i 's/x/y/' /var/log/app.log"}, "ask", "TK-A027"),
+            ("Bash", {"command": "sed --in-place 's/x/y/' /var/log/app.log"}, "ask", "TK-A027"),
+            ("Bash", {"command": "perl -pi -e 's/x//' /var/log/app.log"}, "ask", "TK-A027"),
+            ("Bash", {"command": "history -c"}, "ask", "TK-A027"),
+            ("Bash", {"command": "history -cw"}, "ask", "TK-A027"),
+            ("Bash", {"command": "history -w -c"}, "ask", "TK-A027"),
+            ("Bash", {"command": "HISTFILE=/dev/null"}, "ask", "TK-A027"),
+            ("Bash", {"command": "unset HISTFILE"}, "ask", "TK-A027"),
+            ("Bash", {"command": "set +o history"}, "ask", "TK-A027"),
+            ("Bash", {"command": "export HISTFILE=/dev/null"}, "ask", "TK-A027"),
+            ("Bash", {"command": "journalctl --vacuum-time=1s"}, "ask", "TK-A027"),
+            ("Bash", {"command": "cp /var/log/app.log /tmp/app.log"}, "allow", ""),
+            ("Bash", {"command": "cp ~/.bash_history /tmp/history-copy"}, "allow", ""),
+            ("Bash", {"command": "cp -r /var/log /tmp/logs"}, "allow", ""),
+            ("Bash", {"command": "find /var/log -type f -exec cat {} +"}, "allow", ""),
+            ("Bash", {"command": "history -w"}, "allow", ""),
+            ("Bash", {"command": "sed -i 's,/var/log,x,' /tmp/app.txt"}, "allow", ""),
+            ("Bash", {"command": "perl -pi -e 'print \"/var/log\"' /tmp/app.txt"}, "allow", ""),
+            ("Bash", {"command": "sed -n '1,10p' /var/log/app.log"}, "allow", ""),
+            ("Bash", {"command": "cat /var/log/app.log; echo done"}, "allow", ""),
+            ("Bash", {"command": "cat < ~/.bash_history"}, "allow", ""),
+            ("Bash", {"command": "rm /repo/Cookies"}, "allow", ""),
+            ("Bash", {"command": "rm -rf /repo/var/log"}, "allow", ""),
+            ("Bash", {"command": "cat /repo/docs/Cookies"}, "allow", ""),
+        ]
+        shell_cases = [case for case in cases if case[0] == "Bash" and case[3]]
+        for tool, args, verdict, rule_id in shell_cases:
+            command = args["command"]
+            executable, _, rest = command.partition(" ")
+            absolute = "/usr/bin/" + executable.rsplit("/", 1)[-1] + (" " + rest if rest else "")
+            builtin = executable in {"history", "unset", "set", "export", "HISTFILE=/dev/null"}
+            for prefix, rewritten in (
+                ("cd", "cd /repo && " + command), ("true", "true; " + command),
+                ("env", "env " + command), ("absolute", absolute),
+                ("assignment", "VAR=1 " + command), ("command", "command " + command),
+            ):
+                if builtin and prefix in {"env", "absolute"} or "=" in executable and prefix == "command":
+                    continue
+                cases.append((tool, {"command": rewritten}, verdict, rule_id))
+        engines = [Engine(policy, "re2"), Engine(policy, "regex")]
+        for tool, args, verdict, rule_id in cases:
+            with self.subTest(tool=tool, args=args):
+                decisions = [engine.decide(tool, args) for engine in engines]
+                if verdict == "allow":
+                    self.assertTrue(all(d["verdict"] not in ("deny", "ask") for d in decisions), decisions)
+                else:
+                    self.assertEqual({d["verdict"] for d in decisions}, {verdict})
+                if rule_id:
+                    self.assertTrue(all(rule_id in d["rule_ids"] for d in decisions))
+                self.assertEqual(decisions[0]["rule_ids"], decisions[1]["rule_ids"])
+
+        lookalikes = [
+            ("Write", {"file_path": "/repo/compose.yaml", "content": "services: {}"}),
+            ("Write", {"file_path": "/repo/packages.list", "content": "ordinary"}),
+            ("Read", {"file_path": "/home/app/.bash_history"}),
+            ("Read", {"file_path": "/repo/Cookies"}),
+            ("Bash", {"command": "docker run alpine"}),
+            ("Bash", {"command": "docker run --mount type=bind,source=/data,target=/host alpine"}),
+            ("Bash", {"command": "find /var/log -type f -print"}),
+            ("Bash", {"command": "cat /var/log/app.log; echo done"}),
+            ("Bash", {"command": "cat < ~/.bash_history"}),
+            ("Bash", {"command": "pip install --index-url https://pypi.org/simple demo"}),
+            ("Bash", {"command": "npm install --registry=https://registry.npmjs.org demo"}),
+            ("Bash", {"command": "pip config set global.index-url https://pypi.org/simple"}),
+            ("Bash", {"command": "npm install --registry=https://packages.example.test --registry=https://registry.npmjs.org demo"}),
+            ("Bash", {"command": "npm config set registry https://registry.npmjs.org/"}),
+            ("Bash", {"command": "cat /repo/docs/Cookies"}),
+            ("Bash", {"command": "rm -rf /repo/var/log"}),
+            ("Bash", {"command": "pip install requests"}),
+            ("Bash", {"command": "history"}),
+            ("Bash", {"command": "echo 'security dump-keychain'"}),
+            ("Bash", {"command": "printf 'pip install https://packages.example.test/pkg.whl'"}),
+            ("Bash", {"command": "echo 'docker run --privileged alpine'"}),
+        ]
+        for tool, args in lookalikes:
+            with self.subTest(lookalike=tool, args=args):
+                decisions = [engine.decide(tool, args) for engine in engines]
+                self.assertEqual(decisions[0]["verdict"], decisions[1]["verdict"])
+                self.assertNotIn(decisions[0]["verdict"], ("deny", "ask"))
+                self.assertFalse(set(decisions[0]["rule_ids"]) & NEW_RULES)
+
+    def test_an_oversize_command_is_denied(self):
+        d = self.e.decide("Bash", {"command": "echo " + "x" * (64 * 1024)})
+        self.assertEqual((d["verdict"], d["rule_ids"][0]), ("deny", "TK-OVERSIZE"))
+
+    def test_history_and_container_rules_are_bounded_on_adversarial_commands(self):
+        """The new rules alone, on the fallback engine: an older rule's own worst case here (TK-D008 on 64 KB of
+        `find ... -delete`) is not theirs to bound."""
+        policy = pc.build(os.path.join(PACKS, "coding.yaml"))[0]
+        new = Engine(dict(policy, **{sec: [r for r in policy[sec] if r["id"] in NEW_RULES]
+                                     for sec in ("deny", "ask", "flag")}), "regex")
+        cases = [("rm " + "x " * 16000 + "~/.bash_history", "ask"),
+                 ("find /repo " + "-name x " * 4000 + "-print", "allow"),
+                 ("find ~/.bash_history " + "-delete " * 8000, "ask"),
+                 ("docker run " + "--mount src=/x, " * 4000 + "alpine", "allow"),
+                 ("find /var/log " + "-exec " * 8000 + "rm {} +", "ask"),
+                 ("mv " + "x " * 16000 + "~/.bash_history /tmp/h", "ask"),
+                 ("history " + "-w " * 16000 + "-c", "ask"),
+                 ("history " + "-w " * 16000, "allow"),
+                 ("npm config set " + "registry " * 6000 + "https://packages.example.test/", "ask"),
+                 ("docker run " + "-e " * 16000 + "alpine", "allow")]
+        for command, expected in cases:
+            with self.subTest(length=len(command), expected=expected):
+                decision = new.decide("Bash", {"command": command})
+                self.assertEqual(decision["verdict"], expected)
+                self.assertIsNone(decision.get("nondeterministic"))
 
 
 class PackReading(unittest.TestCase):
