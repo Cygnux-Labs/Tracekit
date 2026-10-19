@@ -146,7 +146,11 @@ class Verdicts(Base):
         out, _ = self.review(ask, t)
         [f] = self.x210(out)
         decision = self.seq("policy.decision", tid)
-        self.assertEqual(f["verdict"], {"kind": "finding", "rule": "TK-X210", "severity": "high", "tier": "transcript"})
+        self.assertEqual(f["verdict"], {"kind": "finding", "rule": "TK-X210", "severity": "high", "tier": "transcript",
+                                        "alignment": "misaligned", "reason": "unrequested_action",
+                                        "asserted": {"model": "gpt-5", "version": findings_v2.__version__,
+                                                     "prompt_hash": review_model.PROMPT_HASH},
+                                        "families": {"reviewer": "openai", "agent": ["anthropic"]}})
         self.assertEqual(f["cites"], [{"run_seq": decision, "hash": next(
             r["hash"] for r in self.records if r["event"]["run_seq"] == decision)}])   # 99999 is no record: dropped
         self.assertEqual(out["findings"][-1], f)   # after the deterministic findings
@@ -366,12 +370,36 @@ class Calls(Base):
         self.assertEqual(out["coverage"]["verdict"]["checks"]["TK-X210"]["checked"], 1)
         self.assertEqual([e for e in run.records() if e["type"] == "model.exchange"], [])   # the gateway records it
 
+    def test_the_default_reviewer_is_of_another_family_than_the_agent_when_one_is_configured(self):
+        _, records, _ = e20.replay(self.signer, self.fault()[0].lines)   # the agent: claude-opus-5-5
+        keys = {"ANTHROPIC_API_KEY": "a-key", "OPENAI_API_KEY": "o-key", "TRACEKIT_REVIEW_API_KEY": "r-key"}
+        model, url, env = review_model.choose(records, keys)
+        self.assertEqual((model, url, env), (review_model.OPENAI_MODEL, review_model.OPENAI_URL,
+                                             {"OPENAI_API_KEY": "o-key"}))   # never another endpoint's key
+        local = {"TRACEKIT_REVIEW_MODEL": "qwen3-coder",
+                 "TRACEKIT_REVIEW_URL": "http://localhost:8000/v1/chat/completions"}
+        self.assertEqual(review_model.choose(records, {**keys, **local})[:2], tuple(local.values()))
+        same = review_model.choose(records, {"ANTHROPIC_API_KEY": "a-key"})   # only the agent's family: as before
+        self.assertEqual(same[:2], (review_model.reviewer.DEFAULT_MODEL, review_model.URL))
+        self.assertEqual(review_model.choose(records, {})[:2], same[:2])
+        with mock.patch.dict(os.environ, {"OPENAI_API_KEY": "o-key"}):
+            for k in ("ANTHROPIC_API_KEY", "TRACEKIT_REVIEW_MODEL", "TRACEKIT_REVIEW_URL", "TRACEKIT_REVIEW_API_KEY"):
+                os.environ.pop(k, None)
+            _, _, err = Command.cli(self, "--review", model=Fake(message(OK)))
+            self.assertEqual(self.Model.call_args.args[:2], (review_model.OPENAI_URL, review_model.OPENAI_MODEL))
+            self.assertNotIn("model family", err)
+            _, _, err = Command.cli(self, "--review", "--review-model", "claude-sonnet-5", model=Fake(message(OK)))
+            self.assertEqual(self.Model.call_args.args[:2], (review_model.URL, "claude-sonnet-5"))   # as given
+            self.assertIn("OPENAI_API_KEY or ANTHROPIC_API_KEY", err)   # and the warning says how to pick another
+
     def test_config(self):
         for url in ("https://api.example.com/v1/responses", "http://model.internal/v1/messages", "ftp://x/v1/messages"):
             with self.assertRaises(ValueError):
                 review_model.Model(url, env={})
         with self.assertRaisesRegex(ValueError, "TRACEKIT_SIGNER_TOKEN_FILE"):
             review_model.Model(gateway=True, env={})
+        with self.assertRaisesRegex(ValueError, "a model's name"):   # signed in the finding: a name, never prose
+            review_model.Reviewer(Fake(message(OK)), "the best model there is")
         self.assertEqual(review_model.Model(env={"TRACEKIT_REVIEW_API_KEY": "a", "ANTHROPIC_API_KEY": "b"}).key, "a")
         self.assertEqual(review_model.Model("http://localhost:8000/v1/chat/completions",
                                             env={"OPENAI_API_KEY": "c"}).kind, "openai:chat")
@@ -383,7 +411,7 @@ class Command(Base):
         client = mock.Mock(content_get=self.signer.content_get,
                            run=run or (lambda agent, analyzes: Findings(self.signer, analyzes)))
         with mock.patch("tracekit.sdk.client.Client", return_value=client), \
-                mock.patch("tracekit.review_model.Model", return_value=model or Fake(message(FLAG))), \
+                mock.patch("tracekit.review_model.Model", return_value=model or Fake(message(FLAG))) as self.Model, \
                 contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             code = findings.main(["--v2", "--store", os.path.join(self.d, "data"), *args])
         return code, out.getvalue(), err.getvalue()
@@ -398,6 +426,25 @@ class Command(Base):
         code, out, _ = self.cli("--review", "--json", model=Fake(TimeoutError("timed out")))
         self.assertEqual((code, json.loads(out)["coverage"]["verdict"]["checks"]["TK-X210"]["not_checkable"]),
                          (0, [{"reason": "no_answer", "n": 1}]))
+
+    def test_one_findings_run_holds_the_reviewer_call_and_every_finding_of_the_pass(self):
+        _, url = serve(self, lambda body: message(FLAG))
+        e20.replay(self.signer, self.fault()[0].lines)
+        runs = []
+
+        def register(agent, analyzes):
+            runs.append(Findings(self.signer, analyzes))
+            return runs[-1]
+        model = review_model.Model(f"{url}/v1/messages", "gpt-5", env={"ANTHROPIC_API_KEY": "test-key"})
+        code, out, _ = self.cli("--review", "--json", model=model, run=register)
+        self.assertEqual((code, len(runs)), (4, 1))   # TK-X204 high: exit 4; one findings run
+        events = runs[0].records()
+        self.assertEqual([e["data"]["phase"] for e in events if e["type"] == "model.exchange"], ["request", "response"])
+        reviews = [e["data"]["verdict"]["rule"] for e in events if e["type"] == "review"]
+        self.assertEqual(len(reviews), json.loads(out)["signed"]["records"])
+        self.assertIn("TK-X210", reviews)
+        self.assertEqual(reviews[-1], "TK-X200")   # the coverage, last, counts the reviewer too
+        self.assertEqual(events[-1]["type"], "run.closing")
 
     def test_review_and_dry_run_are_refused_together_and_no_findings_run_is_no_call(self):
         e20.replay(self.signer, self.fault()[0].lines)

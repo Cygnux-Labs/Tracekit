@@ -2853,6 +2853,8 @@ class SignerService:
         top, out, gw = {}, None, None
         if "amended" in req and not ("caller" in req and req["phase"] == "request"):
             raise RPCError("invalid_request", "amended is an LLM gateway's, on a request it changed before sending it")
+        if "said_only" in req and ("tool_uses" in req or req["phase"] != "response"):
+            raise RPCError("invalid_request", "said_only is a response recorded without its calls: no tool_uses")
         if "caller" in req:   # an LLM gateway reports the exchange of the client it authenticated, under its run token
             identity, gw = self._as_caller(identity, "model_event", req)
             top, out = {"source": "gateway"}, {"fail_modes": self.fail_modes,
@@ -2870,7 +2872,7 @@ class SignerService:
         def data(commit):
             d = {"exchange_id": req.get("exchange_id", req["request_id"]), "phase": req["phase"],
                  "streamed": req.get("streamed", False), "model": req["model"], "upstream": req["provider"]}
-            for k in ("stop_reason", "tool_results_sent"):
+            for k in ("stop_reason", "tool_results_sent", "said_only"):
                 if k in req:
                     d[k] = req[k]
             if "error" in req:

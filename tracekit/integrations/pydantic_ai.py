@@ -12,8 +12,10 @@ unchanged, so its retries and `ModelRetry` work as before; each retry is a new c
 that runs again under the same id (a deferral resumed) is decided as its next attempt.
 
 Each model response is recorded too (tracekit.integrations.said): its thinking (with the provider's signature), text
-and calls of the agent's function tools, under the ids they are decided by. A response that can't be recorded only
-warns.
+and calls of the agent's function tools, under the ids they are decided by. Its other calls (an output tool's, a tool
+that needs approval) may never be decided: each is recorded as a call of that response only when the capability
+decides it, so the signer never takes a decided call for one the model didn't ask for. A response that can't be
+recorded only warns.
 """
 import asyncio
 
@@ -72,6 +74,8 @@ class Tracekit(AbstractCapability):
     async def _gated(self, call, run_it, refused, args=None, output=False):
         call_id, tool, raw = call.tool_call_id, call.tool_name, call.args or {}   # Pydantic AI reads "" as {}
         attempt = self._attempts.get(call_id, 0)
+        if call_id in self.said.later:   # a call its recorded response left out: recorded as its call now
+            await asyncio.to_thread(self.said.decided, call_id)
         d, why = await gate_call(self.run, call_id, attempt, tool, raw, json_text=True)
         if why is not None:
             raise refused(why)
@@ -102,16 +106,16 @@ class Tracekit(AbstractCapability):
 
 def _said(response, tools):
     """What the model said in a ModelResponse, in order; the calls of `tools`, the function tools this capability
-    decides."""
-    # lean: an output function's call (gated in wrap_output_process) and an approval-required tool's are left out, so
-    # their decides read as reconcile.fabricated; name them here if those tools are common
+    decides as they run, and its other calls as `later`: it decides those only if they run (an output function, an
+    approved tool)."""
     for p in response.parts:
         if isinstance(p, ThinkingPart):
             yield said.thought(p.content, p.signature)
         elif isinstance(p, TextPart):
             yield said.text(p.content)
-        elif isinstance(p, ToolCallPart) and p.tool_name in tools:
-            yield said.call(p.tool_call_id, p.tool_name, p.args or {})
+        elif isinstance(p, ToolCallPart):
+            c = said.call(p.tool_call_id, p.tool_name, p.args or {})
+            yield c if p.tool_name in tools else said.later(c)
 
 
 def _as_the_model_reads(value):

@@ -941,8 +941,11 @@ ENTRIES = {
         "observer": "uid:7", "sensor": "tetragon", "kind": "exec", "ts": TS_, "pid": 7, "binary": "/usr/bin/curl",
         "attribution": "identity"}, "run-a")],
     "constraint.added": [registered(), ("constraint.added", {"kind": "no_push"}, "run-a")],
+    "model.exchange.said_only": [registered(), ("model.exchange", {
+        "exchange_id": "x1", "phase": "response", "streamed": False, "model": "m", "said_only": True}, "run-a")],
     "review.cites": [registered(), registered("run-f", analyzes="run-a"), ("review", {
-        "reviewer": "tracekit-analyze/1.4.0", "verdict": {"kind": "coverage", "rule": "TK-X200"}, "cites": []}, "run-f")],
+        "reviewer": "tracekit-analyze/1.4.0", "verdict": {"kind": "coverage", "rule": "TK-X200", "severity": "info",
+                                                          "checks": {}}, "cites": []}, "run-f")],
 }
 
 

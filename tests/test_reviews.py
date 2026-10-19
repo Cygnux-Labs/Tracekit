@@ -12,7 +12,7 @@ import uuid
 from unittest import mock
 
 from factories import unverified_bundles
-from test_bundle_v2 import KEY1, LOG_SECRET, ORIGIN, Log, pub, trust_config
+from test_bundle_v2 import KEY1, LOG_SECRET, ORIGIN, Log, pub, registered, trust_config
 from tracekit.bundle_v2 import export
 from tracekit.format import checkpoint
 from tracekit.format.checkpoint import ED25519
@@ -26,6 +26,11 @@ AGENT = CallerIdentity("uid", "999999", True)
 ANALYZER = CallerIdentity("uid", "999002", True)
 FINDING = {"kind": "finding", "rule": "TK-X202", "severity": "medium", "tier": "gateway", "order": "signed_before",
            "redacted": False, "digests": ["sha256:" + "ab" * 32]}
+REVIEWER = {"kind": "finding", "rule": "TK-X210", "severity": "high", "tier": "transcript", "alignment": "misaligned",
+            "reason": "unrequested_action", "asserted": {"model": "gpt-5", "version": "1.4.0",
+                                                         "prompt_hash": "sha256:" + "cd" * 32},
+            "families": {"reviewer": "openai", "agent": ["anthropic"]}}
+EFFECT = {"kind": "finding", "rule": "TK-X206", "severity": "high", "window": {"grace_s": 2.0, "skew_s": 0.5}}
 COVERAGE = {"kind": "coverage", "rule": "TK-X200", "severity": "info", "partial": False,
             "checks": {"TK-X201": {"checked": 3, "found": 1, "not_checkable": [{"reason": "withheld", "n": 1}]}},
             "reasoning": {"full": 1, "summary": 1, "withheld": 1, "none": 0}}
@@ -111,6 +116,24 @@ class Signed(unittest.TestCase):
         export(log.store, "acme", "run-a", log.note(), out["imported"][0])
         with open(out["imported"][1], "w") as f:
             json.dump(trust_config(), f)
+        reviewer = self.register(ANALYZER, analyzes=run["run_id"])   # a reviewer model's and an effect check's
+        for verdict in (REVIEWER, EFFECT):
+            self.review(ANALYZER, reviewer, verdict, self.cites(run)[:1])
+        self.call(ANALYZER, "close_run", **reviewer)
+        out["reviewer"] = self.export(run, reviewer, analyzers=[f"uid:{ANALYZER.subject}"])
+        log = Log(os.path.join(self.dir, "shape"))   # a signed finding no signer of this format would sign
+        self.addCleanup(log.store.close)
+        log.epoch(KEY1)
+        for args in (registered(), registered("run-f", analyzes="run-a")):
+            log.add(*args)
+        log.add("review", {"reviewer": "tracekit-analyze/1.4.0", "verdict": {
+            **REVIEWER, "alignment": "fine", "families": {"reviewer": "acme", "agent": []}}, "cites": []}, "run-f")
+        log.add("review", {"reviewer": "tracekit-analyze/1.4.0", "verdict": {**EFFECT, "window": {"grace_s": -1}},
+                           "cites": []}, "run-f")
+        for r in ("run-a", "run-f"):
+            log.final(r)
+        out["shape"] = (os.path.join(self.dir, "shape.tkb"), out["imported"][1])
+        export(log.store, "acme", "run-a", log.note(), out["shape"][0], with_runs=["run-f"])
         return out
 
 
@@ -162,7 +185,14 @@ class TestReviewFinding(Signed):
                 ("a check of no rule in coverage", {**COVERAGE, "checks": {text: {"checked": 1, "found": 0}}}, [], {}),
                 ("a reason that is text", {**COVERAGE, "checks": {"TK-X201": {
                     "checked": 1, "found": 0, "not_checkable": [{"reason": text, "n": 1}]}}}, [], {}),
-                ("a digest that is text", {**FINDING, "digests": [text]}, [], {})):
+                ("a digest that is text", {**FINDING, "digests": [text]}, [], {}),
+                ("an alignment that is text", {**REVIEWER, "alignment": text}, [], {}),
+                ("a reason code that is text", {**REVIEWER, "reason": text}, [], {}),
+                ("a model name that is text", {**REVIEWER, "asserted": {**REVIEWER["asserted"], "model": text}}, [],
+                 {}),
+                ("a family of no model", {**REVIEWER, "families": {"reviewer": text, "agent": []}}, [], {}),
+                ("a window of text", {**EFFECT, "window": {"grace_s": text, "skew_s": 0.5}}, [], {}),
+                ("a negative window", {**EFFECT, "window": {"grace_s": -1, "skew_s": 0.5}}, [], {})):
             with self.subTest(name), self.assertRaises(RPCError) as e:
                 self.review(ANALYZER, f, verdict, cites, **extra)
             self.assertEqual(e.exception.code, "invalid_request")
@@ -172,7 +202,7 @@ class TestReviewFinding(Signed):
 
 
 class TestVerify(Signed):
-    @unverified_bundles   # `mismatch` cites what its analysed run does not hold, on purpose
+    @unverified_bundles   # `mismatch` cites what its analysed run does not hold, `shape` is no signer's, on purpose
     def test_citations_and_author_labels(self):
         b = self.bundles()
         want = {"independent": ("pass", "1 review(s): 1 independent"),
@@ -181,12 +211,18 @@ class TestVerify(Signed):
                 "same-user": ("warn", "1 review(s): 1 self-asserted"),
                 "alone": ("pass", "1 review(s): 1 author not checked"),
                 "imported": ("pass", "1 review(s): 1 imported"),
-                "mismatch": ("fail", "1 review(s): 1 unpinned author uid:999002")}
+                "mismatch": ("fail", "1 review(s): 1 unpinned author uid:999002"),
+                "reviewer": ("pass", "2 review(s): 2 independent"),
+                "shape": ("fail", "2 review(s): 2 self-asserted")}
         for name, (bundle, trust) in b.items():
             with self.subTest(name):
                 rep, code = v2.verify(bundle, trust)
                 self.assertEqual((reviews(rep)["reviews"]["status"], reviews(rep)["reviews"]["detail"]), want[name])
-                self.assertEqual(code, 1 if name == "mismatch" else 0, rep.checks)
+                self.assertEqual(code, 1 if name in ("mismatch", "shape") else 0, rep.checks)
+        rep, _ = v2.verify(*b["shape"])
+        self.assertEqual([p.split(": ", 1)[1] for p in reviews(rep)["reviews"]["problems"]],
+                         ["its verdict's alignment, families is not what a signed finding holds",
+                          "its verdict's window is not what a signed finding holds"])
         rep, _ = v2.verify(*b["self-asserted"])
         self.assertEqual(reviews(rep)["reviews"]["problems"],
                          [f"findings run {rep_run(b['self-asserted'][0])}: its author uid:{AGENT.subject} is the "

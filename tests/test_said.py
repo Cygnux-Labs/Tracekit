@@ -129,6 +129,49 @@ class OnTheSigner(tcv.Vault):
         self.assertNotIn(b"check the balance first", b"".join(v2.read_zip(out).values()))
 
 
+class Reconciled(tcv.Vault):
+    """A message names exactly the calls the integration decides, so an honest run reconciles clean: a call it may never
+    decide (`later`) is recorded as its message's only once decided, and a message sent `said_only` names none."""
+
+    def finish(self):
+        self.s.close_run({"request_id": "close", "run_id": self.run["run_id"], "run_token": self.run["run_token"]})
+        self.s.sweep()
+        return self.records()
+
+    def test_a_call_left_out_is_recorded_only_once_decided_and_never_reads_as_fabricated(self):
+        self.s.close()
+        self.open(grace_s=0)
+        s = said.Said(lambda **f: self.s.model_event(self.req(**f)), lambda: self.s.status({}))
+        s([said.thought("the answer is ready"), said.call("c1", "lookup", {"q": "x"}),
+           said.later(said.call("c2", "final_result", {"answer": "42"})),   # an output tool: never decided
+           said.later(said.call("c3", "send_mail", {"to": "dev@example.com"}))], model="m", provider="openai")
+        self.tool({"q": "x"}, "found", tool="lookup", tcid="c1")
+        s.decided("c3")
+        self.tool({"to": "dev@example.com"}, "sent", tool="send_mail", tcid="c3")
+        s.decided("c2-unknown")   # no such call left out: nothing sent
+        recs = self.finish()
+        xs = [e for e in recs if e["type"] == "model.exchange"]
+        self.assertEqual([[t["id"] for t in e["data"].get("tool_uses", ())] for e in xs], [["c1"], ["c3"]])
+        self.assertEqual(len({e["data"]["exchange_id"] for e in xs}), 1)   # both are the one message
+        self.assertIn("run.final", [e["type"] for e in recs])
+        self.assertEqual([e["type"] for e in recs if e["type"].startswith("reconcile.")], [])
+
+    def test_a_said_only_message_names_no_call(self):
+        self.s.close()
+        self.open(grace_s=0)
+        sent = []
+        s = said.Said(lambda **f: sent.append(f) or self.s.model_event(self.req(**f)), lambda: self.s.status({}))
+        s([said.thought("list the files first"), said.call("c9", "Bash", {"command": "ls"})], said_only=True)
+        self.assertEqual((sent[0]["said_only"], "tool_uses" in sent[0]), (True, False))
+        self.tool({"command": "ls"}, "a.txt", tcid="g-1")   # the hook decides under an id of its own
+        recs = self.finish()
+        self.assertTrue([e for e in recs if e["type"] == "model.exchange"][0]["data"]["said_only"])
+        self.assertEqual([e["type"] for e in recs if e["type"].startswith("reconcile.")], [])
+        with self.assertRaises(RPCError):   # a response recorded without its calls names none
+            self.s.model_event(self.req(provider="p", model="m", phase="response", said_only=True,
+                                        tool_uses=[{"id": "c9", "name": "Bash", "executed_by": "provider"}]))
+
+
 class OffTheVault(OnTheSigner):
     content = None
 

@@ -383,6 +383,54 @@ class Said(unittest.TestCase):
         self.agent(r).run_sync("close it")
         self.assertTrue(all("body" not in f and f["content_digest"] for f in ts.recorded(r)))
 
+    def test_an_output_call_is_recorded_as_its_responses_only_when_it_is_decided(self):
+        """The signer reconciles decided calls with recorded responses: an output function's call (decided) is
+        recorded, under the response's exchange id, just before its decision; a data-only output's (never decided)
+        is not, so neither reads as reconcile.fabricated or hook_missing."""
+        def model(messages, info):
+            return ModelResponse(parts=[TextPart("Running it."),
+                                        ToolCallPart(info.output_tools[0].name, {"command": "ls"}, "o-1")])
+        def Bash(command: str) -> str:
+            """Run a command; its output is the answer."""
+            return f"ran {command}"
+        r = ts.vault(run())
+        Agent(FunctionModel(model), output_type=ToolOutput(Bash), capabilities=[Tracekit(r)]).run_sync("x")
+        first, call = ts.recorded(r)
+        self.assertNotIn("tool_uses", first)
+        self.assertEqual(([t["id"] for t in call["tool_uses"]], call["exchange_id"]), (["o-1"], first["exchange_id"]))
+        names = [c[0] for c in r.mock_calls]
+        self.assertLess(r.mock_calls.index(mock.call.call("model_event", **call)), names.index("decide"))
+
+        class Answer(BaseModel):
+            answer: str
+        r = ts.vault(run())
+        Agent(FunctionModel(lambda m, info: ModelResponse(parts=[ToolCallPart(
+            info.output_tools[0].name, {"answer": "42"}, "o-2")])), output_type=Answer,
+            capabilities=[Tracekit(r)]).run_sync("x")
+        self.assertEqual(ts.recorded(r), [])   # nothing said but a data-only output: no call to record
+        r.decide.assert_not_called()
+
+    def test_a_tool_that_needs_approval_is_recorded_as_its_responses_call_once_approved_and_decided(self):
+        def model(messages, info):
+            back = [p for m in messages for p in m.parts if isinstance(p, ToolReturnPart)]
+            if back:
+                return ModelResponse(parts=[TextPart(str(back[-1].content))])
+            return ModelResponse(parts=[ToolCallPart("close_account", {"account": "ACC-9"}, "call-1")])
+        r = ts.vault(run())
+        a = Agent(FunctionModel(model), output_type=[str, DeferredToolRequests], capabilities=[Tracekit(r)])
+
+        @a.tool_plain(requires_approval=True)
+        def close_account(account: str) -> str:
+            """Close an account."""
+            return f"closed {account}"
+        first = a.run_sync("close it")
+        self.assertEqual((ts.recorded(r), r.decide.call_count), ([], 0))   # waiting for a person: no call recorded
+        a.run_sync(message_history=first.all_messages(),
+                   deferred_tool_results=DeferredToolResults(approvals={"call-1": True}))
+        call = ts.recorded(r)[0]
+        self.assertEqual([t["id"] for t in call["tool_uses"]], ["call-1"])
+        self.assertEqual(r.decide.call_args.args[0], "call-1")
+
     def test_a_failure_to_record_changes_nothing_for_the_agent(self):
         r = ts.failing(run())
         with self.assertWarnsRegex(UserWarning, "what the model said was not recorded"):

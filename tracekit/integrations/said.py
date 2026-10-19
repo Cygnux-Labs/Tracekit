@@ -13,14 +13,26 @@ what it wrote, `call(...)` for each tool call it asked for. `Said` sends the mes
   transcript or hook payload the record was read from) goes in the message too;
 - `body`: the message, when the signer keeps content (VaultBody); without the vault the text stays where it came from.
 
+The signer reconciles the calls a run decides with the calls its recorded messages asked for: a decided call no recorded
+message names reads as reconcile.fabricated. So a message names exactly the calls the integration decides: a call it
+may never decide (a framework's output tool, a tool waiting for a person's approval) is listed as `later(call(...))`
+and recorded, as a tool use of its message (the same exchange id), only once `decided` is called for it, just before
+its decision;
+and a message whose calls the integration can't name at all (a harness whose hooks give a call no id) is sent
+`said_only`, which the signer never reads a call from.
+
 An empty message is not sent. `Said` never raises: a message it could not record warns, and the agent goes on.
 """
 import base64
+import collections
+import uuid
 import warnings
 
 from tracekit import parsers
 from tracekit.format.canon import canonical, event_hash
 from tracekit.sdk.client import VaultBody
+
+MAX_LATER = 1024   # lean: left-out calls remembered per integration; the oldest past it, never decided, are dropped
 
 
 def thought(text=None, sealed=None, full=False):
@@ -52,6 +64,11 @@ def call(id, name, args):
             "arguments": args if isinstance(args, str) else canonical(args).decode()}
 
 
+def later(item):
+    """A call (`call(...)`) of the message the integration may never decide: recorded only once it is (Said.decided)."""
+    return {"later": item}
+
+
 class Said:
     """`send(**fields)` sends a model_event (the integration's stream and client_seq); `status()` is the signer's
     status answer (VaultBody). Call it with a message's items (an iterable, read inside its own guard, so a generator
@@ -60,16 +77,38 @@ class Said:
 
     def __init__(self, send, status):
         self.send, self.vault = send, VaultBody(status)
+        self.later = collections.OrderedDict()   # call id -> (its call item, exchange id, model, provider)
 
-    def __call__(self, items, model=None, provider=None, source=None):
+    def __call__(self, items, model=None, provider=None, source=None, said_only=False):
+        """Record one message; `said_only`: it is sent without its calls, and says so."""
         try:
             output = [i for x in items for i in (x if isinstance(x, list) else [x]) if i]
-            if not output:
-                return
-            body = {"output": output, **({"source": source} if source else {})}
-            uses = parsers.parse("openai:responses", body)["tool_uses"]
-            # lean: the RPC's cap; send the rest in a second model_event if messages ever carry more
-            self.send(provider=str(provider or "unknown")[:64], model=str(model or "unknown")[:128], phase="response",
-                      content_digest=event_hash(body), **self.vault(body), **({"tool_uses": uses[:128]} if uses else {}))
+            left = [i["later"] for i in output if "later" in i and i["later"]["call_id"]]
+            output = [i for i in output if "later" not in i]
+            xid = uuid.uuid4().hex if left else None
+            for c in left:
+                self.later[c["call_id"]] = (c, xid, model, provider)
+                if len(self.later) > MAX_LATER:
+                    self.later.popitem(last=False)
+            if output:
+                self._send(output, model, provider, source, xid, said_only)
         except Exception as e:
             warnings.warn(f"tracekit: what the model said was not recorded: {type(e).__name__}: {e}", stacklevel=2)
+
+    def decided(self, call_id):
+        """Call right before deciding `call_id`: a call its message left out (`later`) is recorded now, as a tool use
+        of that message, so the signer pairs the decision with the model asking for it. Never raises."""
+        got = self.later.pop(call_id, None)
+        if got is not None:
+            try:
+                self._send([got[0]], got[2], got[3], None, got[1], False)
+            except Exception as e:
+                warnings.warn(f"tracekit: what the model said was not recorded: {type(e).__name__}: {e}", stacklevel=2)
+
+    def _send(self, output, model, provider, source, xid, said_only):
+        body = {"output": output, **({"source": source} if source else {})}
+        uses = [] if said_only else parsers.parse("openai:responses", body)["tool_uses"]
+        # lean: the RPC's cap; send the rest in a second model_event if messages ever carry more
+        self.send(provider=str(provider or "unknown")[:64], model=str(model or "unknown")[:128], phase="response",
+                  content_digest=event_hash(body), **self.vault(body), **({"tool_uses": uses[:128]} if uses else {}),
+                  **({"exchange_id": xid} if xid else {}), **({"said_only": True} if said_only else {}))

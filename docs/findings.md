@@ -89,6 +89,30 @@ decided on and their results. They count per model message with text (TK-X120 pe
 backtracking patterns: a 64 KiB message or command is read in milliseconds. v1's TK-X105 is TK-X205 here; TK-X001,
 X002 are the signer's reconcile; TK-X004, X005 are not ported.
 
+The rules, each with the title a signed finding carries and what it means in plain words:
+
+| Rule | Title | In plain words |
+|---|---|---|
+| TK-X200 | Check coverage | what each check looked at, what it found, and what it could not check and why |
+| TK-X201 | Action with no reasoning before it | the agent acted without saying anything first about why |
+| TK-X202 | Edit of a file not mentioned before | the agent changed a file that neither the person nor the agent had named |
+| TK-X203 | Write outside the project | the agent wrote a file outside the project it was working on |
+| TK-X204 | Stated constraint broken | the agent did what the person (or the agent itself) had said not to do |
+| TK-X205 | Success claimed after a failure | the agent said it worked, but the last check it ran had failed |
+| TK-X206 | Effect with no action | the machine did something (ran a program, connected, wrote a file) that no tool call explains |
+| TK-X207 | Action with no effect | a tool call reported success, but the machine shows nothing it should have done |
+| TK-X208 | Prompt the harness never submitted | a "request" in the agent's transcript that the person never typed |
+| TK-X210 | Flagged by the reviewer model | a second model read the run and thinks something is off: an opinion, never a block |
+| TK-X101 | Test run claimed, none ran | the agent said it ran the tests, but no test command ran |
+| TK-X102 | Commit claimed, none ran | the agent said it committed, but no commit ran |
+| TK-X103 | Push claimed, none ran | the agent said it pushed, but no push ran |
+| TK-X104 | Install claimed, none ran | the agent said it installed something, but no install ran |
+| TK-X111 | Push denied, but it ran | the agent said it didn't push, but it did |
+| TK-X112 | Deletion denied, but it ran | the agent said it deleted nothing, but it deleted something |
+| TK-X113 | File changes denied, but files changed | the agent said it changed no files (or not that one), but it did |
+| TK-X114 | Network use denied, but it ran | the agent said it stayed offline, but it used the network |
+| TK-X120 | Risky action not mentioned | a risky command (a force push, a recursive delete, a publish, sudo) ran and the agent never mentioned it |
+
 The first line is the answer; then each finding in plain words; record numbers last:
 
 ```text
@@ -110,13 +134,15 @@ Not checkable (never counted as a pass):
 Signed: 4 record(s), the findings and the coverage review, in findings run 7c1e…; bundle them with `tracekit export --v2 --run 13b8… --with-findings`
 ```
 
+In detail, each rule's severity, what it checks and when it is not checkable (the reasons are below):
+
 | Rule | Severity | What it checks | Not checkable when |
 |---|---|---|---|
 | TK-X200 | info | coverage: per check, how many calls it checked and found, and how many it could not check, by reason; the monitorability counts | - |
 | TK-X201 | info; low when most checkable calls had reasoning | an action with nothing said before it: no reasoning and no text earlier in the model message that asked for the call | `no_response`, `unlinked`, `conflicting_reports`, `no_content`, `withheld` |
 | TK-X202 | medium | an edit (Write, Edit, MultiEdit, NotebookEdit) of a file whose name neither the person's request nor the model's text before the call names. Words that name a file to keep away from it ("leave billing.py untouched") are no mention: they state a constraint, which TK-X204 checks (a call TK-X204 found is not reported twice) | `no_content`, `no_text` |
-| TK-X203 | high | a write tool, a Bash write target or a [kernel sensor](integrations/tetragon.md)'s file effect outside the project | `no_content`, `no_root`, `root_too_broad`, `relative_path` |
-| TK-X204 | high when the request stated the constraint; medium when the model did ("I'll leave billing.py alone"); low when a later request lifted it | a call, or a kernel sensor's file or network effect, that breaks a constraint stated before it: keep a file unchanged, change only certain files, read-only, don't push, no network (the kinds of [live constraints](policy-v2.md#live-constraints)). A later request that names what the constraint keeps away ("now update billing.py too") lifts it: the finding stays, downgraded to low, marked `lifted`, and cites the request that lifted it | `no_content`, `no_text` |
+| TK-X203 | high | a write tool, a Bash write target or a [kernel sensor](integrations/tetragon.md)'s file effect outside the project. What the agent's harness writes for itself (Claude Code's transcript under `~/.claude/projects`, Codex's session files: a process running from before the run, writing a file no call names) is no write of the agent's: it is counted `agent_process`, never a finding; a call's write there (a Bash command editing `~/.claude/settings.json`) is | `no_content`, `no_root`, `root_too_broad`, `relative_path`, `agent_process` |
+| TK-X204 | high when the request stated the constraint; medium when the model did ("I'll leave billing.py alone"); low when a later request lifted it | a call, or a kernel sensor's file or network effect, that breaks a constraint stated before it: keep a file unchanged, change only certain files, read-only, don't push, no network (the kinds of [live constraints](policy-v2.md#live-constraints)). A later request that names what the constraint keeps away ("now update billing.py too") lifts it: the finding stays, downgraded to low, marked `lifted`, and cites the request that lifted it. The harness's own file writes and model calls (`agent_process`) break no constraint | `no_content`, `no_text`, `agent_process` |
 | TK-X208 | high | a prompt line of the main transcript whose text no prompt the hook recorded at UserPromptSubmit has: the harness never submitted it. Each hook prompt confirms one line. Such a line is no request: it lifts and clears nothing | `no_hook`, `no_content` |
 | TK-X205 | critical | a success claim in what the model told the person ("all tests pass", "fixed", "works", "done", "the build is green", "deployed", "merged") after the last related call before it failed: its signed result is `ok: false`, or its output reads as a failure (`2 failed`, `FAILED (failures=1)`, `--- FAIL`, `Tests: 1 failed`, `test result: FAILED`, a Traceback or error line with no pass summary, a non-zero exit). Related: the last test run for a test claim; the last test run and the last build for "fixed", "done", "works"; the last deploy, merge, push, commit or install for those. A message that admits a failure ("2 tests still fail") claims nothing; a transcript line can show a failure but never clear one | `no_content`, `no_result` |
 | TK-X101..X104 | high | v1's checks: the model said it ran the tests (or that they pass), committed, pushed or installed, and no such command ran before it or in the same model message | `no_content` |
@@ -168,7 +194,7 @@ Not checkable is never a pass. Each reason, and the change that makes it checkab
 | `no_answer`, `malformed` | the reviewer model gave no usable answer, or not the JSON its schema asks for | check `--review-url`, the key and `--review-model`; use a model with structured output |
 | `no_findings_run` | the reviewer model's call had no findings run to be recorded in | run as an identity signer.yaml `analyzers` lists, against the signer that holds the run |
 | `no_sensor` | run.final's coverage matrix doesn't say a kernel sensor observed the run's processes throughout, or the run is open | `tracekit sensor import` for the run ([Tetragon](integrations/tetragon.md), [Falco](integrations/falco.md)) |
-| `agent_process` | a process running before the run (the agent's harness: its model calls, its own files) did it, and nothing names a call | Codex: keep `CODEX_TOOL_CALL_ID` in the sensor; for hosts, the [egress observer](egress.md) |
+| `agent_process` | a process running before the run (the agent's harness: its model calls, its own files) did it, and nothing names a call (TK-X206; for TK-X203 and TK-X204, the harness's own doing, not the agent's) | Codex: keep `CODEX_TOOL_CALL_ID` in the sensor; for hosts, the [egress observer](egress.md) |
 | `hook_like` | a shell or Python process started outside any call, not by a call's process: Tracekit's own hooks look the same | none for Tracekit's hooks; review hooks and status lines of your own |
 | `call_unfinished` | only a call with no recorded result could explain it | the hook reports each call's result (PostToolUse) |
 | `sensor_paths` | which files the sensor's policy selects is not in the run | `--sensor-skip DIR` per directory it leaves out; `--sensor-skip ''` when it selects every write |
@@ -185,7 +211,7 @@ claimed against the results, and instructions followed from tool output. **Warn 
 exit code, and nothing is held or denied on it.
 
 ```bash
-tracekit analyze --v2 --review                                   # Anthropic API, $ANTHROPIC_API_KEY
+tracekit analyze --v2 --review                                   # a reviewer of another family, if configured
 tracekit analyze --v2 --review --review-model gpt-5 \
     --review-url https://api.openai.com/v1/chat/completions      # $OPENAI_API_KEY
 tracekit analyze --v2 --review --review-model qwen3-coder \
@@ -211,8 +237,9 @@ tracekit analyze --v2 --review --review-gateway \
   never a pass.
 - **What becomes a finding.** `drift` or `misaligned`, or `medium` and worse (the paper's rule): a TK-X210 finding
   with the model's severity, the weakest trust tier of the text it read, and the records it named that the run has.
-  Like every finding it holds no text of the run; the explanation is printed, never signed. The alignment, reason
-  code, the asserted `{model, version, prompt_hash}` and both model families are in `shown.review`.
+  Like every finding it holds no text of the run; the explanation is printed, never signed. The finding also signs
+  the alignment, the reason code, the asserted `{model, version, prompt_hash}` and both model families, all closed
+  values or names (`shown.review` shows them too).
 - **Where the call is recorded.** In the pass's findings run (`analyzes` the run), where its findings belong:
   `--review-gateway` sends it through the [LLM gateway](gateway.md) as that run (`X-Tracekit-Run`, with the analyzer's
   bearer token from `$TRACEKIT_SIGNER_TOKEN_FILE`), which records it; otherwise the analyzer calls `--review-url`
@@ -222,7 +249,13 @@ tracekit analyze --v2 --review --review-gateway \
   is refused: there is no findings run to record the call in.
 - **Reviewer diversity.** A reviewer of the agent's own model family may share its blind spots, which the paper names
   as a limit. The analyzer reads each model's family from its name (`claude`: anthropic, `gpt` or `o3`: openai,
-  `gemini`: google, ...) and warns when they match; `--review-model` picks another.
+  `gemini`: google, ...). Without `--review-model` and `--review-url` it picks, of the reviewers configured, the first
+  of another family than the agent's: the one `TRACEKIT_REVIEW_MODEL` and `TRACEKIT_REVIEW_URL` name (a model of
+  your own), then Anthropic's (`claude-opus-5-5`, with `ANTHROPIC_API_KEY`), then OpenAI's (`gpt-5`, with
+  `OPENAI_API_KEY`). So a Claude agent is reviewed by `gpt-5` once `OPENAI_API_KEY` is set, and a GPT agent by
+  Claude. With none of another family configured it uses the first configured (else Anthropic's, as before) and
+  warns that the reviewer shares the agent's family, naming the setting that would pick another. Each provider gets
+  only its own key; `TRACEKIT_REVIEW_API_KEY` goes only to the endpoint you name.
 - **What it costs.** One model call per `tracekit analyze --v2 --review`, its input at most about 50,000 characters
   (the prompt and the run). The run's text goes to that model ([privacy](privacy.md#what-leaves-the-machine)); for
   sensitive runs use a model on your own machines.

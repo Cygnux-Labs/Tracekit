@@ -103,11 +103,12 @@ def options(grace_s=GRACE_S, skew_s=SKEW_S, skips=None):
 
 def arguments(ap):
     ap.add_argument("--effect-grace", type=float, default=GRACE_S, metavar="S",
-                    help="TK-X206/X207: seconds after a call's result its effects still count as its own")
+                    help="seconds after a call's result its effects still count as its own (default %(default)g)")
     ap.add_argument("--clock-skew", type=float, default=SKEW_S, metavar="S",
-                    help="TK-X206/X207: seconds the kernel sensor's clock may be off the signer's")
+                    help="seconds the kernel sensor's clock may be off the signer's (default %(default)g)")
     ap.add_argument("--sensor-skip", metavar="DIR", action="append",
-                    help="TK-X207: a directory the kernel sensor's file policy leaves out ('': it selects every write)")
+                    help="TK-X207: a directory the kernel sensor's file policy leaves out (repeatable; '': it selects "
+                    "every write)")
 
 
 def from_args(a):
@@ -116,7 +117,7 @@ def from_args(a):
 
 def unit(rule, reason):
     """The thing a check's not-checkable count counts."""
-    return "effect" if rule == "TK-X206" and reason != "no_sensor" else "call"
+    return "effect" if rule == "TK-X206" and reason != "no_sensor" or reason == "agent_process" else "call"
 
 
 def _t(ts):
@@ -423,7 +424,8 @@ def _finding(fx, out, rule, seqs, call, what):
         f"; every effect reached the signer at least {seen['behind_s'] + FLUSH_S:.1f} s after its sensor time (record "
         f"{seen['record']}), so the sensor's clock may be behind the signer's") + (
         f": pass --clock-skew {seen['suggest_s']:g}" if seen else "") + "]"
-    out["findings"].append({"verdict": {"kind": "finding", "rule": rule, "severity": SEVERITIES[rule]},
+    out["findings"].append({"verdict": {"kind": "finding", "rule": rule, "severity": SEVERITIES[rule],
+                                        "window": {"grace_s": fx.grace, "skew_s": fx.skew}},
                             "cites": [{"run_seq": s, "hash": fx.run.by_seq[s]["hash"]} for s in cited]})
     out["shown"]["details"].append({"what": what + note, "tiers": ["observer", "decision"] if call else ["observer"],
                                     "labels": labels})
@@ -432,7 +434,7 @@ def _finding(fx, out, rule, seqs, call, what):
 def check(run, out, cov, opts, deadline, clock):
     """TK-X206 and TK-X207 over findings_v2's run, adding to its result `out` (findings, shown details, and
     shown.effects: run_seq -> {call, how, status} of each effect, for the viewer) and coverage `cov`; findings_v2.Budget
-    past `deadline` on `clock`."""
+    past `deadline` on `clock`. -> run_seq -> {call, how, status} of every effect judged (shown.effects, uncut)."""
     from .findings_v2 import Budget
 
     def tick():
@@ -444,3 +446,4 @@ def check(run, out, cov, opts, deadline, clock):
     out["shown"]["effects"] = dict(itertools.islice(shown.items(), MAX_SHOWN))
     out["shown"]["effect_window"] = {"grace_s": fx.grace, "skew_s": fx.skew, "skips": fx.skips,
                                      **({"skew_seen": fx.skew_seen} if fx.skew_seen else {})}
+    return shown

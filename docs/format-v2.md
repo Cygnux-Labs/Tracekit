@@ -179,7 +179,11 @@ the analysed run, by `run_seq` and record `hash`. The verdict holds no text of t
 title, severity: info|low|medium|high|critical, tier?: gateway|harness|transcript|sdk (the text it relied on; harness:
 a prompt the hook recorded and the transcript agree on), order?: signed_before|transcript_order|after (that text
 against the call), redacted?, lifted?: true (TK-X204: a later request named what the constraint kept away, so the
-finding is downgraded), digests?: [sha256:...]}`, or once per
+finding is downgraded), digests?: [sha256:...], alignment?: ok|drift|misaligned, reason?: <a reason code> (TK-X210:
+the reviewer model's answer), asserted?: {model, version, prompt_hash} (the reviewer model and prompt the analyzer
+says it asked), families?: {reviewer, agent: [...]} (model families: anthropic, openai, google, meta, mistral,
+deepseek, qwen, xai, or a null reviewer), window?: {grace_s, skew_s} (TK-X206, TK-X207: the window effects were
+joined to calls with)}`, or once per
 pass `{kind: coverage, rule: TK-X200, title, severity: info, checks: {<rule>: {checked, found, not_checkable?:
 [{reason, n}]}}, partial?, reasoning?: {full, summary, withheld, none}}`. `title` is the rule's fixed title
 (`rpc_schema.FINDING_TITLES`), written by the signer; `digests` are copied from the cited records, never a hash of
@@ -235,7 +239,10 @@ carries an `args_commitment` when the provider returned its input; `run.final` c
 of such tool uses, which no decide covers and which are never `reconcile.fabricated` (with `gateway_mandatory`, only
 those the gateway reported), and `paired_by_args`, the number of calls reconciled by pairing a decide with a tool use
 of the same model turn by their arguments when the adapter had no tool-call id (never across turns, never when two
-could match). A bundle with any of these kinds, fields or `run.child` needs `verifier_min_version` 1.2.0.
+could match). A bundle with any of these kinds, fields or `run.child` needs `verifier_min_version` 1.2.0. A
+`model.exchange` response with `said_only: true` (format 1.4) holds what the model said without the calls it asked for
+(a harness whose hooks name no call: Gemini CLI, Cursor); reconciliation reads no call from it, so it never makes a
+decide `reconcile.fabricated`.
 
 Verified tool results (format 1.3, [gateway](gateway.md#verified-tool-results)): when signer.yaml sets
 `verify_tool_results`, an LLM gateway's request record is checked against the run's tool results. For each tool result
@@ -514,7 +521,7 @@ them, all critical; and from 1.4.0 the ext names it interprets, which are not:
 | 1.1.0 | `input.observed`, `content.accessed`, `content.erased`, `why.finding` | `policy.decision`: `provenance`, `provenance_state`; `run.registered`: `replay_of` | — | — |
 | 1.2.0 | `run.child`, `approval.escalated`, `approval.revoked`, `approval.suggested`, `approval.agents`, `incident.opened`, `incident.updated`, `incident.capped`, `run.held`, `run.resumed`, `run.quarantined`, `incident.resolved`, `incident.response`, `identity.suspension`, `effect.observed` | `run.registered`: `parent_run`, `session`, `posture`; `capture.gap`: `run_id`; `run.final`: `provider_executed`, `paired_by_args`, `matrix`; `policy.decision`: `via`, `caller`, `detect`, `incident_id`; `approval.request`: `agent`, `via`, `incident_id`, `passkey`; `tool.result`, `input.observed`: `via`; `approval`: `approver_kind`, `asserted`, `spent`, `not_before`, `consume_by`, `incident_id`; `approval.expired`: `reason`; `reconcile.unexplained_effect`: `observer`, `kind`, `host`, `port` | `capture.gap` `kind`: `decided_not_completed`, `late_activity`, `concurrent_run`, `tailer_redelegated`, `reask_after_reject`, `held_call_unresolved`, `observer_lost`, `effect_outside_run`; `run.closing` `reason`: `quarantine` | — |
 | 1.3.0 | `reconcile.result_mismatch` | — | `capture.gap` `kind`: `result_unchecked` | — |
-| 1.4.0 | `constraint.added` | `effect.observed`: `sensor`; `review`: `cites` | — | `amended`; and the slot itself (`ext` fields, `ext` records: critical) |
+| 1.4.0 | `constraint.added` | `effect.observed`: `sensor`; `review`: `cites`; `model.exchange`: `said_only` | — | `amended`; and the slot itself (`ext` fields, `ext` records: critical) |
 
 Every v2 definition is closed (`additionalProperties: false`), so an older verifier would fail a record that uses a
 newer critical entry; the version the manifest declares makes it report `UNVERIFIABLE (needs tracekit >= x)` instead,
@@ -605,8 +612,9 @@ line and verdict is in [verdicts](verdicts.md).
    the checkpoint's last record, or later records were added after the log closed.
 8. **Format bridge** (with `--v1-ledger`/`--v1-key`, §12).
    **Signed findings** (with `review` records): a `review` with `cites` must be in a findings run; when the run it
-   analyses is in the bundle, each cite must be a record of that run with that `run_seq` and `hash` (`reviews` fails
-   otherwise), and each finding is labelled by its author, the findings run's `run.registered` `identity`:
+   analyses is in the bundle, each cite must be a record of that run with that `run_seq` and `hash`, and its verdict
+   must have a signed finding's shape: a kind, a `TK-` rule and a severity, and each closed field above of the values
+   it allows (other fields pass) (`reviews` fails otherwise); each finding is labelled by its author, the findings run's `run.registered` `identity`:
    `self-asserted` (a warning) when that is the analysed run's identity or either run's `signer_isolation` is
    `same-user`; else `independent` when the trust config's `analyzers` lists it, else `unpinned author <id>`. Without
    the analysed run, the findings are `author not checked` and their cites not counted (`reviews counted`, a warning).

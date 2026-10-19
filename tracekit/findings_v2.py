@@ -5,6 +5,7 @@
     tracekit analyze --v2 --run R --bundle B --trust T
         [--project DIR] [--allow DIR ...] [--open] [--budget S] [--dry-run] [--json]
         [--effect-grace S] [--clock-skew S] [--sensor-skip DIR ...]
+        [--review [--review-model M] [--review-url URL] [--review-gateway]]
 
 Each pass signs its findings and its coverage review through the signer (review_finding), in a findings run of its own
 about the run (`register_run analyzes`), as an identity signer.yaml `analyzers` lists (the dev signer lists its user, so
@@ -22,7 +23,9 @@ Checks, for each call the run allowed or ran:
   TK-X202 (medium) a write tool edited a file whose name neither the person's request nor the model's text before the
           call names. A sentence that names a file to keep away from it ("leave billing.py untouched") is no mention:
           it is a constraint, and a file the request kept away is a finding whatever the model said about it.
-  TK-X203 (high) a write tool, a Bash write target or a kernel sensor's file effect outside the project
+  TK-X203 (high) a write tool, a Bash write target or a kernel sensor's file effect outside the project; an effect of
+          the agent's harness itself (findings_effects' agent_process: its transcript, its model calls) is counted
+          not checkable, for TK-X204 too, never a finding
   TK-X204 (high; medium when the model stated it, low once a later request lifts it) a call or a kernel sensor's
           effect breaks a constraint stated before it (tracekit.constraints: "don't touch X", "leave X alone",
           "read-only", "don't push", "no network", "only change Y"). A later request that names what the constraint
@@ -172,8 +175,8 @@ def _tailer(body):
 
 
 def text_tier(e, body):
-    """The trust tier of record e's text (`body`): the LLM gateway's, an agent-writable transcript's or hook payload's (a
-    tailer body, or one with a `source`), else an in-process adapter's."""
+    """The trust tier of record e's text (`body`): the LLM gateway's, an agent-writable transcript's or hook payload's
+    (a tailer body, or one with a `source`), else an in-process adapter's."""
     return ("gateway" if e["source"] == "gateway" else
             "transcript" if _tailer(body) or isinstance(body, dict) and "source" in body else "sdk")
 
@@ -678,15 +681,6 @@ def _check(run, out, project, allow, deadline, clock):
             run, "TK-X201", [s for s in seqs if s is not None],
             severity="low" if checkable and explained / checkable > 0.5 else "info"),
             f"{call['tool']} (call {tcid}) came with nothing said before it in the model's message")
-    found = {t for t, c in shown["calls"].items() if c["checks"].get("TK-X204") == "found"}
-    for r in sorted(run.effects + run.net_effects, key=lambda r: r["event"]["run_seq"]):   # TK-X204 of each effect
-        d, eseq = r["event"]["data"], r["event"]["run_seq"]
-        run.tier[eseq] = "observer"
-        if run.stated and d.get("tool_call_id") not in found:   # a call's own finding covers what it did
-            file = d["kind"] == "file"
-            _constraint(run, note, None, {"names": [constraints.norm(d["path"])] if file else [], "write": file,
-                                          "push": False, "network": not file}, (eseq, 0), [eseq],
-                        f"the {d.get('sensor') or 'egress'} observer saw {d.get('binary', 'a process')}: it")
     for seq, _, _, _ in run.prompts:   # TK-X208
         if not run.hooked:
             note(None, "TK-X208", "no_hook")
@@ -699,17 +693,37 @@ def _check(run, out, project, allow, deadline, clock):
     for seq in run.requests:   # an agent-reported request whose content is not here: maybe a prompt line
         if seq not in run.content:
             note(None, "TK-X208", "no_content")
-    for r in run.effects:
-        p = posixpath.normpath(r["event"]["data"]["path"])
-        if root_why:
-            note(None, "TK-X203", root_why)
-            continue
-        seqs = [r["event"]["run_seq"], *root_seqs]
-        note(None, "TK-X203", "checked", _tiers(run, seqs, root_tier), not _under(p, root) and not _allowed(
-            p, allow) and _finding(run, "TK-X203", seqs),
-            f"the kernel sensor saw {r['event']['data'].get('binary', 'a process')} write {p}, outside the project "
-            f"{root}")
-    return cov, forms
+
+    def effects(judged):
+        """TK-X204 and TK-X203 of what the observers saw, once findings_effects has `judged` each sensor effect: one of
+        the agent's harness itself (agent_process: a process running from before the run, its own files and model
+        calls, which no call names) is not the agent's doing, and is counted as such, never checked."""
+        found = {t for t, c in shown["calls"].items() if c["checks"].get("TK-X204") == "found"}
+        for r in sorted(run.effects + run.net_effects, key=lambda r: r["event"]["run_seq"]):   # TK-X204 of each
+            d, eseq = r["event"]["data"], r["event"]["run_seq"]
+            run.tier[eseq] = "observer"
+            harness = (judged.get(eseq) or {}).get("status") == "agent_process"
+            if run.stated and harness:
+                note(None, "TK-X204", "agent_process")
+            elif run.stated and d.get("tool_call_id") not in found:   # a call's own finding covers what it did
+                file = d["kind"] == "file"
+                _constraint(run, note, None, {"names": [constraints.norm(d["path"])] if file else [], "write": file,
+                                              "push": False, "network": not file}, (eseq, 0), [eseq],
+                            f"the {d.get('sensor') or 'egress'} observer saw {d.get('binary', 'a process')}: it")
+        for r in run.effects:
+            p, eseq = posixpath.normpath(r["event"]["data"]["path"]), r["event"]["run_seq"]
+            if (judged.get(eseq) or {}).get("status") == "agent_process":
+                note(None, "TK-X203", "agent_process")
+                continue
+            if root_why:
+                note(None, "TK-X203", root_why)
+                continue
+            seqs = [eseq, *root_seqs]
+            note(None, "TK-X203", "checked", _tiers(run, seqs, root_tier), not _under(p, root) and not _allowed(
+                p, allow) and _finding(run, "TK-X203", seqs),
+                f"the kernel sensor saw {r['event']['data'].get('binary', 'a process')} write {p}, outside the "
+                f"project {root}")
+    return cov, forms, effects
 
 
 def analyze(records, content=None, project=None, allow=(), partial=False, budget_s=BUDGET_S, clock=time.monotonic,
@@ -739,9 +753,9 @@ def analyze(records, content=None, project=None, allow=(), partial=False, budget
             if nxt is not None and nxt[0] == seq:
                 run.feed(r, nxt[1], nxt[2])
         run.confirm()
-        cov, forms = _check(run, out, project, allow, deadline, clock)
+        cov, forms, observed = _check(run, out, project, allow, deadline, clock)
         findings_text.check(run, content, out, cov, deadline, clock)
-        findings_effects.check(run, out, cov, effects, deadline, clock)
+        observed(findings_effects.check(run, out, cov, effects, deadline, clock))
     except Budget:
         budget, out["findings"], out["shown"]["details"] = True, [], []
         out["shown"]["calls"] = {}
@@ -867,11 +881,22 @@ def _latest(data_dir):
     return None
 
 
-def sign(client, run_id, out):
-    """Sign `out`'s findings and its coverage review into a new findings run about `run_id`, then close it. -> the
-    findings run's id. A signer rate limit (quota_exceeded with retry_after_ms) is waited out."""
-    reviewer, run = f"tracekit-analyze/{__version__}", client.run("tracekit-analyze", analyzes=run_id)
+def sign(client, run_id, out, review=None, records=()):
+    """Sign `out`'s findings and its coverage review into a new findings run about `run_id`, then close it. With
+    `review` (review_model.Reviewer), TK-X210 is added to `out` first, the reviewer model asked as that findings run:
+    a pass's model call and all its findings are in its one findings run. -> the findings run's id. A signer rate limit
+    (quota_exceeded with retry_after_ms) is waited out."""
+    reviewer = f"tracekit-analyze/{__version__}"
     try:
+        run = client.run({"name": "tracekit-analyze", "version": __version__}, analyzes=run_id)
+    except Exception as e:
+        if review:
+            review.add(out, records, why="no_findings_run")
+            out["shown"]["review"]["error"] = f"no findings run: {e}"
+        raise
+    try:
+        if review:
+            review.add(out, records, run)
         for f in [*out["findings"], out["coverage"]]:
             while True:
                 try:
@@ -897,41 +922,42 @@ def main(argv=None):
         "call with no effect; TK-X200 coverage and the monitorability score; with --review, TK-X210 a reviewer "
         "model's reading, warn only), and sign the findings. Exit 0, 4 when a finding other than TK-X210 is high or "
         "worse, 2 on an error (findings that could not be signed among them)."))
-    ap.add_argument("--run", help="the run id (default: the store's latest run)")
-    src = ap.add_mutually_exclusive_group()
-    src.add_argument("--store", metavar="DIR", help="a signer data dir (default: the dev signer's), read-only")
-    src.add_argument("--bundle", metavar="FILE", help="a v2 bundle, verified first with --trust")
-    ap.add_argument("--trust", help="with --bundle: the v2 trust config")
-    ap.add_argument("--project", metavar="DIR", help="the project directory (default: the first prompt's cwd)")
-    ap.add_argument("--allow", metavar="DIR", action="append", default=[],
-                    help="a directory outside the project the agent may write (with /tmp and $TMPDIR)")
-    ap.add_argument("--open", action="store_true", help="analyse a run that is still open: coverage says partial")
-    ap.add_argument("--budget", type=float, default=BUDGET_S, metavar="S", help="seconds the analysis may take")
-    findings_effects.arguments(ap)
-    ap.add_argument("--dry-run", action="store_true", help="print the findings, sign nothing")
-    ap.add_argument("--json", action="store_true")
-    ap.add_argument("--review", action="store_true", help="also ask a reviewer model (TK-X210, warn only), which "
-                    "sends the run's text to that model (docs/privacy.md#what-leaves-the-machine)")
-    ap.add_argument("--review-model", default=review_model.reviewer.DEFAULT_MODEL, metavar="M",
-                    help="the reviewer model, best of another family than the agent's (default %(default)s)")
-    ap.add_argument("--review-url", default=review_model.URL, metavar="URL", help="its endpoint: .../v1/messages "
-                    "(Anthropic Messages; default %(default)s) or .../v1/chat/completions (OpenAI chat, as a local "
-                    "model server speaks it)")
-    ap.add_argument("--review-gateway", action="store_true", help="--review-url is Tracekit's LLM gateway, which "
-                    "records the call (default: the analyzer records it)")
+    g = ap.add_argument_group("the run")
+    g.add_argument("--run", metavar="ID", help="the run id (default: the store's latest run)")
+    src = g.add_mutually_exclusive_group()
+    src.add_argument("--store", metavar="DIR", help="a signer data dir, read-only (default: the dev signer's)")
+    src.add_argument("--bundle", metavar="FILE", help="a v2 bundle, verified first against --trust")
+    g.add_argument("--trust", metavar="FILE", help="with --bundle: the v2 trust config")
+    g.add_argument("--open", action="store_true", help="analyse a run that is still open: coverage says partial")
+    g = ap.add_argument_group("the checks")
+    g.add_argument("--project", metavar="DIR", help="the project directory, for TK-X203 (default: the first prompt's "
+                   "cwd)")
+    g.add_argument("--allow", metavar="DIR", action="append", default=[], help="a directory outside the project the "
+                   "agent may write, besides /tmp and $TMPDIR (repeatable)")
+    g.add_argument("--budget", type=float, default=BUDGET_S, metavar="S", help="seconds the analysis may take "
+                   "(default %(default)g); past it every check is not checkable: budget")
+    findings_effects.arguments(ap.add_argument_group("kernel sensor effects (TK-X206, TK-X207)"))
+    g = ap.add_argument_group("the reviewer model (TK-X210, warn only)")
+    g.add_argument("--review", action="store_true", help="also ask a reviewer model, which sends the run's text "
+                   "(redacted) to that model (docs/privacy.md#what-leaves-the-machine); not with --dry-run")
+    g.add_argument("--review-model", metavar="M", help="the reviewer model (default: of those configured, the first "
+                   "of another model family than the agent's: TRACEKIT_REVIEW_MODEL with TRACEKIT_REVIEW_URL, "
+                   f"{review_model.reviewer.DEFAULT_MODEL} with ANTHROPIC_API_KEY, {review_model.OPENAI_MODEL} with "
+                   f"OPENAI_API_KEY; else {review_model.reviewer.DEFAULT_MODEL})")
+    g.add_argument("--review-url", metavar="URL", help="its endpoint: .../v1/messages (Anthropic Messages) or "
+                   ".../v1/chat/completions (OpenAI chat, as a local model server speaks it) (default: the chosen "
+                   "reviewer's endpoint)")
+    g.add_argument("--review-gateway", action="store_true", help="--review-url is Tracekit's LLM gateway, which "
+                   "records the call (default: the analyzer records it)")
+    g = ap.add_argument_group("output")
+    g.add_argument("--dry-run", action="store_true", help="print the findings, sign nothing")
+    g.add_argument("--json", action="store_true", help="print the whole result as JSON (docs/findings.md#the---json-"
+                   "shape), for CI and agents")
     a = ap.parse_args(argv)
-    rv = None
-    if a.review:
-        if a.dry_run:
-            print("tracekit analyze: --review records the model call in a findings run and --dry-run signs nothing: "
-                  "drop one", file=sys.stderr)
-            return 2
-        try:
-            rv = review_model.Reviewer(review_model.Model(a.review_url, a.review_model, a.review_gateway),
-                                       a.review_model)
-        except ValueError as e:
-            print(f"tracekit analyze: {e}", file=sys.stderr)
-            return 2
+    if a.review and a.dry_run:
+        print("tracekit analyze: --review records the model call in a findings run and --dry-run signs nothing: "
+              "drop one", file=sys.stderr)
+        return 2
     from .sdk.client import Client, SignerUnavailable
     from .signer.pipeline import SIGNER_RUN
     from .signer.service import dev_data_dir
@@ -967,6 +993,16 @@ def main(argv=None):
         print(f"tracekit analyze: run {run_id} is still open (no run.final yet): what it does next is not in it. Wait "
               "for it to end, or pass --open for a partial analysis", file=sys.stderr)
         return 2
+    rv = None
+    if a.review:
+        given = a.review_model or a.review_url or a.review_gateway
+        model, url, env = (review_model.choose(records) if not given else (
+            a.review_model or review_model.reviewer.DEFAULT_MODEL, a.review_url or review_model.URL, None))
+        try:
+            rv = review_model.Reviewer(review_model.Model(url, model, a.review_gateway, env=env), model)
+        except ValueError as e:
+            print(f"tracekit analyze: {e}", file=sys.stderr)
+            return 2
     client, note = Client(), None
 
     def content(recs):
@@ -985,8 +1021,6 @@ def main(argv=None):
         try:
             out = analyze(records, rv.tee(content) if rv else content, a.project, a.allow, a.open, a.budget,
                           effects=findings_effects.from_args(a))
-            if rv:
-                _review(rv, out, records, client, run_id)
         except EvidenceAlert as e:
             print(f"tracekit analyze: EVIDENCE ALERT: {e}", file=sys.stderr)
             return 4
@@ -994,7 +1028,8 @@ def main(argv=None):
             print(f"tracekit analyze: {note}: checks that read content are not checkable", file=sys.stderr)
         if not a.dry_run:
             try:
-                out["signed"] = {"findings_run": sign(client, run_id, out), "records": len(out["findings"]) + 1}
+                out["signed"] = {"findings_run": sign(client, run_id, out, rv, records),
+                                 "records": len(out["findings"]) + 1}
             except (SignerUnavailable, OSError, RPCError) as e:
                 failed = e
     finally:
@@ -1005,7 +1040,8 @@ def main(argv=None):
     if review.get("same_family"):
         print(f"tracekit analyze: --review: the reviewer model is of the agent's model family "
               f"({review['families']['reviewer']}), so it may share the agent's blind spots: pass --review-model of "
-              "another family", file=sys.stderr)
+              "another family, or configure one (OPENAI_API_KEY or ANTHROPIC_API_KEY for the other provider, or "
+              "TRACEKIT_REVIEW_MODEL with TRACEKIT_REVIEW_URL) and it is picked", file=sys.stderr)
     print(json.dumps(out, indent=2) if a.json else render(out))
     if failed is not None:
         print(f"tracekit analyze: the findings are printed but NOT signed: {failed}. The signer signs them for an "
@@ -1015,21 +1051,6 @@ def main(argv=None):
     worst = max((SEVERITY.index(f["verdict"]["severity"]) for f in out["findings"]
                  if f["verdict"]["rule"] != review_model.RULE), default=-1)   # a model's opinion never fails a build
     return 4 if worst >= SEVERITY.index("high") else 0
-
-
-def _review(rv, out, records, client, run_id):
-    """TK-X210, its model call in a findings run of this pass (`analyzes` the run), where it is recorded."""
-    from . import __version__
-    from .sdk.client import SignerUnavailable
-    from .signer.rpc_schema import RPCError
-    try:
-        run = client.run({"name": "tracekit-analyze", "version": __version__}, analyzes=run_id)
-    except (SignerUnavailable, RPCError) as e:
-        rv.add(out, records, why="no_findings_run")
-        out["shown"]["review"]["error"] = f"no findings run: {e}"
-        return
-    with run:
-        rv.add(out, records, run)
 
 
 if __name__ == "__main__":

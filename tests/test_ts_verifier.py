@@ -643,7 +643,7 @@ class Reviews(test_reviews.Signed):
         for name, (bundle, trust) in self.bundles().items():
             with self.subTest(name):
                 code, rep = Agreement.agree(self, bundle, trust)
-                self.assertEqual(code, 1 if name == "mismatch" else 0)
+                self.assertEqual(code, 1 if name in ("mismatch", "shape") else 0)
                 self.assertTrue(pick(rep.checks))
                 ts = ts_verify(bundle, trust)
                 self.assertEqual(pick(ts["checks"]), pick(rep.checks))

@@ -852,6 +852,8 @@ def effects_replay(signer, sess, rng):
             observe([])   # the import's heartbeat: it covers the run from its start
         clock[0] = 0.0
         run, decided = _Run(signer), {}
+        if sess.get("prompt"):   # what the person asked, as a trusted input
+            run.call("observe", source="e20", trust="trusted", value=sess["prompt"])
         for t, _, (what, x) in sorted(acts, key=lambda a: (a[0], a[1])):
             clock[0] = t
             if what == "effect":
