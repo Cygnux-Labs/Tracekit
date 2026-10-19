@@ -124,7 +124,8 @@ a signed `capture.gap{observer_lost}` in each run it covers, after which their m
 ([Tetragon](tetragon.md#losses) says how). With Falco's defaults it reports a second only when more than 10 % of its
 events were dropped, and at most one second in 30: the settings above report every second with a drop. Alerts Falco
 drops from a full output queue (`outputs_queue.capacity`) show only in its log and its metric
-`falcosecurity_falco_outputs_queue_num_drops_total`: alert on it in your monitoring.
+`falcosecurity_falco_outputs_queue_num_drops_total`: alert on it in your monitoring. A Falco restart writes no alert,
+so what happened while it was down is missing with no gap: alert on its restarts too.
 
 ## What Tracekit sees and doesn't
 

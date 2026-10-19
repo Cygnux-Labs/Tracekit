@@ -45,7 +45,8 @@ _MISSING = object()
 
 def new_run(tenant, run_id):
     """`closed`: run.closing written, late records only; `final`: run.final written, nothing more. `active` and
-    `closing_at` are monotonic times for the idle and grace clocks. `prov`: the provenance index of a run registered
+    `closing_at` are monotonic times for the idle and grace clocks; `registered`, its run.registered's time (none in a
+    snapshot before 1.4). `prov`: the provenance index of a run registered
     since this signer started (SignerService._index), memory only; None after a restart (unavailable). `writers`: who
     wrote each stream first (writer()), `tails`: the last client_seq a close_run said each stream ended at; both memory
     and snapshot only. `results`: tool_call_id -> [[decision_id, output hash, comparable, redacted, the form digest it
@@ -306,6 +307,8 @@ class Tx:
         self.set(log.head, "prev", r["hash"])
         self.set(run, "run_seq", e["run_seq"] + 1)
         self.set(run, "head", r["hash"])
+        if typ == "run.registered":
+            self.set(run, "registered", e["ts"])
         found = reconcile.observe(self.set, run, e, digests, log.handoff)
         agent_state(self.set, log, run, e)
         contain_state(self.set, log, run, e, self.pop)
@@ -525,6 +528,7 @@ class RecordLog:
                 run["spans"][f"{e['span_id']}:{e['type']}"] = True
             if e["type"] == "run.registered":
                 run["owner"], run["source"] = "{scheme}:{subject}".format(**e["data"]["identity"]), e["source"]
+                run["registered"] = e["ts"]
                 run["principal"] = e.get("principal")
                 run["people"] = (e["data"]["identity"].get("person"), e.get("principal") if e.get("principal_attested") else None)
                 h = e["data"].get("harness")

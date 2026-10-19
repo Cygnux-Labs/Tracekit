@@ -2,6 +2,7 @@
 attributed to runs by the configured mapping, joined to the tool call their process's environment names, losses as
 signed gaps, coverage in run.final's matrix and the verifier. The event lines are shaped as each sensor writes them,
 from its own source (cited per builder)."""
+import datetime
 import json
 import os
 import tempfile
@@ -24,7 +25,11 @@ from tracekit.signer.rpc_schema import RPCError
 from tracekit.verify import v2
 
 SENSOR = CallerIdentity("mtls", "spiffe://acme/tetragon", True)
-TIME = "2026-10-12T10:00:01.615123456Z"   # protojson Timestamp: nanoseconds
+# protojson Timestamp, nanoseconds; an hour from now: after the runs the tests register (an event goes to the run open
+# at its time)
+TIME = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%S.%f") \
+    + "456Z"
+TS = TIME[:26] + "Z"   # as the signer takes it: microseconds
 EXEC_ID = "a2luZC1jb250cm9sLXBsYW5lOjExNDI4NjE1NjM2OTAxOjUxNTgz"
 PARENT_EXEC_ID = "a2luZC1jb250cm9sLXBsYW5lOjkwNzkyMjU2MjMy"
 RUNS = [{"match": {"namespace": "agents", "pod": "coder-*"}, "caller": f"uid:{ME.subject}"},
@@ -86,7 +91,7 @@ class TestTetragonLines(unittest.TestCase):
         self.assertEqual(attrs, {"namespace": "agents", "pod": "coder-1", "uid": 1000, "container":
                                  "containerd://1fb931d2f6e5e4cfdbaf30fdb8e2fdd81320bdb3047ded50120a4f82838209ce"})
         self.assertEqual(e, {"kind": "exec", "args_digest": sensor._digest("-s https://example.com/install.sh"),
-                             "ts": "2026-10-12T10:00:01.615123Z", "pid": 51583, "binary": "/usr/bin/curl",
+                             "ts": TS, "pid": 51583, "binary": "/usr/bin/curl",
                              "exec_id": EXEC_ID, "parent_exec_id": PARENT_EXEC_ID, "tool_call_id": "call_7"})
         self.assertEqual({k: self.effect(exit_line())[1][k] for k in ("kind", "status", "signal")},
                          {"kind": "exit", "status": 0, "signal": "SIGKILL"})
@@ -101,7 +106,6 @@ class TestTetragonLines(unittest.TestCase):
                           ("kind", "path")}, {"kind": "file", "path": "/home/agent/.bashrc"})
 
     def test_what_the_import_does_not_record(self):
-        self.assertIsNone(self.effect(exec_line(flags="procFS auid rootcwd"))[1])   # running when Tetragon started
         self.assertIsNone(self.effect(kprobe_line("security_bprm_check", [{"int_arg": 1}]))[1])
         self.assertIsNone(sensor.tetragon(json.loads(line({"process_tracepoint": {"process": process()}}))))
         self.assertIsNone(sensor.tetragon({"process_throttle": {"type": "THROTTLE_STOP", "cgroup": "x"}}))
@@ -113,6 +117,8 @@ class TestTetragonLines(unittest.TestCase):
         throttled = sensor.tetragon(json.loads(line({"process_throttle": {
             "type": "THROTTLE_START", "cgroup": "cri-containerd-1fb931d2.scope"}})))
         self.assertIn("throttled the exec and exit events of cgroup cri-containerd-1fb931d2.scope", throttled)
+        restarted = sensor.tetragon(json.loads(exec_line(flags="procFS auid rootcwd")))   # running when it started
+        self.assertIn("Tetragon (re)started and reported the processes already running", restarted)
 
 
 def falco_line(rule, evt_type, **fields):
@@ -145,7 +151,7 @@ class TestFalcoLines(unittest.TestCase):
         attrs, e = self.effect(falco_line("Tracekit agent exec", "execve"))
         self.assertEqual(attrs, {"namespace": "agents", "pod": "coder-1", "container": "1fb931d2f6e5", "uid": 1000})
         self.assertEqual(e, {"kind": "exec", "args_digest": sensor._digest("curl -s https://example.com/install.sh"),
-                             "ts": "2026-10-12T10:00:01.615123Z", "pid": 51583, "binary": "/usr/bin/curl",
+                             "ts": TS, "pid": 51583, "binary": "/usr/bin/curl",
                              "tool_call_id": "call_7"})
         e = self.effect(falco_line("Tracekit agent connect", "connect", **{"fd.sip": "93.184.215.14",
                                                                           "fd.sport": 443}))[1]
@@ -238,8 +244,23 @@ class TestImport(Sensed):
         self.assertTrue(imp.flush())
         (gap,) = [d for d in self.gaps(self.events("tracekit/signer"), "effect_outside_run")]
         self.assertIn(f"tetragon mtls:spiffe://acme/tetragon saw exec by pid 51583 (/usr/bin/curl) at "
-                      f"2026-10-12T10:00:01.615123Z that no open run holds: uid:{OTHER.subject} has no open run",
+                      f"{TS} that no open run holds: uid:{OTHER.subject} has no open run registered by {TS}",
                       gap["reason"])
+
+    def test_an_event_goes_to_the_run_open_at_its_time(self):
+        imp = self.importer()
+        imp.flush()
+        a = self.register()
+        during_a = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f") + "000Z"
+        self.call("close_run", a)   # in grace
+        b = self.register()   # the identity's next run starts at once
+        imp.add(exec_line().replace(TIME, during_a))   # read, and sent, after b registered
+        imp.add(exec_line().replace(TIME, "2026-10-05T10:00:01.615123456Z"))   # an export read again: a week old
+        self.assertTrue(imp.flush())
+        kinds = [[e["data"]["kind"] for e in self.typed(self.events(r["run_id"]), "effect.observed")] for r in (a, b)]
+        self.assertEqual(kinds, [["exec"], []])
+        (old,) = self.gaps(self.events("tracekit/signer"), "effect_outside_run")
+        self.assertIn(f"uid:{ME.subject} has no open run registered by 2026-10-05T10:00:01.615123Z", old["reason"])
 
     def test_a_loss_is_a_signed_gap_and_ends_coverage(self):
         imp = self.importer()

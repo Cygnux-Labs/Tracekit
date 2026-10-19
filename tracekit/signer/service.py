@@ -3795,7 +3795,8 @@ class SignerService:
     def _attributed(self, tenant, x):
         """(run key or None, attribution, why there is none) of effect `x` of an observer of `tenant` (on the writer):
         the run its run token names, unless this signer didn't issue that token for that run of `tenant`, or issued it
-        to another identity than the client's (`caller`); else the latest open run of `caller`."""
+        to another identity than the client's (`caller`); else the latest open run of `caller` registered by the
+        effect's `ts` (a kernel sensor's: an event read late goes to the run it happened in, an old one to none)."""
         why = None
         if "run_token" in x:
             try:
@@ -3814,10 +3815,13 @@ class SignerService:
         c = CallerIdentity(*x["caller"].split(":", 1), True)
         if self._tenant_of(c) != tenant:
             return None, "identity", f"{why}{x['caller'][:256]} is of another tenant than the observer"
-        # lean: the owner's latest open run takes it; with concurrent runs of one owner, send the run token instead
+        # lean: the owner's latest open run registered by the effect's time takes it; with concurrent runs of one owner,
+        # send the run token instead
         key = next((k for k in reversed(list(self.log.live)) if k[0] == tenant
-                    and self.log.runs[k]["owner"] == owner(c)), None)
-        return key, "identity", None if key else f"{why}{x['caller'][:256]} has no open run"
+                    and self.log.runs[k]["owner"] == owner(c) and self.log.runs[k].get("registered", "") <= x.get(
+                        "ts", "~")), None)
+        return key, "identity", None if key else f"{why}{x['caller'][:256]} has no open run" + (
+            f" registered by {x['ts']}" if "ts" in x else "")
 
     def _finding(self, identity, req, method, type_, data, cites=()):
         """Write a `type_` record of `data` in the caller's findings run (registered with `analyzes`, which only an

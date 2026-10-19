@@ -117,8 +117,9 @@ file once and exits; without a file, stdin.
 ## Attribution
 
 The first `runs` entry whose `match` fits the event's process (its pod's namespace and name, its container id, its
-uid) attributes it: the signer gives the event to the latest open run of that entry's `caller`
-(`attribution: identity` in the record). An event of a process no entry matches is not an agent's: the import skips
+uid) attributes it: the signer gives the event to the latest open run of that entry's `caller` registered by the
+event's time (Tetragon's `time`; `attribution: identity` in the record), so an event read late goes to the run it
+happened in, and one older than every open run of the caller (an export read again) to none. An event of a process no entry matches is not an agent's: the import skips
 it. An event of a matched process whose caller has no open run is a signed `capture.gap{effect_outside_run}` in the
 tenant's signer run. The import covers the runs of its entries' `caller`s only (it names them in every call), so a run
 of any other identity never says its processes were observed, and the import's losses are no gaps in it.
@@ -136,8 +137,7 @@ One `effect.observed` per event, in the run (`source: signer`, format 1.4,
 | `process_kprobe` with a `file_arg` or `path_arg` | `file` | `path` |
 
 Every record also has `observer` (the import's identity), `sensor: tetragon`, `ts` (Tetragon's time) and
-`attribution`. Other events (other kprobes, tracepoints, LSM hooks) aren't recorded, nor are the `procFS` exec events
-of processes already running when Tetragon started.
+`attribution`. Other events (other kprobes, tracepoints, LSM hooks) aren't recorded.
 
 `run.final`'s coverage matrix says `processes observed (tetragon)` when an import covered the run throughout: the
 run's identity is a `caller` of its `runs`, and the import was alive when the run registered, sent a heartbeat at least
@@ -182,6 +182,8 @@ signed gap:
 - `rate_limit_info`: its export rate limit (`--export-rate-limit`) dropped that many events.
 - `process_throttle` (`THROTTLE_START`): its cgroup rate limit (`--cgroup-rate`) stopped sending a cgroup's exec and
   exit events.
+- A `process_exec` flagged `procFS`: Tetragon (re)started and reported the processes already running, read from
+  `/proc`; what happened while it was down isn't in its export.
 
 The import adds lines it can't read and an agent's events it can't record. It skips, and counts on stderr when it
 exits, events it never records: a connect to no IP address (a unix socket: any family but `AF_INET` and `AF_INET6`),
