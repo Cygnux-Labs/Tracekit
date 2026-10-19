@@ -47,7 +47,7 @@ observation), with Python and TypeScript SDKs and framework integrations. [HIGH 
 | `sdk/typescript/` | TS SDK: the v2 client speaks the signer RPC itself (`sdk/typescript/src/v2/`); only the legacy v1 API (`sdk/typescript/src/v1.ts`) spawns `tracekit.bridge`; the independent verifier is in `sdk/typescript/src/verify/` | [HIGH CONFIDENCE] |
 | `plugin/` | Claude Code plugin (laptop on-ramp) | [HIGH CONFIDENCE] |
 | `tests/` | pytest suite (real daemons); `tests/conftest.py` (markers, env isolation), `tests/factories.py` (shared builders), `tests/golden/` (frozen verifier corpus) | [HIGH CONFIDENCE] |
-| `eval/` | Experiments E1–E21 (`eval/e*.py`; no E7 or E13 script); E8 (insider attacks, v1 and v2) gates CI on Linux; CI also runs E9 and E15 | [HIGH CONFIDENCE] |
+| `eval/` | Experiments E1–E22 (`eval/e*.py`; no E7 or E13 script); E8 (insider attacks, v1 and v2) gates CI on Linux; CI also runs E9 and E15 | [HIGH CONFIDENCE] |
 | `docs/` | User docs; `docs/sample/` holds the shipped sample bundles | [HIGH CONFIDENCE] |
 | `paper/` | v0.1 paper — frozen artifact, don't update | [HIGH CONFIDENCE] |
 

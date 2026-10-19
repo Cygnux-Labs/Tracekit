@@ -423,6 +423,41 @@ caught 215 of 420 (51.2%) by default and 250 of 420 (59.5%) strict, with the sam
 compare with the first run.
 A semantics-preserving mutation of E17's harmful calls is not part of E21 yet.
 
+## E22: verifier agreement on real bundles
+
+`eval/e22_verifier_agreement.py` makes every bundle the way a user would, from scratch, in a HOME of its own with no
+`TRACEKIT_*` variable, and verifies each one three ways: `tracekit verify --json`, the TypeScript CLI and the browser
+page (`verify.html` in Chrome through Playwright: headless for every bundle, again with a script element added before
+the page's own as a browser extension adds one, and headed for five). The three must give the same verdict, exit code
+and check lines (the rules of `scripts/verify_page_check.py`); an honest bundle must verify and a forgery must not.
+
+| Source | Bundles |
+|---|---|
+| Every offline example of `examples/v2`: 11 frameworks, 5 demos and the LangGraph injection replay, scripted models, no API key | 17, and the completeness demo's tampered copy |
+| `tracekit demo --server` | a witness-cosigned run and its tampered copy |
+| The Claude Code hook of `tracekit init --dev --v2`: an allowed call, a denied one and one held until a person ran `tracekit approvals approve` | the run, and the run with the findings `tracekit analyze --v2` signed (`--with-findings`) |
+| Tetragon and Falco imports, OpenShell's middleware with its OCSF import, an agentsh follower | 4 |
+| A run exported while open, and again once closed | 2 |
+| 50,000 tool calls of a scripted client through `tracekit signer serve` (server pack), exported open at each tenth | the largest export accepts, 20,000 calls; at 25,000 calls and once closed (130 MiB of records) export refuses: over the format's 64 MiB a file |
+| The released 1.2.3 and 1.3.0 signers (`git archive` of their tags); `docs/sample/demo-run.tkb` (v1) | 3 |
+| Forgeries of five of them, the manifest refreshed: a record edited and re-hashed, one deleted, two swapped, the run truncated, another signer's trust config, and every record and the checkpoint re-signed with a forger's keys; the closed run under the open run's older checkpoint | 31, and 5 controls: each re-signed copy against the forger's own trust config |
+
+All 68 bundles agree in all three passes. The 30 honest bundles and the 5 controls verify; none of the 33 forgeries
+(the 31 above and the two tampered copies) does, in any verifier. The page names the Python command for the v1 bundle, which only
+that verifier reads. Timings for the largest bundle, from `eval/results/e22_verifier_agreement.json`:
+
+| Bundle | Records | Size | Page (Chrome, headless) | TypeScript CLI | Python CLI |
+|---|---|---|---|---|---|
+| 20,000 calls, open | 40,002 | 11.0 MB (52 MiB unzipped) | 5.3 s | 8.1 s | 21.1 s |
+
+The client made 2,197 calls a second (a decide and a complete each). The page verifies in a worker: its main thread
+had no long task. Measured on macOS arm64, Python 3.11, Node 25, Chrome.
+E22 found two bugs, fixed in 1.4: `tracekit export` wrote a bundle every verifier called `UNUSABLE BUNDLE` once a run's
+records passed 64 MiB (it now refuses and says why, [limits](limits.md)), and the page's rewrite let a log origin widen
+it past a phone's screen. Not in `make eval`: it takes minutes and needs node, the TypeScript build, Playwright with
+Chrome and each framework (`--python NAME=PY` runs an example with an interpreter that has it; an example that can't
+run is listed as skipped). Firefox and Safari are not run.
+
 ## What is not measured
 
 Signer throughput with a separate-user signer or over the remote gateway, durability across crashes beyond the
