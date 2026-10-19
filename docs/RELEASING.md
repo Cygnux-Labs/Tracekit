@@ -9,6 +9,16 @@ A release is one tag. From it the release workflow builds the PyPI files, the np
 image, attests each one (SLSA build provenance through GitHub artifact attestations), publishes them, and attaches every file with its SBOMs and `SHA256SUMS` to the GitHub release. Users check a download with
 `scripts/release/verify-release.sh`.
 
+## Release blockers for 1.4.0
+
+Both verifiers' UNVERIFIABLE line sends a person whose verifier is too old for a bundle to two places, and on
+2026-10-19 neither works. Don't tag 1.4.0 until both do, or a 1.4 bundle's upgrade line is a dead end:
+
+- **The browser verifier on Pages**: https://cygnux-labs.github.io/Tracekit/verify/ returns 404. Do one-time setup step
+  4, and procedure step 8 for the release, then open the URL.
+- **`npx -y @cygnuxlabs/tracekit@latest`** resolves to 1.3.0 (`npm view @cygnuxlabs/tracekit dist-tags`), which prints
+  UNVERIFIABLE again for a 1.4 bundle. The `npm` job must publish 1.4.0 under `latest`; check the dist-tag after it.
+
 ## Procedure
 
 1. Set the version in `tracekit/__init__.py` (`__version__`), in `sdk/typescript/package.json` (`version` and the

@@ -77,8 +77,8 @@ Hooks before this release record no prompt, and TK-X208 says `no_hook`.
 
 The hook also sends what the prompt says not to do ("don't touch billing.py", "read-only", "don't push", "no network",
 "only change src/pager.py") to the signer as [live constraints](policy-v2.md#live-constraints): a later call that
-breaks one waits for your approval, and the agent reads why on stderr: `waiting for approval apr-… (TK-CONSTRAINT): the
-person's request in this run said not to modify billing.py; ask the person`. Answer it from another terminal as any
+breaks one waits for your approval, and the agent reads why on stderr: `[tracekit] waiting for approval apr-…
+(TK-CONSTRAINT): the person's request in this run said not to modify billing.py; ask the person (TK-CONSTRAINT)`. Answer it from another terminal as any
 held call: `tracekit approvals list`, then `tracekit approvals approve <id>` (or `reject`). `tracekit view --dev` lists
 the run's constraints at the top of its review.
 

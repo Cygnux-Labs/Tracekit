@@ -2,7 +2,7 @@
 
 The v2 signer decides every tool call itself, over the raw arguments, with its own policy (`tracekit/policy2/`). The
 agent can't change the policy or the tool's class: a class the adapter declares is a hint, and the class the policy
-maps the tool to wins. The v1 daemon's regex engine is a different one ([README](../README.md#policy-and-approvals)).
+maps the tool to wins. The v1 daemon's regex engine is a different one ([migrating](migration.md#what-changes)).
 
 ```sh
 tracekit policy lint my-policy.yaml       # every error at once
@@ -103,9 +103,10 @@ push a new branch); a person rewrites shared history themselves.` The `decide` r
 ask is the matching rules' reasons joined by `; `, then each remedy once, so the client shows it to the model and
 `tracekit view` shows it under the rule in the decision's detail. The signed record names only the rule ids, and the
 policy (by its `policy_hash`) holds the text. Lint keeps a remedy to one line of at most 200 characters, starting with
-a capital letter and ending with a period, in the present tense (no `should`, `could`, `might`, `please`, `maybe`,
-`perhaps`, `consider` or `try to`), and refuses one on a flag rule: a flagged call runs. The `coding.yaml` and
-`server.yaml` deny and ask rules carry one.
+a capital letter and ending with a period, in the present tense (no `should`, `would`, `could`, `might`, `please`,
+`maybe`, `perhaps`, `consider` or `try to`), and refuses one on a flag rule: a flagged call runs. The deny and ask rules
+of `coding.yaml`, and those `server.yaml` and `strict.yaml` add themselves, carry one; the browser, data, network,
+cloud and communication packs' rules don't yet, so their calls get the reason alone.
 
 `on_parse_error: deny` denies (rather than holds) a shell command the parser can't read or whose program it can't see
 (`TK-SHELL-PARSE`: an unclosed quote, a command name from a variable, a script piped into a shell). Use it where no
@@ -420,8 +421,10 @@ agent approver never does). A `deny` stays a `deny`, an `ask` stays an `ask`, an
 constraint can only hold more calls. That is why any client of the run may add one, the agent's own identity included:
 a made-up constraint only makes the agent wait.
 
-The agent is told why, in its own words: `held: the person's request in this run said not to modify billing.py; ask
-the person (TK-CONSTRAINT)` (the hook prints it; the decide response carries it as `reason`). The file name comes from
+The agent is told why, in its own words. The decide response carries it as `reason` (`the person's request in this run
+said not to modify billing.py; ask the person (TK-CONSTRAINT)`), and Claude Code's hook prints it after the approval it
+waits for: `[tracekit] waiting for approval apr-… (TK-CONSTRAINT): the person's request in this run said not to modify
+billing.py; ask the person (TK-CONSTRAINT)`. The file name comes from
 the call's own arguments. The log never holds it: `constraint.added` records the kind and, for a file, a salted
 commitment to its lower-cased base name ([format v2](format-v2.md#3-events)), and the signer matches a call by
 committing each file it writes under that record's salt. The prompt itself is recorded beside it (`input.observed`,

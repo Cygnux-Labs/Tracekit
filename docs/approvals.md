@@ -4,7 +4,7 @@
 
 An `ask` rule ([policy](policy-v2.md)) holds a tool call until a person answers it. The approval lives in the signer,
 is bound to the exact arguments of one call attempt, and is consumed once. The v1 daemon's `tracekit pending` /
-`approve` / `reject` are described in the [README](../README.md#policy-and-approvals).
+`approve` / `reject` and their v2 equivalents are listed in [migrating](migration.md#what-changes).
 
 ## Flow
 

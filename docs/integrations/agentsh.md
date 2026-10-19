@@ -60,10 +60,15 @@ authorize:
 Then, as a user that can read agentsh's log:
 
 ```bash
-tracekit signer token add agentsh-follow --config signer.yaml   # once, on the signer's host
+tracekit signer token add agentsh-follow --ttl 90d --config signer.yaml   # once, on the signer's host
 TRACEKIT_SIGNER=https://signer.internal:8443 TRACEKIT_SIGNER_TOKEN_FILE=/etc/tracekit/agentsh-follow.token \
   tracekit follow agentsh --log /var/log/agentsh/audit.jsonl
 ```
+
+`token add` prints the token once: save it to the file `TRACEKIT_SIGNER_TOKEN_FILE` names, readable only by the
+follower's user (`chmod 600`) and never by the agent. A token lasts 30 days unless `--ttl` says otherwise; once it
+expires the signer refuses the follower, which exits 1. Add a new token before then, replace the file and restart the
+follower.
 
 All of the log goes into one run, which the follower prints; once the signer closes it after its `idle_s` without a
 decision, the next decision starts a new one.
