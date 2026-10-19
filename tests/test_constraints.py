@@ -113,7 +113,15 @@ class Grammar(unittest.TestCase):
                 ("Don't change the tests to make billing.py pass.", []),
                 ("I didn't change billing.py yet.", []),   # a report, not an instruction
                 ("Everything outside src/pager.py is off-limits.", [("only_change", "pager.py")]),
-                ("Fix src/pager.py; everything else is out of scope.", [("only_change", "pager.py")])):
+                ("Fix src/pager.py; everything else is out of scope.", [("only_change", "pager.py")]),
+                # the rest of the vocabulary, a phrase each
+                ("Leave billing.py as-is.", [("keep_away", "billing.py")]),
+                ("billing.py is hands-off.", [("keep_away", "billing.py")]),
+                ("billing.py is out of bounds.", [("keep_away", "billing.py")]),
+                ("Can you leave billing.py alone?", [("keep_away", "billing.py")]),
+                ("billing.py cannot be modified.", [("keep_away", "billing.py")]),
+                ("Keep your changes scoped to src/pager.py.", [("only_change", "pager.py")]),
+                ("Don't omit updating billing.py.", [])):
             with self.subTest(text):
                 self.assertEqual(constraints.extract(text), want)
 

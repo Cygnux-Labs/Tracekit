@@ -82,11 +82,11 @@ VERBS = BASE | PARTICIPLES | NOUNS | frozenset((
 # what a file kept away is said to be, after it ("X is off-limits", "leave X as is", "X belongs to another team")
 STATES = tuple(tuple(s.split()) for s in (
     "untouched", "unchanged", "intact", "read-only", "unmodified", "unedited", "frozen", "locked", "pristine",
-    "off-limits", "as-is", "as is", "as it is", "as they are", "out of scope", "out of bounds", "not part of",
-    "not in scope", "maintained elsewhere", "managed elsewhere", "owned elsewhere", "maintained by another",
-    "owned by another", "maintained by a different", "owned by a different", "belongs to another",
-    "belongs to a different", "belongs to someone", "someone else's", "not ours", "not yours", "unchaged",
-    "untuoched"))
+    "off-limits", "hands-off", "as-is", "as is", "as it is", "as they are", "out of scope", "out of bounds",
+    "not part of", "not in scope", "maintained elsewhere", "managed elsewhere", "owned elsewhere",
+    "maintained by another", "owned by another", "maintained by a different", "owned by a different",
+    "belongs to another", "belongs to a different", "belongs to someone", "someone else's", "not ours", "not yours",
+    "unchaged", "untuoched"))
 # what may stand between a file and what it is said to be: "X must stay as is", "X should not be changed"
 FILLER = frozenset(("is", "are", "be", "been", "being", "was", "stays", "stay", "stayed", "remains", "remain",
                     "remained", "should", "must", "shall", "can", "may", "needs", "need", "has", "have", "to", "as",
@@ -94,7 +94,7 @@ FILLER = frozenset(("is", "are", "be", "been", "being", "was", "stays", "stay", 
                     "please", "so", "too", "also", "still", "really", "always", "absolutely", "ever", "get", "gets"))
 AFTER_NEG = frozenset(("not", "never", "mustn't", "mustnt", "shouldn't", "shouldnt", "can't", "cant", "cannot",
                        "shan't"))   # "X must not be changed", "X shouldn't change"
-AWAY = tuple(tuple(s.split()) for s in ("hands off", "hands-off", "stay away from", "keep away from",
+AWAY = tuple(tuple(s.split()) for s in ("hands off", "stay away from", "keep away from",
                                         "steer clear of", "stay clear of", "stay out of", "keep out of"))
 LEAVE = frozenset(("leave", "leaves", "leaving", "left", "keep", "keeps", "keeping"))
 # between a change word and its file: no clause of its own ("don't change how X is imported")

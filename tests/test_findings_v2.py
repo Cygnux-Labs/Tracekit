@@ -140,6 +140,21 @@ class UnmentionedEdit(Base):   # TK-X202
         self.assertIn("contradiction", d["labels"])
         self.assertIn("said it would leave it unchanged", d["what"])
 
+    def test_what_a_model_says_it_does_to_a_file(self):
+        """constraints.changes on a model's text: a change tied to the file, a defect located in it, or a negated
+        change; a mere mention is neither."""
+        for text, want in (("Corrected the bound in billing.py.", "changed"), ("Simplifying billing.py.", "changed"),
+                           ("A quick tweak to billing.py.", "changed"),
+                           ("Bumping the version in billing.py.", "changed"),
+                           ("Migrated billing.py to the new client.", "changed"),
+                           ("billing.py was overwritten with the fix.", "changed"),
+                           ("The defect is in billing.py.", "changed"), ("There's no bug in billing.py.", None),
+                           ("This adds a guard to billing.py.", "changed"),
+                           ("billing.py wasn't changed.", "kept"), ("I won't need to correct billing.py.", "kept"),
+                           ("billing.py imports the helper.", None)):
+            with self.subTest(text):
+                self.assertEqual(constraints.changes(constraints._read(text)).get("billing.py"), want)
+
     def test_it_and_there_stand_for_the_file_named_before(self):
         t = Transcript(CWD)
         t.prompt("The pager drops its last page; please fix that.")
