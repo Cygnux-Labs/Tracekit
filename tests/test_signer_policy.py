@@ -69,6 +69,12 @@ class Packs(unittest.TestCase):
             self.assertEqual(e.decide(tool, {})["verdict"], "ask")
         self.assertEqual(e.decide("mcp:demo/list_files", {})["verdict"], "flag")
 
+    def test_srt_requests_are_http_calls_in_every_pack(self):
+        for name in ("dev.yaml", "coding.yaml", "server.yaml"):
+            e = Engine(pc.build(os.path.join(PACKS, name))[0], "regex")
+            self.assertEqual(e.tool_class("srt:request"), "http", name)
+        self.assertEqual(e.decide("srt:request", {"method": "GET", "url": "http://169.254.169.254/"})["verdict"], "deny")
+
     @unittest.skipUnless(HAVE_RE2, "google-re2 not installed")
     def test_re2_and_regex_decide_identically_on_the_packs(self):
         pol = pc.build(svc.DEFAULT_POLICY)[0]

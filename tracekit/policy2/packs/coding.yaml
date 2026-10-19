@@ -8,7 +8,7 @@
 # with `\` as `/` and also casefolded (the agent's file system may ignore case). Rules stay tripwires: the protection
 # is the signer, its storage and the witnesses.
 
-version: '2026.10-v2-11'
+version: '2026.10-v2-12'
 description: coding agents on a laptop (Claude Code, Codex, Cursor, Gemini)
 # laptop: a tool the pack does not map is flagged, not held; server.yaml holds it for a person (ask)
 unknown_tools: flag
@@ -30,6 +30,7 @@ tools:
   Glob: fs
   WebFetch: http
   WebSearch: http
+  'srt:request': http        # a request srt-proxy asks about (tracekit srt-decider)
   'mcp__*': mcp
   'mcp:*/*': mcp
 

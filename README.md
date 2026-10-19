@@ -135,6 +135,8 @@ with Codex's, see what Tracekit sees and the settings to use
 ([Codex's sandbox](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/integrations/codex-sandbox.md));
 with Gemini CLI's tool sandbox, Tracekit holds each sandbox expansion for a person
 ([Gemini CLI's sandbox](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/integrations/gemini-sandbox.md)).
+Running sandbox-runtime's proxy on its own, Tracekit decides each request it forwards (experimental,
+[sandbox-runtime](https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/integrations/sandbox-runtime.md)).
 Without uv: `pip install tracekit-ai`, then `tracekit demo --server`. `--why`
 (experimental) shows a held
 email whose cause is found by replay and cited by its signed record:
