@@ -132,4 +132,7 @@ drops from a full output queue (`outputs_queue.capacity`) show only in its log a
   root user on the node can change Falco, its output or the import.
 
 [Limits](../limits.md#kernel-sensor-import) lists these with what to do. A bundle with these records needs verifier
-1.4.0 or later.
+1.4.0 or later; an older one reports it `UNVERIFIABLE (needs tracekit >= 1.4.0)`. Verify it with
+`uvx --from "tracekit-ai>=1.4.0" tracekit verify run.tkb --trust trust.json`,
+`npx -y @cygnuxlabs/tracekit@latest verify run.tkb --trust trust.json`, or the browser page
+([verdicts](../verdicts.md#a-bundle-that-needs-a-newer-verifier)).

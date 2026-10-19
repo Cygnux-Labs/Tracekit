@@ -25,7 +25,8 @@ class VerifyDryRun(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.mkdtemp()
         for name, data in (("tracekit_ai-1.0-py3-none-any.whl", b"w"), ("tracekit_ai-1.0.tar.gz", b"s"),
-                           ("cygnuxlabs-tracekit-1.0.tgz", b"n"), (release.PY_SBOM, b'{"bomFormat": "CycloneDX"}')):
+                           ("cygnuxlabs-tracekit-1.0.tgz", b"n"), ("verify.html", b"v"),
+                           (release.PY_SBOM, b'{"bomFormat": "CycloneDX"}')):
             with open(os.path.join(self.dir, name), "wb") as f:
                 f.write(data)
         release.write_sums(self.dir)
@@ -37,6 +38,11 @@ class VerifyDryRun(unittest.TestCase):
     def test_changed_file_fails(self):
         with open(os.path.join(self.dir, "tracekit_ai-1.0.tar.gz"), "wb") as f:
             f.write(b"x")
+        self.assertNotEqual(verify(self.dir).returncode, 0)
+
+    def test_missing_page_fails(self):
+        os.remove(os.path.join(self.dir, "verify.html"))
+        release.write_sums(self.dir)
         self.assertNotEqual(verify(self.dir).returncode, 0)
 
     def test_missing_sbom_fails(self):
@@ -69,7 +75,7 @@ class ReleaseBuild(unittest.TestCase):
         with tempfile.TemporaryDirectory() as out:
             subprocess.run([sys.executable, BUILD, out], check=True)
             names = os.listdir(out)
-            for suffix in (".whl", ".tar.gz", ".tgz", release.PY_SBOM, "SHA256SUMS"):
+            for suffix in (".whl", ".tar.gz", ".tgz", "verify.html", release.PY_SBOM, "SHA256SUMS"):
                 self.assertTrue(any(n.endswith(suffix) for n in names), (suffix, names))
             r = verify(out)
             self.assertEqual(r.returncode, 0, r.stdout + r.stderr)

@@ -23,7 +23,7 @@
   "files": ["dist", "bin", "README.md"],
   "engines": { "node": ">=18" },
   "scripts": {
-    "build": "tsc -p .",
+    "build": "tsc -p . && node scripts/verify-page.mjs",
     "test": "npm run build && node --test test/*.test.mjs"
   },
   "optionalDependencies": {

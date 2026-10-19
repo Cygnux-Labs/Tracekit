@@ -19,7 +19,7 @@ cd "$1"
 if command -v sha256sum >/dev/null 2>&1; then sha256sum -c SHA256SUMS; else shasum -a 256 -c SHA256SUMS; fi
 grep -q '"bomFormat": *"CycloneDX"' tracekit-ai.cdx.json 2>/dev/null \
     || { echo "tracekit-ai.cdx.json: missing or not a CycloneDX SBOM" >&2; exit 1; }
-for f in *.whl *.tar.gz *.tgz; do
+for f in *.whl *.tar.gz *.tgz verify.html; do
     [ -e "$f" ] || { echo "no $f in $1" >&2; exit 1; }
     grep -q "  $f\$" SHA256SUMS || { echo "$f is not listed in SHA256SUMS" >&2; exit 1; }
 done

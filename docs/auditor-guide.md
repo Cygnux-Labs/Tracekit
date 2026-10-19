@@ -75,6 +75,15 @@ npx --package ./cygnuxlabs-tracekit-<version>.tgz tracekit verify run.tkb --trus
 It needs only Node ≥ 20.12. Where it can't check something the bundle relies on (an SLH-DSA checkpoint line, a Rekor
 anchor, a certified record key) it says `UNVERIFIABLE` and names it; use the Python verifier for those.
 
+**In a browser.** The release's `verify.html` is the TypeScript verifier as one page whose Content Security Policy lets
+it load and send nothing, so a bundle checked there never leaves your machine. Check your copy against the release
+first, `gh attestation verify verify.html --repo Cygnux-Labs/Tracekit`, then open it and choose the bundle and your
+trust config.
+
+A verifier older than the bundle says `UNVERIFIABLE (needs tracekit >= x)` and, from 1.4.0, the commands that verify
+it ([verdicts](verdicts.md#a-bundle-that-needs-a-newer-verifier)). A `not interpreted` warning means the records carry
+an ext name your verifier doesn't check: they verified, but for what the name says use the version the line names.
+
 ## 5. Read the report
 
 [Verdicts](verdicts.md) explains every line. For an audit, look at least at:

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Build the release artifacts of the committed tree at HEAD into OUT (docs/RELEASING.md): the tracekit-ai sdist and
 wheel (byte-identical across builds: SOURCE_DATE_EPOCH is HEAD's commit time, tool versions from constraints.txt), the
-@cygnuxlabs/tracekit npm tarball, CycloneDX SBOMs of the Python package and, with --image, the container image, and
-SHA256SUMS over all of it. Publishes nothing; the release workflow attests and publishes what it writes.
+@cygnuxlabs/tracekit npm tarball, the browser verifier verify.html (built twice, byte-identical), CycloneDX SBOMs of
+the Python package and, with --image, the container image, and SHA256SUMS over all of it. Publishes nothing; the release workflow attests and publishes what it writes.
 
     python3 scripts/release/build.py [OUT] [--image REF]      (needs `pip install -c scripts/release/constraints.txt build`)
 """
@@ -11,6 +11,7 @@ import gzip
 import hashlib
 import io
 import os
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -58,6 +59,21 @@ def npm_pack(src, out):
     for cmd in (["npm", "ci", "--no-audit", "--no-fund"], ["npm", "run", "build"],
                 ["npm", "pack", "--pack-destination", os.path.abspath(out)]):
         subprocess.run(cmd, cwd=sdk, check=True, shell=os.name == "nt")
+
+
+def verify_page(src, out):
+    """verify.html, the browser verifier the npm build wrote, built once more: the two must be byte-identical."""
+    # lean: the second build runs in the same tree; build from a second export of HEAD if a page ever differs between
+    # machines
+    sdk = os.path.join(src, "sdk", "typescript")
+    page = os.path.join(sdk, "dist", "verify.html")
+    with open(page, "rb") as f:
+        first = f.read()
+    subprocess.run(["npm", "run", "build"], cwd=sdk, check=True, shell=os.name == "nt")
+    with open(page, "rb") as f:
+        if f.read() != first:
+            sys.exit("verify.html differs between two builds of the same tree")
+    shutil.copyfile(page, os.path.join(out, "verify.html"))
 
 
 def exe(env_dir, name):
@@ -109,6 +125,7 @@ def main():
         export_head(src)
         python_dists(src, args.out, epoch)
         npm_pack(src, args.out)
+        verify_page(src, args.out)
         python_sbom(src, args.out, tmp)
     # lean: the image and the signer npm packages are built by the release workflow, not here (they need buildx and a
     # registry, and tracekit-ai on PyPI); add them to the dry run if their build breaks only at release time
