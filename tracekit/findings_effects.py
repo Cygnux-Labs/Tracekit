@@ -103,11 +103,12 @@ def options(grace_s=GRACE_S, skew_s=SKEW_S, skips=None):
 
 def arguments(ap):
     ap.add_argument("--effect-grace", type=float, default=GRACE_S, metavar="S",
-                    help="TK-X206/X207: seconds after a call's result its effects still count as its own")
+                    help="seconds after a call's result its effects still count as its own (default %(default)g)")
     ap.add_argument("--clock-skew", type=float, default=SKEW_S, metavar="S",
-                    help="TK-X206/X207: seconds the kernel sensor's clock may be off the signer's")
+                    help="seconds the kernel sensor's clock may be off the signer's (default %(default)g)")
     ap.add_argument("--sensor-skip", metavar="DIR", action="append",
-                    help="TK-X207: a directory the kernel sensor's file policy leaves out ('': it selects every write)")
+                    help="TK-X207: a directory the kernel sensor's file policy leaves out (repeatable; '': it selects "
+                    "every write)")
 
 
 def from_args(a):

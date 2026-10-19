@@ -5,6 +5,7 @@ import contextlib
 import io
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -23,6 +24,7 @@ from tracekit.bundle_v2 import export  # noqa: E402
 from tracekit.format import checkpoint  # noqa: E402
 from tracekit.format.canon import event_hash  # noqa: E402
 from tracekit.format.checkpoint import ED25519  # noqa: E402
+from tracekit.signer.rpc_schema import FINDING_TITLES as TITLES  # noqa: E402
 from tracekit.sdk.client import RunHandle  # noqa: E402
 from tracekit.signer.rpc_schema import REQUESTS, RPCError  # noqa: E402
 from tracekit.verify import v2  # noqa: E402
@@ -540,6 +542,27 @@ class Via:
 
     def close(self):   # main closes its client; this one stays open
         pass
+
+
+class Docs(unittest.TestCase):
+    def test_every_rule_has_its_title_and_a_plain_line_in_the_docs(self):
+        with open(os.path.join(ROOT, "docs", "findings.md"), encoding="utf-8") as f:
+            doc = f.read()
+        for rule, title in TITLES.items():
+            with self.subTest(rule):
+                self.assertRegex(doc, rf"\n\| {rule} \| {re.escape(title)} \| [a-z][^|\n]+ \|\n")
+
+    def test_the_help_explains_every_flag(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), self.assertRaises(SystemExit):
+            findings_v2.main(["--help"])
+        text = out.getvalue()
+        for flag in ("--run", "--store", "--bundle", "--trust", "--open", "--project", "--allow", "--budget",
+                     "--effect-grace", "--clock-skew", "--sensor-skip", "--review", "--review-model", "--review-url",
+                     "--review-gateway", "--dry-run", "--json"):
+            with self.subTest(flag):
+                self.assertRegex(text, rf"\n  {flag}(?: [A-Z]+)?\s+\S")   # its help follows it
+        self.assertIn("(default 60)", text)
 
 
 class Command(Base):

@@ -5,6 +5,7 @@
     tracekit analyze --v2 --run R --bundle B --trust T
         [--project DIR] [--allow DIR ...] [--open] [--budget S] [--dry-run] [--json]
         [--effect-grace S] [--clock-skew S] [--sensor-skip DIR ...]
+        [--review [--review-model M] [--review-url URL] [--review-gateway]]
 
 Each pass signs its findings and its coverage review through the signer (review_finding), in a findings run of its own
 about the run (`register_run analyzes`), as an identity signer.yaml `analyzers` lists (the dev signer lists its user, so
@@ -921,29 +922,37 @@ def main(argv=None):
         "call with no effect; TK-X200 coverage and the monitorability score; with --review, TK-X210 a reviewer "
         "model's reading, warn only), and sign the findings. Exit 0, 4 when a finding other than TK-X210 is high or "
         "worse, 2 on an error (findings that could not be signed among them)."))
-    ap.add_argument("--run", help="the run id (default: the store's latest run)")
-    src = ap.add_mutually_exclusive_group()
-    src.add_argument("--store", metavar="DIR", help="a signer data dir (default: the dev signer's), read-only")
-    src.add_argument("--bundle", metavar="FILE", help="a v2 bundle, verified first with --trust")
-    ap.add_argument("--trust", help="with --bundle: the v2 trust config")
-    ap.add_argument("--project", metavar="DIR", help="the project directory (default: the first prompt's cwd)")
-    ap.add_argument("--allow", metavar="DIR", action="append", default=[],
-                    help="a directory outside the project the agent may write (with /tmp and $TMPDIR)")
-    ap.add_argument("--open", action="store_true", help="analyse a run that is still open: coverage says partial")
-    ap.add_argument("--budget", type=float, default=BUDGET_S, metavar="S", help="seconds the analysis may take")
-    findings_effects.arguments(ap)
-    ap.add_argument("--dry-run", action="store_true", help="print the findings, sign nothing")
-    ap.add_argument("--json", action="store_true")
-    ap.add_argument("--review", action="store_true", help="also ask a reviewer model (TK-X210, warn only), which "
-                    "sends the run's text to that model (docs/privacy.md#what-leaves-the-machine)")
-    ap.add_argument("--review-model", metavar="M", help="the reviewer model (default: one of another model family "
-                    "than the agent's, of those configured: TRACEKIT_REVIEW_MODEL with TRACEKIT_REVIEW_URL, "
-                    f"{review_model.reviewer.DEFAULT_MODEL} with ANTHROPIC_API_KEY, {review_model.OPENAI_MODEL} with "
-                    f"OPENAI_API_KEY; else {review_model.reviewer.DEFAULT_MODEL})")
-    ap.add_argument("--review-url", metavar="URL", help="its endpoint: .../v1/messages (Anthropic Messages; default "
-                    f"{review_model.URL}) or .../v1/chat/completions (OpenAI chat, as a local model server speaks it)")
-    ap.add_argument("--review-gateway", action="store_true", help="--review-url is Tracekit's LLM gateway, which "
-                    "records the call (default: the analyzer records it)")
+    g = ap.add_argument_group("the run")
+    g.add_argument("--run", metavar="ID", help="the run id (default: the store's latest run)")
+    src = g.add_mutually_exclusive_group()
+    src.add_argument("--store", metavar="DIR", help="a signer data dir, read-only (default: the dev signer's)")
+    src.add_argument("--bundle", metavar="FILE", help="a v2 bundle, verified first against --trust")
+    g.add_argument("--trust", metavar="FILE", help="with --bundle: the v2 trust config")
+    g.add_argument("--open", action="store_true", help="analyse a run that is still open: coverage says partial")
+    g = ap.add_argument_group("the checks")
+    g.add_argument("--project", metavar="DIR", help="the project directory, for TK-X203 (default: the first prompt's "
+                   "cwd)")
+    g.add_argument("--allow", metavar="DIR", action="append", default=[], help="a directory outside the project the "
+                   "agent may write, besides /tmp and $TMPDIR (repeatable)")
+    g.add_argument("--budget", type=float, default=BUDGET_S, metavar="S", help="seconds the analysis may take "
+                   "(default %(default)g); past it every check is not checkable: budget")
+    findings_effects.arguments(ap.add_argument_group("kernel sensor effects (TK-X206, TK-X207)"))
+    g = ap.add_argument_group("the reviewer model (TK-X210, warn only)")
+    g.add_argument("--review", action="store_true", help="also ask a reviewer model, which sends the run's text "
+                   "(redacted) to that model (docs/privacy.md#what-leaves-the-machine); not with --dry-run")
+    g.add_argument("--review-model", metavar="M", help="the reviewer model (default: of those configured, the first "
+                   "of another model family than the agent's: TRACEKIT_REVIEW_MODEL with TRACEKIT_REVIEW_URL, "
+                   f"{review_model.reviewer.DEFAULT_MODEL} with ANTHROPIC_API_KEY, {review_model.OPENAI_MODEL} with "
+                   f"OPENAI_API_KEY; else {review_model.reviewer.DEFAULT_MODEL})")
+    g.add_argument("--review-url", metavar="URL", help="its endpoint: .../v1/messages (Anthropic Messages) or "
+                   ".../v1/chat/completions (OpenAI chat, as a local model server speaks it) (default: the chosen "
+                   "reviewer's endpoint)")
+    g.add_argument("--review-gateway", action="store_true", help="--review-url is Tracekit's LLM gateway, which "
+                   "records the call (default: the analyzer records it)")
+    g = ap.add_argument_group("output")
+    g.add_argument("--dry-run", action="store_true", help="print the findings, sign nothing")
+    g.add_argument("--json", action="store_true", help="print the whole result as JSON (docs/findings.md#the---json-"
+                   "shape), for CI and agents")
     a = ap.parse_args(argv)
     if a.review and a.dry_run:
         print("tracekit analyze: --review records the model call in a findings run and --dry-run signs nothing: "

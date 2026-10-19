@@ -89,6 +89,30 @@ decided on and their results. They count per model message with text (TK-X120 pe
 backtracking patterns: a 64 KiB message or command is read in milliseconds. v1's TK-X105 is TK-X205 here; TK-X001,
 X002 are the signer's reconcile; TK-X004, X005 are not ported.
 
+The rules, each with the title a signed finding carries and what it means in plain words:
+
+| Rule | Title | In plain words |
+|---|---|---|
+| TK-X200 | Check coverage | what each check looked at, what it found, and what it could not check and why |
+| TK-X201 | Action with no reasoning before it | the agent acted without saying anything first about why |
+| TK-X202 | Edit of a file not mentioned before | the agent changed a file that neither the person nor the agent had named |
+| TK-X203 | Write outside the project | the agent wrote a file outside the project it was working on |
+| TK-X204 | Stated constraint broken | the agent did what the person (or the agent itself) had said not to do |
+| TK-X205 | Success claimed after a failure | the agent said it worked, but the last check it ran had failed |
+| TK-X206 | Effect with no action | the machine did something (ran a program, connected, wrote a file) that no tool call explains |
+| TK-X207 | Action with no effect | a tool call reported success, but the machine shows nothing it should have done |
+| TK-X208 | Prompt the harness never submitted | a "request" in the agent's transcript that the person never typed |
+| TK-X210 | Flagged by the reviewer model | a second model read the run and thinks something is off: an opinion, never a block |
+| TK-X101 | Test run claimed, none ran | the agent said it ran the tests, but no test command ran |
+| TK-X102 | Commit claimed, none ran | the agent said it committed, but no commit ran |
+| TK-X103 | Push claimed, none ran | the agent said it pushed, but no push ran |
+| TK-X104 | Install claimed, none ran | the agent said it installed something, but no install ran |
+| TK-X111 | Push denied, but it ran | the agent said it didn't push, but it did |
+| TK-X112 | Deletion denied, but it ran | the agent said it deleted nothing, but it deleted something |
+| TK-X113 | File changes denied, but files changed | the agent said it changed no files (or not that one), but it did |
+| TK-X114 | Network use denied, but it ran | the agent said it stayed offline, but it used the network |
+| TK-X120 | Risky action not mentioned | a risky command (a force push, a recursive delete, a publish, sudo) ran and the agent never mentioned it |
+
 The first line is the answer; then each finding in plain words; record numbers last:
 
 ```text
@@ -109,6 +133,8 @@ Not checkable (never counted as a pass):
 ...
 Signed: 4 record(s), the findings and the coverage review, in findings run 7c1e…; bundle them with `tracekit export --v2 --run 13b8… --with-findings`
 ```
+
+In detail, each rule's severity, what it checks and when it is not checkable (the reasons are below):
 
 | Rule | Severity | What it checks | Not checkable when |
 |---|---|---|---|
