@@ -3,6 +3,7 @@ against the run's calls, the gateways and the policy's explains; observer heartb
 unattributed effects; the coverage matrix in run.final and the verifier; the proxy's SNI, IP and DoH refusals."""
 import base64
 import concurrent.futures
+import io
 import ipaddress
 import json
 import math
@@ -20,6 +21,7 @@ import unittest
 from unittest import mock
 
 from test_signer_lifecycle import Lifecycle
+from test_netserver import self_signed
 from test_signer_service import ME, OTHER
 from tracekit import egress
 from tracekit.bundle_v2 import export
@@ -398,6 +400,31 @@ def client_hello(name):
     return out.read()
 
 
+def socks5(proxy, host, port, creds=("run-1", "tok.mac"), cmd=1, tls=None):
+    """A SOCKS5 request to host:port as microsandbox's outbound proxy sends it (crates/network/lib/proxy/socks.rs), or
+    E2B's (a host name for a domain-matched flow; inside TLS with `tls`, an SSLContext): the socket and each reply."""
+    s = socket.create_connection(proxy, 5)
+    s = tls.wrap_socket(s) if tls else s
+    s.sendall(b"\x05\x02\x00\x02" if creds else b"\x05\x01\x00")
+    replies = [s.recv(2)]
+    if replies[0] == b"\x05\x02":
+        user, password = (x.encode() for x in creds)
+        s.sendall(bytes([1, len(user)]) + user + bytes([len(password)]) + password)
+        replies.append(s.recv(2))
+    if replies[-1] in (b"\x05\x00", b"\x01\x00"):
+        try:
+            a = ipaddress.ip_address(host)
+            target = bytes([1 if a.version == 4 else 4]) + a.packed
+        except ValueError:
+            target = bytes([3, len(host)]) + host.encode()
+        s.sendall(bytes([5, cmd, 0]) + target + port.to_bytes(2, "big"))
+        replies.append(s.recv(10))
+    return s, replies
+
+
+OPENED = b"\x05\x00\x00\x01" + bytes(6)
+
+
 class Upstream:
     """A TCP server that keeps what it is sent and answers `pong`."""
 
@@ -733,6 +760,100 @@ class TestProxy(unittest.TestCase):
         self.assertEqual(got, [b"a" * 1000, b"b" * 1000])
 
     @unittest.skipUnless(sys.byteorder == "little", "the rows below are a little-endian machine's")
+    def socks(self, host, **kw):
+        return socks5(self.srv.server_address[:2], host, self.up.port, **kw)
+
+    def test_a_socks5_address_is_reached_by_its_sni_and_its_credentials_are_the_run(self):
+        s, replies = self.socks("127.0.0.1")
+        self.assertEqual(replies, [b"\x05\x02", b"\x01\x00", OPENED])
+        self.assertEqual(self.sent[0]["check"], {"run_id": "run-1", "run_token": "tok.mac"})
+        hello = client_hello("localhost")
+        s.sendall(hello)
+        self.assertEqual(self.read(s), b"pong")
+        self.assertEqual(self.up.got, [hello])
+        time.sleep(0.1)
+        self.srv.observer.flush(math.inf)
+        (e,) = self.sent[-1]["effects"]
+        self.assertEqual({k: e[k] for k in ("run_id", "run_token", "host", "port", "bytes_out", "bytes_in")},
+                         {"run_id": "run-1", "run_token": "tok.mac", "host": "localhost", "port": self.up.port,
+                          "bytes_out": len(hello), "bytes_in": 4})
+
+    def test_a_socks5_address_whose_sni_does_not_resolve_to_it_is_closed_before_it_is_reached(self):
+        for ip, hello, why in (("127.0.0.3", client_hello("localhost"), "'localhost' does not resolve to it here"),
+                               ("127.0.0.1", client_hello(None), "it sends no TLS server name"),
+                               ("127.0.0.1", b"GET / HTTP/1.1\r\nHost: localhost\r\n\r\n", "no TLS server name"),
+                               ("127.0.0.1", client_hello("dns.google"), "DNS-over-HTTPS endpoint")):
+            with self.subTest(why), mock.patch.object(sys, "stderr", io.StringIO()) as err:
+                s, replies = self.socks(ip)
+                self.assertEqual(replies[-1], OPENED)
+                s.sendall(hello)
+                self.assertEqual(self.read(s), b"")
+                self.assertIn(why, err.getvalue())
+        self.assertEqual(self.up.got, [])
+        self.srv.observer.flush(math.inf)
+        self.assertEqual([e for r in self.sent for e in r["effects"]], [])
+        self.srv.observer.allow.add("127.0.0.1")   # an allowed address passes as itself, any protocol
+        s, _ = self.socks("127.0.0.1")
+        s.sendall(b"ping\r\n\r\n")
+        self.assertEqual(self.read(s), b"pong")
+
+    def test_socks5_without_a_run_udp_and_a_made_up_token_are_refused(self):
+        with mock.patch.object(egress, "_peer_uid", return_value=None), mock.patch.object(sys, "stderr", io.StringIO()):
+            self.assertEqual(self.socks("127.0.0.1", creds=None)[1], [b"\x05\xff"])
+            self.assertEqual(self.socks("127.0.0.1", cmd=3)[1][-1][:2], b"\x05\x07")   # UDP ASSOCIATE
+            self.client.observe_effect = mock.Mock(side_effect=RPCError("run_token_invalid", "not issued"))
+            self.assertEqual(self.socks("127.0.0.1", creds=("run-1", "made.up"))[1], [b"\x05\x02", b"\x01\x01"])
+            self.assertEqual(self.socks("127.0.0.1", creds=("run-1", "tok mac"))[1], [b"\x05\x02", b"\x01\x01"])
+        self.assertEqual(self.client.observe_effect.call_count, 1)   # a token no run could have isn't checked
+        self.client.observe_effect = self.sent.append
+        with mock.patch.object(egress, "_peer_uid", return_value=1234):   # no credentials: the client's identity
+            s, replies = self.socks("127.0.0.1", creds=None)
+        self.assertEqual(replies, [b"\x05\x00", OPENED])
+        s.sendall(client_hello("localhost"))
+        self.assertEqual(self.read(s), b"pong")
+        self.srv.observer.flush(math.inf)
+        self.assertEqual(self.sent[-1]["effects"][0]["caller"], "uid:1234")
+
+    def test_a_socks5_host_name_is_resolved_and_checked_as_connects(self):
+        s, replies = self.socks("localhost")
+        self.assertEqual(replies[-1], OPENED)
+        s.sendall(client_hello("localhost"))
+        self.assertEqual(self.read(s), b"pong")
+        with mock.patch.object(sys, "stderr", io.StringIO()) as err:
+            s, replies = self.socks("localhost")
+            s.sendall(client_hello("evil.example"))
+            self.assertEqual(self.read(s), b"")
+            self.assertEqual(self.socks("dns.google")[1][-1][:2], b"\x05\x02")   # refused: not allowed
+            self.assertEqual(self.socks("a!b.example")[1][-1][:2], b"\x05\x01")
+        self.assertIn("its TLS server name is 'evil.example', not 'localhost'", err.getvalue())
+        self.assertIn("DNS-over-HTTPS endpoint", err.getvalue())
+        self.assertEqual(len(self.up.got), 1)
+        self.srv.observer.flush(math.inf)
+        self.assertEqual([e["host"] for r in self.sent for e in r["effects"]], ["localhost"])
+
+    def test_socks5_and_http_inside_tls_on_the_http_listener(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        self_signed(d)
+        with open(os.path.join(d, "bearer"), "w") as f:
+            f.write("b" * 40)
+        self.srv = egress.serve({"http": {"listen": "127.0.0.1:0", "cert": os.path.join(d, "c.pem"),
+                                          "key": os.path.join(d, "k.pem"), "authenticators": ["token"],
+                                          "token_file": os.path.join(d, "bearer")}, "signer": "unused"}, self.client)
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+        self.addCleanup(self.srv.server_close)
+        self.addCleanup(self.srv.shutdown)
+        tls = ssl.create_default_context()
+        tls.check_hostname, tls.verify_mode = False, ssl.CERT_NONE
+        s, replies = self.socks("localhost", tls=tls)   # E2B's egressProxy with tls.enabled
+        self.assertEqual(replies, [b"\x05\x02", b"\x01\x00", OPENED])
+        s.sendall(client_hello("localhost"))
+        self.assertEqual(self.read(s), b"pong")
+        s = tls.wrap_socket(socket.create_connection(self.srv.server_address[:2], 5))
+        s.sendall(f"CONNECT localhost:{self.up.port} HTTP/1.1\r\nProxy-Authorization: {self.auth}\r\n\r\n".encode())
+        self.assertTrue(s.recv(65536).startswith(b"HTTP/1.1 200 Connection established"))
+        s.close()
+
     def test_the_peer_uid_is_the_established_socket_with_both_addresses(self):
         rows = ["  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode",
                 # the same ports from another address; the right addresses not established; the agent's socket
@@ -775,6 +896,33 @@ class TestEndToEnd(Observed):
         es = self.final(run)
         self.assertEqual([e["data"]["host"] for e in self.typed(es, "reconcile.unexplained_effect")], ["localhost"])
         self.assertEqual(self.typed(es, "run.final")[0]["data"]["matrix"]["network"]["status"], "observed")
+
+    def test_a_microsandbox_socks5_connection_is_its_runs_signed_effect(self):
+        public(self)
+        up = Upstream()
+        self.addCleanup(up.sock.close)
+        client = types.SimpleNamespace(observe_effect=lambda req: self.s.call(OBSERVER, "observe_effect", req))
+        srv = egress.serve({"listen": "127.0.0.1:0", "signer": "unused"}, client)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        srv.observer.flush()
+        run, other = self.register(), self.register()
+        with mock.patch.object(sys, "stderr", io.StringIO()):
+            s, replies = socks5(srv.server_address[:2], "127.0.0.1", up.port, creds=(run["run_id"], other["run_token"]))
+        self.assertEqual(replies, [b"\x05\x02", b"\x01\x01"])   # another run's token
+        s, replies = socks5(srv.server_address[:2], "127.0.0.1", up.port, creds=(run["run_id"], run["run_token"]))
+        self.assertEqual(replies[-1], OPENED)
+        s.sendall(client_hello("localhost"))
+        while s.recv(65536):
+            pass
+        s.close()
+        time.sleep(0.1)
+        srv.observer.flush(math.inf)
+        (e,) = self.typed(self.final(run), "effect.observed")
+        self.assertEqual({k: e["data"][k] for k in ("host", "port", "bytes_in", "attribution")},
+                         {"host": "localhost", "port": up.port, "bytes_in": 4, "attribution": "token"})
+        self.assertEqual(e["data"]["observer"], f"{OBSERVER.scheme}:{OBSERVER.subject}")
 
 
 if __name__ == "__main__":
