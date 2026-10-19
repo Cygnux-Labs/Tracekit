@@ -214,7 +214,7 @@ ask:
   - id: TK-A027
     class: shell
     field: target
-    pattern: '^(?:WRITE_TARGET|DELETE_TARGET):(?:[^\n]*/)?(?:\.bash_history|\.zsh_history|fish_history|ConsoleHost_history\.txt)$|^(?:WRITE_TARGET|DELETE_TARGET):/var/log(?:/.*)?$|^history\s[^\n]*?-[A-Za-z]*c|^unset\s+HISTFILE(?:\s|$)|^set\s+\+o\s+history(?:\s|$)|^(?:export\s+)?HISTFILE=/dev/null(?:\s|$)|^journalctl\s+[^\n]*--vacuum-[^\s=]+(?:=|\s|$)'
+    pattern: '^(?:WRITE_TARGET|DELETE_TARGET):(?:[^\n]*/)?(?:\.bash_history|\.zsh_history|fish_history|ConsoleHost_history\.txt)$|^(?:WRITE_TARGET|DELETE_TARGET):/var/log(?:/.*)?$|^history\s(?:[^\n]*\s)?-[A-Za-z]*c[A-Za-z]*(?:\s|$)|^unset\s+HISTFILE(?:\s|$)|^set\s+\+o\s+history(?:\s|$)|^(?:export\s+)?HISTFILE=/dev/null(?:\s|$)|^journalctl\s+[^\n]*--vacuum-[^\s=]+(?:=|\s|$)'
     reason: clearing shell history or system logs
     remedy: Wait for a person to approve the held call, or leave shell history and system logs as they are.
     rationale: Writing or deleting a history or log file can hide earlier activity; reading those files remains allowed.

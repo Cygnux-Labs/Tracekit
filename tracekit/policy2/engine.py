@@ -5,6 +5,7 @@ Every decision names the engine (id@version) and the policy_hash. Precedence: de
 """
 import fnmatch
 import functools
+import posixpath
 import re
 import time
 
@@ -349,6 +350,12 @@ _RUN_FLAGS = {"--detach", "--interactive", "--tty", "--rm", "--init", "--privile
 _HOST_PATH = re.compile(r"/|/proc(/.*)?")   # a mount source that hands the container the host's root or /proc
 
 
+def _host_path(source):
+    """Whether mount source `source` is the host's root or /proc, read as the runtime resolves it (`//`, `/.`)."""
+    p = posixpath.normpath(source)
+    return bool(_HOST_PATH.fullmatch("/" + p.lstrip("/") if p.startswith("/") else p))
+
+
 def _container_host_access(commands):
     """A docker/podman run whose own options (those before the image: later words are the container's command) give
     it host privileges, the host's process space, or the host's root or /proc."""
@@ -366,14 +373,14 @@ def _container_host_access(commands):
                 j = next((j for j, c in enumerate(arg[1:], 1) if c not in "ditPq"), len(arg))
                 name, value = "-" + arg[j:j + 1], arg[j + 1:].removeprefix("=")
                 takes = j < len(arg) and not value
-            if takes and i + 1 < len(args):
+            if takes and i + 1 < len(args) and not args[i + 1].startswith("-"):   # an option is never a value
                 i += 1
                 value = args[i]
             i += 1
             if (name == "--privileged" and value.lower() not in ("0", "f", "false")
                     or name == "--pid" and value == "host"
-                    or name in ("-v", "--volume") and _HOST_PATH.fullmatch(value.partition(":")[0])
-                    or name == "--mount" and any(k in ("src", "source") and _HOST_PATH.fullmatch(v)
+                    or name in ("-v", "--volume") and _host_path(value.partition(":")[0])
+                    or name == "--mount" and any(k in ("src", "source") and _host_path(v)
                                                  for k, _, v in (item.partition("=") for item in value.split(",")))):
                 return ["host-access"]
     return []
@@ -397,7 +404,10 @@ def _shell_action_targets(commands):
                     break
                 paths.append(arg)
             history_names = (".bash_history", ".zsh_history", "fish_history", "ConsoleHost_history.txt")
+            pruned = {i for i in range(len(args)) if args[i + 1:i + 2] == ["-prune"]}   # `-path X -prune` leaves X out
             for i, arg in enumerate(args):
+                if i in pruned or i + 1 in pruned and arg in ("-path", "-wholename"):
+                    continue
                 if (arg in ("-path", "-wholename") and i + 1 < len(args)
                         and (args[i + 1].replace("\\", "/").startswith("/var/log")
                              or any(part.endswith(history_names) for part in args[i + 1].replace("\\", "/").split("/")))):

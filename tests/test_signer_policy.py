@@ -524,6 +524,29 @@ class CodingPack(unittest.TestCase):
                 self.assertEqual(decision["verdict"], expected)
                 self.assertIsNone(decision.get("nondeterministic"))
 
+    def test_mount_sources_option_values_history_reads_and_pruned_paths(self):
+        # a mount source is read as the runtime resolves it (`//`, `/.`); an option's value is never another option
+        # (`--rootfs --privileged`); `history -r` with a path holding `-c` reads history; a path `-prune` leaves out of
+        # a find that deletes isn't deleted
+        self.verdicts([(c, "TK-A023") for c in (
+            "docker run -v //:/host alpine", "docker run -v /.:/host alpine", "podman run -v /proc/.:/p alpine",
+            "docker run --mount type=bind,src=//,dst=/h alpine", "podman run --rootfs --privileged alpine",
+            "docker run -v --privileged alpine")])
+        self.verdicts([("history -cw", "TK-A027"), ("history -w -c", "TK-A027")])
+        for command in ("docker run -v /home/u/src:/src alpine", "docker run -v ./proc:/p alpine",
+                        "history -r ~/my-cache", "history -a ~/a-c",
+                        "find /tmp -path /var/log -prune -o -name '*.tmp' -delete",
+                        "find /tmp -name .bash_history -prune -o -exec rm {} +"):
+            with self.subTest(command=command):
+                d = self.e.decide("Bash", {"command": command})
+                self.assertFalse({"TK-A023", "TK-A027"} & set(d["rule_ids"]), d)
+        # docs/limits.md's rows: a delete by a shell find runs, and Yarn Berry's registry setting, aren't held
+        for command in ("find /var/log -exec sh -c 'rm \"$1\"' _ {} \\;",
+                        "yarn config set npmRegistryServer https://packages.example.test/"):
+            with self.subTest(command=command):
+                d = self.e.decide("Bash", {"command": command})
+                self.assertFalse({"TK-A025", "TK-A027"} & set(d["rule_ids"]), d)
+
 
 class PackReading(unittest.TestCase):
     """How the shipped packs read SQL, hosts, paths and commands an agent can spell more than one way."""
