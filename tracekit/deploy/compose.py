@@ -18,6 +18,7 @@ import sys
 
 from tracekit.deploy import files
 from tracekit.format import checkpoint
+from tracekit.wiki import wiki_url
 
 SRC = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 TEMPLATES = os.path.join(SRC, "deploy", "compose")
@@ -178,12 +179,13 @@ def main(argv=None):
     print(f"wrote {len(written)} file(s) to {out}, {kept} already there")
     if hasattr(os, "geteuid") and os.geteuid() != 0 and any(r.startswith("secrets/") for r in written):
         print("note: not root, so secrets/ is owned by you; on Linux the containers (uids 10001, 10002, 999) can't "
-              "read it: run this as root, or chown each file as docs/deploy-compose.md shows", file=sys.stderr)
+              f"read it: run this as root, or chown each file as {wiki_url('docs/deploy-compose.md')} shows",
+              file=sys.stderr)
     print(f"""next:
   cd {out}
   cp .env.example .env                    # ports
   docker compose up -d --build --wait     # docker compose build --build-arg WITNESS=litewitness witness: litewitness
   docker compose run --rm agent           # a run from the example agent service; prints its run id
   docker compose logs viewer              # the viewer's URL and token
-docs/deploy-compose.md: what `witnessed` needs (the witness here is class {a.witness_class}).""")
+{wiki_url('docs/deploy-compose.md')}: what `witnessed` needs (the witness here is class {a.witness_class}).""")
     return 0

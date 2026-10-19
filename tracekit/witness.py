@@ -16,6 +16,7 @@ import subprocess
 from . import crypto
 from .client import no_redirect_opener, remote_url_error
 from .core import b64d, b64e, canon, now_ts
+from .wiki import wiki_url
 
 CP_TYPE = "tracekit.checkpoint.v1"
 STH_TYPE = "tracekit.witness.sth.v1"
@@ -275,7 +276,8 @@ def from_spec(spec):
         return GitWitness(rest)
     if kind == "rekor":
         if os.environ.get("TRACEKIT_ENABLE_REKOR") != "1":
-            raise ValueError("rekor witness requires TRACEKIT_ENABLE_REKOR=1 (public and permanent; see docs/witnesses.md)")
+            raise ValueError("rekor witness requires TRACEKIT_ENABLE_REKOR=1 (public and permanent; see "
+                             f"{wiki_url('docs/witnesses.md')})")
         from .rekor import RekorWitness
         return RekorWitness(rest)
     raise ValueError(f"unknown witness spec {spec!r} (use file:/path, git:/path[@remote] or https://witness[#key=...])")

@@ -38,6 +38,7 @@ from tracekit.deploy import files
 from tracekit.format import checkpoint
 from tracekit.netserver import MAX_PER_IP, MAX_THREADS, Server
 from tracekit.tlog_witness import MAX_BODY
+from tracekit.wiki import wiki_url
 
 REGISTRATIONS_PER_DAY, REGISTRATIONS_PER_MIN, CHECKPOINTS_PER_MIN, MAX_ORIGINS = 100, 60, 30, 100_000
 MAX_HITS = 100_000
@@ -139,7 +140,7 @@ class Witness:
                 return (200, "registered\n") if row[0] == req["vkey"] else \
                     (409, "this origin is registered with another key: set another `origin` in signer.yaml\n")
             if self.db.execute("SELECT count(*) FROM origins").fetchone()[0] >= MAX_ORIGINS:
-                return 403, "this witness is full: run your own witness (docs/witnesses.md)\n"
+                return 403, f"this witness is full: run your own witness ({wiki_url('docs/witnesses.md')})\n"
             if self._limited("register-all", "", REGISTRATIONS_PER_MIN, 60):
                 return 429, "registrations are over this witness's limit this minute: try again later\n"
             self.db.execute("INSERT INTO origins VALUES (?, ?, 0, ?, NULL, NULL, ?)",

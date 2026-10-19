@@ -42,6 +42,7 @@ import re
 import shlex
 
 from .findings import WRITE_TOOLS
+from .wiki import wiki_url
 
 CLAIMED = {"TK-X101": "tests", "TK-X102": "commit", "TK-X103": "push", "TK-X104": "install"}
 DENIED = ("TK-X111", "TK-X112", "TK-X113", "TK-X114")
@@ -76,7 +77,7 @@ REASONS = {   # not checkable: (why, the change that makes it checkable)
                   "complete every call (the integrations do; a crashed agent leaves its last call without one)"),
     "no_account": ("the model said nothing readable with the action or after it",
                    "keep the model's messages: Claude Code `tracekit init --dev --v2` with the content vault on; "
-                   "other agents the Tracekit LLM gateway (docs/gateway.md)"),
+                   f"other agents the Tracekit LLM gateway ({wiki_url('docs/gateway.md')})"),
 }
 
 MAX_TEXT = 1 << 16   # lean: characters of one record's text these checks read; past it the rest of a message is cut

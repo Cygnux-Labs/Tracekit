@@ -425,29 +425,31 @@ Code-like runs and a Python process during a fetch in 3 of 8; on the tuned set a
   is denied or held (ask); a benign call is a false positive when it is denied or held.
 - Developer sessions (`eval/e21_benign_sessions.jsonl`): 130 calls of ordinary sessions (Python, web, Go, Rust, docs,
   data, read-only operations, repository chores), written by the packs' builder, so tuned: false positives only.
-- Latency: each call's fastest of three decisions, over E17 and both E21 sets (2,207 calls in this run; 2,230 in the recorded results, after E17 grew).
+- Latency: each call's fastest of three decisions, over E17 and both E21 sets (2,230 calls).
+
+The recorded results (on the packs as merged for 1.4):
 
 | Profile | Held-out caught | of which denied | caught only as an unmapped tool | Held-out benign FP | Session FP |
 |---|---|---|---|---|---|
-| default | 211 / 420 (50.2%) | 108 (25.7%) | 44 | 18 / 432 (4.2%) | 2 / 130 (1.5%) |
-| strict | 246 / 420 (58.6%) | 149 (35.5%) | 44 | 47 / 432 (10.9%) | 13 / 130 (10.0%) |
+| default | 215 / 420 (51.2%) | 108 (25.7%) | 44 | 18 / 432 (4.2%) | 2 / 130 (1.5%) |
+| strict | 250 / 420 (59.5%) | 149 (35.5%) | 44 | 47 / 432 (10.9%) | 13 / 130 (10.0%) |
 
 Weakest categories (default, caught): defence evasion 2 of 30, supply chain 8 of 27, privilege escalation 7 of 27,
 exfiltration 12 of 39, destructive 15 of 36; strongest: Kubernetes 23 of 27, database 28 of 32. By evasion, calls
-with none are caught 120 of 275; quoting 8 of 18, environment prefixes 6 of 14, substitution 35 of 49, interpreter
+with none are caught 124 of 275; quoting 8 of 18, environment prefixes 6 of 14, substitution 35 of 49, interpreter
 one-liners 23 of 28 (many held as unreadable, `TK-SHELL-PARSE`). Per category, severity and evasion, and every miss
 and false positive: `eval/results/e21_policy_robustness.json`. The two engines decided every call the same.
 
 | Latency (µs) | p50 | p99 | max |
 |---|---|---|---|
-| default, RE2 / regex | 55 / 52 | 125 / 158 | 225 / 312 |
-| strict, RE2 / regex | 55 / 52 | 124 / 158 | 219 / 314 |
-| dev, RE2 / regex | 37 / 34 | 101 / 108 | 185 / 184 |
+| default, RE2 / regex | 60 / 56 | 134 / 166 | 234 / 320 |
+| strict, RE2 / regex | 58 / 54 | 128 / 161 | 230 / 320 |
+| dev, RE2 / regex | 41 / 38 | 106 / 114 | 198 / 191 |
 
-Measured on macOS arm64, Python 3.11. Gates guard against regressions from this first run, recorded in the results
-file: per profile, held-out recall doesn't drop (50.2% default, 58.6% strict) and no benign set's false-positive rate
-rises (held-out, sessions and E17's benign calls: 4.2%, 1.5%, 0.14% default; 10.9%, 10.0%, 4.1% strict); p99 stays
-within 25% of this run's on the same machine (re-measured once before failing). The targets of 2% (default) and 5%
+Measured on macOS arm64, Python 3.11. Gates, recorded in the results file, guard against regressions from the first
+run: per profile, held-out recall doesn't drop below that run's (50.2% default, 58.6% strict) and no benign set's
+false-positive rate rises (held-out, sessions and E17's benign calls: 4.2%, 1.5%, 0.14% default; 10.9%, 10.0%, 4.1%
+strict); p99 stays within 25% of the first run's on the same machine (re-measured once before failing). The targets of 2% (default) and 5%
 (strict) false positives are reported, not gated: this run is over target on the held-out set (default 4.2%, strict
 10.9%) and on strict's sessions (10.0%).
 `TK-A010` to `TK-A013` (autostart locations and Git hooks) were added after this run: with them the held-out pool is

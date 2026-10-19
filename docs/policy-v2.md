@@ -407,7 +407,7 @@ record runs under the pack in shadow, backtest your own store and set `max` abov
 
 A policy is written ahead of time; a person's request often adds a limit for one task: "don't touch billing.py",
 "read-only, just tell me what you'd change", "don't push". A live constraint is such a limit, held by the signer for the
-rest of the run. It is experimental, new after 1.3.0.
+rest of the run. It is experimental, new in 1.4.
 
 The Claude Code hook (and the Codex, Cursor and Gemini hooks, which share it) reads the person's prompt at
 `UserPromptSubmit`, as the harness hands it over, and sends each constraint it states with `constraint_add` (RPC 19),
@@ -487,7 +487,7 @@ text between, noted in [limits](limits.md#policy).
 | Pack | For | Contents |
 |---|---|---|
 | `coding.yaml` | coding agents on a laptop | shell, file and harness self-protection rules; `unknown_tools: flag`; maps the shell, file, web and MCP tools of Claude Code, Codex, Cursor, Gemini CLI, OpenAI Agents and LangChain, and srt-proxy's requests (`srt:request`, [sandbox-runtime](integrations/sandbox-runtime.md)) |
-| `dev.yaml` | the signer's default | `coding.yaml` plus `TK-DEMO-DENY` (denies the tool `tracekit_demo_denied`, so a deny is easy to see) |
+| `dev.yaml` | the signer's default | `coding.yaml` plus `TK-DEMO-DENY` (denies the tool `tracekit_demo_denied`) and `TK-DEMO-ASK` (holds `tracekit_demo_ask` for a person), so both are easy to see |
 | `browser.yaml` | browser agents (Browser Use) | local file and internal-network navigation (addresses and names) denied; uploads, typing outside an allowlist, the agent's own page JavaScript (`evaluate`), and typing or a navigation with a query string to a host from untrusted content, ask; Browser Use's actions are `structured_output` |
 | `server.yaml` | server-hosted agents | `extends: [coding, browser, server-data, server-net, server-cloud, server-comms]` plus rules for every tool; `unknown_tools: ask`: an unmapped tool waits for a person; detection in shadow: `TK-Q001` a secret read then egress (notify), `TK-L001` a runaway loop and `TK-L002` a delete burst (limits), `executed_against_policy` (notify) |
 | `strict.yaml` | server-hosted agents no call should surprise | `extends: server.yaml`, no new patterns: `TK-F004` (push, publish, install, `docker run`, apply), `TK-F011` (environment changes) and `TK-F013` (network commands) ask instead of flag, and `on_parse_error: deny` |

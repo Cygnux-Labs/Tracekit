@@ -26,6 +26,7 @@ from . import client, install, yamlmini
 from .core import read_json, read_text
 from .harness_helper import HELPER_CAPS, trusted_file
 from .deploy import files
+from .wiki import wiki_url
 
 OK, WARN, FAIL = "ok", "warn", "fail"
 NETWORK_FS = {"nfs", "nfs4", "cifs", "smb", "smb3", "smbfs", "afpfs", "webdav", "fuse", "fuseblk", "9p", "macfuse",
@@ -561,7 +562,7 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
                  "on: the shipped coding pack's TK-A003 holds each one for a person")
         add("D-CLAUDE-SANDBOX", not why, "; ".join(why) or f"Claude Code's sandbox is on and fails closed; "
             f"unsandboxed retries {retry}",
-            "; ".join(fix) + " (docs/integrations/claude-code-sandbox.md)" if fix else "", bad=WARN)
+            "; ".join(fix) + f" ({wiki_url('docs/integrations/claude-code-sandbox.md')})" if fix else "", bad=WARN)
 
     # lean: the settings files only, a later one winning each key of `tools` and `security`; doctor doesn't see
     # GEMINI_SANDBOX or -s at launch (they override tools.sandbox), folder trust (Gemini skips an untrusted project's
@@ -579,7 +580,7 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
                 "the shipped coding pack's TK-A004 holds each command that asks it for more; GEMINI_SANDBOX or -s at "
                 "launch, which doctor can't see, would run the whole CLI in a sandbox instead",
                 'remove tools.sandbox and set "toolSandboxing": true under "security" '
-                "(docs/integrations/gemini-sandbox.md)", bad=WARN)
+                f"({wiki_url('docs/integrations/gemini-sandbox.md')})", bad=WARN)
 
     _reasoning_checks(add, harnesses, isinstance(cfg.get("content"), dict) and cfg["content"].get("retain") is True,
                       REINIT if prod else "tracekit init --dev --v2")
@@ -612,8 +613,8 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
 
     ws = cfg.get("witnesses") or []
     add("D-WITNESS-CONFIGURED", bool(ws), f"{len(ws)} witnesses" if ws else "no witnesses: checkpoints are not cosigned, "
-        f"so assurance stays {'local' if prod else 'dev'}", "add a witness under witnesses: in signer.yaml (docs/witnesses.md)"
-        if prod else "the dev signer takes no witnesses: serve one from a signer.yaml with witnesses: (docs/witnesses.md)",
+        f"so assurance stays {'local' if prod else 'dev'}", f"add a witness under witnesses: in signer.yaml ({wiki_url('docs/witnesses.md')})"
+        if prod else f"the dev signer takes no witnesses: serve one from a signer.yaml with witnesses: ({wiki_url('docs/witnesses.md')})",
         bad=sev)
     if ws:
         operator = all(w["class"] == "operator" for w in ws)
@@ -642,7 +643,7 @@ def v2_checks(config, profile="production", agent=None, settings=None, signer=No
             if lag > 0 and (st is None or (st.get("since") and now - st["since"] >= service.WITNESS_GAP_S)):
                 stale.append(f"{name} is {lag} records behind")
         add("D-WITNESS-FRESH", not stale, "; ".join(stale) or "every witness has cosigned the latest checkpoint",
-            "check the witness is reachable and accepts this log (docs/witnesses.md)", bad=WARN)
+            f"check the witness is reachable and accepts this log ({wiki_url('docs/witnesses.md')})", bad=WARN)
         try:
             cosigs = checkpoint.open_note(note, service.read_vkeys(data), [w["vkey"] for w in ws])[3]
         except (OSError, ValueError) as e:

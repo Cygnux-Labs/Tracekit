@@ -8,7 +8,7 @@
     "url": "https://github.com/Cygnux-Labs/Tracekit",
     "source": "github"
   },
-  "websiteUrl": "https://github.com/Cygnux-Labs/Tracekit/blob/main/docs/mcp-gateway.md",
+  "websiteUrl": "https://github.com/Cygnux-Labs/Tracekit/wiki/MCP-Gateway",
   "remotes": [
     {
       "type": "streamable-http",

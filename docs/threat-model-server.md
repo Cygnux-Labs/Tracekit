@@ -59,7 +59,9 @@ Limits: in-process autotrace (L3) runs in the same process as S2, so S2 can supp
 `(L3 absent)`. The [LLM gateway](gateway.md) captures L3 outside the agent, and the [egress observer](egress.md)
 the hosts each run reaches (L6): side effects beneath a recorded call, such as a shell command's own connections, are
 signed `effect.observed` records, and a host no http or model call nor `explains` entry covers is
-`reconcile.unexplained_effect`. Layers L4 and L5 (processes, services) are not shipped yet; run.final's coverage
+`reconcile.unexplained_effect`. Layer L5 (services) is not shipped yet, and L4 (processes) only as the experimental
+[kernel sensor import](integrations/tetragon.md): a Tetragon or Falco import that covered a run throughout makes its
+processes `observed`, its effects are the sensor's word, and the signer doesn't reconcile them; run.final's coverage
 matrix says per action class what covered the run (enforced, observed, reported or none) and never claims more. All limits: [limits.md](limits.md). Invariants: I1, I2, I6. Covered by `tests/test_reconcile.py`, `eval/e10_reconcile.py`,
 `tests/test_signer_lifecycle.py` (`test_client_forged_gap_or_tamper_is_refused_and_summarised`,
 `test_client_isolation_and_fail_mode_claims_have_no_effect`) and `tests/test_known_gaps_v2.py::test_kg11_signer_isolation_not_taken_from_client`.

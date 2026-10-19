@@ -40,7 +40,7 @@ The signer runs as its own OS user from a root-owned install. The agent runs as 
 |---|---|
 | The agent can't read the signing key or rewrite the store; edits to the store become signed tamper records. | That every action was reported: the agent can remove the hook from its own settings, or act outside its harness, and leave no record and no gap ([limits](limits.md#dev-mode-vs-system-mode)). |
 | Calls of a fail-closed class are blocked, not run unrecorded, while the signer is down. | That an event came from the real harness and not from the agent's own process: anything that can call the signer as the agent can send well-formed fakes ([limits](limits.md#signer-and-capture)). |
-| With a witness on another host, a rewrite of witnessed history is detected. | Processes, files and environment reads inside a command: only the command line is seen. Nothing captures processes or services (L4, L5) yet. |
+| With a witness on another host, a rewrite of witnessed history is detected. | Processes, files and environment reads inside a command: only the command line is seen, unless a Tetragon or Falco [import](integrations/tetragon.md) (experimental) covers the run, which signs the processes, connections and file writes the sensor saw, as the sensor's word. Nothing captures environment reads or services (L5) yet. |
 
 macOS system mode is experimental; Windows has dev mode only ([support](support.md)).
 
@@ -71,5 +71,6 @@ of these services are experimental.
 ## Not yet
 
 - A public witness.
-- Capture of processes and files (L4, L5).
+- Capture of services (L5), and of processes and files beyond the experimental kernel sensor import (Linux,
+  Tetragon or Falco), which is recorded but not reconciled against the calls.
 - Hooks the agent can't remove in v2 system mode.

@@ -31,6 +31,7 @@ import posixpath
 import shlex
 
 from .findings import WRITE_TOOLS
+from .wiki import wiki_url
 
 GRACE_S, SKEW_S = 2.0, 0.5
 FLUSH_S = 1.0   # how often tracekit.sensor's import sends what it read
@@ -71,7 +72,8 @@ REASONS = {
     "agent_process": ("a process running before the run started did it (the agent's harness: its model calls, its own "
                       "files), and nothing names the call",
                       "Codex: keep CODEX_TOOL_CALL_ID in the sensor's environment variables "
-                      "(docs/integrations/tetragon.md#tool-calls); for hosts, the egress observer (docs/egress.md)"),
+                      f"({wiki_url('docs/integrations/tetragon.md', 'tool-calls')}); for hosts, the egress observer "
+                      f"({wiki_url('docs/egress.md')})"),
     "hook_like": ("a shell or Python process started outside any call, not by a call's process: Tracekit's own hooks "
                   "look the same",
                   "nothing for Tracekit's hooks; a hook or status line of your own shows here too, so review the "
@@ -80,17 +82,18 @@ REASONS = {
                         "make sure the agent's hook reports each call's result (PostToolUse)"),
     "no_sensor": ("run.final's coverage matrix doesn't say a kernel sensor observed the run's processes throughout, or "
                   "the run is still open",
-                  "run `tracekit sensor import` for this run (docs/integrations/tetragon.md)"),
+                  f"run `tracekit sensor import` for this run ({wiki_url('docs/integrations/tetragon.md')})"),
     "sensor_paths": ("which files the sensor's policy selects is not in the run",
                      "pass --sensor-skip DIR for each directory the policy leaves out (the sample's /workspace/ and "
                      "/tmp/), or --sensor-skip '' when it selects every write"),
     "hook_binary": ("the only processes that could be the command's ran the same program as Tracekit's own hooks (a "
                     "shell or Python), so they may have been the hooks",
-                    "Codex: keep CODEX_TOOL_CALL_ID in the sensor's environment variables (docs/integrations/"
-                    "tetragon.md#tool-calls): a command's processes then name their call"),
+                    "Codex: keep CODEX_TOOL_CALL_ID in the sensor's environment variables "
+                    f"({wiki_url('docs/integrations/tetragon.md', 'tool-calls')}): a command's processes then name "
+                    "their call"),
     "kind_not_recorded": ("the sensor recorded no effect of this kind in the run: its policy may not select them",
-                          "use the sample TracingPolicy of docs/integrations/tetragon.md, or the Falco rules of "
-                          "docs/integrations/falco.md"),
+                          f"use the sample TracingPolicy of {wiki_url('docs/integrations/tetragon.md')}, or the Falco "
+                          f"rules of {wiki_url('docs/integrations/falco.md')}"),
 }
 WHAT = {"exec": "start a process", "exit": "end a process", "connect": "connect", "file": "write a file"}
 

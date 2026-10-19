@@ -326,6 +326,7 @@ from tracekit.storage.file import FileStorage, _mkdir, _sync_dir, _write_all
 from tracekit.storage.file import fsck as fsck_store
 from tracekit.tlog_witness import TlogWitness, WitnessError, log_signed, signed_by
 from tracekit.transport import answering_hello, hello
+from tracekit.wiki import wiki_url
 
 DEFAULT_POLICY = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "policy2", "packs", "dev.yaml")
 APPROVAL_TTL_S = 3600
@@ -709,7 +710,7 @@ class SignerService:
         if any(r["mode"] == "enforce" and r["action"] == "notify" for r in respond) and \
                 not any("incident" in w["events"] for w in webhooks):
             raise ValueError("the policy's respond notifies (action notify, mode enforce) but no webhook subscribes to "
-                             "incident events: add `incident` to a webhook's events (docs/webhooks.md)")
+                             f"incident events: add `incident` to a webhook's events ({wiki_url('docs/webhooks.md')})")
         # a hold no person can answer is a quarantine (_respond)
         self._people = any(_person_like(p, (approvals or {}).get("persons", {}))
                            for p in (approvals or {}).get("approvers", ()))
@@ -773,7 +774,7 @@ class SignerService:
         if both:
             raise ValueError(f"authorize grants {', '.join(both)} both register_run and containment's operator calls: "
                              "an agent's identity can't operate its own containment; give operators an identity of "
-                             "their own (docs/incidents.md)")
+                             f"their own ({wiki_url('docs/incidents.md')})")
         keys = os.path.join(data_dir, "keys")
         if open_storage is None and storage_config:
             from tracekit.storage import postgres
@@ -4056,7 +4057,7 @@ class SignerService:
         """The key of run `run_id` of the caller's tenant, once the vault exists."""
         if self._content_key is None:
             raise RPCError("invalid_request", "this signer keeps no content: set content: {retain: true} in signer.yaml "
-                                              "(docs/privacy.md)")
+                                              f"({wiki_url('docs/privacy.md')})")
         key = (self._tenant_of(identity), run_id)
         if key not in self.log.runs:
             raise RPCError("unknown_run", run_id)
@@ -4725,7 +4726,7 @@ def main(argv=None):
     t.add_parser("revoke", help="refuse the token from its next request").add_argument("name")
     for q in t.choices.values():
         q.add_argument("--config", required=True)
-    c = sub.add_parser("content", help="the content vault: read or erase a run's retained content (docs/privacy.md)"
+    c = sub.add_parser("content", help=f"the content vault: read or erase a run's retained content ({wiki_url('docs/privacy.md')})"
                        ).add_subparsers(dest="content_cmd", required=True)
     q = c.add_parser("get", help="print the retained content of records of a run, each with its salt (recorded as "
                                  "content.accessed)")
@@ -4737,7 +4738,7 @@ def main(argv=None):
         q.add_argument("--run", required=True)
         q.add_argument("--config", help="reach the signer on this config's socket (default: $TRACEKIT_SIGNER, else "
                                         "the dev signer)")
-    q = sub.add_parser("incidents", help="containment's operator calls on the running signer (docs/incidents.md)")
+    q = sub.add_parser("incidents", help=f"containment's operator calls on the running signer ({wiki_url('docs/incidents.md')})")
     q.add_argument("action", choices=sorted(INCIDENT_CMDS))
     q.add_argument("target", nargs="?", help="the incident (show, resolve), run (hold, quarantine, resume) or "
                                               "identity (suspend, unsuspend)")
@@ -4849,7 +4850,7 @@ def main(argv=None):
             f"approvals.{k}" for k in ("agents", "webauthn") if isinstance(cfg.get("approvals"), dict) and cfg["approvals"].get(k)]
         if extra:
             print(f"tracekit: the signer's {', '.join(extra)} setting(s) are experimental: they work and are tested, "
-                  "but may change (docs/support.md)", file=sys.stderr)
+                  f"but may change ({wiki_url('docs/support.md')})", file=sys.stderr)
     try:
         service = open_service(cfg)
     except BlockingIOError as e:

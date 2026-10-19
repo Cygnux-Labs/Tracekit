@@ -1,6 +1,7 @@
 # FAQ and limits
 
-Every known limit and trade-off, from all the docs, is listed in one place: [known limits](limits.md).
+Every known limit and trade-off, from all the docs, is listed in one place: [known limits](limits.md). How the whole
+system works, one concept per page: [how Tracekit works](concepts/README.md).
 
 ## What does a verified bundle prove?
 
@@ -11,8 +12,8 @@ that checkpoint (witnesses, Rekor, a monitor). [Reading a verify report](verdict
 ## What can't Tracekit prove?
 
 - **Intent.** A record says a call was made, not why.
-- **That everything was recorded.** An action that crosses no capture layer (a subprocess the hook never sees, app
-  code that skips the adapter, a call outside a gateway that isn't mandatory) leaves no record. The report lists which
+- **That everything was recorded.** An action that crosses no capture layer (a subprocess the hook never sees and
+  no [kernel sensor import](integrations/tetragon.md) covers, app code that skips the adapter, a call outside a gateway that isn't mandatory) leaves no record. The report lists which
   layers ran, the tier of each tool call, and the signed gaps; it never says "complete".
 - **That what the agent reported is true.** In-process capture (tier T1: hooks, adapters, SDKs) proves what the agent
   process *reported*; out-of-process capture (T2: the [LLM gateway](gateway.md), a T2 executor you run) proves

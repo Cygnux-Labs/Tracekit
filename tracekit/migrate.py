@@ -10,6 +10,7 @@ import sys
 from . import privacy
 from .core import GENESIS, SCHEMA_VERSION, canon, new_id
 from . import schema as schema_mod
+from .wiki import wiki_url
 
 LEGACY_POLICY_HASH = "sha256:" + hashlib.sha256(b"tracekit v0.1 policy (not recorded)").hexdigest()
 
@@ -100,7 +101,7 @@ def main(argv):
     ap.add_argument("--out", help="write v1 events (unsigned) as JSONL")
     ap.add_argument("--send", action="store_true", help="send the converted events to tracekitd to be signed")
     ap.add_argument("--force", action="store_true", help="--send even when the v0.1 chain is broken")
-    ap.add_argument("--full-content", action="store_true", help="keep v0.1 content in clear (default: hash it, per docs/privacy.md)")
+    ap.add_argument("--full-content", action="store_true", help=f"keep v0.1 content in clear (default: hash it, per {wiki_url('docs/privacy.md')})")
     a = ap.parse_args(argv)
     recs, problems = verify_v01(a.ledger)
     print(f"v0.1 ledger: {len(recs)} records; chain " + ("intact" if not problems else f"BROKEN ({len(problems)} problems, e.g. {problems[0]})"))
