@@ -35,12 +35,16 @@ runs, and the sample v1 bundle.
 
 Panel 1 lists each run with its verdict: `VERIFIED` means `tracekit verify`'s checks passed on the run's bundle against
 the pinned log key (here the store's own key: `dev` assurance); `FAILED` means they did not, and the run shows only its
-failure report (a run that verified at an earlier checkpoint and fails at a later one has the records it showed taken
-back); `PENDING` means no checkpoint covers the run's records yet. A run still being written is shown up to the newest
+failure report (a run that verified at an earlier checkpoint and fails at a later one has the records it showed, and
+its earlier report and findings, taken back); `ERROR` means the viewer could not check the run (its NOT CHECKED row
+says why; it tries again five minutes later or when the run grows); `PENDING` means no checkpoint covers the run's
+records yet. A viewer that stops checking runs altogether says `STOPPED`, not `LIVE`, with the reason, until it
+restarts. A run still being written is shown up to the newest
 checkpoint and grows with each one; a long run is checked again no sooner than four times its last check's time. A run
 that stopped growing is checked again five minutes after its last check, one run at a time, so a later edit of its
 records turns it `FAILED`. Past 50,000 rows (`TRACEKIT_OBSERVE_MAX_RECORDS`) the oldest leave the live view and the tape
-says how many; every run's latest verdict stays in the run list. Under each run: calls, **blocked** (red: the policy
+says how many; each run's latest verdict stays in the run list, for up to 10,000 runs (a failed run's goes last).
+Under each run: calls, **blocked** (red: the policy
 denied them), held for a person, and signed gaps. Panel 2, the tape, has one row per signed record: `BLOCK` a denied
 call (red), `TOOL` an allowed one (`⚑` flagged by a rule), `HOLD` a call held for a person, with its approvals folded
 under it and its final state (`APPROVED · RAN`, `REJECTED`, `EXPIRED`, `WAITING`) in STATUS, `SESS` the run's start and
@@ -161,7 +165,8 @@ tests.
 ![GRAPH of a signed run: five tool calls left to right in run order, two Bash calls marked DENIED with their rule ids](viewer/signed-graph.png)
 
 `tracekit view` on a signer store with no why logs (no `--why`, no `why/` in its data dir) still has GRAPH: each run that verifies is imported read-only
-(`why import --store`'s import) into the viewer's own temp dir, and imported again as it grows. Its tool calls read
+(`why import --store`'s import) into the viewer's own temp dir, imported again as it grows, and removed once its rows
+leave the live view (past `TRACEKIT_OBSERVE_MAX_RECORDS`) or it fails. Its tool calls read
 left to right in run order; each node carries its signed decision: **DENIED** (red), **HELD** or **FLAGGED** (amber),
 **APPROVED**, or ALLOWED (muted), with the first rule id. Click a node: NODE shows the decision, every rule with its
 reason, who approved, and the record it cites. A run's arguments are only a salted commitment, so WHY can list the
@@ -241,14 +246,15 @@ checklist ([security-checklist.md](security-checklist.md)).
 
 Every request needs the token: `$TRACEKIT_VIEW_TOKEN`, else a random one that `tracekit view` prints in its URL (with
 `$TRACEKIT_VIEW_TOKEN` set the printed URL carries none: add `?token=…` yourself). Open `/?token=…` once: the page
-exchanges it for an `HttpOnly` session cookie and reloads without it. A script sends `Authorization: Bearer <token>`
+exchanges it for an `HttpOnly` session cookie and reloads without it; the cookie holds nothing of the token and lasts
+8 hours, and only while this viewer runs (open the URL again after that). A script sends `Authorization: Bearer <token>`
 instead; `?token=` on an `/api/` path is refused (401), so the token never sits in an API URL. These requests are
 `GET`s; with `--why` the replays and ingest are `POST`s ([below](#why)):
 
 | Path | Answers |
 |---|---|
-| `/api/snapshot` | `{next, dropped, records}`: the tape rows the page renders (each run's verifier report, then its records once it verifies), `next` the index to stream from |
-| `/api/verify` | `{records, ok, problems, head}`: how many records are shown from runs that verified, and each run that failed with its failure (the header's chain badge) |
+| `/api/snapshot` | `{next, dropped, max, records, source?}`: the tape rows the page renders (each run's verifier report, then its records once it verifies), `next` the index to stream from, `dropped` how many rows left the live view and `max` how many it holds; `source` is `bundle` when the viewer shows a v1 bundle |
+| `/api/verify` | `{records, ok, problems, head, stopped}`: how many records are shown from runs that verified, each run that failed or could not be checked with why (the header's chain badge), and `stopped`, why the viewer stopped checking runs if it did (the page then says STOPPED, not LIVE) |
 | `/api/stream?from=N` | `text/event-stream`: one `data:` line per record from index `N` on, as they are recorded |
 | `/api/why/workspace`, `/api/why/runs/<id>` | the why logs, with `--why` ([below](#why)) |
 

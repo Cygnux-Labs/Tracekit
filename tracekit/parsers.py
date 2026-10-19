@@ -213,6 +213,8 @@ def openai_responses(resp, request=None):
     uses = []
     for item in _list(resp, "output"):
         typ = _get(item, "type")
+        if not isinstance(typ, str):   # an item type is a name: anything else is no item this parser knows
+            continue
         if (typ == "shell_call" and _get(item, "environment", "type") == "container_reference"
                 or typ == "tool_search_call" and _get(item, "execution") == "server"):   # hosted: the provider runs it
             _, field, source = CLIENT_ITEMS[typ]
@@ -443,6 +445,8 @@ def _said_chat(resp):
 def _said_responses(resp):
     for item in _list(resp, "output"):
         typ = _get(item, "type")
+        if not isinstance(typ, str):
+            continue
         if typ == "reasoning":
             full = "\n".join(t for t in (_get(x, "text") for x in _list(item, "content")) if isinstance(t, str) and t)
             summary = "\n".join(t for t in (_get(x, "text") for x in _list(item, "summary")) if isinstance(t, str) and t)

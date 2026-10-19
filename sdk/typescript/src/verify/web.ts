@@ -8,7 +8,7 @@
  * The verification runs in a worker started from this same script (a blob: URL, which inherits the page's policy), so a
  * large bundle doesn't freeze the page; in the page itself where the browser refuses the worker.
  */
-import { MEANING, asJson, asText, cliExit, nextSteps, summarize, verdict } from "./explain.js";
+import { MEANING, asJson, asText, cliExit, nextSteps, sh, summarize, verdict } from "./explain.js";
 import { type Report, VERSION, clean, readZip, verify } from "./index.js";
 
 /** The page's samples (src/verify/sample/), base64: a clean bundle, a tampered copy and their trust config. */
@@ -78,8 +78,10 @@ function page() {
 
   const read = async (f: File) => ({ name: f.name, bytes: new Uint8Array(await f.arrayBuffer()) });
   const unb64 = (s: string) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+  const sampleTrust = { name: "sample.trust.json", bytes: unb64(SAMPLES["sample.trust.json"]) };
 
   async function choose(files: FileList | null | undefined) {
+    if (trust === sampleTrust) trust = null;   // the samples' signer is not the one behind the person's own bundle
     for (const f of [...files ?? []]) {
       if (/\.json$/i.test(f.name)) trust = await read(f);
       else bundle = await read(f);
@@ -102,6 +104,7 @@ function page() {
     $("clear-trust").hidden = !trust;
     if (!bundle) return;
     const mine = ++turn, names = { bundle: bundle.name, trust: trust?.name ?? null };
+    $("result").hidden = true;   // the last bundle's verdict never stands under this one's name
     document.body.dataset.state = "verifying";
     $("busy").textContent = "Verifying...";
     $("busy").hidden = false;
@@ -113,7 +116,7 @@ function page() {
       if (mine !== turn) return;
       $("result").hidden = true;
       $("busy").textContent = `Couldn't check this file: ${clean(String((err as Error)?.message ?? err))}. The `
-        + `command-line verifier may say more: npx -y @cygnuxlabs/tracekit@latest verify ${names.bundle}`;
+        + `command-line verifier may say more: npx -y @cygnuxlabs/tracekit@latest verify ${sh(names.bundle)}`;
       document.body.dataset.state = "error";
       return;
     }
@@ -173,7 +176,7 @@ function page() {
   for (const [id, file] of [["sample-clean", "sample.tkb"], ["sample-tampered", "sample-tampered.tkb"]] as const)
     $(id).addEventListener("click", () => {
       bundle = { name: file, bytes: unb64(SAMPLES[file]) };
-      trust = { name: "sample.trust.json", bytes: unb64(SAMPLES["sample.trust.json"]) };
+      trust = sampleTrust;
       return show();
     });
   $("copy").addEventListener("click", async () => {

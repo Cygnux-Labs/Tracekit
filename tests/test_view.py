@@ -7,6 +7,7 @@ import http.client
 import io
 import json
 import os
+import re
 import shutil
 import signal
 import socket
@@ -53,6 +54,14 @@ def store_feed(test, cfg, **kw):
     return feed
 
 
+def page_js(names, script):
+    """What `script` prints, run in Node after terminal.html's own definitions `names` (functions, one-line consts)."""
+    page = observe.read_text(observe.UI)
+    code = "".join(re.search(rf"^    (?:function {n}\(.*?^    }}|const {n} = .*?;)$", page, re.M | re.S).group(0) + "\n"
+                   for n in names)
+    return subprocess.run(["node", "-e", code + script], capture_output=True, text=True, check=True).stdout
+
+
 def v2rec(seq, typ, data, run="r1", **top):
     return {"event": {"seq": seq, "run_seq": seq, "run_id": run, "agent_id": "main", "type": typ, "data": data,
                       "ts": f"2026-10-10T17:00:{seq:02d}.000000Z", "prev_hash": "sha256:p", **top},
@@ -93,6 +102,66 @@ class Translate(unittest.TestCase):
                                                          "rule_ids": ["TK-S001"], "policy_hash": "sha256:unknown"}))
         # a decision of a policy the viewer does not have: its rule ids only
         self.assertEqual((other["target"], other["policy"]["flags"]), ("TK-S001", ["held_for_approval"]))
+
+    def test_a_model_message_of_any_shape_reads_as_what_it_says(self):
+        """{"output": [{"type": ["x"]}]}, an agent's own words the dev vault keeps, raised TypeError in the parser and
+        ended the viewer's checks of every run; an item whose type is no name is no item."""
+        tr = view.Translator()
+        tr.content[("r1", 1)] = {"output": [{"type": ["x"]}, {"type": {"a": 1}}]}
+        self.assertEqual(tr.feed(v2rec(1, "model.exchange", {"phase": "response", "exchange_id": "x1",
+                                                             "content_digest": "sha256:c"})), [])
+
+    def test_the_analysis_reads_content_it_cannot_parse_as_unread(self):
+        """findings_v2.analyze raised on the same body: an agent could make its own run unanalysable."""
+        recs = [v2rec(0, "run.registered", {"agent": {"name": "a"}}, source="sdk"),
+                v2rec(1, "model.exchange", {"phase": "response", "exchange_id": "x", "content_digest": "sha256:c",
+                                            "tool_uses": [{"id": "c1", "name": "read_file"}]}, source="sdk"),
+                v2rec(2, "policy.decision", {"tool": "read_file", "tool_use_id": "c1", "decision": "allow"},
+                      source="sdk")]
+
+        def vault(want):
+            return ((r["event"]["run_seq"], {"output": [{"type": ["x"]}]}, True) for r in want
+                    if r["event"]["type"] == "model.exchange")
+        self.assertIn("no problems found", findings_v2.analyze(recs, vault)["summary"])
+        with mock.patch.object(findings_v2._Run, "feed", side_effect=RecursionError("too deep")):   # any reader error
+            self.assertIn("no problems found", findings_v2.analyze(recs, vault)["summary"])
+
+    def test_what_the_model_said_before_a_call_leaves_out_what_it_said_after(self):
+        """SAID BEFORE THIS CALL listed every block of the message that asked for the call, text written after it too,
+        labelled "signed before this call": each block says how many of the message's calls came before it."""
+        tr = view.Translator()
+        tr.content[("r1", 1)] = {"output": [
+            {"type": "message", "content": [{"type": "output_text", "text": "BEFORE"}]},
+            {"type": "function_call", "call_id": "c1", "name": "f", "arguments": "{}"},
+            {"type": "message", "content": [{"type": "output_text", "text": "AFTER"}]},
+            {"type": "function_call", "call_id": "c2", "name": "f", "arguments": "{}"}]}
+        uses = [{"id": "c1", "name": "f"}, {"id": "c2", "name": "f"}]
+        turn = tr.feed(v2rec(1, "model.exchange", {"phase": "response", "exchange_id": "x1",
+                                                   "content_digest": "sha256:c", "tool_uses": uses}))[0]
+        self.assertEqual([(b["text"], b["after"]) for b in turn["blocks"]], [("BEFORE", 0), ("AFTER", 1)])
+        self.assertEqual(turn["calls"], ["c1", "c2"])
+        if not shutil.which("node"):
+            self.skipTest("needs node to run the page's saidBefore()")
+        said = json.loads(page_js(["saidBefore"], f"""
+            const rec = {{ session_id: "r1" }}, asked = {{ x: "x1", seq: 1 }};
+            const entries = [{{ x: "x1", seq: 0, rec, text: "EARLIER RECORD" }},
+              ...{json.dumps(turn["blocks"])}.map(b =>
+              ({{ x: "x1", seq: 1, rec, calls: {json.dumps(turn["calls"])}, k: b.after, text: b.text }})),
+              {{ x: "x1", seq: 1, rec, text: "COMMITTED" }}, {{ x: "x1", seq: 2, rec, text: "LATER RECORD" }}];
+            process.stdout.write(JSON.stringify(["c1", "c2", "c9"].map(id => entries.filter(r =>
+              saidBefore(r, asked, {{ session_id: "r1", tool_use_id: id }})).map(r => r.text))));"""))
+        self.assertEqual(said, [["EARLIER RECORD", "BEFORE", "COMMITTED"],
+                                ["EARLIER RECORD", "BEFORE", "AFTER", "COMMITTED"],
+                                ["EARLIER RECORD", "COMMITTED"]])
+
+    def test_content_redaction_changed_is_not_shown_as_the_records(self):
+        """The dev content source dropped `opened`: content that opens no commitment (redacted) showed as the call's
+        arguments, as content that does."""
+        recs = [v2rec(1, "policy.decision", {"tool": "Bash", "args_commitment": "hmac-sha256:a"}),
+                v2rec(2, "policy.decision", {"tool": "Bash", "args_commitment": "hmac-sha256:b"})]
+        with mock.patch.object(view, "Client"), mock.patch("tracekit.why.signed.vault_content", return_value=iter(
+                [(1, {"command": "ls"}, True), (2, {"command": "[REDACTED]"}, False)])):
+            self.assertEqual(view.dev_content_source()("r1", recs), {1: {"command": "ls"}})
 
     def test_openshells_blocks_and_policy_changes_are_rows_in_words(self):
         seen = {"observer": "mtls:spiffe://acme.example/tracekit-openshell", "sensor": "openshell",
@@ -339,6 +408,33 @@ class View(unittest.TestCase):
                          [({"command": f"at {r['v2']['run_seq']}"}, None) for r in rows])
         self.assertEqual(asked, [(run_id, [r["v2"]["run_seq"] for r in rows])])
 
+    def test_an_agents_odd_model_message_never_stops_the_viewer_checking_runs(self):
+        """A model message {"output": [{"type": ["x"]}]} (the agent's own words, kept by the dev vault) raised in the
+        viewer's parser and ended its watch thread: no run, earlier or later, was checked again while the page said
+        LIVE. The message reads as nothing said, and the watch goes on to the next run."""
+        bodies, storage = {}, self.service.log.storage
+
+        def a_run(name, body):
+            run = self.client.run(agent=name)
+            seq = run.call("model_event", provider="openai", model="m", phase="response", exchange_id="x1",
+                           content_digest=canon_hash(body))["run_seq"]
+            bodies[(run.run_id, seq)] = body
+            run.decide("c1", "Bash", {"command": "ls"})
+            run.complete("c1")
+            run.close()
+            self.assertTrue(wait_for(lambda: list(storage.iter_run("default", run.run_id))[-1]["event"]["type"] ==
+                                     "run.final" and (storage.checkpoint_latest() or (0,))[0] == storage.tree.size, 20))
+            return run.run_id
+        odd = a_run("odd", {"output": [{"type": ["x"]}]})
+        feed = store_feed(self, {"data_dir": self.d}, content=lambda rid, recs: {
+            r["event"]["run_seq"]: bodies[(rid, r["event"]["run_seq"])] for r in recs
+            if (rid, r["event"]["run_seq"]) in bodies})
+        self.assertEqual([r["review"]["verdict"] for r in self.report(feed, odd)], ["verified"])
+        later = a_run("later", {"output": []})
+        self.assertEqual([r["review"]["verdict"] for r in self.report(feed, later)], ["verified"])
+        self.assertTrue(feed.threads[-1].is_alive())
+        self.assertIsNone(feed.stopped)
+
     def test_vault_content_that_does_not_open_its_record_is_not_shown(self):
         run_id = self.finished_run()
 
@@ -393,7 +489,7 @@ class View(unittest.TestCase):
         self.assertEqual([r["prompt"] for r in rows if r["event"] == "UserPromptSubmit"], ["Fix pager.py."])
         turns = [r for r in rows if r["event"] == "model_turn"]
         self.assertEqual([(t["blocks"], t["v2"]["exchange_id"]) for t in turns], [
-            ([{"kind": "thinking", "text": "One more small fix.", "form": "summary"}], "msg_1"),
+            ([{"kind": "thinking", "text": "One more small fix.", "form": "summary", "after": 0}], "msg_1"),
             ([{"kind": "committed", "text": "said something here; it is committed, and this viewer reads no content"}],
              "msg_2")])
         self.assertEqual(turns[1]["v2"]["run_seq"], unread)
@@ -993,8 +1089,8 @@ class WhyIngest(WhyServer):
             "/v1/ingest", {"events": events, "blobs": blobs},
             {"Authorization": f"Bearer {token}", "Content-Type": "application/json"})[0]
         self.assertEqual(ingest(evs, blobs, "wrong"), 401)
-        self.assertEqual(self.request("POST", "/v1/ingest", {"Cookie": f"tracekit_observe={_session(TOKEN)}"},
-                                      b"{}")[0], 401)
+        cookie = _session(self.httpd.RequestHandlerClass.session_key, int(time.time()) + 60)   # the token's session
+        self.assertEqual(self.request("POST", "/v1/ingest", {"Cookie": f"tracekit_observe={cookie}"}, b"{}")[0], 401)
         bad = json.loads(json.dumps(evs[:3]))
         bad[2]["agent"] = "mallory"
         self.assertEqual(ingest(bad, blobs), 422)
@@ -1230,6 +1326,26 @@ class Pages(unittest.TestCase):
         self.assertTrue(r.getheader("Set-Cookie").startswith("tracekit_observe="))
 
 
+    def test_text_set_on_the_page_shows_bidi_and_invisible_characters_escaped(self):
+        """DETAIL's heading is set as text: a tool name holding U+202E rendered reversed there, though escaped
+        everywhere else."""
+        page = observe.read_text(observe.UI)
+        sinks = re.findall(r'\$\("detsum"\)\.textContent = ([^;]*);', page)
+        self.assertEqual([x for x in sinks if not (x.startswith("vis(") or re.fullmatch(r'"[^"]*"', x))], [])
+        if shutil.which("node"):
+            self.assertEqual(page_js(["vis"], 'process.stdout.write(vis("rm\\u202e/hs.exe <b>"))'),
+                             "rm\\u202e/hs.exe <b>")
+
+    def test_runs_tape_rows_and_alerts_open_by_keyboard(self):
+        """Runs, tape rows and alerts took no keyboard focus: a keyboard user could open none of them."""
+        page = observe.read_text(observe.UI)
+        for row in ('data-run="" tabindex="0"', 'data-run="${esc(r.id)}" tabindex="0"',
+                    'data-i="${esc(row.i)}" tabindex="0"', 'data-al="${esc(al.i)}" tabindex="0"'):
+            self.assertIn(row, page)
+        self.assertIn('if (e.key === "Enter" && e.target.matches("[data-run][tabindex],[data-i][tabindex],'
+                      '[data-al][tabindex]")) e.target.click();', page)
+
+
 VERIFIED = (mock.Mock(integrity="VERIFIED", assurance="dev"), 0, "Integrity: VERIFIED.")
 FAILED = (mock.Mock(integrity="FAILED", assurance="none"), 1, "[FAIL] signatures — seq 1: bad signature\n\nFAILED.")
 
@@ -1299,8 +1415,9 @@ class LiveRuns(unittest.TestCase):
 
     def test_a_run_that_fails_at_a_later_checkpoint_takes_back_every_record_it_showed(self):
         """A run that verified at one checkpoint and failed at the next kept its earlier rows on the tape as SIGNED,
-        next to a review saying none of its records are shown. They are taken back from the snapshot and the stream;
-        the page drops them on the failed review; if the run verifies again it is shown again from its start."""
+        next to a review saying none of its records are shown, and its VERIFIED report and FINDING alerts (counted in
+        HIGH ALERTS). They are taken back from the snapshot and the stream; the page drops them on the failed review;
+        if the run verifies again it is shown again from its start."""
         verdicts = [VERIFIED, FAILED, VERIFIED]
         feed = self.feed(lambda run_id: verdicts.pop(0))
         self.refresh(feed)
@@ -1309,13 +1426,25 @@ class LiveRuns(unittest.TestCase):
         snap, streamed = self.served(feed)
         for rows in (snap["records"], streamed):
             self.assertEqual([(r["event"], r.get("analysis"), (r.get("review") or {}).get("verdict")) for r in rows],
-                             [("tk_alert", True, "verified"), ("tk_alert", True, "failed")])
+                             [("tk_alert", True, "failed")])
         self.assertEqual(feed.verify()[1], ["run r1 of tenant default: FAILED"])
         self.now[0] += 60
         self.refresh(feed, r1=1)
         snap, _ = self.served(feed)
         self.assertEqual([r["v2"]["run_seq"] for r in snap["records"] if not r.get("analysis")], [0, 1, 2, 3])
-        self.assertIn('if (r.review?.verdict === "failed")', observe.read_text(observe.UI))   # B41 runs it
+        if shutil.which("node"):   # the page drops them too, its own report and findings included
+            rows = [{"session_id": "r1", "tenant": "default", "analysis": True, "review": {"verdict": "verified"}},
+                    {"session_id": "r1", "tenant": "default", "analysis": True, "tape": "FINDING"},
+                    {"session_id": "r1", "tenant": "default", "v2": {"run_seq": 0}},
+                    {"session_id": "r2", "tenant": "default", "analysis": True, "tape": "FINDING"}]
+            self.assertEqual(json.loads(page_js(["accept"], f"""
+                let V2 = true, R = null, scope = null, DROPPED = 0, MAXREC = 50000;
+                const ALL = [], RUNS = new Map(), document = {{ body: {{ classList: {{ add() {{}} }} }} }};
+                const inScope = () => true, ingest = () => {{}}, rebuild = () => {{}}, stopRun = () => {{}};
+                for (const r of {json.dumps(rows)}) accept(r);
+                accept({{ session_id: "r1", tenant: "default", analysis: true, review: {{ verdict: "failed" }} }});
+                process.stdout.write(JSON.stringify(ALL.map(r => [r.session_id, r.review?.verdict ?? r.tape])));""")),
+                [["r2", "FINDING"], ["r1", "failed"]])
 
     def test_a_flood_of_rows_never_pushes_a_failed_runs_verdict_out_of_the_run_list(self):
         """Past the live cap the oldest rows went, reviews included, and the page never said so: an agent writing
@@ -1374,6 +1503,30 @@ class LiveRuns(unittest.TestCase):
         mirror([3], advance=view.BACKOFF * 2)
         self.assertTrue(wait_for(lambda: imported == [[1], None, [3]], 5))
 
+    def test_a_runs_graph_goes_when_its_rows_leave_the_live_view(self):
+        """Each verified run's graph (its import, and the why server's analysis of it) stayed for the server's life,
+        some 3.4 KiB a record: a 30k-call run peaked at 1.45 GB. A run whose rows left the live view loses its graph, as
+        a run that fails does, so the why dir and the why server's cache hold the runs on the live view only."""
+        why = os.path.join(self.d, "why")
+        os.makedirs(why)
+        store = Store(why, out=WhyFeed(), ingest=False)
+        feed = self.feed(lambda run_id: VERIFIED, on_run=functools.partial(view.mirror_run, why))
+        feed.max_records = 100
+        for i in range(50):
+            run = f"run{i}"
+            at = {"log_id": "l", "tenant": "default"}   # what an import reads
+            self.recs[run] = [v2rec(0, "run.registered", {"agent": {"name": run}}, run, **at)] + [
+                v2rec(k, "policy.decision", {"tool": "Bash", "decision": "allow", "tool_use_id": f"c{k}",
+                                             "policy_hash": "sha256:p", "rule_ids": []}, run, **at)
+                for k in range(1, 6)]
+            self.refresh(feed)
+            store.scan(announce=False)
+        live = {os.path.basename(_target(why, k[1], k[0])) for k in feed.latest if k[1] != "r1"}
+        self.assertTrue(10 < len(live) < 20, live)
+        self.assertTrue(wait_for(lambda: set(os.listdir(why)) == live, 10), (sorted(os.listdir(why)), sorted(live)))
+        store.scan(announce=False)
+        self.assertEqual(set(store._cache), {os.path.join(why, n) for n in live})
+
     def test_a_run_that_did_not_grow_is_checked_again_and_adds_no_rows_while_unchanged(self):
         """A run was checked only when it grew, so an edit of records already shown stayed VERIFIED until a restart."""
         verdicts = [VERIFIED, VERIFIED, FAILED]
@@ -1389,7 +1542,71 @@ class LiveRuns(unittest.TestCase):
         self.refresh(feed)
         with feed.lock:
             self.assertEqual(feed.records[-1]["review"]["verdict"], "failed")
-            self.assertEqual([r for r in feed.records if not r.get("analysis")], [observe.RETRACTED] * 2)
+            self.assertEqual([r for r in feed.records if not r.get("analysis")], [observe.RETRACTED] * 3)
+
+    def test_a_run_whose_check_raises_says_not_checked_and_every_other_run_is_still_checked(self):
+        """An error checking one run escaped the watch thread and ended it: no run was checked again. That run gets a
+        "not checked" row and is tried again as a run that did not grow; the others are checked as before. A pending
+        run whose unverified first record names no agent object (a store edit) raised AttributeError the same way."""
+        self.recs["bad"] = [v2rec(0, "run.registered", {"agent": {"name": "bad"}}, "bad")]
+        self.recs["edited"] = [v2rec(10 ** 7, "run.registered", {"agent": "x"}, "edited")]   # no note covers it yet
+        feed = self.feed(lambda run_id: VERIFIED)
+        real = feed.tr.feed
+
+        def translate(rec):
+            if rec["event"]["run_id"] == "bad":
+                raise TypeError("unhashable type: 'list'")
+            return real(rec)
+        with mock.patch.object(feed.tr, "feed", side_effect=translate):
+            self.refresh(feed)
+        reviews = {r["session_id"]: r["review"] for r in feed.records if r.get("review")}
+        self.assertEqual({k: (v["verdict"], v["agent"]) for k, v in reviews.items()},
+                         {"r1": ("verified", "a"), "bad": ("error", None), "edited": ("pending", None)})
+        [row] = [r for r in feed.records if r.get("session_id") == "bad"]
+        self.assertEqual(row["title"], "RUN bad · NOT CHECKED: error")
+        self.assertIn("TypeError: unhashable type: 'list'", row["text"])
+        self.assertEqual(feed.verify()[1], ["run bad of tenant default: NOT CHECKED (error)"])
+        self.refresh(feed)
+        self.assertEqual(self.checks, ["r1", "bad"])   # not tried again at once
+        self.now[0] += view.RECHECK_S
+        self.refresh(feed)
+        self.refresh(feed)
+        self.assertEqual(self.checks[2:], ["r1", "bad"])   # one run a pass, the one checked longest ago first
+        self.assertEqual(feed.latest[("default", "bad")]["review"]["verdict"], "verified")
+        self.assertEqual(feed.verify()[1], [])
+
+    def test_a_watch_that_ends_stops_the_page_saying_live(self):
+        """Had the watch thread ended, no run would be checked again while the page went on saying LIVE: the viewer
+        says verification stopped (/api/verify's `stopped`, and a problem), and the page shows STOPPED, not LIVE."""
+        class Ended(BaseException):
+            pass
+        with mock.patch.object(view, "read_vkeys", return_value=[]), \
+                mock.patch.object(view.StoreFeed, "refresh", side_effect=Ended("out of memory")), \
+                mock.patch.object(threading, "excepthook", lambda args: None):
+            feed = store_feed(self, self.cfg)
+            self.assertTrue(wait_for(lambda: not feed.threads[-1].is_alive(), 5))
+        self.assertEqual(feed.stopped, "verification stopped (Ended: out of memory): no run is checked until tracekit "
+                                       "view restarts")
+        self.assertEqual(feed.verify()[1], [feed.stopped])
+        srv = view.server(feed, "127.0.0.1", 0, "t0k")
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.server_close)
+        self.addCleanup(srv.shutdown)
+        c = http.client.HTTPConnection("127.0.0.1", srv.server_address[1], timeout=5)
+        c.request("GET", "/api/verify", headers={"Authorization": "Bearer t0k"})
+        self.assertEqual(json.loads(c.getresponse().read())["stopped"], feed.stopped)
+        if not shutil.which("node"):
+            self.skipTest("needs node to run the page's renderTop()")
+        top = json.loads(page_js(["renderTop"], f"""
+            const el = {{}}, $ = id => el[id] ??= {{ classList: {{ toggle() {{}} }} }};
+            const document = {{ URL: "http://127.0.0.1/", body: {{ classList: {{ toggle() {{}} }} }} }};
+            let mode = "live", liveOk = true, liveErr = "", SOURCE = "", STOPPED = {json.dumps(feed.stopped)};
+            const BOOT = null, V2 = true, scope = null, RUNS = new Map(), F = {{}}, TZ = "UTC", nowTs = () => 0;
+            const chainState = {{ ok: false, n: 0, detail: "" }}, esc = s => s;
+            renderTop();
+            process.stdout.write(JSON.stringify([el.mode.textContent, el.lost.hidden, el.lost.textContent,
+                                                 el.chain.textContent]));"""))
+        self.assertEqual(top, ["STOPPED", False, feed.stopped, "✗ VERIFICATION STOPPED"])
 
 
 class BoundedState(unittest.TestCase):
@@ -1415,7 +1632,8 @@ class BoundedState(unittest.TestCase):
             self.assertLessEqual(len(getattr(t2, name)), cap, name)
 
     def test_the_store_feed_keeps_its_newest_records(self):
-        feed = types.SimpleNamespace(records=[], base=0, max_records=100, latest={}, kept=collections.OrderedDict())
+        feed = types.SimpleNamespace(records=[], base=0, max_records=100, latest={}, kept=collections.OrderedDict(),
+                                     on_run=None)
         for i in range(1000):
             feed.records.append({"seq": i})
             view.StoreFeed._trim(feed)

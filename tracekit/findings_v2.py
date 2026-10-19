@@ -924,7 +924,10 @@ def analyze(records, content=None, project=None, allow=(), partial=False, budget
         while nxt is not None and nxt[0] < seq:
             nxt = next(got, None)
         if nxt is not None and nxt[0] == seq:
-            run.feed(r, nxt[1], nxt[2])
+            try:
+                run.feed(r, nxt[1], nxt[2])
+            except Exception:   # content an agent supplied that no reader here takes: as if the vault kept none
+                run.content.discard(seq)
     run.confirm()
     cov, forms, observed = _check(run, out, project, allow, deadline, clock)
     findings_text.check(run, content, out, cov, deadline, clock)

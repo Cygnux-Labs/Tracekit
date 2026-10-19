@@ -16,6 +16,7 @@ import tempfile
 import time
 import unittest
 import uuid
+from unittest import mock
 import zipfile
 
 TESTS = os.path.dirname(os.path.abspath(__file__))
@@ -140,6 +141,46 @@ await el.bundle.on.change();
 process.stdout.write(JSON.stringify({ own: (await source) === script, busy: el.busy.textContent,
   report: el.report?.textContent ?? "" }));
 """
+
+
+# the same stand-in, driven through `steps`: "#id" clicks that button, else a comma list of files is chosen in the
+# bundle dialog; prints each state the page entered with whether the last result was hidden then, and the page's lines
+PAGE_STEPS = r"""
+import { readFileSync, writeFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+const [page, tmp, ...steps] = process.argv.slice(1);
+const file = (p) => ({ name: p.split(/[\\/]/).pop(), arrayBuffer: async () => {
+  const b = readFileSync(p);
+  return b.buffer.slice(b.byteOffset, b.byteOffset + b.length);
+} });
+const node = () => ({ dataset: {}, classList: { add() {}, remove() {} }, on: {}, textContent: "", append() {},
+  replaceChildren() {}, setAttribute() {}, addEventListener(t, f) { this.on[t] = f; } });
+const el = {}, seen = [];
+let state;
+const body = { ...node(), dataset: { get state() { return state; },
+  set state(v) { state = v; seen.push([v, el.result?.hidden ?? null]); } } };
+globalThis.document = { getElementById: (id) => el[id] ??= node(), createElement: node, body, addEventListener() {} };
+writeFileSync(tmp, readFileSync(page, "utf8").match(/<script id="verifier" type="module">([\s\S]*)<\/script>/)[1]);
+await import(pathToFileURL(tmp));
+for (const s of steps) {
+  if (s.startsWith("#")) await el[s.slice(1)].on.click();
+  else {
+    el.bundle.files = s.split(",").map(file);
+    await el.bundle.on.change();
+  }
+}
+process.stdout.write(JSON.stringify({ seen, trust: el["trust-name"].textContent, report: el.report.textContent,
+  busy: el.busy.textContent }));
+"""
+
+
+def page_steps(*steps):
+    """What verify.html did through `steps` (PAGE_STEPS)."""
+    _build()
+    with tempfile.TemporaryDirectory() as d:
+        return json.loads(subprocess.run(["node", "--input-type=module", "-e", PAGE_STEPS, "--", PAGE,
+                                          os.path.join(d, "page.mjs"), *steps],
+                                         capture_output=True, text=True, check=True).stdout)
 
 
 def page_verify(bundle, trust=None, *flags):
@@ -676,6 +717,30 @@ class Agreement(unittest.TestCase):
         self.assertTrue(error["own"])
         self.assertTrue(error["busy"].startswith("Couldn't check this file: boom. "), error["busy"])
         self.assertEqual(error["report"], "")
+        with tempfile.TemporaryDirectory() as d:   # the command it suggests names the file as one shell word
+            odd = shutil.copy(bundle, os.path.join(d, "it's mine.tkb"))
+            busy = json.loads(subprocess.run(["node", "--input-type=module", "-e", PAGE_WORKER, "--", PAGE,
+                                              os.path.join(d, "page.mjs"), "error", odd, trust],
+                                             capture_output=True, text=True, check=True).stdout)["busy"]
+        self.assertTrue(busy.endswith("verify 'it'\"'\"'s mine.tkb'"), busy)
+
+    def test_a_new_choice_never_shows_under_the_last_bundles_verdict(self):
+        """Choosing another bundle wrote its name under the last one's VERIFIED banner, every check [PASS], for as long
+        as it took to verify (some 6 s for a tampered 30k-record bundle): the last result is hidden from the start."""
+        tampered = self.mutate(lambda rs: rs[1]["event"]["data"].update(tool="other"))
+        out = page_steps(f"{self.bundles['closed']},{self.trusts['witnessed']}", tampered)
+        self.assertEqual(out["seen"], [["verifying", True], ["done", False], ["verifying", True], ["done", False]])
+        self.assertIn("\nIntegrity: FAILED.\n", out["report"])
+
+    def test_a_samples_trust_config_is_not_kept_for_the_persons_own_bundle(self):
+        """After a sample, the person's own bundle chosen alone was checked against the samples' trust config: a
+        genuine bundle of another signer showed FAILED, not UNVERIFIABLE. The sample's trust goes with the sample; a
+        trust config the person chose stays."""
+        out = page_steps("#sample-clean", self.bundles["closed"])
+        self.assertEqual(out["trust"], "none")
+        self.assertTrue(out["report"].endswith("\nExit code 2.\n"), out["report"][-300:])
+        mine = page_steps(f"{self.bundles['closed']},{self.trusts['witnessed']}", self.bundles["closed"])
+        self.assertIn("\nIntegrity: VERIFIED.\n", mine["report"])
 
     def test_a_run_of_many_records_under_a_small_stack(self):
         """No record-sized array is spread into a call's arguments, which puts each element on the stack: the CLI and
@@ -926,6 +991,64 @@ class Reviews(test_reviews.Signed):
                 self.assertEqual(ts.get("findings"), rep.findings)   # the Findings line, apart from Integrity
                 self.assertEqual(page_words(bundle, trust)["json"], ts)   # the page's download is the CLI's --json
                 self.assertTrue(rep.findings.endswith("(an opinion of the run, not its integrity)"))
+
+
+@unittest.skipIf(SKIP or os.name == "nt", SKIP or "a shell script stands in for a Python that crashes")
+class AgreementScripts(unittest.TestCase):
+    """scripts/verify_page_check.py's agree() and E22's verdicts(): what says the verifiers agree."""
+
+    def test_a_cli_that_crashes_never_agrees(self):
+        """agree() compared the Python CLI only when it printed a report: one that crashed on a forgery counted as
+        agreeing, and in E22 as expected. The Python CLI's refusal of a file that is no v2 bundle is no crash."""
+        _build()
+        sys.path[:0] = [os.path.join(ROOT, "scripts"), os.path.join(ROOT, "eval")]
+        import e22_verifier_agreement as e22
+        import verify_page_check as vpc
+        sample = os.path.join(TS, "src", "verify", "sample")
+        with tempfile.TemporaryDirectory() as d:
+            crash = os.path.join(d, "python")
+            with open(crash, "w") as f:
+                f.write("#!/bin/sh\necho 'Traceback (most recent call last): KeyError' >&2\nexit 1\n")
+            os.chmod(crash, 0o755)
+            with mock.patch.object(vpc, "PY", crash):
+                row, problems = vpc.agree(None, os.path.join(sample, "sample-tampered.tkb"),
+                                          os.path.join(sample, "sample.trust.json"), [])
+        self.assertEqual(problems, ["Python CLI printed no report (exit 1): Traceback (most recent call last): "
+                                    "KeyError"])
+        [r] = e22.verdicts([dict(row, name="sample: tampered", forgery=True, problems=problems)])
+        self.assertFalse(r["agree"])
+        golden = os.path.join(ROOT, "tests", "golden", "negative")
+        self.assertEqual(vpc.agree(None, os.path.join(golden, "zip-no-manifest.tkb"),
+                                   os.path.join(golden, "trust.json"), [])[1], [])
+
+    def test_the_page_names_its_file_inputs_and_says_errors_aloud(self):
+        """Its two file inputs had no label, and an error went to a line no screen reader announces."""
+        _build()
+        with open(PAGE, encoding="utf-8") as f:
+            page = f.read()
+        for name in ("bundle", "trust"):
+            self.assertIn(f'<label for="{name}">', page)
+        self.assertIn('<p id="busy" hidden role="status">', page)
+
+    def test_e22_forges_each_bundles_other_signer_trust_from_its_own_origin(self):
+        """E22's "another signer's trust config" forgery wrote one shared file, so every base was checked against a key
+        under the last base's origin, not its own."""
+        sys.path[:0] = [os.path.join(ROOT, "scripts"), os.path.join(ROOT, "eval")]
+        import e22_verifier_agreement as e22
+        bundles = {"demo run": os.path.join(ROOT, "tests", "golden", "v2", "closed.tkb"),
+                   "hook": os.path.join(TS, "src", "verify", "sample", "sample.tkb")}
+        with tempfile.TemporaryDirectory() as d:
+            corpus = e22.Corpus(d)
+            for name, bundle in bundles.items():
+                corpus.add(name, "test", bundle, None)
+            with mock.patch.object(corpus, "forge") as forge:
+                corpus.forgeries()
+            pinned = {}
+            for call in forge.call_args_list:
+                if call.args[1] == "another signer's trust config":
+                    with open(call.kwargs["trust"]) as f:
+                        pinned[call.args[0]] = json.load(f)["logs"][0].split("+")[0]
+        self.assertEqual(pinned, {name: e22._origin(name, corpus) for name in bundles})
 
 
 if __name__ == "__main__":

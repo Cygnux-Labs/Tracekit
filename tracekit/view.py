@@ -624,14 +624,19 @@ class Translator(observe.Translator):
         if d.get("phase") == "request":
             prompt = findings_v2._tailer(body) and findings_v2._prompt(body)
             return [{**self._base(e, rec, "UserPromptSubmit"), "prompt": prompt[0], "v2": x}] if prompt else []
+        calls = []   # the message's tool uses in order; each block says how many came before it (`after`)
         if body is None:
             blocks = [] if d.get("tool_uses") else [{"kind": "committed", "text": "said something here; it is "
                                                      "committed, and this viewer reads no content"}]
         else:
-            blocks = [{"kind": ("thinking" if s["text"] else "thinking_redacted") if s["kind"] == "reasoning" else
-                       "text", "text": s["text"], "form": s["form"]}
-                      for s in parsers.said(*findings_v2._message(body, d)) if s["text"] or s["kind"] == "reasoning"]
-        turn = [{**self._base(e, rec, "model_turn"), "blocks": blocks, "message_id": d.get("exchange_id"), "v2": x}]
+            blocks = []
+            for s in parsers.said(*findings_v2._message(body, d)):
+                if s["text"] or s["kind"] == "reasoning":
+                    blocks.append({"kind": ("thinking" if s["text"] else "thinking_redacted") if s["kind"] ==
+                                   "reasoning" else "text", "text": s["text"], "form": s["form"], "after": len(calls)})
+                calls += s["tools"]
+        turn = [{**self._base(e, rec, "model_turn"), "blocks": blocks, "calls": calls,
+                 "message_id": d.get("exchange_id"), "v2": x}]
         return (turn if blocks else []) + out
 
 
@@ -703,9 +708,9 @@ def dev_content_source():
     """StoreFeed's `content` for the dev signer's store: the retained arguments of a run's decisions and content of its
     model exchanges, read with `content_get` (the dev signer keeps them and grants this user content_read:
     service.dev_content), each item opening its record's commitment (why.signed.vault_content: EvidenceAlert when one
-    doesn't, and nothing is shown). Each read is one signed content.accessed record. A refusal
-    (TRACEKIT_DEV_CONTENT=0, or a signer from before 1.2.2) stops it for good, said once; while the signer is down it
-    reads nothing."""
+    doesn't, and nothing is shown; content redaction changed is left out). Each read is one signed content.accessed
+    record. A refusal (TRACEKIT_DEV_CONTENT=0, or a signer from before 1.2.2) stops it for good, said once; while the
+    signer is down it reads nothing."""
     from .why.signed import vault_content
     state = {"client": None, "off": False}
 
@@ -715,7 +720,9 @@ def dev_content_source():
         out = {}
         try:
             state["client"] = state["client"] or Client()
-            out = {seq: content for seq, content, _ in vault_content(state["client"], records, "tracekit view")}
+            # content redaction changed opens no commitment: not shown as what the record holds
+            out = {seq: content for seq, content, opened in vault_content(state["client"], records, "tracekit view")
+                   if opened}
         except RPCError as e:
             state["off"] = True
             print(f"tracekit view: calls show their rules, not their arguments: the dev signer keeps none for this "
@@ -781,6 +788,7 @@ class StoreFeed:
         # snapshot serves before the records so the run list keeps every run's verdict, failed ones longest
         self.latest, self.kept = {}, collections.OrderedDict()
         self.tr = Translator(policy_reasons([cfg["policy"]] if cfg.get("policy") else []))
+        self.stopped = None   # why the watch thread ended, when it did: the page then says verification stopped
         self.on_run, self.content, self.analyze = on_run, content, analyze
         # (tenant, run_id) -> the newest records of a run to mirror (on_run), off the watch thread: the tape never
         # waits for a graph, and a run that grew twice meanwhile is mirrored once
@@ -806,22 +814,27 @@ class StoreFeed:
 
     def _watch(self):
         seen = None
-        while not self._stop.is_set():
-            stamp = []
-            for name in () if self.pg else ("records.jsonl", NOTE):
-                try:
-                    st = os.stat(os.path.join(self.store, name))
-                    stamp.append((st.st_size, st.st_mtime_ns))
-                except FileNotFoundError:
-                    stamp.append(None)
-            # lean: a Postgres store is read again every POLL_S; compare its latest note first if that loads the server
-            if stamp != seen or self.pg or time.time() >= self.due:
-                seen = stamp
-                try:
-                    self.refresh()
-                except (OSError, ValueError, StorageCorrupt, StorageUnavailable) as e:
-                    print(f"tracekit view: cannot read {self.store}: {e}", file=sys.stderr, flush=True)
-            self._stop.wait(POLL_S)
+        try:
+            while not self._stop.is_set():
+                stamp = []
+                for name in () if self.pg else ("records.jsonl", NOTE):
+                    try:
+                        st = os.stat(os.path.join(self.store, name))
+                        stamp.append((st.st_size, st.st_mtime_ns))
+                    except FileNotFoundError:
+                        stamp.append(None)
+                # lean: a Postgres store is read again every POLL_S; compare its latest note first if that loads it
+                if stamp != seen or self.pg or time.time() >= self.due:
+                    seen = stamp
+                    try:
+                        self.refresh()
+                    except Exception as e:   # the store unreadable, or a bug: said, and tried again
+                        print(f"tracekit view: cannot check {self.store}: {e!r}", file=sys.stderr, flush=True)
+                self._stop.wait(POLL_S)
+        except BaseException as e:   # whatever ends the watch but close(): the page stops saying LIVE
+            self.stopped = f"verification stopped ({type(e).__name__}: {e}): no run is checked until tracekit view " \
+                           "restarts"
+            raise
 
     def refresh(self):
         """Verify every run with records a checkpoint covers that were not verified yet: a run still being written is
@@ -845,24 +858,43 @@ class StoreFeed:
                     if at > now:
                         due.append(at)
                     else:
-                        self._verify(r, note[1], key, covered)
+                        self._check(r, note[1], key, covered)
                 elif covered:
                     due.append(state["checked"] + RECHECK_S)
                     if state["checked"] + RECHECK_S <= now and (stale is None or state["checked"] < stale[1]):
                         stale = key, state["checked"], covered
                 elif key not in self.runs and key[1] != SIGNER_RUN[1]:   # no checkpoint covers it yet: listed as pending
-                    first = next(iter(r.iter_run(*key)), None)
-                    name = first and ((first["event"].get("data") or {}).get("agent") or {}).get("name")
+                    # its first record, unverified: the agent's name only if it is one
+                    name = parsers._get(next(iter(r.iter_run(*key)), None), "event", "data", "agent", "name")
+                    name = name if isinstance(name, str) else None
                     with self.lock:
                         self.runs[key] = {"count": 0, "shown": 0, "failed": None}
                         self._append([{**self.tr._base({"run_id": key[1]}, {}, "tk_run"), "tenant": key[0],
                                        "analysis": True, "review": {"verdict": "pending", "agent": name,
                                                                     "label": OPERATOR_SIDE}}], key)
             if stale:
-                self._verify(r, note[1], stale[0], stale[2])
+                self._check(r, note[1], stale[0], stale[2])
         finally:
             r.close()
         self.due = min(due)
+
+    def _check(self, reader, note, key, count):
+        """_verify, where an error gives the run a "not checked" row and is tried again as a run that did not grow
+        is: one run never stops the others being checked."""
+        try:
+            self._verify(reader, note, key, count)
+        except Exception as x:
+            why = f"{type(x).__name__}: {x}"[:1024]
+            print(f"tracekit view: run {key[1]} not checked: {why}", file=sys.stderr, flush=True)
+            row = self._own({"run_id": key[1]}, "high", f"RUN {key[1]} · NOT CHECKED: error",
+                            f"{OPERATOR_SIDE}\n\nThe viewer could not check this run ({why}); it tries again in "
+                            f"{RECHECK_S // 60} minutes or when the run grows.", "VERIFY")
+            row["review"] = {"verdict": "error", "integrity": "NOT CHECKED", "assurance": "none",
+                             "label": OPERATOR_SIDE, "agent": None}
+            with self.lock:
+                self.runs[key] = dict(self.runs.get(key) or {"count": 0, "shown": 0}, count=count,
+                                      failed="NOT CHECKED (error)", checked=time.time())
+                self._append([dict(row, tenant=key[0])], key)
 
     def _verify(self, reader, note, key, count):
         tenant, run_id = key
@@ -886,8 +918,9 @@ class StoreFeed:
                 pass
             new = [self._own(e, "high", f"RUN {run_id} · Integrity {rep.integrity}", f"{OPERATOR_SIDE}\n\n{text}",
                              "VERIFY")]
-            # its records shown when it verified leave the tape (shown again from the start if it verifies again)
-            state = dict(state, count=count, shown=0, failed=rep.integrity)
+            # its rows of when it verified leave the tape (shown again from the start, findings too, if it verifies
+            # again)
+            state = dict(state, count=count, shown=0, failed=rep.integrity, analyzed=False)
             records = None   # a mirror of it, from when it verified, goes
         else:
             records = list(itertools.islice(reader.iter_run(tenant, run_id), count))   # what the checkpoint covers
@@ -924,10 +957,9 @@ class StoreFeed:
             new[-1].update(signer=True, agent="signer")
         with self.lock:
             self.runs[key] = state
-            if code:
+            if code:   # its records, and the reports and findings of when it verified
                 for i, x in enumerate(self.records):
-                    if x is not observe.RETRACTED and (x.get("tenant"), x.get("session_id")) == key \
-                            and not x.get("analysis"):
+                    if x is not observe.RETRACTED and (x.get("tenant"), x.get("session_id")) == key:
                         self.records[i] = observe.RETRACTED
             self._append([dict(x, tenant=tenant) for x in new], key)
         if self.on_run and key[1] != SIGNER_RUN[1]:   # after the tape has the records: the graph waits, not the tape
@@ -944,7 +976,9 @@ class StoreFeed:
     def _mirrors(self):
         """The mirror thread: on_run for each run that changed, with its newest records. A run is imported whole each
         time, so a growing run is mirrored again no sooner than BACKOFF times its last mirror's time after it; a run
-        that failed (records None) loses its mirror at once."""
+        that failed or left the live view (records None) loses its mirror at once."""
+        # lean: BACKOFF counts the import, not the why server's analysis of it on its own thread (about as long again);
+        # count both if a growing run's graph costs too much CPU
         due = {}   # (tenant, run_id) -> when it may be mirrored again
         while True:
             with self._mlock:
@@ -1017,7 +1051,8 @@ class StoreFeed:
 
     def _trim(self):
         """Under self.lock: drop the oldest records past max_records, counted in base (what /api/snapshot calls dropped);
-        a run's latest review among them goes to kept, which keeps KEPT_MAX runs' and drops a failed run's last."""
+        a run's latest review among them goes to kept, which keeps KEPT_MAX runs' and drops a failed run's last, and
+        the run's graph goes (on_run), so the graphs too are of the runs on the live view only."""
         over = len(self.records) - self.max_records
         if over > 0:
             for x in self.records[:over]:
@@ -1025,6 +1060,10 @@ class StoreFeed:
                 if key and self.latest.get(key) is x:
                     del self.latest[key]
                     self.kept[key] = x
+                    if self.on_run and key[1] != SIGNER_RUN[1]:
+                        with self._mlock:
+                            self._mirror[key] = None
+                            self._mlock.notify()
             while len(self.kept) > KEPT_MAX:
                 self.kept.pop(next((k for k, x in self.kept.items() if x["review"]["verdict"] != "failed"),
                                    next(iter(self.kept))))
@@ -1036,13 +1075,15 @@ class StoreFeed:
         with self.lock:
             runs = {k: s for k, s in self.runs.items() if tenant is None or k[0] == tenant}
             return (sum(s["shown"] for s in runs.values() if not s["failed"]),
-                    [f"run {k[1]} of tenant {k[0]}: {s['failed']}" for k, s in runs.items() if s["failed"]], None)
+                    [f"run {k[1]} of tenant {k[0]}: {s['failed']}" for k, s in runs.items() if s["failed"]]
+                    + [self.stopped] * bool(self.stopped), None)
 
 
 def mirror_run(why_dir, tenant, run_id, records, reasons=None):
     """Import one verified v2 run as a why run under `why_dir` (why.import_v2, from the records only), replacing an
     earlier import of it, so GRAPH, WHY, AGENTS and INFLUENCE work on a store with no why logs; with `records` None (the
-    run failed verification), remove its import. A reader sees the old import or the new one, never part of either."""
+    run failed verification), remove its import. A reader sees the old import, the new one or, between the two
+    renames, neither: never part of one."""
     # lean: the whole run is imported again each time it grows; import only the new records if long runs make it slow
     from .why.import_v2 import _target, import_records
     target = _target(why_dir, run_id, tenant)

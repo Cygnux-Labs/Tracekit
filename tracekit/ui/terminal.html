@@ -709,7 +709,8 @@
       color: var(--green)
     }
 
-    .vchip.failed {
+    .vchip.failed,
+    .vchip.error {
       color: #000;
       background: var(--red);
       border-color: var(--red)
@@ -1616,6 +1617,8 @@
     // bidi and invisible format characters are shown as \uXXXX, so a name cannot render as something else
     // lean: a filter clicked on such a name compares the shown text and matches nothing; decode data-* if that matters
     const esc = s => String(s ?? "").replace(/[&<>"'\u061c\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c] || "\\u" + c.charCodeAt(0).toString(16).padStart(4, "0")));
+    // the same for text set as textContent, which needs no markup escaped
+    const vis = s => String(s ?? "").replace(/[\u061c\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]/g, c => "\\u" + c.charCodeAt(0).toString(16).padStart(4, "0"));
     const FIELD = { Bash: "command", Write: "file_path", Edit: "file_path", MultiEdit: "file_path", Read: "file_path", NotebookEdit: "notebook_path", WebFetch: "url", WebSearch: "query", Glob: "pattern", Grep: "pattern", Agent: "description", Task: "description" };
     const FILE_TOOLS = { Read: "R", Write: "W", Edit: "W", MultiEdit: "W", NotebookEdit: "W" };
     const SEVERE = new Set(["denied", "out_of_scope_write", "secrets_access"]);
@@ -1739,17 +1742,17 @@
         if (!S.withheldSeen.has("u" + mid)) { a.tokIn += tin; a.tokOut += tout; S.tokIn += tin; S.tokOut += tout; S.withheldSeen.add("u" + mid); }
         if (r.model) a.model = r.model;
         // v2: each entry keeps its form, its model message (x) and its record's run_seq, for the call it led to
-        const at = { x: r.v2?.exchange_id, seq: r.v2?.run_seq };
+        const at = { x: r.v2?.exchange_id, seq: r.v2?.run_seq, calls: r.calls };
         for (const b of r.blocks || []) {
           if ((b.kind === "thinking" || b.kind === "text") && b.text && b.text.trim()) {
             const kind = b.kind === "thinking" ? "think" : "says";
-            S.reasoning.push({ ts: r.ts, agent: a, kind, text: b.text, rec: r, form: b.form, x: at.x, seq: at.seq });
+            S.reasoning.push({ ts: r.ts, agent: a, kind, text: b.text, rec: r, form: b.form, ...at, k: b.after });
             pushTape({ ts: r.ts, agent: a, ev: kind === "think" ? "THINK" : "SAYS", text: b.text, rec: r });
           } else if (b.kind === "thinking_redacted" && !S.withheldSeen.has(mid)) {
             S.withheldSeen.add(mid);
-            S.reasoning.push({ ts: r.ts, agent: a, kind: "withheld", text: "Thinking happened; the provider withheld its text" + (b.form === "encrypted" ? " (kept sealed in the record: encrypted)." : "."), rec: r, form: b.form, x: at.x, seq: at.seq });
+            S.reasoning.push({ ts: r.ts, agent: a, kind: "withheld", text: "Thinking happened; the provider withheld its text" + (b.form === "encrypted" ? " (kept sealed in the record: encrypted)." : "."), rec: r, form: b.form, ...at, k: b.after });
           } else if (b.kind === "committed") {
-            S.reasoning.push({ ts: r.ts, agent: a, kind: "committed", text: b.text, rec: r, x: at.x, seq: at.seq });
+            S.reasoning.push({ ts: r.ts, agent: a, kind: "committed", text: b.text, rec: r, ...at });
           }
         }
         return;
@@ -1900,26 +1903,26 @@
       if (WTAB === "node") renderNode(); else if (WTAB === "why") renderWhyPanel(); else if (selected) renderDetail(selected); else if (V2) renderReview();
     }
     function renderTop() {
-      const m = $("mode");
-      m.className = "mode " + (mode === "live" ? (liveOk ? "live" : "off") : "replay");
-      m.textContent = mode === "live" ? (document.URL.startsWith("file:") ? "STATIC" : SOURCE === "bundle" ? "BUNDLE" : liveOk ? "LIVE" : "DISCONNECTED") : "REPLAY";   // file: a `tracekit why report`
-      m.title = mode === "live" && !liveOk ? liveErr : "";
-      // a page that lost its viewer says so where it can't be missed: what it shows may be out of date
-      $("lost").hidden = liveOk || !!BOOT || document.URL.startsWith("file:");
-      $("lost").textContent = liveErr || "Connection to the viewer lost; reconnecting…";
+      const m = $("mode"), live = liveOk && !STOPPED;   // a viewer that stopped checking runs is not live, connected or not
+      m.className = "mode " + (mode === "live" ? (live ? "live" : "off") : "replay");
+      m.textContent = mode === "live" ? (document.URL.startsWith("file:") ? "STATIC" : SOURCE === "bundle" ? "BUNDLE" : STOPPED ? "STOPPED" : liveOk ? "LIVE" : "DISCONNECTED") : "REPLAY";   // file: a `tracekit why report`
+      m.title = mode === "live" && !live ? STOPPED || liveErr : "";
+      // a page that lost its viewer, or whose viewer stopped checking, says so where it can't be missed
+      $("lost").hidden = live || !!BOOT || document.URL.startsWith("file:");
+      $("lost").textContent = STOPPED || liveErr || "Connection to the viewer lost; reconnecting…";
       document.body.classList.toggle("scoped", !!(V2 && scope));
       const c = $("chain");
       const run = V2 && scope ? RUNS.get(scope) : null;   // a selected run: its own verdict, not the page's
       const failed = V2 && !run ? [...RUNS.values()].filter(r => r.verdict === "failed").length : 0;
       if (run) {
-        c.className = "chain" + (run.verdict === "verified" ? " ok" : run.verdict === "failed" ? " bad" : "");
-        c.textContent = run.verdict === "verified" ? "RUN ✓ VERIFIED" : run.verdict === "failed" ? "RUN ✗ FAILED" : "RUN … PENDING";
+        c.className = "chain" + (run.verdict === "verified" ? " ok" : run.verdict === "pending" ? "" : " bad");
+        c.textContent = run.verdict === "verified" ? "RUN ✓ VERIFIED" : run.verdict === "failed" ? "RUN ✗ FAILED" : run.verdict === "error" ? "RUN ✗ NOT CHECKED" : "RUN … PENDING";
         c.title = (run.integrity || "") + " · " + (run.label || "");
       } else {
         c.className = "chain" + (chainState.ok === true && chainState.n ? " ok" : chainState.ok === false ? " bad" : "");
         // why logs alone have no signed records: nothing to check, which is not a passed check
         c.textContent = chainState.ok === true ? (chainState.n ? `CHAIN ✓ ${chainState.n} SIGNED RECORDS` : "NO SIGNED RECORDS")
-          : chainState.ok === false ? (failed ? `✗ ${failed} OF ${RUNS.size} RUNS FAILED` : `CHAIN ✗ BROKEN`)
+          : chainState.ok === false ? (STOPPED ? "✗ VERIFICATION STOPPED" : failed ? `✗ ${failed} OF ${RUNS.size} RUNS FAILED` : `CHAIN ✗ BROKEN`)
           : chainState.detail ? "CHAIN n/a" : "CHAIN …";
         c.title = chainState.detail || "";
       }
@@ -1963,11 +1966,11 @@
     function renderRuns() {
       const list = [...RUNS.values()].sort((x, y) => String(y.first_ts || "").localeCompare(String(x.first_ts || "")));
       const n = v => list.filter(r => r.verdict === v).length;
-      let html = `<div class="run${scope ? "" : " sel"}" data-run=""><span class="nm">ALL RUNS</span><span></span><span class="meta"><span>${esc(list.length)} runs</span><span class="s-ok">${esc(n("verified"))} verified</span>${n("failed") ? `<span class="s-err">${esc(n("failed"))} failed</span>` : ""}${n("pending") ? `<span class="s-run">${esc(n("pending"))} pending</span>` : ""}</span></div>`;
+      let html = `<div class="run${scope ? "" : " sel"}" data-run="" tabindex="0"><span class="nm">ALL RUNS</span><span></span><span class="meta"><span>${esc(list.length)} runs</span><span class="s-ok">${esc(n("verified"))} verified</span>${n("failed") ? `<span class="s-err">${esc(n("failed"))} failed</span>` : ""}${n("pending") ? `<span class="s-run">${esc(n("pending"))} pending</span>` : ""}${n("error") ? `<span class="s-err">${esc(n("error"))} not checked</span>` : ""}</span></div>`;
       for (const r of list) {
         const d = r.decisions || {}, t0 = Date.parse(r.first_ts) / 1000, t1 = Date.parse(r.last_ts) / 1000;
         const gaps = Object.values(r.gaps || {}).reduce((x, y) => x + y, 0), calls = Object.values(d).reduce((x, y) => x + y, 0);
-        html += `<div class="run${scope === r.id ? " sel" : ""}" data-run="${esc(r.id)}"><span class="nm">${esc(r.agent || "run")}</span><span class="vchip ${esc(r.verdict)}" title="${esc(r.integrity || "")} · ${esc(r.label)}">${esc(String(r.verdict).toUpperCase())}</span>
+        html += `<div class="run${scope === r.id ? " sel" : ""}" data-run="${esc(r.id)}" tabindex="0"><span class="nm">${esc(r.agent || "run")}</span><span class="vchip ${esc(r.verdict)}" title="${esc(r.integrity || "")} · ${esc(r.label)}">${esc(String(r.verdict).toUpperCase())}</span>
           <span class="meta"><span>${esc(r.id.slice(0, 8))}</span>${t0 ? `<span>${esc(fmtD(t0))} ${esc(fmtT(t0))}</span><span>${esc(fmtDur(t1 - t0))}</span>` : ""}${r.state ? `<span>${esc(r.state)}</span>` : ""}${r.tenant && r.tenant !== "default" ? `<span>tenant ${esc(r.tenant)}</span>` : ""}</span>
           ${r.decisions ? `<span class="meta"><span>${esc(calls)} calls</span><span class="${d.deny ? "s-deny" : ""}">${esc(d.deny || 0)} blocked</span><span class="${d.ask ? "s-flag" : ""}">${esc(d.ask || 0)} held</span><span class="${gaps ? "s-err" : ""}">${esc(gaps)} gaps</span></span>` : ""}</div>`;
       }
@@ -2017,7 +2020,7 @@
       }
       // a row that is no signed record says where it comes from; a gap's code is in its tooltip
       const src = srcOf(row.rec), tag = src === "ANALYSIS" || (src === "WHY" && V2) ? src : "", code = row.rec?.v2?.kind;
-      return `<tr class="row${esc(isNew)}${esc(sel)}${row.under ? " sub" : ""}" data-i="${esc(row.i)}"><td class="c-time">${esc(fmtT(row.ts))}</td><td class="c-agent">${esc(label(row.agent))}</td><td class="c-ev ev-${esc(row.ev)}">${esc(row.ev)}</td><td class="c-tool">${esc(tool)}</td><td class="tgt${a ? "" : " dim"}" title="${esc((code ? code + ": " : "") + text.slice(0, 400))}">${tool ? `<span class="ptool">${esc(tool)} </span>` : ""}${tag ? `<span class="src">${esc(tag)}</span>` : ""}${n > 1 ? `<span class="n">×${esc(n)} </span>` : ""}${esc(text.slice(0, 300))}</td><td class="c-st">${st ? `<span class="${esc(st[0])}">${esc(st[1])}</span>` : ""}</td><td class="c-ms">${esc(ms)}</td></tr>`;
+      return `<tr class="row${esc(isNew)}${esc(sel)}${row.under ? " sub" : ""}" data-i="${esc(row.i)}" tabindex="0"><td class="c-time">${esc(fmtT(row.ts))}</td><td class="c-agent">${esc(label(row.agent))}</td><td class="c-ev ev-${esc(row.ev)}">${esc(row.ev)}</td><td class="c-tool">${esc(tool)}</td><td class="tgt${a ? "" : " dim"}" title="${esc((code ? code + ": " : "") + text.slice(0, 400))}">${tool ? `<span class="ptool">${esc(tool)} </span>` : ""}${tag ? `<span class="src">${esc(tag)}</span>` : ""}${n > 1 ? `<span class="n">×${esc(n)} </span>` : ""}${esc(text.slice(0, 300))}</td><td class="c-st">${st ? `<span class="${esc(st[0])}">${esc(st[1])}</span>` : ""}</td><td class="c-ms">${esc(ms)}</td></tr>`;
     }
     function renderTape() {
       if (V2) put("fchips", [["", "All"], ...Object.entries(KINDS).map(([k, v]) => [k, v[0]])].map(([k, t]) => `<button class="fchip${(F.kind || "") === k ? " on" : ""}" data-kind="${esc(k)}" type="button">${esc(t)}</button>`).join(" "));
@@ -2056,7 +2059,7 @@
       }
       const list = [...groups.values()].sort((x, y) => y.al.i - x.al.i).slice(0, 200);
       put("alerts", why.map((a, i) => `<div class="al" data-wal="${esc(i)}"><span class="sev ${esc(a.severity === "review" ? "med" : a.severity)}">${esc(String(a.severity).toUpperCase())}</span><span class="tx"><span class="src">WHY</span>${esc(a.title)}</span><span class="sub">${esc(a.run_id)} · ${esc(a.agent || "")} · ${esc(String(a.detail || "").slice(0, 200))}</span></div>`).join("")
-        + list.map(({ al, n }) => `<div class="al" data-al="${esc(al.i)}"><span class="sev ${esc(al.sev)}">${esc(String(al.sev).toUpperCase())}</span><span class="tx">${src(al) ? `<span class="src">${esc(src(al))}</span>` : ""}${esc(al.text)}${n > 1 ? `<span class="n">×${esc(n)}</span>` : ""}</span><span class="sub">${esc(fmtT(al.ts))} · ${esc(al.agent ? label(al.agent) : "")} · ${esc(String(al.sub || "").slice(0, 200))}</span></div>`).join("") || `<div class="empty">No alerts. Blocked, flagged and failed actions appear here.</div>`);
+        + list.map(({ al, n }) => `<div class="al" data-al="${esc(al.i)}" tabindex="0"><span class="sev ${esc(al.sev)}">${esc(String(al.sev).toUpperCase())}</span><span class="tx">${src(al) ? `<span class="src">${esc(src(al))}</span>` : ""}${esc(al.text)}${n > 1 ? `<span class="n">×${esc(n)}</span>` : ""}</span><span class="sub">${esc(fmtT(al.ts))} · ${esc(al.agent ? label(al.agent) : "")} · ${esc(String(al.sub || "").slice(0, 200))}</span></div>`).join("") || `<div class="empty">No alerts. Blocked, flagged and failed actions appear here.</div>`);
       $("alsum").textContent = `${S.alerts.length + why.length} total · ${highCount()} high`;
     }
     function renderMix() {
@@ -2170,7 +2173,7 @@
         html += `<div class="sec">INPUT</div><pre>${esc(j(a.input).slice(0, 6000))}</pre>` + argsFrom(a);
         if (a.post) html += `<div class="sec">RESULT</div><pre>${esc(j(a.post.tool_response).slice(0, 6000))}</pre>`;
         html += evidence(a.pre) + (a.post ? evidence(a.post) : "");
-        $("detsum").textContent = `${a.tool} · seq ${lseq(a.pre)}`;
+        $("detsum").textContent = vis(`${a.tool} · seq ${lseq(a.pre)}`);
       } else if (sel.seq !== undefined) { // raw record
         if (Array.isArray(sel.evidence) && sel.evidence.length) {  // a signed finding: jump to the records it cites
           html += `<div class="sec">EVIDENCE CITED BY THIS FINDING</div><dl class="kv">` + sel.evidence.map(x => {
@@ -2180,12 +2183,14 @@
           }).join("") + `</dl>`;
         }
         html += bodyHtml(sel) + evidence(sel);
-        $("detsum").textContent = `${sel.event} · seq ${lseq(sel)}`;
+        $("detsum").textContent = vis(`${sel.event} · seq ${lseq(sel)}`);
       }
       put("detail", html);
     }
     /* ---------------- v2 runs: detail card and run review ---------------- */
     const short = h => h ? String(h).slice(0, String(h).indexOf(":") + 13) + "…" : "";
+    // said before call `pre`, which the record `asked` (its message x, its run_seq) asked for: in an earlier record of that message, or in that record before the call (k: how many of its calls came first)
+    const saidBefore = (r, asked, pre) => r.x === asked.x && r.rec.session_id === pre.session_id && (r.seq < asked.seq || r.seq === asked.seq && !(r.k > (r.calls || []).indexOf(pre.tool_use_id)));
     // a run's verdict; its integrity is said once (VERIFIED, not "VERIFIED Integrity VERIFIED")
     function verdictLine(id) {
       const v = RUNS.get(id);
@@ -2205,14 +2210,14 @@
         let right = a.approvals.length ? `<div class="sec">APPROVAL</div><dl class="kv">` + a.approvals.map(r => `<dt>${esc(fmtT(r.ts))}</dt><dd class="go" data-tkseq="${esc(r.tk_seq)}">${esc(r.title)}<div class="dim">${esc(r.text)}</div></dd>`).join("") + `</dl>` : "";
         if (a.post) right += `<div class="sec">RESULT</div><dl class="kv"><dt>status</dt><dd>${esc(a.error ? "failed" : "ok")}</dd><dt>output</dt><dd>${esc(j(a.post.tool_response?.output))}</dd></dl>`;
         // what the model said before this call in the message that asked for it: "signed before this call" only when its record's run_seq is lower than the decision's
-        const asked = S.asked.get(a.id), said = asked ? S.reasoning.filter(r => r.x === asked.x && r.seq <= asked.seq && r.rec.session_id === a.pre.session_id) : [];
+        const asked = S.asked.get(a.id), said = asked ? S.reasoning.filter(r => saidBefore(r, asked, a.pre)) : [];
         right += `<div class="sec">SAID BEFORE THIS CALL · SELF-REPORTED, NOT PROOF</div>` + (said.length ? `<dl class="kv">` + said.map(r => `<dt>${esc(sayLabel(r).toLowerCase())}</dt><dd>${esc(r.text.slice(0, 1500))}<div class="dim">${r.seq < v.run_seq ? "signed before this call" : "before the call in the transcript; signed after it"}</div></dd>`).join("") + `</dl>`
           : `<div class="dim">${asked ? "nothing: the model said nothing before this call" : "no model message recorded for this call"}</div>`);
         // what a kernel sensor saw this call cause, as the run's analysis joined it; what doesn't fit the call is marked
         const happened = [...S.effects.values()].filter(e => e.call === a.id);
         right += `<div class="sec">HAPPENED · WHAT THE KERNEL SENSOR SAW</div>` + (happened.length ? `<dl class="kv">` + happened.map(e => `<dt>${esc(e.rec.v2.effect.kind)}</dt><dd class="go" data-tkseq="${esc(e.rec.tk_seq)}">${esc(e.rec.v2.effect.target)}<div class="${e.status === "found" ? "s-deny" : "dim"}">${esc(effectHow(e))}</div></dd>`).join("") + `</dl>`
           : `<div class="dim">${S.effects.size ? "nothing the sensor saw is joined to this call" : "no kernel sensor's records in this view (https://github.com/Cygnux-Labs/Tracekit/wiki/Integrations-Tetragon)"}</div>`);
-        $("detsum").textContent = `${a.tool} · seq ${seq}`;
+        $("detsum").textContent = vis(`${a.tool} · seq ${seq}`);
         return cols(left, right + citedHtml([a.pre, a.post]) + evidence(a.pre) + (a.post ? evidence(a.post) : ""));
       }
       // a row the viewer made is named for what it is, not by its internal event
@@ -2232,7 +2237,7 @@
         return r ? `<a href="#" data-tkseq="${esc(r.tk_seq)}">record ${esc(c.run_seq)} · ${esc(r.event === "UserPromptSubmit" ? "prompt" : r.v2.type)}</a> <span class="${r.hash === c.hash ? "s-ok" : "s-deny"}">${r.hash === c.hash ? "hash matches" : "HASH MISMATCH"}</span>` : `record ${esc(c.run_seq)} <span class="dim">not in this view</span>`; }).join("<br>") + `</dd>`;
       if (!sel.signer) left += verdictLine(sel.session_id);
       const right = (sel.review ? `<div class="sec">VERIFIER REPORT</div><pre>${esc(sel.text)}</pre>` : sel.analysis ? "" : bodyHtml(sel)) + citedHtml([sel]);
-      $("detsum").textContent = type + (seq != null ? ` · seq ${seq}` : "");
+      $("detsum").textContent = vis(type + (seq != null ? ` · seq ${seq}` : ""));
       return cols(left + `</dl>` + evidence(sel), right);
     }
     // a verifier report's failing checks, each with the lines that say why (indented under it)
@@ -2367,7 +2372,10 @@
     $("cmd").addEventListener("keydown", e => { if (e.key === "Enter") { runCommand(e.target.value); e.target.value = ""; } if (e.key === "Escape") e.target.blur(); });
     document.addEventListener("keydown", e => {
       if (e.target.tagName === "INPUT" || e.target.tagName === "SELECT") return;
-      if (e.key === "/") { e.preventDefault(); $("cmd").focus(); }
+      // a run, tape row or alert reached with Tab opens with Enter, as a click does
+      // lean: a panel redrawn as records arrive loses the focus inside it; keep the focused row's key across redraws if that bites
+      if (e.key === "Enter" && e.target.matches("[data-run][tabindex],[data-i][tabindex],[data-al][tabindex]")) e.target.click();
+      else if (e.key === "/") { e.preventDefault(); $("cmd").focus(); }
       else if (V2 && !BOOT && scope && rpKeys(e)) return;
       else if (e.key === "Escape") { $("help").hidden = true; if (R) stopRun(); selected = null; put("detail", `<div class="empty">Select an action, alert or reasoning entry.</div>`); $("detsum").textContent = "click any row"; schedule(); }
       else if (e.key === "f" || e.key === "F") { F.flag = !F.flag; schedule(); }
@@ -2408,7 +2416,7 @@
     }
 
     /* ---------------- live mode ---------------- */
-    let liveOk = false, liveErr = "", SOURCE = "";   // SOURCE: "bundle" when the server shows a file, not a live log
+    let liveOk = false, liveErr = "", SOURCE = "", STOPPED = "";   // SOURCE: "bundle" when the server shows a file, not a live log; STOPPED: why the viewer stopped checking runs
     async function getJSON(path) {
       const r = await fetch(path, { credentials: "same-origin" });
       if (r.status === 401) throw Object.assign(new Error("This viewer needs a token: open the URL it printed (?token=…; TRACEKIT_VIEW_TOKEN, or TRACEKIT_OBSERVE_TOKEN for tracekit observe)."), { fatal: true });
@@ -2430,7 +2438,7 @@
         es.onmessage = e => { try { accept(JSON.parse(e.data)); schedule(); } catch (err) { console.error("bad stream record", err); } };
         es.onopen = () => { liveOk = true; liveErr = ""; schedule(); };
         es.onerror = () => { es.close(); liveOk = false; liveErr = "Connection to the viewer lost; reconnecting…"; schedule(); setTimeout(startLive, 2000); };
-        const check = async () => { try { const v = await getJSON("api/verify"); chainState = { ok: v.ok, n: v.records, detail: (v.problems || []).join("\n") || "Verified by the observer (hash chain and Ed25519 signatures): operator-side view — re-verify with the signed release for evidence. Head " + (v.head || "").slice(0, 16) }; schedule(); } catch { if (document.URL.startsWith("file:")) { chainState = { ok: null, n: 0, detail: "A static report: nothing here verifies it. Check the why logs with `tracekit why verify`." }; schedule(); } } };
+        const check = async () => { try { const v = await getJSON("api/verify"); STOPPED = v.stopped || ""; chainState = { ok: v.ok, n: v.records, detail: (v.problems || []).join("\n") || "Verified by the observer (hash chain and Ed25519 signatures): operator-side view — re-verify with the signed release for evidence. Head " + (v.head || "").slice(0, 16) }; schedule(); } catch { if (document.URL.startsWith("file:")) { chainState = { ok: null, n: 0, detail: "A static report: nothing here verifies it. Check the why logs with `tracekit why verify`." }; schedule(); } } };
         check(); if (!checking) checking = setInterval(check, 10000);
       } catch (e) {
         liveOk = false; liveErr = e.message || String(e); schedule();
@@ -2474,10 +2482,11 @@
       ALL.push(r);
       if ((r.v2 || r.review) && !V2) { V2 = true; document.body.classList.add("v2"); }
       if (r.review && !r.signer) RUNS.set(r.session_id, { ...r.review, id: r.session_id, tenant: r.tenant, report: r.text });
-      // a run that verified at one checkpoint and fails at a later one: the records it showed are taken back
+      // a run that verified at one checkpoint and fails at a later one: the records it showed are taken back, and the
+      // reports and findings of when it verified
       let n = 0;
       if (r.review?.verdict === "failed") {
-        for (const x of ALL) if (x.analysis || x.session_id !== r.session_id || x.tenant !== r.tenant) ALL[n++] = x;
+        for (const x of ALL) if (x === r || x.session_id !== r.session_id || x.tenant !== r.tenant) ALL[n++] = x;
         n = ALL.length - n; ALL.length -= n;
       }
       if (ALL.length > MAXREC * 1.1) { const k = ALL.length - MAXREC; ALL.splice(0, k); DROPPED += k; n += k; }
@@ -2657,7 +2666,7 @@
     function renderWhyPanel() {
       if (document.activeElement?.classList.contains("wtarget")) return;   // don't wipe the target being typed
       const ref = whyRef(selected);
-      $("detsum").textContent = ref ? `why · ${ref.run}` : "select a call";
+      $("detsum").textContent = vis(ref ? `why · ${ref.run}` : "select a call");
       if (!ref) { put("detail", `<div class="empty">${selected ? "No why log covers this record: record the run with the why runtime (https://github.com/Cygnux-Labs/Tracekit/wiki/Tracekit-Why), and start the viewer with --why DIR if its logs are elsewhere." : "Select a tool call: why it happened."}</div>`); return; }
       const d = whyDetail(ref.run), A = d && !d.error && d.actions[ref.node];
       if (!A) { put("detail", `<div class="empty">${esc(!d ? "loading…" : d.error || "WHY explains tool calls: select one.")}</div>`); return; }
@@ -2667,7 +2676,7 @@
     // NODE: one why event of the graph or a lineage step, in full: what it saw, did and produced, its links, its record
     function renderNode() {
       const d = whyDetail(WNODE.run);
-      $("detsum").textContent = `why · ${WNODE.run}`;
+      $("detsum").textContent = vis(`why · ${WNODE.run}`);
       const n = d && !d.error && d.nodes.find(x => x.id === WNODE.id);
       if (!n) { put("detail", `<div class="empty">${esc(!d ? "loading…" : d.error || "This node is not in the run's why log any more.")}</div>`); return; }
       const by = Object.fromEntries(d.nodes.map(x => [x.id, x])), ms = v => v == null ? "–" : `${(+v).toFixed(1)} ms`;
