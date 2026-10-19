@@ -33,16 +33,42 @@ class Grammar(unittest.TestCase):
                 ("Please don't change anything.", [("read_only", None)]),
                 ("Don't push.", [("no_push", None)]),
                 ("No network access, please.", [("no_network", None)]),
-                ("Work offline.", [("no_network", None)])):
+                ("Work offline.", [("no_network", None)]),
+                ("Don't change anything except foo.py", [("only_change", "foo.py")]),
+                ("Don't touch anything other than src/foo.py.", [("only_change", "foo.py")]),
+                ("Do not modify anything, except foo.py and bar.py.", [("only_change", "foo.py"),
+                                                                      ("only_change", "bar.py")]),
+                ("Don't change anything but foo.py.", [("only_change", "foo.py")]),
+                ("Read-only except docs/notes.md.", [("only_change", "notes.md")]),
+                ("Fix foo.py. Don't change anything else.", [("only_change", "foo.py")]),
+                ("Don't touch billing.py. Fix foo.py and don't change anything else.",
+                 [("keep_away", "billing.py"), ("only_change", "foo.py")]),
+                ("I don't want anything changed.", [("read_only", None)]),
+                ("Don't change anything, but do run the tests.", [("read_only", None)]),
+                ("Don't commit or push.", [("no_push", None)]),
+                ("Don't go online.", [("no_network", None)]),
+                ("Don't use the internet.", [("no_network", None)]),
+                ("Don't search the web.", [("no_network", None)]),
+                ("No internet during this task.", [("no_network", None)]),
+                ("Please stay offline while you work.", [("no_network", None)])):
             with self.subTest(text):
                 self.assertEqual(constraints.extract(text), want)
 
     def test_no_constraint_where_none_is_stated(self):
         for text in ("Updating billing.py to match the fix.", "A small consistency change in billing.py.",
                      "I'll leave the tests unchanged and fix billing.py.", "Please also update billing.py.",
-                     "Push the branch when you are done.", "Fix the network timeout in net.py.", "", None, 7):
+                     "Push the branch when you are done.", "Fix the network timeout in net.py.", "", None, 7,
+                     # everyday phrasings that state no constraint (#309 review): each would hold a wanted call
+                     "Make the CLI work offline.", "Add an offline mode to the app.",
+                     "We need the app to work offline.", "Don't forget to update README.md.",
+                     "Don't forget to push when you're done.", "Don't hesitate to change config.py.",
+                     "You don't need to touch test_a.py.", "Don't break the network code in net.py.",
+                     "Don't modify the web UI.", "Don't change the network timeout.", "No web UI changes.",
+                     "Don't change anything except the docs.", "Run the tests; don't change anything else.",
+                     "Don't forget to change anything that references it."):
             with self.subTest(text):
                 self.assertEqual(constraints.extract(text), [])
+        self.assertEqual(constraints.extract("Fix the online checkout, don't push."), [("no_push", None)])
 
     def test_a_later_request_lifts_what_it_names(self):
         keep = "billing.py".__eq__
@@ -104,11 +130,13 @@ class Grammar(unittest.TestCase):
             constraints.mentions(text)
             constraints.facts("Bash", {"command": text})
             self.assertLess(time.perf_counter() - t0, 5, text[:20])
-        many = "Don't touch " + " or ".join(f"a{k}.py" for k in range(9000))   # one clause naming 9,000 files
-        t0 = time.perf_counter()
-        self.assertGreater(len(constraints.extract(many)), 5000)
-        constraints.mentions(many)
-        self.assertLess(time.perf_counter() - t0, 0.2)   # each file looked only at the next, not at every other
+        for many in ("Don't touch " + " or ".join(f"a{k}.py" for k in range(9000)),   # one clause naming 9,000 files
+                     "Don't change anything except " + " ".join(f"a{k}.py" for k in range(9000)),
+                     "Don't change anything" + "".join(f", except a{k}.py" for k in range(4000))):
+            t0 = time.perf_counter()
+            self.assertGreater(len(constraints.extract(many)), 3000)
+            constraints.mentions(many)
+            self.assertLess(time.perf_counter() - t0, 0.2)   # each file looked only at the next, not at every other
 
 
 class Live(Signed):

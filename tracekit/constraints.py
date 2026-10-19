@@ -11,18 +11,25 @@ person's approval (live constraints, docs/policy-v2.md#live-constraints).
 Kinds (rpc_schema.CONSTRAINT_KINDS):
   keep_away X    "don't touch / modify / edit / change / delete X", "leave X alone", "X stays untouched", "X is
                  read-only", "read-only on X": a call that writes X breaks it
-  only_change X  "only change / edit / modify / touch X": a call that writes any other file breaks it
+  only_change X  "only change / edit / modify / touch X", "don't change anything except / but / other than X",
+                 "read-only except X", and each file the text names when it says "don't change anything else": a
+                 call that writes any other file breaks it
   read_only      "read-only" naming no file, "don't change anything": any call that writes breaks it
   no_push        "don't push", "never push", "no pushing": a git push breaks it
-  no_network     "no network", "no internet", "don't go online", "offline": a call that reaches the network breaks it
+  no_network     "no network (access)", "no internet", "don't go online", "don't use the web", "work / stay offline":
+                 a call that reaches the network breaks it
 
 The grammar reads a clause at a time (a sentence end, a comma, semicolon, colon or bracket, "but", "except", "though"
-end one) and, for a file, the WINDOW words before and after it in its clause: a negation and a change verb before it
-("don't touch X"), a keep word after it ("X stays untouched", "leave X alone") or "read-only" either side. Files listed
-after a kept one ("don't touch a.py or b.py") are kept too. An object is a file name, lower-cased, compared by
-basename (norm).
-lean: a fixed phrase list, English only; a phrasing outside it ("X is frozen", "hands off X") states no constraint, and
-"don't forget to update X" reads as one. Grow the lists from real misses, never from the held-out pool.
+end one; a clause that starts with an exception word after "don't change anything" or "read-only" belongs to it) and,
+for a file, the WINDOW words before and after it in its clause: a negation and a change verb before it ("don't touch
+X"), a keep word after it ("X stays untouched", "leave X alone") or "read-only" either side. Files listed after a kept
+one ("don't touch a.py or b.py") are kept too. A negation followed by a word that turns it around ("don't forget to",
+"don't hesitate to", "you don't need to") negates nothing; a network word is negated only with nothing but words of
+use between ("don't use the network", not "don't change the network code") and no noun after it ("no web UI changes");
+"offline" only where the clause begins with it as an instruction ("work offline", not "make the CLI work offline"). An
+object is a file name, lower-cased, compared by basename (norm).
+lean: a fixed phrase list, English only; a phrasing outside it ("X is frozen", "hands off X") states no constraint.
+Grow the lists from real misses, never from the held-out pool.
 """
 import hashlib
 import re
@@ -35,12 +42,16 @@ from .policy2.shell import ParseError
 OBJECT_KINDS = ("keep_away", "only_change")
 MAX_TEXT = 1 << 16   # lean: characters of one text the grammar reads; past it, cut
 WINDOW = 4
-CLAUSE = re.compile(r"(?<=[.!?])\s+|\n+|[,;:()\[\]]\s*|\s+(?:but|except|though)\s+", re.I)
+CLAUSE = re.compile(r"(?<=[.!?])\s+|\n+|[,;:()\[\]]\s*|\s+(?=(?:but|except|though)\s)", re.I)   # keeps the word
 TOKEN = re.compile(r"[\w.~/\\'-]+")
 READ_ONLY = re.compile(r"\bread[\s_-]*only\b", re.I)
 FILE_LIKE = re.compile(r"\w\.\w|/|^\.\w")
 NEGATIONS = frozenset(("not", "never", "don't", "dont", "won't", "wont", "mustn't", "shouldn't", "didn't", "didnt",
                        "can't", "cannot", "without", "avoid"))
+# a word after a negation that turns it around: "don't forget to update X" asks for the change
+UNNEGATE = frozenset(("forget", "forgetting", "hesitate", "fail", "neglect", "omit", "skip", "miss", "need", "needs",
+                      "have", "afraid"))
+EXCEPT = frozenset(("except", "but", "besides", "other", "apart", "excluding", "save"))   # "anything except X"
 VERBS = frozenset(("touch", "touching", "touched", "modify", "modifying", "modified", "edit", "editing", "edited",
                    "change", "changing", "changed", "delete", "deleting", "deleted", "alter", "altering", "altered",
                    "rewrite", "rewriting", "overwrite", "overwriting", "update", "updating", "updated", "remove",
@@ -50,6 +61,15 @@ LEAVE = frozenset(("leave", "leaves", "leaving", "left"))
 LIST = frozenset(("or", "and", "nor"))
 PUSH = frozenset(("push", "pushing", "pushed"))
 NETWORK = frozenset(("network", "internet", "online", "web"))
+NET_USE = frozenset(("use", "using", "access", "accessing", "connect", "connecting", "reach", "reaching", "go", "going",
+                     "call", "calling", "hit", "browse", "browsing", "search", "searching", "the", "any", "a", "to",
+                     "on", "onto", "of", "from", "be"))   # between a negation and a network word: "don't use the web"
+NET_AFTER = frozenset(("access", "calls", "requests", "connections", "connection", "traffic", "use", "usage",
+                       "searches", "browsing", "for", "during", "while", "at", "in", "on", "until", "unless",
+                       "whatsoever", "either", "and", "or", "nor", "to", "this", "here", "now", "please", "again",
+                       "anymore", "is", "are", "allowed", "today"))   # what may follow it: "no network access, please"
+OFFLINE = frozenset(("work", "stay", "remain", "keep", "be", "go", "do", "run", "operate", "you", "you're", "we're"))
+LEAD = frozenset(("please", "just", "and", "but", "though", "so", "also", "then"))
 ASKS_CHANGE = VERBS | {"fix", "add", "create", "implement", "apply"}   # a later request that asks for a change
 LIFT = {"no_push": PUSH, "no_network": NETWORK | {"download", "fetch", "curl", "install"}, "read_only": ASKS_CHANGE}
 LIFT_WORDS = frozenset().union(*LIFT.values())
@@ -81,8 +101,15 @@ def _tokens(clause):
     return [t.rstrip(".-") or t for t in TOKEN.findall(READ_ONLY.sub("read-only", clause.lower().replace("’", "'")))]
 
 
+def _negation(tokens, i, words=NEGATIONS):
+    """The index of the word of `words` within WINDOW before tokens[i] that negates it, or None: the nearest, and none
+    of UNNEGATE after it ("don't forget to push")."""
+    at = next((k for k in range(i - 1, max(0, i - WINDOW) - 1, -1) if tokens[k] in words), None)
+    return None if at is None or set(tokens[at + 1:i]) & UNNEGATE else at
+
+
 def _negated(tokens, i, words=NEGATIONS):
-    return bool(set(tokens[max(0, i - WINDOW):i]) & words)
+    return _negation(tokens, i, words) is not None
 
 
 def _kept(tokens, i, nxt):
@@ -91,37 +118,109 @@ def _kept(tokens, i, nxt):
     before = tokens[max(0, i - WINDOW):i]
     end = min(nxt, i + 1 + WINDOW)
     after = tokens[i + 1:end]
-    return bool(set(before) & NEGATIONS and set(before) & VERBS or set(after) & KEEP or "read-only" in before
+    return bool(_negated(tokens, i) and set(before) & VERBS or set(after) & KEEP or "read-only" in before
                 or "alone" in after and set(before) & LEAVE)
 
 
+def _anything(tokens):
+    """The index of the clause's "read-only" or of its "anything" a change is negated before ("don't change anything",
+    "I don't want anything changed"), or None."""
+    neg = verb = None
+    if "anything" not in tokens and "read-only" not in tokens:
+        return None
+    for k, t in enumerate(tokens):
+        if t == "read-only":
+            return k
+        if t in NEGATIONS:
+            neg, verb = k, None
+        elif t in UNNEGATE:
+            neg = None
+        elif t in VERBS:
+            verb = k
+        elif t == "anything" and neg is not None and (verb is not None or set(tokens[k + 1:k + 1 + WINDOW]) & VERBS):
+            return k
+    return None
+
+
 def _clause(tokens):
-    """[(kind, object or None)] of one clause's tokens; also the clause's files kept away (for mentions)."""
-    files = {i: t for i, t in enumerate(tokens) if FILE_LIKE.search(t) and norm(t)}
+    """[(kind, object or None)] of one clause's tokens; also the clause's files kept away (for mentions). ("else",
+    None): "don't change anything else", which extract() reads with the text's other files."""
+    files = {i: t for i, t in enumerate(tokens) if ("." in t or "/" in t) and FILE_LIKE.search(t) and norm(t)}
     out, kept, last, at = [], set(), None, [*files, len(tokens)] if files else ()
+    m, only, excepts = _anything(tokens), (), False
+    if m is not None:   # "don't change anything except X (or Y)": X and Y only, up to a negation after them
+        only, excepted = set(), False
+        for k in range(m + 1, len(tokens)):
+            excepted = tokens[k] in EXCEPT or excepted and tokens[k] not in NEGATIONS
+            excepts |= excepted
+            if excepted and k in files:
+                only.add(k)
     for n, (i, t) in enumerate(files.items()):
-        if _kept(tokens, i, at[n + 1]) or last in kept and set(tokens[last + 1:i]) <= LIST:
+        if i in only:
+            out.append(("only_change", norm(t)))
+        elif _kept(tokens, i, at[n + 1]) or last in kept and set(tokens[last + 1:i]) <= LIST:
             kept.add(i)
             out.append(("keep_away", norm(t)))
         elif "only" in tokens[max(0, i - WINDOW):i] and set(tokens[max(0, i - WINDOW):i]) & VERBS \
                 and not _negated(tokens, i):
             out.append(("only_change", norm(t)))
         last = i
-    if not files and ("read-only" in tokens or set(tokens) & NEGATIONS and set(tokens) & VERBS and "anything" in tokens):
+    if m is not None and tokens[m] == "anything" and tokens[m + 1:m + 2] == ["else"]:
+        out.append(("else", None))
+    elif m is not None and not files and not excepts:   # "except the docs": some change is allowed, but not which
         out.append(("read_only", None))
     for i, t in enumerate(tokens):
         if t in PUSH and _negated(tokens, i, NEGATIONS | {"no"}):
             out.append(("no_push", None))
-        elif t in NETWORK and _negated(tokens, i, NEGATIONS | {"no"}) or t == "offline":
+        elif t in NETWORK and _network(tokens, i) or t == "offline" and _instruction(tokens, i):
             out.append(("no_network", None))
     return list(dict.fromkeys(out)), {files[i] for i in kept}
 
 
-def extract(text):
-    """The constraints `text` states: [(kind, object or None)], each once, in order."""
-    out = []
+def _network(tokens, i):
+    """Whether the network word at tokens[i] is negated: only words of use between ("don't use the internet"), no noun
+    after it ("don't change the network code", "no web UI changes")."""
+    n = _negation(tokens, i, NEGATIONS | {"no"})
+    return n is not None and set(tokens[n + 1:i]) <= NET_USE and (i + 1 == len(tokens) or tokens[i + 1] in NET_AFTER)
+
+
+def _instruction(tokens, i):
+    """Whether "offline" at tokens[i] is an instruction: within three words of an OFFLINE word that begins the clause
+    ("please work offline", "keep everything offline"; not "make the CLI work offline")."""
+    lead = next(k for k, t in enumerate(tokens) if t not in LEAD)
+    return i - lead <= 3 and tokens[lead] in OFFLINE
+
+
+def _clauses(text):
+    """The token lists of `text`'s clauses: a clause that starts with an exception word ("except the docs", "but
+    foo.py": with a file, as "but" also starts a clause of its own) after one that says "don't change anything" or
+    "read-only" is part of it."""
+    cur, marked = None, None   # marked: whether cur says so, once asked
     for clause in CLAUSE.split(text[:MAX_TEXT] if isinstance(text, str) else ""):
-        out += _clause(_tokens(clause))[0]
+        tokens = _tokens(clause)
+        if cur is not None and tokens and tokens[0] in EXCEPT and (tokens[0] != "but" or any(
+                FILE_LIKE.search(t) and norm(t) for t in tokens)):
+            marked = _anything(cur) is not None if marked is None else marked
+            if marked:
+                cur += tokens
+                continue
+        if cur is not None:
+            yield cur
+        cur, marked = tokens, None
+    if cur is not None:
+        yield cur
+
+
+def extract(text):
+    """The constraints `text` states: [(kind, object or None)], each once, in order. "Don't change anything else"
+    keeps the text to the files it names (only_change each; nothing when it names none)."""
+    out, clauses = [], list(_clauses(text))
+    for tokens in clauses:
+        out += _clause(tokens)[0]
+    if ("else", None) in out:
+        out = [c for c in out if c[0] != "else"] + [
+            ("only_change", norm(t)) for tokens in clauses for kept in [_clause(tokens)[1]] for t in tokens
+            if FILE_LIKE.search(t) and norm(t) and t not in kept]
     return list(dict.fromkeys(out))
 
 
@@ -129,11 +228,10 @@ def mentions(text):
     """(the files `text` names other than to keep them away, the words of LIFT_WORDS it uses other than negated):
     what a later request lifts a constraint with."""
     names, words = set(), set()
-    for clause in CLAUSE.split(text[:MAX_TEXT] if isinstance(text, str) else ""):
-        tokens = _tokens(clause)
-        _, kept = _clause(tokens)
+    for tokens in _clauses(text):
+        kept = _clause(tokens)[1]
         for i, t in enumerate(tokens):
-            if FILE_LIKE.search(t) and t not in kept and norm(t):
+            if ("." in t or "/" in t) and FILE_LIKE.search(t) and t not in kept and norm(t):
                 names.add(norm(t))
             elif t in LIFT_WORDS and not _negated(tokens, i, NEGATIONS | {"no"}):
                 words.add(t)
