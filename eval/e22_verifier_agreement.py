@@ -467,11 +467,14 @@ def compare(cases, headed):
         sync_playwright = None
     rows = {c["name"]: dict(c, problems=[]) for c in cases}
     if sync_playwright is None:
-        for c in cases:
-            if c["trust"]:
-                row, problems = vpc.agree(None, c["bundle"], c["trust"], [])
-                rows[c["name"]].update(row, problems=problems)
-        return list(rows.values()), "Playwright is not importable: the page was not run"
+        # a bundle with no trust config is the page's alone to compare (the TypeScript CLI hands a v1 bundle to
+        # Python): without the page it is skipped, not a row
+        compared, left = [c for c in cases if c["trust"]], [c["name"] for c in cases if not c["trust"]]
+        for c in compared:
+            row, problems = vpc.agree(None, c["bundle"], c["trust"], [])
+            rows[c["name"]].update(row, problems=problems)
+        return [rows[c["name"]] for c in compared], "Playwright is not importable: the page was not run" + (
+            f"; not compared without it: {', '.join(left)}" if left else "")
     with sync_playwright() as pw:
         for name, headless, extension in PASSES:
             sample = cases if name != "headed" else cases[::max(1, len(cases) // max(1, headed))][:headed]
