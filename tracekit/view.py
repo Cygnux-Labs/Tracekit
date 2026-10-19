@@ -624,14 +624,19 @@ class Translator(observe.Translator):
         if d.get("phase") == "request":
             prompt = findings_v2._tailer(body) and findings_v2._prompt(body)
             return [{**self._base(e, rec, "UserPromptSubmit"), "prompt": prompt[0], "v2": x}] if prompt else []
+        calls = []   # the message's tool uses in order; each block says how many came before it (`after`)
         if body is None:
             blocks = [] if d.get("tool_uses") else [{"kind": "committed", "text": "said something here; it is "
                                                      "committed, and this viewer reads no content"}]
         else:
-            blocks = [{"kind": ("thinking" if s["text"] else "thinking_redacted") if s["kind"] == "reasoning" else
-                       "text", "text": s["text"], "form": s["form"]}
-                      for s in parsers.said(*findings_v2._message(body, d)) if s["text"] or s["kind"] == "reasoning"]
-        turn = [{**self._base(e, rec, "model_turn"), "blocks": blocks, "message_id": d.get("exchange_id"), "v2": x}]
+            blocks = []
+            for s in parsers.said(*findings_v2._message(body, d)):
+                if s["text"] or s["kind"] == "reasoning":
+                    blocks.append({"kind": ("thinking" if s["text"] else "thinking_redacted") if s["kind"] ==
+                                   "reasoning" else "text", "text": s["text"], "form": s["form"], "after": len(calls)})
+                calls += s["tools"]
+        turn = [{**self._base(e, rec, "model_turn"), "blocks": blocks, "calls": calls,
+                 "message_id": d.get("exchange_id"), "v2": x}]
         return (turn if blocks else []) + out
 
 

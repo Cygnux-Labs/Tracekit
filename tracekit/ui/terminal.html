@@ -1740,17 +1740,17 @@
         if (!S.withheldSeen.has("u" + mid)) { a.tokIn += tin; a.tokOut += tout; S.tokIn += tin; S.tokOut += tout; S.withheldSeen.add("u" + mid); }
         if (r.model) a.model = r.model;
         // v2: each entry keeps its form, its model message (x) and its record's run_seq, for the call it led to
-        const at = { x: r.v2?.exchange_id, seq: r.v2?.run_seq };
+        const at = { x: r.v2?.exchange_id, seq: r.v2?.run_seq, calls: r.calls };
         for (const b of r.blocks || []) {
           if ((b.kind === "thinking" || b.kind === "text") && b.text && b.text.trim()) {
             const kind = b.kind === "thinking" ? "think" : "says";
-            S.reasoning.push({ ts: r.ts, agent: a, kind, text: b.text, rec: r, form: b.form, x: at.x, seq: at.seq });
+            S.reasoning.push({ ts: r.ts, agent: a, kind, text: b.text, rec: r, form: b.form, ...at, k: b.after });
             pushTape({ ts: r.ts, agent: a, ev: kind === "think" ? "THINK" : "SAYS", text: b.text, rec: r });
           } else if (b.kind === "thinking_redacted" && !S.withheldSeen.has(mid)) {
             S.withheldSeen.add(mid);
-            S.reasoning.push({ ts: r.ts, agent: a, kind: "withheld", text: "Thinking happened; the provider withheld its text" + (b.form === "encrypted" ? " (kept sealed in the record: encrypted)." : "."), rec: r, form: b.form, x: at.x, seq: at.seq });
+            S.reasoning.push({ ts: r.ts, agent: a, kind: "withheld", text: "Thinking happened; the provider withheld its text" + (b.form === "encrypted" ? " (kept sealed in the record: encrypted)." : "."), rec: r, form: b.form, ...at, k: b.after });
           } else if (b.kind === "committed") {
-            S.reasoning.push({ ts: r.ts, agent: a, kind: "committed", text: b.text, rec: r, x: at.x, seq: at.seq });
+            S.reasoning.push({ ts: r.ts, agent: a, kind: "committed", text: b.text, rec: r, ...at });
           }
         }
         return;
@@ -2187,6 +2187,8 @@
     }
     /* ---------------- v2 runs: detail card and run review ---------------- */
     const short = h => h ? String(h).slice(0, String(h).indexOf(":") + 13) + "…" : "";
+    // said before call `pre`, which the record `asked` (its message x, its run_seq) asked for: in an earlier record of that message, or in that record before the call (k: how many of its calls came first)
+    const saidBefore = (r, asked, pre) => r.x === asked.x && r.rec.session_id === pre.session_id && (r.seq < asked.seq || r.seq === asked.seq && !(r.k > (r.calls || []).indexOf(pre.tool_use_id)));
     // a run's verdict; its integrity is said once (VERIFIED, not "VERIFIED Integrity VERIFIED")
     function verdictLine(id) {
       const v = RUNS.get(id);
@@ -2206,7 +2208,7 @@
         let right = a.approvals.length ? `<div class="sec">APPROVAL</div><dl class="kv">` + a.approvals.map(r => `<dt>${esc(fmtT(r.ts))}</dt><dd class="go" data-tkseq="${esc(r.tk_seq)}">${esc(r.title)}<div class="dim">${esc(r.text)}</div></dd>`).join("") + `</dl>` : "";
         if (a.post) right += `<div class="sec">RESULT</div><dl class="kv"><dt>status</dt><dd>${esc(a.error ? "failed" : "ok")}</dd><dt>output</dt><dd>${esc(j(a.post.tool_response?.output))}</dd></dl>`;
         // what the model said before this call in the message that asked for it: "signed before this call" only when its record's run_seq is lower than the decision's
-        const asked = S.asked.get(a.id), said = asked ? S.reasoning.filter(r => r.x === asked.x && r.seq <= asked.seq && r.rec.session_id === a.pre.session_id) : [];
+        const asked = S.asked.get(a.id), said = asked ? S.reasoning.filter(r => saidBefore(r, asked, a.pre)) : [];
         right += `<div class="sec">SAID BEFORE THIS CALL · SELF-REPORTED, NOT PROOF</div>` + (said.length ? `<dl class="kv">` + said.map(r => `<dt>${esc(sayLabel(r).toLowerCase())}</dt><dd>${esc(r.text.slice(0, 1500))}<div class="dim">${r.seq < v.run_seq ? "signed before this call" : "before the call in the transcript; signed after it"}</div></dd>`).join("") + `</dl>`
           : `<div class="dim">${asked ? "nothing: the model said nothing before this call" : "no model message recorded for this call"}</div>`);
         // what a kernel sensor saw this call cause, as the run's analysis joined it; what doesn't fit the call is marked

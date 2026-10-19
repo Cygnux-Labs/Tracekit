@@ -126,6 +126,32 @@ class Translate(unittest.TestCase):
         with mock.patch.object(findings_v2._Run, "feed", side_effect=RecursionError("too deep")):   # any reader error
             self.assertIn("no problems found", findings_v2.analyze(recs, vault)["summary"])
 
+    def test_what_the_model_said_before_a_call_leaves_out_what_it_said_after(self):
+        """SAID BEFORE THIS CALL listed every block of the message that asked for the call, text written after it too,
+        labelled "signed before this call": each block says how many of the message's calls came before it."""
+        tr = view.Translator()
+        tr.content[("r1", 1)] = {"output": [
+            {"type": "message", "content": [{"type": "output_text", "text": "BEFORE"}]},
+            {"type": "function_call", "call_id": "c1", "name": "f", "arguments": "{}"},
+            {"type": "message", "content": [{"type": "output_text", "text": "AFTER"}]},
+            {"type": "function_call", "call_id": "c2", "name": "f", "arguments": "{}"}]}
+        turn = tr.feed(v2rec(1, "model.exchange", {"phase": "response", "exchange_id": "x1", "content_digest": "sha256:c",
+                                                   "tool_uses": [{"id": "c1", "name": "f"}, {"id": "c2", "name": "f"}]}))[0]
+        self.assertEqual([(b["text"], b["after"]) for b in turn["blocks"]], [("BEFORE", 0), ("AFTER", 1)])
+        self.assertEqual(turn["calls"], ["c1", "c2"])
+        if not shutil.which("node"):
+            self.skipTest("needs node to run the page's saidBefore()")
+        said = json.loads(page_js(["saidBefore"], f"""
+            const rec = {{ session_id: "r1" }}, asked = {{ x: "x1", seq: 1 }};
+            const entries = [{{ x: "x1", seq: 0, rec, text: "EARLIER RECORD" }}, ...{json.dumps(turn["blocks"])}.map(b =>
+              ({{ x: "x1", seq: 1, rec, calls: {json.dumps(turn["calls"])}, k: b.after, text: b.text }})),
+              {{ x: "x1", seq: 1, rec, text: "COMMITTED" }}, {{ x: "x1", seq: 2, rec, text: "LATER RECORD" }}];
+            process.stdout.write(JSON.stringify(["c1", "c2", "c9"].map(id => entries.filter(r =>
+              saidBefore(r, asked, {{ session_id: "r1", tool_use_id: id }})).map(r => r.text))));"""))
+        self.assertEqual(said, [["EARLIER RECORD", "BEFORE", "COMMITTED"],
+                                ["EARLIER RECORD", "BEFORE", "AFTER", "COMMITTED"],
+                                ["EARLIER RECORD", "COMMITTED"]])
+
     def test_openshells_blocks_and_policy_changes_are_rows_in_words(self):
         seen = {"observer": "mtls:spiffe://acme.example/tracekit-openshell", "sensor": "openshell",
                 "ts": "2026-10-15T00:00:00.000000Z", "pid": 2187, "binary": "/usr/bin/curl", "attribution": "token"}
@@ -452,7 +478,7 @@ class View(unittest.TestCase):
         self.assertEqual([r["prompt"] for r in rows if r["event"] == "UserPromptSubmit"], ["Fix pager.py."])
         turns = [r for r in rows if r["event"] == "model_turn"]
         self.assertEqual([(t["blocks"], t["v2"]["exchange_id"]) for t in turns], [
-            ([{"kind": "thinking", "text": "One more small fix.", "form": "summary"}], "msg_1"),
+            ([{"kind": "thinking", "text": "One more small fix.", "form": "summary", "after": 0}], "msg_1"),
             ([{"kind": "committed", "text": "said something here; it is committed, and this viewer reads no content"}],
              "msg_2")])
         self.assertEqual(turns[1]["v2"]["run_seq"], unread)
