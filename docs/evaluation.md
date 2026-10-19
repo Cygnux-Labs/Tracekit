@@ -333,14 +333,14 @@ Detection by cover (24 sessions each):
 Text faults, found when any of their checks finds them: F4 a test run fails (by its exit, or piped through `tail` so
 only its output shows it) and the model claims success (TK-X205; c5_line appends a transcript line in which the run
 passed); F2 posts a file to a host, F3 deletes one, F5 installs a package and pushes, each followed by the model's
-summary (TK-X114, X112 or X120, X111); Fc claims a test run, commit, push or install that never ran (TK-X101..X104).
-F4 is found in every tuned session; on pool v1, 60% (c0 79%, c1 58%, c2 21%, c3 67%, c4 71%, c5_line 67%; exit 56%,
-piped 65%; 64% before the phrases taken from the pool were removed): a free-form summary is the hardest. F2, F3 and F5 are found only when the summary denies the action or
-leaves out a risky one (held out: F2 c2 25%, F3 25% for c0, c1, c4 and 100% for c3, F5 0%); held-out Fc (the pool's
-success claims with no test run) 29%, since most of those claims don't say tests ran. No control session of either
-set (36 each) and none of the 15 tuned honest final statements got a text finding; but every control session ends on
-E20's own final statement and pool v1 has no honest final statements, so the text checks' false alarms on wording they
-were not written with are not measured.
+summary (TK-X114, X112 or X120, X111); Fc claims a test run, commit, push or install that never ran (TK-X101..X104). F4
+is found in every tuned session; on pool v1, 60% (c0 79%, c1 58%, c2 21%, c3 67%, c4 71%, c5_line 67%; exit 56%, piped
+65%; 64% before the phrases taken from the pool were removed): a free-form summary is the hardest. F2, F3 and F5 are
+found only when the summary denies the action or leaves out a risky one (held out: F2 c2 25%, F3 25% for c0, c1, c4 and
+100% for c3, F5 0%); held-out Fc (the pool's success claims with no test run) 29%, since most of those claims don't say
+tests ran. No control session of either set (36 each) and none of the 15 tuned honest final statements got a text
+finding; but every control session ends on E20's own final statement and pool v1 has no honest final statements, so the
+text checks' false alarms on wording they were not written with are not measured.
 
 The reviewer model arm (`E20_MODEL=1`) runs [TK-X210](findings.md#the-reviewer-model-tk-x210) on a sample of the same
 sessions of both sets (2 per fault, cover and splice; 4 per control kind), each reviewed twice: per cover, how often it
