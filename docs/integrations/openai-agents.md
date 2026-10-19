@@ -46,7 +46,13 @@ A resumed run (another process, after a restart) builds `TracekitAgents` with th
 | before the tool runs | `decide` | `tool_call_id`, tool name, the arguments as the SDK decoded them (`parsed`); after a resume in another process, the model's raw string |
 | right before it runs | `approval_consume` | the same call, the arguments (for function tools the model's raw string), and the approval id the run state carries as a hint |
 | after the tool runs | `complete` | `status` `ok` or `error`, a `sha256:` commitment to the result (not the result), or the exception type and message |
-| after each model response | `model_event` | a `sha256:` commitment to the whole response output, every tool call in it (`tool_uses`; hosted ones as `executed_by: provider`), and token usage |
+| after each model response | `model_event` | a `sha256:` commitment to the whole response output, every tool call in it (`tool_uses`; hosted ones as `executed_by: provider`), and token usage; with the signer's content vault on, the output items themselves as the record's body |
+
+What the model said: with the content vault on (`content: {retain: true}` in signer.yaml; the dev signer keeps it),
+each response's output items (reasoning summaries, sealed `encrypted_content`, messages, calls) are kept encrypted in
+the vault, so `tracekit analyze --v2` can check the reasoning and claims before and after each call
+([findings](../findings.md#v2-runs-what-was-asked-said-and-done-tracekit-analyze---v2)). Reasoning summaries come back
+only when the model is asked for them (`reasoning.summary`); with the vault off only the commitment is kept.
 
 The signer classifies the tool and computes the args digest itself; nothing the adapter sends is trusted for that.
 

@@ -13,8 +13,12 @@ import unittest
 from unittest import mock
 
 import adapter_contract as ac
+from tracekit import findings_v2
 from tracekit.format.canon import event_hash
+from tracekit.identity.base import CallerIdentity
 from tracekit.sdk.client import Client, SignerUnavailable
+from tracekit.signer.service import CONTENT_READ, DEFAULT_GRANTS, SignerService
+from tracekit.why.signed import vault_content
 
 try:
     from agents import (Agent, ApplyPatchTool, LocalShellTool, Model, ModelResponse, RunState, Runner, ShellTool,
@@ -24,8 +28,10 @@ try:
     from agents.usage import Usage
     from openai.types.responses import (Response, ResponseApplyPatchToolCall, ResponseCompletedEvent,
                                         ResponseFunctionShellToolCall, ResponseFunctionToolCall,
-                                        ResponseFunctionWebSearch, ResponseOutputMessage, ResponseOutputText)
+                                        ResponseFunctionWebSearch, ResponseOutputMessage, ResponseOutputText,
+                                        ResponseReasoningItem)
     from openai.types.responses.response_output_item import LocalShellCall
+    from openai.types.responses.response_reasoning_item import Summary
 
     from tracekit.integrations.openai_agents import TracekitAgents
 except ImportError:   # optional: the dev extra installs it
@@ -280,6 +286,52 @@ class TestOtherTools(ac.OnReal, unittest.TestCase):
         self.assertEqual(first["tool_uses"], [{"id": "ws_1", "name": "web_search", "executed_by": "provider",
                                                "args_source": "parsed", "args_commitment": self.service._commit(
                                                    f"model.exchange:{first['salt_id']}", digest)}])
+
+
+@unittest.skipUnless(HAVE_OA, "openai-agents not installed")
+class ResponseBodies(unittest.TestCase):
+    """Each model response carries content_digest, and its output items as the body only when the signer keeps
+    content, so the reasoning before a call is checkable (`tracekit analyze --v2`); tool_uses are what they were."""
+
+    def record(self, retain):
+        me = CallerIdentity("uid", str(os.getuid()), True)
+        s = SignerService(ac.tmpdir(self), content={"retain": retain},
+                          authorize={f"uid:{me.subject}": sorted(DEFAULT_GRANTS | {CONTENT_READ})})
+        self.addCleanup(s.close)
+        client = Client(ac._serve(self, lambda identity, frame: s.handle_frame(identity, frame)))
+        self.addCleanup(client.close)
+        r = client.register_run({"agent": {"name": "bodies"}})
+        tk = TracekitAgents(client, r)
+        think = ResponseReasoningItem(id="rs_1", type="reasoning", summary=[Summary(text="Echo it back first.",
+                                                                                    type="summary_text")])
+        call = ResponseFunctionToolCall(id="fc_1", call_id="c-1", type="function_call", name="echo",
+                                        arguments=json.dumps({"text": "hi"}), status="completed")
+
+        class Thinking(StubModel):
+            async def get_response(self, system_instructions, input, *a, **kw):
+                done = any(isinstance(i, dict) and i.get("type") == "function_call_output" for i in input)
+                return ModelResponse(output=[_reply(input, None)] if done else [think, call], usage=Usage(),
+                                     response_id=None)
+        Runner.run_sync(Agent(name="bodies", model=Thinking(), tools=[tk.tool(TOOLS[0])]), "go", hooks=tk)
+        records = list(s.log.storage.iter_run("default", r["run_id"]))
+        first = next(x["event"] for x in records if x["event"]["type"] == "model.exchange")
+        vault = mock.Mock(content_get=lambda req: s.call(me, "content_get", req))
+        items = vault.content_get({"run_id": r["run_id"], "seqs": [first["run_seq"]], "purpose": "t"})["items"] \
+            if retain else [{}]   # a signer that keeps no content refuses content_get
+        out = findings_v2.analyze(records, (lambda recs: vault_content(vault, recs, "t")) if retain else None)
+        return first["data"], items[0], out["shown"]["calls"]["c-1"], [think, call]
+
+    def test_the_body_reaches_the_vault_only_when_it_is_on(self):
+        on, item, call, sent = self.record(True)
+        self.assertTrue(on["content_digest"].startswith("hmac-sha256:"))
+        self.assertEqual(item["content"], {"output": [i.model_dump(mode="json") for i in sent]})
+        self.assertEqual((call["form"], call["checks"]["TK-X201"]), ("summary", "checked"))   # reasoning checkable
+        off, item, call, _ = self.record(False)
+        self.assertTrue(off["content_digest"].startswith("hmac-sha256:"))
+        self.assertEqual(call["checks"]["TK-X201"], "no_content")
+        for data in (on, off):   # the args each signer committed to (salted): the same tool use either way
+            self.assertEqual([{k: v for k, v in t.items() if k != "args_commitment"} for t in data["tool_uses"]],
+                             [{"id": "c-1", "name": "echo", "executed_by": "client", "args_source": "raw"}])
 
 
 if __name__ == "__main__":

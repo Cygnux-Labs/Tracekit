@@ -45,7 +45,7 @@ from agents.tool import maybe_invoke_function_tool_failure_error_function, set_f
 from tracekit import parsers
 from tracekit.format.canon import event_hash, loads_strict
 from tracekit.integrations.executor_tools import EXECUTOR
-from tracekit.sdk.client import SignerUnavailable, fail_open, named_rules, result_field
+from tracekit.sdk.client import SignerUnavailable, VaultBody, fail_open, named_rules, result_field
 from tracekit.signer.rpc_schema import RPCError
 
 BLOCKED = "Tool call blocked by policy: "
@@ -77,6 +77,7 @@ class TracekitAgents(RunHooks):
         self._decided = {}   # tool_call_id -> its decision, from needs_approval to the gate in this process
         self._passed = {}    # tool_call_id -> (decision, tool, args) of a call the gate let run (None: unrecorded)
         self._patches = {}   # id(operation) -> (operation, call_id): the SDK does not tell the editor the call id
+        self._vault = VaultBody(lambda: signer.status({}))   # a response's body, when the signer keeps content
 
     async def _call(self, method, req):
         def call():
@@ -259,15 +260,17 @@ class TracekitAgents(RunHooks):
         return waiting
 
     async def on_llm_end(self, context, agent, response):
-        """T3: each model response as a commitment, hosted tool calls, computer actions and handoffs included. Never
-        raises: the run goes on without the record."""
+        """T3: each model response as a commitment, hosted tool calls, computer actions and handoffs included, and
+        with the signer's content vault on its output items as the body the vault keeps (reasoning, messages and
+        calls, which `tracekit analyze --v2` reads). Never raises: the run goes on without the record."""
         try:
             out = parsers.parse("openai:responses", {"output": response.output, "usage": response.usage})
             model = agent.model if isinstance(agent.model, str) else getattr(agent.model, "model", None)
             # lean: the RPC's cap, as autotrace; send the rest in a second model_event if responses ever carry more
             fields = {"usage": out["usage"], "tool_uses": out["tool_uses"][:128]}
+            content = {"output": [i.model_dump(mode="json") for i in response.output]}
             await self._rpc("model_event", provider="openai", phase="response", model=str(model or "")[:128],
-                            content_digest=event_hash([i.model_dump(mode="json") for i in response.output]),
+                            content_digest=event_hash(content), **await asyncio.to_thread(self._vault, content),
                             **{k: v for k, v in fields.items() if v})
         except Exception as e:
             warnings.warn(f"tracekit: model response not recorded: {e}", stacklevel=2)

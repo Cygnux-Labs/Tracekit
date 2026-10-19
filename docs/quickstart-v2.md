@@ -26,7 +26,9 @@ wires every framework it finds installed: OpenAI Agents SDK tools, LangGraph / L
 `create_agent` builds), Claude Agent SDK hooks, MCP `ClientSession.call_tool`, Browser Use's `Tools` (which an `Agent`
 builds), CrewAI's tool hooks, Pydantic AI `Agent`s (the `Tracekit` capability), and the OpenAI, Anthropic and Google Gen AI clients' model calls. Each tool call is decided by the signer
 before it runs (`allow`, `deny`, `ask`) and recorded after. A denied call reaches the model as a refusal and the agent
-goes on. Calling it again returns the same run. With none of these installed it warns and does nothing. TypeScript:
+goes on. Each model response is committed to and, with the signer's content vault on (the dev signer keeps it), kept
+in the vault, so `tracekit analyze --v2` can read what the model said before and after each call ([findings](findings.md#v2-runs-what-was-asked-said-and-done-tracekit-analyze---v2)).
+Calling it again returns the same run. With none of these installed it warns and does nothing. TypeScript:
 `const tk = await instrument()` from `@cygnuxlabs/tracekit`, then pass `tk.ai` (Vercel AI SDK) or `tk.agents` (OpenAI Agents
 JS) to the framework.
 

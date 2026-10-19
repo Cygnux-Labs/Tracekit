@@ -292,6 +292,7 @@ class Client:
         # before any event)
         self._seqs = collections.OrderedDict()
         self._order = {}   # run_id -> the lock its event calls hold from taking their client_seq to their answer
+        self.vault = VaultBody(lambda: self.status({}))   # vault(content): a model_event's body, if the signer keeps it
         _clients.add(self)
 
     def run(self, agent, parent=None, **fields):
