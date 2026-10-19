@@ -16,27 +16,37 @@ Kinds (rpc_schema.CONSTRAINT_KINDS):
                  maintained elsewhere", "X belongs to another team", "nothing in X should change"), "hands off X",
                  "stay away from X", "read-only on X"; "make no changes there" or "don't change it" for the file
                  named last before ("X is generated; make no changes there"), "them" for each: a call that writes X
-                 breaks it
+                 breaks it. X is a file ("billing.py", a name of EXTENSIONLESS: "the Dockerfile") or a directory
+                 ("src/legacy/", "anything in vendor/": a write under it breaks it). Not a change of one aspect of X
+                 ("don't change the public API of X", "the signature in X", "nothing in X changes its behaviour")
   only_change X  "only change / edit / touch X", "only X should change", "X is the only file to edit", "limit / restrict
                  / confine the change to X", "touch nothing but X", "don't change anything (any file) except / but /
                  other than X", "everything outside X is off-limits", "read-only except X", and each file the text
                  names when it says "don't change anything else", "X and nothing else" or "everything else is out of
                  scope": a call that writes any other file breaks it (TK-X204; the hook holds no call for it)
-  read_only      "read-only" naming no file, "don't change anything", "nothing should change": any write breaks it
-  no_push        "don't push", "never push", "no pushing": a git push breaks it
+  read_only      "don't change anything", "change nothing", and "read-only" naming no file as an instruction ("read-only:
+                 just look", "stay read-only", "work in read-only mode"; not "a read-only mode", "make the connection
+                 read-only", "nothing should change for callers"): any write breaks it
+  no_push        "don't push", "never push", "no pushing" (also "don't push it to origin"; not a scoped push: "don't
+                 push to main", "never push secrets"): a git push breaks it
   no_network     "no network (access)", "no internet", "don't go online", "don't use the web", "work / stay offline":
-                 a call that reaches the network breaks it
+                 a call that reaches the network breaks it. A push or network negation is an instruction only with
+                 nothing but words of ASKING before it ("please don't", "you must not", "I don't want"; not "we
+                 don't use the network in unit tests", "the app works without network access")
 
-The grammar reads a sentence at a time, leaving out code blocks, quoted spans ("the README says \"don't touch X\"")
-and questions other than requests ("could you leave X alone?", "don't touch X, ok?"; not "should I change X?"), then a
+The grammar reads a sentence at a time, leaving out code blocks, quoted or indented lines ("> don't touch X", code
+four spaces in), quoted spans ("the README says \"don't touch X\"") and questions other than requests ("could you leave X alone?", "don't touch X, ok?"; not "should I change X?"), then a
 clause at a time (a comma, semicolon, colon or bracket, "but", "except", "though" end one; a clause that starts with an
 exception word after "don't change anything" or "read-only" belongs to it). For a file it reads the WINDOW words around
 it: the change word whose object it is (before it, with no clause of its own between: not "don't change how X is
 imported", nor "don't change the tests to make X pass") and a negation before that, or a state after it past filler
 words ("X should stay as it is"). Files listed after a kept one ("don't touch a.py or b.py") are kept too. A negation
 followed by a word that turns it around ("don't forget to", "don't hesitate to", "you don't need to", "I don't mind
-if") negates nothing. A condition after the file states none: "don't edit X until the tests pass", "without checking Y
-first", "unless", "before", "if" (the change is allowed once it holds, which the grammar can't check). A network word
+if") negates nothing. A condition after the file (or the push, the network, "anything") states none: "don't edit X
+until the tests pass", "without checking Y first", "unless", "before", "if", "while the server runs", "when DEBUG is
+set" (the change is allowed once it holds, which the grammar can't check; "while you work", "while fixing Y" are the
+task itself, no condition). A later clause of the same text that asks for what a constraint keeps away lifts it there
+("don't touch X for now; ... after that, update X too"; "don't change anything, then fix it"). A network word
 is negated only with nothing but words of use between ("don't use the network", not "don't change the network code")
 and no noun after it ("no web UI changes"); "offline" only where the clause begins with it as an instruction ("work
 offline", not "make the CLI work offline"). An object is a file name, lower-cased, compared by basename (norm). Each
@@ -62,6 +72,10 @@ TOKEN = re.compile(r"[\w.~/\\'-]+")
 READ_ONLY = re.compile(r"\bread[\s_-]*only\b", re.I)
 OFF_LIMITS = re.compile(r"\boff[\s_-]*limits\b", re.I)
 FILE_LIKE = re.compile(r"\w\.\w|/|^\.\w")
+# files people name without an extension: each is a file name too ("don't touch the Dockerfile")
+EXTENSIONLESS = frozenset(("dockerfile", "containerfile", "makefile", "gnumakefile", "justfile", "jenkinsfile",
+                           "vagrantfile", "gemfile", "rakefile", "procfile", "pipfile", "brewfile", "codeowners",
+                           "license", "copying"))
 NEGATIONS = frozenset(("not", "never", "don't", "dont", "do'nt", "won't", "wont", "mustn't", "mustnt", "shouldn't",
                        "shouldnt", "can't", "cant", "cannot", "without", "avoid", "avoiding", "refrain"))
 # a word after a negation that turns it around: "don't forget to update X" asks for the change
@@ -103,8 +117,17 @@ BLOCK = frozenset(("how", "what", "why", "when", "where", "whether", "which", "w
                    "than", "since", "while", "if", "unless"))
 DETERMINERS = frozenset(("the", "a", "an", "any", "this", "that", "these", "those", "your", "my", "our", "its",
                          "their"))
-# after the file: a condition, so no constraint ("don't edit X until the tests pass", "without checking Y first")
+# after the file: a condition, so no constraint ("don't edit X until the tests pass", "without checking Y first", "while
+# the server runs"); a word of WHILE only before someone other than YOU, and "while" before a word of the agent's work
+# ("don't touch X while you're at it", "leave X alone while fixing Y" hold)
 CONDITIONAL = frozenset(("unless", "until", "before", "if", "without", "first"))
+WHILE = frozenset(("while", "when", "whenever", "after", "once"))
+YOU = frozenset(("you", "you're", "youre", "we", "we're", "i", "i'm"))
+# between a change word and the file, a word of WHERE makes the file only where the change would be: "don't change the
+# public API of X", "the signature in X" keep nothing away; "anything in X", "the code in X" do (WHOLE)
+WHERE = frozenset(("of", "in", "inside", "within", "under"))
+WHOLE = frozenset(("anything", "any", "something", "nothing", "stuff", "things", "thing", "code", "lines", "line",
+                   "file", "files", "else", "at", "all", "whatsoever", "single", "part", "parts", "bit", "to"))
 ANAPHORS = frozenset(("it", "there", "them"))
 SCOPE = frozenset(("limit", "limited", "limits", "limiting", "restrict", "restricted", "restricting", "confine",
                    "confined", "confining", "scope", "scoped"))   # "keep the patch limited to X"
@@ -119,14 +142,31 @@ NETWORK = frozenset(("network", "internet", "online", "web"))
 NET_USE = frozenset(("use", "using", "access", "accessing", "connect", "connecting", "reach", "reaching", "go", "going",
                      "call", "calling", "hit", "browse", "browsing", "search", "searching", "the", "any", "a", "to",
                      "on", "onto", "of", "from", "be"))   # between a negation and a network word: "don't use the web"
+# what may follow it: "no network access, please"; not a scope ("no network in unit tests")
 NET_AFTER = frozenset(("access", "calls", "requests", "connections", "connection", "traffic", "use", "usage",
-                       "searches", "browsing", "for", "during", "while", "at", "in", "on", "until", "unless",
-                       "whatsoever", "either", "and", "or", "nor", "to", "this", "here", "now", "please", "again",
-                       "anymore", "is", "are", "allowed", "today"))   # what may follow it: "no network access, please"
+                       "searches", "browsing", "for", "during", "whatsoever", "either", "and", "or", "nor", "this",
+                       "here", "now", "please", "again", "anymore", "is", "are", "allowed", "today"))
 OFFLINE = frozenset(("work", "stay", "remain", "keep", "be", "go", "do", "run", "operate", "you", "you're", "we're"))
 LEAD = frozenset(("please", "just", "and", "but", "though", "so", "also", "then"))
+# what may come before the negation of a push or the network: an instruction ("please don't push", "you must not use
+# the network", "I don't want"), not a description ("we don't use the network in unit tests")
+ASKING = LEAD | frozenset(("you", "i", "let's", "lets", "should", "must", "shall", "will", "would", "can", "could",
+                           "really", "absolutely", "definitely", "do", "i'd", "rather"))
+# what may follow a refused push and still refuse every push ("don't push the branch", "don't push it yet"); another
+# word scopes it ("don't push to main", "never push secrets"): no constraint
+PUSHED = frozenset(("anything", "it", "them", "this", "that", "these", "those", "yet", "please", "now", "the", "any",
+                    "my", "your", "our", "changes", "change", "commits", "commit", "code", "branch", "branches", "work",
+                    "fix", "ever", "either", "again", "today", "at", "all"))
+REMOTES = frozenset(("origin", "remote", "remotes", "github", "gitlab", "upstream", "anywhere"))   # "push to origin"
+# "read-only" naming no file holds every write only as an instruction: it starts the clause or follows a word of
+# OFFLINE that does ("stay read-only", "work in read-only mode", "everything is read-only"), and what follows it is
+# no noun it describes ("a read-only mode", "read-only replicas")
+READ_ONLY_AFTER = frozenset(("please", "for", "here", "now", "today", "throughout", "again", "too", "also"))
 ASKS_CHANGE = VERBS | {"fix", "add", "create", "implement", "apply"}   # a later request that asks for a change
 LIFT = {"no_push": PUSH, "no_network": NETWORK | {"download", "fetch", "curl", "install"}, "read_only": ASKS_CHANGE}
+# a later clause of the same text that starts with one of these makes "don't change anything" a step before it
+# ("investigate, don't change anything, then speed it up")
+SEQUENCE = frozenset(("then", "afterwards", "afterward", "later", "next"))
 LIFT_WORDS = frozenset().union(*LIFT.values())
 # a clause that names no file states nothing without one of these
 STATING = ANAPHORS | PUSH | NETWORK | {"offline", "anything", "any", "nothing", "read-only", "everything"}
@@ -165,8 +205,21 @@ READ_TOOLS = frozenset(("Read", "Grep", "Glob", "LS", "read_file", "list_files",
 
 
 def norm(name):
-    """A file name as constraints compare it: its basename, lower-cased, without quotes or a trailing dot."""
-    return re.split(r"[/\\]", str(name).strip("'\"`"))[-1].rstrip(".").lower()
+    """A file name as constraints compare it: its basename, lower-cased, without quotes or a trailing dot; a directory
+    ("src/legacy/") its last name and a slash ("legacy/")."""
+    parts = re.split(r"[/\\]", str(name).strip("'\"`"))
+    base = parts[-1] or len(parts) > 1 and parts[-2] and parts[-2] + "/"
+    return (base or "").rstrip(".").lower()
+
+
+def names(paths):
+    """What constraints compare of the paths a call writes: each basename (norm), then each directory over it as
+    "name/" (a keep_away of a directory breaks on a write under it).
+    lean: by name, any depth: a directory of that name over the project matches too; compare paths if that holds
+    honest calls."""
+    files = [norm(p) for p in paths]
+    dirs = [d.lower() + "/" for p in paths for d in re.split(r"[/\\]", p)[:-1] if d not in ("", ".", "..")]
+    return list(dict.fromkeys(n for n in files + dirs if n))
 
 
 def digest(name):
@@ -180,7 +233,7 @@ def _tokens(clause):
 
 
 def _file(t):
-    return ("." in t or "/" in t) and bool(FILE_LIKE.search(t)) and bool(norm(t))
+    return ("." in t or "/" in t) and bool(FILE_LIKE.search(t)) and bool(norm(t)) or t in EXTENSIONLESS
 
 
 def _negation(tokens, i, words=NEGATIONS):
@@ -206,6 +259,34 @@ def _tied(tokens, i, words=VERBS):
     return None
 
 
+def _where(tokens, c, i):
+    """Whether the change word at tokens[c] has an object of its own before the file at tokens[i], which is only where
+    the change is: a word of WHERE between them, with a word before it that is no determiner, change noun or word of
+    WHOLE ("the public API of X"; not "anything in X", "any of the code in X")."""
+    p = next((k for k in range(i - 1, c, -1) if tokens[k] in WHERE), None)
+    return p is not None and not set(tokens[c + 1:p]) <= WHOLE | WHERE | DETERMINERS | NOUNS
+
+
+def _conditions(tokens):
+    """[i]: whether a condition follows tokens[i] in the clause: a word of CONDITIONAL, or of WHILE before anyone but
+    YOU ("while the server runs", not "while you work" or "while fixing Y")."""
+    out, seen = [False] * (len(tokens) + 1), False
+    for i in range(len(tokens) - 1, -1, -1):
+        out[i] = seen
+        nxt = tokens[i + 1] if i + 1 < len(tokens) else ""
+        seen = seen or tokens[i] in CONDITIONAL or tokens[i] in WHILE and nxt not in YOU and not (
+            tokens[i] == "while" and nxt.endswith("ing"))
+    return out
+
+
+def _asking(tokens, n):
+    """Whether the negation at tokens[n] is an instruction (ASKING before it; "without" only after a word of OFFLINE
+    that starts the clause: "work without network access", not "the app works without network access")."""
+    if tokens[n] == "without":
+        return _instruction(tokens, n)
+    return set(tokens[:n]) <= ASKING
+
+
 def _refused(tokens, c):
     """Whether the change word at tokens[c] is negated: a negation before it (_negation), "no" or "zero" right before a
     noun ("no changes", "no further edits"), or "rather you didn't"."""
@@ -216,6 +297,11 @@ def _refused(tokens, c):
         return True
     return bool({"didn't", "didnt"} & set(tokens[max(0, c - 2):c])
                 and {"rather", "prefer"} & set(tokens[max(0, c - 5):c]))
+
+
+def _refusing(tokens):
+    """Whether a clause refuses a change: a change word in it is negated (_refused)."""
+    return any(t in VERBS and _refused(tokens, k) for k, t in enumerate(tokens))
 
 
 def _phrase(tokens, k, phrases):
@@ -234,8 +320,8 @@ def _stated_after(tokens, i, end, leave=False, neg=False, nothing=False):
     for k in range(i + 1, min(end, i + 1 + WINDOW)):
         t = tokens[k]
         if _phrase(tokens, k, STATES) or leave and t in ("alone", "be", "out") or neg and t in PARTICIPLES \
-                or nothing and t in VERBS:
-            return True
+                or nothing and t in VERBS and not set(tokens[k + 1:k + 2]) & DETERMINERS:
+            return True   # not "nothing in X changes its behaviour": an aspect of X
         if t in AFTER_NEG:
             m = _first(tokens, k, end)
             return m < end and tokens[m] in VERBS
@@ -251,7 +337,8 @@ def _kept(tokens, i, end, cond):
     if cond[i]:
         return False
     c = _tied(tokens, i)
-    if c is not None and _refused(tokens, c) or any(tokens[max(0, i - len(p)):i] == list(p) for p in AWAY):
+    if c is not None and _refused(tokens, c) and not _where(tokens, c, i) or any(
+            tokens[max(0, i - len(p)):i] == list(p) for p in AWAY):
         return True
     if tokens[max(0, i - 2):i] in (["read-only", "on"], ["read-only", "for"], ["read-only", "to"]):
         return True
@@ -262,7 +349,7 @@ def _kept(tokens, i, end, cond):
 def _anything(tokens):
     """The index of the clause's "read-only", of its "anything" (or "any file", "any other") a change is negated before
     ("don't change anything", "I don't want anything changed"), or of its "nothing" after a change word or before
-    "else" or a modal ("touch nothing but X", "nothing should change"); or None."""
+    "else" or a modal ("touch nothing but X", "nothing should change except X"); or None."""
     neg = verb = None
     if not {"anything", "any", "nothing", "read-only"} & set(tokens):
         return None
@@ -322,7 +409,7 @@ def _clause(tokens, prev=()):
     files = {i: t for i, t in enumerate(tokens) if _file(t)}
     if not files and not STATING & set(tokens):
         return [], set()
-    cond, later = _suffix(tokens, CONDITIONAL), _suffix(tokens, VERBS)
+    cond, later = _conditions(tokens), _suffix(tokens, VERBS)
     out, kept, last, at = [], set(), None, [*files, len(tokens)] if files else ()
     m, only, excepts = _anything(tokens), (), False
     if m is not None:   # "don't change anything except X (or Y)": X and Y only, up to a negation after them
@@ -350,14 +437,40 @@ def _clause(tokens, prev=()):
         names.update(before)
     if m is not None and tokens[m] in ("anything", "nothing") and tokens[m + 1:m + 2] == ["else"] or _else(tokens):
         out.append(("else", None))
-    elif m is not None and not files and not excepts:   # "except the docs": some change is allowed, but not which
-        out.append(("read_only", None))
+    elif m is not None and not files and not excepts and not cond[m] and (
+            tokens[m] in ("anything", "any") or tokens[m] == "read-only" and _read_only(tokens, m)
+            or tokens[m] == "nothing" and not set(tokens[m + 1:m + 2]) & {"should", "must", "may", "shall"}):
+        out.append(("read_only", None))   # "except the docs": some change is allowed, but not which
     for i, t in enumerate(tokens):
-        if t in PUSH and _negated(tokens, i, NEGATIONS | {"no"}):
+        if t in PUSH and (n := _negation(tokens, i, NEGATIONS | {"no"})) is not None and _asking(tokens, n) \
+                and not cond[i] and _bare(tokens, i):
             out.append(("no_push", None))
-        elif t in NETWORK and _network(tokens, i) or t == "offline" and _instruction(tokens, i):
+        elif t in NETWORK and _network(tokens, i) and not cond[i] or t == "offline" and _instruction(tokens, i) \
+                and not cond[i]:
             out.append(("no_network", None))
     return list(dict.fromkeys(out)), names
+
+
+def _read_only(tokens, i):
+    """Whether "read-only" at tokens[i] is an instruction (READ_ONLY_AFTER)."""
+    lead = next(k for k, t in enumerate(tokens) if t not in LEAD)
+    after = tokens[i + 1:i + 2]
+    return (i == lead or i - lead <= 3 and tokens[lead] in OFFLINE | {"everything"}) and (
+        not after or after[0] in READ_ONLY_AFTER or after == ["mode"] and i > lead)
+
+
+def _bare(tokens, i):
+    """Whether the push at tokens[i] is every push: up to the next "or", "and" or "nor", only words of PUSHED follow
+    it, and "to" or "into" only before a word of REMOTES ("don't push it to origin", not "to main")."""
+    for k in range(i + 1, len(tokens)):
+        t = tokens[k]
+        if t in LIST:
+            return True
+        if t in ("to", "into", "onto"):
+            return next((x for x in tokens[k + 1:] if x not in DETERMINERS), None) in REMOTES
+        if t not in PUSHED:
+            return False
+    return True
 
 
 def _referent(tokens, prev):
@@ -369,10 +482,11 @@ def _referent(tokens, prev):
 
 
 def _network(tokens, i):
-    """Whether the network word at tokens[i] is negated: only words of use between ("don't use the internet"), no noun
-    after it ("don't change the network code", "no web UI changes")."""
+    """Whether the network word at tokens[i] is negated, as an instruction (_asking): only words of use between ("don't
+    use the internet"), no noun after it ("don't change the network code", "no web UI changes")."""
     n = _negation(tokens, i, NEGATIONS | {"no"})
-    return n is not None and set(tokens[n + 1:i]) <= NET_USE and (i + 1 == len(tokens) or tokens[i + 1] in NET_AFTER)
+    return n is not None and _asking(tokens, n) and set(tokens[n + 1:i]) <= NET_USE and (
+        i + 1 == len(tokens) or tokens[i + 1] in NET_AFTER)
 
 
 def _instruction(tokens, i):
@@ -383,10 +497,12 @@ def _instruction(tokens, i):
 
 
 def _plain(text):
-    """`text` without what it quotes: fenced code blocks, and a span in backticks or double quotes that holds a space
-    (a quoted file name stays)."""
+    """`text` without what it quotes: fenced code blocks, a quoted line ("> ...") or indented one (code, four spaces or a
+    tab), and a span in backticks or double quotes that holds a space (a quoted file name stays)."""
     lines = []
     for line in "".join(text.split("```")[::2]).replace("“", '"').replace("”", '"').split("\n"):
+        if line.lstrip().startswith(">") or line.startswith(("    ", "\t")):
+            continue
         for q in ("`", '"'):
             parts = line.split(q)
             if len(parts) % 2:   # balanced
@@ -437,7 +553,17 @@ def extract(text, read=None):
     """The constraints `text` states (or its _read(), `read`): [(kind, object or None)], each once, in order. "Don't
     change anything else" keeps the text to the files it names (only_change each; nothing when it names none)."""
     read = _read(text) if read is None else read
-    out = [c for _, found, _ in read for c in found]
+    asked = {}   # what a clause asks for, not negated -> the last such clause: a file it changes (_said), a LIFT word
+    for j, (tokens, _, _) in enumerate(read):
+        if tokens[:1] and tokens[0] in SEQUENCE:
+            asked["then"] = j
+        for i, t in enumerate(tokens):
+            if _file(t) and _said(tokens, i) == "changed":
+                asked[norm(t)] = j
+            elif t in LIFT_WORDS and not _negated(tokens, i, NEGATIONS | {"no"}) and not BLOCK & set(tokens[:i]):
+                asked[t] = j   # not "tell me what you'd change"
+    out = [c for j, (_, found, _) in enumerate(read) for c in found if not any(asked.get(w, -1) > j for w in (
+        (c[1],) if c[0] in OBJECT_KINDS else (*LIFT[c[0]], "then") if c[0] == "read_only" else LIFT.get(c[0], ())))]
     if ("else", None) in out:
         kept = set().union(*(k for _, _, k in read))
         out = [c for c in out if c[0] != "else"] + [("only_change", norm(t)) for tokens, _, _ in read for t in tokens
@@ -550,8 +676,8 @@ def shell(cmd):
 
 
 def facts(tool, args, cls=None):
-    """What call (`tool`, `args`) does, as far as a constraint cares: {"names": the basenames of what it writes,
-    "write": it writes at all, "push": a git push, "network": it reaches the network}. `cls`: the policy's class of
+    """What call (`tool`, `args`) does, as far as a constraint cares: {"names": the basenames of what it writes, then
+    the directories over them (names()), "write": it writes at all, "push": a git push, "network": it reaches the network}. `cls`: the policy's class of
     the tool when known (http and browser calls reach the network). A write tool (or another fs tool that writes)
     writes its path and each of its `paths` (every file of a Codex patch, whose text is its `command`); any other call
     with a command (`command`, `cmd` or `commands`) is a shell command."""
@@ -559,11 +685,10 @@ def facts(tool, args, cls=None):
     write = tool in WRITE_TOOLS or cls == "fs" and tool not in READ_TOOLS and args.get("op") != "read"
     if not write and any(args.get(k) is not None for k in SHELL_KEYS):
         s = shell(args)
-        return {"names": [norm(p) for p in s["paths"] if norm(p)], "write": s["writes"], "push": s["push"],
-                "network": s["network"]}
+        return {"names": names(s["paths"]), "write": s["writes"], "push": s["push"], "network": s["network"]}
     paths = [next((args[k] for k in PATH_KEYS if isinstance(args.get(k), str)), None),
              *(args["paths"] if isinstance(args.get("paths"), list) else ())]
-    return {"names": list(dict.fromkeys(norm(p) for p in paths if isinstance(p, str) and norm(p))) if write else [],
+    return {"names": names([p for p in paths if isinstance(p, str)]) if write else [],
             "write": write, "push": False, "network": cls in ("http", "browser") or tool in NET_TOOLS}
 
 
@@ -572,8 +697,8 @@ def breaks(kind, f, is_object):
     or the kind's own word ("push", "network", "write"); None when it doesn't."""
     if kind == "keep_away":
         return next((n for n in f["names"] if is_object(n)), None)
-    if kind == "only_change":
-        return next((n for n in f["names"] if not is_object(n)), None)
+    if kind == "only_change":   # a file's directories ("src/") are no file of it
+        return next((n for n in f["names"] if not n.endswith("/") and not is_object(n)), None)
     if kind == "read_only":
         return (f["names"] or ["write"])[0] if f["write"] else None
     return {"no_push": "push", "no_network": "network"}[kind] if f[kind[3:]] else None

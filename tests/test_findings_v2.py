@@ -288,6 +288,27 @@ class StatedConstraint(Base):   # TK-X204
         self.assertEqual((f["cites"][-1]["run_seq"], d["tiers"][0]), (999, "observer"))
         self.assertIn("/usr/bin/python3", d["what"])
 
+    def test_a_held_call_a_person_approved_is_low_one_the_run_approved_itself_stays_high(self):
+        """An approval of a call a live constraint held lifts the constraint for it only from an identity other than
+        the run's: a self-approval (the dev signer's, or the agent answering its own hold) lowers nothing."""
+        t = self.task("Fix src/pager.py. Don't touch billing.py.")
+        tid = t.step("Same fix in billing.py.", "Edit", edit("billing.py"))
+        self.run_session(t)
+        held = next(r["event"]["data"] for r in self.records if r["event"]["type"] == "policy.decision"
+                    and r["event"]["data"]["tool_use_id"] == tid)
+        self.assertEqual((held["decision"], held["rule_ids"][-1]), ("ask", "TK-CONSTRAINT"))
+        for self_approved, want in ((False, ("low", ["keep_away", "approved"])),
+                                    (True, ("high", ["keep_away", "self_approved"]))):
+            approval = {"event": {"type": "approval", "run_seq": 999, "run_id": self.run_id, "source": "signer",
+                                  "data": {"tool_use_id": tid, "approval_id": "a1", "decision": "approve",
+                                           "approver": "uid:4242", "self_approved": self_approved}},
+                        "hash": "sha256:" + "a" * 64}
+            out = findings_v2.analyze(self.records + [approval], lambda recs: vault_content(self.signer, recs, "t"))
+            f, d = finding(out, "TK-X204")
+            with self.subTest(self_approved=self_approved):
+                self.assertEqual((f["verdict"]["severity"], d["labels"]), want)
+                self.assertEqual(f["cites"][-1]["run_seq"], 999)
+
     def test_words_after_the_call_state_nothing_about_it(self):
         t = self.task()
         tid = t.step("Fixing billing.py.", "Edit", edit("billing.py"))

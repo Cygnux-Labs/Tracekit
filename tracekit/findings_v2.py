@@ -33,7 +33,9 @@ Checks, for each call the run allowed or ran:
   TK-X204 (high; medium when the model stated it, low once a later request lifts it) a call or a kernel sensor's
           effect breaks a constraint stated before it (tracekit.constraints: "don't touch X", "leave X alone",
           "read-only", "don't push", "no network", "only change Y"). A later request that names what the constraint
-          keeps away lifts it: the finding stays, downgraded, and cites the lifting record.
+          keeps away lifts it: the finding stays, downgraded, and cites the lifting record. So does an approval of a
+          call a live constraint held, by an identity other than the run's (`approved`); the run's own identity's
+          (self-approved: it may be the agent's) lowers nothing (`self_approved`).
   TK-X205 (critical) a success claim after the last related call failed, and v1's say-vs-do checks TK-X101..X104,
           X111..X114 and X120 on the v2 view: tracekit.findings_text
   TK-X206 (high) a kernel sensor's exec, connect or file effect no call explains, and TK-X207 (medium) a call that
@@ -248,12 +250,13 @@ def _message(body, data):
 def _names(read):
     """[(name, kept away)] of the words of a request (its constraints._read()), each a basename as constraints compare
     them (constraints.norm). A file a clause keeps away ("leave billing.py untouched", "don't modify billing.py") is
-    marked kept away, and that clause's other words, its other files aside, are no mention."""
+    marked kept away, and the other words of a clause that keeps a file away or refuses a change ("don't touch the
+    Brewfile"), its other files aside, are no mention."""
     out = []
     for tokens, _, kept in read:
+        whole = not kept and not constraints._refusing(tokens)
         for t in tokens:
-            file = bool(constraints.FILE_LIKE.search(t))
-            if (file or not kept) and constraints.norm(t):
+            if (whole or constraints._file(t)) and constraints.norm(t):
                 out.append((constraints.norm(t), constraints.norm(t) in kept))
     return out
 
@@ -293,6 +296,7 @@ class _Run:
         # hook recorded a prompt (PROMPT_HOOK)
         self.synthetic = self.hooked = False
         self.net_effects, self.requests = [], []   # net and connect effects; agent-reported request records
+        self.approved = {}   # tool_use_id -> the approval record that approved its call
         self.model_hosts = set()   # the API hosts of the model calls the run recorded: the harness's own traffic
         for r in self.records:
             e, d = r["event"], r["event"]["data"]
@@ -302,6 +306,8 @@ class _Run:
                 self.calls[d["tool_use_id"]] = {"decision": r}   # a later attempt replaces an earlier one
             elif e["type"] == "tool.result" and d.get("tool_use_id") in self.calls:
                 self.calls[d["tool_use_id"]]["result"] = r
+            elif e["type"] == "approval" and d.get("decision") == "approve":
+                self.approved[d.get("tool_use_id")] = r
             elif e["type"] == "model.exchange" and d.get("phase") == "request" and e["source"] != "gateway":
                 self.requests.append(e["run_seq"])
             elif e["type"] == "model.exchange" and d.get("phase") == "response":
@@ -629,25 +635,32 @@ DID = {"keep_away": "changed {}", "only_change": "changed {}", "read_only": "cha
        "no_network": "reached the network"}
 
 
-def _constraint(run, note, call, f, pos, seqs, who):
+def _constraint(run, note, call, f, pos, seqs, who, approval=None):
     """TK-X204 of one call or effect (`f` its constraints.facts, at position `pos`; `seqs` its records; `who` names
     it): whether it breaks a constraint stated before it. With text before it the size caps left unread
-    (`run.capped`), a break is still found (labelled `size`: a lift may be in that text) and no break is not checkable."""
+    (`run.capped`), a break is still found (labelled `size`: a lift may be in that text) and no break is not checkable.
+    `approval`: the approval record of the call a live constraint held: by another identity than the run's (not
+    self_approved), the person approved it, which lifts the constraint for it (low, `approved`); self-approved, the
+    run's own identity answered, which may be the agent's: labelled `self_approved`, nothing lowered."""
     hit = run.broken(f, pos)
     capped = run.capped is not None and run.capped < pos
     if hit is None:
         return note(call, "TK-X204", "size" if capped else "checked", _tiers(run, seqs))
     (_, cseq, kind, obj, source), name, lift = hit
-    seqs = [*seqs, cseq, *([lift[1]] if lift else [])]
+    aseq = approval and approval["event"]["run_seq"]
+    self_approved = bool(approval and approval["event"]["data"].get("self_approved"))
+    seqs = [*seqs, cseq, *([lift[1]] if lift else []), *([aseq] if approval else [])]
     only = sorted(run.only_before(pos))
     note(call, "TK-X204", "checked", _tiers(run, seqs), _finding(
-        run, "TK-X204", seqs, "low" if lift else "high" if source == "request" else "medium",
-        call and call["order"], bool(lift)),
+        run, "TK-X204", seqs, "low" if lift or approval and not self_approved else "high" if source == "request"
+        else "medium", call and call["order"], bool(lift)),
         f"{who} {DID[kind].format(name)} after the {source} (record {cseq}) said "
         + STATED[kind].format(", ".join(only[:3]) if kind == "only_change" else obj)
-        + (f"; a later {lift[3]} (record {lift[1]}) named it, so the constraint may have been lifted" if lift else ""),
-        [kind] + (["lifted"] if lift else []) + (["stated_by_model"] if source == "model" else [])
-        + (["size"] if capped else []))
+        + (f"; a later {lift[3]} (record {lift[1]}) named it, so the constraint may have been lifted" if lift else "")
+        + ("" if not approval else f"; the run's own identity approved the held call (record {aseq}), which may be the "
+           "agent" if self_approved else f"; the person approved the held call (record {aseq})"),
+        [kind] + (["lifted"] if lift else []) + (["self_approved" if self_approved else "approved"] if approval else [])
+        + (["stated_by_model"] if source == "model" else []) + (["size"] if capped else []))
     return True
 
 
@@ -740,7 +753,8 @@ def _check(run, out, project, allow, deadline, clock):
         elif not i and not prose:
             note(call, "TK-X204", "no_text")
         else:
-            _constraint(run, note, call, run.facts[dseq], pos, [dseq, *([cs] if cs is not None else [])], tool)
+            _constraint(run, note, call, run.facts[dseq], pos, [dseq, *([cs] if cs is not None else [])], tool,
+                        "TK-CONSTRAINT" in dec["data"].get("rule_ids", ()) and run.approved.get(tcid) or None)
         # TK-X202
         if tool in WRITE_TOOLS:
             if not facts or not facts["paths"]:
@@ -823,7 +837,7 @@ def _check(run, out, project, allow, deadline, clock):
                 note(None, "TK-X204", "agent_process")
             elif d.get("tool_call_id") not in found:   # a call's own finding covers what it did
                 file = d["kind"] == "file"
-                _constraint(run, note, None, {"names": [constraints.norm(d["path"])] if file else [], "write": file,
+                _constraint(run, note, None, {"names": constraints.names([d["path"]]) if file else [], "write": file,
                                               "push": False, "network": not file}, (eseq, 0), [eseq],
                             f"the {d.get('sensor') or 'egress'} observer saw {d.get('binary', 'a process')}: it")
         for r in run.effects:
